@@ -1,0 +1,23 @@
+{
+    "compilerOptions": {
+      "composite": true,
+      "declaration": true,
+      "declarationMap": true,
+      "experimentalDecorators": true,
+      "incremental": true,
+      "lib": ["ESNext"],
+      "module": "commonjs",
+      "moduleResolution": "node",
+      "noImplicitAny": true,
+      "outDir": "build",
+      "rootDir": "src",
+      "sourceMap": true,
+      "strict": true,
+      "target": "es2019",
+      "tsBuildInfoFile": "build/tsconfig.tsbuildinfo",
+      "typeRoots": [ "node_modules/@types" ],
+      "types": ["node", "jest"]
+    },
+    "exclude": ["node_modules"],
+    "include": ["./src/**/*"]
+  }

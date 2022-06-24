@@ -1,0 +1,376 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Parser Tests Include Decl 1`] = `
+Object {
+  "includes": Array [
+    Object {
+      "filename": "src/BUILD.FABR",
+      "kind": 3,
+      "offset": 8,
+      "source": Object {
+        "filename": "BUILD.TOP",
+        "fs": Object {},
+        "reader": Object {},
+      },
+    },
+  ],
+  "namespaces": Array [],
+  "properties": Array [],
+  "targets": Array [],
+}
+`;
+
+exports[`Parser Tests Missing Close Brace 1`] = `
+Object {
+  "includes": Array [],
+  "namespaces": Array [],
+  "properties": Array [],
+  "targets": Array [],
+}
+`;
+
+exports[`Parser Tests Missing Close Brace 2`] = `
+Array [
+  "BUILD.TOP:3:20:error:Read EOF but expected Identifier or '}'
+unicode-properties;
+                   ^
+",
+]
+`;
+
+exports[`Parser Tests Property Decl 1`] = `
+Object {
+  "includes": Array [],
+  "namespaces": Array [],
+  "properties": Array [
+    Object {
+      "kind": 1,
+      "name": "tsc",
+      "offset": 0,
+      "source": Object {
+        "filename": "BUILD.TOP",
+        "fs": Object {},
+        "reader": Object {},
+      },
+      "values": Array [
+        Object {
+          "kind": 0,
+          "offset": 4,
+          "source": Object {
+            "filename": "BUILD.TOP",
+            "fs": Object {},
+            "reader": Object {},
+          },
+          "value": Name {
+            "parts": Array [
+              Object {
+                "kind": 0,
+                "value": "@npm:typescript",
+              },
+            ],
+          },
+        },
+      ],
+    },
+    Object {
+      "kind": 1,
+      "name": "js_target",
+      "offset": 22,
+      "source": Object {
+        "filename": "BUILD.TOP",
+        "fs": Object {},
+        "reader": Object {},
+      },
+      "values": Array [
+        Object {
+          "kind": 0,
+          "offset": 32,
+          "source": Object {
+            "filename": "BUILD.TOP",
+            "fs": Object {},
+            "reader": Object {},
+          },
+          "value": Name {
+            "parts": Array [
+              Object {
+                "kind": 0,
+                "value": "es5-commonjs",
+              },
+            ],
+          },
+        },
+      ],
+    },
+    Object {
+      "kind": 1,
+      "name": "flavours",
+      "offset": 46,
+      "source": Object {
+        "filename": "BUILD.TOP",
+        "fs": Object {},
+        "reader": Object {},
+      },
+      "values": Array [
+        Object {
+          "kind": 0,
+          "offset": 55,
+          "source": Object {
+            "filename": "BUILD.TOP",
+            "fs": Object {},
+            "reader": Object {},
+          },
+          "value": Name {
+            "parts": Array [
+              Object {
+                "kind": 0,
+                "value": "red",
+              },
+            ],
+          },
+        },
+        Object {
+          "kind": 0,
+          "offset": 59,
+          "source": Object {
+            "filename": "BUILD.TOP",
+            "fs": Object {},
+            "reader": Object {},
+          },
+          "value": Name {
+            "parts": Array [
+              Object {
+                "kind": 0,
+                "value": "green",
+              },
+            ],
+          },
+        },
+        Object {
+          "kind": 0,
+          "offset": 65,
+          "source": Object {
+            "filename": "BUILD.TOP",
+            "fs": Object {},
+            "reader": Object {},
+          },
+          "value": Name {
+            "parts": Array [
+              Object {
+                "kind": 0,
+                "value": "blue",
+              },
+            ],
+          },
+        },
+      ],
+    },
+  ],
+  "targets": Array [],
+}
+`;
+
+exports[`Parser Tests Target Decl 1`] = `
+Object {
+  "includes": Array [],
+  "namespaces": Array [],
+  "properties": Array [],
+  "targets": Array [
+    Object {
+      "kind": 2,
+      "name": "fabr",
+      "offset": 11,
+      "properties": Array [
+        Object {
+          "kind": 1,
+          "name": "srcs",
+          "offset": 18,
+          "source": Object {
+            "filename": "BUILD.TOP",
+            "fs": Object {},
+            "reader": Object {},
+          },
+          "values": Array [
+            Object {
+              "kind": 0,
+              "offset": 23,
+              "source": Object {
+                "filename": "BUILD.TOP",
+                "fs": Object {},
+                "reader": Object {},
+              },
+              "value": Name {
+                "parts": Array [
+                  Object {
+                    "kind": 0,
+                    "value": "src:",
+                  },
+                  Object {
+                    "kind": 1,
+                    "value": "**",
+                  },
+                  Object {
+                    "kind": 0,
+                    "value": "/",
+                  },
+                  Object {
+                    "kind": 1,
+                    "value": "*",
+                  },
+                  Object {
+                    "kind": 0,
+                    "value": ".ts",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+        Object {
+          "kind": 1,
+          "name": "deps",
+          "offset": 36,
+          "source": Object {
+            "filename": "BUILD.TOP",
+            "fs": Object {},
+            "reader": Object {},
+          },
+          "values": Array [
+            Object {
+              "kind": 0,
+              "offset": 42,
+              "source": Object {
+                "filename": "BUILD.TOP",
+                "fs": Object {},
+                "reader": Object {},
+              },
+              "value": Name {
+                "parts": Array [
+                  Object {
+                    "kind": 0,
+                    "value": "es2019",
+                  },
+                ],
+              },
+            },
+            Object {
+              "kind": 0,
+              "offset": 50,
+              "source": Object {
+                "filename": "BUILD.TOP",
+                "fs": Object {},
+                "reader": Object {},
+              },
+              "value": Name {
+                "parts": Array [
+                  Object {
+                    "kind": 0,
+                    "value": "node",
+                  },
+                ],
+              },
+            },
+            Object {
+              "kind": 0,
+              "offset": 56,
+              "source": Object {
+                "filename": "BUILD.TOP",
+                "fs": Object {},
+                "reader": Object {},
+              },
+              "value": Name {
+                "parts": Array [
+                  Object {
+                    "kind": 0,
+                    "value": "unicode-properties",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      "source": Object {
+        "filename": "BUILD.TOP",
+        "fs": Object {},
+        "reader": Object {},
+      },
+      "type": "js_package",
+      "typeOffset": 0,
+    },
+    Object {
+      "kind": 2,
+      "name": "test",
+      "offset": 84,
+      "properties": Array [],
+      "source": Object {
+        "filename": "BUILD.TOP",
+        "fs": Object {},
+        "reader": Object {},
+      },
+      "type": "empty",
+      "typeOffset": 78,
+    },
+  ],
+}
+`;
+
+exports[`Parser Tests Target Decl 2`] = `
+Object {
+  "includes": Array [],
+  "namespaces": Array [],
+  "properties": Array [],
+  "targets": Array [
+    Object {
+      "kind": 2,
+      "name": "@fabr/common",
+      "offset": 11,
+      "properties": Array [
+        Object {
+          "kind": 1,
+          "name": "srcs",
+          "offset": 28,
+          "source": Object {
+            "filename": "BUILD.FABR",
+            "fs": Object {},
+            "reader": Object {},
+          },
+          "values": Array [
+            Object {
+              "kind": 0,
+              "offset": 34,
+              "source": Object {
+                "filename": "BUILD.FABR",
+                "fs": Object {},
+                "reader": Object {},
+              },
+              "value": Name {
+                "parts": Array [
+                  Object {
+                    "kind": 0,
+                    "value": "src:",
+                  },
+                  Object {
+                    "kind": 1,
+                    "value": "*",
+                  },
+                  Object {
+                    "kind": 0,
+                    "value": ".ts",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      "source": Object {
+        "filename": "BUILD.FABR",
+        "fs": Object {},
+        "reader": Object {},
+      },
+      "type": "js_package",
+      "typeOffset": 0,
+    },
+  ],
+}
+`;
