@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc",
     "test": "jest",
-    "lint": "eslint"
+    "lint": "eslint",
+    "dist": "yarn build && yarn test && yarn lint"
   },
   "dependencies": {
     "chokidar": "^3.5.3",
