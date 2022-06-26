@@ -48,7 +48,7 @@ class FSFile implements IFile {
     this.stats = stats;
   }
 
-  public readString(encoding?: BufferEncoding) {
+  public readString(encoding?: BufferEncoding): Computable<string> {
     return readFileAsString(path.resolve(this.root, this.name), encoding);
   }
 
@@ -85,7 +85,7 @@ class FSFileSetProvider implements IFileSetProvider {
    * @param name
    * @returns
    */
-  public find(name: Name) {
+  public find(name: Name): Computable<FileSet> {
     return Computable.from<FileSet>((resolve, reject) => {
       console.log("Chokidaring");
       const watch = chokidar.watch(name.toString(), {

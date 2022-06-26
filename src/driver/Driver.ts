@@ -23,26 +23,22 @@ import { defaultLog } from "../support/Log";
 import { Options } from "./Command";
 import { findSourceRoot, getBuildCache, PROJECT_FILENAME } from "./Environment";
 
-export async function runFabr(options: Options) {
+export async function runFabr(options: Options): Promise<void> {
   const log = defaultLog;
 
-  const sourceRoot = await findSourceRoot().catch(err => {
-    console.error("PROJECT.fabr not found");
-    process.exit(1);
-  });
+  const sourceRoot = await findSourceRoot();
 
   const buildRoot = getBuildCache();
 
   const load = loadProject(sourceRoot, PROJECT_FILENAME, log);
 
-  load.then(model => {
+  return load.then(model => {
     const config = model.getConfig(options.properties);
     const targets = options.targets.map(targetName => config.getTarget(targetName));
-    Computable.forAll(targets, results => {
+    Computable.forAll(targets, () => {
       console.log("Done");
       console.log(targets);
       process.exit(0);
     });
   });
-  options.targets;
 }

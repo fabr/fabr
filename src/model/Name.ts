@@ -50,7 +50,7 @@ export class Name {
   /**
    * Construct and return a new name from a simple literal string.
    */
-  static fromLiteral(str: string) {
+  static fromLiteral(str: string): Name {
     return new Name([{ kind: NamePartKind.Literal, value: str }]);
   }
 
@@ -182,7 +182,7 @@ export class Name {
   /**
    * @return a string suitable for use with a globbing implementation (ie with literal metacharacters escaped).
    */
-  public toString() {
+  public toString(): string {
     return this.parts.reduce((result, part) => {
       switch (part.kind) {
         case NamePartKind.Literal:
@@ -200,7 +200,7 @@ export class NameBuilder {
   private parts: NamePart[] = [];
   private last: NamePart | undefined = undefined;
 
-  private append(kind: NamePartKind, value: string) {
+  private append(kind: NamePartKind, value: string): void {
     if (value === "") {
       return;
     } else if ((kind !== NamePartKind.VarSubst, this.last?.kind === kind)) {
@@ -217,7 +217,7 @@ export class NameBuilder {
    * such as from a single-quoted string.
    * @param str
    */
-  public appendLiteralString(str: string) {
+  public appendLiteralString(str: string): void {
     this.append(NamePartKind.Literal, str);
   }
 
@@ -227,7 +227,7 @@ export class NameBuilder {
    * Note: does not extract substitution variables from the string.
    * @param str The contents of the DQ string (excluding the containing quotes)
    */
-  public appendEscapedString(str: string) {
+  public appendEscapedString(str: string): void {
     this.append(NamePartKind.Literal, unescapeDoubleQuotedString(str));
   }
 
@@ -238,23 +238,23 @@ export class NameBuilder {
    * Currently recognized metachars are '*', '?', and '[]'
    * @param str
    */
-  public appendGlobMetachars(str: string) {
+  public appendGlobMetachars(str: string): void {
     this.append(NamePartKind.Glob, str);
   }
 
   /**
    * Add a substitution variable by name.
    */
-  public appendSubstVar(str: string) {
+  public appendSubstVar(str: string): void {
     this.append(NamePartKind.VarSubst, str);
   }
 
-  public reset() {
+  public reset(): void {
     this.parts = [];
     this.last = undefined;
   }
 
-  public name() {
+  public name(): Name {
     const result = new Name(this.parts);
     this.reset();
     return result;

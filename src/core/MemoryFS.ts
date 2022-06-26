@@ -21,24 +21,28 @@ import { Computable } from "./Computable";
 import { IFile, IFileStats } from "./FileSet";
 
 export class MemoryFile implements IFile {
-  private content: string;
+  private content: Buffer;
   stat: IFileStats;
 
-  constructor(content: string) {
-    this.content = content;
+  constructor(buffer: Buffer) {
+    this.content = buffer;
     this.stat = {
-      size: content.length,
+      size: buffer.length,
       mtime: new Date(),
     };
   }
 
-  readString(encoding?: BufferEncoding): Computable<string> {
-    return Computable.resolve(this.content);
+  public static from(content: string, encoding: BufferEncoding = "utf8"): MemoryFile {
+    return new MemoryFile(Buffer.from(content, encoding));
   }
-  getDisplayName(): string {
+
+  public readString(encoding: BufferEncoding = "utf8"): Computable<string> {
+    return Computable.resolve(this.content.toString(encoding));
+  }
+  public getDisplayName(): string {
     throw new Error("Method not implemented.");
   }
-  isSameFile(file: IFile): boolean {
+  public isSameFile(file: IFile): boolean {
     return file instanceof MemoryFile && file.content === this.content;
   }
 }

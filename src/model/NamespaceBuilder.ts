@@ -54,7 +54,7 @@ export class NamespaceBuilder {
   public addNamespaceDecl(decl: INamespaceDecl, root: NSBuilderNode = this.root): boolean {
     const nameParts = decl.name.split(NAME_COMPONENT_SEPARATOR);
     const simpleName = nameParts.pop()!;
-    const parent = this.getNodeFor(this.root, nameParts, decl);
+    const parent = this.getNodeFor(root, nameParts, decl);
     if (parent) {
       let node: NSBuilderNode;
       if (simpleName in parent.content) {
@@ -134,7 +134,7 @@ export class NamespaceBuilder {
     return new Namespace(content, decl);
   }
 
-  private conflictError(decl: ITargetDecl | IPropertyDecl | NSBuilderNode, newDecl: INamedDecl) {
+  private conflictError(decl: ITargetDecl | IPropertyDecl | NSBuilderNode, newDecl: INamedDecl): void {
     const oldDecl = "kind" in decl ? decl : decl.self!;
     if (oldDecl.name === newDecl.name) {
       this.log.log(oldDecl.kind === newDecl.kind ? DIAG_DUPLICATE_DECL : DIAG_CONFLICT_DECL, {

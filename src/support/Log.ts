@@ -68,7 +68,7 @@ export interface Log {
   log<T>(diagnostic: Diagnostic<T>, params: T): void;
 }
 
-function getLogLevelName(logLevel: LogLevel) {
+function getLogLevelName(logLevel: LogLevel): string {
   switch (logLevel) {
     case LogLevel.Debug:
       return "debug";

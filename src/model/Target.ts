@@ -18,9 +18,12 @@
  */
 
 import { FileSet } from "../core/FileSet";
+import { ITargetDecl } from "./AST";
 
 /**
  * The final evaluated result of a TargetDecl, normally consisting of a FileSet
  * and possibly additional properties.
  */
-export interface Target extends FileSet {}
+export interface Target extends FileSet {
+  origin: ITargetDecl;
+}

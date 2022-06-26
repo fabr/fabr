@@ -23,7 +23,7 @@ describe("Computable", () => {
   it("Simple", () => {
     const values: number[] = [];
     let resolve: (value: number) => void = () => {};
-    const c = Computable.from<number>((res, rej) => {
+    const c = Computable.from<number>(res => {
       resolve = res;
     });
     resolve(3);
@@ -42,7 +42,7 @@ describe("Computable", () => {
   it("Subgraph invalidation", () => {
     const values: number[] = [];
     let resolve: (value: number) => void = () => {};
-    const c = Computable.from<number>((res, rej) => {
+    const c = Computable.from<number>(res => {
       resolve = res;
     });
     const left = c.then(value => value + 4);

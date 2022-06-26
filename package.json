@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "test": "jest",
-    "lint": "eslint",
+    "lint": "eslint src",
     "fabr": "node_modules/.bin/ts-node src/index.ts",
     "dist": "yarn build && yarn test && yarn lint"
   },
@@ -27,6 +27,7 @@
     "chai": "^4.3.6",
     "chai-subset": "^1.6.0",
     "eslint": "^8.7.0",
+    "eslint-config-prettier": "^8.5.0",
     "jest": "^27.4.7",
     "prettier": "^2.5.1",
     "ts-jest": "^27.1.3",

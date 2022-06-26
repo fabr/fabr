@@ -106,7 +106,7 @@ export class Computable<T> {
    * (This is primarily exported for use in batch invalidation/revalidation
    * scenarios)
    */
-  public invalidate() {
+  public invalidate(): void {
     if (this.state !== State.Unresolved) {
       this.state = State.Invalid;
       this.forEachDependant(dep => dep.markMaybeInvalid());
@@ -156,14 +156,14 @@ export class Computable<T> {
     /* TODO error reporting */
   }
 
-  private markMaybeInvalid() {
+  private markMaybeInvalid(): void {
     if (this.state === State.Valid || this.state === State.Error) {
       this.state = State.MaybeInvalid;
       this.forEachDependant(dep => dep.markMaybeInvalid());
     }
   }
 
-  forEachDependant(fn: (dep: Computable<any>) => void): void {
+  private forEachDependant(fn: (dep: Computable<any>) => void): void {
     let gc = false;
     this.dependants.forEach(wdep => {
       const dep = wdep.deref();

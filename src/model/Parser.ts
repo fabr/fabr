@@ -250,7 +250,7 @@ export class BuildParser {
     }
   }
 
-  private readCharClass(builder?: NameBuilder) {
+  private readCharClass(builder?: NameBuilder): void {
     const start = this.reader.currentOffset();
     const next = this.reader.consume(CHAR_LSQUARE);
     if (next === CHAR_RSQUARE) {
@@ -566,7 +566,7 @@ export class BuildParser {
    * Very basic error recovery - skip tokens until we find a ';' or '}' followed by a NAME,
    * so that parsing can resume on the NAME.
    */
-  private recoverFromError() {
+  private recoverFromError(): void {
     let last = this.token.type;
     while (last !== TokenType.EOF) {
       const next = this.nextToken();

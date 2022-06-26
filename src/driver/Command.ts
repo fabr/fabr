@@ -31,7 +31,7 @@ export interface Options {
   properties: Constraints;
 }
 
-function printUsage() {
+function printUsage(): void {
   console.log(
     "Usage: fabrjs [-nw] <targets>\n" +
       "Options:\n" +
@@ -45,7 +45,7 @@ function parseDefine(def: string): [string, string] {
   return [arr[0].trim(), arr[1]?.trim()];
 }
 
-export function parseCommandLine(args: string[]) {
+export function parseCommandLine(args: string[]): Options {
   const options: Options = { mode: Mode.Normal, targets: [], properties: {} };
   const [node, script, ...opts] = args;
 

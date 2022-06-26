@@ -90,9 +90,9 @@ export class StringReader {
    * the expected one, and then advances forward one character.
    * @param char expected value.
    */
-  public consume(char: number | undefined) {
+  public consume(char: number | undefined): number | undefined {
     assert(this.currentChar === char);
-    this.next();
+    return this.next();
   }
 
   /**
@@ -133,7 +133,7 @@ export class StringReader {
    * @param end Character after the last character to include. Optional: if not specified,
    *  returns all characters from start up to (but not including) the current offset.
    */
-  public substring(start: number, end: number = this.offset) {
+  public substring(start: number, end: number = this.offset): string {
     return this.data.substring(start, end);
   }
 
@@ -159,7 +159,7 @@ export class StringReader {
         offset,
         line,
         column: this.countCodePositions(lineStart, offset) + 1,
-        lineText: this.data.substring(lineStart, this.lineTable[line + 1]),
+        lineText,
       };
     }
   }
@@ -183,7 +183,7 @@ export class StringReader {
    * @param startOffset
    * @param endOffset
    */
-  private countCodePositions(startOffset: number, endOffset: number) {
+  private countCodePositions(startOffset: number, endOffset: number): number {
     let count = 0;
     for (let offset = startOffset; offset < endOffset; offset += this.data.codePointAt(offset)! > 0xffff ? 2 : 1) {
       count++;
@@ -194,7 +194,7 @@ export class StringReader {
   /**
    * Return an empty JSON representation to avoid polluting output
    */
-  public toJSON(): Record<string, any> {
+  public toJSON(): Record<string, unknown> {
     return {};
   }
 }

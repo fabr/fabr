@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { EMPTY_FILESET, FileSet, IFile, IFileSetProvider } from "../core/FileSet";
+import { EMPTY_FILESET } from "../core/FileSet";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { parseBuildString } from "./Parser";
 

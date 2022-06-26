@@ -37,6 +37,6 @@ export function registerTargetRule<S extends ITargetSchema>(
   name: string,
   schema: S,
   evaluate: (spec: ResolvedType<S>, config: BuildConfig) => Computable<FileSet>
-) {
+): void {
   TARGET_REGISTRY[name] = { schema, evaluate } as ITargetTypeDefinition<any>;
 }
