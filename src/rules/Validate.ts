@@ -72,7 +72,7 @@ function validateTargetForSchema<S extends ITargetSchema>(decl: ITargetDecl, sch
   let isValid = true;
 
   decl.properties.forEach(prop => {
-    if (!(prop.name in schema)) {
+    if (!(prop.name in schema.properties)) {
       isValid = false;
       log.log(DIAG_UNEXPECTED_PROPERTY, {
         loc: declPosn(prop),
@@ -92,7 +92,7 @@ function validateTargetForSchema<S extends ITargetSchema>(decl: ITargetDecl, sch
       seen.add(prop.name);
     }
   });
-  Object.entries(schema).forEach(([key, value]) => {
+  Object.entries(schema.properties).forEach(([key, value]) => {
     if (value.required && !seen.has(key)) {
       isValid = false;
       log.log(DIAG_MISSING_PROPERTY, {

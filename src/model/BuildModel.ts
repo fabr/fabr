@@ -19,6 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { evaluateTarget } from "../rules/Evaluate";
+import { getDefaultProperty } from "../rules/Registry";
 import { resolveProperty } from "../rules/Resolve";
 import { IPropertyDecl, ITargetDecl } from "./AST";
 import { Name } from "./Name";
@@ -110,7 +111,12 @@ export class BuildConfig {
     } else {
       const def = this.model.getProperty(name);
       if (!def) {
-        throw new Error("Unresolved name '" + name + "'"); /* TODO: actual error reporting */
+        const defaultProp = getDefaultProperty(name);
+        if (defaultProp) {
+          return (this.propCache[name] = Computable.resolve(defaultProp));
+        } else {
+          throw new Error("Unresolved name '" + name + "'"); /* TODO: actual error reporting */
+        }
       }
       this.propCache[name] = null;
       const result = resolveProperty(def, this);

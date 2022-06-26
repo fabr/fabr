@@ -24,13 +24,19 @@ import { PropertyType } from "./Types";
  */
 
 export const BaseLanguageSchema = {
-  srcs: { required: true, type: PropertyType.FileSet },
-  deps: { type: PropertyType.FileSet },
-  version: { type: PropertyType.String },
+  properties: {
+    srcs: { required: true, type: PropertyType.FileSet },
+    deps: { type: PropertyType.FileSet },
+    version: { type: PropertyType.String },
+  },
+  globals: {},
 } as const;
 
 /**
  * Common target interface that dependency resolvers are expected to recognize and handle.
  */
 
-export const BaseDependencySchema = {};
+export const BaseDependencySchema = {
+  properties: {},
+  globals: {},
+};

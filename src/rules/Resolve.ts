@@ -42,11 +42,18 @@ export function resolveTarget<S extends ITargetSchema>(
   const dependsOn: Computable<string[] | FileSet>[] = [];
 
   /**
+   * Collect all global properties that the target rule depends on.
+   */
+  Object.keys(schema.globals).forEach(propName => {
+    dependsOn.push(config.getProperty(propName).then(prop => prop.getValues()));
+  });
+
+  /**
    * Collect all of the values in a single dependency list to allow
    * for concurrent processing
    **/
   decl.properties.forEach(prop => {
-    const propType = schema[prop.name].type;
+    const propType = schema.properties[prop.name].type;
     prop.values.forEach(value => {
       if (propType === PropertyType.FileSet) {
         dependsOn.push(resolveFileSet(value.value, config, decl));
@@ -55,21 +62,39 @@ export function resolveTarget<S extends ITargetSchema>(
       }
     });
   });
+
   /**
    * And then split it back out into the target property structure
    * after resolution finishes.
    */
   return Computable.forAll(dependsOn, (...resolved) => {
-    const result: Record<string, Array<string | FileSet>> = {};
+    const result: Record<string, string | FileSet | Array<string | FileSet>> = {};
     let idx = 0;
+
+    Object.keys(schema.globals).forEach(prop => {
+      result[prop] = valueAsType(resolved.slice(idx, idx + 1).flat(), schema.globals[prop]);
+      idx++;
+    });
+
     decl.properties.forEach(prop => {
       const propLength = prop.values.length;
       const propEnd = idx + propLength;
-      result[prop.name] = resolved.slice(idx, propEnd).flat();
+      const values = resolved.slice(idx, propEnd).flat();
+      result[prop.name] = valueAsType(values, schema.properties[prop.name].type);
       idx += propLength;
     });
     return result as ResolvedType<S>;
   });
+}
+
+function valueAsType(value: Array<string | FileSet>, type: PropertyType): Array<string | FileSet> | string | FileSet {
+  if (type === PropertyType.String) {
+    return value.join(" ");
+  } else if (type === PropertyType.FileSet) {
+    return FileSet.unionAll(...(value as FileSet[]));
+  } else {
+    return value;
+  }
 }
 
 export function resolveProperty(prop: IPropertyDecl, config: BuildConfig): Computable<Property> {

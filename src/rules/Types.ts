@@ -23,8 +23,9 @@ import { Target } from "../model/Target";
 
 export enum PropertyType {
   String,
-  StringList,
   FileSet,
+  StringList,
+  FileSetList,
 }
 
 export interface IPropertySchema {
@@ -32,18 +33,31 @@ export interface IPropertySchema {
   type: PropertyType;
 }
 
-export type ITargetSchema = Record<string, IPropertySchema>;
+export interface ITargetSchema {
+  /**
+   * Target-specific properties that are declared within the target body.
+   */
+  properties: Record<string, IPropertySchema>;
+  /**
+   * Global named properties that the target rules also depend on.
+   */
+  globals: Record<string, PropertyType.String | PropertyType.StringList>;
+}
 
 interface PropertyTypeMap {
   [PropertyType.String]: string;
+  [PropertyType.FileSet]: FileSet;
   [PropertyType.StringList]: string[];
-  [PropertyType.FileSet]: FileSet[];
+  [PropertyType.FileSetList]: FileSet[];
 }
 type MappedType<T extends IPropertySchema> = T["required"] extends true
   ? PropertyTypeMap[T["type"]]
   : PropertyTypeMap[T["type"]] | undefined;
 
-export type ResolvedType<S extends ITargetSchema> = { [P in keyof S]: MappedType<S[P]> };
+type ResolvedTargetType<S extends ITargetSchema> = { [P in keyof S["properties"]]: MappedType<S["properties"][P]> };
+type ResolvedGlobalType<S extends ITargetSchema> = { [P in keyof S["globals"]]: PropertyTypeMap[S["globals"][P]] };
+
+export type ResolvedType<S extends ITargetSchema> = ResolvedTargetType<S> & ResolvedGlobalType<S>;
 
 export interface ITargetTypeDefinition<S extends ITargetSchema> {
   schema: S;

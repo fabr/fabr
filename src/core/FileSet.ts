@@ -50,6 +50,8 @@ export interface IFile {
   isSameFile(file: IFile): boolean;
 }
 
+type FileSetContent = Map<string, IFile>;
+
 /**
  * Represents a set of files that may originate from arbitrary points of the file system
  * (or not even be on the filesystem). FileSets are immutable after construction.
@@ -57,9 +59,9 @@ export interface IFile {
  * Current implementation is just a Map<string,IFile> but other structures
  */
 export class FileSet implements IFileSetProvider {
-  private content: Map<string, IFile>;
+  private content: FileSetContent;
 
-  constructor(content: Map<string, IFile>) {
+  constructor(content: FileSetContent) {
     this.content = content;
   }
 
@@ -112,6 +114,26 @@ export class FileSet implements IFileSetProvider {
   }
 
   /* Set operations */
+
+  /**
+   * Partition the fileset into 1 or more subsets based on a partition function
+   * (each file in the original will be placed in exactly one output partition).
+   * @param cb
+   */
+  public partition(cb: (path: string) => string): Record<string, FileSet> {
+    /* Note: we're technically mutating the content of each of the partitioned FileSets
+     * as we go, but those FileSets can't escape from this function before they're finalized.
+     */
+    const partitions: Record<string, FileSet> = {};
+    for (const [path, file] of this.content) {
+      const dest = cb(path);
+      if (!(dest in partitions)) {
+        partitions[dest] = new FileSet(new Map());
+      }
+      partitions[dest].content.set(path, file);
+    }
+    return partitions;
+  }
 
   public static unionAll(...sets: FileSet[]): FileSet {
     if (sets.length === 0) {

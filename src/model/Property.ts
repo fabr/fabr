@@ -26,4 +26,8 @@ export class Property {
   public toString(): string {
     return this.values.join(" ");
   }
+
+  public getValues(): string[] {
+    return this.values;
+  }
 }

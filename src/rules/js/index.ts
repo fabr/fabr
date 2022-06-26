@@ -19,3 +19,4 @@
 
 import "./JSPackageTarget";
 import "./NPMDepTarget";
+import "./JSProperties";
