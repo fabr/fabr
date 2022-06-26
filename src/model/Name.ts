@@ -156,7 +156,7 @@ export class Name {
     if (idx === -1 || idx === 0) {
       return this;
     } else {
-      return this.withPrefix(filename.substring(idx + 1));
+      return this.withPrefix(filename.substring(0, idx + 1));
     }
   }
 
