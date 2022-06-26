@@ -22,7 +22,7 @@ import { isWhiteSpace as isWhiteSpaceChar, isAlphabetic, isDigit } from "unicode
 import { DeclKind, IBuildFile, IBuildFileContents, IIncludeDecl, IPropertyDecl, ITargetDecl, IValue } from "./AST";
 import { Diagnostic, ISourcePosition, Log, LogLevel } from "../support/Log";
 import { Name, NameBuilder } from "./Name";
-import { FileSet } from "../core/FileSet";
+import { IFileSetProvider } from "../core/FileSet";
 
 enum TokenType {
   EOF = 0,
@@ -597,6 +597,6 @@ export function parseBuildFile(source: IBuildFile, log: Log): IBuildFileContents
   return new BuildParser(source, log).parse();
 }
 
-export function parseBuildString(fs: FileSet, filename: string, contents: string, log: Log): IBuildFileContents {
-  return new BuildParser({ fs, filename, reader: new StringReader(contents) }, log).parse();
+export function parseBuildString(fs: IFileSetProvider, file: string, contents: string, log: Log): IBuildFileContents {
+  return new BuildParser({ fs, file, reader: new StringReader(contents) }, log).parse();
 }

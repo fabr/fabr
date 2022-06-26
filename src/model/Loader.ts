@@ -26,7 +26,7 @@ import { IBuildFileContents, IIncludeDecl } from "./AST";
 import { Log } from "../support/Log";
 import { BuildModel } from "./BuildModel";
 import { toBuildModel } from "./Sema";
-import { FileSet } from "../core/FileSet";
+import { IFileSetProvider } from "../core/FileSet";
 import { FS } from "../core/FS";
 
 function resolveIncludes(baseFile: string, includes: IIncludeDecl[]): string[] {
@@ -37,27 +37,30 @@ type BuildFiles = Record<string, IBuildFileContents>;
 const loadBuildCache: Record<string, Computable<BuildFiles>> = {};
 
 /* FIXME: Detect cycles? */
-function loadBuildFile(sourceTree: FileSet, file: string, log: Log): Computable<BuildFiles> {
+function loadBuildFile(sourceTree: IFileSetProvider, file: string, log: Log): Computable<BuildFiles> {
   if (!(file in loadBuildCache)) {
-    loadBuildCache[file] = sourceTree.readFileAsString(file).then(content => {
-      const source = { fs: sourceTree, filename: file, reader: new StringReader(content) };
-      const decls = parseBuildFile(source, log);
-      const includes = resolveIncludes(file, decls.includes);
-      if (includes.length > 0) {
-        return Computable.forAll(
-          includes.map(child => loadBuildFile(sourceTree, child, log)),
-          (...children) => {
-            const result: BuildFiles = { [file]: decls };
-            children.forEach(decls => {
-              Object.assign(result, decls);
-            });
-            return result;
-          }
-        );
-      } else {
-        return { [file]: decls };
-      }
-    });
+    loadBuildCache[file] = sourceTree
+      .get(file)
+      .then(f => f.readString())
+      .then(content => {
+        const source = { fs: sourceTree, file, reader: new StringReader(content) };
+        const decls = parseBuildFile(source, log);
+        const includes = resolveIncludes(file, decls.includes);
+        if (includes.length > 0) {
+          return Computable.forAll(
+            includes.map(child => loadBuildFile(sourceTree, child, log)),
+            (...children) => {
+              const result: BuildFiles = { [file]: decls };
+              children.forEach(decls => {
+                Object.assign(result, decls);
+              });
+              return result;
+            }
+          );
+        } else {
+          return { [file]: decls };
+        }
+      });
   }
   return loadBuildCache[file];
 }

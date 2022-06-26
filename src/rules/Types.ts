@@ -37,7 +37,7 @@ export type ITargetSchema = Record<string, IPropertySchema>;
 interface PropertyTypeMap {
   [PropertyType.String]: string;
   [PropertyType.StringList]: string[];
-  [PropertyType.FileSet]: FileSet;
+  [PropertyType.FileSet]: FileSet[];
 }
 type MappedType<T extends IPropertySchema> = T["required"] extends true
   ? PropertyTypeMap[T["type"]]

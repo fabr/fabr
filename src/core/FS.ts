@@ -23,57 +23,99 @@ import * as path from "path";
 import { Name } from "../model/Name";
 
 import { Computable } from "./Computable";
-import { FileSet } from "./FileSet";
+import { FileSet, IFile, IFileSetProvider, IFileStats } from "./FileSet";
 
-export const EMPTY_FILESET: FileSet = {
-  find() {
-    return EMPTY_FILESET;
-  },
+function readFileAsString(filepath: string, encoding: BufferEncoding = "utf8"): Computable<string> {
+  return Computable.from<string>((resolve, reject) => {
+    fs.readFile(filepath, encoding, (err, data) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(data);
+      }
+    });
+  });
+}
 
-  findRelative() {
-    return EMPTY_FILESET;
-  },
+class FSFile implements IFile {
+  private root: string;
+  private name: string;
+  private stats: IFileStats | undefined;
 
-  readFileAsString(file: string): Computable<string> {
-    return Computable.reject<string>(new Error("File not found"));
-  },
+  constructor(root: string, name: string, stats: fs.Stats | undefined) {
+    this.root = root;
+    this.name = name;
+    this.stats = stats;
+  }
 
-  getDisplayName(file: string): string {
-    return file;
-  },
-};
+  public readString(encoding?: BufferEncoding) {
+    return readFileAsString(path.resolve(this.root, this.name), encoding);
+  }
 
-class LazyFileSet implements FileSet {
+  public get stat(): IFileStats {
+    if (!this.stats) {
+      const stats = fs.statSync(path.resolve(this.root, this.name));
+      this.stats = { size: stats.size, mtime: stats.mtime };
+    }
+    return this.stats;
+  }
+
+  public getDisplayName(): string {
+    return path.resolve(this.root, this.name);
+  }
+
+  public isSameFile(file: IFile): boolean {
+    return file instanceof FSFile && this.getDisplayName() === file.getDisplayName();
+  }
+}
+
+/**
+ * FileSet implementation that loads the directory tree from the real FS on demand
+ */
+class FSFileSetProvider implements IFileSetProvider {
   private root: string;
   constructor(root: string) {
     this.root = root;
   }
 
+  /**
+   * FIXME: This has multiple issues - it never closes even if the dependency
+   * is otherwise drops, and it has no way to actually apply the post-ready
+   * updates when we're in real watch mode.
+   * @param name
+   * @returns
+   */
   public find(name: Name) {
-    /* TODO */
-    return EMPTY_FILESET;
-  }
-
-  public findRelative(baseFile: string, name: Name) {
-    /* TODO */
-    return EMPTY_FILESET;
-  }
-
-  readFileAsString(file: string, encoding: BufferEncoding = "utf8"): Computable<string> {
-    return Computable.from<string>((resolve, reject) => {
-      const fullFile = path.resolve(this.root, file);
-      fs.readFile(fullFile, encoding, (err, data) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(data);
-        }
+    return Computable.from<FileSet>((resolve, reject) => {
+      console.log("Chokidaring");
+      const watch = chokidar.watch(name.toString(), {
+        cwd: this.root,
+        persistent: false,
       });
+      const files = new Map<string, IFile>();
+      watch.on("add", (path, stat) => {
+        files.set(path, new FSFile(this.root, path, stat));
+      });
+      watch.on("unlink", path => {
+        files.delete(path);
+      });
+      watch.on("error", err => reject(err));
+      watch.on("ready", () => resolve(new FileSet(files)));
     });
   }
 
-  getDisplayName(file: string): string {
-    return path.resolve(this.root, file);
+  public get(name: string): Computable<IFile> {
+    /* FIXME: Should support watching as well. */
+    return Computable.from((resolve, reject) => {
+      const file = path.resolve(this.root, name);
+      fs.stat(file, (err, stat) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(new FSFile(this.root, name, stat));
+        }
+      });
+    });
   }
 }
 
@@ -82,10 +124,10 @@ export const FS = {
    * Obtain a FileSet representing a real directory on the filesystem.
    * @param path
    */
-  get(dirname: string): Computable<FileSet> {
-    return Computable.from<FileSet>((resolve, reject) => {
+  get(dirname: string): Computable<IFileSetProvider> {
+    return Computable.from<IFileSetProvider>((resolve, reject) => {
       if (fs.existsSync(dirname)) {
-        resolve(new LazyFileSet(dirname));
+        resolve(new FSFileSetProvider(dirname));
       } else {
         reject(new Error("No such path"));
       }

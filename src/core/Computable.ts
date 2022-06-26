@@ -85,6 +85,7 @@ export class Computable<T> {
   public static resolve<T>(value: T): Computable<T> {
     const result = new Computable<T>();
     result.value = value;
+    result.state = State.Valid;
     return result;
   }
 
@@ -152,7 +153,6 @@ export class Computable<T> {
   private rejectWith(err: unknown): void {
     this.state = State.Error;
     this.value = err;
-    console.log("Error: " + err);
     /* TODO error reporting */
   }
 

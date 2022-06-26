@@ -40,6 +40,7 @@ export async function runFabr(options: Options) {
     const targets = options.targets.map(targetName => config.getTarget(targetName));
     Computable.forAll(targets, results => {
       console.log("Done");
+      console.log(targets);
       process.exit(0);
     });
   });

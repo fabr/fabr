@@ -18,13 +18,12 @@
  */
 
 import { Computable } from "../core/Computable";
-import { FileSet } from "../core/FileSet";
+import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { BuildConfig } from "../model/BuildModel";
 import { Name } from "../model/Name";
 import { INamedDecl, IPropertyDecl, ITargetDecl } from "../model/AST";
 import { ITargetSchema, PropertyType, ResolvedType } from "./Types";
 import { Property } from "../model/Property";
-import { EMPTY_FILESET } from "../core/FS";
 
 /**
  * Resolve everything needed to actually be able to build the target and yield a resolved
@@ -56,7 +55,6 @@ export function resolveTarget<S extends ITargetSchema>(
       }
     });
   });
-
   /**
    * And then split it back out into the target property structure
    * after resolution finishes.
@@ -114,8 +112,8 @@ export function resolveFileSet(name: Name, context: BuildConfig, relativeTo: INa
           }
         } else {
           /* Not an identified target; check the filesystem relative to the target decl */
-          const baseName = relativeTo.source.filename;
-          return relativeTo.source.fs.findRelative(baseName, substName);
+          const baseName = relativeTo.source.file;
+          return relativeTo.source.fs.find(substName.relativeTo(baseName));
         }
       }
     }

@@ -129,6 +129,38 @@ export class Name {
   }
 
   /**
+   * @return a new name with the given initial literal prefix added to the name.
+   */
+  public withPrefix(prefix: string): Name {
+    if (this.parts[0].kind === NamePartKind.Literal) {
+      const [head, ...rest] = this.parts;
+      return new Name([{ kind: NamePartKind.Literal, value: prefix + head.value }, ...rest]);
+    } else {
+      return new Name([{ kind: NamePartKind.Literal, value: prefix }, ...this.parts]);
+    }
+  }
+
+  /**
+   * @return a new name with the dirname of filename prepended to the receiver.
+   * e.g. given the Name "mylib/lib/*" and filename "src/lib/BUILD.fabr", returns
+   * the Name "src/lib/mylib/lib/*".
+   *
+   * If the filename does not have a dirname (e.g. "foo"), the original name is returned
+   * unmodified.
+   *
+   * Note: Does not attempt to interpret "." or ".."
+   * @param filename
+   */
+  public relativeTo(filename: string): Name {
+    const idx = filename.lastIndexOf(NAME_COMPONENT_SEPARATOR);
+    if (idx === -1 || idx === 0) {
+      return this;
+    } else {
+      return this.withPrefix(filename.substring(idx + 1));
+    }
+  }
+
+  /**
    * As getLiteralPrefix, but excludes the final path component if it contains a non-literal part.
    * If the name does not have a literal path prefix, returns the empty string.
    *
@@ -145,6 +177,22 @@ export class Name {
       const idx = prefix.lastIndexOf(NAME_COMPONENT_SEPARATOR);
       return idx === -1 ? "" : prefix.substring(0, idx);
     }
+  }
+
+  /**
+   * @return a string suitable for use with a globbing implementation (ie with literal metacharacters escaped).
+   */
+  public toString() {
+    return this.parts.reduce((result, part) => {
+      switch (part.kind) {
+        case NamePartKind.Literal:
+          return result + escapeGlob(part.value);
+        case NamePartKind.Glob:
+          return result + part.value;
+        case NamePartKind.VarSubst:
+          return result + "${" + part.value + "}";
+      }
+    }, "");
   }
 }
 
@@ -242,4 +290,8 @@ function unescapeDoubleQuotedString(str: string): string {
       }
     }
   });
+}
+
+function escapeGlob(str: string): string {
+  return str.replaceAll(/([][\\*.?])/g, "\\$1");
 }

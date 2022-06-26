@@ -17,33 +17,122 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import * as picomatch from "picomatch";
 import { Name } from "../model/Name";
 import { Computable } from "./Computable";
 
-export interface FileSet {
+export interface IFileStats {
+  size: number;
+  mtime: Date;
+}
+
+export interface IFileSetProvider {
   /**
-   * Find all files in the FileSet that match the given Name, returning a new FileSet with the results.
+   * @return a FileSet of all files that match the given Name
+   * If no files match, yields the empty set.
+   *
    * @param name
    */
-  find(name: Name): FileSet;
+  find(name: Name): Computable<FileSet>;
 
   /**
-   * Find all files in the FileSet that match the given Name, relative to the given filename
-   * @param relativeTo
+   * @return a single direct file by exact name
+   * Rejects if the file does not exist
    * @param name
    */
-  findRelative(relativeTo: string, name: Name): FileSet;
+  get(name: string): Computable<IFile>;
+}
+
+export interface IFile {
+  stat: IFileStats;
+  readString(encoding?: BufferEncoding): Computable<string>;
+  getDisplayName(): string;
+  isSameFile(file: IFile): boolean;
+}
+
+/**
+ * Represents a set of files that may originate from arbitrary points of the file system
+ * (or not even be on the filesystem). FileSets are immutable after construction.
+ *
+ * Current implementation is just a Map<string,IFile> but other structures
+ */
+export class FileSet implements IFileSetProvider {
+  private content: Map<string, IFile>;
+
+  constructor(content: Map<string, IFile>) {
+    this.content = content;
+  }
+
+  find(name: Name): Computable<FileSet> {
+    const newContent = new Map<string, IFile>();
+    const matcher = picomatch(name.toString());
+    for (const [path, file] of this.content) {
+      if (matcher(path)) {
+        newContent.set(path, file);
+      }
+    }
+    return Computable.resolve(new FileSet(newContent));
+  }
 
   /**
-   * Read the contents of the given file as a string
-   * @param file
+   * Read the contents of the given file as a string (convenience method).
+   * Rejects if the file is not in the set.
+   * @param filepath path of a file within the set.
    * @param encoding Optional encoding to use for the file (default UTF8)
    */
-  readFileAsString(file: string, encoding?: BufferEncoding): Computable<string>;
+  readFile(filepath: string, encoding?: BufferEncoding): Computable<string> {
+    const file = this.content.get(filepath);
+    return file ? file.readString() : Computable.reject(new Error("File not found"));
+  }
 
   /**
-   * @return a string representing the given file, suitable for logging or other
-   * human-readable output (it may or may not be a legal OS path).
+   *
+   * @param name
+   * @returns
    */
-  getDisplayName(file: string): string;
+  public get(name: string): Computable<IFile> {
+    const file = this.content.get(name);
+    if (file) {
+      return Computable.resolve(file);
+    } else {
+      return Computable.reject(new Error("No such file"));
+    }
+  }
+
+  public [Symbol.iterator](): IterableIterator<[string, IFile]> {
+    return this.content[Symbol.iterator]();
+  }
+
+  public get size(): number {
+    return this.content.size;
+  }
+
+  public isEmpty(): boolean {
+    return this.content.size === 0;
+  }
+
+  /* Set operations */
+
+  public static unionAll(...sets: FileSet[]): FileSet {
+    if (sets.length === 0) {
+      return EMPTY_FILESET;
+    } else if (sets.length === 1) {
+      return sets[0];
+    } else {
+      const result = new Map<string, IFile>();
+      for (const fs of sets) {
+        for (const [path, file] of fs) {
+          const old = result.get(path);
+          if (old && !old.isSameFile(file)) {
+            /* TODO: Needs much more diagnostic information */
+            throw new Error("Conflicting files for " + path);
+          }
+          result.set(path, file);
+        }
+      }
+      return new FileSet(result);
+    }
+  }
 }
+
+export const EMPTY_FILESET: FileSet = new FileSet(new Map());

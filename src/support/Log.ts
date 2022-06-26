@@ -17,12 +17,12 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { FileSet } from "../core/FileSet";
+import { IFileSetProvider } from "../core/FileSet";
 import { StringReader } from "./StringReader";
 
 export interface ISourcePosition {
-  fs: FileSet;
-  filename: string;
+  fs: IFileSetProvider;
+  file: string;
   offset: number;
   reader: StringReader;
 }
@@ -99,7 +99,7 @@ export class LogFormatter implements Log {
     const resolvedPos = params.loc?.reader.resolvePosition(params.loc.offset);
     const message = diagnostic.message(params);
     if (resolvedPos) {
-      const filename = params.loc?.fs.getDisplayName(params.loc.filename);
+      const filename = params.loc?.file;
       const logline = `${filename}:${resolvedPos.line}:${resolvedPos.column}:${getLogLevelName(level)}:${message}\n`;
       const text = resolvedPos.lineText + "\n";
       const caret = " ".repeat(resolvedPos.column - 1) + "^\n";

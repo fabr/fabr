@@ -19,7 +19,7 @@
 
 import { Name } from "./Name";
 import { StringReader } from "../support/StringReader";
-import { FileSet } from "../core/FileSet";
+import { IFileSetProvider } from "../core/FileSet";
 import { ISourcePosition } from "../support/Log";
 
 export enum DeclKind {
@@ -69,8 +69,8 @@ export interface IIncludeDecl extends IBaseDecl {
 }
 
 export interface IBuildFile {
-  fs: FileSet;
-  filename: string;
+  fs: IFileSetProvider;
+  file: string;
   reader: StringReader;
 }
 

@@ -17,15 +17,15 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { FileSet } from "../core/FileSet";
+import { EMPTY_FILESET, FileSet, IFile, IFileSetProvider } from "../core/FileSet";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { parseBuildString } from "./Parser";
 
 describe("Parser Tests", () => {
   const errors: string[] = [];
   const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-  const fs = {} as FileSet;
-  Object.defineProperty(fs, "getDisplayName", { value: (f: string) => f, enumerable: false });
+
+  const fs = EMPTY_FILESET;
 
   it("Include Decl", () => {
     errors.length = 0;
