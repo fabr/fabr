@@ -64,4 +64,12 @@ describe("Parser Tests", () => {
     ).toMatchSnapshot();
     expect(errors).toMatchSnapshot();
   });
+
+  it("Optional final semicolon", () => {
+    errors.length = 0;
+    expect(
+      parseBuildString(fs, "BUILD.FABR", "npm_dep @npm {\n  deps = chokidar:3.5.3 picomatch:2.3.1 unicode-properties:1.3.1\n}", logger)
+    ).toMatchSnapshot();
+    expect(errors.length).toBe(0);
+  });
 });

@@ -40,6 +40,103 @@ unicode-properties;
 ]
 `;
 
+exports[`Parser Tests Optional final semicolon 1`] = `
+Object {
+  "includes": Array [],
+  "namespaces": Array [],
+  "properties": Array [],
+  "targets": Array [
+    Object {
+      "kind": 2,
+      "name": "@npm",
+      "offset": 8,
+      "properties": Array [
+        Object {
+          "kind": 1,
+          "name": "deps",
+          "offset": 17,
+          "source": Object {
+            "file": "BUILD.FABR",
+            "fs": FileSet {
+              "content": Map {},
+            },
+            "reader": Object {},
+          },
+          "values": Array [
+            Object {
+              "kind": 0,
+              "offset": 24,
+              "source": Object {
+                "file": "BUILD.FABR",
+                "fs": FileSet {
+                  "content": Map {},
+                },
+                "reader": Object {},
+              },
+              "value": Name {
+                "parts": Array [
+                  Object {
+                    "kind": 0,
+                    "value": "chokidar:3.5.3",
+                  },
+                ],
+              },
+            },
+            Object {
+              "kind": 0,
+              "offset": 39,
+              "source": Object {
+                "file": "BUILD.FABR",
+                "fs": FileSet {
+                  "content": Map {},
+                },
+                "reader": Object {},
+              },
+              "value": Name {
+                "parts": Array [
+                  Object {
+                    "kind": 0,
+                    "value": "picomatch:2.3.1",
+                  },
+                ],
+              },
+            },
+            Object {
+              "kind": 0,
+              "offset": 55,
+              "source": Object {
+                "file": "BUILD.FABR",
+                "fs": FileSet {
+                  "content": Map {},
+                },
+                "reader": Object {},
+              },
+              "value": Name {
+                "parts": Array [
+                  Object {
+                    "kind": 0,
+                    "value": "unicode-properties:1.3.1",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      "source": Object {
+        "file": "BUILD.FABR",
+        "fs": FileSet {
+          "content": Map {},
+        },
+        "reader": Object {},
+      },
+      "type": "npm_dep",
+      "typeOffset": 0,
+    },
+  ],
+}
+`;
+
 exports[`Parser Tests Property Decl 1`] = `
 Object {
   "includes": Array [],

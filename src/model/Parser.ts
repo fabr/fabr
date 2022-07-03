@@ -450,10 +450,10 @@ export class BuildParser {
   private parsePropertyDecl(name: string, nameOffset: number): IPropertyDecl {
     const values: IValue[] = [];
     this.consumeToken(TokenType.EQUALS);
-    while (this.token.type !== TokenType.SEMI) {
+    while (this.token.type !== TokenType.SEMI && this.token.type !== TokenType.RBRACE) {
       values.push(this.parseValue());
     }
-    this.consumeToken(TokenType.SEMI);
+    this.consumeIfToken(TokenType.SEMI);
     return {
       kind: DeclKind.Property,
       source: this.source,
