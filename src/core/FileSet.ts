@@ -45,9 +45,15 @@ export interface IFileSetProvider {
 
 export interface IFile {
   stat: IFileStats;
+  hash: string;
   readString(encoding?: BufferEncoding): Computable<string>;
   getDisplayName(): string;
   isSameFile(file: IFile): boolean;
+}
+
+export interface IDir {
+  hash: string;
+  contents: Map<string, IDir | IFile>;
 }
 
 type FileSetContent = Map<string, IFile>;

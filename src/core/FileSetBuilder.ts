@@ -17,26 +17,29 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { PropertyType } from "./Types";
+import { IFile, IDir, FileSet } from "./FileSet";
 
 /**
- * Common target interface that language processors are expected to recognize and handle.
+ * Mutable class used be e.g. FS to create and maintain the underlying set of
+ * files from which the immutable FileSet is constructed
  */
+export class FileSetBuilder {
 
-export const BaseLanguageSchema = {
-  properties: {
-    srcs: { required: true, type: PropertyType.FileSet },
-    deps: { type: PropertyType.FileSetList },
-    version: { type: PropertyType.String },
-  },
-  globals: {},
-} as const;
+    constructor() {
 
-/**
- * Common target interface that dependency resolvers are expected to recognize and handle.
- */
+    }
 
-export const BaseDependencySchema = {
-  properties: {},
-  globals: {},
-};
+    add( name: string, file: IFile ) : void {
+
+    }
+
+    /**
+     * @return the top-level FileSet containing the builder's files.
+     * 
+     * Note: this may be called multiple times, and should return the
+     * same FileSet if the builder has not been modified between calls.
+     */
+    build() : FileSet {
+
+    }
+}

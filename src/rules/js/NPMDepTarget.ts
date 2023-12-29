@@ -18,18 +18,84 @@
  */
 
 import { BuildConfig } from "../../model/BuildModel";
-import { ResolvedType } from "../Types";
+import { PropertyType, ResolvedType } from "../Types";
 import { BaseDependencySchema } from "../Common";
 import { Computable } from "../../core/Computable";
-import { FileSet } from "../../core/FileSet";
+import { EMPTY_FILESET, FileSet } from "../../core/FileSet";
 import { registerTargetRule } from "../Registry";
+import { fetchUrl } from "../../core/Fetch";
 
-const NPMDepSchema = BaseDependencySchema;
+const NPMDepSchema = {
+  properties: {
+    deps: {
+      required: true,
+      type: PropertyType.StringList,
+    },
+    ...BaseDependencySchema.properties,
+  },
+  globals: {
+    npm_repo: PropertyType.String,
+  },
+} as const;
+
 type NPMDepType = ResolvedType<typeof NPMDepSchema>;
+
+interface IDepSpec {
+  name: string;
+  version: string;
+}
+
+export function parseDepSpec(dep: string): IDepSpec {
+  const idx = dep.indexOf(":");
+  if (idx === -1) {
+    return { name: dep, version: "latest" };
+  } else {
+    return { name: dep.substring(0, idx), version: dep.substring(idx + 1) };
+  }
+}
+
+interface Signature {
+  keyid: string;
+  sig: string;
+}
+interface NPMPackageMetadata {
+  dependencies: Record<string, string>;
+  dist: {
+    fileCount: number;
+    integrity: string;
+    "npm-signature": string;
+    shasum: string;
+    signatures: Signature[];
+    tarball: string;
+    unpackedSize: number;
+  };
+  name: string;
+  version: string;
+  /* and potentially lots of other stuff that we don't need */
+}
+
+function getNpmMetadata(repo: string, spec: IDepSpec): Computable<NPMPackageMetadata> {
+  /* FIXME: Validate response schema */
+  const url = `${repo}/${spec.name}/${spec.version}`;
+  return fetchUrl(url).then(data => JSON.parse(data.toString()));
+}
 
 function fetchNpmDeps(spec: NPMDepType, config: BuildConfig): Computable<FileSet> {
   /* STUB */
-  return new Computable<FileSet>();
+  const baseUrl = spec.npm_repo;
+  console.log("Fetching from " + baseUrl);
+  const deps = spec.deps.map(dep => {
+    const ds = parseDepSpec(dep);
+    return getNpmMetadata(baseUrl, ds);
+  });
+
+  return Computable.forAll(deps, (...npm) => {
+    npm.forEach(pkg => {
+      console.log(pkg.name + ": " + pkg.dist.tarball);
+    });
+
+    return EMPTY_FILESET;
+  });
 }
 
 registerTargetRule("npm_dep", NPMDepSchema, fetchNpmDeps);

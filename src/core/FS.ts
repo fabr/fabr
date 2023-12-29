@@ -24,24 +24,14 @@ import { Name } from "../model/Name";
 
 import { Computable } from "./Computable";
 import { FileSet, IFile, IFileSetProvider, IFileStats } from "./FileSet";
+import { readFile } from "./FSWrapper";
 
-function readFileAsString(filepath: string, encoding: BufferEncoding = "utf8"): Computable<string> {
-  return Computable.from<string>((resolve, reject) => {
-    fs.readFile(filepath, encoding, (err, data) => {
-      if (err) {
-        reject(err);
-      } else {
-        resolve(data);
-      }
-    });
-  });
-}
 
 class FSFile implements IFile {
   private root: string;
   private name: string;
   private stats: IFileStats | undefined;
-
+  
   constructor(root: string, name: string, stats: fs.Stats | undefined) {
     this.root = root;
     this.name = name;
@@ -49,7 +39,7 @@ class FSFile implements IFile {
   }
 
   public readString(encoding?: BufferEncoding): Computable<string> {
-    return readFileAsString(path.resolve(this.root, this.name), encoding);
+    return readFile(path.resolve(this.root, this.name), encoding);
   }
 
   public get stat(): IFileStats {
@@ -58,6 +48,10 @@ class FSFile implements IFile {
       this.stats = { size: stats.size, mtime: stats.mtime };
     }
     return this.stats;
+  }
+
+  public getHash(): Computable<string> {
+
   }
 
   public getDisplayName(): string {
@@ -87,7 +81,7 @@ class FSFileSetProvider implements IFileSetProvider {
    */
   public find(name: Name): Computable<FileSet> {
     return Computable.from<FileSet>((resolve, reject) => {
-      console.log("Chokidaring");
+      console.log("Chokidaring " + this.root + ":" + name);
       const watch = chokidar.watch(name.toString(), {
         cwd: this.root,
         persistent: false,

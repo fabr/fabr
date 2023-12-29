@@ -19,6 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
+import { Name } from "../model/Name";
 import { Target } from "../model/Target";
 
 export enum PropertyType {
@@ -26,6 +27,7 @@ export enum PropertyType {
   FileSet,
   StringList,
   FileSetList,
+  OutputFileSet,
 }
 
 export interface IPropertySchema {
@@ -49,6 +51,7 @@ interface PropertyTypeMap {
   [PropertyType.FileSet]: FileSet;
   [PropertyType.StringList]: string[];
   [PropertyType.FileSetList]: FileSet[];
+  [PropertyType.OutputFileSet]: Name[];
 }
 type MappedType<T extends IPropertySchema> = T["required"] extends true
   ? PropertyTypeMap[T["type"]]

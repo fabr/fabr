@@ -19,9 +19,12 @@
 
 import * as path from "path";
 import * as fs from "fs";
+import * as os from "os";
 import * as fsPromises from "fs/promises";
 
 export const PROJECT_FILENAME = "PROJECT.fabr";
+
+export const BUILD_CACHE_ENV = "FABR_CACHE_DIR";
 
 /**
  * Walk up the source tree until we find the PROJECT.fabr file
@@ -46,6 +49,38 @@ export async function findSourceRoot(): Promise<string> {
   }
 }
 
-export function getBuildCache(): string {
-  return process.env.HOME ?? ".";
+/**
+ * @return the root of our build cache (which may or may not exist at this point).
+ */
+export function getBuildCacheRoot(): string {
+  const explicitDir = process.env[BUILD_CACHE_ENV];
+  if (explicitDir) {
+    return explicitDir;
+  } else {
+    return path.resolve(getBaseCacheDir(), "fabr");
+  }
+}
+
+/**
+ * @return the location in which we should stored 'cache' application data,
+ * following platform conventions where possible.
+ */
+function getBaseCacheDir(): string {
+  switch (os.platform()) {
+    case "darwin":
+      return path.resolve(os.homedir(), "Library/Caches");
+    case "win32":
+      return process.env.LOCALAPPDATA ?? process.env.APPDATA ?? path.resolve(os.homedir(), "AppData/Local");
+    default:
+      /* Assume anything else follows XDG conventions */
+      return process.env.XDG_CACHE_HOME ?? path.resolve(os.homedir(), ".cache");
+  }
+}
+
+export function getHostProperties(): Record<string, string> {
+  return {
+    host_os: os.platform(),
+    host_cpu: os.arch(),
+    host: os.arch() + "-" + os.platform(),
+  };
 }
