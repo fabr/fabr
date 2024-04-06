@@ -2,10 +2,11 @@
 
 exports[`Parser Tests Include Decl 1`] = `
 Object {
+  "defaults": Array [],
   "includes": Array [
     Object {
       "filename": "src/BUILD.FABR",
-      "kind": 3,
+      "kind": 4,
       "offset": 8,
       "source": Object {
         "file": "BUILD.TOP",
@@ -18,22 +19,25 @@ Object {
   ],
   "namespaces": Array [],
   "properties": Array [],
+  "targetdefs": Array [],
   "targets": Array [],
 }
 `;
 
 exports[`Parser Tests Missing Close Brace 1`] = `
 Object {
+  "defaults": Array [],
   "includes": Array [],
   "namespaces": Array [],
   "properties": Array [],
+  "targetdefs": Array [],
   "targets": Array [],
 }
 `;
 
 exports[`Parser Tests Missing Close Brace 2`] = `
 Array [
-  "BUILD.TOP:3:20:error:Read EOF but expected Identifier or '}'
+  "BUILD.TOP:4:20:error:Read EOF but expected Identifier or '}'
 unicode-properties;
                    ^
 ",
@@ -42,9 +46,11 @@ unicode-properties;
 
 exports[`Parser Tests Optional final semicolon 1`] = `
 Object {
+  "defaults": Array [],
   "includes": Array [],
   "namespaces": Array [],
   "properties": Array [],
+  "targetdefs": Array [],
   "targets": Array [
     Object {
       "kind": 2,
@@ -139,6 +145,7 @@ Object {
 
 exports[`Parser Tests Property Decl 1`] = `
 Object {
+  "defaults": Array [],
   "includes": Array [],
   "namespaces": Array [],
   "properties": Array [
@@ -280,15 +287,18 @@ Object {
       ],
     },
   ],
+  "targetdefs": Array [],
   "targets": Array [],
 }
 `;
 
 exports[`Parser Tests Target Decl 1`] = `
 Object {
+  "defaults": Array [],
   "includes": Array [],
   "namespaces": Array [],
   "properties": Array [],
+  "targetdefs": Array [],
   "targets": Array [
     Object {
       "kind": 2,
@@ -447,9 +457,11 @@ Object {
 
 exports[`Parser Tests Target Decl 2`] = `
 Object {
+  "defaults": Array [],
   "includes": Array [],
   "namespaces": Array [],
   "properties": Array [],
+  "targetdefs": Array [],
   "targets": Array [
     Object {
       "kind": 2,
@@ -509,5 +521,43 @@ Object {
       "typeOffset": 0,
     },
   ],
+}
+`;
+
+exports[`Parser Tests Targetdef 1`] = `
+Object {
+  "defaults": Array [],
+  "includes": Array [],
+  "namespaces": Array [],
+  "properties": Array [],
+  "targetdefs": Array [
+    Object {
+      "kind": 3,
+      "name": "js_package",
+      "offset": 10,
+      "properties": Object {
+        "deps": Object {
+          "required": false,
+          "type": 1,
+        },
+        "srcs": Object {
+          "required": true,
+          "type": 1,
+        },
+        "version": Object {
+          "required": false,
+          "type": 0,
+        },
+      },
+      "source": Object {
+        "file": "BUILD.FABR",
+        "fs": FileSet {
+          "content": Map {},
+        },
+        "reader": Object {},
+      },
+    },
+  ],
+  "targets": Array [],
 }
 `;

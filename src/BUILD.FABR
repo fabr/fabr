@@ -1,6 +1,0 @@
-
-
-js_package @fabrjs/fabr {
-  srcs = **/*.ts;
-}
-

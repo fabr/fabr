@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { DeclKind, INamespaceDecl, IPropertyDecl, ITargetDecl } from "./AST";
+import { DeclKind, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
 import { NAME_COMPONENT_SEPARATOR } from "./Name";
 
 type ContentType = Namespace | ITargetDecl | IPropertyDecl;
@@ -29,12 +29,15 @@ type ContentType = Namespace | ITargetDecl | IPropertyDecl;
 export class Namespace {
   private content: Record<string, ContentType>;
 
+  private targetDefs: Record<string, ITargetDefDecl>;
+
   /* If it's an explicit namespace, keep it here; leave undefined for implicit ones */
   private decl?: INamespaceDecl;
 
-  constructor(content: Record<string, ContentType>, decl?: INamespaceDecl) {
+  constructor(content: Record<string, ContentType>, targetDefs: Record<string, ITargetDefDecl>, decl?: INamespaceDecl) {
     this.content = content;
     this.decl = decl;
+    this.targetDefs = targetDefs;
   }
 
   /**
@@ -59,6 +62,12 @@ export class Namespace {
     }
   }
 
+  public getTargetDef(name: string) :ITargetDefDecl | undefined {
+    const parts = name.split(NAME_COMPONENT_SEPARATOR);
+    const targetName = parts.pop()!; /* Array must contain at least 1 element */
+    return this.getNamespacePrefix(parts)?.targetDefs[targetName];
+  }
+  
   /**
    * @return the target whose name forms a prefix of the given string, plus the
    *   matched prefix of the string.

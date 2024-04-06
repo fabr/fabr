@@ -154,10 +154,11 @@ export class StringReader {
       const line = this.getLineByOffset(offset);
       const lineStart = this.lineTable[line];
       const nextLine = this.lineTable[line + 1];
-      const lineText = this.data.substring(lineStart, nextLine ? nextLine - 1 : undefined);
+      const lineEnd = nextLine ? nextLine-1 : this.data.indexOf("\n",lineStart)
+      const lineText = this.data.substring(lineStart, lineEnd === -1 ? undefined : lineEnd);
       return {
         offset,
-        line,
+        line: line+1,
         column: this.countCodePositions(lineStart, offset) + 1,
         lineText,
       };

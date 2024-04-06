@@ -72,4 +72,13 @@ describe("Parser Tests", () => {
     ).toMatchSnapshot();
     expect(errors.length).toBe(0);
   });
+
+  it("Targetdef", () => {
+    errors.length = 0;
+    expect(
+      parseBuildString(fs, "BUILD.FABR", "targetdef js_package {\n  deps = FILES;\n  srcs=FILES REQUIRED;version=STRING}", logger)
+    ).toMatchSnapshot();
+    expect(errors.length).toBe(0);
+
+  })
 });

@@ -19,7 +19,7 @@
 
 import { StringReader } from "../support/StringReader";
 import { isWhiteSpace as isWhiteSpaceChar, isAlphabetic, isDigit } from "unicode-properties";
-import { DeclKind, IBuildFile, IBuildFileContents, IIncludeDecl, IPropertyDecl, ITargetDecl, IValue } from "./AST";
+import { DeclKind, IBuildFile, IBuildFileContents, IIncludeDecl, IPropertyDecl, IPropertySchema, ITargetDecl, ITargetDefDecl, IValue, PropertyType } from "./AST";
 import { Diagnostic, ISourcePosition, Log, LogLevel } from "../support/Log";
 import { Name, NameBuilder } from "./Name";
 import { IFileSetProvider } from "../core/FileSet";
@@ -57,6 +57,7 @@ const CHAR_QUESTION = "?".codePointAt(0);
 const CHAR_LSQUARE = "[".codePointAt(0);
 const CHAR_RSQUARE = "]".codePointAt(0);
 const CHAR_AT = "@".codePointAt(0);
+const CHAR_HASH = "#".codePointAt(0);
 
 interface NameToken {
   type: TokenType.NAME;
@@ -163,7 +164,9 @@ export class BuildParser {
     this.result = {
       namespaces: [],
       targets: [],
+      targetdefs: [],
       properties: [],
+      defaults: [],
       includes: [],
     };
     this.nextToken();
@@ -323,6 +326,7 @@ export class BuildParser {
         case CHAR_SEMI:
         case CHAR_LANGLE:
         case CHAR_RANGLE:
+        case CHAR_HASH:
           return true;
       }
       return false;
@@ -345,8 +349,22 @@ export class BuildParser {
   private nextToken(): Token {
     const start = this.reader.currentOffset();
 
-    /* Skip over whitespace */
-    const ch = this.reader.skipUntil(ch => !isWhitespace(ch));
+    /* Skip over whitespace and comments */
+    let inComment = false;
+    const ch = this.reader.skipUntil(ch => {
+      if( inComment ) {
+        if( ch === CHAR_NEWLINE ) {
+          inComment = false;
+        }
+        return false;
+      } else if( ch === CHAR_HASH ) {
+        inComment = true;
+        return false;
+      } else {
+        return !isWhitespace(ch);
+      }
+     });
+
     switch (ch) {
       case undefined:
         this.token = { type: TokenType.EOF, start };
@@ -386,7 +404,7 @@ export class BuildParser {
     return this.token;
   }
 
-  private consumeToken(type: TokenType): Token | undefined {
+  private consumeToken(type: TokenType): Token {
     if (this.token.type !== type) {
       this.unexpectedTokenError(TOKEN_NAME_MAP[type]);
     } else {
@@ -459,7 +477,7 @@ export class BuildParser {
       source: this.source,
       name,
       offset: nameOffset,
-      values,
+      values
     };
   }
 
@@ -504,6 +522,83 @@ export class BuildParser {
     }
   }
 
+
+  /**
+   * TargetDefDecl ::= 'targetdef' NAME '{' PropertyTypeList '}'
+   *                     ^
+   * @param name
+   * @param nameOffset
+   */
+  private parseTargetDefDecl(): ITargetDefDecl {
+    if (this.token.type !== TokenType.IDENTIFIER) {
+      this.unexpectedTokenError("Identifier");
+    } else {
+      const nameToken = this.token;
+      this.nextToken();
+      this.consumeToken(TokenType.LBRACE);
+      const properties = this.parsePropertyTypeList();
+      this.consumeToken(TokenType.RBRACE);
+      return {
+        kind: DeclKind.TargetDef,
+        source: this.source,
+        name: nameToken.text,
+        offset: nameToken.start,
+        properties,
+      };
+    }
+  }
+
+
+  /**
+   * PropertyTypeList ::= PropertyType*
+   * PropertyType ::= NAME '=' PropertySchema ';'
+   * PropertySchema ::=  ( 'STRING'|'FILES'|'REQUIRED' )*
+   *
+   */
+  private parsePropertyTypeList() : Record<string, IPropertySchema> {
+    const result: Record<string, IPropertySchema> = {};
+    while (this.token.type !== TokenType.RBRACE) {
+      const name = this.token;
+      let required = false;
+      let type : PropertyType|undefined;
+      if (name.type === TokenType.IDENTIFIER) {
+        this.nextToken();
+        let next = this.consumeToken(TokenType.EQUALS);
+        if( next.type !== TokenType.IDENTIFIER ) {
+          this.unexpectedTokenError("'STRING' or 'FILES' or 'REQUIRED'");
+        } else {
+          while(next.type === TokenType.IDENTIFIER){
+            switch(next.text) {
+              case "REQUIRED":
+                required = true;
+                break;
+              case "STRING":
+                type = PropertyType.String;
+                break;
+              case "FILES":
+                type = PropertyType.FileSet;
+                break;
+              default:
+                this.unexpectedTokenError("'STRING' or 'FILES' or 'REQUIRED'");
+            }
+            next = this.nextToken();
+          }
+        }
+        if( type === undefined ) {
+          this.unexpectedTokenError("'STRING' or 'Files'");
+        } else {
+          result[name.text] = {required, type};
+        }
+        if( next.type !== TokenType.RBRACE ) {
+          this.consumeToken(TokenType.SEMI);
+        }
+      } else {
+        this.unexpectedTokenError("Identifier or '}'");
+      }
+    }
+    return result;
+  }
+
   /**
    * Report a parse error to the diagnostic log due to an unexpected token,
    * and throw (caught by recovery). Note that the current token is _NOT_
@@ -536,12 +631,13 @@ export class BuildParser {
   /**
    * Parse a statement.
    *
-   * Statement ::= PropertyDecl | TargetDecl | IncludeDecl
+   * Statement ::= PropertyDecl | TargetDecl | IncludeDecl | TargetDefDecl | DefaultPropertyDecl
    *               ^
    * PropertyDecl ::= NAME '=' expr ';'
    * TargetDecl ::= NAME NAME '{' PropertyList '}'
    * IncludeDecl ::= 'include' NAME ';'
-   *
+   * TargetDefDecl ::= 'targetdef' NAME '{' PropertyTypeList '}'
+   * DefaultPropertyDecl ::= 'default' PropertyDecl
    */
 
   public parseStatement(): void {
@@ -550,10 +646,17 @@ export class BuildParser {
       const next = this.nextToken();
       if (token.text === "include") {
         this.result.includes.push(this.parseIncludeDecl());
+      } else if(token.text === "default" && next.type === TokenType.IDENTIFIER) {
+        this.nextToken();
+        this.result.defaults.push(this.parsePropertyDecl(next.text, next.start));
       } else if (next.type === TokenType.EQUALS) {
         this.result.properties.push(this.parsePropertyDecl(token.text, token.start));
       } else if (next.type === TokenType.IDENTIFIER) {
-        this.result.targets.push(this.parseTargetDecl(token.text, token.start));
+        if( token.text === "targetdef" ) {
+          this.result.targetdefs.push(this.parseTargetDefDecl());
+        } else {
+          this.result.targets.push(this.parseTargetDecl(token.text, token.start));
+        }
       } else {
         this.unexpectedTokenError("Identifier or '='");
       }

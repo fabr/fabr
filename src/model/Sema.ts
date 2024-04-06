@@ -17,7 +17,6 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { validateTarget } from "../rules/Validate";
 import { Log } from "../support/Log";
 import { BuildModel } from "./BuildModel";
 import { IBuildFileContents } from "./AST";
@@ -34,11 +33,12 @@ export function toBuildModel(files: IBuildFileContents[], log: Log): BuildModel 
   files.forEach(file => {
     file.namespaces.forEach(ns => builder.addNamespaceDecl(ns));
     file.properties.forEach(prop => builder.addDecl(prop));
-    file.targets.forEach(target => {
-      validateTarget(target, log);
-      builder.addDecl(target);
-    });
+    file.defaults.forEach(prop => builder.addDefaultDecl(prop));
+    file.targetdefs.forEach(def => builder.addDecl(def));
+    file.targets.forEach(target => builder.addDecl(target));
   });
+
+  builder.resolve();
 
   return new BuildModel(builder.toNamespace());
 }

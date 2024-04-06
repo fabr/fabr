@@ -17,8 +17,9 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { validateTarget } from "../rules/Validate";
 import { Diagnostic, ISourcePosition, Log } from "../support/Log";
-import { DeclKind, declPosn, getDeclKindName, INamedDecl, INamespaceDecl, IPropertyDecl, ITargetDecl } from "./AST";
+import { DeclKind, declPosn, getDeclKindName, INamedDecl, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
 import { NAME_COMPONENT_SEPARATOR } from "./Name";
 import { Namespace } from "./Namespace";
 
@@ -37,9 +38,19 @@ const DIAG_EXPLICIT_NAMESPACE_CONFLICT = Diagnostic.Error<{ kind: string; name: 
   "Declaration of {kind} '{name}' conflicts with namespace '{other}'"
 );
 
+const DIAG_UNKNOWN_TARGET_TYPE = Diagnostic.Error<{ type: string; loc: ISourcePosition }>(
+  "Unknown target type '{type}'"
+);
+
 interface NSBuilderNode {
   self?: INamedDecl;
+  targetDefs: Record<string, ITargetDefDecl>;
   content: Record<string, NSBuilderNode | ITargetDecl | IPropertyDecl>;
+  defaultContent: Record<string, ITargetDecl | IPropertyDecl>;
+}
+
+function newBuilderNode(self?: INamedDecl) : NSBuilderNode {
+  return { self, content: {}, defaultContent: {}, targetDefs: {}};
 }
 
 export class NamespaceBuilder {
@@ -48,7 +59,7 @@ export class NamespaceBuilder {
 
   constructor(log: Log) {
     this.log = log;
-    this.root = { content: {} };
+    this.root = newBuilderNode();
   }
 
   public addNamespaceDecl(decl: INamespaceDecl, root: NSBuilderNode = this.root): boolean {
@@ -70,26 +81,43 @@ export class NamespaceBuilder {
           node = current;
         }
       } else {
-        node = { self: decl, content: {} };
+        node = newBuilderNode(decl);
         parent.content[simpleName] = node;
       }
       decl.namespaces.forEach(ns => this.addNamespaceDecl(ns, node));
       decl.properties.forEach(prop => this.addDecl(prop, node));
       decl.targets.forEach(target => this.addDecl(target, node));
+      decl.defaults.forEach(prop => this.addDefaultDecl(prop, node));
       return true;
     }
     return false;
   }
 
-  public addDecl(decl: ITargetDecl | IPropertyDecl, root: NSBuilderNode = this.root): boolean {
+  public addDecl(decl: ITargetDefDecl | ITargetDecl | IPropertyDecl, root: NSBuilderNode = this.root): boolean {
     const nameParts = decl.name.split(NAME_COMPONENT_SEPARATOR);
     const simpleName = nameParts.pop()!;
     const parent = this.getNodeFor(root, nameParts, decl);
     if (parent) {
-      if (simpleName in parent.content) {
-        this.conflictError(parent.content[simpleName], decl);
+      const content = decl.kind === DeclKind.TargetDef ? parent.targetDefs : parent.content;
+      if (simpleName in content) {
+        this.conflictError(content[simpleName], decl);
       } else {
-        parent.content[simpleName] = decl;
+        content[simpleName] = decl;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  public addDefaultDecl(decl: ITargetDecl | IPropertyDecl, root: NSBuilderNode = this.root): boolean {
+    const nameParts = decl.name.split(NAME_COMPONENT_SEPARATOR);
+    const simpleName = nameParts.pop()!;
+    const parent = this.getNodeFor(root, nameParts, decl);
+    if (parent) {
+      if (simpleName in parent.defaultContent) {
+        this.conflictError(parent.defaultContent[simpleName], decl);
+      } else {
+        parent.defaultContent[simpleName] = decl;
         return true;
       }
     }
@@ -113,7 +141,7 @@ export class NamespaceBuilder {
           node = next;
         }
       } else {
-        const next = { self: decl, content: {} };
+        const next = newBuilderNode(decl);
         node.content[part] = next;
         node = next;
       }
@@ -121,8 +149,33 @@ export class NamespaceBuilder {
     return node;
   }
 
+  private resolveTargetDef(name: string, node: NSBuilderNode) : ITargetDefDecl | undefined {
+    /* FIXME: Namespaces */
+    return node.targetDefs[name] ?? this.root.targetDefs[name];
+  }
+
+  public resolve(node: NSBuilderNode = this.root) {
+    Object.entries(node.content).forEach(([key, child]) => {
+      if( "kind" in child ) {
+      if( child.kind === DeclKind.Target ) {
+        const targetDef = this.resolveTargetDef(child.type, node);
+        if( !targetDef ) {
+          this.unknownTargetDefError(child);
+        } else {
+          validateTarget(child, targetDef, this.log);
+        }
+      }
+    } else {
+      this.resolve(child);
+    }
+    });
+  }
+
   private buildNamespace(node: NSBuilderNode): Namespace {
     const content: Record<string, Namespace | ITargetDecl | IPropertyDecl> = {};
+    Object.entries(node.defaultContent).forEach( ([key, child]) => {
+      content[key] = child;
+    });
     Object.entries(node.content).forEach(([key, child]) => {
       if ("kind" in child) {
         content[key] = child;
@@ -131,10 +184,10 @@ export class NamespaceBuilder {
       }
     });
     const decl = node.self?.kind === DeclKind.Namespace ? node.self : undefined;
-    return new Namespace(content, decl);
+    return new Namespace(content, node.targetDefs, decl);
   }
 
-  private conflictError(decl: ITargetDecl | IPropertyDecl | NSBuilderNode, newDecl: INamedDecl): void {
+  private conflictError(decl: INamedDecl | NSBuilderNode, newDecl: INamedDecl): void {
     const oldDecl = "kind" in decl ? decl : decl.self!;
     if (oldDecl.name === newDecl.name) {
       this.log.log(oldDecl.kind === newDecl.kind ? DIAG_DUPLICATE_DECL : DIAG_CONFLICT_DECL, {
@@ -150,5 +203,9 @@ export class NamespaceBuilder {
         other: oldDecl.name,
       });
     }
+  }
+
+  private unknownTargetDefError(decl: ITargetDecl) : void {
+    this.log.log(DIAG_UNKNOWN_TARGET_TYPE, { type: decl.type, loc: { ...decl.source, offset: decl.typeOffset } })
   }
 }

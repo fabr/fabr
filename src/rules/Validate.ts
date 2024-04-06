@@ -17,10 +17,8 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { declPosn, ITargetDecl } from "../model/AST";
+import { declPosn, ITargetDecl, ITargetDefDecl } from "../model/AST";
 import { Diagnostic, ISourcePosition, Log, LogLevel } from "../support/Log";
-import { getTargetRule } from "./Registry";
-import { ITargetSchema } from "./Types";
 
 interface ITargetPropertyError {
   property: string;
@@ -42,21 +40,6 @@ const DIAG_MISSING_PROPERTY = new Diagnostic<ITargetPropertyError>(
   "Missing required property '{property} in {type} ttarget '{target}'"
 );
 
-const DIAG_UNKNOWN_TARGET_TYPE = new Diagnostic<{ type: string; loc: ISourcePosition }>(
-  LogLevel.Error,
-  "Unrecognized target type '{type}'"
-);
-
-export function validateTarget(target: ITargetDecl, log: Log): boolean {
-  const targetType = getTargetRule(target.type);
-  if (!targetType) {
-    log.log(DIAG_UNKNOWN_TARGET_TYPE, { type: target.type, loc: { ...target.source, offset: target.typeOffset } });
-    return false;
-  } else {
-    return validateTargetForSchema(target, targetType.schema, log);
-  }
-}
-
 /**
  * Check that all properties in the target decl are
  *   a) known to the schema,
@@ -67,12 +50,12 @@ export function validateTarget(target: ITargetDecl, log: Log): boolean {
  *
  * @return true if validation succeeds, otherwise false (and errors are written to the log);
  */
-function validateTargetForSchema<S extends ITargetSchema>(decl: ITargetDecl, schema: S, log: Log): boolean {
+export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log: Log): boolean {
   const seen = new Set();
   let isValid = true;
 
   decl.properties.forEach(prop => {
-    if (!(prop.name in schema.properties)) {
+    if (!(prop.name in targetDef.properties)) {
       isValid = false;
       log.log(DIAG_UNEXPECTED_PROPERTY, {
         loc: declPosn(prop),
@@ -92,7 +75,7 @@ function validateTargetForSchema<S extends ITargetSchema>(decl: ITargetDecl, sch
       seen.add(prop.name);
     }
   });
-  Object.entries(schema.properties).forEach(([key, value]) => {
+  Object.entries(targetDef.properties).forEach(([key, value]) => {
     if (value.required && !seen.has(key)) {
       isValid = false;
       log.log(DIAG_MISSING_PROPERTY, {

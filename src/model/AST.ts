@@ -26,6 +26,7 @@ export enum DeclKind {
   Value,
   Property,
   Target,
+  TargetDef,
   Include,
   Namespace,
 }
@@ -42,6 +43,7 @@ export interface INamespaceDecl extends IBaseDecl {
   namespaces: INamespaceDecl[];
   targets: ITargetDecl[];
   properties: IPropertyDecl[];
+  defaults: IPropertyDecl[];
 }
 
 export interface ITargetDecl extends IBaseDecl {
@@ -50,6 +52,26 @@ export interface ITargetDecl extends IBaseDecl {
   typeOffset: number;
   name: string;
   properties: IPropertyDecl[];
+}
+
+
+export enum PropertyType {
+  String,
+  FileSet,
+  StringList,
+  FileSetList,
+  OutputFileSet,
+}
+
+export interface IPropertySchema {
+  required?: boolean;
+  type: PropertyType;
+}
+
+export interface ITargetDefDecl extends IBaseDecl {
+  kind: DeclKind.TargetDef;
+  name: string;
+  properties: Record<string, IPropertySchema>;
 }
 
 export interface IValue extends IBaseDecl {
@@ -77,13 +99,15 @@ export interface IBuildFile {
 export interface IBuildFileContents {
   namespaces: INamespaceDecl[];
   targets: ITargetDecl[];
+  targetdefs: ITargetDefDecl[];
   properties: IPropertyDecl[];
+  defaults: IPropertyDecl[];
   includes: IIncludeDecl[];
 }
 
 export type IDecl = ITargetDecl | IPropertyDecl | INamespaceDecl | IIncludeDecl | IValue;
 
-export type INamedDecl = ITargetDecl | IPropertyDecl | INamespaceDecl;
+export type INamedDecl = ITargetDecl | IPropertyDecl | INamespaceDecl | ITargetDefDecl;
 
 export type IScope = INamespaceDecl | IBuildFileContents;
 
@@ -97,6 +121,8 @@ export function getDeclKindName(kind: DeclKind): string {
       return "property";
     case DeclKind.Target:
       return "target";
+    case DeclKind.TargetDef:
+      return "targetdef";
     case DeclKind.Value:
       return "value";
   }

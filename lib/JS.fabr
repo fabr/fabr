@@ -1,0 +1,55 @@
+##################### Global Properties ####################
+
+#
+# Primary URL for the remote NPM repository. You'll usually want to override this if you're using
+# a private mirror/cache.
+#
+
+default NPM_REPOSITORY_URL = https://registry.npmjs.org/;
+
+#
+# The default target for JS output.
+# This is constructed as a pair of <ES-version>-<Module-Format>
+#
+
+default JS_TARGET = es6-esm;
+
+#
+# The default typescript compiler to use (if compiling typescript).
+# You'll usually want to override this to set a specific version.
+#
+
+default TSC = @npm:typescript:latest;
+
+
+################### JS-specific targets ####################
+
+#
+# Standard Javascript / NPM package.
+#
+
+targetdef js_package {
+    srcs = FILES;
+    deps = FILES;
+    version = STRING;
+}
+
+#
+# npmjs.org compatible repository, specified by URL.
+#
+
+targetdef npm_repository {
+    url = REQUIRED STRING;
+}
+
+
+#################### Repository ############################
+
+#
+# Convenience provider for the public npmjs.org repository.
+#
+
+npm_repository @npm {
+    url = NPM_REPOSITORY_URL;
+}
+
