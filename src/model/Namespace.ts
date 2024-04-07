@@ -62,17 +62,17 @@ export class Namespace {
     }
   }
 
-  public getTargetDef(name: string) :ITargetDefDecl | undefined {
+  public getTargetDef(name: string): ITargetDefDecl | undefined {
     const parts = name.split(NAME_COMPONENT_SEPARATOR);
     const targetName = parts.pop()!; /* Array must contain at least 1 element */
     return this.getNamespacePrefix(parts)?.targetDefs[targetName];
   }
-  
+
   /**
-   * @return the target whose name forms a prefix of the given string, plus the
+   * @return the target or prop whose name forms a prefix of the given string, plus the
    *   matched prefix of the string.
    */
-  public getPrefixTarget(name: string): [ITargetDecl, string] | undefined {
+  public getPrefixMatch(name: string): [ITargetDecl | IPropertyDecl, string] | undefined {
     const parts = name.split(NAME_COMPONENT_SEPARATOR);
     let node: Namespace = this;
     for (let idx = 0; idx < parts.length; idx++) {
@@ -80,7 +80,7 @@ export class Namespace {
       if (next instanceof Namespace) {
         node = next;
       } else {
-        if (next.kind === DeclKind.Target) {
+        if (next?.kind === DeclKind.Target || next?.kind === DeclKind.Property) {
           return [next, parts.slice(0, idx + 1).join(NAME_COMPONENT_SEPARATOR)];
         } else {
           return undefined;

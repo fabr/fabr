@@ -19,7 +19,18 @@
 
 import { StringReader } from "../support/StringReader";
 import { isWhiteSpace as isWhiteSpaceChar, isAlphabetic, isDigit } from "unicode-properties";
-import { DeclKind, IBuildFile, IBuildFileContents, IIncludeDecl, IPropertyDecl, IPropertySchema, ITargetDecl, ITargetDefDecl, IValue, PropertyType } from "./AST";
+import {
+  DeclKind,
+  IBuildFile,
+  IBuildFileContents,
+  IIncludeDecl,
+  IPropertyDecl,
+  IPropertySchema,
+  ITargetDecl,
+  ITargetDefDecl,
+  IValue,
+  PropertyType,
+} from "./AST";
 import { Diagnostic, ISourcePosition, Log, LogLevel } from "../support/Log";
 import { Name, NameBuilder } from "./Name";
 import { IFileSetProvider } from "../core/FileSet";
@@ -27,6 +38,7 @@ import { IFileSetProvider } from "../core/FileSet";
 enum TokenType {
   EOF = 0,
   IDENTIFIER,
+  COMPOUND_IDENTIFIER,
   NAME,
   EQUALS,
   LBRACE,
@@ -66,13 +78,13 @@ interface NameToken {
 }
 
 interface IdentToken {
-  type: TokenType.IDENTIFIER;
+  type: TokenType.IDENTIFIER | TokenType.COMPOUND_IDENTIFIER;
   start: number;
   text: string;
 }
 
 interface NonNameToken {
-  type: Exclude<TokenType, TokenType.NAME | TokenType.IDENTIFIER>;
+  type: Exclude<TokenType, TokenType.NAME | TokenType.IDENTIFIER | TokenType.COMPOUND_IDENTIFIER>;
   start: number;
 }
 
@@ -82,6 +94,7 @@ const TOKEN_NAME_MAP = {
   [TokenType.EOF]: "EOF",
   [TokenType.NAME]: "Name",
   [TokenType.IDENTIFIER]: "Identifier",
+  [TokenType.COMPOUND_IDENTIFIER]: "Path",
   [TokenType.EQUALS]: "'='",
   [TokenType.LBRACE]: "'{'",
   [TokenType.RBRACE]: "'}'",
@@ -126,6 +139,10 @@ function isIdentifier(text?: string): text is string {
     if (!isIdentChar(code)) return false;
   }
   return true;
+}
+
+function hasSlash(text: string): boolean {
+  return text.indexOf("/") !== -1;
 }
 
 const DIAG_PARSE_ERROR = new Diagnostic<{ actual: string; expected: string; loc: ISourcePosition }>(
@@ -184,7 +201,6 @@ export class BuildParser {
       this.unexpectedEndOfFile("'");
     }
     builder?.appendLiteralString(this.reader.substring(start));
-    this.reader.next(); /* Consume the quote */
   }
 
   /* Double quotes can contain variables (which can contain double quotes */
@@ -210,7 +226,6 @@ export class BuildParser {
       this.unexpectedEndOfFile('"');
     }
     builder?.appendEscapedString(this.reader.substring(posn));
-    this.reader.next();
   }
 
   private readSubstVar(builder?: NameBuilder): void {
@@ -249,7 +264,6 @@ export class BuildParser {
         this.unexpectedEndOfFile("}");
       }
       builder?.appendSubstVar(this.reader.substring(posn));
-      this.reader.consume(CHAR_RBRACE);
     }
   }
 
@@ -287,19 +301,19 @@ export class BuildParser {
           maybeIdent = false;
           nameBuilder.appendEscapedString(this.reader.substring(posn));
           this.readSingleQuotedString(nameBuilder);
-          posn = this.reader.currentOffset();
+          posn = this.reader.currentOffset() + 1;
           break;
         case CHAR_DQUOTE:
           maybeIdent = false;
           nameBuilder.appendEscapedString(this.reader.substring(posn));
           this.readDoubleQuotedString(nameBuilder);
-          posn = this.reader.currentOffset();
+          posn = this.reader.currentOffset() + 1;
           break;
         case CHAR_DOLLAR:
           maybeIdent = false;
           nameBuilder.appendEscapedString(this.reader.substring(posn));
           this.readSubstVar(nameBuilder);
-          posn = this.reader.currentOffset();
+          posn = this.reader.currentOffset() + 1;
           break;
         case CHAR_STAR:
           maybeIdent = false;
@@ -338,7 +352,7 @@ export class BuildParser {
        * just interrogate the whole string
        */
       if (isIdentifier(rest)) {
-        return { type: TokenType.IDENTIFIER, text: rest, start };
+        return { type: hasSlash(rest) ? TokenType.COMPOUND_IDENTIFIER : TokenType.IDENTIFIER, text: rest, start };
       }
     }
 
@@ -352,18 +366,18 @@ export class BuildParser {
     /* Skip over whitespace and comments */
     let inComment = false;
     const ch = this.reader.skipUntil(ch => {
-      if( inComment ) {
-        if( ch === CHAR_NEWLINE ) {
+      if (inComment) {
+        if (ch === CHAR_NEWLINE) {
           inComment = false;
         }
         return false;
-      } else if( ch === CHAR_HASH ) {
+      } else if (ch === CHAR_HASH) {
         inComment = true;
         return false;
       } else {
         return !isWhitespace(ch);
       }
-     });
+    });
 
     switch (ch) {
       case undefined:
@@ -425,7 +439,7 @@ export class BuildParser {
    */
   private parseIncludeDecl(): IIncludeDecl {
     const token = this.token;
-    if (token.type === TokenType.IDENTIFIER || token.type === TokenType.NAME) {
+    if (token.type === TokenType.IDENTIFIER || token.type === TokenType.COMPOUND_IDENTIFIER || token.type === TokenType.NAME) {
       const simpleName = typeof token.text === "string" ? token.text : token.text.getSimpleName();
       if (!simpleName) {
         this.invalidIncludeName();
@@ -446,7 +460,7 @@ export class BuildParser {
 
   private parseValue(): IValue {
     const token = this.token;
-    if (token.type === TokenType.NAME || token.type === TokenType.IDENTIFIER) {
+    if (token.type === TokenType.NAME || token.type === TokenType.IDENTIFIER || token.type === TokenType.COMPOUND_IDENTIFIER) {
       this.nextToken();
       return {
         kind: DeclKind.Value,
@@ -455,7 +469,7 @@ export class BuildParser {
         value: typeof token.text === "string" ? Name.fromLiteral(token.text) : token.text,
       };
     } else {
-      this.unexpectedTokenError("Name");
+      this.unexpectedTokenError("Name, ';', or '}'");
     }
   }
 
@@ -477,7 +491,7 @@ export class BuildParser {
       source: this.source,
       name,
       offset: nameOffset,
-      values
+      values,
     };
   }
 
@@ -502,8 +516,8 @@ export class BuildParser {
    * @param nameOffset
    */
   private parseTargetDecl(type: string, typeOffset: number): ITargetDecl {
-    if (this.token.type !== TokenType.IDENTIFIER) {
-      this.unexpectedTokenError("Identifier");
+    if (this.token.type !== TokenType.IDENTIFIER && this.token.type !== TokenType.COMPOUND_IDENTIFIER) {
+      this.unexpectedTokenError("Path");
     } else {
       const nameToken = this.token;
       this.nextToken();
@@ -521,7 +535,6 @@ export class BuildParser {
       };
     }
   }
-
 
   /**
    * TargetDefDecl ::= 'targetdef' NAME '{' PropertyTypeList '}'
@@ -548,27 +561,26 @@ export class BuildParser {
     }
   }
 
-
   /**
    * PropertyTypeList ::= PropertyType*
    * PropertyType ::= NAME '=' PropertySchema ';'
    * PropertySchema ::=  ( 'STRING'|'FILES'|'REQUIRED' )*
    *
    */
-  private parsePropertyTypeList() : Record<string, IPropertySchema> {
+  private parsePropertyTypeList(): Record<string, IPropertySchema> {
     const result: Record<string, IPropertySchema> = {};
     while (this.token.type !== TokenType.RBRACE) {
       const name = this.token;
       let required = false;
-      let type : PropertyType|undefined;
+      let type: PropertyType | undefined;
       if (name.type === TokenType.IDENTIFIER) {
         this.nextToken();
         let next = this.consumeToken(TokenType.EQUALS);
-        if( next.type !== TokenType.IDENTIFIER ) {
+        if (next.type !== TokenType.IDENTIFIER) {
           this.unexpectedTokenError("'STRING' or 'FILES' or 'REQUIRED'");
         } else {
-          while(next.type === TokenType.IDENTIFIER){
-            switch(next.text) {
+          while (next.type === TokenType.IDENTIFIER) {
+            switch (next.text) {
               case "REQUIRED":
                 required = true;
                 break;
@@ -584,12 +596,12 @@ export class BuildParser {
             next = this.nextToken();
           }
         }
-        if( type === undefined ) {
+        if (type === undefined) {
           this.unexpectedTokenError("'STRING' or 'Files'");
         } else {
-          result[name.text] = {required, type};
+          result[name.text] = { required, type };
         }
-        if( next.type !== TokenType.RBRACE ) {
+        if (next.type !== TokenType.RBRACE) {
           this.consumeToken(TokenType.SEMI);
         }
       } else {
@@ -646,13 +658,13 @@ export class BuildParser {
       const next = this.nextToken();
       if (token.text === "include") {
         this.result.includes.push(this.parseIncludeDecl());
-      } else if(token.text === "default" && next.type === TokenType.IDENTIFIER) {
+      } else if (token.text === "default" && next.type === TokenType.IDENTIFIER) {
         this.nextToken();
         this.result.defaults.push(this.parsePropertyDecl(next.text, next.start));
       } else if (next.type === TokenType.EQUALS) {
         this.result.properties.push(this.parsePropertyDecl(token.text, token.start));
-      } else if (next.type === TokenType.IDENTIFIER) {
-        if( token.text === "targetdef" ) {
+      } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.COMPOUND_IDENTIFIER) {
+        if (token.text === "targetdef") {
           this.result.targetdefs.push(this.parseTargetDefDecl());
         } else {
           this.result.targets.push(this.parseTargetDecl(token.text, token.start));

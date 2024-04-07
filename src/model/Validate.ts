@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { declPosn, ITargetDecl, ITargetDefDecl } from "../model/AST";
+import { declPosn, ITargetDecl, ITargetDefDecl } from "./AST";
 import { Diagnostic, ISourcePosition, Log, LogLevel } from "../support/Log";
 
 interface ITargetPropertyError {

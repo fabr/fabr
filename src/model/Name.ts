@@ -86,16 +86,21 @@ export class Name {
    * @param substitutionMap
    * @returns
    */
-  public substitute(substitutionMap: Record<string, string>): Name {
+  public substitute(varNames: string[], values: string[]): Name {
+    const substitutionMap = varNames.reduce<Record<string, string>>((result, key, index) => {
+      result[key] = values[index];
+      return result;
+    }, {});
+
     /* Note: internally we collapse strings down so that afterwards we can treat it as if
      * the subst vars were never there.
      */
     const parts = this.parts.reduce<NamePart[]>((rest, part) => {
       const newPart = part.kind === NamePartKind.VarSubst ? { kind: NamePartKind.Literal, value: substitutionMap[part.value] } : part;
       if (rest.length > 0 && rest[rest.length - 1].kind === newPart.kind) {
-        rest[rest.length - 1].value += newPart.value;
+        rest[rest.length - 1] = { kind: newPart.kind, value: rest[rest.length - 1].value + newPart.value };
       } else {
-        rest.push(part);
+        rest.push(newPart);
       }
       return rest;
     }, []);
@@ -200,9 +205,9 @@ export class NameBuilder {
   private parts: NamePart[] = [];
   private last: NamePart | undefined = undefined;
 
-  private append(kind: NamePartKind, value: string): void {
+  private append(kind: NamePartKind, value: string): this {
     if (value === "") {
-      return;
+      return this;
     } else if ((kind !== NamePartKind.VarSubst, this.last?.kind === kind)) {
       this.last.value += value;
     } else {
@@ -210,6 +215,7 @@ export class NameBuilder {
       this.parts.push(part);
       this.last = part;
     }
+    return this;
   }
 
   /**
@@ -217,8 +223,9 @@ export class NameBuilder {
    * such as from a single-quoted string.
    * @param str
    */
-  public appendLiteralString(str: string): void {
+  public appendLiteralString(str: string): this {
     this.append(NamePartKind.Literal, str);
+    return this;
   }
 
   /**
@@ -227,8 +234,9 @@ export class NameBuilder {
    * Note: does not extract substitution variables from the string.
    * @param str The contents of the DQ string (excluding the containing quotes)
    */
-  public appendEscapedString(str: string): void {
+  public appendEscapedString(str: string): this {
     this.append(NamePartKind.Literal, unescapeDoubleQuotedString(str));
+    return this;
   }
 
   /**
@@ -238,15 +246,17 @@ export class NameBuilder {
    * Currently recognized metachars are '*', '?', and '[]'
    * @param str
    */
-  public appendGlobMetachars(str: string): void {
+  public appendGlobMetachars(str: string): this {
     this.append(NamePartKind.Glob, str);
+    return this;
   }
 
   /**
    * Add a substitution variable by name.
    */
-  public appendSubstVar(str: string): void {
+  public appendSubstVar(str: string): this {
     this.append(NamePartKind.VarSubst, str);
+    return this;
   }
 
   public reset(): void {

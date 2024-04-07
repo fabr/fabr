@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { BuildConfig } from "../../model/BuildModel";
+import { BuildContext } from "../../model/BuildContext";
 import { PropertyType, ResolvedType } from "../Types";
 import { BaseDependencySchema } from "../Common";
 import { Computable } from "../../core/Computable";
@@ -80,7 +80,7 @@ function getNpmMetadata(repo: string, spec: IDepSpec): Computable<NPMPackageMeta
   return fetchUrl(url).then(data => JSON.parse(data.toString()));
 }
 
-function fetchNpmDeps(spec: NPMDepType, config: BuildConfig): Computable<FileSet> {
+function fetchNpmDeps(spec: NPMDepType, config: BuildContext): Computable<FileSet> {
   /* STUB */
   const baseUrl = spec.npm_repo;
   console.log("Fetching from " + baseUrl);

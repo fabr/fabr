@@ -17,10 +17,10 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { BuildConfig } from "../model/BuildModel";
+import { BuildContext } from "../model/BuildContext";
 import { PropertyType, ResolvedType } from "./Types";
 import { Computable } from "../core/Computable";
-import { FileSet } from "../core/FileSet";
+import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { registerTargetRule } from "./Registry";
 import * as os from "os";
 import * as path from "path";
@@ -50,19 +50,19 @@ type GenericType = ResolvedType<typeof GenericSchema>;
  *
  * Note: this is the main execution point which nearly everything else
  * is built on top of, and can be called directly.
- * 
+ *
  * Ideally this would be fully sandboxed, but for now we just kind of
  * fake it and hope the tools aren't _too_ badly behaved.
  * @param spec
  * @param config
  */
-export function runGeneric(spec: GenericType, config: BuildConfig): Computable<FileSet> {
+export function runGeneric(spec: GenericType, config: BuildContext): Computable<FileSet> {
   const tmpdir = getExecRoot(config);
   if (spec.inputs) {
     filesetToDir(tmpdir, spec.inputs);
   }
 
-  spawn(spec.command, )
+  return Computable.resolve(EMPTY_FILESET);
 }
 
 /**
@@ -70,32 +70,30 @@ export function runGeneric(spec: GenericType, config: BuildConfig): Computable<F
  * to do this inside the build cache so that we can just rename files to their final
  * locations.
  */
-function getExecRoot(config: BuildConfig): string {}
+function getExecRoot(config: BuildContext): string {
+  return "/tmp/fixme";
+}
 
 function filesetToDir(dir: string, files: FileSet) {
   for (const [path, file] of files) {
   }
 }
 
-function execute(cmd: string, args: string[], cwd: string, env: Record<string,string>) : Computable<> {
-    return Computable.from( (resolve,reject ) => {
-    const proc = spawn(cmd, args, { cwd, env, windowsHide: true, });
-        proc.stdout.on("data", (data) => {
-
-        });
-        proc.stderr.on("data", (data) => {
-
-        });
-        proc.on("close", (code, signal) => {
-            if( signal ) {
-                reject("Terminated by signal " + signal);
-            } else if( code !== 0 ) {
-                reject("Exited with error code " + code);
-            } else {
-                resolve()
-            }
-        });
+function execute(cmd: string, args: string[], cwd: string, env: Record<string, string>): Computable<void> {
+  return Computable.from((resolve, reject) => {
+    const proc = spawn(cmd, args, { cwd, env, windowsHide: true });
+    proc.stdout.on("data", data => {});
+    proc.stderr.on("data", data => {});
+    proc.on("close", (code, signal) => {
+      if (signal) {
+        reject("Terminated by signal " + signal);
+      } else if (code !== 0) {
+        reject("Exited with error code " + code);
+      } else {
+        resolve();
+      }
     });
+  });
 }
 
 registerTargetRule("script", GenericSchema, runGeneric);

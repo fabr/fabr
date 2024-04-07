@@ -39,10 +39,11 @@ const loadBuildCache: Record<string, Computable<BuildFiles>> = {};
 /* FIXME: Detect cycles? */
 function loadBuildFile(sourceTree: IFileSetProvider, file: string, log: Log): Computable<BuildFiles> {
   if (!(file in loadBuildCache)) {
-    loadBuildCache[file] = sourceTree
-      .get(file)
-      .then(f => f.readString())
-      .then(content => {
+    loadBuildCache[file] = sourceTree.get(file).then(f => {
+      if (!f) {
+        throw new Error("File not found: " + f);
+      }
+      return f.readString().then(content => {
         const source = { fs: sourceTree, file, reader: new StringReader(content) };
         const decls = parseBuildFile(source, log);
         const includes = resolveIncludes(file, decls.includes);
@@ -61,6 +62,7 @@ function loadBuildFile(sourceTree: IFileSetProvider, file: string, log: Log): Co
           return { [file]: decls };
         }
       });
+    });
   }
   return loadBuildCache[file];
 }

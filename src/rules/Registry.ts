@@ -19,13 +19,11 @@
 
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
-import { BuildConfig } from "../model/BuildModel";
-import { Property } from "../model/Property";
+import { BuildContext } from "../model/BuildContext";
 
 import { ITargetSchema, ITargetTypeDefinition, ResolvedType } from "./Types";
 
 const TARGET_REGISTRY: Record<string, ITargetTypeDefinition<any>> = {};
-const DEFAULT_PROPERTIES: Record<string, Property> = {};
 
 export function getTargetRule(name: string): ITargetTypeDefinition<any> | undefined {
   return TARGET_REGISTRY[name];
@@ -38,15 +36,7 @@ export function hasTargetType(type: string): boolean {
 export function registerTargetRule<S extends ITargetSchema>(
   name: string,
   schema: S,
-  evaluate: (spec: ResolvedType<S>, config: BuildConfig) => Computable<FileSet>
+  evaluate: (spec: ResolvedType<S>, config: BuildContext) => Computable<FileSet>
 ): void {
   TARGET_REGISTRY[name] = { schema, evaluate } as ITargetTypeDefinition<any>;
-}
-
-export function registerDefaultProperty(name: string, value: string): void {
-  DEFAULT_PROPERTIES[name] = new Property([value]);
-}
-
-export function getDefaultProperty(name: string): Property | undefined {
-  return DEFAULT_PROPERTIES[name];
 }

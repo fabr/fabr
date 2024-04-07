@@ -17,24 +17,18 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Computable } from "../core/Computable";
-import { evaluateTarget } from "../rules/Evaluate";
-import { getDefaultProperty } from "../rules/Registry";
-import { resolveProperty } from "../rules/Resolve";
-import { IPropertyDecl, ITargetDecl } from "./AST";
-import { Name } from "./Name";
+import { INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
 import { Namespace } from "./Namespace";
-import { Property } from "./Property";
-import { Target } from "./Target";
-
-export type Constraints = Record<string, Property>;
+import { BuildContext, Constraints } from "./BuildContext";
 
 /**
  * Build model holds the generalized model-as-it-is-written in the build files.
+ *
+ * It primarily exists to maintain a cache from constraint sets to active
  */
 export class BuildModel {
   private root: Namespace;
-  private configs: BuildConfig[] = [];
+  private configs: BuildContext[] = [];
 
   constructor(root: Namespace) {
     this.root = root;
@@ -43,134 +37,27 @@ export class BuildModel {
   /**
    * @return the build configuration under the given (possibly empty set of) constraints
    */
-  public getConfig(constraints: Constraints = {}): BuildConfig {
+  public getConfig(constraints: Constraints = {}): BuildContext {
     /* Todo: hash the constraints instead of linearly scanning */
     for (const config of this.configs) {
       if (config.hasConstraints(constraints)) {
         return config;
       }
     }
-    const config = new BuildConfig(this, constraints);
+    const config = new BuildContext(this, constraints);
     this.configs.push(config);
     return config;
   }
 
-  public getProperty(name: string): IPropertyDecl | undefined {
-    return this.root.getProperty(name);
+  public getDecl(name: string): IPropertyDecl | ITargetDecl | INamespaceDecl | undefined {
+    return this.root.getDecl(name);
   }
 
-  public getTarget(name: string): ITargetDecl | undefined {
-    return this.root.getTarget(name);
+  public getTargetDef(name: string): ITargetDefDecl | undefined {
+    return this.root.getTargetDef(name);
   }
 
-  public getPrefixTarget(name: string): [ITargetDecl, string] | undefined {
-    return this.root.getPrefixTarget(name);
-  }
-}
-
-export class BuildConfig {
-  protected constraints: Constraints;
-  private model: BuildModel;
-  private propCache: Record<string, Computable<Property> | null>;
-  private targetCache: Record<string, Computable<Target> | null>;
-
-  constructor(model: BuildModel, constraints: Constraints) {
-    this.model = model;
-    this.constraints = constraints;
-    this.propCache = {};
-    this.targetCache = {};
-    // Pre-force the constraints so we don't have to check this later.
-    Object.keys(constraints).forEach(key => (this.propCache[key] = Computable.resolve(constraints[key])));
-  }
-
-  public hasConstraints(constraints: Constraints): boolean {
-    const k1 = Object.keys(this.constraints);
-    const k2 = Object.keys(constraints);
-    return k1.length === k2.length && k1.every(k => k in constraints && constraints[k] === this.constraints[k]);
-  }
-
-  public getPropertyWithOverrides(name: string, overrides: Constraints): Computable<Property> {
-    const combined = { ...this.constraints, ...overrides };
-    return this.model.getConfig(combined).getProperty(name);
-  }
-
-  public getTargetWithOverrides(name: string, overrides: Constraints): Computable<any> {
-    const combined = { ...this.constraints, ...overrides };
-    return this.model.getConfig(combined).getTarget(name);
-  }
-
-  public getProperty(name: string): Computable<Property> {
-    if (name in this.propCache) {
-      /* Already seen */
-      const result = this.propCache[name];
-      if (result === null) {
-        throw new Error("Circular dependency at '" + name + "'");
-      } else {
-        return result;
-      }
-    } else {
-      const def = this.model.getProperty(name);
-      if (!def) {
-        const defaultProp = getDefaultProperty(name);
-        if (defaultProp) {
-          return (this.propCache[name] = Computable.resolve(defaultProp));
-        } else {
-          throw new Error("Unresolved name '" + name + "'"); /* TODO: actual error reporting */
-        }
-      }
-      this.propCache[name] = null;
-      const result = resolveProperty(def, this);
-      this.propCache[name] = result;
-      return result;
-    }
-  }
-
-  public hasTarget(name: string): boolean {
-    return Boolean(this.model.getTarget(name));
-  }
-
-  public getTarget(name: string): Computable<Target> {
-    if (name in this.targetCache) {
-      /* Already seen */
-      const result = this.targetCache[name];
-      if (result === null) {
-        throw new Error("Circular dependency at '" + name + "'");
-      } else {
-        return result;
-      }
-    } else {
-      const def = this.model.getTarget(name);
-      if (!def) {
-        throw new Error("Unresolved name '" + name + "'"); /* TODO: actual error reporting */
-      }
-      this.targetCache[name] = null;
-      const result = evaluateTarget(def, this);
-      this.targetCache[name] = result;
-      return result;
-    }
-  }
-
-  /**
-   * Find and return a target from the literal prefix of the given name, and return
-   * a new Name representing the unmatched suffix. If no such target can be found,
-   * returns undefined.
-   *
-   * e.g. given a name of "mylib/lib/*" and a declared target 'mylib', will return
-   * the Computable for mylib and the remaining name "lib/*".
-   *
-   * Note: target names are not pattern matched against globs (ie only the literal prefix
-   * of the name is looked up)
-   */
-  public getPrefixTargetIfExists(name: Name): [Computable<Target>, Name] | undefined {
-    const literalPrefix = name.getLiteralPathPrefix();
-    if (literalPrefix !== "") {
-      const result = this.model.getPrefixTarget(literalPrefix);
-      if (result) {
-        /* Fixme Could be more efficient */
-        const [decl, matched] = result;
-        return [this.getTarget(matched), name.withoutPrefix(matched)];
-      }
-    }
-    return undefined;
+  public getPrefixMatch(name: string): [ITargetDecl | IPropertyDecl, string] | undefined {
+    return this.root.getPrefixMatch(name);
   }
 }

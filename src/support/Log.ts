@@ -51,21 +51,21 @@ export class Diagnostic<T extends Record<string, any>> {
     return this.logLevel;
   }
 
-  static Error<T>(format: string): Diagnostic<T> {
+  static Error<T extends Record<string, any>>(format: string): Diagnostic<T> {
     return new Diagnostic<T>(LogLevel.Error, format);
   }
 
-  static Warn<T>(format: string): Diagnostic<T> {
+  static Warn<T extends Record<string, any>>(format: string): Diagnostic<T> {
     return new Diagnostic<T>(LogLevel.Warn, format);
   }
 
-  static Info<T>(format: string): Diagnostic<T> {
+  static Info<T extends Record<string, any>>(format: string): Diagnostic<T> {
     return new Diagnostic<T>(LogLevel.Info, format);
   }
 }
 
 export interface Log {
-  log<T>(diagnostic: Diagnostic<T>, params: T): void;
+  log<T extends Record<string, any>>(diagnostic: Diagnostic<T>, params: T): void;
 }
 
 function getLogLevelName(logLevel: LogLevel): string {
@@ -90,7 +90,7 @@ export class LogFormatter implements Log {
     this.out = out;
   }
 
-  public log<T>(diagnostic: Diagnostic<T>, params: T & { loc?: ISourcePosition }): void {
+  public log<T extends Record<string, any>>(diagnostic: Diagnostic<T>, params: T & { loc?: ISourcePosition }): void {
     const level = diagnostic.level;
     if (level < this.logLevel) {
       return;

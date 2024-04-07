@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Constraints } from "../model/BuildModel";
+import { Constraints } from "../model/BuildContext";
 import { Property } from "../model/Property";
 
 export enum Mode {

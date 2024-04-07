@@ -17,11 +17,12 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { BuildConfig } from "../../model/BuildModel";
+import { BuildContext } from "../../model/BuildContext";
 import { PropertyType, ResolvedType } from "../Types";
 import { Computable } from "../../core/Computable";
-import { FileSet } from "../../core/FileSet";
+import { EMPTY_FILESET, FileSet } from "../../core/FileSet";
 import { registerTargetRule } from "../Registry";
+import { runGeneric } from "../GenericTarget";
 
 const NodeJSSchema = {
   properties: {
@@ -49,8 +50,8 @@ type NodeJSType = ResolvedType<typeof NodeJSSchema>;
  * @param spec
  * @param config
  */
-function runNodeJs(spec: NodeJSType, config: BuildConfig): Computable<FileSet> {
-    return runGene
+function runNodeJs(spec: NodeJSType, config: BuildContext): Computable<FileSet> {
+  return Computable.resolve(EMPTY_FILESET);
 }
 
 registerTargetRule("js_run", NodeJSSchema, runNodeJs);

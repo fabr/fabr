@@ -19,66 +19,65 @@
 
 import { EMPTY_FILESET } from "../core/FileSet";
 import { LogFormatter, LogLevel } from "../support/Log";
+import { IBuildFileContents } from "./AST";
 import { parseBuildString } from "./Parser";
 
-describe("Parser Tests", () => {
+function parseValid(text: string): IBuildFileContents {
   const errors: string[] = [];
   const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
 
-  const fs = EMPTY_FILESET;
+  const result = parseBuildString(EMPTY_FILESET, "PROJECT.fabr", text, logger);
+  expect(errors).toStrictEqual([]);
+  return result;
+}
 
+function parseInvalid(text: string): string[] {
+  const errors: string[] = [];
+  const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+
+  parseBuildString(EMPTY_FILESET, "PROJECT.fabr", text, logger);
+  return errors;
+}
+
+describe("Parser Tests", () => {
   it("Include Decl", () => {
-    errors.length = 0;
-    expect(parseBuildString(fs, "BUILD.TOP", "include src/BUILD.FABR;", logger)).toMatchSnapshot();
-    expect(errors.length).toBe(0);
+    expect(parseValid("include src/BUILD.FABR;")).toMatchSnapshot();
   });
 
   it("Property Decl", () => {
-    errors.length = 0;
-    expect(
-      parseBuildString(fs, "BUILD.TOP", "tsc=@npm:typescript;\n js_target=es5-commonjs;\nflavours=red green blue;", logger)
-    ).toMatchSnapshot();
-    expect(errors.length).toBe(0);
+    expect(parseValid("tsc=@npm:typescript;\n js_target=es5-commonjs;\nflavours=red green blue;")).toMatchSnapshot();
+    expect(parseInvalid("hello=world")).toMatchSnapshot();
+    expect(parseInvalid("foo/bar=woo;")).toMatchSnapshot();
+  });
+
+  it("Property with Subst var", () => {
+    expect(parseValid("A=b; B=${A};")).toMatchSnapshot();
+  });
+
+  it("Property with double quotes", () => {
+    expect(parseValid('A="a b"; B=a b "cd${A}e";')).toMatchSnapshot();
+  });
+
+  it("Property with single quotes", () => {
+    expect(parseValid("A='a b'; B=a b '${A}';")).toMatchSnapshot();
   });
 
   it("Target Decl", () => {
-    errors.length = 0;
     expect(
-      parseBuildString(
-        fs,
-        "BUILD.TOP",
-        "js_package fabr {\nsrcs=src:**/*.ts; deps= es2019\n node \nunicode-properties; } empty test {}",
-        logger
-      )
+      parseValid("js_package fabr {\nsrcs=src:**/*.ts; deps= es2019\n node \nunicode-properties; } empty test {}")
     ).toMatchSnapshot();
-    expect(errors.length).toBe(0);
-
-    expect(parseBuildString(fs, "BUILD.FABR", "js_package @fabr/common {\n  srcs= src:*.ts; }", logger)).toMatchSnapshot();
-    expect(errors.length).toBe(0);
+    expect(parseValid("js_package @fabr/common {\n  srcs= src:*.ts; }")).toMatchSnapshot();
   });
 
   it("Missing Close Brace", () => {
-    errors.length = 0;
-    expect(
-      parseBuildString(fs, "BUILD.TOP", "js_package fabr {\nsrcs=src:**/*.ts; deps= es2019\n node \nunicode-properties;", logger)
-    ).toMatchSnapshot();
-    expect(errors).toMatchSnapshot();
+    expect(parseInvalid("js_package fabr {\nsrcs=src:**/*.ts; deps= es2019\n node \nunicode-properties;")).toMatchSnapshot();
   });
 
   it("Optional final semicolon", () => {
-    errors.length = 0;
-    expect(
-      parseBuildString(fs, "BUILD.FABR", "npm_dep @npm {\n  deps = chokidar:3.5.3 picomatch:2.3.1 unicode-properties:1.3.1\n}", logger)
-    ).toMatchSnapshot();
-    expect(errors.length).toBe(0);
+    expect(parseValid("npm_dep @npm {\n  deps = chokidar:3.5.3 picomatch:2.3.1 unicode-properties:1.3.1\n}")).toMatchSnapshot();
   });
 
   it("Targetdef", () => {
-    errors.length = 0;
-    expect(
-      parseBuildString(fs, "BUILD.FABR", "targetdef js_package {\n  deps = FILES;\n  srcs=FILES REQUIRED;version=STRING}", logger)
-    ).toMatchSnapshot();
-    expect(errors.length).toBe(0);
-
-  })
+    expect(parseValid("targetdef js_package {\n  deps = FILES;\n  srcs=FILES REQUIRED;version=STRING}")).toMatchSnapshot();
+  });
 });
