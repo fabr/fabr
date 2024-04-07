@@ -21,12 +21,12 @@ import { Computable } from "../core/Computable";
 import { loadProject } from "../model/Loader";
 import { defaultLog } from "../support/Log";
 import { Options } from "./Command";
-import { findSourceRoot, getBuildCacheRoot, PROJECT_FILENAME } from "./Environment";
+import { getSourceRoot, getBuildCacheRoot, PROJECT_FILENAME } from "./Environment";
 
 export async function runFabr(options: Options): Promise<void> {
   const log = defaultLog;
 
-  const sourceRoot = await findSourceRoot();
+  const sourceRoot = await getSourceRoot();
   const buildRoot = getBuildCacheRoot();
 
   const load = loadProject(sourceRoot, PROJECT_FILENAME, log);

@@ -32,7 +32,7 @@ export const BUILD_CACHE_ENV = "FABR_CACHE_DIR";
  * @returns The absolute directory name.
  * @thorws Error if the file is not found.
  */
-export async function findSourceRoot(): Promise<string> {
+export async function getSourceRoot(): Promise<string> {
   let dir = process.cwd();
   for (;;) {
     try {
@@ -46,6 +46,17 @@ export async function findSourceRoot(): Promise<string> {
         dir = parent;
       }
     }
+  }
+}
+
+
+export async function getStdlibRoot(): Promise<string> {
+  const binPath = path.resolve(__dirname, "../lib");
+  try {
+    await fsPromises.access(binPath, fs.constants.R_OK);
+    return binPath;
+  } catch( err ) {
+    return path.resolve(__dirname, "../../lib");
   }
 }
 
