@@ -20,6 +20,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { Computable } from "./Computable";
+import { hashFile } from "./FSWrapper";
 
 export interface ISourceFileCacheEntry {
   size: number;
@@ -59,8 +60,13 @@ class SourceFileCache {
     const fileStat = stat ?? fs.statSync(path.resolve(this.sourceRoot, filename));
     const entry = this.cache.get(filename);
     if (entry && entry.mtime === fileStat.mtime.getTime() && entry.size === fileStat.size) {
-      return entry;
+      return Computable.resolve(entry);
     } else {
+      return hashFile(filename).then( hash => {
+        const result = { size: fileStat.size, mtime: fileStat.mtime.getTime(), hash};
+        this.cache.set(filename, result);
+        return result;
+      })
     }
   }
 }

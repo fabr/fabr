@@ -24,7 +24,7 @@ import { Name } from "../model/Name";
 
 import { Computable } from "./Computable";
 import { FileSet, IFile, IFileSetProvider, IFileStats } from "./FileSet";
-import { readFile } from "./FSWrapper";
+import { hashFile, readFile } from "./FSWrapper";
 
 
 class FSFile implements IFile {
@@ -51,7 +51,7 @@ class FSFile implements IFile {
   }
 
   public getHash(): Computable<string> {
-
+    return hashFile(path.resolve(this.root, this.name));
   }
 
   public getDisplayName(): string {

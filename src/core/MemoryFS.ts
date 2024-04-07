@@ -18,10 +18,12 @@
  */
 
 import { Computable } from "./Computable";
+import { hashString } from "./FSWrapper";
 import { IFile, IFileStats } from "./FileSet";
 
 export class MemoryFile implements IFile {
   private content: Buffer;
+  private hash: string;
   stat: IFileStats;
 
   constructor(buffer: Buffer) {
@@ -30,10 +32,15 @@ export class MemoryFile implements IFile {
       size: buffer.length,
       mtime: new Date(),
     };
+    this.hash = hashString(buffer);
   }
 
   public static from(content: string, encoding: BufferEncoding = "utf8"): MemoryFile {
     return new MemoryFile(Buffer.from(content, encoding));
+  }
+
+  public getHash() : Computable<string> {
+    return Computable.resolve(this.hash);
   }
 
   public readString(encoding: BufferEncoding = "utf8"): Computable<string> {

@@ -154,6 +154,7 @@ export class Computable<T> {
     this.state = State.Error;
     this.value = err;
     /* TODO error reporting */
+    console.error(err);
   }
 
   private markMaybeInvalid(): void {

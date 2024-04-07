@@ -36,19 +36,18 @@ export interface IFileSetProvider {
   find(name: Name): Computable<FileSet>;
 
   /**
-   * @return a single direct file by exact name
-   * Rejects if the file does not exist
+   * @return a single direct file by exact name or undefined if it does not exist.
    * @param name
    */
-  get(name: string): Computable<IFile>;
+  get(name: string): Computable<IFile|undefined>;
 }
 
 export interface IFile {
   stat: IFileStats;
-  hash: string;
   readString(encoding?: BufferEncoding): Computable<string>;
   getDisplayName(): string;
   isSameFile(file: IFile): boolean;
+  getHash() : Computable<string>;
 }
 
 export interface IDir {
@@ -98,13 +97,8 @@ export class FileSet implements IFileSetProvider {
    * @param name
    * @returns
    */
-  public get(name: string): Computable<IFile> {
-    const file = this.content.get(name);
-    if (file) {
-      return Computable.resolve(file);
-    } else {
-      return Computable.reject(new Error("No such file"));
-    }
+  public get(name: string): Computable<IFile|undefined> {
+    return Computable.resolve(this.content.get(name));
   }
 
   public [Symbol.iterator](): IterableIterator<[string, IFile]> {
