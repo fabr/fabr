@@ -5,8 +5,8 @@ import { Computable } from "./Computable";
 
 export function fetchUrl(urlstring: string): Computable<Buffer> {
   return Computable.from<Buffer>((resolve, reject) => {
-    let data: Buffer[] = [];
-    function handleResponse(res: http.IncomingMessage) {
+    const data: Buffer[] = [];
+    function handleResponse(res: http.IncomingMessage): void {
       if (res.statusCode !== 200) {
         reject(new Error(`${res.statusCode} ${res.statusMessage}`));
       } else {

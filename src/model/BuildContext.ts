@@ -47,7 +47,7 @@ export class BuildContext {
     return this.model.getConfig(combined).getProperty(name);
   }
 
-  public getTargetWithOverrides(name: string, overrides: Constraints): Computable<any> {
+  public getTargetWithOverrides(name: string, overrides: Constraints): Computable<Target[]> {
     const combined = { ...this.constraints, ...overrides };
     return this.model.getConfig(combined).getTarget(name);
   }
@@ -122,7 +122,7 @@ export class BuildContext {
       const result = this.model.getPrefixMatch(literalPrefix);
       if (result) {
         /* Fixme Could be more efficient */
-        const [decl, matched] = result;
+        const matched = result[1];
         return [this.getTarget(matched), name.withoutPrefix(matched)];
       }
     }

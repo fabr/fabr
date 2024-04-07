@@ -47,7 +47,7 @@ function parseDefine(def: string): [string, string] {
 
 export function parseCommandLine(args: string[]): Options {
   const options: Options = { mode: Mode.Normal, targets: [], properties: {} };
-  const [node, script, ...opts] = args;
+  const opts = args.slice(2);
 
   for (const arg of opts) {
     if (arg[0] === "-") {

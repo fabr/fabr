@@ -74,7 +74,7 @@ function getExecRoot(config: BuildContext): string {
   return "/tmp/fixme";
 }
 
-function filesetToDir(dir: string, files: FileSet) {
+function filesetToDir(dir: string, files: FileSet): void {
   for (const [path, file] of files) {
   }
 }

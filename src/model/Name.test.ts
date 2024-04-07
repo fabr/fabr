@@ -1,4 +1,4 @@
-import { Name, NameBuilder } from "./Name";
+import { NameBuilder } from "./Name";
 
 describe("Name", () => {
   it("Substitute", () => {

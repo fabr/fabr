@@ -1,10 +1,9 @@
 import * as crypto from "crypto";
 import * as fs from "fs";
-import * as path from "path";
 import { Computable } from "./Computable";
 import { EMPTY_FILESET, FileSet } from "./FileSet";
 
-function hash(input: string) {
+function hash(input: string): string {
   return crypto.createHash("sha256").update(input).digest("hex");
 }
 
@@ -15,17 +14,15 @@ export class BuildCache {
     this.ensureExists();
   }
 
-  public getFileSet(manifest: string): Computable<FileSet|undefined> {
+  public getFileSet(manifest: string): Computable<FileSet | undefined> {
     const key = hash(manifest);
     const result = this.lookup(key);
     return Computable.resolve(EMPTY_FILESET);
   }
 
-  private ensureExists() {
+  private ensureExists(): void {
     fs.mkdirSync(this.root, { recursive: true });
   }
 
-  private lookup(key: string) {
-    
-  }
+  private lookup(key: string): void {}
 }

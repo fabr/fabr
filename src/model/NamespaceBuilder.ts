@@ -147,15 +147,15 @@ export class NamespaceBuilder {
     return node;
   }
 
-  private resolveTargetDef(name: string, node: NSBuilderNode): ITargetDefDecl | undefined {
+  private resolveTargetDef(name: string): ITargetDefDecl | undefined {
     return this.root.targetDefs[name];
   }
 
-  public resolve(node: NSBuilderNode = this.root) {
-    Object.entries(node.content).forEach(([key, child]) => {
+  public resolve(node: NSBuilderNode = this.root): void {
+    Object.values(node.content).forEach(child => {
       if ("kind" in child) {
         if (child.kind === DeclKind.Target) {
-          const targetDef = this.resolveTargetDef(child.type, node);
+          const targetDef = this.resolveTargetDef(child.type);
           if (!targetDef) {
             this.unknownTargetDefError(child);
           } else {
