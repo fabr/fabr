@@ -6,7 +6,7 @@ chokidar = @npm:chokidar:3.5.3;
 picomatch = @npm:picomatch:2.3.1 @npm:@types/picomatch:2.3.0;
 unicode_properties = @npm:unicode-properties:1.3.1 @npm:@types/unicode-properties:1.3.0;
 
-js_package @fabrjs/fabr {
+js_package @fabr/fabr {
   srcs = src:**/*.ts lib/**;
   deps = chokidar picomatch unicode_properties
 }
