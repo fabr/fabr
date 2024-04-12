@@ -32,6 +32,7 @@ interface NamePart {
  * name/path components are separated by slash (yes even on windows)
  */
 export const NAME_COMPONENT_SEPARATOR = "/";
+export const NAME_LEVEL_SEPARATOR = ":";
 
 /**
  * A string expression, potentially consisting of literal, wildcard, and variable substitution parts
@@ -133,6 +134,19 @@ export class Name {
     return new Name([head, ...parts]);
   }
 
+  public substring(start: number): Name {
+    const [head, ...parts] = this.parts;
+    if (head.kind === NamePartKind.Literal && (head.value.length >= start || parts.length === 0)) {
+      const rest = head.value.substring(start);
+      if (rest === "") {
+        return new Name(parts);
+      } else {
+        return new Name([{ kind: NamePartKind.Literal, value: rest }, ...parts]);
+      }
+    }
+    return new Name([head, ...parts]);
+  }
+
   /**
    * @return a new name with the given initial literal prefix added to the name.
    */
@@ -179,7 +193,9 @@ export class Name {
     if (this.parts.length === 1) {
       return prefix;
     } else {
-      const idx = prefix.lastIndexOf(NAME_COMPONENT_SEPARATOR);
+      const pidx = prefix.lastIndexOf(NAME_COMPONENT_SEPARATOR);
+      const cidx = prefix.lastIndexOf(NAME_LEVEL_SEPARATOR);
+      const idx = pidx > cidx ? pidx : cidx;
       return idx === -1 ? "" : prefix.substring(0, idx);
     }
   }

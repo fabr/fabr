@@ -1,8 +1,9 @@
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { getTargetRule } from "../rules/Registry";
-import { DeclKind, INamedDecl, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl, PropertyType } from "./AST";
+import { DeclKind, IDecl, INamedDecl, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl, IValue, PropertyType } from "./AST";
 import { Name } from "./Name";
+import { IPrefixMatch } from "./Namespace";
 import { Property } from "./Property";
 import { Target } from "./Target";
 
@@ -12,7 +13,15 @@ interface IBuildModel {
   getConfig(constraints: Constraints): BuildContext;
   getDecl(name: string): IPropertyDecl | ITargetDecl | INamespaceDecl | undefined;
   getTargetDef(name: string): ITargetDefDecl | undefined;
-  getPrefixMatch(name: string): [ITargetDecl | IPropertyDecl, string] | undefined;
+  getPrefixMatch(name: Name): IPrefixMatch | undefined;
+}
+
+interface IDependencyStack {
+  target?: ITargetDecl;
+  property: IPropertyDecl;
+  context: BuildContext;
+  value: IValue;
+  next?: IDependencyStack;
 }
 
 /**
@@ -24,8 +33,8 @@ interface IBuildModel {
 export class BuildContext {
   protected constraints: Constraints;
   private model: IBuildModel;
-  private propCache: Record<string, Computable<Property> | null>;
-  private targetCache: Record<string, Computable<Target[]> | null>;
+  private propCache: Record<string, Computable<Property>>;
+  private targetCache: Record<string, Computable<FileSet[]>>;
 
   constructor(model: IBuildModel, constraints: Constraints) {
     this.model = model;
@@ -47,12 +56,13 @@ export class BuildContext {
     return this.model.getConfig(combined).getProperty(name);
   }
 
-  public getTargetWithOverrides(name: string, overrides: Constraints): Computable<Target[]> {
+  public getTargetWithOverrides(name: string, overrides: Constraints): Computable<FileSet[]> {
     const combined = { ...this.constraints, ...overrides };
     return this.model.getConfig(combined).getTarget(name);
   }
 
-  public getProperty(name: string): Computable<Property> {
+  public getProperty(name: string, stack?: IDependencyStack): Computable<Property> {
+    this.assertNonCircularProperty(name, stack);
     if (name in this.propCache) {
       /* Already seen */
       const result = this.propCache[name];
@@ -66,37 +76,25 @@ export class BuildContext {
       if (!def || def.kind !== DeclKind.Property) {
         throw new Error("Unresolved property name '" + name + "'"); /* TODO: actual error reporting */
       }
-      this.propCache[name] = null;
-      const result = this.resolveStringProperty(def);
+      const result = this.resolveStringProperty(def, undefined, stack);
       this.propCache[name] = result;
       return result;
     }
   }
 
-  public getTarget(name: string): Computable<Target[]> {
+  public getTarget(name: string, stack?: IDependencyStack): Computable<FileSet[]> {
+    this.assertNonCircularTarget(name, stack);
     if (name in this.targetCache) {
       /* Already seen */
-      const result = this.targetCache[name];
-      if (result === null) {
-        throw new Error("Circular dependency at '" + name + "'");
-      } else {
-        return result;
-      }
+      return this.targetCache[name];
     } else {
       const def = this.model.getDecl(name);
       if (def?.kind === DeclKind.Target) {
-        this.targetCache[name] = null;
-        const result = this.resolveTarget(def).then(target => [target]);
+        const result = this.resolveTarget(def, stack).then(target => [target]);
         this.targetCache[name] = result;
         return result;
       } else if (def?.kind === DeclKind.Property) {
-        this.targetCache[name] = null;
-        const result = this.getProperty(name).then(prop =>
-          Computable.forAll(
-            prop.getValues().map(value => this.getTarget(value)),
-            (...resolved) => resolved.flat()
-          )
-        );
+        const result = this.resolveFileProperty(def, undefined, stack);
         this.targetCache[name] = result;
         return result;
       } else {
@@ -116,29 +114,25 @@ export class BuildContext {
    * Note: target names are not pattern matched against globs (ie only the literal prefix
    * of the name is looked up)
    */
-  public getPrefixTargetIfExists(name: Name): [Computable<Target[]>, Name] | undefined {
-    const literalPrefix = name.getLiteralPathPrefix();
-    if (literalPrefix !== "") {
-      const result = this.model.getPrefixMatch(literalPrefix);
-      if (result) {
-        /* Fixme Could be more efficient */
-        const matched = result[1];
-        return [this.getTarget(matched), name.withoutPrefix(matched)];
-      }
+  public getPrefixTargetIfExists(name: Name, stack?: IDependencyStack): [Computable<FileSet[]>, Name] | undefined {
+    const result = this.model.getPrefixMatch(name);
+    if (result) {
+      console.log("Resolved " + name.toString() + " => " + result.decl.name + " - " + result.rest.toString());
+      return [this.getTarget(result.decl.name, stack), result.rest];
     }
     return undefined;
   }
 
-  private resolveStringProperty(prop: IPropertyDecl): Computable<Property> {
+  private resolveStringProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<Property> {
     return Computable.forAll(
-      prop.values.map(value => this.substituteNameVars(value.value)),
+      prop.values.map(value => this.substituteNameVars(value.value, { property: prop, target, context: this, value, next: stack })),
       (...resolved) => new Property(resolved.map(name => name.toString()))
     );
   }
 
-  private resolveFileProperty(prop: IPropertyDecl): Computable<FileSet[]> {
+  private resolveFileProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<FileSet[]> {
     return Computable.forAll(
-      prop.values.map(value => this.resolveFileSet(value.value, prop)),
+      prop.values.map(value => this.resolveFileSet(value.value, prop, { property: prop, target, context: this, value, next: stack })),
       (...resolved) => resolved.flat()
     );
   }
@@ -148,12 +142,12 @@ export class BuildContext {
    * (potentially causing them to be queued for evaluation)
    * @param name
    */
-  private resolveFileSet(name: Name, relativeTo: INamedDecl): Computable<FileSet[]> {
-    return this.substituteNameVars(name).then(substName => {
+  private resolveFileSet(name: Name, relativeTo: INamedDecl, stack?: IDependencyStack): Computable<FileSet[]> {
+    return this.substituteNameVars(name, stack).then(substName => {
       if (substName.isEmpty()) {
         return [];
       } else {
-        const targetDep = this.getPrefixTargetIfExists(substName);
+        const targetDep = this.getPrefixTargetIfExists(substName, stack);
         if (targetDep) {
           const [target, rest] = targetDep;
           if (rest.isEmpty()) {
@@ -170,10 +164,10 @@ export class BuildContext {
     });
   }
 
-  private substituteNameVars(name: Name): Computable<Name> {
+  private substituteNameVars(name: Name, stack?: IDependencyStack): Computable<Name> {
     const vars = name.getVariables();
     return Computable.forAll(
-      vars.map(varName => this.getProperty(varName)),
+      vars.map(varName => this.getProperty(varName, stack)),
       (...resolvedVars) => {
         const substName = name.substitute(
           vars,
@@ -184,24 +178,30 @@ export class BuildContext {
     );
   }
 
-  private resolveTarget(target: ITargetDecl): Computable<Target> {
+  private resolveTarget(target: ITargetDecl, stack?: IDependencyStack): Computable<Target> {
     const targetDef = this.model.getTargetDef(target.type);
     if (!targetDef) {
       throw new Error("Targetdef '" + target.type + "' not found"); /* Can't happen due to earlier checks */
     }
     const rule = getTargetRule(target.type)!;
     if (!rule) {
-      throw new Error("No rule found to build '" + target.type + "'");
+      throw new Error(
+        "No rule found to build '" +
+          target.type +
+          "'\n" +
+          `    at ${target.name} (${stringifyLoc(target)})\n` +
+          stringifyDependencyStack(stack)
+      );
     }
     const resolvedProps = target.properties.map(prop => {
       const type = targetDef.properties[prop.name];
       switch (type.type) {
         case PropertyType.String:
         case PropertyType.StringList:
-          return this.resolveStringProperty(prop);
+          return this.resolveStringProperty(prop, target, stack);
         case PropertyType.FileSet:
         case PropertyType.FileSetList:
-          return this.resolveFileProperty(prop);
+          return this.resolveFileProperty(prop, target, stack);
         default:
           throw new Error("Unsupported property type");
       }
@@ -216,4 +216,68 @@ export class BuildContext {
       return rule.evaluate(resolvedTarget);
     });
   }
+
+  private findTargetInStack(target: string, stack?: IDependencyStack): IDependencyStack | undefined {
+    let node = stack;
+    while (node) {
+      if (node.target && node.target.name === target && node.context === this) {
+        return node;
+      }
+      node = node.next;
+    }
+  }
+
+  private findPropertyInStack(property: string, stack?: IDependencyStack): IDependencyStack | undefined {
+    let node = stack;
+    while (node) {
+      if (node.property.name === property && node.context === this) {
+        return node;
+      }
+      node = node.next;
+    }
+  }
+
+  private assertNonCircularProperty(property: string, stack?: IDependencyStack): void {
+    const entry = this.findPropertyInStack(property, stack);
+    if (entry) {
+      throw new Error("Circular dependency resolving " + property + "\n" + stringifyDependencyStack(stack, entry));
+    }
+  }
+
+  private assertNonCircularTarget(target: string, stack?: IDependencyStack): void {
+    const entry = this.findTargetInStack(target, stack);
+    if (entry) {
+      throw new Error("Circular dependency resolving " + target + "\n" + stringifyDependencyStack(stack, entry));
+    }
+  }
+}
+
+/**
+ * Construct a human readable dump of the stack.
+ * @param stack start of the start to show.
+ * @param end If supplied, the last entry of the stack to show.
+ */
+function stringifyDependencyStack(stack?: IDependencyStack, end?: IDependencyStack): string {
+  let result = "";
+  let node = stack;
+  while (node && node !== end) {
+    result += "    " + stringifyDependencyStackEntry(node) + "\n";
+    node = node.next;
+  }
+  return result;
+}
+
+function stringifyDependencyStackEntry(entry: IDependencyStack): string {
+  let name;
+  if (entry.target) {
+    name = entry.target.name + "." + entry.property.name;
+  } else {
+    name = entry.property.name;
+  }
+  return `at ${name} (${stringifyLoc(entry.value)})`;
+}
+
+function stringifyLoc(decl: IDecl): string {
+  const loc = decl.source.reader.resolvePosition(decl.offset);
+  return `${decl.source.file}:${loc?.line}:${loc?.column}`;
 }

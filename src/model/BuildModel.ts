@@ -18,8 +18,9 @@
  */
 
 import { INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
-import { Namespace } from "./Namespace";
+import { IPrefixMatch, Namespace } from "./Namespace";
 import { BuildContext, Constraints } from "./BuildContext";
+import { Name } from "./Name";
 
 /**
  * Build model holds the generalized model-as-it-is-written in the build files.
@@ -57,7 +58,7 @@ export class BuildModel {
     return this.root.getTargetDef(name);
   }
 
-  public getPrefixMatch(name: string): [ITargetDecl | IPropertyDecl, string] | undefined {
+  public getPrefixMatch(name: Name): IPrefixMatch | undefined {
     return this.root.getPrefixMatch(name);
   }
 }

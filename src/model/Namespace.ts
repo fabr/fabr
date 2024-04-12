@@ -18,9 +18,20 @@
  */
 
 import { DeclKind, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
-import { NAME_COMPONENT_SEPARATOR } from "./Name";
+import { NAME_COMPONENT_SEPARATOR, Name } from "./Name";
 
 type ContentType = Namespace | ITargetDecl | IPropertyDecl;
+
+export interface IPrefixMatch {
+  /* The matched declaration */
+  decl: ITargetDecl | IPropertyDecl;
+  /* The part of the prefix string after the last ':' in the matched prefix (if any).
+   * That is, if we match e.g. a/b:c/d at c, then `c` is the retained part
+   */
+  retainedPrefix: string;
+  /* The part of the string that's left over after matching decl */
+  rest: Name;
+}
 
 /**
  * A namespace is a target-like entity that contains other targets or properties.
@@ -69,19 +80,31 @@ export class Namespace {
   }
 
   /**
-   * @return the target or prop whose name forms a prefix of the given string, plus the
-   *   matched prefix of the string.
+   * Given a Name, return the first target or prop that can be identified
+   * as a prefix of the Name.
+   * Note this requires the name to have a literal prefix.
+   * @return the target or prop whose name forms a prefix of the
    */
-  public getPrefixMatch(name: string): [ITargetDecl | IPropertyDecl, string] | undefined {
-    const parts = name.split(NAME_COMPONENT_SEPARATOR);
+  public getPrefixMatch(name: Name): IPrefixMatch | undefined {
+    const literalPrefix = name.getLiteralPathPrefix();
+    if (literalPrefix === "") {
+      return undefined;
+    }
+    const parts = literalPrefix.split(/[:\/]/);
     let node: Namespace = this;
+
     for (let idx = 0; idx < parts.length; idx++) {
       const next = node.content[parts[idx]];
       if (next instanceof Namespace) {
         node = next;
       } else {
         if (next?.kind === DeclKind.Target || next?.kind === DeclKind.Property) {
-          return [next, parts.slice(0, idx + 1).join(NAME_COMPONENT_SEPARATOR)];
+          const matchedLength = parts.slice(0, idx + 1).join(NAME_COMPONENT_SEPARATOR).length;
+          const matchPrefix = literalPrefix.substring(0, matchedLength + 1);
+          const rest = name.substring(matchedLength + 1);
+          const colonIdx = matchPrefix.lastIndexOf(":");
+          const retainedPrefix = colonIdx === -1 ? matchPrefix : matchPrefix.substring(colonIdx + 1);
+          return { decl: next, retainedPrefix, rest };
         } else {
           return undefined;
         }
