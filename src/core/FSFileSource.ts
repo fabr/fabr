@@ -25,6 +25,7 @@ import { Name } from "../model/Name";
 import { Computable } from "./Computable";
 import { FileSet, IFile, FileSource } from "./FileSet";
 import { hashFile, readFile, readFileBuffer } from "./FSWrapper";
+import picomatch = require("picomatch");
 
 export interface FSFileStats {
   size: number;
@@ -83,8 +84,13 @@ export class FSFileSource implements FileSource {
    */
   public find(name: Name): Computable<FileSet> {
     return Computable.from<FileSet>((resolve, reject) => {
-      console.log("Chokidaring " + this.root + ":" + name);
-      const watch = chokidar.watch(name.toString(), {
+      const nameString = name.toString();
+      const colonIdx = nameString.lastIndexOf(":");
+      const stripPrefix =
+        colonIdx === -1 ? undefined : new RegExp("^" + picomatch.parse(nameString.substring(0, colonIdx) + "/").output);
+      const searchString = nameString.replace(":", "/");
+      console.log("Chokidaring " + this.root + ":" + searchString);
+      const watch = chokidar.watch(searchString, {
         cwd: this.root,
         persistent: false,
       });
@@ -98,7 +104,7 @@ export class FSFileSource implements FileSource {
       watch.on("error", err => reject(err));
       watch.on("ready", () => {
         Computable.forAll(Array.from(files.values()), (...done) =>
-          resolve(new FileSet(done.reduce((result, file) => result.set(file.name, file), new Map())))
+          resolve(new FileSet(done.reduce((result, file) => result.set(removePrefix(file.name, stripPrefix), file), new Map())))
         );
       });
     });
@@ -140,3 +146,13 @@ export const FS = {
     });
   },
 };
+
+function removePrefix(filename: string, pattern: RegExp | undefined): string {
+  if (pattern) {
+    const match = pattern.exec(filename);
+    if (match) {
+      return filename.substring(match[0].length);
+    }
+  }
+  return filename;
+}

@@ -147,6 +147,22 @@ export class FileSet implements FileSource {
     return partitions;
   }
 
+  /**
+   * Remap the files in the fileset, and return a new FileSet with the result.
+   * @param fn A function that either returns the new name for the given file, or undefined to exclude it from the result.
+   */
+  public remap(fn: (name: string, file: IFile) => string | undefined): FileSet {
+    const result = new Map();
+    for (const [name, file] of this.content) {
+      const newName = fn(name, file);
+      if (newName !== undefined) {
+        result.set(newName, file);
+      }
+    }
+
+    return new FileSet(result);
+  }
+
   public static unionAll(...sets: FileSet[]): FileSet {
     if (sets.length === 0) {
       return EMPTY_FILESET;

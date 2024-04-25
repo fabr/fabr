@@ -22,6 +22,7 @@ import { ResolvedTarget } from "../Types";
 import { Computable } from "../../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource } from "../../core/FileSet";
 import { registerTargetRule } from "../Registry";
+import { Property } from "../../model/Property";
 
 /**
  * Build a javascript (Node/NPM compatible) package.
@@ -39,7 +40,6 @@ function buildJsPackage(spec: ResolvedTarget, config: BuildContext): Computable<
   const sources = spec.getFileSet("srcs");
   const target = config.getProperty("JS_TARGET");
 
-  console.log("target: " + target);
   /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
   const packageJsonFile = sources
     .get("package.json")
@@ -69,22 +69,21 @@ function buildJsPackage(spec: ResolvedTarget, config: BuildContext): Computable<
     return "copy";
   });
 
-  console.log(sources.size);
-  console.log(sourceGroups);
   if ("ts" in sourceGroups) {
-    config
-      .getProperty("TSC")
-      .then(value => config.getTarget(value.toString()))
-      .then(typescript => {
-        compileTypescript(sourceGroups.ts, spec.getFileSet("deps"), typescript);
-      });
-
-    console.log("Has TS: " + sourceGroups.ts);
+    const typescript = config.getTarget("TSC");
+    Computable.forAll([target, typescript], (targetProp, typescriptSource) => {
+      compileTypescript(
+        sourceGroups.ts,
+        spec.getFileSet("deps"),
+        FileSet.unionAll(...(typescriptSource as FileSet[])),
+        (targetProp as Property).toString()
+      );
+    });
   }
   return new Computable<FileSet>();
 }
 
-function compileTypescript(srcs: FileSet, deps: FileSet, tsc: FileSource[]): Computable<FileSet> {
+function compileTypescript(srcs: FileSet, deps: FileSet, tsc: FileSet, target: string): Computable<FileSet> {
   return Computable.resolve(EMPTY_FILESET);
 }
 

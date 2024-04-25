@@ -74,11 +74,13 @@ class NPMRepository implements FileSource {
           throw new Error(`NPM respository error on '${prefix}': ${response.message}`);
         } else if ("versions" in response) {
           /* We've got a package with no version */
-          throw new Error(`Name does not match a apackage`);
+          throw new Error(`Name does not match a a package`);
         } else {
           /* Ok we've got an actual package */
           const tarball = response.dist.tarball;
-          return openUrlStream(response.dist.tarball).then(ins => unpackStream(ins, targetDir));
+          return openUrlStream(response.dist.tarball)
+            .then(ins => unpackStream(ins, targetDir))
+            .then(fs => remapFilenames(fs, response.name));
         }
       });
     });
@@ -91,6 +93,17 @@ class NPMRepository implements FileSource {
 
 function createRepository(target: ResolvedTarget, context: BuildContext): Computable<NPMRepository> {
   return Computable.resolve(new NPMRepository(target.getRequiredString("url"), context));
+}
+
+function remapFilenames(files: FileSet, packageName: string): FileSet {
+  return files.remap(name => {
+    let idx = name.indexOf("/");
+    if (idx !== -1) {
+      return packageName + name.substring(idx);
+    } else {
+      return undefined;
+    }
+  });
 }
 
 registerTargetRule("npm_repository", {}, (target, context) => createRepository(target, context));
