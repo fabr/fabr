@@ -49,6 +49,30 @@ export function readFile(filepath: string, encoding: BufferEncoding = "utf8"): C
   });
 }
 
+export function readFileBuffer(filepath: string): Computable<Buffer> {
+  return Computable.from<Buffer>((resolve, reject) => {
+    fs.readFile(filepath, (err, data) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(data);
+      }
+    });
+  });
+}
+
+export function writeFile(filepath: string, data: string | Buffer): Computable<void> {
+  return Computable.from<void>((resolve, reject) => {
+    fs.writeFile(filepath, data, err => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
 export function hashFile(filepath: string): Computable<string> {
   return Computable.from<string>((resolve, reject) => {
     fs.readFile(filepath, (err, data) => {

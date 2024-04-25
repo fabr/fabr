@@ -26,8 +26,8 @@ import { IBuildFileContents, IIncludeDecl } from "./AST";
 import { Log } from "../support/Log";
 import { BuildModel } from "./BuildModel";
 import { toBuildModel } from "./Sema";
-import { IFileSetProvider } from "../core/FileSet";
-import { FS } from "../core/FS";
+import { FileSource } from "../core/FileSet";
+import { BuildCache } from "../core/BuildCache";
 
 function resolveIncludes(baseFile: string, includes: IIncludeDecl[]): string[] {
   return includes.map(include => path.resolve(path.dirname(baseFile), include.filename));
@@ -37,7 +37,7 @@ type BuildFiles = Record<string, IBuildFileContents>;
 const loadBuildCache: Record<string, Computable<BuildFiles>> = {};
 
 /* FIXME: Detect cycles? */
-function loadBuildFile(sourceTree: IFileSetProvider, file: string, log: Log): Computable<BuildFiles> {
+function loadBuildFile(sourceTree: FileSource, file: string, log: Log): Computable<BuildFiles> {
   if (!(file in loadBuildCache)) {
     loadBuildCache[file] = sourceTree.get(file).then(f => {
       if (!f) {
@@ -67,8 +67,6 @@ function loadBuildFile(sourceTree: IFileSetProvider, file: string, log: Log): Co
   return loadBuildCache[file];
 }
 
-export function loadProject(sourceRoot: string, startFile: string, log: Log): Computable<BuildModel> {
-  return FS.get(sourceRoot)
-    .then(root => loadBuildFile(root, startFile, log))
-    .then(decls => toBuildModel(Object.values(decls), log));
+export function loadProject(fileSource: FileSource, startFile: string, buildCache: BuildCache, log: Log): Computable<BuildModel> {
+  return loadBuildFile(fileSource, startFile, log).then(decls => toBuildModel(Object.values(decls), buildCache, log));
 }

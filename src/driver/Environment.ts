@@ -23,7 +23,7 @@ import * as os from "os";
 import * as fsPromises from "fs/promises";
 
 export const PROJECT_FILENAME = "PROJECT.fabr";
-
+export const SOURCE_CACHE_FILENAME = ".fabrhash";
 export const BUILD_CACHE_ENV = "FABR_CACHE_DIR";
 
 /**
@@ -49,13 +49,12 @@ export async function getSourceRoot(): Promise<string> {
   }
 }
 
-
 export async function getStdlibRoot(): Promise<string> {
   const binPath = path.resolve(__dirname, "../lib");
   try {
     await fsPromises.access(binPath, fs.constants.R_OK);
     return binPath;
-  } catch( err ) {
+  } catch (err) {
     return path.resolve(__dirname, "../../lib");
   }
 }
@@ -90,8 +89,8 @@ function getBaseCacheDir(): string {
 
 export function getHostProperties(): Record<string, string> {
   return {
-    host_os: os.platform(),
-    host_cpu: os.arch(),
-    host: os.arch() + "-" + os.platform(),
+    HOST_OS: os.platform(),
+    HOST_CPU: os.arch(),
+    HOST: os.arch() + "-" + os.platform(),
   };
 }

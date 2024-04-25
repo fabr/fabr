@@ -1,6 +1,8 @@
+import { BuildCache } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
-import { FileSet } from "../core/FileSet";
+import { FileSet, FileSource } from "../core/FileSet";
 import { getTargetRule } from "../rules/Registry";
+import { ResolvedTarget } from "../rules/Types";
 import { DeclKind, IDecl, INamedDecl, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl, IValue, PropertyType } from "./AST";
 import { Name } from "./Name";
 import { IPrefixMatch } from "./Namespace";
@@ -14,6 +16,7 @@ interface IBuildModel {
   getDecl(name: string): IPropertyDecl | ITargetDecl | INamespaceDecl | undefined;
   getTargetDef(name: string): ITargetDefDecl | undefined;
   getPrefixMatch(name: Name): IPrefixMatch | undefined;
+  getBuildCache(): BuildCache;
 }
 
 interface IDependencyStack {
@@ -25,7 +28,7 @@ interface IDependencyStack {
 }
 
 /**
- * A BuildConfig is (effectively) the BuildModel instantiated with an explicit set of additional
+ * A BuildContext is (effectively) the BuildModel instantiated with an explicit set of additional
  * constraints (which may be the empty set).
  *
  * As a practical matter, this is where everything is actually resolved and evaluated.
@@ -34,7 +37,7 @@ export class BuildContext {
   protected constraints: Constraints;
   private model: IBuildModel;
   private propCache: Record<string, Computable<Property>>;
-  private targetCache: Record<string, Computable<FileSet[]>>;
+  private targetCache: Record<string, Computable<FileSource[]>>;
 
   constructor(model: IBuildModel, constraints: Constraints) {
     this.model = model;
@@ -56,7 +59,7 @@ export class BuildContext {
     return this.model.getConfig(combined).getProperty(name);
   }
 
-  public getTargetWithOverrides(name: string, overrides: Constraints): Computable<FileSet[]> {
+  public getTargetWithOverrides(name: string, overrides: Constraints): Computable<FileSource[]> {
     const combined = { ...this.constraints, ...overrides };
     return this.model.getConfig(combined).getTarget(name);
   }
@@ -82,7 +85,7 @@ export class BuildContext {
     }
   }
 
-  public getTarget(name: string, stack?: IDependencyStack): Computable<FileSet[]> {
+  public getTarget(name: string, stack?: IDependencyStack): Computable<FileSource[]> {
     this.assertNonCircularTarget(name, stack);
     if (name in this.targetCache) {
       /* Already seen */
@@ -114,13 +117,17 @@ export class BuildContext {
    * Note: target names are not pattern matched against globs (ie only the literal prefix
    * of the name is looked up)
    */
-  public getPrefixTargetIfExists(name: Name, stack?: IDependencyStack): [Computable<FileSet[]>, Name] | undefined {
+  public getPrefixTargetIfExists(name: Name, stack?: IDependencyStack): [Computable<FileSource[]>, Name] | undefined {
     const result = this.model.getPrefixMatch(name);
     if (result) {
       console.log("Resolved " + name.toString() + " => " + result.decl.name + " - " + result.rest.toString());
       return [this.getTarget(result.decl.name, stack), result.rest];
     }
     return undefined;
+  }
+
+  public getCachedOrBuild(manifest: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
+    return this.model.getBuildCache().getOrCreate(manifest, create);
   }
 
   private resolveStringProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<Property> {
@@ -130,9 +137,11 @@ export class BuildContext {
     );
   }
 
-  private resolveFileProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<FileSet[]> {
+  private resolveFileProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<FileSource[]> {
     return Computable.forAll(
-      prop.values.map(value => this.resolveFileSet(value.value, prop, { property: prop, target, context: this, value, next: stack })),
+      prop.values.map(value =>
+        this.resolveFileSource(value.value, prop, { property: prop, target, context: this, value, next: stack })
+      ),
       (...resolved) => resolved.flat()
     );
   }
@@ -142,7 +151,7 @@ export class BuildContext {
    * (potentially causing them to be queued for evaluation)
    * @param name
    */
-  private resolveFileSet(name: Name, relativeTo: INamedDecl, stack?: IDependencyStack): Computable<FileSet[]> {
+  private resolveFileSource(name: Name, relativeTo: INamedDecl, stack?: IDependencyStack): Computable<FileSource[]> {
     return this.substituteNameVars(name, stack).then(substName => {
       if (substName.isEmpty()) {
         return [];
@@ -153,7 +162,7 @@ export class BuildContext {
           if (rest.isEmpty()) {
             return target;
           } else {
-            return target.then(t => FileSet.unionAll(...t).find(rest)).then(data => [data]);
+            return target.then(t => FileSet.findAll(t, rest)).then(data => [data]);
           }
         } else {
           /* Not an identified target; check the filesystem relative to the target decl */
@@ -178,7 +187,7 @@ export class BuildContext {
     );
   }
 
-  private resolveTarget(target: ITargetDecl, stack?: IDependencyStack): Computable<Target> {
+  private resolveTarget(target: ITargetDecl, stack?: IDependencyStack): Computable<FileSource> {
     const targetDef = this.model.getTargetDef(target.type);
     if (!targetDef) {
       throw new Error("Targetdef '" + target.type + "' not found"); /* Can't happen due to earlier checks */
@@ -208,12 +217,11 @@ export class BuildContext {
     });
 
     return Computable.forAll(resolvedProps, (...resolved) => {
-      const keys = Object.keys(target.properties);
-      const resolvedTarget = keys.reduce<Record<string, Property | FileSet[]>>((m, k, idx) => {
-        m[k] = resolved[idx];
+      const resolvedTarget = target.properties.reduce<Record<string, Property | FileSource[]>>((m, k, idx) => {
+        m[k.name] = resolved[idx];
         return m;
       }, {});
-      return rule.evaluate(resolvedTarget);
+      return rule.evaluate(new ResolvedTarget(resolvedTarget), this);
     });
   }
 

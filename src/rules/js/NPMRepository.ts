@@ -1,0 +1,96 @@
+import { Computable } from "../../core/Computable";
+import { fetchUrl, openUrlStream } from "../../core/Fetch";
+import { FileSet, FileSource, IFile } from "../../core/FileSet";
+import { BuildContext } from "../../model/BuildContext";
+import { Name } from "../../model/Name";
+import { unpackStream } from "../../support/Unpack";
+import { registerTargetRule } from "../Registry";
+import { ResolvedTarget } from "../Types";
+
+interface ISignature {
+  keyid: string;
+  sig: string;
+}
+interface INPMPackageMetadata {
+  dependencies: Record<string, string>;
+  dist: {
+    fileCount?: number;
+    integrity: string;
+    "npm-signature"?: string;
+    shasum: string;
+    signatures: ISignature[];
+    tarball: string;
+    unpackedSize?: number;
+  };
+  name: string;
+  version: string;
+  license: string;
+  typings?: string;
+  types?: string;
+  /* and potentially lots of other stuff that we don't need */
+}
+
+interface INPMPackageVersions {
+  name: string;
+  description: string;
+  "dist-tags": Record<string, string>;
+  versions: Record<string, INPMPackageMetadata>;
+  license: string;
+}
+
+interface INPMError {
+  code: string;
+  message: string;
+}
+
+interface INPMError2 {
+  error: string;
+}
+
+type INPMResponse = INPMError | INPMError2 | INPMPackageVersions | INPMPackageMetadata;
+
+class NPMRepository implements FileSource {
+  private url: string;
+  private context: BuildContext;
+
+  constructor(url: string, context: BuildContext) {
+    this.url = url.replace(/\/+$/, "");
+    this.context = context;
+  }
+
+  public find(name: Name): Computable<FileSet> {
+    const prefix = name.getLiteralPathPrefix();
+    const bits = prefix.replace(":", "/");
+    return this.context.getCachedOrBuild(this.url + bits, targetDir => {
+      return fetchUrl(this.url + "/" + bits).then(data => {
+        const response = JSON.parse(data.toString()) as INPMResponse;
+        if ("error" in response) {
+          if (response.error === "Not Found") {
+            throw new Error(`${prefix} not found in NPM repository`);
+          } else {
+            throw new Error(`NPM respository error on '${prefix}: ${response.error}`);
+          }
+        } else if ("code" in response) {
+          throw new Error(`NPM respository error on '${prefix}': ${response.message}`);
+        } else if ("versions" in response) {
+          /* We've got a package with no version */
+          throw new Error(`Name does not match a apackage`);
+        } else {
+          /* Ok we've got an actual package */
+          const tarball = response.dist.tarball;
+          return openUrlStream(response.dist.tarball).then(ins => unpackStream(ins, targetDir));
+        }
+      });
+    });
+  }
+
+  public get(name: string): Computable<undefined> {
+    return Computable.resolve(undefined);
+  }
+}
+
+function createRepository(target: ResolvedTarget, context: BuildContext): Computable<NPMRepository> {
+  return Computable.resolve(new NPMRepository(target.getRequiredString("url"), context));
+}
+
+registerTargetRule("npm_repository", {}, (target, context) => createRepository(target, context));

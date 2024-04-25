@@ -21,6 +21,7 @@ import { INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AS
 import { IPrefixMatch, Namespace } from "./Namespace";
 import { BuildContext, Constraints } from "./BuildContext";
 import { Name } from "./Name";
+import { BuildCache } from "../core/BuildCache";
 
 /**
  * Build model holds the generalized model-as-it-is-written in the build files.
@@ -30,9 +31,11 @@ import { Name } from "./Name";
 export class BuildModel {
   private root: Namespace;
   private configs: BuildContext[] = [];
+  private buildCache: BuildCache;
 
-  constructor(root: Namespace) {
+  constructor(root: Namespace, cache: BuildCache) {
     this.root = root;
+    this.buildCache = cache;
   }
 
   /**
@@ -60,5 +63,9 @@ export class BuildModel {
 
   public getPrefixMatch(name: Name): IPrefixMatch | undefined {
     return this.root.getPrefixMatch(name);
+  }
+
+  public getBuildCache(): BuildCache {
+    return this.buildCache;
   }
 }

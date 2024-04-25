@@ -18,7 +18,7 @@
  */
 
 import { BuildContext } from "../model/BuildContext";
-import { PropertyType, ResolvedType } from "./Types";
+import { ResolvedTarget } from "./Types";
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { registerTargetRule } from "./Registry";
@@ -26,24 +26,6 @@ import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
 import { spawn } from "child_process";
-
-const GenericSchema = {
-  properties: {
-    command: {
-      required: true,
-      type: PropertyType.String,
-    },
-    inputs: {
-      type: PropertyType.FileSet,
-    },
-    outs: {
-      required: true,
-      type: PropertyType.OutputFileSet,
-    },
-  },
-  globals: {},
-} as const;
-type GenericType = ResolvedType<typeof GenericSchema>;
 
 /**
  * Execute an arbitrary script, yielding some set of output files.
@@ -56,11 +38,9 @@ type GenericType = ResolvedType<typeof GenericSchema>;
  * @param spec
  * @param config
  */
-export function runGeneric(spec: GenericType, config: BuildContext): Computable<FileSet> {
+export function runGeneric(spec: ResolvedTarget, config: BuildContext): Computable<FileSet> {
   const tmpdir = getExecRoot(config);
-  if (spec.inputs) {
-    filesetToDir(tmpdir, spec.inputs);
-  }
+  filesetToDir(tmpdir, spec.getFileSet("inputs"));
 
   return Computable.resolve(EMPTY_FILESET);
 }
@@ -96,4 +76,4 @@ function execute(cmd: string, args: string[], cwd: string, env: Record<string, s
   });
 }
 
-registerTargetRule("script", GenericSchema, runGeneric);
+registerTargetRule("script", {}, runGeneric);

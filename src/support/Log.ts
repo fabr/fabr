@@ -17,11 +17,11 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { IFileSetProvider } from "../core/FileSet";
+import { FileSource } from "../core/FileSet";
 import { StringReader } from "./StringReader";
 
 export interface ISourcePosition {
-  fs: IFileSetProvider;
+  fs: FileSource;
   file: string;
   offset: number;
   reader: StringReader;

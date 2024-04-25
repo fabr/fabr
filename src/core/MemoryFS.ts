@@ -19,28 +19,19 @@
 
 import { Computable } from "./Computable";
 import { hashString } from "./FSWrapper";
-import { IFile, IFileStats } from "./FileSet";
+import { IFile } from "./FileSet";
 
 export class MemoryFile implements IFile {
   private content: Buffer;
-  private hash: string;
-  stat: IFileStats;
+  public hash: string;
 
   constructor(buffer: Buffer) {
     this.content = buffer;
-    this.stat = {
-      size: buffer.length,
-      mtime: new Date(),
-    };
     this.hash = hashString(buffer);
   }
 
   public static from(content: string, encoding: BufferEncoding = "utf8"): MemoryFile {
     return new MemoryFile(Buffer.from(content, encoding));
-  }
-
-  public getHash() : Computable<string> {
-    return Computable.resolve(this.hash);
   }
 
   public readString(encoding: BufferEncoding = "utf8"): Computable<string> {
@@ -51,5 +42,13 @@ export class MemoryFile implements IFile {
   }
   public isSameFile(file: IFile): boolean {
     return file instanceof MemoryFile && file.content === this.content;
+  }
+
+  public getAbsPath(): undefined {
+    return undefined;
+  }
+
+  public getBuffer(): Computable<Buffer> {
+    return Computable.resolve(this.content);
   }
 }

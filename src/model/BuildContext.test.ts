@@ -7,13 +7,14 @@ import { expect } from "chai";
 import * as chai from "chai";
 import * as chaiPromise from "chai-as-promised";
 import { Property } from "./Property";
+import { BuildCache } from "../core/BuildCache";
 
 chai.use(chaiPromise);
 
 async function testGetProperty(input: string, prop: string, constraints?: Constraints): Promise<string[]> {
   const errors: string[] = [];
   const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-  const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger);
+  const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], new BuildCache("."), logger);
   if (errors.length !== 0) {
     throw new Error("Parse error:\n" + errors.join("\n"));
   }

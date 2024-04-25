@@ -18,40 +18,18 @@
  */
 
 import { BuildContext } from "../../model/BuildContext";
-import { PropertyType, ResolvedType } from "../Types";
+import { ResolvedTarget } from "../Types";
 import { Computable } from "../../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../../core/FileSet";
 import { registerTargetRule } from "../Registry";
-import { runGeneric } from "../GenericTarget";
-
-const NodeJSSchema = {
-  properties: {
-    entry: {
-      required: true,
-      type: PropertyType.String,
-    },
-    deps: {
-      type: PropertyType.FileSetList,
-    },
-    outs: {
-      required: true,
-      type: PropertyType.OutputFileSet,
-    },
-  },
-  globals: {
-    js_target: PropertyType.String,
-    node: PropertyType.String,
-  },
-} as const;
-type NodeJSType = ResolvedType<typeof NodeJSSchema>;
 
 /**
  * Execute a NodeJS script, yielding some set of output files.
  * @param spec
  * @param config
  */
-function runNodeJs(spec: NodeJSType, config: BuildContext): Computable<FileSet> {
+function runNodeJs(spec: ResolvedTarget, config: BuildContext): Computable<FileSet> {
   return Computable.resolve(EMPTY_FILESET);
 }
 
-registerTargetRule("js_run", NodeJSSchema, runNodeJs);
+registerTargetRule("js_run", {}, runNodeJs);

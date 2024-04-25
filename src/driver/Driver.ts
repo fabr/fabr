@@ -17,19 +17,22 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { BuildCache } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
+import { getSourceFileSource } from "../core/SourceFileSource";
 import { loadProject } from "../model/Loader";
 import { defaultLog } from "../support/Log";
 import { Options } from "./Command";
-import { getSourceRoot, getBuildCacheRoot, PROJECT_FILENAME } from "./Environment";
+import { getSourceRoot, getBuildCacheRoot, PROJECT_FILENAME, SOURCE_CACHE_FILENAME } from "./Environment";
 
 export async function runFabr(options: Options): Promise<void> {
   const log = defaultLog;
 
   const sourceRoot = await getSourceRoot();
-  const buildRoot = getBuildCacheRoot();
+  const buildCache = new BuildCache(getBuildCacheRoot());
+  const sourceFileSource = await getSourceFileSource(sourceRoot, SOURCE_CACHE_FILENAME);
 
-  const load = loadProject(sourceRoot, PROJECT_FILENAME, log);
+  const load = loadProject(sourceFileSource, PROJECT_FILENAME, buildCache, log);
 
   return load.then(model => {
     const config = model.getConfig(options.properties);

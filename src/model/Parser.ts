@@ -33,7 +33,7 @@ import {
 } from "./AST";
 import { Diagnostic, ISourcePosition, Log, LogLevel } from "../support/Log";
 import { Name, NameBuilder } from "./Name";
-import { IFileSetProvider } from "../core/FileSet";
+import { FileSource } from "../core/FileSet";
 
 enum TokenType {
   EOF = 0,
@@ -712,6 +712,6 @@ export function parseBuildFile(source: IBuildFile, log: Log): IBuildFileContents
   return new BuildParser(source, log).parse();
 }
 
-export function parseBuildString(fs: IFileSetProvider, file: string, contents: string, log: Log): IBuildFileContents {
+export function parseBuildString(fs: FileSource, file: string, contents: string, log: Log): IBuildFileContents {
   return new BuildParser({ fs, file, reader: new StringReader(contents) }, log).parse();
 }

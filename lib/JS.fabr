@@ -50,6 +50,6 @@ targetdef npm_repository {
 #
 
 npm_repository @npm {
-    url = NPM_REPOSITORY_URL;
+    url = ${NPM_REPOSITORY_URL};
 }
 

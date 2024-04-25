@@ -23,35 +23,29 @@ import * as path from "path";
 import { Name } from "../model/Name";
 
 import { Computable } from "./Computable";
-import { FileSet, IFile, IFileSetProvider, IFileStats } from "./FileSet";
-import { hashFile, readFile } from "./FSWrapper";
+import { FileSet, IFile, FileSource } from "./FileSet";
+import { hashFile, readFile, readFileBuffer } from "./FSWrapper";
 
+export interface FSFileStats {
+  size: number;
+  mtime: Date;
+}
 
-class FSFile implements IFile {
+export class FSFile implements IFile {
   private root: string;
-  private name: string;
-  private stats: IFileStats | undefined;
-  
-  constructor(root: string, name: string, stats: fs.Stats | undefined) {
+  public stat: FSFileStats;
+  public name: string;
+  public hash: string;
+
+  constructor(root: string, name: string, stat: FSFileStats, hash: string) {
     this.root = root;
     this.name = name;
-    this.stats = stats;
+    this.stat = stat;
+    this.hash = hash;
   }
 
   public readString(encoding?: BufferEncoding): Computable<string> {
     return readFile(path.resolve(this.root, this.name), encoding);
-  }
-
-  public get stat(): IFileStats {
-    if (!this.stats) {
-      const stats = fs.statSync(path.resolve(this.root, this.name));
-      this.stats = { size: stats.size, mtime: stats.mtime };
-    }
-    return this.stats;
-  }
-
-  public getHash(): Computable<string> {
-    return hashFile(path.resolve(this.root, this.name));
   }
 
   public getDisplayName(): string {
@@ -61,13 +55,21 @@ class FSFile implements IFile {
   public isSameFile(file: IFile): boolean {
     return file instanceof FSFile && this.getDisplayName() === file.getDisplayName();
   }
+
+  public getAbsPath(): string {
+    return path.resolve(this.root, this.name);
+  }
+
+  public getBuffer(): Computable<Buffer> {
+    return readFileBuffer(path.resolve(this.root, this.name));
+  }
 }
 
 /**
  * FileSet implementation that loads the directory tree from the real FS on demand
  */
-class FSFileSetProvider implements IFileSetProvider {
-  private root: string;
+export class FSFileSource implements FileSource {
+  protected root: string;
   constructor(root: string) {
     this.root = root;
   }
@@ -86,16 +88,26 @@ class FSFileSetProvider implements IFileSetProvider {
         cwd: this.root,
         persistent: false,
       });
-      const files = new Map<string, IFile>();
+      const files: Map<string, Computable<FSFile>> = new Map();
       watch.on("add", (path, stat) => {
-        files.set(path, new FSFile(this.root, path, stat));
+        files.set(path, this.fileAdded(path, stat));
       });
       watch.on("unlink", path => {
         files.delete(path);
       });
       watch.on("error", err => reject(err));
-      watch.on("ready", () => resolve(new FileSet(files)));
+      watch.on("ready", () => {
+        Computable.forAll(Array.from(files.values()), (...done) =>
+          resolve(new FileSet(done.reduce((result, file) => result.set(file.name, file), new Map())))
+        );
+      });
     });
+  }
+
+  protected fileAdded(filename: string, stat: FSFileStats | undefined): Computable<FSFile> {
+    const filepath = path.resolve(this.root, filename);
+    const fileStat = stat ?? fs.statSync(filepath);
+    return hashFile(filepath).then(hash => new FSFile(this.root, filename, fileStat, hash));
   }
 
   public get(name: string): Computable<IFile> {
@@ -106,7 +118,7 @@ class FSFileSetProvider implements IFileSetProvider {
         if (err) {
           reject(err);
         } else {
-          resolve(new FSFile(this.root, name, stat));
+          hashFile(file).then(hash => resolve(new FSFile(this.root, name, stat, "")));
         }
       });
     });
@@ -118,10 +130,10 @@ export const FS = {
    * Obtain a FileSet representing a real directory on the filesystem.
    * @param path
    */
-  get(dirname: string): Computable<IFileSetProvider> {
-    return Computable.from<IFileSetProvider>((resolve, reject) => {
+  get(dirname: string): Computable<FileSource> {
+    return Computable.from<FileSource>((resolve, reject) => {
       if (fs.existsSync(dirname)) {
-        resolve(new FSFileSetProvider(dirname));
+        resolve(new FSFileSource(dirname));
       } else {
         reject(new Error("No such path"));
       }

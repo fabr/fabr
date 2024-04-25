@@ -18,19 +18,10 @@
  */
 
 import { BuildContext } from "../../model/BuildContext";
-import { PropertyType, ResolvedType } from "../Types";
-import { BaseLanguageSchema } from "../Common";
+import { ResolvedTarget } from "../Types";
 import { Computable } from "../../core/Computable";
-import { EMPTY_FILESET, FileSet } from "../../core/FileSet";
+import { EMPTY_FILESET, FileSet, FileSource } from "../../core/FileSet";
 import { registerTargetRule } from "../Registry";
-
-const JSPackageSchema = {
-  properties: BaseLanguageSchema.properties,
-  globals: {
-    js_target: PropertyType.String,
-  },
-} as const;
-type JSPackageType = ResolvedType<typeof JSPackageSchema>;
 
 /**
  * Build a javascript (Node/NPM compatible) package.
@@ -41,12 +32,12 @@ type JSPackageType = ResolvedType<typeof JSPackageSchema>;
  * @param spec
  * @param config
  */
-function buildJsPackage(spec: JSPackageType, config: BuildContext): Computable<FileSet> {
+function buildJsPackage(spec: ResolvedTarget, config: BuildContext): Computable<FileSet> {
   /* STUB */
   console.log("Building JS Package");
 
-  const sources = spec.srcs;
-  const target = spec.js_target;
+  const sources = spec.getFileSet("srcs");
+  const target = config.getProperty("JS_TARGET");
 
   console.log("target: " + target);
   /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
@@ -85,7 +76,7 @@ function buildJsPackage(spec: JSPackageType, config: BuildContext): Computable<F
       .getProperty("TSC")
       .then(value => config.getTarget(value.toString()))
       .then(typescript => {
-        compileTypescript(sourceGroups.ts, spec.deps, FileSet.unionAll(...typescript));
+        compileTypescript(sourceGroups.ts, spec.getFileSet("deps"), typescript);
       });
 
     console.log("Has TS: " + sourceGroups.ts);
@@ -93,8 +84,8 @@ function buildJsPackage(spec: JSPackageType, config: BuildContext): Computable<F
   return new Computable<FileSet>();
 }
 
-function compileTypescript(srcs: FileSet, deps: FileSet[] | undefined, tsc: FileSet): Computable<FileSet> {
+function compileTypescript(srcs: FileSet, deps: FileSet, tsc: FileSource[]): Computable<FileSet> {
   return Computable.resolve(EMPTY_FILESET);
 }
 
-registerTargetRule("js_package", JSPackageSchema, buildJsPackage);
+registerTargetRule("js_package", {}, buildJsPackage);

@@ -18,8 +18,9 @@
  */
 
 import { Computable } from "../core/Computable";
-import { FileSet } from "../core/FileSet";
-import { Name } from "../model/Name";
+import { FileSet, FileSource } from "../core/FileSet";
+import { BuildContext, Constraints } from "../model/BuildContext";
+import { Property } from "../model/Property";
 import { Target } from "../model/Target";
 
 export enum PropertyType {
@@ -30,40 +31,8 @@ export enum PropertyType {
   OutputFileSet,
 }
 
-export interface IPropertySchema {
-  required?: boolean;
-  type: PropertyType;
-}
-
-export interface ITargetSchema {
-  /**
-   * Target-specific properties that are declared within the target body.
-   */
-  properties: Record<string, IPropertySchema>;
-  /**
-   * Global named properties that the target rules also depend on.
-   */
-  globals: Record<string, PropertyType.String | PropertyType.StringList>;
-}
-
-interface PropertyTypeMap {
-  [PropertyType.String]: string;
-  [PropertyType.FileSet]: FileSet;
-  [PropertyType.StringList]: string[];
-  [PropertyType.FileSetList]: FileSet[];
-  [PropertyType.OutputFileSet]: Name[];
-}
-type MappedType<T extends IPropertySchema> = T["required"] extends true
-  ? PropertyTypeMap[T["type"]]
-  : PropertyTypeMap[T["type"]] | undefined;
-
-type ResolvedTargetType<S extends ITargetSchema> = { [P in keyof S["properties"]]: MappedType<S["properties"][P]> };
-type ResolvedGlobalType<S extends ITargetSchema> = { [P in keyof S["globals"]]: PropertyTypeMap[S["globals"][P]] };
-
-export type ResolvedType<S extends ITargetSchema> = ResolvedTargetType<S> & ResolvedGlobalType<S>;
-
-export interface ITargetTypeDefinition<S extends ITargetSchema> {
-  schema: S;
+export interface ITargetTypeDefinition {
+  constraints: Constraints;
 
   /**
    * Evaluation function. Note that the type of entity will be
@@ -71,5 +40,58 @@ export interface ITargetTypeDefinition<S extends ITargetSchema> {
    * but Typescript currently doesn't seem to be able to track this through the interface.
    * @param entity
    */
-  evaluate(entity: ResolvedType<S>): Computable<Target>;
+  evaluate(entity: ResolvedTarget, context: BuildContext): Computable<FileSource>;
+}
+
+/**
+ * This is a convenience class wrapper around the actual resolved data to provide a bit of
+ * type safety.
+ *
+ * Note that a type mismatch here is treated as an error, as it indicates a conflict between
+ * the rule code and the target definition.
+ */
+export class ResolvedTarget {
+  private values: Record<string, Property | FileSource[]>;
+
+  constructor(values: Record<string, Property | FileSource[]>) {
+    this.values = values;
+  }
+
+  public getRequiredProperty(name: string): Property {
+    const property = this.getProperty(name);
+    if (property === undefined) {
+      throw new Error("Missing required property " + name);
+    }
+    return property;
+  }
+
+  public getProperty(name: string): Property | undefined {
+    const property = this.values[name];
+    if (property === undefined || property instanceof Property) {
+      return property;
+    } else {
+      throw new Error("Unexpected files when expecting string property for " + name);
+    }
+  }
+
+  public getRequiredString(name: string): string {
+    return this.getRequiredProperty(name).toString();
+  }
+
+  public getFileSources(name: string): FileSource[] {
+    const files = this.values[name];
+    if (files instanceof Property) {
+      throw new Error("Unexpected string property when expecting files for " + name);
+    } else {
+      return files ?? [];
+    }
+  }
+
+  public getFileSet(name: string): FileSet {
+    const files = this.getFileSources(name);
+    if (!files.every(file => file instanceof FileSet)) {
+      throw new Error("Files required for property " + name + " but got a repository");
+    }
+    return FileSet.unionAll(...(files as FileSet[]));
+  }
 }

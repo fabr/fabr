@@ -18,4 +18,5 @@
  */
 
 import "./JSPackageTarget";
-import "./NPMDepTarget";
+import "./NodeJSTarget";
+import "./NPMRepository";

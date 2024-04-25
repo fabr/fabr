@@ -21,12 +21,28 @@ import * as picomatch from "picomatch";
 import { Name } from "../model/Name";
 import { Computable } from "./Computable";
 
-export interface IFileStats {
-  size: number;
-  mtime: Date;
+export interface IFile {
+  hash: string;
+  readString(encoding?: BufferEncoding): Computable<string>;
+
+  /**
+   * @returns a human readable string representing the file (may not be parseable in any sense)
+   */
+  getDisplayName(): string;
+  isSameFile(file: IFile): boolean;
+
+  /**
+   * @returns the real, absolute path to the file if it has one, or undefined if it does not.
+   */
+  getAbsPath(): string | undefined;
+
+  /**
+   * @returns a Buffer containing the contents of the file.
+   */
+  getBuffer(): Computable<Buffer>;
 }
 
-export interface IFileSetProvider {
+export interface FileSource {
   /**
    * @return a FileSet of all files that match the given Name
    * If no files match, yields the empty set.
@@ -39,18 +55,10 @@ export interface IFileSetProvider {
    * @return a single direct file by exact name or undefined if it does not exist.
    * @param name
    */
-  get(name: string): Computable<IFile|undefined>;
+  get(name: string): Computable<IFile | undefined>;
 }
 
-export interface IFile {
-  stat: IFileStats;
-  readString(encoding?: BufferEncoding): Computable<string>;
-  getDisplayName(): string;
-  isSameFile(file: IFile): boolean;
-  getHash() : Computable<string>;
-}
-
-export interface IDir {
+interface IDir {
   hash: string;
   contents: Map<string, IDir | IFile>;
 }
@@ -61,16 +69,16 @@ type FileSetContent = Map<string, IFile>;
  * Represents a set of files that may originate from arbitrary points of the file system
  * (or not even be on the filesystem). FileSets are immutable after construction.
  *
- * Current implementation is just a Map<string,IFile> but other structures
+ * Current implementation is just a Map<string,IFile> but other code shouldn't depend on that.
  */
-export class FileSet implements IFileSetProvider {
+export class FileSet implements FileSource {
   private content: FileSetContent;
 
   constructor(content: FileSetContent) {
     this.content = content;
   }
 
-  find(name: Name): Computable<FileSet> {
+  public find(name: Name): Computable<FileSet> {
     const newContent = new Map<string, IFile>();
     const matcher = picomatch(name.toString());
     for (const [path, file] of this.content) {
@@ -97,8 +105,12 @@ export class FileSet implements IFileSetProvider {
    * @param name
    * @returns
    */
-  public get(name: string): Computable<IFile|undefined> {
+  public get(name: string): Computable<IFile | undefined> {
     return Computable.resolve(this.content.get(name));
+  }
+
+  public getAll(): Computable<FileSet> {
+    return Computable.resolve(this);
   }
 
   public [Symbol.iterator](): IterableIterator<[string, IFile]> {
@@ -154,6 +166,16 @@ export class FileSet implements IFileSetProvider {
       }
       return new FileSet(result);
     }
+  }
+
+  /**
+   * Search all sources for the given name, and return a union of all matches
+   */
+  public static findAll(sources: FileSource[], name: Name): Computable<FileSet> {
+    return Computable.forAll(
+      sources.map(fs => fs.find(name)),
+      (...sets) => FileSet.unionAll(...sets)
+    );
   }
 }
 

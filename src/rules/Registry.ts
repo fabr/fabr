@@ -18,25 +18,33 @@
  */
 
 import { Computable } from "../core/Computable";
-import { FileSet } from "../core/FileSet";
-import { BuildContext } from "../model/BuildContext";
+import { FileSource } from "../core/FileSet";
+import { BuildContext, Constraints } from "../model/BuildContext";
 
-import { ITargetSchema, ITargetTypeDefinition, ResolvedType } from "./Types";
+import { ITargetTypeDefinition, ResolvedTarget } from "./Types";
 
-const TARGET_REGISTRY: Record<string, ITargetTypeDefinition<any>> = {};
+const TARGET_REGISTRY: Record<string, ITargetTypeDefinition[]> = {};
 
-export function getTargetRule(name: string): ITargetTypeDefinition<any> | undefined {
-  return TARGET_REGISTRY[name];
+export function getTargetRule(name: string): ITargetTypeDefinition | undefined {
+  const candidates = TARGET_REGISTRY[name];
+  if (candidates) {
+    /* TODO */
+    return candidates[0];
+  }
 }
 
 export function hasTargetType(type: string): boolean {
   return type in TARGET_REGISTRY;
 }
 
-export function registerTargetRule<S extends ITargetSchema>(
+export function registerTargetRule(
   name: string,
-  schema: S,
-  evaluate: (spec: ResolvedType<S>, config: BuildContext) => Computable<FileSet>
+  constraints: Constraints,
+  evaluate: (spec: ResolvedTarget, config: BuildContext) => Computable<FileSource>
 ): void {
-  TARGET_REGISTRY[name] = { schema, evaluate } as ITargetTypeDefinition<any>;
+  if (name in TARGET_REGISTRY) {
+    TARGET_REGISTRY[name].push({ constraints, evaluate });
+  } else {
+    TARGET_REGISTRY[name] = [{ constraints, evaluate }];
+  }
 }
