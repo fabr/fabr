@@ -18,6 +18,7 @@
  */
 
 import * as picomatch from "picomatch";
+import * as path from "path";
 import { Name } from "../model/Name";
 import { Computable } from "./Computable";
 
@@ -125,6 +126,15 @@ export class FileSet implements FileSource {
     return this.content.size === 0;
   }
 
+  public toManifest(): string {
+    let result = [];
+    for (const [name, file] of this.content) {
+      result.push(`${file.hash} ${name}`);
+    }
+    result.sort();
+    return result.join("\n");
+  }
+
   /* Set operations */
 
   /**
@@ -182,6 +192,27 @@ export class FileSet implements FileSource {
       }
       return new FileSet(result);
     }
+  }
+
+  public static layout(data: Record<string, FileSet | FileSet[] | IFile>): FileSet {
+    const result = new Map();
+    for (const prefix in data) {
+      const files = data[prefix];
+      if (Array.isArray(files)) {
+        for (const fs of files) {
+          for (const [name, file] of fs) {
+            result.set(path.join(prefix, name), file);
+          }
+        }
+      } else if (files instanceof FileSet) {
+        for (const [name, file] of files) {
+          result.set(path.join(prefix, name), file);
+        }
+      } else {
+        result.set(prefix, files);
+      }
+    }
+    return new FileSet(result);
   }
 
   /**

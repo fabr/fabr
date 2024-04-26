@@ -120,7 +120,6 @@ export class BuildContext {
   public getPrefixTargetIfExists(name: Name, stack?: IDependencyStack): [Computable<FileSource[]>, Name] | undefined {
     const result = this.model.getPrefixMatch(name);
     if (result) {
-      console.log("Resolved " + name.toString() + " => " + result.decl.name + " - " + result.rest.toString());
       return [this.getTarget(result.decl.name, stack), result.rest];
     }
     return undefined;

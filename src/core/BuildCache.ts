@@ -2,7 +2,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { Computable } from "./Computable";
 import { EMPTY_FILESET, FileSet, IFile } from "./FileSet";
-import { hashString, readFile, readFileBuffer, writeFile } from "./FSWrapper";
+import { deleteFile, hashFile, hashString, readFile, readFileBuffer, symlink, writeFile } from "./FSWrapper";
+import picomatch = require("picomatch");
 
 export class BuildFile implements IFile {
   private root: string;
@@ -96,8 +97,10 @@ export class BuildCache {
       .toString()
       .split("\n")
       .forEach(line => {
-        const [hash, name, path] = line.split(" ");
-        result.set(decodeURI(name), new BuildFile(this.root, decodeURI(path), hash));
+        if (line) {
+          const [hash, name, path] = line.split(" ");
+          result.set(decodeURI(name), new BuildFile(this.root, decodeURI(path), hash));
+        }
       });
     return new FileSet(result);
   }
@@ -108,12 +111,12 @@ export class BuildCache {
  * with those files replaced with an equivalent FSFile.
  *
  * @param targetDir Base directory in which to write files.
- * @param fs The fileset to write out.
+ * @param files The fileset to write out.
  */
-function writeMemoryFiles(targetDir: string, fs: FileSet): Computable<FileSet> {
+function writeMemoryFiles(targetDir: string, files: FileSet): Computable<FileSet> {
   const map = new Map();
   const output: Computable<void>[] = [];
-  for (const [name, file] of fs) {
+  for (const [name, file] of files) {
     if (file.getAbsPath() === undefined) {
       const writeName = file.hash + ".dat";
       output.push(file.getBuffer().then(buffer => writeFile(writeName, buffer)));
@@ -123,8 +126,56 @@ function writeMemoryFiles(targetDir: string, fs: FileSet): Computable<FileSet> {
     }
   }
   if (output.length === 0) {
-    return Computable.resolve(fs);
+    return Computable.resolve(files);
   } else {
     return Computable.forAll(output, () => new FileSet(map));
   }
+}
+
+export function writeFileSet(targetDir: string, files: FileSet): Computable<void> {
+  const operations = [];
+  for (const [name, file] of files) {
+    const targetName = path.resolve(targetDir, name);
+    const dirname = path.dirname(targetName);
+    fs.mkdirSync(dirname, { recursive: true });
+    const filepath = file.getAbsPath();
+    if (filepath) {
+      operations.push(symlink(filepath, targetName));
+    } else {
+      operations.push(file.getBuffer().then(buffer => writeFile(targetName, buffer)));
+    }
+  }
+  return Computable.forAll(operations, () => {});
+}
+
+export function getResultFileSet(targetDir: string, pattern: string): Computable<FileSet> {
+  const matcher = picomatch(pattern);
+  const result = new Map();
+  const ops: Computable<void>[] = [];
+  const dirs = [];
+
+  return Computable.from((resolve, reject) => {
+    fs.readdir(targetDir, { withFileTypes: true, recursive: true }, (err, dirents) => {
+      if (err) {
+        reject(err);
+      } else {
+        dirents.forEach(dirent => {
+          if (dirent.isFile() && matcher(dirent.name)) {
+            ops.push(
+              hashFile(path.resolve(targetDir, dirent.name)).then(hash => {
+                result.set(dirent.name, new BuildFile(targetDir, dirent.name, hash));
+              })
+            );
+          } else {
+            if (dirent.isDirectory()) {
+              dirs.push(dirent.name);
+            } else {
+              ops.push(deleteFile(path.resolve(targetDir, dirent.name)));
+            }
+          }
+        });
+      }
+      Computable.forAll(ops, () => resolve(new FileSet(result)));
+    });
+  });
 }

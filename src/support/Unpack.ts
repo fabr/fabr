@@ -39,10 +39,10 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
         case ArchiveType.TAR:
           const extract = tar.extract();
           extract.on("entry", (headers, entry, next) => {
+            entry.on("end", () => {
+              next();
+            });
             if (headers.type === "directory") {
-              entry.on("end", () => {
-                next();
-              });
               entry.resume();
             } else {
               const hash = crypto.createHash(HASH_ALGORITHM);
@@ -50,7 +50,7 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
               const dir = path.dirname(pathname);
               fs.mkdirSync(dir, { recursive: true });
               const outfile = fs.createWriteStream(pathname);
-              entry.on("end", () => {
+              outfile.on("close", () => {
                 fileMap.set(
                   headers.name,
                   new FSFile(
@@ -60,7 +60,6 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
                     hash.digest("hex")
                   )
                 );
-                next();
               });
               const hashTransform = new Transform({
                 transform: (chunk, _enc, cb) => {
@@ -72,6 +71,7 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
             }
           });
           extract.on("finish", () => {
+            /* FIXME: it may be possible to get here before the last file has finished writing out above */
             resolve(new FileSet(fileMap));
           });
           return extract;

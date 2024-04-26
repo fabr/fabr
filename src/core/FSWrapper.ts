@@ -73,6 +73,30 @@ export function writeFile(filepath: string, data: string | Buffer): Computable<v
   });
 }
 
+export function deleteFile(filepath: string): Computable<void> {
+  return Computable.from<void>((resolve, reject) => {
+    fs.unlink(filepath, err => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+export function symlink(target: string, filepath: string): Computable<void> {
+  return Computable.from<void>((resolve, reject) => {
+    fs.symlink(target, filepath, err => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
 export function hashFile(filepath: string): Computable<string> {
   return Computable.from<string>((resolve, reject) => {
     fs.readFile(filepath, (err, data) => {

@@ -20,9 +20,12 @@
 import { BuildContext } from "../../model/BuildContext";
 import { ResolvedTarget } from "../Types";
 import { Computable } from "../../core/Computable";
-import { EMPTY_FILESET, FileSet, FileSource } from "../../core/FileSet";
+import { EMPTY_FILESET, FileSet } from "../../core/FileSet";
 import { registerTargetRule } from "../Registry";
 import { Property } from "../../model/Property";
+import { MemoryFile } from "../../core/MemoryFS";
+import { getResultFileSet, writeFileSet } from "../../core/BuildCache";
+import { execute } from "../../support/Execute";
 
 /**
  * Build a javascript (Node/NPM compatible) package.
@@ -31,14 +34,14 @@ import { Property } from "../../model/Property";
  *
  *
  * @param spec
- * @param config
+ * @param context
  */
-function buildJsPackage(spec: ResolvedTarget, config: BuildContext): Computable<FileSet> {
+function buildJsPackage(spec: ResolvedTarget, context: BuildContext): Computable<FileSet> {
   /* STUB */
   console.log("Building JS Package");
 
   const sources = spec.getFileSet("srcs");
-  const target = config.getProperty("JS_TARGET");
+  const target = context.getProperty("JS_TARGET");
 
   /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
   const packageJsonFile = sources
@@ -70,20 +73,44 @@ function buildJsPackage(spec: ResolvedTarget, config: BuildContext): Computable<
   });
 
   if ("ts" in sourceGroups) {
-    const typescript = config.getTarget("TSC");
+    const typescript = context.getTarget("TSC");
     Computable.forAll([target, typescript], (targetProp, typescriptSource) => {
       compileTypescript(
         sourceGroups.ts,
         spec.getFileSet("deps"),
         FileSet.unionAll(...(typescriptSource as FileSet[])),
-        (targetProp as Property).toString()
+        (targetProp as Property).toString(),
+        context
       );
     });
   }
   return new Computable<FileSet>();
 }
 
-function compileTypescript(srcs: FileSet, deps: FileSet, tsc: FileSet, target: string): Computable<FileSet> {
+function compileTypescript(srcs: FileSet, deps: FileSet, tsc: FileSet, target: string, context: BuildContext): Computable<FileSet> {
+  const tsconfig = {
+    compilerOptions: {
+      declaration: true,
+      declarationMap: true,
+      outDir: "build",
+      rootDir: "src",
+    },
+    exclude: ["node_modules"],
+    include: ["./src/**/*.ts"],
+  };
+
+  const workingDir = FileSet.layout({
+    node_modules: [deps, tsc],
+    src: srcs,
+    "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
+  });
+  console.log(workingDir.toManifest());
+
+  context.getCachedOrBuild(workingDir.toManifest(), targetDir =>
+    writeFileSet(targetDir, workingDir)
+      .then(() => execute("/home/nkeynes/.nvm/versions/node/v20.10.0/bin/node", ["node_modules/typescript/bin/tsc"], targetDir, {}))
+      .then(() => getResultFileSet(targetDir, "build/**"))
+  );
   return Computable.resolve(EMPTY_FILESET);
 }
 
