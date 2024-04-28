@@ -68,9 +68,15 @@ export class Computable<T> {
     return result;
   }
 
-  public static forAll<U, D extends readonly Computable<unknown>[]>(
+  /**
+   *  * all<T extends readonly unknown[] | []>(values: T): Promise<{ -readonly [P in keyof T]: Awaited<T[P]>; }>;
+   * @param deps
+   * @param fn
+   * @returns
+   */
+  public static forAll<U, D extends readonly Computable<unknown>[] | []>(
     deps: D,
-    fn: (...deps: { [P in keyof D]: D[P] extends Computable<infer U> ? U : D[P] }) => U | Computable<U>
+    fn: (...deps: { -readonly [P in keyof D]: Awaited<D[P]> }) => U | Computable<U>
   ): Computable<U> {
     const result = new Computable<U>();
     result.dependsOn.push(...deps);
