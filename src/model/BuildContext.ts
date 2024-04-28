@@ -2,7 +2,6 @@ import { BuildCache } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { FileSet, FileSource } from "../core/FileSet";
 import { getTargetRule } from "../rules/Registry";
-import { ResolvedTarget } from "../rules/Types";
 import { DeclKind, IDecl, INamedDecl, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl, IValue, PropertyType } from "./AST";
 import { Name } from "./Name";
 import { IPrefixMatch } from "./Namespace";
@@ -62,6 +61,11 @@ export class BuildContext {
   public getTargetWithOverrides(name: string, overrides: Constraints): Computable<FileSource[]> {
     const combined = { ...this.constraints, ...overrides };
     return this.model.getConfig(combined).getTarget(name);
+  }
+
+  public getContextWithOverrides(overrides: Constraints): BuildContext {
+    const combined = { ...this.constraints, ...overrides };
+    return this.model.getConfig(combined);
   }
 
   public getProperty(name: string, stack?: IDependencyStack): Computable<Property> {
@@ -129,14 +133,14 @@ export class BuildContext {
     return this.model.getBuildCache().getOrCreate(manifest, create);
   }
 
-  private resolveStringProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<Property> {
+  public resolveStringProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<Property> {
     return Computable.forAll(
       prop.values.map(value => this.substituteNameVars(value.value, { property: prop, target, context: this, value, next: stack })),
       (...resolved) => new Property(resolved.map(name => name.toString()))
     );
   }
 
-  private resolveFileProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<FileSource[]> {
+  public resolveFileProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<FileSource[]> {
     return Computable.forAll(
       prop.values.map(value =>
         this.resolveFileSource(value.value, prop, { property: prop, target, context: this, value, next: stack })
@@ -201,27 +205,7 @@ export class BuildContext {
           stringifyDependencyStack(stack)
       );
     }
-    const resolvedProps = target.properties.map(prop => {
-      const type = targetDef.properties[prop.name];
-      switch (type.type) {
-        case PropertyType.String:
-        case PropertyType.StringList:
-          return this.resolveStringProperty(prop, target, stack);
-        case PropertyType.FileSet:
-        case PropertyType.FileSetList:
-          return this.resolveFileProperty(prop, target, stack);
-        default:
-          throw new Error("Unsupported property type");
-      }
-    });
-
-    return Computable.forAll(resolvedProps, (...resolved) => {
-      const resolvedTarget = target.properties.reduce<Record<string, Property | FileSource[]>>((m, k, idx) => {
-        m[k.name] = resolved[idx];
-        return m;
-      }, {});
-      return rule.evaluate(new ResolvedTarget(resolvedTarget), this);
-    });
+    return rule.evaluate(new TargetContext(target, this, stack));
   }
 
   private findTargetInStack(target: string, stack?: IDependencyStack): IDependencyStack | undefined {
@@ -287,4 +271,81 @@ function stringifyDependencyStackEntry(entry: IDependencyStack): string {
 function stringifyLoc(decl: IDecl): string {
   const loc = decl.source.reader.resolvePosition(decl.offset);
   return `${decl.source.file}:${loc?.line}:${loc?.column}`;
+}
+
+/**
+ * The context for an individual target.
+ */
+export class TargetContext {
+  private target: ITargetDecl;
+  private props: Record<string, IPropertyDecl>;
+  public context: BuildContext;
+  public stack?: IDependencyStack;
+
+  constructor(target: ITargetDecl, context: BuildContext, stack?: IDependencyStack) {
+    this.target = target;
+    this.props = {};
+    this.context = context;
+    this.stack = stack;
+    target.properties.forEach(prop => {
+      this.props[prop.name] = prop;
+    });
+  }
+
+  public getRequiredProperty(name: string, overrides?: Constraints): Computable<Property> {
+    const prop = this.props[name];
+    if (!prop) {
+      throw new Error("Missing required property " + name);
+    }
+    return this.getContext(overrides).resolveStringProperty(prop, this.target, this.stack);
+  }
+
+  public getProperty(name: string, overrides?: Constraints): Computable<Property | undefined> {
+    const prop = this.props[name];
+    if (!prop) {
+      return Computable.resolve(undefined);
+    }
+    return this.getContext(overrides).resolveStringProperty(prop, this.target, this.stack);
+  }
+
+  public getRequiredString(name: string, overrides?: Constraints): Computable<string> {
+    return this.getRequiredProperty(name, overrides).then(prop => prop.toString());
+  }
+
+  public getFileSources(name: string, overrides?: Constraints): Computable<FileSource[]> {
+    const prop = this.props[name];
+    if (!prop) {
+      return Computable.resolve([]);
+    }
+    return this.getContext(overrides).resolveFileProperty(prop, this.target, this.stack);
+  }
+
+  public getFileSet(name: string): Computable<FileSet> {
+    return this.getFileSources(name).then(files => {
+      if (!files.every(file => file instanceof FileSet)) {
+        throw new Error("Files required for property " + name + " but got a repository");
+      }
+      return FileSet.unionAll(...(files as FileSet[]));
+    });
+  }
+
+  public getCachedOrBuild(manifest: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
+    return this.context.getCachedOrBuild(manifest, create);
+  }
+
+  public getGlobalString(name: string, overrides?: Constraints): Computable<string> {
+    return this.getGlobalProperty(name, overrides).then(prop => prop.toString());
+  }
+
+  public getGlobalProperty(name: string, overrides?: Constraints): Computable<Property> {
+    return this.getContext(overrides).getProperty(name, this.stack);
+  }
+
+  public getGlobalTarget(name: string, overrides?: Constraints): Computable<FileSource[]> {
+    return this.getContext(overrides).getTarget(name, this.stack);
+  }
+
+  private getContext(overrides?: Constraints): BuildContext {
+    return overrides ? this.context.getContextWithOverrides(overrides) : this.context;
+  }
 }

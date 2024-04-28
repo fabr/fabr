@@ -17,8 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { BuildContext } from "../../model/BuildContext";
-import { ResolvedTarget } from "../Types";
+import { TargetContext } from "../../model/BuildContext";
 import { Computable } from "../../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../../core/FileSet";
 import { registerTargetRule } from "../Registry";
@@ -28,7 +27,7 @@ import { registerTargetRule } from "../Registry";
  * @param spec
  * @param config
  */
-function runNodeJs(spec: ResolvedTarget, config: BuildContext): Computable<FileSet> {
+function runNodeJs(config: TargetContext): Computable<FileSet> {
   return Computable.resolve(EMPTY_FILESET);
 }
 

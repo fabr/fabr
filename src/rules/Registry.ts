@@ -19,9 +19,9 @@
 
 import { Computable } from "../core/Computable";
 import { FileSource } from "../core/FileSet";
-import { BuildContext, Constraints } from "../model/BuildContext";
+import { Constraints, TargetContext } from "../model/BuildContext";
 
-import { ITargetTypeDefinition, ResolvedTarget } from "./Types";
+import { ITargetTypeDefinition } from "./Types";
 
 const TARGET_REGISTRY: Record<string, ITargetTypeDefinition[]> = {};
 
@@ -40,7 +40,7 @@ export function hasTargetType(type: string): boolean {
 export function registerTargetRule(
   name: string,
   constraints: Constraints,
-  evaluate: (spec: ResolvedTarget, config: BuildContext) => Computable<FileSource>
+  evaluate: (target: TargetContext) => Computable<FileSource>
 ): void {
   if (name in TARGET_REGISTRY) {
     TARGET_REGISTRY[name].push({ constraints, evaluate });

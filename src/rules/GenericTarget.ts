@@ -17,8 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { BuildContext } from "../model/BuildContext";
-import { ResolvedTarget } from "./Types";
+import { BuildContext, TargetContext } from "../model/BuildContext";
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { registerTargetRule } from "./Registry";
@@ -38,9 +37,9 @@ import { spawn } from "child_process";
  * @param spec
  * @param config
  */
-export function runGeneric(spec: ResolvedTarget, config: BuildContext): Computable<FileSet> {
-  const tmpdir = getExecRoot(config);
-  filesetToDir(tmpdir, spec.getFileSet("inputs"));
+export function runGeneric(context: TargetContext): Computable<FileSet> {
+  const tmpdir = getExecRoot(context);
+  context.getFileSet("inputs").then(inputs => filesetToDir(tmpdir, inputs));
 
   return Computable.resolve(EMPTY_FILESET);
 }
@@ -50,7 +49,7 @@ export function runGeneric(spec: ResolvedTarget, config: BuildContext): Computab
  * to do this inside the build cache so that we can just rename files to their final
  * locations.
  */
-function getExecRoot(config: BuildContext): string {
+function getExecRoot(config: TargetContext): string {
   return "/tmp/fixme";
 }
 

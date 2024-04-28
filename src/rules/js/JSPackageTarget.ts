@@ -17,12 +17,10 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { BuildContext } from "../../model/BuildContext";
-import { ResolvedTarget } from "../Types";
+import { TargetContext } from "../../model/BuildContext";
 import { Computable } from "../../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../../core/FileSet";
 import { registerTargetRule } from "../Registry";
-import { Property } from "../../model/Property";
 import { MemoryFile } from "../../core/MemoryFS";
 import { getResultFileSet, writeFileSet } from "../../core/BuildCache";
 import { execute } from "../../support/Execute";
@@ -31,63 +29,66 @@ import { execute } from "../../support/Execute";
  * Build a javascript (Node/NPM compatible) package.
  *
  *
+ * all<T extends readonly unknown[] | []>(values: T): Promise<{ -readonly [P in keyof T]: Awaited<T[P]>; }>;
  *
- *
+ * type Awaited<T> = T extends null | undefined ? T : // special case for `null | undefined` when not in `--strictNullChecks` mode
+    T extends object & { then(onfulfilled: infer F, ...args: infer _): any; } ? // `await` only unwraps object types with a callable `then`. Non-object types are not unwrapped
+        F extends ((value: infer V, ...args: infer _) => any) ? // if the argument to `then` is callable, extracts the first argument
+            Awaited<V> : // recursively unwrap the value
+        never : // the argument to `then` was not callable
+    T; // non-object or non-thenable
+ * 
  * @param spec
  * @param context
  */
-function buildJsPackage(spec: ResolvedTarget, context: BuildContext): Computable<FileSet> {
+function buildJsPackage(context: TargetContext): Computable<FileSet> {
   /* STUB */
   console.log("Building JS Package");
 
-  const sources = spec.getFileSet("srcs");
-  const target = context.getProperty("JS_TARGET");
+  return Computable.forAll(
+    [context.getFileSet("srcs"), context.getFileSet("deps"), context.getGlobalString("JS_TARGET")],
+    (sources, deps, target) => {
+      /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
+      const packageJsonFile = sources
+        .get("package.json")
+        .then(file => file?.readString())
+        .then(content => content && JSON.parse(content));
 
-  /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
-  const packageJsonFile = sources
-    .get("package.json")
-    .then(file => file?.readString())
-    .then(content => content && JSON.parse(content));
+      /* If we have TS files, we get to invoke the compiler */
 
-  /* If we have TS files, we get to invoke the compiler */
-
-  const sourceGroups = sources.partition(path => {
-    const lower = path.toLowerCase();
-    const extidx = lower.lastIndexOf(".");
-    if (extidx !== -1) {
-      const ext = lower.substring(extidx + 1);
-      switch (ext) {
-        case "ts":
-          if (lower.endsWith(".d.ts")) {
-            break; /* Output only */
+      const sourceGroups = sources.partition(path => {
+        const lower = path.toLowerCase();
+        const extidx = lower.lastIndexOf(".");
+        if (extidx !== -1) {
+          const ext = lower.substring(extidx + 1);
+          switch (ext) {
+            case "ts":
+              if (lower.endsWith(".d.ts")) {
+                break; /* Output only */
+              }
+            /* fallthrough */
+            case "tsx":
+              return "ts";
+            case "js":
+            case "jsx":
+              return "js";
           }
-        /* fallthrough */
-        case "tsx":
-          return "ts";
-        case "js":
-        case "jsx":
-          return "js";
-      }
-    }
-    return "copy";
-  });
+        }
+        return "copy";
+      });
 
-  if ("ts" in sourceGroups) {
-    const typescript = context.getTarget("TSC");
-    Computable.forAll([target, typescript], (targetProp, typescriptSource) => {
-      compileTypescript(
-        sourceGroups.ts,
-        spec.getFileSet("deps"),
-        FileSet.unionAll(...(typescriptSource as FileSet[])),
-        (targetProp as Property).toString(),
-        context
-      );
-    });
-  }
-  return new Computable<FileSet>();
+      if ("ts" in sourceGroups) {
+        context.getGlobalTarget("TSC").then(typescript => {
+          compileTypescript(sourceGroups.ts, deps, FileSet.unionAll(...(typescript as FileSet[])), target, context);
+        });
+      }
+
+      return new Computable<FileSet>();
+    }
+  );
 }
 
-function compileTypescript(srcs: FileSet, deps: FileSet, tsc: FileSet, target: string, context: BuildContext): Computable<FileSet> {
+function compileTypescript(srcs: FileSet, deps: FileSet, tsc: FileSet, target: string, context: TargetContext): Computable<FileSet> {
   const tsconfig = {
     compilerOptions: {
       declaration: true,

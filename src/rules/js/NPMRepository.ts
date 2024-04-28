@@ -1,11 +1,10 @@
 import { Computable } from "../../core/Computable";
 import { fetchUrl, openUrlStream } from "../../core/Fetch";
-import { FileSet, FileSource, IFile } from "../../core/FileSet";
-import { BuildContext } from "../../model/BuildContext";
+import { FileSet, FileSource } from "../../core/FileSet";
+import { TargetContext } from "../../model/BuildContext";
 import { Name } from "../../model/Name";
 import { unpackStream } from "../../support/Unpack";
 import { registerTargetRule } from "../Registry";
-import { ResolvedTarget } from "../Types";
 
 interface ISignature {
   keyid: string;
@@ -51,9 +50,9 @@ type INPMResponse = INPMError | INPMError2 | INPMPackageVersions | INPMPackageMe
 
 class NPMRepository implements FileSource {
   private url: string;
-  private context: BuildContext;
+  private context: TargetContext;
 
-  constructor(url: string, context: BuildContext) {
+  constructor(url: string, context: TargetContext) {
     this.url = url.replace(/\/+$/, "");
     this.context = context;
   }
@@ -91,8 +90,8 @@ class NPMRepository implements FileSource {
   }
 }
 
-function createRepository(target: ResolvedTarget, context: BuildContext): Computable<NPMRepository> {
-  return Computable.resolve(new NPMRepository(target.getRequiredString("url"), context));
+function createRepository(context: TargetContext): Computable<NPMRepository> {
+  return context.getRequiredString("url").then(url => new NPMRepository(url, context));
 }
 
 function remapFilenames(files: FileSet, packageName: string): FileSet {
@@ -106,4 +105,4 @@ function remapFilenames(files: FileSet, packageName: string): FileSet {
   });
 }
 
-registerTargetRule("npm_repository", {}, (target, context) => createRepository(target, context));
+registerTargetRule("npm_repository", {}, createRepository);
