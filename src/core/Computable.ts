@@ -54,13 +54,13 @@ export class Computable<T> {
   private value: T | undefined | unknown;
   private state: State = State.Unresolved;
   private dependsOn: Computable<any>[] = [];
-  private dependants: WeakRef<Computable<any>>[] = [];
+  private dependants: Computable<any>[] = [];
   private fn: ((...args: any[]) => any) | undefined = undefined;
 
   public then<U>(fn: (value: T) => U | Computable<U>): Computable<U> {
     const result = new Computable<U>();
     result.fn = fn;
-    this.dependants.push(new WeakRef(result));
+    this.dependants.push(result);
     result.dependsOn.push(this);
     if (this.state === State.Valid) {
       result.run();
@@ -80,7 +80,7 @@ export class Computable<T> {
   ): Computable<U> {
     const result = new Computable<U>();
     result.dependsOn.push(...deps);
-    deps.forEach(dep => dep.dependants.push(new WeakRef(result)));
+    deps.forEach(dep => dep.dependants.push(result));
     result.fn = fn;
     if (result.canRun()) {
       result.run();
@@ -101,7 +101,7 @@ export class Computable<T> {
     return result;
   }
 
-  public static from<T>(fn: (resolve: (value: T) => void, reject: (err: unknown) => void) => void): Computable<T> {
+  public static from<T>(fn: (resolve: (value: T | Computable<T>) => void, reject: (err: unknown) => void) => void): Computable<T> {
     const result = new Computable<T>();
     fn(result.resolveTo.bind(result), result.rejectWith.bind(result));
     return result;
@@ -126,34 +126,33 @@ export class Computable<T> {
   private run(): void {
     const inputs = this.dependsOn.map(dep => dep.value);
     try {
-      const result = this.fn && this.fn(...inputs);
-      if (result instanceof Computable) {
-        result.then(this.resolveTo.bind(this));
-      } else {
-        this.resolveTo(result);
-      }
+      this.resolveTo(this.fn && this.fn(...inputs));
     } catch (err) {
       this.rejectWith(err);
     }
   }
 
-  private resolveTo(value: T): void {
-    this.state = State.Valid;
-    if (value !== this.value) {
-      this.value = value;
+  private resolveTo(value: T | Computable<T>): void {
+    if (value instanceof Computable) {
+      value.then(this.resolveTo.bind(this));
+    } else {
+      this.state = State.Valid;
+      if (value !== this.value) {
+        this.value = value;
+        this.forEachDependant(dep => {
+          dep.invalidate();
+        });
+      }
       this.forEachDependant(dep => {
-        dep.invalidate();
+        if (dep.state !== State.Valid && dep.canRun()) {
+          if (dep.state === State.MaybeInvalid) {
+            dep.state = State.Valid;
+          } else {
+            dep.run();
+          }
+        }
       });
     }
-    this.forEachDependant(dep => {
-      if (dep.state !== State.Valid && dep.canRun()) {
-        if (dep.state === State.MaybeInvalid) {
-          dep.state = State.Valid;
-        } else {
-          dep.run();
-        }
-      }
-    });
   }
 
   private rejectWith(err: unknown): void {
@@ -171,17 +170,6 @@ export class Computable<T> {
   }
 
   private forEachDependant(fn: (dep: Computable<any>) => void): void {
-    let gc = false;
-    this.dependants.forEach(wdep => {
-      const dep = wdep.deref();
-      if (dep) {
-        fn(dep);
-      } else {
-        gc = true;
-      }
-    });
-    if (gc) {
-      this.dependants = this.dependants.filter(wdep => wdep.deref());
-    }
+    this.dependants.forEach(fn);
   }
 }
