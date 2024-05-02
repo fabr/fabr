@@ -37,7 +37,7 @@ export async function runFabr(options: Options): Promise<void> {
   return load.then(model => {
     const config = model.getConfig(options.properties);
     const targets = options.targets.map(targetName => config.getTarget(targetName));
-    Computable.forAll(targets, () => {
+    return Computable.forAll(targets, () => {
       console.log("Done");
       console.log(targets);
       process.exit(0);

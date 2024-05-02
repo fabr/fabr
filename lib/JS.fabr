@@ -31,6 +31,7 @@ default TSC = @npm:typescript:latest;
 targetdef js_package {
     srcs = FILES;
     deps = FILES;
+    tests = FILES;
     version = STRING;
 }
 

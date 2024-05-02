@@ -128,10 +128,9 @@ export class FileSet implements FileSource {
 
   public toManifest(): string {
     let result = [];
-    for (const [name, file] of this.content) {
-      result.push(`${file.hash} ${name}`);
+    for (const name of [...this.content.keys()].sort()) {
+      result.push(`${this.content.get(name)?.hash} ${name}`);
     }
-    result.sort();
     return result.join("\n");
   }
 
@@ -170,6 +169,19 @@ export class FileSet implements FileSource {
       }
     }
 
+    return new FileSet(result);
+  }
+
+  /**
+   * @return all files in the receiver, excluding any file names that appear in the given
+   *  fileset (irrespective of file content).
+   * @param files
+   */
+  public minus(files: FileSet): FileSet {
+    const result = new Map(this.content);
+    for (const [name] of files.content) {
+      result.delete(name);
+    }
     return new FileSet(result);
   }
 

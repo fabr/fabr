@@ -2,8 +2,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { Computable } from "./Computable";
 import { EMPTY_FILESET, FileSet, IFile } from "./FileSet";
-import { deleteFile, hashFile, hashString, readFile, readFileBuffer, symlink, writeFile } from "./FSWrapper";
-import picomatch = require("picomatch");
+import { deleteFile, hardlink, hashFile, hashString, readFile, readFileBuffer, writeFile } from "./FSWrapper";
+import * as picomatch from "picomatch";
 
 export class BuildFile implements IFile {
   private root: string;
@@ -140,7 +140,7 @@ export function writeFileSet(targetDir: string, files: FileSet): Computable<void
     fs.mkdirSync(dirname, { recursive: true });
     const filepath = file.getAbsPath();
     if (filepath) {
-      operations.push(symlink(filepath, targetName));
+      operations.push(hardlink(filepath, targetName));
     } else {
       operations.push(file.getBuffer().then(buffer => writeFile(targetName, buffer)));
     }

@@ -25,7 +25,7 @@ import { Name } from "../model/Name";
 import { Computable } from "./Computable";
 import { FileSet, IFile, FileSource } from "./FileSet";
 import { hashFile, readFile, readFileBuffer } from "./FSWrapper";
-import picomatch = require("picomatch");
+import * as picomatch from "picomatch";
 
 export interface FSFileStats {
   size: number;
@@ -103,8 +103,11 @@ export class FSFileSource implements FileSource {
       });
       watch.on("error", err => reject(err));
       watch.on("ready", () => {
-        Computable.forAll(Array.from(files.values()), (...done) =>
-          resolve(new FileSet(done.reduce((result, file) => result.set(removePrefix(file.name, stripPrefix), file), new Map())))
+        resolve(
+          Computable.forAll(
+            Array.from(files.values()),
+            (...done) => new FileSet(done.reduce((result, file) => result.set(removePrefix(file.name, stripPrefix), file), new Map()))
+          )
         );
       });
     });
@@ -124,7 +127,7 @@ export class FSFileSource implements FileSource {
         if (err) {
           reject(err);
         } else {
-          hashFile(file).then(hash => resolve(new FSFile(this.root, name, stat, "")));
+          resolve(hashFile(file).then(hash => new FSFile(this.root, name, stat, "")));
         }
       });
     });

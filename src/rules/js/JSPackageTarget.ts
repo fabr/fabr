@@ -46,8 +46,8 @@ function buildJsPackage(context: TargetContext): Computable<FileSet> {
   console.log("Building JS Package");
 
   return Computable.forAll(
-    [context.getFileSet("srcs"), context.getFileSet("deps"), context.getGlobalString("JS_TARGET")],
-    (sources, deps, target) => {
+    [context.getFileSet("srcs"), context.getFileSet("deps"), context.getFileSet("tests"), context.getGlobalString("JS_TARGET")],
+    (sources, deps, tests, target) => {
       /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
       const packageJsonFile = sources
         .get("package.json")
@@ -55,8 +55,7 @@ function buildJsPackage(context: TargetContext): Computable<FileSet> {
         .then(content => content && JSON.parse(content));
 
       /* If we have TS files, we get to invoke the compiler */
-
-      const sourceGroups = sources.partition(path => {
+      const sourceGroups = sources.minus(tests).partition(path => {
         const lower = path.toLowerCase();
         const extidx = lower.lastIndexOf(".");
         if (extidx !== -1) {
@@ -78,8 +77,8 @@ function buildJsPackage(context: TargetContext): Computable<FileSet> {
       });
 
       if ("ts" in sourceGroups) {
-        context.getGlobalTarget("TSC").then(typescript => {
-          compileTypescript(sourceGroups.ts, deps, FileSet.unionAll(...(typescript as FileSet[])), target, context);
+        return context.getGlobalTarget("TSC").then(typescript => {
+          return compileTypescript(sourceGroups.ts, deps, FileSet.unionAll(...(typescript as FileSet[])), target, context);
         });
       }
 
@@ -89,12 +88,17 @@ function buildJsPackage(context: TargetContext): Computable<FileSet> {
 }
 
 function compileTypescript(srcs: FileSet, deps: FileSet, tsc: FileSet, target: string, context: TargetContext): Computable<FileSet> {
+  const jsTarget = parseJSTarget(target);
+
   const tsconfig = {
     compilerOptions: {
       declaration: true,
       declarationMap: true,
       outDir: "build",
       rootDir: "src",
+      target: jsTarget.version,
+      module: jsTarget.module === "esm" ? "esnext" : "commonjs",
+      moduleResolution: "node",
     },
     exclude: ["node_modules"],
     include: ["./src/**/*.ts"],
@@ -107,12 +111,46 @@ function compileTypescript(srcs: FileSet, deps: FileSet, tsc: FileSet, target: s
   });
   console.log(workingDir.toManifest());
 
-  context.getCachedOrBuild(workingDir.toManifest(), targetDir =>
+  return context.getCachedOrBuild(workingDir.toManifest(), targetDir =>
     writeFileSet(targetDir, workingDir)
       .then(() => execute("/home/nkeynes/.nvm/versions/node/v20.10.0/bin/node", ["node_modules/typescript/bin/tsc"], targetDir, {}))
       .then(() => getResultFileSet(targetDir, "build/**"))
   );
-  return Computable.resolve(EMPTY_FILESET);
+}
+
+interface JSTarget {
+  version: string;
+  module: "esm" | "commonjs";
+  environment: "node" | "browser";
+}
+
+/**
+ * Parse a JS target triple
+ * @param target
+ */
+function parseJSTarget(target: string): JSTarget {
+  const bits = target.split("-");
+
+  const result: JSTarget = { version: bits[0], module: "commonjs", environment: "node" };
+
+  if (bits.length > 1 && bits[1] === "esm") {
+    result.module = "esm";
+  }
+  if (bits.length > 2 && bits[2] === "browser") {
+    result.environment = "browser";
+  }
+  return result;
 }
 
 registerTargetRule("js_package", {}, buildJsPackage);
+
+/**
+ * Resolve all dependencies including transitive for our build target (from the 'deps' property).
+ *
+ * This is completely awful at the moment: we collect the _direct_ dependencies by the
+ * standard resolution process, then we read the package.json from each dep for its
+ * transitive dependencies, collate them, and then resolve them all against the default npm repository.
+ *
+ * There's so many things wrong with this that its not funny, but it
+ */
+// function resolveNPMDependencies(context: TargetContext): Computable<FileSet> {}

@@ -28,7 +28,6 @@ const MIN_HEAD_LENGTH = 262; /* For TAR */
 export function unpackStream(ins: Readable, targetdir: string): Computable<FileSet> {
   return Computable.from((resolve, reject) => {
     let depth = 0;
-    let fileMap = new Map<string, IFile>();
     function handleHeader(data: Buffer): Writable | null {
       switch (getMagic(data)) {
         case ArchiveType.GZIP:
@@ -38,6 +37,7 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
           return zip;
         case ArchiveType.TAR:
           const extract = tar.extract();
+          const files: Computable<FSFile>[] = [];
           extract.on("entry", (headers, entry, next) => {
             entry.on("end", () => {
               next();
@@ -45,34 +45,45 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
             if (headers.type === "directory") {
               entry.resume();
             } else {
-              const hash = crypto.createHash(HASH_ALGORITHM);
-              const pathname = path.resolve(targetdir, headers.name);
-              const dir = path.dirname(pathname);
-              fs.mkdirSync(dir, { recursive: true });
-              const outfile = fs.createWriteStream(pathname);
-              outfile.on("close", () => {
-                fileMap.set(
-                  headers.name,
-                  new FSFile(
-                    targetdir,
-                    headers.name,
-                    { mtime: headers.mtime ?? new Date(), size: headers.size ?? 0 },
-                    hash.digest("hex")
-                  )
-                );
-              });
-              const hashTransform = new Transform({
-                transform: (chunk, _enc, cb) => {
-                  hash.update(chunk);
-                  cb(null, chunk);
-                },
-              });
-              pipeline(entry, hashTransform, outfile);
+              files.push(
+                Computable.from((resolveFile, rejectFile) => {
+                  const hash = crypto.createHash(HASH_ALGORITHM);
+                  const pathname = path.resolve(targetdir, headers.name);
+                  const dir = path.dirname(pathname);
+                  fs.mkdirSync(dir, { recursive: true });
+                  const outfile = fs.createWriteStream(pathname);
+                  outfile.on("close", () => {
+                    resolveFile(
+                      new FSFile(
+                        targetdir,
+                        headers.name,
+                        { mtime: headers.mtime ?? new Date(), size: headers.size ?? 0 },
+                        hash.digest("hex")
+                      )
+                    );
+                  });
+                  outfile.on("error", err => {
+                    rejectFile(err);
+                  });
+                  const hashTransform = new Transform({
+                    transform: (chunk, _enc, cb) => {
+                      hash.update(chunk);
+                      cb(null, chunk);
+                    },
+                  });
+                  pipeline(entry, hashTransform, outfile);
+                })
+              );
             }
           });
           extract.on("finish", () => {
-            /* FIXME: it may be possible to get here before the last file has finished writing out above */
-            resolve(new FileSet(fileMap));
+            resolve(
+              Computable.forAll(files, (...f) => {
+                const fileMap = new Map();
+                f.forEach(file => fileMap.set(file.name, file));
+                return new FileSet(fileMap);
+              })
+            );
           });
           return extract;
         default:
