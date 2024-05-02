@@ -127,7 +127,7 @@ export class FSFileSource implements FileSource {
         if (err) {
           reject(err);
         } else {
-          resolve(hashFile(file).then(hash => new FSFile(this.root, name, stat, "")));
+          resolve(hashFile(file).then(hash => new FSFile(this.root, name, stat, hash)));
         }
       });
     });

@@ -3,7 +3,6 @@ import { unpackStream } from "./Unpack";
 import * as chai from "chai";
 import { expect } from "chai";
 import * as chaiAsPromised from "chai-as-promised";
-import { FileSet } from "../core/FileSet";
 
 chai.use(chaiAsPromised);
 

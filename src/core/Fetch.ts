@@ -2,7 +2,6 @@ import * as https from "https";
 import * as http from "http";
 import { URL } from "url";
 import { Computable } from "./Computable";
-import { ReadStream } from "fs";
 import { Readable } from "stream";
 
 export function fetchUrl(urlstring: string): Computable<Buffer> {
@@ -38,7 +37,6 @@ export function fetchUrl(urlstring: string): Computable<Buffer> {
 
 export function openUrlStream(urlstring: string): Computable<Readable> {
   return Computable.from<Readable>((resolve, reject) => {
-    const data: Buffer[] = [];
     function handleResponse(res: http.IncomingMessage): void {
       if (res.statusCode !== 200) {
         reject(new Error(`${res.statusCode} ${res.statusMessage}`));

@@ -19,7 +19,7 @@
 
 import { TargetContext } from "../../model/BuildContext";
 import { Computable } from "../../core/Computable";
-import { EMPTY_FILESET, FileSet } from "../../core/FileSet";
+import { FileSet } from "../../core/FileSet";
 import { registerTargetRule } from "../Registry";
 import { MemoryFile } from "../../core/MemoryFS";
 import { getResultFileSet, writeFileSet } from "../../core/BuildCache";

@@ -18,9 +18,8 @@
  */
 
 import { Computable } from "../core/Computable";
-import { FileSet, FileSource } from "../core/FileSet";
+import { FileSource } from "../core/FileSet";
 import { Constraints, TargetContext } from "../model/BuildContext";
-import { Property } from "../model/Property";
 
 export enum PropertyType {
   String,

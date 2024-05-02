@@ -17,14 +17,10 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { BuildContext, TargetContext } from "../model/BuildContext";
+import { TargetContext } from "../model/BuildContext";
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { registerTargetRule } from "./Registry";
-import * as os from "os";
-import * as path from "path";
-import * as fs from "fs";
-import { spawn } from "child_process";
 
 /**
  * Execute an arbitrary script, yielding some set of output files.
@@ -53,9 +49,6 @@ function getExecRoot(config: TargetContext): string {
   return "/tmp/fixme";
 }
 
-function filesetToDir(dir: string, files: FileSet): void {
-  for (const [path, file] of files) {
-  }
-}
+function filesetToDir(dir: string, files: FileSet): void {}
 
 registerTargetRule("script", {}, runGeneric);

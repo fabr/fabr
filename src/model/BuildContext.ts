@@ -2,11 +2,10 @@ import { BuildCache } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { FileSet, FileSource } from "../core/FileSet";
 import { getTargetRule } from "../rules/Registry";
-import { DeclKind, IDecl, INamedDecl, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl, IValue, PropertyType } from "./AST";
+import { DeclKind, IDecl, INamedDecl, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl, IValue } from "./AST";
 import { Name } from "./Name";
 import { IPrefixMatch } from "./Namespace";
 import { Property } from "./Property";
-import { Target } from "./Target";
 
 export type Constraints = Record<string, Property>;
 

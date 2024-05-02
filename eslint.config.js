@@ -12,5 +12,7 @@ module.exports = tslint.config(
     "@typescript-eslint/no-inferrable-types": 0,
     "@typescript-eslint/no-namespace": 0,
     "@typescript-eslint/no-non-null-assertion": 0,
+    "@typescript-eslint/no-explicit-any": "warn",
+    "@typescript-eslint/no-unused-vars": "warn",
   }},
 );

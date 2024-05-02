@@ -77,7 +77,7 @@ class NPMRepository implements FileSource {
         } else {
           /* Ok we've got an actual package */
           const tarball = response.dist.tarball;
-          return openUrlStream(response.dist.tarball)
+          return openUrlStream(tarball)
             .then(ins => unpackStream(ins, targetDir))
             .then(fs => remapFilenames(fs, response.name));
         }
@@ -96,7 +96,7 @@ function createRepository(context: TargetContext): Computable<NPMRepository> {
 
 function remapFilenames(files: FileSet, packageName: string): FileSet {
   return files.remap(name => {
-    let idx = name.indexOf("/");
+    const idx = name.indexOf("/");
     if (idx !== -1) {
       return packageName + name.substring(idx);
     } else {

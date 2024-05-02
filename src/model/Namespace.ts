@@ -90,7 +90,7 @@ export class Namespace {
     if (literalPrefix === "") {
       return undefined;
     }
-    const parts = literalPrefix.split(/[:\/]/);
+    const parts = literalPrefix.split(/[:/]/);
     let node: Namespace = this;
 
     for (let idx = 0; idx < parts.length; idx++) {

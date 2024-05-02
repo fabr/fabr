@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { Computable } from "./Computable";
-import { EMPTY_FILESET, FileSet, IFile } from "./FileSet";
+import { FileSet, IFile } from "./FileSet";
 import { deleteFile, hardlink, hashFile, hashString, readFile, readFileBuffer, writeFile } from "./FSWrapper";
 import * as picomatch from "picomatch";
 
@@ -47,12 +47,6 @@ export class BuildCache {
   private root: string;
   constructor(path: string) {
     this.root = path;
-  }
-
-  public getFileSet(manifest: string): Computable<FileSet | undefined> {
-    const key = hashString(manifest);
-    const result = this.lookup(key);
-    return Computable.resolve(EMPTY_FILESET);
   }
 
   public getOrCreate(manifest: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {

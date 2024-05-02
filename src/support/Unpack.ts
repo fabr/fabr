@@ -7,7 +7,7 @@ import * as fs from "fs";
 import * as tar from "tar-stream";
 import { Computable } from "../core/Computable";
 import { HASH_ALGORITHM } from "../core/FSWrapper";
-import { FileSet, IFile } from "../core/FileSet";
+import { FileSet } from "../core/FileSet";
 import { FSFile } from "../core/FSFileSource";
 
 export enum ArchiveType {
@@ -30,12 +30,13 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
     let depth = 0;
     function handleHeader(data: Buffer): Writable | null {
       switch (getMagic(data)) {
-        case ArchiveType.GZIP:
-          depth++;
+        case ArchiveType.GZIP: {
+          depth++; // TODO
           const zip = createUnzip();
           magicByteStream(zip, MIN_HEAD_LENGTH, handleHeader);
           return zip;
-        case ArchiveType.TAR:
+        }
+        case ArchiveType.TAR: {
           const extract = tar.extract();
           const files: Computable<FSFile>[] = [];
           extract.on("entry", (headers, entry, next) => {
@@ -86,6 +87,7 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
             );
           });
           return extract;
+        }
         default:
           reject(new Error("Unsupported archive file"));
           return null;
@@ -108,7 +110,7 @@ export function getMagic(buf: Buffer): ArchiveType {
   }
 }
 
-function magicByteStream(ins: Readable, headerSize: number, cb: (data: Buffer) => Writable | null) {
+function magicByteStream(ins: Readable, headerSize: number, cb: (data: Buffer) => Writable | null): void {
   const buffers: Buffer[] = [];
   let bufferSize = 0;
 
@@ -129,7 +131,7 @@ function magicByteStream(ins: Readable, headerSize: number, cb: (data: Buffer) =
     }
   }
 
-  function invokeCallback() {
+  function invokeCallback(): void {
     ins.removeListener("data", headerData);
     ins.removeListener("end", headerEnd);
     ins.removeListener("error", headerError);

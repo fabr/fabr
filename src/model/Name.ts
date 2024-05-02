@@ -319,5 +319,5 @@ function unescapeDoubleQuotedString(str: string): string {
 }
 
 function escapeGlob(str: string): string {
-  return str.replaceAll(/([][\\*.?])/g, "\\$1");
+  return str.replaceAll(/([\][\\*?])/g, "\\$1");
 }

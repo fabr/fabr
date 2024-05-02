@@ -59,11 +59,6 @@ export interface FileSource {
   get(name: string): Computable<IFile | undefined>;
 }
 
-interface IDir {
-  hash: string;
-  contents: Map<string, IDir | IFile>;
-}
-
 type FileSetContent = Map<string, IFile>;
 
 /**
@@ -127,7 +122,7 @@ export class FileSet implements FileSource {
   }
 
   public toManifest(): string {
-    let result = [];
+    const result = [];
     for (const name of [...this.content.keys()].sort()) {
       result.push(`${this.content.get(name)?.hash} ${name}`);
     }
