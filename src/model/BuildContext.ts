@@ -1,6 +1,7 @@
 import { BuildCache } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { FileSet, FileSource } from "../core/FileSet";
+import { Flag } from "../core/Flag";
 import { getTargetRule } from "../rules/Registry";
 import { DeclKind, IDecl, INamedDecl, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl, IValue } from "./AST";
 import { Name } from "./Name";
@@ -276,16 +277,16 @@ function stringifyLoc(decl: IDecl): string {
  * The context for an individual target.
  */
 export class TargetContext {
-  private target: ITargetDecl;
-  private props: Record<string, IPropertyDecl>;
+  public target: ITargetDecl;
   public context: BuildContext;
   public stack?: IDependencyStack;
+  private props: Record<string, IPropertyDecl>;
 
   constructor(target: ITargetDecl, context: BuildContext, stack?: IDependencyStack) {
     this.target = target;
-    this.props = {};
     this.context = context;
     this.stack = stack;
+    this.props = {};
     target.properties.forEach(prop => {
       this.props[prop.name] = prop;
     });
@@ -319,12 +320,14 @@ export class TargetContext {
     return this.getContext(overrides).resolveFileProperty(prop, this.target, this.stack);
   }
 
+  public getFlags(name: string, overrides?: Constraints): Computable<Flag[]> {
+    return this.getFileSources(name, overrides).then(sources => sources.filter(source => source instanceof Flag) as Flag[]);
+  }
+
   public getFileSet(name: string): Computable<FileSet> {
     return this.getFileSources(name).then(files => {
-      if (!files.every(file => file instanceof FileSet)) {
-        throw new Error("Files required for property " + name + " but got a repository");
-      }
-      return FileSet.unionAll(...(files as FileSet[]));
+      const filtered = files.filter(file => file instanceof FileSet) as FileSet[];
+      return FileSet.unionAll(...filtered);
     });
   }
 

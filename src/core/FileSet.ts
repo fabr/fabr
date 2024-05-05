@@ -201,21 +201,23 @@ export class FileSet implements FileSource {
     }
   }
 
-  public static layout(data: Record<string, FileSet | FileSet[] | IFile>): FileSet {
-    const result = new Map();
+  public static layout(data: Record<string, FileSet | Array<FileSet | undefined> | IFile | undefined>): FileSet {
+    const result = new Map<string, IFile>();
     for (const prefix in data) {
       const files = data[prefix];
       if (Array.isArray(files)) {
         for (const fs of files) {
-          for (const [name, file] of fs) {
-            result.set(path.join(prefix, name), file);
+          if (fs) {
+            for (const [name, file] of fs) {
+              result.set(path.join(prefix, name), file);
+            }
           }
         }
       } else if (files instanceof FileSet) {
         for (const [name, file] of files) {
           result.set(path.join(prefix, name), file);
         }
-      } else {
+      } else if (files !== undefined) {
         result.set(prefix, files);
       }
     }

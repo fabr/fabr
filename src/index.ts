@@ -20,6 +20,7 @@
 import { parseCommandLine } from "./driver/Command";
 import { runFabr } from "./driver/Driver";
 import "./rules/js";
+import "./rules/FlagTarget";
 
 const options = parseCommandLine(process.argv);
 runFabr(options);
