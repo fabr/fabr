@@ -1,0 +1,76 @@
+/*
+ * Copyright (c) 2026 Nathan Keynes <nkeynes@deadcoderemoval.net>
+ *
+ * This file is part of Fabr.
+ *
+ * Fabr is free software: you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * Fabr is distributed in the hope that it will be useful, but WITHOUT ANY
+ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * Fabr. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { BuildCache } from "./BuildCache";
+import { Computable } from "./Computable";
+import { FileSet } from "./FileSet";
+import { MemoryFile } from "./MemoryFS";
+
+function toPromise<T>(computable: Computable<T>): Promise<T> {
+  return new Promise(resolve => computable.then(resolve));
+}
+
+describe("BuildCache", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-buildcache-test-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("persists in-memory files into the cache directory", async () => {
+    const cache = new BuildCache(root);
+    const files = await toPromise(
+      cache.getOrCreate("test manifest", () =>
+        Computable.resolve(new FileSet(new Map([["meta.json", MemoryFile.from('{"name":"test"}')]])))
+      )
+    );
+    const file = await toPromise(files.get("meta.json"));
+    expect(file).toBeDefined();
+    const abspath = file!.getAbsPath();
+    expect(abspath).toBeDefined();
+    expect(abspath!.startsWith(root)).toBe(true);
+    expect(fs.readFileSync(abspath!, "utf8")).toBe('{"name":"test"}');
+  });
+
+  it("returns the cached result without re-running the build", async () => {
+    const cache = new BuildCache(root);
+    await toPromise(
+      cache.getOrCreate("test manifest", () =>
+        Computable.resolve(new FileSet(new Map([["meta.json", MemoryFile.from('{"name":"test"}')]])))
+      )
+    );
+
+    /* A separate BuildCache instance sees the persisted entry and never calls create */
+    const reopened = new BuildCache(root);
+    const files = await toPromise(
+      reopened.getOrCreate("test manifest", () => {
+        throw new Error("cache entry should not be rebuilt");
+      })
+    );
+    const content = await toPromise(files.readFile("meta.json"));
+    expect(content).toBe('{"name":"test"}');
+  });
+});

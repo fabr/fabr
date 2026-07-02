@@ -1,6 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
+import { Readable } from "stream";
 import { Computable } from "./Computable";
+import { openUrlStream } from "./Fetch";
 import { FileSet, IFile } from "./FileSet";
 import { deleteFile, hardlink, hashFile, hashString, readFile, readFileBuffer, writeFile } from "./FSWrapper";
 import * as picomatch from "picomatch";
@@ -64,6 +66,22 @@ export class BuildCache {
     });
   }
 
+  /**
+   * Download a URL through the cache: the cache key IS the url (by construction
+   * — the fetch and the key cannot diverge), and the entry is created by passing
+   * the response stream through the given process callback (e.g. unpacking an
+   * archive, or validating and storing a metadata document).
+   *
+   * The process callback runs before anything is recorded in the cache, so
+   * throwing on invalid content guarantees error responses are never cached.
+   * Cached downloads are currently never refreshed: this must only be used for
+   * URLs whose content is immutable by contract. (Any future invalidation/TTL
+   * policy, and integrity verification of downloaded content, belongs here.)
+   */
+  public getOrFetch(url: string, process: (content: Readable, targetDir: string) => Computable<FileSet>): Computable<FileSet> {
+    return this.getOrCreate(url, targetDir => openUrlStream(url).then(ins => process(ins, targetDir)));
+  }
+
   private lookup(key: string): Computable<FileSet | undefined> {
     const file = path.resolve(this.root, key + ".manifest");
     if (fs.existsSync(file)) {
@@ -113,7 +131,7 @@ function writeMemoryFiles(targetDir: string, files: FileSet): Computable<FileSet
   for (const [name, file] of files) {
     if (file.getAbsPath() === undefined) {
       const writeName = file.hash + ".dat";
-      output.push(file.getBuffer().then(buffer => writeFile(writeName, buffer)));
+      output.push(file.getBuffer().then(buffer => writeFile(path.resolve(targetDir, writeName), buffer)));
       map.set(name, new BuildFile(targetDir, writeName, file.hash));
     } else {
       map.set(name, file);

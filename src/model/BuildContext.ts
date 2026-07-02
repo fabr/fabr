@@ -1,3 +1,4 @@
+import { Readable } from "stream";
 import { BuildCache } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { FileSet, FileSource } from "../core/FileSet";
@@ -131,6 +132,10 @@ export class BuildContext {
 
   public getCachedOrBuild(manifest: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
     return this.model.getBuildCache().getOrCreate(manifest, create);
+  }
+
+  public getCachedOrFetch(url: string, process: (content: Readable, targetDir: string) => Computable<FileSet>): Computable<FileSet> {
+    return this.model.getBuildCache().getOrFetch(url, process);
   }
 
   public resolveStringProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<Property> {
@@ -333,6 +338,10 @@ export class TargetContext {
 
   public getCachedOrBuild(manifest: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
     return this.context.getCachedOrBuild(manifest, create);
+  }
+
+  public getCachedOrFetch(url: string, process: (content: Readable, targetDir: string) => Computable<FileSet>): Computable<FileSet> {
+    return this.context.getCachedOrFetch(url, process);
   }
 
   public getGlobalString(name: string, overrides?: Constraints): Computable<string> {

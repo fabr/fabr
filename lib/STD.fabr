@@ -1,0 +1,21 @@
+#
+# Build type: standard values are one of
+#  - debug          = no optimization, full debugging info (default)
+#  - relwithdebinfo = full optimization but still debuggable
+#  - release        = full optimization, all debug info stripped
+default BUILD_TYPE = debug;
+
+#
+# 
+default BUILD_MODE = build;
+
+
+targetdef flag {
+    provides = FILES;
+}
+
+targetdef generic {
+    cmd = STRING;
+    deps = FILES;
+    outputs = FILES;
+}

@@ -19,10 +19,12 @@ default JS_TARGET = es6-esm;
 #
 # The default typescript compiler to use (if compiling typescript).
 # You'll usually want to override this to set a specific version.
+# (Note these must be pinned versions or ranges; mutable dist-tags like
+# 'latest' are not supported as they make the build non-deterministic.)
 #
 
-default TSC = @npm:typescript:latest;
-default NODE_TYPES = @npm:@types/node:latest;
+default TSC = @npm:typescript:5.4.5;
+default NODE_TYPES = @npm:@types/node:20.12.7;
 
 ################### JS-specific targets ####################
 
