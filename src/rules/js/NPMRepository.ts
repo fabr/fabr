@@ -1,6 +1,7 @@
 import { Computable } from "../../core/Computable";
 import { readStream } from "../../core/Fetch";
-import { FileSet, FileSource } from "../../core/FileSet";
+import { FileSet } from "../../core/FileSet";
+import { Repository, RepositoryRef } from "../../core/Repository";
 import { MemoryFile } from "../../core/MemoryFS";
 import { TargetContext } from "../../model/BuildContext";
 import { Name } from "../../model/Name";
@@ -62,9 +63,20 @@ interface IResolutionEntry {
   version: string;
   selectedBy?: IRequirementEdge;
   reachedVia?: IRequirementEdge;
+  reachableFrom?: number[];
 }
 
-class NPMRepository implements FileSource, PackageRegistry<SemverVersion> {
+/** Serialized form of a persisted joint resolution */
+interface IResolutionDoc {
+  roots: Requirement[];
+  selections: IResolutionEntry[];
+}
+
+function requirementKey(req: Requirement): string {
+  return `${req.pkg}:${req.constraint}`;
+}
+
+class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
   private url: string;
   private context: TargetContext;
   /* In-process memo over the persistent metadata cache, keyed by "pkg/version" */
@@ -77,16 +89,49 @@ class NPMRepository implements FileSource, PackageRegistry<SemverVersion> {
   }
 
   /**
-   * Resolve a package requirement of the form "<name>:<constraint>" to the full
-   * transitive dependency closure (by minimal version selection), and return the
-   * union of all resolved package contents laid out as "<name>/..." paths.
+   * Resolve a batch of references jointly: one minimal-version-selection
+   * instance over all of the root requirements together, so that shared
+   * packages resolve to a single agreed version (and user overrides dominate
+   * sibling dependencies' requirements, per the max-of-minimums rule).
+   * Each reference receives the subset of the joint closure reachable from its
+   * own root, laid out as "<package>/..." paths.
    *
    * Only semver versions/ranges are accepted: dist-tags (e.g. 'latest') are
    * mutable pointers and would make the build non-deterministic, so they are
    * deliberately not supported. This also means every document we fetch from the
    * repository is immutable, and so cacheable indefinitely with no refresh policy.
    */
-  public find(name: Name): Computable<FileSet> {
+  public resolveAll(references: RepositoryRef[]): Computable<FileSet[]> {
+    const requirements = references.map(reference => this.parseRequirement(reference.name));
+    /* Canonicalize the roots so the resolution (and its memo key, and the
+     * reachableFrom indices) are independent of reference order */
+    const byKey = new Map(requirements.map(req => [requirementKey(req), req]));
+    const rootKeys = [...byKey.keys()].sort();
+    const roots = rootKeys.map(key => byKey.get(key)!);
+    const rootIndex = new Map(rootKeys.map((key, index) => [key, index]));
+    return this.getJointResolution(roots, rootKeys).then(selections => {
+      checkSingleVersions(selections, rootKeys.join(", "));
+      return Computable.forAll(
+        selections.map(sel => this.fetch(sel.pkg, sel.version)),
+        (...sets: FileSet[]) =>
+          requirements.map(req => {
+            const index = rootIndex.get(requirementKey(req))!;
+            const subset = selections.flatMap((sel, selIndex) => (sel.reachableFrom?.includes(index) ? [sets[selIndex]] : []));
+            const origin: IResolutionOrigin<SemverVersion> = {
+              kind: PACKAGE_RESOLUTION_PROVENANCE,
+              repository: this.url,
+              root: req,
+              selections,
+              versionToString,
+              packageOfPath: npmPackageOfPath,
+            };
+            return FileSet.unionAll(...subset).withOrigin(origin);
+          })
+      );
+    });
+  }
+
+  private parseRequirement(name: Name): Requirement {
     const prefix = name.getLiteralPathPrefix();
     const idx = prefix.lastIndexOf(":");
     if (idx === -1) {
@@ -100,24 +145,7 @@ class NPMRepository implements FileSource, PackageRegistry<SemverVersion> {
           " (note that dist-tags such as 'latest' are not supported: pin a version or range instead)"
       );
     }
-    return this.getResolution(pkg, constraint).then(selections => {
-      const origin: IResolutionOrigin<SemverVersion> = {
-        kind: PACKAGE_RESOLUTION_PROVENANCE,
-        repository: this.url,
-        root: { pkg, constraint },
-        selections,
-        versionToString,
-        packageOfPath: npmPackageOfPath,
-      };
-      return Computable.forAll(
-        selections.map(sel => this.fetch(sel.pkg, sel.version)),
-        (...sets: FileSet[]) => FileSet.unionAll(...sets).withOrigin(origin)
-      );
-    });
-  }
-
-  public get(name: string): Computable<undefined> {
-    return Computable.resolve(undefined);
+    return { pkg, constraint };
   }
 
   /**
@@ -133,37 +161,42 @@ class NPMRepository implements FileSource, PackageRegistry<SemverVersion> {
 
   /**
    * Resolutions are persisted in the build cache: under minimal version selection
-   * the result is a pure function of the root requirement and the (immutable)
-   * declared metadata of the packages it reaches, so a cached resolution can only
-   * become wrong if the requirement itself changes — which changes the cache key.
-   * Failed resolutions are not cached (the error propagates before anything is
-   * written), so transient repository problems don't poison the cache.
+   * the result is a pure function of the (canonically ordered) root requirements
+   * and the (immutable) declared metadata of the packages they reach, so a cached
+   * resolution can only become wrong if a requirement itself changes — which
+   * changes the cache key. Failed resolutions are not cached (the error
+   * propagates before anything is written), so transient repository problems
+   * don't poison the cache.
    */
-  private getResolution(pkg: string, constraint: string): Computable<Selected<SemverVersion>[]> {
+  private getJointResolution(roots: Requirement[], rootKeys: string[]): Computable<Selected<SemverVersion>[]> {
     return this.context
-      .getCachedOrBuild(`fabr:resolve:npm ${this.url} ${pkg}:${constraint}`, () =>
-        resolveMVS([{ pkg, constraint }], SEMVER, this).then(resolution => {
+      .getCachedOrBuild(`fabr:resolve:npm2 ${this.url} ${rootKeys.join(" ")}`, () =>
+        resolveMVS(roots, SEMVER, this).then(resolution => {
           if (resolution.errors.length > 0) {
-            throw new Error(`Unable to resolve ${pkg}:${constraint}:\n  ${resolution.errors.join("\n  ")}`);
+            throw new Error(`Unable to resolve ${rootKeys.join(", ")}:\n  ${resolution.errors.join("\n  ")}`);
           }
-          checkSingleVersions(resolution.selections, `${pkg}:${constraint}`);
-          const doc: IResolutionEntry[] = resolution.selections.map(sel => ({
-            pkg: sel.pkg,
-            version: versionToString(sel.version),
-            selectedBy: sel.selectedBy,
-            reachedVia: sel.reachedVia,
-          }));
+          const doc: IResolutionDoc = {
+            roots,
+            selections: resolution.selections.map(sel => ({
+              pkg: sel.pkg,
+              version: versionToString(sel.version),
+              selectedBy: sel.selectedBy,
+              reachedVia: sel.reachedVia,
+              reachableFrom: sel.reachableFrom,
+            })),
+          };
           return new FileSet(new Map([[RESOLUTION_FILE, MemoryFile.from(JSON.stringify(doc, undefined, 2))]]));
         })
       )
       .then(files => files.readFile(RESOLUTION_FILE))
       .then(data => {
-        const doc = JSON.parse(data) as IResolutionEntry[];
-        return doc.map(entry => ({
+        const doc = JSON.parse(data) as IResolutionDoc;
+        return doc.selections.map(entry => ({
           pkg: entry.pkg,
           version: parseVersion(entry.version),
           selectedBy: entry.selectedBy,
           reachedVia: entry.reachedVia,
+          reachableFrom: entry.reachableFrom,
         }));
       });
   }

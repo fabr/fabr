@@ -144,6 +144,35 @@ export function resolveMVS<V, C>(
         }
       }
 
+      /* Mark, for each root, which selections it (transitively) reaches */
+      roots.forEach((root, rootIndex) => {
+        const visitedNodes = new Set<string>();
+        const visit = (requirements: Requirement[]): void => {
+          for (const req of requirements) {
+            let constraint: C;
+            try {
+              constraint = domain.parseConstraint(req.constraint);
+            } catch {
+              continue;
+            }
+            const selection = reachable.get(domain.resolutionKey(req.pkg, constraint));
+            if (!selection) {
+              continue;
+            }
+            const from = (selection.reachableFrom ??= []);
+            if (!from.includes(rootIndex)) {
+              from.push(rootIndex);
+            }
+            const id = nodeId(selection.pkg, selection.version);
+            if (!visitedNodes.has(id)) {
+              visitedNodes.add(id);
+              visit(nodeRequirements.get(id) ?? []);
+            }
+          }
+        };
+        visit([root]);
+      });
+
       const selections = [...reachable.values()].sort((a, b) => {
         if (a.pkg !== b.pkg) {
           return a.pkg < b.pkg ? -1 : 1;

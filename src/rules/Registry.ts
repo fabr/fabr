@@ -19,6 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { FileSource } from "../core/FileSet";
+import { Repository } from "../core/Repository";
 import { Constraints, TargetContext } from "../model/BuildContext";
 
 import { ITargetTypeDefinition } from "./Types";
@@ -40,7 +41,7 @@ export function hasTargetType(type: string): boolean {
 export function registerTargetRule(
   name: string,
   constraints: Constraints,
-  evaluate: (target: TargetContext) => Computable<FileSource>
+  evaluate: (target: TargetContext) => Computable<FileSource | Repository>
 ): void {
   if (name in TARGET_REGISTRY) {
     TARGET_REGISTRY[name].push({ constraints, evaluate });

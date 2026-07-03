@@ -2,6 +2,7 @@ import { Readable } from "stream";
 import { BuildCache } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, ILabeledFileSet } from "../core/FileSet";
+import { isRepository, materializeAll, Repository, RepositoryRef, SourceRef } from "../core/Repository";
 import { Flag } from "../core/Flag";
 import { IProvenanceStep, IRenderContext, registerProvenanceRenderer } from "../core/Provenance";
 import { getTargetRule } from "../rules/Registry";
@@ -15,11 +16,11 @@ export type Constraints = Record<string, Property>;
 
 interface ILabeledFileSources {
   label: string;
-  sources: FileSource[];
+  sources: SourceRef[];
 }
 
 interface IResolvedFileSource {
-  sources: FileSource[];
+  sources: SourceRef[];
   /** The declaration the name resolved to, if it named a target or property */
   decl?: ITargetDecl | IPropertyDecl;
 }
@@ -123,7 +124,7 @@ export class BuildContext {
   protected constraints: Constraints;
   private model: IBuildModel;
   private propCache: Record<string, Computable<Property>>;
-  private targetCache: Record<string, Computable<FileSource[]>>;
+  private targetCache: Record<string, Computable<SourceRef[]>>;
 
   constructor(model: IBuildModel, constraints: Constraints) {
     this.model = model;
@@ -145,7 +146,7 @@ export class BuildContext {
     return this.model.getConfig(combined).getProperty(name);
   }
 
-  public getTargetWithOverrides(name: string, overrides: Constraints): Computable<FileSource[]> {
+  public getTargetWithOverrides(name: string, overrides: Constraints): Computable<SourceRef[]> {
     const combined = { ...this.constraints, ...overrides };
     return this.model.getConfig(combined).getTarget(name);
   }
@@ -176,7 +177,7 @@ export class BuildContext {
     }
   }
 
-  public getTarget(name: string, stack?: IDependencyStack): Computable<FileSource[]> {
+  public getTarget(name: string, stack?: IDependencyStack): Computable<SourceRef[]> {
     this.assertNonCircularTarget(name, stack);
     if (name in this.targetCache) {
       /* Already seen */
@@ -184,7 +185,7 @@ export class BuildContext {
     } else {
       const def = this.model.getDecl(name);
       if (def?.kind === DeclKind.Target) {
-        const result = this.resolveTarget(def, stack).then(target => [target]);
+        const result = this.resolveTarget(def, stack).then((target): SourceRef[] => [target]);
         this.targetCache[name] = result;
         return result;
       } else if (def?.kind === DeclKind.Property) {
@@ -211,7 +212,7 @@ export class BuildContext {
   public getPrefixTargetIfExists(
     name: Name,
     stack?: IDependencyStack
-  ): { target: Computable<FileSource[]>; rest: Name; decl: ITargetDecl | IPropertyDecl } | undefined {
+  ): { target: Computable<SourceRef[]>; rest: Name; decl: ITargetDecl | IPropertyDecl } | undefined {
     const result = this.model.getPrefixMatch(name);
     if (result) {
       return { target: this.getTarget(result.decl.name, stack), rest: result.rest, decl: result.decl };
@@ -234,7 +235,7 @@ export class BuildContext {
     );
   }
 
-  public resolveFileProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<FileSource[]> {
+  public resolveFileProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<SourceRef[]> {
     return this.resolveFilePropertyLabeled(prop, target, stack).then(groups => groups.flatMap(group => group.sources));
   }
 
@@ -263,10 +264,10 @@ export class BuildContext {
     );
   }
 
-  private withModelRef(source: FileSource, value: IValue): FileSource {
-    if (source instanceof FileSet) {
-      const step: IModelRefStep = { kind: MODEL_REF_PROVENANCE, value, constraints: this.constraints, parent: source.origin };
-      return source.withOrigin(step);
+  private withModelRef(source: SourceRef, value: IValue): SourceRef {
+    const step: IModelRefStep = { kind: MODEL_REF_PROVENANCE, value, constraints: this.constraints };
+    if (source instanceof FileSet || source instanceof RepositoryRef) {
+      return source.withStep(step);
     }
     return source;
   }
@@ -292,7 +293,27 @@ export class BuildContext {
           if (rest.isEmpty()) {
             return target.then(sources => ({ sources, decl }));
           } else {
-            return target.then(t => FileSet.findAll(t, rest)).then(data => ({ sources: [data], decl }));
+            /* Names into a repository become references, deferred until the
+             * consuming collection point resolves them jointly (and finding
+             * into an existing reference narrows it); container sources answer
+             * immediately. */
+            return target.then((t): IResolvedFileSource | Computable<IResolvedFileSource> => {
+              const references: SourceRef[] = [];
+              const containers: FileSource[] = [];
+              for (const source of t) {
+                if (source instanceof RepositoryRef) {
+                  references.push(source.find(rest));
+                } else if (isRepository(source)) {
+                  references.push(new RepositoryRef(source, rest));
+                } else {
+                  containers.push(source);
+                }
+              }
+              if (containers.length === 0) {
+                return { sources: references, decl };
+              }
+              return FileSet.findAll(containers, rest).then(data => ({ sources: [...references, data], decl }));
+            });
           }
         } else {
           /* Not an identified target; check the filesystem relative to the target decl */
@@ -317,7 +338,7 @@ export class BuildContext {
     );
   }
 
-  private resolveTarget(target: ITargetDecl, stack?: IDependencyStack): Computable<FileSource> {
+  private resolveTarget(target: ITargetDecl, stack?: IDependencyStack): Computable<FileSource | Repository> {
     const targetDef = this.model.getTargetDef(target.type);
     if (!targetDef) {
       throw new Error("Targetdef '" + target.type + "' not found"); /* Can't happen due to earlier checks */
@@ -456,7 +477,7 @@ export class TargetContext {
     return this.getRequiredProperty(name, overrides).then(prop => prop.toString());
   }
 
-  public getFileSources(name: string, overrides?: Constraints): Computable<FileSource[]> {
+  public getFileSources(name: string, overrides?: Constraints): Computable<SourceRef[]> {
     const prop = this.props[name];
     if (!prop) {
       return Computable.resolve([]);
@@ -476,15 +497,16 @@ export class TargetContext {
     return this.getContext()
       .resolveFilePropertyLabeled(prop, this.target, this.stack)
       .then(groups => {
-        const sets: ILabeledFileSet[] = [];
-        for (const group of groups) {
-          for (const source of group.sources) {
+        const flat = groups.flatMap(group => group.sources.map(source => ({ label: group.label, source })));
+        return materializeAll(flat.map(entry => entry.source)).then(sources => {
+          const sets: ILabeledFileSet[] = [];
+          sources.forEach((source, index) => {
             if (source instanceof FileSet) {
-              sets.push({ label: group.label, files: source });
+              sets.push({ label: flat[index].label, files: source });
             }
-          }
-        }
-        return FileSet.unionAllLabeled(sets);
+          });
+          return FileSet.unionAllLabeled(sets);
+        });
       });
   }
 
@@ -504,8 +526,10 @@ export class TargetContext {
     return this.getContext(overrides).getProperty(name, this.stack);
   }
 
-  public getGlobalTarget(name: string, overrides?: Constraints): Computable<FileSource[]> {
-    return this.getContext(overrides).getTarget(name, this.stack);
+  public getGlobalTarget(name: string, overrides?: Constraints): Computable<(FileSource | Repository)[]> {
+    return this.getContext(overrides)
+      .getTarget(name, this.stack)
+      .then(sources => materializeAll(sources));
   }
 
   private getContext(overrides?: Constraints): BuildContext {

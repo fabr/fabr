@@ -1,6 +1,7 @@
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
+import { Repository, RepositoryRef } from "../core/Repository";
 import { FileConflictError, renderProvenance } from "../core/Provenance";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { registerTargetRule } from "../rules/Registry";
@@ -16,11 +17,39 @@ import { BuildCache } from "../core/BuildCache";
 chai.use(chaiPromise);
 
 /* Trivial rules for exercising target-to-target dependency behaviour */
-registerTargetRule("test_good", {}, context => context.getFileSet("deps").then(() => EMPTY_FILESET));
+let lastDeps: FileSet | undefined;
+registerTargetRule("test_good", {}, context =>
+  context.getFileSet("deps").then(files => {
+    lastDeps = files;
+    return EMPTY_FILESET;
+  })
+);
 registerTargetRule("test_fail", {}, () => Computable.reject(new Error("reasons")));
 registerTargetRule("test_file", {}, context =>
   context.getRequiredString("content").then(content => new FileSet(new Map([["f.txt", MemoryFile.from(content)]])))
 );
+
+/* Repository double: resolves each reference to a single file, and records
+ * the batches it was asked to resolve */
+const batchCalls: string[][] = [];
+class TestRepo implements Repository {
+  private readonly cache = new Map<string, FileSet>();
+
+  public resolveAll(references: RepositoryRef[]): Computable<FileSet[]> {
+    batchCalls.push(references.map(reference => reference.name.toString()));
+    return Computable.resolve(references.map(reference => this.filesFor(reference.name.toString())));
+  }
+
+  private filesFor(name: string): FileSet {
+    let files = this.cache.get(name);
+    if (!files) {
+      files = new FileSet(new Map([[`${name}/data.txt`, MemoryFile.from(name)]]));
+      this.cache.set(name, files);
+    }
+    return files;
+  }
+}
+registerTargetRule("test_repo", {}, () => Computable.resolve(new TestRepo()));
 
 async function testGetProperty(input: string, prop: string, constraints?: Constraints): Promise<string[]> {
   const errors: string[] = [];
@@ -96,6 +125,86 @@ describe("BuildContext", () => {
       expect(rendered).to.include("with arch=armv7");
       expect(rendered.some(line => /^TEST.fabr:3:\d+: built by test_file 'c1'$/.test(line))).to.equal(true);
     }
+  });
+
+  it("Resolves external references jointly at the consuming target", async () => {
+    batchCalls.length = 0;
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_repo { }\n" +
+      "targetdef test_good { deps = FILES; }\n" +
+      "test_repo repo { }\n" +
+      "x = repo:one;\n" +
+      "test_good a { deps = x repo:two; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], new BuildCache("."), logger);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}).getTarget("a");
+    /* One joint batch, containing the reference reached through the property
+     * expansion of 'x' as well as the direct one */
+    expect(batchCalls).to.have.length(1);
+    expect(batchCalls[0].slice().sort()).to.deep.equal(["one", "two"]);
+    expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "two/data.txt"]);
+  });
+
+  it("Gathers external references through multiple levels of property indirection", async () => {
+    batchCalls.length = 0;
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_repo { }\n" +
+      "targetdef test_good { deps = FILES; }\n" +
+      "test_repo repo { }\n" +
+      "one = repo:one;\n" +
+      "two = repo:two;\n" +
+      "mydeps = one two;\n" +
+      "test_good a { deps = mydeps; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], new BuildCache("."), logger);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}).getTarget("a");
+    expect(batchCalls).to.have.length(1);
+    expect(batchCalls[0].slice().sort()).to.deep.equal(["one", "two"]);
+    expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "two/data.txt"]);
+  });
+
+  it("Partitions references by repository for resolution", async () => {
+    batchCalls.length = 0;
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_repo { }\n" +
+      "targetdef test_good { deps = FILES; }\n" +
+      "test_repo repoA { }\n" +
+      "test_repo repoB { }\n" +
+      "test_good a { deps = repoA:one repoB:two; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], new BuildCache("."), logger);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}).getTarget("a");
+    /* Each repository resolves its own references, as separate batches */
+    expect(batchCalls.map(batch => batch.slice().sort()).sort()).to.deep.equal([["one"], ["two"]]);
+    expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "two/data.txt"]);
+  });
+
+  it("Suspends projections into external references until resolution", async () => {
+    batchCalls.length = 0;
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_repo { }\n" +
+      "targetdef test_good { deps = FILES; }\n" +
+      "test_repo repo { }\n" +
+      "x = repo:one;\n" +
+      "test_good a { deps = x:one/*.txt; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], new BuildCache("."), logger);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}).getTarget("a");
+    expect(batchCalls).to.deep.equal([["one"]]);
+    /* The projection was applied to the resolved files */
+    expect(lastDeps && [...lastDeps].map(([path]) => path)).to.deep.equal(["one/data.txt"]);
   });
 
   it("Get String Property", async () => {

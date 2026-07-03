@@ -20,7 +20,7 @@
 import { Computable } from "../core/Computable";
 import { resolveMVS } from "./MVSResolver";
 import { SEMVER, SemverVersion, versionToString } from "./Semver";
-import { PackageRegistry, Requirement, Resolution } from "./Types";
+import { PackageRegistry, Requirement, Resolution, Selected } from "./Types";
 
 /**
  * Mock registry over a literal { pkg: { version: { dep: constraint } } } table.
@@ -172,6 +172,34 @@ describe("MVSResolver", () => {
     const result = resolve({}, {});
     expect(selectionStrings(result)).toEqual([]);
     expect(result.errors).toEqual([]);
+  });
+
+  it("records which roots reach each selection", () => {
+    const result = resolve(
+      { B: "^1.0.0", C: "^1.0.0" },
+      {
+        B: { "1.0.0": { D: "^1.0.0" } },
+        C: { "1.0.0": {} },
+        D: { "1.0.0": {} },
+      }
+    );
+    const get = (pkg: string): Selected<SemverVersion> => result.selections.find(sel => sel.pkg === pkg)!;
+    expect(get("B").reachableFrom).toEqual([0]);
+    expect(get("C").reachableFrom).toEqual([1]);
+    expect(get("D").reachableFrom).toEqual([0]);
+  });
+
+  it("records multiple reaching roots through a diamond", () => {
+    const result = resolve(
+      { B: "^1.0.0", C: "^1.0.0" },
+      {
+        B: { "1.0.0": { D: "^1.1.0" } },
+        C: { "1.0.0": { D: "^1.3.0" } },
+        D: { "1.1.0": {}, "1.3.0": {} },
+      }
+    );
+    const d = result.selections.find(sel => sel.pkg === "D")!;
+    expect(d.reachableFrom?.slice().sort()).toEqual([0, 1]);
   });
 
   it("records why each selection was reached and which requirement won", () => {

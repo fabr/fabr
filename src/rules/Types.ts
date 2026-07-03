@@ -19,6 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { FileSource } from "../core/FileSet";
+import { Repository } from "../core/Repository";
 import { Constraints, TargetContext } from "../model/BuildContext";
 
 export enum PropertyType {
@@ -38,5 +39,5 @@ export interface ITargetTypeDefinition {
    * but Typescript currently doesn't seem to be able to track this through the interface.
    * @param entity
    */
-  evaluate(target: TargetContext): Computable<FileSource>;
+  evaluate(target: TargetContext): Computable<FileSource | Repository>;
 }

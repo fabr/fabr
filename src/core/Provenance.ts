@@ -76,6 +76,19 @@ export function renderProvenance(step: IProvenanceStep | undefined, context: IRe
 }
 
 /**
+ * Link a sequence of collected steps (ordered innermost first) onto an existing
+ * chain: used when steps are accumulated as data before their parent exists
+ * (e.g. while a deferred reference travels to its resolution point).
+ */
+export function chainSteps(steps: ReadonlyArray<IProvenanceStep>, parent: IProvenanceStep | undefined): IProvenanceStep | undefined {
+  let chain = parent;
+  for (const step of steps) {
+    chain = { ...step, parent: chain };
+  }
+  return chain;
+}
+
+/**
  * One side of a file conflict: the file, the name its contributing dependency
  * was written as, and the provenance chain of the fileset it arrived in.
  */

@@ -64,6 +64,12 @@ export interface Selected<V> {
   version: V;
   selectedBy?: IRequirementEdge;
   reachedVia?: IRequirementEdge;
+  /**
+   * Indices into the resolution's root list identifying which root
+   * requirements (transitively) reach this selection — the basis for carving
+   * a joint resolution into per-root subsets.
+   */
+  reachableFrom?: number[];
 }
 
 /**

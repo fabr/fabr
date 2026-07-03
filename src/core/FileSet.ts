@@ -94,6 +94,14 @@ export class FileSet implements FileSource {
     return new FileSet(this.content, origin);
   }
 
+  /**
+   * @return a copy of the receiver with the given provenance step chained onto
+   * its existing provenance.
+   */
+  public withStep(step: IProvenanceStep): FileSet {
+    return this.withOrigin({ ...step, parent: this.origin });
+  }
+
   public find(name: Name): Computable<FileSet> {
     const newContent = new Map<string, IFile>();
     const matcher = picomatch(name.toString());
