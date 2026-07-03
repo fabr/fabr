@@ -284,7 +284,7 @@ function parseJSTarget(target: string): JSTarget {
   return result;
 }
 
-registerTargetRule("js_package", {}, buildJsPackage);
+registerTargetRule("js_package", { BUILD_OPERATION: "build" }, buildJsPackage);
 
 /**
  * Resolve all dependencies including transitive for our build target (from the 'deps' property).

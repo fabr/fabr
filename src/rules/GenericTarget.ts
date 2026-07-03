@@ -51,4 +51,4 @@ function getExecRoot(config: TargetContext): string {
 
 function filesetToDir(dir: string, files: FileSet): void {}
 
-registerTargetRule("script", {}, runGeneric);
+registerTargetRule("script", { BUILD_OPERATION: "build" }, runGeneric);

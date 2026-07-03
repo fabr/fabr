@@ -26,12 +26,27 @@ import { ITargetTypeDefinition } from "./Types";
 
 const TARGET_REGISTRY: Record<string, ITargetTypeDefinition[]> = {};
 
-export function getTargetRule(name: string): ITargetTypeDefinition | undefined {
+/**
+ * Select the rule for the given target type under the given configuration:
+ * every constraint the rule declares must match (by value), and the most
+ * specific matching rule (most constraints) wins; a rule registered with no
+ * constraints acts as a wildcard.
+ */
+export function getTargetRule(name: string, constraints: Constraints): ITargetTypeDefinition | undefined {
   const candidates = TARGET_REGISTRY[name];
-  if (candidates) {
-    /* TODO */
-    return candidates[0];
+  if (!candidates) {
+    return undefined;
   }
+  let best: ITargetTypeDefinition | undefined;
+  let bestCount = -1;
+  for (const candidate of candidates) {
+    const entries = Object.entries(candidate.constraints);
+    if (entries.length > bestCount && entries.every(([key, value]) => constraints[key] === value)) {
+      best = candidate;
+      bestCount = entries.length;
+    }
+  }
+  return best;
 }
 
 export function hasTargetType(type: string): boolean {

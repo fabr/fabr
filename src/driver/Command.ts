@@ -18,14 +18,17 @@
  */
 
 import { Constraints } from "../model/BuildContext";
-import { Property } from "../model/Property";
 
 export enum Mode {
   Normal,
   Watch,
 }
 
+/** The operations the command line can request (BUILD_OPERATION values) */
+const COMMANDS = new Set(["build", "test", "run"]);
+
 export interface Options {
+  command: string;
   mode: Mode;
   targets: string[];
   properties: Constraints;
@@ -33,7 +36,11 @@ export interface Options {
 
 function printUsage(): void {
   console.log(
-    "Usage: fabrjs [-nw] <targets>\n" +
+    "Usage: fabrjs [command] [-w] <targets>\n" +
+      "Commands:\n" +
+      "  build             Build the given targets (the default)\n" +
+      "  test              Run the given targets' tests\n" +
+      "  run               Execute the given targets\n" +
       "Options:\n" +
       "  -DPROP=VALUE      Force the given property PROP to VALUE\n" +
       "  -w                Watch mode\n"
@@ -46,9 +53,10 @@ function parseDefine(def: string): [string, string] {
 }
 
 export function parseCommandLine(args: string[]): Options {
-  const options: Options = { mode: Mode.Normal, targets: [], properties: {} };
+  const options: Options = { command: "build", mode: Mode.Normal, targets: [], properties: {} };
   const opts = args.slice(2);
 
+  let commandGiven = false;
   for (const arg of opts) {
     if (arg[0] === "-") {
       if (arg === "-w") {
@@ -58,12 +66,17 @@ export function parseCommandLine(args: string[]): Options {
         process.exit(0);
       } else if (arg.startsWith("-D")) {
         const [key, value] = parseDefine(arg.substring(2));
-        options.properties[key] = new Property([value]);
+        options.properties[key] = value;
       } else {
         console.error(`Unrecognized command-line option '${arg}'`);
         printUsage();
         process.exit(1);
       }
+    } else if (!commandGiven && options.targets.length === 0 && COMMANDS.has(arg)) {
+      /* The first positional argument may name the operation; a target with
+       * the same name can be reached with an explicit command first */
+      options.command = arg;
+      commandGiven = true;
     } else {
       options.targets.push(arg);
     }

@@ -24,7 +24,7 @@ import { FileConflictError, renderProvenance } from "../core/Provenance";
 import { ExecutionError } from "../support/Execute";
 import { getSourceFileSource } from "../core/SourceFileSource";
 import { declPosn } from "../model/AST";
-import { DependencyFailedError } from "../model/BuildContext";
+import { BUILD_OPERATION, DependencyFailedError } from "../model/BuildContext";
 import { loadProject } from "../model/Loader";
 import { defaultLog, Diagnostic, ISourcePosition, Log } from "../support/Log";
 import { Options } from "./Command";
@@ -130,7 +130,9 @@ export async function runFabr(options: Options): Promise<void> {
 
   return load
     .then(model => {
-      const config = model.getConfig(options.properties);
+      /* The requested command is the BUILD_OPERATION constraint (explicit
+       * -DBUILD_OPERATION=... takes precedence) */
+      const config = model.getConfig({ [BUILD_OPERATION]: options.command, ...options.properties });
       const targets = options.targets.map(targetName => config.getTarget(targetName));
       return Computable.forAll(targets, () => {
         if (buildCache.getBuildCount() === 0) {

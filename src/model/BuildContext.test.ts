@@ -11,7 +11,6 @@ import { toBuildModel } from "./Sema";
 import { expect } from "chai";
 import * as chai from "chai";
 import * as chaiPromise from "chai-as-promised";
-import { Property } from "./Property";
 import { BuildCache } from "../core/BuildCache";
 
 chai.use(chaiPromise);
@@ -103,7 +102,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig({ arch: new Property(["armv7"]) }).getTarget("a");
+      await model.getConfig({ arch: "armv7" }).getTarget("a");
       expect.fail("expected target a to fail");
     } catch (err) {
       expect(err).to.be.instanceOf(DependencyFailedError);
@@ -211,6 +210,16 @@ describe("BuildContext", () => {
     await expect(testGetProperty("a = b c; d = ${a};", "a")).to.eventually.deep.equal(["b", "c"]);
     await expect(testGetProperty("a = b c; d = ${a};", "d")).to.eventually.deep.equal(["b c"]);
     await expect(testGetProperty("a = b c; d = ${a} ${a};", "d")).to.eventually.deep.equal(["b c", "b c"]);
-    await expect(testGetProperty("a = b c; d = a${a};", "d", { a: new Property(["QUUX"]) })).to.eventually.deep.equal(["aQUUX"]);
+    await expect(testGetProperty("a = b c; d = a${a};", "d", { a: "QUUX" })).to.eventually.deep.equal(["aQUUX"]);
+  });
+
+  it("Interns configurations by constraint value", () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", "a = b;", logger)], new BuildCache("."), logger);
+    expect(errors).to.deep.equal([]);
+
+    expect(model.getConfig({ x: "1" })).to.equal(model.getConfig({ x: "1" }));
+    expect(model.getConfig({ x: "2" })).to.not.equal(model.getConfig({ x: "1" }));
   });
 });

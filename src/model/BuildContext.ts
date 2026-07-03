@@ -12,7 +12,21 @@ import { Name } from "./Name";
 import { IPrefixMatch } from "./Namespace";
 import { Property } from "./Property";
 
-export type Constraints = Record<string, Property>;
+/**
+ * A set of (scalar) property constraints defining a build configuration.
+ * Values are plain strings by design, so that constraint sets compare by value.
+ */
+export type Constraints = Record<string, string>;
+
+/**
+ * The distinguished constraint carrying the requested operation ('build',
+ * 'test', ...): `fabr test foo` is sugar for constraining BUILD_OPERATION=test.
+ * Rule selection matches against it, so a target type provides an operation by
+ * registering a rule constrained to it. Note that an operation-specific rule
+ * is responsible for explicitly requesting BUILD_OPERATION=build for its
+ * dependencies (the constraint otherwise propagates).
+ */
+export const BUILD_OPERATION = "BUILD_OPERATION";
 
 interface ILabeledFileSources {
   label: string;
@@ -63,9 +77,7 @@ function renderModelRef(step: IModelRefStep, context: IRenderContext): string[] 
  */
 function constraintLines(step: IModelRefStep): string[] {
   const deeper = findNextModelRef(step.parent);
-  const entries = Object.entries(step.constraints).filter(([key, value]) =>
-    deeper ? String(deeper.constraints[key]) !== String(value) : true
-  );
+  const entries = Object.entries(step.constraints).filter(([key, value]) => (deeper ? deeper.constraints[key] !== value : true));
   if (entries.length === 0) {
     return [];
   }
@@ -132,7 +144,7 @@ export class BuildContext {
     this.propCache = {};
     this.targetCache = {};
     // Pre-force the constraints so we don't have to check this later.
-    Object.keys(constraints).forEach(key => (this.propCache[key] = Computable.resolve(constraints[key])));
+    Object.keys(constraints).forEach(key => (this.propCache[key] = Computable.resolve(new Property([constraints[key]]))));
   }
 
   public hasConstraints(constraints: Constraints): boolean {
@@ -343,12 +355,13 @@ export class BuildContext {
     if (!targetDef) {
       throw new Error("Targetdef '" + target.type + "' not found"); /* Can't happen due to earlier checks */
     }
-    const rule = getTargetRule(target.type)!;
+    const rule = getTargetRule(target.type, this.constraints);
     if (!rule) {
+      const configuration = Object.entries(this.constraints)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(", ");
       throw new Error(
-        "No rule found to build '" +
-          target.type +
-          "'\n" +
+        `No rule found to build '${target.type}'${configuration ? ` (${configuration})` : ""}\n` +
           `    at ${target.name} (${stringifyLoc(target)})\n` +
           stringifyDependencyStack(stack)
       );

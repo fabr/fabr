@@ -31,4 +31,4 @@ function runNodeJs(config: TargetContext): Computable<FileSet> {
   return Computable.resolve(EMPTY_FILESET);
 }
 
-registerTargetRule("js_run", {}, runNodeJs);
+registerTargetRule("js_run", { BUILD_OPERATION: "build" }, runNodeJs);
