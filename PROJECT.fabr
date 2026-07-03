@@ -1,6 +1,7 @@
 include lib/JS.fabr;
 
 TSC = @npm:typescript:5.4.5;
+JS_TARGET = es2018-commonjs;
 
 chokidar = @npm:chokidar:3.6.0;
 picomatch = @npm:picomatch:2.3.1 @npm:@types/picomatch:2.3.0;

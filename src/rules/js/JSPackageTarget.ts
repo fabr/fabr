@@ -19,7 +19,7 @@
 
 import { TargetContext } from "../../model/BuildContext";
 import { Computable } from "../../core/Computable";
-import { FileSet } from "../../core/FileSet";
+import { EMPTY_FILESET, FileSet } from "../../core/FileSet";
 import { RepositoryRef, SourceRef } from "../../core/Repository";
 import { registerTargetRule } from "../Registry";
 import { MemoryFile } from "../../core/MemoryFS";
@@ -118,43 +118,51 @@ function buildJsPackage(context: TargetContext): Computable<FileSet> {
         return "copy";
       });
 
+      const jsTarget = parseJSTarget(target);
+
+      let compiled: Computable<FileSet>;
       if ("ts" in sourceGroups) {
         const tsdeps = [context.getGlobalTarget("TSC")];
         if (flags.find(f => f.name === "nodejs")) {
           tsdeps.push(context.getGlobalTarget("NODE_TYPES"));
         }
 
-        const compiled = Computable.forAll(tsdeps, (typescript, types) => {
+        compiled = Computable.forAll(tsdeps, (typescript, types) => {
           const extraTypes = types ? FileSet.unionAll(...(types as FileSet[])) : undefined;
           return compileTypescript(
             sourceGroups.ts,
             deps,
             FileSet.unionAll(...(typescript as FileSet[])),
             extraTypes,
-            target,
+            jsTarget,
             flags,
             context
           );
         });
-        return Computable.forAll([compiled, packageJsonFile], (files, seed) => {
-          const packageJson = createPackageJson(
-            files,
-            seed,
-            context.target.name,
-            version?.toString(),
-            depSources,
-            parseJSTarget(target)
-          );
-          const assembled = FileSet.unionAll(files, new FileSet(new Map([["package.json", packageJson]])));
-          /* Materialize the assembled package as its own cache entry: the
-           * target's deliverable is a real on-disk package directory. */
-          return context.getCachedOrBuild(assembled.toManifest(), targetDir =>
-            writeFileSet(targetDir, assembled).then(() => getResultFileSet(targetDir, "**"))
-          );
-        });
+      } else {
+        compiled = Computable.resolve(EMPTY_FILESET);
       }
 
-      return new Computable<FileSet>();
+      return Computable.forAll([compiled, packageJsonFile], (files, seed) => {
+        /* Non-compiled sources are preserved in the output as-is (the source
+         * package.json is consumed as the seed rather than copied through) */
+        const copied = (sourceGroups.copy ?? EMPTY_FILESET).remap(name => (name === "package.json" ? undefined : name));
+        const contents = FileSet.unionAll(files, copied);
+        const packageJson = createPackageJson(
+          contents,
+          seed,
+          context.target.name,
+          version?.toString(),
+          depSources,
+          jsTarget
+        );
+        const assembled = FileSet.unionAll(contents, new FileSet(new Map([["package.json", packageJson]])));
+        /* Materialize the assembled package as its own cache entry: the
+         * target's deliverable is a real on-disk package directory. */
+        return context.getCachedOrBuild(assembled.toManifest(), targetDir =>
+          writeFileSet(targetDir, assembled).then(() => getResultFileSet(targetDir, "**"))
+        );
+      });
     }
   );
 }
@@ -216,11 +224,10 @@ function compileTypescript(
   deps: FileSet,
   tsc: FileSet,
   extraTypes: FileSet | undefined,
-  target: string,
+  jsTarget: JSTarget,
   flags: Flag[],
   context: TargetContext
 ): Computable<FileSet> {
-  const jsTarget = parseJSTarget(target);
   const runtime = getESRuntime(flags, jsTarget.version);
 
   const tsconfig = {
@@ -232,7 +239,7 @@ function compileTypescript(
       /* Strict by default; TODO: needs a way to flag it off per target */
       strict: true,
       target: jsTarget.version,
-      lib: [runtime],
+      lib: jsTarget.environment === "browser" ? [runtime, "dom"] : [runtime],
       module: jsTarget.module === "esm" ? "esnext" : "commonjs",
       moduleResolution: "node",
     },
