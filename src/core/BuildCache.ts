@@ -192,7 +192,11 @@ function asExecutionError<T>(operation: Computable<T>): Computable<T> {
 }
 
 export function getResultFileSet(targetDir: string, pattern: string): Computable<FileSet> {
-  const matcher = picomatch(pattern);
+  /* A "dir:glob" pattern matches under dir, and names the results relative to
+   * it (consistent with the source-name convention) */
+  const colon = pattern.indexOf(":");
+  const rootDir = colon === -1 ? targetDir : path.resolve(targetDir, pattern.substring(0, colon));
+  const matcher = picomatch(colon === -1 ? pattern : pattern.substring(colon + 1));
   const result = new Map<string, IFile>();
   const ops: Computable<void>[] = [];
 
@@ -212,11 +216,11 @@ export function getResultFileSet(targetDir: string, pattern: string): Computable
            * but the (since removed) path on the ones our current @types are for. */
           const entry = dirent as typeof dirent & Partial<{ parentPath: string; path: string }>;
           const abspath = path.resolve(entry.parentPath ?? entry.path ?? targetDir, dirent.name);
-          const relpath = path.relative(targetDir, abspath);
-          if (matcher(relpath)) {
+          const relpath = path.relative(rootDir, abspath);
+          if (!relpath.startsWith("..") && matcher(relpath)) {
             ops.push(
               hashFile(abspath).then(hash => {
-                result.set(relpath, new BuildFile(targetDir, relpath, hash));
+                result.set(relpath, new BuildFile(rootDir, relpath, hash));
               })
             );
           } else {

@@ -20,6 +20,7 @@
 import { TargetContext } from "../../model/BuildContext";
 import { Computable } from "../../core/Computable";
 import { FileSet } from "../../core/FileSet";
+import { RepositoryRef, SourceRef } from "../../core/Repository";
 import { registerTargetRule } from "../Registry";
 import { MemoryFile } from "../../core/MemoryFS";
 import { getResultFileSet, writeFileSet } from "../../core/BuildCache";
@@ -85,13 +86,15 @@ function buildJsPackage(context: TargetContext): Computable<FileSet> {
       context.getFlags("deps"),
       context.getFileSet("tests"),
       context.getGlobalString("JS_TARGET"),
+      context.getProperty("version"),
+      context.getFileSources("deps"),
     ],
-    (sources, deps, flags, tests, target) => {
+    (sources, deps, flags, tests, target, version, depSources) => {
       /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
       const packageJsonFile = sources
         .get("package.json")
         .then(file => file?.readString())
-        .then(content => content && JSON.parse(content));
+        .then(content => (content ? (JSON.parse(content) as Record<string, unknown>) : undefined));
 
       /* If we have TS files, we get to invoke the compiler */
       const sourceGroups = sources.minus(tests).partition(path => {
@@ -121,7 +124,7 @@ function buildJsPackage(context: TargetContext): Computable<FileSet> {
           tsdeps.push(context.getGlobalTarget("NODE_TYPES"));
         }
 
-        return Computable.forAll(tsdeps, (typescript, types) => {
+        const compiled = Computable.forAll(tsdeps, (typescript, types) => {
           const extraTypes = types ? FileSet.unionAll(...(types as FileSet[])) : undefined;
           return compileTypescript(
             sourceGroups.ts,
@@ -133,11 +136,79 @@ function buildJsPackage(context: TargetContext): Computable<FileSet> {
             context
           );
         });
+        return Computable.forAll([compiled, packageJsonFile], (files, seed) => {
+          const packageJson = createPackageJson(
+            files,
+            seed,
+            context.target.name,
+            version?.toString(),
+            depSources,
+            parseJSTarget(target)
+          );
+          const assembled = FileSet.unionAll(files, new FileSet(new Map([["package.json", packageJson]])));
+          /* Materialize the assembled package as its own cache entry: the
+           * target's deliverable is a real on-disk package directory. */
+          return context.getCachedOrBuild(assembled.toManifest(), targetDir =>
+            writeFileSet(targetDir, assembled).then(() => getResultFileSet(targetDir, "**"))
+          );
+        });
       }
 
       return new Computable<FileSet>();
     }
   );
+}
+
+/**
+ * Generate the package.json for the built package: initialized from the source
+ * package.json where one exists, then overlaid with what the target declares —
+ * its name, version, module type, entry points, and the direct package
+ * requirements from its deps.
+ */
+function createPackageJson(
+  files: FileSet,
+  seed: Record<string, unknown> | undefined,
+  name: string,
+  version: string | undefined,
+  depSources: SourceRef[],
+  jsTarget: JSTarget
+): MemoryFile {
+  const packageJson: Record<string, unknown> = { ...(seed ?? {}) };
+  packageJson.name = name;
+  if (version !== undefined) {
+    packageJson.version = version;
+  }
+  packageJson.type = jsTarget.module === "esm" ? "module" : "commonjs";
+  const names = new Set([...files].map(([filename]) => filename));
+  if (names.has("index.js")) {
+    packageJson.main = "index.js";
+  }
+  if (names.has("index.d.ts")) {
+    packageJson.types = "index.d.ts";
+  }
+
+  /* The direct package requirements, as written (typings split out per convention) */
+  const dependencies: Record<string, string> = {};
+  const devDependencies: Record<string, string> = {};
+  for (const source of depSources) {
+    if (source instanceof RepositoryRef) {
+      const requirement = source.name.toString();
+      const idx = requirement.lastIndexOf(":");
+      if (idx > 0) {
+        const pkg = requirement.substring(0, idx);
+        const constraint = requirement.substring(idx + 1);
+        (pkg.startsWith("@types/") ? devDependencies : dependencies)[pkg] = constraint;
+      }
+    }
+  }
+  if (Object.keys(dependencies).length > 0) {
+    packageJson.dependencies = dependencies;
+  }
+  if (Object.keys(devDependencies).length > 0) {
+    packageJson.devDependencies = devDependencies;
+  }
+
+  return MemoryFile.from(JSON.stringify(packageJson, undefined, 2));
 }
 
 function compileTypescript(
@@ -178,7 +249,7 @@ function compileTypescript(
   return context.getCachedOrBuild(workingDir.toManifest(), targetDir =>
     writeFileSet(targetDir, workingDir)
       .then(() => execute(findExecutable("node"), ["node_modules/typescript/bin/tsc"], targetDir, {}))
-      .then(() => getResultFileSet(targetDir, "build/**"))
+      .then(() => getResultFileSet(targetDir, "build:**"))
   );
 }
 
