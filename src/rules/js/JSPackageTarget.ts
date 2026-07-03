@@ -23,7 +23,7 @@ import { FileSet } from "../../core/FileSet";
 import { registerTargetRule } from "../Registry";
 import { MemoryFile } from "../../core/MemoryFS";
 import { getResultFileSet, writeFileSet } from "../../core/BuildCache";
-import { execute } from "../../support/Execute";
+import { execute, findExecutable } from "../../support/Execute";
 import { Flag } from "../../core/Flag";
 
 /**
@@ -158,6 +158,8 @@ function compileTypescript(
       declarationMap: true,
       outDir: "build",
       rootDir: "src",
+      /* Strict by default; TODO: needs a way to flag it off per target */
+      strict: true,
       target: jsTarget.version,
       lib: [runtime],
       module: jsTarget.module === "esm" ? "esnext" : "commonjs",
@@ -172,11 +174,10 @@ function compileTypescript(
     src: srcs,
     "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
   });
-  console.log(workingDir.toManifest());
 
   return context.getCachedOrBuild(workingDir.toManifest(), targetDir =>
     writeFileSet(targetDir, workingDir)
-      .then(() => execute("/home/nkeynes/.nvm/versions/node/v20.10.0/bin/node", ["node_modules/typescript/bin/tsc"], targetDir, {}))
+      .then(() => execute(findExecutable("node"), ["node_modules/typescript/bin/tsc"], targetDir, {}))
       .then(() => getResultFileSet(targetDir, "build/**"))
   );
 }

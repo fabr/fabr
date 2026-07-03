@@ -31,6 +31,7 @@ import { Options } from "./Command";
 import { getSourceRoot, getBuildCacheRoot, PROJECT_FILENAME, SOURCE_CACHE_FILENAME } from "./Environment";
 
 const DIAG_BUILD_COMPLETE = Diagnostic.Info<{ count: number }>("Built {count} target(s)");
+const DIAG_UP_TO_DATE = Diagnostic.Info<Record<string, never>>("Already up to date");
 const DIAG_BUILD_FAILED = Diagnostic.Error<Record<string, never>>("Build failed");
 const DIAG_ERROR = Diagnostic.Error<{ message: string }>("{message}");
 const DIAG_TARGET_FAILED = Diagnostic.Error<{ name: string; message: string; loc: ISourcePosition }>(
@@ -113,6 +114,14 @@ function renderConflictDetail(err: FileConflictError): string {
 export async function runFabr(options: Options): Promise<void> {
   const log = defaultLog;
 
+  /* Both the success and failure paths exit explicitly; reaching a drained
+   * event loop means some computation stalled without settling (i.e. a bug),
+   * which should be loud rather than a silent exit. */
+  process.on("beforeExit", () => {
+    log.log(DIAG_ERROR, { message: "Internal error: the build stalled without completing" });
+    process.exit(2);
+  });
+
   const sourceRoot = await getSourceRoot();
   const buildCache = new BuildCache(getBuildCacheRoot());
   const sourceFileSource = await getSourceFileSource(sourceRoot, SOURCE_CACHE_FILENAME);
@@ -124,7 +133,11 @@ export async function runFabr(options: Options): Promise<void> {
       const config = model.getConfig(options.properties);
       const targets = options.targets.map(targetName => config.getTarget(targetName));
       return Computable.forAll(targets, () => {
-        log.log(DIAG_BUILD_COMPLETE, { count: targets.length });
+        if (buildCache.getBuildCount() === 0) {
+          log.log(DIAG_UP_TO_DATE, {});
+        } else {
+          log.log(DIAG_BUILD_COMPLETE, { count: targets.length });
+        }
         process.exit(0);
       });
     })

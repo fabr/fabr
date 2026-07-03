@@ -102,5 +102,7 @@ describe("BuildCache", () => {
     );
     const content = await toPromise(files.readFile("meta.json"));
     expect(content).toBe('{"name":"test"}');
+    /* A fully-cached run built nothing */
+    expect(reopened.getBuildCount()).toBe(0);
   });
 });

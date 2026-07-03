@@ -48,8 +48,19 @@ export class BuildFile implements IFile {
  */
 export class BuildCache {
   private root: string;
+  /** Number of entries actually built (cache misses) during this run */
+  private builds = 0;
+
   constructor(path: string) {
     this.root = path;
+  }
+
+  /**
+   * @return the number of entries that had to be built (rather than served
+   * from cache) so far — zero meaning the run had no effect.
+   */
+  public getBuildCount(): number {
+    return this.builds;
   }
 
   public getOrCreate(manifest: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
@@ -58,6 +69,7 @@ export class BuildCache {
       if (result) {
         return result;
       } else {
+        this.builds++;
         const targetDir = path.resolve(this.root, key);
         /* No manifest means any existing directory content is debris from a
          * failed (or crashed) earlier attempt: start from a clean slate. */
@@ -181,32 +193,46 @@ function asExecutionError<T>(operation: Computable<T>): Computable<T> {
 
 export function getResultFileSet(targetDir: string, pattern: string): Computable<FileSet> {
   const matcher = picomatch(pattern);
-  const result = new Map();
+  const result = new Map<string, IFile>();
   const ops: Computable<void>[] = [];
-  const dirs = [];
 
   return Computable.from((resolve, reject) => {
     fs.readdir(targetDir, { withFileTypes: true, recursive: true }, (err, dirents) => {
       if (err) {
         reject(err);
-      } else {
+        return;
+      }
+      try {
         dirents.forEach(dirent => {
-          if (dirent.isFile() && matcher(dirent.name)) {
+          if (!dirent.isFile()) {
+            return;
+          }
+          /* Note: with recursive readdir, dirent.name is only the basename.
+           * The containing directory is parentPath on current node versions,
+           * but the (since removed) path on the ones our current @types are for. */
+          const entry = dirent as typeof dirent & Partial<{ parentPath: string; path: string }>;
+          const abspath = path.resolve(entry.parentPath ?? entry.path ?? targetDir, dirent.name);
+          const relpath = path.relative(targetDir, abspath);
+          if (matcher(relpath)) {
             ops.push(
-              hashFile(path.resolve(targetDir, dirent.name)).then(hash => {
-                result.set(dirent.name, new BuildFile(targetDir, dirent.name, hash));
+              hashFile(abspath).then(hash => {
+                result.set(relpath, new BuildFile(targetDir, relpath, hash));
               })
             );
           } else {
-            if (dirent.isDirectory()) {
-              dirs.push(dirent.name);
-            } else {
-              ops.push(deleteFile(path.resolve(targetDir, dirent.name)));
-            }
+            /* Prune staged inputs, retaining only the results in the cache entry */
+            ops.push(asExecutionError(deleteFile(abspath)));
           }
         });
+      } catch (direntErr) {
+        reject(direntErr);
+        return;
       }
-      Computable.forAll(ops, () => resolve(new FileSet(result)));
+      Computable.forAll(
+        ops,
+        () => resolve(new FileSet(result)),
+        opErr => reject(opErr)
+      );
     });
   });
 }
