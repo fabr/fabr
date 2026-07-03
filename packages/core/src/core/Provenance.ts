@@ -89,13 +89,44 @@ export function chainSteps(steps: ReadonlyArray<IProvenanceStep>, parent: IProve
 }
 
 /**
- * One side of a file conflict: the file, the name its contributing dependency
- * was written as, and the provenance chain of the fileset it arrived in.
+ * Produce a short identifier from one provenance step — "the name it was
+ * written as" — for attributing content in one-line messages, as opposed to
+ * the full multi-line rendering.
  */
-export interface IConflictSide {
-  label: string;
+export type ProvenanceDescriber = (step: IProvenanceStep) => string;
+
+const PROVENANCE_DESCRIBERS = new Map<string, ProvenanceDescriber>();
+
+export function registerProvenanceDescriber(kind: string, describer: ProvenanceDescriber): void {
+  PROVENANCE_DESCRIBERS.set(kind, describer);
+}
+
+/**
+ * @return a short description of the nearest describable step in the chain, or
+ * undefined if no step has a registered describer.
+ */
+export function describeProvenance(step: IProvenanceStep | undefined): string | undefined {
+  for (let current = step; current; current = current.parent) {
+    const describer = PROVENANCE_DESCRIBERS.get(current.kind);
+    if (describer) {
+      return describer(current);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * One side of a file conflict: the file, and the provenance chain of the
+ * fileset it arrived in.
+ */
+export interface IConflictSource {
   file: IFile;
   provenance?: IProvenanceStep;
+}
+
+/** A conflict side as reported: the label is derived from the provenance */
+export interface IConflictSide extends IConflictSource {
+  label: string;
 }
 
 export class FileConflictError extends Error {
@@ -103,14 +134,20 @@ export class FileConflictError extends Error {
   public readonly left: IConflictSide;
   public readonly right: IConflictSide;
 
-  constructor(path: string, left: IConflictSide, right: IConflictSide) {
+  constructor(path: string, left: IConflictSource, right: IConflictSource) {
+    const leftSide = describeSide(left);
+    const rightSide = describeSide(right);
     super(
-      left.label !== right.label
-        ? `Conflicting files for ${path} (from '${left.label}' and '${right.label}')`
-        : `Conflicting files for ${path} (within '${left.label}')`
+      leftSide.label === rightSide.label
+        ? `Conflicting files for ${path} (within '${leftSide.label}')`
+        : `Conflicting files for ${path} (from '${leftSide.label}' and '${rightSide.label}')`
     );
     this.path = path;
-    this.left = left;
-    this.right = right;
+    this.left = leftSide;
+    this.right = rightSide;
   }
+}
+
+function describeSide(source: IConflictSource): IConflictSide {
+  return { ...source, label: describeProvenance(source.provenance) ?? source.file.getDisplayName() };
 }

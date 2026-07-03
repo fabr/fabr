@@ -18,7 +18,7 @@
  */
 
 import { Computable } from "./Computable";
-import { FileSet, FileSource } from "./FileSet";
+import { FileSet, FileSource, PackageFileSet } from "./FileSet";
 import { chainSteps, IProvenanceStep } from "./Provenance";
 import { Name } from "../model/Name";
 
@@ -90,6 +90,16 @@ export class RepositoryRef {
       result = result.then(files => files.find(projection));
     }
     return result.then(files => {
+      if (this.steps.length === 0) {
+        return files;
+      }
+      if (files instanceof PackageFileSet) {
+        /* The reference's provenance applies to the whole delivery: the root
+         * package and every member of its resolved closure arrived via the
+         * same reference. */
+        const dependencies = files.dependencies.map(dep => dep.withOrigin(chainSteps(this.steps, dep.origin)!));
+        return new PackageFileSet(files, files.packageName, files.version, dependencies, chainSteps(this.steps, files.origin));
+      }
       const origin = chainSteps(this.steps, files.origin);
       return origin ? files.withOrigin(origin) : files;
     });

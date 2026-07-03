@@ -1,10 +1,15 @@
 import { Readable } from "stream";
 import { BuildCache } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
-import { EMPTY_FILESET, FileSet, FileSource, ILabeledFileSet } from "../core/FileSet";
+import { EMPTY_FILESET, FileSet, FileSource } from "../core/FileSet";
 import { isRepository, materializeAll, Repository, RepositoryRef, SourceRef } from "../core/Repository";
 import { Flag } from "../core/Flag";
-import { IProvenanceStep, IRenderContext, registerProvenanceRenderer } from "../core/Provenance";
+import {
+  IProvenanceStep,
+  IRenderContext,
+  registerProvenanceDescriber,
+  registerProvenanceRenderer,
+} from "../core/Provenance";
 import { getTargetRule } from "../rules/Registry";
 import { ITargetOrigin, TARGET_PROVENANCE } from "./Target";
 import { DeclKind, IDecl, INamedDecl, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl, IValue } from "./AST";
@@ -27,11 +32,6 @@ export type Constraints = Record<string, string>;
  * dependencies (the constraint otherwise propagates).
  */
 export const BUILD_OPERATION = "BUILD_OPERATION";
-
-interface ILabeledFileSources {
-  label: string;
-  sources: SourceRef[];
-}
 
 interface IResolvedFileSource {
   sources: SourceRef[];
@@ -59,6 +59,10 @@ registerProvenanceRenderer(TARGET_PROVENANCE, step => {
   const target = (step as ITargetOrigin).decl;
   return [`${stringifyLoc(target)}: built by ${target.type} '${target.name}'`];
 });
+
+/* Short attribution ("the name it was written as") for one-line messages */
+registerProvenanceDescriber(MODEL_REF_PROVENANCE, step => (step as IModelRefStep).value.value.toString());
+registerProvenanceDescriber(TARGET_PROVENANCE, step => (step as ITargetOrigin).decl.name);
 
 function renderModelRef(step: IModelRefStep, context: IRenderContext): string[] {
   const value = step.value;
@@ -247,32 +251,20 @@ export class BuildContext {
     );
   }
 
-  public resolveFileProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<SourceRef[]> {
-    return this.resolveFilePropertyLabeled(prop, target, stack).then(groups => groups.flatMap(group => group.sources));
-  }
-
   /**
-   * As resolveFileProperty, but the resolved sources are grouped by the name
-   * they were written as in the property value, and each resolved FileSet is
-   * wrapped with a model-ref provenance step recording the written value and
-   * the constraints in effect — chained onto whatever provenance the set
-   * already carried, so that nested resolutions accumulate multi-hop chains.
+   * Resolve a FILES property to its sources. Each resolved source is wrapped
+   * with a model-ref provenance step recording the written value and the
+   * constraints in effect — chained onto whatever provenance it already
+   * carried, so that nested resolutions accumulate multi-hop chains.
    */
-  public resolveFilePropertyLabeled(
-    prop: IPropertyDecl,
-    target?: ITargetDecl,
-    stack?: IDependencyStack
-  ): Computable<ILabeledFileSources[]> {
+  public resolveFileProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<SourceRef[]> {
     return Computable.forAll(
       prop.values.map(value =>
-        this.resolveFileSource(value.value, prop, { property: prop, target, context: this, value, next: stack }).then(
-          resolved => ({
-            label: value.value.toString(),
-            sources: resolved.sources.map(source => this.withModelRef(source, value)),
-          })
+        this.resolveFileSource(value.value, prop, { property: prop, target, context: this, value, next: stack }).then(resolved =>
+          resolved.sources.map(source => this.withModelRef(source, value))
         )
       ),
-      (...resolved) => resolved
+      (...resolved) => resolved.flat()
     );
   }
 
@@ -503,34 +495,23 @@ export class TargetContext {
   }
 
   /**
-   * Resolve a FILES property to its individual (labeled, fully materialized)
-   * FileSets — one entry per contributing source, before any merging. This is
-   * the collection point at which deferred repository references are resolved
-   * jointly.
+   * Resolve a FILES property to its individual (fully materialized) FileSets —
+   * one per contributing source, before any merging. This is the collection
+   * point at which deferred repository references are resolved jointly.
    */
-  public getLabeledFileSets(name: string): Computable<ILabeledFileSet[]> {
+  public getFileSets(name: string): Computable<FileSet[]> {
     const prop = this.props[name];
     if (!prop) {
       return Computable.resolve([]);
     }
     return this.getContext()
-      .resolveFilePropertyLabeled(prop, this.target, this.stack)
-      .then(groups => {
-        const flat = groups.flatMap(group => group.sources.map(source => ({ label: group.label, source })));
-        return materializeAll(flat.map(entry => entry.source)).then(sources => {
-          const sets: ILabeledFileSet[] = [];
-          sources.forEach((source, index) => {
-            if (source instanceof FileSet) {
-              sets.push({ label: flat[index].label, files: source });
-            }
-          });
-          return sets;
-        });
-      });
+      .resolveFileProperty(prop, this.target, this.stack)
+      .then(sources => materializeAll(sources))
+      .then(sources => sources.filter((source): source is FileSet => source instanceof FileSet));
   }
 
   public getFileSet(name: string): Computable<FileSet> {
-    return this.getLabeledFileSets(name).then(sets => FileSet.unionAllLabeled(sets));
+    return this.getFileSets(name).then(sets => FileSet.unionAll(...sets));
   }
 
   public getCachedOrBuild(manifest: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {

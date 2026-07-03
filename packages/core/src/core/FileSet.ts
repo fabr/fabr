@@ -62,11 +62,6 @@ export interface FileSource {
 
 type FileSetContent = Map<string, IFile>;
 
-export interface ILabeledFileSet {
-  label: string;
-  files: FileSet;
-}
-
 /**
  * Represents a set of files that may originate from arbitrary points of the file system
  * (or not even be on the filesystem). FileSets are immutable after construction.
@@ -209,52 +204,32 @@ export class FileSet implements FileSource {
   }
 
   /**
-   * As unionAll, but each input set carries the name of the dependency (or other
-   * source) it was resolved from, so that a conflict can be attributed to the
-   * pair of sources that introduced it.
+   * Union the given sets; two different files at the same path is a conflict,
+   * reported with both sides attributed via their sets' provenance.
    */
-  public static unionAllLabeled(sets: ILabeledFileSet[]): FileSet {
+  public static unionAll(...sets: FileSet[]): FileSet {
+    if (sets.length === 0) {
+      return EMPTY_FILESET;
+    }
+    if (sets.length === 1) {
+      return sets[0];
+    }
     const result = new Map<string, IFile>();
-    const firstOwner = new Map<string, ILabeledFileSet>();
-    for (const entry of sets) {
-      for (const [path, file] of entry.files) {
+    const firstOwner = new Map<string, FileSet>();
+    for (const fs of sets) {
+      for (const [path, file] of fs) {
         const old = result.get(path);
         if (old && !old.isSameFile(file)) {
-          const owner = firstOwner.get(path) ?? entry;
-          throw new FileConflictError(
-            path,
-            { label: owner.label, file: old, provenance: owner.files.origin },
-            { label: entry.label, file, provenance: entry.files.origin }
-          );
+          const owner = firstOwner.get(path) ?? fs;
+          throw new FileConflictError(path, { file: old, provenance: owner.origin }, { file, provenance: fs.origin });
         }
         result.set(path, file);
         if (!firstOwner.has(path)) {
-          firstOwner.set(path, entry);
+          firstOwner.set(path, fs);
         }
       }
     }
     return new FileSet(result);
-  }
-
-  public static unionAll(...sets: FileSet[]): FileSet {
-    if (sets.length === 0) {
-      return EMPTY_FILESET;
-    } else if (sets.length === 1) {
-      return sets[0];
-    } else {
-      const result = new Map<string, IFile>();
-      for (const fs of sets) {
-        for (const [path, file] of fs) {
-          const old = result.get(path);
-          if (old && !old.isSameFile(file)) {
-            /* TODO: Needs much more diagnostic information */
-            throw new Error("Conflicting files for " + path);
-          }
-          result.set(path, file);
-        }
-      }
-      return new FileSet(result);
-    }
   }
 
   public static layout(data: Record<string, FileSet | Array<FileSet | undefined> | IFile | undefined>): FileSet {
@@ -288,6 +263,34 @@ export class FileSet implements FileSource {
       sources.map(fs => fs.find(name)),
       (...sets) => FileSet.unionAll(...sets)
     );
+  }
+}
+
+/**
+ * A FileSet that is a package: the files are the package's own contents, named
+ * relative to the package root, and the package's identity — its real name, as
+ * distinct from whatever alias it may be referred to by — rides along as data
+ * (identity is semantic: it decides where the package gets mounted, so unlike
+ * provenance it is not ghost data). Where the package was resolved jointly with
+ * its own requirements (e.g. by a package repository), the resolved closure is
+ * carried too, so a consumer can lay out a complete installation.
+ *
+ * Content derivations (find/remap/minus/...) deliberately return plain
+ * FileSets: once you reach inside a package, the result is just files.
+ */
+export class PackageFileSet extends FileSet {
+  constructor(
+    files: Iterable<[string, IFile]>,
+    public readonly packageName: string,
+    public readonly version?: string,
+    public readonly dependencies: ReadonlyArray<PackageFileSet> = [],
+    origin?: IProvenanceStep
+  ) {
+    super(new Map(files), origin ?? (files instanceof FileSet ? files.origin : undefined));
+  }
+
+  public withOrigin(origin: IProvenanceStep): PackageFileSet {
+    return new PackageFileSet(this, this.packageName, this.version, this.dependencies, origin);
   }
 }
 

@@ -19,7 +19,7 @@
 
 import { TargetContext } from "../../model/BuildContext";
 import { Computable } from "../../core/Computable";
-import { EMPTY_FILESET, FileSet, ILabeledFileSet } from "../../core/FileSet";
+import { EMPTY_FILESET, FileSet, PackageFileSet } from "../../core/FileSet";
 import { RepositoryRef, SourceRef } from "../../core/Repository";
 import { registerTargetRule } from "../Registry";
 import { MemoryFile } from "../../core/MemoryFS";
@@ -82,14 +82,14 @@ function buildJsPackage(context: TargetContext): Computable<FileSet> {
   return Computable.forAll(
     [
       context.getFileSet("srcs"),
-      context.getLabeledFileSets("deps"),
+      context.getFileSets("deps"),
       context.getFlags("deps"),
       context.getFileSet("tests"),
       context.getGlobalString("JS_TARGET"),
       context.getProperty("version"),
       context.getFileSources("deps"),
     ],
-    (sources, labeledDeps, flags, tests, target, version, depSources) => {
+    (sources, deps, flags, tests, target, version, depSources) => {
       /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
       const packageJsonFile = sources
         .get("package.json")
@@ -120,10 +120,9 @@ function buildJsPackage(context: TargetContext): Computable<FileSet> {
 
       const jsTarget = parseJSTarget(target);
 
-      /* Assemble node_modules from the deps: package outputs (identified by a
-       * root package.json) are mounted under their package name; repository
-       * closures are already node_modules-shaped. */
-      const assembly = assembleNodeModules(labeledDeps);
+      /* Lay the deps out as node_modules contents: every package (and every
+       * member of its resolved closure) is mounted at its real package name */
+      const nodeModules = assembleNodeModules(deps);
 
       let compiled: Computable<FileSet>;
       if ("ts" in sourceGroups) {
@@ -132,12 +131,12 @@ function buildJsPackage(context: TargetContext): Computable<FileSet> {
           tsdeps.push(context.getGlobalTarget("NODE_TYPES"));
         }
 
-        compiled = Computable.forAll([assembly, ...tsdeps] as const, (deps, typescript, types) => {
-          const extraTypes = types ? FileSet.unionAll(...(types as FileSet[])) : undefined;
+        compiled = Computable.forAll(tsdeps, (typescript, types) => {
+          const extraTypes = types ? assembleNodeModules(types as FileSet[]) : undefined;
           return compileTypescript(
             sourceGroups.ts,
-            deps.files,
-            FileSet.unionAll(...(typescript as FileSet[])),
+            nodeModules,
+            assembleNodeModules(typescript as FileSet[]),
             extraTypes,
             jsTarget,
             flags,
@@ -148,29 +147,41 @@ function buildJsPackage(context: TargetContext): Computable<FileSet> {
         compiled = Computable.resolve(EMPTY_FILESET);
       }
 
-      return Computable.forAll([compiled, packageJsonFile, assembly], (files, seed, deps) => {
+      return Computable.forAll([compiled, packageJsonFile], (files, seed) => {
         /* Non-compiled sources are preserved in the output as-is (the source
          * package.json is consumed as the seed rather than copied through) */
         const copied = (sourceGroups.copy ?? EMPTY_FILESET).remap(name => (name === "package.json" ? undefined : name));
         const contents = FileSet.unionAll(files, copied);
-        const packageJson = createPackageJson(
-          contents,
-          seed,
-          context.target.name,
-          version?.toString(),
-          depSources,
-          deps.packages,
-          jsTarget
-        );
+        const packageJson = createPackageJson(contents, seed, context.target.name, version?.toString(), depSources, jsTarget);
         const assembled = FileSet.unionAll(contents, new FileSet(new Map([["package.json", packageJson]])));
         /* Materialize the assembled package as its own cache entry: the
-         * target's deliverable is a real on-disk package directory. */
-        return context.getCachedOrBuild(assembled.toManifest(), targetDir =>
-          writeFileSet(targetDir, assembled).then(() => getResultFileSet(targetDir, "**"))
-        );
+         * target's deliverable is a real on-disk package directory, delivered
+         * as a package (root-relative files + identity) to consumers. */
+        return context
+          .getCachedOrBuild(assembled.toManifest(), targetDir =>
+            writeFileSet(targetDir, assembled).then(() => getResultFileSet(targetDir, "**"))
+          )
+          .then(built => new PackageFileSet(built, context.target.name, version?.toString()));
       });
     }
   );
+}
+
+/**
+ * Lay out the given (materialized) sources as node_modules contents: each
+ * package — and each member of its resolved closure — is mounted at its real
+ * package name (which may differ from the alias it was written as); anything
+ * that isn't a package passes through unchanged.
+ */
+function assembleNodeModules(sets: FileSet[]): FileSet {
+  return FileSet.unionAll(
+    ...sets.flatMap(set => (set instanceof PackageFileSet ? [set, ...set.dependencies].map(mountPackage) : [set]))
+  );
+}
+
+/** @return the package's files renamed under the package's mount point */
+function mountPackage(pkg: PackageFileSet): FileSet {
+  return pkg.remap(path => `${pkg.packageName}/${path}`);
 }
 
 /**
@@ -179,49 +190,12 @@ function buildJsPackage(context: TargetContext): Computable<FileSet> {
  * its name, version, module type, entry points, and the direct package
  * requirements from its deps.
  */
-/** A package dependency discovered while assembling node_modules */
-interface IPackageInfo {
-  name: string;
-  version?: string;
-}
-
-/**
- * Assemble the node_modules contents from the target's (materialized, labeled)
- * deps: a FileSet with a root package.json is a built package and is mounted
- * under its declared name; anything else (repository closures, plain files) is
- * already node_modules-shaped and passes through unchanged.
- */
-function assembleNodeModules(labeledDeps: ILabeledFileSet[]): Computable<{ files: FileSet; packages: IPackageInfo[] }> {
-  const packages: IPackageInfo[] = [];
-  const mounted = labeledDeps.map(entry =>
-    entry.files.get("package.json").then(file => {
-      if (!file) {
-        return entry;
-      }
-      return file.readString().then((content): ILabeledFileSet => {
-        const packageJson = JSON.parse(content) as { name?: string; version?: string };
-        if (!packageJson.name) {
-          return entry;
-        }
-        packages.push({ name: packageJson.name, version: packageJson.version });
-        const name = packageJson.name;
-        return { label: entry.label, files: entry.files.remap(path => `${name}/${path}`) };
-      });
-    })
-  );
-  return Computable.forAll(mounted, (...entries: ILabeledFileSet[]) => ({
-    files: FileSet.unionAllLabeled(entries),
-    packages,
-  }));
-}
-
 function createPackageJson(
   files: FileSet,
   seed: Record<string, unknown> | undefined,
   name: string,
   version: string | undefined,
   depSources: SourceRef[],
-  depPackages: IPackageInfo[],
   jsTarget: JSTarget
 ): MemoryFile {
   const packageJson: Record<string, unknown> = { ...(seed ?? {}) };
@@ -238,7 +212,9 @@ function createPackageJson(
     packageJson.types = "index.d.ts";
   }
 
-  /* The direct package requirements, as written (typings split out per convention) */
+  /* The direct package requirements, as written (typings split out per
+   * convention); a built package dep carries its identity directly, at
+   * whatever version it declared */
   const dependencies: Record<string, string> = {};
   const devDependencies: Record<string, string> = {};
   for (const source of depSources) {
@@ -250,11 +226,9 @@ function createPackageJson(
         const constraint = requirement.substring(idx + 1);
         (pkg.startsWith("@types/") ? devDependencies : dependencies)[pkg] = constraint;
       }
+    } else if (source instanceof PackageFileSet) {
+      dependencies[source.packageName] = source.version ?? "*";
     }
-  }
-  /* Built package dependencies, at whatever version they declared */
-  for (const dep of depPackages) {
-    dependencies[dep.name] = dep.version ?? "*";
   }
   if (Object.keys(dependencies).length > 0) {
     packageJson.dependencies = dependencies;

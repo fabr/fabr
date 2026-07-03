@@ -1,6 +1,6 @@
 import { Computable } from "../../core/Computable";
 import { readStream } from "../../core/Fetch";
-import { FileSet } from "../../core/FileSet";
+import { FileSet, PackageFileSet } from "../../core/FileSet";
 import { Repository, RepositoryRef } from "../../core/Repository";
 import { MemoryFile } from "../../core/MemoryFS";
 import { TargetContext } from "../../model/BuildContext";
@@ -93,8 +93,10 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
    * instance over all of the root requirements together, so that shared
    * packages resolve to a single agreed version (and user overrides dominate
    * sibling dependencies' requirements, per the max-of-minimums rule).
-   * Each reference receives the subset of the joint closure reachable from its
-   * own root, laid out as "<package>/..." paths.
+   * Each reference receives its root as a PackageFileSet (files relative to
+   * the package root), carrying the subset of the joint closure reachable from
+   * that root as its resolved dependencies; laying the packages out (mounting)
+   * is the consumer's decision.
    *
    * Only semver versions/ranges are accepted: dist-tags (e.g. 'latest') are
    * mutable pointers and would make the build non-deterministic, so they are
@@ -113,22 +115,41 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
       checkSingleVersions(selections, rootKeys.join(", "));
       return Computable.forAll(
         selections.map(sel => this.fetch(sel.pkg, sel.version)),
-        (...sets: FileSet[]) =>
-          requirements.map(req => {
-            const index = rootIndex.get(requirementKey(req))!;
-            const subset = selections.flatMap((sel, selIndex) => (sel.reachableFrom?.includes(index) ? [sets[selIndex]] : []));
-            const origin: IResolutionOrigin<SemverVersion> = {
-              kind: PACKAGE_RESOLUTION_PROVENANCE,
-              repository: this.url,
-              root: req,
-              selections,
-              versionToString,
-              packageOfPath: npmPackageOfPath,
-            };
-            return FileSet.unionAll(...subset).withOrigin(origin);
-          })
+        (...packages: PackageFileSet[]) =>
+          requirements.map(req => this.assembleClosure(req, rootIndex.get(requirementKey(req))!, selections, packages))
       );
     });
+  }
+
+  /**
+   * Assemble the delivery for one root requirement: its own package, carrying
+   * the reachable members of the joint closure as resolved dependencies, all
+   * stamped with the resolution's provenance.
+   */
+  private assembleClosure(
+    req: Requirement,
+    index: number,
+    selections: Selected<SemverVersion>[],
+    packages: PackageFileSet[]
+  ): PackageFileSet {
+    const origin: IResolutionOrigin<SemverVersion> = {
+      kind: PACKAGE_RESOLUTION_PROVENANCE,
+      repository: this.url,
+      root: req,
+      selections,
+      versionToString,
+      packageOfPath: npmPackageOfPath,
+    };
+    const reachable = selections.flatMap((sel, selIndex) =>
+      sel.reachableFrom?.includes(index) ? [{ sel, files: packages[selIndex] }] : []
+    );
+    const root = reachable.find(entry => entry.sel.pkg === req.pkg);
+    if (!root) {
+      /* Can't happen: a root requirement is always reachable from itself */
+      throw new Error(`Resolution of ${requirementKey(req)} does not contain its own root package`);
+    }
+    const dependencies = reachable.filter(entry => entry !== root).map(entry => entry.files.withOrigin(origin));
+    return new PackageFileSet(root.files, root.files.packageName, root.files.version, dependencies, origin);
   }
 
   private parseRequirement(name: Name): Requirement {
@@ -224,11 +245,11 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
     return result;
   }
 
-  private fetch(pkg: string, version: SemverVersion): Computable<FileSet> {
+  private fetch(pkg: string, version: SemverVersion): Computable<PackageFileSet> {
     return this.getVersionMetadata(pkg, versionToString(version)).then(meta =>
-      this.context.getCachedOrFetch(meta.dist.tarball, (content, targetDir) =>
-        unpackStream(content, targetDir).then(fs => remapFilenames(fs, meta.name))
-      )
+      this.context
+        .getCachedOrFetch(meta.dist.tarball, (content, targetDir) => unpackStream(content, targetDir).then(stripArchiveRoot))
+        .then(files => new PackageFileSet(files, meta.name, meta.version))
     );
   }
 }
@@ -264,10 +285,10 @@ function isSemverConstraint(text: string): boolean {
 }
 
 /**
- * The resolved closure is laid out as a flat node_modules, which can only host a
- * single version of each package; check for multiple selected versions (of
- * different majors) and fail with something actionable rather than letting the
- * FileSet union report an opaque path conflict.
+ * Consumers mount the resolved closure as a flat node_modules, which can only
+ * host a single version of each package; check for multiple selected versions
+ * (of different majors) and fail with something actionable rather than letting
+ * the FileSet union report an opaque path conflict.
  */
 function checkSingleVersions(selections: Selected<SemverVersion>[], root: string): void {
   const byPkg = new Map<string, SemverVersion[]>();
@@ -286,8 +307,8 @@ function checkSingleVersions(selections: Selected<SemverVersion>[], root: string
 }
 
 /**
- * The package owning a path within a resolved closure, per the node_modules
- * naming convention this repository lays files out with ("@scope/name/..." or
+ * The package owning a path within a mounted closure, per the node_modules
+ * naming convention consumers mount packages with ("@scope/name/..." or
  * "name/...").
  */
 export function npmPackageOfPath(path: string): string {
@@ -299,14 +320,15 @@ function createRepository(context: TargetContext): Computable<NPMRepository> {
   return context.getRequiredString("url").then(url => new NPMRepository(url, context));
 }
 
-function remapFilenames(files: FileSet, packageName: string): FileSet {
+/**
+ * npm tarballs wrap the package contents in a single root directory
+ * (conventionally "package/", but not reliably so); strip it, so the stored
+ * package's files are named relative to the package root.
+ */
+function stripArchiveRoot(files: FileSet): FileSet {
   return files.remap(name => {
     const idx = name.indexOf("/");
-    if (idx !== -1) {
-      return packageName + name.substring(idx);
-    } else {
-      return undefined;
-    }
+    return idx === -1 ? undefined : name.substring(idx + 1);
   });
 }
 
