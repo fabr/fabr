@@ -29,11 +29,41 @@ export interface Requirement {
 }
 
 /**
+ * The distinguished `requiredBy` value identifying a root requirement (one
+ * passed directly to the resolver, rather than declared by a package).
+ */
+export const ROOT_REQUIRER = "(root)";
+
+/**
+ * A requirement edge in the dependency graph, for provenance: the node that
+ * declared the requirement ("pkg@version", or ROOT_REQUIRER for a root
+ * requirement) and the constraint it declared.
+ */
+export interface IRequirementEdge {
+  requiredBy: string;
+  constraint: string;
+}
+
+/**
  * A concrete package version chosen by a resolver.
+ *
+ * The two provenance edges answer the questions a user asks of a resolution:
+ * reachedVia answers "why is this package in my build at all" (following the
+ * chain of reachedVia.requiredBy nodes leads back to a root), and selectedBy
+ * answers "why this version" (the requirement whose lower bound won).
+ * Note that under minimal version selection the winning requirement may have
+ * been declared by a version that was itself later superseded — the raised
+ * version legitimately remains — so selectedBy.requiredBy is not always a
+ * selected node.
+ *
+ * Both are optional so that resolutions persisted before these fields existed
+ * still deserialize.
  */
 export interface Selected<V> {
   pkg: string;
   version: V;
+  selectedBy?: IRequirementEdge;
+  reachedVia?: IRequirementEdge;
 }
 
 /**

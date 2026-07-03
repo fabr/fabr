@@ -5,8 +5,9 @@ import { MemoryFile } from "../../core/MemoryFS";
 import { TargetContext } from "../../model/BuildContext";
 import { Name } from "../../model/Name";
 import { resolveMVS } from "../../resolver/MVSResolver";
+import { IResolutionOrigin, PACKAGE_RESOLUTION_PROVENANCE } from "../../resolver/ResolutionProvenance";
 import { parseVersion, SEMVER, SemverVersion, versionToString } from "../../resolver/Semver";
-import { PackageRegistry, Requirement, Selected } from "../../resolver/Types";
+import { IRequirementEdge, PackageRegistry, Requirement, Selected } from "../../resolver/Types";
 import { unpackStream } from "../../support/Unpack";
 import { registerTargetRule } from "../Registry";
 
@@ -55,6 +56,14 @@ type INPMResponse = INPMError | INPMError2 | INPMPackageVersions | INPMPackageMe
 const METADATA_FILE = "metadata.json";
 const RESOLUTION_FILE = "resolution.json";
 
+/** Serialized form of one selection in a persisted resolution document */
+interface IResolutionEntry {
+  pkg: string;
+  version: string;
+  selectedBy?: IRequirementEdge;
+  reachedVia?: IRequirementEdge;
+}
+
 class NPMRepository implements FileSource, PackageRegistry<SemverVersion> {
   private url: string;
   private context: TargetContext;
@@ -91,12 +100,20 @@ class NPMRepository implements FileSource, PackageRegistry<SemverVersion> {
           " (note that dist-tags such as 'latest' are not supported: pin a version or range instead)"
       );
     }
-    return this.getResolution(pkg, constraint).then(selections =>
-      Computable.forAll(
+    return this.getResolution(pkg, constraint).then(selections => {
+      const origin: IResolutionOrigin<SemverVersion> = {
+        kind: PACKAGE_RESOLUTION_PROVENANCE,
+        repository: this.url,
+        root: { pkg, constraint },
+        selections,
+        versionToString,
+        packageOfPath: npmPackageOfPath,
+      };
+      return Computable.forAll(
         selections.map(sel => this.fetch(sel.pkg, sel.version)),
-        (...sets: FileSet[]) => FileSet.unionAll(...sets)
-      )
-    );
+        (...sets: FileSet[]) => FileSet.unionAll(...sets).withOrigin(origin)
+      );
+    });
   }
 
   public get(name: string): Computable<undefined> {
@@ -130,14 +147,24 @@ class NPMRepository implements FileSource, PackageRegistry<SemverVersion> {
             throw new Error(`Unable to resolve ${pkg}:${constraint}:\n  ${resolution.errors.join("\n  ")}`);
           }
           checkSingleVersions(resolution.selections, `${pkg}:${constraint}`);
-          const doc = resolution.selections.map(sel => ({ pkg: sel.pkg, version: versionToString(sel.version) }));
+          const doc: IResolutionEntry[] = resolution.selections.map(sel => ({
+            pkg: sel.pkg,
+            version: versionToString(sel.version),
+            selectedBy: sel.selectedBy,
+            reachedVia: sel.reachedVia,
+          }));
           return new FileSet(new Map([[RESOLUTION_FILE, MemoryFile.from(JSON.stringify(doc, undefined, 2))]]));
         })
       )
       .then(files => files.readFile(RESOLUTION_FILE))
       .then(data => {
-        const doc = JSON.parse(data) as Array<{ pkg: string; version: string }>;
-        return doc.map(entry => ({ pkg: entry.pkg, version: parseVersion(entry.version) }));
+        const doc = JSON.parse(data) as IResolutionEntry[];
+        return doc.map(entry => ({
+          pkg: entry.pkg,
+          version: parseVersion(entry.version),
+          selectedBy: entry.selectedBy,
+          reachedVia: entry.reachedVia,
+        }));
       });
   }
 
@@ -223,6 +250,16 @@ function checkSingleVersions(selections: Selected<SemverVersion>[], root: string
       );
     }
   }
+}
+
+/**
+ * The package owning a path within a resolved closure, per the node_modules
+ * naming convention this repository lays files out with ("@scope/name/..." or
+ * "name/...").
+ */
+export function npmPackageOfPath(path: string): string {
+  const parts = path.split("/");
+  return parts[0].startsWith("@") && parts.length > 1 ? `${parts[0]}/${parts[1]}` : parts[0];
 }
 
 function createRepository(context: TargetContext): Computable<NPMRepository> {

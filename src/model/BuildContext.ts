@@ -1,9 +1,11 @@
 import { Readable } from "stream";
 import { BuildCache } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
-import { FileSet, FileSource } from "../core/FileSet";
+import { EMPTY_FILESET, FileSet, FileSource, ILabeledFileSet } from "../core/FileSet";
 import { Flag } from "../core/Flag";
+import { IProvenanceStep, IRenderContext, registerProvenanceRenderer } from "../core/Provenance";
 import { getTargetRule } from "../rules/Registry";
+import { ITargetOrigin, TARGET_PROVENANCE } from "./Target";
 import { DeclKind, IDecl, INamedDecl, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl, IValue } from "./AST";
 import { Name } from "./Name";
 import { IPrefixMatch } from "./Namespace";
@@ -11,12 +13,96 @@ import { Property } from "./Property";
 
 export type Constraints = Record<string, Property>;
 
+interface ILabeledFileSources {
+  label: string;
+  sources: FileSource[];
+}
+
+interface IResolvedFileSource {
+  sources: FileSource[];
+  /** The declaration the name resolved to, if it named a target or property */
+  decl?: ITargetDecl | IPropertyDecl;
+}
+
+export const MODEL_REF_PROVENANCE = "model-ref";
+
+/**
+ * Provenance step for a FileSet that was included by writing a name in a
+ * property value: the written value (with its source position), and the
+ * constraint set in effect for the resolution. Steps chain along the data
+ * path — each resolution hop wraps the sets it resolves — so nested property
+ * expansions produce multi-hop chains without any explicit stack capture.
+ */
+export interface IModelRefStep extends IProvenanceStep {
+  kind: typeof MODEL_REF_PROVENANCE;
+  value: IValue;
+  constraints: Constraints;
+}
+
+registerProvenanceRenderer(MODEL_REF_PROVENANCE, (step, context) => renderModelRef(step as IModelRefStep, context));
+registerProvenanceRenderer(TARGET_PROVENANCE, step => {
+  const target = (step as ITargetOrigin).decl;
+  return [`${stringifyLoc(target)}: built by ${target.type} '${target.name}'`];
+});
+
+function renderModelRef(step: IModelRefStep, context: IRenderContext): string[] {
+  const value = step.value;
+  const header = `${stringifyLoc(value)}: ${context.stepIndex === 0 ? "from" : "via"} '${value.value.toString()}':`;
+  const pos = value.source.reader.resolvePosition(value.offset);
+  const lines = pos ? [header, pos.lineText, " ".repeat(pos.column - 1) + "^"] : [header];
+  lines.push(...constraintLines(step));
+  return lines;
+}
+
+/**
+ * Describe the constraint set a reference was resolved under, but only where
+ * it is informative: the deepest model step shows its (non-empty) constraints,
+ * and other steps show only the entries that differ from the next model step
+ * down the chain (i.e. override boundaries).
+ */
+function constraintLines(step: IModelRefStep): string[] {
+  const deeper = findNextModelRef(step.parent);
+  const entries = Object.entries(step.constraints).filter(([key, value]) =>
+    deeper ? String(deeper.constraints[key]) !== String(value) : true
+  );
+  if (entries.length === 0) {
+    return [];
+  }
+  return [`with ${entries.map(([key, value]) => `${key}=${value}`).sort().join(" ")}`];
+}
+
+function findNextModelRef(step: IProvenanceStep | undefined): IModelRefStep | undefined {
+  for (let current = step; current; current = current.parent) {
+    if (current.kind === MODEL_REF_PROVENANCE) {
+      return current as IModelRefStep;
+    }
+  }
+  return undefined;
+}
+
 interface IBuildModel {
   getConfig(constraints: Constraints): BuildContext;
   getDecl(name: string): IPropertyDecl | ITargetDecl | INamespaceDecl | undefined;
   getTargetDef(name: string): ITargetDefDecl | undefined;
   getPrefixMatch(name: Name): IPrefixMatch | undefined;
   getBuildCache(): BuildCache;
+}
+
+/**
+ * Failure of a target, as propagated to its dependants: carries the failed
+ * target's declaration and the underlying cause, so that whoever ultimately
+ * reports the failure (the driver) can attribute each cause to its target
+ * exactly once and render dependants' failures tersely.
+ */
+export class DependencyFailedError extends Error {
+  public readonly target: ITargetDecl;
+  public readonly cause: Error;
+
+  constructor(target: ITargetDecl, cause: Error) {
+    super(`dependency '${target.name}' failed`);
+    this.target = target;
+    this.cause = cause;
+  }
 }
 
 interface IDependencyStack {
@@ -112,9 +198,9 @@ export class BuildContext {
   }
 
   /**
-   * Find and return a target from the literal prefix of the given name, and return
-   * a new Name representing the unmatched suffix. If no such target can be found,
-   * returns undefined.
+   * Find and return a target from the literal prefix of the given name, along with
+   * the matched declaration and a new Name representing the unmatched suffix.
+   * If no such target can be found, returns undefined.
    *
    * e.g. given a name of "mylib/lib/*" and a declared target 'mylib', will return
    * the Computable for mylib and the remaining name "lib/*".
@@ -122,10 +208,13 @@ export class BuildContext {
    * Note: target names are not pattern matched against globs (ie only the literal prefix
    * of the name is looked up)
    */
-  public getPrefixTargetIfExists(name: Name, stack?: IDependencyStack): [Computable<FileSource[]>, Name] | undefined {
+  public getPrefixTargetIfExists(
+    name: Name,
+    stack?: IDependencyStack
+  ): { target: Computable<FileSource[]>; rest: Name; decl: ITargetDecl | IPropertyDecl } | undefined {
     const result = this.model.getPrefixMatch(name);
     if (result) {
-      return [this.getTarget(result.decl.name, stack), result.rest];
+      return { target: this.getTarget(result.decl.name, stack), rest: result.rest, decl: result.decl };
     }
     return undefined;
   }
@@ -146,36 +235,69 @@ export class BuildContext {
   }
 
   public resolveFileProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<FileSource[]> {
+    return this.resolveFilePropertyLabeled(prop, target, stack).then(groups => groups.flatMap(group => group.sources));
+  }
+
+  /**
+   * As resolveFileProperty, but the resolved sources are grouped by the name
+   * they were written as in the property value, and each resolved FileSet is
+   * wrapped with a model-ref provenance step recording the written value and
+   * the constraints in effect — chained onto whatever provenance the set
+   * already carried, so that nested resolutions accumulate multi-hop chains.
+   */
+  public resolveFilePropertyLabeled(
+    prop: IPropertyDecl,
+    target?: ITargetDecl,
+    stack?: IDependencyStack
+  ): Computable<ILabeledFileSources[]> {
     return Computable.forAll(
       prop.values.map(value =>
-        this.resolveFileSource(value.value, prop, { property: prop, target, context: this, value, next: stack })
+        this.resolveFileSource(value.value, prop, { property: prop, target, context: this, value, next: stack }).then(
+          resolved => ({
+            label: value.value.toString(),
+            sources: resolved.sources.map(source => this.withModelRef(source, value)),
+          })
+        )
       ),
-      (...resolved) => resolved.flat()
+      (...resolved) => resolved
     );
+  }
+
+  private withModelRef(source: FileSource, value: IValue): FileSource {
+    if (source instanceof FileSet) {
+      const step: IModelRefStep = { kind: MODEL_REF_PROVENANCE, value, constraints: this.constraints, parent: source.origin };
+      return source.withOrigin(step);
+    }
+    return source;
   }
 
   /**
    * Resolve the Names as they appear in a target property list to their respective targets
-   * (potentially causing them to be queued for evaluation)
+   * (potentially causing them to be queued for evaluation), along with the declaration
+   * the name resolved to (if it named a target or property rather than plain files).
    * @param name
    */
-  private resolveFileSource(name: Name, relativeTo: INamedDecl, stack?: IDependencyStack): Computable<FileSource[]> {
-    return this.substituteNameVars(name, stack).then(substName => {
+  private resolveFileSource(
+    name: Name,
+    relativeTo: INamedDecl,
+    stack?: IDependencyStack
+  ): Computable<IResolvedFileSource> {
+    return this.substituteNameVars(name, stack).then((substName): IResolvedFileSource | Computable<IResolvedFileSource> => {
       if (substName.isEmpty()) {
-        return [];
+        return { sources: [] };
       } else {
         const targetDep = this.getPrefixTargetIfExists(substName, stack);
         if (targetDep) {
-          const [target, rest] = targetDep;
+          const { target, rest, decl } = targetDep;
           if (rest.isEmpty()) {
-            return target;
+            return target.then(sources => ({ sources, decl }));
           } else {
-            return target.then(t => FileSet.findAll(t, rest)).then(data => [data]);
+            return target.then(t => FileSet.findAll(t, rest)).then(data => ({ sources: [data], decl }));
           }
         } else {
           /* Not an identified target; check the filesystem relative to the target decl */
           const baseName = relativeTo.source.file;
-          return relativeTo.source.fs.find(substName.relativeTo(baseName)).then(data => [data]);
+          return relativeTo.source.fs.find(substName.relativeTo(baseName)).then(data => ({ sources: [data] }));
         }
       }
     });
@@ -210,7 +332,24 @@ export class BuildContext {
           stringifyDependencyStack(stack)
       );
     }
-    return rule.evaluate(new TargetContext(target, this, stack));
+    /* The target is the error boundary: any failure is wrapped to identify the
+     * target it belongs to, and propagates onwards to the target's dependants.
+     * No reporting happens here — the model layer doesn't log; the driver
+     * renders the failure tree. Successful FileSet results are stamped with the
+     * producing target's provenance.
+     */
+    return rule
+      .evaluate(new TargetContext(target, this, stack))
+      .then(result => {
+        if (result instanceof FileSet) {
+          const step: ITargetOrigin = { kind: TARGET_PROVENANCE, decl: target, parent: result.origin };
+          return result.withOrigin(step);
+        }
+        return result;
+      })
+      .catch(err => {
+        throw new DependencyFailedError(target, err);
+      });
   }
 
   private findTargetInStack(target: string, stack?: IDependencyStack): IDependencyStack | undefined {
@@ -330,10 +469,23 @@ export class TargetContext {
   }
 
   public getFileSet(name: string): Computable<FileSet> {
-    return this.getFileSources(name).then(files => {
-      const filtered = files.filter(file => file instanceof FileSet) as FileSet[];
-      return FileSet.unionAll(...filtered);
-    });
+    const prop = this.props[name];
+    if (!prop) {
+      return Computable.resolve(EMPTY_FILESET);
+    }
+    return this.getContext()
+      .resolveFilePropertyLabeled(prop, this.target, this.stack)
+      .then(groups => {
+        const sets: ILabeledFileSet[] = [];
+        for (const group of groups) {
+          for (const source of group.sources) {
+            if (source instanceof FileSet) {
+              sets.push({ label: group.label, files: source });
+            }
+          }
+        }
+        return FileSet.unionAllLabeled(sets);
+      });
   }
 
   public getCachedOrBuild(manifest: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {

@@ -99,11 +99,15 @@ export class LogFormatter implements Log {
     const resolvedPos = params.loc?.reader.resolvePosition(params.loc.offset);
     const message = diagnostic.message(params);
     if (resolvedPos) {
+      /* Multi-line messages: the first line goes on the position line, and the
+       * remainder follows the source excerpt as detail. */
+      const [firstLine, ...restLines] = message.split("\n");
       const filename = params.loc?.file;
-      const logline = `${filename}:${resolvedPos.line}:${resolvedPos.column}:${getLogLevelName(level)}:${message}\n`;
+      const logline = `${filename}:${resolvedPos.line}:${resolvedPos.column}:${getLogLevelName(level)}:${firstLine}\n`;
       const text = resolvedPos.lineText + "\n";
       const caret = " ".repeat(resolvedPos.column - 1) + "^\n";
-      this.out(logline + text + caret);
+      const detail = restLines.length > 0 ? restLines.join("\n") + "\n" : "";
+      this.out(logline + text + caret + detail);
     } else {
       const logline = `${getLogLevelName(level)}:${message}`;
       this.out(logline);

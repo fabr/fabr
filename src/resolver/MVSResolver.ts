@@ -18,7 +18,7 @@
  */
 
 import { Computable } from "../core/Computable";
-import { PackageRegistry, Requirement, Resolution, Selected, VersionDomain } from "./Types";
+import { PackageRegistry, Requirement, Resolution, ROOT_REQUIRER, Selected, VersionDomain } from "./Types";
 
 /**
  * Minimal Version Selection resolver (after Go's MVS): every constraint is
@@ -32,15 +32,16 @@ import { PackageRegistry, Requirement, Resolution, Selected, VersionDomain } fro
  * (the deterministic remedy is a user-supplied override, i.e. an additional
  * root requirement, which dominates naturally by the max rule).
  *
- * Note: if the registry rejects a metadata fetch, the returned Computable never
- * resolves (computation halts), per Computable's current error model.
+ * Note: if the registry rejects a metadata fetch, the returned Computable
+ * rejects with that error (the requirement graph cannot be determined, which is
+ * unlike a constraint violation and so is not reported via Resolution.errors).
  */
 export function resolveMVS<V, C>(
   roots: Requirement[],
   domain: VersionDomain<V, C>,
   registry: PackageRegistry<V>
 ): Computable<Resolution<V>> {
-  return Computable.from(resolve => {
+  return Computable.from((resolve, reject) => {
     /* Highest minimum seen so far, per resolution key */
     const selected = new Map<string, Selected<V>>();
     /* Declared requirements of every pkg@version visited (including superseded ones) */
@@ -48,6 +49,14 @@ export function resolveMVS<V, C>(
     const errors = new Set<string>();
     /* Outstanding metadata fetches, plus one guard token held while seeding */
     let pending = 1;
+    let failed = false;
+
+    const fail = (err: Error): void => {
+      if (!failed) {
+        failed = true;
+        reject(err);
+      }
+    };
 
     const nodeId = (pkg: string, version: V): string => `${pkg}@${domain.versionToString(version)}`;
 
@@ -63,7 +72,7 @@ export function resolveMVS<V, C>(
       const min = domain.minimumOf(constraint);
       const current = selected.get(key);
       if (!current || domain.compare(min, current.version) > 0) {
-        selected.set(key, { pkg: req.pkg, version: min });
+        selected.set(key, { pkg: req.pkg, version: min, selectedBy: { requiredBy, constraint: req.constraint } });
         visit(req.pkg, min);
       }
     };
@@ -75,15 +84,18 @@ export function resolveMVS<V, C>(
       }
       nodeRequirements.set(id, []);
       pending++;
-      registry.getRequirements(pkg, version).then(requirements => {
-        nodeRequirements.set(id, requirements);
-        for (const req of requirements) {
-          enqueue(req, id);
-        }
-        if (--pending === 0) {
-          finish();
-        }
-      });
+      registry.getRequirements(pkg, version).then(
+        requirements => {
+          nodeRequirements.set(id, requirements);
+          for (const req of requirements) {
+            enqueue(req, id);
+          }
+          if (--pending === 0) {
+            finish();
+          }
+        },
+        err => fail(err)
+      );
     };
 
     /**
@@ -93,9 +105,12 @@ export function resolveMVS<V, C>(
      * ensures upper bounds are only validated for requirements actually in effect.
      */
     const finish = (): void => {
+      if (failed) {
+        return;
+      }
       const reachable = new Map<string, Selected<V>>();
       const visited = new Set<string>();
-      const queue: Array<{ from: string; requirements: Requirement[] }> = [{ from: "(root)", requirements: roots }];
+      const queue: Array<{ from: string; requirements: Requirement[] }> = [{ from: ROOT_REQUIRER, requirements: roots }];
 
       const followEdge = (from: string, req: Requirement): void => {
         let constraint: C;
@@ -113,7 +128,7 @@ export function resolveMVS<V, C>(
           );
         }
         if (!reachable.has(key)) {
-          reachable.set(key, selection);
+          reachable.set(key, { ...selection, reachedVia: { requiredBy: from, constraint: req.constraint } });
           const id = nodeId(selection.pkg, selection.version);
           if (!visited.has(id)) {
             visited.add(id);
@@ -139,7 +154,7 @@ export function resolveMVS<V, C>(
     };
 
     for (const root of roots) {
-      enqueue(root, "(root)");
+      enqueue(root, ROOT_REQUIRER);
     }
     if (--pending === 0) {
       finish();

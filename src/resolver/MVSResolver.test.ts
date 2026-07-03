@@ -173,4 +173,43 @@ describe("MVSResolver", () => {
     expect(selectionStrings(result)).toEqual([]);
     expect(result.errors).toEqual([]);
   });
+
+  it("records why each selection was reached and which requirement won", () => {
+    const result = resolve(
+      { B: "^1.0.0", C: "^1.0.0" },
+      {
+        B: { "1.0.0": { D: "^1.1.0" } },
+        C: { "1.0.0": { D: "^1.3.0" } },
+        D: { "1.1.0": {}, "1.3.0": {} },
+      }
+    );
+    const b = result.selections.find(sel => sel.pkg === "B")!;
+    expect(b.reachedVia).toEqual({ requiredBy: "(root)", constraint: "^1.0.0" });
+    expect(b.selectedBy).toEqual({ requiredBy: "(root)", constraint: "^1.0.0" });
+
+    /* D is first reached through B, but its version was raised by C's requirement */
+    const d = result.selections.find(sel => sel.pkg === "D")!;
+    expect(d.reachedVia).toEqual({ requiredBy: "B@1.0.0", constraint: "^1.1.0" });
+    expect(d.selectedBy).toEqual({ requiredBy: "C@1.0.0", constraint: "^1.3.0" });
+  });
+
+  it("keeps a version raised by a superseded requirement, and says so", () => {
+    /* A@1.0.0 raises D to 1.5.0 before A itself is upgraded to 1.2.0, which only
+     * needs D ^1.1.0; per MVS the raised version stands, and selectedBy records
+     * the (now unselected) node that raised it. */
+    const result = resolve(
+      { A: "^1.0.0", AUP: "1.0.0" },
+      {
+        A: { "1.0.0": { D: "^1.5.0" }, "1.2.0": { D: "^1.1.0" } },
+        AUP: { "1.0.0": { A: "^1.2.0" } },
+        D: { "1.1.0": {}, "1.5.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).toEqual(["A@1.2.0", "AUP@1.0.0", "D@1.5.0"]);
+    const d = result.selections.find(sel => sel.pkg === "D")!;
+    expect(d.selectedBy).toEqual({ requiredBy: "A@1.0.0", constraint: "^1.5.0" });
+    expect(d.reachedVia).toEqual({ requiredBy: "A@1.2.0", constraint: "^1.1.0" });
+    /* The winning node is not among the final selections */
+    expect(selectionStrings(result)).not.toContain("A@1.0.0");
+  });
 });

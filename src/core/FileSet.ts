@@ -21,6 +21,7 @@ import * as picomatch from "picomatch";
 import * as path from "path";
 import { Name } from "../model/Name";
 import { Computable } from "./Computable";
+import { FileConflictError, IProvenanceStep } from "./Provenance";
 
 export interface IFile {
   hash: string;
@@ -61,6 +62,11 @@ export interface FileSource {
 
 type FileSetContent = Map<string, IFile>;
 
+export interface ILabeledFileSet {
+  label: string;
+  files: FileSet;
+}
+
 /**
  * Represents a set of files that may originate from arbitrary points of the file system
  * (or not even be on the filesystem). FileSets are immutable after construction.
@@ -69,9 +75,23 @@ type FileSetContent = Map<string, IFile>;
  */
 export class FileSet implements FileSource {
   private content: FileSetContent;
+  /**
+   * Optional provenance chain, preserved through single-source derivations.
+   * This is runtime-only "ghost" data: it must never participate in manifests,
+   * cache keys, or file equality.
+   */
+  public readonly origin: IProvenanceStep | undefined;
 
-  constructor(content: FileSetContent) {
+  constructor(content: FileSetContent, origin?: IProvenanceStep) {
     this.content = content;
+    this.origin = origin;
+  }
+
+  /**
+   * @return a copy of the receiver carrying the given provenance.
+   */
+  public withOrigin(origin: IProvenanceStep): FileSet {
+    return new FileSet(this.content, origin);
   }
 
   public find(name: Name): Computable<FileSet> {
@@ -82,7 +102,7 @@ export class FileSet implements FileSource {
         newContent.set(path, file);
       }
     }
-    return Computable.resolve(new FileSet(newContent));
+    return Computable.resolve(new FileSet(newContent, this.origin));
   }
 
   /**
@@ -144,7 +164,7 @@ export class FileSet implements FileSource {
     for (const [path, file] of this.content) {
       const dest = cb(path);
       if (!(dest in partitions)) {
-        partitions[dest] = new FileSet(new Map());
+        partitions[dest] = new FileSet(new Map(), this.origin);
       }
       partitions[dest].content.set(path, file);
     }
@@ -164,7 +184,7 @@ export class FileSet implements FileSource {
       }
     }
 
-    return new FileSet(result);
+    return new FileSet(result, this.origin);
   }
 
   /**
@@ -176,6 +196,34 @@ export class FileSet implements FileSource {
     const result = new Map(this.content);
     for (const [name] of files.content) {
       result.delete(name);
+    }
+    return new FileSet(result, this.origin);
+  }
+
+  /**
+   * As unionAll, but each input set carries the name of the dependency (or other
+   * source) it was resolved from, so that a conflict can be attributed to the
+   * pair of sources that introduced it.
+   */
+  public static unionAllLabeled(sets: ILabeledFileSet[]): FileSet {
+    const result = new Map<string, IFile>();
+    const firstOwner = new Map<string, ILabeledFileSet>();
+    for (const entry of sets) {
+      for (const [path, file] of entry.files) {
+        const old = result.get(path);
+        if (old && !old.isSameFile(file)) {
+          const owner = firstOwner.get(path) ?? entry;
+          throw new FileConflictError(
+            path,
+            { label: owner.label, file: old, provenance: owner.files.origin },
+            { label: entry.label, file, provenance: entry.files.origin }
+          );
+        }
+        result.set(path, file);
+        if (!firstOwner.has(path)) {
+          firstOwner.set(path, entry);
+        }
+      }
     }
     return new FileSet(result);
   }

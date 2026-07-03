@@ -18,12 +18,24 @@
  */
 
 import { FileSet } from "../core/FileSet";
+import { IProvenanceStep } from "../core/Provenance";
 import { ITargetDecl } from "./AST";
+
+export const TARGET_PROVENANCE = "target";
+
+/**
+ * Provenance step for a FileSet produced by evaluating a target: the
+ * declaration of the target that built it.
+ */
+export interface ITargetOrigin extends IProvenanceStep {
+  kind: typeof TARGET_PROVENANCE;
+  decl: ITargetDecl;
+}
 
 /**
  * The final evaluated result of a TargetDecl, normally consisting of a FileSet
  * and possibly additional properties.
  */
 export interface Target extends FileSet {
-  origin: ITargetDecl;
+  origin: ITargetOrigin;
 }
