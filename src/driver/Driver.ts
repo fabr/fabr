@@ -21,6 +21,7 @@ import { BuildCache } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { MultiError } from "../core/MultiError";
 import { FileConflictError, renderProvenance } from "../core/Provenance";
+import { ExecutionError } from "../support/Execute";
 import { getSourceFileSource } from "../core/SourceFileSource";
 import { declPosn } from "../model/AST";
 import { DependencyFailedError } from "../model/BuildContext";
@@ -53,20 +54,40 @@ function reportFailure(log: Log, err: Error, reported: Set<Error>): void {
     err.errors.forEach(cause => reportFailure(log, cause, reported));
   } else if (err instanceof DependencyFailedError) {
     const causes = err.cause instanceof MultiError ? err.cause.errors : [err.cause];
+    const execution: Error[] = [];
     for (const cause of causes) {
       if (cause instanceof DependencyFailedError) {
         log.log(DIAG_DEPENDENCY_FAILED, { name: err.target.name, dependency: cause.target.name, loc: declPosn(err.target) });
         reportFailure(log, cause, reported);
+      } else if (cause instanceof ExecutionError) {
+        execution.push(cause);
       } else {
-        /* Provenance detail is part of the failure message, not a separate error */
+        /* Semantic diagnostics (conflicts, resolution failures, ...) each get
+         * their own report, with any provenance detail attached */
         const message =
           cause instanceof FileConflictError ? `${cause.message}\n${renderConflictDetail(cause)}` : cause.message;
         log.log(DIAG_TARGET_FAILED, { name: err.target.name, message, loc: declPosn(err.target) });
       }
     }
+    if (execution.length > 0) {
+      /* Mechanical failures of the target's execution are reported once,
+       * grouped under the target */
+      log.log(DIAG_TARGET_FAILED, { name: err.target.name, message: describeCauses(execution), loc: declPosn(err.target) });
+    }
   } else {
     log.log(DIAG_ERROR, { message: err.message });
   }
+}
+
+/**
+ * Format the execution errors of a target as a single message: one error
+ * inline, several as an indented list.
+ */
+function describeCauses(causes: Error[]): string {
+  if (causes.length === 1) {
+    return causes[0].message;
+  }
+  return `${causes.length} errors:\n` + causes.map(cause => "  " + cause.message.split("\n").join("\n  ")).join("\n");
 }
 
 /**

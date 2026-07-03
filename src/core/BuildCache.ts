@@ -5,6 +5,7 @@ import { Computable } from "./Computable";
 import { openUrlStream } from "./Fetch";
 import { FileSet, IFile } from "./FileSet";
 import { deleteFile, hardlink, hashFile, hashString, readFile, readFileBuffer, writeFile } from "./FSWrapper";
+import { describeSystemError, ExecutionError } from "../support/Execute";
 import * as picomatch from "picomatch";
 
 export class BuildFile implements IFile {
@@ -58,10 +59,18 @@ export class BuildCache {
         return result;
       } else {
         const targetDir = path.resolve(this.root, key);
+        /* No manifest means any existing directory content is debris from a
+         * failed (or crashed) earlier attempt: start from a clean slate. */
+        fs.rmSync(targetDir, { recursive: true, force: true });
         fs.mkdirSync(targetDir, { recursive: true });
         return create(targetDir)
           .then(fs => writeMemoryFiles(targetDir, fs))
-          .then(fs => writeFile(targetDir + ".manifest", this.serializeFileSet(fs)).then(() => fs));
+          .then(fs => writeFile(targetDir + ".manifest", this.serializeFileSet(fs)).then(() => fs))
+          .catch(err => {
+            /* Remove the partial entry so a retry starts fresh */
+            fs.rmSync(targetDir, { recursive: true, force: true });
+            throw err;
+          });
       }
     });
   }
@@ -152,12 +161,22 @@ export function writeFileSet(targetDir: string, files: FileSet): Computable<void
     fs.mkdirSync(dirname, { recursive: true });
     const filepath = file.getAbsPath();
     if (filepath) {
-      operations.push(hardlink(filepath, targetName));
+      operations.push(asExecutionError(hardlink(filepath, targetName)));
     } else {
-      operations.push(file.getBuffer().then(buffer => writeFile(targetName, buffer)));
+      operations.push(asExecutionError(file.getBuffer().then(buffer => writeFile(targetName, buffer))));
     }
   }
   return Computable.forAll(operations, () => {});
+}
+
+/**
+ * Classify failures of a staging operation as execution errors (mechanical
+ * failures of the build step, reported grouped per target).
+ */
+function asExecutionError<T>(operation: Computable<T>): Computable<T> {
+  return operation.catch(err => {
+    throw new ExecutionError(describeSystemError(err));
+  });
 }
 
 export function getResultFileSet(targetDir: string, pattern: string): Computable<FileSet> {

@@ -23,10 +23,11 @@ import * as path from "path";
 import { BuildCache } from "./BuildCache";
 import { Computable } from "./Computable";
 import { FileSet } from "./FileSet";
+import { hashString } from "./FSWrapper";
 import { MemoryFile } from "./MemoryFS";
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {
-  return new Promise(resolve => computable.then(resolve));
+  return new Promise((resolve, reject) => computable.then(resolve, reject));
 }
 
 describe("BuildCache", () => {
@@ -53,6 +54,35 @@ describe("BuildCache", () => {
     expect(abspath).toBeDefined();
     expect(abspath!.startsWith(root)).toBe(true);
     expect(fs.readFileSync(abspath!, "utf8")).toBe('{"name":"test"}');
+  });
+
+  it("pre-cleans debris and removes partial entries on failure", async () => {
+    const cache = new BuildCache(root);
+    const targetDir = path.join(root, hashString("failing manifest"));
+    /* Simulate a crashed earlier attempt: entry content but no manifest */
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.writeFileSync(path.join(targetDir, "leftover.txt"), "stale");
+
+    let failure: Error | undefined;
+    try {
+      await toPromise(cache.getOrCreate("failing manifest", () => Computable.reject(new Error("boom"))));
+    } catch (err) {
+      failure = err as Error;
+    }
+    expect(failure?.message).toBe("boom");
+    /* The partial entry was removed on failure */
+    expect(fs.existsSync(targetDir)).toBe(false);
+
+    /* A retry over fresh debris pre-cleans and succeeds */
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.writeFileSync(path.join(targetDir, "leftover.txt"), "stale");
+    const files = await toPromise(
+      cache.getOrCreate("failing manifest", () =>
+        Computable.resolve(new FileSet(new Map([["meta.json", MemoryFile.from('{"ok":true}')]])))
+      )
+    );
+    expect(await toPromise(files.readFile("meta.json"))).toBe('{"ok":true}');
+    expect(fs.existsSync(path.join(targetDir, "leftover.txt"))).toBe(false);
   });
 
   it("returns the cached result without re-running the build", async () => {
