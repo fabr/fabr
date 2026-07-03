@@ -1,0 +1,14 @@
+{
+  "name": "@fabr/core",
+  "version": "0.1.0",
+  "license": "GPL-3.0-or-later",
+  "homepage": "https://github.com/fabr/fabrjs",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "picomatch": "^2.3.1",
+    "tar-stream": "^3.1.7",
+    "unicode-properties": "^1.3.1"
+  }
+}

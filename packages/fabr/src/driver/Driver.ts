@@ -17,16 +17,23 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { BuildCache } from "../core/BuildCache";
-import { Computable } from "../core/Computable";
-import { MultiError } from "../core/MultiError";
-import { FileConflictError, renderProvenance } from "../core/Provenance";
-import { ExecutionError } from "../support/Execute";
-import { getSourceFileSource } from "../core/SourceFileSource";
-import { declPosn } from "../model/AST";
-import { BUILD_OPERATION, DependencyFailedError } from "../model/BuildContext";
-import { loadProject } from "../model/Loader";
-import { defaultLog, Diagnostic, ISourcePosition, Log } from "../support/Log";
+import {
+  BUILD_OPERATION,
+  BuildCache,
+  Computable,
+  declPosn,
+  defaultLog,
+  DependencyFailedError,
+  Diagnostic,
+  ExecutionError,
+  FileConflictError,
+  getSourceFileSource,
+  ISourcePosition,
+  loadProject,
+  Log,
+  MultiError,
+  renderProvenance,
+} from "@fabr/core";
 import { Options } from "./Command";
 import { getSourceRoot, getBuildCacheRoot, PROJECT_FILENAME, SOURCE_CACHE_FILENAME } from "./Environment";
 

@@ -1,0 +1,13 @@
+{
+  "name": "@fabr/fabr",
+  "version": "0.1.0",
+  "license": "GPL-3.0-or-later",
+  "homepage": "https://github.com/fabr/fabrjs",
+  "main": "build/index.js",
+  "bin": {
+    "fabr": "build/index.js"
+  },
+  "dependencies": {
+    "@fabr/core": "0.1.0"
+  }
+}

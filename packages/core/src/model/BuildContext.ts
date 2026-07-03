@@ -502,10 +502,16 @@ export class TargetContext {
     return this.getFileSources(name, overrides).then(sources => sources.filter(source => source instanceof Flag) as Flag[]);
   }
 
-  public getFileSet(name: string): Computable<FileSet> {
+  /**
+   * Resolve a FILES property to its individual (labeled, fully materialized)
+   * FileSets — one entry per contributing source, before any merging. This is
+   * the collection point at which deferred repository references are resolved
+   * jointly.
+   */
+  public getLabeledFileSets(name: string): Computable<ILabeledFileSet[]> {
     const prop = this.props[name];
     if (!prop) {
-      return Computable.resolve(EMPTY_FILESET);
+      return Computable.resolve([]);
     }
     return this.getContext()
       .resolveFilePropertyLabeled(prop, this.target, this.stack)
@@ -518,9 +524,13 @@ export class TargetContext {
               sets.push({ label: flat[index].label, files: source });
             }
           });
-          return FileSet.unionAllLabeled(sets);
+          return sets;
         });
       });
+  }
+
+  public getFileSet(name: string): Computable<FileSet> {
+    return this.getLabeledFileSets(name).then(sets => FileSet.unionAllLabeled(sets));
   }
 
   public getCachedOrBuild(manifest: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {

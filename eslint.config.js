@@ -2,6 +2,7 @@ const tslint = require("typescript-eslint");
 const eslint = require("@eslint/js");
 
 module.exports = tslint.config(
+  { ignores: ["**/build/**", "**/node_modules/**", "coverage/**"] },
   eslint.configs.recommended,
   ...tslint.configs.recommended,
   {rules: {

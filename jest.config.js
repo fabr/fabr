@@ -3,13 +3,17 @@ module.exports = {
   collectCoverageFrom: ["**/src/**/*.ts", "!**/node_modules/**", "!**/*.d.ts"],
   globals: {
     "ts-jest": {
-      tsconfig: "tsconfig.json",
+      tsconfig: "tsconfig.base.json",
     },
+  },
+  moduleNameMapper: {
+    "^@fabr/core$": "<rootDir>/packages/core/src/index.ts",
   },
   transform: {
     "^.+\\.ts$": "ts-jest",
   },
-  moduleDirectories: ["src", "node_modules"],
+  moduleDirectories: ["node_modules"],
   moduleFileExtensions: ["ts", "js"],
-  testRegex: ".*\\.test\\.ts$"
+  testRegex: ".*\\.test\\.ts$",
+  testPathIgnorePatterns: ["/node_modules/", "/build/"],
 };
