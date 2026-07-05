@@ -19,24 +19,24 @@
 
 /**
  * The runner-side implementation of the test report contract. The contract
- * itself (document shape and filename) is defined by @fabr/core
+ * itself — a CTRF document (https://ctrf.io) — is defined by @fabr/core
  * (support/TestResult.ts) and consumed there by the rules and the driver; the
  * runner executes standalone inside the test working directory — it cannot
  * reach the host's core at runtime — so it carries its own copies of the
- * (small) formatting helpers. Keep them in sync with core.
+ * (small) helpers. Keep them in sync with core.
  */
 
-import type { ITestCounts, ITestReport, ITestResult } from "@fabr/core";
+import type { ITestReport, ITestResult, ITestSummary } from "@fabr/core";
 
 /** The report filename, relative to the test working directory (= core's TEST_REPORT_FILENAME) */
-export const TEST_REPORT_FILENAME = "fabr-test-report.json";
+export const TEST_REPORT_FILENAME = "ctrf-report.json";
 
-export function countResults(tests: ITestResult[]): ITestCounts {
-  const counts: ITestCounts = { pass: 0, fail: 0, skip: 0, todo: 0, total: tests.length };
+export function buildReport(tests: ITestResult[], start: number, stop: number): ITestReport {
+  const summary: ITestSummary = { tests: tests.length, passed: 0, failed: 0, pending: 0, skipped: 0, other: 0, start, stop };
   for (const test of tests) {
-    counts[test.status]++;
+    summary[test.status]++;
   }
-  return counts;
+  return { results: { tool: { name: "fabr" }, summary, tests } };
 }
 
 /**
@@ -44,14 +44,14 @@ export function countResults(tests: ITestResult[]): ITestCounts {
  * tests failed", ...).
  */
 export function formatTestSummary(report: ITestReport): string {
-  const { pass, fail, skip, todo, total } = report.counts;
-  const notRun = skip + todo;
-  if (fail > 0) {
-    return `${fail} of ${testCount(total)} failed`;
+  const { tests, passed, failed, pending, skipped, other } = report.results.summary;
+  const notRun = skipped + pending + other;
+  if (failed > 0) {
+    return `${failed} of ${testCount(tests)} failed`;
   } else if (notRun > 0) {
-    return `${testCount(pass)} passed (${notRun} skipped)`;
+    return `${testCount(passed)} passed (${notRun} skipped)`;
   } else {
-    return `${testCount(pass)} passed`;
+    return `${testCount(passed)} passed`;
   }
 }
 
@@ -61,10 +61,10 @@ export function formatTestSummary(report: ITestReport): string {
  */
 export function formatTestFailures(report: ITestReport): string {
   const lines = [formatTestSummary(report)];
-  for (const test of report.tests) {
-    if (test.status === "fail") {
-      const where = test.file ? ` (${test.file})` : "";
-      const detail = test.error ? `: ${firstLine(test.error)}` : "";
+  for (const test of report.results.tests) {
+    if (test.status === "failed") {
+      const where = test.filePath ? ` (${test.filePath})` : "";
+      const detail = test.message ? `: ${firstLine(test.message)}` : "";
       lines.push(`  ${test.name}${where}${detail}`);
     }
   }

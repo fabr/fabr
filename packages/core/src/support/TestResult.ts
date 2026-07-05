@@ -22,57 +22,71 @@ import { FileSet } from "../core/FileSet";
 import type { SourceRef } from "../core/Repository";
 
 /**
- * The structured test report: the contract between a test rule and its runner.
- * The runner writes the document as the test working directory's
- * TEST_REPORT_FILENAME; the rule delivers it as the test target's output
- * artifact, and the driver reads it back to summarize the run for the user.
+ * The structured test report: the contract between a test rule and its
+ * runner. The document is CTRF (Common Test Report Format, https://ctrf.io) —
+ * a standard JSON test-results schema, so the artifact a test target delivers
+ * is directly consumable by third-party tooling. The runner writes the
+ * document as the test working directory's TEST_REPORT_FILENAME; the rule
+ * delivers it as the test target's output artifact, and the driver reads it
+ * back to summarize the run for the user.
+ *
+ * Note the summary start/stop are wall-clock times of the original run: a
+ * cached-green report deliberately retains its original timings.
+ *
  * (The runner side is standalone at runtime, so @fabr/js carries its own
  * implementation of this contract; the shapes must be kept in sync.)
  */
 
-export type TestStatus = "pass" | "fail" | "skip" | "todo";
+export type TestStatus = "passed" | "failed" | "skipped" | "pending" | "other";
 
 export interface ITestResult {
   /** The test's own name (not including ancestor suite names) */
   name: string;
-  /** Path of the test file, relative to the test working directory */
-  file?: string;
   status: TestStatus;
-  durationMs?: number;
+  /** Elapsed time in milliseconds */
+  duration: number;
+  /** Path of the test file, relative to the test working directory */
+  filePath?: string;
   /** Failure description (failed tests only) */
-  error?: string;
+  message?: string;
 }
 
-export interface ITestCounts {
-  pass: number;
-  fail: number;
-  skip: number;
-  todo: number;
-  total: number;
+export interface ITestSummary {
+  tests: number;
+  passed: number;
+  failed: number;
+  pending: number;
+  skipped: number;
+  other: number;
+  /** Wall-clock start/stop of the run, epoch milliseconds */
+  start: number;
+  stop: number;
 }
 
 export interface ITestReport {
-  version: 1;
-  counts: ITestCounts;
-  tests: ITestResult[];
+  results: {
+    tool: { name: string };
+    summary: ITestSummary;
+    tests: ITestResult[];
+  };
 }
 
 /** The report filename, relative to the test working directory */
-export const TEST_REPORT_FILENAME = "fabr-test-report.json";
+export const TEST_REPORT_FILENAME = "ctrf-report.json";
 
 /**
  * @return a one-line description of the run ("12 tests passed", "2 of 14
  * tests failed", ...).
  */
 export function formatTestSummary(report: ITestReport): string {
-  const { pass, fail, skip, todo, total } = report.counts;
-  const notRun = skip + todo;
-  if (fail > 0) {
-    return `${fail} of ${testCount(total)} failed`;
+  const { tests, passed, failed, pending, skipped, other } = report.results.summary;
+  const notRun = skipped + pending + other;
+  if (failed > 0) {
+    return `${failed} of ${testCount(tests)} failed`;
   } else if (notRun > 0) {
-    return `${testCount(pass)} passed (${notRun} skipped)`;
+    return `${testCount(passed)} passed (${notRun} skipped)`;
   } else {
-    return `${testCount(pass)} passed`;
+    return `${testCount(passed)} passed`;
   }
 }
 
@@ -82,10 +96,10 @@ export function formatTestSummary(report: ITestReport): string {
  */
 export function formatTestFailures(report: ITestReport): string {
   const lines = [formatTestSummary(report)];
-  for (const test of report.tests) {
-    if (test.status === "fail") {
-      const where = test.file ? ` (${test.file})` : "";
-      const detail = test.error ? `: ${firstLine(test.error)}` : "";
+  for (const test of report.results.tests) {
+    if (test.status === "failed") {
+      const where = test.filePath ? ` (${test.filePath})` : "";
+      const detail = test.message ? `: ${firstLine(test.message)}` : "";
       lines.push(`  ${test.name}${where}${detail}`);
     }
   }
@@ -114,7 +128,7 @@ export function getTestReport(sources: SourceRef[]): Computable<ITestReport | un
       const file = files.find(f => f !== undefined);
       return file?.readString().then(content => {
         const report = JSON.parse(content) as Partial<ITestReport>;
-        return report.version === 1 && report.counts && report.tests ? (report as ITestReport) : undefined;
+        return report.results?.summary && Array.isArray(report.results.tests) ? (report as ITestReport) : undefined;
       });
     }
   );

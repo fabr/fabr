@@ -22,76 +22,76 @@
 
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import type { ITestReport, ITestResult } from "@fabr/core";
-import { countResults, formatTestFailures, formatTestSummary } from "./Report";
+import type { ITestResult } from "@fabr/core";
+import { buildReport, formatTestFailures, formatTestSummary } from "./Report";
 
-function report(tests: ITestResult[]): ITestReport {
-  return { version: 1, counts: countResults(tests), tests };
+function test(name: string, status: ITestResult["status"], extra?: Partial<ITestResult>): ITestResult {
+  return { name, status, duration: 0, ...extra };
 }
 
-describe("countResults", () => {
-  it("counts by status", () => {
-    const counts = countResults([
-      { name: "a", status: "pass" },
-      { name: "b", status: "fail" },
-      { name: "c", status: "pass" },
-      { name: "d", status: "skip" },
-      { name: "e", status: "todo" },
-    ]);
-    assert.deepEqual(counts, { pass: 2, fail: 1, skip: 1, todo: 1, total: 5 });
+describe("buildReport", () => {
+  it("summarizes by status", () => {
+    const report = buildReport(
+      [test("a", "passed"), test("b", "failed"), test("c", "passed"), test("d", "skipped"), test("e", "pending")],
+      100,
+      250
+    );
+    assert.deepEqual(report.results.summary, {
+      tests: 5,
+      passed: 2,
+      failed: 1,
+      pending: 1,
+      skipped: 1,
+      other: 0,
+      start: 100,
+      stop: 250,
+    });
+    assert.equal(report.results.tool.name, "fabr");
   });
 
-  it("counts an empty run", () => {
-    assert.deepEqual(countResults([]), { pass: 0, fail: 0, skip: 0, todo: 0, total: 0 });
+  it("summarizes an empty run", () => {
+    assert.deepEqual(buildReport([], 5, 7).results.summary, {
+      tests: 0,
+      passed: 0,
+      failed: 0,
+      pending: 0,
+      skipped: 0,
+      other: 0,
+      start: 5,
+      stop: 7,
+    });
   });
 });
 
 describe("formatTestSummary", () => {
   it("reports an all-green run", () => {
-    assert.equal(
-      formatTestSummary(
-        report([
-          { name: "a", status: "pass" },
-          { name: "b", status: "pass" },
-        ])
-      ),
-      "2 tests passed"
-    );
+    assert.equal(formatTestSummary(buildReport([test("a", "passed"), test("b", "passed")], 0, 0)), "2 tests passed");
   });
 
   it("mentions skipped tests", () => {
     assert.equal(
-      formatTestSummary(
-        report([
-          { name: "a", status: "pass" },
-          { name: "b", status: "skip" },
-        ])
-      ),
+      formatTestSummary(buildReport([test("a", "passed"), test("b", "skipped")], 0, 0)),
       "1 test passed (1 skipped)"
     );
   });
 
   it("reports failures", () => {
-    assert.equal(
-      formatTestSummary(
-        report([
-          { name: "a", status: "fail" },
-          { name: "b", status: "pass" },
-        ])
-      ),
-      "1 of 2 tests failed"
-    );
+    assert.equal(formatTestSummary(buildReport([test("a", "failed"), test("b", "passed")], 0, 0)), "1 of 2 tests failed");
   });
 });
 
 describe("formatTestFailures", () => {
-  it("lists each failed test with its location and first error line", () => {
+  it("lists each failed test with its location and first message line", () => {
     const text = formatTestFailures(
-      report([
-        { name: "works", status: "pass" },
-        { name: "breaks", status: "fail", file: "core/Thing.test.js", error: "expected 1 to equal 2\nlong stack" },
-        { name: "also breaks", status: "fail" },
-      ])
+      buildReport(
+        [
+          test("works", "passed"),
+          test("breaks", "failed", { filePath: "core/Thing.test.js", message: "expected 1 to equal 2\nlong stack" }),
+          test("also breaks", "failed"),
+        ],
+        0,
+        0
+      )
     );
     assert.deepEqual(text.split("\n"), [
       "2 of 3 tests failed",

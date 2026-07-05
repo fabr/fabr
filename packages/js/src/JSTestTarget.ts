@@ -255,8 +255,9 @@ function toTestFailure(targetDir: string, err: Error): Error {
   try {
     const content = fs.readFileSync(path.resolve(targetDir, TEST_REPORT_FILENAME), "utf8");
     const report = JSON.parse(content) as ITestReport;
-    if (report.counts.fail > 0) {
-      return new TestsFailedError(formatTestFailures(report), report.counts.fail, report.counts.total);
+    const summary = report.results?.summary;
+    if (summary && summary.failed > 0) {
+      return new TestsFailedError(formatTestFailures(report), summary.failed, summary.tests);
     }
   } catch {
     /* No readable report: fall through to the original error */

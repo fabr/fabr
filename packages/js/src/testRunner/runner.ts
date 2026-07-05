@@ -32,8 +32,8 @@
 import { run } from "node:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ITestReport, ITestResult } from "@fabr/core";
-import { countResults, formatTestFailures, formatTestSummary, TEST_REPORT_FILENAME } from "./Report";
+import type { ITestResult } from "@fabr/core";
+import { buildReport, formatTestFailures, formatTestSummary, TEST_REPORT_FILENAME } from "./Report";
 
 /**
  * The fields we consume from node:test's test:pass / test:fail event data,
@@ -76,18 +76,18 @@ function record(results: ITestResult[], event: ITestEvent, kind: "pass" | "fail"
      * whole-file crashes, which arrive as failed tests) are recorded */
     return;
   }
-  let status: ITestResult["status"] = kind;
+  let status: ITestResult["status"] = kind === "fail" ? "failed" : "passed";
   if (kind === "pass" && event.skip) {
-    status = "skip";
+    status = "skipped";
   } else if (kind === "pass" && event.todo) {
-    status = "todo";
+    status = "pending";
   }
   results.push({
     name: event.name,
-    file: event.file ? path.relative(process.cwd(), event.file) : undefined,
+    filePath: event.file ? path.relative(process.cwd(), event.file) : undefined,
     status,
-    durationMs: event.details.duration_ms,
-    error: kind === "fail" ? describeError(event.details.error) : undefined,
+    duration: event.details.duration_ms ?? 0,
+    message: kind === "fail" ? describeError(event.details.error) : undefined,
   });
 }
 
@@ -108,16 +108,18 @@ function describeError(error: (Error & { cause?: unknown }) | undefined): string
   return error.message;
 }
 
-function finish(results: ITestResult[], reportPath: string): void {
-  const report: ITestReport = { version: 1, counts: countResults(results), tests: results };
+function finish(results: ITestResult[], reportPath: string, start: number): void {
+  const report = buildReport(results, start, Date.now());
   fs.writeFileSync(reportPath, JSON.stringify(report, undefined, 2));
-  console.log(report.counts.fail > 0 ? formatTestFailures(report) : formatTestSummary(report));
-  process.exitCode = report.counts.fail > 0 ? 1 : 0;
+  const failed = report.results.summary.failed;
+  console.log(failed > 0 ? formatTestFailures(report) : formatTestSummary(report));
+  process.exitCode = failed > 0 ? 1 : 0;
 }
 
 export function main(argv: string[]): void {
   const options = parseArgs(argv);
   const results: ITestResult[] = [];
+  const start = Date.now();
   /* Each test file runs in its own child process; preload the test-globals
    * shim (describe/it/expect/...) into them via the inherited environment */
   const preload = `--require ${JSON.stringify(path.join(__dirname, "globals.js"))}`;
@@ -125,7 +127,7 @@ export function main(argv: string[]): void {
   const stream = run({ files: options.files.map(file => path.resolve(file)) });
   stream.on("test:pass", data => record(results, data as unknown as ITestEvent, "pass"));
   stream.on("test:fail", data => record(results, data as unknown as ITestEvent, "fail"));
-  stream.once("end", () => finish(results, options.report));
+  stream.once("end", () => finish(results, options.report, start));
   /* The event stream only flows (and thus only ends) if it is consumed */
   stream.resume();
 }
