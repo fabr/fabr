@@ -49,15 +49,6 @@ export async function getSourceRoot(): Promise<string> {
   }
 }
 
-export async function getStdlibRoot(): Promise<string> {
-  const binPath = path.resolve(__dirname, "../lib");
-  try {
-    await fsPromises.access(binPath, fs.constants.R_OK);
-    return binPath;
-  } catch (err) {
-    return path.resolve(__dirname, "../../lib");
-  }
-}
 
 /**
  * @return the root of our build cache (which may or may not exist at this point).

@@ -66,6 +66,7 @@ export function findExecutable(name: string): string {
 
 export function execute(cmd: string, args: string[], cwd: string, env: Record<string, string>): Computable<void> {
   return Computable.from((resolve, reject) => {
+    const commandLine = "$ " + [cmd, ...args].map(quoteArg).join(" ");
     const proc = spawn(cmd, args, { cwd, env, windowsHide: true });
     /* Capture the tool's output (both streams, in arrival order) so that a
      * failure can report what the tool actually said. */
@@ -75,13 +76,15 @@ export function execute(cmd: string, args: string[], cwd: string, env: Record<st
     /* Failure to spawn at all (e.g. missing executable) is reported through
      * the 'error' event; without a handler it would crash the process. */
     proc.on("error", err => {
-      reject(new ExecutionError(`Unable to execute ${cmd}: ${systemErrorText(err)}`));
+      reject(new ExecutionError(`${commandLine}\nunable to execute: ${systemErrorText(err)}`));
     });
+    /* Failures report the command line that ran first, then the tool's
+     * output, then how it ended. */
     proc.on("close", (code, signal) => {
       if (signal) {
-        reject(new ExecutionError(withOutput(`${cmd}: terminated by signal ${signal}`, output)));
+        reject(new ExecutionError(withOutput(commandLine, output, `terminated by signal ${signal}`)));
       } else if (code !== 0) {
-        reject(new ExecutionError(withOutput(`${cmd}: exited with error code ${code}`, output)));
+        reject(new ExecutionError(withOutput(commandLine, output, `exited with error code ${code}`)));
       } else {
         resolve();
       }
@@ -89,7 +92,12 @@ export function execute(cmd: string, args: string[], cwd: string, env: Record<st
   });
 }
 
-function withOutput(message: string, output: Uint8Array[]): string {
+/** Quote an argument for display where it wouldn't survive a shell round-trip */
+function quoteArg(arg: string): string {
+  return arg.length > 0 && !/[\s'"$\\`*?[\]{}()<>|&;#~!]/.test(arg) ? arg : `'${arg.replace(/'/g, "'\\''")}'`;
+}
+
+function withOutput(commandLine: string, output: Uint8Array[], result: string): string {
   const text = Buffer.concat(output).toString().trimEnd();
-  return text.length > 0 ? `${message}\n${text}` : message;
+  return text.length > 0 ? `${commandLine}\n${text}\n${result}` : `${commandLine}\n${result}`;
 }

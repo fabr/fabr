@@ -68,6 +68,12 @@ export function resolveMVS<V, C>(
         errors.add(`${err instanceof Error ? err.message : err} (required by ${requiredBy})`);
         return;
       }
+      if (domain.isUnconstrained(constraint)) {
+        /* No version preference: contributes no selection of its own, and is
+         * satisfied by whatever the constrained requirements select (resolved
+         * during finish; an unconstrained-only package is an error there) */
+        return;
+      }
       const key = domain.resolutionKey(req.pkg, constraint);
       const min = domain.minimumOf(constraint);
       const current = selected.get(key);
@@ -108,7 +114,33 @@ export function resolveMVS<V, C>(
       if (failed) {
         return;
       }
-      const reachable = new Map<string, Selected<V>>();
+      const selectionsByPkg = new Map<string, Selected<V>[]>();
+      for (const selection of selected.values()) {
+        selectionsByPkg.set(selection.pkg, [...(selectionsByPkg.get(selection.pkg) ?? []), selection]);
+      }
+
+      /**
+       * The selections a requirement edge leads to: the (single) selection
+       * under its resolution key, or — for an unconstrained requirement —
+       * every selection of the package, since it is satisfied by any of them.
+       */
+      const targetsOf = (req: Requirement): Selected<V>[] => {
+        let constraint: C;
+        try {
+          constraint = domain.parseConstraint(req.constraint);
+        } catch {
+          return []; /* Already reported during the walk */
+        }
+        if (domain.isUnconstrained(constraint)) {
+          return selectionsByPkg.get(req.pkg) ?? [];
+        }
+        return [selected.get(domain.resolutionKey(req.pkg, constraint))!];
+      };
+
+      /* Reachable selections, each annotated (as a copy) with how it was
+       * first reached; keyed by the underlying selection instance since an
+       * unconstrained edge has no resolution key of its own */
+      const reachable = new Map<Selected<V>, Selected<V>>();
       const visited = new Set<string>();
       const queue: Array<{ from: string; requirements: Requirement[] }> = [{ from: ROOT_REQUIRER, requirements: roots }];
 
@@ -119,20 +151,28 @@ export function resolveMVS<V, C>(
         } catch {
           return; /* Already reported during the walk */
         }
-        const key = domain.resolutionKey(req.pkg, constraint);
-        const selection = selected.get(key)!;
-        if (!domain.satisfies(selection.version, constraint)) {
+        const targets = targetsOf(req);
+        if (targets.length === 0 && domain.isUnconstrained(constraint)) {
           errors.add(
-            `${selection.pkg}@${domain.versionToString(selection.version)} does not satisfy '${req.constraint}'` +
-              ` required by ${from}`
+            `'${req.pkg}' is required by ${from} without a version constraint ('${req.constraint}'),` +
+              ` and no versioned requirement for it exists — add one explicitly`
           );
+          return;
         }
-        if (!reachable.has(key)) {
-          reachable.set(key, { ...selection, reachedVia: { requiredBy: from, constraint: req.constraint } });
-          const id = nodeId(selection.pkg, selection.version);
-          if (!visited.has(id)) {
-            visited.add(id);
-            queue.push({ from: id, requirements: nodeRequirements.get(id) ?? [] });
+        for (const selection of targets) {
+          if (!domain.satisfies(selection.version, constraint)) {
+            errors.add(
+              `${selection.pkg}@${domain.versionToString(selection.version)} does not satisfy '${req.constraint}'` +
+                ` required by ${from}`
+            );
+          }
+          if (!reachable.has(selection)) {
+            reachable.set(selection, { ...selection, reachedVia: { requiredBy: from, constraint: req.constraint } });
+            const id = nodeId(selection.pkg, selection.version);
+            if (!visited.has(id)) {
+              visited.add(id);
+              queue.push({ from: id, requirements: nodeRequirements.get(id) ?? [] });
+            }
           }
         }
       };
@@ -149,24 +189,20 @@ export function resolveMVS<V, C>(
         const visitedNodes = new Set<string>();
         const visit = (requirements: Requirement[]): void => {
           for (const req of requirements) {
-            let constraint: C;
-            try {
-              constraint = domain.parseConstraint(req.constraint);
-            } catch {
-              continue;
-            }
-            const selection = reachable.get(domain.resolutionKey(req.pkg, constraint));
-            if (!selection) {
-              continue;
-            }
-            const from = (selection.reachableFrom ??= []);
-            if (!from.includes(rootIndex)) {
-              from.push(rootIndex);
-            }
-            const id = nodeId(selection.pkg, selection.version);
-            if (!visitedNodes.has(id)) {
-              visitedNodes.add(id);
-              visit(nodeRequirements.get(id) ?? []);
+            for (const target of targetsOf(req)) {
+              const selection = reachable.get(target);
+              if (!selection) {
+                continue;
+              }
+              const from = (selection.reachableFrom ??= []);
+              if (!from.includes(rootIndex)) {
+                from.push(rootIndex);
+              }
+              const id = nodeId(selection.pkg, selection.version);
+              if (!visitedNodes.has(id)) {
+                visitedNodes.add(id);
+                visit(nodeRequirements.get(id) ?? []);
+              }
             }
           }
         };

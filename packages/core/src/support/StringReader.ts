@@ -127,6 +127,29 @@ export class StringReader {
   }
 
   /**
+   * As skipUntil, except that the callback may itself consume input (e.g. an
+   * entire quoted string or variable substitution): when the callback has
+   * advanced the reader, the scan does not advance again, and the new current
+   * character is tested on the next step. Returning true stops the scan with
+   * the current character unconsumed.
+   * @param test Function from codepoint to boolean; may consume input.
+   * @return the codepoint for which the test succeeded, or undefined if EOF
+   * was reached.
+   */
+  public scanUntil(test: (char: number) => boolean): number | undefined {
+    while (this.currentChar !== undefined) {
+      const offset = this.offset;
+      if (test(this.currentChar)) {
+        break;
+      }
+      if (this.offset === offset) {
+        this.next();
+      }
+    }
+    return this.currentChar;
+  }
+
+  /**
    * @returns the string of characters between the start position (inclusive) up to the
    *  end position (excluding the character at the end position).
    * @param start First character to include.

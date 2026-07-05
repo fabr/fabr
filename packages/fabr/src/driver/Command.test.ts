@@ -17,11 +17,12 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { expect } from "chai";
 import { Mode, parseCommandLine } from "./Command";
 
 describe("Command", () => {
   it("defaults to the build command", () => {
-    expect(parseCommandLine(["node", "fabr", "foo"])).toEqual({
+    expect(parseCommandLine(["node", "fabr", "foo"])).to.deep.equal({
       command: "build",
       mode: Mode.Normal,
       targets: ["foo"],
@@ -30,7 +31,7 @@ describe("Command", () => {
   });
 
   it("parses an explicit command", () => {
-    expect(parseCommandLine(["node", "fabr", "test", "foo", "bar"])).toEqual({
+    expect(parseCommandLine(["node", "fabr", "test", "foo", "bar"])).to.deep.equal({
       command: "test",
       mode: Mode.Normal,
       targets: ["foo", "bar"],
@@ -39,11 +40,11 @@ describe("Command", () => {
   });
 
   it("treats later command-words as targets", () => {
-    expect(parseCommandLine(["node", "fabr", "build", "test"]).targets).toEqual(["test"]);
+    expect(parseCommandLine(["node", "fabr", "build", "test"]).targets).to.deep.equal(["test"]);
   });
 
   it("parses flags and defines alongside a command", () => {
-    expect(parseCommandLine(["node", "fabr", "-w", "run", "foo", "-Dx=1"])).toEqual({
+    expect(parseCommandLine(["node", "fabr", "-w", "run", "foo", "-Dx=1"])).to.deep.equal({
       command: "run",
       mode: Mode.Watch,
       targets: ["foo"],

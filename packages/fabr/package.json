@@ -8,6 +8,7 @@
     "fabr": "build/index.js"
   },
   "dependencies": {
-    "@fabr/core": "0.1.0"
+    "@fabr/core": "0.1.0",
+    "@fabr/js": "0.1.0"
   }
 }

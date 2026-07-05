@@ -18,7 +18,8 @@
  */
 
 import { Computable } from "./Computable";
-import { FileSet, FileSource, PackageFileSet } from "./FileSet";
+import { FileSet, FileSource } from "./FileSet";
+import { PackageFileSet } from "./PackageFileSet";
 import { chainSteps, IProvenanceStep } from "./Provenance";
 import { Name } from "../model/Name";
 
@@ -96,8 +97,11 @@ export class RepositoryRef {
       if (files instanceof PackageFileSet) {
         /* The reference's provenance applies to the whole delivery: the root
          * package and every member of its resolved closure arrived via the
-         * same reference. */
-        const dependencies = files.dependencies.map(dep => dep.withOrigin(chainSteps(this.steps, dep.origin)!));
+         * same reference. (Carried references stay as they are — they get
+         * their attribution when they are themselves resolved.) */
+        const dependencies = files.dependencies.map(dep =>
+          dep instanceof PackageFileSet ? dep.withOrigin(chainSteps(this.steps, dep.origin)!) : dep
+        );
         return new PackageFileSet(files, files.packageName, files.version, dependencies, chainSteps(this.steps, files.origin));
       }
       const origin = chainSteps(this.steps, files.origin);
@@ -115,17 +119,68 @@ export type SourceRef = FileSource | Repository | RepositoryRef;
 /**
  * Resolve the RepositoryRefs among the given sources: this is the collection
  * point — because the caller's inputs are all settled by the time the sources
- * are in hand, the set of references is provably complete. References are
- * partitioned by repository, and each repository resolves its own batch
- * jointly. Projections and provenance carried by the references are applied to
- * the results; other sources pass through unchanged.
+ * are in hand, the set of references is provably complete. The batch includes
+ * the references CARRIED by packages among the sources (a built package's
+ * direct external requirements, gathered recursively through its built-package
+ * deps), so every requirement reachable from this collection point takes part
+ * in one joint resolution per repository — resolved fresh here, in this
+ * consumer's context. Projections and provenance carried by the references are
+ * applied to the results; packages are re-delivered with their carried
+ * references replaced by the resolutions; other sources pass through
+ * unchanged.
  */
 export function materializeAll(sources: SourceRef[]): Computable<(FileSource | Repository)[]> {
-  const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
+  const references = gatherReferences(sources);
   if (references.length === 0) {
     /* No references present, so nothing to resolve */
     return Computable.resolve(sources as (FileSource | Repository)[]);
   }
+  const batches = [...groupByRepository(references).entries()];
+  return Computable.forAll(
+    batches.map(([repository, refs]) => repository.resolveAll(refs)),
+    (...results: FileSet[][]) => {
+      const finished = new Map<RepositoryRef, Computable<FileSet>>();
+      batches.forEach(([, refs], batchIndex) =>
+        refs.forEach((ref, index) => finished.set(ref, ref.finishMaterialize(results[batchIndex][index])))
+      );
+      const rebuilt = new Map<PackageFileSet, Computable<PackageFileSet>>();
+      return Computable.forAll(
+        sources.map(source => {
+          if (source instanceof RepositoryRef) {
+            return finished.get(source)!;
+          } else if (source instanceof PackageFileSet) {
+            return rebuildPackage(source, finished, rebuilt);
+          } else {
+            return Computable.resolve(source);
+          }
+        }),
+        (...resolved: (FileSource | Repository)[]) => resolved
+      );
+    }
+  );
+}
+
+/**
+ * @return every reference among the sources, plus those carried by packages —
+ * recursively through their built-package deps — deduplicated by identity.
+ */
+function gatherReferences(sources: SourceRef[]): RepositoryRef[] {
+  const references: RepositoryRef[] = [];
+  const visited = new Set<RepositoryRef | PackageFileSet>();
+  const gather = (source: SourceRef | PackageFileSet): void => {
+    if (source instanceof RepositoryRef && !visited.has(source)) {
+      visited.add(source);
+      references.push(source);
+    } else if (source instanceof PackageFileSet && !visited.has(source)) {
+      visited.add(source);
+      source.dependencies.forEach(gather);
+    }
+  };
+  sources.forEach(gather);
+  return references;
+}
+
+function groupByRepository(references: RepositoryRef[]): Map<Repository, RepositoryRef[]> {
   const groups = new Map<Repository, RepositoryRef[]>();
   for (const reference of references) {
     const group = groups.get(reference.source);
@@ -135,18 +190,38 @@ export function materializeAll(sources: SourceRef[]): Computable<(FileSource | R
       groups.set(reference.source, [reference]);
     }
   }
-  const batches = [...groups.entries()];
-  return Computable.forAll(
-    batches.map(([repository, refs]) => repository.resolveAll(refs)),
-    (...results: FileSet[][]) => {
-      const finished = new Map<RepositoryRef, Computable<FileSet>>();
-      batches.forEach(([, refs], batchIndex) =>
-        refs.forEach((ref, index) => finished.set(ref, ref.finishMaterialize(results[batchIndex][index])))
-      );
-      return Computable.forAll(
-        sources.map(source => (source instanceof RepositoryRef ? finished.get(source)! : Computable.resolve(source))),
-        (...resolved: (FileSource | Repository)[]) => resolved
+  return groups;
+}
+
+/**
+ * Re-deliver a package with its carried references replaced by their
+ * resolutions (recursively through built-package deps); a reference that
+ * resolved to something without package identity (e.g. a projection) cannot
+ * be mounted and so drops out of the dependency list.
+ */
+function rebuildPackage(
+  pkg: PackageFileSet,
+  finished: Map<RepositoryRef, Computable<FileSet>>,
+  rebuilt: Map<PackageFileSet, Computable<PackageFileSet>>
+): Computable<PackageFileSet> {
+  let result = rebuilt.get(pkg);
+  if (!result) {
+    if (pkg.dependencies.length === 0) {
+      result = Computable.resolve(pkg);
+    } else {
+      result = Computable.forAll(
+        pkg.dependencies.map(dep => (dep instanceof RepositoryRef ? finished.get(dep)! : rebuildPackage(dep, finished, rebuilt))),
+        (...deps) =>
+          new PackageFileSet(
+            pkg,
+            pkg.packageName,
+            pkg.version,
+            deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet),
+            pkg.origin
+          )
       );
     }
-  );
+    rebuilt.set(pkg, result);
+  }
+  return result;
 }

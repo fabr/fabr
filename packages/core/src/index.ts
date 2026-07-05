@@ -17,16 +17,23 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* Importing @fabr/core registers the bootstrap rules (enough to build any
- * further rules as plugins): js_package, npm_repository, flag, and friends. */
-import "./rules/js";
+/* Importing @fabr/core registers the generic bootstrap rules (flag, generic)
+ * and core's own lib/ on the system include path. Language-specific rules
+ * live in their own packages (@fabr/js et al) — the bootstrap set is
+ * core + js + fabr; anything beyond that can be built by fabr itself and
+ * loaded via a plugin declaration. */
 import "./rules/FlagTarget";
 import "./rules/GenericTarget";
+import { packageLibDir, registerSystemIncludeDir } from "./model/Loader";
+
+registerSystemIncludeDir(packageLibDir("@fabr/core"));
 
 export * from "./core/BuildCache";
 export * from "./core/Computable";
 export * from "./core/Fetch";
 export * from "./core/FileSet";
+export * from "./core/FSFileSource";
+export * from "./core/PackageFileSet";
 export * from "./core/Flag";
 export * from "./core/MemoryFS";
 export * from "./core/MultiError";
@@ -39,6 +46,12 @@ export * from "./model/Loader";
 export * from "./model/Name";
 export * from "./model/Property";
 export { declPosn } from "./model/AST";
+export * from "./resolver/MVSResolver";
+export * from "./resolver/ResolutionProvenance";
+export * from "./resolver/Semver";
+export * from "./resolver/Types";
 export * from "./support/Execute";
 export * from "./support/Log";
+export * from "./support/TestResult";
+export * from "./support/Unpack";
 export * from "./rules/Registry";

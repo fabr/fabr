@@ -20,6 +20,7 @@
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { getTargetRule, registerTargetRule } from "./Registry";
+import { expect } from "chai";
 
 const wildcardRule = (): Computable<FileSet> => Computable.resolve(EMPTY_FILESET);
 const testRule = (): Computable<FileSet> => Computable.resolve(EMPTY_FILESET);
@@ -29,14 +30,14 @@ registerTargetRule("reg_test", { BUILD_OPERATION: "test" }, testRule);
 
 describe("Registry", () => {
   it("selects the most specific matching rule", () => {
-    expect(getTargetRule("reg_test", {})?.evaluate).toBe(wildcardRule);
-    expect(getTargetRule("reg_test", { BUILD_OPERATION: "build" })?.evaluate).toBe(wildcardRule);
-    expect(getTargetRule("reg_test", { BUILD_OPERATION: "test" })?.evaluate).toBe(testRule);
+    expect(getTargetRule("reg_test", {})?.evaluate).to.equal(wildcardRule);
+    expect(getTargetRule("reg_test", { BUILD_OPERATION: "build" })?.evaluate).to.equal(wildcardRule);
+    expect(getTargetRule("reg_test", { BUILD_OPERATION: "test" })?.evaluate).to.equal(testRule);
     /* Unrelated constraints don't disturb selection */
-    expect(getTargetRule("reg_test", { BUILD_OPERATION: "test", arch: "armv7" })?.evaluate).toBe(testRule);
+    expect(getTargetRule("reg_test", { BUILD_OPERATION: "test", arch: "armv7" })?.evaluate).to.equal(testRule);
   });
 
   it("returns undefined when no rule matches", () => {
-    expect(getTargetRule("no_such_type", {})).toBeUndefined();
+    expect(getTargetRule("no_such_type", {})).to.equal(undefined);
   });
 });

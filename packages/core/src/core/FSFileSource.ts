@@ -89,7 +89,6 @@ export class FSFileSource implements FileSource {
       const stripPrefix =
         colonIdx === -1 ? undefined : new RegExp("^" + picomatch.parse(nameString.substring(0, colonIdx) + "/").output);
       const searchString = nameString.replace(":", "/");
-      console.log("Chokidaring " + this.root + ":" + searchString);
       const watch = chokidar.watch(searchString, {
         cwd: this.root,
         persistent: false,

@@ -17,9 +17,17 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { explainResolutionPath, IResolutionOrigin } from "../../resolver/ResolutionProvenance";
-import { parseVersion, SemverVersion, versionToString } from "../../resolver/Semver";
-import { IRequirementEdge, ROOT_REQUIRER, Selected } from "../../resolver/Types";
+import { expect } from "chai";
+import {
+  explainResolutionPath,
+  IRequirementEdge,
+  IResolutionOrigin,
+  parseVersion,
+  ROOT_REQUIRER,
+  Selected,
+  SemverVersion,
+  versionToString,
+} from "@fabr/core";
 import { npmPackageOfPath } from "./NPMRepository";
 
 function selection(
@@ -61,26 +69,26 @@ describe("explainResolutionPath", () => {
   ]);
 
   it("renders the chain through the requirement that picked the version", () => {
-    expect(explainResolutionPath(chokidarClosure, "picomatch/LICENSE")).toEqual([
+    expect(explainResolutionPath(chokidarClosure, "picomatch/LICENSE")).to.deep.equal([
       "chokidar@3.5.3 -> readdirp@3.6.0 (~3.6.0) -> picomatch@2.2.1 (^2.2.1)",
     ]);
   });
 
   it("renders a plain transitive chain", () => {
-    expect(explainResolutionPath(chokidarClosure, "anymatch/index.js")).toEqual([
+    expect(explainResolutionPath(chokidarClosure, "anymatch/index.js")).to.deep.equal([
       "chokidar@3.5.3 -> anymatch@3.1.2 (~3.1.2)",
     ]);
   });
 
   it("renders a root package tersely", () => {
-    expect(explainResolutionPath(chokidarClosure, "chokidar/lib/index.js")).toEqual(["chokidar@3.5.3 (3.5.3)"]);
+    expect(explainResolutionPath(chokidarClosure, "chokidar/lib/index.js")).to.deep.equal(["chokidar@3.5.3 (3.5.3)"]);
   });
 
   it("handles scoped package paths", () => {
     const scoped = origin({ pkg: "@types/picomatch", constraint: "2.3.0" }, [
       selection("@types/picomatch", "2.3.0", ROOT_EDGE("2.3.0")),
     ]);
-    expect(explainResolutionPath(scoped, "@types/picomatch/index.d.ts")).toEqual(["@types/picomatch@2.3.0 (2.3.0)"]);
+    expect(explainResolutionPath(scoped, "@types/picomatch/index.d.ts")).to.deep.equal(["@types/picomatch@2.3.0 (2.3.0)"]);
   });
 
   it("marks a winning requirement from a superseded version", () => {
@@ -93,14 +101,14 @@ describe("explainResolutionPath", () => {
         { requiredBy: "A@1.0.0", constraint: "^1.5.0" }
       ),
     ]);
-    expect(explainResolutionPath(withSuperseded, "D/index.js")).toEqual([
+    expect(explainResolutionPath(withSuperseded, "D/index.js")).to.deep.equal([
       "A@1.2.0 -> D@1.5.0 (^1.1.0)",
       "version 1.5.0 raised by A@1.0.0 requiring ^1.5.0 (since superseded)",
     ]);
   });
 
   it("degrades gracefully for a package not in the resolution", () => {
-    expect(explainResolutionPath(chokidarClosure, "mystery/index.js")).toEqual([
+    expect(explainResolutionPath(chokidarClosure, "mystery/index.js")).to.deep.equal([
       "mystery is not present in the resolution of chokidar:3.5.3",
     ]);
   });

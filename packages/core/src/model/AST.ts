@@ -29,6 +29,7 @@ export enum DeclKind {
   TargetDef,
   Include,
   Namespace,
+  Plugin,
 }
 
 interface IBaseDecl {
@@ -89,6 +90,17 @@ export interface IIncludeDecl extends IBaseDecl {
   filename: string;
 }
 
+/**
+ * `plugin <name>;` — requests that the named target (typically a js_package)
+ * be built and loaded into the host as a rule plugin before the requested
+ * targets are resolved. The name must resolve to a target that yields a
+ * package with an `activate(api)` entry point.
+ */
+export interface IPluginDecl extends IBaseDecl {
+  kind: DeclKind.Plugin;
+  name: string;
+}
+
 export interface IBuildFile {
   fs: FileSource;
   file: string;
@@ -102,9 +114,10 @@ export interface IBuildFileContents {
   properties: IPropertyDecl[];
   defaults: IPropertyDecl[];
   includes: IIncludeDecl[];
+  plugins: IPluginDecl[];
 }
 
-export type IDecl = ITargetDecl | IPropertyDecl | INamespaceDecl | IIncludeDecl | IValue;
+export type IDecl = ITargetDecl | IPropertyDecl | INamespaceDecl | IIncludeDecl | IPluginDecl | IValue;
 
 export type INamedDecl = ITargetDecl | IPropertyDecl | INamespaceDecl | ITargetDefDecl;
 
@@ -124,6 +137,8 @@ export function getDeclKindName(kind: DeclKind): string {
       return "targetdef";
     case DeclKind.Value:
       return "value";
+    case DeclKind.Plugin:
+      return "plugin";
   }
 }
 

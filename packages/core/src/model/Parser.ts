@@ -24,6 +24,7 @@ import {
   IBuildFile,
   IBuildFileContents,
   IIncludeDecl,
+  IPluginDecl,
   IPropertyDecl,
   IPropertySchema,
   ITargetDecl,
@@ -157,6 +158,10 @@ const DIAG_INVALID_INCLUDE = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
   "Include names cannot currently contain glob patterns or variables"
 );
+const DIAG_INVALID_PLUGIN = new Diagnostic<{ loc: ISourcePosition }>(
+  LogLevel.Error,
+  "Plugin names must be plain target names (no glob patterns or variables)"
+);
 
 const PARSE_ERROR = "Parse Error";
 
@@ -185,12 +190,13 @@ export class BuildParser {
       properties: [],
       defaults: [],
       includes: [],
+      plugins: [],
     };
     this.nextToken();
   }
 
-  /* Single quotes consume everything until the next single quote.
-   * Note: currently this will allow new-lines inside the quote.
+  /* Single quotes consume everything until the next single quote (which is
+   * consumed too). Note: currently this will allow new-lines inside the quote.
    * @param builder NameBuilder to receive the quoted content
    */
   private readSingleQuotedString(builder?: NameBuilder): void {
@@ -201,16 +207,19 @@ export class BuildParser {
       this.unexpectedEndOfFile("'");
     }
     builder?.appendLiteralString(this.reader.substring(start));
+    this.reader.next(); /* Consume the closing quote */
   }
 
-  /* Double quotes can contain variables (which can contain double quotes */
+  /* Double quotes can contain variables (which can contain double quotes).
+   * Consumes everything up to and including the closing quote. */
   private readDoubleQuotedString(builder?: NameBuilder): void {
     this.reader.consume(CHAR_DQUOTE);
     let posn = this.reader.currentOffset();
-    const next = this.reader.skipUntil(ch => {
+    const next = this.reader.scanUntil(ch => {
       switch (ch) {
         case CHAR_BACKSLASH:
-          this.reader.next();
+          this.reader.next(); /* the backslash */
+          this.reader.next(); /* the escaped character */
           break;
         case CHAR_DOLLAR:
           builder?.appendEscapedString(this.reader.substring(posn));
@@ -226,13 +235,16 @@ export class BuildParser {
       this.unexpectedEndOfFile('"');
     }
     builder?.appendEscapedString(this.reader.substring(posn));
+    this.reader.next(); /* Consume the closing quote */
   }
 
+  /* Reads a variable substitution ('$NAME' or '${NAME}'), consuming the whole
+   * construct: on return the reader is at the first character after it. */
   private readSubstVar(builder?: NameBuilder): void {
     const next = this.reader.consume(CHAR_DOLLAR);
     if (next !== CHAR_LBRACE) {
       const posn = this.reader.currentOffset();
-      this.reader.skipUntil(ch => !isAlphabetic(ch) && !isDigit(ch)) !== undefined;
+      this.reader.skipUntil(ch => !isAlphabetic(ch) && !isDigit(ch));
       const str = this.reader.substring(posn);
       if (str.length === 0) {
         /* Terminal '$' is just treated as a literal $ */
@@ -244,10 +256,11 @@ export class BuildParser {
       this.reader.consume(CHAR_LBRACE);
       const posn = this.reader.currentOffset();
       /* TODO: currently we don't try to parse out the contents of the substitution */
-      const next = this.reader.skipUntil(ch => {
+      const inner = this.reader.scanUntil(ch => {
         switch (ch) {
           case CHAR_BACKSLASH:
-            this.reader.next();
+            this.reader.next(); /* the backslash */
+            this.reader.next(); /* the escaped character */
             break;
           case CHAR_DOLLAR:
             this.readSubstVar();
@@ -260,10 +273,11 @@ export class BuildParser {
         }
         return false;
       });
-      if (next === undefined) {
+      if (inner === undefined) {
         this.unexpectedEndOfFile("}");
       }
       builder?.appendSubstVar(this.reader.substring(posn));
+      this.reader.next(); /* Consume the closing brace */
     }
   }
 
@@ -286,34 +300,37 @@ export class BuildParser {
     const start = this.reader.currentOffset();
     const nameBuilder = new NameBuilder();
     let maybeIdent = true;
-    /* Expect current character is not whitespace or a special character */
+    /* Expect current character is not whitespace or a special character.
+     * Quoted strings, substitutions and character classes consume themselves
+     * whole (the scan only advances past characters they leave in place). */
     let posn = this.reader.currentOffset();
-    this.reader.skipUntil(ch => {
+    this.reader.scanUntil(ch => {
       if (isWhitespace(ch)) {
         return true;
       }
       switch (ch) {
         case CHAR_BACKSLASH:
           maybeIdent = false;
-          this.reader.next();
+          this.reader.next(); /* the backslash */
+          this.reader.next(); /* the escaped character */
           break;
         case CHAR_QUOTE:
           maybeIdent = false;
           nameBuilder.appendEscapedString(this.reader.substring(posn));
           this.readSingleQuotedString(nameBuilder);
-          posn = this.reader.currentOffset() + 1;
+          posn = this.reader.currentOffset();
           break;
         case CHAR_DQUOTE:
           maybeIdent = false;
           nameBuilder.appendEscapedString(this.reader.substring(posn));
           this.readDoubleQuotedString(nameBuilder);
-          posn = this.reader.currentOffset() + 1;
+          posn = this.reader.currentOffset();
           break;
         case CHAR_DOLLAR:
           maybeIdent = false;
           nameBuilder.appendEscapedString(this.reader.substring(posn));
           this.readSubstVar(nameBuilder);
-          posn = this.reader.currentOffset() + 1;
+          posn = this.reader.currentOffset();
           break;
         case CHAR_STAR:
           maybeIdent = false;
@@ -453,6 +470,27 @@ export class BuildParser {
           filename: simpleName,
         };
       }
+    } else {
+      this.unexpectedTokenError("Name");
+    }
+  }
+
+  /**
+   * PluginDecl ::= 'plugin' NAME ';'
+   */
+  private parsePluginDecl(): IPluginDecl {
+    const token = this.token;
+    if (token.type === TokenType.IDENTIFIER || token.type === TokenType.COMPOUND_IDENTIFIER) {
+      this.nextToken();
+      this.consumeIfToken(TokenType.SEMI);
+      return {
+        kind: DeclKind.Plugin,
+        source: this.source,
+        offset: token.start,
+        name: token.text,
+      };
+    } else if (token.type === TokenType.NAME) {
+      this.invalidPluginName();
     } else {
       this.unexpectedTokenError("Name");
     }
@@ -640,14 +678,20 @@ export class BuildParser {
     throw new Error(PARSE_ERROR);
   }
 
+  private invalidPluginName(): never {
+    this.log.log(DIAG_INVALID_PLUGIN, { loc: { ...this.source, offset: this.token.start } });
+    throw new Error(PARSE_ERROR);
+  }
+
   /**
    * Parse a statement.
    *
-   * Statement ::= PropertyDecl | TargetDecl | IncludeDecl | TargetDefDecl | DefaultPropertyDecl
+   * Statement ::= PropertyDecl | TargetDecl | IncludeDecl | PluginDecl | TargetDefDecl | DefaultPropertyDecl
    *               ^
    * PropertyDecl ::= NAME '=' expr ';'
    * TargetDecl ::= NAME NAME '{' PropertyList '}'
    * IncludeDecl ::= 'include' NAME ';'
+   * PluginDecl ::= 'plugin' NAME ';'
    * TargetDefDecl ::= 'targetdef' NAME '{' PropertyTypeList '}'
    * DefaultPropertyDecl ::= 'default' PropertyDecl
    */
@@ -658,6 +702,8 @@ export class BuildParser {
       const next = this.nextToken();
       if (token.text === "include") {
         this.result.includes.push(this.parseIncludeDecl());
+      } else if (token.text === "plugin") {
+        this.result.plugins.push(this.parsePluginDecl());
       } else if (token.text === "default" && next.type === TokenType.IDENTIFIER) {
         this.nextToken();
         this.result.defaults.push(this.parsePropertyDecl(next.text, next.start));

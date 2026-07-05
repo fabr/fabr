@@ -21,6 +21,7 @@ import { Computable } from "../core/Computable";
 import { resolveMVS } from "./MVSResolver";
 import { SEMVER, SemverVersion, versionToString } from "./Semver";
 import { PackageRegistry, Requirement, Resolution, Selected } from "./Types";
+import { expect } from "chai";
 
 /**
  * Mock registry over a literal { pkg: { version: { dep: constraint } } } table.
@@ -50,7 +51,7 @@ function resolve(
     result = resolution;
   });
   /* The mock registry is synchronous, so resolution completes before we get here */
-  expect(result).toBeDefined();
+  expect(result).to.not.equal(undefined);
   return result!;
 }
 
@@ -61,8 +62,8 @@ function selectionStrings(resolution: Resolution<SemverVersion>): string[] {
 describe("MVSResolver", () => {
   it("resolves a single package with no dependencies", () => {
     const result = resolve({ A: "1.2.3" }, { A: { "1.2.3": {} } });
-    expect(selectionStrings(result)).toEqual(["A@1.2.3"]);
-    expect(result.errors).toEqual([]);
+    expect(selectionStrings(result)).to.deep.equal(["A@1.2.3"]);
+    expect(result.errors).to.deep.equal([]);
   });
 
   it("resolves transitive dependencies", () => {
@@ -74,8 +75,8 @@ describe("MVSResolver", () => {
         C: { "2.1.0": {} },
       }
     );
-    expect(selectionStrings(result)).toEqual(["A@1.0.0", "B@1.2.0", "C@2.1.0"]);
-    expect(result.errors).toEqual([]);
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@1.2.0", "C@2.1.0"]);
+    expect(result.errors).to.deep.equal([]);
   });
 
   it("selects the maximum of declared minimums (diamond)", () => {
@@ -87,8 +88,8 @@ describe("MVSResolver", () => {
         D: { "1.1.0": {}, "1.3.0": {} },
       }
     );
-    expect(selectionStrings(result)).toEqual(["B@1.0.0", "C@1.0.0", "D@1.3.0"]);
-    expect(result.errors).toEqual([]);
+    expect(selectionStrings(result)).to.deep.equal(["B@1.0.0", "C@1.0.0", "D@1.3.0"]);
+    expect(result.errors).to.deep.equal([]);
   });
 
   it("prunes packages only required by superseded versions", () => {
@@ -101,8 +102,48 @@ describe("MVSResolver", () => {
         C: { "1.0.0": {} },
       }
     );
-    expect(selectionStrings(result)).toEqual(["B@1.2.0", "B-upgrader@1.0.0"]);
-    expect(result.errors).toEqual([]);
+    expect(selectionStrings(result)).to.deep.equal(["B@1.2.0", "B-upgrader@1.0.0"]);
+    expect(result.errors).to.deep.equal([]);
+  });
+
+  it("attaches unconstrained requirements to the selected version", () => {
+    const result = resolve(
+      { A: "1.0.0" },
+      {
+        A: { "1.0.0": { B: "^1.2.0", C: "*" } },
+        B: { "1.2.0": { C: "^2.0.0" } },
+        C: { "2.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@1.2.0", "C@2.0.0"]);
+    expect(result.errors).to.deep.equal([]);
+  });
+
+  it("resolves an unconstrained root against a sibling requirement", () => {
+    const result = resolve(
+      { A: "*", B: "1.0.0" },
+      {
+        A: { "1.1.0": {} },
+        B: { "1.0.0": { A: "^1.1.0" } },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.1.0", "B@1.0.0"]);
+    expect(result.errors).to.deep.equal([]);
+    /* Both roots reach A */
+    expect(result.selections.find(sel => sel.pkg === "A")?.reachableFrom).to.deep.equal([0, 1]);
+  });
+
+  it("reports unconstrained requirements that nothing selects", () => {
+    const result = resolve(
+      { A: "1.0.0" },
+      {
+        A: { "1.0.0": { B: "*" } },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0"]);
+    expect(result.errors).to.deep.equal([
+      "'B' is required by A@1.0.0 without a version constraint ('*'), and no versioned requirement for it exists — add one explicitly",
+    ]);
   });
 
   it("terminates on dependency cycles", () => {
@@ -113,8 +154,8 @@ describe("MVSResolver", () => {
         B: { "1.0.0": { A: "^1.0.0" } },
       }
     );
-    expect(selectionStrings(result)).toEqual(["A@1.0.0", "B@1.0.0"]);
-    expect(result.errors).toEqual([]);
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@1.0.0"]);
+    expect(result.errors).to.deep.equal([]);
   });
 
   it("allows distinct major versions to coexist", () => {
@@ -126,8 +167,8 @@ describe("MVSResolver", () => {
         D: { "1.0.0": {}, "2.0.0": {} },
       }
     );
-    expect(selectionStrings(result)).toEqual(["B@1.0.0", "C@1.0.0", "D@1.0.0", "D@2.0.0"]);
-    expect(result.errors).toEqual([]);
+    expect(selectionStrings(result)).to.deep.equal(["B@1.0.0", "C@1.0.0", "D@1.0.0", "D@2.0.0"]);
+    expect(result.errors).to.deep.equal([]);
   });
 
   it("reports upper bound violations without rejecting", () => {
@@ -138,10 +179,10 @@ describe("MVSResolver", () => {
         E: { "1.0.0": { D: "^1.3.0" } },
       }
     );
-    expect(selectionStrings(result)).toEqual(["D@1.3.0", "E@1.0.0"]);
-    expect(result.errors).toHaveLength(1);
-    expect(result.errors[0]).toContain("D@1.3.0");
-    expect(result.errors[0]).toContain("~1.1.0");
+    expect(selectionStrings(result)).to.deep.equal(["D@1.3.0", "E@1.0.0"]);
+    expect(result.errors).to.have.length(1);
+    expect(result.errors[0]).to.contain("D@1.3.0");
+    expect(result.errors[0]).to.contain("~1.1.0");
   });
 
   it("a root override dominates transitive requirements", () => {
@@ -152,8 +193,8 @@ describe("MVSResolver", () => {
         D: { "1.1.0": {}, "1.4.0": {} },
       }
     );
-    expect(selectionStrings(result)).toEqual(["B@1.0.0", "D@1.4.0"]);
-    expect(result.errors).toEqual([]);
+    expect(selectionStrings(result)).to.deep.equal(["B@1.0.0", "D@1.4.0"]);
+    expect(result.errors).to.deep.equal([]);
   });
 
   it("reports unparseable constraints as errors", () => {
@@ -163,15 +204,15 @@ describe("MVSResolver", () => {
         A: { "1.0.0": { B: "1.0.0 - 2.0.0" } },
       }
     );
-    expect(selectionStrings(result)).toEqual(["A@1.0.0"]);
-    expect(result.errors).toHaveLength(1);
-    expect(result.errors[0]).toContain("A@1.0.0");
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0"]);
+    expect(result.errors).to.have.length(1);
+    expect(result.errors[0]).to.contain("A@1.0.0");
   });
 
   it("resolves an empty root set", () => {
     const result = resolve({}, {});
-    expect(selectionStrings(result)).toEqual([]);
-    expect(result.errors).toEqual([]);
+    expect(selectionStrings(result)).to.deep.equal([]);
+    expect(result.errors).to.deep.equal([]);
   });
 
   it("records which roots reach each selection", () => {
@@ -184,9 +225,9 @@ describe("MVSResolver", () => {
       }
     );
     const get = (pkg: string): Selected<SemverVersion> => result.selections.find(sel => sel.pkg === pkg)!;
-    expect(get("B").reachableFrom).toEqual([0]);
-    expect(get("C").reachableFrom).toEqual([1]);
-    expect(get("D").reachableFrom).toEqual([0]);
+    expect(get("B").reachableFrom).to.deep.equal([0]);
+    expect(get("C").reachableFrom).to.deep.equal([1]);
+    expect(get("D").reachableFrom).to.deep.equal([0]);
   });
 
   it("records multiple reaching roots through a diamond", () => {
@@ -199,7 +240,7 @@ describe("MVSResolver", () => {
       }
     );
     const d = result.selections.find(sel => sel.pkg === "D")!;
-    expect(d.reachableFrom?.slice().sort()).toEqual([0, 1]);
+    expect(d.reachableFrom?.slice().sort()).to.deep.equal([0, 1]);
   });
 
   it("records why each selection was reached and which requirement won", () => {
@@ -212,13 +253,13 @@ describe("MVSResolver", () => {
       }
     );
     const b = result.selections.find(sel => sel.pkg === "B")!;
-    expect(b.reachedVia).toEqual({ requiredBy: "(root)", constraint: "^1.0.0" });
-    expect(b.selectedBy).toEqual({ requiredBy: "(root)", constraint: "^1.0.0" });
+    expect(b.reachedVia).to.deep.equal({ requiredBy: "(root)", constraint: "^1.0.0" });
+    expect(b.selectedBy).to.deep.equal({ requiredBy: "(root)", constraint: "^1.0.0" });
 
     /* D is first reached through B, but its version was raised by C's requirement */
     const d = result.selections.find(sel => sel.pkg === "D")!;
-    expect(d.reachedVia).toEqual({ requiredBy: "B@1.0.0", constraint: "^1.1.0" });
-    expect(d.selectedBy).toEqual({ requiredBy: "C@1.0.0", constraint: "^1.3.0" });
+    expect(d.reachedVia).to.deep.equal({ requiredBy: "B@1.0.0", constraint: "^1.1.0" });
+    expect(d.selectedBy).to.deep.equal({ requiredBy: "C@1.0.0", constraint: "^1.3.0" });
   });
 
   it("keeps a version raised by a superseded requirement, and says so", () => {
@@ -233,11 +274,11 @@ describe("MVSResolver", () => {
         D: { "1.1.0": {}, "1.5.0": {} },
       }
     );
-    expect(selectionStrings(result)).toEqual(["A@1.2.0", "AUP@1.0.0", "D@1.5.0"]);
+    expect(selectionStrings(result)).to.deep.equal(["A@1.2.0", "AUP@1.0.0", "D@1.5.0"]);
     const d = result.selections.find(sel => sel.pkg === "D")!;
-    expect(d.selectedBy).toEqual({ requiredBy: "A@1.0.0", constraint: "^1.5.0" });
-    expect(d.reachedVia).toEqual({ requiredBy: "A@1.2.0", constraint: "^1.1.0" });
+    expect(d.selectedBy).to.deep.equal({ requiredBy: "A@1.0.0", constraint: "^1.5.0" });
+    expect(d.reachedVia).to.deep.equal({ requiredBy: "A@1.2.0", constraint: "^1.1.0" });
     /* The winning node is not among the final selections */
-    expect(selectionStrings(result)).not.toContain("A@1.0.0");
+    expect(selectionStrings(result)).to.not.contain("A@1.0.0");
   });
 });

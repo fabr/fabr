@@ -112,6 +112,18 @@ export interface VersionDomain<V, C> {
   minimumOf(constraint: C): V;
 
   /**
+   * @return true if the constraint admits every version (e.g. npm's '*',
+   * ubiquitous among DefinitelyTyped inter-package deps). An unconstrained
+   * requirement expresses no version preference at all: it contributes no
+   * selection of its own, and is satisfied by whichever version(s) of the
+   * package the constrained requirements select. A package required ONLY
+   * without constraints cannot be selected deterministically (the resolver
+   * never consults the registry's version list) and is reported as an error
+   * whose remedy is an explicit requirement.
+   */
+  isUnconstrained(constraint: C): boolean;
+
+  /**
    * @return true if the version fully satisfies the constraint (including any
    * upper bounds, which minimumOf ignores). Used to detect conflicts after
    * selection.

@@ -17,13 +17,13 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-enum NamePartKind {
+export enum NamePartKind {
   Literal,
   Glob,
   VarSubst,
 }
 
-interface NamePart {
+export interface NamePart {
   kind: NamePartKind;
   value: string;
 }

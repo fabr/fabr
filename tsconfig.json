@@ -1,4 +1,4 @@
 {
   "files": [],
-  "references": [{ "path": "packages/core" }, { "path": "packages/fabr" }, { "path": "packages/test" }]
+  "references": [{ "path": "packages/core" }, { "path": "packages/fabr" }, { "path": "packages/js" }]
 }

@@ -12,7 +12,7 @@ export function openUrlStream(urlstring: string): Computable<Readable> {
   return Computable.from<Readable>((resolve, reject) => {
     function handleResponse(res: http.IncomingMessage): void {
       if (res.statusCode !== 200) {
-        reject(new Error(`${res.statusCode} ${res.statusMessage}`));
+        reject(new Error(`${res.statusCode} ${res.statusMessage}: ${urlstring}`));
       } else {
         resolve(res);
       }

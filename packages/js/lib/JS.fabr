@@ -1,6 +1,6 @@
 ##################### Global Properties ####################
 
-include ./STD.fabr;
+include STD.fabr;
 
 #
 # Primary URL for the remote NPM repository. You'll usually want to override this if you're using
@@ -26,6 +26,15 @@ default JS_TARGET = es6-esm;
 default TSC = @npm:typescript:5.4.5;
 default NODE_TYPES = @npm:@types/node:20.12.7;
 
+#
+# The test runner used by js_test / 'fabr test': a package providing a
+# testRunner/runner.js entry point (see also the per-target 'runner' property).
+# The default is the @fabr/js package itself, built from source when
+# self-hosting; override to a pinned published version otherwise.
+#
+
+default JS_TEST_RUNNER = @fabr/js;
+
 ################### JS-specific targets ####################
 
 #
@@ -36,7 +45,25 @@ targetdef js_package {
     srcs = FILES;
     deps = FILES;
     tests = FILES;
+    # Extra packages for compiling and running the tests only (assertion
+    # libraries and their @types); never part of the package's own
+    # dependencies. The describe/it globals are provided (and typed) by the
+    # test runner.
+    test_deps = FILES;
     version = STRING;
+}
+
+#
+# Standalone Javascript test target: srcs are compiled against deps (the
+# package under test is just a dependency) and any *.test.ts files are run
+# under the test runner (the JS_TEST_RUNNER property, or the per-target
+# 'runner' override).
+#
+
+targetdef js_test {
+    srcs = FILES;
+    deps = FILES;
+    runner = FILES;
 }
 
 #

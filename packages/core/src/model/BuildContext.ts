@@ -499,19 +499,19 @@ export class TargetContext {
    * one per contributing source, before any merging. This is the collection
    * point at which deferred repository references are resolved jointly.
    */
-  public getFileSets(name: string): Computable<FileSet[]> {
+  public getFileSets(name: string, overrides?: Constraints): Computable<FileSet[]> {
     const prop = this.props[name];
     if (!prop) {
       return Computable.resolve([]);
     }
-    return this.getContext()
+    return this.getContext(overrides)
       .resolveFileProperty(prop, this.target, this.stack)
       .then(sources => materializeAll(sources))
       .then(sources => sources.filter((source): source is FileSet => source instanceof FileSet));
   }
 
-  public getFileSet(name: string): Computable<FileSet> {
-    return this.getFileSets(name).then(sets => FileSet.unionAll(...sets));
+  public getFileSet(name: string, overrides?: Constraints): Computable<FileSet> {
+    return this.getFileSets(name, overrides).then(sets => FileSet.unionAll(...sets));
   }
 
   public getCachedOrBuild(manifest: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {

@@ -1,16 +1,27 @@
-import { Computable } from "../../core/Computable";
-import { readStream } from "../../core/Fetch";
-import { FileSet, PackageFileSet } from "../../core/FileSet";
-import { Repository, RepositoryRef } from "../../core/Repository";
-import { MemoryFile } from "../../core/MemoryFS";
-import { TargetContext } from "../../model/BuildContext";
-import { Name } from "../../model/Name";
-import { resolveMVS } from "../../resolver/MVSResolver";
-import { IResolutionOrigin, PACKAGE_RESOLUTION_PROVENANCE } from "../../resolver/ResolutionProvenance";
-import { parseVersion, SEMVER, SemverVersion, versionToString } from "../../resolver/Semver";
-import { IRequirementEdge, PackageRegistry, Requirement, Selected } from "../../resolver/Types";
-import { unpackStream } from "../../support/Unpack";
-import { registerTargetRule } from "../Registry";
+import {
+  Computable,
+  FileSet,
+  IRequirementEdge,
+  IResolutionOrigin,
+  MemoryFile,
+  Name,
+  PACKAGE_RESOLUTION_PROVENANCE,
+  PackageFileSet,
+  PackageRegistry,
+  parseVersion,
+  readStream,
+  registerTargetRule,
+  Repository,
+  RepositoryRef,
+  Requirement,
+  resolveMVS,
+  Selected,
+  SEMVER,
+  SemverVersion,
+  TargetContext,
+  unpackStream,
+  versionToString,
+} from "@fabr/core";
 
 interface ISignature {
   keyid: string;

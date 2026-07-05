@@ -1,7 +1,11 @@
-include packages/core/lib/JS.fabr;
+plugin @fabr/js;
+include JS.fabr;
 
 TSC = @npm:typescript:5.4.5;
 JS_TARGET = es2018-commonjs;
+
+chai = @npm:chai:4.3.6 @npm:@types/chai:4.3.1
+       @npm:chai-as-promised:7.1.1 @npm:@types/chai-as-promised:7.1.8;
 
 chokidar = @npm:chokidar:3.6.0;
 picomatch = @npm:picomatch:2.3.1 @npm:@types/picomatch:2.3.0;
@@ -11,16 +15,20 @@ tar_stream = @npm:tar-stream:3.1.7 @npm:@types/tar-stream:3.1.3;
 js_package @fabr/core {
   srcs = packages/core/src:**/*.ts packages/core:lib/**;
   tests = packages/core/src:**/*.test.ts;
-  deps = es2021 nodejs chokidar picomatch unicode_properties tar_stream
+  deps = es2021 nodejs chokidar picomatch unicode_properties tar_stream;
+  test_deps = chai;
+}
+
+js_package @fabr/js {
+  srcs = packages/js/src:**/*.ts packages/js:lib/**;
+  tests = packages/js/src:**/*.test.ts;
+  deps = es2021 nodejs @fabr/core;
+  test_deps = chai;
 }
 
 js_package @fabr/fabr {
   srcs = packages/fabr/src:**/*.ts;
   tests = packages/fabr/src:**/*.test.ts;
-  deps = es2021 nodejs @fabr/core chokidar picomatch unicode_properties tar_stream
-}
-
-js_package @fabr/test {
-  srcs = packages/test/src:**/*.ts;
-  deps = es2021 nodejs @fabr/core
+  deps = es2021 nodejs @fabr/core @fabr/js;
+  test_deps = chai;
 }

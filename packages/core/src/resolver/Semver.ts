@@ -309,6 +309,13 @@ export const SEMVER: VersionDomain<SemverVersion, SemverConstraint> = {
     return constraint.ranges.map(rangeMinimum).reduce((a, b) => (compareVersions(a, b) <= 0 ? a : b));
   },
 
+  isUnconstrained(constraint: SemverConstraint): boolean {
+    /* A disjunction admits everything if any arm does ('*', 'x', '>=0.0.0') */
+    return constraint.ranges.some(
+      range => range.max === undefined && range.minInclusive && compareVersions(range.min, ZERO_VERSION) === 0
+    );
+  },
+
   satisfies(version: SemverVersion, constraint: SemverConstraint): boolean {
     return constraint.ranges.some(range => versionInRange(version, range));
   },

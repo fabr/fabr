@@ -8,12 +8,12 @@ import { registerTargetRule } from "../rules/Registry";
 import { Constraints, DependencyFailedError } from "./BuildContext";
 import { parseBuildString } from "./Parser";
 import { toBuildModel } from "./Sema";
-import { expect } from "chai";
 import * as chai from "chai";
-import * as chaiPromise from "chai-as-promised";
+import { expect } from "chai";
+import * as chaiAsPromised from "chai-as-promised";
 import { BuildCache } from "../core/BuildCache";
 
-chai.use(chaiPromise);
+chai.use(chaiAsPromised);
 
 /* Trivial rules for exercising target-to-target dependency behaviour */
 let lastDeps: FileSet | undefined;

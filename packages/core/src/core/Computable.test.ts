@@ -19,6 +19,7 @@
 
 import { Computable } from "./Computable";
 import { MultiError } from "./MultiError";
+import { expect } from "chai";
 
 describe("Computable", () => {
   it("Simple", () => {
@@ -30,14 +31,14 @@ describe("Computable", () => {
     resolve(3);
     const c2 = c.then(value => value + 4);
     c2.then(value => values.push(value));
-    expect(values).toStrictEqual([7]);
+    expect(values).to.deep.equal([7]);
     /* Changed value propagates */
     resolve(10);
-    expect(values).toStrictEqual([7, 14]);
+    expect(values).to.deep.equal([7, 14]);
 
     /* Same value doesn't cause child updates */
     resolve(10);
-    expect(values).toStrictEqual([7, 14]);
+    expect(values).to.deep.equal([7, 14]);
   });
 
   it("Subgraph invalidation", () => {
@@ -53,16 +54,16 @@ describe("Computable", () => {
     });
     child.then(result => values.push(result));
     resolve(3);
-    expect(values).toStrictEqual([8]);
+    expect(values).to.deep.equal([8]);
     resolve(4);
-    expect(values).toStrictEqual([8, 10]);
+    expect(values).to.deep.equal([8, 10]);
   });
 
   it("propagates errors to dependent computables", () => {
     const errors: string[] = [];
     const c = Computable.reject<number>(new Error("boom"));
     c.then(value => value + 1).catch(err => errors.push(err.message));
-    expect(errors).toStrictEqual(["boom"]);
+    expect(errors).to.deep.equal(["boom"]);
   });
 
   it("catch passes valid values through", () => {
@@ -70,7 +71,7 @@ describe("Computable", () => {
     Computable.resolve(5)
       .catch(() => -1)
       .then(value => values.push(value));
-    expect(values).toStrictEqual([5]);
+    expect(values).to.deep.equal([5]);
   });
 
   it("handles errors with two-arg then", () => {
@@ -84,7 +85,7 @@ describe("Computable", () => {
       err => "err:" + err.message
     ).then(value => values.push(value));
     reject(new Error("bad"));
-    expect(values).toStrictEqual(["err:bad"]);
+    expect(values).to.deep.equal(["err:bad"]);
   });
 
   it("recovers when a dependency re-resolves after an error", () => {
@@ -101,7 +102,7 @@ describe("Computable", () => {
     ).then(value => values.push(value));
     reject(new Error("bad"));
     resolve(7);
-    expect(values).toStrictEqual(["err:bad", "ok:7"]);
+    expect(values).to.deep.equal(["err:bad", "ok:7"]);
   });
 
   it("aggregates multiple distinct errors into a MultiError", () => {
@@ -109,9 +110,9 @@ describe("Computable", () => {
     const a = Computable.reject<number>(new Error("a"));
     const b = Computable.reject<number>(new Error("b"));
     Computable.forAll([a, b], (x, y) => x + y).catch(err => errors.push(err));
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toBeInstanceOf(MultiError);
-    expect((errors[0] as MultiError).errors.map(err => err.message)).toStrictEqual(["a", "b"]);
+    expect(errors).to.have.length(1);
+    expect(errors[0]).to.be.an.instanceOf(MultiError);
+    expect((errors[0] as MultiError).errors.map(err => err.message)).to.deep.equal(["a", "b"]);
   });
 
   it("dedupes the same error arriving via multiple paths", () => {
@@ -120,9 +121,9 @@ describe("Computable", () => {
     const left = root.then(value => value + 1);
     const right = root.then(value => value * 2);
     Computable.forAll([left, right], (l, r) => l + r).catch(err => errors.push(err));
-    expect(errors).toHaveLength(1);
-    expect(errors[0].message).toBe("root");
-    expect(errors[0]).not.toBeInstanceOf(MultiError);
+    expect(errors).to.have.length(1);
+    expect(errors[0].message).to.equal("root");
+    expect(errors[0]).to.not.be.an.instanceOf(MultiError);
   });
 
   it("coerces thrown non-Error values to Error", () => {
@@ -132,9 +133,9 @@ describe("Computable", () => {
         throw "plain string";
       })
       .catch(err => errors.push(err));
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toBeInstanceOf(Error);
-    expect(errors[0].message).toBe("plain string");
+    expect(errors).to.have.length(1);
+    expect(errors[0]).to.be.an.instanceOf(Error);
+    expect(errors[0].message).to.equal("plain string");
   });
 
   it("restores a valid node without recomputation when inputs revalidate unchanged", () => {
@@ -150,19 +151,19 @@ describe("Computable", () => {
     });
     const values: number[] = [];
     doubled.then(value => values.push(value));
-    expect(values).toStrictEqual([2]);
-    expect(runs).toBe(1);
+    expect(values).to.deep.equal([2]);
+    expect(runs).to.equal(1);
 
     /* Revalidate with the same value: nothing recomputes */
     src.invalidate();
     resolve(1);
-    expect(runs).toBe(1);
-    expect(values).toStrictEqual([2]);
+    expect(runs).to.equal(1);
+    expect(values).to.deep.equal([2]);
 
     /* An actual change recomputes as usual */
     resolve(3);
-    expect(runs).toBe(2);
-    expect(values).toStrictEqual([2, 6]);
+    expect(runs).to.equal(2);
+    expect(values).to.deep.equal([2, 6]);
   });
 
   it("restores an errored node without recomputation when inputs revalidate unchanged", () => {
@@ -178,18 +179,18 @@ describe("Computable", () => {
     });
     const caught: string[] = [];
     failing.catch(err => caught.push(err.message));
-    expect(caught).toStrictEqual(["fail:1"]);
-    expect(runs).toBe(1);
+    expect(caught).to.deep.equal(["fail:1"]);
+    expect(runs).to.equal(1);
 
     /* Revalidate with the same value: nothing recomputes, the error state is retained */
     src.invalidate();
     resolve(1);
-    expect(runs).toBe(1);
-    expect(caught).toStrictEqual(["fail:1"]);
+    expect(runs).to.equal(1);
+    expect(caught).to.deep.equal(["fail:1"]);
 
     /* An actual change recomputes as usual */
     resolve(2);
-    expect(runs).toBe(2);
-    expect(caught).toStrictEqual(["fail:1", "fail:2"]);
+    expect(runs).to.equal(2);
+    expect(caught).to.deep.equal(["fail:1", "fail:2"]);
   });
 });

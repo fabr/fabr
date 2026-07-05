@@ -17,10 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { TargetContext } from "../../model/BuildContext";
-import { Computable } from "../../core/Computable";
-import { EMPTY_FILESET, FileSet } from "../../core/FileSet";
-import { registerTargetRule } from "../Registry";
+import { Computable, EMPTY_FILESET, FileSet, registerTargetRule, TargetContext } from "@fabr/core";
 
 /**
  * Execute a NodeJS script, yielding some set of output files.

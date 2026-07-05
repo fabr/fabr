@@ -27,13 +27,21 @@ import {
   Diagnostic,
   ExecutionError,
   FileConflictError,
+  formatTestSummary,
   getSourceFileSource,
+  getTestReport,
   ISourcePosition,
   loadProject,
   Log,
   MultiError,
   renderProvenance,
+  SourceRef,
+  TestsFailedError,
 } from "@fabr/core";
+/* The whole of @fabr/core doubles as the api object injected into plugins:
+ * handing plugins the host's own module instance keeps every class and
+ * registry shared (a plugin must never load a second copy of the core). */
+import * as pluginApi from "@fabr/core";
 import { Options } from "./Command";
 import { getSourceRoot, getBuildCacheRoot, PROJECT_FILENAME, SOURCE_CACHE_FILENAME } from "./Environment";
 
@@ -47,6 +55,8 @@ const DIAG_TARGET_FAILED = Diagnostic.Error<{ name: string; message: string; loc
 const DIAG_DEPENDENCY_FAILED = Diagnostic.Error<{ name: string; dependency: string; loc: ISourcePosition }>(
   "Cannot build {name}: dependency '{dependency}' failed"
 );
+const DIAG_TESTS_FAILED = Diagnostic.Error<{ name: string; message: string; loc: ISourcePosition }>("{name}: {message}");
+const DIAG_TEST_RESULT = Diagnostic.Info<{ name: string; summary: string }>("{name}: {summary}");
 
 /**
  * Render a build failure tree: each failed target is reported once, against its
@@ -67,6 +77,10 @@ function reportFailure(log: Log, err: Error, reported: Set<Error>): void {
       if (cause instanceof DependencyFailedError) {
         log.log(DIAG_DEPENDENCY_FAILED, { name: err.target.name, dependency: cause.target.name, loc: declPosn(err.target) });
         reportFailure(log, cause, reported);
+      } else if (cause instanceof TestsFailedError) {
+        /* Tests failed: the target built fine, so report the (pre-rendered)
+         * test summary rather than a build failure */
+        log.log(DIAG_TESTS_FAILED, { name: err.target.name, message: cause.message, loc: declPosn(err.target) });
       } else if (cause instanceof ExecutionError) {
         execution.push(cause);
       } else {
@@ -133,7 +147,9 @@ export async function runFabr(options: Options): Promise<void> {
   const buildCache = new BuildCache(getBuildCacheRoot());
   const sourceFileSource = await getSourceFileSource(sourceRoot, SOURCE_CACHE_FILENAME);
 
-  const load = loadProject(sourceFileSource, PROJECT_FILENAME, buildCache, log);
+  /* The system include path defaults to the directories the loaded rule
+   * packages registered (core + js via their imports; plugins later) */
+  const load = loadProject(sourceFileSource, PROJECT_FILENAME, buildCache, log, pluginApi);
 
   return load
     .then(model => {
@@ -141,7 +157,7 @@ export async function runFabr(options: Options): Promise<void> {
        * -DBUILD_OPERATION=... takes precedence) */
       const config = model.getConfig({ [BUILD_OPERATION]: options.command, ...options.properties });
       const targets = options.targets.map(targetName => config.getTarget(targetName));
-      return Computable.forAll(targets, () => {
+      return Computable.forAll(targets, (...results) => reportTestResults(log, options, results)).then(() => {
         if (buildCache.getBuildCount() === 0) {
           log.log(DIAG_UP_TO_DATE, {});
         } else {
@@ -155,4 +171,23 @@ export async function runFabr(options: Options): Promise<void> {
       log.log(DIAG_BUILD_FAILED, {});
       process.exit(1);
     });
+}
+
+/**
+ * For a test run, the interesting outcome is the tests, not the build: report
+ * each target's result summary from its test report artifact (whether freshly
+ * run or cached-green).
+ */
+function reportTestResults(log: Log, options: Options, results: SourceRef[][]): Computable<void> {
+  if (options.command !== "test") {
+    return Computable.resolve(undefined);
+  }
+  return Computable.forAll(
+    results.map(sources => getTestReport(sources)),
+    (...reports) => {
+      reports.forEach((report, i) => {
+        log.log(DIAG_TEST_RESULT, { name: options.targets[i], summary: report ? formatTestSummary(report) : "no tests" });
+      });
+    }
+  );
 }

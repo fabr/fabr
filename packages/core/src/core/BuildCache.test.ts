@@ -25,6 +25,7 @@ import { Computable } from "./Computable";
 import { FileSet } from "./FileSet";
 import { hashString } from "./FSWrapper";
 import { MemoryFile } from "./MemoryFS";
+import { expect } from "chai";
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.then(resolve, reject));
@@ -49,11 +50,11 @@ describe("BuildCache", () => {
       )
     );
     const file = await toPromise(files.get("meta.json"));
-    expect(file).toBeDefined();
+    expect(file).to.not.equal(undefined);
     const abspath = file!.getAbsPath();
-    expect(abspath).toBeDefined();
-    expect(abspath!.startsWith(root)).toBe(true);
-    expect(fs.readFileSync(abspath!, "utf8")).toBe('{"name":"test"}');
+    expect(abspath).to.not.equal(undefined);
+    expect(abspath!.startsWith(root)).to.equal(true);
+    expect(fs.readFileSync(abspath!, "utf8")).to.equal('{"name":"test"}');
   });
 
   it("pre-cleans debris and removes partial entries on failure", async () => {
@@ -69,9 +70,9 @@ describe("BuildCache", () => {
     } catch (err) {
       failure = err as Error;
     }
-    expect(failure?.message).toBe("boom");
+    expect(failure?.message).to.equal("boom");
     /* The partial entry was removed on failure */
-    expect(fs.existsSync(targetDir)).toBe(false);
+    expect(fs.existsSync(targetDir)).to.equal(false);
 
     /* A retry over fresh debris pre-cleans and succeeds */
     fs.mkdirSync(targetDir, { recursive: true });
@@ -81,8 +82,8 @@ describe("BuildCache", () => {
         Computable.resolve(new FileSet(new Map([["meta.json", MemoryFile.from('{"ok":true}')]])))
       )
     );
-    expect(await toPromise(files.readFile("meta.json"))).toBe('{"ok":true}');
-    expect(fs.existsSync(path.join(targetDir, "leftover.txt"))).toBe(false);
+    expect(await toPromise(files.readFile("meta.json"))).to.equal('{"ok":true}');
+    expect(fs.existsSync(path.join(targetDir, "leftover.txt"))).to.equal(false);
   });
 
   it("returns the cached result without re-running the build", async () => {
@@ -101,8 +102,8 @@ describe("BuildCache", () => {
       })
     );
     const content = await toPromise(files.readFile("meta.json"));
-    expect(content).toBe('{"name":"test"}');
+    expect(content).to.equal('{"name":"test"}');
     /* A fully-cached run built nothing */
-    expect(reopened.getBuildCount()).toBe(0);
+    expect(reopened.getBuildCount()).to.equal(0);
   });
 });

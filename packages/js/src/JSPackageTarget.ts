@@ -17,15 +17,23 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { TargetContext } from "../../model/BuildContext";
-import { Computable } from "../../core/Computable";
-import { EMPTY_FILESET, FileSet, PackageFileSet } from "../../core/FileSet";
-import { RepositoryRef, SourceRef } from "../../core/Repository";
-import { registerTargetRule } from "../Registry";
-import { MemoryFile } from "../../core/MemoryFS";
-import { getResultFileSet, writeFileSet } from "../../core/BuildCache";
-import { execute, findExecutable } from "../../support/Execute";
-import { Flag } from "../../core/Flag";
+import {
+  Computable,
+  Constraints,
+  EMPTY_FILESET,
+  execute,
+  FileSet,
+  findExecutable,
+  Flag,
+  getResultFileSet,
+  MemoryFile,
+  PackageFileSet,
+  registerTargetRule,
+  RepositoryRef,
+  SourceRef,
+  TargetContext,
+  writeFileSet,
+} from "@fabr/core";
 
 /**
  * Simplify flags by removing flags that are provided (directly on indirectly) by another flag.
@@ -96,87 +104,145 @@ function buildJsPackage(context: TargetContext): Computable<FileSet> {
         .then(file => file?.readString())
         .then(content => (content ? (JSON.parse(content) as Record<string, unknown>) : undefined));
 
-      /* If we have TS files, we get to invoke the compiler */
-      const sourceGroups = sources.minus(tests).partition(path => {
-        const lower = path.toLowerCase();
-        const extidx = lower.lastIndexOf(".");
-        if (extidx !== -1) {
-          const ext = lower.substring(extidx + 1);
-          switch (ext) {
-            case "ts":
-              if (lower.endsWith(".d.ts")) {
-                break; /* Output only */
-              }
-            /* fallthrough */
-            case "tsx":
-              return "ts";
-            case "js":
-            case "jsx":
-              return "js";
-          }
-        }
-        return "copy";
-      });
-
       const jsTarget = parseJSTarget(target);
 
       /* Lay the deps out as node_modules contents: every package (and every
        * member of its resolved closure) is mounted at its real package name */
       const nodeModules = assembleNodeModules(deps);
 
-      let compiled: Computable<FileSet>;
-      if ("ts" in sourceGroups) {
-        const tsdeps = [context.getGlobalTarget("TSC")];
-        if (flags.find(f => f.name === "nodejs")) {
-          tsdeps.push(context.getGlobalTarget("NODE_TYPES"));
-        }
+      const compiled = compileJsSources(context, sources.minus(tests), nodeModules, jsTarget, flags);
 
-        compiled = Computable.forAll(tsdeps, (typescript, types) => {
-          const extraTypes = types ? assembleNodeModules(types as FileSet[]) : undefined;
-          return compileTypescript(
-            sourceGroups.ts,
-            nodeModules,
-            assembleNodeModules(typescript as FileSet[]),
-            extraTypes,
-            jsTarget,
-            flags,
-            context
-          );
-        });
-      } else {
-        compiled = Computable.resolve(EMPTY_FILESET);
-      }
-
-      return Computable.forAll([compiled, packageJsonFile], (files, seed) => {
+      return Computable.forAll([compiled, packageJsonFile], (result, seed) => {
         /* Non-compiled sources are preserved in the output as-is (the source
          * package.json is consumed as the seed rather than copied through) */
-        const copied = (sourceGroups.copy ?? EMPTY_FILESET).remap(name => (name === "package.json" ? undefined : name));
-        const contents = FileSet.unionAll(files, copied);
+        const contents = FileSet.unionAll(result.compiled, stripPackageJson(result.copied));
         const packageJson = createPackageJson(contents, seed, context.target.name, version?.toString(), depSources, jsTarget);
         const assembled = FileSet.unionAll(contents, new FileSet(new Map([["package.json", packageJson]])));
         /* Materialize the assembled package as its own cache entry: the
          * target's deliverable is a real on-disk package directory, delivered
-         * as a package (root-relative files + identity) to consumers. */
+         * as a package — root-relative files + identity + its DIRECT deps as
+         * written (built packages as packages, external requirements as inert
+         * references, resolved fresh at each consuming collection point). */
+        const carried = depSources.filter(
+          (source): source is PackageFileSet | RepositoryRef =>
+            source instanceof PackageFileSet || source instanceof RepositoryRef
+        );
         return context
           .getCachedOrBuild(assembled.toManifest(), targetDir =>
             writeFileSet(targetDir, assembled).then(() => getResultFileSet(targetDir, "**"))
           )
-          .then(built => new PackageFileSet(built, context.target.name, version?.toString()));
+          .then(built => new PackageFileSet(built, context.target.name, version?.toString(), carried));
       });
     }
   );
 }
 
+export interface ICompiledSources {
+  /** The compiler output (js + declarations), named root-relative */
+  compiled: FileSet;
+  /** Non-compiled sources, passed through unchanged */
+  copied: FileSet;
+}
+
+/**
+ * Compile a JS/TS source tree against a prepared node_modules layout:
+ * TypeScript sources are compiled with the toolchain named by the TSC (and,
+ * under the nodejs flag, NODE_TYPES) globals, resolved under the given
+ * constraint overrides — an operation-specific rule should pass
+ * BUILD_OPERATION=build. Anything that isn't compiled is passed through in
+ * `copied`. (Note: plain .js sources are currently dropped — transpiling them
+ * to the requested target is an open gap.)
+ */
+export function compileJsSources(
+  context: TargetContext,
+  sources: FileSet,
+  nodeModules: FileSet,
+  jsTarget: JSTarget,
+  flags: Flag[],
+  overrides?: Constraints
+): Computable<ICompiledSources> {
+  const sourceGroups = sources.partition(path => {
+    const lower = path.toLowerCase();
+    const extidx = lower.lastIndexOf(".");
+    if (extidx !== -1) {
+      const ext = lower.substring(extidx + 1);
+      switch (ext) {
+        case "ts":
+          if (lower.endsWith(".d.ts")) {
+            break; /* Output only */
+          }
+        /* fallthrough */
+        case "tsx":
+          return "ts";
+        case "js":
+        case "jsx":
+          return "js";
+      }
+    }
+    return "copy";
+  });
+
+  let compiled: Computable<FileSet>;
+  if ("ts" in sourceGroups) {
+    const tsdeps = [context.getGlobalTarget("TSC", overrides)];
+    if (flags.find(f => f.name === "nodejs")) {
+      tsdeps.push(context.getGlobalTarget("NODE_TYPES", overrides));
+    }
+
+    compiled = Computable.forAll(tsdeps, (typescript, types) => {
+      const extraTypes = types ? assembleNodeModules(types as FileSet[]) : undefined;
+      return compileTypescript(
+        sourceGroups.ts,
+        nodeModules,
+        assembleNodeModules(typescript as FileSet[]),
+        extraTypes,
+        jsTarget,
+        flags,
+        context
+      );
+    });
+  } else {
+    compiled = Computable.resolve(EMPTY_FILESET);
+  }
+
+  return compiled.then(files => ({ compiled: files, copied: sourceGroups.copy ?? EMPTY_FILESET }));
+}
+
+/** @return the files without any root package.json (consumed, not copied through) */
+export function stripPackageJson(files: FileSet): FileSet {
+  return files.remap(name => (name === "package.json" ? undefined : name));
+}
+
 /**
  * Lay out the given (materialized) sources as node_modules contents: each
- * package — and each member of its resolved closure — is mounted at its real
- * package name (which may differ from the alias it was written as); anything
- * that isn't a package passes through unchanged.
+ * package — and, recursively, every package among its dependencies — is
+ * mounted at its real package name (which may differ from the alias it was
+ * written as); anything that isn't a package passes through unchanged. The
+ * sources must have been materialized (any carried references resolved) by
+ * the collection point before they get here.
  */
-function assembleNodeModules(sets: FileSet[]): FileSet {
-  return FileSet.unionAll(
-    ...sets.flatMap(set => (set instanceof PackageFileSet ? [set, ...set.dependencies].map(mountPackage) : [set]))
-  );
+export function assembleNodeModules(sets: FileSet[]): FileSet {
+  const mounts: FileSet[] = [];
+  const seen = new Set<PackageFileSet>();
+  const mount = (pkg: PackageFileSet): void => {
+    if (!seen.has(pkg)) {
+      seen.add(pkg);
+      mounts.push(mountPackage(pkg));
+      for (const dep of pkg.dependencies) {
+        if (dep instanceof PackageFileSet) {
+          mount(dep);
+        }
+      }
+    }
+  };
+  for (const set of sets) {
+    if (set instanceof PackageFileSet) {
+      mount(set);
+    } else {
+      mounts.push(set);
+    }
+  }
+  return FileSet.unionAll(...mounts);
 }
 
 /** @return the package's files renamed under the package's mount point */
@@ -281,7 +347,7 @@ function compileTypescript(
   );
 }
 
-interface JSTarget {
+export interface JSTarget {
   version: string;
   module: "esm" | "commonjs";
   environment: "node" | "browser";
@@ -291,7 +357,7 @@ interface JSTarget {
  * Parse a JS target triple
  * @param target
  */
-function parseJSTarget(target: string): JSTarget {
+export function parseJSTarget(target: string): JSTarget {
   const bits = target.split("-");
 
   const result: JSTarget = { version: bits[0], module: "commonjs", environment: "node" };

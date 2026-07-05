@@ -266,32 +266,4 @@ export class FileSet implements FileSource {
   }
 }
 
-/**
- * A FileSet that is a package: the files are the package's own contents, named
- * relative to the package root, and the package's identity — its real name, as
- * distinct from whatever alias it may be referred to by — rides along as data
- * (identity is semantic: it decides where the package gets mounted, so unlike
- * provenance it is not ghost data). Where the package was resolved jointly with
- * its own requirements (e.g. by a package repository), the resolved closure is
- * carried too, so a consumer can lay out a complete installation.
- *
- * Content derivations (find/remap/minus/...) deliberately return plain
- * FileSets: once you reach inside a package, the result is just files.
- */
-export class PackageFileSet extends FileSet {
-  constructor(
-    files: Iterable<[string, IFile]>,
-    public readonly packageName: string,
-    public readonly version?: string,
-    public readonly dependencies: ReadonlyArray<PackageFileSet> = [],
-    origin?: IProvenanceStep
-  ) {
-    super(new Map(files), origin ?? (files instanceof FileSet ? files.origin : undefined));
-  }
-
-  public withOrigin(origin: IProvenanceStep): PackageFileSet {
-    return new PackageFileSet(this, this.packageName, this.version, this.dependencies, origin);
-  }
-}
-
 export const EMPTY_FILESET: FileSet = new FileSet(new Map());

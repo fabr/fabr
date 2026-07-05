@@ -1,10 +1,6 @@
 import { Readable } from "stream";
 import { unpackStream } from "./Unpack";
-import * as chai from "chai";
 import { expect } from "chai";
-import * as chaiAsPromised from "chai-as-promised";
-
-chai.use(chaiAsPromised);
 
 describe("Unpack", () => {
   it("tar.gz", async () => {
