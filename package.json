@@ -6,7 +6,7 @@
   "homepage": "https://github.com/fabr/fabrjs",
   "workspaces": ["packages/*"],
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && node scripts/copylibs.js",
     "test": "jest",
     "lint": "eslint packages",
     "fabr": "node packages/fabr/build/index.js",

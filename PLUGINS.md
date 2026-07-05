@@ -40,9 +40,10 @@ export function activate(api: typeof fabr): void {
 - `registerSystemIncludeDir(dir)` puts a directory on the system include path: bare include names
   (`include FOO.fabr;` — no `/` in the name) resolve against these directories in declaration
   order, before falling back to the including file's own directory. By convention a plugin ships
-  its `.fabr` files in `lib/` and registers `packageLibDir("<its-own-name>")` — which locates the
-  directory from the installed package root, independent of how the package was built or
-  installed. The `lib/` directory must therefore be included in the published package.
+  its `.fabr` files in `lib/`, next to its entry point, and registers
+  `packageLibDir("<its-own-name>")` — which locates the directory beside the package's resolved
+  entry point, i.e. within the *built* package content, never a source tree. The `lib/` directory
+  must therefore be packaged alongside the compiled code.
 - `registerTargetRule(type, constraints, evaluate)` registers the implementation of a target type.
   The *schema* for the type (its `targetdef`) is declared in the plugin's `.fabr` library files,
   not in code. Rule selection picks the registered rule whose constraints most specifically match

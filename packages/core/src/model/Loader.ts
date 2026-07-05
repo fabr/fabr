@@ -56,12 +56,14 @@ export function registerSystemIncludeDir(dir: string): void {
 }
 
 /**
- * @return the lib/ directory of an installed package, located from the
- * package root so the result is independent of the package's build shape
- * (workspace symlink, npm installation, or fabr-built package).
+ * @return the lib/ directory of an installed package, located next to the
+ * package's ENTRY POINT — i.e. within the built package content, never the
+ * source tree. The devchain copies lib/ into build/ beside the compiled
+ * output (scripts/copylibs.js); a fabr-built package has its entry point and
+ * lib/ together at the package root.
  */
 export function packageLibDir(packageName: string): string {
-  return path.join(path.dirname(require.resolve(`${packageName}/package.json`)), "lib");
+  return path.join(path.dirname(require.resolve(packageName)), "lib");
 }
 
 type BuildFiles = Record<string, IBuildFileContents>;
