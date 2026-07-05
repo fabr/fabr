@@ -45,6 +45,17 @@ export function isRepository(source: SourceRef): source is Repository {
 }
 
 /**
+ * One narrowing step of a reference: the pattern to match (against the names
+ * produced by the previous step), and the prefix prepended to the matched
+ * names — the written-name rule: `alias/path` keeps the written `alias/` in
+ * result names, `alias:path` strips it (empty prefix).
+ */
+export interface IProjection {
+  pattern: Name;
+  prefix: string;
+}
+
+/**
  * A deferred reference to files from a Repository, possibly narrowed by
  * projections: "the thing we resolve", explicitly separate from the FileSet
  * content it eventually produces. References travel through property and
@@ -59,7 +70,7 @@ export class RepositoryRef {
   constructor(
     public readonly source: Repository,
     public readonly name: Name,
-    public readonly projections: ReadonlyArray<Name> = [],
+    public readonly projections: ReadonlyArray<IProjection> = [],
     public readonly steps: ReadonlyArray<IProvenanceStep> = []
   ) {}
 
@@ -73,12 +84,13 @@ export class RepositoryRef {
   /**
    * Finding within a reference yields a narrower reference: once resolved,
    * only the files matching the given name remain (still resolved together
-   * with everything else at the collection point). Note that a RepositoryRef
-   * is deliberately NOT a FileSource — it cannot honestly promise files, only
-   * a narrower reference.
+   * with everything else at the collection point), renamed under the given
+   * prefix per the written-name rule. Note that a RepositoryRef is
+   * deliberately NOT a FileSource — it cannot honestly promise files, only a
+   * narrower reference.
    */
-  public find(name: Name): RepositoryRef {
-    return new RepositoryRef(this.source, this.name, [...this.projections, name], this.steps);
+  public find(name: Name, prefix = ""): RepositoryRef {
+    return new RepositoryRef(this.source, this.name, [...this.projections, { pattern: name, prefix }], this.steps);
   }
 
   /**
@@ -88,7 +100,9 @@ export class RepositoryRef {
   public finishMaterialize(base: FileSet): Computable<FileSet> {
     let result = Computable.resolve(base);
     for (const projection of this.projections) {
-      result = result.then(files => files.find(projection));
+      result = result
+        .then(files => files.find(projection.pattern))
+        .then(files => (projection.prefix ? files.remap(name => projection.prefix + name) : files));
     }
     return result.then(files => {
       if (this.steps.length === 0) {

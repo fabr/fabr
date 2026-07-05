@@ -216,11 +216,10 @@ export class BuildContext {
 
   /**
    * Find and return a target from the literal prefix of the given name, along with
-   * the matched declaration and a new Name representing the unmatched suffix.
+   * the matched declaration, a new Name representing the unmatched suffix, and
+   * the written prefix to retain in result names (the written-name rule:
+   * "mylib/lib/*" retains "mylib/", "mylib:lib/*" retains nothing).
    * If no such target can be found, returns undefined.
-   *
-   * e.g. given a name of "mylib/lib/*" and a declared target 'mylib', will return
-   * the Computable for mylib and the remaining name "lib/*".
    *
    * Note: target names are not pattern matched against globs (ie only the literal prefix
    * of the name is looked up)
@@ -228,10 +227,15 @@ export class BuildContext {
   public getPrefixTargetIfExists(
     name: Name,
     stack?: IDependencyStack
-  ): { target: Computable<SourceRef[]>; rest: Name; decl: ITargetDecl | IPropertyDecl } | undefined {
+  ): { target: Computable<SourceRef[]>; rest: Name; decl: ITargetDecl | IPropertyDecl; retainedPrefix: string } | undefined {
     const result = this.model.getPrefixMatch(name);
     if (result) {
-      return { target: this.getTarget(result.decl.name, stack), rest: result.rest, decl: result.decl };
+      return {
+        target: this.getTarget(result.decl.name, stack),
+        rest: result.rest,
+        decl: result.decl,
+        retainedPrefix: result.retainedPrefix,
+      };
     }
     return undefined;
   }
@@ -293,21 +297,26 @@ export class BuildContext {
       } else {
         const targetDep = this.getPrefixTargetIfExists(substName, stack);
         if (targetDep) {
-          const { target, rest, decl } = targetDep;
+          const { target, rest, decl, retainedPrefix } = targetDep;
           if (rest.isEmpty()) {
             return target.then(sources => ({ sources, decl }));
           } else {
             /* Names into a repository become references, deferred until the
              * consuming collection point resolves them jointly (and finding
              * into an existing reference narrows it); container sources answer
-             * immediately. */
+             * immediately. Result names follow the written-name rule: a
+             * slash-form reference keeps the written prefix, a colon-form
+             * reference strips it. */
             return target.then((t): IResolvedFileSource | Computable<IResolvedFileSource> => {
               const references: SourceRef[] = [];
               const containers: FileSource[] = [];
               for (const source of t) {
                 if (source instanceof RepositoryRef) {
-                  references.push(source.find(rest));
+                  references.push(source.find(rest, retainedPrefix));
                 } else if (isRepository(source)) {
+                  /* The rest is a requirement identifier, not a file path:
+                   * the written-name rule applies to projections into
+                   * delivered content, not to the delivery itself */
                   references.push(new RepositoryRef(source, rest));
                 } else {
                   containers.push(source);
@@ -316,7 +325,9 @@ export class BuildContext {
               if (containers.length === 0) {
                 return { sources: references, decl };
               }
-              return FileSet.findAll(containers, rest).then(data => ({ sources: [...references, data], decl }));
+              return FileSet.findAll(containers, rest)
+                .then(data => (retainedPrefix ? data.remap(name => retainedPrefix + name) : data))
+                .then(data => ({ sources: [...references, data], decl }));
             });
           }
         } else {

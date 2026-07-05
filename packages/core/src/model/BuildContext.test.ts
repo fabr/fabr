@@ -206,6 +206,40 @@ describe("BuildContext", () => {
     expect(lastDeps && [...lastDeps].map(([path]) => path)).to.deep.equal(["one/data.txt"]);
   });
 
+  it("Keeps the written prefix for slash-form references into a target", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_file { content = STRING; }\n" +
+      "test_file c1 { content = one; }\n" +
+      "test_good a { deps = c1/f.txt c1:f.txt; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], new BuildCache("."), logger);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}).getTarget("a");
+    /* Slash-form keeps the written name; colon-form strips the prefix */
+    expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["c1/f.txt", "f.txt"]);
+  });
+
+  it("Keeps the written prefix for slash-form projections into external references", async () => {
+    batchCalls.length = 0;
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_repo { }\n" +
+      "targetdef test_good { deps = FILES; }\n" +
+      "test_repo repo { }\n" +
+      "x = repo:one;\n" +
+      "test_good a { deps = x/one/*.txt; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], new BuildCache("."), logger);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}).getTarget("a");
+    expect(batchCalls).to.deep.equal([["one"]]);
+    expect(lastDeps && [...lastDeps].map(([path]) => path)).to.deep.equal(["x/one/data.txt"]);
+  });
+
   it("Get String Property", async () => {
     await expect(testGetProperty("a = b c; d = ${a};", "a")).to.eventually.deep.equal(["b", "c"]);
     await expect(testGetProperty("a = b c; d = ${a};", "d")).to.eventually.deep.equal(["b c"]);
