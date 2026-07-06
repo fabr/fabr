@@ -24,12 +24,15 @@ export enum Mode {
   Watch,
 }
 
-/** The operations the command line can request (BUILD_OPERATION values) */
-const COMMANDS = new Set(["build", "test", "run"]);
+/** The commands the command line can request. All except `ls` are
+ * BUILD_OPERATION values; `ls` is a driver-side verb that builds under
+ * BUILD_OPERATION=build and then lists the results. */
+const COMMANDS = new Set(["build", "test", "run", "ls"]);
 
 export interface Options {
   command: string;
   mode: Mode;
+  longListing: boolean;
   targets: string[];
   properties: Constraints;
 }
@@ -41,8 +44,10 @@ function printUsage(): void {
       "  build             Build the given targets (the default)\n" +
       "  test              Run the given targets' tests\n" +
       "  run               Execute the given targets\n" +
+      "  ls                Build the given targets and list their contents\n" +
       "Options:\n" +
       "  -DPROP=VALUE      Force the given property PROP to VALUE\n" +
+      "  -l                Long listing (with ls): hash and size per file\n" +
       "  -w                Watch mode\n"
   );
 }
@@ -53,7 +58,7 @@ function parseDefine(def: string): [string, string] {
 }
 
 export function parseCommandLine(args: string[]): Options {
-  const options: Options = { command: "build", mode: Mode.Normal, targets: [], properties: {} };
+  const options: Options = { command: "build", mode: Mode.Normal, longListing: false, targets: [], properties: {} };
   const opts = args.slice(2);
 
   let commandGiven = false;
@@ -61,6 +66,8 @@ export function parseCommandLine(args: string[]): Options {
     if (arg[0] === "-") {
       if (arg === "-w") {
         options.mode = Mode.Watch;
+      } else if (arg === "-l") {
+        options.longListing = true;
       } else if (arg === "-h") {
         printUsage();
         process.exit(0);

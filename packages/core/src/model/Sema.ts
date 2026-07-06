@@ -21,14 +21,13 @@ import { Log } from "../support/Log";
 import { BuildModel } from "./BuildModel";
 import { IBuildFileContents } from "./AST";
 import { NamespaceBuilder } from "./NamespaceBuilder";
-import { BuildCache } from "../core/BuildCache";
 
 /**
  * Collate and validate  the declarations from all included build files to the extent
  * that we can (ie we accept that some potential issues can only be detected given
  * a concrete BuildConfig)
  */
-export function toBuildModel(files: IBuildFileContents[], buildCache: BuildCache, log: Log): BuildModel {
+export function toBuildModel(files: IBuildFileContents[], log: Log): BuildModel {
   const builder = new NamespaceBuilder(log);
 
   files.forEach(file => {
@@ -41,5 +40,5 @@ export function toBuildModel(files: IBuildFileContents[], buildCache: BuildCache
 
   builder.resolve();
 
-  return new BuildModel(builder.toNamespace(), buildCache);
+  return new BuildModel(builder.toNamespace());
 }

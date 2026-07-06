@@ -20,23 +20,18 @@
 import { TargetContext } from "../model/BuildContext";
 import { Computable } from "../core/Computable";
 import { FileSource } from "../core/FileSet";
-import { registerTargetRule } from "./Registry";
+import { registerRule } from "./Registry";
 import { Flag } from "../core/Flag";
 
 /**
- * Execute an arbitrary script, yielding some set of output files.
- *
- * Note: this is the main execution point which nearly everything else
- * is built on top of, and can be called directly.
- *
- * Ideally this would be fully sandboxed, but for now we just kind of
- * fake it and hope the tools aren't _too_ badly behaved.
- * @param spec
- * @param config
+ * Flags are inert markers that ride the dependency graph for rules to
+ * interpret (platform modes and the like): the rule is an evaluate-less
+ * resolve producing the Flag value — flags are never "built" and never touch
+ * the cache.
  */
 export function createFlag(context: TargetContext): Computable<FileSource> {
-  const name = context.target.name;
+  const name = context.name;
   return context.getFlags("provides").then(provides => new Flag(name, provides));
 }
 
-registerTargetRule("flag", {}, createFlag);
+registerRule("flag", {}, createFlag);

@@ -19,36 +19,21 @@
 
 import { TargetContext } from "../model/BuildContext";
 import { Computable } from "../core/Computable";
-import { EMPTY_FILESET, FileSet } from "../core/FileSet";
-import { registerTargetRule } from "./Registry";
+import { registerRule } from "./Registry";
+import { createExecAction } from "./ExecAction";
+import { BuildAction } from "./Types";
 
 /**
- * Execute an arbitrary script, yielding some set of output files.
+ * Run an arbitrary command over staged inputs, yielding output files: resolve
+ * gathers the declared inputs and yields an `exec` action.
  *
- * Note: this is the main execution point which nearly everything else
- * is built on top of, and can be called directly.
- *
- * Ideally this would be fully sandboxed, but for now we just kind of
- * fake it and hope the tools aren't _too_ badly behaved.
- * @param spec
- * @param config
+ * (Still a stub in spirit: no sandboxing, and the schema is minimal.)
  */
-export function runGeneric(context: TargetContext): Computable<FileSet> {
-  const tmpdir = getExecRoot(context);
-  context.getFileSet("inputs").then(inputs => filesetToDir(tmpdir, inputs));
-
-  return Computable.resolve(EMPTY_FILESET);
+export function runGeneric(context: TargetContext): Computable<BuildAction> {
+  return Computable.forAll(
+    [context.getFileSet("inputs"), context.getRequiredString("cmd")],
+    (inputs, cmd) => createExecAction(inputs, cmd.split(/\s+/), "**", "script")
+  );
 }
 
-/**
- * Create a dir in which we're going to run the thing; We're usually going to want
- * to do this inside the build cache so that we can just rename files to their final
- * locations.
- */
-function getExecRoot(config: TargetContext): string {
-  return "/tmp/fixme";
-}
-
-function filesetToDir(dir: string, files: FileSet): void {}
-
-registerTargetRule("script", { BUILD_OPERATION: "build" }, runGeneric);
+registerRule("script", { BUILD_OPERATION: "build" }, runGeneric);

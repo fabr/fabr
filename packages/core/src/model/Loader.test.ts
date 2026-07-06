@@ -18,7 +18,6 @@
  */
 
 import { expect } from "chai";
-import { BuildCache } from "../core/BuildCache";
 import { FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { LogFormatter, LogLevel } from "../support/Log";
@@ -37,7 +36,7 @@ function load(project: FileSet, startFile: string, systemPath: ISystemIncludeDir
   const errors: string[] = [];
   const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
   let model: BuildModel | undefined;
-  loadProject(project, startFile, new BuildCache("."), logger, undefined, systemPath).then(result => {
+  loadProject(project, startFile, logger, undefined, systemPath).then(result => {
     model = result;
   });
   /* All sources are in-memory, so loading completes synchronously */

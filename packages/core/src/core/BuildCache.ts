@@ -50,6 +50,19 @@ export class BuildCache {
   private root: string;
   /** Number of entries actually built (cache misses) during this run */
   private builds = 0;
+  /**
+   * Entries currently being created, by hashed key: a second demand for the
+   * same key joins the first's Computable rather than starting its own build
+   * (removed once settled — later demands find the entry on disk). This is
+   * both a redundant-work dedup (concurrent consumers sharing a package don't
+   * re-download it — repository fetches are demanded per consuming collection
+   * point, not gated by the per-target cache) AND an in-process write lock on
+   * the entry: without it two concurrent misses would both rm+mkdir+write the
+   * same targetDir, a genuine race (one's manifest can reference files the
+   * other just deleted). Per-process only — two fabr processes sharing a cache
+   * directory can still race (that needs on-disk locking; out of scope).
+   */
+  private inflight = new Map<string, Computable<FileSet>>();
 
   constructor(path: string) {
     this.root = path;
@@ -63,11 +76,15 @@ export class BuildCache {
     return this.builds;
   }
 
-  public getOrCreate(manifest: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
-    const key = hashString(manifest);
-    return this.lookup(key).then(result => {
-      if (result) {
-        return result;
+  public getOrCreate(cacheKey: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
+    const key = hashString(cacheKey);
+    const running = this.inflight.get(key);
+    if (running) {
+      return running;
+    }
+    const result = this.lookup(key).then(entry => {
+      if (entry) {
+        return entry;
       } else {
         this.builds++;
         const targetDir = path.resolve(this.root, key);
@@ -77,7 +94,7 @@ export class BuildCache {
         fs.mkdirSync(targetDir, { recursive: true });
         return create(targetDir)
           .then(fs => writeMemoryFiles(targetDir, fs))
-          .then(fs => writeFile(targetDir + ".manifest", this.serializeFileSet(fs)).then(() => fs))
+          .then(fs => this.storeManifest(targetDir, fs))
           .catch(err => {
             /* Remove the partial entry so a retry starts fresh */
             fs.rmSync(targetDir, { recursive: true, force: true });
@@ -85,13 +102,20 @@ export class BuildCache {
           });
       }
     });
+    this.inflight.set(key, result);
+    result.finally(() => this.inflight.delete(key));
+    return result;
   }
 
   /**
-   * Download a URL through the cache: the cache key IS the url (by construction
-   * — the fetch and the key cannot diverge), and the entry is created by passing
-   * the response stream through the given process callback (e.g. unpacking an
-   * archive, or validating and storing a metadata document).
+   * Download a URL through the cache: the cache key is the url plus the
+   * caller's process tag (a stable `name:version` identifying — and
+   * versioning — what is done to the response, e.g. `npm:tarball:1`), so two
+   * different treatments of one URL cannot collide, and a behavior change is
+   * an explicit tag bump rather than a manual cache flush. The entry is
+   * created by passing the response stream through the given process callback
+   * (e.g. unpacking an archive, or validating and storing a metadata
+   * document).
    *
    * The process callback runs before anything is recorded in the cache, so
    * throwing on invalid content guarantees error responses are never cached.
@@ -99,8 +123,12 @@ export class BuildCache {
    * URLs whose content is immutable by contract. (Any future invalidation/TTL
    * policy, and integrity verification of downloaded content, belongs here.)
    */
-  public getOrFetch(url: string, process: (content: Readable, targetDir: string) => Computable<FileSet>): Computable<FileSet> {
-    return this.getOrCreate(url, targetDir => openUrlStream(url).then(ins => process(ins, targetDir)));
+  public getOrFetch(
+    url: string,
+    tag: string,
+    process: (content: Readable, targetDir: string) => Computable<FileSet>
+  ): Computable<FileSet> {
+    return this.getOrCreate(`fetch:${tag} ${url}`, targetDir => openUrlStream(url).then(ins => process(ins, targetDir)));
   }
 
   private lookup(key: string): Computable<FileSet | undefined> {
@@ -112,16 +140,26 @@ export class BuildCache {
     }
   }
 
-  private serializeFileSet(data: FileSet): string {
-    let result = "";
-    for (const [name, file] of data) {
-      let realpath = file.getAbsPath() as string; // Note: by the time we get here, we've replaced all non-fs files
+  /**
+   * Write the entry's manifest and return its cache-backed view: in one pass,
+   * serialize each file (all fs-backed by now — writeMemoryFiles ran) to the
+   * manifest AND build a FileSet of BuildFiles rooted at the store. That view
+   * is the SAME representation a later cache hit deserialises, so an entry
+   * surfaces with a stable IFile identity whether freshly built or served from
+   * disk — built directly here rather than by re-parsing the manifest.
+   */
+  private storeManifest(targetDir: string, files: FileSet): Computable<FileSet> {
+    let manifest = "";
+    const backed = new Map<string, IFile>();
+    for (const [name, file] of files) {
+      let realpath = file.getAbsPath() as string;
       if (realpath.startsWith(this.root)) {
         realpath = path.relative(this.root, realpath);
       }
-      result += `${file.hash} ${encodeURI(name)} ${encodeURI(realpath)}\n`;
+      manifest += `${file.hash} ${encodeURI(name)} ${encodeURI(realpath)}\n`;
+      backed.set(name, new BuildFile(this.root, realpath, file.hash));
     }
-    return result;
+    return writeFile(targetDir + ".manifest", manifest).then(() => new FileSet(backed));
   }
 
   private deserialiseFileSet(data: string): FileSet {

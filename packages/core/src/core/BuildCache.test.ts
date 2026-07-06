@@ -86,6 +86,44 @@ describe("BuildCache", () => {
     expect(fs.existsSync(path.join(targetDir, "leftover.txt"))).to.equal(false);
   });
 
+  it("joins concurrent demands for one key to a single creation", async () => {
+    const cache = new BuildCache(root);
+    let release!: () => void;
+    const gate = Computable.from<undefined>(resolve => {
+      release = () => resolve(undefined);
+    });
+    let creates = 0;
+    const create = (): Computable<FileSet> =>
+      gate.then(() => {
+        creates++;
+        return new FileSet(new Map([["out.txt", MemoryFile.from("content")]]));
+      });
+
+    const first = cache.getOrCreate("shared key", create);
+    const second = cache.getOrCreate("shared key", create);
+    release();
+    const [a, b] = await Promise.all([toPromise(first), toPromise(second)]);
+    expect(creates).to.equal(1);
+    expect(cache.getBuildCount()).to.equal(1);
+    expect(await toPromise(a.readFile("out.txt"))).to.equal("content");
+    expect(await toPromise(b.readFile("out.txt"))).to.equal("content");
+  });
+
+  it("retries after a failed creation instead of joining it", async () => {
+    const cache = new BuildCache(root);
+    let failure: Error | undefined;
+    try {
+      await toPromise(cache.getOrCreate("retry key", () => Computable.reject(new Error("boom"))));
+    } catch (err) {
+      failure = err as Error;
+    }
+    expect(failure?.message).to.equal("boom");
+    const recovered = await toPromise(
+      cache.getOrCreate("retry key", () => Computable.resolve(new FileSet(new Map([["out.txt", MemoryFile.from("ok")]]))))
+    );
+    expect(await toPromise(recovered.readFile("out.txt"))).to.equal("ok");
+  });
+
   it("returns the cached result without re-running the build", async () => {
     const cache = new BuildCache(root);
     await toPromise(

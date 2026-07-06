@@ -31,7 +31,8 @@ import type * as fabr from "@fabr/core";
 
 export function activate(api: typeof fabr): void {
   api.registerSystemIncludeDir(api.packageLibDir("@my/plugin"));
-  api.registerTargetRule("my_thing", { BUILD_OPERATION: "build" }, buildMyThing);
+  api.registerRule("my_thing", { BUILD_OPERATION: "build" }, buildMyThing);
+  api.registerRepositoryType("my_repository", createMyRepository);
 }
 ```
 
@@ -44,13 +45,39 @@ export function activate(api: typeof fabr): void {
   `packageLibDir("<its-own-name>")` — which locates the directory beside the package's resolved
   entry point, i.e. within the *built* package content, never a source tree. The `lib/` directory
   must therefore be packaged alongside the compiled code.
-- `registerTargetRule(type, constraints, evaluate)` registers the implementation of a target type.
-  The *schema* for the type (its `targetdef`) is declared in the plugin's `.fabr` library files,
-  not in code. Rule selection picks the registered rule whose constraints most specifically match
-  the active configuration; `{}` is a wildcard. The `BUILD_OPERATION` constraint carries the build
-  verb (`fabr test x` ≡ `x[BUILD_OPERATION=test]`) — an operation-specific rule must explicitly
-  request `BUILD_OPERATION: "build"` when resolving its own dependencies, because constraints
-  otherwise propagate.
+- `registerRule(type, constraints, evaluate)` registers the implementation of a target type. The
+  *schema* for a declared type (its `targetdef`) lives in the plugin's `.fabr` library files, not
+  in code. Rule selection picks the registered rule whose constraints most specifically match the
+  active configuration (`{}` is a wildcard); the `BUILD_OPERATION` constraint carries the build
+  verb (`fabr test x` ≡ `x[BUILD_OPERATION=test]`), and an operation-specific rule must explicitly
+  request `BUILD_OPERATION: "build"` for its dependencies, since constraints otherwise propagate.
+
+  `evaluate(context: TargetContext)` is the rule body: read the target's properties and globals,
+  materialize dependencies, compute layouts and generated files, and compose sub-targets — all
+  through the `context` — then return a **`RuleResult`**. It never executes external tools and has
+  no work directory: it either returns final content directly (a `FileSource`) or a
+  **`BuildAction`** the framework caches and runs. The same rule serves declared and anonymous
+  (sub-)targets identically — `context.getFileSet("srcs")` reads a declared property or a
+  sub-target's supplied input transparently.
+
+  - **To run a tool**, return a `BuildAction` — `new BuildAction(step, inputs, label?)`, or the
+    `createExecAction(files, argv, outputs?)` helper. Its `step` (`{ id, version, run(inputs,
+    workDir) }`) is the unit of build caching, keyed by `id:version` + a manifest of its concrete
+    inputs (materialized FileSets and strings only); bump `version` when its behavior changes.
+    Prefer `createExecAction`; write a bespoke step only where semantics demand it (e.g.
+    `@fabr/js`'s `js:test-run`).
+  - **To compose builds**, use `context.subTarget(type, inputs, {label, constraints})`. It builds
+    an anonymous target of `type` and returns its cached output as a `Computable<FileSet>`, which
+    you wire into a later action's inputs or reshape into final content. Actions never nest;
+    composition is always via sub-targets.
+
+  The evaluation/caching model these hang off is described in `CLAUDE.md` and
+  `DESIGN-rules-and-caching.md`; this document covers only the registration surface.
+- `registerRepositoryType(type, provider)` registers a repository type — repositories resolve
+  requirements and are not rule-built targets: the provider is constructed lazily per build
+  configuration against a narrow `RepositoryContext` (declared config properties,
+  `memoize(tag, key, fn)` for resolution memos, `fetch(url, tag, process)` for downloads, and
+  `notifyProgress` for resolve/fetch progress events).
 
 ## Module identity
 

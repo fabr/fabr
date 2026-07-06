@@ -18,8 +18,7 @@
  */
 
 import { Computable } from "../core/Computable";
-import { FileSource } from "../core/FileSet";
-import { Repository } from "../core/Repository";
+import { FileSet, FileSource } from "../core/FileSet";
 import { Constraints, TargetContext } from "../model/BuildContext";
 
 export enum PropertyType {
@@ -30,14 +29,72 @@ export enum PropertyType {
   OutputFileSet,
 }
 
-export interface ITargetTypeDefinition {
-  constraints: Constraints;
+/**
+ * The resolved inputs a build action's step sees: a manifestable bag.
+ * Everything a step consumes arrives here — FileSets fully materialized
+ * (inert references never cross this boundary), strings as values — so the
+ * cache key (step id + version + canonical manifest of this bag) is sound by
+ * construction. A rule that needs one action's output as another's input
+ * builds the first as a sub-target (`ResolveContext.subTarget`) and passes
+ * its resolved FileSet here; there is no action nesting.
+ */
+export type BuildActionInput = string | string[] | FileSet | FileSet[];
+export type BuildActionInputs = Record<string, BuildActionInput>;
 
-  /**
-   * Evaluation function. Note that the type of entity will be
-   *   ResolvedType<S>
-   * but Typescript currently doesn't seem to be able to track this through the interface.
-   * @param entity
-   */
-  evaluate(target: TargetContext): Computable<FileSource | Repository>;
+/**
+ * The build step of a build action: a pure function from resolved inputs
+ * to output content, run in a framework-provided work directory. This is the
+ * only unit of build caching; `id` + `version` identify the step in every
+ * cache key, so a behavior change is a version bump rather than a manual
+ * cache flush.
+ */
+export interface IBuildActionDefinition {
+  id: string;
+  version: number;
+  run(inputs: BuildActionInputs, workDir: string): Computable<FileSet>;
+}
+
+/**
+ * A build action: a build step plus its concrete (already-resolved)
+ * inputs — the cacheable leaf a rule yields, or that a sub-target's rule
+ * yields to produce that target's output. Actions do not compose directly:
+ * composition is via sub-targets (see ResolveContext.subTarget), so an
+ * action's inputs are always plain data.
+ */
+export class BuildAction {
+  constructor(
+    public readonly step: IBuildActionDefinition,
+    public readonly inputs: BuildActionInputs,
+    public readonly label?: string
+  ) {}
+
+  /** @return a copy carrying the given display label */
+  public withLabel(label: string): BuildAction {
+    return new BuildAction(this.step, this.inputs, label);
+  }
+}
+
+/**
+ * What a rule's evaluate yields: either final content directly (a
+ * FileSource — flags, an in-memory result, or a sub-target's output reshaped
+ * by resolution), or a BuildAction the framework keys/caches/executes to
+ * produce the target's content.
+ */
+export type RuleResult = FileSource | BuildAction;
+
+/**
+ * A rule: the knowledge of how to build targets of a type. A single evaluate
+ * function — always run, per evaluation, as the in-memory Computable graph
+ * (property/global lookups, materialization, layout, generated-file
+ * computation, and composing sub-targets via `context.subTarget`) — that
+ * yields a RuleResult. Evaluation is given no work directory and never executes
+ * tools; all execution happens inside the build steps of the BuildActions
+ * it (and the sub-targets it builds) yield. A rule cannot tell whether it is
+ * building a declared or an anonymous target: it reads its properties through
+ * the same `context` accessors either way (for an anonymous target they are
+ * served from the caller-supplied inputs).
+ */
+export interface IRuleDefinition {
+  constraints: Constraints;
+  evaluate: (context: TargetContext) => Computable<RuleResult>;
 }

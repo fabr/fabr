@@ -20,8 +20,8 @@
 import { INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
 import { IPrefixMatch, Namespace } from "./Namespace";
 import { BuildContext, Constraints } from "./BuildContext";
+import { ExecutionContext } from "./ExecutionContext";
 import { Name } from "./Name";
-import { BuildCache } from "../core/BuildCache";
 
 /**
  * Build model holds the generalized model-as-it-is-written in the build files.
@@ -31,24 +31,25 @@ import { BuildCache } from "../core/BuildCache";
 export class BuildModel {
   private root: Namespace;
   private configs: BuildContext[] = [];
-  private buildCache: BuildCache;
 
-  constructor(root: Namespace, cache: BuildCache) {
+  constructor(root: Namespace) {
     this.root = root;
-    this.buildCache = cache;
   }
 
   /**
-   * @return the build configuration under the given (possibly empty set of) constraints
+   * @return the build configuration under the given (possibly empty set of)
+   * constraints, evaluating within the given execution context. The model
+   * itself is purely the declarations as written; everything runtime (the
+   * build cache, progress observers) rides in the ExecutionContext.
    */
-  public getConfig(constraints: Constraints = {}): BuildContext {
+  public getConfig(constraints: Constraints, execution: ExecutionContext): BuildContext {
     /* Todo: hash the constraints instead of linearly scanning */
     for (const config of this.configs) {
-      if (config.hasConstraints(constraints)) {
+      if (config.execution === execution && config.hasConstraints(constraints)) {
         return config;
       }
     }
-    const config = new BuildContext(this, constraints);
+    const config = new BuildContext(this, constraints, execution);
     this.configs.push(config);
     return config;
   }
@@ -63,9 +64,5 @@ export class BuildModel {
 
   public getPrefixMatch(name: Name): IPrefixMatch | undefined {
     return this.root.getPrefixMatch(name);
-  }
-
-  public getBuildCache(): BuildCache {
-    return this.buildCache;
   }
 }

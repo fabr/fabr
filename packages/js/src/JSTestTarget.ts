@@ -35,20 +35,27 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   BUILD_OPERATION,
+  BuildAction,
   Computable,
   Constraints,
   EMPTY_FILESET,
+  BuildActionInputs,
   execute,
   FileSet,
+  fileSetInput,
   findExecutable,
   Flag,
   formatTestFailures,
   getResultFileSet,
+  IBuildActionDefinition,
   ITestReport,
   MemoryFile,
   PackageFileSet,
-  registerTargetRule,
+  registerRule,
   TargetContext,
+  RuleResult,
+  SourceRef,
+  stringListInput,
   TEST_REPORT_FILENAME,
   TestsFailedError,
   writeFileSet,
@@ -56,7 +63,7 @@ import {
 import {
   assembleNodeModules,
   compileJsSources,
-  ICompiledSources,
+  hasTypescriptSources,
   JSTarget,
   parseJSTarget,
   stripPackageJson,
@@ -82,32 +89,33 @@ const GLOBALS_TYPES_MOUNT = "@types/fabr-test-globals/index.d.ts";
  */
 const BUILD_OP: Constraints = { [BUILD_OPERATION]: "build" };
 
-function testJsPackage(context: TargetContext): Computable<FileSet> {
+function testJsPackage(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
       context.getFileSet("srcs", BUILD_OP),
-      context.getFileSets("deps", BUILD_OP),
       context.getFlags("deps", BUILD_OP),
       context.getFileSet("tests", BUILD_OP),
       context.getGlobalString("JS_TARGET", BUILD_OP),
-      context.getFileSets("test_deps", BUILD_OP),
+      context.getFileSources("deps", BUILD_OP),
+      context.getFileSources("test_deps", BUILD_OP),
     ],
-    (sources, deps, flags, tests, target, testDeps) =>
-      compileAndRunTests(context, { sources, tests, deps, flags, target, testDeps })
+    (sources, flags, tests, target, depSources, testDepSources) =>
+      compileAndRunTests(context, { sources, tests, flags, target, depSources, testDepSources, runnerSources: [] })
   );
 }
 
-function runJsTest(context: TargetContext): Computable<FileSet> {
+function runJsTest(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
       context.getFileSet("srcs", BUILD_OP),
-      context.getFileSets("deps", BUILD_OP),
       context.getFlags("deps", BUILD_OP),
       context.getGlobalString("JS_TARGET", BUILD_OP),
+      context.getFileSources("deps", BUILD_OP),
+      context.getFileSources("runner", BUILD_OP),
     ],
-    (sources, deps, flags, target) => {
+    (sources, flags, target, depSources, runnerSources) => {
       const tests = sources.remap(name => (TEST_FILE_PATTERN.test(name) ? name : undefined));
-      return compileAndRunTests(context, { sources, tests, deps, flags, target, testDeps: [] });
+      return compileAndRunTests(context, { sources, tests, flags, target, depSources, testDepSources: [], runnerSources });
     }
   );
 }
@@ -125,12 +133,15 @@ function runnerGlobalsTypes(runner: PackageFileSet): FileSet {
 interface ITestInputs {
   sources: FileSet;
   tests: FileSet;
-  deps: FileSet[];
   flags: Flag[];
   target: string;
+  /** The as-written (unmaterialized) dependency sources */
+  depSources: SourceRef[];
   /** Test-only packages (assertion libraries and their @types), available to
    * both the test compile and the test run but never to the package build */
-  testDeps: FileSet[];
+  testDepSources: SourceRef[];
+  /** The runner property's sources; empty means fall back to JS_TEST_RUNNER */
+  runnerSources: SourceRef[];
 }
 
 /**
@@ -140,27 +151,47 @@ interface ITestInputs {
  * runner, and execute the runner over the compiled test files. The output
  * artifact is the test report; a red run fails the target with the report's
  * failure summary.
+ *
+ * Everything the evaluation consumes — deps, test-only deps, the runner
+ * (property or JS_TEST_RUNNER global), and the compile toolchain — goes
+ * through ONE collection point, so every requirement resolves jointly and
+ * the consumer's pins participate across the lot.
  */
-function compileAndRunTests(context: TargetContext, inputs: ITestInputs): Computable<FileSet> {
+function compileAndRunTests(context: TargetContext, inputs: ITestInputs): Computable<RuleResult> {
   const testFiles = compiledTestFiles(inputs.tests);
   if (testFiles.length === 0) {
     /* Nothing to run is trivially green (and no runner is needed) */
     return Computable.resolve(EMPTY_FILESET);
   }
-  return getRunner(context).then(runner => {
-    const jsTarget = parseJSTarget(inputs.target);
-    const compileModules = assembleNodeModules([...inputs.deps, ...inputs.testDeps, runnerGlobalsTypes(runner)]);
-    const runtimeModules = assembleNodeModules([...inputs.deps, ...inputs.testDeps, runner]);
-    /* Compile srcs and tests together (tests are normally within srcs); the
-     * globals declarations come in via the synthetic @types mount, so a copy
-     * among the sources (the runner package testing itself) is dropped */
-    const sources = FileSet.unionAll(inputs.sources, inputs.tests).remap(name =>
-      name === RUNNER_GLOBALS_TYPES ? undefined : name
-    );
-    return compileJsSources(context, sources, compileModules, jsTarget, inputs.flags, BUILD_OP).then(compiled =>
-      executeTests(context, compiled, runtimeModules, runner, testFiles, jsTarget)
-    );
-  });
+  const jsTarget = parseJSTarget(inputs.target);
+  /* Compile srcs and tests together (tests are normally within srcs); the
+   * globals declarations come in via the synthetic @types mount, so a copy
+   * among the sources (the runner package testing itself) is dropped */
+  const sources = FileSet.unionAll(inputs.sources, inputs.tests).remap(name =>
+    name === RUNNER_GLOBALS_TYPES ? undefined : name
+  );
+  const needsTsc = hasTypescriptSources(sources);
+  return context
+    .collect({
+      deps: inputs.depSources,
+      testDeps: inputs.testDepSources,
+      runner: inputs.runnerSources.length > 0 ? inputs.runnerSources : context.getGlobalSources("JS_TEST_RUNNER", BUILD_OP),
+      ...(needsTsc && inputs.flags.find(f => f.name === "nodejs")
+        ? { nodeTypes: context.getGlobalSources("NODE_TYPES", BUILD_OP) }
+        : {}),
+    })
+    .then(({ deps, testDeps, runner: runnerSets, nodeTypes }): Computable<RuleResult> => {
+      const runner = requireRunnerPackage(runnerSets, inputs.runnerSources.length > 0);
+      const compileModules = assembleNodeModules([...deps, ...testDeps, runnerGlobalsTypes(runner)]);
+      const runtimeModules = assembleNodeModules([...deps, ...testDeps, runner]);
+      const { compiled, copied } = compileJsSources(context, sources, compileModules, jsTarget, inputs.flags, nodeTypes);
+      if (!compiled) {
+        /* Test files are TypeScript, so a compile is always present; guard
+         * defensively rather than emit an empty run */
+        return Computable.resolve(EMPTY_FILESET);
+      }
+      return planTestRun(compiled, copied, runtimeModules, runner, testFiles, jsTarget);
+    });
 }
 
 /** @return the compiled (.js) names of the given test sources, sorted for determinism */
@@ -173,77 +204,78 @@ function compiledTestFiles(tests: FileSet): string[] {
 }
 
 /**
- * @return the runner package: the target's runner property if given, falling
- * back to the JS_TEST_RUNNER global (js_package has no runner property, so
- * the in-package sugar always uses the global).
+ * @return the runner package from its materialized delivery (the target's
+ * runner property if given, else the JS_TEST_RUNNER global — collected
+ * jointly with everything else the evaluation consumes).
  */
-function getRunner(context: TargetContext): Computable<PackageFileSet> {
-  return context
-    .getFileSets("runner", BUILD_OP)
-    .then(sets => runnerFromProperty(sets) ?? runnerFromGlobal(context));
-}
-
-function runnerFromProperty(sets: FileSet[]): PackageFileSet | undefined {
+function requireRunnerPackage(sets: FileSet[], fromProperty: boolean): PackageFileSet {
   const pkg = sets.find((set): set is PackageFileSet => set instanceof PackageFileSet);
-  if (!pkg && sets.length > 0) {
-    throw new Error("The runner property must name a built package");
+  if (!pkg) {
+    throw new Error(
+      fromProperty
+        ? "The runner property must name a built package"
+        : "JS_TEST_RUNNER does not resolve to a built package (it should name the test runner, e.g. @fabr/js)"
+    );
   }
   return pkg;
 }
 
-function runnerFromGlobal(context: TargetContext): Computable<PackageFileSet> {
-  return context.getGlobalTarget("JS_TEST_RUNNER", BUILD_OP).then(sources => {
-    const pkg = sources.find((source): source is PackageFileSet => source instanceof PackageFileSet);
-    if (!pkg) {
-      throw new Error("JS_TEST_RUNNER does not resolve to a built package (it should name the test runner, e.g. @fabr/js)");
-    }
-    return pkg;
-  });
-}
-
-function executeTests(
-  context: TargetContext,
-  compiled: ICompiledSources,
+/**
+ * Plan the test run: the runtime installation (deps/test-deps/runner as
+ * node_modules, plus a minimal package.json and any copied sources) is
+ * assembled in resolution, and the compiled tree — the output of the shared
+ * js_compile sub-target — is passed in as a concrete input. The js_test_run
+ * step's key covers both the staged installation and the invocation (which
+ * tests run is part of what a cached green result attests to). A generic exec
+ * can't serve here: a red run must fail the target while keeping the report.
+ */
+function planTestRun(
+  compiled: Computable<FileSet>,
+  copied: FileSet,
   nodeModules: FileSet,
   runner: PackageFileSet,
   testFiles: string[],
   jsTarget: JSTarget
-): Computable<FileSet> {
-  return runner.get(RUNNER_ENTRY).then(entry => {
+): Computable<RuleResult> {
+  return Computable.forAll([runner.get(RUNNER_ENTRY), compiled], (entry, compiledTree) => {
     if (!entry) {
       throw new Error(`Test runner package '${runner.packageName}' does not provide a ${RUNNER_ENTRY} entry point`);
     }
-    /* The working directory is a complete installation: the compiled tree at
-     * the root, the deps (including test-only deps and the runner) laid out
-     * as node_modules, and a minimal package.json establishing the module
-     * format */
     const packageJson = MemoryFile.from(
       JSON.stringify({ name: "fabr-test", private: true, type: jsTarget.module === "esm" ? "module" : "commonjs" })
     );
-    const workingDir = FileSet.unionAll(
-      FileSet.layout({
-        node_modules: [nodeModules],
-        "package.json": packageJson,
-      }),
-      compiled.compiled,
-      stripPackageJson(compiled.copied)
+    const staged = FileSet.unionAll(
+      FileSet.layout({ node_modules: [nodeModules], "package.json": packageJson }),
+      stripPackageJson(copied),
+      compiledTree
     );
     const runnerEntry = path.join("node_modules", runner.packageName, RUNNER_ENTRY);
-    const args = [runnerEntry, `--report=${TEST_REPORT_FILENAME}`, ...testFiles];
-    /* The cache key covers the invocation as well as the staged files: which
-     * tests run is part of what the cached green result attests to */
-    const manifest = `${workingDir.toManifest()}\nrun node ${args.join(" ")}`;
-    return context.getCachedOrBuild(manifest, targetDir =>
-      writeFileSet(targetDir, workingDir)
-        .then(() => execute(findExecutable("node"), args, targetDir, {}))
-        .then(
-          () => getResultFileSet(targetDir, TEST_REPORT_FILENAME),
-          err => {
-            throw toTestFailure(targetDir, err);
-          }
-        )
-    );
+    const argv = [findExecutable("node"), runnerEntry, `--report=${TEST_REPORT_FILENAME}`, ...testFiles];
+    return new BuildAction(JS_TEST_STEP, { staged, argv }, "test");
   });
+}
+
+/**
+ * The js_test_run build step: stage the complete installation (built in
+ * resolution — deps/runner as node_modules, the compiled tree, a minimal
+ * package.json), execute the runner under node, and deliver the report
+ * artifact. Only green runs enter the cache — a red run throws (as
+ * TestsFailedError when the report says so), which also removes the partial
+ * entry, so tests re-run until they pass.
+ */
+const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 1, run: runTests };
+
+function runTests(inputs: BuildActionInputs, workDir: string): Computable<FileSet> {
+  const staged = fileSetInput(inputs, "staged");
+  const argv = stringListInput(inputs, "argv");
+  return writeFileSet(workDir, staged)
+    .then(() => execute(argv[0], argv.slice(1), workDir, {}))
+    .then(
+      () => getResultFileSet(workDir, TEST_REPORT_FILENAME),
+      err => {
+        throw toTestFailure(workDir, err);
+      }
+    );
 }
 
 /**
@@ -265,5 +297,5 @@ function toTestFailure(targetDir: string, err: Error): Error {
   return err;
 }
 
-registerTargetRule("js_test", { [BUILD_OPERATION]: "test" }, runJsTest);
-registerTargetRule("js_package", { [BUILD_OPERATION]: "test" }, testJsPackage);
+registerRule("js_test", { [BUILD_OPERATION]: "test" }, runJsTest);
+registerRule("js_package", { [BUILD_OPERATION]: "test" }, testJsPackage);

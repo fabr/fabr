@@ -1,7 +1,6 @@
 import { Readable } from "stream";
-import { BuildCache } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
-import { EMPTY_FILESET, FileSet, FileSource } from "../core/FileSet";
+import { FileSet, FileSource } from "../core/FileSet";
 import { isRepository, materializeAll, Repository, RepositoryRef, SourceRef } from "../core/Repository";
 import { Flag } from "../core/Flag";
 import {
@@ -10,9 +9,20 @@ import {
   registerProvenanceDescriber,
   registerProvenanceRenderer,
 } from "../core/Provenance";
-import { getTargetRule } from "../rules/Registry";
+import { getRepositoryProvider, getTargetRule } from "../rules/Registry";
+import { BuildAction, BuildActionInput, BuildActionInputs, IRuleDefinition } from "../rules/Types";
+import { ExecutionContext, ProgressEvent } from "./ExecutionContext";
 import { ITargetOrigin, TARGET_PROVENANCE } from "./Target";
-import { DeclKind, IDecl, INamedDecl, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl, IValue } from "./AST";
+import {
+  DeclKind,
+  IDecl,
+  INamedDecl,
+  INamespaceDecl,
+  IPropertyDecl,
+  ITargetDecl,
+  ITargetDefDecl,
+  IValue,
+} from "./AST";
 import { Name } from "./Name";
 import { IPrefixMatch } from "./Namespace";
 import { Property } from "./Property";
@@ -98,11 +108,10 @@ function findNextModelRef(step: IProvenanceStep | undefined): IModelRefStep | un
 }
 
 interface IBuildModel {
-  getConfig(constraints: Constraints): BuildContext;
+  getConfig(constraints: Constraints, execution: ExecutionContext): BuildContext;
   getDecl(name: string): IPropertyDecl | ITargetDecl | INamespaceDecl | undefined;
   getTargetDef(name: string): ITargetDefDecl | undefined;
   getPrefixMatch(name: Name): IPrefixMatch | undefined;
-  getBuildCache(): BuildCache;
 }
 
 /**
@@ -114,11 +123,19 @@ interface IBuildModel {
 export class DependencyFailedError extends Error {
   public readonly target: ITargetDecl;
   public readonly cause: Error;
+  /**
+   * Set when the failure is an anonymous sub-target's build step: the action
+   * verb (e.g. "Compiling"). `target` is then the *declared* target it
+   * belongs to, so the driver renders "Compiling X failed" against it and
+   * collapses the intermediate hop.
+   */
+  public readonly label?: string;
 
-  constructor(target: ITargetDecl, cause: Error) {
+  constructor(target: ITargetDecl, cause: Error, label?: string) {
     super(`dependency '${target.name}' failed`);
     this.target = target;
     this.cause = cause;
+    this.label = label;
   }
 }
 
@@ -137,14 +154,17 @@ interface IDependencyStack {
  * As a practical matter, this is where everything is actually resolved and evaluated.
  */
 export class BuildContext {
-  protected constraints: Constraints;
-  private model: IBuildModel;
+  /** The run's fixed runtime surroundings, shared by every config of the run */
+  public readonly execution: ExecutionContext;
+  protected readonly constraints: Constraints;
+  private readonly model: IBuildModel;
   private propCache: Record<string, Computable<Property>>;
   private targetCache: Record<string, Computable<SourceRef[]>>;
 
-  constructor(model: IBuildModel, constraints: Constraints) {
+  constructor(model: IBuildModel, constraints: Constraints, execution: ExecutionContext) {
     this.model = model;
     this.constraints = constraints;
+    this.execution = execution;
     this.propCache = {};
     this.targetCache = {};
     // Pre-force the constraints so we don't have to check this later.
@@ -158,18 +178,21 @@ export class BuildContext {
   }
 
   public getPropertyWithOverrides(name: string, overrides: Constraints): Computable<Property> {
-    const combined = { ...this.constraints, ...overrides };
-    return this.model.getConfig(combined).getProperty(name);
+    return this.getContextWithOverrides(overrides).getProperty(name);
   }
 
   public getTargetWithOverrides(name: string, overrides: Constraints): Computable<SourceRef[]> {
-    const combined = { ...this.constraints, ...overrides };
-    return this.model.getConfig(combined).getTarget(name);
+    return this.getContextWithOverrides(overrides).getTarget(name);
   }
 
   public getContextWithOverrides(overrides: Constraints): BuildContext {
     const combined = { ...this.constraints, ...overrides };
-    return this.model.getConfig(combined);
+    return this.model.getConfig(combined, this.execution);
+  }
+
+  /** @return the BUILD_OPERATION this configuration is evaluating under */
+  public getOperation(): string {
+    return this.constraints[BUILD_OPERATION] ?? "build";
   }
 
   public getProperty(name: string, stack?: IDependencyStack): Computable<Property> {
@@ -241,11 +264,15 @@ export class BuildContext {
   }
 
   public getCachedOrBuild(manifest: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
-    return this.model.getBuildCache().getOrCreate(manifest, create);
+    return this.execution.buildCache.getOrCreate(manifest, create);
   }
 
-  public getCachedOrFetch(url: string, process: (content: Readable, targetDir: string) => Computable<FileSet>): Computable<FileSet> {
-    return this.model.getBuildCache().getOrFetch(url, process);
+  public getCachedOrFetch(
+    url: string,
+    tag: string,
+    process: (content: Readable, targetDir: string) => Computable<FileSet>
+  ): Computable<FileSet> {
+    return this.execution.buildCache.getOrFetch(url, tag, process);
   }
 
   public resolveStringProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<Property> {
@@ -358,6 +385,15 @@ export class BuildContext {
     if (!targetDef) {
       throw new Error("Targetdef '" + target.type + "' not found"); /* Can't happen due to earlier checks */
     }
+    /* Repositories are not rule-built targets: the provider constructs the
+     * instance lazily, interned per context via the target cache. No build
+     * events, no build-cache entries of its own. */
+    const provider = getRepositoryProvider(target.type);
+    if (provider) {
+      return provider(new RepositoryContext(target, this)).catch(err => {
+        throw new DependencyFailedError(target, err);
+      });
+    }
     const rule = getTargetRule(target.type, this.constraints);
     if (!rule) {
       const configuration = Object.entries(this.constraints)
@@ -369,24 +405,68 @@ export class BuildContext {
           stringifyDependencyStack(stack)
       );
     }
-    /* The target is the error boundary: any failure is wrapped to identify the
-     * target it belongs to, and propagates onwards to the target's dependants.
-     * No reporting happens here — the model layer doesn't log; the driver
-     * renders the failure tree. Successful FileSet results are stamped with the
-     * producing target's provenance.
-     */
+    return this.evaluateTarget(new DeclaredTargetContext(target, this, stack), rule);
+  }
+
+  /**
+   * The shared evaluation core, uniform for declared and anonymous targets:
+   * run the rule's evaluate, execute a yielded BuildAction through the cache,
+   * stamp the producing target's provenance, and make the target the error
+   * boundary (any failure wrapped to identify it). No reporting happens here —
+   * the model layer doesn't log; the driver renders the failure tree.
+   */
+  private evaluateTarget(context: TargetContext, rule: IRuleDefinition): Computable<FileSource | Repository> {
     return rule
-      .evaluate(new TargetContext(target, this, stack))
-      .then(result => {
-        if (result instanceof FileSet) {
-          const step: ITargetOrigin = { kind: TARGET_PROVENANCE, decl: target, parent: result.origin };
-          return result.withOrigin(step);
-        }
-        return result;
-      })
+      .evaluate(context)
+      .then(result => (result instanceof BuildAction ? this.runAction(result, context) : result))
+      .then(result => (result instanceof FileSet ? context.stampProvenance(result) : result))
       .catch(err => {
-        throw new DependencyFailedError(target, err);
+        throw context.failure(err);
       });
+  }
+
+  /**
+   * Build an anonymous target of the given (typically internal) type with the
+   * given concrete inputs, returning its cached output — the mechanism a rule
+   * composes sub-builds with (compile → run, object → link). It is an ordinary
+   * target: same evaluation core, its own context (bag-backed), provenance and
+   * error boundary — differing from a declared target only in having no
+   * namespace entry and in receiving its inputs directly. Rule selection runs
+   * under the owner's constraints (with explicit overrides available).
+   */
+  public buildSubTarget(
+    owner: TargetContext,
+    type: string,
+    inputs: BuildActionInputs,
+    options?: { label?: string; constraints?: Constraints }
+  ): Computable<FileSet> {
+    const buildContext = options?.constraints ? this.getContextWithOverrides(options.constraints) : this;
+    const rule = getTargetRule(type, buildContext.constraints);
+    if (!rule) {
+      throw new Error(`No rule found for anonymous target type '${type}'`);
+    }
+    const context = new AnonymousTargetContext(buildContext, inputs, owner.getDeclaredContext(), options?.label ?? type, owner.stack);
+    return buildContext.evaluateTarget(context, rule).then(result => {
+      if (result instanceof FileSet) {
+        return result;
+      }
+      throw new Error(`Anonymous target type '${type}' did not produce file content`);
+    });
+  }
+
+  /**
+   * Run a build action through the cache: the key is the step's identity plus
+   * the canonical manifest of its (already-resolved) inputs — sound by
+   * construction, since the step consumes nothing else. A miss is the moment
+   * real work happens: the evaluation announces its (declared) target as
+   * building.
+   */
+  public runAction(action: BuildAction, context: TargetContext): Computable<FileSet> {
+    const key = `rule:${action.step.id}:${action.step.version}\n${manifestEvalInputs(action.inputs)}`;
+    return this.getCachedOrBuild(key, targetDir => {
+      context.announceBuilding();
+      return action.step.run(action.inputs, targetDir);
+    });
   }
 
   private findTargetInStack(target: string, stack?: IDependencyStack): IDependencyStack | undefined {
@@ -455,50 +535,84 @@ function stringifyLoc(decl: IDecl): string {
 }
 
 /**
- * The context for an individual target.
+ * @return the distinct targets on the dependency stack (nearest requester
+ * first, the given target itself excluded): the chain of demand that led to
+ * this target being evaluated. Empty for a target requested directly.
  */
-export class TargetContext {
-  public target: ITargetDecl;
-  public context: BuildContext;
-  public stack?: IDependencyStack;
-  private props: Record<string, IPropertyDecl>;
+function requestingTargets(target: ITargetDecl, stack?: IDependencyStack): ITargetDecl[] {
+  const result: ITargetDecl[] = [];
+  for (let node = stack; node; node = node.next) {
+    if (node.target && node.target !== target && !result.includes(node.target)) {
+      result.push(node.target);
+    }
+  }
+  return result;
+}
 
-  constructor(target: ITargetDecl, context: BuildContext, stack?: IDependencyStack) {
-    this.target = target;
+/**
+ * The context a rule's evaluate runs in: property and global resolution
+ * for the target under evaluation, plus sub-target composition. Evaluate code
+ * deliberately has no work directory and no cache access — all content work
+ * goes through the BuildActions it yields (or the sub-targets it builds).
+ *
+ * A rule cannot tell whether it is building a declared or an anonymous target:
+ * the interface is uniform, and only the two raw-value primitives
+ * (`getProperty`, `getFileSources`) and `announceBuilding` differ between the
+ * two implementations. Everything else — materialization, flag extraction,
+ * collection, globals, sub-targets — derives from those and is shared here.
+ */
+export abstract class TargetContext {
+  public readonly context: BuildContext;
+  public readonly stack?: IDependencyStack;
+
+  constructor(context: BuildContext, stack?: IDependencyStack) {
     this.context = context;
     this.stack = stack;
-    this.props = {};
-    target.properties.forEach(prop => {
-      this.props[prop.name] = prop;
-    });
   }
+
+  /** The name of the (declared) target being built — what a rule refers to
+   * itself as; for an anonymous sub-target, its declared owner's name. */
+  public abstract get name(): string;
+
+  /** The raw value of a scalar property — resolved from the model, or read
+   * from the anonymous target's input bag. */
+  public abstract getProperty(name: string, overrides?: Constraints): Computable<Property | undefined>;
+
+  /** The unmaterialized sources of a FILES property — resolved from the model
+   * (references still inert), or the anonymous target's already-materialized
+   * input (for which materialization is the identity). */
+  public abstract getFileSources(name: string, overrides?: Constraints): Computable<SourceRef[]>;
+
+  /** Announce the declared target this evaluation belongs to as building
+   * (once) — see DeclaredTargetContext; an anonymous target delegates to its
+   * declared owner. */
+  public abstract announceBuilding(): void;
+
+  /** The declared target context this evaluation ultimately belongs to
+   * (itself, for a declared target). */
+  public abstract getDeclaredContext(): DeclaredTargetContext;
+
+  /** Stamp the target's provenance onto a delivered FileSet: the declared
+   * target's TARGET_PROVENANCE step; an anonymous target adds none (its
+   * declared owner's stamp covers the composed result). */
+  public abstract stampProvenance(result: FileSet): FileSet;
+
+  /** Wrap a failure into this target's error boundary — a DependencyFailedError
+   * identifying the declared target (an anonymous sub-target additionally
+   * carries its action-verb label, for "Compiling X failed" rendering). */
+  public abstract failure(err: Error): DependencyFailedError;
 
   public getRequiredProperty(name: string, overrides?: Constraints): Computable<Property> {
-    const prop = this.props[name];
-    if (!prop) {
-      throw new Error("Missing required property " + name);
-    }
-    return this.getContext(overrides).resolveStringProperty(prop, this.target, this.stack);
-  }
-
-  public getProperty(name: string, overrides?: Constraints): Computable<Property | undefined> {
-    const prop = this.props[name];
-    if (!prop) {
-      return Computable.resolve(undefined);
-    }
-    return this.getContext(overrides).resolveStringProperty(prop, this.target, this.stack);
+    return this.getProperty(name, overrides).then(prop => {
+      if (!prop) {
+        throw new Error("Missing required property " + name);
+      }
+      return prop;
+    });
   }
 
   public getRequiredString(name: string, overrides?: Constraints): Computable<string> {
     return this.getRequiredProperty(name, overrides).then(prop => prop.toString());
-  }
-
-  public getFileSources(name: string, overrides?: Constraints): Computable<SourceRef[]> {
-    const prop = this.props[name];
-    if (!prop) {
-      return Computable.resolve([]);
-    }
-    return this.getContext(overrides).resolveFileProperty(prop, this.target, this.stack);
   }
 
   public getFlags(name: string, overrides?: Constraints): Computable<Flag[]> {
@@ -507,16 +621,17 @@ export class TargetContext {
 
   /**
    * Resolve a FILES property to its individual (fully materialized) FileSets —
-   * one per contributing source, before any merging. This is the collection
-   * point at which deferred repository references are resolved jointly.
+   * one per contributing source, before any merging.
+   *
+   * Note: each call is its own materialization. THE collection point of an
+   * evaluation is singular by design — a rule whose external requirements
+   * span several properties/globals must gather them through one `collect`
+   * call so they resolve jointly; per-property materialization is only
+   * appropriate when the property is the evaluation's sole requirement
+   * surface (or holds no external references at all, e.g. srcs).
    */
   public getFileSets(name: string, overrides?: Constraints): Computable<FileSet[]> {
-    const prop = this.props[name];
-    if (!prop) {
-      return Computable.resolve([]);
-    }
-    return this.getContext(overrides)
-      .resolveFileProperty(prop, this.target, this.stack)
+    return this.getFileSources(name, overrides)
       .then(sources => materializeAll(sources))
       .then(sources => sources.filter((source): source is FileSet => source instanceof FileSet));
   }
@@ -525,12 +640,57 @@ export class TargetContext {
     return this.getFileSets(name, overrides).then(sets => FileSet.unionAll(...sets));
   }
 
-  public getCachedOrBuild(manifest: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
-    return this.context.getCachedOrBuild(manifest, create);
+  /**
+   * THE collection point of this evaluation: materialize several named
+   * source lists (properties via getFileSources, globals via
+   * getGlobalSources, or already-gathered arrays) through a SINGLE joint
+   * materialization, so every deferred reference they carry — however many
+   * properties and globals it spans — is partitioned into one batch per
+   * repository and resolved together, with the consumer's own pins
+   * participating across the lot. Results come back per name, filtered to
+   * materialized FileSets (flags and other non-content sources drop out).
+   */
+  public collect(parts: Record<string, SourceRef[] | Computable<SourceRef[]>>): Computable<Record<string, FileSet[]>> {
+    const names = Object.keys(parts);
+    return Computable.forAll(
+      names.map(name => {
+        const value = parts[name];
+        return value instanceof Computable ? value : Computable.resolve(value);
+      }),
+      (...lists: SourceRef[][]) => {
+        const flat = lists.flat();
+        return materializeAll(flat).then(resolved => {
+          const result: Record<string, FileSet[]> = {};
+          let index = 0;
+          names.forEach((name, i) => {
+            const slice = resolved.slice(index, index + lists[i].length);
+            index += lists[i].length;
+            result[name] = slice.filter((source): source is FileSet => source instanceof FileSet);
+          });
+          return result;
+        });
+      }
+    );
   }
 
-  public getCachedOrFetch(url: string, process: (content: Readable, targetDir: string) => Computable<FileSet>): Computable<FileSet> {
-    return this.context.getCachedOrFetch(url, process);
+  /**
+   * Build an anonymous target of the given internal type with concrete
+   * inputs, returning its cached output — how a rule composes a sub-build
+   * (e.g. the compiled tree consumed by both the package and the test run).
+   * The sub-target's rule reads those inputs through the same context
+   * accessors (getFileSet, getRequiredString, …) as any target.
+   */
+  public subTarget(
+    type: string,
+    inputs: BuildActionInputs,
+    options?: { label?: string; constraints?: Constraints }
+  ): Computable<FileSet> {
+    return this.context.buildSubTarget(this, type, inputs, options);
+  }
+
+  /** Emit a progress event on behalf of this target (see ProgressEvent) */
+  public notifyProgress(event: ProgressEvent): void {
+    this.context.execution.notifyProgress(event);
   }
 
   public getGlobalString(name: string, overrides?: Constraints): Computable<string> {
@@ -547,7 +707,227 @@ export class TargetContext {
       .then(sources => materializeAll(sources));
   }
 
-  private getContext(overrides?: Constraints): BuildContext {
+  /**
+   * The unmaterialized counterpart of getGlobalTarget: the global's sources
+   * with any repository references still inert, for feeding into `collect`
+   * so they resolve jointly with the evaluation's other requirements.
+   */
+  public getGlobalSources(name: string, overrides?: Constraints): Computable<SourceRef[]> {
+    return this.getContext(overrides).getTarget(name, this.stack);
+  }
+
+  protected getContext(overrides?: Constraints): BuildContext {
     return overrides ? this.context.getContextWithOverrides(overrides) : this.context;
+  }
+}
+
+/**
+ * A declared target's context: properties resolve from its `ITargetDecl`, and
+ * it owns the "is building" announcement (fired once, at the first actual
+ * cache miss beneath it — an evaluation is only *potentially* a build, since
+ * it may be served entirely from cache or produce content with no build).
+ */
+export class DeclaredTargetContext extends TargetContext {
+  public readonly target: ITargetDecl;
+  private readonly props: Record<string, IPropertyDecl>;
+  private announced = false;
+
+  constructor(target: ITargetDecl, context: BuildContext, stack?: IDependencyStack) {
+    super(context, stack);
+    this.target = target;
+    this.props = {};
+    target.properties.forEach(prop => {
+      this.props[prop.name] = prop;
+    });
+  }
+
+  public get name(): string {
+    return this.target.name;
+  }
+
+  public getProperty(name: string, overrides?: Constraints): Computable<Property | undefined> {
+    const prop = this.props[name];
+    if (!prop) {
+      return Computable.resolve(undefined);
+    }
+    return this.getContext(overrides).resolveStringProperty(prop, this.target, this.stack);
+  }
+
+  public getFileSources(name: string, overrides?: Constraints): Computable<SourceRef[]> {
+    const prop = this.props[name];
+    if (!prop) {
+      return Computable.resolve([]);
+    }
+    return this.getContext(overrides).resolveFileProperty(prop, this.target, this.stack);
+  }
+
+  public getDeclaredContext(): DeclaredTargetContext {
+    return this;
+  }
+
+  public stampProvenance(result: FileSet): FileSet {
+    const step: ITargetOrigin = { kind: TARGET_PROVENANCE, decl: this.target, parent: result.origin };
+    return result.withOrigin(step);
+  }
+
+  public failure(err: Error): DependencyFailedError {
+    return new DependencyFailedError(this.target, err);
+  }
+
+  public announceBuilding(): void {
+    if (this.announced) {
+      return;
+    }
+    this.announced = true;
+    this.notifyProgress({
+      kind: "target-build",
+      target: this.target,
+      operation: this.context.getOperation(),
+      requiredBy: requestingTargets(this.target, this.stack),
+    });
+  }
+}
+
+/**
+ * An anonymous (sub-)target's context: it has no declaration — its properties
+ * come from the concrete input bag the caller supplied (a FileSet is a
+ * SourceRef; a string wraps as a Property), so materialization/collection over
+ * them are no-ops. It carries only the declared owner it was built under and
+ * an action-verb `label` ("Compiling"): failures attribute to the declared
+ * target with that label, provenance is left to the declared owner's stamp,
+ * and the build announcement delegates to the declared owner.
+ */
+export class AnonymousTargetContext extends TargetContext {
+  private readonly inputs: BuildActionInputs;
+  private readonly declared: DeclaredTargetContext;
+  private readonly label: string;
+
+  constructor(
+    context: BuildContext,
+    inputs: BuildActionInputs,
+    declared: DeclaredTargetContext,
+    label: string,
+    stack?: IDependencyStack
+  ) {
+    super(context, stack);
+    this.inputs = inputs;
+    this.declared = declared;
+    this.label = label;
+  }
+
+  public get name(): string {
+    return this.declared.name;
+  }
+
+  public getProperty(name: string): Computable<Property | undefined> {
+    const value = this.inputs[name];
+    if (value === undefined) {
+      return Computable.resolve(undefined);
+    }
+    return Computable.resolve(new Property((Array.isArray(value) ? value : [value]) as string[]));
+  }
+
+  public getFileSources(name: string): Computable<SourceRef[]> {
+    const value = this.inputs[name];
+    if (value === undefined) {
+      return Computable.resolve([]);
+    }
+    return Computable.resolve((Array.isArray(value) ? value : [value]) as SourceRef[]);
+  }
+
+  public getDeclaredContext(): DeclaredTargetContext {
+    return this.declared;
+  }
+
+  public stampProvenance(result: FileSet): FileSet {
+    /* No own provenance step: the declared owner stamps the composed result. */
+    return result;
+  }
+
+  public failure(err: Error): DependencyFailedError {
+    return new DependencyFailedError(this.declared.target, err, this.label);
+  }
+
+  public announceBuilding(): void {
+    /* The umbrella "Building X" (the declared target, once), then this
+     * specific step ("Compiling X") attributed to it. */
+    this.declared.announceBuilding();
+    this.notifyProgress({ kind: "sub-target-build", declared: this.declared.target, label: this.label });
+  }
+}
+
+/**
+ * @return the canonical manifest of a build step's input bag: keys in
+ * sorted order, FileSets by their content manifests, strings as JSON values.
+ * This is the input half of every evaluate cache key.
+ */
+function manifestEvalInputs(inputs: BuildActionInputs): string {
+  return Object.keys(inputs)
+    .sort((a, b) => a.localeCompare(b))
+    .map(name => `${name}=${manifestEvalInput(inputs[name])}`)
+    .join("\n");
+}
+
+function manifestEvalInput(value: BuildActionInput): string {
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return "[" + value.map(element => manifestEvalInput(element)).join(",") + "]";
+  }
+  return "{\n" + value.toManifest() + "\n}";
+}
+
+/**
+ * The narrow runtime surface a repository provider works against: the
+ * declaration's configuration properties, resolve-phase caching (memos and
+ * fetches — distinct from evaluate entries, and never announced as
+ * building), and progress attribution to the repository's own declaration.
+ */
+export class RepositoryContext {
+  public readonly target: ITargetDecl;
+  private readonly context: BuildContext;
+  private readonly props: Record<string, IPropertyDecl>;
+
+  constructor(target: ITargetDecl, context: BuildContext) {
+    this.target = target;
+    this.context = context;
+    this.props = {};
+    target.properties.forEach(prop => {
+      this.props[prop.name] = prop;
+    });
+  }
+
+  public getRequiredString(name: string): Computable<string> {
+    const prop = this.props[name];
+    if (!prop) {
+      throw new Error("Missing required property " + name);
+    }
+    return this.context.resolveStringProperty(prop, this.target).then(prop => prop.toString());
+  }
+
+  /**
+   * Resolve-phase memoization: results of pure resolution work (e.g. a joint
+   * version selection), persisted under `memo:<tag> <key>`. The tag is a
+   * stable `name:version` — bump the version when the computation's behavior
+   * changes.
+   */
+  public memoize(tag: string, key: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
+    return this.context.getCachedOrBuild(`memo:${tag} ${key}`, create);
+  }
+
+  /**
+   * Download through the cache (see BuildCache.getOrFetch); an actual fetch
+   * (a miss) is announced as progress, attributed to this repository.
+   */
+  public fetch(url: string, tag: string, process: (content: Readable, targetDir: string) => Computable<FileSet>): Computable<FileSet> {
+    return this.context.getCachedOrFetch(url, tag, (content, targetDir) => {
+      this.notifyProgress({ kind: "fetch", url, target: this.target });
+      return process(content, targetDir);
+    });
+  }
+
+  public notifyProgress(event: ProgressEvent): void {
+    this.context.execution.notifyProgress(event);
   }
 }

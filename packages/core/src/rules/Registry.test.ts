@@ -19,14 +19,14 @@
 
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
-import { getTargetRule, registerTargetRule } from "./Registry";
+import { getTargetRule, registerRule } from "./Registry";
 import { expect } from "chai";
 
 const wildcardRule = (): Computable<FileSet> => Computable.resolve(EMPTY_FILESET);
 const testRule = (): Computable<FileSet> => Computable.resolve(EMPTY_FILESET);
 
-registerTargetRule("reg_test", {}, wildcardRule);
-registerTargetRule("reg_test", { BUILD_OPERATION: "test" }, testRule);
+registerRule("reg_test", {}, wildcardRule);
+registerRule("reg_test", { BUILD_OPERATION: "test" }, testRule);
 
 describe("Registry", () => {
   it("selects the most specific matching rule", () => {

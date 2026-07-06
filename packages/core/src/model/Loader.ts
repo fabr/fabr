@@ -29,7 +29,6 @@ import { BuildModel } from "./BuildModel";
 import { activatePlugins } from "./Plugin";
 import { toBuildModel } from "./Sema";
 import { FileSource } from "../core/FileSet";
-import { BuildCache } from "../core/BuildCache";
 
 /**
  * A directory on the system include path: bare include names (`include
@@ -149,12 +148,11 @@ function findOnSystemPath(
 export function loadProject(
   fileSource: FileSource,
   startFile: string,
-  buildCache: BuildCache,
   log: Log,
   pluginApi?: unknown,
   systemIncludePath: ISystemIncludeDir[] = systemIncludeDirs
 ): Computable<BuildModel> {
   return loadBuildFile(fileSource, startFile, { systemPath: systemIncludePath, pluginApi, log }).then(decls =>
-    toBuildModel(Object.values(decls), buildCache, log)
+    toBuildModel(Object.values(decls), log)
   );
 }

@@ -18,21 +18,20 @@
  */
 
 import {
+  BUILD_OPERATION,
   Computable,
-  Constraints,
   EMPTY_FILESET,
-  execute,
+  createExecAction,
   FileSet,
-  findExecutable,
+  FileSource,
   Flag,
-  getResultFileSet,
   MemoryFile,
   PackageFileSet,
-  registerTargetRule,
+  registerRule,
   RepositoryRef,
-  SourceRef,
   TargetContext,
-  writeFileSet,
+  RuleResult,
+  SourceRef,
 } from "@fabr/core";
 
 /**
@@ -83,75 +82,103 @@ function getESRuntime(flags: Flag[], defaultRuntime: string): string {
  * @param spec
  * @param context
  */
-function buildJsPackage(context: TargetContext): Computable<FileSet> {
-  /* STUB */
-  console.log("Building JS Package");
-
+function buildJsPackage(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
       context.getFileSet("srcs"),
-      context.getFileSets("deps"),
       context.getFlags("deps"),
       context.getFileSet("tests"),
       context.getGlobalString("JS_TARGET"),
       context.getProperty("version"),
       context.getFileSources("deps"),
     ],
-    (sources, deps, flags, tests, target, version, depSources) => {
+    (sources, flags, tests, target, version, depSources) => {
       /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
-      const packageJsonFile = sources
+      const seedJson = sources
         .get("package.json")
         .then(file => file?.readString())
         .then(content => (content ? (JSON.parse(content) as Record<string, unknown>) : undefined));
 
       const jsTarget = parseJSTarget(target);
+      const compileSources = sources.minus(tests);
+      const needsTsc = hasTypescriptSources(compileSources);
 
-      /* Lay the deps out as node_modules contents: every package (and every
-       * member of its resolved closure) is mounted at its real package name */
-      const nodeModules = assembleNodeModules(deps);
+      /* THE collection point: the deps and the node @types (under nodejs)
+       * materialize through one joint resolution, so e.g. the NODE_TYPES pin
+       * satisfies an unconstrained @types/node arriving via the deps. TSC is
+       * the compiler's own concern (resolved in js_compile), independent of
+       * what it compiles. */
+      const gathered = context.collect({
+        deps: depSources,
+        ...(needsTsc && flags.find(f => f.name === "nodejs") ? { nodeTypes: context.getGlobalSources("NODE_TYPES") } : {}),
+      });
 
-      const compiled = compileJsSources(context, sources.minus(tests), nodeModules, jsTarget, flags);
+      return Computable.forAll([gathered, seedJson], ({ deps, nodeTypes }, seed) => {
+        /* Lay the deps out as node_modules contents: every package (and every
+         * member of its resolved closure) is mounted at its real package name */
+        const nodeModules = assembleNodeModules(deps);
+        const { compiled, copied } = compileJsSources(context, compileSources, nodeModules, jsTarget, flags, nodeTypes);
 
-      return Computable.forAll([compiled, packageJsonFile], (result, seed) => {
-        /* Non-compiled sources are preserved in the output as-is (the source
-         * package.json is consumed as the seed rather than copied through) */
-        const contents = FileSet.unionAll(result.compiled, stripPackageJson(result.copied));
-        const packageJson = createPackageJson(contents, seed, context.target.name, version?.toString(), depSources, jsTarget);
-        const assembled = FileSet.unionAll(contents, new FileSet(new Map([["package.json", packageJson]])));
-        /* Materialize the assembled package as its own cache entry: the
-         * target's deliverable is a real on-disk package directory, delivered
-         * as a package — root-relative files + identity + its DIRECT deps as
-         * written (built packages as packages, external requirements as inert
-         * references, resolved fresh at each consuming collection point). */
+        /* The package's DIRECT deps as written (built packages as packages,
+         * external requirements as inert references, resolved fresh at each
+         * consuming collection point) — carried on the delivered package. */
         const carried = depSources.filter(
           (source): source is PackageFileSet | RepositoryRef =>
             source instanceof PackageFileSet || source instanceof RepositoryRef
         );
-        return context
-          .getCachedOrBuild(assembled.toManifest(), targetDir =>
-            writeFileSet(targetDir, assembled).then(() => getResultFileSet(targetDir, "**"))
-          )
-          .then(built => new PackageFileSet(built, context.target.name, version?.toString(), carried));
+
+        /* Delivery shape: add the generated package.json (in memory — its
+         * entry points depend on the compiled file list) and wrap with
+         * identity + carried deps. This runs in resolution on every evaluation
+         * (whether the compile sub-target hit or missed), reconstructing the
+         * runtime-only identity each time. */
+        const deliver = (built: FileSet): FileSource => {
+          const contents = FileSet.unionAll(built, stripPackageJson(copied));
+          const packageJson = createPackageJson(contents, seed, context.name, version?.toString(), depSources, jsTarget);
+          const assembled = FileSet.unionAll(contents, new FileSet(new Map([["package.json", packageJson]])));
+          return new PackageFileSet(assembled, context.name, version?.toString(), carried);
+        };
+
+        /* With TS sources the compile is a sub-target (its output wrapped
+         * here); without, there is nothing to build — the package is the
+         * copied files + package.json, assembled in memory. */
+        return compiled ? compiled.then(deliver) : deliver(EMPTY_FILESET);
       });
     }
   );
 }
 
+/**
+ * @return whether the tree holds compilable TypeScript sources (i.e. the
+ * compile step — and hence the TSC toolchain — will be needed at all).
+ */
+export function hasTypescriptSources(files: FileSet): boolean {
+  return [...files].some(([name]) => {
+    const lower = name.toLowerCase();
+    return (lower.endsWith(".ts") || lower.endsWith(".tsx")) && !lower.endsWith(".d.ts");
+  });
+}
+
 export interface ICompiledSources {
-  /** The compiler output (js + declarations), named root-relative */
-  compiled: FileSet;
+  /** The compiled tree's output (from the js_compile sub-target); undefined
+   * when there are no TypeScript sources to compile */
+  compiled?: Computable<FileSet>;
   /** Non-compiled sources, passed through unchanged */
   copied: FileSet;
 }
 
 /**
- * Compile a JS/TS source tree against a prepared node_modules layout:
- * TypeScript sources are compiled with the toolchain named by the TSC (and,
- * under the nodejs flag, NODE_TYPES) globals, resolved under the given
- * constraint overrides — an operation-specific rule should pass
- * BUILD_OPERATION=build. Anything that isn't compiled is passed through in
- * `copied`. (Note: plain .js sources are currently dropped — transpiling them
- * to the requested target is an open gap.)
+ * Compile a JS/TS source tree by building the `js_compile` sub-target — the
+ * single TS compile path shared by the package build and the test run.
+ * TypeScript sources yield `compiled` (the sub-target's cached output);
+ * anything not compiled is returned in `copied`. `nodeModules` is the
+ * already-assembled dependency layout the sources compile against, with the
+ * NODE_TYPES delivery (`nodeTypes`, under the nodejs flag) folded in — both
+ * resolved jointly by the caller's collection point. TSC is the compiler's
+ * own concern, resolved inside js_compile. The sub-target builds under
+ * BUILD_OPERATION=build (a compile is a build even for a test target).
+ * (Note: plain .js sources are currently dropped — transpiling them is an
+ * open gap.)
  */
 export function compileJsSources(
   context: TargetContext,
@@ -159,8 +186,8 @@ export function compileJsSources(
   nodeModules: FileSet,
   jsTarget: JSTarget,
   flags: Flag[],
-  overrides?: Constraints
-): Computable<ICompiledSources> {
+  nodeTypes?: FileSet[]
+): ICompiledSources {
   const sourceGroups = sources.partition(path => {
     const lower = path.toLowerCase();
     const extidx = lower.lastIndexOf(".");
@@ -182,31 +209,74 @@ export function compileJsSources(
     return "copy";
   });
 
-  let compiled: Computable<FileSet>;
+  let compiled: Computable<FileSet> | undefined;
   if ("ts" in sourceGroups) {
-    const tsdeps = [context.getGlobalTarget("TSC", overrides)];
-    if (flags.find(f => f.name === "nodejs")) {
-      tsdeps.push(context.getGlobalTarget("NODE_TYPES", overrides));
-    }
-
-    compiled = Computable.forAll(tsdeps, (typescript, types) => {
-      const extraTypes = types ? assembleNodeModules(types as FileSet[]) : undefined;
-      return compileTypescript(
-        sourceGroups.ts,
-        nodeModules,
-        assembleNodeModules(typescript as FileSet[]),
-        extraTypes,
-        jsTarget,
-        flags,
-        context
-      );
-    });
-  } else {
-    compiled = Computable.resolve(EMPTY_FILESET);
+    /* The deps the sources compile against: the package deps plus (under
+     * nodejs) the node @types — resolved jointly by the caller. TSC is added
+     * by js_compile itself. */
+    const deps = nodeTypes ? FileSet.unionAll(nodeModules, assembleNodeModules(nodeTypes)) : nodeModules;
+    compiled = context.subTarget(
+      "js_compile",
+      { srcs: sourceGroups.ts, deps, runtime: getESRuntime(flags, jsTarget.version) },
+      { label: "Compiling", constraints: { [BUILD_OPERATION]: "build" } }
+    );
   }
 
-  return compiled.then(files => ({ compiled: files, copied: sourceGroups.copy ?? EMPTY_FILESET }));
+  return { compiled, copied: sourceGroups.copy ?? EMPTY_FILESET };
 }
+
+/**
+ * The js_compile rule: the one TS-compile path, a self-contained target
+ * `{ srcs = FILES; deps = FILES }`. `deps` is the node_modules the sources are
+ * compiled against (package deps + any @types, already resolved by the caller
+ * so `getFileSet` here is a no-op materialization). It resolves its *own*
+ * toolchain — `TSC` (a build tool, independent of what it compiles) — and its
+ * own `JS_TARGET`, derives the tsconfig, lays out the tsc working directory
+ * and yields the `exec` action that runs the compiler (output: `build/**`).
+ * The `runtime` input carries the ES lib level (from the target's `es*` flags,
+ * which can't survive materialization into `deps`).
+ */
+function compileTypescript(context: TargetContext): Computable<RuleResult> {
+  return Computable.forAll(
+    [
+      context.getFileSet("srcs"),
+      context.getFileSet("deps"),
+      context.getRequiredString("runtime"),
+      context.getGlobalString("JS_TARGET"),
+      context.getGlobalTarget("TSC"),
+    ],
+    (srcs, deps, runtime, target, tscSources) => {
+      const jsTarget = parseJSTarget(target);
+      const modules = FileSet.unionAll(deps, assembleNodeModules(tscSources.filter((s): s is FileSet => s instanceof FileSet)));
+      const tsconfig = {
+        compilerOptions: {
+          declaration: true,
+          declarationMap: true,
+          outDir: "build",
+          rootDir: "src",
+          /* Strict by default; TODO: needs a way to flag it off per target */
+          strict: true,
+          target: jsTarget.version,
+          lib: jsTarget.environment === "browser" ? [runtime, "dom"] : [runtime],
+          module: jsTarget.module === "esm" ? "esnext" : "commonjs",
+          moduleResolution: "node",
+        },
+        exclude: ["node_modules"],
+        include: ["./src/**/*.ts"],
+      };
+
+      const workingDir = FileSet.layout({
+        node_modules: modules,
+        src: srcs,
+        "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
+      });
+
+      return createExecAction(workingDir, ["node", "node_modules/typescript/bin/tsc"], "build:**", "compile");
+    }
+  );
+}
+
+registerRule("js_compile", {}, compileTypescript);
 
 /** @return the files without any root package.json (consumed, not copied through) */
 export function stripPackageJson(files: FileSet): FileSet {
@@ -306,47 +376,6 @@ function createPackageJson(
   return MemoryFile.from(JSON.stringify(packageJson, undefined, 2));
 }
 
-function compileTypescript(
-  srcs: FileSet,
-  deps: FileSet,
-  tsc: FileSet,
-  extraTypes: FileSet | undefined,
-  jsTarget: JSTarget,
-  flags: Flag[],
-  context: TargetContext
-): Computable<FileSet> {
-  const runtime = getESRuntime(flags, jsTarget.version);
-
-  const tsconfig = {
-    compilerOptions: {
-      declaration: true,
-      declarationMap: true,
-      outDir: "build",
-      rootDir: "src",
-      /* Strict by default; TODO: needs a way to flag it off per target */
-      strict: true,
-      target: jsTarget.version,
-      lib: jsTarget.environment === "browser" ? [runtime, "dom"] : [runtime],
-      module: jsTarget.module === "esm" ? "esnext" : "commonjs",
-      moduleResolution: "node",
-    },
-    exclude: ["node_modules"],
-    include: ["./src/**/*.ts"],
-  };
-
-  const workingDir = FileSet.layout({
-    node_modules: [deps, tsc, extraTypes],
-    src: srcs,
-    "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
-  });
-
-  return context.getCachedOrBuild(workingDir.toManifest(), targetDir =>
-    writeFileSet(targetDir, workingDir)
-      .then(() => execute(findExecutable("node"), ["node_modules/typescript/bin/tsc"], targetDir, {}))
-      .then(() => getResultFileSet(targetDir, "build:**"))
-  );
-}
-
 export interface JSTarget {
   version: string;
   module: "esm" | "commonjs";
@@ -371,15 +400,4 @@ export function parseJSTarget(target: string): JSTarget {
   return result;
 }
 
-registerTargetRule("js_package", { BUILD_OPERATION: "build" }, buildJsPackage);
-
-/**
- * Resolve all dependencies including transitive for our build target (from the 'deps' property).
- *
- * This is completely awful at the moment: we collect the _direct_ dependencies by the
- * standard resolution process, then we read the package.json from each dep for its
- * transitive dependencies, collate them, and then resolve them all against the default npm repository.
- *
- * There's so many things wrong with this that its not funny, but it
- */
-// function resolveNPMDependencies(context: TargetContext): Computable<FileSet> {}
+registerRule("js_package", { BUILD_OPERATION: "build" }, buildJsPackage);

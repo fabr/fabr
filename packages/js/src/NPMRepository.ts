@@ -10,15 +10,15 @@ import {
   PackageRegistry,
   parseVersion,
   readStream,
-  registerTargetRule,
+  registerRepositoryProvider,
   Repository,
+  RepositoryContext,
   RepositoryRef,
   Requirement,
   resolveMVS,
   Selected,
   SEMVER,
   SemverVersion,
-  TargetContext,
   unpackStream,
   versionToString,
 } from "@fabr/core";
@@ -88,12 +88,12 @@ function requirementKey(req: Requirement): string {
 }
 
 class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
-  private url: string;
-  private context: TargetContext;
+  private readonly url: string;
+  private readonly context: RepositoryContext;
   /* In-process memo over the persistent metadata cache, keyed by "pkg/version" */
-  private metadataCache: Map<string, Computable<INPMPackageMetadata>>;
+  private readonly metadataCache: Map<string, Computable<INPMPackageMetadata>>;
 
-  constructor(url: string, context: TargetContext) {
+  constructor(url: string, context: RepositoryContext) {
     this.url = url.replace(/\/+$/, "");
     this.context = context;
     this.metadataCache = new Map();
@@ -202,8 +202,10 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
    */
   private getJointResolution(roots: Requirement[], rootKeys: string[]): Computable<Selected<SemverVersion>[]> {
     return this.context
-      .getCachedOrBuild(`fabr:resolve:npm2 ${this.url} ${rootKeys.join(" ")}`, () =>
-        resolveMVS(roots, SEMVER, this).then(resolution => {
+      .memoize("npm:resolve:2", `${this.url} ${rootKeys.join(" ")}`, () => {
+        /* A memo miss means real resolution work on behalf of the consumer */
+        this.context.notifyProgress({ kind: "repository-resolve", repository: this.context.target, requirements: rootKeys });
+        return resolveMVS(roots, SEMVER, this).then(resolution => {
           if (resolution.errors.length > 0) {
             throw new Error(`Unable to resolve ${rootKeys.join(", ")}:\n  ${resolution.errors.join("\n  ")}`);
           }
@@ -218,8 +220,8 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
             })),
           };
           return new FileSet(new Map([[RESOLUTION_FILE, MemoryFile.from(JSON.stringify(doc, undefined, 2))]]));
-        })
-      )
+        });
+      })
       .then(files => files.readFile(RESOLUTION_FILE))
       .then(data => {
         const doc = JSON.parse(data) as IResolutionDoc;
@@ -243,7 +245,7 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
     let result = this.metadataCache.get(key);
     if (!result) {
       result = this.context
-        .getCachedOrFetch(`${this.url}/${key}`, content =>
+        .fetch(`${this.url}/${key}`, "npm:metadata:1", content =>
           readStream(content).then(data => {
             const meta = parseMetadataResponse(data, key);
             return new FileSet(new Map([[METADATA_FILE, MemoryFile.from(JSON.stringify(meta))]]));
@@ -259,7 +261,7 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
   private fetch(pkg: string, version: SemverVersion): Computable<PackageFileSet> {
     return this.getVersionMetadata(pkg, versionToString(version)).then(meta =>
       this.context
-        .getCachedOrFetch(meta.dist.tarball, (content, targetDir) => unpackStream(content, targetDir).then(stripArchiveRoot))
+        .fetch(meta.dist.tarball, "npm:tarball:1", (content, targetDir) => unpackStream(content, targetDir).then(stripArchiveRoot))
         .then(files => new PackageFileSet(files, meta.name, meta.version))
     );
   }
@@ -327,7 +329,7 @@ export function npmPackageOfPath(path: string): string {
   return parts[0].startsWith("@") && parts.length > 1 ? `${parts[0]}/${parts[1]}` : parts[0];
 }
 
-function createRepository(context: TargetContext): Computable<NPMRepository> {
+function createRepository(context: RepositoryContext): Computable<NPMRepository> {
   return context.getRequiredString("url").then(url => new NPMRepository(url, context));
 }
 
@@ -343,4 +345,4 @@ function stripArchiveRoot(files: FileSet): FileSet {
   });
 }
 
-registerTargetRule("npm_repository", {}, createRepository);
+registerRepositoryProvider("npm_repository", createRepository);

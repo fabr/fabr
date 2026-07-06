@@ -25,6 +25,7 @@ describe("Command", () => {
     expect(parseCommandLine(["node", "fabr", "foo"])).to.deep.equal({
       command: "build",
       mode: Mode.Normal,
+      longListing: false,
       targets: ["foo"],
       properties: {},
     });
@@ -34,6 +35,7 @@ describe("Command", () => {
     expect(parseCommandLine(["node", "fabr", "test", "foo", "bar"])).to.deep.equal({
       command: "test",
       mode: Mode.Normal,
+      longListing: false,
       targets: ["foo", "bar"],
       properties: {},
     });
@@ -47,8 +49,23 @@ describe("Command", () => {
     expect(parseCommandLine(["node", "fabr", "-w", "run", "foo", "-Dx=1"])).to.deep.equal({
       command: "run",
       mode: Mode.Watch,
+      longListing: false,
       targets: ["foo"],
       properties: { x: "1" },
     });
+  });
+
+  it("parses the ls command with the long-listing flag", () => {
+    expect(parseCommandLine(["node", "fabr", "ls", "-l", "foo", "bar"])).to.deep.equal({
+      command: "ls",
+      mode: Mode.Normal,
+      longListing: true,
+      targets: ["foo", "bar"],
+      properties: {},
+    });
+  });
+
+  it("treats ls after another command as a target", () => {
+    expect(parseCommandLine(["node", "fabr", "build", "ls"]).targets).to.deep.equal(["ls"]);
   });
 });

@@ -31,6 +31,14 @@ export interface IFile {
    * @returns a human readable string representing the file (may not be parseable in any sense)
    */
   getDisplayName(): string;
+
+  /**
+   * Whether the receiver names the *same underlying file* as the given one
+   * (same identity, not merely same content) — used to tell a genuine union
+   * conflict from the same file arriving twice. A given cache entry surfaces
+   * with a stable identity on both the fresh and served-from-disk paths (see
+   * BuildCache.getOrCreate), so the two compare equal.
+   */
   isSameFile(file: IFile): boolean;
 
   /**

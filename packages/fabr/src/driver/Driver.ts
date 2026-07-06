@@ -25,8 +25,10 @@ import {
   defaultLog,
   DependencyFailedError,
   Diagnostic,
+  ExecutionContext,
   ExecutionError,
   FileConflictError,
+  FileSet,
   formatTestSummary,
   getSourceFileSource,
   getTestReport,
@@ -52,11 +54,25 @@ const DIAG_ERROR = Diagnostic.Error<{ message: string }>("{message}");
 const DIAG_TARGET_FAILED = Diagnostic.Error<{ name: string; message: string; loc: ISourcePosition }>(
   "Failed to build {name}: {message}"
 );
+/* An anonymous sub-target's failure, rendered against its declared target with
+ * its action-verb label ("Compiling @fabr/core failed"); the detail (the
+ * command and its output) follows the source excerpt, so it leads with a
+ * newline. */
+const DIAG_SUBTARGET_FAILED = Diagnostic.Error<{ verb: string; name: string; message: string; loc: ISourcePosition }>(
+  "{verb} {name} failed:\n{message}"
+);
 const DIAG_DEPENDENCY_FAILED = Diagnostic.Error<{ name: string; dependency: string; loc: ISourcePosition }>(
   "Cannot build {name}: dependency '{dependency}' failed"
 );
 const DIAG_TESTS_FAILED = Diagnostic.Error<{ name: string; message: string; loc: ISourcePosition }>("{name}: {message}");
 const DIAG_TEST_RESULT = Diagnostic.Info<{ name: string; summary: string }>("{name}: {summary}");
+const DIAG_BUILDING = Diagnostic.Info<{ verb: string; name: string; chain: string }>("{verb} {name}{chain}");
+const DIAG_RESOLVING = Diagnostic.Info<{ requirements: string; name: string }>("Resolving {requirements} from {name}");
+const DIAG_FETCHING = Diagnostic.Info<{ url: string }>("Fetching {url}");
+
+/** Progress verbs for the well-known operations; anything else renders as
+ * "Running <operation> on <target>" */
+const OPERATION_VERBS: Record<string, string> = { build: "Building", test: "Testing", run: "Running" };
 
 /**
  * Render a build failure tree: each failed target is reported once, against its
@@ -75,7 +91,12 @@ function reportFailure(log: Log, err: Error, reported: Set<Error>): void {
     const execution: Error[] = [];
     for (const cause of causes) {
       if (cause instanceof DependencyFailedError) {
-        log.log(DIAG_DEPENDENCY_FAILED, { name: err.target.name, dependency: cause.target.name, loc: declPosn(err.target) });
+        /* An anonymous sub-target (label set) is an implementation detail of
+         * its declared target: skip the "dependency failed" hop and let its
+         * own report ("Compiling X failed") stand for it. */
+        if (!cause.label) {
+          log.log(DIAG_DEPENDENCY_FAILED, { name: err.target.name, dependency: cause.target.name, loc: declPosn(err.target) });
+        }
         reportFailure(log, cause, reported);
       } else if (cause instanceof TestsFailedError) {
         /* Tests failed: the target built fine, so report the (pre-rendered)
@@ -92,9 +113,16 @@ function reportFailure(log: Log, err: Error, reported: Set<Error>): void {
       }
     }
     if (execution.length > 0) {
-      /* Mechanical failures of the target's execution are reported once,
-       * grouped under the target */
-      log.log(DIAG_TARGET_FAILED, { name: err.target.name, message: describeCauses(execution), loc: declPosn(err.target) });
+      /* Mechanical failures of the target's execution, reported once. An
+       * anonymous sub-target (label set) reports against its declared target
+       * with its verb ("Compiling X failed"); a declared target as "Failed to
+       * build X". Either way `target` is the declared decl. */
+      const message = describeCauses(execution);
+      if (err.label) {
+        log.log(DIAG_SUBTARGET_FAILED, { verb: err.label, name: err.target.name, message, loc: declPosn(err.target) });
+      } else {
+        log.log(DIAG_TARGET_FAILED, { name: err.target.name, message, loc: declPosn(err.target) });
+      }
     }
   } else {
     log.log(DIAG_ERROR, { message: err.message });
@@ -128,6 +156,8 @@ function renderConflictDetail(err: FileConflictError): string {
     } else {
       lines.push(`  from '${side.label}' (no origin information)`);
     }
+    /* The concrete file, so identical-provenance conflicts stay diagnosable */
+    lines.push(`    at ${side.file.getDisplayName()}`);
   }
   return lines.join("\n");
 }
@@ -147,18 +177,49 @@ export async function runFabr(options: Options): Promise<void> {
   const buildCache = new BuildCache(getBuildCacheRoot());
   const sourceFileSource = await getSourceFileSource(sourceRoot, SOURCE_CACHE_FILENAME);
 
+  /* The run's fixed surroundings: the cache to build against, plus our
+   * progress observer — a target is announced when (and only when) it
+   * actually starts building (its first build-cache miss), attributed with
+   * the chain of targets that required it */
+  const execution = new ExecutionContext(buildCache);
+  execution.onProgress(event => {
+    switch (event.kind) {
+      case "target-build": {
+        const verb = OPERATION_VERBS[event.operation] ?? `Running ${event.operation} on`;
+        const chain = event.requiredBy.length > 0 ? ` (required by ${event.requiredBy.map(decl => decl.name).join(" < ")})` : "";
+        log.log(DIAG_BUILDING, { verb, name: event.target.name, chain });
+        break;
+      }
+      case "sub-target-build":
+        log.log(DIAG_BUILDING, { verb: event.label, name: event.declared.name, chain: "" });
+        break;
+      case "repository-resolve":
+        log.log(DIAG_RESOLVING, { requirements: event.requirements.join(", "), name: event.repository.name });
+        break;
+      case "fetch":
+        log.log(DIAG_FETCHING, { url: event.url });
+        break;
+    }
+  });
+
   /* The system include path defaults to the directories the loaded rule
    * packages registered (core + js via their imports; plugins later) */
-  const load = loadProject(sourceFileSource, PROJECT_FILENAME, buildCache, log, pluginApi);
+  const load = loadProject(sourceFileSource, PROJECT_FILENAME, log, pluginApi);
 
   return load
     .then(model => {
       /* The requested command is the BUILD_OPERATION constraint (explicit
-       * -DBUILD_OPERATION=... takes precedence) */
-      const config = model.getConfig({ [BUILD_OPERATION]: options.command, ...options.properties });
+       * -DBUILD_OPERATION=... takes precedence); `ls` is a driver verb, not
+       * an operation — it builds and then lists */
+      const operation = options.command === "ls" ? "build" : options.command;
+      const config = model.getConfig({ [BUILD_OPERATION]: operation, ...options.properties }, execution);
       const targets = options.targets.map(targetName => config.getTarget(targetName));
-      return Computable.forAll(targets, (...results) => reportTestResults(log, options, results)).then(() => {
-        if (buildCache.getBuildCount() === 0) {
+      return Computable.forAll(targets, (...results) =>
+        options.command === "ls" ? listTargets(options, results) : reportTestResults(log, options, results)
+      ).then(() => {
+        if (options.command === "ls") {
+          /* The listing is the outcome; no build-status line */
+        } else if (buildCache.getBuildCount() === 0) {
           log.log(DIAG_UP_TO_DATE, {});
         } else {
           log.log(DIAG_BUILD_COMPLETE, { count: targets.length });
@@ -178,6 +239,53 @@ export async function runFabr(options: Options): Promise<void> {
  * each target's result summary from its test report artifact (whether freshly
  * run or cached-green).
  */
+/**
+ * For `fabr ls`, the listing is the outcome: print each built target's
+ * contents (sorted by name), with a `target:` header when more than one
+ * target was requested. A target is by definition a built thing, so its
+ * results are FileSets already — union and enumerate them directly. Listing
+ * output is the command's data, so it goes straight to stdout rather than
+ * through the diagnostic log.
+ */
+function listTargets(options: Options, results: SourceRef[][]): Computable<void> {
+  return Computable.forAll(
+    results.map(sources =>
+      renderListing(
+        FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet)),
+        options.longListing
+      )
+    ),
+    (...listings) => {
+      listings.forEach((lines, i) => {
+        if (listings.length > 1) {
+          console.log(`${i > 0 ? "\n" : ""}${options.targets[i]}:`);
+        }
+        lines.forEach(line => console.log(line));
+      });
+    }
+  );
+}
+
+/**
+ * @return the listing lines: names only, or `hash size name` for the long
+ * form (hashes abbreviated, sizes right-aligned).
+ */
+function renderListing(files: FileSet, longListing: boolean): Computable<string[]> {
+  const entries = [...files].sort(([a], [b]) => a.localeCompare(b));
+  if (!longListing) {
+    return Computable.resolve(entries.map(([name]) => name));
+  }
+  return Computable.forAll(
+    entries.map(([, file]) => file.getBuffer()),
+    (...buffers) => {
+      const width = Math.max(1, ...buffers.map(buffer => String(buffer.byteLength).length));
+      return entries.map(
+        ([name, file], i) => `${file.hash.substring(0, 12)} ${String(buffers[i].byteLength).padStart(width)} ${name}`
+      );
+    }
+  );
+}
+
 function reportTestResults(log: Log, options: Options, results: SourceRef[][]): Computable<void> {
   if (options.command !== "test") {
     return Computable.resolve(undefined);

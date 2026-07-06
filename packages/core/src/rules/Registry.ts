@@ -18,26 +18,26 @@
  */
 
 import { Computable } from "../core/Computable";
-import { FileSource } from "../core/FileSet";
 import { Repository } from "../core/Repository";
-import { Constraints, TargetContext } from "../model/BuildContext";
+import { Constraints, RepositoryContext } from "../model/BuildContext";
 
-import { ITargetTypeDefinition } from "./Types";
+import { IRuleDefinition } from "./Types";
 
-const TARGET_REGISTRY: Record<string, ITargetTypeDefinition[]> = {};
+const TARGET_REGISTRY: Record<string, IRuleDefinition[]> = {};
 
 /**
  * Select the rule for the given target type under the given configuration:
  * every constraint the rule declares must match (by value), and the most
  * specific matching rule (most constraints) wins; a rule registered with no
- * constraints acts as a wildcard.
+ * constraints acts as a wildcard. Selection applies uniformly to declared and
+ * anonymous targets.
  */
-export function getTargetRule(name: string, constraints: Constraints): ITargetTypeDefinition | undefined {
+export function getTargetRule(name: string, constraints: Constraints): IRuleDefinition | undefined {
   const candidates = TARGET_REGISTRY[name];
   if (!candidates) {
     return undefined;
   }
-  let best: ITargetTypeDefinition | undefined;
+  let best: IRuleDefinition | undefined;
   let bestCount = -1;
   for (const candidate of candidates) {
     const entries = Object.entries(candidate.constraints);
@@ -50,17 +50,40 @@ export function getTargetRule(name: string, constraints: Constraints): ITargetTy
 }
 
 export function hasTargetType(type: string): boolean {
-  return type in TARGET_REGISTRY;
+  return type in TARGET_REGISTRY || type in REPOSITORY_REGISTRY;
 }
 
-export function registerTargetRule(
+/**
+ * Register a rule for a target type: a single evaluate function that yields
+ * either final content or a BuildAction (see ITargetTypeDefinition / RuleResult).
+ */
+export function registerRule(
   name: string,
   constraints: Constraints,
-  evaluate: (target: TargetContext) => Computable<FileSource | Repository>
+  evaluate: IRuleDefinition["evaluate"]
 ): void {
+  const definition: IRuleDefinition = { constraints, evaluate };
   if (name in TARGET_REGISTRY) {
-    TARGET_REGISTRY[name].push({ constraints, evaluate });
+    TARGET_REGISTRY[name].push(definition);
   } else {
-    TARGET_REGISTRY[name] = [{ constraints, evaluate }];
+    TARGET_REGISTRY[name] = [definition];
   }
+}
+
+/**
+ * Repositories are not rule-built targets: a repository type registers a
+ * provider that lazily constructs the Repository instance for a declaration,
+ * per BuildContext (its configuration resolves under that context's
+ * constraints).
+ */
+export type RepositoryProvider = (context: RepositoryContext) => Computable<Repository>;
+
+const REPOSITORY_REGISTRY: Record<string, RepositoryProvider> = {};
+
+export function registerRepositoryProvider(name: string, provider: RepositoryProvider): void {
+  REPOSITORY_REGISTRY[name] = provider;
+}
+
+export function getRepositoryProvider(name: string): RepositoryProvider | undefined {
+  return REPOSITORY_REGISTRY[name];
 }

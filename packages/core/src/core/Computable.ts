@@ -87,6 +87,23 @@ export class Computable<T> {
   }
 
   /**
+   * Run the given side effect once the receiver settles, either way, passing
+   * the original value or error through unchanged (like Promise.finally).
+   */
+  public finally(onSettled: () => void): Computable<T> {
+    return this.then(
+      value => {
+        onSettled();
+        return value;
+      },
+      err => {
+        onSettled();
+        throw err;
+      }
+    );
+  }
+
+  /**
    *  * all<T extends readonly unknown[] | []>(values: T): Promise<{ -readonly [P in keyof T]: Awaited<T[P]> }>;
    * @param deps
    * @param fn
