@@ -17,15 +17,15 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Computable, EMPTY_FILESET, FileSet, registerRule, TargetContext } from "@fabr/core";
-
 /**
- * Execute a NodeJS script, yielding some set of output files.
- * @param spec
- * @param config
+ * The js_run[build] rule: execute a NodeJS script, yielding some set of output
+ * files. (Currently a stub.)
  */
-function runNodeJs(config: TargetContext): Computable<FileSet> {
+
+import { BUILD_OPERATION, Computable, EMPTY_FILESET, FileSet, registerRule, TargetContext } from "@fabr/core";
+
+function runNodeJs(context: TargetContext): Computable<FileSet> {
   return Computable.resolve(EMPTY_FILESET);
 }
 
-registerRule("js_run", { BUILD_OPERATION: "build" }, runNodeJs);
+registerRule("js_run", { [BUILD_OPERATION]: "build" }, runNodeJs);

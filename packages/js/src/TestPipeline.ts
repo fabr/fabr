@@ -18,17 +18,13 @@
  */
 
 /**
- * The JS test rules:
- *
- *  - js_test [BUILD_OPERATION=test]: compile srcs against deps and run the
- *    *.test.* files under the runner.
- *  - js_package [BUILD_OPERATION=test]: in-package test sugar — the tests
- *    property is compiled together with the package's own source tree (so
- *    relative imports resolve) and run against the package's deps.
+ * The shared test pipeline behind both js test rules (js_test and
+ * js_package[test]): compile the source tree (tests included), assemble the
+ * runnable installation, and run the runner over the compiled test files,
+ * reporting through the test report contract defined by @fabr/core.
  *
  * The runner (JS_TEST_RUNNER, normally the built @fabr/js package itself)
- * executes standalone inside the test working directory and reports through
- * the test report contract defined by @fabr/core.
+ * executes standalone inside the test working directory.
  */
 
 import * as fs from "node:fs";
@@ -51,7 +47,6 @@ import {
   ITestReport,
   MemoryFile,
   PackageFileSet,
-  registerRule,
   TargetContext,
   RuleResult,
   SourceRef,
@@ -60,17 +55,10 @@ import {
   TestsFailedError,
   writeFileSet,
 } from "@fabr/core";
-import {
-  assembleNodeModules,
-  compileJsSources,
-  hasTypescriptSources,
-  JSTarget,
-  parseJSTarget,
-  stripPackageJson,
-} from "./JSPackageTarget";
+import { assembleNodeModules, compileJsSources, hasTypescriptSources, JSTarget, parseJSTarget, stripPackageJson } from "./JSPackage";
 
 /** Test files are conventionally named *.test.ts (or .tsx) */
-const TEST_FILE_PATTERN = /\.test\.tsx?$/;
+export const TEST_FILE_PATTERN = /\.test\.tsx?$/;
 /** Compilable sources (the runner executes their compiled .js) */
 const TS_FILE_PATTERN = /\.tsx?$/;
 
@@ -87,50 +75,9 @@ const GLOBALS_TYPES_MOUNT = "@types/fabr-test-globals/index.d.ts";
  * BUILD_OPERATION=build: the test constraint exists to select the rule for the
  * target itself, and must not propagate into its dependencies.
  */
-const BUILD_OP: Constraints = { [BUILD_OPERATION]: "build" };
+export const BUILD_OP: Constraints = { [BUILD_OPERATION]: "build" };
 
-function testJsPackage(context: TargetContext): Computable<RuleResult> {
-  return Computable.forAll(
-    [
-      context.getFileSet("srcs", BUILD_OP),
-      context.getFlags("deps", BUILD_OP),
-      context.getFileSet("tests", BUILD_OP),
-      context.getGlobalString("JS_TARGET", BUILD_OP),
-      context.getFileSources("deps", BUILD_OP),
-      context.getFileSources("test_deps", BUILD_OP),
-    ],
-    (sources, flags, tests, target, depSources, testDepSources) =>
-      compileAndRunTests(context, { sources, tests, flags, target, depSources, testDepSources, runnerSources: [] })
-  );
-}
-
-function runJsTest(context: TargetContext): Computable<RuleResult> {
-  return Computable.forAll(
-    [
-      context.getFileSet("srcs", BUILD_OP),
-      context.getFlags("deps", BUILD_OP),
-      context.getGlobalString("JS_TARGET", BUILD_OP),
-      context.getFileSources("deps", BUILD_OP),
-      context.getFileSources("runner", BUILD_OP),
-    ],
-    (sources, flags, target, depSources, runnerSources) => {
-      const tests = sources.remap(name => (TEST_FILE_PATTERN.test(name) ? name : undefined));
-      return compileAndRunTests(context, { sources, tests, flags, target, depSources, testDepSources: [], runnerSources });
-    }
-  );
-}
-
-/**
- * The runner provides describe/it/... as globals at run time (see
- * testRunner/globals.ts); its test-globals.d.ts carries the matching ambient
- * types. Mount it as a synthetic @types package so the compiler auto-includes
- * it for the test compile. (A runner without the file contributes nothing.)
- */
-function runnerGlobalsTypes(runner: PackageFileSet): FileSet {
-  return runner.remap(name => (name === RUNNER_GLOBALS_TYPES ? GLOBALS_TYPES_MOUNT : undefined));
-}
-
-interface ITestInputs {
+export interface ITestInputs {
   sources: FileSet;
   tests: FileSet;
   flags: Flag[];
@@ -157,7 +104,7 @@ interface ITestInputs {
  * through ONE collection point, so every requirement resolves jointly and
  * the consumer's pins participate across the lot.
  */
-function compileAndRunTests(context: TargetContext, inputs: ITestInputs): Computable<RuleResult> {
+export function compileAndRunTests(context: TargetContext, inputs: ITestInputs): Computable<RuleResult> {
   const testFiles = compiledTestFiles(inputs.tests);
   if (testFiles.length === 0) {
     /* Nothing to run is trivially green (and no runner is needed) */
@@ -192,6 +139,16 @@ function compileAndRunTests(context: TargetContext, inputs: ITestInputs): Comput
       }
       return planTestRun(compiled, copied, runtimeModules, runner, testFiles, jsTarget);
     });
+}
+
+/**
+ * The runner provides describe/it/... as globals at run time (see
+ * testRunner/globals.ts); its test-globals.d.ts carries the matching ambient
+ * types. Mount it as a synthetic @types package so the compiler auto-includes
+ * it for the test compile. (A runner without the file contributes nothing.)
+ */
+function runnerGlobalsTypes(runner: PackageFileSet): FileSet {
+  return runner.remap(name => (name === RUNNER_GLOBALS_TYPES ? GLOBALS_TYPES_MOUNT : undefined));
 }
 
 /** @return the compiled (.js) names of the given test sources, sorted for determinism */
@@ -296,6 +253,3 @@ function toTestFailure(targetDir: string, err: Error): Error {
   }
   return err;
 }
-
-registerRule("js_test", { [BUILD_OPERATION]: "test" }, runJsTest);
-registerRule("js_package", { [BUILD_OPERATION]: "test" }, testJsPackage);

@@ -31,13 +31,16 @@
  */
 
 import type * as fabr from "@fabr/core";
-import "./JSTestTarget";
-import "./NodeJSTarget";
+import "./rules/BuildJSPackage";
+import "./rules/BuildJSCompile";
+import "./rules/TestJSPackage";
+import "./rules/TestJSTest";
+import "./rules/BuildJSRun";
 import "./NPMRepository";
 
 /* The compile pipeline helpers, for other js rules to build on (in-tree only:
  * cross-plugin extension isn't supported yet — see PLUGINS.md) */
-export { assembleNodeModules, compileJsSources, ICompiledSources, JSTarget, parseJSTarget } from "./JSPackageTarget";
+export { assembleNodeModules, compileJsSources, ICompiledSources, JSTarget, parseJSTarget } from "./JSPackage";
 
 export function activate(api: typeof fabr): void {
   api.registerSystemIncludeDir(api.packageLibDir("@fabr/js"));
