@@ -20,9 +20,10 @@
 import {
   BUILD_OPERATION,
   BuildCache,
+  BuildContext,
+  BuildModel,
   Computable,
   declPosn,
-  defaultLog,
   DependencyFailedError,
   Diagnostic,
   ExecutionContext,
@@ -35,7 +36,10 @@ import {
   ISourcePosition,
   loadProject,
   Log,
+  LogFormatter,
+  LogLevel,
   MultiError,
+  ProgressListener,
   renderProvenance,
   SourceRef,
   TestsFailedError,
@@ -162,12 +166,56 @@ function renderConflictDetail(err: FileConflictError): string {
   return lines.join("\n");
 }
 
-export async function runFabr(options: Options): Promise<void> {
-  const log = defaultLog;
+/** What to do with the loaded model — the per-command work, run inside the
+ * harness's lifecycle. The run's surroundings (log, cache, progress) ride on
+ * `execution`; the command (and so `options`) is closed over by the caller. */
+export type Operation = (model: BuildModel, execution: ExecutionContext) => Computable<void>;
 
-  /* Both the success and failure paths exit explicitly; reaching a drained
-   * event loop means some computation stalled without settling (i.e. a bug),
-   * which should be loud rather than a silent exit. */
+/**
+ * The CLI entry: dispatch the command to a tiny operation (each closing over
+ * `options`) and run it in the harness. The `BUILD_OPERATION` constraint is the
+ * command itself (explicit `-DBUILD_OPERATION=...` takes precedence); `ls`/`cat`
+ * are driver verbs, not operations — they build under `build` and resolve the
+ * whole name (target + `:`/glob projection) through the model, while the build
+ * verbs take a bare target name.
+ */
+export function runFabr(options: Options): Promise<void> {
+  switch (options.command) {
+    case "ls":
+      return runWith((model, execution) =>
+        Computable.forAll(resolveNames(model, options, execution), (...results) => listTargets(options, results))
+      );
+    case "cat":
+      return runWith((model, execution) =>
+        Computable.forAll(resolveNames(model, options, execution), (...results) => catTarget(options, results))
+      );
+    case "test":
+      return runWith((model, execution) => {
+        const targets = buildTargets(model, options, execution, "test");
+        return Computable.forAll(targets, (...results) => reportTestResults(execution.log, options, results)).then(() =>
+          buildStatus(execution, targets.length)
+        );
+      });
+    default: /* build, run */
+      return runWith((model, execution) => {
+        const targets = buildTargets(model, options, execution, options.command);
+        return Computable.forAll(targets, () => {}).then(() => buildStatus(execution, targets.length));
+      });
+  }
+}
+
+/**
+ * The driver lifecycle harness: establish the run's surroundings (stderr log,
+ * cache, source tree, progress-reporting ExecutionContext), load the project,
+ * then hand the model to `operation` — exiting 0 on success and rendering the
+ * failure tree (exit 1) on error. Reaching a drained event loop without an
+ * explicit exit is a stall bug, reported loudly (exit 2).
+ */
+async function runWith(operation: Operation): Promise<void> {
+  /* Diagnostics and progress go to stderr; command data (ls listings, cat
+   * file contents) goes to stdout, so a build can be filtered from its output. */
+  const log = new LogFormatter(LogLevel.Info, line => process.stderr.write(line + "\n"));
+
   process.on("beforeExit", () => {
     log.log(DIAG_ERROR, { message: "Internal error: the build stalled without completing" });
     process.exit(2);
@@ -176,13 +224,58 @@ export async function runFabr(options: Options): Promise<void> {
   const sourceRoot = await getSourceRoot();
   const buildCache = new BuildCache(getBuildCacheRoot());
   const sourceFileSource = await getSourceFileSource(sourceRoot, SOURCE_CACHE_FILENAME);
+  const execution = new ExecutionContext(buildCache, log);
+  execution.onProgress(progressListener(log));
 
-  /* The run's fixed surroundings: the cache to build against, plus our
-   * progress observer — a target is announced when (and only when) it
-   * actually starts building (its first build-cache miss), attributed with
-   * the chain of targets that required it */
-  const execution = new ExecutionContext(buildCache);
-  execution.onProgress(event => {
+  /* The system include path defaults to the directories the loaded rule
+   * packages registered (core + js via their imports; plugins later) */
+  return loadProject(sourceFileSource, PROJECT_FILENAME, log, pluginApi)
+    .then(model => operation(model, execution))
+    .then(() => process.exit(0))
+    .catch(err => {
+      reportFailure(log, err, new Set());
+      log.log(DIAG_BUILD_FAILED, {});
+      process.exit(1);
+    });
+}
+
+function configFor(model: BuildModel, options: Options, execution: ExecutionContext, operation: string): BuildContext {
+  return model.getConfig({ [BUILD_OPERATION]: operation, ...options.properties }, execution);
+}
+
+/** Build each named target under the given operation (bare target names). */
+function buildTargets(
+  model: BuildModel,
+  options: Options,
+  execution: ExecutionContext,
+  operation: string
+): Computable<SourceRef[]>[] {
+  const config = configFor(model, options, execution, operation);
+  return options.targets.map(name => config.getTarget(name));
+}
+
+/** Resolve each whole name (target + projection) under the build operation. */
+function resolveNames(model: BuildModel, options: Options, execution: ExecutionContext): Computable<SourceRef[]>[] {
+  const config = configFor(model, options, execution, "build");
+  return options.targets.map(name => config.resolveName(name));
+}
+
+/** Print the terminal build-status line: nothing built, or a count. */
+function buildStatus(execution: ExecutionContext, count: number): void {
+  if (execution.buildCache.getBuildCount() === 0) {
+    execution.log.log(DIAG_UP_TO_DATE, {});
+  } else {
+    execution.log.log(DIAG_BUILD_COMPLETE, { count });
+  }
+}
+
+/**
+ * Render ExecutionContext progress events as diagnostics: a target is announced
+ * when (and only when) it actually starts building (its first build-cache
+ * miss), attributed with the chain of targets that required it.
+ */
+function progressListener(log: Log): ProgressListener {
+  return event => {
     switch (event.kind) {
       case "target-build": {
         const verb = OPERATION_VERBS[event.operation] ?? `Running ${event.operation} on`;
@@ -200,45 +293,39 @@ export async function runFabr(options: Options): Promise<void> {
         log.log(DIAG_FETCHING, { url: event.url });
         break;
     }
-  });
-
-  /* The system include path defaults to the directories the loaded rule
-   * packages registered (core + js via their imports; plugins later) */
-  const load = loadProject(sourceFileSource, PROJECT_FILENAME, log, pluginApi);
-
-  return load
-    .then(model => {
-      /* The requested command is the BUILD_OPERATION constraint (explicit
-       * -DBUILD_OPERATION=... takes precedence); `ls` is a driver verb, not
-       * an operation — it builds and then lists */
-      const operation = options.command === "ls" ? "build" : options.command;
-      const config = model.getConfig({ [BUILD_OPERATION]: operation, ...options.properties }, execution);
-      const targets = options.targets.map(targetName => config.getTarget(targetName));
-      return Computable.forAll(targets, (...results) =>
-        options.command === "ls" ? listTargets(options, results) : reportTestResults(log, options, results)
-      ).then(() => {
-        if (options.command === "ls") {
-          /* The listing is the outcome; no build-status line */
-        } else if (buildCache.getBuildCount() === 0) {
-          log.log(DIAG_UP_TO_DATE, {});
-        } else {
-          log.log(DIAG_BUILD_COMPLETE, { count: targets.length });
-        }
-        process.exit(0);
-      });
-    })
-    .catch(err => {
-      reportFailure(log, err, new Set());
-      log.log(DIAG_BUILD_FAILED, {});
-      process.exit(1);
-    });
+  };
 }
 
 /**
- * For a test run, the interesting outcome is the tests, not the build: report
- * each target's result summary from its test report artifact (whether freshly
- * run or cached-green).
+ * For `fabr cat`, the outcome is the raw contents of each resolved name's files
+ * on stdout — the name (`pkg:build/*.js`) has already been resolved through the
+ * model, so its projection/glob is applied; a name that matches nothing is an
+ * error. Content is data, so it goes straight to stdout.
  */
+function catTarget(options: Options, results: SourceRef[][]): Computable<void> {
+  return Computable.forAll(
+    results.map((sources, i) => {
+      const files = FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet));
+      if (files.isEmpty()) {
+        throw new Error(`'${options.targets[i]}' matched no files`);
+      }
+      return dumpFiles(files);
+    }),
+    () => {}
+  );
+}
+
+/** Write every file in the set (sorted by name) to stdout, contents only. */
+function dumpFiles(files: FileSet): Computable<void> {
+  const entries = [...files].sort(([a], [b]) => a.localeCompare(b));
+  return Computable.forAll(
+    entries.map(([, file]) => file.getBuffer()),
+    (...buffers) => {
+      buffers.forEach(buffer => process.stdout.write(Uint8Array.from(buffer)));
+    }
+  );
+}
+
 /**
  * For `fabr ls`, the listing is the outcome: print each built target's
  * contents (sorted by name), with a `target:` header when more than one
@@ -286,10 +373,12 @@ function renderListing(files: FileSet, longListing: boolean): Computable<string[
   );
 }
 
+/**
+ * For a test run, the interesting outcome is the tests, not the build: report
+ * each target's result summary from its test report artifact (whether freshly
+ * run or cached-green).
+ */
 function reportTestResults(log: Log, options: Options, results: SourceRef[][]): Computable<void> {
-  if (options.command !== "test") {
-    return Computable.resolve(undefined);
-  }
   return Computable.forAll(
     results.map(sources => getTestReport(sources)),
     (...reports) => {

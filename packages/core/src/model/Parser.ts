@@ -32,9 +32,9 @@ import {
   IValue,
   PropertyType,
 } from "./AST";
-import { Diagnostic, ISourcePosition, Log, LogLevel } from "../support/Log";
+import { Diagnostic, ISourcePosition, Log, LogLevel, defaultLog } from "../support/Log";
 import { Name, NameBuilder } from "./Name";
-import { FileSource } from "../core/FileSet";
+import { EMPTY_FILESET, FileSource } from "../core/FileSet";
 
 enum TokenType {
   EOF = 0,
@@ -375,6 +375,21 @@ export class BuildParser {
 
     nameBuilder.appendEscapedString(rest);
     return { type: TokenType.NAME, text: nameBuilder.name(), start };
+  }
+
+  /**
+   * Parse the whole source as a single name expression — glob metachars,
+   * quotes and substitutions handled exactly as in a build file. Used for
+   * command-line names (`fabr cat pkg:build/*.js`), so the CLI reuses the model's
+   * reference semantics rather than re-implementing the `:` / glob split.
+   */
+  public parseName(): Name {
+    /* The constructor already primed the first token */
+    const token = this.token as { text?: Name | string };
+    if (token.text === undefined) {
+      return Name.fromLiteral("");
+    }
+    return typeof token.text === "string" ? Name.fromLiteral(token.text) : token.text;
   }
 
   private nextToken(): Token {
@@ -760,4 +775,9 @@ export function parseBuildFile(source: IBuildFile, log: Log): IBuildFileContents
 
 export function parseBuildString(fs: FileSource, file: string, contents: string, log: Log): IBuildFileContents {
   return new BuildParser({ fs, file, reader: new StringReader(contents) }, log).parse();
+}
+
+/** Parse a single name expression (e.g. a command-line target/file reference). */
+export function parseName(contents: string): Name {
+  return new BuildParser({ fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(contents) }, defaultLog).parseName();
 }

@@ -18,6 +18,7 @@
  */
 
 import { BuildCache } from "../core/BuildCache";
+import { defaultLog, Log } from "../support/Log";
 import { ITargetDecl } from "./AST";
 
 /**
@@ -82,17 +83,23 @@ export type ProgressListener = (event: ProgressEvent) => void;
 /**
  * The fixed runtime surroundings of a build run, as distinct from the model
  * (which is purely the declarations as written): the build cache to run
- * against and the driver's progress observers. Constructed by the driver and
- * threaded through getConfig(), so every BuildContext of a run — including
- * the constraint-override configs spawned during evaluation — shares the one
- * instance.
+ * against, the driver's diagnostic log, and its progress observer. Constructed
+ * by the driver and threaded through getConfig(), so every BuildContext of a
+ * run — including the constraint-override configs spawned during evaluation —
+ * shares the one instance.
+ *
+ * The `log` is here as a run-surrounding the *driver* reads (status lines, the
+ * failure tree); the model still only ever emits ProgressEvents and never logs
+ * — reporting stays the driver's job.
  */
 export class ExecutionContext {
   public readonly buildCache: BuildCache;
+  public readonly log: Log;
   private progressListener?: ProgressListener;
 
-  constructor(buildCache: BuildCache) {
+  constructor(buildCache: BuildCache, log: Log = defaultLog) {
     this.buildCache = buildCache;
+    this.log = log;
   }
 
   /**

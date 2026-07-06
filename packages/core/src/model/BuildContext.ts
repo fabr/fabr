@@ -24,6 +24,7 @@ import {
   IValue,
 } from "./AST";
 import { Name } from "./Name";
+import { parseName } from "./Parser";
 import { IPrefixMatch } from "./Namespace";
 import { Property } from "./Property";
 
@@ -313,9 +314,19 @@ export class BuildContext {
    * the name resolved to (if it named a target or property rather than plain files).
    * @param name
    */
+  /**
+   * Resolve a name (target reference, projection, glob or bare path) to its
+   * sources — the whole-name entry the CLI uses so `fabr ls`/`cat` reuse the
+   * model's reference semantics (target-prefix + `:`/glob projection) rather
+   * than splitting the name themselves.
+   */
+  public resolveName(name: string, stack?: IDependencyStack): Computable<SourceRef[]> {
+    return this.resolveFileSource(parseName(name), undefined, stack).then(resolved => resolved.sources);
+  }
+
   private resolveFileSource(
     name: Name,
-    relativeTo: INamedDecl,
+    relativeTo: INamedDecl | undefined,
     stack?: IDependencyStack
   ): Computable<IResolvedFileSource> {
     return this.substituteNameVars(name, stack).then((substName): IResolvedFileSource | Computable<IResolvedFileSource> => {
@@ -357,10 +368,14 @@ export class BuildContext {
                 .then(data => ({ sources: [...references, data], decl }));
             });
           }
-        } else {
+        } else if (relativeTo) {
           /* Not an identified target; check the filesystem relative to the target decl */
           const baseName = relativeTo.source.file;
           return relativeTo.source.fs.find(substName.relativeTo(baseName)).then(data => ({ sources: [data] }));
+        } else {
+          /* A command-line name that names no known target (no decl to resolve
+           * a bare path against) */
+          throw new Error(`Unknown target '${name.toString()}'`);
         }
       }
     });

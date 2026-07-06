@@ -20,9 +20,9 @@
 /**
  * @fabr/js: the Javascript/NPM ecosystem support for fabr, loaded as a fabr
  * plugin (`plugin @fabr/js;` — see PLUGINS.md for the plugin contract):
- * activation registers the js rules (js_package build+test, js_test, js_run,
- * npm_repository) and this package's lib/ (JS.fabr) on the system include
- * path.
+ * activation registers the js rules (js_package build+test, js_test,
+ * js_script, npm_repository) and this package's lib/ (JS.fabr) on the system
+ * include path.
  *
  * The package doubles as the default test runner (JS_TEST_RUNNER). The runner
  * runtime lives in src/testRunner/ and is deliberately disjoint from this side
@@ -35,7 +35,7 @@ import "./rules/BuildJSPackage";
 import "./rules/BuildJSCompile";
 import "./rules/TestJSPackage";
 import "./rules/TestJSTest";
-import "./rules/BuildJSRun";
+import "./rules/BuildJSScript";
 import "./NPMRepository";
 
 /* The compile pipeline helpers, for other js rules to build on (in-tree only:

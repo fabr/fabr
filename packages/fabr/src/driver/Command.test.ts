@@ -68,4 +68,10 @@ describe("Command", () => {
   it("treats ls after another command as a target", () => {
     expect(parseCommandLine(["node", "fabr", "build", "ls"]).targets).to.deep.equal(["ls"]);
   });
+
+  it("keeps cat name references whole (the model resolves the projection)", () => {
+    const options = parseCommandLine(["node", "fabr", "cat", "mypkg:build/out.js", "b:src/*.ts"]);
+    expect(options.command).to.equal("cat");
+    expect(options.targets).to.deep.equal(["mypkg:build/out.js", "b:src/*.ts"]);
+  });
 });

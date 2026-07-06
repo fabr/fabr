@@ -24,15 +24,17 @@ export enum Mode {
   Watch,
 }
 
-/** The commands the command line can request. All except `ls` are
- * BUILD_OPERATION values; `ls` is a driver-side verb that builds under
- * BUILD_OPERATION=build and then lists the results. */
-const COMMANDS = new Set(["build", "test", "run", "ls"]);
+/** The commands the command line can request. All except `ls`/`cat` are
+ * BUILD_OPERATION values; `ls` and `cat` are driver-side verbs that build under
+ * BUILD_OPERATION=build and then list / dump the results. */
+const COMMANDS = new Set(["build", "test", "run", "ls", "cat"]);
 
 export interface Options {
   command: string;
   mode: Mode;
   longListing: boolean;
+  /** Target names, or (for `ls`/`cat`) whole name references — `pkg:build/*.js`
+   * — resolved by the model, not split here. */
   targets: string[];
   properties: Constraints;
 }
@@ -45,6 +47,7 @@ function printUsage(): void {
       "  test              Run the given targets' tests\n" +
       "  run               Execute the given targets\n" +
       "  ls                Build the given targets and list their contents\n" +
+      "  cat               Build a target and write its matching files to stdout\n" +
       "Options:\n" +
       "  -DPROP=VALUE      Force the given property PROP to VALUE\n" +
       "  -l                Long listing (with ls): hash and size per file\n" +
