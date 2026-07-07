@@ -4,7 +4,8 @@ import { Readable } from "stream";
 import { Computable } from "./Computable";
 import { openUrlStream } from "./Fetch";
 import { FileSet, IFile } from "./FileSet";
-import { deleteFile, hardlink, hashFile, hashString, readFile, readFileBuffer, writeFile } from "./FSWrapper";
+import { deleteFile, hardlink, hashFile, hashString, readFile, readFileBuffer, symlink, writeFile } from "./FSWrapper";
+import { SymlinkFile } from "./SymlinkFile";
 import { describeSystemError, ExecutionError } from "../support/Execute";
 import * as picomatch from "picomatch";
 
@@ -205,12 +206,25 @@ function writeMemoryFiles(targetDir: string, files: FileSet): Computable<FileSet
 
 export function writeFileSet(targetDir: string, files: FileSet): Computable<void> {
   const operations = [];
+  let realRoot: string | undefined;
   for (const [name, file] of files) {
     const targetName = path.resolve(targetDir, name);
     const dirname = path.dirname(targetName);
     fs.mkdirSync(dirname, { recursive: true });
     const filepath = file.getAbsPath();
-    if (filepath) {
+    if (file instanceof SymlinkFile) {
+      /* Security: a symlink whose target escapes the staged tree (via `..`, an
+       * absolute path, or a symlinked parent component) could point at — or,
+       * written-through, clobber — files outside it. Resolve the target against
+       * the *real* parent directory (path.resolve is purely lexical and would not
+       * follow symlinks in the path), and only stage it if it stays within the
+       * real root. */
+      realRoot ??= fs.realpathSync(path.resolve(targetDir));
+      const resolved = path.resolve(fs.realpathSync(dirname), file.target);
+      if (resolved === realRoot || resolved.startsWith(realRoot + path.sep)) {
+        operations.push(asExecutionError(symlink(file.target, targetName)));
+      }
+    } else if (filepath) {
       operations.push(asExecutionError(hardlink(filepath, targetName)));
     } else {
       operations.push(asExecutionError(file.getBuffer().then(buffer => writeFile(targetName, buffer))));

@@ -40,13 +40,26 @@ export function describeSystemError(err: unknown): string {
 }
 
 /**
- * Locate an executable by searching the directories of the PATH environment
- * variable, as a shell would. Note this is a short-term measure (the result is
- * an untracked input from the environment) until runtimes are modelled as
- * proper dependencies.
- * @throws ExecutionError if no executable of that name is on the PATH.
+ * Locate an executable. A name with a path separator is used directly (as a
+ * shell does — a command containing a slash is not PATH-searched), which also
+ * lets a caller resolve a specific binary by absolute path without any PATH.
+ * A bare name is searched on the PATH environment variable. Note the PATH
+ * search is a short-term measure (the result is an untracked input from the
+ * environment) until runtimes are modelled as proper dependencies.
+ * @throws ExecutionError if the executable cannot be found.
  */
 export function findExecutable(name: string): string {
+  if (path.basename(name) !== name) {
+    try {
+      fs.accessSync(name, fs.constants.X_OK);
+      if (fs.statSync(name).isFile()) {
+        return name;
+      }
+    } catch {
+      /* fall through to the error */
+    }
+    throw new ExecutionError(`'${name}' is not an executable file`);
+  }
   for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
     if (dir.length === 0) {
       continue;
@@ -87,6 +100,28 @@ export function execute(cmd: string, args: string[], cwd: string, env: Record<st
         reject(new ExecutionError(withOutput(commandLine, output, `exited with error code ${code}`)));
       } else {
         resolve();
+      }
+    });
+  });
+}
+
+/**
+ * Run a command interactively: the child inherits this process's stdio (tty,
+ * pipes, stdin), cwd and environment, and its exit code resolves as *data* — a
+ * program may legitimately exit non-zero, unlike `execute`, which fails the
+ * build on a non-zero exit. Rejects only when the process cannot be spawned or
+ * is killed by a signal. This is the launch behind `fabr run`.
+ */
+export function executeInteractive(cmd: string, args: string[]): Computable<number> {
+  return Computable.from((resolve, reject) => {
+    const commandLine = "$ " + [cmd, ...args].map(quoteArg).join(" ");
+    const proc = spawn(cmd, args, { stdio: "inherit", windowsHide: true });
+    proc.on("error", e => reject(new ExecutionError(`${commandLine}\nunable to execute: ${systemErrorText(e)}`)));
+    proc.on("close", (code, signal) => {
+      if (signal) {
+        reject(new ExecutionError(`${commandLine}\nterminated by signal ${signal}`));
+      } else {
+        resolve(code ?? 0);
       }
     });
   });

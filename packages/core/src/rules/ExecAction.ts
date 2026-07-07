@@ -64,12 +64,12 @@ function runExec(inputs: BuildActionInputs, workDir: string): Computable<FileSet
     .then(() => getResultFileSet(workDir, outputs));
 }
 
-export const EXEC_STEP: IBuildActionDefinition = { id: "core:exec", version: 1, run: runExec };
+export const EXEC_ACTION: IBuildActionDefinition = { id: "core:exec", version: 1, run: runExec };
 
 /**
  * @return an action that stages `files`, runs `argv` in the work directory,
  * and collects `outputs` (a "dir:glob" pattern, default "**").
  */
 export function createExecAction(files: FileSet, argv: string[], outputs = "**", label?: string): BuildAction {
-  return new BuildAction(EXEC_STEP, { files, argv, outputs }, label);
+  return new BuildAction(EXEC_ACTION, { files, argv, outputs }, label);
 }

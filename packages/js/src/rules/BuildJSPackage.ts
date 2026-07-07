@@ -39,6 +39,7 @@ import {
 } from "@fabr/core";
 import {
   assembleNodeModules,
+  binByConvention,
   compileJsSources,
   hasTypescriptSources,
   JSTarget,
@@ -140,9 +141,31 @@ function createPackageJson(
     packageJson.types = "index.d.ts";
   }
 
-  /* The direct package requirements, as written (typings split out per
-   * convention); a built package dep carries its identity directly, at
-   * whatever version it declared */
+  const bin = binByConvention(names);
+  if (Object.keys(bin).length > 0) {
+    packageJson.bin = bin;
+  }
+
+  const { dependencies, devDependencies } = packageDependencies(depSources);
+  if (Object.keys(dependencies).length > 0) {
+    packageJson.dependencies = dependencies;
+  }
+  if (Object.keys(devDependencies).length > 0) {
+    packageJson.devDependencies = devDependencies;
+  }
+
+  return MemoryFile.from(JSON.stringify(packageJson, undefined, 2));
+}
+
+/**
+ * The direct package requirements for the generated package.json: npm refs as
+ * written, built-package deps by their identity, with @types/* split into
+ * devDependencies per convention.
+ */
+function packageDependencies(depSources: SourceRef[]): {
+  dependencies: Record<string, string>;
+  devDependencies: Record<string, string>;
+} {
   const dependencies: Record<string, string> = {};
   const devDependencies: Record<string, string> = {};
   for (const source of depSources) {
@@ -158,14 +181,7 @@ function createPackageJson(
       dependencies[source.packageName] = source.version ?? "*";
     }
   }
-  if (Object.keys(dependencies).length > 0) {
-    packageJson.dependencies = dependencies;
-  }
-  if (Object.keys(devDependencies).length > 0) {
-    packageJson.devDependencies = devDependencies;
-  }
-
-  return MemoryFile.from(JSON.stringify(packageJson, undefined, 2));
+  return { dependencies, devDependencies };
 }
 
 registerRule("js_package", { [BUILD_OPERATION]: "build" }, buildJsPackage);

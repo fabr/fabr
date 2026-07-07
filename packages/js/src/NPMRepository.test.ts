@@ -22,13 +22,14 @@ import {
   explainResolutionPath,
   IRequirementEdge,
   IResolutionOrigin,
+  Name,
   parseVersion,
   ROOT_REQUIRER,
   Selected,
   SemverVersion,
   versionToString,
 } from "@fabr/core";
-import { npmPackageOfPath } from "./NPMRepository";
+import { npmPackageOfPath, splitNpmReference } from "./NPMRepository";
 
 function selection(
   pkg: string,
@@ -111,5 +112,41 @@ describe("explainResolutionPath", () => {
     expect(explainResolutionPath(chokidarClosure, "mystery/index.js")).to.deep.equal([
       "mystery is not present in the resolution of chokidar:3.5.3",
     ]);
+  });
+});
+
+describe("splitNpmReference", () => {
+  function split(ref: string): { requirement: string; projection?: { pattern: string; prefix: string } } {
+    const { requirement, projection } = splitNpmReference(Name.fromLiteral(ref));
+    return {
+      requirement: requirement.getSimpleName() as string,
+      ...(projection ? { projection: { pattern: projection.pattern.getSimpleName() as string, prefix: projection.prefix } } : {}),
+    };
+  }
+
+  it("leaves a requirement-only reference whole", () => {
+    expect(split("esbuild:0.28.1")).to.deep.equal({ requirement: "esbuild:0.28.1" });
+  });
+
+  it("splits a colon projection (strips the requirement prefix)", () => {
+    expect(split("esbuild:0.28.1:package.json")).to.deep.equal({
+      requirement: "esbuild:0.28.1",
+      projection: { pattern: "package.json", prefix: "" },
+    });
+  });
+
+  it("splits a slash projection (retains the written prefix)", () => {
+    expect(split("esbuild:0.28.1/lib/main.js")).to.deep.equal({
+      requirement: "esbuild:0.28.1",
+      projection: { pattern: "lib/main.js", prefix: "esbuild:0.28.1/" },
+    });
+  });
+
+  it("does not treat a scoped name's slash as a projection boundary", () => {
+    expect(split("@types/node:20.12.7")).to.deep.equal({ requirement: "@types/node:20.12.7" });
+    expect(split("@types/node:20.12.7:index.d.ts")).to.deep.equal({
+      requirement: "@types/node:20.12.7",
+      projection: { pattern: "index.d.ts", prefix: "" },
+    });
   });
 });

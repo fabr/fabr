@@ -2,6 +2,7 @@ import { Readable } from "stream";
 import { Computable } from "../core/Computable";
 import { FileSet, FileSource } from "../core/FileSet";
 import { isRepository, materializeAll, Repository, RepositoryRef, SourceRef } from "../core/Repository";
+import { RunnableFileSet } from "../core/RunnableFileSet";
 import { Flag } from "../core/Flag";
 import {
   IProvenanceStep,
@@ -318,10 +319,12 @@ export class BuildContext {
    * Resolve a name (target reference, projection, glob or bare path) to its
    * sources — the whole-name entry the CLI uses so `fabr ls`/`cat` reuse the
    * model's reference semantics (target-prefix + `:`/glob projection) rather
-   * than splitting the name themselves.
+   * than splitting the name themselves. This IS a collection point: any external
+   * reference the name resolves to (`@npm:esbuild:0.28.1`) is materialized here,
+   * so a top-level external name resolves like any other.
    */
   public resolveName(name: string, stack?: IDependencyStack): Computable<SourceRef[]> {
-    return this.resolveFileSource(parseName(name), undefined, stack).then(resolved => resolved.sources);
+    return this.resolveFileSource(parseName(name), undefined, stack).then(resolved => materializeAll(resolved.sources));
   }
 
   private resolveFileSource(
@@ -352,20 +355,28 @@ export class BuildContext {
                 if (source instanceof RepositoryRef) {
                   references.push(source.find(rest, retainedPrefix));
                 } else if (isRepository(source)) {
-                  /* The rest is a requirement identifier, not a file path:
-                   * the written-name rule applies to projections into
-                   * delivered content, not to the delivery itself */
-                  references.push(new RepositoryRef(source, rest));
+                  /* The rest is a requirement identifier followed by an optional
+                   * projection into the delivered content — the repository claims
+                   * its identity (`esbuild:0.28.1`), the remainder projects into
+                   * the resolved package (`:package.json`), riding the normal
+                   * find/naming path. The written-name rule applies to the
+                   * projection, not to the requirement itself. */
+                  const split = source.splitReference(rest);
+                  const ref = new RepositoryRef(source, split.requirement);
+                  references.push(split.projection ? ref.find(split.projection.pattern, split.projection.prefix) : ref);
                 } else {
+                  /* A container projects on its own terms (FileSource.find): a
+                   * fileset filters + prefixes; a runnable re-points its entry. */
                   containers.push(source);
                 }
               }
               if (containers.length === 0) {
                 return { sources: references, decl };
               }
-              return FileSet.findAll(containers, rest)
-                .then(data => (retainedPrefix ? data.remap(name => retainedPrefix + name) : data))
-                .then(data => ({ sources: [...references, data], decl }));
+              return FileSet.findAll(containers, rest, retainedPrefix).then(data => ({
+                sources: [...references, data],
+                decl,
+              }));
             });
           }
         } else if (relativeTo) {
@@ -723,6 +734,22 @@ export abstract class TargetContext {
   }
 
   /**
+   * Resolve a global that names a **runnable tool** (e.g. `TSC`): it is resolved
+   * under `BUILD_OPERATION=run` (so a package/definer yields its runnable), and
+   * the result is asserted to be a RunnableFileSet. The caller launches it via
+   * `toCommandLine` — it needn't know how the tool is invoked.
+   */
+  public getGlobalRunnable(name: string): Computable<RunnableFileSet> {
+    return this.getGlobalTarget(name, { [BUILD_OPERATION]: "run" }).then(sources => {
+      const runnable = sources.find((source): source is RunnableFileSet => source instanceof RunnableFileSet);
+      if (!runnable) {
+        throw new Error(`'${name}' must name a runnable (its BUILD_OPERATION=run result)`);
+      }
+      return runnable;
+    });
+  }
+
+  /**
    * The unmaterialized counterpart of getGlobalTarget: the global's sources
    * with any repository references still inert, for feeding into `collect`
    * so they resolve jointly with the evaluation's other requirements.
@@ -919,6 +946,18 @@ export class RepositoryContext {
       throw new Error("Missing required property " + name);
     }
     return this.context.resolveStringProperty(prop, this.target).then(prop => prop.toString());
+  }
+
+  /**
+   * The build operation this repository is resolving under (the instance is
+   * interned per BuildContext, so it reflects the constraints the references
+   * were consumed with). The repository delivers accordingly — a plain package
+   * for build/test, a runnable for run. Global config the repository selects on
+   * (a host/target platform, …) reaches it the same way; BUILD_OPERATION is just
+   * the first such property.
+   */
+  public getOperation(): string {
+    return this.context.getOperation();
   }
 
   /**

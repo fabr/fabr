@@ -225,6 +225,9 @@ const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 1, ru
 function runTests(inputs: BuildActionInputs, workDir: string): Computable<FileSet> {
   const staged = fileSetInput(inputs, "staged");
   const argv = stringListInput(inputs, "argv");
+  /* Tests run with a clean environment (no ambient vars that could alter their
+   * output); a test that must spawn a tool references it by an absolute path
+   * (e.g. process.execPath), which needs no PATH. */
   return writeFileSet(workDir, staged)
     .then(() => execute(argv[0], argv.slice(1), workDir, {}))
     .then(

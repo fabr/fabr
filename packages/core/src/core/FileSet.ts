@@ -54,12 +54,17 @@ export interface IFile {
 
 export interface FileSource {
   /**
-   * @return a FileSet of all files that match the given Name
-   * If no files match, yields the empty set.
+   * Project this source to the part named by `name`, its result names rewritten
+   * under `prefix` (the written-name rule: `alias/path` keeps `alias/`, `alias:path`
+   * strips it). "Project" because a plain source yields the **matching files**,
+   * but a source with its own notion of a named part may yield something else —
+   * a RunnableFileSet re-points its launch entry, keeping the whole install. No
+   * match yields the empty set.
    *
-   * @param name
+   * @param name the name/glob to match.
+   * @param prefix prepended to every result name (default none).
    */
-  find(name: Name): Computable<FileSet>;
+  find(name: Name, prefix?: string): Computable<FileSet>;
 
   /**
    * @return a single direct file by exact name or undefined if it does not exist.
@@ -105,12 +110,12 @@ export class FileSet implements FileSource {
     return this.withOrigin({ ...step, parent: this.origin });
   }
 
-  public find(name: Name): Computable<FileSet> {
+  public find(name: Name, prefix = ""): Computable<FileSet> {
     const newContent = new Map<string, IFile>();
     const matcher = picomatch(name.toString());
     for (const [path, file] of this.content) {
       if (matcher(path)) {
-        newContent.set(path, file);
+        newContent.set(prefix + path, file);
       }
     }
     return Computable.resolve(new FileSet(newContent, this.origin));
@@ -264,11 +269,12 @@ export class FileSet implements FileSource {
   }
 
   /**
-   * Search all sources for the given name, and return a union of all matches
+   * Project all sources by `name` (result names under `prefix`) and union the
+   * results — each source projects on its own terms (see FileSource.find).
    */
-  public static findAll(sources: FileSource[], name: Name): Computable<FileSet> {
+  public static findAll(sources: FileSource[], name: Name, prefix?: string): Computable<FileSet> {
     return Computable.forAll(
-      sources.map(fs => fs.find(name)),
+      sources.map(fs => fs.find(name, prefix)),
       (...sets) => FileSet.unionAll(...sets)
     );
   }

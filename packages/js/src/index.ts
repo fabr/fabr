@@ -32,10 +32,11 @@
 
 import type * as fabr from "@fabr/core";
 import "./rules/BuildJSPackage";
+import "./rules/RunJSPackage";
 import "./rules/BuildJSCompile";
 import "./rules/TestJSPackage";
 import "./rules/TestJSTest";
-import "./rules/BuildJSScript";
+import "./rules/RunJSScript";
 import "./NPMRepository";
 
 /* The compile pipeline helpers, for other js rules to build on (in-tree only:

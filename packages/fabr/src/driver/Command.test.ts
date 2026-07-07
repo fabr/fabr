@@ -46,8 +46,9 @@ describe("Command", () => {
   });
 
   it("parses flags and defines alongside a command", () => {
-    expect(parseCommandLine(["node", "fabr", "-w", "run", "foo", "-Dx=1"])).to.deep.equal({
-      command: "run",
+    /* Not `run`: for `run`, options after the target pass through to the program */
+    expect(parseCommandLine(["node", "fabr", "-w", "test", "foo", "-Dx=1"])).to.deep.equal({
+      command: "test",
       mode: Mode.Watch,
       longListing: false,
       targets: ["foo"],
@@ -73,5 +74,19 @@ describe("Command", () => {
     const options = parseCommandLine(["node", "fabr", "cat", "mypkg:build/out.js", "b:src/*.ts"]);
     expect(options.command).to.equal("cat");
     expect(options.targets).to.deep.equal(["mypkg:build/out.js", "b:src/*.ts"]);
+  });
+
+  it("passes everything after a run target through as program args, flags included", () => {
+    const options = parseCommandLine(["node", "fabr", "run", "mytool", "--flag", "x", "-y"]);
+    expect(options.command).to.equal("run");
+    expect(options.targets).to.deep.equal(["mytool"]);
+    expect(options.runArgs).to.deep.equal(["--flag", "x", "-y"]);
+  });
+
+  it("takes fabr options before the run target, program args after", () => {
+    const options = parseCommandLine(["node", "fabr", "-Dx=1", "run", "mytool", "-Dy=2"]);
+    expect(options.properties).to.deep.equal({ x: "1" });
+    expect(options.targets).to.deep.equal(["mytool"]);
+    expect(options.runArgs).to.deep.equal(["-Dy=2"]);
   });
 });

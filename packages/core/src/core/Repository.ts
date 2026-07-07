@@ -35,9 +35,24 @@ export interface Repository {
   /**
    * Resolve a batch of references together, returning the base files for each
    * reference in order. Projections and provenance carried by the references
-   * are applied by the caller (see materializeAll).
+   * are applied by the caller (see materializeAll). The repository delivers the
+   * artifact its *operation* asks for — a plain package for build/test, or (its
+   * ecosystem's notion of) a runnable for run — reading that operation (and any
+   * other global config it selects on, e.g. a host platform) from its
+   * RepositoryContext, which is interned per BuildContext and so reflects the
+   * constraints these references were consumed under. Making a package runnable
+   * is the repository's own business; the `run` delivery is a sealed launch
+   * install, not files for the consumer to lay out, so "consumers decide layout"
+   * is intact.
    */
   resolveAll(references: RepositoryRef[]): Computable<FileSet[]>;
+
+  /**
+   * Claim the identity portion of a reference name that this repository
+   * resolves (e.g. npm's `name:version`); anything left over is a projection
+   * *into* the resolved package.
+   */
+  splitReference(name: Name): { requirement: Name; projection?: IProjection };
 }
 
 export function isRepository(source: SourceRef): source is Repository {
@@ -100,9 +115,10 @@ export class RepositoryRef {
   public finishMaterialize(base: FileSet): Computable<FileSet> {
     let result = Computable.resolve(base);
     for (const projection of this.projections) {
-      result = result
-        .then(files => files.find(projection.pattern))
-        .then(files => (projection.prefix ? files.remap(name => projection.prefix + name) : files));
+      /* Each projection narrows on the artifact's own terms (FileSource.find):
+       * a package filters files (remapped under the prefix); a runnable re-points
+       * its launch entry, ignoring the prefix. */
+      result = result.then(files => files.find(projection.pattern, projection.prefix));
     }
     return result.then(files => {
       if (this.steps.length === 0) {

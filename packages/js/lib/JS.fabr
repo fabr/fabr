@@ -67,20 +67,19 @@ targetdef js_test {
 }
 
 #
-# Run a Javascript file under node (the JS analogue of the generic 'script'
-# target). 'deps' builds the run directory — packages mount under node_modules,
-# loose filesets land at their own paths; 'entry' is the path WITHIN that run
-# directory to execute (so a package script runs from its node_modules mount and
-# its relative imports resolve, e.g. entry = node_modules/@babel/core/bin/babel.js).
-# 'args' are passed to the script verbatim; 'output' selects the files collected
-# as the result (default: everything).
+# Define a runnable Javascript program (run it with 'fabr run', collect its
+# output with the generic 'run' target, or check it with a golden test). 'deps'
+# assemble the install — packages mount under node_modules, loose filesets land
+# at their own paths; 'entry' is the path WITHIN that install to launch under
+# node (so a package script runs from its node_modules mount and its relative
+# imports resolve, e.g. entry = node_modules/@babel/core/bin/babel.js); 'args'
+# are fixed leading arguments. It yields a runnable, it does not itself execute.
 #
 
 targetdef js_script {
     deps = FILES;
     entry = REQUIRED STRING;
     args = STRING;
-    output = STRING;
 }
 
 #

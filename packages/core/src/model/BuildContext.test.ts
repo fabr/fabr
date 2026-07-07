@@ -5,6 +5,7 @@ import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { Repository, RepositoryRef, SourceRef } from "../core/Repository";
+import { Name } from "./Name";
 import { FileConflictError, renderProvenance } from "../core/Provenance";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { registerRepositoryProvider, registerRule } from "../rules/Registry";
@@ -46,6 +47,11 @@ class TestRepo implements Repository {
   public resolveAll(references: RepositoryRef[]): Computable<FileSet[]> {
     batchCalls.push(references.map(reference => reference.name.toString()));
     return Computable.resolve(references.map(reference => this.filesFor(reference.name.toString())));
+  }
+
+  /* No sub-package grammar: the whole name is the requirement, nothing projects. */
+  public splitReference(name: Name): { requirement: Name } {
+    return { requirement: name };
   }
 
   private filesFor(name: string): FileSet {

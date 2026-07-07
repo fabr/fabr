@@ -22,15 +22,22 @@
  * `{ srcs = FILES; deps = FILES }`. `deps` is the node_modules the sources are
  * compiled against (package deps + any @types, already resolved by the caller
  * so `getFileSet` here is a no-op materialization). It resolves its *own*
- * toolchain — `TSC` (a build tool, independent of what it compiles) — and its
- * own `JS_TARGET`, derives the tsconfig, lays out the tsc working directory
- * and yields the `exec` action that runs the compiler (output: `build/**`).
- * The `runtime` input carries the ES lib level (from the target's `es*` flags,
+ * toolchain — `TSC` (a build tool, independent of what it compiles) as a
+ * **runnable** (`BUILD_OPERATION=run`), so it needn't know how to launch it —
+ * and its own `JS_TARGET`, derives the tsconfig, and lays out the working
+ * directory. The tool is **mounted apart** from the workspace (under `TOOL_DIR`,
+ * not merged into `node_modules`): the tool's own dependencies must not collide
+ * with — nor be visible to — the sources' `node_modules`. It runs with cwd at
+ * the workspace root and yields the `exec` action (output: `build/**`). The
+ * `runtime` input carries the ES lib level (from the target's `es*` flags,
  * which can't survive materialization into `deps`).
  */
 
 import { Computable, createExecAction, FileSet, MemoryFile, registerRule, RuleResult, TargetContext } from "@fabr/core";
-import { assembleNodeModules, parseJSTarget } from "../JSPackage";
+import { parseJSTarget } from "../JSPackage";
+
+/** Where the toolchain is mounted in the working dir — disjoint from src/node_modules/build. */
+const TOOL_DIR = ".tools/tsc";
 
 function compileTypescript(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
@@ -39,11 +46,10 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       context.getFileSet("deps"),
       context.getRequiredString("runtime"),
       context.getGlobalString("JS_TARGET"),
-      context.getGlobalTarget("TSC"),
+      context.getGlobalRunnable("TSC"),
     ],
-    (srcs, deps, runtime, target, tscSources) => {
+    (srcs, deps, runtime, target, tsc) => {
       const jsTarget = parseJSTarget(target);
-      const modules = FileSet.unionAll(deps, assembleNodeModules(tscSources.filter((s): s is FileSet => s instanceof FileSet)));
       const tsconfig = {
         compilerOptions: {
           declaration: true,
@@ -62,12 +68,15 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       };
 
       const workingDir = FileSet.layout({
-        node_modules: modules,
+        node_modules: deps,
         src: srcs,
         "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
+        [TOOL_DIR]: tsc,
       });
 
-      return createExecAction(workingDir, ["node", "node_modules/typescript/bin/tsc"], "build:**", "compile");
+      /* The tool launches from its own mount (its deps resolve there); cwd is the
+       * workspace root, so `include`/`node_modules` resolve against the sources. */
+      return createExecAction(workingDir, tsc.toCommandLine([], { base: TOOL_DIR }), "build:**", "compile");
     }
   );
 }

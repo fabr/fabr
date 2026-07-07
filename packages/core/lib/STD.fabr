@@ -14,8 +14,27 @@ targetdef flag {
     provides = FILES;
 }
 
-targetdef generic {
-    cmd = STRING;
+#
+# Define a runnable plain shell script (run it with 'fabr run', collect its
+# output with the generic 'run' target, or check it with a golden test). 'deps'
+# stage the install (their filesets union flat — just files, no package
+# mounting); 'entry' is the path WITHIN that install to launch with the shell;
+# 'args' are fixed leading arguments. It yields a runnable, it does not itself
+# execute.
+#
+targetdef script {
     deps = FILES;
-    outputs = FILES;
+    entry = REQUIRED STRING;
+    args = STRING;
+}
+
+#
+# Execute a runnable (a BUILD_OPERATION=run target) and collect the files it
+# writes as this target's content. 'tool' names the runnable; 'args' are
+# appended to its own; 'output' (a name pattern, default '**') selects the result.
+#
+targetdef run {
+    tool = REQUIRED FILES;
+    args = STRING;
+    output = STRING;
 }

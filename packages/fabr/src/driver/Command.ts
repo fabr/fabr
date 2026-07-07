@@ -36,6 +36,8 @@ export interface Options {
   /** Target names, or (for `ls`/`cat`) whole name references — `pkg:build/*.js`
    * — resolved by the model, not split here. */
   targets: string[];
+  /** For `run`: the program's argv — everything after the target, verbatim. */
+  runArgs?: string[];
   properties: Constraints;
 }
 
@@ -66,7 +68,11 @@ export function parseCommandLine(args: string[]): Options {
 
   let commandGiven = false;
   for (const arg of opts) {
-    if (arg[0] === "-") {
+    /* For `run`, once the target is captured everything else — flags included —
+     * is passed verbatim to the program (fabr's own options go before it). */
+    if (options.runArgs) {
+      options.runArgs.push(arg);
+    } else if (arg[0] === "-") {
       if (arg === "-w") {
         options.mode = Mode.Watch;
       } else if (arg === "-l") {
@@ -89,6 +95,10 @@ export function parseCommandLine(args: string[]): Options {
       commandGiven = true;
     } else {
       options.targets.push(arg);
+      if (options.command === "run") {
+        /* Target captured — the rest is the program's argv. */
+        options.runArgs = [];
+      }
     }
   }
   if (options.targets.length === 0) {

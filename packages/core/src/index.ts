@@ -17,13 +17,14 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* Importing @fabr/core registers the generic bootstrap rules (flag, generic)
- * and core's own lib/ on the system include path. Language-specific rules
+/* Importing @fabr/core registers the generic bootstrap rules (flag, script,
+ * run) and core's own lib/ on the system include path. Language-specific rules
  * live in their own packages (@fabr/js et al) — the bootstrap set is
  * core + js + fabr; anything beyond that can be built by fabr itself and
  * loaded via a plugin declaration. */
 import "./rules/FlagTarget";
-import "./rules/GenericTarget";
+import "./rules/RunScript";
+import "./rules/BuildRun";
 import { packageLibDir, registerSystemIncludeDir } from "./model/Loader";
 
 registerSystemIncludeDir(packageLibDir("@fabr/core"));
@@ -34,8 +35,10 @@ export * from "./core/Fetch";
 export * from "./core/FileSet";
 export * from "./core/FSFileSource";
 export * from "./core/PackageFileSet";
+export * from "./core/RunnableFileSet";
 export * from "./core/Flag";
 export * from "./core/MemoryFS";
+export * from "./core/SymlinkFile";
 export * from "./core/MultiError";
 export * from "./core/Provenance";
 export * from "./core/Repository";

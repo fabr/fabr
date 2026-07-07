@@ -1,6 +1,7 @@
 import {
   Computable,
   FileSet,
+  IProjection,
   IRequirementEdge,
   IResolutionOrigin,
   MemoryFile,
@@ -22,6 +23,7 @@ import {
   unpackStream,
   versionToString,
 } from "@fabr/core";
+import { makeNpmRunnable } from "./JSPackage";
 
 interface ISignature {
   keyid: string;
@@ -122,12 +124,22 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
     const rootKeys = [...byKey.keys()].sort();
     const roots = rootKeys.map(key => byKey.get(key)!);
     const rootIndex = new Map(rootKeys.map((key, index) => [key, index]));
+    /* The operation is a property of this collection point, read from the
+     * context (this instance is interned per BuildContext, so it reflects the
+     * constraints these references were consumed under). Closure members are
+     * always plain packages — only the requested roots take the run delivery. */
+    const operation = this.context.getOperation();
     return this.getJointResolution(roots, rootKeys).then(selections => {
       checkSingleVersions(selections, rootKeys.join(", "));
       return Computable.forAll(
         selections.map(sel => this.fetch(sel.pkg, sel.version)),
         (...packages: PackageFileSet[]) =>
-          requirements.map(req => this.assembleClosure(req, rootIndex.get(requirementKey(req))!, selections, packages))
+          Computable.forAll(
+            requirements.map(req =>
+              this.assembleClosure(req, rootIndex.get(requirementKey(req))!, selections, packages, operation)
+            ),
+            (...delivered: FileSet[]) => delivered
+          )
       );
     });
   }
@@ -141,8 +153,9 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
     req: Requirement,
     index: number,
     selections: Selected<SemverVersion>[],
-    packages: PackageFileSet[]
-  ): PackageFileSet {
+    packages: PackageFileSet[],
+    operation: string
+  ): Computable<FileSet> {
     const origin: IResolutionOrigin<SemverVersion> = {
       kind: PACKAGE_RESOLUTION_PROVENANCE,
       repository: this.url,
@@ -160,7 +173,15 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
       throw new Error(`Resolution of ${requirementKey(req)} does not contain its own root package`);
     }
     const dependencies = reachable.filter(entry => entry !== root).map(entry => entry.files.withOrigin(origin));
-    return new PackageFileSet(root.files, root.files.packageName, root.files.version, dependencies, origin);
+    const pkg = new PackageFileSet(root.files, root.files.packageName, root.files.version, dependencies, origin);
+    /* Under `run`, hand back a runnable (the npm package's own bin, launched with
+     * its closure mounted) — making a package runnable is this repository's own
+     * npm-specific business. Everything else gets the plain package. */
+    return operation === "run" ? makeNpmRunnable(pkg) : Computable.resolve(pkg);
+  }
+
+  public splitReference(name: Name): { requirement: Name; projection?: IProjection } {
+    return splitNpmReference(name);
   }
 
   private parseRequirement(name: Name): Requirement {
@@ -327,6 +348,30 @@ function checkSingleVersions(selections: Selected<SemverVersion>[], root: string
 export function npmPackageOfPath(path: string): string {
   const parts = path.split("/");
   return parts[0].startsWith("@") && parts.length > 1 ? `${parts[0]}/${parts[1]}` : parts[0];
+}
+
+/**
+ * Split an npm reference name into its identity (`name:version`) and an optional
+ * projection into the resolved package. Since neither `:` nor `/` is legal in a
+ * registry version, the identity ends at the first `:` or `/` after the
+ * `name:version` separator; the remainder (plus any trailing glob) is the
+ * projection, named per the written-name rule (`:` strips, `/` retains). A pure
+ * parse — no resolution (see Repository.splitReference).
+ */
+export function splitNpmReference(name: Name): { requirement: Name; projection?: IProjection } {
+  const lit = name.getLiteralPrefix();
+  const firstColon = lit.indexOf(":");
+  if (firstColon === -1) {
+    return { requirement: name }; // no version — parseRequirement reports it
+  }
+  const nextColon = lit.indexOf(":", firstColon + 1);
+  const nextSlash = lit.indexOf("/", firstColon + 1);
+  const boundary = nextColon === -1 ? nextSlash : nextSlash === -1 ? nextColon : Math.min(nextColon, nextSlash);
+  if (boundary === -1) {
+    return { requirement: name }; // identity runs to the end; no projection
+  }
+  const prefix = lit[boundary] === "/" ? lit.substring(0, boundary) + "/" : "";
+  return { requirement: Name.fromLiteral(lit.substring(0, boundary)), projection: { pattern: name.substring(boundary + 1), prefix } };
 }
 
 function createRepository(context: RepositoryContext): Computable<NPMRepository> {

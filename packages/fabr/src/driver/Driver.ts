@@ -41,9 +41,11 @@ import {
   MultiError,
   ProgressListener,
   renderProvenance,
+  RunnableFileSet,
   SourceRef,
   TestsFailedError,
 } from "@fabr/core";
+import { runInteractive } from "./RunHandler";
 /* The whole of @fabr/core doubles as the api object injected into plugins:
  * handing plugins the host's own module instance keeps every class and
  * registry shared (a plugin must never load a second copy of the core). */
@@ -196,12 +198,36 @@ export function runFabr(options: Options): Promise<void> {
           buildStatus(execution, targets.length)
         );
       });
-    default: /* build, run */
+    case "run":
+      return runWith((model, execution) => runProgram(model, options, execution));
+    default: /* build */
       return runWith((model, execution) => {
-        const targets = buildTargets(model, options, execution, options.command);
+        const targets = buildTargets(model, options, execution, "build");
         return Computable.forAll(targets, () => {}).then(() => buildStatus(execution, targets.length));
       });
   }
+}
+
+/**
+ * `fabr run <target> [args…]`: build the target under `run` to get its runnable,
+ * then hand it to `runInteractive` (staging + inherited-stdio launch). Exits with
+ * the program's own exit code.
+ */
+function runProgram(model: BuildModel, options: Options, execution: ExecutionContext): Computable<void> {
+  const config = model.getConfig({ [BUILD_OPERATION]: "run", ...options.properties }, execution);
+  return config.resolveName(options.targets[0]).then(sources => {
+    const runnable = sources.find((s): s is RunnableFileSet => s instanceof RunnableFileSet);
+    if (!runnable) {
+      /* No runnable: a projection that matched nothing (empty) is the shared
+       * "matched no files" error — same as cat/ls; genuine content that just
+       * isn't runnable is the distinct case. */
+      const files = FileSet.unionAll(...sources.filter((s): s is FileSet => s instanceof FileSet));
+      throw files.isEmpty()
+        ? matchedNoFiles(options.targets[0])
+        : new Error(`'${options.targets[0]}' is not runnable (it has no BUILD_OPERATION=run result)`);
+    }
+    return runInteractive(runnable, options.runArgs ?? []).then(code => process.exit(code));
+  });
 }
 
 /**
@@ -307,12 +333,22 @@ function catTarget(options: Options, results: SourceRef[][]): Computable<void> {
     results.map((sources, i) => {
       const files = FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet));
       if (files.isEmpty()) {
-        throw new Error(`'${options.targets[i]}' matched no files`);
+        throw matchedNoFiles(options.targets[i]);
       }
       return dumpFiles(files);
     }),
     () => {}
   );
+}
+
+/**
+ * The shared "you named something that resolves to nothing" error — a reference
+ * whose projection/glob matched no files. Raised uniformly for `cat`, `ls`, and
+ * a `fabr run` whose entry projection missed, so a missing file reports the same
+ * way however it was named.
+ */
+function matchedNoFiles(name: string): Error {
+  return new Error(`'${name}' matched no files`);
 }
 
 /** Write every file in the set (sorted by name) to stdout, contents only. */

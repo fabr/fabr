@@ -23,7 +23,18 @@
  * that builds the `js_compile` sub-target.
  */
 
-import { BUILD_OPERATION, Computable, EMPTY_FILESET, FileSet, Flag, PackageFileSet, TargetContext } from "@fabr/core";
+import {
+  BUILD_OPERATION,
+  Computable,
+  EMPTY_FILESET,
+  FileSet,
+  Flag,
+  IFile,
+  PackageFileSet,
+  RunnableFileSet,
+  SymlinkFile,
+  TargetContext,
+} from "@fabr/core";
 
 export interface JSTarget {
   version: string;
@@ -198,4 +209,78 @@ export function assembleNodeModules(sets: FileSet[]): FileSet {
 /** @return the package's files renamed under the package's mount point */
 function mountPackage(pkg: PackageFileSet): FileSet {
   return pkg.remap(path => `${pkg.packageName}/${path}`);
+}
+
+/**
+ * Bin by convention: every file directly under bin/ is a command named after it
+ * (its extension stripped) — `bin/fabr.js` → `{ fabr: "bin/fabr.js" }`. Anything
+ * executable qualifies (a compiled .js, but equally a bundled shell script);
+ * only the emitted .d.ts / .map siblings are skipped. Used to write the generated
+ * package.json bin (js_package[build]); running reads that field back via
+ * makeNpmRunnable, so a fabr-built package and an external npm one launch the
+ * same way.
+ */
+export function binByConvention(names: Set<string>): Record<string, string> {
+  const bin: Record<string, string> = {};
+  for (const filename of names) {
+    const match = /^bin\/([^/]+)$/.exec(filename);
+    if (match && !/\.d\.[cm]?ts$|\.map$/.test(match[1])) {
+      bin[match[1].replace(/\.[^.]+$/, "")] = filename;
+    }
+  }
+  return bin;
+}
+
+/**
+ * Make a resolved package runnable: mount the package and its resolved
+ * dependency closure as node_modules, and launch a bin under node. The runnable's
+ * launch **surface** is the package's own files (findable by path) unioned with a
+ * `SymlinkFile` per package.json `bin` (findable by command, targeting the bin's
+ * install path — files added first, so a file wins a same-path tie); a projection
+ * is `surface.find`. The default entry (no projection) is the sole bin, or a
+ * bin-less package's sole file; anything else needs a projection. This is the
+ * single "npm package → runnable" path — shared by an external `@npm:…` consumed
+ * under `run` (via NPMRepository) and a declared `js_package[run]` (over its own
+ * generated package.json bin). The package's dependencies must already be resolved
+ * (PackageFileSets, not inert refs) — its collection point is responsible for that.
+ */
+export function makeNpmRunnable(pkg: PackageFileSet): Computable<RunnableFileSet> {
+  return binOf(pkg).then(bin => {
+    const root = `node_modules/${pkg.packageName}`;
+    const install = FileSet.layout({ node_modules: assembleNodeModules([pkg]) });
+    /* Bins first: a declared bin takes precedence over a package file — it wins
+     * its command *name* (a file sharing it is still in the install, just not the
+     * surface entry for it) and, being earlier, wins a same-*path* dedup at launch.
+     * So `fabr run pkg:tsc` is always the declared bin, never a stray file. */
+    const surface = new Map<string, IFile>();
+    for (const [command, binPath] of Object.entries(bin)) {
+      surface.set(command, new SymlinkFile(`${root}/${binPath}`));
+    }
+    for (const [name, file] of pkg) {
+      if (!surface.has(name)) {
+        surface.set(name, file);
+      }
+    }
+    return new RunnableFileSet(install, [], "node", root, new FileSet(surface));
+  });
+}
+
+/**
+ * @return the package's `bin` as a command→path map. npm allows `bin` to be a
+ * bare string (the command is the package's unscoped name) or an object; a
+ * package.json with no `bin` (or none at all) yields an empty map — not runnable.
+ */
+function binOf(pkg: PackageFileSet): Computable<Record<string, string>> {
+  return pkg.get("package.json").then(file => {
+    if (!file) {
+      return {};
+    }
+    return file.readString().then(text => {
+      const bin = (JSON.parse(text) as { bin?: unknown }).bin;
+      if (typeof bin === "string") {
+        return { [pkg.packageName.replace(/^@[^/]+\//, "")]: bin };
+      }
+      return bin && typeof bin === "object" ? (bin as Record<string, string>) : {};
+    });
+  });
 }

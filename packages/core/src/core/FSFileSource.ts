@@ -82,7 +82,7 @@ export class FSFileSource implements FileSource {
    * @param name
    * @returns
    */
-  public find(name: Name): Computable<FileSet> {
+  public find(name: Name, prefix = ""): Computable<FileSet> {
     return Computable.from<FileSet>((resolve, reject) => {
       const nameString = name.toString();
       const colonIdx = nameString.lastIndexOf(":");
@@ -105,7 +105,8 @@ export class FSFileSource implements FileSource {
         resolve(
           Computable.forAll(
             Array.from(files.values()),
-            (...done) => new FileSet(done.reduce((result, file) => result.set(removePrefix(file.name, stripPrefix), file), new Map()))
+            (...done) =>
+              new FileSet(done.reduce((result, file) => result.set(prefix + removePrefix(file.name, stripPrefix), file), new Map()))
           )
         );
       });
