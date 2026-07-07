@@ -39,17 +39,22 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
         case ArchiveType.TAR: {
           const extract = tar.extract();
           const files: Computable<FSFile>[] = [];
+          const root = path.resolve(targetdir);
           extract.on("entry", (headers, entry, next) => {
             entry.on("end", () => {
               next();
             });
-            if (headers.type === "directory") {
+            const pathname = path.resolve(targetdir, headers.name);
+            const contained = pathname === root || pathname.startsWith(root + path.sep);
+            if (headers.type === "directory" || !contained) {
+              /* Directories carry no file to write; an entry whose path escapes
+               * `targetdir` (a tar-slip via a `../` or absolute name — untrusted,
+               * these tarballs come from the network) is dropped for security. */
               entry.resume();
             } else {
               files.push(
                 Computable.from((resolveFile, rejectFile) => {
                   const hash = crypto.createHash(HASH_ALGORITHM);
-                  const pathname = path.resolve(targetdir, headers.name);
                   const dir = path.dirname(pathname);
                   fs.mkdirSync(dir, { recursive: true });
                   const outfile = fs.createWriteStream(pathname);

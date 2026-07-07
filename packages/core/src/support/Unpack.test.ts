@@ -1,4 +1,8 @@
 import { Readable } from "stream";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import * as tar from "tar-stream";
 import { unpackStream } from "./Unpack";
 import { expect } from "chai";
 
@@ -25,5 +29,28 @@ describe("Unpack", () => {
     const file = await result.get("package.json");
     console.log(file);
     expect(file?.hash).to.equal("ff344d6ce0cb6497bcc78b026420dee7538870af60809bab61e9a2e83b70a287");
+  });
+
+  it("drops tar entries whose path escapes the target dir (tar-slip)", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-unpack-"));
+    const escape = path.resolve(dir, "..", "fabr-tar-slip.txt");
+    try {
+      const pack = tar.pack();
+      pack.entry({ name: "package/ok.txt" }, "safe");
+      pack.entry({ name: "../fabr-tar-slip.txt" }, "evil");
+      pack.entry({ name: "/etc/fabr-tar-slip.txt" }, "evil");
+      pack.finalize();
+
+      const result = await unpackStream(pack, dir);
+      /* Only the contained entry survives; the escaping ones are neither in the
+       * result nor written to disk outside the target dir. */
+      expect(result.size).to.equal(1);
+      expect(await result.get("package/ok.txt")).to.not.equal(undefined);
+      expect(fs.existsSync(escape)).to.equal(false);
+      expect(fs.existsSync("/etc/fabr-tar-slip.txt")).to.equal(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(escape, { force: true });
+    }
   });
 });
