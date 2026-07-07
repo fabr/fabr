@@ -1,4 +1,5 @@
 import {
+  BUILD_OPERATION,
   Computable,
   FileSet,
   IProjection,
@@ -31,6 +32,22 @@ interface ISignature {
 }
 interface INPMPackageMetadata {
   dependencies?: Record<string, string>;
+  /**
+   * Deps npm installs when they can be installed but tolerates the absence of.
+   * The dominant use is os/cpu-gated native binaries (esbuild's @esbuild/<plat>,
+   * rollup, swc, …): every platform variant is listed here, each self-gated by
+   * its own package's `os`/`cpu`, and only the host-matching one(s) are kept.
+   */
+  optionalDependencies?: Record<string, string>;
+  /**
+   * Installability gates declared by a package on itself, in Node's
+   * process.platform / process.arch vocabulary; each is an allow-list, with a
+   * leading `!` negating an entry. Absent/empty means "any". (npm's `libc`
+   * gate — glibc/musl — is not yet honored; irrelevant to esbuild, whose Go
+   * binary is statically linked, but it splits rollup/swc/sharp builds.)
+   */
+  os?: string[];
+  cpu?: string[];
   dist: {
     fileCount?: number;
     integrity: string;
@@ -89,6 +106,58 @@ function requirementKey(req: Requirement): string {
   return `${req.pkg}:${req.constraint}`;
 }
 
+/**
+ * npm's os/cpu gate semantics: the list is an allow-list of process.platform /
+ * process.arch values, an entry prefixed `!` negating it. An empty/absent list
+ * imposes no constraint. A value is rejected if explicitly blocked (`!value`);
+ * otherwise it must appear in the allow-list, unless the list is negations-only.
+ * A gated package on a host whose fact is unknown cannot be confirmed to match.
+ */
+export function platformGateAdmits(gate: string[] | undefined, value: string | undefined): boolean {
+  if (!gate || gate.length === 0) {
+    return true;
+  }
+  if (value === undefined) {
+    return false;
+  }
+  if (gate.some(entry => entry.startsWith("!") && entry.slice(1) === value)) {
+    return false;
+  }
+  const allowed = gate.filter(entry => !entry.startsWith("!"));
+  return allowed.length === 0 || allowed.includes(value);
+}
+
+/**
+ * Whether a package declaring these os/cpu gates in its own metadata may run on
+ * the given host — the test that keeps only the host-matching native-binary
+ * variants out of a package's full set of platform optional dependencies.
+ */
+export function matchesHostPlatform(meta: { os?: string[]; cpu?: string[] }, host: { os?: string; cpu?: string }): boolean {
+  return platformGateAdmits(meta.os, host.os) && platformGateAdmits(meta.cpu, host.cpu);
+}
+
+/**
+ * A human-readable reason a package declaring these os/cpu gates cannot run on
+ * the given host, or undefined if it can. Optional dependencies are filtered
+ * out silently before selection; this is for the other side of npm's contract —
+ * a *non-optional* dependency (or a direct requirement) on a package built for
+ * another platform, which npm rejects as EBADPLATFORM rather than mounting an
+ * unusable install.
+ */
+export function unsupportedPlatformReason(
+  meta: { os?: string[]; cpu?: string[] },
+  host: { os?: string; cpu?: string }
+): string | undefined {
+  const parts: string[] = [];
+  if (!platformGateAdmits(meta.os, host.os)) {
+    parts.push(`os '${host.os ?? "(unknown)"}' is not in [${(meta.os ?? []).join(", ")}]`);
+  }
+  if (!platformGateAdmits(meta.cpu, host.cpu)) {
+    parts.push(`cpu '${host.cpu ?? "(unknown)"}' is not in [${(meta.cpu ?? []).join(", ")}]`);
+  }
+  return parts.length === 0 ? undefined : parts.join("; ");
+}
+
 class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
   private readonly url: string;
   private readonly context: RepositoryContext;
@@ -128,7 +197,7 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
      * context (this instance is interned per BuildContext, so it reflects the
      * constraints these references were consumed under). Closure members are
      * always plain packages — only the requested roots take the run delivery. */
-    const operation = this.context.getOperation();
+    const operation = this.context.getConstraint(BUILD_OPERATION) ?? "build";
     return this.getJointResolution(roots, rootKeys).then(selections => {
       checkSingleVersions(selections, rootKeys.join(", "));
       return Computable.forAll(
@@ -202,13 +271,65 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
   }
 
   /**
-   * PackageRegistry implementation: the requirements of pkg@version are the
-   * "dependencies" declared in its package metadata.
-   * Note: peerDependencies and optionalDependencies are currently ignored.
+   * The host machine facts (Node's process.platform/process.arch vocabulary),
+   * driver-injected as HOST_OS / HOST_CPU constraints and read off this
+   * repository's (per-BuildContext-interned) context. Either component is
+   * undefined if unset. Used to gate os/cpu-specific optional dependencies.
+   */
+  private hostPlatform(): { os?: string; cpu?: string } {
+    return { os: this.context.getConstraint("HOST_OS"), cpu: this.context.getConstraint("HOST_CPU") };
+  }
+
+  /**
+   * PackageRegistry implementation: the requirements of pkg@version are its
+   * declared `dependencies`, plus the `optionalDependencies` that are installable
+   * on this host. The dominant use of the latter is os/cpu-gated native binaries
+   * (esbuild's @esbuild/<platform> engine): all variants are listed, and only the
+   * host-matching one(s) are kept. peerDependencies remain ignored.
    */
   public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
-    return this.getVersionMetadata(pkg, versionToString(version)).then(meta =>
-      Object.entries(meta.dependencies ?? {}).map(([dep, constraint]) => ({ pkg: dep, constraint }))
+    return this.getVersionMetadata(pkg, versionToString(version)).then(meta => {
+      const required = Object.entries(meta.dependencies ?? {}).map(([dep, constraint]) => ({ pkg: dep, constraint }));
+      const optional = Object.entries(meta.optionalDependencies ?? {}).map(([dep, constraint]) => ({ pkg: dep, constraint }));
+      if (optional.length === 0) {
+        return Computable.resolve(required);
+      }
+      /* The os/cpu gate is declared in the *dependency's* own metadata, so each
+       * candidate must be probed. The match is version-stable (a package's target
+       * platform doesn't change across releases), so probing the constraint's
+       * minimum decides correctly whatever version selection ultimately picks. */
+      const host = this.hostPlatform();
+      return Computable.forAll(
+        optional.map(req => this.keepIfHostMatches(req, host)),
+        (...kept) => [...required, ...kept.filter((req): req is Requirement => req !== undefined)]
+      );
+    });
+  }
+
+  /**
+   * Probe an optional dependency's os/cpu gates, returning it as a requirement
+   * only if this host satisfies them (else undefined). A candidate that can't be
+   * probed — unparseable pin, no version to probe, or an unreachable/unpublished
+   * metadata document — is dropped non-fatally, per npm's optional-dependency
+   * contract (a genuinely-needed absence surfaces at the consumer's own runtime
+   * check, e.g. esbuild's "missing platform binary" error). A future refinement:
+   * a matched-but-unfetchable probe deserves a diagnostic once the progress layer
+   * carries warnings; a plain platform mismatch stays silent.
+   */
+  private keepIfHostMatches(req: Requirement, host: { os?: string; cpu?: string }): Computable<Requirement | undefined> {
+    let probeVersion: string;
+    try {
+      const constraint = SEMVER.parseConstraint(req.constraint);
+      if (SEMVER.isUnconstrained(constraint)) {
+        return Computable.resolve(undefined);
+      }
+      probeVersion = versionToString(SEMVER.minimumOf(constraint));
+    } catch {
+      return Computable.resolve(undefined);
+    }
+    return this.getVersionMetadata(req.pkg, probeVersion).then(
+      meta => (matchesHostPlatform(meta, host) ? req : undefined),
+      () => undefined
     );
   }
 
@@ -222,25 +343,20 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
    * don't poison the cache.
    */
   private getJointResolution(roots: Requirement[], rootKeys: string[]): Computable<Selected<SemverVersion>[]> {
+    /* The resolution now depends on the host platform (it filters os/cpu-gated
+     * optional deps), so the memo key must carry it — otherwise a resolution
+     * computed on one host would be served on another. */
+    const host = this.hostPlatform();
+    const hostKey = `${host.os ?? "?"}-${host.cpu ?? "?"}`;
     return this.context
-      .memoize("npm:resolve:2", `${this.url} ${rootKeys.join(" ")}`, () => {
+      .memoize("npm:resolve:3", `${this.url} ${hostKey} ${rootKeys.join(" ")}`, () => {
         /* A memo miss means real resolution work on behalf of the consumer */
         this.context.notifyProgress({ kind: "repository-resolve", repository: this.context.target, requirements: rootKeys });
         return resolveMVS(roots, SEMVER, this).then(resolution => {
           if (resolution.errors.length > 0) {
             throw new Error(`Unable to resolve ${rootKeys.join(", ")}:\n  ${resolution.errors.join("\n  ")}`);
           }
-          const doc: IResolutionDoc = {
-            roots,
-            selections: resolution.selections.map(sel => ({
-              pkg: sel.pkg,
-              version: versionToString(sel.version),
-              selectedBy: sel.selectedBy,
-              reachedVia: sel.reachedVia,
-              reachableFrom: sel.reachableFrom,
-            })),
-          };
-          return new FileSet(new Map([[RESOLUTION_FILE, MemoryFile.from(JSON.stringify(doc, undefined, 2))]]));
+          return this.verifiedResolutionDoc(roots, resolution.selections, host);
         });
       })
       .then(files => files.readFile(RESOLUTION_FILE))
@@ -257,6 +373,47 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
   }
 
   /**
+   * Validate the resolved closure against the host platform, then serialize it.
+   * Optional deps were already filtered to this host, so any os/cpu mismatch
+   * remaining is a *non-optional* dependency (or a direct requirement) on a
+   * package for another platform — npm's EBADPLATFORM — and is an error rather
+   * than an unusable install. Each selection's metadata was fetched during the
+   * resolution walk, so these are cache hits. (Override HOST_OS / HOST_CPU with
+   * -D to resolve for a different platform.)
+   */
+  private verifiedResolutionDoc(
+    roots: Requirement[],
+    selections: Selected<SemverVersion>[],
+    host: { os?: string; cpu?: string }
+  ): Computable<FileSet> {
+    return Computable.forAll(
+      selections.map(sel => this.getVersionMetadata(sel.pkg, versionToString(sel.version)).then(meta => ({ sel, meta }))),
+      (...entries) => {
+        for (const { sel, meta } of entries) {
+          const reason = unsupportedPlatformReason(meta, host);
+          if (reason) {
+            throw new Error(
+              `${sel.pkg}@${versionToString(sel.version)} is not supported on this host (${reason}), ` +
+                `required by ${sel.reachedVia?.requiredBy ?? "a direct requirement"}`
+            );
+          }
+        }
+        const doc: IResolutionDoc = {
+          roots,
+          selections: selections.map(sel => ({
+            pkg: sel.pkg,
+            version: versionToString(sel.version),
+            selectedBy: sel.selectedBy,
+            reachedVia: sel.reachedVia,
+            reachableFrom: sel.reachableFrom,
+          })),
+        };
+        return new FileSet(new Map([[RESOLUTION_FILE, MemoryFile.from(JSON.stringify(doc, undefined, 2))]]));
+      }
+    );
+  }
+
+  /**
    * Fetch the metadata document for an exact package version. The registry
    * contract is that these are immutable once published, so they are persisted
    * in the build cache and never refreshed.
@@ -266,11 +423,15 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
     let result = this.metadataCache.get(key);
     if (!result) {
       result = this.context
-        .fetch(`${this.url}/${key}`, "npm:metadata:1", content =>
-          readStream(content).then(data => {
-            const meta = parseMetadataResponse(data, key);
-            return new FileSet(new Map([[METADATA_FILE, MemoryFile.from(JSON.stringify(meta))]]));
-          })
+        .fetch(
+          `${this.url}/${key}`,
+          "npm:metadata:1",
+          content =>
+            readStream(content).then(data => {
+              const meta = parseMetadataResponse(data, key);
+              return new FileSet(new Map([[METADATA_FILE, MemoryFile.from(JSON.stringify(meta))]]));
+            }),
+          "metadata"
         )
         .then(files => files.readFile(METADATA_FILE))
         .then(data => JSON.parse(data) as INPMPackageMetadata);
@@ -282,7 +443,12 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
   private fetch(pkg: string, version: SemverVersion): Computable<PackageFileSet> {
     return this.getVersionMetadata(pkg, versionToString(version)).then(meta =>
       this.context
-        .fetch(meta.dist.tarball, "npm:tarball:1", (content, targetDir) => unpackStream(content, targetDir).then(stripArchiveRoot))
+        .fetch(
+          meta.dist.tarball,
+          "npm:tarball:1",
+          (content, targetDir) => unpackStream(content, targetDir).then(stripArchiveRoot),
+          "package"
+        )
         .then(files => new PackageFileSet(files, meta.name, meta.version))
     );
   }

@@ -56,6 +56,12 @@ export interface IFetchEvent {
   url: string;
   /** The target (usually a repository) on whose behalf the fetch happens */
   target: ITargetDecl;
+  /**
+   * An optional human noun for what is being fetched (e.g. "metadata",
+   * "package"), supplied by the repository so the driver can distinguish kinds
+   * of download; the URL alone is opaque.
+   */
+  resource?: string;
 }
 
 /**

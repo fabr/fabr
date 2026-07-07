@@ -192,9 +192,16 @@ export class BuildContext {
     return this.model.getConfig(combined, this.execution);
   }
 
-  /** @return the BUILD_OPERATION this configuration is evaluating under */
-  public getOperation(): string {
-    return this.constraints[BUILD_OPERATION] ?? "build";
+  /**
+   * The raw value of a configuration constraint, or undefined if unset. Unlike
+   * getProperty this never consults declarations or throws — it reads only the
+   * scalar constraint set the context was instantiated with. This is how every
+   * driver-injected global a rule or repository selects on is read: the build
+   * verb (`getConstraint(BUILD_OPERATION) ?? "build"`) and the host facts
+   * (HOST_OS / HOST_CPU) alike.
+   */
+  public getConstraint(name: string): string | undefined {
+    return this.constraints[name];
   }
 
   public getProperty(name: string, stack?: IDependencyStack): Computable<Property> {
@@ -824,7 +831,7 @@ export class DeclaredTargetContext extends TargetContext {
     this.notifyProgress({
       kind: "target-build",
       target: this.target,
-      operation: this.context.getOperation(),
+      operation: this.context.getConstraint(BUILD_OPERATION) ?? "build",
       requiredBy: requestingTargets(this.target, this.stack),
     });
   }
@@ -949,15 +956,16 @@ export class RepositoryContext {
   }
 
   /**
-   * The build operation this repository is resolving under (the instance is
-   * interned per BuildContext, so it reflects the constraints the references
-   * were consumed with). The repository delivers accordingly — a plain package
-   * for build/test, a runnable for run. Global config the repository selects on
-   * (a host/target platform, …) reaches it the same way; BUILD_OPERATION is just
-   * the first such property.
+   * The value of a configuration constraint this repository is resolving under,
+   * or undefined if unset (see BuildContext.getConstraint). This instance is
+   * interned per BuildContext, so the constraints reflect what the references
+   * were consumed with — the build verb (`getConstraint(BUILD_OPERATION) ??
+   * "build"`, which decides whether the repository delivers a plain package or a
+   * runnable) and any global config it selects on (host platform via HOST_OS /
+   * HOST_CPU, …) reach it identically.
    */
-  public getOperation(): string {
-    return this.context.getOperation();
+  public getConstraint(name: string): string | undefined {
+    return this.context.getConstraint(name);
   }
 
   /**
@@ -972,11 +980,18 @@ export class RepositoryContext {
 
   /**
    * Download through the cache (see BuildCache.getOrFetch); an actual fetch
-   * (a miss) is announced as progress, attributed to this repository.
+   * (a miss) is announced as progress, attributed to this repository. The
+   * optional `resource` is a human noun for what is being fetched (e.g.
+   * "metadata", "package"), carried on the progress event for display.
    */
-  public fetch(url: string, tag: string, process: (content: Readable, targetDir: string) => Computable<FileSet>): Computable<FileSet> {
+  public fetch(
+    url: string,
+    tag: string,
+    process: (content: Readable, targetDir: string) => Computable<FileSet>,
+    resource?: string
+  ): Computable<FileSet> {
     return this.context.getCachedOrFetch(url, tag, (content, targetDir) => {
-      this.notifyProgress({ kind: "fetch", url, target: this.target });
+      this.notifyProgress({ kind: "fetch", url, target: this.target, resource });
       return process(content, targetDir);
     });
   }

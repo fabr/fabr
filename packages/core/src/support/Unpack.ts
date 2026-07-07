@@ -57,7 +57,13 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
                   const hash = crypto.createHash(HASH_ALGORITHM);
                   const dir = path.dirname(pathname);
                   fs.mkdirSync(dir, { recursive: true });
-                  const outfile = fs.createWriteStream(pathname);
+                  /* Preserve the entry's permission bits (masked; setuid/setgid/
+                   * sticky dropped) so an executable — e.g. esbuild's native
+                   * binary in @esbuild/<platform> — lands runnable. Staging
+                   * hardlinks the cache file, so the bit propagates for free; it
+                   * travels with the content, so it stays out of the hash/manifest. */
+                  const mode = (headers.mode ?? 0o644) & 0o777;
+                  const outfile = fs.createWriteStream(pathname, { mode });
                   outfile.on("close", () => {
                     resolveFile(
                       new FSFile(

@@ -51,7 +51,7 @@ import { runInteractive } from "./RunHandler";
  * registry shared (a plugin must never load a second copy of the core). */
 import * as pluginApi from "@fabr/core";
 import { Options } from "./Command";
-import { getSourceRoot, getBuildCacheRoot, PROJECT_FILENAME, SOURCE_CACHE_FILENAME } from "./Environment";
+import { getSourceRoot, getBuildCacheRoot, getHostProperties, PROJECT_FILENAME, SOURCE_CACHE_FILENAME } from "./Environment";
 
 const DIAG_BUILD_COMPLETE = Diagnostic.Info<{ count: number }>("Built {count} target(s)");
 const DIAG_UP_TO_DATE = Diagnostic.Info<Record<string, never>>("Already up to date");
@@ -74,7 +74,7 @@ const DIAG_TESTS_FAILED = Diagnostic.Error<{ name: string; message: string; loc:
 const DIAG_TEST_RESULT = Diagnostic.Info<{ name: string; summary: string }>("{name}: {summary}");
 const DIAG_BUILDING = Diagnostic.Info<{ verb: string; name: string; chain: string }>("{verb} {name}{chain}");
 const DIAG_RESOLVING = Diagnostic.Info<{ requirements: string; name: string }>("Resolving {requirements} from {name}");
-const DIAG_FETCHING = Diagnostic.Info<{ url: string }>("Fetching {url}");
+const DIAG_FETCHING = Diagnostic.Info<{ resource: string; url: string }>("Fetching {resource}{url}");
 
 /** Progress verbs for the well-known operations; anything else renders as
  * "Running <operation> on <target>" */
@@ -214,7 +214,7 @@ export function runFabr(options: Options): Promise<void> {
  * the program's own exit code.
  */
 function runProgram(model: BuildModel, options: Options, execution: ExecutionContext): Computable<void> {
-  const config = model.getConfig({ [BUILD_OPERATION]: "run", ...options.properties }, execution);
+  const config = model.getConfig({ ...getHostProperties(), [BUILD_OPERATION]: "run", ...options.properties }, execution);
   return config.resolveName(options.targets[0]).then(sources => {
     const runnable = sources.find((s): s is RunnableFileSet => s instanceof RunnableFileSet);
     if (!runnable) {
@@ -266,7 +266,7 @@ async function runWith(operation: Operation): Promise<void> {
 }
 
 function configFor(model: BuildModel, options: Options, execution: ExecutionContext, operation: string): BuildContext {
-  return model.getConfig({ [BUILD_OPERATION]: operation, ...options.properties }, execution);
+  return model.getConfig({ ...getHostProperties(), [BUILD_OPERATION]: operation, ...options.properties }, execution);
 }
 
 /** Build each named target under the given operation (bare target names). */
@@ -316,7 +316,7 @@ function progressListener(log: Log): ProgressListener {
         log.log(DIAG_RESOLVING, { requirements: event.requirements.join(", "), name: event.repository.name });
         break;
       case "fetch":
-        log.log(DIAG_FETCHING, { url: event.url });
+        log.log(DIAG_FETCHING, { resource: event.resource ? `${event.resource} ` : "", url: event.url });
         break;
     }
   };

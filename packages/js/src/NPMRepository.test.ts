@@ -29,7 +29,13 @@ import {
   SemverVersion,
   versionToString,
 } from "@fabr/core";
-import { npmPackageOfPath, splitNpmReference } from "./NPMRepository";
+import {
+  matchesHostPlatform,
+  npmPackageOfPath,
+  platformGateAdmits,
+  splitNpmReference,
+  unsupportedPlatformReason,
+} from "./NPMRepository";
 
 function selection(
   pkg: string,
@@ -148,5 +154,76 @@ describe("splitNpmReference", () => {
       requirement: "@types/node:20.12.7",
       projection: { pattern: "index.d.ts", prefix: "" },
     });
+  });
+});
+
+describe("platformGateAdmits", () => {
+  it("admits any value when the gate is absent or empty", () => {
+    expect(platformGateAdmits(undefined, "linux")).to.equal(true);
+    expect(platformGateAdmits([], "linux")).to.equal(true);
+  });
+
+  it("treats a gate as an allow-list", () => {
+    expect(platformGateAdmits(["darwin", "linux"], "linux")).to.equal(true);
+    expect(platformGateAdmits(["darwin", "linux"], "win32")).to.equal(false);
+  });
+
+  it("honours negated entries as a block-list", () => {
+    expect(platformGateAdmits(["!win32"], "linux")).to.equal(true);
+    expect(platformGateAdmits(["!win32"], "win32")).to.equal(false);
+  });
+
+  it("a block wins even against an allow of the same value", () => {
+    expect(platformGateAdmits(["linux", "!linux"], "linux")).to.equal(false);
+  });
+
+  it("cannot confirm a gated package when the host fact is unknown", () => {
+    expect(platformGateAdmits(["linux"], undefined)).to.equal(false);
+    expect(platformGateAdmits(undefined, undefined)).to.equal(true);
+  });
+});
+
+describe("matchesHostPlatform", () => {
+  const host = { os: "darwin", cpu: "arm64" };
+
+  it("keeps the host-matching native variant", () => {
+    expect(matchesHostPlatform({ os: ["darwin"], cpu: ["arm64"] }, host)).to.equal(true);
+  });
+
+  it("rejects a variant for another os or cpu", () => {
+    expect(matchesHostPlatform({ os: ["linux"], cpu: ["arm64"] }, host)).to.equal(false);
+    expect(matchesHostPlatform({ os: ["darwin"], cpu: ["x64"] }, host)).to.equal(false);
+  });
+
+  it("keeps a platform-agnostic package (no gates)", () => {
+    expect(matchesHostPlatform({}, host)).to.equal(true);
+  });
+
+  it("requires both os and cpu to admit the host", () => {
+    expect(matchesHostPlatform({ os: ["darwin", "linux"], cpu: ["x64"] }, host)).to.equal(false);
+    expect(matchesHostPlatform({ os: ["darwin", "linux"], cpu: ["arm64", "x64"] }, host)).to.equal(true);
+  });
+});
+
+describe("unsupportedPlatformReason", () => {
+  const host = { os: "linux", cpu: "x64" };
+
+  it("returns undefined for a supported package", () => {
+    expect(unsupportedPlatformReason({ os: ["linux"], cpu: ["x64"] }, host)).to.equal(undefined);
+    expect(unsupportedPlatformReason({}, host)).to.equal(undefined);
+  });
+
+  it("explains an os mismatch", () => {
+    expect(unsupportedPlatformReason({ os: ["darwin"] }, host)).to.equal("os 'linux' is not in [darwin]");
+  });
+
+  it("explains a cpu mismatch", () => {
+    expect(unsupportedPlatformReason({ cpu: ["arm64"] }, host)).to.equal("cpu 'x64' is not in [arm64]");
+  });
+
+  it("reports both when both mismatch", () => {
+    expect(unsupportedPlatformReason({ os: ["darwin"], cpu: ["arm64"] }, host)).to.equal(
+      "os 'linux' is not in [darwin]; cpu 'x64' is not in [arm64]"
+    );
   });
 });

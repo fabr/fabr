@@ -31,6 +31,24 @@ describe("Unpack", () => {
     expect(file?.hash).to.equal("ff344d6ce0cb6497bcc78b026420dee7538870af60809bab61e9a2e83b70a287");
   });
 
+  it("preserves the executable bit from tar entry modes", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-unpack-"));
+    try {
+      const pack = tar.pack();
+      pack.entry({ name: "package/bin/tool", mode: 0o755 }, "#!/bin/sh\n");
+      pack.entry({ name: "package/lib/plain.js", mode: 0o644 }, "module.exports = 1;\n");
+      pack.finalize();
+
+      const result = await unpackStream(pack, dir);
+      expect(result.size).to.equal(2);
+      /* 0o111 = any execute bit; the plain file must not have gained one. */
+      expect(fs.statSync(path.resolve(dir, "package/bin/tool")).mode & 0o111).to.not.equal(0);
+      expect(fs.statSync(path.resolve(dir, "package/lib/plain.js")).mode & 0o111).to.equal(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("drops tar entries whose path escapes the target dir (tar-slip)", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-unpack-"));
     const escape = path.resolve(dir, "..", "fabr-tar-slip.txt");
