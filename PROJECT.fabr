@@ -7,7 +7,7 @@ JS_TARGET = es2018-commonjs;
 chai = @npm:chai:4.3.6 @npm:@types/chai:4.3.1
        @npm:chai-as-promised:7.1.1 @npm:@types/chai-as-promised:7.1.8;
 
-chokidar = @npm:chokidar:3.6.0;
+parcel_watcher = @npm:@parcel/watcher:2.4.1;
 picomatch = @npm:picomatch:2.3.1 @npm:@types/picomatch:2.3.0;
 unicode_properties = @npm:unicode-properties:1.3.1 @npm:@types/unicode-properties:1.3.0;
 tar_stream = @npm:tar-stream:3.1.7 @npm:@types/tar-stream:3.1.3;
@@ -15,7 +15,7 @@ tar_stream = @npm:tar-stream:3.1.7 @npm:@types/tar-stream:3.1.3;
 js_package @fabr/core {
   srcs = packages/core/src:**/*.ts packages/core:lib/**;
   tests = packages/core/src:**/*.test.ts;
-  deps = es2021 nodejs chokidar picomatch unicode_properties tar_stream;
+  deps = es2021 nodejs parcel_watcher picomatch unicode_properties tar_stream;
   test_deps = chai;
 }
 

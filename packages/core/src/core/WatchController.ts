@@ -85,6 +85,12 @@ export class WatchController {
     this.closers.add(close);
   }
 
+  /** Surface a watcher-backend error (e.g. the filesystem subscription failing)
+   * through the same channel as a recompute error. */
+  public reportError(err: Error): void {
+    this.onError(err);
+  }
+
   /** Note that a watched entry changed, (re)starting the quiet-window timer. */
   public notifyChanged(entry: WatchEntry): void {
     if (this.closed) {

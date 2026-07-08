@@ -289,7 +289,15 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
    */
   public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
     return this.getVersionMetadata(pkg, versionToString(version)).then(meta => {
-      const required = Object.entries(meta.dependencies ?? {}).map(([dep, constraint]) => ({ pkg: dep, constraint }));
+      /* npm's rule: an entry in optionalDependencies overrides the same name in
+       * dependencies, so a dep listed in both is optional (os/cpu-gated, dropped
+       * if the host doesn't match). @parcel/watcher lists its per-platform native
+       * binaries in both — treating them as required would reject the ones for
+       * other platforms as EBADPLATFORM. */
+      const optionalNames = new Set(Object.keys(meta.optionalDependencies ?? {}));
+      const required = Object.entries(meta.dependencies ?? {})
+        .filter(([dep]) => !optionalNames.has(dep))
+        .map(([dep, constraint]) => ({ pkg: dep, constraint }));
       const optional = Object.entries(meta.optionalDependencies ?? {}).map(([dep, constraint]) => ({ pkg: dep, constraint }));
       if (optional.length === 0) {
         return Computable.resolve(required);

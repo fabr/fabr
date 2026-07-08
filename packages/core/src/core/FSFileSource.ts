@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import * as chokidar from "chokidar";
+import * as parcelWatcher from "@parcel/watcher";
 import * as fs from "fs";
 import * as path from "path";
 import { Name } from "../model/Name";
@@ -76,19 +76,36 @@ export class FSFile implements IFile {
   }
 }
 
+type Matcher = (rel: string) => boolean;
+
+/** A watched glob's live registration against the source's single subscription:
+ * a change to a matching path updates its file map and marks its leaf stale. */
+interface WatchRegistration {
+  matches: Matcher;
+  files: Map<string, Computable<FSFile>>;
+  entry: WatchEntry;
+}
+
 /**
  * FileSet implementation that loads the directory tree from the real FS on demand
  */
 export class FSFileSource implements FileSource {
   protected root: string;
   /**
-   * When present, `find` watches persistently and re-settles its result on
-   * change, funnelling events through the shared controller (which batches them
-   * behind a quiet window). Absent → one-shot: enumerate once and stop watching.
-   * Fixed at construction, so a source is watching-or-not for its whole life —
-   * `find` never changes behaviour underneath an already-issued result.
+   * When present, `find` results are *live*: a single {@link parcelWatcher}
+   * subscription over the source tree re-settles them as files change (batched
+   * through the controller). Absent → one-shot enumeration, no watching. Fixed
+   * at construction, so a source is watching-or-not for its whole life.
    */
   protected readonly watchController?: WatchController;
+  /**
+   * The one filesystem subscription for the whole tree (created lazily on the
+   * first watched `find`) and the per-glob registrations it dispatches to. One
+   * subscription — not one per `find` — so watching scales and a single edit is
+   * not multiplied across overlapping globs.
+   */
+  private subscription?: Promise<parcelWatcher.AsyncSubscription>;
+  private readonly registrations = new Set<WatchRegistration>();
 
   constructor(root: string, watchController?: WatchController) {
     this.root = root;
@@ -138,57 +155,71 @@ export class FSFileSource implements FileSource {
         }),
     };
 
-    let ready = false;
-    const watch = chokidar.watch(searchString, {
-      cwd: this.root,
-      persistent: !!controller,
-      /* Force stat-polling instead of native OS events. chokidar's default
-       * (fsevents on macOS) has been observed to silently drop `change` events
-       * under heavy volume-wide fs activity — the watch then misses the edit.
-       * Polling is reliable but O(files) per interval, so it doesn't scale;
-       * `FABR_WATCH_POLL` is an opt-in for environments where the native backend
-       * is unreliable (and the e2e test, which runs amid a saturated gate).
-       * The scalable answer is a robust backend (e.g. Watchman) — future work. */
-      usePolling: !!process.env.FABR_WATCH_POLL,
-      /* Wait for a file's write to settle before hashing it — a low threshold
-       * keeps watch snappy; a torn read would anyway be corrected by the next
-       * event re-ingesting, since the snapshot is content-addressed. */
-      awaitWriteFinish: controller ? { stabilityThreshold: 150, pollInterval: 50 } : false,
-    });
-    watch.on("add", (path, stat) => {
-      files.set(path, this.fileAdded(path, stat));
-      if (ready && controller) {
-        controller.notifyChanged(entry);
+    enumerateGlob(this.root, searchString).then(({ names, matches }) => {
+      for (const relName of names) {
+        files.set(relName, this.fileAdded(relName, undefined));
       }
-    });
-    watch.on("change", (path, stat) => {
-      if (ready && controller) {
-        files.set(path, this.fileAdded(path, stat));
-        controller.notifyChanged(entry);
-      }
-    });
-    watch.on("unlink", path => {
-      files.delete(path);
-      if (ready && controller) {
-        controller.notifyChanged(entry);
-      }
-    });
-    watch.on("error", err => rejectLeaf(err));
-    watch.on("ready", () => {
-      ready = true;
       buildFileSet().then(fileSet => {
         lastManifest = fileSet.toManifest();
         resolveLeaf(fileSet);
       }, rejectLeaf);
       if (controller) {
-        controller.track(() => void watch.close());
-      } else {
-        /* One-shot: the enumeration is done, so stop watching (the old code
-         * leaked the watcher — see the removed FIXME). */
-        void watch.close();
+        this.registrations.add({ matches, files, entry });
+        this.ensureSubscription(controller);
       }
-    });
+    }, rejectLeaf);
     return leaf;
+  }
+
+  /**
+   * Ensure the single source-tree subscription exists, then dispatch each
+   * filesystem change to every registration whose glob matches — updating that
+   * glob's file map and marking its leaf for a (debounced) re-settle.
+   * @parcel/watcher's FSEvents backend delivers reliably under heavy load where
+   * chokidar's silently dropped events (the reason for the switch, and the exact
+   * 2.4.1 pin — 2.5.x fails to start FSEvents on macOS 15).
+   */
+  private ensureSubscription(controller: WatchController): void {
+    if (this.subscription) {
+      return;
+    }
+    /* @parcel/watcher reports canonical realpaths, but this.root may be a
+     * symlinked form (macOS /var -> /private/var), so relativise against the
+     * real root or nothing matches. */
+    const realRoot = fs.realpathSync(this.root);
+    this.subscription = parcelWatcher.subscribe(
+      realRoot,
+      (err, events) => {
+        if (err) {
+          controller.reportError(err);
+          return;
+        }
+        for (const event of events) {
+          const rel = toPosix(path.relative(realRoot, event.path));
+          for (const registration of this.registrations) {
+            if (!registration.matches(rel)) {
+              continue;
+            }
+            if (event.type === "delete") {
+              registration.files.delete(rel);
+            } else {
+              registration.files.set(rel, this.fileAdded(rel, undefined));
+            }
+            controller.notifyChanged(registration.entry);
+          }
+        }
+      },
+      { ignore: ["**/node_modules/**", "**/.git/**"] }
+    );
+    this.subscription.catch(err => controller.reportError(err));
+    controller.track(() => {
+      void this.subscription?.then(
+        sub => sub.unsubscribe(),
+        () => undefined
+      );
+      this.subscription = undefined;
+      this.registrations.clear();
+    });
   }
 
   protected fileAdded(filename: string, stat: FSFileStats | undefined): Computable<FSFile> {
@@ -238,4 +269,61 @@ function removePrefix(filename: string, pattern: RegExp | undefined): string {
     }
   }
   return filename;
+}
+
+function makeMatcher(glob: string): Matcher {
+  return (picomatch as unknown as (g: string) => Matcher)(glob);
+}
+
+/** Normalise an OS path to forward slashes so glob matching and FileSet names
+ * are platform-independent (matching chokidar's old behaviour). */
+function toPosix(p: string): string {
+  return p.split(path.sep).join("/");
+}
+
+/**
+ * Enumerate the files under `root` matching `searchString`, returning both the
+ * matching root-relative names and the matcher (reused to filter live change
+ * events, so enumeration and watching agree). A plain file matches itself; a
+ * bare directory means every file beneath it. Only the glob's static base is
+ * walked, and node_modules/.git are skipped.
+ */
+async function enumerateGlob(root: string, searchString: string): Promise<{ names: string[]; matches: Matcher }> {
+  const scanned = picomatch.scan(searchString);
+  let pattern = searchString;
+  if (!scanned.isGlob) {
+    const abs = path.resolve(root, searchString);
+    const stat = await fs.promises.stat(abs).catch(() => undefined);
+    if (!stat) {
+      /* Nothing there yet — an empty set that a later create-event can fill. */
+      return { names: [], matches: makeMatcher(searchString) };
+    }
+    if (stat.isFile()) {
+      return { names: [toPosix(searchString)], matches: makeMatcher(searchString) };
+    }
+    pattern = `${searchString.replace(/\/+$/, "")}/**`;
+  }
+  const matches = makeMatcher(pattern);
+  const base = path.resolve(root, picomatch.scan(pattern).base);
+  const names: string[] = [];
+  await walk(root, base, matches, names);
+  return { names, matches };
+}
+
+async function walk(root: string, dir: string, matches: Matcher, names: string[]): Promise<void> {
+  const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [] as fs.Dirent[]);
+  for (const entry of entries) {
+    if (entry.name === "node_modules" || entry.name === ".git") {
+      continue;
+    }
+    const abs = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await walk(root, abs, matches, names);
+    } else if (entry.isFile()) {
+      const rel = toPosix(path.relative(root, abs));
+      if (matches(rel)) {
+        names.push(rel);
+      }
+    }
+  }
 }
