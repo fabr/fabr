@@ -44,14 +44,15 @@ import {
   RunnableFileSet,
   SourceRef,
   TestsFailedError,
+  WatchController,
 } from "@fabr/core";
 import { runInteractive } from "./RunHandler";
 /* The whole of @fabr/core doubles as the api object injected into plugins:
  * handing plugins the host's own module instance keeps every class and
  * registry shared (a plugin must never load a second copy of the core). */
 import * as pluginApi from "@fabr/core";
-import { Options } from "./Command";
-import { getSourceRoot, getBuildCacheRoot, getHostProperties, PROJECT_FILENAME, SOURCE_CACHE_FILENAME } from "./Environment";
+import { Mode, Options } from "./Command";
+import { getSourceRoot, getBuildCacheRoot, getHostProperties, PROJECT_FILENAME } from "./Environment";
 
 const DIAG_BUILD_COMPLETE = Diagnostic.Info<{ count: number }>("Built {count} target(s)");
 const DIAG_UP_TO_DATE = Diagnostic.Info<Record<string, never>>("Already up to date");
@@ -73,12 +74,17 @@ const DIAG_DEPENDENCY_FAILED = Diagnostic.Error<{ name: string; dependency: stri
 const DIAG_TESTS_FAILED = Diagnostic.Error<{ name: string; message: string; loc: ISourcePosition }>("{name}: {message}");
 const DIAG_TEST_RESULT = Diagnostic.Info<{ name: string; summary: string }>("{name}: {summary}");
 const DIAG_BUILDING = Diagnostic.Info<{ verb: string; name: string; chain: string }>("{verb} {name}{chain}");
+const DIAG_WATCHING = Diagnostic.Info<Record<string, never>>("Watching for changes (Ctrl-C to stop)");
 const DIAG_RESOLVING = Diagnostic.Info<{ requirements: string; name: string }>("Resolving {requirements} from {name}");
 const DIAG_FETCHING = Diagnostic.Info<{ resource: string; url: string }>("Fetching {resource}{url}");
 
 /** Progress verbs for the well-known operations; anything else renders as
  * "Running <operation> on <target>" */
 const OPERATION_VERBS: Record<string, string> = { build: "Building", test: "Testing", run: "Running" };
+
+/** Quiet-window (ms) a burst of filesystem events is collapsed behind before a
+ * rebuild — long enough to coalesce an editor's save, short enough to feel live. */
+const WATCH_QUIET_MS = 100;
 
 /**
  * Render a build failure tree: each failed target is reported once, against its
@@ -182,6 +188,9 @@ export type Operation = (model: BuildModel, execution: ExecutionContext) => Comp
  * verbs take a bare target name.
  */
 export function runFabr(options: Options): Promise<void> {
+  /* Watch is only meaningful for the build-graph verbs; `run` is interactive
+   * (it exits with the program's code) and ls/cat are one-shot queries. */
+  const watch = options.mode === Mode.Watch && (options.command === "build" || options.command === "test");
   switch (options.command) {
     case "ls":
       return runWith((model, execution) =>
@@ -194,17 +203,23 @@ export function runFabr(options: Options): Promise<void> {
     case "test":
       return runWith((model, execution) => {
         const targets = buildTargets(model, options, execution, "test");
-        return Computable.forAll(targets, (...results) => reportTestResults(execution.log, options, results)).then(() =>
-          buildStatus(execution, targets.length)
+        /* Reporting lives in the forAll callback (not a trailing .then) so it
+         * re-runs on every watch cycle: the callback is re-invoked whenever a
+         * target re-settles to a new value, whereas a `.then` on the void result
+         * would be short-circuited by the value-equality cutoff. */
+        return Computable.forAll(targets, (...results) =>
+          reportTestResults(execution.log, options, results).then(() => buildStatus(execution, targets.length))
         );
-      });
+      }, watch);
     case "run":
       return runWith((model, execution) => runProgram(model, options, execution));
     default: /* build */
       return runWith((model, execution) => {
         const targets = buildTargets(model, options, execution, "build");
-        return Computable.forAll(targets, () => {}).then(() => buildStatus(execution, targets.length));
-      });
+        /* Report inside the callback (see the test case) so a watch rebuild
+         * re-prints its status rather than being cut off at the void result. */
+        return Computable.forAll(targets, () => buildStatus(execution, targets.length));
+      }, watch);
   }
 }
 
@@ -237,21 +252,36 @@ function runProgram(model: BuildModel, options: Options, execution: ExecutionCon
  * failure tree (exit 1) on error. Reaching a drained event loop without an
  * explicit exit is a stall bug, reported loudly (exit 2).
  */
-async function runWith(operation: Operation): Promise<void> {
+async function runWith(operation: Operation, watch = false): Promise<void> {
   /* Diagnostics and progress go to stderr; command data (ls listings, cat
    * file contents) goes to stdout, so a build can be filtered from its output. */
   const log = new LogFormatter(LogLevel.Info, line => process.stderr.write(line + "\n"));
 
-  process.on("beforeExit", () => {
-    log.log(DIAG_ERROR, { message: "Internal error: the build stalled without completing" });
-    process.exit(2);
-  });
+  /* In watch mode a drained event loop is the normal idle state (the watchers
+   * keep the process alive), so the stall guard would misfire. */
+  if (!watch) {
+    process.on("beforeExit", () => {
+      log.log(DIAG_ERROR, { message: "Internal error: the build stalled without completing" });
+      process.exit(2);
+    });
+  }
 
   const sourceRoot = await getSourceRoot();
   const buildCache = new BuildCache(getBuildCacheRoot());
-  const sourceFileSource = await getSourceFileSource(sourceRoot, SOURCE_CACHE_FILENAME);
   const execution = new ExecutionContext(buildCache, log);
   execution.onProgress(progressListener(log));
+
+  /* Watching is fixed at the source's construction (not toggled later), so build
+   * the controller first. The build cache doubles as the content-addressed blob
+   * store the source snapshots into, so it too precedes the source file source. */
+  const controller = watch
+    ? new WatchController(WATCH_QUIET_MS, undefined, err => reportFailure(log, err, new Set()), () => execution.beginBuildCycle())
+    : undefined;
+  const sourceFileSource = getSourceFileSource(sourceRoot, buildCache, controller);
+
+  if (controller) {
+    return runWatched(operation, sourceFileSource, execution, log, controller);
+  }
 
   /* The system include path defaults to the directories the loaded rule
    * packages registered (core + js via their imports; plugins later) */
@@ -263,6 +293,42 @@ async function runWith(operation: Operation): Promise<void> {
       log.log(DIAG_BUILD_FAILED, {});
       process.exit(1);
     });
+}
+
+/**
+ * The watch lifecycle: put the source tree into watch mode, run the operation
+ * once to establish the live graph, then keep re-reporting as the operation's
+ * Computable re-settles on each (debounced) change. Unlike the one-shot path it
+ * never exits on completion — a failed build reports and keeps watching, a
+ * subsequent fix re-settles the graph to green — and it tears the watchers down
+ * on SIGINT. The returned promise deliberately never resolves; the process is
+ * kept alive by the persistent watchers and ends only via the signal handler.
+ */
+function runWatched(
+  operation: Operation,
+  sourceFileSource: ReturnType<typeof getSourceFileSource>,
+  execution: ExecutionContext,
+  log: Log,
+  controller: WatchController
+): Promise<void> {
+  process.on("SIGINT", () => {
+    controller.close();
+    process.exit(0);
+  });
+
+  /* This observer re-fires every time the operation's Computable re-settles (the
+   * revalidation cascade after a change), so status/failure render per cycle. */
+  loadProject(sourceFileSource, PROJECT_FILENAME, log, pluginApi)
+    .then(model => operation(model, execution))
+    .then(
+      () => log.log(DIAG_WATCHING, {}),
+      err => {
+        reportFailure(log, err, new Set());
+        log.log(DIAG_BUILD_FAILED, {});
+        log.log(DIAG_WATCHING, {});
+      }
+    );
+  return new Promise<void>(() => {});
 }
 
 function configFor(model: BuildModel, options: Options, execution: ExecutionContext, operation: string): BuildContext {
@@ -286,9 +352,10 @@ function resolveNames(model: BuildModel, options: Options, execution: ExecutionC
   return options.targets.map(name => config.resolveName(name));
 }
 
-/** Print the terminal build-status line: nothing built, or a count. */
+/** Print the terminal build-status line: nothing built (this cycle), or a count.
+ * Uses the per-cycle delta so a watch rebuild reports only what it rebuilt. */
 function buildStatus(execution: ExecutionContext, count: number): void {
-  if (execution.buildCache.getBuildCount() === 0) {
+  if (execution.takeBuildCount() === 0) {
     execution.log.log(DIAG_UP_TO_DATE, {});
   } else {
     execution.log.log(DIAG_BUILD_COMPLETE, { count });

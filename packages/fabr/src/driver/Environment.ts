@@ -23,7 +23,6 @@ import * as os from "os";
 import * as fsPromises from "fs/promises";
 
 export const PROJECT_FILENAME = "PROJECT.fabr";
-export const SOURCE_CACHE_FILENAME = ".fabrhash";
 export const BUILD_CACHE_ENV = "FABR_CACHE_DIR";
 
 /**

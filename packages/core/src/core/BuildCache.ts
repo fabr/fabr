@@ -4,32 +4,35 @@ import { Readable } from "stream";
 import { Computable } from "./Computable";
 import { openUrlStream } from "./Fetch";
 import { FileSet, IFile } from "./FileSet";
+import { FSFile } from "./FSFileSource";
 import { deleteFile, hardlink, hashFile, hashString, readFile, readFileBuffer, symlink, writeFile } from "./FSWrapper";
 import { SymlinkFile } from "./SymlinkFile";
 import { describeSystemError, ExecutionError } from "../support/Execute";
 import * as picomatch from "picomatch";
 
-export class BuildFile implements IFile {
-  private root: string;
+class BuildFile implements IFile {
+  private readonly root: string;
   public name: string;
   public hash: string;
 
-  constructor(root: string, name: string, hash: string) {
+  constructor(root: string, hash: string, name: string) {
     this.root = root;
-    this.name = name;
     this.hash = hash;
+    this.name = name;
   }
 
   public readString(encoding?: BufferEncoding): Computable<string> {
-    return readFile(path.resolve(this.root, this.name), encoding);
+    return readFile(path.resolve(this.root, this.hash), encoding);
   }
 
   public getBuffer(): Computable<Buffer> {
-    return readFileBuffer(path.resolve(this.root, this.name));
+    return readFileBuffer(path.resolve(this.root, this.hash));
   }
 
   public getDisplayName(): string {
-    return path.resolve(this.root, this.name);
+    /* The logical name (e.g. "build/index.js"), not the opaque blob path — a
+     * content hash is meaningless in a diagnostic. */
+    return this.name;
   }
 
   public isSameFile(file: IFile): boolean {
@@ -37,7 +40,7 @@ export class BuildFile implements IFile {
   }
 
   public getAbsPath(): string {
-    return path.resolve(this.root, this.name);
+    return path.resolve(this.root, this.hash);
   }
 }
 
@@ -46,11 +49,19 @@ export class BuildFile implements IFile {
  *
  * The Source Manifest is hashed and used to look up the target manifest. If not found,
  * we create a directory for the job to write to, and
+ *
+ * It is also the content-addressed blob store (see {@link ensureBlob}) that both
+ * the source-file snapshots a {@link SourceFileSource} takes and a build step's
+ * outputs (see `storeContent`) materialise into — one pool (`blob/<hash>`), one
+ * atomic write, one dedup.
  */
 export class BuildCache {
-  private root: string;
-  /** Number of entries actually built (cache misses) during this run */
-  private builds = 0;
+  private readonly root: string;
+  private readonly blobRoot: string;
+
+  /** Counter for unique blob temp names (with the pid, unique across processes
+   * sharing the cache; the +rename is what makes a blob appear atomically). */
+  private blobTempCounter = 0;
   /**
    * Entries currently being created, by hashed key: a second demand for the
    * same key joins the first's Computable rather than starting its own build
@@ -63,18 +74,11 @@ export class BuildCache {
    * other just deleted). Per-process only — two fabr processes sharing a cache
    * directory can still race (that needs on-disk locking; out of scope).
    */
-  private inflight = new Map<string, Computable<FileSet>>();
+  private readonly inflight = new Map<string, Computable<FileSet>>();
 
-  constructor(path: string) {
-    this.root = path;
-  }
-
-  /**
-   * @return the number of entries that had to be built (rather than served
-   * from cache) so far — zero meaning the run had no effect.
-   */
-  public getBuildCount(): number {
-    return this.builds;
+  constructor(cachePath: string) {
+    this.root = cachePath;
+    this.blobRoot = path.resolve(cachePath, "blob");
   }
 
   public getOrCreate(cacheKey: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
@@ -87,15 +91,21 @@ export class BuildCache {
       if (entry) {
         return entry;
       } else {
-        this.builds++;
         const targetDir = path.resolve(this.root, key);
         /* No manifest means any existing directory content is debris from a
          * failed (or crashed) earlier attempt: start from a clean slate. */
         fs.rmSync(targetDir, { recursive: true, force: true });
         fs.mkdirSync(targetDir, { recursive: true });
         return create(targetDir)
-          .then(fs => writeMemoryFiles(targetDir, fs))
-          .then(fs => this.storeManifest(targetDir, fs))
+          .then(result => this.storeContent(result))
+          .then(result => this.storeManifest(targetDir, result))
+          .then(result => {
+            /* The work dir was only scratch for the step — its outputs now live
+             * in the content pool and the manifest is written, so discard it.
+             * The `<key>.manifest` sibling file is untouched. */
+            fs.rmSync(targetDir, { recursive: true, force: true });
+            return result;
+          })
           .catch(err => {
             /* Remove the partial entry so a retry starts fresh */
             fs.rmSync(targetDir, { recursive: true, force: true });
@@ -132,6 +142,67 @@ export class BuildCache {
     return this.getOrCreate(`fetch:${tag} ${url}`, targetDir => openUrlStream(url).then(ins => process(ins, targetDir)));
   }
 
+  /**
+   * Store `bytes` as an immutable content-addressed blob under `hash` (for the
+   * source-file snapshots a {@link SourceFileSource} takes, and any in-memory
+   * build output). Keying it by the same hash the manifest uses guarantees the
+   * bytes compiled are exactly the bytes that hash names. Written atomically
+   * (temp + rename) so a crash or concurrent writer can never leave a *partial*
+   * blob a later `existsSync` would trust.
+   */
+  public ensureBlob(hash: string, bytes: Buffer): Computable<string> {
+    return this.materializeBlob(hash, blobPath => {
+      const tmp = `${blobPath}.tmp-${process.pid}-${this.blobTempCounter++}`;
+      return Computable.from<void>((resolve, reject) => {
+        fs.writeFile(tmp, Uint8Array.from(bytes), err => (err ? reject(err) : resolve()));
+      }).then(() => this.renameIntoPool(tmp, blobPath));
+    });
+  }
+
+  /**
+   * Move an already-written file (a build step's output, sitting in its work
+   * dir) into the pool under `hash` — a rename, not a copy, since we already
+   * hashed it. Rename preserves the file's mode, so a unique-content executable
+   * keeps its exec bit. (Two byte-identical files that want *different* modes
+   * would share one blob — rare, and the same content-vs-mode limitation as
+   * source snapshots; a per-entry mode in the manifest is the eventual fix.)
+   */
+  private ingestFile(hash: string, sourcePath: string): Computable<string> {
+    return this.materializeBlob(hash, blobPath => this.renameIntoPool(sourcePath, blobPath));
+  }
+
+  /**
+   * Put content into the pool at `<blobRoot>/<hash>`: reuse an existing blob,
+   * else `materialise` it (which must place it *atomically* at the given path).
+   * No in-flight lock is needed — the atomic rename makes concurrent writers of
+   * the same hash safe (identical content, atomic replace); the worst case is a
+   * redundant temp-write that never corrupts the result.
+   */
+  private materializeBlob(hash: string, materialise: (blobPath: string) => Computable<void>): Computable<string> {
+    const blobPath = path.resolve(this.blobRoot, hash);
+    if (fs.existsSync(blobPath)) {
+      return Computable.resolve(blobPath);
+    }
+    fs.mkdirSync(this.blobRoot, { recursive: true });
+    return materialise(blobPath).then(() => blobPath);
+  }
+
+  /** Atomically move `from` into place at `blobPath`. If another writer got
+   * there first (the blob now exists — same content by hash), that is success;
+   * either way `from` is consumed. */
+  private renameIntoPool(from: string, blobPath: string): Computable<void> {
+    return Computable.from<void>((resolve, reject) => {
+      fs.rename(from, blobPath, err => {
+        if (!err) {
+          resolve();
+          return;
+        }
+        const won = fs.existsSync(blobPath);
+        fs.rm(from, { force: true }, () => (won ? resolve() : reject(err)));
+      });
+    });
+  }
+
   private lookup(key: string): Computable<FileSet | undefined> {
     const file = path.resolve(this.root, key + ".manifest");
     if (fs.existsSync(file)) {
@@ -143,24 +214,44 @@ export class BuildCache {
 
   /**
    * Write the entry's manifest and return its cache-backed view: in one pass,
-   * serialize each file (all fs-backed by now — writeMemoryFiles ran) to the
-   * manifest AND build a FileSet of BuildFiles rooted at the store. That view
-   * is the SAME representation a later cache hit deserialises, so an entry
-   * surfaces with a stable IFile identity whether freshly built or served from
-   * disk — built directly here rather than by re-parsing the manifest.
+   * serialize each file (just `hash name`) to the manifest AND build a FileSet of
+   * BuildFiles rooted at the store. That view is the SAME representation a later
+   * cache hit deserialises, so an entry surfaces with a stable IFile identity
+   * whether freshly built or served from disk.
+   *
+   * Every file is blob-backed by now (storeContent ran), so its content path is
+   * implicitly `blob/<hash>` and needn't be stored. (A symlink output, which has
+   * no content hash, would need a distinct line form recording its target — build
+   * steps don't currently produce them; `getResultFileSet` collects only regular
+   * files.)
    */
   private storeManifest(targetDir: string, files: FileSet): Computable<FileSet> {
     let manifest = "";
     const backed = new Map<string, IFile>();
     for (const [name, file] of files) {
-      let realpath = file.getAbsPath() as string;
-      if (realpath.startsWith(this.root)) {
-        realpath = path.relative(this.root, realpath);
-      }
-      manifest += `${file.hash} ${encodeURI(name)} ${encodeURI(realpath)}\n`;
-      backed.set(name, new BuildFile(this.root, realpath, file.hash));
+      manifest += `${file.hash} ${encodeURI(name)}\n`;
+      backed.set(name, new BuildFile(this.blobRoot, file.hash, name));
     }
     return writeFile(targetDir + ".manifest", manifest).then(() => new FileSet(backed));
+  }
+
+  /**
+   * Ingest every file of a completed build step's result into the shared
+   * content-addressed pool — in-memory files by their bytes, files the step
+   * wrote to its work dir by a rename (no copy; already hashed) — and return a
+   * FileSet of blob-backed BuildFiles. So all content lives in one pool keyed by
+   * hash (deduplicated globally), and the work dir can be discarded afterwards.
+   */
+  private storeContent(files: FileSet): Computable<FileSet> {
+    const map = new Map<string, IFile>();
+    const ops: Computable<void>[] = [];
+    for (const [name, file] of files) {
+      const abspath = file.getAbsPath();
+      const stored = abspath === undefined ? file.getBuffer().then(buffer => this.ensureBlob(file.hash, buffer)) : this.ingestFile(file.hash, abspath);
+      ops.push(stored.then(() => undefined));
+      map.set(name, new BuildFile(this.blobRoot, file.hash, name));
+    }
+    return ops.length === 0 ? Computable.resolve(new FileSet(map)) : Computable.forAll(ops, () => new FileSet(map));
   }
 
   private deserialiseFileSet(data: string): FileSet {
@@ -170,37 +261,11 @@ export class BuildCache {
       .split("\n")
       .forEach(line => {
         if (line) {
-          const [hash, name, path] = line.split(" ");
-          result.set(decodeURI(name), new BuildFile(this.root, decodeURI(path), hash));
+          const [hash, name] = line.split(" ");
+          result.set(decodeURI(name), new BuildFile(this.blobRoot, hash, decodeURI(name)));
         }
       });
     return new FileSet(result);
-  }
-}
-
-/**
- * Write all in-memory (or otherwise non-fs-based) files out to disk, and return a FileSet
- * with those files replaced with an equivalent FSFile.
- *
- * @param targetDir Base directory in which to write files.
- * @param files The fileset to write out.
- */
-function writeMemoryFiles(targetDir: string, files: FileSet): Computable<FileSet> {
-  const map = new Map();
-  const output: Computable<void>[] = [];
-  for (const [name, file] of files) {
-    if (file.getAbsPath() === undefined) {
-      const writeName = file.hash + ".dat";
-      output.push(file.getBuffer().then(buffer => writeFile(path.resolve(targetDir, writeName), buffer)));
-      map.set(name, new BuildFile(targetDir, writeName, file.hash));
-    } else {
-      map.set(name, file);
-    }
-  }
-  if (output.length === 0) {
-    return Computable.resolve(files);
-  } else {
-    return Computable.forAll(output, () => new FileSet(map));
   }
 }
 
@@ -272,7 +337,10 @@ export function getResultFileSet(targetDir: string, pattern: string): Computable
           if (!relpath.startsWith("..") && matcher(relpath)) {
             ops.push(
               hashFile(abspath).then(hash => {
-                result.set(relpath, new BuildFile(rootDir, relpath, hash));
+                /* A work-dir output is path-backed (content at its relpath, not
+                 * at a blob hash), so it can't be a BuildFile — storeContent then
+                 * ingests it into the pool by rename. */
+                result.set(relpath, new FSFile(rootDir, relpath, fs.statSync(abspath), hash));
               })
             );
           } else {

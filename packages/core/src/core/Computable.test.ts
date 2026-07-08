@@ -166,6 +166,38 @@ describe("Computable", () => {
     expect(values).to.deep.equal([2, 6]);
   });
 
+  it("recomputes a shared dependant once when several inputs re-settle as a batch", () => {
+    let resolveA: (value: number) => void = () => {};
+    let resolveB: (value: number) => void = () => {};
+    const a = Computable.from<number>(res => {
+      resolveA = res;
+    });
+    const b = Computable.from<number>(res => {
+      resolveB = res;
+    });
+    resolveA(1);
+    resolveB(1);
+    let runs = 0;
+    const sum = Computable.forAll([a, b], (x, y) => {
+      runs++;
+      return x + y;
+    });
+    const values: number[] = [];
+    sum.then(value => values.push(value));
+    expect(runs).to.equal(1);
+    expect(values).to.deep.equal([2]);
+
+    /* The WatchController batch pattern: invalidate the whole frontier first,
+     * then settle it. The shared dependant must not run until *both* inputs are
+     * settled again, so it recomputes exactly once — not once per input. */
+    a.invalidate();
+    b.invalidate();
+    resolveA(10);
+    resolveB(20);
+    expect(runs).to.equal(2);
+    expect(values).to.deep.equal([2, 30]);
+  });
+
   it("restores an errored node without recomputation when inputs revalidate unchanged", () => {
     let resolve: (value: number) => void = () => {};
     const src = Computable.from<number>(res => {

@@ -102,10 +102,45 @@ export class ExecutionContext {
   public readonly buildCache: BuildCache;
   public readonly log: Log;
   private progressListener?: ProgressListener;
+  private generation = 0;
+  /** Work signalled this run and the amount already reported, so watch mode can
+   * take a per-rebuild delta. Counted from the progress events (every one is
+   * emitted from a cache-miss path — never a cache hit), so "work happened" is
+   * exactly "some progress event fired"; no separate tally is threaded through
+   * the store. */
+  private workSignals = 0;
+  private reportedWork = 0;
 
   constructor(buildCache: BuildCache, log: Log = defaultLog) {
     this.buildCache = buildCache;
     this.log = log;
+  }
+
+  /**
+   * @return the number of work events (builds/fetches/resolutions) since the
+   * previous call (or since the start), resetting that baseline — so each
+   * watch-mode rebuild reports only what it did. A one-shot run calls this once;
+   * zero means the run had no effect ("already up to date").
+   */
+  public takeBuildCount(): number {
+    const delta = this.workSignals - this.reportedWork;
+    this.reportedWork = this.workSignals;
+    return delta;
+  }
+
+  /**
+   * A monotonically increasing "build cycle" counter. In watch mode the driver
+   * advances it before each rebuild so a target that already announced itself in
+   * an earlier cycle announces again for the new one (the per-target announce
+   * flag is keyed by this, not a plain boolean).
+   */
+  public get buildGeneration(): number {
+    return this.generation;
+  }
+
+  /** Advance to the next build cycle (watch mode, before re-settling the graph). */
+  public beginBuildCycle(): void {
+    this.generation++;
   }
 
   /**
@@ -116,6 +151,9 @@ export class ExecutionContext {
   }
 
   public notifyProgress(event: ProgressEvent): void {
+    /* Every progress event marks real work (never a cache hit), so this doubles
+     * as the "was anything done" tally the driver's status line reads. */
+    this.workSignals++;
     this.progressListener?.(event);
   }
 }

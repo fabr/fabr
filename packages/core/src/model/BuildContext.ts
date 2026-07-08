@@ -779,7 +779,10 @@ export abstract class TargetContext {
 export class DeclaredTargetContext extends TargetContext {
   public readonly target: ITargetDecl;
   private readonly props: Record<string, IPropertyDecl>;
-  private announced = false;
+  /** The build cycle in which this target last announced itself building, so a
+   * watch rebuild (a new cycle) re-announces while a single cycle announces once
+   * however many sub-actions miss the cache. */
+  private announcedGeneration = -1;
 
   constructor(target: ITargetDecl, context: BuildContext, stack?: IDependencyStack) {
     super(context, stack);
@@ -824,10 +827,11 @@ export class DeclaredTargetContext extends TargetContext {
   }
 
   public announceBuilding(): void {
-    if (this.announced) {
+    const generation = this.context.execution.buildGeneration;
+    if (this.announcedGeneration === generation) {
       return;
     }
-    this.announced = true;
+    this.announcedGeneration = generation;
     this.notifyProgress({
       kind: "target-build",
       target: this.target,

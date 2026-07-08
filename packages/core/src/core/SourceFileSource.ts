@@ -18,88 +18,48 @@
  */
 
 import * as fs from "fs";
-import * as fsPromises from "fs/promises";
 import * as path from "path";
 import { Computable } from "./Computable";
-import { hashFile } from "./FSWrapper";
-import { FSFile, FSFileSource } from "./FSFileSource";
-
-export interface ISourceFileCacheEntry {
-  size: number;
-  mtime: number;
-  hash: string;
-}
+import { hashString, readFileBuffer } from "./FSWrapper";
+import { BuildCache } from "./BuildCache";
+import { FSFile, FSFileSource, FSFileStats } from "./FSFileSource";
+import { WatchController } from "./WatchController";
 
 /**
- * FileSource for the local source tree. In addition to wrapping the basic filesystem
- * handling (and keeping the results within the tree), it also caches source file hashes
- * so that we don't have to keep recomputing them.
+ * FileSource for the local (mutable) source tree. Every source file it hands
+ * back is **snapshotted** into the content-addressed blob store at the moment
+ * it is hashed: the single read that computes the hash also supplies the bytes,
+ * so the hash and the compiled content can never diverge (the manifest key
+ * always names exactly what a build step stages). The returned FSFile is
+ * blob-backed — its content path is the immutable snapshot — while its
+ * name/root still identify the source for diagnostics.
  *
  * TODO: Locking
  */
 export class SourceFileSource extends FSFileSource {
-  private cacheFile: string;
-  private cache: Map<string, FSFile>;
+  private readonly cache: BuildCache;
 
-  constructor(sourceRoot: string, cacheFile: string) {
-    super(sourceRoot);
-    this.cache = new Map();
-    this.cacheFile = path.resolve(sourceRoot, cacheFile);
-  }
-
-  public async load(): Promise<void> {
-    if (fs.existsSync(this.cacheFile)) {
-      const data = await fsPromises.readFile(this.cacheFile);
-      const result = new Map<string, FSFile>();
-      data
-        .toString()
-        .split("\n")
-        .forEach(line => {
-          const [hash, mtime, size, ...name] = line.split(" ");
-          if (name.length > 0) {
-            const filename = name.join(" ");
-            result.set(
-              filename,
-              new FSFile(this.root, filename, { mtime: new Date(parseInt(mtime, 10)), size: parseInt(size, 10) }, hash)
-            );
-          }
-        });
-      this.cache = result;
-    }
-  }
-
-  public async save(): Promise<void> {
-    let content = "";
-    this.cache.forEach((entry, name) => {
-      content += `${entry.hash} ${entry.stat.mtime.getTime()} ${entry.stat.size} ${name}\n`;
-    });
-    await fsPromises.writeFile(this.cacheFile, content);
+  constructor(sourceRoot: string, cache: BuildCache, watchController?: WatchController) {
+    super(sourceRoot, watchController);
+    this.cache = cache;
   }
 
   /**
-   * @return the hash of the given file + timestamp. If the file can't be read,
-   * throws an Error.
-   * @param filename
-   * @param stat
+   * Read the file once, hash those exact bytes, and ingest them into the blob
+   * store; return an FSFile whose content is read from the immutable blob.
    */
-  fileAdded(filename: string, stat?: fs.Stats): Computable<FSFile> {
+  fileAdded(filename: string, stat?: FSFileStats): Computable<FSFile> {
     const filepath = path.resolve(this.root, filename);
     const fileStat = stat ?? fs.statSync(filepath);
-    const entry = this.cache.get(filename);
-    if (entry && entry.stat.mtime.getTime() === fileStat.mtime.getTime() && entry.stat.size === fileStat.size) {
-      return Computable.resolve(entry);
-    } else {
-      return hashFile(filepath).then(hash => {
-        const result = new FSFile(this.root, filename, { size: fileStat.size, mtime: fileStat.mtime }, hash);
-        this.cache.set(filename, result);
-        return result;
-      });
-    }
+    return readFileBuffer(filepath).then(bytes => {
+      const hash = hashString(bytes);
+      return this.cache
+        .ensureBlob(hash, bytes)
+        .then(blobPath => new FSFile(this.root, filename, { size: fileStat.size, mtime: fileStat.mtime }, hash, blobPath));
+    });
   }
 }
 
-export async function getSourceFileSource(root: string, cacheFilename: string): Promise<SourceFileSource> {
-  const source = new SourceFileSource(root, cacheFilename);
-  await source.load();
-  return source;
+export function getSourceFileSource(root: string, cache: BuildCache, watchController?: WatchController): SourceFileSource {
+  return new SourceFileSource(root, cache, watchController);
 }

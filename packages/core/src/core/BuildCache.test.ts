@@ -104,7 +104,6 @@ describe("BuildCache", () => {
     release();
     const [a, b] = await Promise.all([toPromise(first), toPromise(second)]);
     expect(creates).to.equal(1);
-    expect(cache.getBuildCount()).to.equal(1);
     expect(await toPromise(a.readFile("out.txt"))).to.equal("content");
     expect(await toPromise(b.readFile("out.txt"))).to.equal("content");
   });
@@ -124,6 +123,41 @@ describe("BuildCache", () => {
     expect(await toPromise(recovered.readFile("out.txt"))).to.equal("ok");
   });
 
+  it("stores a blob addressed by its content hash", async () => {
+    const cache = new BuildCache(root);
+    const bytes = Buffer.from("hello blob");
+    const hash = hashString(bytes);
+    const blobPath = await toPromise(cache.ensureBlob(hash, bytes));
+    expect(blobPath).to.equal(path.join(root, "blob", hash));
+    expect(fs.readFileSync(blobPath, "utf8")).to.equal("hello blob");
+    /* Atomic write leaves no temp debris behind */
+    expect(fs.readdirSync(path.join(root, "blob")).some(name => name.includes(".tmp-"))).to.equal(false);
+  });
+
+  it("reuses an existing blob without rewriting it", async () => {
+    const cache = new BuildCache(root);
+    const bytes = Buffer.from("content");
+    const hash = hashString(bytes);
+    const first = await toPromise(cache.ensureBlob(hash, bytes));
+    /* A second demand under the same (immutable) hash returns the same path and
+     * the original content stands — the store trusts the hash, not the bytes. */
+    const second = await toPromise(cache.ensureBlob(hash, Buffer.from("would-be-ignored")));
+    expect(second).to.equal(first);
+    expect(fs.readFileSync(second, "utf8")).to.equal("content");
+  });
+
+  it("converges concurrent ingests of the same blob to one atomic result", async () => {
+    const cache = new BuildCache(root);
+    const bytes = Buffer.from("shared blob");
+    const hash = hashString(bytes);
+    /* No in-flight lock: both writers run, but the content-addressed path and the
+     * atomic rename mean they converge on one blob with the right content. */
+    const [a, b] = await Promise.all([toPromise(cache.ensureBlob(hash, bytes)), toPromise(cache.ensureBlob(hash, bytes))]);
+    expect(a).to.equal(b);
+    expect(fs.readFileSync(a, "utf8")).to.equal("shared blob");
+    expect(fs.readdirSync(path.join(root, "blob")).some(name => name.includes(".tmp-"))).to.equal(false);
+  });
+
   it("returns the cached result without re-running the build", async () => {
     const cache = new BuildCache(root);
     await toPromise(
@@ -132,7 +166,8 @@ describe("BuildCache", () => {
       )
     );
 
-    /* A separate BuildCache instance sees the persisted entry and never calls create */
+    /* A separate BuildCache instance sees the persisted entry and never calls
+     * create (a rebuild would throw), so a fully-cached run does no work. */
     const reopened = new BuildCache(root);
     const files = await toPromise(
       reopened.getOrCreate("test manifest", () => {
@@ -141,7 +176,5 @@ describe("BuildCache", () => {
     );
     const content = await toPromise(files.readFile("meta.json"));
     expect(content).to.equal('{"name":"test"}');
-    /* A fully-cached run built nothing */
-    expect(reopened.getBuildCount()).to.equal(0);
   });
 });

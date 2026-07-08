@@ -25,6 +25,7 @@ import { Name } from "../model/Name";
 import { Computable } from "./Computable";
 import { FileSet, IFile, FileSource } from "./FileSet";
 import { hashFile, readFile, readFileBuffer } from "./FSWrapper";
+import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
 import * as picomatch from "picomatch";
 
 export interface FSFileStats {
@@ -37,16 +38,25 @@ export class FSFile implements IFile {
   public stat: FSFileStats;
   public name: string;
   public hash: string;
+  /**
+   * The absolute path the file's *content* is read from. Defaults to the file's
+   * own location under `root`, but a blob-backed source file (see
+   * {@link SourceFileSource}) points this at its immutable content-addressed
+   * snapshot, so reads and staging never touch the live source path while the
+   * name/root — and thus {@link getDisplayName} — still identify the source.
+   */
+  private readonly contentPath: string;
 
-  constructor(root: string, name: string, stat: FSFileStats, hash: string) {
+  constructor(root: string, name: string, stat: FSFileStats, hash: string, contentPath?: string) {
     this.root = root;
     this.name = name;
     this.stat = stat;
     this.hash = hash;
+    this.contentPath = contentPath ?? path.resolve(root, name);
   }
 
   public readString(encoding?: BufferEncoding): Computable<string> {
-    return readFile(path.resolve(this.root, this.name), encoding);
+    return readFile(this.contentPath, encoding);
   }
 
   public getDisplayName(): string {
@@ -54,15 +64,15 @@ export class FSFile implements IFile {
   }
 
   public isSameFile(file: IFile): boolean {
-    return file instanceof FSFile && this.getDisplayName() === file.getDisplayName();
+    return file.getAbsPath() === this.getAbsPath();
   }
 
   public getAbsPath(): string {
-    return path.resolve(this.root, this.name);
+    return this.contentPath;
   }
 
   public getBuffer(): Computable<Buffer> {
-    return readFileBuffer(path.resolve(this.root, this.name));
+    return readFileBuffer(this.contentPath);
   }
 }
 
@@ -71,46 +81,114 @@ export class FSFile implements IFile {
  */
 export class FSFileSource implements FileSource {
   protected root: string;
-  constructor(root: string) {
+  /**
+   * When present, `find` watches persistently and re-settles its result on
+   * change, funnelling events through the shared controller (which batches them
+   * behind a quiet window). Absent → one-shot: enumerate once and stop watching.
+   * Fixed at construction, so a source is watching-or-not for its whole life —
+   * `find` never changes behaviour underneath an already-issued result.
+   */
+  protected readonly watchController?: WatchController;
+
+  constructor(root: string, watchController?: WatchController) {
     this.root = root;
+    this.watchController = watchController;
   }
 
-  /**
-   * FIXME: This has multiple issues - it never closes even if the dependency
-   * is otherwise drops, and it has no way to actually apply the post-ready
-   * updates when we're in real watch mode.
-   * @param name
-   * @returns
-   */
   public find(name: Name, prefix = ""): Computable<FileSet> {
-    return Computable.from<FileSet>((resolve, reject) => {
-      const nameString = name.toString();
-      const colonIdx = nameString.lastIndexOf(":");
-      const stripPrefix =
-        colonIdx === -1 ? undefined : new RegExp("^" + picomatch.parse(nameString.substring(0, colonIdx) + "/").output);
-      const searchString = nameString.replace(":", "/");
-      const watch = chokidar.watch(searchString, {
-        cwd: this.root,
-        persistent: false,
-      });
-      const files: Map<string, Computable<FSFile>> = new Map();
-      watch.on("add", (path, stat) => {
-        files.set(path, this.fileAdded(path, stat));
-      });
-      watch.on("unlink", path => {
-        files.delete(path);
-      });
-      watch.on("error", err => reject(err));
-      watch.on("ready", () => {
-        resolve(
-          Computable.forAll(
-            Array.from(files.values()),
-            (...done) =>
-              new FileSet(done.reduce((result, file) => result.set(prefix + removePrefix(file.name, stripPrefix), file), new Map()))
-          )
-        );
-      });
+    const nameString = name.toString();
+    const colonIdx = nameString.lastIndexOf(":");
+    const stripPrefix =
+      colonIdx === -1 ? undefined : new RegExp("^" + picomatch.parse(nameString.substring(0, colonIdx) + "/").output);
+    const searchString = nameString.replace(":", "/");
+    const controller = this.watchController;
+
+    /* The retained leaf: its resolver is called once on `ready` and again on
+     * every (debounced) change while watching. We resolve it only with settled
+     * plain FileSets (never a Computable) so a re-settle can't orphan a prior
+     * resolution nor be clobbered by a stale one. */
+    let resolveLeaf!: (value: FileSet) => void;
+    let rejectLeaf!: (err: unknown) => void;
+    const leaf = Computable.from<FileSet>((resolve, reject) => {
+      resolveLeaf = resolve;
+      rejectLeaf = reject;
     });
+
+    const files: Map<string, Computable<FSFile>> = new Map();
+    const buildFileSet = (): Computable<FileSet> =>
+      Computable.forAll(
+        Array.from(files.values()),
+        (...done) =>
+          new FileSet(done.reduce((result, file) => result.set(prefix + removePrefix(file.name, stripPrefix), file), new Map()))
+      );
+
+    /* The manifest (names+hashes) of the last settled FileSet, so a change that
+     * doesn't actually alter content (a touch) is skipped — no re-settle, no
+     * cascade. */
+    let lastManifest: string | undefined;
+    const entry: WatchEntry = {
+      recompute: (): Computable<PreparedUpdate | null> =>
+        buildFileSet().then(fileSet => {
+          const manifest = fileSet.toManifest();
+          if (manifest === lastManifest) {
+            return null;
+          }
+          lastManifest = manifest;
+          return { invalidate: () => leaf.invalidate(), settle: () => resolveLeaf(fileSet) };
+        }),
+    };
+
+    let ready = false;
+    const watch = chokidar.watch(searchString, {
+      cwd: this.root,
+      persistent: !!controller,
+      /* Force stat-polling instead of native OS events. chokidar's default
+       * (fsevents on macOS) has been observed to silently drop `change` events
+       * under heavy volume-wide fs activity — the watch then misses the edit.
+       * Polling is reliable but O(files) per interval, so it doesn't scale;
+       * `FABR_WATCH_POLL` is an opt-in for environments where the native backend
+       * is unreliable (and the e2e test, which runs amid a saturated gate).
+       * The scalable answer is a robust backend (e.g. Watchman) — future work. */
+      usePolling: !!process.env.FABR_WATCH_POLL,
+      /* Wait for a file's write to settle before hashing it — a low threshold
+       * keeps watch snappy; a torn read would anyway be corrected by the next
+       * event re-ingesting, since the snapshot is content-addressed. */
+      awaitWriteFinish: controller ? { stabilityThreshold: 150, pollInterval: 50 } : false,
+    });
+    watch.on("add", (path, stat) => {
+      files.set(path, this.fileAdded(path, stat));
+      if (ready && controller) {
+        controller.notifyChanged(entry);
+      }
+    });
+    watch.on("change", (path, stat) => {
+      if (ready && controller) {
+        files.set(path, this.fileAdded(path, stat));
+        controller.notifyChanged(entry);
+      }
+    });
+    watch.on("unlink", path => {
+      files.delete(path);
+      if (ready && controller) {
+        controller.notifyChanged(entry);
+      }
+    });
+    watch.on("error", err => rejectLeaf(err));
+    watch.on("ready", () => {
+      ready = true;
+      buildFileSet().then(fileSet => {
+        lastManifest = fileSet.toManifest();
+        resolveLeaf(fileSet);
+      }, rejectLeaf);
+      if (controller) {
+        controller.track(() => void watch.close());
+      } else {
+        /* One-shot: the enumeration is done, so stop watching (the old code
+         * leaked the watcher — see the removed FIXME). */
+        void watch.close();
+      }
+    });
+    return leaf;
   }
 
   protected fileAdded(filename: string, stat: FSFileStats | undefined): Computable<FSFile> {
@@ -127,7 +205,9 @@ export class FSFileSource implements FileSource {
         if (err) {
           reject(err);
         } else {
-          resolve(hashFile(file).then(hash => new FSFile(this.root, name, stat, hash)));
+          /* Route through fileAdded so a subclass (SourceFileSource) applies its
+           * ingestion — single-file reads get blob-backed just like glob finds. */
+          resolve(this.fileAdded(name, stat));
         }
       });
     });
