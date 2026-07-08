@@ -31,8 +31,8 @@ import {
   FileSource,
   MemoryFile,
   PackageFileSet,
-  registerRule,
   RepositoryRef,
+  RuleRegistration,
   RuleResult,
   SourceRef,
   TargetContext,
@@ -184,4 +184,8 @@ function packageDependencies(depSources: SourceRef[]): {
   return { dependencies, devDependencies };
 }
 
-registerRule("js_package", { [BUILD_OPERATION]: "build" }, buildJsPackage);
+export const buildJsPackageRule: RuleRegistration = {
+  type: "js_package",
+  constraints: { [BUILD_OPERATION]: "build" },
+  evaluate: buildJsPackage,
+};

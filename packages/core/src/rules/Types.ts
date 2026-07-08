@@ -19,7 +19,8 @@
 
 import { Computable } from "../core/Computable";
 import { FileSet, FileSource } from "../core/FileSet";
-import { Constraints, TargetContext } from "../model/BuildContext";
+import { Repository } from "../core/Repository";
+import { Constraints, RepositoryContext, TargetContext } from "../model/BuildContext";
 
 export enum PropertyType {
   String,
@@ -97,4 +98,46 @@ export type RuleResult = FileSource | BuildAction;
 export interface IRuleDefinition {
   constraints: Constraints;
   evaluate: (context: TargetContext) => Computable<RuleResult>;
+}
+
+/**
+ * Repositories are not rule-built targets: a provider lazily constructs the
+ * Repository instance for a declaration, per BuildContext (its configuration
+ * resolves under that context's constraints).
+ */
+export type RepositoryProvider = (context: RepositoryContext) => Computable<Repository>;
+
+/**
+ * A rule contributed to a build (by core or a plugin): the knowledge of how to
+ * build targets of a `type` under some constraints. Omit `type` for a *default*
+ * rule — the type-dimension wildcard, selected for any target type that has no
+ * more specific rule of its own. The BuildModel indexes these into its rule
+ * tables; a future language surface for defining rules would contribute the same
+ * shape.
+ */
+export interface RuleRegistration {
+  /** Target type this rule builds; omitted → a default (all-types) rule. */
+  type?: string;
+  constraints: Constraints;
+  evaluate: IRuleDefinition["evaluate"];
+}
+
+/** A repository type contributed to a build. */
+export interface RepositoryRegistration {
+  type: string;
+  provider: RepositoryProvider;
+}
+
+/**
+ * What core and each plugin contribute to a build: rules, repository types, and
+ * system include directories. A plugin's `activate()` *returns* this — it
+ * performs no global registration (see PLUGINS.md), so the build's rule tables
+ * are a pure function of the active contribution set and are rebuilt per load.
+ * `includeDirs` are consumed by the loader (bare-include search path); `rules`
+ * and `repositories` are tracked by the {@link BuildModel}.
+ */
+export interface PluginContribution {
+  rules?: RuleRegistration[];
+  repositories?: RepositoryRegistration[];
+  includeDirs?: string[];
 }

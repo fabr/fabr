@@ -1,7 +1,7 @@
 # Fabr plugins
 
 Rule packages beyond the core engine are fabr *plugins*: ordinary npm packages, installed
-alongside fabr, that register their build rules and `.fabr` library files into the host when a
+alongside fabr, that contribute their build rules and `.fabr` library files to the host when a
 project declares them. `@fabr/js` — the JavaScript/NPM ecosystem support — is itself a plugin and
 the canonical example.
 
@@ -19,38 +19,48 @@ include JS.fabr;
   option to build a plugin from source as part of the build that uses it. A plugin that cannot be
   resolved is an error.
 - Activation happens at **parse time, before include resolution** — so the include directories a
-  plugin registers are searchable by the rest of the very file that declared it (as above: the
+  plugin contributes are searchable by the rest of the very file that declared it (as above: the
   `include JS.fabr;` is satisfied by the `@fabr/js` plugin's own library directory).
 
 ## The plugin contract
 
-A plugin package's main entry point must export:
+A plugin package's main entry point must export an `activate` function that **returns its
+contribution** — the rules, repository types, and include directories it provides. It performs no
+registration and has no side effects; the host merges the returned `PluginContribution` into the
+build model's rule tables.
 
 ```ts
 import type * as fabr from "@fabr/core";
+import type { PluginContribution } from "@fabr/core";
 
-export function activate(api: typeof fabr): void {
-  api.registerSystemIncludeDir(api.packageLibDir("@my/plugin"));
-  api.registerRule("my_thing", { BUILD_OPERATION: "build" }, buildMyThing);
-  api.registerRepositoryType("my_repository", createMyRepository);
+export function activate(api: typeof fabr): PluginContribution {
+  return {
+    rules: [
+      { type: "my_thing", constraints: { BUILD_OPERATION: "build" }, evaluate: buildMyThing },
+    ],
+    repositories: [{ type: "my_repository", provider: createMyRepository }],
+    includeDirs: [api.packageLibDir("@my/plugin")],
+  };
 }
 ```
 
-- `activate(api)` is called once, and performs all of the plugin's registrations. The `api` object
-  is the **host's own `@fabr/core` module instance** (the full module namespace).
-- `registerSystemIncludeDir(dir)` puts a directory on the system include path: bare include names
-  (`include FOO.fabr;` — no `/` in the name) resolve against these directories in declaration
-  order, before falling back to the including file's own directory. By convention a plugin ships
-  its `.fabr` files in `lib/`, next to its entry point, and registers
-  `packageLibDir("<its-own-name>")` — which locates the directory beside the package's resolved
-  entry point, i.e. within the *built* package content, never a source tree. The `lib/` directory
-  must therefore be packaged alongside the compiled code.
-- `registerRule(type, constraints, evaluate)` registers the implementation of a target type. The
-  *schema* for a declared type (its `targetdef`) lives in the plugin's `.fabr` library files, not
-  in code. Rule selection picks the registered rule whose constraints most specifically match the
-  active configuration (`{}` is a wildcard); the `BUILD_OPERATION` constraint carries the build
-  verb (`fabr test x` ≡ `x[BUILD_OPERATION=test]`), and an operation-specific rule must explicitly
-  request `BUILD_OPERATION: "build"` for its dependencies, since constraints otherwise propagate.
+- `activate(api)` is a **pure function**: it returns a `PluginContribution` and registers nothing
+  globally. It is called once per load (per build); a plugin declared from several files
+  contributes once. The `api` object is the **host's own `@fabr/core` module instance** (the full
+  module namespace) — used for helpers like `packageLibDir`, not for registration.
+- `includeDirs` puts directories on the system include path: bare include names (`include
+  FOO.fabr;` — no `/` in the name) resolve against these in declaration order, before falling back
+  to the including file's own directory. By convention a plugin ships its `.fabr` files in `lib/`,
+  next to its entry point, and contributes `packageLibDir("<its-own-name>")` — which locates the
+  directory beside the package's resolved entry point, i.e. within the *built* package content,
+  never a source tree. The `lib/` directory must therefore be packaged alongside the compiled code.
+- `rules` — each `{ type?, constraints, evaluate }` contributes the implementation of a target
+  type; omit `type` for a **default (all-types) rule**. The *schema* for a declared type (its
+  `targetdef`) lives in the plugin's `.fabr` library files, not in code. Rule selection picks the
+  rule whose constraints most specifically match the active configuration (`{}` is a wildcard); the
+  `BUILD_OPERATION` constraint carries the build verb (`fabr test x` ≡ `x[BUILD_OPERATION=test]`),
+  and an operation-specific rule must explicitly request `BUILD_OPERATION: "build"` for its
+  dependencies, since constraints otherwise propagate.
 
   `evaluate(context: TargetContext)` is the rule body: read the target's properties and globals,
   materialize dependencies, compute layouts and generated files, and compose sub-targets — all
@@ -73,7 +83,7 @@ export function activate(api: typeof fabr): void {
 
   The evaluation/caching model these hang off is described in `CLAUDE.md` and
   `DESIGN-rules-and-caching.md`; this document covers only the registration surface.
-- `registerRepositoryType(type, provider)` registers a repository type — repositories resolve
+- `repositories` — each `{ type, provider }` contributes a repository type. Repositories resolve
   requirements and are not rule-built targets: the provider is constructed lazily per build
   configuration against a narrow `RepositoryContext` (declared config properties,
   `memoize(tag, key, fn)` for resolution memos, `fetch(url, tag, process)` for downloads, and
@@ -81,11 +91,13 @@ export function activate(api: typeof fabr): void {
 
 ## Module identity
 
-The host and its plugins must share a single copy of `@fabr/core`: core's rule registry, class
-identities (`instanceof`), and include-path registry are process-global. An installed plugin
-shares the host's `node_modules`, so importing `@fabr/core` directly from plugin code is safe and
-normal (node resolves it to the host's instance). What a plugin must never do is bundle or vendor
-its own copy of core.
+The host and its plugins must share a single copy of `@fabr/core`: class identities (`instanceof`)
+and the `Computable`/`FileSet`/etc. machinery a rule builds on must be the host's own. (The rule
+tables themselves are *not* global — they are built per load from core's and the active plugins'
+contributions and carried by the build model — but a plugin's `evaluate` still runs against the
+host's core classes.) An installed plugin shares the host's `node_modules`, so importing `@fabr/core`
+directly from plugin code is safe and normal (node resolves it to the host's instance). What a
+plugin must never do is bundle or vendor its own copy of core.
 
 Code that a plugin arranges to run in *client* processes — such as `@fabr/js`'s test runner, which
 executes inside test working directories — is a different matter: it cannot reach the host's core
@@ -97,7 +109,7 @@ they erase at compile time).
 ```
 my-plugin/
   package.json          main -> the module exporting activate()
-  index.js              activate(api): register rules + include dir
+  index.js              activate(api): returns rules + include dir
   lib/
     MYTHING.fabr        targetdefs, defaults, convenience targets
   ...rule modules...

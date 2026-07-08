@@ -31,7 +31,7 @@ import {
   Computable,
   Constraints,
   PackageFileSet,
-  registerRule,
+  RuleRegistration,
   RuleResult,
   TargetContext,
 } from "@fabr/core";
@@ -64,4 +64,8 @@ function runJsPackage(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-registerRule("js_package", { [BUILD_OPERATION]: "run" }, runJsPackage);
+export const runJsPackageRule: RuleRegistration = {
+  type: "js_package",
+  constraints: { [BUILD_OPERATION]: "run" },
+  evaluate: runJsPackage,
+};

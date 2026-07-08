@@ -21,13 +21,15 @@ import { Log } from "../support/Log";
 import { BuildModel } from "./BuildModel";
 import { IBuildFileContents } from "./AST";
 import { NamespaceBuilder } from "./NamespaceBuilder";
+import { PluginContribution } from "../rules/Types";
 
 /**
  * Collate and validate  the declarations from all included build files to the extent
  * that we can (ie we accept that some potential issues can only be detected given
- * a concrete BuildConfig)
+ * a concrete BuildConfig). The `contributions` (core's rules plus any plugins')
+ * become the model's rule tables, so rule selection is per-model, not global.
  */
-export function toBuildModel(files: IBuildFileContents[], log: Log): BuildModel {
+export function toBuildModel(files: IBuildFileContents[], log: Log, contributions: PluginContribution[]): BuildModel {
   const builder = new NamespaceBuilder(log);
 
   files.forEach(file => {
@@ -40,5 +42,5 @@ export function toBuildModel(files: IBuildFileContents[], log: Log): BuildModel 
 
   builder.resolve();
 
-  return new BuildModel(builder.toNamespace());
+  return new BuildModel(builder.toNamespace(), contributions);
 }

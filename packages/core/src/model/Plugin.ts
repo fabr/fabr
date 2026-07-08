@@ -18,28 +18,30 @@
  */
 
 import { IPluginDecl } from "./AST";
+import { PluginContribution } from "../rules/Types";
 
 /**
- * The shape a plugin package's entry point must export: activate is called
- * once and performs the plugin's registrations, with the host's own
- * @fabr/core module instance as the api. The full plugin contract is
- * documented in PLUGINS.md.
+ * The shape a plugin package's entry point must export: `activate` is a pure
+ * function that RETURNS the plugin's contribution (rules, repositories, include
+ * dirs) — it performs no global registration. It receives the host's own
+ * @fabr/core module instance as the api. The full plugin contract is documented
+ * in PLUGINS.md.
  */
 interface IFabrPluginModule {
-  activate?: (api: unknown) => void;
+  activate?: (api: unknown) => PluginContribution | undefined;
 }
 
-/** Plugins already activated this process (a plugin activates exactly once) */
-const activated = new Set<string>();
-
 /**
- * Activate the declared plugins. Plugins resolve by MODULE RESOLUTION only:
- * the package must be installed alongside the host (there is currently no
- * build-the-plugin-from-source option). Activation happens at parse time —
- * before include resolution — so the include directories a plugin registers
- * take part in resolving the very file that declared it.
+ * Activate the declared plugins and return their contributions (in declaration
+ * order). Plugins resolve by MODULE RESOLUTION only: the package must be
+ * installed alongside the host (there is currently no build-the-plugin-from-
+ * source option). Activation happens at parse time — before include resolution —
+ * so the include directories a plugin contributes take part in resolving the
+ * very file that declared it. `activated` (a per-load set) dedupes a plugin
+ * declared from several files without double-counting its contribution.
  */
-export function activatePlugins(plugins: IPluginDecl[], api: unknown): void {
+export function activatePlugins(plugins: IPluginDecl[], api: unknown, activated: Set<string>): PluginContribution[] {
+  const contributions: PluginContribution[] = [];
   for (const decl of plugins) {
     if (activated.has(decl.name)) {
       continue;
@@ -54,15 +56,16 @@ export function activatePlugins(plugins: IPluginDecl[], api: unknown): void {
       throw new Error(`Plugin '${decl.name}' is not installed (plugins are resolved from the fabr installation)`);
     }
     activated.add(decl.name);
-    activatePlugin(entry, decl, api);
+    contributions.push(activatePlugin(entry, decl, api));
   }
+  return contributions;
 }
 
-function activatePlugin(entry: string, decl: IPluginDecl, api: unknown): void {
+function activatePlugin(entry: string, decl: IPluginDecl, api: unknown): PluginContribution {
   /* eslint-disable-next-line @typescript-eslint/no-var-requires */
   const plugin = require(entry) as IFabrPluginModule;
   if (typeof plugin.activate !== "function") {
     throw new Error(`Plugin '${decl.name}' does not export an activate() function`);
   }
-  plugin.activate(api);
+  return plugin.activate(api) ?? {};
 }

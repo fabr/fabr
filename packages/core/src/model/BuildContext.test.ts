@@ -8,8 +8,14 @@ import { Repository, RepositoryRef, SourceRef } from "../core/Repository";
 import { Name } from "./Name";
 import { FileConflictError, renderProvenance } from "../core/Provenance";
 import { LogFormatter, LogLevel } from "../support/Log";
-import { registerRepositoryProvider, registerRule } from "../rules/Registry";
-import { BuildAction, IBuildActionDefinition } from "../rules/Types";
+import {
+  BuildAction,
+  IBuildActionDefinition,
+  PluginContribution,
+  RepositoryProvider,
+  RepositoryRegistration,
+  RuleRegistration,
+} from "../rules/Types";
 import { Constraints, DependencyFailedError } from "./BuildContext";
 import { ExecutionContext } from "./ExecutionContext";
 import { parseBuildString } from "./Parser";
@@ -24,6 +30,20 @@ chai.use(chaiAsPromised);
 /* The runtime surroundings for evaluation: none of these tests reach the
  * cache, so a single throwaway instance serves them all */
 const execution = new ExecutionContext(new BuildCache("."));
+
+/* These tests exercise the evaluation engine with throwaway rules. Rules now
+ * ride the model's registry (not a global), so collect them into a contribution
+ * and build a per-test registry passed to toBuildModel. `registerRule` /
+ * `registerRepositoryProvider` are kept as local shims so the registrations
+ * below read unchanged. */
+const testRules: RuleRegistration[] = [];
+const testRepos: RepositoryRegistration[] = [];
+function registerRule(type: string, constraints: Constraints, evaluate: RuleRegistration["evaluate"]): void {
+  testRules.push({ type, constraints, evaluate });
+}
+function registerRepositoryProvider(type: string, provider: RepositoryProvider): void {
+  testRepos.push({ type, provider });
+}
 
 /* Trivial rules for exercising target-to-target dependency behaviour */
 let lastDeps: FileSet | undefined;
@@ -115,10 +135,12 @@ registerRule("test_composer", {}, context =>
   )
 );
 
+const testContributions: PluginContribution[] = [{ rules: testRules, repositories: testRepos }];
+
 async function testGetProperty(input: string, prop: string, constraints?: Constraints): Promise<string[]> {
   const errors: string[] = [];
   const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-  const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger);
+  const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
   if (errors.length !== 0) {
     throw new Error("Parse error:\n" + errors.join("\n"));
   }
@@ -137,7 +159,7 @@ describe("BuildContext", () => {
       "targetdef test_fail { }\n" +
       "test_fail b { }\n" +
       "test_good a { deps = b; }\n";
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger);
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
     try {
@@ -163,7 +185,7 @@ describe("BuildContext", () => {
       "test_file c1 { content = one; }\n" +
       "test_file c2 { content = two; }\n" +
       "test_good a { deps = c1 c2; }\n";
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger);
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
     try {
@@ -201,7 +223,7 @@ describe("BuildContext", () => {
       "test_repo repo { }\n" +
       "x = repo:one;\n" +
       "test_good a { deps = x repo:two; }\n";
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger);
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
     await model.getConfig({}, execution).getTarget("a");
@@ -224,7 +246,7 @@ describe("BuildContext", () => {
       "two = repo:two;\n" +
       "mydeps = one two;\n" +
       "test_good a { deps = mydeps; }\n";
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger);
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
     await model.getConfig({}, execution).getTarget("a");
@@ -243,7 +265,7 @@ describe("BuildContext", () => {
       "test_repo repoA { }\n" +
       "test_repo repoB { }\n" +
       "test_good a { deps = repoA:one repoB:two; }\n";
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger);
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
     await model.getConfig({}, execution).getTarget("a");
@@ -262,7 +284,7 @@ describe("BuildContext", () => {
       "test_repo repo { }\n" +
       "x = repo:one;\n" +
       "test_good a { deps = x:one/*.txt; }\n";
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger);
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
     await model.getConfig({}, execution).getTarget("a");
@@ -279,7 +301,7 @@ describe("BuildContext", () => {
       "targetdef test_file { content = STRING; }\n" +
       "test_file c1 { content = one; }\n" +
       "test_good a { deps = c1/f.txt c1:f.txt; }\n";
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger);
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
     await model.getConfig({}, execution).getTarget("a");
@@ -297,7 +319,7 @@ describe("BuildContext", () => {
       "test_repo repo { }\n" +
       "x = repo:one;\n" +
       "test_good a { deps = x/one/*.txt; }\n";
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger);
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
     await model.getConfig({}, execution).getTarget("a");
@@ -322,7 +344,7 @@ describe("BuildContext", () => {
       "test_repo repo { }\n" +
       "JOINT_GLOBAL = repo:three;\n" +
       "test_joint a { adeps = repo:one; bdeps = repo:two; }\n";
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger);
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
     await model.getConfig({}, execution).getTarget("a");
@@ -347,7 +369,7 @@ describe("BuildContext", () => {
         const events: string[] = [];
         const runExecution = new ExecutionContext(new BuildCache(root));
         runExecution.onProgress(event => events.push(event.kind));
-        const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger);
+        const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
         expect(errors).to.deep.equal([]);
         await model.getConfig({}, runExecution).getTarget("a");
         return events;
@@ -379,7 +401,7 @@ describe("BuildContext", () => {
         const errors: string[] = [];
         const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
         const runExecution = new ExecutionContext(new BuildCache(root));
-        const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger);
+        const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
         expect(errors).to.deep.equal([]);
         const sources = await new Promise<SourceRef[]>((resolve, reject) =>
           model.getConfig({}, runExecution).getTarget("a").then(resolve, reject)
@@ -408,7 +430,7 @@ describe("BuildContext", () => {
   it("Interns configurations by constraint value", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", "a = b;", logger)], logger);
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", "a = b;", logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
     expect(model.getConfig({ x: "1" }, execution)).to.equal(model.getConfig({ x: "1" }, execution));

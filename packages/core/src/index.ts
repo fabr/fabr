@@ -17,18 +17,13 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* Importing @fabr/core registers the generic bootstrap rules (flag, script,
- * run) and core's own lib/ on the system include path. Language-specific rules
- * live in their own packages (@fabr/js et al) — the bootstrap set is
- * core + js + fabr; anything beyond that can be built by fabr itself and
+/* The generic bootstrap rules (flag, files, script[run], run) and core's own
+ * lib/ are core's contribution to every build's registry — assembled by
+ * `coreContribution()` (model/Loader) and seeded per load, not registered by an
+ * import side effect. Language-specific rules live in their own packages
+ * (@fabr/js et al) and contribute via their plugin `activate()`: the bootstrap
+ * set is core + js + fabr; anything beyond that can be built by fabr itself and
  * loaded via a plugin declaration. */
-import "./rules/FlagTarget";
-import "./rules/DefaultFilesRule";
-import "./rules/RunScript";
-import "./rules/BuildRun";
-import { packageLibDir, registerSystemIncludeDir } from "./model/Loader";
-
-registerSystemIncludeDir(packageLibDir("@fabr/core"));
 
 export * from "./core/BuildCache";
 export * from "./core/Computable";
@@ -61,5 +56,4 @@ export * from "./support/Log";
 export * from "./support/TestResult";
 export * from "./support/Unpack";
 export * from "./rules/ExecAction";
-export * from "./rules/Registry";
 export * from "./rules/Types";

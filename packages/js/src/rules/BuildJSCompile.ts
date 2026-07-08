@@ -33,7 +33,7 @@
  * which can't survive materialization into `deps`).
  */
 
-import { Computable, createExecAction, FileSet, MemoryFile, registerRule, RuleResult, TargetContext } from "@fabr/core";
+import { Computable, createExecAction, FileSet, MemoryFile, RuleRegistration, RuleResult, TargetContext } from "@fabr/core";
 import { parseJSTarget } from "../JSPackage";
 
 /** Where the toolchain is mounted in the working dir — disjoint from src/node_modules/build. */
@@ -81,4 +81,4 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-registerRule("js_compile", {}, compileTypescript);
+export const jsCompileRule: RuleRegistration = { type: "js_compile", constraints: {}, evaluate: compileTypescript };

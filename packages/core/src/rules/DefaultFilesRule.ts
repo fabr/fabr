@@ -20,8 +20,7 @@
 import { BUILD_OPERATION, FILES_OPERATION, TargetContext } from "../model/BuildContext";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
-import { registerDefaultRule } from "./Registry";
-import { RuleResult } from "./Types";
+import { RuleRegistration, RuleResult } from "./Types";
 
 /**
  * The generic `files` rule: registered as a default (all-types) rule, so it is
@@ -43,4 +42,5 @@ function deliverFiles(context: TargetContext): Computable<RuleResult> {
   });
 }
 
-registerDefaultRule({ [BUILD_OPERATION]: FILES_OPERATION }, deliverFiles);
+/* No `type` → a default (all-types) rule. */
+export const defaultFilesRule: RuleRegistration = { constraints: { [BUILD_OPERATION]: FILES_OPERATION }, evaluate: deliverFiles };

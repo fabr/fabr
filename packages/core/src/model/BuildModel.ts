@@ -22,6 +22,26 @@ import { IPrefixMatch, Namespace } from "./Namespace";
 import { BuildContext, Constraints } from "./BuildContext";
 import { ExecutionContext } from "./ExecutionContext";
 import { Name } from "./Name";
+import { IRuleDefinition, PluginContribution, RepositoryProvider } from "../rules/Types";
+
+/**
+ * The most specific rule among `candidates` matching the given configuration:
+ * every constraint the rule declares must match (by value), and the most
+ * specific match (most constraints) wins; a rule with no constraints acts as a
+ * wildcard. Returns undefined if none match.
+ */
+function selectMostSpecific(candidates: IRuleDefinition[], constraints: Constraints): IRuleDefinition | undefined {
+  let best: IRuleDefinition | undefined;
+  let bestCount = -1;
+  for (const candidate of candidates) {
+    const entries = Object.entries(candidate.constraints);
+    if (entries.length > bestCount && entries.every(([key, value]) => constraints[key] === value)) {
+      best = candidate;
+      bestCount = entries.length;
+    }
+  }
+  return best;
+}
 
 /**
  * Build model holds the generalized model-as-it-is-written in the build files.
@@ -31,9 +51,48 @@ import { Name } from "./Name";
 export class BuildModel {
   private root: Namespace;
   private configs: BuildContext[] = [];
+  /**
+   * The rules and repository providers available to this model — indexed from
+   * core's base contribution plus each active plugin's, so they reflect exactly
+   * the declared plugin set (not process-global registration). Held directly by
+   * the model (rather than in a separate registry) because rules are model-level
+   * knowledge, on the same footing as targets/properties — and a future language
+   * surface for defining rules would add to these same tables.
+   */
+  private readonly targetRules: Record<string, IRuleDefinition[]> = {};
+  private readonly defaultRules: IRuleDefinition[] = [];
+  private readonly repositories: Record<string, RepositoryProvider> = {};
 
-  constructor(root: Namespace) {
+  constructor(root: Namespace, contributions: PluginContribution[]) {
     this.root = root;
+    for (const contribution of contributions) {
+      for (const rule of contribution.rules ?? []) {
+        const definition: IRuleDefinition = { constraints: rule.constraints, evaluate: rule.evaluate };
+        if (rule.type === undefined) {
+          this.defaultRules.push(definition);
+        } else {
+          (this.targetRules[rule.type] ??= []).push(definition);
+        }
+      }
+      for (const repository of contribution.repositories ?? []) {
+        this.repositories[repository.type] = repository.provider;
+      }
+    }
+  }
+
+  /**
+   * Select the rule for the given target type under the given configuration.
+   * A type-specific rule is preferred over a default (all-types) rule — the type
+   * dimension dominates the constraint dimension — so the default rules are only
+   * consulted when no type-specific rule matches. Uniform for declared and
+   * anonymous targets.
+   */
+  public getTargetRule(type: string, constraints: Constraints): IRuleDefinition | undefined {
+    return selectMostSpecific(this.targetRules[type] ?? [], constraints) ?? selectMostSpecific(this.defaultRules, constraints);
+  }
+
+  public getRepositoryProvider(type: string): RepositoryProvider | undefined {
+    return this.repositories[type];
   }
 
   /**

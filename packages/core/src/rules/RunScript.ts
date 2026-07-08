@@ -32,8 +32,7 @@ import { BUILD_OPERATION, TargetContext } from "../model/BuildContext";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { registerRule } from "./Registry";
-import { RuleResult } from "./Types";
+import { RuleRegistration, RuleResult } from "./Types";
 
 function defineScriptRunnable(context: TargetContext): Computable<RuleResult> {
   /* deps are ordinary build content — resolve them under build, not the run
@@ -61,4 +60,8 @@ function defineScriptRunnable(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-registerRule("script", { [BUILD_OPERATION]: "run" }, defineScriptRunnable);
+export const scriptRunRule: RuleRegistration = {
+  type: "script",
+  constraints: { [BUILD_OPERATION]: "run" },
+  evaluate: defineScriptRunnable,
+};

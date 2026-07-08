@@ -10,8 +10,7 @@ import {
   registerProvenanceDescriber,
   registerProvenanceRenderer,
 } from "../core/Provenance";
-import { getRepositoryProvider, getTargetRule } from "../rules/Registry";
-import { BuildAction, BuildActionInput, BuildActionInputs, IRuleDefinition } from "../rules/Types";
+import { BuildAction, BuildActionInput, BuildActionInputs, IRuleDefinition, RepositoryProvider } from "../rules/Types";
 import { ExecutionContext, ProgressEvent } from "./ExecutionContext";
 import { ITargetOrigin, TARGET_PROVENANCE } from "./Target";
 import {
@@ -125,6 +124,10 @@ interface IBuildModel {
   getDecl(name: string): IPropertyDecl | ITargetDecl | INamespaceDecl | undefined;
   getTargetDef(name: string): ITargetDefDecl | undefined;
   getPrefixMatch(name: Name): IPrefixMatch | undefined;
+  /** The model's registry: rule selection and repository providers ride the
+   * model (built per load from core + active plugins), not a global. */
+  getTargetRule(type: string, constraints: Constraints): IRuleDefinition | undefined;
+  getRepositoryProvider(type: string): RepositoryProvider | undefined;
 }
 
 /**
@@ -432,13 +435,13 @@ export class BuildContext {
     /* Repositories are not rule-built targets: the provider constructs the
      * instance lazily, interned per context via the target cache. No build
      * events, no build-cache entries of its own. */
-    const provider = getRepositoryProvider(target.type);
+    const provider = this.model.getRepositoryProvider(target.type);
     if (provider) {
       return provider(new RepositoryContext(target, this)).catch(err => {
         throw new DependencyFailedError(target, err);
       });
     }
-    const rule = getTargetRule(target.type, this.constraints);
+    const rule = this.model.getTargetRule(target.type, this.constraints);
     if (!rule) {
       const configuration = Object.entries(this.constraints)
         .map(([key, value]) => `${key}=${value}`)
@@ -485,7 +488,7 @@ export class BuildContext {
     options?: { label?: string; constraints?: Constraints }
   ): Computable<FileSet> {
     const buildContext = options?.constraints ? this.getContextWithOverrides(options.constraints) : this;
-    const rule = getTargetRule(type, buildContext.constraints);
+    const rule = this.model.getTargetRule(type, buildContext.constraints);
     if (!rule) {
       throw new Error(`No rule found for anonymous target type '${type}'`);
     }

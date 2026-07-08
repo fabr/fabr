@@ -23,7 +23,7 @@
  * resolve) and run against the package's deps.
  */
 
-import { BUILD_OPERATION, Computable, registerRule, RuleResult, TargetContext } from "@fabr/core";
+import { BUILD_OPERATION, Computable, RuleRegistration, RuleResult, TargetContext } from "@fabr/core";
 import { BUILD_OP, compileAndRunTests } from "../TestPipeline";
 
 function testJsPackage(context: TargetContext): Computable<RuleResult> {
@@ -41,4 +41,8 @@ function testJsPackage(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-registerRule("js_package", { [BUILD_OPERATION]: "test" }, testJsPackage);
+export const testJsPackageRule: RuleRegistration = {
+  type: "js_package",
+  constraints: { [BUILD_OPERATION]: "test" },
+  evaluate: testJsPackage,
+};

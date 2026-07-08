@@ -22,7 +22,7 @@
  * under the runner (a standalone test target, deps + runner given explicitly).
  */
 
-import { BUILD_OPERATION, Computable, registerRule, RuleResult, TargetContext } from "@fabr/core";
+import { BUILD_OPERATION, Computable, RuleRegistration, RuleResult, TargetContext } from "@fabr/core";
 import { BUILD_OP, compileAndRunTests, TEST_FILE_PATTERN } from "../TestPipeline";
 
 function runJsTest(context: TargetContext): Computable<RuleResult> {
@@ -41,4 +41,4 @@ function runJsTest(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-registerRule("js_test", { [BUILD_OPERATION]: "test" }, runJsTest);
+export const jsTestRule: RuleRegistration = { type: "js_test", constraints: { [BUILD_OPERATION]: "test" }, evaluate: runJsTest };

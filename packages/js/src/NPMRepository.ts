@@ -13,10 +13,10 @@ import {
   PackageRegistry,
   parseVersion,
   readStream,
-  registerRepositoryProvider,
   Repository,
   RepositoryContext,
   RepositoryRef,
+  RepositoryRegistration,
   Requirement,
   resolveMVS,
   ROOT_REQUIRER,
@@ -611,4 +611,4 @@ function stripArchiveRoot(files: FileSet): FileSet {
   });
 }
 
-registerRepositoryProvider("npm_repository", createRepository);
+export const npmRepositoryRegistration: RepositoryRegistration = { type: "npm_repository", provider: createRepository };

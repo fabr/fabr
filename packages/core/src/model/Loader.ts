@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import * as path from "path";
+import * as path from "node:path";
 
 import { Computable } from "../core/Computable";
 import { FSFileSource } from "../core/FSFileSource";
@@ -29,6 +29,11 @@ import { BuildModel } from "./BuildModel";
 import { activatePlugins } from "./Plugin";
 import { toBuildModel } from "./Sema";
 import { FileSource } from "../core/FileSet";
+import { PluginContribution } from "../rules/Types";
+import { flagRule } from "../rules/FlagTarget";
+import { defaultFilesRule } from "../rules/DefaultFilesRule";
+import { scriptRunRule } from "../rules/RunScript";
+import { runRule } from "../rules/BuildRun";
 
 /**
  * A directory on the system include path: bare include names (`include
@@ -41,17 +46,17 @@ export interface ISystemIncludeDir {
   fs: FileSource;
 }
 
-const systemIncludeDirs: ISystemIncludeDir[] = [];
-
 /**
- * Register a directory on the system include path. Called by each rule
- * package as it loads — the bootstrap packages on import, plugins on
- * activation — so registration order (= load order) is the search order.
+ * Core's own contribution to every build: the generic bootstrap rules (flag,
+ * files, script[run], run) and core's lib/ (STD.fabr) on the system include
+ * path. This seeds the registry and include path of every load, before any
+ * plugin; plugins contribute the rest via their `activate()`.
  */
-export function registerSystemIncludeDir(dir: string): void {
-  if (!systemIncludeDirs.some(entry => entry.dir === dir)) {
-    systemIncludeDirs.push({ dir, fs: new FSFileSource(dir) });
-  }
+export function coreContribution(): PluginContribution {
+  return {
+    rules: [flagRule, defaultFilesRule, scriptRunRule, runRule],
+    includeDirs: [packageLibDir("@fabr/core")],
+  };
 }
 
 /**
@@ -66,29 +71,48 @@ export function packageLibDir(packageName: string): string {
 }
 
 type BuildFiles = Record<string, IBuildFileContents>;
-const loadBuildCache: Record<string, Computable<BuildFiles>> = {};
 
-/** The ambient inputs threaded through the recursive build-file load */
+/**
+ * The ambient inputs threaded through the recursive build-file load. All mutable
+ * state here is PER-LOAD, never process-global: `systemPath` and `contributions`
+ * grow as plugins activate, and `loadCache` dedupes a file included from several
+ * places within THIS load only — so each load re-parses and re-activates against
+ * its own fresh registry (a plugin removed since the last load simply isn't
+ * present).
+ */
 interface ILoadContext {
   systemPath: ISystemIncludeDir[];
+  /** Contributions gathered so far — core first, then plugins in activation order. */
+  contributions: PluginContribution[];
+  /** Plugins already activated this load (a plugin declared from several files activates once). */
+  activated: Set<string>;
+  /** Per-load parse memo (dedupes a diamond include within one load). */
+  loadCache: Record<string, Computable<BuildFiles>>;
   pluginApi: unknown;
   log: Log;
 }
 
 /* FIXME: Detect cycles? */
 function loadBuildFile(fs: FileSource, file: string, context: ILoadContext): Computable<BuildFiles> {
-  if (!(file in loadBuildCache)) {
-    loadBuildCache[file] = fs.get(file).then(f => {
+  if (!(file in context.loadCache)) {
+    context.loadCache[file] = fs.get(file).then(f => {
       if (!f) {
         throw new Error("File not found: " + file);
       }
       return f.readString().then(content => {
         const source = { fs, file, reader: new StringReader(content) };
         const decls = parseBuildFile(source, context.log);
-        /* Plugins activate before include resolution, so the include
-         * directories they register are searchable immediately — including
-         * by this very file's own includes */
-        activatePlugins(decls.plugins, context.pluginApi);
+        /* Plugins activate before include resolution: merge each newly-activated
+         * plugin's contribution and add its include directories to the search
+         * path, so this very file's own includes can resolve against them. */
+        for (const contribution of activatePlugins(decls.plugins, context.pluginApi, context.activated)) {
+          context.contributions.push(contribution);
+          for (const dir of contribution.includeDirs ?? []) {
+            if (!context.systemPath.some(entry => entry.dir === dir)) {
+              context.systemPath.push({ dir, fs: new FSFileSource(dir) });
+            }
+          }
+        }
         if (decls.includes.length === 0) {
           return { [file]: decls };
         }
@@ -103,7 +127,7 @@ function loadBuildFile(fs: FileSource, file: string, context: ILoadContext): Com
       });
     });
   }
-  return loadBuildCache[file];
+  return context.loadCache[file];
 }
 
 /**
@@ -140,19 +164,34 @@ function findOnSystemPath(
 }
 
 /**
- * Load and collate the project's build files into a BuildModel. Declared
- * plugins are activated (with the given api object) as their declarations are
- * parsed, so plugin-registered rules and include directories are in effect
- * for the rest of the load and for target resolution.
+ * Load and collate the project's build files into a BuildModel. The load starts
+ * from core's contribution (its rules + lib/ include dir); declared plugins are
+ * activated (with the given api object) as their declarations are parsed, each
+ * contributing its rules and include directories for the rest of the load. The
+ * collected contributions become the model's rule tables, so rule selection is
+ * per-model rather than process-global. `systemIncludePath` supplies any extra
+ * include directories (for tests), searched after core's.
  */
 export function loadProject(
   fileSource: FileSource,
   startFile: string,
   log: Log,
   pluginApi?: unknown,
-  systemIncludePath: ISystemIncludeDir[] = systemIncludeDirs
+  systemIncludePath?: ISystemIncludeDir[]
 ): Computable<BuildModel> {
-  return loadBuildFile(fileSource, startFile, { systemPath: systemIncludePath, pluginApi, log }).then(decls =>
-    toBuildModel(Object.values(decls), log)
+  const core = coreContribution();
+  /* The base include path is core's lib/ dir; a caller-supplied path replaces it
+   * (tests), while core's RULES are contributed to the registry regardless.
+   * Plugin include dirs are appended to whichever base as plugins activate. */
+  const context: ILoadContext = {
+    systemPath: systemIncludePath ?? (core.includeDirs ?? []).map(dir => ({ dir, fs: new FSFileSource(dir) })),
+    contributions: [core],
+    activated: new Set(),
+    loadCache: {},
+    pluginApi,
+    log,
+  };
+  return loadBuildFile(fileSource, startFile, context).then(decls =>
+    toBuildModel(Object.values(decls), log, context.contributions)
   );
 }

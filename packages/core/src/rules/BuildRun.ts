@@ -27,13 +27,11 @@
  * rule used to do itself, now generic.
  */
 
-import { BUILD_OPERATION } from "../model/BuildContext";
-import { TargetContext } from "../model/BuildContext";
+import { BUILD_OPERATION, TargetContext } from "../model/BuildContext";
 import { Computable } from "../core/Computable";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { registerRule } from "./Registry";
 import { createExecAction } from "./ExecAction";
-import { RuleResult } from "./Types";
+import { RuleRegistration, RuleResult } from "./Types";
 
 /**
  * A runnable is just a staged install plus a launch descriptor, so running it
@@ -64,4 +62,4 @@ function runTool(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-registerRule("run", { [BUILD_OPERATION]: "build" }, runTool);
+export const runRule: RuleRegistration = { type: "run", constraints: { [BUILD_OPERATION]: "build" }, evaluate: runTool };

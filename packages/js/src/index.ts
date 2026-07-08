@@ -31,18 +31,30 @@
  */
 
 import type * as fabr from "@fabr/core";
-import "./rules/BuildJSPackage";
-import "./rules/RunJSPackage";
-import "./rules/BuildJSCompile";
-import "./rules/TestJSPackage";
-import "./rules/TestJSTest";
-import "./rules/RunJSScript";
-import "./NPMRepository";
+import type { PluginContribution } from "@fabr/core";
+import { buildJsPackageRule } from "./rules/BuildJSPackage";
+import { runJsPackageRule } from "./rules/RunJSPackage";
+import { jsCompileRule } from "./rules/BuildJSCompile";
+import { testJsPackageRule } from "./rules/TestJSPackage";
+import { jsTestRule } from "./rules/TestJSTest";
+import { jsScriptRule } from "./rules/RunJSScript";
+import { npmRepositoryRegistration } from "./NPMRepository";
 
 /* The compile pipeline helpers, for other js rules to build on (in-tree only:
  * cross-plugin extension isn't supported yet — see PLUGINS.md) */
 export { assembleNodeModules, compileJsSources, ICompiledSources, JSTarget, parseJSTarget } from "./JSPackage";
 
-export function activate(api: typeof fabr): void {
-  api.registerSystemIncludeDir(api.packageLibDir("@fabr/js"));
+/**
+ * Plugin entry point: return this package's contribution — the js rules
+ * (js_package build/run/test, js_test, js_script, js_compile), the npm
+ * repository type, and this package's lib/ (JS.fabr) as an include directory.
+ * Pure: no global registration (see PLUGINS.md); the host merges this into the
+ * build's registry.
+ */
+export function activate(api: typeof fabr): PluginContribution {
+  return {
+    rules: [buildJsPackageRule, runJsPackageRule, jsCompileRule, testJsPackageRule, jsTestRule, jsScriptRule],
+    repositories: [npmRepositoryRegistration],
+    includeDirs: [api.packageLibDir("@fabr/js")],
+  };
 }
