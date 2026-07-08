@@ -45,6 +45,17 @@ export type Constraints = Record<string, string>;
  */
 export const BUILD_OPERATION = "BUILD_OPERATION";
 
+/**
+ * The `files` operation: "give me the output files, and do no more than that."
+ * A weaker form of `build` — it has no type-specific rules of its own; a generic
+ * default rule (see rules/DefaultFilesRule) delegates it to the target's `build`
+ * result. Its value is that a consumer reading the operation off its context can
+ * do strictly less work when only the files are wanted: notably an `@npm:`
+ * repository delivers a package's own files without resolving its dependency
+ * closure. The driver's `ls`/`cat` verbs resolve under it.
+ */
+export const FILES_OPERATION = "files";
+
 interface IResolvedFileSource {
   sources: SourceRef[];
   /** The declaration the name resolved to, if it named a target or property */

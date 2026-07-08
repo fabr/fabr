@@ -23,6 +23,7 @@
  * core + js + fabr; anything beyond that can be built by fabr itself and
  * loaded via a plugin declaration. */
 import "./rules/FlagTarget";
+import "./rules/DefaultFilesRule";
 import "./rules/RunScript";
 import "./rules/BuildRun";
 import { packageLibDir, registerSystemIncludeDir } from "./model/Loader";

@@ -19,6 +19,7 @@
 
 import {
   BUILD_OPERATION,
+  FILES_OPERATION,
   BuildCache,
   BuildContext,
   BuildModel,
@@ -370,9 +371,12 @@ function buildTargets(
   return options.targets.map(name => config.getTarget(name));
 }
 
-/** Resolve each whole name (target + projection) under the build operation. */
+/** Resolve each whole name (target + projection) under the `files` operation:
+ * ls/cat only ever want the resolved files, so this lets the leaves do less —
+ * an `@npm:` reference delivers a package's own files with no dependency
+ * closure — while a declared target still builds (files falls back to build). */
 function resolveNames(model: BuildModel, options: Options, execution: ExecutionContext): Computable<SourceRef[]>[] {
-  const config = configFor(model, options, execution, "build");
+  const config = configFor(model, options, execution, FILES_OPERATION);
   return options.targets.map(name => config.resolveName(name));
 }
 

@@ -1,6 +1,7 @@
 import {
   BUILD_OPERATION,
   Computable,
+  FILES_OPERATION,
   FileSet,
   IProjection,
   IRequirementEdge,
@@ -18,6 +19,7 @@ import {
   RepositoryRef,
   Requirement,
   resolveMVS,
+  ROOT_REQUIRER,
   Selected,
   SEMVER,
   SemverVersion,
@@ -158,7 +160,7 @@ export function unsupportedPlatformReason(
   return parts.length === 0 ? undefined : parts.join("; ");
 }
 
-class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
+export class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
   private readonly url: string;
   private readonly context: RepositoryContext;
   /* In-process memo over the persistent metadata cache, keyed by "pkg/version" */
@@ -186,6 +188,24 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
    * repository is immutable, and so cacheable indefinitely with no refresh policy.
    */
   public resolveAll(references: RepositoryRef[]): Computable<FileSet[]> {
+    /* The operation is a property of this collection point, read from the
+     * context (this instance is interned per BuildContext, so it reflects the
+     * constraints these references were consumed under). Closure members are
+     * always plain packages — only the requested roots take the run delivery. */
+    const operation = this.context.getConstraint(BUILD_OPERATION) ?? "build";
+    /* Under `files` the consumer wants each package's own files and nothing
+     * more (a projection into it, or the whole thing as raw content — never a
+     * mountable package or a runnable), so there is no need to resolve — or even
+     * fetch — the dependency closure, nor to resolve the roots jointly: each is
+     * delivered standalone at its own constraint minimum. This is what lets
+     * `fabr cat @npm:pkg:ver:file` succeed even when the package's dependencies
+     * are unresolvable on this host. */
+    if (operation === FILES_OPERATION) {
+      return Computable.forAll(
+        references.map(reference => this.resolveBarePackage(reference)),
+        (...delivered: FileSet[]) => delivered
+      );
+    }
     const requirements = references.map(reference => this.parseRequirement(reference.name));
     /* Canonicalize the roots so the resolution (and its memo key, and the
      * reachableFrom indices) are independent of reference order */
@@ -193,11 +213,6 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
     const rootKeys = [...byKey.keys()].sort();
     const roots = rootKeys.map(key => byKey.get(key)!);
     const rootIndex = new Map(rootKeys.map((key, index) => [key, index]));
-    /* The operation is a property of this collection point, read from the
-     * context (this instance is interned per BuildContext, so it reflects the
-     * constraints these references were consumed under). Closure members are
-     * always plain packages — only the requested roots take the run delivery. */
-    const operation = this.context.getConstraint(BUILD_OPERATION) ?? "build";
     return this.getJointResolution(roots, rootKeys).then(selections => {
       checkSingleVersions(selections, rootKeys.join(", "));
       return Computable.forAll(
@@ -247,6 +262,38 @@ class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
      * its closure mounted) — making a package runnable is this repository's own
      * npm-specific business. Everything else gets the plain package. */
     return operation === "run" ? makeNpmRunnable(pkg) : Computable.resolve(pkg);
+  }
+
+  /**
+   * Deliver a single package's own files, resolved standalone — the `files`
+   * operation's delivery (see resolveAll). A top-level root's minimal-version
+   * selection is simply its constraint's lower bound (nothing else constrains
+   * it), so this is exactly the version the joint path would give the root, but
+   * reached without walking — or fetching — the dependency closure. The result
+   * is a bare PackageFileSet (no carried dependencies); any projection is
+   * applied afterwards by the collection point (RepositoryRef.finishMaterialize).
+   */
+  private resolveBarePackage(reference: RepositoryRef): Computable<FileSet> {
+    const req = this.parseRequirement(reference.name);
+    const constraint = SEMVER.parseConstraint(req.constraint);
+    if (SEMVER.isUnconstrained(constraint)) {
+      throw new Error(
+        `Cannot resolve the files of '${req.pkg}' from an unconstrained version ('${req.constraint}'): ` +
+          "pin a version or range to project into a package"
+      );
+    }
+    const version = SEMVER.minimumOf(constraint);
+    const edge: IRequirementEdge = { requiredBy: ROOT_REQUIRER, constraint: req.constraint };
+    const selection: Selected<SemverVersion> = { pkg: req.pkg, version, selectedBy: edge, reachedVia: edge, reachableFrom: [0] };
+    const origin: IResolutionOrigin<SemverVersion> = {
+      kind: PACKAGE_RESOLUTION_PROVENANCE,
+      repository: this.url,
+      root: req,
+      selections: [selection],
+      versionToString,
+      packageOfPath: npmPackageOfPath,
+    };
+    return this.fetch(req.pkg, version).then(pkg => new PackageFileSet(pkg, pkg.packageName, pkg.version, [], origin));
   }
 
   public splitReference(name: Name): { requirement: Name; projection?: IProjection } {

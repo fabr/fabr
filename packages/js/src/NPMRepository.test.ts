@@ -19,11 +19,19 @@
 
 import { expect } from "chai";
 import {
+  BUILD_OPERATION,
+  Computable,
   explainResolutionPath,
+  FILES_OPERATION,
+  FileSet,
   IRequirementEdge,
   IResolutionOrigin,
+  MemoryFile,
   Name,
+  PackageFileSet,
   parseVersion,
+  RepositoryContext,
+  RepositoryRef,
   ROOT_REQUIRER,
   Selected,
   SemverVersion,
@@ -31,6 +39,7 @@ import {
 } from "@fabr/core";
 import {
   matchesHostPlatform,
+  NPMRepository,
   npmPackageOfPath,
   platformGateAdmits,
   splitNpmReference,
@@ -225,5 +234,105 @@ describe("unsupportedPlatformReason", () => {
     expect(unsupportedPlatformReason({ os: ["darwin"], cpu: ["arm64"] }, host)).to.equal(
       "os 'linux' is not in [darwin]; cpu 'x64' is not in [arm64]"
     );
+  });
+});
+
+/** The internal name of the metadata file NPMRepository fetches (kept in step
+ * with NPMRepository.METADATA_FILE, which is module-private). */
+const METADATA_FILE = "metadata.json";
+const REG = "https://registry.example.org";
+
+function metadataFor(pkg: string, version: string, deps: Record<string, string>): FileSet {
+  const meta = {
+    name: pkg,
+    version,
+    dependencies: deps,
+    dist: { tarball: `${REG}/tarball/${version}.tgz`, integrity: "", shasum: "", signatures: [] },
+  };
+  return new FileSet(new Map([[METADATA_FILE, MemoryFile.from(JSON.stringify(meta))]]));
+}
+
+function packageTarball(): FileSet {
+  return new FileSet(
+    new Map([
+      ["package.json", MemoryFile.from("{}")],
+      ["index.js", MemoryFile.from("module.exports = {};")],
+    ])
+  );
+}
+
+/**
+ * A minimal RepositoryContext that serves a fixed set of URLs and records every
+ * fetch, so a test can assert which documents were (and were not) requested.
+ * Any unexpected fetch rejects — so a test that expected the dependency closure
+ * to be skipped fails loudly if it isn't.
+ */
+function fakeContext(operation: string, served: Record<string, FileSet>, fetched: string[]): RepositoryContext {
+  return {
+    getConstraint: (name: string) => (name === BUILD_OPERATION ? operation : undefined),
+    fetch: (url: string) => {
+      fetched.push(url);
+      return url in served ? Computable.resolve(served[url]) : Computable.reject(new Error(`unexpected fetch: ${url}`));
+    },
+  } as unknown as RepositoryContext;
+}
+
+function toPromise<T>(computable: Computable<T>): Promise<T> {
+  return new Promise((resolve, reject) => computable.then(resolve, reject));
+}
+
+async function rejection(fn: () => unknown): Promise<Error> {
+  try {
+    await fn();
+  } catch (err) {
+    return err as Error;
+  }
+  throw new Error("expected a rejection, but none occurred");
+}
+
+describe("NPMRepository resolveAll under files", () => {
+  it("delivers a package's own files without resolving its dependency closure", async () => {
+    const fetched: string[] = [];
+    /* The metadata declares a dependency whose fetch is NOT served: if the
+     * closure were walked, resolving it would reject with 'unexpected fetch'. */
+    const served = {
+      [`${REG}/@parcel/watcher/2.4.1`]: metadataFor("@parcel/watcher", "2.4.1", { "node-addon-api": "^7.0.0" }),
+      [`${REG}/tarball/2.4.1.tgz`]: packageTarball(),
+    };
+    const repo = new NPMRepository(REG, fakeContext(FILES_OPERATION, served, fetched));
+    const ref = new RepositoryRef(repo, Name.fromLiteral("@parcel/watcher:2.4.1"));
+
+    const [delivered] = await toPromise(repo.resolveAll([ref]));
+
+    expect(delivered).to.be.instanceOf(PackageFileSet);
+    const pkg = delivered as PackageFileSet;
+    expect(pkg.packageName).to.equal("@parcel/watcher");
+    expect(pkg.version).to.equal("2.4.1");
+    expect(pkg.dependencies).to.deep.equal([]);
+    expect([...pkg].map(([name]) => name).sort()).to.deep.equal(["index.js", "package.json"]);
+    /* Only the root's own metadata + tarball were fetched — never the dep. */
+    expect(fetched).to.deep.equal([`${REG}/@parcel/watcher/2.4.1`, `${REG}/tarball/2.4.1.tgz`]);
+  });
+
+  it("resolves a range standalone at its constraint minimum", async () => {
+    const fetched: string[] = [];
+    const served = {
+      [`${REG}/left-pad/1.2.0`]: metadataFor("left-pad", "1.2.0", {}),
+      [`${REG}/tarball/1.2.0.tgz`]: packageTarball(),
+    };
+    const repo = new NPMRepository(REG, fakeContext(FILES_OPERATION, served, fetched));
+    const ref = new RepositoryRef(repo, Name.fromLiteral("left-pad:^1.2.0"));
+
+    const [delivered] = await toPromise(repo.resolveAll([ref]));
+
+    expect((delivered as PackageFileSet).version).to.equal("1.2.0");
+  });
+
+  it("rejects projecting into an unconstrained version", async () => {
+    const repo = new NPMRepository(REG, fakeContext(FILES_OPERATION, {}, []));
+    const ref = new RepositoryRef(repo, Name.fromLiteral("left-pad:*"));
+
+    const err = await rejection(() => repo.resolveAll([ref]));
+    expect(err.message).to.match(/unconstrained/);
   });
 });

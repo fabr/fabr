@@ -26,17 +26,21 @@ import { IRuleDefinition } from "./Types";
 const TARGET_REGISTRY: Record<string, IRuleDefinition[]> = {};
 
 /**
- * Select the rule for the given target type under the given configuration:
- * every constraint the rule declares must match (by value), and the most
- * specific matching rule (most constraints) wins; a rule registered with no
- * constraints acts as a wildcard. Selection applies uniformly to declared and
- * anonymous targets.
+ * Default rules that apply to *any* target type — the type-dimension wildcard.
+ * A type-specific rule always overrides a default one; a default rule is only
+ * selected for a (type, constraints) combination that no type-specific rule
+ * matches. This is how a general operation (e.g. `files`) is given a fallback
+ * behaviour for every target without each type having to register its own.
  */
-export function getTargetRule(name: string, constraints: Constraints): IRuleDefinition | undefined {
-  const candidates = TARGET_REGISTRY[name];
-  if (!candidates) {
-    return undefined;
-  }
+const DEFAULT_RULES: IRuleDefinition[] = [];
+
+/**
+ * The most specific rule among `candidates` matching the given configuration:
+ * every constraint the rule declares must match (by value), and the most
+ * specific match (most constraints) wins; a rule registered with no constraints
+ * acts as a wildcard. Returns undefined if none match.
+ */
+function selectMostSpecific(candidates: IRuleDefinition[], constraints: Constraints): IRuleDefinition | undefined {
   let best: IRuleDefinition | undefined;
   let bestCount = -1;
   for (const candidate of candidates) {
@@ -47,6 +51,17 @@ export function getTargetRule(name: string, constraints: Constraints): IRuleDefi
     }
   }
   return best;
+}
+
+/**
+ * Select the rule for the given target type under the given configuration.
+ * A type-specific rule is preferred over a default (all-types) rule — the type
+ * dimension dominates the constraint dimension — so the default rules are only
+ * consulted when no type-specific rule matches. Selection applies uniformly to
+ * declared and anonymous targets.
+ */
+export function getTargetRule(name: string, constraints: Constraints): IRuleDefinition | undefined {
+  return selectMostSpecific(TARGET_REGISTRY[name] ?? [], constraints) ?? selectMostSpecific(DEFAULT_RULES, constraints);
 }
 
 export function hasTargetType(type: string): boolean {
@@ -68,6 +83,16 @@ export function registerRule(
   } else {
     TARGET_REGISTRY[name] = [definition];
   }
+}
+
+/**
+ * Register a default rule applying to any target type under the given
+ * constraints — selected only where no type-specific rule matches (see
+ * getTargetRule). Used to give a general operation a uniform fallback
+ * behaviour across every target type.
+ */
+export function registerDefaultRule(constraints: Constraints, evaluate: IRuleDefinition["evaluate"]): void {
+  DEFAULT_RULES.push({ constraints, evaluate });
 }
 
 /**

@@ -43,7 +43,9 @@ export interface Repository {
    * constraints these references were consumed under. Making a package runnable
    * is the repository's own business; the `run` delivery is a sealed launch
    * install, not files for the consumer to lay out, so "consumers decide layout"
-   * is intact.
+   * is intact. Under the `files` operation the consumer wants only a package's
+   * own files (see FILES_OPERATION), so a repository may deliver them without
+   * resolving the dependency closure at all.
    */
   resolveAll(references: RepositoryRef[]): Computable<FileSet[]>;
 

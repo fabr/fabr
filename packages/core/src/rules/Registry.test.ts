@@ -19,14 +19,24 @@
 
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
-import { getTargetRule, registerRule } from "./Registry";
+import { getTargetRule, registerDefaultRule, registerRule } from "./Registry";
 import { expect } from "chai";
 
 const wildcardRule = (): Computable<FileSet> => Computable.resolve(EMPTY_FILESET);
 const testRule = (): Computable<FileSet> => Computable.resolve(EMPTY_FILESET);
+const specificTestRule = (): Computable<FileSet> => Computable.resolve(EMPTY_FILESET);
+const defaultRule = (): Computable<FileSet> => Computable.resolve(EMPTY_FILESET);
+const overrideRule = (): Computable<FileSet> => Computable.resolve(EMPTY_FILESET);
 
 registerRule("reg_test", {}, wildcardRule);
 registerRule("reg_test", { BUILD_OPERATION: "test" }, testRule);
+/* A type with only operation-specific rules (no {} catch-all), so an operation
+ * it doesn't cover falls through to the default rule. */
+registerRule("reg_specific", { BUILD_OPERATION: "test" }, specificTestRule);
+/* A type-specific rule matching the same operation as the default rule below,
+ * to prove the type-specific one is preferred. */
+registerRule("reg_override", { BUILD_OPERATION: "reg_default" }, overrideRule);
+registerDefaultRule({ BUILD_OPERATION: "reg_default" }, defaultRule);
 
 describe("Registry", () => {
   it("selects the most specific matching rule", () => {
@@ -39,5 +49,22 @@ describe("Registry", () => {
 
   it("returns undefined when no rule matches", () => {
     expect(getTargetRule("no_such_type", {})).to.equal(undefined);
+  });
+
+  it("falls back to a default rule for any type when no type-specific rule matches", () => {
+    /* A type with no rules at all: the default rule applies */
+    expect(getTargetRule("some_other_type", { BUILD_OPERATION: "reg_default" })?.evaluate).to.equal(defaultRule);
+    /* A type that HAS rules, but none matching this operation: still falls back */
+    expect(getTargetRule("reg_specific", { BUILD_OPERATION: "reg_default" })?.evaluate).to.equal(defaultRule);
+  });
+
+  it("lets a type's own {} wildcard shadow the default rule", () => {
+    /* reg_test's {} rule is type-specific, so it matches every operation and the
+     * default is never reached — the type dimension dominates. */
+    expect(getTargetRule("reg_test", { BUILD_OPERATION: "reg_default" })?.evaluate).to.equal(wildcardRule);
+  });
+
+  it("prefers a type-specific rule over a default rule matching the same operation", () => {
+    expect(getTargetRule("reg_override", { BUILD_OPERATION: "reg_default" })?.evaluate).to.equal(overrideRule);
   });
 });
