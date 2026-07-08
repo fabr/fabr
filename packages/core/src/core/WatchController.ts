@@ -68,7 +68,7 @@ const defaultTimer: WatchTimer = {
 export class WatchController {
   private readonly dirty = new Set<WatchEntry>();
   private handle: unknown;
-  private readonly closers = new Set<() => void>();
+  private readonly closers = new Set<() => void | Promise<void>>();
   private closed = false;
 
   constructor(
@@ -77,11 +77,23 @@ export class WatchController {
     private readonly onError: (err: Error) => void = () => {},
     /** Invoked once per applied batch, just before the graph is re-settled — the
      * driver uses it to advance the build cycle so progress re-announces. */
-    private readonly onBeforeApply: () => void = () => {}
+    private readonly onBeforeApply: () => void = () => {},
+    /** Surface a non-fatal watcher notice (e.g. a backend fallback) for the
+     * driver to render; core never logs directly. */
+    private readonly onWarning: (message: string) => void = () => {}
   ) {}
 
-  /** Register a teardown callback (e.g. closing a filesystem watcher). */
-  public track(close: () => void): void {
+  /** Surface a non-fatal watcher notice (e.g. the FS backend falling back to an
+   * alternate) through the driver's diagnostics. */
+  public reportWarning(message: string): void {
+    this.onWarning(message);
+  }
+
+  /** Register a teardown callback (e.g. closing a filesystem watcher). May be
+   * async: {@link close} awaits it, so the process can exit only once the native
+   * watcher thread has stopped (an abrupt exit mid-flight crashes the kqueue
+   * backend — see {@link close}). */
+  public track(close: () => void | Promise<void>): void {
     this.closers.add(close);
   }
 
@@ -127,15 +139,21 @@ export class WatchController {
     );
   }
 
-  /** Stop watching: cancel the pending flush and run every teardown callback. */
-  public close(): void {
+  /** Stop watching: cancel the pending flush and run every teardown callback,
+   * resolving once they all settle. The teardowns are awaited (not fire-and-
+   * forget) because a filesystem watcher's `unsubscribe` stops a native thread,
+   * and exiting the process before that thread has stopped crashes the kqueue
+   * backend (`mutex lock failed` → SIGABRT). A teardown that rejects doesn't
+   * block the others — shutdown proceeds regardless. */
+  public close(): Promise<void> {
     this.closed = true;
     if (this.handle !== undefined) {
       this.timer.clear(this.handle);
       this.handle = undefined;
     }
-    this.closers.forEach(close => close());
+    const closers = Array.from(this.closers);
     this.closers.clear();
     this.dirty.clear();
+    return Promise.allSettled(closers.map(close => Promise.resolve().then(close))).then(() => undefined);
   }
 }

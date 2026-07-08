@@ -85,6 +85,30 @@ export function deleteFile(filepath: string): Computable<void> {
   });
 }
 
+export function rename(from: string, to: string): Computable<void> {
+  return Computable.from<void>((resolve, reject) => {
+    fs.rename(from, to, err => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+export function readdir(dirpath: string): Computable<fs.Dirent[]> {
+  return Computable.from<fs.Dirent[]>((resolve, reject) => {
+    fs.readdir(dirpath, { withFileTypes: true }, (err, entries) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(entries);
+      }
+    });
+  });
+}
+
 export function symlink(target: string, filepath: string): Computable<void> {
   return Computable.from<void>((resolve, reject) => {
     fs.symlink(target, filepath, err => {

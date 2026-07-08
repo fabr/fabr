@@ -46,7 +46,7 @@ import {
   TestsFailedError,
   WatchController,
 } from "@fabr/core";
-import { runInteractive } from "./RunHandler";
+import { runInteractive, RunSupervisor } from "./RunHandler";
 /* The whole of @fabr/core doubles as the api object injected into plugins:
  * handing plugins the host's own module instance keeps every class and
  * registry shared (a plugin must never load a second copy of the core). */
@@ -75,6 +75,7 @@ const DIAG_TESTS_FAILED = Diagnostic.Error<{ name: string; message: string; loc:
 const DIAG_TEST_RESULT = Diagnostic.Info<{ name: string; summary: string }>("{name}: {summary}");
 const DIAG_BUILDING = Diagnostic.Info<{ verb: string; name: string; chain: string }>("{verb} {name}{chain}");
 const DIAG_WATCHING = Diagnostic.Info<Record<string, never>>("Watching for changes (Ctrl-C to stop)");
+const DIAG_WATCH_WARNING = Diagnostic.Warn<{ message: string }>("{message}");
 const DIAG_RESOLVING = Diagnostic.Info<{ requirements: string; name: string }>("Resolving {requirements} from {name}");
 const DIAG_FETCHING = Diagnostic.Info<{ resource: string; url: string }>("Fetching {resource}{url}");
 
@@ -188,9 +189,12 @@ export type Operation = (model: BuildModel, execution: ExecutionContext) => Comp
  * verbs take a bare target name.
  */
 export function runFabr(options: Options): Promise<void> {
-  /* Watch is only meaningful for the build-graph verbs; `run` is interactive
-   * (it exits with the program's code) and ls/cat are one-shot queries. */
-  const watch = options.mode === Mode.Watch && (options.command === "build" || options.command === "test");
+  /* Watch is meaningful for the build-graph verbs and for `run` (relaunch the
+   * program on change — a dev server over built artifacts); ls/cat are one-shot
+   * queries. */
+  const watch =
+    options.mode === Mode.Watch &&
+    (options.command === "build" || options.command === "test" || options.command === "run");
   switch (options.command) {
     case "ls":
       return runWith((model, execution) =>
@@ -212,7 +216,7 @@ export function runFabr(options: Options): Promise<void> {
         );
       }, watch);
     case "run":
-      return runWith((model, execution) => runProgram(model, options, execution));
+      return runWith((model, execution) => runProgram(model, options, execution, watch), watch);
     default: /* build */
       return runWith((model, execution) => {
         const targets = buildTargets(model, options, execution, "build");
@@ -225,11 +229,20 @@ export function runFabr(options: Options): Promise<void> {
 
 /**
  * `fabr run <target> [args…]`: build the target under `run` to get its runnable,
- * then hand it to `runInteractive` (staging + inherited-stdio launch). Exits with
- * the program's own exit code.
+ * then launch it. One-shot mode stages + runs interactively and exits with the
+ * program's own code. Watch mode instead hands each (re)settled runnable to a
+ * persistent {@link RunSupervisor} that relaunches the program when the built
+ * install changes; the re-settle happens inside this `.then`, which the value
+ * cutoff re-fires per change (whereas the surrounding void result does not).
  */
-function runProgram(model: BuildModel, options: Options, execution: ExecutionContext): Computable<void> {
+function runProgram(
+  model: BuildModel,
+  options: Options,
+  execution: ExecutionContext,
+  watch: boolean
+): Computable<void> {
   const config = model.getConfig({ ...getHostProperties(), [BUILD_OPERATION]: "run", ...options.properties }, execution);
+  const supervisor = watch ? new RunSupervisor(options.targets[0], options.runArgs ?? [], execution.log) : undefined;
   return config.resolveName(options.targets[0]).then(sources => {
     const runnable = sources.find((s): s is RunnableFileSet => s instanceof RunnableFileSet);
     if (!runnable) {
@@ -240,6 +253,10 @@ function runProgram(model: BuildModel, options: Options, execution: ExecutionCon
       throw files.isEmpty()
         ? matchedNoFiles(options.targets[0])
         : new Error(`'${options.targets[0]}' is not runnable (it has no BUILD_OPERATION=run result)`);
+    }
+    if (supervisor) {
+      supervisor.update(runnable);
+      return;
     }
     return runInteractive(runnable, options.runArgs ?? []).then(code => process.exit(code));
   });
@@ -275,7 +292,13 @@ async function runWith(operation: Operation, watch = false): Promise<void> {
    * the controller first. The build cache doubles as the content-addressed blob
    * store the source snapshots into, so it too precedes the source file source. */
   const controller = watch
-    ? new WatchController(WATCH_QUIET_MS, undefined, err => reportFailure(log, err, new Set()), () => execution.beginBuildCycle())
+    ? new WatchController(
+        WATCH_QUIET_MS,
+        undefined,
+        err => reportFailure(log, err, new Set()),
+        () => execution.beginBuildCycle(),
+        message => log.log(DIAG_WATCH_WARNING, { message })
+      )
     : undefined;
   const sourceFileSource = getSourceFileSource(sourceRoot, buildCache, controller);
 
@@ -312,8 +335,9 @@ function runWatched(
   controller: WatchController
 ): Promise<void> {
   process.on("SIGINT", () => {
-    controller.close();
-    process.exit(0);
+    /* Await teardown before exiting: unsubscribe stops a native watcher thread,
+     * and exiting mid-flight crashes the kqueue backend (SIGABRT). */
+    void controller.close().finally(() => process.exit(0));
   });
 
   /* This observer re-fires every time the operation's Computable re-settles (the

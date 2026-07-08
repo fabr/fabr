@@ -101,18 +101,20 @@ describe("WatchController", () => {
     expect(cycles).to.equal(1);
   });
 
-  it("cancels a pending flush and runs teardown on close", () => {
+  it("cancels a pending flush and runs teardown on close", async () => {
     const controller = new WatchController(50, timer);
     let recomputes = 0;
     let closed = 0;
-    controller.track(() => closed++);
+    controller.track(() => {
+      closed++;
+    });
     controller.notifyChanged({
       recompute: () => {
         recomputes++;
         return Computable.resolve(null);
       },
     });
-    controller.close();
+    await controller.close();
     expect(closed).to.equal(1);
     timer.fire();
     expect(recomputes).to.equal(0);

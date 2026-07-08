@@ -18,13 +18,13 @@
  */
 
 import * as parcelWatcher from "@parcel/watcher";
-import * as fs from "fs";
-import * as path from "path";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { Name } from "../model/Name";
 
 import { Computable } from "./Computable";
 import { FileSet, IFile, FileSource } from "./FileSet";
-import { hashFile, readFile, readFileBuffer } from "./FSWrapper";
+import { hashFile, readdir, readFile, readFileBuffer, stat } from "./FSWrapper";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
 import * as picomatch from "picomatch";
 
@@ -187,38 +187,44 @@ export class FSFileSource implements FileSource {
      * symlinked form (macOS /var -> /private/var), so relativise against the
      * real root or nothing matches. */
     const realRoot = fs.realpathSync(this.root);
-    this.subscription = parcelWatcher.subscribe(
-      realRoot,
-      (err, events) => {
-        if (err) {
-          controller.reportError(err);
-          return;
-        }
-        for (const event of events) {
-          const rel = toPosix(path.relative(realRoot, event.path));
-          for (const registration of this.registrations) {
-            if (!registration.matches(rel)) {
-              continue;
-            }
-            if (event.type === "delete") {
-              registration.files.delete(rel);
-            } else {
-              registration.files.set(rel, this.fileAdded(rel, undefined));
-            }
-            controller.notifyChanged(registration.entry);
+    const handler: parcelWatcher.SubscribeCallback = (err, events) => {
+      if (err) {
+        controller.reportError(err);
+        return;
+      }
+      for (const event of events) {
+        const rel = toPosix(path.relative(realRoot, event.path));
+        for (const registration of this.registrations) {
+          if (!registration.matches(rel)) {
+            continue;
           }
+          if (event.type === "delete") {
+            registration.files.delete(rel);
+          } else {
+            registration.files.set(rel, this.fileAdded(rel, undefined));
+          }
+          controller.notifyChanged(registration.entry);
         }
-      },
-      { ignore: ["**/node_modules/**", "**/.git/**"] }
+      }
+    };
+    this.subscription = subscribeWithFallback(realRoot, handler, backend =>
+      controller.reportWarning(
+        `Filesystem watching fell back to the ${backend} backend (the default backend failed to start); ` +
+          `watching very large trees may be slower.`
+      )
     );
     this.subscription.catch(err => controller.reportError(err));
     controller.track(() => {
-      void this.subscription?.then(
+      const pending = this.subscription;
+      this.subscription = undefined;
+      this.registrations.clear();
+      /* Returned (not fire-and-forget) so the controller awaits the native
+       * unsubscribe before the process exits — an abrupt exit while the kqueue
+       * watcher thread is live crashes with SIGABRT. */
+      return pending?.then(
         sub => sub.unsubscribe(),
         () => undefined
       );
-      this.subscription = undefined;
-      this.registrations.clear();
     });
   }
 
@@ -229,19 +235,10 @@ export class FSFileSource implements FileSource {
   }
 
   public get(name: string): Computable<IFile> {
-    /* FIXME: Should support watching as well. */
-    return Computable.from((resolve, reject) => {
-      const file = path.resolve(this.root, name);
-      fs.stat(file, (err, stat) => {
-        if (err) {
-          reject(err);
-        } else {
-          /* Route through fileAdded so a subclass (SourceFileSource) applies its
-           * ingestion — single-file reads get blob-backed just like glob finds. */
-          resolve(this.fileAdded(name, stat));
-        }
-      });
-    });
+    /* FIXME: Should support watching as well. Route through fileAdded so a
+     * subclass (SourceFileSource) applies its ingestion — single-file reads get
+     * blob-backed just like glob finds. */
+    return stat(path.resolve(this.root, name)).then(fileStat => this.fileAdded(name, fileStat));
   }
 }
 
@@ -271,6 +268,38 @@ function removePrefix(filename: string, pattern: RegExp | undefined): string {
   return filename;
 }
 
+const WATCH_OPTIONS: parcelWatcher.Options = { ignore: ["**/node_modules/**", "**/.git/**"] };
+
+/**
+ * Native watch backend to try when the platform default fails to *start*. macOS
+ * FSEvents can refuse to start a stream (resource pressure, sandboxing, a wedged
+ * fseventsd) — kqueue is a reliable, if per-fd heavier, fallback. Other platforms'
+ * defaults (inotify, ReadDirectoryChangesW) are dependable enough not to need one.
+ * (@parcel/watcher's bundled types omit "kqueue" though the native binding supports
+ * it, hence the cast.)
+ */
+const FALLBACK_BACKEND: parcelWatcher.BackendType | undefined =
+  process.platform === "darwin" ? ("kqueue" as unknown as parcelWatcher.BackendType) : undefined;
+
+/**
+ * Subscribe to the tree, falling back to {@link FALLBACK_BACKEND} if the default
+ * backend fails to start. @parcel/watcher does not auto-fall-back — a start failure
+ * rejects the returned promise — so we retry once with the alternate backend.
+ */
+function subscribeWithFallback(
+  dir: string,
+  callback: parcelWatcher.SubscribeCallback,
+  onFallback: (backend: parcelWatcher.BackendType) => void
+): Promise<parcelWatcher.AsyncSubscription> {
+  return parcelWatcher.subscribe(dir, callback, WATCH_OPTIONS).catch(err => {
+    if (!FALLBACK_BACKEND) {
+      throw err;
+    }
+    onFallback(FALLBACK_BACKEND);
+    return parcelWatcher.subscribe(dir, callback, { ...WATCH_OPTIONS, backend: FALLBACK_BACKEND });
+  });
+}
+
 function makeMatcher(glob: string): Matcher {
   return (picomatch as unknown as (g: string) => Matcher)(glob);
 }
@@ -288,42 +317,50 @@ function toPosix(p: string): string {
  * bare directory means every file beneath it. Only the glob's static base is
  * walked, and node_modules/.git are skipped.
  */
-async function enumerateGlob(root: string, searchString: string): Promise<{ names: string[]; matches: Matcher }> {
+function enumerateGlob(root: string, searchString: string): Computable<{ names: string[]; matches: Matcher }> {
   const scanned = picomatch.scan(searchString);
-  let pattern = searchString;
   if (!scanned.isGlob) {
-    const abs = path.resolve(root, searchString);
-    const stat = await fs.promises.stat(abs).catch(() => undefined);
-    if (!stat) {
-      /* Nothing there yet — an empty set that a later create-event can fill. */
-      return { names: [], matches: makeMatcher(searchString) };
-    }
-    if (stat.isFile()) {
-      return { names: [toPosix(searchString)], matches: makeMatcher(searchString) };
-    }
-    pattern = `${searchString.replace(/\/+$/, "")}/**`;
+    const literal = makeMatcher(searchString);
+    return stat(path.resolve(root, searchString)).then(
+      fileStat =>
+        fileStat.isFile()
+          ? { names: [toPosix(searchString)], matches: literal }
+          : /* A directory reference means every file beneath it. */
+            walkGlob(root, `${searchString.replace(/\/+$/, "")}/**`),
+      /* Nothing there yet — an empty set a later create-event can fill. */
+      () => ({ names: [], matches: literal })
+    );
   }
-  const matches = makeMatcher(pattern);
-  const base = path.resolve(root, picomatch.scan(pattern).base);
-  const names: string[] = [];
-  await walk(root, base, matches, names);
-  return { names, matches };
+  return walkGlob(root, searchString);
 }
 
-async function walk(root: string, dir: string, matches: Matcher, names: string[]): Promise<void> {
-  const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [] as fs.Dirent[]);
-  for (const entry of entries) {
-    if (entry.name === "node_modules" || entry.name === ".git") {
-      continue;
-    }
-    const abs = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      await walk(root, abs, matches, names);
-    } else if (entry.isFile()) {
-      const rel = toPosix(path.relative(root, abs));
-      if (matches(rel)) {
-        names.push(rel);
-      }
-    }
-  }
+function walkGlob(root: string, pattern: string): Computable<{ names: string[]; matches: Matcher }> {
+  const matches = makeMatcher(pattern);
+  const base = path.resolve(root, picomatch.scan(pattern).base);
+  return walk(root, base, matches).then(names => ({ names, matches }));
+}
+
+function walk(root: string, dir: string, matches: Matcher): Computable<string[]> {
+  return readdir(dir).then(
+    entries =>
+      Computable.forAll(
+        entries.map(entry => {
+          if (entry.name === "node_modules" || entry.name === ".git") {
+            return Computable.resolve<string[]>([]);
+          }
+          const abs = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            return walk(root, abs, matches);
+          }
+          if (entry.isFile()) {
+            const rel = toPosix(path.relative(root, abs));
+            return Computable.resolve<string[]>(matches(rel) ? [rel] : []);
+          }
+          return Computable.resolve<string[]>([]);
+        }),
+        (...lists) => lists.flat()
+      ),
+    /* An unreadable directory contributes nothing. */
+    () => []
+  );
 }

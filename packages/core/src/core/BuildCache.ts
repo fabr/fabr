@@ -5,7 +5,7 @@ import { Computable } from "./Computable";
 import { openUrlStream } from "./Fetch";
 import { FileSet, IFile } from "./FileSet";
 import { FSFile } from "./FSFileSource";
-import { deleteFile, hardlink, hashFile, hashString, readFile, readFileBuffer, symlink, writeFile } from "./FSWrapper";
+import { deleteFile, hardlink, hashFile, hashString, readFile, readFileBuffer, rename, symlink, writeFile } from "./FSWrapper";
 import { SymlinkFile } from "./SymlinkFile";
 import { describeSystemError, ExecutionError } from "../support/Execute";
 import * as picomatch from "picomatch";
@@ -153,9 +153,7 @@ export class BuildCache {
   public ensureBlob(hash: string, bytes: Buffer): Computable<string> {
     return this.materializeBlob(hash, blobPath => {
       const tmp = `${blobPath}.tmp-${process.pid}-${this.blobTempCounter++}`;
-      return Computable.from<void>((resolve, reject) => {
-        fs.writeFile(tmp, Uint8Array.from(bytes), err => (err ? reject(err) : resolve()));
-      }).then(() => this.renameIntoPool(tmp, blobPath));
+      return writeFile(tmp, bytes).then(() => this.renameIntoPool(tmp, blobPath));
     });
   }
 
@@ -191,14 +189,15 @@ export class BuildCache {
    * there first (the blob now exists — same content by hash), that is success;
    * either way `from` is consumed. */
   private renameIntoPool(from: string, blobPath: string): Computable<void> {
-    return Computable.from<void>((resolve, reject) => {
-      fs.rename(from, blobPath, err => {
-        if (!err) {
-          resolve();
-          return;
+    return rename(from, blobPath).catch(renameErr => {
+      /* rename failed: if another writer already materialised the blob first
+       * (same content by hash) that is success, else a real error. Either way
+       * drop the leftover `from`, then settle on which it was. */
+      const won = fs.existsSync(blobPath);
+      return deleteFile(from).finally(() => {
+        if (!won) {
+          throw renameErr;
         }
-        const won = fs.existsSync(blobPath);
-        fs.rm(from, { force: true }, () => (won ? resolve() : reject(err)));
       });
     });
   }

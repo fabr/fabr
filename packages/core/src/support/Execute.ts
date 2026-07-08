@@ -1,4 +1,4 @@
-import { spawn } from "child_process";
+import { ChildProcess, spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { getSystemErrorMap } from "util";
@@ -125,6 +125,18 @@ export function executeInteractive(cmd: string, args: string[]): Computable<numb
       }
     });
   });
+}
+
+/**
+ * Spawn an interactive child (inherited stdio) and return the live handle, for a
+ * caller that must manage its lifecycle — kill it, restart it, watch for its
+ * exit — rather than merely await it. This is the supervised counterpart of
+ * {@link executeInteractive} (the one-shot form that resolves on exit); it backs
+ * `fabr run -w`, where a source change relaunches the program. All process
+ * spawning stays centralized here.
+ */
+export function spawnInteractive(cmd: string, args: string[]): ChildProcess {
+  return spawn(cmd, args, { stdio: "inherit", windowsHide: true });
 }
 
 /** Quote an argument for display where it wouldn't survive a shell round-trip */
