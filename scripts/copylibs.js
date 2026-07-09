@@ -17,19 +17,40 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* Copy each package's .fabr library alongside its compiled output, so the
- * built package content is self-contained: the system include path resolves
- * lib/ next to the package entry point (see packageLibDir), never from the
- * source tree. */
+/* Make each package's devchain (tsc) build content-identical to the package
+ * fabr itself produces, so `yarn build` is a faithful stand-in and not just a
+ * bootstrap. Two source assets tsc leaves behind that the fabr build carries:
+ *   - lib/ .fabr libraries: the system include path resolves lib/ next to the
+ *     package entry point (see packageLibDir), never from the source tree;
+ *   - hand-authored .d.ts under src/: the fabr build's `srcs = **\/*.ts` glob
+ *     passes them through, but tsc never copies .d.ts *inputs* to outDir. */
 
 const fs = require("fs");
 const path = require("path");
 
 for (const pkg of ["core", "js"]) {
-  const src = path.join(__dirname, "..", "packages", pkg, "lib");
-  const dest = path.join(__dirname, "..", "packages", pkg, "build", "lib");
-  if (fs.existsSync(src)) {
-    fs.rmSync(dest, { recursive: true, force: true });
-    fs.cpSync(src, dest, { recursive: true });
+  const pkgDir = path.join(__dirname, "..", "packages", pkg);
+  const lib = path.join(pkgDir, "lib");
+  const libDest = path.join(pkgDir, "build", "lib");
+  if (fs.existsSync(lib)) {
+    fs.rmSync(libDest, { recursive: true, force: true });
+    fs.cpSync(lib, libDest, { recursive: true });
+  }
+
+  const srcRoot = path.join(pkgDir, "src");
+  const buildRoot = path.join(pkgDir, "build");
+  if (fs.existsSync(srcRoot)) {
+    (function copyDecls(dir) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const from = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          copyDecls(from);
+        } else if (entry.name.endsWith(".d.ts")) {
+          const to = path.join(buildRoot, path.relative(srcRoot, from));
+          fs.mkdirSync(path.dirname(to), { recursive: true });
+          fs.copyFileSync(from, to);
+        }
+      }
+    })(srcRoot);
   }
 }

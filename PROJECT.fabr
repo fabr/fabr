@@ -31,3 +31,9 @@ js_package @fabr/fabr {
   deps = es2021 nodejs @fabr/core @fabr/js;
   test_deps = chai;
 }
+
+# End-to-end tests: drive the built fabr CLI directly.
+js_test e2e_tests {
+  srcs = packages/fabr/test:**/*.ts;
+  deps = es2021 nodejs chai @fabr/fabr;
+}

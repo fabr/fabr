@@ -37,7 +37,7 @@ function testJsPackage(context: TargetContext): Computable<RuleResult> {
       context.getFileSources("test_deps", BUILD_OP),
     ],
     (sources, flags, tests, target, depSources, testDepSources) =>
-      compileAndRunTests(context, { sources, tests, flags, target, depSources, testDepSources, runnerSources: [] })
+      compileAndRunTests(context, { sources, tests, flags, target, depSources, testDepSources })
   );
 }
 

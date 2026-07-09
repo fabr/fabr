@@ -24,14 +24,9 @@ default JS_TARGET = es6-esm;
 default TSC = @npm:typescript:5.4.5;
 default NODE_TYPES = @npm:@types/node:20.12.7;
 
-#
-# The test runner used by js_test / 'fabr test': a package providing a
-# testRunner/runner.js entry point (see also the per-target 'runner' property).
-# The default is the @fabr/js package itself, built from source when
-# self-hosting; override to a pinned published version otherwise.
-#
-
-default JS_TEST_RUNNER = @fabr/js;
+# The test runner ('fabr test' / js_test) is fabr's own: it is sourced directly
+# from the installed @fabr/js providing the js rules, not resolved as a build
+# target. Selecting an alternative runner is deferred to a future version.
 
 ################### JS-specific targets ####################
 
@@ -54,14 +49,12 @@ targetdef js_package {
 #
 # Standalone Javascript test target: srcs are compiled against deps (the
 # package under test is just a dependency) and any *.test.ts files are run
-# under the test runner (the JS_TEST_RUNNER property, or the per-target
-# 'runner' override).
+# under fabr's own test runner.
 #
 
 targetdef js_test {
     srcs = FILES;
     deps = FILES;
-    runner = FILES;
 }
 
 #

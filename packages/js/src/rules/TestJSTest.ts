@@ -19,7 +19,7 @@
 
 /**
  * The js_test[test] rule: compile srcs against deps and run the *.test.* files
- * under the runner (a standalone test target, deps + runner given explicitly).
+ * under fabr's own runner (a standalone test target, deps given explicitly).
  */
 
 import { BUILD_OPERATION, Computable, RuleRegistration, RuleResult, TargetContext } from "@fabr/core";
@@ -32,11 +32,10 @@ function runJsTest(context: TargetContext): Computable<RuleResult> {
       context.getFlags("deps", BUILD_OP),
       context.getGlobalString("JS_TARGET", BUILD_OP),
       context.getFileSources("deps", BUILD_OP),
-      context.getFileSources("runner", BUILD_OP),
     ],
-    (sources, flags, target, depSources, runnerSources) => {
+    (sources, flags, target, depSources) => {
       const tests = sources.remap(name => (TEST_FILE_PATTERN.test(name) ? name : undefined));
-      return compileAndRunTests(context, { sources, tests, flags, target, depSources, testDepSources: [], runnerSources });
+      return compileAndRunTests(context, { sources, tests, flags, target, depSources, testDepSources: [] });
     }
   );
 }

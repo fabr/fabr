@@ -23,8 +23,9 @@
  * runnable installation, and run the runner over the compiled test files,
  * reporting through the test report contract defined by @fabr/core.
  *
- * The runner (JS_TEST_RUNNER, normally the built @fabr/js package itself)
- * executes standalone inside the test working directory.
+ * The runner is fabr's own, sourced directly from this @fabr/js installation
+ * (see {@link getHostRunner}) and executed standalone inside the test working
+ * directory — it is not resolved as a build target.
  */
 
 import * as fs from "node:fs";
@@ -44,9 +45,9 @@ import {
   formatTestFailures,
   getResultFileSet,
   IBuildActionDefinition,
+  IFile,
   ITestReport,
   MemoryFile,
-  PackageFileSet,
   TargetContext,
   RuleResult,
   SourceRef,
@@ -62,13 +63,59 @@ export const TEST_FILE_PATTERN = /\.test\.tsx?$/;
 /** Compilable sources (the runner executes their compiled .js) */
 const TS_FILE_PATTERN = /\.tsx?$/;
 
-/* The runner-package convention (see packages/js/src/testRunner/): the entry
- * point the rule executes, and the ambient type declarations matching the
- * globals the runner preloads into test processes. */
-const RUNNER_ENTRY = "testRunner/runner.js";
-const RUNNER_GLOBALS_TYPES = "testRunner/test-globals.d.ts";
-/** Where the globals declarations are mounted so tsc auto-includes them */
+/* Fabr's own test runner lives in this @fabr/js installation, next to the
+ * compiled rule code (packages/js/build/testRunner in the devchain build, or
+ * testRunner/ within the fabr-built package — the same relative layout). */
+const HOST_TESTRUNNER_DIR = path.join(__dirname, "testRunner");
+/** The runner entry executed in the test process (see testRunner/runner.ts) */
+const RUNNER_ENTRY = "runner.js";
+/** The runner's hand-authored ambient types for the preloaded globals */
+const GLOBALS_TYPES_FILE = "test-globals.d.ts";
+/** Where the runner runtime is staged in the test install, and where its
+ * ambient-types file mounts so tsc auto-includes it for the test compile */
+const RUNNER_STAGE_DIR = ".fabr-testrunner";
 const GLOBALS_TYPES_MOUNT = "@types/fabr-test-globals/index.d.ts";
+/* The runner's own globals .d.ts as it appears in @fabr/js's srcs, dropped
+ * when @fabr/js tests itself so it doesn't collide with the synthetic mount. */
+const RUNNER_GLOBALS_TYPES = "testRunner/test-globals.d.ts";
+
+interface IHostRunner {
+  /** The runtime .js files, named at the runner's stage-dir root */
+  runtime: FileSet;
+  /** The globals ambient types, as a synthetic @types package for the compile */
+  globalsTypes: FileSet;
+}
+
+let hostRunnerCache: IHostRunner | undefined;
+
+/**
+ * Load fabr's own test runner from this @fabr/js installation's testRunner
+ * directory: the runtime .js (runner.js + its helpers + the globals shim,
+ * executed in the test process) and the hand-authored globals .d.ts (mounted
+ * into the test compile). Read once and memoized — the runner is fixed per
+ * fabr version. Files enter the build as in-memory content, so the test-run
+ * cache key stays content-addressed (no host path leaks into the manifest).
+ */
+function getHostRunner(): IHostRunner {
+  if (!hostRunnerCache) {
+    const read = (file: string): MemoryFile => MemoryFile.from(fs.readFileSync(path.join(HOST_TESTRUNNER_DIR, file), "utf8"));
+    const runtime: Record<string, IFile> = {};
+    for (const name of fs.readdirSync(HOST_TESTRUNNER_DIR)) {
+      /* The runtime is the compiled .js; exclude the runner's own tests */
+      if (name.endsWith(".js") && !name.endsWith(".test.js")) {
+        runtime[name] = read(name);
+      }
+    }
+    if (!runtime[RUNNER_ENTRY]) {
+      throw new Error(`fabr test runner is missing its ${RUNNER_ENTRY} entry in ${HOST_TESTRUNNER_DIR}`);
+    }
+    hostRunnerCache = {
+      runtime: FileSet.layout(runtime),
+      globalsTypes: FileSet.layout({ [GLOBALS_TYPES_MOUNT]: read(GLOBALS_TYPES_FILE) }),
+    };
+  }
+  return hostRunnerCache;
+}
 
 /**
  * Everything a test rule consumes is explicitly resolved under
@@ -87,8 +134,6 @@ export interface ITestInputs {
   /** Test-only packages (assertion libraries and their @types), available to
    * both the test compile and the test run but never to the package build */
   testDepSources: SourceRef[];
-  /** The runner property's sources; empty means fall back to JS_TEST_RUNNER */
-  runnerSources: SourceRef[];
 }
 
 /**
@@ -99,10 +144,11 @@ export interface ITestInputs {
  * artifact is the test report; a red run fails the target with the report's
  * failure summary.
  *
- * Everything the evaluation consumes — deps, test-only deps, the runner
- * (property or JS_TEST_RUNNER global), and the compile toolchain — goes
- * through ONE collection point, so every requirement resolves jointly and
- * the consumer's pins participate across the lot.
+ * Everything the evaluation consumes from the build graph — deps, test-only
+ * deps, and the compile toolchain — goes through ONE collection point, so
+ * every requirement resolves jointly and the consumer's pins participate
+ * across the lot. The runner is not among them: it is fabr's own, sourced
+ * from this installation (see {@link getHostRunner}).
  */
 export function compileAndRunTests(context: TargetContext, inputs: ITestInputs): Computable<RuleResult> {
   const testFiles = compiledTestFiles(inputs.tests);
@@ -111,9 +157,10 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
     return Computable.resolve(EMPTY_FILESET);
   }
   const jsTarget = parseJSTarget(inputs.target);
+  const { runtime: runnerRuntime, globalsTypes } = getHostRunner();
   /* Compile srcs and tests together (tests are normally within srcs); the
    * globals declarations come in via the synthetic @types mount, so a copy
-   * among the sources (the runner package testing itself) is dropped */
+   * among the sources (the runner testing itself) is dropped */
   const sources = FileSet.unionAll(inputs.sources, inputs.tests).remap(name =>
     name === RUNNER_GLOBALS_TYPES ? undefined : name
   );
@@ -122,33 +169,21 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
     .collect({
       deps: inputs.depSources,
       testDeps: inputs.testDepSources,
-      runner: inputs.runnerSources.length > 0 ? inputs.runnerSources : context.getGlobalSources("JS_TEST_RUNNER", BUILD_OP),
       ...(needsTsc && inputs.flags.find(f => f.name === "nodejs")
         ? { nodeTypes: context.getGlobalSources("NODE_TYPES", BUILD_OP) }
         : {}),
     })
-    .then(({ deps, testDeps, runner: runnerSets, nodeTypes }): Computable<RuleResult> => {
-      const runner = requireRunnerPackage(runnerSets, inputs.runnerSources.length > 0);
-      const compileModules = assembleNodeModules([...deps, ...testDeps, runnerGlobalsTypes(runner)]);
-      const runtimeModules = assembleNodeModules([...deps, ...testDeps, runner]);
+    .then(({ deps, testDeps, nodeTypes }): Computable<RuleResult> => {
+      const compileModules = assembleNodeModules([...deps, ...testDeps, globalsTypes]);
+      const runtimeModules = assembleNodeModules([...deps, ...testDeps]);
       const { compiled, copied } = compileJsSources(context, sources, compileModules, jsTarget, inputs.flags, nodeTypes);
       if (!compiled) {
         /* Test files are TypeScript, so a compile is always present; guard
          * defensively rather than emit an empty run */
         return Computable.resolve(EMPTY_FILESET);
       }
-      return planTestRun(compiled, copied, runtimeModules, runner, testFiles, jsTarget);
+      return planTestRun(compiled, copied, runtimeModules, runnerRuntime, testFiles, jsTarget);
     });
-}
-
-/**
- * The runner provides describe/it/... as globals at run time (see
- * testRunner/globals.ts); its test-globals.d.ts carries the matching ambient
- * types. Mount it as a synthetic @types package so the compiler auto-includes
- * it for the test compile. (A runner without the file contributes nothing.)
- */
-function runnerGlobalsTypes(runner: PackageFileSet): FileSet {
-  return runner.remap(name => (name === RUNNER_GLOBALS_TYPES ? GLOBALS_TYPES_MOUNT : undefined));
 }
 
 /** @return the compiled (.js) names of the given test sources, sorted for determinism */
@@ -161,52 +196,33 @@ function compiledTestFiles(tests: FileSet): string[] {
 }
 
 /**
- * @return the runner package from its materialized delivery (the target's
- * runner property if given, else the JS_TEST_RUNNER global — collected
- * jointly with everything else the evaluation consumes).
- */
-function requireRunnerPackage(sets: FileSet[], fromProperty: boolean): PackageFileSet {
-  const pkg = sets.find((set): set is PackageFileSet => set instanceof PackageFileSet);
-  if (!pkg) {
-    throw new Error(
-      fromProperty
-        ? "The runner property must name a built package"
-        : "JS_TEST_RUNNER does not resolve to a built package (it should name the test runner, e.g. @fabr/js)"
-    );
-  }
-  return pkg;
-}
-
-/**
- * Plan the test run: the runtime installation (deps/test-deps/runner as
- * node_modules, plus a minimal package.json and any copied sources) is
- * assembled in resolution, and the compiled tree — the output of the shared
- * js_compile sub-target — is passed in as a concrete input. The js_test_run
- * step's key covers both the staged installation and the invocation (which
- * tests run is part of what a cached green result attests to). A generic exec
- * can't serve here: a red run must fail the target while keeping the report.
+ * Plan the test run: the runtime installation (deps/test-deps as node_modules,
+ * fabr's runner staged under {@link RUNNER_STAGE_DIR}, a minimal package.json
+ * and any copied sources) is assembled in resolution, and the compiled tree —
+ * the output of the shared js_compile sub-target — is passed in as a concrete
+ * input. The js_test_run step's key covers both the staged installation and
+ * the invocation (which tests run is part of what a cached green result
+ * attests to). A generic exec can't serve here: a red run must fail the target
+ * while keeping the report.
  */
 function planTestRun(
   compiled: Computable<FileSet>,
   copied: FileSet,
   nodeModules: FileSet,
-  runner: PackageFileSet,
+  runnerRuntime: FileSet,
   testFiles: string[],
   jsTarget: JSTarget
 ): Computable<RuleResult> {
-  return Computable.forAll([runner.get(RUNNER_ENTRY), compiled], (entry, compiledTree) => {
-    if (!entry) {
-      throw new Error(`Test runner package '${runner.packageName}' does not provide a ${RUNNER_ENTRY} entry point`);
-    }
+  return compiled.then(compiledTree => {
     const packageJson = MemoryFile.from(
       JSON.stringify({ name: "fabr-test", private: true, type: jsTarget.module === "esm" ? "module" : "commonjs" })
     );
     const staged = FileSet.unionAll(
-      FileSet.layout({ node_modules: [nodeModules], "package.json": packageJson }),
+      FileSet.layout({ node_modules: [nodeModules], [RUNNER_STAGE_DIR]: [runnerRuntime], "package.json": packageJson }),
       stripPackageJson(copied),
       compiledTree
     );
-    const runnerEntry = path.join("node_modules", runner.packageName, RUNNER_ENTRY);
+    const runnerEntry = path.join(RUNNER_STAGE_DIR, RUNNER_ENTRY);
     const argv = [findExecutable("node"), runnerEntry, `--report=${TEST_REPORT_FILENAME}`, ...testFiles];
     return new BuildAction(JS_TEST_STEP, { staged, argv }, "test");
   });
@@ -214,8 +230,8 @@ function planTestRun(
 
 /**
  * The js_test_run build step: stage the complete installation (built in
- * resolution — deps/runner as node_modules, the compiled tree, a minimal
- * package.json), execute the runner under node, and deliver the report
+ * resolution — deps as node_modules, fabr's runner, the compiled tree, a
+ * minimal package.json), execute the runner under node, and deliver the report
  * artifact. Only green runs enter the cache — a red run throws (as
  * TestsFailedError when the report says so), which also removes the partial
  * entry, so tests re-run until they pass.

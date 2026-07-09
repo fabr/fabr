@@ -24,7 +24,9 @@
  * js_script, npm_repository) and this package's lib/ (JS.fabr) on the system
  * include path.
  *
- * The package doubles as the default test runner (JS_TEST_RUNNER). The runner
+ * The package doubles as fabr's test runner: the js test rules source the
+ * runner runtime straight from this installation's own testRunner/ (see
+ * TestPipeline.getHostRunner), never resolving it as a build target. That
  * runtime lives in src/testRunner/ and is deliberately disjoint from this side
  * of the package: it executes standalone inside client test processes (no
  * dependency on the host's core at runtime), and nothing here imports it.

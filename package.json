@@ -10,7 +10,7 @@
     "test": "jest",
     "lint": "eslint packages",
     "fabr": "node packages/fabr/build/index.js",
-    "bootstrap": "yarn build && yarn fabr @fabr/core @fabr/js @fabr/fabr && yarn fabr test @fabr/core @fabr/js @fabr/fabr",
+    "bootstrap": "yarn build && yarn fabr @fabr/core @fabr/js @fabr/fabr && yarn fabr test @fabr/core @fabr/js @fabr/fabr e2e_tests",
     "dist": "yarn build && yarn test && yarn lint"
   },
   "devDependencies": {
