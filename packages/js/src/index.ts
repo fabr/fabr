@@ -31,7 +31,6 @@
  */
 
 import type * as fabr from "@fabr/core";
-import type { PluginContribution } from "@fabr/core";
 import { buildJsPackageRule } from "./rules/BuildJSPackage";
 import { runJsPackageRule } from "./rules/RunJSPackage";
 import { jsCompileRule } from "./rules/BuildJSCompile";
@@ -47,14 +46,14 @@ export { assembleNodeModules, compileJsSources, ICompiledSources, JSTarget, pars
 /**
  * Plugin entry point: return this package's contribution — the js rules
  * (js_package build/run/test, js_test, js_script, js_compile), the npm
- * repository type, and this package's lib/ (JS.fabr) as an include directory.
- * Pure: no global registration (see PLUGINS.md); the host merges this into the
- * build's registry.
+ * repository type, and this package's `.fabr` library (JS.fabr), which a
+ * `plugin @fabr/js;` declaration auto-includes. Pure: no global registration
+ * (see PLUGINS.md); the host merges this into the build model's rule tables.
  */
-export function activate(api: typeof fabr): PluginContribution {
+export function activate(api: typeof fabr): fabr.PluginContribution {
   return {
     rules: [buildJsPackageRule, runJsPackageRule, jsCompileRule, testJsPackageRule, jsTestRule, jsScriptRule],
     repositories: [npmRepositoryRegistration],
-    includeDirs: [api.packageLibDir("@fabr/js")],
+    includes: [api.packageLibFile("@fabr/js", "JS.fabr")],
   };
 }

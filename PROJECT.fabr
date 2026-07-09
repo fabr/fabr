@@ -1,5 +1,4 @@
 plugin @fabr/js;
-include JS.fabr;
 
 TSC = @npm:typescript:5.4.5:tsc;
 JS_TARGET = es2018-commonjs;

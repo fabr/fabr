@@ -22,7 +22,7 @@ import * as path from "path";
 import { Computable } from "./Computable";
 import { hashString, readFileBuffer } from "./FSWrapper";
 import { BuildCache } from "./BuildCache";
-import { FSFile, FSFileSource, FSFileStats } from "./FSFileSource";
+import { FSFile, FSFileSource } from "./FSFileSource";
 import { WatchController } from "./WatchController";
 
 /**
@@ -48,9 +48,9 @@ export class SourceFileSource extends FSFileSource {
    * Read the file once, hash those exact bytes, and ingest them into the blob
    * store; return an FSFile whose content is read from the immutable blob.
    */
-  fileAdded(filename: string, stat?: FSFileStats): Computable<FSFile> {
+  public override ingest(filename: string): Computable<FSFile> {
     const filepath = path.resolve(this.root, filename);
-    const fileStat = stat ?? fs.statSync(filepath);
+    const fileStat = fs.statSync(filepath);
     return readFileBuffer(filepath).then(bytes => {
       const hash = hashString(bytes);
       return this.cache

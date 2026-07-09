@@ -20,7 +20,7 @@
 import * as picomatch from "picomatch";
 import * as path from "path";
 import { Name } from "../model/Name";
-import { Computable } from "./Computable";
+import { Computable, ComputableSource } from "./Computable";
 import { FileConflictError, IProvenanceStep } from "./Provenance";
 
 export interface IFile {
@@ -64,13 +64,13 @@ export interface FileSource {
    * @param name the name/glob to match.
    * @param prefix prepended to every result name (default none).
    */
-  find(name: Name, prefix?: string): Computable<FileSet>;
+  find(name: Name, prefix?: string): ComputableSource<FileSet>;
 
   /**
    * @return a single direct file by exact name or undefined if it does not exist.
    * @param name
    */
-  get(name: string): Computable<IFile | undefined>;
+  get(name: string): ComputableSource<IFile | undefined>;
 }
 
 type FileSetContent = Map<string, IFile>;
@@ -143,6 +143,12 @@ export class FileSet implements FileSource {
 
   public getAll(): Computable<FileSet> {
     return Computable.resolve(this);
+  }
+
+  /** The sole file when this set holds exactly one, else undefined — the projection a
+   * single-file query applies to reduce its (0-or-1-element) FileSet to that file. */
+  public getSingleFile(): IFile | undefined {
+    return this.content.size === 1 ? this.content.values().next().value : undefined;
   }
 
   public [Symbol.iterator](): IterableIterator<[string, IFile]> {

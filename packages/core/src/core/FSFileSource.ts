@@ -22,9 +22,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Name } from "../model/Name";
 
-import { Computable } from "./Computable";
+import { Computable, ComputableSource, ComputableState } from "./Computable";
 import { FileSet, IFile, FileSource } from "./FileSet";
 import { hashFile, readdir, readFile, readFileBuffer, stat } from "./FSWrapper";
+import { toError } from "./MultiError";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
 import * as picomatch from "picomatch";
 
@@ -78,12 +79,90 @@ export class FSFile implements IFile {
 
 type Matcher = (rel: string) => boolean;
 
-/** A watched glob's live registration against the source's single subscription:
- * a change to a matching path updates its file map and marks its leaf stale. */
-interface WatchRegistration {
-  matches: Matcher;
-  files: Map<string, Computable<FSFile>>;
-  entry: WatchEntry;
+/**
+ * A reactive query over the source tree: a {@link ComputableSource} that IS both the
+ * graph node and its FS-side registration. It **attaches** (registers with the source
+ * and enumerates the current tree) on its first dependant and **detaches** (unregisters)
+ * on its last — so a watch is held exactly while its result is needed, and a reload's
+ * orphaned query cleans up with no sweep. When the source has a {@link WatchController}
+ * the query is *live*: the source hands each raw change to {@link applyEvent}, and if it
+ * was ours we update our files and it asks the controller to re-settle (skipped when the
+ * content-manifest is unchanged — a touch). Without a controller register/dispatch are
+ * no-ops, so it is a one-shot enumeration that simply never sees an event. Always yields
+ * a {@link FileSet}; `get` projects the single file via {@link FileSet.getSingleFile}
+ * (a single-file `get` is just a query over a literal, non-glob path).
+ */
+class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
+  private readonly files = new Map<string, Computable<FSFile>>();
+  private matches: Matcher = () => false;
+  private lastManifest: string | undefined;
+
+  constructor(
+    private readonly owner: FSFileSource,
+    private readonly root: string,
+    private readonly searchString: string,
+    private readonly prefix: string,
+    private readonly stripPrefix: RegExp | undefined
+  ) {
+    super();
+  }
+
+  protected override attach(): void {
+    /* super.attach() moves us Detached -> Unresolved, i.e. pending — so a reattach
+     * won't briefly serve the stale value while we re-enumerate the current tree
+     * (picking up anything changed while unsubscribed) and settle. */
+    super.attach();
+    this.owner.registerQuery(this);
+    this.files.clear();
+    enumerateGlob(this.root, this.searchString).then(({ names, matches }) => {
+      names.forEach(name => this.files.set(name, this.owner.ingest(name)));
+      this.matches = matches;
+      this.deliver();
+    }, err => this.settle(ComputableState.Error, toError(err)));
+  }
+
+  protected override detach(): void {
+    super.detach();
+    this.owner.unregisterQuery(this);
+  }
+
+  /** Apply a filesystem change: if `rel` is one of ours, update the file map and return
+   * true (so the source schedules our re-settle); otherwise ignore it and return false. */
+  public applyEvent(rel: string, removed: boolean): boolean {
+    if (!this.matches(rel)) {
+      return false;
+    }
+    if (removed) {
+      this.files.delete(rel);
+    } else {
+      this.files.set(rel, this.owner.ingest(rel));
+    }
+    return true;
+  }
+
+  private build(): Computable<FileSet> {
+    return buildFileSet(this.files, this.prefix, this.stripPrefix);
+  }
+
+  private deliver(): void {
+    this.build().then(fileSet => {
+      this.lastManifest = fileSet.toManifest();
+      this.settle(ComputableState.Valid, fileSet);
+    }, err => this.settle(ComputableState.Error, toError(err)));
+  }
+
+  /** WatchController entry: rebuild from the (dispatcher-updated) files and, unless the
+   * content is unchanged (a touch), prepare the batched re-settle. */
+  public recompute(): Computable<PreparedUpdate | null> {
+    return this.build().then(fileSet => {
+      const manifest = fileSet.toManifest();
+      if (manifest === this.lastManifest) {
+        return null;
+      }
+      this.lastManifest = manifest;
+      return { invalidate: () => this.invalidate(), settle: () => this.settle(ComputableState.Valid, fileSet) };
+    });
+  }
 }
 
 /**
@@ -105,79 +184,46 @@ export class FSFileSource implements FileSource {
    * not multiplied across overlapping globs.
    */
   private subscription?: Promise<parcelWatcher.AsyncSubscription>;
-  private readonly registrations = new Set<WatchRegistration>();
+  /** The live queries the single subscription dispatches to — one per watched
+   * `find`/`get`. Each adds itself here when it attaches and removes itself when
+   * it detaches (see {@link TreeQuery}); one subscription, not one per query. */
+  private readonly registrations = new Set<TreeQuery>();
 
   constructor(root: string, watchController?: WatchController) {
     this.root = root;
     this.watchController = watchController;
   }
 
-  public find(name: Name, prefix = ""): Computable<FileSet> {
+  public find(name: Name, prefix = ""): ComputableSource<FileSet> {
     const nameString = name.toString();
     const colonIdx = nameString.lastIndexOf(":");
     const stripPrefix =
       colonIdx === -1 ? undefined : new RegExp("^" + picomatch.parse(nameString.substring(0, colonIdx) + "/").output);
     const searchString = nameString.replace(":", "/");
+    return new TreeQuery(this, this.root, searchString, prefix, stripPrefix);
+  }
+
+  /** Register a live query with the dispatch set and ensure the subscription (a
+   * no-op when this source isn't watching). Called from {@link TreeQuery} on attach. */
+  public registerQuery(query: TreeQuery): void {
     const controller = this.watchController;
+    if (controller) {
+      this.registrations.add(query);
+      this.ensureSubscription(controller);
+    }
+  }
 
-    /* The retained leaf: its resolver is called once on `ready` and again on
-     * every (debounced) change while watching. We resolve it only with settled
-     * plain FileSets (never a Computable) so a re-settle can't orphan a prior
-     * resolution nor be clobbered by a stale one. */
-    let resolveLeaf!: (value: FileSet) => void;
-    let rejectLeaf!: (err: unknown) => void;
-    const leaf = Computable.from<FileSet>((resolve, reject) => {
-      resolveLeaf = resolve;
-      rejectLeaf = reject;
-    });
-
-    const files: Map<string, Computable<FSFile>> = new Map();
-    const buildFileSet = (): Computable<FileSet> =>
-      Computable.forAll(
-        Array.from(files.values()),
-        (...done) =>
-          new FileSet(done.reduce((result, file) => result.set(prefix + removePrefix(file.name, stripPrefix), file), new Map()))
-      );
-
-    /* The manifest (names+hashes) of the last settled FileSet, so a change that
-     * doesn't actually alter content (a touch) is skipped — no re-settle, no
-     * cascade. */
-    let lastManifest: string | undefined;
-    const entry: WatchEntry = {
-      recompute: (): Computable<PreparedUpdate | null> =>
-        buildFileSet().then(fileSet => {
-          const manifest = fileSet.toManifest();
-          if (manifest === lastManifest) {
-            return null;
-          }
-          lastManifest = manifest;
-          return { invalidate: () => leaf.invalidate(), settle: () => resolveLeaf(fileSet) };
-        }),
-    };
-
-    enumerateGlob(this.root, searchString).then(({ names, matches }) => {
-      for (const relName of names) {
-        files.set(relName, this.fileAdded(relName, undefined));
-      }
-      buildFileSet().then(fileSet => {
-        lastManifest = fileSet.toManifest();
-        resolveLeaf(fileSet);
-      }, rejectLeaf);
-      if (controller) {
-        this.registrations.add({ matches, files, entry });
-        this.ensureSubscription(controller);
-      }
-    }, rejectLeaf);
-    return leaf;
+  /** Remove a live query from the dispatch set (on its detach). */
+  public unregisterQuery(query: TreeQuery): void {
+    this.registrations.delete(query);
   }
 
   /**
-   * Ensure the single source-tree subscription exists, then dispatch each
-   * filesystem change to every registration whose glob matches — updating that
-   * glob's file map and marking its leaf for a (debounced) re-settle.
-   * @parcel/watcher's FSEvents backend delivers reliably under heavy load where
-   * chokidar's silently dropped events (the reason for the switch, and the exact
-   * 2.4.1 pin — 2.5.x fails to start FSEvents on macOS 15).
+   * Ensure the single source-tree subscription exists, then hand each filesystem change
+   * to every registered query ({@link TreeQuery.applyEvent}), scheduling a (debounced)
+   * re-settle for each that claims it. @parcel/watcher's FSEvents backend delivers
+   * reliably under heavy load where chokidar silently dropped events (the reason for the
+   * switch, and the exact 2.4.1 pin — 2.5.x fails to start FSEvents on macOS 15).
    */
   private ensureSubscription(controller: WatchController): void {
     if (this.subscription) {
@@ -194,16 +240,10 @@ export class FSFileSource implements FileSource {
       }
       for (const event of events) {
         const rel = toPosix(path.relative(realRoot, event.path));
-        for (const registration of this.registrations) {
-          if (!registration.matches(rel)) {
-            continue;
+        for (const query of this.registrations) {
+          if (query.applyEvent(rel, event.type === "delete")) {
+            controller.notifyChanged(query);
           }
-          if (event.type === "delete") {
-            registration.files.delete(rel);
-          } else {
-            registration.files.set(rel, this.fileAdded(rel, undefined));
-          }
-          controller.notifyChanged(registration.entry);
         }
       }
     };
@@ -228,17 +268,22 @@ export class FSFileSource implements FileSource {
     });
   }
 
-  protected fileAdded(filename: string, stat: FSFileStats | undefined): Computable<FSFile> {
+  /** Turn a tree-relative path into a tracked FSFile. Public because a {@link TreeQuery}
+   * (a separate class) calls it to seed and update its file map; overridable so a subclass
+   * ({@link SourceFileSource}) can blob-back the content. */
+  public ingest(filename: string): Computable<FSFile> {
     const filepath = path.resolve(this.root, filename);
-    const fileStat = stat ?? fs.statSync(filepath);
-    return hashFile(filepath).then(hash => new FSFile(this.root, filename, fileStat, hash));
+    return hashFile(filepath).then(hash => new FSFile(this.root, filename, fs.statSync(filepath), hash));
   }
 
-  public get(name: string): Computable<IFile> {
-    /* FIXME: Should support watching as well. Route through fileAdded so a
-     * subclass (SourceFileSource) applies its ingestion — single-file reads get
-     * blob-backed just like glob finds. */
-    return stat(path.resolve(this.root, name)).then(fileStat => this.fileAdded(name, fileStat));
+  public get(name: string): ComputableSource<IFile | undefined> {
+    /* A single-file get is a query over the literal path (enumerateGlob's non-glob branch
+     * stats one file), projected to that file — undefined when absent, per the FileSource
+     * contract. When watching, a `.fabr` edit thus cascades (through the loader's memoized
+     * parse) into a model reload. The name is normalised to a root-relative path, since
+     * callers pass it either relative (the project entry) or absolute (a resolved include). */
+    const target = toPosix(path.relative(this.root, path.resolve(this.root, name)));
+    return new TreeQuery(this, this.root, target, "", undefined).then(fileSet => fileSet.getSingleFile());
   }
 }
 
@@ -257,6 +302,21 @@ export const FS = {
     });
   },
 };
+
+/** Resolve a query's held files into a FileSet, each name reprefixed (the
+ * `alias:path` strip + the caller's `prefix`). Shared by the one-shot and live
+ * `find` paths. */
+function buildFileSet(
+  files: Map<string, Computable<FSFile>>,
+  prefix: string,
+  stripPrefix: RegExp | undefined
+): Computable<FileSet> {
+  return Computable.forAll(
+    Array.from(files.values()),
+    (...done) =>
+      new FileSet(done.reduce((result, file) => result.set(prefix + removePrefix(file.name, stripPrefix), file), new Map<string, IFile>()))
+  );
+}
 
 function removePrefix(filename: string, pattern: RegExp | undefined): string {
   if (pattern) {

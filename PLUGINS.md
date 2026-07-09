@@ -9,25 +9,27 @@ the canonical example.
 
 ```
 plugin @fabr/js;
-include JS.fabr;
 ```
 
-- `plugin <packagename>;` may appear in any build file. Each plugin is activated exactly once per
-  build, in declaration order.
+- `plugin <packagename>;` may appear in any build file. A plugin declaration **auto-includes the
+  plugin's own `.fabr` library files** — no separate `include` needed (declaring `@fabr/js` brings in
+  its `JS.fabr`). Each plugin is activated once per build, in declaration order.
+- **STD.fabr is always present** — core's library is included in every build without being named, so
+  the generic `flag`/`script`/`run` targetdefs are always available.
 - Plugins are resolved by **module resolution only**: the package must be installed alongside the
   fabr host (for `@fabr/*` packages, they ship with the fabr installation). There is currently no
   option to build a plugin from source as part of the build that uses it. A plugin that cannot be
   resolved is an error.
-- Activation happens at **parse time, before include resolution** — so the include directories a
-  plugin contributes are searchable by the rest of the very file that declared it (as above: the
-  `include JS.fabr;` is satisfied by the `@fabr/js` plugin's own library directory).
+- The only explicit `include` is a **path-relative** one — `include ./shared.fabr;`, resolved
+  relative to the including file — for project-local shared `.fabr` files. There is no system include
+  search path.
 
 ## The plugin contract
 
 A plugin package's main entry point must export an `activate` function that **returns its
-contribution** — the rules, repository types, and include directories it provides. It performs no
+contribution** — the rules, repository types, and `.fabr` library files it provides. It performs no
 registration and has no side effects; the host merges the returned `PluginContribution` into the
-build model's rule tables.
+build model's rule tables and auto-includes its files.
 
 ```ts
 import type * as fabr from "@fabr/core";
@@ -39,7 +41,7 @@ export function activate(api: typeof fabr): PluginContribution {
       { type: "my_thing", constraints: { BUILD_OPERATION: "build" }, evaluate: buildMyThing },
     ],
     repositories: [{ type: "my_repository", provider: createMyRepository }],
-    includeDirs: [api.packageLibDir("@my/plugin")],
+    includes: [api.packageLibFile("@my/plugin", "MYLIB.fabr")],
   };
 }
 ```
@@ -47,13 +49,13 @@ export function activate(api: typeof fabr): PluginContribution {
 - `activate(api)` is a **pure function**: it returns a `PluginContribution` and registers nothing
   globally. It is called once per load (per build); a plugin declared from several files
   contributes once. The `api` object is the **host's own `@fabr/core` module instance** (the full
-  module namespace) — used for helpers like `packageLibDir`, not for registration.
-- `includeDirs` puts directories on the system include path: bare include names (`include
-  FOO.fabr;` — no `/` in the name) resolve against these in declaration order, before falling back
-  to the including file's own directory. By convention a plugin ships its `.fabr` files in `lib/`,
-  next to its entry point, and contributes `packageLibDir("<its-own-name>")` — which locates the
-  directory beside the package's resolved entry point, i.e. within the *built* package content,
-  never a source tree. The `lib/` directory must therefore be packaged alongside the compiled code.
+  module namespace) — used for helpers like `packageLibFile`, not for registration.
+- `includes` are absolute paths to the plugin's own `.fabr` library files, auto-parsed and merged
+  into the model when the plugin is declared. By convention a plugin ships them in `lib/`, next to
+  its entry point, and names them with `packageLibFile("<its-own-name>", "FILE.fabr")` — which
+  locates the file beside the package's resolved entry point, i.e. within the *built* package
+  content, never a source tree. The `lib/` directory must therefore be packaged alongside the
+  compiled code.
 - `rules` — each `{ type?, constraints, evaluate }` contributes the implementation of a target
   type; omit `type` for a **default (all-types) rule**. The *schema* for a declared type (its
   `targetdef`) lives in the plugin's `.fabr` library files, not in code. Rule selection picks the
@@ -109,7 +111,7 @@ they erase at compile time).
 ```
 my-plugin/
   package.json          main -> the module exporting activate()
-  index.js              activate(api): returns rules + include dir
+  index.js              activate(api): returns rules + lib files
   lib/
     MYTHING.fabr        targetdefs, defaults, convenience targets
   ...rule modules...

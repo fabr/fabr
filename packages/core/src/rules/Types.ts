@@ -130,14 +130,16 @@ export interface RepositoryRegistration {
 
 /**
  * What core and each plugin contribute to a build: rules, repository types, and
- * system include directories. A plugin's `activate()` *returns* this — it
- * performs no global registration (see PLUGINS.md), so the build's rule tables
- * are a pure function of the active contribution set and are rebuilt per load.
- * `includeDirs` are consumed by the loader (bare-include search path); `rules`
- * and `repositories` are tracked by the {@link BuildModel}.
+ * `.fabr` library files. A plugin's `activate()` *returns* this — it performs no
+ * global registration (see PLUGINS.md), so the build's rule tables are a pure
+ * function of the active contribution set and are rebuilt per load. `includes`
+ * are absolute paths to the plugin's own `.fabr` files, which a `plugin <name>;`
+ * declaration auto-parses and merges into the model (no explicit `include`
+ * needed); core's contribution auto-includes STD.fabr, so it is always present.
+ * `rules` and `repositories` are tracked by the {@link BuildModel}.
  */
 export interface PluginContribution {
   rules?: RuleRegistration[];
   repositories?: RepositoryRegistration[];
-  includeDirs?: string[];
+  includes?: string[];
 }

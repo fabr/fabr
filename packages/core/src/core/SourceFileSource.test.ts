@@ -21,12 +21,12 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { BuildCache } from "./BuildCache";
-import { Computable } from "./Computable";
+import { ComputableSource } from "./Computable";
 import { hashString } from "./FSWrapper";
 import { SourceFileSource } from "./SourceFileSource";
 import { expect } from "chai";
 
-function toPromise<T>(computable: Computable<T>): Promise<T> {
+function toPromise<T>(computable: ComputableSource<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.then(resolve, reject));
 }
 
@@ -51,7 +51,7 @@ describe("SourceFileSource", () => {
     fs.writeFileSync(filePath, "original");
     const src = new SourceFileSource(sourceRoot, cache);
 
-    const file = await toPromise(src.get("a.txt"));
+    const file = (await toPromise(src.get("a.txt")))!;
     /* Content and identity resolve to the blob; the display name stays on source */
     expect(file.getDisplayName()).to.equal(filePath);
     expect(file.getAbsPath()!.startsWith(path.join(cacheRoot, "blob"))).to.equal(true);
@@ -64,7 +64,7 @@ describe("SourceFileSource", () => {
     fs.writeFileSync(filePath, "v1");
     const src = new SourceFileSource(sourceRoot, cache);
 
-    const file = await toPromise(src.get("a.txt"));
+    const file = (await toPromise(src.get("a.txt")))!;
     const hashV1 = hashString("v1");
     expect(file.hash).to.equal(hashV1);
 

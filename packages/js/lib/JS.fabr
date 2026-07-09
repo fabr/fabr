@@ -1,7 +1,5 @@
 ##################### Global Properties ####################
 
-include STD.fabr;
-
 #
 # Primary URL for the remote NPM repository. You'll usually want to override this if you're using
 # a private mirror/cache.
