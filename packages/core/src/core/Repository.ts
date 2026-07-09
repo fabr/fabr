@@ -149,6 +149,40 @@ export class RepositoryRef {
 export type SourceRef = FileSource | Repository | RepositoryRef;
 
 /**
+ * Shallow counterpart to {@link materializeAll} for the CLI verb entry points
+ * (`fabr ls`/`cat`/`run` via `resolveName`): resolve only the top-level
+ * references the name itself denotes — never the dependency closure a delivered
+ * package carries. A verb wants the named entity's own content (its files, or
+ * its runnable), not its mounted deps: recursing the closure here would
+ * re-resolve a built package's carried externals pointlessly (ls/cat discard the
+ * deps, reading only the delivered set's own files) and under the wrong
+ * operation (those refs ride the repository instance they were built with, not
+ * this `files` one), so it both wastes work and can fail on a requirement only
+ * the original build context constrained. Non-reference sources (a built
+ * package, a runnable) pass through untouched.
+ */
+export function materializeShallow(sources: SourceRef[]): Computable<(FileSource | Repository)[]> {
+  const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
+  if (references.length === 0) {
+    return Computable.resolve(sources as (FileSource | Repository)[]);
+  }
+  const batches = [...groupByRepository(references).entries()];
+  return Computable.forAll(
+    batches.map(([repository, refs]) => repository.resolveAll(refs)),
+    (...results: FileSet[][]) => {
+      const finished = new Map<RepositoryRef, Computable<FileSet>>();
+      batches.forEach(([, refs], batchIndex) =>
+        refs.forEach((ref, index) => finished.set(ref, ref.finishMaterialize(results[batchIndex][index])))
+      );
+      return Computable.forAll(
+        sources.map(source => (source instanceof RepositoryRef ? finished.get(source)! : Computable.resolve(source))),
+        (...resolved: (FileSource | Repository)[]) => resolved
+      );
+    }
+  );
+}
+
+/**
  * Resolve the RepositoryRefs among the given sources: this is the collection
  * point — because the caller's inputs are all settled by the time the sources
  * are in hand, the set of references is provably complete. The batch includes

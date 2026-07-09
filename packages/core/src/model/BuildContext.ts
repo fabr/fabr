@@ -1,7 +1,7 @@
 import { Readable } from "stream";
 import { Computable } from "../core/Computable";
 import { FileSet, FileSource } from "../core/FileSet";
-import { isRepository, materializeAll, Repository, RepositoryRef, SourceRef } from "../core/Repository";
+import { isRepository, materializeAll, materializeShallow, Repository, RepositoryRef, SourceRef } from "../core/Repository";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { Flag } from "../core/Flag";
 import {
@@ -342,10 +342,13 @@ export class BuildContext {
    * model's reference semantics (target-prefix + `:`/glob projection) rather
    * than splitting the name themselves. This IS a collection point: any external
    * reference the name resolves to (`@npm:esbuild:0.28.1`) is materialized here,
-   * so a top-level external name resolves like any other.
+   * so a top-level external name resolves like any other. It is *shallow*
+   * (`materializeShallow`): a verb wants the named entity's own content, not the
+   * dependency closure a delivered package carries — that closure is discarded by
+   * ls/cat and would re-resolve under the wrong operation (see materializeShallow).
    */
   public resolveName(name: string, stack?: IDependencyStack): Computable<SourceRef[]> {
-    return this.resolveFileSource(parseName(name), undefined, stack).then(resolved => materializeAll(resolved.sources));
+    return this.resolveFileSource(parseName(name), undefined, stack).then(resolved => materializeShallow(resolved.sources));
   }
 
   private resolveFileSource(
