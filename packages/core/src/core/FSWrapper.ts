@@ -20,6 +20,7 @@
 /* Computable<> versions of common fs functions */
 
 import * as fs from "fs";
+import * as path from "path";
 import * as crypto from "crypto";
 import { Computable } from "./Computable";
 
@@ -107,6 +108,35 @@ export function readdir(dirpath: string): Computable<fs.Dirent[]> {
       }
     });
   });
+}
+
+/**
+ * Recursively walk `dir`, calling `onEntry` with every entry (its Dirent and
+ * absolute path) and descending into real subdirectories. Symlinks are NOT
+ * followed: `withFileTypes` classifies by lstat, so a symlinked directory is a
+ * symlink (not a directory) and is never recursed into — the walk visits each
+ * path once and cannot cycle, even through a tree that links to itself.
+ * `skipDir` can veto descent into a directory (the directory entry is still
+ * reported to `onEntry` first). An unreadable directory contributes nothing.
+ */
+export function walkTree(
+  dir: string,
+  onEntry: (entry: fs.Dirent, abspath: string) => void,
+  skipDir: (entry: fs.Dirent, abspath: string) => boolean = () => false
+): Computable<void> {
+  return readdir(dir).then(
+    entries =>
+      Computable.forAll(
+        entries.map(entry => {
+          const abs = path.join(dir, entry.name);
+          onEntry(entry, abs);
+          return entry.isDirectory() && !skipDir(entry, abs) ? walkTree(abs, onEntry, skipDir) : Computable.resolve<void>(undefined);
+        }),
+        () => undefined
+      ),
+    /* An unreadable directory contributes nothing. */
+    () => undefined
+  );
 }
 
 export function symlink(target: string, filepath: string): Computable<void> {

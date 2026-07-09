@@ -174,9 +174,17 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
         : {}),
     })
     .then(({ deps, testDeps, nodeTypes }): Computable<RuleResult> => {
-      const compileModules = assembleNodeModules([...deps, ...testDeps, globalsTypes]);
+      /* The test compile may import the package's deps, the test_deps, and the
+       * runner globals directly; the runtime install is the flat closure. */
       const runtimeModules = assembleNodeModules([...deps, ...testDeps]);
-      const { compiled, copied } = compileJsSources(context, sources, compileModules, jsTarget, inputs.flags, nodeTypes);
+      const { compiled, copied } = compileJsSources(
+        context,
+        sources,
+        [...deps, ...testDeps, globalsTypes],
+        jsTarget,
+        inputs.flags,
+        nodeTypes
+      );
       if (!compiled) {
         /* Test files are TypeScript, so a compile is always present; guard
          * defensively rather than emit an empty run */

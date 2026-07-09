@@ -115,19 +115,23 @@ export interface ICompiledSources {
  * Compile a JS/TS source tree by building the `js_compile` sub-target — the
  * single TS compile path shared by the package build and the test run.
  * TypeScript sources yield `compiled` (the sub-target's cached output);
- * anything not compiled is returned in `copied`. `nodeModules` is the
- * already-assembled dependency layout the sources compile against, with the
- * NODE_TYPES delivery (`nodeTypes`, under the nodejs flag) folded in — both
- * resolved jointly by the caller's collection point. TSC is the compiler's
- * own concern, resolved inside js_compile. The sub-target builds under
- * BUILD_OPERATION=build (a compile is a build even for a test target).
- * (Note: plain .js sources are currently dropped — transpiling them is an
- * open gap.)
+ * anything not compiled is returned in `copied`. `directDeps` are the deps the
+ * sources may import directly (the package's own deps, plus test_deps / runner
+ * globals for a test compile); the NODE_TYPES delivery (`nodeTypes`, under the
+ * nodejs flag) is folded in as another direct type dep. All were resolved
+ * jointly by the caller's collection point. They are laid out *scoped*
+ * (`assembleScopedNodeModules`): the sources see only these direct deps at the
+ * top of node_modules, while the full transitive closure is reachable only by
+ * the deps themselves — so a source importing an undeclared transitive dep fails
+ * to compile. TSC is the compiler's own concern, resolved inside js_compile. The
+ * sub-target builds under BUILD_OPERATION=build (a compile is a build even for a
+ * test target). (Note: plain .js sources are currently dropped — transpiling
+ * them is an open gap.)
  */
 export function compileJsSources(
   context: TargetContext,
   sources: FileSet,
-  nodeModules: FileSet,
+  directDeps: FileSet[],
   jsTarget: JSTarget,
   flags: Flag[],
   nodeTypes?: FileSet[]
@@ -155,10 +159,10 @@ export function compileJsSources(
 
   let compiled: Computable<FileSet> | undefined;
   if ("ts" in sourceGroups) {
-    /* The deps the sources compile against: the package deps plus (under
-     * nodejs) the node @types — resolved jointly by the caller. TSC is added
-     * by js_compile itself. */
-    const deps = nodeTypes ? FileSet.unionAll(nodeModules, assembleNodeModules(nodeTypes)) : nodeModules;
+    /* The deps the sources compile against: the direct deps plus (under nodejs)
+     * the node @types, laid out scoped so only these are visible to the sources.
+     * TSC is added by js_compile itself. */
+    const deps = assembleScopedNodeModules(nodeTypes ? [...directDeps, ...nodeTypes] : directDeps);
     compiled = context.subTarget(
       "js_compile",
       { srcs: sourceGroups.ts, deps, runtime: getESRuntime(flags, jsTarget.version) },
@@ -209,6 +213,61 @@ export function assembleNodeModules(sets: FileSet[]): FileSet {
 /** @return the package's files renamed under the package's mount point */
 function mountPackage(pkg: PackageFileSet): FileSet {
   return pkg.remap(path => `${pkg.packageName}/${path}`);
+}
+
+/** The hidden store (a dot-dir, so never itself a resolvable package name) that
+ * holds the full closure; each package's real files live at
+ * `<STORE>/<name>`, so store packages resolve each other as siblings. */
+const SCOPED_STORE = ".pkgs/node_modules";
+
+/**
+ * Lay out the given DIRECT sources as node_modules, but scoped so the consuming
+ * sources see only the direct deps — not the transitive closure. The full
+ * closure's real files go into a hidden store (`.pkgs/node_modules/<name>`,
+ * flat, so deps resolve each other as siblings); each *direct* package is then
+ * exposed at the top of node_modules as a symlink into the store. Node/tsc
+ * resolve the symlink to its real store path (`preserveSymlinks: false`), so a
+ * direct dep resolves *its* imports from the store (the whole closure), while a
+ * source importing an undeclared transitive dep finds nothing at the top level
+ * and fails. Non-package sources (loose files) pass through at the top level, as
+ * a source may reference them directly. Requires the sources to be materialized.
+ */
+export function assembleScopedNodeModules(directSets: FileSet[]): FileSet {
+  const store: FileSet[] = [];
+  const seen = new Set<PackageFileSet>();
+  const toStore = (pkg: PackageFileSet): void => {
+    if (!seen.has(pkg)) {
+      seen.add(pkg);
+      store.push(pkg.remap(path => `${SCOPED_STORE}/${pkg.packageName}/${path}`));
+      for (const dep of pkg.dependencies) {
+        if (dep instanceof PackageFileSet) {
+          toStore(dep);
+        }
+      }
+    }
+  };
+  const topLevel: FileSet[] = [];
+  const linked = new Set<string>();
+  for (const set of directSets) {
+    if (set instanceof PackageFileSet) {
+      toStore(set);
+      if (!linked.has(set.packageName)) {
+        linked.add(set.packageName);
+        topLevel.push(new FileSet(new Map([[set.packageName, storeLink(set.packageName)]])));
+      }
+    } else {
+      topLevel.push(set);
+    }
+  }
+  return FileSet.unionAll(...store, ...topLevel);
+}
+
+/** A relative symlink from `node_modules/<name>` to the package's store copy.
+ * The target is resolved from the link's own directory, so a scoped name
+ * (`@x/y`, one directory deep) needs one `../` to climb back to node_modules. */
+function storeLink(packageName: string): SymlinkFile {
+  const depth = (packageName.match(/\//g) ?? []).length;
+  return new SymlinkFile(`${"../".repeat(depth)}${SCOPED_STORE}/${packageName}`);
 }
 
 /**

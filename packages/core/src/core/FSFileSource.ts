@@ -24,7 +24,7 @@ import { Name } from "../model/Name";
 
 import { Computable, ComputableSource, ComputableState } from "./Computable";
 import { FileSet, IFile, FileSource } from "./FileSet";
-import { hashFile, readdir, readFile, readFileBuffer, stat } from "./FSWrapper";
+import { hashFile, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
 import { toError } from "./MultiError";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
 import * as picomatch from "picomatch";
@@ -401,26 +401,18 @@ function walkGlob(root: string, pattern: string): Computable<{ names: string[]; 
 }
 
 function walk(root: string, dir: string, matches: Matcher): Computable<string[]> {
-  return readdir(dir).then(
-    entries =>
-      Computable.forAll(
-        entries.map(entry => {
-          if (entry.name === "node_modules" || entry.name === ".git") {
-            return Computable.resolve<string[]>([]);
-          }
-          const abs = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            return walk(root, abs, matches);
-          }
-          if (entry.isFile()) {
-            const rel = toPosix(path.relative(root, abs));
-            return Computable.resolve<string[]>(matches(rel) ? [rel] : []);
-          }
-          return Computable.resolve<string[]>([]);
-        }),
-        (...lists) => lists.flat()
-      ),
-    /* An unreadable directory contributes nothing. */
-    () => []
-  );
+  const names: string[] = [];
+  return walkTree(
+    dir,
+    (entry, abs) => {
+      if (entry.isFile()) {
+        const rel = toPosix(path.relative(root, abs));
+        if (matches(rel)) {
+          names.push(rel);
+        }
+      }
+    },
+    /* Source scanning ignores dependency and VCS trees entirely. */
+    entry => entry.name === "node_modules" || entry.name === ".git"
+  ).then(() => names);
 }

@@ -5,7 +5,7 @@ import { Computable } from "./Computable";
 import { openUrlStream } from "./Fetch";
 import { FileSet, IFile } from "./FileSet";
 import { FSFile } from "./FSFileSource";
-import { deleteFile, hardlink, hashFile, hashString, readFile, readFileBuffer, rename, symlink, writeFile } from "./FSWrapper";
+import { deleteFile, hardlink, hashFile, hashString, readFile, readFileBuffer, rename, symlink, walkTree, writeFile } from "./FSWrapper";
 import { SymlinkFile } from "./SymlinkFile";
 import { describeSystemError, ExecutionError } from "../support/Execute";
 import * as picomatch from "picomatch";
@@ -316,46 +316,28 @@ export function getResultFileSet(targetDir: string, pattern: string): Computable
   const result = new Map<string, IFile>();
   const ops: Computable<void>[] = [];
 
-  return Computable.from((resolve, reject) => {
-    fs.readdir(targetDir, { withFileTypes: true, recursive: true }, (err, dirents) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      try {
-        dirents.forEach(dirent => {
-          if (!dirent.isFile()) {
-            return;
-          }
-          /* Note: with recursive readdir, dirent.name is only the basename.
-           * The containing directory is parentPath on current node versions,
-           * but the (since removed) path on the ones our current @types are for. */
-          const entry = dirent as typeof dirent & Partial<{ parentPath: string; path: string }>;
-          const abspath = path.resolve(entry.parentPath ?? entry.path ?? targetDir, dirent.name);
-          const relpath = path.relative(rootDir, abspath);
-          if (!relpath.startsWith("..") && matcher(relpath)) {
-            ops.push(
-              hashFile(abspath).then(hash => {
-                /* A work-dir output is path-backed (content at its relpath, not
-                 * at a blob hash), so it can't be a BuildFile — storeContent then
-                 * ingests it into the pool by rename. */
-                result.set(relpath, new FSFile(rootDir, relpath, fs.statSync(abspath), hash));
-              })
-            );
-          } else {
-            /* Prune staged inputs, retaining only the results in the cache entry */
-            ops.push(asExecutionError(deleteFile(abspath)));
-          }
-        });
-      } catch (direntErr) {
-        reject(direntErr);
-        return;
-      }
-      Computable.forAll(
-        ops,
-        () => resolve(new FileSet(result)),
-        opErr => reject(opErr)
+  /* Walk without following symlinks (walkTree recurses real dirs only): the work
+   * dir may contain symlinks — a scoped node_modules links its direct deps into a
+   * hidden store — and following them would visit each linked file twice and risk
+   * cycles. Keep matching files, prune everything else — a symlink by removing the
+   * link itself, never its target. Directories are neither collected nor deleted;
+   * the emptied work dir is discarded by the caller. */
+  return walkTree(targetDir, (entry, abspath) => {
+    if (entry.isDirectory()) {
+      return;
+    }
+    const relpath = path.relative(rootDir, abspath);
+    if (entry.isFile() && !relpath.startsWith("..") && matcher(relpath)) {
+      ops.push(
+        hashFile(abspath).then(hash => {
+          /* A work-dir output is path-backed (content at its relpath, not at a
+           * blob hash), so it can't be a BuildFile — storeContent then ingests
+           * it into the pool by rename. */
+          result.set(relpath, new FSFile(rootDir, relpath, fs.statSync(abspath), hash));
+        })
       );
-    });
-  });
+    } else {
+      ops.push(asExecutionError(deleteFile(abspath)));
+    }
+  }).then(() => Computable.forAll(ops, () => new FileSet(result)));
 }

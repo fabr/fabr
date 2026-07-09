@@ -38,7 +38,6 @@ import {
   TargetContext,
 } from "@fabr/core";
 import {
-  assembleNodeModules,
   binByConvention,
   compileJsSources,
   hasTypescriptSources,
@@ -79,10 +78,10 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
       });
 
       return Computable.forAll([gathered, seedJson], ({ deps, nodeTypes }, seed) => {
-        /* Lay the deps out as node_modules contents: every package (and every
-         * member of its resolved closure) is mounted at its real package name */
-        const nodeModules = assembleNodeModules(deps);
-        const { compiled, copied } = compileJsSources(context, compileSources, nodeModules, jsTarget, flags, nodeTypes);
+        /* Compile against the deps laid out scoped: the sources see only these
+         * direct deps, while the transitive closure is reachable only by the
+         * deps themselves (assembleScopedNodeModules). */
+        const { compiled, copied } = compileJsSources(context, compileSources, deps, jsTarget, flags, nodeTypes);
 
         /* The package's DIRECT deps as written (built packages as packages,
          * external requirements as inert references, resolved fresh at each
