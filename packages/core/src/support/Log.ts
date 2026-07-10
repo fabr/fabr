@@ -114,6 +114,16 @@ function getLogLevelName(logLevel: LogLevel): string {
   }
 }
 
+/* CSI sequences (colors, cursor movement) and OSC sequences (hyperlinks,
+ * titles) — everything a tool plausibly embeds in its captured output. */
+// eslint-disable-next-line no-control-regex -- matching escape sequences is the point
+const ANSI_ESCAPES = /\x1b\[[0-9;?]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g;
+
+/** Remove ANSI escape sequences, leaving the plain text. */
+export function stripAnsi(text: string): string {
+  return text.replaceAll(ANSI_ESCAPES, "");
+}
+
 /* ANSI SGR codes for the block elements (rustc's palette) */
 const SGR_ERROR = "1;31";
 const SGR_WARN = "1;33";
@@ -141,10 +151,17 @@ export class LogFormatter implements Log {
     /* A diagnostic without a resolvable primary position stays a plain
      * one-liner (progress and status lines depend on this form). */
     if (!params.loc?.reader.resolvePosition(params.loc.offset)) {
-      this.out(`${getLogLevelName(level)}:${message}`);
+      this.emit(`${getLogLevelName(level)}:${message}`);
       return;
     }
-    this.out(this.renderBlock(level, message, params));
+    this.emit(this.renderBlock(level, message, params));
+  }
+
+  /** Message content may itself carry ANSI codes (captured tool output runs
+   * with color forced — see Execute); when this formatter isn't painting,
+   * embedded codes are stripped too, so non-TTY output is genuinely plain. */
+  private emit(text: string): void {
+    this.out(this.color ? text : stripAnsi(text));
   }
 
   /**

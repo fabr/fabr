@@ -106,4 +106,16 @@ describe("LogFormatter", () => {
     expect(lines[0]).to.contain("\x1b[1;31merror\x1b[0m");
     expect(lines[0]).to.contain("something went wrong");
   });
+
+  it("strips ANSI codes embedded in the message when color is off", () => {
+    /* Captured tool output: SGR color, a cursor sequence, an OSC hyperlink */
+    const message = "failed:\n\x1b[31mred text\x1b[0m \x1b[1A\x1b]8;;http://x\x07link\x1b]8;;\x07";
+    const lines = render({ loc: spanAt(18, 21), message });
+    expect(lines[5]).to.equal("red text link");
+  });
+
+  it("passes embedded ANSI codes through when color is on", () => {
+    const lines = render({ loc: spanAt(18, 21), message: "failed:\n\x1b[31mred\x1b[0m" }, true);
+    expect(lines[5]).to.equal("\x1b[31mred\x1b[0m");
+  });
 });

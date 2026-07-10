@@ -244,7 +244,7 @@ function planTestRun(
  * TestsFailedError when the report says so), which also removes the partial
  * entry, so tests re-run until they pass.
  */
-const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 1, run: runTests };
+const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 2, run: runTests };
 
 function runTests(inputs: BuildActionInputs, workDir: string): Computable<FileSet> {
   const staged = fileSetInput(inputs, "staged");

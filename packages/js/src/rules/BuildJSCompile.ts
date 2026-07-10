@@ -63,6 +63,10 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
           lib: jsTarget.environment === "browser" ? [runtime, "dom"] : [runtime],
           module: jsTarget.module === "esm" ? "esnext" : "commonjs",
           moduleResolution: "node",
+          /* tsc ignores FORCE_COLOR (it only checks its own TTY), so formatted
+           * diagnostics must be forced here; unwanted codes are stripped at
+           * render time. Note this also overrides the child's NO_COLOR. */
+          pretty: true,
         },
         exclude: ["node_modules"],
         include: ["./src/**/*.ts"],

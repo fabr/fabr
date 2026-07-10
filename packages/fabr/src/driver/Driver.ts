@@ -184,8 +184,11 @@ function runProgram(
  */
 async function runWith(operation: Operation, watch = false): Promise<void> {
   /* Diagnostics and progress go to stderr; command data (ls listings, cat
-   * file contents) goes to stdout, so a build can be filtered from its output. */
-  const log = new LogFormatter(LogLevel.Info, line => process.stderr.write(line + "\n"), process.stderr.isTTY === true);
+   * file contents) goes to stdout, so a build can be filtered from its output.
+   * Color is a render-time decision only (NO_COLOR is any non-empty value):
+   * captured tool output arrives colored regardless and is stripped when off. */
+  const color = process.stderr.isTTY === true && !process.env.NO_COLOR;
+  const log = new LogFormatter(LogLevel.Info, line => process.stderr.write(line + "\n"), color);
 
   /* In watch mode a drained event loop is the normal idle state (the watchers
    * keep the process alive), so the stall guard would misfire. */

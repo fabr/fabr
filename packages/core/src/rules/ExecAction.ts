@@ -64,7 +64,7 @@ function runExec(inputs: BuildActionInputs, workDir: string): Computable<FileSet
     .then(() => getResultFileSet(workDir, outputs));
 }
 
-export const EXEC_ACTION: IBuildActionDefinition = { id: "core:exec", version: 1, run: runExec };
+export const EXEC_ACTION: IBuildActionDefinition = { id: "core:exec", version: 2, run: runExec };
 
 /**
  * @return an action that stages `files`, runs `argv` in the work directory,

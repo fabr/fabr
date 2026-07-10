@@ -12,11 +12,22 @@ import { ExecutionError } from "../core/Errors";
  * back to the error's own message for anything unrecognized.
  */
 export function systemErrorText(err: unknown): string {
-  const errno = (err as Partial<NodeJS.ErrnoException>).errno;
-  if (typeof errno === "number") {
-    const entry = getSystemErrorMap().get(errno);
+  const sys = err as Partial<NodeJS.ErrnoException>;
+  if (typeof sys.errno === "number") {
+    const entry = getSystemErrorMap().get(sys.errno);
     if (entry) {
       return entry[1];
+    }
+  }
+  /* HACK: the map is keyed by libuv's negative errnos, but Node's C++ fs.rm
+   * implementation (v23+) throws with the raw *positive* POSIX errno and a
+   * nonstandard message (nodejs/node#57095 area), so the lookup above misses.
+   * The `code` name is still correct on those errors — match on it instead. */
+  if (typeof sys.code === "string") {
+    for (const [name, text] of getSystemErrorMap().values()) {
+      if (name === sys.code) {
+        return text;
+      }
     }
   }
   return err instanceof Error ? err.message : String(err);
@@ -70,10 +81,19 @@ export function findExecutable(name: string): string {
   throw new ExecutionError(`Unable to find '${name}' in PATH`);
 }
 
+/**
+ * Because the child's output is captured (a pipe, not a TTY), tools would
+ * suppress their color/formatting; these conventional variables ask them not
+ * to. Set unconditionally — never conditioned on the driver's own terminal —
+ * so a step's environment stays deterministic; the driver strips the codes at
+ * render time when its output isn't a TTY. A caller's own env entries win.
+ */
+const FORCE_COLOR_ENV = { FORCE_COLOR: "1", CLICOLOR_FORCE: "1" };
+
 export function execute(cmd: string, args: string[], cwd: string, env: Record<string, string>): Computable<void> {
   return Computable.from((resolve, reject) => {
     const commandLine = "$ " + [cmd, ...args].map(quoteArg).join(" ");
-    const proc = spawn(cmd, args, { cwd, env, windowsHide: true });
+    const proc = spawn(cmd, args, { cwd, env: { ...FORCE_COLOR_ENV, ...env }, windowsHide: true });
     /* Capture the tool's output (both streams, in arrival order) so that a
      * failure can report what the tool actually said. */
     const output: Uint8Array[] = [];
