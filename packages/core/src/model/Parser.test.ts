@@ -22,7 +22,7 @@ import { EMPTY_FILESET } from "../core/FileSet";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { IBuildFileContents, IPropertyDecl, PropertyType } from "./AST";
 import { Name, NamePart, NamePartKind } from "./Name";
-import { parseBuildString } from "./Parser";
+import { parseBuildString, parseName } from "./Parser";
 
 function parseValid(text: string): IBuildFileContents {
   const errors: string[] = [];
@@ -106,6 +106,15 @@ function summary(overrides: Record<string, unknown>): Record<string, unknown> {
 describe("Parser Tests", () => {
   it("Include Decl", () => {
     expect(summarize(parseValid("include src/BUILD.FABR;"))).to.deep.equal(summary({ includes: ["src/BUILD.FABR"] }));
+  });
+
+  it("rejects an absolute include path", () => {
+    expect(parseInvalid("include /etc/evil.fabr;")).to.deep.equal([
+      "PROJECT.fabr:1:9:error:Include paths must be relative to the including file\ninclude /etc/evil.fabr;\n        ^\n",
+    ]);
+    expect(parseInvalid("include C:/evil.fabr;")).to.deep.equal([
+      "PROJECT.fabr:1:9:error:Include paths must be relative to the including file\ninclude C:/evil.fabr;\n        ^\n",
+    ]);
   });
 
   it("Property Decl", () => {
@@ -225,5 +234,90 @@ describe("Parser Tests", () => {
     expect(parseInvalid("plugin @fabr/*;")).to.deep.equal([
       "PROJECT.fabr:1:8:error:Plugin names must be plain target names (no glob patterns or variables)\nplugin @fabr/*;\n       ^\n",
     ]);
+  });
+
+  describe("constrained references", () => {
+    /** The Name of the first value of the first property. */
+    function firstValue(text: string): Name {
+      return parseValid(text).properties[0].values[0].value;
+    }
+    function constraintsOf(name: Name): [string, string][] {
+      return name.getConstraints().map(([key, value]) => [key, value.toString()]);
+    }
+
+    it("parses a single constraint and rounds-trips it", () => {
+      const name = firstValue("dep = mylib<BUILD_TYPE=release>;");
+      expect(name.toString()).to.equal("mylib<BUILD_TYPE=release>");
+      expect(constraintsOf(name)).to.deep.equal([["BUILD_TYPE", "release"]]);
+    });
+
+    it("parses multiple constraints, ordered, with a trailing comma", () => {
+      const name = firstValue("dep = mylib<BUILD_TYPE=release, JS_TARGET=es6-esm,>;");
+      expect(name.toString()).to.equal("mylib<BUILD_TYPE=release, JS_TARGET=es6-esm>");
+      expect(constraintsOf(name)).to.deep.equal([
+        ["BUILD_TYPE", "release"],
+        ["JS_TARGET", "es6-esm"],
+      ]);
+    });
+
+    it("accepts non-identifier constraint values (versions, requirements)", () => {
+      expect(constraintsOf(firstValue("dep = a<V=5.4.5>;"))).to.deep.equal([["V", "5.4.5"]]);
+      expect(constraintsOf(firstValue("dep = a<TSC=@npm:typescript:5.4.5>;"))).to.deep.equal([
+        ["TSC", "@npm:typescript:5.4.5"],
+      ]);
+    });
+
+    it("reassembles a projection tail after the constraint", () => {
+      const name = firstValue("dep = pkg<BUILD_TYPE=release>:build/*.js;");
+      expect(name.toString()).to.equal("pkg:build/*.js<BUILD_TYPE=release>");
+      /* The literal prefix must remain intact for target-prefix matching */
+      expect(name.getLiteralPrefix()).to.equal("pkg:build/");
+    });
+
+    it("treats the constraint position relative to ':' as equivalent", () => {
+      const before = firstValue("dep = pkg<BUILD_TYPE=release>:x;");
+      const after = firstValue("dep = pkg:x<BUILD_TYPE=release>;");
+      expect(before.toString()).to.equal("pkg:x<BUILD_TYPE=release>");
+      expect(after.toString()).to.equal("pkg:x<BUILD_TYPE=release>");
+    });
+
+    it("substitutes variables in constraint values", () => {
+      const name = firstValue("dep = mylib<BUILD_TYPE=${DEFAULT}>;");
+      expect(name.getVariables()).to.deep.equal(["DEFAULT"]);
+      expect(name.substitute(["DEFAULT"], ["release"]).toString()).to.equal("mylib<BUILD_TYPE=release>");
+    });
+
+    it("rejects an empty constraint list", () => {
+      expect(parseInvalid("dep = mylib<>;")).to.deep.equal([
+        "PROJECT.fabr:1:13:error:Read '>' but expected a constraint key\ndep = mylib<>;\n            ^\n",
+      ]);
+    });
+
+    it("rejects a duplicate constraint key", () => {
+      expect(parseInvalid("dep = mylib<A=1, A=2>;")).to.deep.equal([
+        "PROJECT.fabr:1:18:error:Duplicate constraint key 'A'\ndep = mylib<A=1, A=2>;\n                 ^\n",
+      ]);
+    });
+
+    it("rejects a constraint with no value", () => {
+      expect(parseInvalid("dep = mylib<A>;")).to.deep.equal([
+        "PROJECT.fabr:1:14:error:Read '>' but expected '='\ndep = mylib<A>;\n             ^\n",
+      ]);
+    });
+
+    it("requires the '<' to abut the reference", () => {
+      /* A whitespace-separated '<' cannot start a value, so it is an error */
+      expect(parseInvalid("dep = mylib <A=1>;")).to.deep.equal([
+        "PROJECT.fabr:1:12:error:Read '<' but expected Name, ';', or '}'\ndep = mylib <A=1>;\n           ^\n",
+      ]);
+    });
+
+    it("parses constraints on a command-line name (parseName parity)", () => {
+      const name = parseName("pkg<BUILD_TYPE=release>:build/*.js");
+      expect(name.toString()).to.equal("pkg:build/*.js<BUILD_TYPE=release>");
+      expect(constraintsOf(name)).to.deep.equal([["BUILD_TYPE", "release"]]);
+      /* A plain command-line name still parses unchanged */
+      expect(parseName("@npm:esbuild:0.28.1").toString()).to.equal("@npm:esbuild:0.28.1");
+    });
   });
 });

@@ -46,6 +46,27 @@ describe("SourceFileSource", () => {
     fs.rmSync(cacheRoot, { recursive: true, force: true });
   });
 
+  it("refuses to read a name outside the source tree", async () => {
+    const src = new SourceFileSource(sourceRoot, cache);
+    const rejectionOf = (computable: ComputableSource<unknown>): Promise<Error | undefined> =>
+      toPromise(computable).then(
+        () => undefined,
+        err => err as Error
+      );
+
+    /* Rejected on the name, before any read — the file needn't exist. */
+    const relative = await rejectionOf(src.get("../outside.txt"));
+    expect(relative?.message).to.match(/outside the source tree/);
+
+    /* An out-of-tree absolute is refused too; an in-tree absolute still resolves. */
+    const absolute = await rejectionOf(src.get(path.join(sourceRoot, "..", "outside.txt")));
+    expect(absolute?.message).to.match(/outside the source tree/);
+
+    fs.writeFileSync(path.join(sourceRoot, "inside.txt"), "ok");
+    const file = await toPromise(src.get(path.join(sourceRoot, "inside.txt")));
+    expect(file?.hash).to.equal(hashString("ok"));
+  });
+
   it("serves source content from an immutable blob, keeping the source path as its display name", async () => {
     const filePath = path.join(sourceRoot, "a.txt");
     fs.writeFileSync(filePath, "original");

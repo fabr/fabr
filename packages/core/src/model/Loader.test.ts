@@ -54,31 +54,53 @@ function propertyValue(model: BuildModel, name: string): string | undefined {
 describe("Loader", () => {
   it("resolves explicit includes relative to the including file", async () => {
     const project = files({
-      "/proj2/PROJECT.fabr": "include sub/LIB.fabr;\nown = here;",
-      "/proj2/sub/LIB.fabr": "which = relative;",
+      "PROJECT.fabr": "include sub/LIB.fabr;\nown = here;",
+      "sub/LIB.fabr": "which = relative;",
     });
-    const model = await load(project, "/proj2/PROJECT.fabr");
+    const model = await load(project, "PROJECT.fabr");
     expect(propertyValue(model, "which")).to.equal("relative");
     expect(propertyValue(model, "own")).to.equal("here");
   });
 
   it("resolves a nested include relative to its own including file", async () => {
     const project = files({
-      "/proj3/PROJECT.fabr": "include sub/OUTER.fabr;",
-      "/proj3/sub/OUTER.fabr": "include INNER.fabr;\nouter = yes;",
-      "/proj3/sub/INNER.fabr": "inner = yes;",
+      "PROJECT.fabr": "include sub/OUTER.fabr;",
+      "sub/OUTER.fabr": "include INNER.fabr;\nouter = yes;",
+      "sub/INNER.fabr": "inner = yes;",
     });
-    const model = await load(project, "/proj3/PROJECT.fabr");
+    const model = await load(project, "PROJECT.fabr");
     expect(propertyValue(model, "outer")).to.equal("yes");
     expect(propertyValue(model, "inner")).to.equal("yes");
   });
 
-  it("errors on a missing include", async () => {
-    const project = files({ "/proj4/PROJECT.fabr": "include missing.fabr;" });
+  it("allows an include climbing within the project tree", async () => {
+    const project = files({
+      "PROJECT.fabr": "include sub/OUTER.fabr;",
+      "sub/OUTER.fabr": "include ../TOP.fabr;",
+      "TOP.fabr": "top = yes;",
+    });
+    const model = await load(project, "PROJECT.fabr");
+    expect(propertyValue(model, "top")).to.equal("yes");
+  });
+
+  it("blocks an include outside the project tree", async () => {
+    const project = files({ "PROJECT.fabr": "include ../outside.fabr;" });
     const logger = new LogFormatter(LogLevel.Info, () => undefined);
     let error: Error | undefined;
     try {
-      await loadProject(project, "/proj4/PROJECT.fabr", logger, undefined, NO_BASE);
+      await loadProject(project, "PROJECT.fabr", logger, undefined, NO_BASE);
+    } catch (err) {
+      error = err as Error;
+    }
+    expect(error?.message).to.match(/outside the project tree/);
+  });
+
+  it("errors on a missing include", async () => {
+    const project = files({ "PROJECT.fabr": "include missing.fabr;" });
+    const logger = new LogFormatter(LogLevel.Info, () => undefined);
+    let error: Error | undefined;
+    try {
+      await loadProject(project, "PROJECT.fabr", logger, undefined, NO_BASE);
     } catch (err) {
       error = err as Error;
     }

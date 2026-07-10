@@ -19,10 +19,12 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { Computable } from "./Computable";
+import { Computable, ComputableSource } from "./Computable";
 import { hashString, readFileBuffer } from "./FSWrapper";
 import { BuildCache } from "./BuildCache";
 import { FSFile, FSFileSource } from "./FSFileSource";
+import { FileSet, IFile } from "./FileSet";
+import { Name } from "../model/Name";
 import { WatchController } from "./WatchController";
 
 /**
@@ -42,6 +44,28 @@ export class SourceFileSource extends FSFileSource {
   constructor(sourceRoot: string, cache: BuildCache, watchController?: WatchController) {
     super(sourceRoot, watchController);
     this.cache = cache;
+  }
+
+  /** Lexical containment: the source tree is this source's whole namespace, so a
+   * name escaping the root — a `..` climb or an out-of-tree absolute — is refused.
+   * The boundary is the *name*; symlinked content inside the tree reads as usual. */
+  private contains(name: string): boolean {
+    const rel = path.relative(this.root, path.resolve(this.root, name));
+    return !path.isAbsolute(rel) && rel !== ".." && !rel.startsWith(".." + path.sep);
+  }
+
+  public override get(name: string): ComputableSource<IFile | undefined> {
+    if (!this.contains(name)) {
+      return Computable.reject(new Error(`'${name}' is outside the source tree`));
+    }
+    return super.get(name);
+  }
+
+  public override find(name: Name, prefix = ""): ComputableSource<FileSet> {
+    if (!this.contains(name.toString())) {
+      return Computable.reject(new Error(`'${name.toString()}' is outside the source tree`));
+    }
+    return super.find(name, prefix);
   }
 
   /**

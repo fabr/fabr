@@ -33,7 +33,7 @@ import {
   PropertyType,
 } from "./AST";
 import { Diagnostic, ISourcePosition, Log, LogLevel, defaultLog } from "../support/Log";
-import { Name, NameBuilder } from "./Name";
+import { Name, NameBuilder, NameConstraint } from "./Name";
 import { EMPTY_FILESET, FileSource } from "../core/FileSet";
 
 enum TokenType {
@@ -150,6 +150,10 @@ const DIAG_PARSE_ERROR = new Diagnostic<{ actual: string; expected: string; loc:
   LogLevel.Error,
   "Read {actual} but expected {expected}"
 );
+const DIAG_DUP_CONSTRAINT = new Diagnostic<{ key: string; loc: ISourcePosition }>(
+  LogLevel.Error,
+  "Duplicate constraint key '{key}'"
+);
 const DIAG_UNEXPECTED_EOF = new Diagnostic<{ expected: string; loc: ISourcePosition }>(
   LogLevel.Error,
   "Unexpected end of file, expected {expected}"
@@ -157,6 +161,10 @@ const DIAG_UNEXPECTED_EOF = new Diagnostic<{ expected: string; loc: ISourcePosit
 const DIAG_INVALID_INCLUDE = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
   "Include names cannot currently contain glob patterns or variables"
+);
+const DIAG_ABSOLUTE_INCLUDE = new Diagnostic<{ loc: ISourcePosition }>(
+  LogLevel.Error,
+  "Include paths must be relative to the including file"
 );
 const DIAG_INVALID_PLUGIN = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
@@ -174,6 +182,12 @@ export class BuildParser {
   private reader: StringReader;
   private log: Log;
   private token: Token;
+  /**
+   * Whether the current token immediately abuts the previous one (no intervening
+   * whitespace). Used to keep a constrained/projected reference atomic: a `<...>`
+   * constraint delta or a `:projection` tail only binds to a ref if it hugs it.
+   */
+  private tokenAbutsPrev = false;
 
   private source: IBuildFile;
   private result: IBuildFileContents;
@@ -385,11 +399,14 @@ export class BuildParser {
    */
   public parseName(): Name {
     /* The constructor already primed the first token */
-    const token = this.token as { text?: Name | string };
-    if (token.text === undefined) {
-      return Name.fromLiteral("");
+    const token = this.token;
+    if (token.type === TokenType.NAME || token.type === TokenType.IDENTIFIER || token.type === TokenType.COMPOUND_IDENTIFIER) {
+      /* Reuse the build-file reference grammar so a CLI name carries the same
+       * `<k=v>` constraints and `:projection` semantics. */
+      return this.parseReference();
     }
-    return typeof token.text === "string" ? Name.fromLiteral(token.text) : token.text;
+    /* Empty input or a leading operator: preserve the prior empty-name result. */
+    return Name.fromLiteral("");
   }
 
   private nextToken(): Token {
@@ -410,6 +427,11 @@ export class BuildParser {
         return !isWhitespace(ch);
       }
     });
+
+    /* `start` was captured at the end of the previous token (before any
+     * whitespace here); if the first content char sits right there, this token
+     * abuts the previous with no gap. */
+    this.tokenAbutsPrev = this.reader.currentOffset() === start;
 
     switch (ch) {
       case undefined:
@@ -475,6 +497,10 @@ export class BuildParser {
       const simpleName = typeof token.text === "string" ? token.text : token.text.getSimpleName();
       if (!simpleName) {
         this.invalidIncludeName();
+        /* Lexically, either platform's absolute form — a .fabr file must parse the
+         * same everywhere, so this doesn't ride the host's path.isAbsolute. */
+      } else if (simpleName.startsWith("/") || /^[A-Za-z]:[\\/]/.test(simpleName)) {
+        this.absoluteIncludeName();
       } else {
         this.nextToken();
         this.consumeIfToken(TokenType.SEMI);
@@ -514,16 +540,102 @@ export class BuildParser {
   private parseValue(): IValue {
     const token = this.token;
     if (token.type === TokenType.NAME || token.type === TokenType.IDENTIFIER || token.type === TokenType.COMPOUND_IDENTIFIER) {
-      this.nextToken();
+      const offset = token.start;
       return {
         kind: DeclKind.Value,
         source: this.source,
-        offset: token.start,
-        value: typeof token.text === "string" ? Name.fromLiteral(token.text) : token.text,
+        offset,
+        value: this.parseReference(),
       };
     } else {
       this.unexpectedTokenError("Name, ';', or '}'");
     }
+  }
+
+  /** @return the Name for a ref token (a bare identifier is a literal name). */
+  private tokenToName(token: NameToken | IdentToken): Name {
+    return typeof token.text === "string" ? Name.fromLiteral(token.text) : token.text;
+  }
+
+  /** @return the current token if it is a reference token (NAME/identifier), else undefined. */
+  private peekRefToken(): NameToken | IdentToken | undefined {
+    const token = this.token;
+    return token.type === TokenType.NAME || token.type === TokenType.IDENTIFIER || token.type === TokenType.COMPOUND_IDENTIFIER
+      ? token
+      : undefined;
+  }
+
+  /**
+   * Reference ::= Ref Constraints?  (an abutting ':projection' tail rejoined)
+   *
+   * Assumes the current token is the base ref (NAME/IDENTIFIER/COMPOUND_IDENTIFIER);
+   * consumes it, any *hugging* `<k=v, ...>` constraint delta, and — since a `<...>`
+   * splits what would otherwise be one reference token — any hugging `:projection`
+   * tail, reassembling them into one Name. Leaves the current token positioned
+   * after the reference. A `<...>`/`:tail` separated by whitespace does not bind.
+   */
+  private parseReference(): Name {
+    let name = this.tokenToName(this.token as NameToken | IdentToken);
+    this.nextToken();
+    if (this.token.type === TokenType.LANGLE && this.tokenAbutsPrev) {
+      const constraints = this.parseConstraints();
+      /* A `<...>` splits what would be one reference token, so a projection tail
+       * (`:build/*.js`) arrives as a separate, hugging token — rejoin it. */
+      const tail = this.tokenAbutsPrev ? this.peekRefToken() : undefined;
+      if (tail) {
+        name = name.concat(this.tokenToName(tail));
+        this.nextToken();
+      }
+      name = name.withConstraints(constraints);
+    }
+    return name;
+  }
+
+  /**
+   * Constraints ::= '<' Constraint ( ',' Constraint )* ','? '>'
+   * Constraint  ::= IDENTIFIER '=' ( IDENTIFIER | COMPOUND_IDENTIFIER | NAME )
+   *
+   * Consumes from the opening `<` through the closing `>`. An empty `<>`, a
+   * non-identifier key, and a repeated key are all errors.
+   */
+  private parseConstraints(): NameConstraint[] {
+    this.consumeToken(TokenType.LANGLE);
+    const constraints: NameConstraint[] = [];
+    const seen = new Set<string>();
+    for (;;) {
+      const key = this.token;
+      if (key.type !== TokenType.IDENTIFIER) {
+        this.unexpectedTokenError("a constraint key");
+      }
+      if (seen.has(key.text)) {
+        this.duplicateConstraintError(key.text);
+      }
+      seen.add(key.text);
+      this.nextToken();
+      this.consumeToken(TokenType.EQUALS);
+      const value = this.token;
+      if (
+        value.type !== TokenType.IDENTIFIER &&
+        value.type !== TokenType.COMPOUND_IDENTIFIER &&
+        value.type !== TokenType.NAME
+      ) {
+        this.unexpectedTokenError("a constraint value");
+      }
+      constraints.push([key.text, this.tokenToName(value)]);
+      this.nextToken();
+      /* Continue on a comma (unless it was trailing, before the '>'); otherwise
+       * the list is done and a '>' must follow. */
+      if (!this.consumeIfToken(TokenType.COMMA) || this.token.type === TokenType.RANGLE) {
+        break;
+      }
+    }
+    this.consumeToken(TokenType.RANGLE);
+    return constraints;
+  }
+
+  private duplicateConstraintError(key: string): never {
+    this.log.log(DIAG_DUP_CONSTRAINT, { key, loc: { ...this.source, offset: this.token.start } });
+    throw new Error(PARSE_ERROR);
   }
 
   /**
@@ -690,6 +802,11 @@ export class BuildParser {
 
   private invalidIncludeName(): never {
     this.log.log(DIAG_INVALID_INCLUDE, { loc: { ...this.source, offset: this.token.start } });
+    throw new Error(PARSE_ERROR);
+  }
+
+  private absoluteIncludeName(): never {
+    this.log.log(DIAG_ABSOLUTE_INCLUDE, { loc: { ...this.source, offset: this.token.start } });
     throw new Error(PARSE_ERROR);
   }
 

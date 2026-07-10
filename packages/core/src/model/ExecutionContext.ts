@@ -22,17 +22,31 @@ import { defaultLog, Log } from "../support/Log";
 import { ITargetDecl } from "./AST";
 
 /**
- * A target actually starting to build (a build-cache miss, as opposed to
- * being served from cache).
+ * A target actually starting to build (a build-cache miss, as opposed to being
+ * served from cache) — either a declared target or an anonymous sub-target of
+ * one (a sub-target is a target too: it builds under a context with its own
+ * constraints and operation, so it is not a separate event kind — it just
+ * carries a `label`). The driver renders "Building X" for a declared target and
+ * e.g. "Compiling X" for a labelled sub-target.
  */
 export interface ITargetBuildEvent {
   kind: "target-build";
   target: ITargetDecl;
   /** The BUILD_OPERATION the evaluation is running under ('build', 'test', ...) */
   operation: string;
-  /** The targets that required this one (nearest requester first; empty for
-   * a target requested directly) */
+  /** The full constraint set the target is building under. The driver decides
+   * what to surface (it elides the ambient keys it injected — the host facts
+   * and BUILD_OPERATION — leaving the explicit ones, e.g. a reference's
+   * `<BUILD_TYPE=release>` delta or a `-D` override). */
+  constraints: Record<string, string>;
+  /** The targets that required this one (nearest requester first; empty for a
+   * target requested directly, and for a sub-target — the umbrella declared
+   * event carries the chain). */
   requiredBy: ITargetDecl[];
+  /** For an anonymous sub-target: the action verb its creator gave it
+   * ("Compiling"), used verbatim as the display verb; absent for a declared
+   * target, where the driver derives the verb from `operation`. */
+  label?: string;
 }
 
 /**
@@ -65,24 +79,12 @@ export interface IFetchEvent {
 }
 
 /**
- * A specific build step of a declared target actually running (an anonymous
- * sub-target's cache miss), carrying the action-verb `label` its creator gave
- * it and the `declared` target it belongs to — the driver renders it as e.g.
- * "Compiling X" alongside the umbrella "Building X".
- */
-export interface ISubTargetBuildEvent {
-  kind: "sub-target-build";
-  declared: ITargetDecl;
-  label: string;
-}
-
-/**
  * Progress: work that is actually being performed, as opposed to being
  * served from cache — never emitted for a cache hit. The model and rules
  * only emit events — rendering them is the listener's (i.e. the driver's)
  * job.
  */
-export type ProgressEvent = ITargetBuildEvent | ISubTargetBuildEvent | IRepositoryResolveEvent | IFetchEvent;
+export type ProgressEvent = ITargetBuildEvent | IRepositoryResolveEvent | IFetchEvent;
 
 export type ProgressListener = (event: ProgressEvent) => void;
 

@@ -54,6 +54,14 @@ registerRule("test_good", {}, context =>
   })
 );
 registerRule("test_fail", {}, () => Computable.reject(new Error("reasons")));
+/* Resolves its dep under a caller-supplied constraint override, for testing
+ * override precedence against a reference's own <k=v> delta. */
+registerRule("test_override", {}, context =>
+  context.getFileSet("dep", { FLAVOR: "caller" }).then(files => {
+    lastDeps = files;
+    return EMPTY_FILESET;
+  })
+);
 registerRule("test_file", {}, context =>
   context.getRequiredString("content").then(content => new FileSet(new Map([["f.txt", MemoryFile.from(content)]])))
 );
@@ -440,5 +448,49 @@ describe("BuildContext", () => {
      * state with another */
     const other = new ExecutionContext(new BuildCache("."));
     expect(model.getConfig({ x: "1" }, other)).to.not.equal(model.getConfig({ x: "1" }, execution));
+  });
+
+  it("Applies a reference's <k=v> delta to the referenced target's build", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    /* `leaf` bakes ${FLAVOR} into its output; the dependant references it once
+     * plainly and once with a FLAVOR override, so the override must reach leaf's
+     * own evaluation (not the ambient config). */
+    const input =
+      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_file { content = STRING; }\n" +
+      "default FLAVOR = plain;\n" +
+      "test_file leaf { content = ${FLAVOR}; }\n" +
+      "test_good plain_root { deps = leaf; }\n" +
+      "test_good fancy_root { deps = leaf<FLAVOR=fancy>; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    const config = model.getConfig({}, execution);
+    const readLeaf = (): Computable<string | undefined> => lastDeps!.get("f.txt").then(file => file?.readString());
+
+    await config.getTarget("plain_root");
+    expect(await readLeaf()).to.equal("plain");
+
+    await config.getTarget("fancy_root");
+    expect(await readLeaf()).to.equal("fancy");
+  });
+
+  it("A caller's constraint override takes precedence over a reference's own delta", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    /* The rule resolves `dep` under an explicit {FLAVOR: caller} override while
+     * the reference carries <FLAVOR=ref>; the caller's requirement must win
+     * (e.g. a `run` rule forcing BUILD_OPERATION=run over a stray delta). */
+    const input =
+      "targetdef test_override { dep = FILES; }\n" +
+      "targetdef test_file { content = STRING; }\n" +
+      "default FLAVOR = ambient;\n" +
+      "test_file leaf { content = ${FLAVOR}; }\n" +
+      "test_override root { dep = leaf<FLAVOR=ref>; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}, execution).getTarget("root");
+    expect(await lastDeps!.get("f.txt").then(file => file?.readString())).to.equal("caller");
   });
 });

@@ -84,6 +84,20 @@ const DIAG_FETCHING = Diagnostic.Info<{ resource: string; url: string }>("Fetchi
  * "Running <operation> on <target>" */
 const OPERATION_VERBS: Record<string, string> = { build: "Building", test: "Testing", run: "Running" };
 
+/** Constraint keys the driver injects as ambient context, elided from progress
+ * output: the host facts, and BUILD_OPERATION (already shown as the verb). */
+const AMBIENT_CONSTRAINT_KEYS = new Set([BUILD_OPERATION, ...Object.keys(getHostProperties())]);
+
+/**
+ * @return a ` [k=v, ...]` annotation of the explicit constraints a target is
+ * building under (the ambient keys elided), or "" when there are none — so a
+ * default build reads exactly as before.
+ */
+function renderConstraints(constraints: Record<string, string>): string {
+  const shown = Object.entries(constraints).filter(([key]) => !AMBIENT_CONSTRAINT_KEYS.has(key));
+  return shown.length > 0 ? ` [${shown.map(([key, value]) => key + "=" + value).join(", ")}]` : "";
+}
+
 /** Quiet-window (ms) a burst of filesystem events is collapsed behind before a
  * rebuild — long enough to coalesce an editor's save, short enough to feel live. */
 const WATCH_QUIET_MS = 100;
@@ -399,14 +413,17 @@ function progressListener(log: Log): ProgressListener {
   return event => {
     switch (event.kind) {
       case "target-build": {
-        const verb = OPERATION_VERBS[event.operation] ?? `Running ${event.operation} on`;
-        const chain = event.requiredBy.length > 0 ? ` (required by ${event.requiredBy.map(decl => decl.name).join(" < ")})` : "";
-        log.log(DIAG_BUILDING, { verb, name: event.target.name, chain });
+        /* A sub-target carries its action verb as `label` ("Compiling"); a
+         * declared target derives its verb from the operation ("Building"). */
+        const verb = event.label ?? OPERATION_VERBS[event.operation] ?? `Running ${event.operation} on`;
+        const requiredBy =
+          event.requiredBy.length > 0 ? ` (required by ${event.requiredBy.map(decl => decl.name).join(" < ")})` : "";
+        /* Surface the explicit constraints (a reference `<BUILD_TYPE=release>`
+         * delta or a -D override), eliding the ambient keys the driver injected
+         * (host facts, and BUILD_OPERATION — already the verb). */
+        log.log(DIAG_BUILDING, { verb, name: event.target.name, chain: renderConstraints(event.constraints) + requiredBy });
         break;
       }
-      case "sub-target-build":
-        log.log(DIAG_BUILDING, { verb: event.label, name: event.declared.name, chain: "" });
-        break;
       case "repository-resolve":
         log.log(DIAG_RESOLVING, { requirements: event.requirements.join(", "), name: event.repository.name });
         break;

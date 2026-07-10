@@ -23,7 +23,7 @@ import { Computable } from "../core/Computable";
 import { FSFileSource } from "../core/FSFileSource";
 import { StringReader } from "../support/StringReader";
 import { parseBuildFile } from "./Parser";
-import { IBuildFileContents } from "./AST";
+import { IBuildFileContents, IIncludeDecl, IPluginDecl } from "./AST";
 import { Log } from "../support/Log";
 import { BuildModel } from "./BuildModel";
 import { activatePlugin } from "./Plugin";
@@ -34,6 +34,7 @@ import { flagRule } from "../rules/FlagTarget";
 import { defaultFilesRule } from "../rules/DefaultFilesRule";
 import { scriptRunRule } from "../rules/RunScript";
 import { runRule } from "../rules/BuildRun";
+import { computableWorkList } from "../core/WorkList";
 
 /**
  * Core's own contribution to every build: the generic bootstrap rules (flag,
@@ -64,102 +65,36 @@ export function packageLibFile(packageName: string, file: string): string {
   return path.join(packageLibDir(packageName), file);
 }
 
-type BuildFiles = Record<string, IBuildFileContents>;
-
-/**
- * Ambient inputs threaded through the recursive load. The only state is the
- * per-load parse memo (dedupes a diamond include within one load); its persisted,
- * revalidating form is where incremental reparse-on-reload will live.
- */
-interface ILoadContext {
-  loadCache: Record<string, Computable<BuildFiles>>;
-  pluginApi: unknown;
-  log: Log;
-}
-
-/** A `.fabr` file to load, with the FileSource to read it from. */
-interface FileRef {
-  fs: FileSource;
-  file: string;
-}
-
 /** A FileSource for reading absolute paths — plugin/core lib `.fabr` files, named
  * absolutely in a contribution's `includes` (project files use their own source).
  * `get(absPath)` resolves to `absPath` regardless of this root. */
 const absFileSource = new FSFileSource(path.sep);
 
-/**
- * Parse one build file and everything it pulls in via **explicit path-relative
- * `include`s only**. `plugin` decls are left in the parsed files — they no longer
- * affect parsing (there is no include search path), so they are resolved after
- * parsing (see {@link loadProject}). The result is a pure function of the files'
- * content, which is what lets this memoized Computable double as the parse cache:
- * a changed file re-settles only its own node, unchanged files stay valid.
- */
-/* FIXME: Detect cycles? */
-function loadBuildFile(fs: FileSource, file: string, context: ILoadContext): Computable<BuildFiles> {
-  if (!(file in context.loadCache)) {
-    context.loadCache[file] = fs.get(file).then(f => {
-      if (!f) {
-        throw new Error("File not found: " + file);
-      }
-      return f.readString().then(content => {
-        const decls = parseBuildFile({ fs, file, reader: new StringReader(content) }, context.log);
-        const result: BuildFiles = { [file]: decls };
-        if (decls.includes.length === 0) {
-          return result;
-        }
-        return Computable.forAll(
-          decls.includes.map(include => loadBuildFile(fs, path.resolve(path.dirname(file), include.filename), context)),
-          (...children) => {
-            children.forEach(child => Object.assign(result, child));
-            return result;
-          }
-        );
-      });
-    });
+/* A work-list key is a bare file path: which source reads it rides on the name's
+ * shape, per the naming contract — project files are named relative to the project
+ * source's root (the entry file is, and file-relative include resolution keeps it
+ * that way), while plugin/core lib files are absolute ({@link packageLibFile}). */
+
+/** Resolve an include relative to its including file — join, not resolve, so a
+ * relative (project) file's includes stay relative, anchored at the source root
+ * rather than the process cwd. Absolute include paths are rejected at parse; a
+ * project file's include is additionally confined to the project tree (a lib
+ * file's includes resolve within its installed package, which activation
+ * already vouches for). */
+function resolveInclude(file: string, include: IIncludeDecl): string {
+  const target = path.join(path.dirname(file), include.filename);
+  if (!path.isAbsolute(file) && (target === ".." || target.startsWith(".." + path.sep))) {
+    throw new Error(`Invalid include '${include.filename}' in ${file}: outside the project tree`);
   }
-  return context.loadCache[file];
+  return target;
 }
 
-/**
- * Load `refs` (each following its explicit includes), then activate any plugin
- * they declare that isn't yet active, load that plugin's own `.fabr` files, and
- * repeat to a fixpoint — so a plugin declared by a plugin's library is resolved
- * too. Plugins are activated here, after parsing, because (with no include search
- * path) activation no longer affects how anything parses; activation is a pure
- * function returning the contribution, deduped by plugin name.
- */
-function loadClosure(
-  refs: FileRef[],
-  files: BuildFiles,
-  contributions: Record<string, PluginContribution>,
-  context: ILoadContext
-): Computable<{ files: BuildFiles; contributions: Record<string, PluginContribution> }> {
-  return Computable.forAll(
-    refs.map(ref => loadBuildFile(ref.fs, ref.file, context)),
-    (...maps) => {
-      /* Fresh copies, not mutation of the passed-in accumulators: a re-settle
-       * (reload) re-runs this callback, and a mutated shared object would keep
-       * stale entries from the previous run. */
-      const nextFiles: BuildFiles = Object.assign({}, files, ...maps);
-      const nextContributions = { ...contributions };
-      const pluginFiles: FileRef[] = [];
-      for (const decls of Object.values(nextFiles)) {
-        for (const decl of decls.plugins) {
-          if (decl.name in nextContributions) {
-            continue;
-          }
-          const contribution = activatePlugin(decl, context.pluginApi);
-          nextContributions[decl.name] = contribution;
-          (contribution.includes ?? []).forEach(inc => pluginFiles.push({ fs: absFileSource, file: inc }));
-        }
-      }
-      return pluginFiles.length === 0
-        ? { files: nextFiles, contributions: nextContributions }
-        : loadClosure(pluginFiles, nextFiles, nextContributions, context);
-    }
-  );
+/** One loaded build file: its parsed decls, plus the contribution of each plugin
+ * it declares — carried on the value so collation gathers exactly the plugins
+ * that are still declared by some reachable file. */
+interface LoadedFile {
+  decls: IBuildFileContents;
+  plugins: PluginContribution[];
 }
 
 /**
@@ -180,13 +115,36 @@ export function loadProject(
    * where the package resolves to src/, not the built tree). */
   core: PluginContribution = coreContribution()
 ): Computable<BuildModel> {
-  const context: ILoadContext = { loadCache: {}, pluginApi, log };
-  /* The project entry, plus core's always-present includes (STD.fabr). */
-  const seeds: FileRef[] = [
-    { fs: fileSource, file: startFile },
-    ...(core.includes ?? []).map(inc => ({ fs: absFileSource, file: inc })),
-  ];
-  return loadClosure(seeds, {}, {}, context).then(({ files, contributions }) =>
-    toBuildModel(Object.values(files), log, [core, ...Object.values(contributions)])
-  );
+  const contributions = new Map<string, PluginContribution>();
+  const activate = (decl: IPluginDecl): PluginContribution => {
+    let contribution = contributions.get(decl.name);
+    if (contribution === undefined) {
+      contribution = activatePlugin(decl, pluginApi);
+      contributions.set(decl.name, contribution);
+    }
+    return contribution;
+  };
+  const libFiles = (contribution: PluginContribution): string[] => contribution.includes ?? [];
+
+  return computableWorkList<string, LoadedFile>([startFile, ...libFiles(core)], file => {
+    const fs = path.isAbsolute(file) ? absFileSource : fileSource;
+    return fs.get(file).then(f => {
+      if (!f) {
+        throw new Error("File not found: " + file);
+      }
+      return f.readString().then(content => {
+        const decls = parseBuildFile({ fs, file, reader: new StringReader(content) }, log);
+        const plugins = decls.plugins.map(activate);
+        return {
+          value: { decls, plugins },
+          next: [...decls.includes.map(include => resolveInclude(file, include)), ...plugins.flatMap(libFiles)],
+        };
+      });
+    });
+  }).then(loaded => {
+    const files = [...loaded.values()];
+    /* Identity-dedup suffices: activation memoized by name ⇒ one instance per plugin. */
+    const plugins = [...new Set(files.flatMap(file => file.plugins))];
+    return toBuildModel(files.map(file => file.decls), log, [core, ...plugins]);
+  });
 }

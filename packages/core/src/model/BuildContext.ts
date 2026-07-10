@@ -218,6 +218,11 @@ export class BuildContext {
     return this.constraints[name];
   }
 
+  /** The full constraint set this context resolves under (read-only). */
+  public getConstraints(): Constraints {
+    return this.constraints;
+  }
+
   public getProperty(name: string, stack?: IDependencyStack): Computable<Property> {
     this.assertNonCircularProperty(name, stack);
     if (name in this.propCache) {
@@ -311,15 +316,56 @@ export class BuildContext {
    * constraints in effect — chained onto whatever provenance it already
    * carried, so that nested resolutions accumulate multi-hop chains.
    */
-  public resolveFileProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<SourceRef[]> {
+  public resolveFileProperty(
+    prop: IPropertyDecl,
+    target?: ITargetDecl,
+    stack?: IDependencyStack,
+    callerOverrides?: Constraints
+  ): Computable<SourceRef[]> {
     return Computable.forAll(
-      prop.values.map(value =>
-        this.resolveFileSource(value.value, prop, { property: prop, target, context: this, value, next: stack }).then(resolved =>
-          resolved.sources.map(source => this.withModelRef(source, value))
-        )
-      ),
+      prop.values.map(value => {
+        const info: IDependencyStack = { property: prop, target, context: this, value, next: stack };
+        /* A value written as `ref<k=v>` resolves under this context overridden
+         * by its delta, so the referenced target builds under those constraints
+         * and the model-ref step (stamped by that context) records them. */
+        return this.resolvingContextFor(value.value, callerOverrides, info).then(({ context, reference }) =>
+          context.resolveFileSource(reference, prop, info).then(resolved =>
+            resolved.sources.map(source => context.withModelRef(source, value))
+          )
+        );
+      }),
       (...resolved) => resolved.flat()
     );
+  }
+
+  /**
+   * The context a reference resolves under, plus the reference with its
+   * constraint delta stripped. Constraints layer lowest-to-highest as **ambient
+   * (this) → the reference's own `<k=v>` delta → the caller's override**: the
+   * reference delta overrides the ambient config (its whole point), but a
+   * consumer's *explicit* override — e.g. a rule forcing `BUILD_OPERATION=run`
+   * on the tool it needs — is the operative requirement and wins over a stray
+   * delta on the same key. A `ref<k=v>` is returned pre-substituted (bare parts),
+   * so resolution proceeds on the parts and the merged context governs the build.
+   */
+  private resolvingContextFor(
+    name: Name,
+    callerOverrides?: Constraints,
+    stack?: IDependencyStack
+  ): Computable<{ context: BuildContext; reference: Name }> {
+    if (!name.hasConstraints()) {
+      const context = callerOverrides ? this.getContextWithOverrides(callerOverrides) : this;
+      return Computable.resolve({ context, reference: name });
+    }
+    return this.substituteNameVars(name, stack).then(substituted => {
+      const overrides: Constraints = {};
+      for (const [key, value] of substituted.getConstraints()) {
+        overrides[key] = value.toString();
+      }
+      /* Caller override last, so it wins on a shared key. */
+      const merged = callerOverrides ? { ...overrides, ...callerOverrides } : overrides;
+      return { context: this.getContextWithOverrides(merged), reference: substituted.withConstraints([]) };
+    });
   }
 
   private withModelRef(source: SourceRef, value: IValue): SourceRef {
@@ -348,7 +394,9 @@ export class BuildContext {
    * ls/cat and would re-resolve under the wrong operation (see materializeShallow).
    */
   public resolveName(name: string, stack?: IDependencyStack): Computable<SourceRef[]> {
-    return this.resolveFileSource(parseName(name), undefined, stack).then(resolved => materializeShallow(resolved.sources));
+    return this.resolvingContextFor(parseName(name), undefined, stack)
+      .then(({ context, reference }) => context.resolveFileSource(reference, undefined, stack))
+      .then(resolved => materializeShallow(resolved.sources));
   }
 
   private resolveFileSource(
@@ -827,7 +875,10 @@ export class DeclaredTargetContext extends TargetContext {
     if (!prop) {
       return Computable.resolve([]);
     }
-    return this.getContext(overrides).resolveFileProperty(prop, this.target, this.stack);
+    /* Resolve on the ambient context and pass the caller's explicit override
+     * through, so it is applied *last* (winning over any per-reference delta) —
+     * rather than pre-baked, where a reference's own <k=v> would override it. */
+    return this.context.resolveFileProperty(prop, this.target, this.stack, overrides);
   }
 
   public getDeclaredContext(): DeclaredTargetContext {
@@ -853,6 +904,7 @@ export class DeclaredTargetContext extends TargetContext {
       kind: "target-build",
       target: this.target,
       operation: this.context.getConstraint(BUILD_OPERATION) ?? "build",
+      constraints: this.context.getConstraints(),
       requiredBy: requestingTargets(this.target, this.stack),
     });
   }
@@ -919,10 +971,20 @@ export class AnonymousTargetContext extends TargetContext {
   }
 
   public announceBuilding(): void {
-    /* The umbrella "Building X" (the declared target, once), then this
-     * specific step ("Compiling X") attributed to it. */
+    /* The umbrella "Building X" (the declared target, once), then this specific
+     * step ("Compiling X") attributed to it. A sub-target is a target too: it
+     * announces the same event, carrying its own constraints/operation, plus the
+     * action-verb `label` that distinguishes it. Its requiredBy is left to the
+     * umbrella event (it belongs to the same declared target). */
     this.declared.announceBuilding();
-    this.notifyProgress({ kind: "sub-target-build", declared: this.declared.target, label: this.label });
+    this.notifyProgress({
+      kind: "target-build",
+      target: this.declared.target,
+      operation: this.context.getConstraint(BUILD_OPERATION) ?? "build",
+      constraints: this.context.getConstraints(),
+      requiredBy: [],
+      label: this.label,
+    });
   }
 }
 

@@ -37,15 +37,32 @@ export const NAME_LEVEL_SEPARATOR = ":";
 /**
  * A string expression, potentially consisting of literal, wildcard, and variable substitution parts
  */
+/**
+ * A single constraint written on a reference (`<KEY=value>`): the key is a
+ * scalar config identifier, the value a Name (so it may itself carry a `${subst}`).
+ * Kept in written order (see Name.constraints).
+ */
+export type NameConstraint = readonly [key: string, value: Name];
+
 export class Name {
   private parts: NamePart[];
+  /**
+   * The constraint delta written on this reference (`ref<KEY=value, ...>`),
+   * in written order, or empty. Kept apart from `parts` (which hold only the
+   * resolvable base+projection literal): a FILES consumer applies these as a
+   * config override when resolving the reference, while `toString` re-renders
+   * them so a value used as a plain string round-trips to its original text.
+   * Ordered (not a map) precisely so that round-trip is faithful.
+   */
+  private readonly constraints: readonly NameConstraint[];
 
-  constructor(parts: NamePart[]) {
+  constructor(parts: NamePart[], constraints: readonly NameConstraint[] = []) {
     if (parts.length === 0) {
       this.parts = [{ kind: NamePartKind.Literal, value: "" }];
     } else {
       this.parts = parts;
     }
+    this.constraints = constraints;
   }
 
   /**
@@ -53,6 +70,43 @@ export class Name {
    */
   static fromLiteral(str: string): Name {
     return new Name([{ kind: NamePartKind.Literal, value: str }]);
+  }
+
+  /**
+   * @return a copy of this name carrying the given constraint delta (replacing
+   * any it already had). The parts are unchanged — constraints ride alongside.
+   */
+  public withConstraints(constraints: readonly NameConstraint[]): Name {
+    return new Name(this.parts, constraints);
+  }
+
+  /** @return the constraint delta written on this reference (empty if none). */
+  public getConstraints(): readonly NameConstraint[] {
+    return this.constraints;
+  }
+
+  /**
+   * @return this name with `other` appended, merging adjacent same-kind parts at
+   * the seam (so a literal base and a literal projection tail collapse to one
+   * literal prefix, keeping prefix-matching intact). Used to reassemble a
+   * reference split by an intervening `<...>` (`pkg` + `:build/*.js`). Constraints
+   * are taken from neither operand — the caller attaches them.
+   */
+  public concat(other: Name): Name {
+    const merged: NamePart[] = [];
+    for (const part of [...this.parts, ...other.parts]) {
+      const last = merged[merged.length - 1];
+      if (last && last.kind === part.kind && part.kind !== NamePartKind.VarSubst) {
+        last.value += part.value;
+      } else {
+        merged.push({ ...part });
+      }
+    }
+    return new Name(merged);
+  }
+
+  public hasConstraints(): boolean {
+    return this.constraints.length > 0;
   }
 
   public isSimpleName(): boolean {
@@ -79,7 +133,10 @@ export class Name {
   }
 
   public getVariables(): string[] {
-    return this.parts.filter(part => part.kind === NamePartKind.VarSubst).map(part => part.value);
+    const own = this.parts.filter(part => part.kind === NamePartKind.VarSubst).map(part => part.value);
+    /* Constraint values may themselves reference variables (`<K=${X}>`), which
+     * must be resolved before the delta is applied. */
+    return this.constraints.reduce<string[]>((vars, [, value]) => vars.concat(value.getVariables()), own);
   }
 
   /**
@@ -106,7 +163,10 @@ export class Name {
       return rest;
     }, []);
 
-    return new Name(parts);
+    /* Constraint values are substituted too (they share the variable space), so
+     * `<K=${X}>` resolves before the delta is applied / rendered. */
+    const constraints = this.constraints.map<NameConstraint>(([key, value]) => [key, value.substitute(varNames, values)]);
+    return new Name(parts, constraints);
   }
 
   /**
@@ -204,7 +264,7 @@ export class Name {
    * @return a string suitable for use with a globbing implementation (ie with literal metacharacters escaped).
    */
   public toString(): string {
-    return this.parts.reduce((result, part) => {
+    const base = this.parts.reduce((result, part) => {
       switch (part.kind) {
         case NamePartKind.Literal:
           return result + escapeGlob(part.value);
@@ -214,6 +274,13 @@ export class Name {
           return result + "${" + part.value + "}";
       }
     }, "");
+    if (this.constraints.length === 0) {
+      return base;
+    }
+    /* Re-render the delta so a value used as a plain string reproduces its
+     * original text (`foo<a=b, c=d>`). */
+    const delta = this.constraints.map(([key, value]) => `${key}=${value.toString()}`).join(", ");
+    return `${base}<${delta}>`;
   }
 }
 
