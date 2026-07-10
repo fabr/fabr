@@ -96,8 +96,9 @@ export function explainResolutionPath<V>(origin: IResolutionOrigin<V>, path: str
 
 registerProvenanceRenderer(PACKAGE_RESOLUTION_PROVENANCE, (step, context) => {
   const origin = step as IResolutionOrigin<unknown>;
-  if (context.path === undefined) {
-    return [`resolved from ${origin.root.pkg}:${origin.root.constraint}`];
-  }
-  return explainResolutionPath(origin, context.path);
+  const lines =
+    context.path === undefined
+      ? [`resolved from ${origin.root.pkg}:${origin.root.constraint}`]
+      : explainResolutionPath(origin, context.path);
+  return lines.map(message => ({ message }));
 });

@@ -18,6 +18,7 @@
  */
 
 import { Computable } from "../core/Computable";
+import { MetadataFetchError } from "../core/Errors";
 import { PackageRegistry, Requirement, Resolution, ROOT_REQUIRER, Selected, VersionDomain } from "./Types";
 
 /**
@@ -33,8 +34,10 @@ import { PackageRegistry, Requirement, Resolution, ROOT_REQUIRER, Selected, Vers
  * root requirement, which dominates naturally by the max rule).
  *
  * Note: if the registry rejects a metadata fetch, the returned Computable
- * rejects with that error (the requirement graph cannot be determined, which is
- * unlike a constraint violation and so is not reported via Resolution.errors).
+ * rejects with a MetadataFetchError identifying the failing package and the
+ * requirement chain that first reached it (the requirement graph cannot be
+ * determined, which is unlike a constraint violation and so is not reported
+ * via Resolution.errors).
  */
 export function resolveMVS<V, C>(
   roots: Requirement[],
@@ -46,6 +49,9 @@ export function resolveMVS<V, C>(
     const selected = new Map<string, Selected<V>>();
     /* Declared requirements of every pkg@version visited (including superseded ones) */
     const nodeRequirements = new Map<string, Requirement[]>();
+    /* First reacher of every visited node (a node id, or ROOT_REQUIRER), for
+     * attributing a metadata failure back to a root requirement */
+    const nodeParents = new Map<string, string>();
     const errors = new Set<string>();
     /* Outstanding metadata fetches, plus one guard token held while seeding */
     let pending = 1;
@@ -79,29 +85,52 @@ export function resolveMVS<V, C>(
       const current = selected.get(key);
       if (!current || domain.compare(min, current.version) > 0) {
         selected.set(key, { pkg: req.pkg, version: min, selectedBy: { requiredBy, constraint: req.constraint } });
-        visit(req.pkg, min);
+        visit(req.pkg, min, requiredBy);
       }
     };
 
-    const visit = (pkg: string, version: V): void => {
+    /**
+     * Attribute a metadata failure to the requirement chain that first reached
+     * the failing node: walk the first-reacher parents back to a root. The
+     * first reacher may be a later-superseded version — still a truthful
+     * "required by" trace, and the only one available if the walk cannot finish.
+     */
+    const annotate = (id: string, pkg: string, version: V, err: unknown): MetadataFetchError => {
+      const path: string[] = [];
+      for (let parent = nodeParents.get(id); parent && parent !== ROOT_REQUIRER; parent = nodeParents.get(parent)) {
+        path.push(parent);
+      }
+      const rootId = path.at(-1) ?? id;
+      const rootPkg = rootId.substring(0, rootId.lastIndexOf("@"));
+      const cause = err instanceof Error ? err : new Error(String(err));
+      return new MetadataFetchError(pkg, domain.versionToString(version), path, rootPkg, cause);
+    };
+
+    const visit = (pkg: string, version: V, requiredBy: string): void => {
       const id = nodeId(pkg, version);
       if (nodeRequirements.has(id)) {
         return;
       }
       nodeRequirements.set(id, []);
+      nodeParents.set(id, requiredBy);
       pending++;
-      registry.getRequirements(pkg, version).then(
-        requirements => {
-          nodeRequirements.set(id, requirements);
-          for (const req of requirements) {
-            enqueue(req, id);
-          }
-          if (--pending === 0) {
-            finish();
-          }
-        },
-        err => fail(err)
-      );
+      try {
+        registry.getRequirements(pkg, version).then(
+          requirements => {
+            nodeRequirements.set(id, requirements);
+            for (const req of requirements) {
+              enqueue(req, id);
+            }
+            if (--pending === 0) {
+              finish();
+            }
+          },
+          err => fail(annotate(id, pkg, version, err))
+        );
+      } catch (err) {
+        /* A registry that throws instead of rejecting gets the same attribution */
+        fail(annotate(id, pkg, version, err));
+      }
     };
 
     /**

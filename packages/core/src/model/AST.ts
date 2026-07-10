@@ -20,7 +20,7 @@
 import { Name } from "./Name";
 import { StringReader } from "../support/StringReader";
 import { FileSource } from "../core/FileSet";
-import { ISourcePosition } from "../support/Log";
+import { ISourceSpan } from "../support/Log";
 
 export enum DeclKind {
   Value,
@@ -35,6 +35,9 @@ export enum DeclKind {
 interface IBaseDecl {
   source: IBuildFile;
   offset: number;
+  /** End offset (exclusive) of the declaration's name/value where recorded,
+   * so diagnostics can underline the extent rather than a single caret */
+  endOffset?: number;
 }
 
 export interface INamespaceDecl extends IBaseDecl {
@@ -77,6 +80,8 @@ export interface ITargetDefDecl extends IBaseDecl {
 export interface IValue extends IBaseDecl {
   kind: DeclKind.Value;
   value: Name;
+  /** End offset (exclusive) of the written value, for span underlines */
+  endOffset: number;
 }
 
 export interface IPropertyDecl extends IBaseDecl {
@@ -142,6 +147,8 @@ export function getDeclKindName(kind: DeclKind): string {
   }
 }
 
-export function declPosn(decl: IBaseDecl): ISourcePosition {
-  return { ...decl.source, offset: decl.offset };
+/** The source span of a declaration: its position, plus the extent of its
+ * name/value where the parser recorded one (rendered as an underline). */
+export function declPosn(decl: IBaseDecl): ISourceSpan {
+  return { ...decl.source, offset: decl.offset, endOffset: decl.endOffset };
 }

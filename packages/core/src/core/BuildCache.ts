@@ -7,7 +7,8 @@ import { FileSet, IFile } from "./FileSet";
 import { FSFile } from "./FSFileSource";
 import { deleteFile, hardlink, hashFile, hashString, readFile, readFileBuffer, rename, symlink, walkTree, writeFile } from "./FSWrapper";
 import { SymlinkFile } from "./SymlinkFile";
-import { describeSystemError, ExecutionError } from "../support/Execute";
+import { describeSystemError } from "../support/Execute";
+import { ExecutionError } from "./Errors";
 import * as picomatch from "picomatch";
 
 class BuildFile implements IFile {

@@ -18,7 +18,7 @@
  */
 
 import { Computable, ComputableSource } from "./Computable";
-import { toError } from "./MultiError";
+import { toError } from "./Errors";
 
 /** One step of a work-list traversal: the value computed for a key, plus the
  * keys it makes reachable. Already-visited keys in `next` are ignored, so

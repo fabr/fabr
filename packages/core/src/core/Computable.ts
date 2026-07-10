@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { MultiError, toError } from "./MultiError";
+import { MultiError, toError } from "./Errors";
 
 export enum ComputableState {
   /**

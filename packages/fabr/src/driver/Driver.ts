@@ -24,29 +24,22 @@ import {
   BuildContext,
   BuildModel,
   Computable,
-  declPosn,
-  DependencyFailedError,
   Diagnostic,
   ExecutionContext,
-  ExecutionError,
-  FileConflictError,
   FileSet,
   formatTestSummary,
   getSourceFileSource,
   getTestReport,
-  ISourcePosition,
   loadProject,
   Log,
   LogFormatter,
   LogLevel,
-  MultiError,
   ProgressListener,
-  renderProvenance,
   RunnableFileSet,
   SourceRef,
-  TestsFailedError,
   WatchController,
 } from "@fabr/core";
+import { DiagnosticErrorFormatter, ErrorFormatter } from "./ErrorFormatter";
 import { runInteractive, RunSupervisor } from "./RunHandler";
 /* The whole of @fabr/core doubles as the api object injected into plugins:
  * handing plugins the host's own module instance keeps every class and
@@ -59,20 +52,6 @@ const DIAG_BUILD_COMPLETE = Diagnostic.Info<{ count: number }>("Built {count} ta
 const DIAG_UP_TO_DATE = Diagnostic.Info<Record<string, never>>("Already up to date");
 const DIAG_BUILD_FAILED = Diagnostic.Error<Record<string, never>>("Build failed");
 const DIAG_ERROR = Diagnostic.Error<{ message: string }>("{message}");
-const DIAG_TARGET_FAILED = Diagnostic.Error<{ name: string; message: string; loc: ISourcePosition }>(
-  "Failed to build {name}: {message}"
-);
-/* An anonymous sub-target's failure, rendered against its declared target with
- * its action-verb label ("Compiling @fabr/core failed"); the detail (the
- * command and its output) follows the source excerpt, so it leads with a
- * newline. */
-const DIAG_SUBTARGET_FAILED = Diagnostic.Error<{ verb: string; name: string; message: string; loc: ISourcePosition }>(
-  "{verb} {name} failed:\n{message}"
-);
-const DIAG_DEPENDENCY_FAILED = Diagnostic.Error<{ name: string; dependency: string; loc: ISourcePosition }>(
-  "Cannot build {name}: dependency '{dependency}' failed"
-);
-const DIAG_TESTS_FAILED = Diagnostic.Error<{ name: string; message: string; loc: ISourcePosition }>("{name}: {message}");
 const DIAG_TEST_RESULT = Diagnostic.Info<{ name: string; summary: string }>("{name}: {summary}");
 const DIAG_BUILDING = Diagnostic.Info<{ verb: string; name: string; chain: string }>("{verb} {name}{chain}");
 const DIAG_WATCHING = Diagnostic.Info<Record<string, never>>("Watching for changes (Ctrl-C to stop)");
@@ -102,92 +81,11 @@ function renderConstraints(constraints: Record<string, string>): string {
  * rebuild — long enough to coalesce an editor's save, short enough to feel live. */
 const WATCH_QUIET_MS = 100;
 
-/**
- * Render a build failure tree: each failed target is reported once, against its
- * own declaration; targets that failed only because a dependency failed get a
- * terse one-liner rather than a repeat of the root cause.
- */
-function reportFailure(log: Log, err: Error, reported: Set<Error>): void {
-  if (reported.has(err)) {
-    return;
-  }
-  reported.add(err);
-  if (err instanceof MultiError) {
-    err.errors.forEach(cause => reportFailure(log, cause, reported));
-  } else if (err instanceof DependencyFailedError) {
-    const causes = err.cause instanceof MultiError ? err.cause.errors : [err.cause];
-    const execution: Error[] = [];
-    for (const cause of causes) {
-      if (cause instanceof DependencyFailedError) {
-        /* An anonymous sub-target (label set) is an implementation detail of
-         * its declared target: skip the "dependency failed" hop and let its
-         * own report ("Compiling X failed") stand for it. */
-        if (!cause.label) {
-          log.log(DIAG_DEPENDENCY_FAILED, { name: err.target.name, dependency: cause.target.name, loc: declPosn(err.target) });
-        }
-        reportFailure(log, cause, reported);
-      } else if (cause instanceof TestsFailedError) {
-        /* Tests failed: the target built fine, so report the (pre-rendered)
-         * test summary rather than a build failure */
-        log.log(DIAG_TESTS_FAILED, { name: err.target.name, message: cause.message, loc: declPosn(err.target) });
-      } else if (cause instanceof ExecutionError) {
-        execution.push(cause);
-      } else {
-        /* Semantic diagnostics (conflicts, resolution failures, ...) each get
-         * their own report, with any provenance detail attached */
-        const message =
-          cause instanceof FileConflictError ? `${cause.message}\n${renderConflictDetail(cause)}` : cause.message;
-        log.log(DIAG_TARGET_FAILED, { name: err.target.name, message, loc: declPosn(err.target) });
-      }
-    }
-    if (execution.length > 0) {
-      /* Mechanical failures of the target's execution, reported once. An
-       * anonymous sub-target (label set) reports against its declared target
-       * with its verb ("Compiling X failed"); a declared target as "Failed to
-       * build X". Either way `target` is the declared decl. */
-      const message = describeCauses(execution);
-      if (err.label) {
-        log.log(DIAG_SUBTARGET_FAILED, { verb: err.label, name: err.target.name, message, loc: declPosn(err.target) });
-      } else {
-        log.log(DIAG_TARGET_FAILED, { name: err.target.name, message, loc: declPosn(err.target) });
-      }
-    }
-  } else {
-    log.log(DIAG_ERROR, { message: err.message });
-  }
-}
+/** The presentation of build failures — swappable; see ErrorFormatter. */
+const errorFormatter: ErrorFormatter = new DiagnosticErrorFormatter(AMBIENT_CONSTRAINT_KEYS);
 
-/**
- * Format the execution errors of a target as a single message: one error
- * inline, several as an indented list.
- */
-function describeCauses(causes: Error[]): string {
-  if (causes.length === 1) {
-    return causes[0].message;
-  }
-  return `${causes.length} errors:\n` + causes.map(cause => "  " + cause.message.split("\n").join("\n  ")).join("\n");
-}
-
-/**
- * Expand both sides of a file conflict into an indented explanation, by
- * rendering each side's provenance chain (model references, target
- * evaluations, repository resolutions, ...).
- */
-function renderConflictDetail(err: FileConflictError): string {
-  const lines: string[] = [];
-  for (const side of [err.left, err.right]) {
-    const provenance = renderProvenance(side.provenance, { path: err.path });
-    if (provenance.length > 0) {
-      /* The chain's first line is its own position-prefixed header */
-      lines.push("  " + provenance[0]);
-      provenance.slice(1).forEach(line => lines.push("    " + line));
-    } else {
-      lines.push(`  from '${side.label}' (no origin information)`);
-    }
-    /* The concrete file, so identical-provenance conflicts stay diagnosable */
-    lines.push(`    at ${side.file.getDisplayName()}`);
-  }
-  return lines.join("\n");
+function reportFailure(log: Log, err: Error): void {
+  errorFormatter.report(log, err);
 }
 
 /** What to do with the loaded model — the per-command work, run inside the
@@ -287,7 +185,7 @@ function runProgram(
 async function runWith(operation: Operation, watch = false): Promise<void> {
   /* Diagnostics and progress go to stderr; command data (ls listings, cat
    * file contents) goes to stdout, so a build can be filtered from its output. */
-  const log = new LogFormatter(LogLevel.Info, line => process.stderr.write(line + "\n"));
+  const log = new LogFormatter(LogLevel.Info, line => process.stderr.write(line + "\n"), process.stderr.isTTY === true);
 
   /* In watch mode a drained event loop is the normal idle state (the watchers
    * keep the process alive), so the stall guard would misfire. */
@@ -310,7 +208,7 @@ async function runWith(operation: Operation, watch = false): Promise<void> {
     ? new WatchController(
         WATCH_QUIET_MS,
         undefined,
-        err => reportFailure(log, err, new Set()),
+        err => reportFailure(log, err),
         () => execution.beginBuildCycle(),
         message => log.log(DIAG_WATCH_WARNING, { message })
       )
@@ -327,7 +225,7 @@ async function runWith(operation: Operation, watch = false): Promise<void> {
     .then(model => operation(model, execution))
     .then(() => process.exit(0))
     .catch(err => {
-      reportFailure(log, err, new Set());
+      reportFailure(log, err);
       log.log(DIAG_BUILD_FAILED, {});
       process.exit(1);
     });
@@ -362,7 +260,7 @@ function runWatched(
     .then(
       () => log.log(DIAG_WATCHING, {}),
       err => {
-        reportFailure(log, err, new Set());
+        reportFailure(log, err);
         log.log(DIAG_BUILD_FAILED, {});
         log.log(DIAG_WATCHING, {});
       }

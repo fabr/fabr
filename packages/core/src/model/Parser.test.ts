@@ -41,6 +41,18 @@ function parseInvalid(text: string): string[] {
   return errors;
 }
 
+/** The expected rendering of a single-caret parse diagnostic block. */
+function diagnosticBlock(line: number, column: number, message: string, lineText: string): string {
+  const width = String(line).length;
+  return (
+    `error: ${message}\n` +
+    `${" ".repeat(width)}--> PROJECT.fabr:${line}:${column}\n` +
+    `${" ".repeat(width + 1)}|\n` +
+    `${line} | ${lineText}\n` +
+    `${" ".repeat(width + 1)}| ${" ".repeat(column - 1)}^\n`
+  );
+}
+
 /**
  * Render a parsed Name unambiguously: a purely-literal name is its text; a
  * composite name renders its parts joined with '+', tagging glob and
@@ -110,10 +122,10 @@ describe("Parser Tests", () => {
 
   it("rejects an absolute include path", () => {
     expect(parseInvalid("include /etc/evil.fabr;")).to.deep.equal([
-      "PROJECT.fabr:1:9:error:Include paths must be relative to the including file\ninclude /etc/evil.fabr;\n        ^\n",
+      diagnosticBlock(1, 9, "Include paths must be relative to the including file", "include /etc/evil.fabr;"),
     ]);
     expect(parseInvalid("include C:/evil.fabr;")).to.deep.equal([
-      "PROJECT.fabr:1:9:error:Include paths must be relative to the including file\ninclude C:/evil.fabr;\n        ^\n",
+      diagnosticBlock(1, 9, "Include paths must be relative to the including file", "include C:/evil.fabr;"),
     ]);
   });
 
@@ -128,10 +140,10 @@ describe("Parser Tests", () => {
       })
     );
     expect(parseInvalid("hello=world")).to.deep.equal([
-      "PROJECT.fabr:1:12:error:Read EOF but expected Name, ';', or '}'\nhello=world\n           ^\n",
+      diagnosticBlock(1, 12, "Read EOF but expected Name, ';', or '}'", "hello=world"),
     ]);
     expect(parseInvalid("foo/bar=woo;")).to.deep.equal([
-      "PROJECT.fabr:1:1:error:Read Path but expected Statement\nfoo/bar=woo;\n^\n",
+      diagnosticBlock(1, 1, "Read Path but expected Statement", "foo/bar=woo;"),
     ]);
   });
 
@@ -192,7 +204,7 @@ describe("Parser Tests", () => {
 
   it("Missing Close Brace", () => {
     expect(parseInvalid("js_package fabr {\nsrcs=src:**/*.ts; deps= es2019\n node \nunicode-properties;")).to.deep.equal([
-      "PROJECT.fabr:4:20:error:Read EOF but expected Identifier or '}'\nunicode-properties;\n                   ^\n",
+      diagnosticBlock(4, 20, "Read EOF but expected Identifier or '}'", "unicode-properties;"),
     ]);
   });
 
@@ -229,10 +241,10 @@ describe("Parser Tests", () => {
 
   it("Plugin Decl with invalid name", () => {
     expect(parseInvalid("plugin ${TEST_PLUGIN};")).to.deep.equal([
-      "PROJECT.fabr:1:8:error:Plugin names must be plain target names (no glob patterns or variables)\nplugin ${TEST_PLUGIN};\n       ^\n",
+      diagnosticBlock(1, 8, "Plugin names must be plain target names (no glob patterns or variables)", "plugin ${TEST_PLUGIN};"),
     ]);
     expect(parseInvalid("plugin @fabr/*;")).to.deep.equal([
-      "PROJECT.fabr:1:8:error:Plugin names must be plain target names (no glob patterns or variables)\nplugin @fabr/*;\n       ^\n",
+      diagnosticBlock(1, 8, "Plugin names must be plain target names (no glob patterns or variables)", "plugin @fabr/*;"),
     ]);
   });
 
@@ -289,26 +301,26 @@ describe("Parser Tests", () => {
 
     it("rejects an empty constraint list", () => {
       expect(parseInvalid("dep = mylib<>;")).to.deep.equal([
-        "PROJECT.fabr:1:13:error:Read '>' but expected a constraint key\ndep = mylib<>;\n            ^\n",
+        diagnosticBlock(1, 13, "Read '>' but expected a constraint key", "dep = mylib<>;"),
       ]);
     });
 
     it("rejects a duplicate constraint key", () => {
       expect(parseInvalid("dep = mylib<A=1, A=2>;")).to.deep.equal([
-        "PROJECT.fabr:1:18:error:Duplicate constraint key 'A'\ndep = mylib<A=1, A=2>;\n                 ^\n",
+        diagnosticBlock(1, 18, "Duplicate constraint key 'A'", "dep = mylib<A=1, A=2>;"),
       ]);
     });
 
     it("rejects a constraint with no value", () => {
       expect(parseInvalid("dep = mylib<A>;")).to.deep.equal([
-        "PROJECT.fabr:1:14:error:Read '>' but expected '='\ndep = mylib<A>;\n             ^\n",
+        diagnosticBlock(1, 14, "Read '>' but expected '='", "dep = mylib<A>;"),
       ]);
     });
 
     it("requires the '<' to abut the reference", () => {
       /* A whitespace-separated '<' cannot start a value, so it is an error */
       expect(parseInvalid("dep = mylib <A=1>;")).to.deep.equal([
-        "PROJECT.fabr:1:12:error:Read '<' but expected Name, ';', or '}'\ndep = mylib <A=1>;\n           ^\n",
+        diagnosticBlock(1, 12, "Read '<' but expected Name, ';', or '}'", "dep = mylib <A=1>;"),
       ]);
     });
 

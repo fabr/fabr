@@ -25,7 +25,7 @@ import { Name } from "../model/Name";
 import { Computable, ComputableSource, ComputableState } from "./Computable";
 import { FileSet, IFile, FileSource } from "./FileSet";
 import { hashFile, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
-import { toError } from "./MultiError";
+import { toError } from "./Errors";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
 import * as picomatch from "picomatch";
 

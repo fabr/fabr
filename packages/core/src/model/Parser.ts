@@ -188,6 +188,8 @@ export class BuildParser {
    * constraint delta or a `:projection` tail only binds to a ref if it hugs it.
    */
   private tokenAbutsPrev = false;
+  /** End offset (exclusive) of the most recently consumed token */
+  private prevTokenEnd = 0;
 
   private source: IBuildFile;
   private result: IBuildFileContents;
@@ -411,6 +413,9 @@ export class BuildParser {
 
   private nextToken(): Token {
     const start = this.reader.currentOffset();
+    /* The reader sits just past the previous token, so this is its end —
+     * kept for span extents (a value's endOffset) */
+    this.prevTokenEnd = start;
 
     /* Skip over whitespace and comments */
     let inComment = false;
@@ -541,11 +546,15 @@ export class BuildParser {
     const token = this.token;
     if (token.type === TokenType.NAME || token.type === TokenType.IDENTIFIER || token.type === TokenType.COMPOUND_IDENTIFIER) {
       const offset = token.start;
+      const value = this.parseReference();
+      /* parseReference leaves the current token positioned after the
+       * reference, so the end of its last consumed token is the value's end */
       return {
         kind: DeclKind.Value,
         source: this.source,
         offset,
-        value: this.parseReference(),
+        endOffset: this.prevTokenEnd,
+        value,
       };
     } else {
       this.unexpectedTokenError("Name, ';', or '}'");
@@ -686,6 +695,7 @@ export class BuildParser {
     } else {
       const nameToken = this.token;
       this.nextToken();
+      const nameEnd = this.prevTokenEnd;
       this.consumeToken(TokenType.LBRACE);
       const properties = this.parsePropertyList();
       this.consumeToken(TokenType.RBRACE);
@@ -696,6 +706,7 @@ export class BuildParser {
         typeOffset,
         name: nameToken.text,
         offset: nameToken.start,
+        endOffset: nameEnd,
         properties,
       };
     }
@@ -713,6 +724,7 @@ export class BuildParser {
     } else {
       const nameToken = this.token;
       this.nextToken();
+      const nameEnd = this.prevTokenEnd;
       this.consumeToken(TokenType.LBRACE);
       const properties = this.parsePropertyTypeList();
       this.consumeToken(TokenType.RBRACE);
@@ -721,6 +733,7 @@ export class BuildParser {
         source: this.source,
         name: nameToken.text,
         offset: nameToken.start,
+        endOffset: nameEnd,
         properties,
       };
     }

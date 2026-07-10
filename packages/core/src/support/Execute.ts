@@ -3,14 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { getSystemErrorMap } from "util";
 import { Computable } from "../core/Computable";
-
-/**
- * A mechanical failure while executing a build step (spawning processes,
- * staging files, ...) — as opposed to a semantic diagnostic like a conflict or
- * resolution failure. Multiple execution errors from one target are reported
- * grouped under the target rather than as individual diagnostics.
- */
-export class ExecutionError extends Error {}
+import { ExecutionError } from "../core/Errors";
 
 /**
  * @return a human-readable description of an OS-level error, without the errno

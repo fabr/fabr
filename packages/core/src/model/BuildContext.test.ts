@@ -6,7 +6,8 @@ import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { Repository, RepositoryRef, SourceRef } from "../core/Repository";
 import { Name } from "./Name";
-import { FileConflictError, renderProvenance } from "../core/Provenance";
+import { renderProvenance } from "../core/Provenance";
+import { FileConflictError } from "../core/Errors";
 import { LogFormatter, LogLevel } from "../support/Log";
 import {
   BuildAction,
@@ -16,7 +17,8 @@ import {
   RepositoryRegistration,
   RuleRegistration,
 } from "../rules/Types";
-import { Constraints, DependencyFailedError } from "./BuildContext";
+import { Constraints } from "./BuildContext";
+import { DependencyFailedError, NameResolutionError, NoRuleFoundError, ReferenceFailedError } from "./Errors";
 import { ExecutionContext } from "./ExecutionContext";
 import { parseBuildString } from "./Parser";
 import { toBuildModel } from "./Sema";
@@ -65,6 +67,8 @@ registerRule("test_override", {}, context =>
 registerRule("test_file", {}, context =>
   context.getRequiredString("content").then(content => new FileSet(new Map([["f.txt", MemoryFile.from(content)]])))
 );
+/* Registered only under a specific constraint, so selection under {} fails */
+registerRule("test_constrained", { FLAVOR: "special" }, () => Computable.resolve(EMPTY_FILESET));
 
 /* Repository double: resolves each reference to a single file, and records
  * the batches it was asked to resolve */
@@ -177,8 +181,15 @@ describe("BuildContext", () => {
       expect(err).to.be.instanceOf(DependencyFailedError);
       const outer = err as DependencyFailedError;
       expect(outer.target.name).to.equal("a");
-      expect(outer.cause).to.be.instanceOf(DependencyFailedError);
-      const inner = outer.cause as DependencyFailedError;
+      /* The failure crossed the written reference 'b' in a's deps: the hop
+       * records the use site (value span, property, owning target) */
+      expect(outer.cause).to.be.instanceOf(ReferenceFailedError);
+      const hop = outer.cause as ReferenceFailedError;
+      expect(hop.value.value.toString()).to.equal("b");
+      expect(hop.property.name).to.equal("deps");
+      expect(hop.target?.name).to.equal("a");
+      expect(hop.cause).to.be.instanceOf(DependencyFailedError);
+      const inner = hop.cause as DependencyFailedError;
       expect(inner.target.name).to.equal("b");
       expect(inner.cause.message).to.equal("reasons");
     }
@@ -209,15 +220,117 @@ describe("BuildContext", () => {
       expect(conflict.left.label).to.equal("c1");
       expect(conflict.right.label).to.equal("c2");
 
-      /* Each side carries a provenance chain: the model reference (position
-       * header, source excerpt, caret, active constraints) chained onto the
-       * producing target's step */
+      /* Each side carries a provenance chain: the model reference (the
+       * written value's span, its use site, active constraints as the label)
+       * chained onto the producing target's step */
       const rendered = renderProvenance(conflict.left.provenance, { path: "f.txt" });
-      expect(rendered.some(line => /^TEST.fabr:5:\d+: from 'c1':$/.test(line))).to.equal(true);
-      expect(rendered).to.include("test_good a { deps = c1 c2; }");
-      expect(rendered.some(line => /^ *\^$/.test(line))).to.equal(true);
-      expect(rendered).to.include("with arch=armv7");
-      expect(rendered.some(line => /^TEST.fabr:3:\d+: built by test_file 'c1'$/.test(line))).to.equal(true);
+      expect(rendered[0].message).to.equal("from 'c1' (a deps)");
+      expect(rendered[0].label).to.equal("with arch=armv7");
+      const loc = rendered[0].loc!;
+      expect(loc.file).to.equal("TEST.fabr");
+      const pos = loc.reader.resolvePosition(loc.offset)!;
+      expect(pos.line).to.equal(5);
+      expect(pos.lineText).to.equal("test_good a { deps = c1 c2; }");
+      /* The span underlines exactly the written 'c1' */
+      expect(loc.endOffset! - loc.offset).to.equal(2);
+      expect(rendered.some(note => note.message === "built by test_file 'c1'")).to.equal(true);
+
+      /* A caller's ambient keys are elided from the "with" annotation */
+      const elided = renderProvenance(conflict.left.provenance, { path: "f.txt", elideConstraintKeys: new Set(["arch"]) });
+      expect(elided[0].label).to.equal(undefined);
+    }
+  });
+
+  it("Wraps an unmatched target type per written reference, like a failed build", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_constrained { }\n" +
+      "test_constrained n { }\n" +
+      "test_good a { deps = n; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    try {
+      await model.getConfig({}, execution).getTarget("a");
+      expect.fail("expected target a to fail");
+    } catch (err) {
+      expect(err).to.be.instanceOf(DependencyFailedError);
+      /* The no-rule failure crossed the written reference 'n' in a's deps */
+      const hop = (err as DependencyFailedError).cause;
+      expect(hop).to.be.instanceOf(ReferenceFailedError);
+      expect((hop as ReferenceFailedError).value.value.toString()).to.equal("n");
+      expect((hop as ReferenceFailedError).property.name).to.equal("deps");
+      const cause = (hop as ReferenceFailedError).cause;
+      expect(cause).to.be.instanceOf(NoRuleFoundError);
+      const noRule = cause as NoRuleFoundError;
+      expect(noRule.message).to.equal("No rule matches target 'n' of type 'test_constrained'");
+      expect(noRule.target.name).to.equal("n");
+      /* The full constraint set rides as data; presentation decides what shows */
+      expect(noRule.constraints).to.deep.equal({});
+    }
+  });
+
+  it("Fails a literal name that names no target and matches no file", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "targetdef test_good { deps = FILES; }\n" + "test_good a { deps = fooff; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    try {
+      await model.getConfig({}, execution).getTarget("a");
+      expect.fail("expected target a to fail");
+    } catch (err) {
+      expect(err).to.be.instanceOf(DependencyFailedError);
+      const cause = (err as DependencyFailedError).cause;
+      expect(cause).to.be.instanceOf(NameResolutionError);
+      expect(cause.message).to.equal("Unable to resolve 'fooff'");
+      /* The use site identifies whose property the name was written in */
+      const useSite = (cause as NameResolutionError).useSite;
+      expect(useSite?.property.name).to.equal("deps");
+      expect(useSite?.target?.name).to.equal("a");
+      /* The position points at the written value, not the target declaration */
+      const position = (cause as NameResolutionError).position;
+      expect(position.file).to.equal("TEST.fabr");
+      const resolved = position.reader.resolvePosition(position.offset);
+      expect(resolved?.line).to.equal(2);
+      expect(resolved?.lineText).to.equal("test_good a { deps = fooff; }");
+      expect(resolved && resolved.lineText[resolved.column - 1]).to.equal("f");
+    }
+  });
+
+  it("Leaves a glob matching nothing as an empty resolution", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "targetdef test_good { deps = FILES; }\n" + "test_good a { deps = fooff*; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}, execution).getTarget("a");
+    expect(lastDeps?.isEmpty()).to.equal(true);
+  });
+
+  it("Fails a literal projection into a target that matches no file", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_file { content = STRING; }\n" +
+      "test_file b { content = one; }\n" +
+      "test_good a { deps = b:missing.txt; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    try {
+      await model.getConfig({}, execution).getTarget("a");
+      expect.fail("expected target a to fail");
+    } catch (err) {
+      expect(err).to.be.instanceOf(DependencyFailedError);
+      const cause = (err as DependencyFailedError).cause;
+      expect(cause).to.be.instanceOf(NameResolutionError);
+      expect(cause.message).to.equal("Unable to resolve 'b:missing.txt'");
     }
   });
 

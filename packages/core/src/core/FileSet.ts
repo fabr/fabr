@@ -21,7 +21,8 @@ import * as picomatch from "picomatch";
 import * as path from "path";
 import { Name } from "../model/Name";
 import { Computable, ComputableSource } from "./Computable";
-import { FileConflictError, IProvenanceStep } from "./Provenance";
+import { IProvenanceStep } from "./Provenance";
+import { FileConflictError } from "./Errors";
 
 export interface IFile {
   hash: string;

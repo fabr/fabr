@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { IFile } from "./FileSet";
+import { IDiagnosticNote } from "../support/Log";
 
 /**
  * A single step in a provenance chain: a small, inert, kind-tagged description
@@ -47,12 +47,20 @@ export interface IRenderContext {
   path?: string;
   /** Index of the step being rendered within its chain (0 = nearest) */
   stepIndex?: number;
+  /**
+   * Constraint keys to omit from "with k=v" annotations: the caller's ambient
+   * keys (the driver's injected host facts and BUILD_OPERATION), universal for
+   * the run and so noise in an explanation — matching their elision from
+   * progress lines.
+   */
+  elideConstraintKeys?: ReadonlySet<string>;
 }
 
 /**
- * Render one provenance step into human-readable lines.
+ * Render one provenance step as structured diagnostic notes (each optionally
+ * anchored at a source span).
  */
-export type ProvenanceRenderer = (step: IProvenanceStep, context: IRenderContext) => string[];
+export type ProvenanceRenderer = (step: IProvenanceStep, context: IRenderContext) => IDiagnosticNote[];
 
 const PROVENANCE_RENDERERS = new Map<string, ProvenanceRenderer>();
 
@@ -62,17 +70,17 @@ export function registerProvenanceRenderer(kind: string, renderer: ProvenanceRen
 
 /**
  * Render a full provenance chain, nearest step first, concatenating each
- * step's lines. Steps with no registered renderer contribute a placeholder.
+ * step's notes. Steps with no registered renderer contribute a placeholder.
  */
-export function renderProvenance(step: IProvenanceStep | undefined, context: IRenderContext = {}): string[] {
-  const lines: string[] = [];
+export function renderProvenance(step: IProvenanceStep | undefined, context: IRenderContext = {}): IDiagnosticNote[] {
+  const notes: IDiagnosticNote[] = [];
   let index = 0;
   for (let current = step; current; current = current.parent) {
     const renderer = PROVENANCE_RENDERERS.get(current.kind);
-    lines.push(...(renderer ? renderer(current, { ...context, stepIndex: index }) : [`(${current.kind})`]));
+    notes.push(...(renderer ? renderer(current, { ...context, stepIndex: index }) : [{ message: `(${current.kind})` }]));
     index++;
   }
-  return lines;
+  return notes;
 }
 
 /**
@@ -115,39 +123,3 @@ export function describeProvenance(step: IProvenanceStep | undefined): string | 
   return undefined;
 }
 
-/**
- * One side of a file conflict: the file, and the provenance chain of the
- * fileset it arrived in.
- */
-export interface IConflictSource {
-  file: IFile;
-  provenance?: IProvenanceStep;
-}
-
-/** A conflict side as reported: the label is derived from the provenance */
-export interface IConflictSide extends IConflictSource {
-  label: string;
-}
-
-export class FileConflictError extends Error {
-  public readonly path: string;
-  public readonly left: IConflictSide;
-  public readonly right: IConflictSide;
-
-  constructor(path: string, left: IConflictSource, right: IConflictSource) {
-    const leftSide = describeSide(left);
-    const rightSide = describeSide(right);
-    super(
-      leftSide.label === rightSide.label
-        ? `Conflicting files for ${path} (within '${leftSide.label}')`
-        : `Conflicting files for ${path} (from '${leftSide.label}' and '${rightSide.label}')`
-    );
-    this.path = path;
-    this.left = leftSide;
-    this.right = rightSide;
-  }
-}
-
-function describeSide(source: IConflictSource): IConflictSide {
-  return { ...source, label: describeProvenance(source.provenance) ?? source.file.getDisplayName() };
-}

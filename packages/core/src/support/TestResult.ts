@@ -134,21 +134,3 @@ export function getTestReport(sources: SourceRef[]): Computable<ITestReport | un
   );
 }
 
-/**
- * A test run completed mechanically but some tests failed — as distinct from
- * an ExecutionError (the run itself couldn't be performed). Test rules throw
- * this with a pre-rendered summary ("N of M tests failed: ..."), which the
- * driver reports against the target under test rather than as a build failure.
- */
-export class TestsFailedError extends Error {
-  /** Number of failing tests */
-  public readonly failed: number;
-  /** Total number of tests that ran */
-  public readonly total: number;
-
-  constructor(message: string, failed: number, total: number) {
-    super(message);
-    this.failed = failed;
-    this.total = total;
-  }
-}

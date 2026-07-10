@@ -20,6 +20,7 @@
 import { Computable } from "../core/Computable";
 import { resolveMVS } from "./MVSResolver";
 import { SEMVER, SemverVersion, versionToString } from "./Semver";
+import { MetadataFetchError } from "../core/Errors";
 import { PackageRegistry, Requirement, Resolution, Selected } from "./Types";
 import { expect } from "chai";
 
@@ -53,6 +54,23 @@ function resolve(
   /* The mock registry is synchronous, so resolution completes before we get here */
   expect(result).to.not.equal(undefined);
   return result!;
+}
+
+/** As resolve, but for inputs whose resolution walk must reject. */
+function resolveError(roots: Record<string, string>, data: Record<string, Record<string, Record<string, string>>>): Error {
+  let error: Error | undefined;
+  resolveMVS(
+    Object.entries(roots).map(([pkg, constraint]) => ({ pkg, constraint })),
+    SEMVER,
+    mockRegistry(data)
+  ).then(
+    () => undefined,
+    err => {
+      error = err as Error;
+    }
+  );
+  expect(error).to.not.equal(undefined);
+  return error!;
 }
 
 function selectionStrings(resolution: Resolution<SemverVersion>): string[] {
@@ -183,6 +201,35 @@ describe("MVSResolver", () => {
     expect(result.errors).to.have.length(1);
     expect(result.errors[0]).to.contain("D@1.3.0");
     expect(result.errors[0]).to.contain("~1.1.0");
+  });
+
+  it("attributes a metadata failure on a root requirement to itself", () => {
+    const err = resolveError({ A: "1.2.3" }, {});
+    expect(err).to.be.instanceOf(MetadataFetchError);
+    const failure = err as MetadataFetchError;
+    expect(failure.pkg).to.equal("A");
+    expect(failure.version).to.equal("1.2.3");
+    expect(failure.rootPkg).to.equal("A");
+    expect(failure.requirerPath).to.deep.equal([]);
+    expect(failure.message).to.equal("A@1.2.3 not found in mock registry");
+  });
+
+  it("attributes a transitive metadata failure to the root requirement that reached it", () => {
+    /* Scoped root: the node-id parse must split on the LAST '@' */
+    const err = resolveError(
+      { "@s/A": "1.0.0" },
+      {
+        "@s/A": { "1.0.0": { B: "^1.2.0" } },
+        B: { "1.2.0": { C: "~2.1.0" } },
+        /* C is unpublished */
+      }
+    );
+    expect(err).to.be.instanceOf(MetadataFetchError);
+    const failure = err as MetadataFetchError;
+    expect(failure.pkg).to.equal("C");
+    expect(failure.rootPkg).to.equal("@s/A");
+    expect(failure.requirerPath).to.deep.equal(["B@1.2.0", "@s/A@1.0.0"]);
+    expect(failure.message).to.equal("C@2.1.0 not found in mock registry (required by B@1.2.0 < @s/A@1.0.0)");
   });
 
   it("a root override dominates transitive requirements", () => {

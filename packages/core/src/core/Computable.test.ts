@@ -18,7 +18,7 @@
  */
 
 import { Computable, ComputableSource, ComputableState } from "./Computable";
-import { MultiError } from "./MultiError";
+import { MultiError } from "./Errors";
 import { expect } from "chai";
 
 /** A pull-based external source with observable attach/detach counters, for exercising

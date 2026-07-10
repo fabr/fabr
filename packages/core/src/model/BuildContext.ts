@@ -15,6 +15,7 @@ import { ExecutionContext, ProgressEvent } from "./ExecutionContext";
 import { ITargetOrigin, TARGET_PROVENANCE } from "./Target";
 import {
   DeclKind,
+  declPosn,
   IDecl,
   INamedDecl,
   INamespaceDecl,
@@ -23,6 +24,14 @@ import {
   ITargetDefDecl,
   IValue,
 } from "./AST";
+import { IDiagnosticNote } from "../support/Log";
+import {
+  DependencyFailedError,
+  IUseSite,
+  NameResolutionError,
+  NoRuleFoundError,
+  ReferenceFailedError,
+} from "./Errors";
 import { Name } from "./Name";
 import { parseName } from "./Parser";
 import { IPrefixMatch } from "./Namespace";
@@ -74,40 +83,56 @@ export interface IModelRefStep extends IProvenanceStep {
   kind: typeof MODEL_REF_PROVENANCE;
   value: IValue;
   constraints: Constraints;
+  /** The property the value was written in, and its owning target (absent for
+   * a global/default property) — the "required by <target> <property>" facts */
+  property: IPropertyDecl;
+  target?: ITargetDecl;
 }
 
 registerProvenanceRenderer(MODEL_REF_PROVENANCE, (step, context) => renderModelRef(step as IModelRefStep, context));
 registerProvenanceRenderer(TARGET_PROVENANCE, step => {
   const target = (step as ITargetOrigin).decl;
-  return [`${stringifyLoc(target)}: built by ${target.type} '${target.name}'`];
+  return [{ message: `built by ${target.type} '${target.name}'`, loc: declPosn(target) }];
 });
 
 /* Short attribution ("the name it was written as") for one-line messages */
 registerProvenanceDescriber(MODEL_REF_PROVENANCE, step => (step as IModelRefStep).value.value.toString());
 registerProvenanceDescriber(TARGET_PROVENANCE, step => (step as ITargetOrigin).decl.name);
 
-function renderModelRef(step: IModelRefStep, context: IRenderContext): string[] {
-  const value = step.value;
-  const header = `${stringifyLoc(value)}: ${context.stepIndex === 0 ? "from" : "via"} '${value.value.toString()}':`;
-  const pos = value.source.reader.resolvePosition(value.offset);
-  const lines = pos ? [header, pos.lineText, " ".repeat(pos.column - 1) + "^"] : [header];
-  lines.push(...constraintLines(step));
-  return lines;
+function renderModelRef(step: IModelRefStep, context: IRenderContext): IDiagnosticNote[] {
+  const verb = context.stepIndex === 0 ? "from" : "via";
+  return [
+    {
+      message: `${verb} '${step.value.value.toString()}' (${describeUseSite(step.property, step.target)})`,
+      loc: declPosn(step.value),
+      label: constraintText(step, context),
+    },
+  ];
+}
+
+/** "required by <target> <property>" without the leading verb: the use-site
+ * attribution shared by model-ref notes and the driver's dependant chain. */
+export function describeUseSite(property: IPropertyDecl, target: ITargetDecl | undefined): string {
+  return target ? `${target.name} ${property.name}` : property.name;
 }
 
 /**
  * Describe the constraint set a reference was resolved under, but only where
  * it is informative: the deepest model step shows its (non-empty) constraints,
- * and other steps show only the entries that differ from the next model step
- * down the chain (i.e. override boundaries).
+ * other steps show only the entries that differ from the next model step
+ * down the chain (i.e. override boundaries), and the caller's ambient keys
+ * (context.elideConstraintKeys) are omitted throughout. Undefined when there
+ * is nothing to say.
  */
-function constraintLines(step: IModelRefStep): string[] {
+export function constraintText(step: IModelRefStep, context: IRenderContext): string | undefined {
   const deeper = findNextModelRef(step.parent);
-  const entries = Object.entries(step.constraints).filter(([key, value]) => (deeper ? deeper.constraints[key] !== value : true));
+  const entries = Object.entries(step.constraints).filter(
+    ([key, value]) => !context.elideConstraintKeys?.has(key) && (deeper ? deeper.constraints[key] !== value : true)
+  );
   if (entries.length === 0) {
-    return [];
+    return undefined;
   }
-  return [`with ${entries.map(([key, value]) => `${key}=${value}`).sort().join(" ")}`];
+  return `with ${entries.map(([key, value]) => `${key}=${value}`).sort().join(" ")}`;
 }
 
 function findNextModelRef(step: IProvenanceStep | undefined): IModelRefStep | undefined {
@@ -130,29 +155,9 @@ interface IBuildModel {
   getRepositoryProvider(type: string): RepositoryProvider | undefined;
 }
 
-/**
- * Failure of a target, as propagated to its dependants: carries the failed
- * target's declaration and the underlying cause, so that whoever ultimately
- * reports the failure (the driver) can attribute each cause to its target
- * exactly once and render dependants' failures tersely.
- */
-export class DependencyFailedError extends Error {
-  public readonly target: ITargetDecl;
-  public readonly cause: Error;
-  /**
-   * Set when the failure is an anonymous sub-target's build step: the action
-   * verb (e.g. "Compiling"). `target` is then the *declared* target it
-   * belongs to, so the driver renders "Compiling X failed" against it and
-   * collapses the intermediate hop.
-   */
-  public readonly label?: string;
-
-  constructor(target: ITargetDecl, cause: Error, label?: string) {
-    super(`dependency '${target.name}' failed`);
-    this.target = target;
-    this.cause = cause;
-    this.label = label;
-  }
+/** The use site recorded on a dependency-stack node, when one exists. */
+function useSiteOf(stack: IDependencyStack | undefined): IUseSite | undefined {
+  return stack ? { value: stack.value, property: stack.property, target: stack.target } : undefined;
 }
 
 interface IDependencyStack {
@@ -328,11 +333,22 @@ export class BuildContext {
         /* A value written as `ref<k=v>` resolves under this context overridden
          * by its delta, so the referenced target builds under those constraints
          * and the model-ref step (stamped by that context) records them. */
-        return this.resolvingContextFor(value.value, callerOverrides, info).then(({ context, reference }) =>
-          context.resolveFileSource(reference, prop, info).then(resolved =>
-            resolved.sources.map(source => context.withModelRef(source, value))
+        return this.resolvingContextFor(value.value, callerOverrides, info)
+          .then(({ context, reference }) =>
+            context.resolveFileSource(reference, prop, info).then(resolved =>
+              resolved.sources.map(source => context.withModelRef(source, value, prop, target))
+            )
           )
-        );
+          .catch(err => {
+            /* A referenced target's failure crossing this written reference
+             * (it failed to build, or no rule matched it): record the use
+             * site, so the driver can render the dependant chain as
+             * "required by <target> <property>" against the written value. */
+            if (err instanceof DependencyFailedError || err instanceof NoRuleFoundError) {
+              throw new ReferenceFailedError(value, prop, target, err);
+            }
+            throw err;
+          });
       }),
       (...resolved) => resolved.flat()
     );
@@ -368,8 +384,8 @@ export class BuildContext {
     });
   }
 
-  private withModelRef(source: SourceRef, value: IValue): SourceRef {
-    const step: IModelRefStep = { kind: MODEL_REF_PROVENANCE, value, constraints: this.constraints };
+  private withModelRef(source: SourceRef, value: IValue, property: IPropertyDecl, target?: ITargetDecl): SourceRef {
+    const step: IModelRefStep = { kind: MODEL_REF_PROVENANCE, value, constraints: this.constraints, property, target };
     if (source instanceof FileSet || source instanceof RepositoryRef) {
       return source.withStep(step);
     }
@@ -445,16 +461,27 @@ export class BuildContext {
               if (containers.length === 0) {
                 return { sources: references, decl };
               }
-              return FileSet.findAll(containers, rest, retainedPrefix).then(data => ({
-                sources: [...references, data],
-                decl,
-              }));
+              return FileSet.findAll(containers, rest, retainedPrefix).then(data => {
+                /* Same literal-must-resolve rule for a projection into built
+                 * content, but only in a property context (a CLI name reports
+                 * through the driver's "matched no files") and only when no
+                 * deferred reference might still deliver the name. */
+                if (data.isEmpty() && references.length === 0 && relativeTo && !rest.hasGlob()) {
+                  throw new NameResolutionError(substName, declPosn(stack?.value ?? relativeTo), useSiteOf(stack));
+                }
+                return { sources: [...references, data], decl };
+              });
             });
           }
         } else if (relativeTo) {
           /* Not an identified target; check the filesystem relative to the target decl */
           const baseName = relativeTo.source.file;
-          return relativeTo.source.fs.find(substName.relativeTo(baseName)).then(data => ({ sources: [data] }));
+          return relativeTo.source.fs.find(substName.relativeTo(baseName)).then(data => {
+            if (data.isEmpty() && !substName.hasGlob()) {
+              throw new NameResolutionError(substName, declPosn(stack?.value ?? relativeTo), useSiteOf(stack));
+            }
+            return { sources: [data] };
+          });
         } else {
           /* A command-line name that names no known target (no decl to resolve
            * a bare path against) */
@@ -494,14 +521,7 @@ export class BuildContext {
     }
     const rule = this.model.getTargetRule(target.type, this.constraints);
     if (!rule) {
-      const configuration = Object.entries(this.constraints)
-        .map(([key, value]) => `${key}=${value}`)
-        .join(", ");
-      throw new Error(
-        `No rule found to build '${target.type}'${configuration ? ` (${configuration})` : ""}\n` +
-          `    at ${target.name} (${stringifyLoc(target)})\n` +
-          stringifyDependencyStack(stack)
-      );
+      throw new NoRuleFoundError(target, this.constraints);
     }
     return this.evaluateTarget(new DeclaredTargetContext(target, this, stack), rule);
   }

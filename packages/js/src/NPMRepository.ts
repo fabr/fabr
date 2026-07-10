@@ -1,12 +1,15 @@
 import {
+  attachHelp,
   BUILD_OPERATION,
   Computable,
   FILES_OPERATION,
   FileSet,
+  HttpStatusError,
   IProjection,
   IRequirementEdge,
   IResolutionOrigin,
   MemoryFile,
+  MetadataFetchError,
   Name,
   PACKAGE_RESOLUTION_PROVENANCE,
   PackageFileSet,
@@ -18,6 +21,7 @@ import {
   RepositoryRef,
   RepositoryRegistration,
   Requirement,
+  RequirementResolutionError,
   resolveMVS,
   ROOT_REQUIRER,
   Selected,
@@ -202,30 +206,64 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
      * are unresolvable on this host. */
     if (operation === FILES_OPERATION) {
       return Computable.forAll(
-        references.map(reference => this.resolveBarePackage(reference)),
+        references.map(reference => this.attributedTo(reference, () => this.resolveBarePackage(reference))),
         (...delivered: FileSet[]) => delivered
       );
     }
-    const requirements = references.map(reference => this.parseRequirement(reference.name));
+    const requirements = references.map(reference => {
+      try {
+        return this.parseRequirement(reference.name);
+      } catch (err) {
+        throw new RequirementResolutionError([reference], asError(err));
+      }
+    });
     /* Canonicalize the roots so the resolution (and its memo key, and the
      * reachableFrom indices) are independent of reference order */
     const byKey = new Map(requirements.map(req => [requirementKey(req), req]));
     const rootKeys = [...byKey.keys()].sort();
     const roots = rootKeys.map(key => byKey.get(key)!);
     const rootIndex = new Map(rootKeys.map((key, index) => [key, index]));
-    return this.getJointResolution(roots, rootKeys).then(selections => {
-      checkSingleVersions(selections, rootKeys.join(", "));
-      return Computable.forAll(
-        selections.map(sel => this.fetch(sel.pkg, sel.version)),
-        (...packages: PackageFileSet[]) =>
-          Computable.forAll(
-            requirements.map(req =>
-              this.assembleClosure(req, rootIndex.get(requirementKey(req))!, selections, packages, operation)
-            ),
-            (...delivered: FileSet[]) => delivered
-          )
-      );
-    });
+    return this.getJointResolution(roots, rootKeys)
+      .then(selections => {
+        checkSingleVersions(selections, rootKeys.join(", "));
+        return Computable.forAll(
+          selections.map(sel => this.fetch(sel.pkg, sel.version)),
+          (...packages: PackageFileSet[]) =>
+            Computable.forAll(
+              requirements.map(req =>
+                this.assembleClosure(req, rootIndex.get(requirementKey(req))!, selections, packages, operation)
+              ),
+              (...delivered: FileSet[]) => delivered
+            )
+        );
+      })
+      .catch(err => {
+        /* A metadata failure names the root package whose closure reached it
+         * (the resolver's first-reacher chain): attribute it to the written
+         * reference(s) requiring that root, whose carried provenance lets the
+         * driver point at the requirement as written. */
+        if (err instanceof MetadataFetchError) {
+          const culpable = references.filter((_, index) => requirements[index].pkg === err.rootPkg);
+          if (culpable.length > 0) {
+            throw new RequirementResolutionError(culpable, err);
+          }
+        }
+        throw asError(err);
+      });
+  }
+
+  /**
+   * Run one reference's own delivery, attributing any failure to it (the
+   * per-reference analogue of resolveAll's batch attribution).
+   */
+  private attributedTo(reference: RepositoryRef, deliver: () => Computable<FileSet>): Computable<FileSet> {
+    try {
+      return deliver().catch(err => {
+        throw new RequirementResolutionError([reference], asError(err));
+      });
+    } catch (err) {
+      throw new RequirementResolutionError([reference], asError(err));
+    }
   }
 
   /**
@@ -309,9 +347,9 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
     const pkg = prefix.substring(0, idx);
     const constraint = prefix.substring(idx + 1);
     if (!isSemverConstraint(constraint)) {
-      throw new Error(
-        `'${constraint}' is not a valid version constraint for '${pkg}'` +
-          " (note that dist-tags such as 'latest' are not supported: pin a version or range instead)"
+      throw attachHelp(
+        new Error(`'${constraint}' is not a valid version constraint for '${pkg}'`),
+        "dist-tags such as 'latest' are not supported: pin a version or range instead"
       );
     }
     return { pkg, constraint };
@@ -489,7 +527,14 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
           "metadata"
         )
         .then(files => files.readFile(METADATA_FILE))
-        .then(data => JSON.parse(data) as INPMPackageMetadata);
+        .then(data => JSON.parse(data) as INPMPackageMetadata)
+        .catch(err => {
+          /* Translate the registry's HTTP 404 into the fact it means */
+          if (err instanceof HttpStatusError && err.statusCode === 404) {
+            throw new Error(`NPM package ${pkg}@${version} not found at ${this.url}`);
+          }
+          throw err;
+        });
       this.metadataCache.set(key, result);
     }
     return result;
@@ -507,6 +552,10 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
         .then(files => new PackageFileSet(files, meta.name, meta.version))
     );
   }
+}
+
+function asError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
 }
 
 /**

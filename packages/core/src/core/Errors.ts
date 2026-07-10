@@ -1,0 +1,199 @@
+/*
+ * Copyright (c) 2026 Nathan Keynes <nkeynes@deadcoderemoval.net>
+ *
+ * This file is part of Fabr.
+ *
+ * Fabr is free software: you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * Fabr is distributed in the hope that it will be useful, but WITHOUT ANY
+ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * Fabr. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/*
+ * The engine-layer error vocabulary: every typed error the core can reject
+ * with, in one place (the model layer's own errors live in model/Errors.ts —
+ * they reference model types the core doesn't know). Errors carry data;
+ * presentation is exclusively the driver's job.
+ */
+
+import { IFile } from "./FileSet";
+import { describeProvenance, IProvenanceStep } from "./Provenance";
+import { RepositoryRef } from "./Repository";
+
+/**
+ * Coerce an arbitrary thrown value to an Error.
+ */
+export function toError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+/**
+ * Attach remedy text to an error, to be rendered as a `help:` line when the
+ * error is reported (the message states the problem; the help suggests the
+ * fix). Carried as a plain optional property so any typed error can bear one.
+ */
+export function attachHelp<T extends Error>(err: T, help: string): T {
+  return Object.assign(err, { help });
+}
+
+/**
+ * Aggregate of multiple independent errors (e.g. several dependencies of a
+ * computation failing), flattened into a single list.
+ */
+export class MultiError extends Error {
+  public readonly errors: ReadonlyArray<Error>;
+
+  private constructor(errors: Error[]) {
+    super(errors.map(err => err.message).join("\n"));
+    this.errors = errors;
+  }
+
+  /**
+   * Aggregate one or more errors: nested MultiErrors are flattened, and
+   * duplicates (by object identity) are dropped, so a single root cause that
+   * reaches a computation via multiple paths is reported once. If only one
+   * distinct error remains it is returned as-is rather than wrapped, which
+   * also preserves its identity for unchanged-value propagation checks.
+   *
+   * @param errors a non-empty list of errors.
+   */
+  public static of(errors: Error[]): Error {
+    const distinct = new Set<Error>();
+    for (const err of errors) {
+      if (err instanceof MultiError) {
+        err.errors.forEach(nested => distinct.add(nested));
+      } else {
+        distinct.add(err);
+      }
+    }
+    if (distinct.size === 0) {
+      throw new Error("MultiError.of() requires at least one error");
+    }
+    const flat = [...distinct];
+    return flat.length === 1 ? flat[0] : new MultiError(flat);
+  }
+}
+
+/**
+ * A non-200 HTTP response, with the status carried as data so a caller can
+ * translate specific statuses (e.g. a registry 404) into domain messages.
+ */
+export class HttpStatusError extends Error {
+  constructor(
+    public readonly statusCode: number,
+    statusMessage: string,
+    public readonly url: string
+  ) {
+    super(`${statusCode} ${statusMessage}: ${url}`);
+  }
+}
+
+/**
+ * A mechanical failure while executing a build step (spawning processes,
+ * staging files, ...) — as opposed to a semantic diagnostic like a conflict or
+ * resolution failure. Multiple execution errors from one target are reported
+ * grouped under the target rather than as individual diagnostics.
+ */
+export class ExecutionError extends Error {}
+
+/**
+ * A test run completed mechanically but some tests failed — as distinct from
+ * an ExecutionError (the run itself couldn't be performed). Test rules throw
+ * this with a pre-rendered summary ("N of M tests failed: ..."), which the
+ * driver reports against the target under test rather than as a build failure.
+ */
+export class TestsFailedError extends Error {
+  /** Number of failing tests */
+  public readonly failed: number;
+  /** Total number of tests that ran */
+  public readonly total: number;
+
+  constructor(message: string, failed: number, total: number) {
+    super(message);
+    this.failed = failed;
+    this.total = total;
+  }
+}
+
+/**
+ * One side of a file conflict: the file, and the provenance chain of the
+ * fileset it arrived in.
+ */
+export interface IConflictSource {
+  file: IFile;
+  provenance?: IProvenanceStep;
+}
+
+/** A conflict side as reported: the label is derived from the provenance */
+export interface IConflictSide extends IConflictSource {
+  label: string;
+}
+
+export class FileConflictError extends Error {
+  public readonly path: string;
+  public readonly left: IConflictSide;
+  public readonly right: IConflictSide;
+
+  constructor(path: string, left: IConflictSource, right: IConflictSource) {
+    const leftSide = describeSide(left);
+    const rightSide = describeSide(right);
+    super(
+      leftSide.label === rightSide.label
+        ? `Conflicting files for ${path} (within '${leftSide.label}')`
+        : `Conflicting files for ${path} (from '${leftSide.label}' and '${rightSide.label}')`
+    );
+    this.path = path;
+    this.left = leftSide;
+    this.right = rightSide;
+  }
+}
+
+function describeSide(source: IConflictSource): IConflictSide {
+  return { ...source, label: describeProvenance(source.provenance) ?? source.file.getDisplayName() };
+}
+
+/**
+ * Rejection raised when the registry cannot supply the metadata needed to
+ * continue a resolution walk (a fetch failure, an unpublished package) —
+ * unlike a constraint violation, which is reported via Resolution.errors.
+ * Carries the failing package, the chain of requirers that first reached it
+ * (nearest first; empty when the package is itself a root requirement), and
+ * the root package name the chain leads back to — so a repository can
+ * attribute the failure to the written reference(s) whose requirement pulled
+ * the package in.
+ */
+export class MetadataFetchError extends Error {
+  constructor(
+    public readonly pkg: string,
+    public readonly version: string,
+    public readonly requirerPath: ReadonlyArray<string>,
+    public readonly rootPkg: string,
+    public readonly cause: Error
+  ) {
+    super(requirerPath.length > 0 ? `${cause.message} (required by ${requirerPath.join(" < ")})` : cause.message);
+  }
+}
+
+/**
+ * A repository failure attributed to the written reference(s) it traces back
+ * to: the underlying error (e.g. a registry 404) wrapped with the refs whose
+ * requirement — or whose closure's root requirement — the failure arose from.
+ * The refs' carried provenance (model-ref steps) is what lets the driver point
+ * back at the written requirement rather than only at the consuming target.
+ */
+export class RequirementResolutionError extends Error {
+  constructor(
+    public readonly refs: ReadonlyArray<RepositoryRef>,
+    public readonly cause: Error
+  ) {
+    super(cause.message);
+  }
+}
