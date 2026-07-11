@@ -29,9 +29,13 @@ import { BuildCache } from "../core/BuildCache";
 
 chai.use(chaiAsPromised);
 
+/* The model never writes to it, but ExecutionContext requires a log; these
+ * tests don't inspect it, so a stderr-backed one (as the driver uses) serves. */
+const testLog = new LogFormatter(LogLevel.Info, console.error);
+
 /* The runtime surroundings for evaluation: none of these tests reach the
  * cache, so a single throwaway instance serves them all */
-const execution = new ExecutionContext(new BuildCache("."));
+const execution = new ExecutionContext(new BuildCache("."), testLog);
 
 /* These tests exercise the evaluation engine with throwaway rules. Rules now
  * ride the model's registry (not a global), so collect them into a contribution
@@ -301,6 +305,28 @@ describe("BuildContext", () => {
     }
   });
 
+  it("resolves a naked FILES reference against the constraint map (override repins)", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_file { content = STRING; }\n" +
+      "test_file t1 { content = one; }\n" +
+      "test_file t2 { content = two; }\n" +
+      "tool = t1;\n" +
+      "test_good a { deps = tool; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    /* No override: the naked `tool` resolves the declared value t1. */
+    await model.getConfig({}, execution).getTarget("a");
+    expect(await lastDeps!.readFile("f.txt")).to.equal("one");
+
+    /* `-Dtool=t2` (a constraint) repins the same bare reference to t2. */
+    await model.getConfig({ tool: "t2" }, execution).getTarget("a");
+    expect(await lastDeps!.readFile("f.txt")).to.equal("two");
+  });
+
   it("Leaves a glob matching nothing as an empty resolution", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
@@ -488,7 +514,7 @@ describe("BuildContext", () => {
         const errors: string[] = [];
         const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
         const events: string[] = [];
-        const runExecution = new ExecutionContext(new BuildCache(root));
+        const runExecution = new ExecutionContext(new BuildCache(root), testLog);
         runExecution.onProgress(event => events.push(event.kind));
         const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
         expect(errors).to.deep.equal([]);
@@ -521,7 +547,7 @@ describe("BuildContext", () => {
       const run = async (): Promise<FileSet> => {
         const errors: string[] = [];
         const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-        const runExecution = new ExecutionContext(new BuildCache(root));
+        const runExecution = new ExecutionContext(new BuildCache(root), testLog);
         const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
         expect(errors).to.deep.equal([]);
         const sources = await new Promise<SourceRef[]>((resolve, reject) =>
@@ -559,7 +585,7 @@ describe("BuildContext", () => {
 
     /* Configs are per execution context: a fresh run never shares evaluation
      * state with another */
-    const other = new ExecutionContext(new BuildCache("."));
+    const other = new ExecutionContext(new BuildCache("."), testLog);
     expect(model.getConfig({ x: "1" }, other)).to.not.equal(model.getConfig({ x: "1" }, execution));
   });
 

@@ -18,7 +18,7 @@
  */
 
 import { BuildCache } from "../core/BuildCache";
-import { defaultLog, Log } from "../support/Log";
+import { Log } from "../support/Log";
 import { ITargetDecl } from "./AST";
 
 /**
@@ -113,7 +113,7 @@ export class ExecutionContext {
   private workSignals = 0;
   private reportedWork = 0;
 
-  constructor(buildCache: BuildCache, log: Log = defaultLog) {
+  constructor(buildCache: BuildCache, log: Log) {
     this.buildCache = buildCache;
     this.log = log;
   }

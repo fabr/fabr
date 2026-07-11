@@ -226,5 +226,3 @@ export class LogFormatter implements Log {
     return this.color ? `\x1b[${sgr}m${text}\x1b[0m` : text;
   }
 }
-
-export const defaultLog = new LogFormatter(LogLevel.Info, console.log);

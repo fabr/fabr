@@ -254,6 +254,16 @@ export class BuildContext {
     if (name in this.targetCache) {
       /* Already seen */
       return this.targetCache[name];
+    } else if (name in this.constraints) {
+      /* A constraint overrides how the name resolves — to files as well as to a
+       * string (`${name}`, via the pre-forced propCache): resolve the override
+       * value as a reference in place of the declared property/target. This is
+       * why `-Dchai=@npm:chai:5.0.0` repins a dependency written as a bare `chai`. */
+      const result = this.resolveFileSource(Name.fromLiteral(this.constraints[name]), undefined, stack).then(
+        resolved => resolved.sources
+      );
+      this.targetCache[name] = result;
+      return result;
     } else {
       const def = this.model.getDecl(name);
       if (def?.kind === DeclKind.Target) {

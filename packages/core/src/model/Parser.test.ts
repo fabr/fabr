@@ -142,8 +142,10 @@ describe("Parser Tests", () => {
     expect(parseInvalid("hello=world")).to.deep.equal([
       diagnosticBlock(1, 12, "Read EOF but expected Name, ';', or '}'", "hello=world"),
     ]);
+    /* `foo/bar` is a SIMPLE_NAME (has a slash), not an identifier, so it can't
+     * start a statement (a property name / type must be a plain identifier). */
     expect(parseInvalid("foo/bar=woo;")).to.deep.equal([
-      diagnosticBlock(1, 1, "Read Path but expected Statement", "foo/bar=woo;"),
+      diagnosticBlock(1, 1, "Read Name but expected Statement", "foo/bar=woo;"),
     ]);
   });
 
@@ -214,6 +216,16 @@ describe("Parser Tests", () => {
     );
   });
 
+  it("recovers after a bad statement and parses the subsequent ones", () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    /* `= oops;` is a bad statement; recovery must resume at the next statement
+     * (which starts with an identifier), not swallow the rest of the file. */
+    const result = parseBuildString(EMPTY_FILESET, "PROJECT.fabr", "a = 1;\n= oops;\nc = 3;\nd = 4;", logger);
+    expect(result.properties.map(p => p.name)).to.deep.equal(["a", "c", "d"]);
+    expect(errors).to.have.length(1);
+  });
+
   it("Missing Close Brace", () => {
     expect(parseInvalid("js_package fabr {\nsrcs=src:**/*.ts; deps= es2019\n node \nunicode-properties;")).to.deep.equal([
       diagnosticBlock(4, 20, "Read EOF but expected Identifier or '}'", "unicode-properties;"),
@@ -249,6 +261,26 @@ describe("Parser Tests", () => {
     expect(summarize(parseValid("plugin @fabr/js;\nplugin simple;"))).to.deep.equal(
       summary({ plugins: ["@fabr/js", "simple"] })
     );
+  });
+
+  it("allows '-' and '.' in plugin and target names (real npm package names)", () => {
+    expect(summarize(parseValid("plugin my-plugin;\nplugin lodash.merge;\nplugin @scope/a-b.c;"))).to.deep.equal(
+      summary({ plugins: ["my-plugin", "lodash.merge", "@scope/a-b.c"] })
+    );
+    expect(summarize(parseValid("js_package my-target {\n  srcs = src:*.ts; }"))).to.deep.equal(
+      summary({ targets: { "my-target": { type: "js_package", properties: { srcs: ["src:+glob(*)+.ts"] } } } })
+    );
+  });
+
+  it("rejects '-'/'.' in identifier positions (property names, constraint keys)", () => {
+    /* `-`/`.` belong to SIMPLE_NAME (names), not IDENTIFIER (property names,
+     * keys, types), so a property named `a-b` can't start a statement. */
+    expect(parseInvalid("a-b = 1;")).to.deep.equal([
+      diagnosticBlock(1, 1, "Read Name but expected Statement", "a-b = 1;"),
+    ]);
+    expect(parseInvalid("dep = mylib<a-b=1>;")).to.deep.equal([
+      diagnosticBlock(1, 13, "Read Name but expected a constraint key", "dep = mylib<a-b=1>;"),
+    ]);
   });
 
   it("Plugin Decl with invalid name", () => {
@@ -342,6 +374,19 @@ describe("Parser Tests", () => {
       expect(constraintsOf(name)).to.deep.equal([["BUILD_TYPE", "release"]]);
       /* A plain command-line name still parses unchanged */
       expect(parseName("@npm:esbuild:0.28.1").toString()).to.equal("@npm:esbuild:0.28.1");
+    });
+
+    it("rejects trailing input rather than silently dropping it", () => {
+      /* The space means `<a=1>` doesn't abut `ref`; report it, don't ignore it. */
+      expect(() => parseName("ref <a=1>")).to.throw(/Invalid name 'ref <a=1>'.*expected end of input/);
+    });
+
+    it("throws a diagnostic message (never logs) on a malformed name", () => {
+      expect(() => parseName("mylib<A>")).to.throw(/Invalid name 'mylib<A>'.*expected '='/);
+    });
+
+    it("returns an empty name for empty input", () => {
+      expect(parseName("").toString()).to.equal("");
     });
   });
 });

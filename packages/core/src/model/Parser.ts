@@ -32,14 +32,14 @@ import {
   IValue,
   PropertyType,
 } from "./AST";
-import { Diagnostic, ISourcePosition, Log, LogLevel, defaultLog } from "../support/Log";
+import { Diagnostic, ISourcePosition, Log, LogLevel } from "../support/Log";
 import { Name, NameBuilder, NameConstraint } from "./Name";
 import { EMPTY_FILESET, FileSource } from "../core/FileSet";
 
 enum TokenType {
   EOF = 0,
   IDENTIFIER,
-  COMPOUND_IDENTIFIER,
+  SIMPLE_NAME,
   NAME,
   EQUALS,
   LBRACE,
@@ -71,6 +71,8 @@ const CHAR_LSQUARE = "[".codePointAt(0);
 const CHAR_RSQUARE = "]".codePointAt(0);
 const CHAR_AT = "@".codePointAt(0);
 const CHAR_HASH = "#".codePointAt(0);
+const CHAR_DASH = "-".codePointAt(0);
+const CHAR_DOT = ".".codePointAt(0);
 
 interface NameToken {
   type: TokenType.NAME;
@@ -79,13 +81,13 @@ interface NameToken {
 }
 
 interface IdentToken {
-  type: TokenType.IDENTIFIER | TokenType.COMPOUND_IDENTIFIER;
+  type: TokenType.IDENTIFIER | TokenType.SIMPLE_NAME;
   start: number;
   text: string;
 }
 
 interface NonNameToken {
-  type: Exclude<TokenType, TokenType.NAME | TokenType.IDENTIFIER | TokenType.COMPOUND_IDENTIFIER>;
+  type: Exclude<TokenType, TokenType.NAME | TokenType.IDENTIFIER | TokenType.SIMPLE_NAME>;
   start: number;
 }
 
@@ -95,7 +97,7 @@ const TOKEN_NAME_MAP = {
   [TokenType.EOF]: "EOF",
   [TokenType.NAME]: "Name",
   [TokenType.IDENTIFIER]: "Identifier",
-  [TokenType.COMPOUND_IDENTIFIER]: "Path",
+  [TokenType.SIMPLE_NAME]: "Name",
   [TokenType.EQUALS]: "'='",
   [TokenType.LBRACE]: "'{'",
   [TokenType.RBRACE]: "'}'",
@@ -114,8 +116,17 @@ function isFirstIdentChar(ch: number): boolean {
   return isAlphabetic(ch) || ch === CHAR_UNDERSCORE || ch === CHAR_AT;
 }
 
+/* An IDENTIFIER — keywords, property names, constraint keys, target *types* —
+ * is `@`/`_`/alphanumeric only. A SIMPLE_NAME (a target or plugin name such as
+ * `@fabr/js`, `my-target`, `lodash.merge`) additionally allows `/`, `-`, `.`.
+ * Both start like an identifier; the extras are interior-only, so a leading
+ * `.`/`-`/`/` (a relative include `./x`, a version `1.2.3`) stays a NAME. */
 function isIdentChar(ch: number): boolean {
-  return isFirstIdentChar(ch) || isDigit(ch) || ch === CHAR_SLASH;
+  return isFirstIdentChar(ch) || isDigit(ch);
+}
+
+function isSimpleNameChar(ch: number): boolean {
+  return isIdentChar(ch) || ch === CHAR_SLASH || ch === CHAR_DASH || ch === CHAR_DOT;
 }
 
 function* codepoints(text: string): Generator<number> {
@@ -142,8 +153,15 @@ function isIdentifier(text?: string): text is string {
   return true;
 }
 
-function hasSlash(text: string): boolean {
-  return text.indexOf("/") !== -1;
+/** True iff `text` is a SIMPLE_NAME: starts like an identifier, body is
+ * identifier chars plus `/`, `-`, `.` (a superset of {@link isIdentifier}). */
+function isSimpleName(text: string): boolean {
+  const first = text.codePointAt(0);
+  if (first === undefined || !isFirstIdentChar(first)) return false;
+  for (const code of codepoints(text)) {
+    if (!isSimpleNameChar(code)) return false;
+  }
+  return true;
 }
 
 const DIAG_PARSE_ERROR = new Diagnostic<{ actual: string; expected: string; loc: ISourcePosition }>(
@@ -381,11 +399,13 @@ export class BuildParser {
 
     const rest = this.reader.substring(posn);
     if (maybeIdent) {
-      /* Note: if we get here, nothing has been added to the nameBuilder so we can
-       * just interrogate the whole string
-       */
+      /* Nothing was added to the nameBuilder (a pure literal), so classify the
+       * whole string by its narrowest tier: a bare identifier, else a simple
+       * name (adds `/`, `-`, `.`), else a NAME (anything with `:` etc.). */
       if (isIdentifier(rest)) {
-        return { type: hasSlash(rest) ? TokenType.COMPOUND_IDENTIFIER : TokenType.IDENTIFIER, text: rest, start };
+        return { type: TokenType.IDENTIFIER, text: rest, start };
+      } else if (isSimpleName(rest)) {
+        return { type: TokenType.SIMPLE_NAME, text: rest, start };
       }
     }
 
@@ -402,10 +422,17 @@ export class BuildParser {
   public parseName(): Name {
     /* The constructor already primed the first token */
     const token = this.token;
-    if (token.type === TokenType.NAME || token.type === TokenType.IDENTIFIER || token.type === TokenType.COMPOUND_IDENTIFIER) {
+    if (token.type === TokenType.NAME || token.type === TokenType.IDENTIFIER || token.type === TokenType.SIMPLE_NAME) {
       /* Reuse the build-file reference grammar so a CLI name carries the same
        * `<k=v>` constraints and `:projection` semantics. */
-      return this.parseReference();
+      const name = this.parseReference();
+      /* A CLI name is the whole input: trailing tokens (e.g. a space before a
+       * `<...>` delta, which then doesn't abut and would be silently dropped)
+       * are an error, not ignored. */
+      if (this.token.type !== TokenType.EOF) {
+        this.unexpectedTokenError("end of input");
+      }
+      return name;
     }
     /* Empty input or a leading operator: preserve the prior empty-name result. */
     return Name.fromLiteral("");
@@ -498,7 +525,7 @@ export class BuildParser {
    */
   private parseIncludeDecl(): IIncludeDecl {
     const token = this.token;
-    if (token.type === TokenType.IDENTIFIER || token.type === TokenType.COMPOUND_IDENTIFIER || token.type === TokenType.NAME) {
+    if (token.type === TokenType.IDENTIFIER || token.type === TokenType.SIMPLE_NAME || token.type === TokenType.NAME) {
       const simpleName = typeof token.text === "string" ? token.text : token.text.getSimpleName();
       if (!simpleName) {
         this.invalidIncludeName();
@@ -526,7 +553,7 @@ export class BuildParser {
    */
   private parsePluginDecl(): IPluginDecl {
     const token = this.token;
-    if (token.type === TokenType.IDENTIFIER || token.type === TokenType.COMPOUND_IDENTIFIER) {
+    if (token.type === TokenType.IDENTIFIER || token.type === TokenType.SIMPLE_NAME) {
       this.nextToken();
       this.consumeIfToken(TokenType.SEMI);
       return {
@@ -544,7 +571,7 @@ export class BuildParser {
 
   private parseValue(): IValue {
     const token = this.token;
-    if (token.type === TokenType.NAME || token.type === TokenType.IDENTIFIER || token.type === TokenType.COMPOUND_IDENTIFIER) {
+    if (token.type === TokenType.NAME || token.type === TokenType.IDENTIFIER || token.type === TokenType.SIMPLE_NAME) {
       const offset = token.start;
       const value = this.parseReference();
       /* parseReference leaves the current token positioned after the
@@ -569,7 +596,7 @@ export class BuildParser {
   /** @return the current token if it is a reference token (NAME/identifier), else undefined. */
   private peekRefToken(): NameToken | IdentToken | undefined {
     const token = this.token;
-    return token.type === TokenType.NAME || token.type === TokenType.IDENTIFIER || token.type === TokenType.COMPOUND_IDENTIFIER
+    return token.type === TokenType.NAME || token.type === TokenType.IDENTIFIER || token.type === TokenType.SIMPLE_NAME
       ? token
       : undefined;
   }
@@ -577,7 +604,7 @@ export class BuildParser {
   /**
    * Reference ::= Ref Constraints?  (an abutting ':projection' tail rejoined)
    *
-   * Assumes the current token is the base ref (NAME/IDENTIFIER/COMPOUND_IDENTIFIER);
+   * Assumes the current token is the base ref (NAME/IDENTIFIER/SIMPLE_NAME);
    * consumes it, any *hugging* `<k=v, ...>` constraint delta, and — since a `<...>`
    * splits what would otherwise be one reference token — any hugging `:projection`
    * tail, reassembling them into one Name. Leaves the current token positioned
@@ -602,7 +629,7 @@ export class BuildParser {
 
   /**
    * Constraints ::= '<' Constraint ( ',' Constraint )* ','? '>'
-   * Constraint  ::= IDENTIFIER '=' ( IDENTIFIER | COMPOUND_IDENTIFIER | NAME )
+   * Constraint  ::= IDENTIFIER '=' ( IDENTIFIER | SIMPLE_NAME | NAME )
    *
    * Consumes from the opening `<` through the closing `>`. An empty `<>`, a
    * non-identifier key, and a repeated key are all errors.
@@ -625,7 +652,7 @@ export class BuildParser {
       const value = this.token;
       if (
         value.type !== TokenType.IDENTIFIER &&
-        value.type !== TokenType.COMPOUND_IDENTIFIER &&
+        value.type !== TokenType.SIMPLE_NAME &&
         value.type !== TokenType.NAME
       ) {
         this.unexpectedTokenError("a constraint value");
@@ -690,7 +717,7 @@ export class BuildParser {
    * @param nameOffset
    */
   private parseTargetDecl(type: string, typeOffset: number): ITargetDecl {
-    if (this.token.type !== TokenType.IDENTIFIER && this.token.type !== TokenType.COMPOUND_IDENTIFIER) {
+    if (this.token.type !== TokenType.IDENTIFIER && this.token.type !== TokenType.SIMPLE_NAME) {
       this.unexpectedTokenError("Path");
     } else {
       const nameToken = this.token;
@@ -854,7 +881,7 @@ export class BuildParser {
         this.result.defaults.push(this.parsePropertyDecl(next.text, next.start));
       } else if (next.type === TokenType.EQUALS) {
         this.result.properties.push(this.parsePropertyDecl(token.text, token.start));
-      } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.COMPOUND_IDENTIFIER) {
+      } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.SIMPLE_NAME) {
         if (token.text === "targetdef") {
           this.result.targetdefs.push(this.parseTargetDefDecl());
         } else {
@@ -869,14 +896,15 @@ export class BuildParser {
   }
 
   /**
-   * Very basic error recovery - skip tokens until we find a ';' or '}' followed by a NAME,
-   * so that parsing can resume on the NAME.
+   * Very basic error recovery - skip tokens until we find a ';' or '}' followed by
+   * an IDENTIFIER, so that parsing can resume on the next statement (every statement
+   * begins with an identifier: a type name, a property name, or a keyword).
    */
   private recoverFromError(): void {
     let last = this.token.type;
     while (last !== TokenType.EOF) {
       const next = this.nextToken();
-      if ((last === TokenType.SEMI || last === TokenType.RBRACE) && next.type === TokenType.NAME) {
+      if ((last === TokenType.SEMI || last === TokenType.RBRACE) && next.type === TokenType.IDENTIFIER) {
         break;
       }
       last = next.type;
@@ -907,7 +935,23 @@ export function parseBuildString(fs: FileSource, file: string, contents: string,
   return new BuildParser({ fs, file, reader: new StringReader(contents) }, log).parse();
 }
 
-/** Parse a single name expression (e.g. a command-line target/file reference). */
+/** Parse a single name expression (e.g. a command-line target/file reference).
+ * Parse diagnostics are *captured*, not logged — the model never writes to a
+ * sink — and a malformed name throws with the diagnostic as its message, which
+ * the driver renders to stderr (never polluting `cat`/`ls`'s stdout). */
 export function parseName(contents: string): Name {
-  return new BuildParser({ fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(contents) }, defaultLog).parseName();
+  const messages: string[] = [];
+  const captureLog: Log = { log: (diagnostic, params) => messages.push(diagnostic.message(params)) };
+  const parser = new BuildParser({ fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(contents) }, captureLog);
+  try {
+    const name = parser.parseName();
+    if (messages.length === 0) {
+      return name;
+    }
+  } catch (err) {
+    if (!(err instanceof Error) || err.message !== PARSE_ERROR) {
+      throw err;
+    }
+  }
+  throw new Error(`Invalid name '${contents}': ${messages.join("; ")}`);
 }
