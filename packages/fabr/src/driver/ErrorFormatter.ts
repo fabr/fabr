@@ -69,26 +69,43 @@ export interface ErrorFormatter {
  * points, and can be reached through several dependant chains — it gets one
  * diagnostic carrying every distinct requirer trail, not one copy per path.
  */
-class PendingReport {
-  private readonly pending = new Map<string, { diagnostic: IDiagnostic; trails: IDiagnosticNote[][] }>();
+interface Trail {
+  notes: IDiagnosticNote[];
+  /** The outermost requirer (the requested target this trail descends from). */
+  root: string | undefined;
+}
 
-  public add(diagnostic: IDiagnostic, trail: IDiagnosticNote[]): void {
+class PendingReport {
+  private readonly pending = new Map<string, { diagnostic: IDiagnostic; trails: Trail[] }>();
+
+  public add(diagnostic: IDiagnostic, trail: IDiagnosticNote[], root: string | undefined): void {
     const key = JSON.stringify([diagnostic.message, spanKey(diagnostic.loc), (diagnostic.notes ?? []).map(noteKey)]);
     let entry = this.pending.get(key);
     if (!entry) {
       entry = { diagnostic, trails: [] };
       this.pending.set(key, entry);
     }
-    if (trail.length > 0 && !entry.trails.some(existing => trailKey(existing) === trailKey(trail))) {
-      entry.trails.push(trail);
+    if (trail.length > 0 && !entry.trails.some(existing => trailKey(existing.notes) === trailKey(trail))) {
+      entry.trails.push({ notes: trail, root });
     }
   }
 
   public flush(log: Log): void {
     for (const { diagnostic, trails } of this.pending.values()) {
+      /* Several paths can reach the same failure; one is enough to explain why
+       * it's in the build, so keep just the shortest trail per requesting root —
+       * an alternate longer route to a root already shown is noise. */
+      const shortestByRoot = new Map<string | undefined, IDiagnosticNote[]>();
+      for (const { notes, root } of trails) {
+        const shortest = shortestByRoot.get(root);
+        if (!shortest || notes.length < shortest.length) {
+          shortestByRoot.set(root, notes);
+        }
+      }
       /* Trails accumulate outermost-first during descent; the report reads
        * outward from the failure, so each renders nearest dependant first */
-      const notes = [...(diagnostic.notes ?? []), ...trails.flatMap(trail => [...trail].reverse())];
+      const trailNotes = [...shortestByRoot.values()].flatMap(trail => [...trail].reverse());
+      const notes = [...(diagnostic.notes ?? []), ...trailNotes];
       log.log(DIAG_FAILURE, { ...diagnostic, notes: notes.length > 0 ? notes : undefined });
     }
   }
@@ -108,7 +125,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
 
   public report(log: Log, err: Error): void {
     const report = new PendingReport();
-    this.walk(report, err, [], undefined);
+    this.walk(report, err, [], undefined, undefined);
     report.flush(log);
   }
 
@@ -117,13 +134,22 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
    * crossing into a "required by" hop on the trail, descend through dependant
    * failures (`owner` is the nearest enclosing failed target, the anchor for
    * causes that carry no position of their own), and describe each root cause.
+   * `root` names the outermost requirer (the requested target the current trail
+   * descends from), captured at the first hop — the report keeps one trail per
+   * root, so alternate longer paths to an already-shown root are dropped.
    */
-  private walk(report: PendingReport, err: Error, trail: IDiagnosticNote[], owner: DependencyFailedError | undefined): void {
+  private walk(
+    report: PendingReport,
+    err: Error,
+    trail: IDiagnosticNote[],
+    owner: DependencyFailedError | undefined,
+    root: string | undefined
+  ): void {
     if (err instanceof MultiError) {
-      err.errors.forEach(cause => this.walk(report, cause, trail, owner));
+      err.errors.forEach(cause => this.walk(report, cause, trail, owner, root));
     } else if (err instanceof ReferenceFailedError) {
       const hop = { message: `required by ${describeUseSite(err.property, err.target)}`, loc: declPosn(err.value) };
-      this.walk(report, err.cause, [...trail, hop], owner);
+      this.walk(report, err.cause, [...trail, hop], owner, root ?? err.target?.name);
     } else if (err instanceof DependencyFailedError) {
       const causes = err.cause instanceof MultiError ? err.cause.errors : [err.cause];
       /* Mechanical failures of the target's execution report as one group */
@@ -134,13 +160,13 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
          * anonymous sub-target (label set) is part of its declared target. */
         const direct = cause instanceof DependencyFailedError && !cause.label;
         const hops = direct ? [...trail, { message: `required by ${err.target.name}`, loc: declPosn(err.target) }] : trail;
-        this.walk(report, cause, hops, err);
+        this.walk(report, cause, hops, err, direct ? root ?? err.target.name : root);
       }
       if (execution.length > 0) {
-        report.add(this.describeExecution(err, execution), trail);
+        report.add(this.describeExecution(err, execution), trail, root);
       }
     } else {
-      report.add(this.describe(err, owner), trail);
+      report.add(this.describe(err, owner), trail, root);
     }
   }
 
