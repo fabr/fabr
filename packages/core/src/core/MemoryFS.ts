@@ -38,7 +38,9 @@ export class MemoryFile implements IFile {
     return Computable.resolve(this.content.toString(encoding));
   }
   public getDisplayName(): string {
-    throw new Error("Method not implemented.");
+    /* An in-memory file has no path; a generic label keeps conflict diagnostics
+     * (which fall back to getDisplayName when provenance is absent) from crashing. */
+    return "<generated file>";
   }
   public isSameFile(file: IFile): boolean {
     return file instanceof MemoryFile && file.content === this.content;

@@ -95,7 +95,11 @@ export function execute(cmd: string, args: string[], cwd: string, env: Record<st
    * keeps the first (informative ENOENT) rejection and drops the useless "-2". */
   return Computable.once((resolve, reject) => {
     const commandLine = "$ " + [cmd, ...args].map(quoteArg).join(" ");
-    const proc = spawn(cmd, args, { cwd, env: { ...FORCE_COLOR_ENV, ...env }, windowsHide: true });
+    /* stdin from /dev/null ("ignore"), not the default open pipe: a build step is
+     * non-interactive, so a tool that reads stdin must get EOF at once rather than
+     * blocking forever on input the parent never sends. stdout/stderr stay piped
+     * so their output is captured below. */
+    const proc = spawn(cmd, args, { cwd, env: { ...FORCE_COLOR_ENV, ...env }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     /* Capture the tool's output (both streams, in arrival order) so that a
      * failure can report what the tool actually said. */
     const output: Uint8Array[] = [];

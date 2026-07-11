@@ -74,6 +74,20 @@ describe("execute", () => {
     expect(outcomes[0].err?.message).to.include("unable to execute");
     expect(outcomes[0].err?.message).to.not.include("exited with error code");
   });
+
+  it("gives a stdin-reading tool EOF instead of hanging", async () => {
+    /* `readFileSync(0)` reads stdin to EOF; with stdin from /dev/null it returns
+     * empty at once. Were stdin the default open pipe the parent holds, it would
+     * block forever — so bound the wait and fail loudly on a hang. */
+    const settled = collectSettlements(
+      execute(NODE, ["-e", "require('fs').readFileSync(0); process.exit(0)"], process.cwd(), {})
+    );
+    const outcomes = await Promise.race([
+      settled,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("execute hung reading stdin")), 4000)),
+    ]);
+    expect(outcomes).to.deep.equal([{ ok: true, value: undefined }]);
+  });
 });
 
 describe("executeInteractive", () => {
