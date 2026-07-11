@@ -57,6 +57,24 @@ describe("BuildCache", () => {
     expect(fs.readFileSync(abspath!, "utf8")).to.equal('{"name":"test"}');
   });
 
+  it("writes the manifest atomically, leaving no temp debris", async () => {
+    const cache = new BuildCache(root);
+    await toPromise(
+      cache.getOrCreate("atomic", () => Computable.resolve(new FileSet(new Map([["a.txt", MemoryFile.from("hi")]]))))
+    );
+    /* The manifest is present and the temp file was renamed into place, not left
+     * behind (an atomic write, so no truncated manifest can ever be trusted). */
+    expect(fs.existsSync(path.join(root, hashString("atomic") + ".manifest"))).to.equal(true);
+    expect(fs.readdirSync(root).filter(name => name.includes(".manifest.tmp-"))).to.deep.equal([]);
+    /* A fresh cache reads the complete manifest back rather than rebuilding. */
+    const files = await toPromise(
+      cache.getOrCreate("atomic", () => {
+        throw new Error("cache entry should not be rebuilt");
+      })
+    );
+    expect(await toPromise(files.readFile("a.txt"))).to.equal("hi");
+  });
+
   it("pre-cleans debris and removes partial entries on failure", async () => {
     const cache = new BuildCache(root);
     const targetDir = path.join(root, hashString("failing manifest"));

@@ -60,9 +60,10 @@ export class BuildCache {
   private readonly root: string;
   private readonly blobRoot: string;
 
-  /** Counter for unique blob temp names (with the pid, unique across processes
-   * sharing the cache; the +rename is what makes a blob appear atomically). */
-  private blobTempCounter = 0;
+  /** Counter for unique temp names for blob/manifest writes (with the pid, unique
+   * across processes sharing the cache; the +rename is what makes each appear
+   * atomically). */
+  private tempCounter = 0;
   /**
    * Entries currently being created, by hashed key: a second demand for the
    * same key joins the first's Computable rather than starting its own build
@@ -153,7 +154,7 @@ export class BuildCache {
    */
   public ensureBlob(hash: string, bytes: Buffer): Computable<string> {
     return this.materializeBlob(hash, blobPath => {
-      const tmp = `${blobPath}.tmp-${process.pid}-${this.blobTempCounter++}`;
+      const tmp = `${blobPath}.tmp-${process.pid}-${this.tempCounter++}`;
       return writeFile(tmp, bytes).then(() => this.renameIntoPool(tmp, blobPath));
     });
   }
@@ -232,7 +233,14 @@ export class BuildCache {
       manifest += `${file.hash} ${encodeURI(name)}\n`;
       backed.set(name, new BuildFile(this.blobRoot, file.hash, name));
     }
-    return writeFile(targetDir + ".manifest", manifest).then(() => new FileSet(backed));
+    /* Write atomically (temp + rename), like blobs: a crash mid-write must not
+     * leave a truncated manifest that `lookup`'s bare `existsSync` would trust,
+     * deserialising to a silently-incomplete FileSet served as a hit forever. */
+    const manifestPath = targetDir + ".manifest";
+    const tmp = `${manifestPath}.tmp-${process.pid}-${this.tempCounter++}`;
+    return writeFile(tmp, manifest)
+      .then(() => rename(tmp, manifestPath))
+      .then(() => new FileSet(backed));
   }
 
   /**
