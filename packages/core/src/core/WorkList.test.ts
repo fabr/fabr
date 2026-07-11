@@ -28,7 +28,7 @@ type Item = WorkListItem<string, string>;
 class TestGraph {
   public readonly calls: string[] = [];
   private readonly resolvers = new Map<string, (item: Item) => void>();
-  private readonly rejectors = new Map<string, (err: unknown) => void>();
+  private readonly rejectors = new Map<string, (err: Error) => void>();
 
   public readonly step = (key: string): Computable<Item> => {
     this.calls.push(key);

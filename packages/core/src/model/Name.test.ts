@@ -12,6 +12,14 @@ describe("Name", () => {
     expect(name.toString()).to.equal("${CD}");
   });
 
+  it("keeps adjacent substitution variables distinct", () => {
+    /* `${A}${B}` must not merge into a single variable `AB`. */
+    const name = new NameBuilder().appendSubstVar("A").appendSubstVar("B").name();
+    expect(name.getVariables()).to.deep.equal(["A", "B"]);
+    expect(name.toString()).to.equal("${A}${B}");
+    expect(name.substitute(["A", "B"], ["x", "y"]).toString()).to.equal("xy");
+  });
+
   describe("constraints", () => {
     it("round-trips through toString in written order", () => {
       const name = Name.fromLiteral("mylib").withConstraints([

@@ -798,11 +798,6 @@
   dependencies:
     undici-types "~5.26.4"
 
-"@types/picomatch@^2.3.0":
-  version "2.3.0"
-  resolved "https://registry.yarnpkg.com/@types/picomatch/-/picomatch-2.3.0.tgz#75db5e75a713c5a83d5b76780c3da84a82806003"
-  integrity sha512-O397rnSS9iQI4OirieAtsDqvCj4+3eY1J+EPdNTKuHuRWIfUoGyzX294o8C4KJYaLqgSrd2o60c5EqCU8Zv02g==
-
 "@types/prettier@^2.1.5":
   version "2.4.3"
   resolved "https://registry.npmjs.org/@types/prettier/-/prettier-2.4.3.tgz"

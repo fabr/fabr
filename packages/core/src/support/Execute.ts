@@ -91,7 +91,9 @@ export function findExecutable(name: string): string {
 const FORCE_COLOR_ENV = { FORCE_COLOR: "1", CLICOLOR_FORCE: "1" };
 
 export function execute(cmd: string, args: string[], cwd: string, env: Record<string, string>): Computable<void> {
-  return Computable.from((resolve, reject) => {
+  /* A failed spawn emits 'error' then a spurious 'close' (code -2): Computable.once
+   * keeps the first (informative ENOENT) rejection and drops the useless "-2". */
+  return Computable.once((resolve, reject) => {
     const commandLine = "$ " + [cmd, ...args].map(quoteArg).join(" ");
     const proc = spawn(cmd, args, { cwd, env: { ...FORCE_COLOR_ENV, ...env }, windowsHide: true });
     /* Capture the tool's output (both streams, in arrival order) so that a
@@ -126,7 +128,9 @@ export function execute(cmd: string, args: string[], cwd: string, env: Record<st
  * is killed by a signal. This is the launch behind `fabr run`.
  */
 export function executeInteractive(cmd: string, args: string[]): Computable<number> {
-  return Computable.from((resolve, reject) => {
+  /* A failed spawn emits 'error' then 'close': Computable.once keeps the informative
+   * rejection and stops 'close' flipping a settled failure into a success. */
+  return Computable.once((resolve, reject) => {
     const commandLine = "$ " + [cmd, ...args].map(quoteArg).join(" ");
     const proc = spawn(cmd, args, { stdio: "inherit", windowsHide: true });
     proc.on("error", e => reject(new ExecutionError(`${commandLine}\nunable to execute: ${systemErrorText(e)}`)));

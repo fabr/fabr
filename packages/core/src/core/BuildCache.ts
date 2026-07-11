@@ -9,7 +9,7 @@ import { deleteFile, hardlink, hashFile, hashString, readFile, readFileBuffer, r
 import { SymlinkFile } from "./SymlinkFile";
 import { describeSystemError } from "../support/Execute";
 import { ExecutionError } from "./Errors";
-import * as picomatch from "picomatch";
+import { globMatcher } from "../support/Glob";
 
 class BuildFile implements IFile {
   private readonly root: string;
@@ -313,7 +313,7 @@ export function getResultFileSet(targetDir: string, pattern: string): Computable
    * it (consistent with the source-name convention) */
   const colon = pattern.indexOf(":");
   const rootDir = colon === -1 ? targetDir : path.resolve(targetDir, pattern.substring(0, colon));
-  const matcher = picomatch(colon === -1 ? pattern : pattern.substring(colon + 1));
+  const matcher = globMatcher(colon === -1 ? pattern : pattern.substring(colon + 1));
   const result = new Map<string, IFile>();
   const ops: Computable<void>[] = [];
 

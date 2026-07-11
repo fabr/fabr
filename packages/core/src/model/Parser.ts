@@ -260,7 +260,7 @@ export class BuildParser {
     const next = this.reader.consume(CHAR_DOLLAR);
     if (next !== CHAR_LBRACE) {
       const posn = this.reader.currentOffset();
-      this.reader.skipUntil(ch => !isAlphabetic(ch) && !isDigit(ch));
+      this.reader.skipUntil(ch => !isAlphabetic(ch) && !isDigit(ch) && ch !== CHAR_UNDERSCORE);
       const str = this.reader.substring(posn);
       if (str.length === 0) {
         /* Terminal '$' is just treated as a literal $ */

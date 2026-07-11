@@ -4,7 +4,26 @@ import * as os from "os";
 import * as path from "path";
 import * as tar from "tar-stream";
 import { unpackStream } from "./Unpack";
+import { Computable } from "../core/Computable";
 import { expect } from "chai";
+
+/* Settle a Computable to a promise with a hard timeout, so a *hang* — the failure
+ * mode these error-path tests exist to catch — fails loudly instead of stalling jest. */
+function withTimeout<T>(c: Computable<T>, ms = 2000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timed out (hang)")), ms);
+    c.then(
+      value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      err => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
 
 describe("Unpack", () => {
   it("tar.gz", async () => {
@@ -44,6 +63,54 @@ describe("Unpack", () => {
       /* 0o111 = any execute bit; the plain file must not have gained one. */
       expect(fs.statSync(path.resolve(dir, "package/bin/tool")).mode & 0o111).to.not.equal(0);
       expect(fs.statSync(path.resolve(dir, "package/lib/plain.js")).mode & 0o111).to.equal(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects (rather than hanging) when the stream errors before a full header", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-unpack-"));
+    try {
+      const ins = new Readable({ read() {} });
+      const result = unpackStream(ins, dir);
+      /* Fewer than MIN_HEAD_LENGTH bytes arrive, then the connection fails. */
+      setImmediate(() => {
+        ins.push(Buffer.alloc(16));
+        ins.destroy(new Error("connection reset"));
+      });
+      let err: Error | undefined;
+      try {
+        await withTimeout(result);
+      } catch (e) {
+        err = e as Error;
+      }
+      expect(err?.message).to.equal("connection reset");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects (rather than crashing) when the stream drops mid-archive", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-unpack-"));
+    try {
+      /* A valid TAR magic (ustar at offset 257) clears the header phase; the
+       * connection then drops, exercising the live pipe's error path. */
+      const head = Buffer.alloc(512);
+      head.write("ustar", 257, "ascii");
+      const ins = new Readable({ read() {} });
+      const result = unpackStream(ins, dir);
+      setImmediate(() => {
+        ins.push(head);
+        setImmediate(() => ins.destroy(new Error("connection dropped")));
+      });
+      let err: Error | undefined;
+      try {
+        await withTimeout(result);
+      } catch (e) {
+        err = e as Error;
+      }
+      expect(err).to.be.instanceOf(Error);
+      expect(err?.message).to.not.equal("timed out (hang)");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

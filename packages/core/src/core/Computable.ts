@@ -293,9 +293,36 @@ export class Computable<T> extends ComputableSource<T> {
     return result;
   }
 
-  public static from<T>(fn: (resolve: (value: T | Computable<T>) => void, reject: (err: unknown) => void) => void): Computable<T> {
+  public static from<T>(fn: (resolve: (value: T | Computable<T>) => void, reject: (err: Error) => void) => void): Computable<T> {
     const result = new Computable<T>();
-    fn(result.resolveTo.bind(result), err => result.rejectWith(toError(err)));
+    fn(result.resolveTo.bind(result), err => result.rejectWith(err));
+    return result;
+  }
+
+  /**
+   * Once-and-once only version of Computable.from, typically for non-repeatable processes that need to avoid
+   * settling multiple times.
+   * @param fn
+   * @returns
+   */
+  public static once<T>(fn: (resolve: (value: T | Computable<T>) => void, reject: (err: Error) => void) => void): Computable<T> {
+    const result = new Computable<T>();
+    let settled = false;
+
+    fn(
+      value => {
+        if (!settled) {
+          settled = true;
+          result.resolveTo(value);
+        }
+      },
+      err => {
+        if (!settled) {
+          settled = true;
+          result.rejectWith(err);
+        }
+      }
+    );
     return result;
   }
 

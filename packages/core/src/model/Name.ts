@@ -240,10 +240,13 @@ export class Name {
   }
 
   /**
-   * As getLiteralPrefix, but excludes the final path component if it contains a non-literal part.
+   * As getLiteralPrefix, but excludes the final path component if it contains a
+   * non-literal part — keeping the separator (':' or '/') that terminates the
+   * retained prefix, so the caller can tell a projection from a path boundary.
    * If the name does not have a literal path prefix, returns the empty string.
    *
-   * e.g. "src/bar/foo*.ts" => "src/bar"
+   * e.g. "src/bar/foo*.ts" => "src/bar/", "pkg:*.js" => "pkg:"
+   * (a fully-literal name has no trailing separator: "src/bar" => "src/bar")
    */
   public getLiteralPathPrefix(): string {
     if (this.parts[0].kind !== NamePartKind.Literal) {
@@ -256,7 +259,8 @@ export class Name {
       const pidx = prefix.lastIndexOf(NAME_COMPONENT_SEPARATOR);
       const cidx = prefix.lastIndexOf(NAME_LEVEL_SEPARATOR);
       const idx = pidx > cidx ? pidx : cidx;
-      return idx === -1 ? "" : prefix.substring(0, idx);
+      /* Retain the separator itself (substring end is idx + 1). */
+      return idx === -1 ? "" : prefix.substring(0, idx + 1);
     }
   }
 
@@ -291,7 +295,7 @@ export class NameBuilder {
   private append(kind: NamePartKind, value: string): this {
     if (value === "") {
       return this;
-    } else if ((kind !== NamePartKind.VarSubst, this.last?.kind === kind)) {
+    } else if (kind !== NamePartKind.VarSubst && this.last?.kind === kind) {
       this.last.value += value;
     } else {
       const part = { kind, value };

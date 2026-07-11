@@ -27,7 +27,7 @@ import { FileSet, IFile, FileSource } from "./FileSet";
 import { hashFile, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
 import { toError } from "./Errors";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
-import * as picomatch from "picomatch";
+import { globMatcher, globPrefixRegex, globScan } from "../support/Glob";
 
 export interface FSFileStats {
   size: number;
@@ -197,8 +197,7 @@ export class FSFileSource implements FileSource {
   public find(name: Name, prefix = ""): ComputableSource<FileSet> {
     const nameString = name.toString();
     const colonIdx = nameString.lastIndexOf(":");
-    const stripPrefix =
-      colonIdx === -1 ? undefined : new RegExp("^" + picomatch.parse(nameString.substring(0, colonIdx) + "/").output);
+    const stripPrefix = colonIdx === -1 ? undefined : globPrefixRegex(nameString.substring(0, colonIdx) + "/");
     const searchString = nameString.replace(":", "/");
     return new TreeQuery(this, this.root, searchString, prefix, stripPrefix);
   }
@@ -361,7 +360,7 @@ function subscribeWithFallback(
 }
 
 function makeMatcher(glob: string): Matcher {
-  return (picomatch as unknown as (g: string) => Matcher)(glob);
+  return globMatcher(glob);
 }
 
 /** Normalise an OS path to forward slashes so glob matching and FileSet names
@@ -378,7 +377,7 @@ function toPosix(p: string): string {
  * walked, and node_modules/.git are skipped.
  */
 function enumerateGlob(root: string, searchString: string): Computable<{ names: string[]; matches: Matcher }> {
-  const scanned = picomatch.scan(searchString);
+  const scanned = globScan(searchString);
   if (!scanned.isGlob) {
     const literal = makeMatcher(searchString);
     return stat(path.resolve(root, searchString)).then(
@@ -396,7 +395,7 @@ function enumerateGlob(root: string, searchString: string): Computable<{ names: 
 
 function walkGlob(root: string, pattern: string): Computable<{ names: string[]; matches: Matcher }> {
   const matches = makeMatcher(pattern);
-  const base = path.resolve(root, picomatch.scan(pattern).base);
+  const base = path.resolve(root, globScan(pattern).base);
   return walk(root, base, matches).then(names => ({ names, matches }));
 }
 

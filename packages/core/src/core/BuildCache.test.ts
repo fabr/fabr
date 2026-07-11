@@ -20,7 +20,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { BuildCache } from "./BuildCache";
+import { BuildCache, getResultFileSet } from "./BuildCache";
 import { Computable } from "./Computable";
 import { FileSet } from "./FileSet";
 import { hashString } from "./FSWrapper";
@@ -176,5 +176,33 @@ describe("BuildCache", () => {
     );
     const content = await toPromise(files.readFile("meta.json"));
     expect(content).to.equal('{"name":"test"}');
+  });
+});
+
+describe("getResultFileSet", () => {
+  let work: string;
+
+  beforeEach(() => {
+    work = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-result-test-"));
+  });
+  afterEach(() => {
+    fs.rmSync(work, { recursive: true, force: true });
+  });
+
+  it("collects a build step's dotfile outputs rather than deleting them", async () => {
+    /* A step may legitimately emit dotfiles (.eslintrc, .babelrc); under `**`
+     * they must be collected, not silently dropped (and, worse, deleted). */
+    fs.writeFileSync(path.join(work, "index.js"), "out");
+    fs.writeFileSync(path.join(work, ".eslintrc"), "{}");
+    fs.mkdirSync(path.join(work, ".config"));
+    fs.writeFileSync(path.join(work, ".config", "nested.json"), "{}");
+
+    const result = await toPromise(getResultFileSet(work, "**"));
+
+    expect(await toPromise(result.get("index.js"))).to.not.equal(undefined);
+    expect(await toPromise(result.get(".eslintrc"))).to.not.equal(undefined);
+    expect(await toPromise(result.get(".config/nested.json"))).to.not.equal(undefined);
+    /* And the dotfile is still on disk, not deleted as a non-match. */
+    expect(fs.existsSync(path.join(work, ".eslintrc"))).to.equal(true);
   });
 });

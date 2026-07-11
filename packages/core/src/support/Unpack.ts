@@ -26,14 +26,18 @@ const MIN_HEAD_LENGTH = 262; /* For TAR */
  * @param targetdir
  */
 export function unpackStream(ins: Readable, targetdir: string): Computable<FileSet> {
-  return Computable.from((resolve, reject) => {
+  /* This is fed the live network response, so any hop can fail (a header
+   * truncated below MIN_HEAD_LENGTH, a mid-stream connection drop, a write
+   * error) via several independent listeners: Computable.once keeps the first
+   * outcome so a later terminal event can't re-settle. */
+  return Computable.once((resolve, reject) => {
     let depth = 0;
     function handleHeader(data: Buffer): Writable | null {
       switch (getMagic(data)) {
         case ArchiveType.GZIP: {
           depth++; // TODO
           const zip = createUnzip();
-          magicByteStream(zip, MIN_HEAD_LENGTH, handleHeader);
+          magicByteStream(zip, MIN_HEAD_LENGTH, handleHeader, reject);
           return zip;
         }
         case ArchiveType.TAR: {
@@ -64,26 +68,32 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
                    * travels with the content, so it stays out of the hash/manifest. */
                   const mode = (headers.mode ?? 0o644) & 0o777;
                   const outfile = fs.createWriteStream(pathname, { mode });
-                  outfile.on("close", () => {
-                    resolveFile(
-                      new FSFile(
-                        targetdir,
-                        headers.name,
-                        { mtime: headers.mtime ?? new Date(), size: headers.size ?? 0 },
-                        hash.digest("hex")
-                      )
-                    );
-                  });
-                  outfile.on("error", err => {
-                    rejectFile(err);
-                  });
                   const hashTransform = new Transform({
                     transform: (chunk, _enc, cb) => {
                       hash.update(chunk);
                       cb(null, chunk);
                     },
                   });
-                  pipeline(entry, hashTransform, outfile);
+                  /* Await the pipeline (not fire-and-forget): its promise is the one
+                   * place that settles this file — a write/read failure would
+                   * otherwise be an unhandled rejection and leave the entry never
+                   * `next()`-ed. A file failure also fails the whole unpack directly,
+                   * so a stalled tar (finish never fires) can't hang the outer. */
+                  pipeline(entry, hashTransform, outfile)
+                    .then(() =>
+                      resolveFile(
+                        new FSFile(
+                          targetdir,
+                          headers.name,
+                          { mtime: headers.mtime ?? new Date(), size: headers.size ?? 0 },
+                          hash.digest("hex")
+                        )
+                      )
+                    )
+                    .catch(err => {
+                      rejectFile(err);
+                      reject(err);
+                    });
                 })
               );
             }
@@ -105,7 +115,7 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
       }
     }
 
-    magicByteStream(ins, MIN_HEAD_LENGTH, handleHeader);
+    magicByteStream(ins, MIN_HEAD_LENGTH, handleHeader, reject);
   });
 }
 
@@ -121,7 +131,12 @@ export function getMagic(buf: Buffer): ArchiveType {
   }
 }
 
-function magicByteStream(ins: Readable, headerSize: number, cb: (data: Buffer) => Writable | null): void {
+function magicByteStream(
+  ins: Readable,
+  headerSize: number,
+  cb: (data: Buffer) => Writable | null,
+  onError: (err: Error) => void
+): void {
   const buffers: Buffer[] = [];
   let bufferSize = 0;
 
@@ -131,7 +146,9 @@ function magicByteStream(ins: Readable, headerSize: number, cb: (data: Buffer) =
   }
 
   function headerError(err: Error): void {
-    /* Input stream failed */
+    /* Input stream failed before we had a full header — settle the build rather
+     * than hanging forever on a Computable that never resolves. */
+    onError(err);
   }
 
   function headerData(data: Buffer): void {
@@ -153,6 +170,11 @@ function magicByteStream(ins: Readable, headerSize: number, cb: (data: Buffer) =
     } else {
       outs.write(head);
       ins.pipe(outs);
+      /* Past the header, the pipe is live: a mid-stream input drop or an output
+       * (decompressor/tar-parse) failure must reject, not throw an uncaught
+       * 'error' that takes down the process. */
+      ins.on("error", err => outs.destroy(err));
+      outs.on("error", onError);
     }
   }
 

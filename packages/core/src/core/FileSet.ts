@@ -17,12 +17,12 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import * as picomatch from "picomatch";
 import * as path from "path";
 import { Name } from "../model/Name";
 import { Computable, ComputableSource } from "./Computable";
 import { IProvenanceStep } from "./Provenance";
 import { FileConflictError } from "./Errors";
+import { globMatcher } from "../support/Glob";
 
 export interface IFile {
   hash: string;
@@ -113,7 +113,7 @@ export class FileSet implements FileSource {
 
   public find(name: Name, prefix = ""): Computable<FileSet> {
     const newContent = new Map<string, IFile>();
-    const matcher = picomatch(name.toString());
+    const matcher = globMatcher(name.toString());
     for (const [path, file] of this.content) {
       if (matcher(path)) {
         newContent.set(prefix + path, file);

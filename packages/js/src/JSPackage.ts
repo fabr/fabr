@@ -143,8 +143,12 @@ export function compileJsSources(
       const ext = lower.substring(extidx + 1);
       switch (ext) {
         case "ts":
+          /* A hand-written .d.ts is both a compile *input* (ambient types tsc
+           * must see — e.g. the local picomatch shim) and a shipped *resource*
+           * (e.g. the test runner's globals .d.ts, read back from the installed
+           * package): it joins both the compile srcs and the copied output. */
           if (lower.endsWith(".d.ts")) {
-            break; /* Output only */
+            return "dts";
           }
         /* fallthrough */
         case "tsx":
@@ -157,6 +161,8 @@ export function compileJsSources(
     return "copy";
   });
 
+  const declarations = sourceGroups.dts ?? EMPTY_FILESET;
+
   let compiled: Computable<FileSet> | undefined;
   if ("ts" in sourceGroups) {
     /* The deps the sources compile against: the direct deps plus (under nodejs)
@@ -165,12 +171,12 @@ export function compileJsSources(
     const deps = assembleScopedNodeModules(nodeTypes ? [...directDeps, ...nodeTypes] : directDeps);
     compiled = context.subTarget(
       "js_compile",
-      { srcs: sourceGroups.ts, deps, runtime: getESRuntime(flags, jsTarget.version) },
+      { srcs: FileSet.unionAll(sourceGroups.ts, declarations), deps, runtime: getESRuntime(flags, jsTarget.version) },
       { label: "Compiling", constraints: { [BUILD_OPERATION]: "build" } }
     );
   }
 
-  return { compiled, copied: sourceGroups.copy ?? EMPTY_FILESET };
+  return { compiled, copied: FileSet.unionAll(sourceGroups.copy ?? EMPTY_FILESET, declarations) };
 }
 
 /** @return the files without any root package.json (consumed, not copied through) */

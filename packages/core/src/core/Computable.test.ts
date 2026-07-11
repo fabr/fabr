@@ -126,7 +126,7 @@ describe("Computable", () => {
 
   it("handles errors with two-arg then", () => {
     const values: string[] = [];
-    let reject: (err: unknown) => void = () => {};
+    let reject: (err: Error) => void = () => {};
     const c = Computable.from<number>((_resolve, rej) => {
       reject = rej;
     });
@@ -138,10 +138,40 @@ describe("Computable", () => {
     expect(values).to.deep.equal(["err:bad"]);
   });
 
+  it("once settles on the first outcome, dropping later resolves", () => {
+    const values: string[] = [];
+    Computable.once<number>((resolve, reject) => {
+      resolve(1);
+      resolve(2);
+      reject(new Error("late"));
+    })
+      .then(
+        value => "ok:" + value,
+        err => "err:" + err.message
+      )
+      .then(value => values.push(value));
+    expect(values).to.deep.equal(["ok:1"]);
+  });
+
+  it("once keeps a rejection even when a trailing resolve arrives", () => {
+    /* The spawn-failure shape: 'error' rejects, then 'close' would resolve. */
+    const values: string[] = [];
+    Computable.once<number>((resolve, reject) => {
+      reject(new Error("ENOENT"));
+      resolve(-2);
+    })
+      .then(
+        value => "ok:" + value,
+        err => "err:" + err.message
+      )
+      .then(value => values.push(value));
+    expect(values).to.deep.equal(["err:ENOENT"]);
+  });
+
   it("recovers when a dependency re-resolves after an error", () => {
     const values: string[] = [];
     let resolve: (value: number) => void = () => {};
-    let reject: (err: unknown) => void = () => {};
+    let reject: (err: Error) => void = () => {};
     const c = Computable.from<number>((res, rej) => {
       resolve = res;
       reject = rej;

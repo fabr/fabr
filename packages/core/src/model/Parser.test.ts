@@ -164,6 +164,18 @@ describe("Parser Tests", () => {
     );
   });
 
+  it("bare substitution variable names include underscores", () => {
+    /* `$BUILD_TYPE` is one variable, not var(BUILD) + literal "_TYPE". */
+    expect(summarize(parseValid("A=$BUILD_TYPE; B=$B_/x;"))).to.deep.equal(
+      summary({
+        properties: {
+          A: ["var(BUILD_TYPE)"],
+          B: ["var(B_)+/x"],
+        },
+      })
+    );
+  });
+
   it("Property with double quotes", () => {
     expect(summarize(parseValid('A="a b"; B=a b "cd${A}e"; C="x${A}";'))).to.deep.equal(
       summary({ properties: { A: ["a b"], B: ["a", "b", "cd+var(A)+e"], C: ["x+var(A)"] } })
