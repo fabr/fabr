@@ -22,7 +22,7 @@ import { jsxModeFor, makeTsConfig } from "./BuildJSCompile";
 import { parseJSTarget } from "../JSPackage";
 
 interface TsConfig {
-  compilerOptions: { jsx?: string; jsxImportSource?: string };
+  compilerOptions: { jsx?: string; jsxImportSource?: string; allowJs?: boolean; checkJs?: boolean };
   include: string[];
 }
 
@@ -33,6 +33,16 @@ describe("makeTsConfig", () => {
      * source was silently ignored and the package built green with it missing. */
     expect(cfg.include).to.include("./src/**/*.tsx");
     expect(cfg.include).to.include("./src/**/*.ts");
+  });
+
+  it("includes .js/.jsx and enables allowJs (downlevel JS, importable from TS) without checkJs", () => {
+    const cfg = makeTsConfig(parseJSTarget("es2018-commonjs"), "es2018") as unknown as TsConfig;
+    expect(cfg.include).to.include("./src/**/*.js");
+    expect(cfg.include).to.include("./src/**/*.jsx");
+    /* allowJs routes .js through tsc's emit (downlevel to target); checkJs stays
+     * off so untyped JS is transpiled, not typechecked, and can't fail the build. */
+    expect(cfg.compilerOptions.allowJs).to.equal(true);
+    expect(cfg.compilerOptions.checkJs).to.equal(false);
   });
 
   it("emits the jsx transform + import source when a runtime is given", () => {

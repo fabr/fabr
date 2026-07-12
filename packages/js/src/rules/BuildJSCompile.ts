@@ -47,11 +47,14 @@ export function jsxModeFor(buildType: string | undefined): "react-jsx" | "react-
 }
 
 /**
- * The tsconfig the compile runs under. `include` matches `.tsx` as well as `.ts`
- * (both are routed to this compile), so a `.tsx` source is compiled, not silently
- * ignored. When a `jsx` runtime is given, the automatic transform is emitted — a
- * JSX source's code imports `<jsxImportSource>/jsx-runtime`, so the target must
- * carry that runtime as a dep (auto-detected, see resolveJsxImportSource).
+ * The tsconfig the compile runs under. `include` matches `.ts`/`.tsx` and
+ * `.js`/`.jsx` (all routed to this compile), so none is silently ignored. `.js`
+ * comes in via `allowJs`: tsc downlevels it to `target` (a package's own JS
+ * honors JS_TARGET) and includes it in the program (a `.ts` can import a local
+ * `.js`), while `checkJs` stays off — JS is transpiled, not typechecked, so
+ * untyped JS can't fail the build. When a `jsx` runtime is given, the automatic
+ * transform is emitted — a JSX source's code imports `<jsxImportSource>/jsx-runtime`,
+ * so the target must carry that runtime as a dep (auto-detected, see resolveJsxImportSource).
  */
 export function makeTsConfig(
   jsTarget: JSTarget,
@@ -66,6 +69,10 @@ export function makeTsConfig(
       rootDir: "src",
       /* Strict by default; TODO: needs a way to flag it off per target */
       strict: true,
+      /* Accept .js/.jsx as compile inputs (downleveled to `target`, and
+       * importable from .ts), but never typecheck them. */
+      allowJs: true,
+      checkJs: false,
       target: jsTarget.version,
       lib: jsTarget.environment === "browser" ? [runtime, "dom"] : [runtime],
       module: jsTarget.module === "esm" ? "esnext" : "commonjs",
@@ -77,7 +84,7 @@ export function makeTsConfig(
       pretty: true,
     },
     exclude: ["node_modules"],
-    include: ["./src/**/*.ts", "./src/**/*.tsx"],
+    include: ["./src/**/*.ts", "./src/**/*.tsx", "./src/**/*.js", "./src/**/*.jsx"],
   };
 }
 
@@ -93,9 +100,13 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
     ],
     (srcs, deps, runtime, target, tsc, buildType) => {
       /* js_compile owns its node_modules layout (only it needs it) and its JSX
-       * runtime: both read the ordered direct deps directly. TSX needs a
-       * jsxImportSource (auto-detected from the deps); a JSX-free compile omits it. */
-      const hasTsx = [...srcs].some(([name]) => name.toLowerCase().endsWith(".tsx"));
+       * runtime: both read the ordered direct deps directly. A .tsx/.jsx source
+       * needs a jsxImportSource (auto-detected from the deps); a JSX-free compile
+       * omits it. */
+      const hasJsx = [...srcs].some(([name]) => {
+        const lower = name.toLowerCase();
+        return lower.endsWith(".tsx") || lower.endsWith(".jsx");
+      });
       const build = (jsxImportSource: string): RuleResult => {
         const jsx = jsxImportSource ? { mode: jsxModeFor(buildType), importSource: jsxImportSource } : undefined;
         const tsconfig = makeTsConfig(parseJSTarget(target), runtime, jsx);
@@ -109,7 +120,7 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
          * workspace root, so `include`/`node_modules` resolve against the sources. */
         return createExecAction(workingDir, tsc.toCommandLine([], { base: TOOL_DIR }), "build:**", "compile");
       };
-      return hasTsx ? resolveJsxImportSource(deps).then(build) : build("");
+      return hasJsx ? resolveJsxImportSource(deps).then(build) : build("");
     }
   );
 }

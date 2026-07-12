@@ -164,12 +164,12 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
   const sources = FileSet.unionAll(inputs.sources, inputs.tests).remap(name =>
     name === RUNNER_GLOBALS_TYPES ? undefined : name
   );
-  const needsTsc = hasTypescriptSources(sources);
+  const typechecks = hasTypescriptSources(sources);
   return context
     .collect({
       deps: inputs.depSources,
       testDeps: inputs.testDepSources,
-      ...(needsTsc && inputs.flags.find(f => f.name === "nodejs")
+      ...(typechecks && inputs.flags.find(f => f.name === "nodejs")
         ? { nodeTypes: context.getGlobalSources("NODE_TYPES", BUILD_OP) }
         : {}),
     })

@@ -93,8 +93,11 @@ function getESRuntime(flags: Flag[], defaultRuntime: string): string {
 }
 
 /**
- * @return whether the tree holds compilable TypeScript sources (i.e. the
- * compile step — and hence the TSC toolchain — will be needed at all).
+ * @return whether the tree holds TypeScript sources that will be *typechecked*
+ * (so ambient @types — e.g. @types/node — are needed). Plain .js is compiled too
+ * (allowJs) but with checkJs off, so it needs no ambient types; hence this stays
+ * TS-only. Note the compile step itself now also runs for pure-JS trees — this
+ * predicate no longer decides *whether* to compile, only whether types apply.
  */
 export function hasTypescriptSources(files: FileSet): boolean {
   return [...files].some(([name]) => {
@@ -125,8 +128,8 @@ export interface ICompiledSources {
  * the deps themselves — so a source importing an undeclared transitive dep fails
  * to compile. TSC is the compiler's own concern, resolved inside js_compile. The
  * sub-target builds under BUILD_OPERATION=build (a compile is a build even for a
- * test target). (Note: plain .js sources are currently dropped — transpiling
- * them is an open gap.)
+ * test target). Plain .js/.jsx sources go through the same compile (tsc allowJs),
+ * so they are downleveled to JS_TARGET and a .ts may import a local .js.
  */
 /** True iff a `package.json` declares the given `subpath` in its `exports` map
  * (e.g. `./jsx-runtime`). The general "does this package expose subpath X" test
@@ -215,15 +218,19 @@ export function compileJsSources(
   const declarations = sourceGroups.dts ?? EMPTY_FILESET;
 
   let compiled: Computable<FileSet> | undefined;
-  if ("ts" in sourceGroups) {
-    /* Hand js_compile the direct deps (plus, under nodejs, the node @types) as
+  if ("ts" in sourceGroups || "js" in sourceGroups) {
+    /* Both .ts(x) and .js(x) go through js_compile: with allowJs, tsc downlevels
+     * the JS to JS_TARGET and lets a .ts import a local .js. .d.ts joins as an
+     * ambient input (it is also copied through as a resource, below).
+     * Hand js_compile the direct deps (plus, under nodejs, the node @types) as
      * they are: it owns the node_modules layout (assembleScopedNodeModules) and
      * the JSX-runtime detection, since those need the ordered package list and
      * are compile concerns. TSC is added by js_compile itself. */
     const deps = nodeTypes ? [...directDeps, ...nodeTypes] : directDeps;
+    const srcs = FileSet.unionAll(sourceGroups.ts ?? EMPTY_FILESET, sourceGroups.js ?? EMPTY_FILESET, declarations);
     compiled = context.subTarget(
       "js_compile",
-      { srcs: FileSet.unionAll(sourceGroups.ts, declarations), deps, runtime: getESRuntime(flags, jsTarget.version) },
+      { srcs, deps, runtime: getESRuntime(flags, jsTarget.version) },
       { label: "Compiling", constraints: { [BUILD_OPERATION]: "build" } }
     );
   }

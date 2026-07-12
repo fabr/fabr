@@ -65,7 +65,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
 
       const jsTarget = parseJSTarget(target);
       const compileSources = sources.minus(tests);
-      const needsTsc = hasTypescriptSources(compileSources);
+      const typechecks = hasTypescriptSources(compileSources);
 
       /* THE collection point: the deps and the node @types (under nodejs)
        * materialize through one joint resolution, so e.g. the NODE_TYPES pin
@@ -74,7 +74,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
        * what it compiles. */
       const gathered = context.collect({
         deps: depSources,
-        ...(needsTsc && flags.find(f => f.name === "nodejs") ? { nodeTypes: context.getGlobalSources("NODE_TYPES") } : {}),
+        ...(typechecks && flags.find(f => f.name === "nodejs") ? { nodeTypes: context.getGlobalSources("NODE_TYPES") } : {}),
       });
 
       return Computable.forAll([gathered, seedJson], ({ deps, nodeTypes }, seed) => {

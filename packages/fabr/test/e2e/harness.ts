@@ -95,7 +95,8 @@ export function runFabr(files: Record<string, string>, args: string[]): FabrResu
  * typescript download. Spread into the fixture files and add STUB_TSC_CONFIG to
  * the project. It reads the generated tsconfig (rootDir/outDir) and copies each
  * `.ts` to `.js` verbatim (fixtures must be type-free), emitting a trivial
- * `.d.ts`.
+ * `.d.ts`. Under `allowJs` it also copies `.js`/`.jsx` inputs to `.js` verbatim,
+ * standing in for tsc's real downlevel (which the tsconfig unit test covers).
  */
 export const STUB_TSC: Record<string, string> = {
   "teststub/typescript/bin/tsc": `const fs = require("fs"), path = require("path");
@@ -111,6 +112,12 @@ const rootDir = cfg.rootDir || "src", outDir = cfg.outDir || "build";
       fs.mkdirSync(path.dirname(outJs), { recursive: true });
       fs.writeFileSync(outJs, fs.readFileSync(p, "utf8"));
       fs.writeFileSync(path.join(outDir, rel + ".d.ts"), "export {};\\n");
+    }
+    else if (cfg.allowJs && /\\.jsx?$/.test(e.name)) {
+      const rel = path.relative(rootDir, p).replace(/\\.jsx?$/, ".js");
+      const outJs = path.join(outDir, rel);
+      fs.mkdirSync(path.dirname(outJs), { recursive: true });
+      fs.writeFileSync(outJs, fs.readFileSync(p, "utf8"));
     }
   }
 })(rootDir);
