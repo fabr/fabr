@@ -128,6 +128,57 @@ export interface ICompiledSources {
  * test target). (Note: plain .js sources are currently dropped — transpiling
  * them is an open gap.)
  */
+/** True iff a `package.json` declares the given `subpath` in its `exports` map
+ * (e.g. `./jsx-runtime`). The general "does this package expose subpath X" test
+ * that subpath-shaped capability signals build on. Malformed JSON reads as no. */
+export function hasPackageExport(packageJson: string, subpath: string): boolean {
+  try {
+    const exports = (JSON.parse(packageJson) as { exports?: unknown }).exports;
+    return typeof exports === "object" && exports !== null && subpath in exports;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether a dependency provides the JSX automatic runtime, read from its
+ * `package.json` `exports` (NOT a filename scan — a package may map the subpath
+ * to a differently-named file). `@types/*` never qualifies: it carries the
+ * types, not the runtime `jsxImportSource` points at.
+ *
+ * TODO: this recognizer is the seed of a general capability model — it should
+ * move to a declared `capability jsxRuntime { … }` in JS.fabr once the model can
+ * express (and rules enumerate) capabilities.
+ */
+function providesJsxRuntime(pkg: PackageFileSet): Computable<boolean> {
+  if (pkg.packageName.startsWith("@types/")) {
+    return Computable.resolve(false);
+  }
+  return pkg
+    .get("package.json")
+    .then(file => (file ? file.readString().then(json => hasPackageExport(json, "./jsx-runtime")) : false));
+}
+
+/** The `jsxImportSource` for a TSX compile: the first direct dep (in written
+ * order) that provides the JSX runtime. Errors if none — TSX can't compile
+ * without one — or if several (an ambiguous capability, like two `log4j`s). */
+export function resolveJsxImportSource(directDeps: FileSet[]): Computable<string> {
+  const packages = directDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+  return Computable.forAll(
+    packages.map(pkg => providesJsxRuntime(pkg).then(provides => (provides ? pkg.packageName : undefined))),
+    (...found) => {
+      const providers = found.filter((name): name is string => name !== undefined);
+      if (providers.length === 0) {
+        throw new Error("No JSX runtime specified in dependencies, and is needed to compile TSX files");
+      }
+      if (providers.length > 1) {
+        throw new Error(`Multiple JSX runtimes in dependencies (${providers.join(", ")}); a target may depend on at most one`);
+      }
+      return providers[0];
+    }
+  );
+}
+
 export function compileJsSources(
   context: TargetContext,
   sources: FileSet,
@@ -165,10 +216,11 @@ export function compileJsSources(
 
   let compiled: Computable<FileSet> | undefined;
   if ("ts" in sourceGroups) {
-    /* The deps the sources compile against: the direct deps plus (under nodejs)
-     * the node @types, laid out scoped so only these are visible to the sources.
-     * TSC is added by js_compile itself. */
-    const deps = assembleScopedNodeModules(nodeTypes ? [...directDeps, ...nodeTypes] : directDeps);
+    /* Hand js_compile the direct deps (plus, under nodejs, the node @types) as
+     * they are: it owns the node_modules layout (assembleScopedNodeModules) and
+     * the JSX-runtime detection, since those need the ordered package list and
+     * are compile concerns. TSC is added by js_compile itself. */
+    const deps = nodeTypes ? [...directDeps, ...nodeTypes] : directDeps;
     compiled = context.subTarget(
       "js_compile",
       { srcs: FileSet.unionAll(sourceGroups.ts, declarations), deps, runtime: getESRuntime(flags, jsTarget.version) },

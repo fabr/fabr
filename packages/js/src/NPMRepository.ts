@@ -194,9 +194,12 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
   public resolveAll(references: RepositoryRef[]): Computable<FileSet[]> {
     /* The operation is a property of this collection point, read from the
      * context (this instance is interned per BuildContext, so it reflects the
-     * constraints these references were consumed under). Closure members are
-     * always plain packages — only the requested roots take the run delivery. */
-    const operation = this.context.getConstraint(BUILD_OPERATION) ?? "build";
+     * config these references were consumed under). Closure members are always
+     * plain packages — only the requested roots take the run delivery. */
+    return this.context.getGlobalString(BUILD_OPERATION).then(operation => this.deliver(references, operation));
+  }
+
+  private deliver(references: RepositoryRef[], operation: string): Computable<FileSet[]> {
     /* Under `files` the consumer wants each package's own files and nothing
      * more (a projection into it, or the whole thing as raw content — never a
      * mountable package or a runnable), so there is no need to resolve — or even
@@ -360,6 +363,11 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
    * driver-injected as HOST_OS / HOST_CPU constraints and read off this
    * repository's (per-BuildContext-interned) context. Either component is
    * undefined if unset. Used to gate os/cpu-specific optional dependencies.
+   *
+   * TODO: the last non-reporting getConstraint use. It stays because the gating
+   * needs undefined-on-absent, which the property read (getGlobalString) can't
+   * give; once HOST_OS / HOST_CPU are modelled as first-class non-overridable
+   * properties this reads them via getGlobalString like everything else.
    */
   private hostPlatform(): { os?: string; cpu?: string } {
     return { os: this.context.getConstraint("HOST_OS"), cpu: this.context.getConstraint("HOST_CPU") };

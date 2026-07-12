@@ -35,53 +35,81 @@
 
 
 import { Computable, createExecAction, FileSet, MemoryFile, RuleRegistration, RuleResult, TargetContext } from "@fabr/core";
-import { parseJSTarget } from "../JSPackage";
+import { assembleScopedNodeModules, JSTarget, parseJSTarget, resolveJsxImportSource } from "../JSPackage";
 
 /** Where the toolchain is mounted in the working dir — disjoint from src/node_modules/build. */
 const TOOL_DIR = ".tools/tsc";
+
+/** The automatic-runtime jsx mode: the dev variant (source-position
+ * instrumentation, `<src>/jsx-dev-runtime`) for a debug build, else production. */
+export function jsxModeFor(buildType: string | undefined): "react-jsx" | "react-jsxdev" {
+  return buildType === "debug" ? "react-jsxdev" : "react-jsx";
+}
+
+/**
+ * The tsconfig the compile runs under. `include` matches `.tsx` as well as `.ts`
+ * (both are routed to this compile), so a `.tsx` source is compiled, not silently
+ * ignored. When a `jsx` runtime is given, the automatic transform is emitted — a
+ * JSX source's code imports `<jsxImportSource>/jsx-runtime`, so the target must
+ * carry that runtime as a dep (auto-detected, see resolveJsxImportSource).
+ */
+export function makeTsConfig(
+  jsTarget: JSTarget,
+  runtime: string,
+  jsx?: { mode: string; importSource: string }
+): Record<string, unknown> {
+  return {
+    compilerOptions: {
+      declaration: true,
+      declarationMap: true,
+      outDir: "build",
+      rootDir: "src",
+      /* Strict by default; TODO: needs a way to flag it off per target */
+      strict: true,
+      target: jsTarget.version,
+      lib: jsTarget.environment === "browser" ? [runtime, "dom"] : [runtime],
+      module: jsTarget.module === "esm" ? "esnext" : "commonjs",
+      moduleResolution: "node",
+      ...(jsx ? { jsx: jsx.mode, jsxImportSource: jsx.importSource } : {}),
+      /* tsc ignores FORCE_COLOR (it only checks its own TTY), so formatted
+       * diagnostics must be forced here; unwanted codes are stripped at
+       * render time. Note this also overrides the child's NO_COLOR. */
+      pretty: true,
+    },
+    exclude: ["node_modules"],
+    include: ["./src/**/*.ts", "./src/**/*.tsx"],
+  };
+}
 
 function compileTypescript(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
       context.getFileSet("srcs"),
-      context.getFileSet("deps"),
+      context.getFileSets("deps"),
       context.getRequiredString("runtime"),
       context.getGlobalString("JS_TARGET"),
       context.getGlobalRunnable("TSC"),
+      context.getGlobalString("BUILD_TYPE"),
     ],
-    (srcs, deps, runtime, target, tsc) => {
-      const jsTarget = parseJSTarget(target);
-      const tsconfig = {
-        compilerOptions: {
-          declaration: true,
-          declarationMap: true,
-          outDir: "build",
-          rootDir: "src",
-          /* Strict by default; TODO: needs a way to flag it off per target */
-          strict: true,
-          target: jsTarget.version,
-          lib: jsTarget.environment === "browser" ? [runtime, "dom"] : [runtime],
-          module: jsTarget.module === "esm" ? "esnext" : "commonjs",
-          moduleResolution: "node",
-          /* tsc ignores FORCE_COLOR (it only checks its own TTY), so formatted
-           * diagnostics must be forced here; unwanted codes are stripped at
-           * render time. Note this also overrides the child's NO_COLOR. */
-          pretty: true,
-        },
-        exclude: ["node_modules"],
-        include: ["./src/**/*.ts"],
+    (srcs, deps, runtime, target, tsc, buildType) => {
+      /* js_compile owns its node_modules layout (only it needs it) and its JSX
+       * runtime: both read the ordered direct deps directly. TSX needs a
+       * jsxImportSource (auto-detected from the deps); a JSX-free compile omits it. */
+      const hasTsx = [...srcs].some(([name]) => name.toLowerCase().endsWith(".tsx"));
+      const build = (jsxImportSource: string): RuleResult => {
+        const jsx = jsxImportSource ? { mode: jsxModeFor(buildType), importSource: jsxImportSource } : undefined;
+        const tsconfig = makeTsConfig(parseJSTarget(target), runtime, jsx);
+        const workingDir = FileSet.layout({
+          node_modules: assembleScopedNodeModules(deps),
+          src: srcs,
+          "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
+          [TOOL_DIR]: tsc,
+        });
+        /* The tool launches from its own mount (its deps resolve there); cwd is the
+         * workspace root, so `include`/`node_modules` resolve against the sources. */
+        return createExecAction(workingDir, tsc.toCommandLine([], { base: TOOL_DIR }), "build:**", "compile");
       };
-
-      const workingDir = FileSet.layout({
-        node_modules: deps,
-        src: srcs,
-        "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
-        [TOOL_DIR]: tsc,
-      });
-
-      /* The tool launches from its own mount (its deps resolve there); cwd is the
-       * workspace root, so `include`/`node_modules` resolve against the sources. */
-      return createExecAction(workingDir, tsc.toCommandLine([], { base: TOOL_DIR }), "build:**", "compile");
+      return hasTsx ? resolveJsxImportSource(deps).then(build) : build("");
     }
   );
 }

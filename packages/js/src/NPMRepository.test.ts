@@ -269,7 +269,10 @@ function packageTarball(): FileSet {
  */
 function fakeContext(operation: string, served: Record<string, FileSet>, fetched: string[]): RepositoryContext {
   return {
-    getConstraint: (name: string) => (name === BUILD_OPERATION ? operation : undefined),
+    getGlobalString: (name: string) =>
+      name === BUILD_OPERATION ? Computable.resolve(operation) : Computable.reject(new Error(`unexpected property: ${name}`)),
+    /* Host facts (HOST_OS / HOST_CPU) are unset in these tests: no os/cpu gating. */
+    getConstraint: () => undefined,
     fetch: (url: string) => {
       fetched.push(url);
       return url in served ? Computable.resolve(served[url]) : Computable.reject(new Error(`unexpected fetch: ${url}`));

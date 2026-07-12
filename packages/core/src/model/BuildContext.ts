@@ -1069,13 +1069,24 @@ export class RepositoryContext {
   }
 
   /**
-   * The value of a configuration constraint this repository is resolving under,
-   * or undefined if unset (see BuildContext.getConstraint). This instance is
-   * interned per BuildContext, so the constraints reflect what the references
-   * were consumed with — the build verb (`getConstraint(BUILD_OPERATION) ??
-   * "build"`, which decides whether the repository delivers a plain package or a
-   * runnable) and any global config it selects on (host platform via HOST_OS /
-   * HOST_CPU, …) reach it identically.
+   * A global (build-config) property this repository resolves under — the same
+   * property surface every rule sees (constraints are pre-forced into it; there
+   * is no separate "constraint" notion outside BuildContext's own reporting).
+   * This instance is interned per BuildContext, so the value reflects what the
+   * references were consumed with — e.g. the build verb (`BUILD_OPERATION`,
+   * which decides whether the repository delivers a plain package or a runnable).
+   */
+  public getGlobalString(name: string): Computable<string> {
+    return this.context.getProperty(name).then(prop => prop.toString());
+  }
+
+  /**
+   * The raw value of an injected constraint, or undefined if unset. Unlike
+   * getGlobalString this never consults declarations or throws — it reads only
+   * what was injected. TODO: this survives solely for the host facts (HOST_OS /
+   * HOST_CPU), which gate os/cpu-specific optional deps and so need
+   * undefined-on-absent; they should become first-class non-overridable
+   * properties, after which this method can go and callers use getGlobalString.
    */
   public getConstraint(name: string): string | undefined {
     return this.context.getConstraint(name);

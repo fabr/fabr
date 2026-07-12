@@ -5,9 +5,12 @@
 #  - release        = full optimization, all debug info stripped
 default BUILD_TYPE = debug;
 
-#
-# 
-default BUILD_MODE = build;
+# The current operation. Standard values are
+# - build  = standard compile/link/package
+# - files  = return the raw contents of the built target 
+# - run    = create a direct executable
+# - test   = execute tests
+default BUILD_OPERATION = build;
 
 
 targetdef flag {

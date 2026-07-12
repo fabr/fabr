@@ -18,8 +18,8 @@
  */
 
 import { expect } from "chai";
-import { FileSet, IFile, MemoryFile, PackageFileSet, SymlinkFile } from "@fabr/core";
-import { assembleScopedNodeModules } from "./JSPackage";
+import { Computable, FileSet, IFile, MemoryFile, PackageFileSet, SymlinkFile } from "@fabr/core";
+import { assembleScopedNodeModules, hasPackageExport, resolveJsxImportSource } from "./JSPackage";
 
 /** A package with a single `index.js` and the given (already-built) deps. */
 function pkg(name: string, deps: PackageFileSet[] = []): PackageFileSet {
@@ -63,5 +63,70 @@ describe("assembleScopedNodeModules", () => {
     const loose = new FileSet(new Map<string, IFile>([["loose.js", MemoryFile.from("x")]]));
     const files = entries(assembleScopedNodeModules([pkg("tar-stream"), loose]));
     expect(files.has("loose.js")).to.equal(true);
+  });
+});
+
+/** A package whose package.json declares (or not) a `./jsx-runtime` export. */
+function jsxPkg(name: string, providesJsxRuntime: boolean): PackageFileSet {
+  const json = JSON.stringify({
+    name,
+    exports: providesJsxRuntime ? { ".": "./index.js", "./jsx-runtime": "./jsx-runtime.js" } : { ".": "./index.js" },
+  });
+  return new PackageFileSet(new Map<string, IFile>([["package.json", MemoryFile.from(json)]]), name);
+}
+
+function settle<T>(c: Computable<T>): Promise<T> {
+  return new Promise((resolve, reject) => c.then(resolve, reject));
+}
+async function rejectionMessage<T>(c: Computable<T>): Promise<string> {
+  try {
+    await settle(c);
+  } catch (e) {
+    return (e as Error).message;
+  }
+  throw new Error("expected a rejection");
+}
+
+describe("hasPackageExport", () => {
+  it("detects a declared subpath in the exports map", () => {
+    const json = JSON.stringify({ exports: { ".": "./index.js", "./jsx-runtime": "./jsx-runtime.js" } });
+    expect(hasPackageExport(json, "./jsx-runtime")).to.equal(true);
+    expect(hasPackageExport(json, "./missing")).to.equal(false);
+  });
+
+  it("returns false without an exports map, or on malformed json", () => {
+    expect(hasPackageExport(JSON.stringify({ main: "index.js" }), "./jsx-runtime")).to.equal(false);
+    expect(hasPackageExport(JSON.stringify({ exports: "./index.js" }), "./jsx-runtime")).to.equal(false);
+    expect(hasPackageExport("not json", "./jsx-runtime")).to.equal(false);
+  });
+});
+
+describe("resolveJsxImportSource", () => {
+  const react = jsxPkg("react", true);
+  const preact = jsxPkg("preact", true);
+  const lodash = jsxPkg("lodash", false);
+  /* Has the jsx-runtime export, but @types never names the runtime. */
+  const reactTypes = jsxPkg("@types/react", true);
+
+  it("names the runtime package (from package.json exports './jsx-runtime')", async () => {
+    expect(await settle(resolveJsxImportSource([react]))).to.equal("react");
+    expect(await settle(resolveJsxImportSource([preact]))).to.equal("preact");
+  });
+
+  it("picks the first provider in dependency order, skipping non-runtimes", async () => {
+    expect(await settle(resolveJsxImportSource([lodash, react]))).to.equal("react");
+  });
+
+  it("never treats a @types package as the runtime", async () => {
+    expect(await settle(resolveJsxImportSource([reactTypes, react]))).to.equal("react");
+    expect(await rejectionMessage(resolveJsxImportSource([reactTypes]))).to.match(/No JSX runtime/);
+  });
+
+  it("errors when no dependency provides a JSX runtime", async () => {
+    expect(await rejectionMessage(resolveJsxImportSource([lodash]))).to.match(/No JSX runtime specified in dependencies/);
+  });
+
+  it("errors when several dependencies provide one (ambiguous)", async () => {
+    expect(await rejectionMessage(resolveJsxImportSource([react, preact]))).to.match(/Multiple JSX runtimes.*react.*preact/);
   });
 });
