@@ -55,6 +55,7 @@ export * from "./resolver/Semver";
 export * from "./resolver/Types";
 export * from "./support/Execute";
 export * from "./support/Log";
+export * from "./support/Platform";
 export * from "./support/TestResult";
 export * from "./support/Unpack";
 export * from "./rules/ExecAction";

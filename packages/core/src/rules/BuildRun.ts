@@ -20,8 +20,8 @@
 /**
  * The generic `run` target: execute a runnable and collect its output — the
  * ecosystem-neutral builder that turns "a program that writes files" into build
- * content. `tool` names a runnable target (resolved under BUILD_OPERATION=run,
- * so it yields a RunnableFileSet); `args` are appended to the runnable's own;
+ * content. `tool` names a runnable target (resolved as a host runnable via
+ * getRunnableProperty — it executes now, on this machine); `args` are appended to the runnable's own;
  * `output` (a dir:glob pattern, default `**`) selects the files it wrote as this
  * target's content. Any runnable plugs in — the "run and collect" the js_script
  * rule used to do itself, now generic.
@@ -29,7 +29,6 @@
 
 import { BUILD_OPERATION, TargetContext } from "../model/BuildContext";
 import { Computable } from "../core/Computable";
-import { RunnableFileSet } from "../core/RunnableFileSet";
 import { createExecAction } from "./ExecAction";
 import { RuleRegistration, RuleResult } from "./Types";
 
@@ -48,12 +47,8 @@ import { RuleRegistration, RuleResult } from "./Types";
  */
 function runTool(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
-    [context.getFileSets("tool", { [BUILD_OPERATION]: "run" }), context.getProperty("args"), context.getProperty("output")],
-    (tools, args, output) => {
-      const runnable = tools.find((t): t is RunnableFileSet => t instanceof RunnableFileSet);
-      if (!runnable) {
-        throw new Error("run: 'tool' must name a runnable target (its BUILD_OPERATION=run result)");
-      }
+    [context.getRunnableProperty("tool"), context.getProperty("args"), context.getProperty("output")],
+    (runnable, args, output) => {
       /* No anchor: the exec step runs with cwd == the staged workDir, so `entry`
        * stays install-relative (resolved there by the interpreter). */
       const argv = runnable.toCommandLine(args ? args.getValues() : []);

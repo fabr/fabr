@@ -21,6 +21,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import * as fsPromises from "fs/promises";
+import { HOST, hostTriple } from "@fabr/core";
 
 export const PROJECT_FILENAME = "PROJECT.fabr";
 export const BUILD_CACHE_ENV = "FABR_CACHE_DIR";
@@ -77,10 +78,14 @@ function getBaseCacheDir(): string {
   }
 }
 
+/**
+ * The host machine facts injected as ambient constraints at every getConfig site.
+ * A single HOST platform triple (`arm64-apple-macosx15.0`, …) — TARGET defaults to
+ * it (STD.fabr) and consumers gate on TARGET; the npm/native mapping lives in
+ * core's Platform helper. See DESIGN-target-triple.md.
+ */
 export function getHostProperties(): Record<string, string> {
   return {
-    HOST_OS: os.platform(),
-    HOST_CPU: os.arch(),
-    HOST: os.arch() + "-" + os.platform(),
+    [HOST]: hostTriple(),
   };
 }

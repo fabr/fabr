@@ -54,6 +54,24 @@ export type Constraints = Record<string, string>;
 export const BUILD_OPERATION = "BUILD_OPERATION";
 
 /**
+ * The platform triple (clang/LLVM form, e.g. `arm64-apple-macosx15.0`,
+ * `x86_64-linux-gnu`) fabr is actually running on — a driver-injected fact, not
+ * meant to be overridden. Native rules consume it verbatim; the npm gate reads a
+ * lossy {os,cpu,libc} projection off it. See DESIGN-target-triple.md.
+ */
+export const HOST = "HOST";
+
+/**
+ * The platform triple we are *building for*. `default TARGET = ${HOST};` (STD.fabr),
+ * overridable per build (`-D TARGET=…`) or per reference (`ref<TARGET=…>`) to
+ * cross-compile. Repository/native selection gates on this, not HOST. Running a
+ * target (`BUILD_OPERATION=run`) forces TARGET back to HOST — you can only execute
+ * what was built for the machine you're on, and it makes build *tools* resolve
+ * host-side automatically.
+ */
+export const TARGET = "TARGET";
+
+/**
  * The `files` operation: "give me the output files, and do no more than that."
  * A weaker form of `build` — it has no type-specific rules of its own; a generic
  * default rule (see rules/DefaultFilesRule) delegates it to the target's `build`
@@ -216,8 +234,8 @@ export class BuildContext {
    * getProperty this never consults declarations or throws — it reads only the
    * scalar constraint set the context was instantiated with. This is how every
    * driver-injected global a rule or repository selects on is read: the build
-   * verb (`getConstraint(BUILD_OPERATION) ?? "build"`) and the host facts
-   * (HOST_OS / HOST_CPU) alike.
+   * verb (`getConstraint(BUILD_OPERATION) ?? "build"`) and the host fact
+   * (`HOST`) alike.
    */
   public getConstraint(name: string): string | undefined {
     return this.constraints[name];
@@ -689,6 +707,17 @@ function requestingTargets(target: ITargetDecl, stack?: IDependencyStack): ITarg
  * two implementations. Everything else — materialization, flag extraction,
  * collection, globals, sub-targets — derives from those and is shared here.
  */
+/** Pick the RunnableFileSet out of a resolved source list, or throw naming the
+ * property/global that was expected to yield one. Shared by getGlobalRunnable
+ * (a global) and getRunnableProperty (a FILES property). */
+function asRunnable(sources: readonly unknown[], name: string): RunnableFileSet {
+  const runnable = sources.find((source): source is RunnableFileSet => source instanceof RunnableFileSet);
+  if (!runnable) {
+    throw new Error(`'${name}' must name a runnable (its BUILD_OPERATION=run result)`);
+  }
+  return runnable;
+}
+
 export abstract class TargetContext {
   public readonly context: BuildContext;
   public readonly stack?: IDependencyStack;
@@ -836,19 +865,36 @@ export abstract class TargetContext {
   }
 
   /**
-   * Resolve a global that names a **runnable tool** (e.g. `TSC`): it is resolved
-   * under `BUILD_OPERATION=run` (so a package/definer yields its runnable), and
-   * the result is asserted to be a RunnableFileSet. The caller launches it via
-   * `toCommandLine` — it needn't know how the tool is invoked.
+   * The constraint overrides for resolving a target in order to *run* it: force
+   * BUILD_OPERATION=run and pin TARGET back to HOST. You run on the machine
+   * you're on, so a runnable is always for the host — and this is what makes a
+   * build *tool* (resolved under run) select its host binary even inside a
+   * cross-build, where the ambient TARGET is some other platform. HOST is a
+   * driver-injected fact; if it is somehow unset, TARGET is left to propagate.
+   */
+  public runOverrides(extra?: Constraints): Constraints {
+    const host = this.context.getConstraint(HOST);
+    return { [BUILD_OPERATION]: "run", ...(host ? { [TARGET]: host } : {}), ...extra };
+  }
+
+  /**
+   * Resolve a global that names a **runnable tool** (e.g. `TSC`) to its host
+   * runnable — see getRunnableProperty; this is the global-property counterpart.
    */
   public getGlobalRunnable(name: string): Computable<RunnableFileSet> {
-    return this.getGlobalTarget(name, { [BUILD_OPERATION]: "run" }).then(sources => {
-      const runnable = sources.find((source): source is RunnableFileSet => source instanceof RunnableFileSet);
-      if (!runnable) {
-        throw new Error(`'${name}' must name a runnable (its BUILD_OPERATION=run result)`);
-      }
-      return runnable;
-    });
+    return this.getGlobalTarget(name, this.runOverrides()).then(sources => asRunnable(sources, name));
+  }
+
+  /**
+   * Resolve a FILES **property** that names a **runnable tool to execute now**
+   * (e.g. a `run` target's `tool`): resolved under runOverrides (BUILD_OPERATION=run
+   * with TARGET pinned to HOST, so the tool is its *host* binary even in a
+   * cross-build — a build-time tool executes on this machine), and asserted to be a
+   * RunnableFileSet. The caller launches it via `toCommandLine`. The host-pinning is
+   * internal by design: a consumer resolving a tool to run it needn't restate it.
+   */
+  public getRunnableProperty(name: string): Computable<RunnableFileSet> {
+    return this.getFileSets(name, this.runOverrides()).then(sources => asRunnable(sources, name));
   }
 
   /**
@@ -1078,18 +1124,6 @@ export class RepositoryContext {
    */
   public getGlobalString(name: string): Computable<string> {
     return this.context.getProperty(name).then(prop => prop.toString());
-  }
-
-  /**
-   * The raw value of an injected constraint, or undefined if unset. Unlike
-   * getGlobalString this never consults declarations or throws — it reads only
-   * what was injected. TODO: this survives solely for the host facts (HOST_OS /
-   * HOST_CPU), which gate os/cpu-specific optional deps and so need
-   * undefined-on-absent; they should become first-class non-overridable
-   * properties, after which this method can go and callers use getGlobalString.
-   */
-  public getConstraint(name: string): string | undefined {
-    return this.context.getConstraint(name);
   }
 
   /**

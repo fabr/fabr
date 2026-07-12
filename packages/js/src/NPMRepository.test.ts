@@ -35,10 +35,11 @@ import {
   ROOT_REQUIRER,
   Selected,
   SemverVersion,
+  TARGET,
   versionToString,
 } from "@fabr/core";
 import {
-  matchesHostPlatform,
+  matchesTargetPlatform,
   NPMRepository,
   npmPackageOfPath,
   platformGateAdmits,
@@ -192,46 +193,58 @@ describe("platformGateAdmits", () => {
   });
 });
 
-describe("matchesHostPlatform", () => {
-  const host = { os: "darwin", cpu: "arm64" };
+describe("matchesTargetPlatform", () => {
+  const target = { os: "darwin", cpu: "arm64" };
 
-  it("keeps the host-matching native variant", () => {
-    expect(matchesHostPlatform({ os: ["darwin"], cpu: ["arm64"] }, host)).to.equal(true);
+  it("keeps the target-matching native variant", () => {
+    expect(matchesTargetPlatform({ os: ["darwin"], cpu: ["arm64"] }, target)).to.equal(true);
   });
 
   it("rejects a variant for another os or cpu", () => {
-    expect(matchesHostPlatform({ os: ["linux"], cpu: ["arm64"] }, host)).to.equal(false);
-    expect(matchesHostPlatform({ os: ["darwin"], cpu: ["x64"] }, host)).to.equal(false);
+    expect(matchesTargetPlatform({ os: ["linux"], cpu: ["arm64"] }, target)).to.equal(false);
+    expect(matchesTargetPlatform({ os: ["darwin"], cpu: ["x64"] }, target)).to.equal(false);
   });
 
   it("keeps a platform-agnostic package (no gates)", () => {
-    expect(matchesHostPlatform({}, host)).to.equal(true);
+    expect(matchesTargetPlatform({}, target)).to.equal(true);
   });
 
-  it("requires both os and cpu to admit the host", () => {
-    expect(matchesHostPlatform({ os: ["darwin", "linux"], cpu: ["x64"] }, host)).to.equal(false);
-    expect(matchesHostPlatform({ os: ["darwin", "linux"], cpu: ["arm64", "x64"] }, host)).to.equal(true);
+  it("requires both os and cpu to admit the target", () => {
+    expect(matchesTargetPlatform({ os: ["darwin", "linux"], cpu: ["x64"] }, target)).to.equal(false);
+    expect(matchesTargetPlatform({ os: ["darwin", "linux"], cpu: ["arm64", "x64"] }, target)).to.equal(true);
+  });
+
+  it("gates on libc when the target declares one", () => {
+    const linuxGnu = { os: "linux", cpu: "x64", libc: "glibc" };
+    expect(matchesTargetPlatform({ os: ["linux"], cpu: ["x64"], libc: ["glibc"] }, linuxGnu)).to.equal(true);
+    expect(matchesTargetPlatform({ os: ["linux"], cpu: ["x64"], libc: ["musl"] }, linuxGnu)).to.equal(false);
+    /* A package with no libc gate admits any libc. */
+    expect(matchesTargetPlatform({ os: ["linux"], cpu: ["x64"] }, linuxGnu)).to.equal(true);
   });
 });
 
 describe("unsupportedPlatformReason", () => {
-  const host = { os: "linux", cpu: "x64" };
+  const target = { os: "linux", cpu: "x64", libc: "glibc" };
 
   it("returns undefined for a supported package", () => {
-    expect(unsupportedPlatformReason({ os: ["linux"], cpu: ["x64"] }, host)).to.equal(undefined);
-    expect(unsupportedPlatformReason({}, host)).to.equal(undefined);
+    expect(unsupportedPlatformReason({ os: ["linux"], cpu: ["x64"] }, target)).to.equal(undefined);
+    expect(unsupportedPlatformReason({}, target)).to.equal(undefined);
   });
 
   it("explains an os mismatch", () => {
-    expect(unsupportedPlatformReason({ os: ["darwin"] }, host)).to.equal("os 'linux' is not in [darwin]");
+    expect(unsupportedPlatformReason({ os: ["darwin"] }, target)).to.equal("os 'linux' is not in [darwin]");
   });
 
   it("explains a cpu mismatch", () => {
-    expect(unsupportedPlatformReason({ cpu: ["arm64"] }, host)).to.equal("cpu 'x64' is not in [arm64]");
+    expect(unsupportedPlatformReason({ cpu: ["arm64"] }, target)).to.equal("cpu 'x64' is not in [arm64]");
+  });
+
+  it("explains a libc mismatch", () => {
+    expect(unsupportedPlatformReason({ libc: ["musl"] }, target)).to.equal("libc 'glibc' is not in [musl]");
   });
 
   it("reports both when both mismatch", () => {
-    expect(unsupportedPlatformReason({ os: ["darwin"], cpu: ["arm64"] }, host)).to.equal(
+    expect(unsupportedPlatformReason({ os: ["darwin"], cpu: ["arm64"] }, target)).to.equal(
       "os 'linux' is not in [darwin]; cpu 'x64' is not in [arm64]"
     );
   });
@@ -268,11 +281,13 @@ function packageTarball(): FileSet {
  * to be skipped fails loudly if it isn't.
  */
 function fakeContext(operation: string, served: Record<string, FileSet>, fetched: string[]): RepositoryContext {
+  /* Properties the repository reads: the operation, and a fixed TARGET triple —
+   * test packages carry no os/cpu/libc gates, so it never filters anything; it
+   * only has to resolve (getJointResolution reads it for the memo key). */
+  const globals: Record<string, string> = { [BUILD_OPERATION]: operation, [TARGET]: "arm64-apple-macosx15.0" };
   return {
     getGlobalString: (name: string) =>
-      name === BUILD_OPERATION ? Computable.resolve(operation) : Computable.reject(new Error(`unexpected property: ${name}`)),
-    /* Host facts (HOST_OS / HOST_CPU) are unset in these tests: no os/cpu gating. */
-    getConstraint: () => undefined,
+      name in globals ? Computable.resolve(globals[name]) : Computable.reject(new Error(`unexpected property: ${name}`)),
     fetch: (url: string) => {
       fetched.push(url);
       return url in served ? Computable.resolve(served[url]) : Computable.reject(new Error(`unexpected fetch: ${url}`));

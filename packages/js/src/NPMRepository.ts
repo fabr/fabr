@@ -11,6 +11,7 @@ import {
   MemoryFile,
   MetadataFetchError,
   Name,
+  NpmPlatform,
   PACKAGE_RESOLUTION_PROVENANCE,
   PackageFileSet,
   PackageRegistry,
@@ -27,6 +28,8 @@ import {
   Selected,
   SEMVER,
   SemverVersion,
+  TARGET,
+  tripleToNpm,
   unpackStream,
   versionToString,
 } from "@fabr/core";
@@ -47,13 +50,15 @@ interface INPMPackageMetadata {
   optionalDependencies?: Record<string, string>;
   /**
    * Installability gates declared by a package on itself, in Node's
-   * process.platform / process.arch vocabulary; each is an allow-list, with a
-   * leading `!` negating an entry. Absent/empty means "any". (npm's `libc`
-   * gate — glibc/musl — is not yet honored; irrelevant to esbuild, whose Go
-   * binary is statically linked, but it splits rollup/swc/sharp builds.)
+   * process.platform / process.arch vocabulary (plus glibc/musl for `libc`); each
+   * is an allow-list, with a leading `!` negating an entry. Absent/empty means
+   * "any". Gated against the TARGET platform (see targetPlatform). `libc` splits
+   * rollup/swc/sharp native builds; it is irrelevant to esbuild, whose Go binary
+   * is statically linked.
    */
   os?: string[];
   cpu?: string[];
+  libc?: string[];
   dist: {
     fileCount?: number;
     integrity: string;
@@ -133,33 +138,40 @@ export function platformGateAdmits(gate: string[] | undefined, value: string | u
   return allowed.length === 0 || allowed.includes(value);
 }
 
+type PlatformGates = { os?: string[]; cpu?: string[]; libc?: string[] };
+
 /**
- * Whether a package declaring these os/cpu gates in its own metadata may run on
- * the given host — the test that keeps only the host-matching native-binary
- * variants out of a package's full set of platform optional dependencies.
+ * Whether a package declaring these os/cpu/libc gates in its own metadata may run
+ * on the given target platform — the test that keeps only the target-matching
+ * native-binary variants out of a package's full set of platform optional
+ * dependencies.
  */
-export function matchesHostPlatform(meta: { os?: string[]; cpu?: string[] }, host: { os?: string; cpu?: string }): boolean {
-  return platformGateAdmits(meta.os, host.os) && platformGateAdmits(meta.cpu, host.cpu);
+export function matchesTargetPlatform(meta: PlatformGates, target: NpmPlatform): boolean {
+  return (
+    platformGateAdmits(meta.os, target.os) &&
+    platformGateAdmits(meta.cpu, target.cpu) &&
+    platformGateAdmits(meta.libc, target.libc)
+  );
 }
 
 /**
- * A human-readable reason a package declaring these os/cpu gates cannot run on
- * the given host, or undefined if it can. Optional dependencies are filtered
- * out silently before selection; this is for the other side of npm's contract —
- * a *non-optional* dependency (or a direct requirement) on a package built for
- * another platform, which npm rejects as EBADPLATFORM rather than mounting an
- * unusable install.
+ * A human-readable reason a package declaring these os/cpu/libc gates cannot run
+ * on the given target platform, or undefined if it can. Optional dependencies are
+ * filtered out silently before selection; this is for the other side of npm's
+ * contract — a *non-optional* dependency (or a direct requirement) on a package
+ * built for another platform, which npm rejects as EBADPLATFORM rather than
+ * mounting an unusable install.
  */
-export function unsupportedPlatformReason(
-  meta: { os?: string[]; cpu?: string[] },
-  host: { os?: string; cpu?: string }
-): string | undefined {
+export function unsupportedPlatformReason(meta: PlatformGates, target: NpmPlatform): string | undefined {
   const parts: string[] = [];
-  if (!platformGateAdmits(meta.os, host.os)) {
-    parts.push(`os '${host.os ?? "(unknown)"}' is not in [${(meta.os ?? []).join(", ")}]`);
+  if (!platformGateAdmits(meta.os, target.os)) {
+    parts.push(`os '${target.os ?? "(unknown)"}' is not in [${(meta.os ?? []).join(", ")}]`);
   }
-  if (!platformGateAdmits(meta.cpu, host.cpu)) {
-    parts.push(`cpu '${host.cpu ?? "(unknown)"}' is not in [${(meta.cpu ?? []).join(", ")}]`);
+  if (!platformGateAdmits(meta.cpu, target.cpu)) {
+    parts.push(`cpu '${target.cpu ?? "(unknown)"}' is not in [${(meta.cpu ?? []).join(", ")}]`);
+  }
+  if (!platformGateAdmits(meta.libc, target.libc)) {
+    parts.push(`libc '${target.libc ?? "(unknown)"}' is not in [${(meta.libc ?? []).join(", ")}]`);
   }
   return parts.length === 0 ? undefined : parts.join("; ");
 }
@@ -359,32 +371,28 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
   }
 
   /**
-   * The host machine facts (Node's process.platform/process.arch vocabulary),
-   * driver-injected as HOST_OS / HOST_CPU constraints and read off this
-   * repository's (per-BuildContext-interned) context. Either component is
-   * undefined if unset. Used to gate os/cpu-specific optional dependencies.
-   *
-   * TODO: the last non-reporting getConstraint use. It stays because the gating
-   * needs undefined-on-absent, which the property read (getGlobalString) can't
-   * give; once HOST_OS / HOST_CPU are modelled as first-class non-overridable
-   * properties this reads them via getGlobalString like everything else.
+   * The platform we are building for, projected to npm's {os, cpu, libc}
+   * vocabulary — read off the TARGET property (a clang/LLVM triple; `default
+   * TARGET = ${HOST}`) via the same property surface every rule sees, then run
+   * through core's lossy `tripleToNpm`. Native selection consumes the triple
+   * verbatim; this projection is only what the npm os/cpu/libc gate matches on.
    */
-  private hostPlatform(): { os?: string; cpu?: string } {
-    return { os: this.context.getConstraint("HOST_OS"), cpu: this.context.getConstraint("HOST_CPU") };
+  private targetPlatform(): Computable<NpmPlatform> {
+    return this.context.getGlobalString(TARGET).then(triple => tripleToNpm(triple));
   }
 
   /**
    * PackageRegistry implementation: the requirements of pkg@version are its
    * declared `dependencies`, plus the `optionalDependencies` that are installable
-   * on this host. The dominant use of the latter is os/cpu-gated native binaries
+   * on the target. The dominant use of the latter is os/cpu-gated native binaries
    * (esbuild's @esbuild/<platform> engine): all variants are listed, and only the
-   * host-matching one(s) are kept. peerDependencies remain ignored.
+   * target-matching one(s) are kept. peerDependencies remain ignored.
    */
   public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
     return this.getVersionMetadata(pkg, versionToString(version)).then(meta => {
       /* npm's rule: an entry in optionalDependencies overrides the same name in
        * dependencies, so a dep listed in both is optional (os/cpu-gated, dropped
-       * if the host doesn't match). @parcel/watcher lists its per-platform native
+       * if the target doesn't match). @parcel/watcher lists its per-platform native
        * binaries in both — treating them as required would reject the ones for
        * other platforms as EBADPLATFORM. */
       const optionalNames = new Set(Object.keys(meta.optionalDependencies ?? {}));
@@ -399,17 +407,18 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
        * candidate must be probed. The match is version-stable (a package's target
        * platform doesn't change across releases), so probing the constraint's
        * minimum decides correctly whatever version selection ultimately picks. */
-      const host = this.hostPlatform();
-      return Computable.forAll(
-        optional.map(req => this.keepIfHostMatches(req, host)),
-        (...kept) => [...required, ...kept.filter((req): req is Requirement => req !== undefined)]
+      return this.targetPlatform().then(target =>
+        Computable.forAll(
+          optional.map(req => this.keepIfTargetMatches(req, target)),
+          (...kept) => [...required, ...kept.filter((req): req is Requirement => req !== undefined)]
+        )
       );
     });
   }
 
   /**
-   * Probe an optional dependency's os/cpu gates, returning it as a requirement
-   * only if this host satisfies them (else undefined). A candidate that can't be
+   * Probe an optional dependency's os/cpu/libc gates, returning it as a requirement
+   * only if the target satisfies them (else undefined). A candidate that can't be
    * probed — unparseable pin, no version to probe, or an unreachable/unpublished
    * metadata document — is dropped non-fatally, per npm's optional-dependency
    * contract (a genuinely-needed absence surfaces at the consumer's own runtime
@@ -417,7 +426,7 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
    * a matched-but-unfetchable probe deserves a diagnostic once the progress layer
    * carries warnings; a plain platform mismatch stays silent.
    */
-  private keepIfHostMatches(req: Requirement, host: { os?: string; cpu?: string }): Computable<Requirement | undefined> {
+  private keepIfTargetMatches(req: Requirement, target: NpmPlatform): Computable<Requirement | undefined> {
     let probeVersion: string;
     try {
       const constraint = SEMVER.parseConstraint(req.constraint);
@@ -429,7 +438,7 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
       return Computable.resolve(undefined);
     }
     return this.getVersionMetadata(req.pkg, probeVersion).then(
-      meta => (matchesHostPlatform(meta, host) ? req : undefined),
+      meta => (matchesTargetPlatform(meta, target) ? req : undefined),
       () => undefined
     );
   }
@@ -444,57 +453,58 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
    * don't poison the cache.
    */
   private getJointResolution(roots: Requirement[], rootKeys: string[]): Computable<Selected<SemverVersion>[]> {
-    /* The resolution now depends on the host platform (it filters os/cpu-gated
+    /* The resolution depends on the target platform (it filters os/cpu/libc-gated
      * optional deps), so the memo key must carry it — otherwise a resolution
-     * computed on one host would be served on another. */
-    const host = this.hostPlatform();
-    const hostKey = `${host.os ?? "?"}-${host.cpu ?? "?"}`;
-    return this.context
-      .memoize("npm:resolve:3", `${this.url} ${hostKey} ${rootKeys.join(" ")}`, () => {
-        /* A memo miss means real resolution work on behalf of the consumer */
-        this.context.notifyProgress({ kind: "repository-resolve", repository: this.context.target, requirements: rootKeys });
-        return resolveMVS(roots, SEMVER, this).then(resolution => {
-          if (resolution.errors.length > 0) {
-            throw new Error(`Unable to resolve ${rootKeys.join(", ")}:\n  ${resolution.errors.join("\n  ")}`);
-          }
-          return this.verifiedResolutionDoc(roots, resolution.selections, host);
+     * computed for one target would be served for another. */
+    return this.targetPlatform().then(target => {
+      const targetKey = `${target.os ?? "?"}-${target.cpu ?? "?"}-${target.libc ?? "?"}`;
+      return this.context
+        .memoize("npm:resolve:4", `${this.url} ${targetKey} ${rootKeys.join(" ")}`, () => {
+          /* A memo miss means real resolution work on behalf of the consumer */
+          this.context.notifyProgress({ kind: "repository-resolve", repository: this.context.target, requirements: rootKeys });
+          return resolveMVS(roots, SEMVER, this).then(resolution => {
+            if (resolution.errors.length > 0) {
+              throw new Error(`Unable to resolve ${rootKeys.join(", ")}:\n  ${resolution.errors.join("\n  ")}`);
+            }
+            return this.verifiedResolutionDoc(roots, resolution.selections, target);
+          });
+        })
+        .then(files => files.readFile(RESOLUTION_FILE))
+        .then(data => {
+          const doc = JSON.parse(data) as IResolutionDoc;
+          return doc.selections.map(entry => ({
+            pkg: entry.pkg,
+            version: parseVersion(entry.version),
+            selectedBy: entry.selectedBy,
+            reachedVia: entry.reachedVia,
+            reachableFrom: entry.reachableFrom,
+          }));
         });
-      })
-      .then(files => files.readFile(RESOLUTION_FILE))
-      .then(data => {
-        const doc = JSON.parse(data) as IResolutionDoc;
-        return doc.selections.map(entry => ({
-          pkg: entry.pkg,
-          version: parseVersion(entry.version),
-          selectedBy: entry.selectedBy,
-          reachedVia: entry.reachedVia,
-          reachableFrom: entry.reachableFrom,
-        }));
-      });
+    });
   }
 
   /**
-   * Validate the resolved closure against the host platform, then serialize it.
-   * Optional deps were already filtered to this host, so any os/cpu mismatch
+   * Validate the resolved closure against the target platform, then serialize it.
+   * Optional deps were already filtered to the target, so any os/cpu/libc mismatch
    * remaining is a *non-optional* dependency (or a direct requirement) on a
    * package for another platform — npm's EBADPLATFORM — and is an error rather
    * than an unusable install. Each selection's metadata was fetched during the
-   * resolution walk, so these are cache hits. (Override HOST_OS / HOST_CPU with
-   * -D to resolve for a different platform.)
+   * resolution walk, so these are cache hits. (Override TARGET with -D to resolve
+   * for a different platform.)
    */
   private verifiedResolutionDoc(
     roots: Requirement[],
     selections: Selected<SemverVersion>[],
-    host: { os?: string; cpu?: string }
+    target: NpmPlatform
   ): Computable<FileSet> {
     return Computable.forAll(
       selections.map(sel => this.getVersionMetadata(sel.pkg, versionToString(sel.version)).then(meta => ({ sel, meta }))),
       (...entries) => {
         for (const { sel, meta } of entries) {
-          const reason = unsupportedPlatformReason(meta, host);
+          const reason = unsupportedPlatformReason(meta, target);
           if (reason) {
             throw new Error(
-              `${sel.pkg}@${versionToString(sel.version)} is not supported on this host (${reason}), ` +
+              `${sel.pkg}@${versionToString(sel.version)} is not supported for the target platform (${reason}), ` +
                 `required by ${sel.reachedVia?.requiredBy ?? "a direct requirement"}`
             );
           }
