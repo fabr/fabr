@@ -24,7 +24,7 @@ import { Name } from "../model/Name";
 
 import { Computable, ComputableSource, ComputableState } from "./Computable";
 import { FileSet, IFile, FileSource } from "./FileSet";
-import { hashFile, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
+import { hashFile, isNotFound, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
 import { toError } from "./Errors";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
 import { globMatcher, globPrefixRegex, globScan } from "../support/Glob";
@@ -93,7 +93,7 @@ type Matcher = (rel: string) => boolean;
  * (a single-file `get` is just a query over a literal, non-glob path).
  */
 class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
-  private readonly files = new Map<string, Computable<FSFile>>();
+  private readonly files = new Map<string, Computable<FSFile | undefined>>();
   private matches: Matcher = () => false;
   private lastManifest: string | undefined;
 
@@ -159,8 +159,17 @@ class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
       if (manifest === this.lastManifest) {
         return null;
       }
-      this.lastManifest = manifest;
-      return { invalidate: () => this.invalidate(), settle: () => this.settle(ComputableState.Valid, fileSet) };
+      /* Advance the memo only when we actually commit the value (in settle), not
+       * here in the prepare phase — so a batch that drops this update (a sibling
+       * failed) leaves lastManifest matching the still-settled value, and the
+       * next recompute sees the change rather than skipping it as unchanged. */
+      return {
+        invalidate: () => this.invalidate(),
+        settle: () => {
+          this.lastManifest = manifest;
+          this.settle(ComputableState.Valid, fileSet);
+        },
+      };
     });
   }
 }
@@ -270,9 +279,18 @@ export class FSFileSource implements FileSource {
   /** Turn a tree-relative path into a tracked FSFile. Public because a {@link TreeQuery}
    * (a separate class) calls it to seed and update its file map; overridable so a subclass
    * ({@link SourceFileSource}) can blob-back the content. */
-  public ingest(filename: string): Computable<FSFile> {
+  public ingest(filename: string): Computable<FSFile | undefined> {
     const filepath = path.resolve(this.root, filename);
-    return hashFile(filepath).then(hash => new FSFile(this.root, filename, fs.statSync(filepath), hash));
+    return hashFile(filepath)
+      .then(hash => stat(filepath).then(stats => new FSFile(this.root, filename, stats, hash)))
+      .catch(err => {
+        /* Gone since the event fired (the save-rename dance): treat as absent —
+         * a later create/change event re-adds it — never a hard error. */
+        if (isNotFound(err)) {
+          return undefined;
+        }
+        throw err;
+      });
   }
 
   public get(name: string): ComputableSource<IFile | undefined> {
@@ -306,14 +324,19 @@ export const FS = {
  * `alias:path` strip + the caller's `prefix`). Shared by the one-shot and live
  * `find` paths. */
 function buildFileSet(
-  files: Map<string, Computable<FSFile>>,
+  files: Map<string, Computable<FSFile | undefined>>,
   prefix: string,
   stripPrefix: RegExp | undefined
 ): Computable<FileSet> {
   return Computable.forAll(
     Array.from(files.values()),
-    (...done) =>
-      new FileSet(done.reduce((result, file) => result.set(prefix + removePrefix(file.name, stripPrefix), file), new Map<string, IFile>()))
+    (...done: (FSFile | undefined)[]) =>
+      new FileSet(
+        done.reduce(
+          (result, file) => (file ? result.set(prefix + removePrefix(file.name, stripPrefix), file) : result),
+          new Map<string, IFile>()
+        )
+      )
   );
 }
 

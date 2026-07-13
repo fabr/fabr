@@ -17,10 +17,9 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import * as fs from "fs";
 import * as path from "path";
 import { Computable, ComputableSource } from "./Computable";
-import { hashString, readFileBuffer } from "./FSWrapper";
+import { hashString, isNotFound, readFileBuffer, stat } from "./FSWrapper";
 import { BuildCache } from "./BuildCache";
 import { FSFile, FSFileSource } from "./FSFileSource";
 import { FileSet, IFile } from "./FileSet";
@@ -72,15 +71,25 @@ export class SourceFileSource extends FSFileSource {
    * Read the file once, hash those exact bytes, and ingest them into the blob
    * store; return an FSFile whose content is read from the immutable blob.
    */
-  public override ingest(filename: string): Computable<FSFile> {
+  public override ingest(filename: string): Computable<FSFile | undefined> {
     const filepath = path.resolve(this.root, filename);
-    const fileStat = fs.statSync(filepath);
-    return readFileBuffer(filepath).then(bytes => {
-      const hash = hashString(bytes);
-      return this.cache
-        .ensureBlob(hash, bytes)
-        .then(blobPath => new FSFile(this.root, filename, { size: fileStat.size, mtime: fileStat.mtime }, hash, blobPath));
-    });
+    return readFileBuffer(filepath)
+      .then(bytes =>
+        stat(filepath).then(fileStat => {
+          const hash = hashString(bytes);
+          return this.cache
+            .ensureBlob(hash, bytes)
+            .then(blobPath => new FSFile(this.root, filename, { size: fileStat.size, mtime: fileStat.mtime }, hash, blobPath));
+        })
+      )
+      .catch(err => {
+        /* Gone since the event fired: absent, not an error (and never a sync
+         * throw into the watcher callback, as the old statSync could be). */
+        if (isNotFound(err)) {
+          return undefined;
+        }
+        throw err;
+      });
   }
 }
 

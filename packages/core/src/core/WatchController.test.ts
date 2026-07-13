@@ -46,6 +46,30 @@ const changeEntry = (record: (event: string) => void): WatchEntry => ({
     Computable.resolve<PreparedUpdate | null>({ invalidate: () => record("invalidate"), settle: () => record("settle") }),
 });
 
+/** An entry whose recompute stays pending until a resolver (one per call, in
+ * order) is invoked — so a test can hold a flush open and interleave further
+ * events, exercising the in-flight/serialization paths. */
+function controllable(): {
+  entry: WatchEntry & { recomputes: number };
+  resolvers: Array<(update: PreparedUpdate | null) => void>;
+} {
+  const resolvers: Array<(update: PreparedUpdate | null) => void> = [];
+  const entry = {
+    recomputes: 0,
+    recompute(): Computable<PreparedUpdate | null> {
+      this.recomputes++;
+      return Computable.from<PreparedUpdate | null>(res => resolvers.push(res));
+    },
+  };
+  return { entry, resolvers };
+}
+
+/** A PreparedUpdate that records its settle under `tag`. */
+const taggedUpdate = (settled: string[], tag: string): PreparedUpdate => ({
+  invalidate: () => {},
+  settle: () => settled.push(tag),
+});
+
 describe("WatchController", () => {
   let timer: FakeTimer;
   beforeEach(() => {
@@ -86,6 +110,75 @@ describe("WatchController", () => {
     controller.notifyChanged(unchanged);
     timer.fire();
     expect(applied).to.deep.equal(["invalidate", "settle"]);
+  });
+
+  it("keeps the rest of the batch when one entry's recompute fails, and retries that entry", () => {
+    const errors: Error[] = [];
+    const controller = new WatchController(50, timer, err => errors.push(err));
+    const applied: string[] = [];
+    let badRecomputes = 0;
+    const bad: WatchEntry = {
+      recompute: () => {
+        badRecomputes++;
+        return Computable.reject<PreparedUpdate | null>(new Error("io fail"));
+      },
+    };
+    controller.notifyChanged(changeEntry(event => applied.push(event)));
+    controller.notifyChanged(bad);
+    timer.fire();
+
+    /* The good entry still applied; the failure was surfaced, not swallowed. */
+    expect(applied).to.deep.equal(["invalidate", "settle"]);
+    expect(errors.map(err => err.message)).to.deep.equal(["io fail"]);
+    expect(badRecomputes).to.equal(1);
+
+    /* The failed entry was re-marked dirty, so a later flush retries it. */
+    controller.notifyChanged(changeEntry(() => {}));
+    timer.fire();
+    expect(badRecomputes).to.equal(2);
+  });
+
+  it("does not start a second flush while one is still in flight", () => {
+    const controller = new WatchController(50, timer);
+    const a = controllable();
+    controller.notifyChanged(a.entry);
+    timer.fire(); // flush #1 begins; a's recompute is pending
+    expect(a.entry.recomputes).to.equal(1);
+
+    /* A fresh event fires the timer again while flush #1 is still open. */
+    const b = controllable();
+    controller.notifyChanged(b.entry);
+    timer.fire();
+    /* No concurrent flush: b is not recomputed until flush #1 finishes. */
+    expect(b.entry.recomputes).to.equal(0);
+    expect(a.entry.recomputes).to.equal(1);
+
+    /* Finish flush #1 (a reports no change); the accumulated batch (b) flushes next. */
+    a.resolvers[0](null);
+    timer.fire();
+    expect(b.entry.recomputes).to.equal(1);
+  });
+
+  it("skips settling an entry re-touched while its recompute was in flight, and retries it", () => {
+    const controller = new WatchController(50, timer);
+    const settled: string[] = [];
+    const c = controllable();
+
+    controller.notifyChanged(c.entry);
+    timer.fire(); // flush #1; c's recompute pending
+    expect(c.entry.recomputes).to.equal(1);
+
+    /* A fresh event for c lands while its recompute is still in flight; then the
+     * (now stale) recompute #1 resolves. */
+    controller.notifyChanged(c.entry);
+    c.resolvers[0](taggedUpdate(settled, "stale"));
+    expect(settled).to.deep.equal([]); // superseded — the stale update is NOT settled
+
+    /* c is retried; its fresh update settles. */
+    timer.fire();
+    expect(c.entry.recomputes).to.equal(2);
+    c.resolvers[1](taggedUpdate(settled, "fresh"));
+    expect(settled).to.deep.equal(["fresh"]);
   });
 
   it("advances the cycle (onBeforeApply) once per applied batch, and not when nothing changed", () => {

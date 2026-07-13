@@ -38,6 +38,13 @@ export function stat(filename: string): Computable<fs.Stats> {
   });
 }
 
+/** Whether an fs error means the path simply isn't there (vanished, or never
+ * existed) rather than a genuine IO failure — so a caller can treat a file that
+ * disappeared mid-event as absent instead of erroring. */
+export function isNotFound(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
+}
+
 export function readFile(filepath: string, encoding: BufferEncoding = "utf8"): Computable<string> {
   return Computable.from<string>((resolve, reject) => {
     fs.readFile(filepath, encoding, (err, data) => {

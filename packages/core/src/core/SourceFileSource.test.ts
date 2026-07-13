@@ -67,6 +67,15 @@ describe("SourceFileSource", () => {
     expect(file?.hash).to.equal(hashString("ok"));
   });
 
+  it("treats a vanished file as absent without throwing synchronously", async () => {
+    const src = new SourceFileSource(sourceRoot, cache);
+    /* The old statSync ran synchronously at the top of ingest, throwing straight
+     * into the watcher callback for a file gone mid-event; ingest must instead
+     * return a Computable that resolves to 'absent'. */
+    const computable = src.ingest("gone.txt");
+    expect(await toPromise(computable)).to.equal(undefined);
+  });
+
   it("serves source content from an immutable blob, keeping the source path as its display name", async () => {
     const filePath = path.join(sourceRoot, "a.txt");
     fs.writeFileSync(filePath, "original");

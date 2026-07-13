@@ -368,6 +368,76 @@ describe("Computable", () => {
     expect(consumerRuns).to.equal(2);
   });
 
+  it("ignores a stale async result when the inputs changed while it was in flight", () => {
+    /* The watch-mode hazard: a node whose fn returned a still-pending inner (an
+     * action running tsc) is re-invalidated by a newer batch before that inner
+     * settles. It must re-run against the new input and drop the stale inner's
+     * eventual settle — never flip to Valid with the superseded value. */
+    let resolveInput: (value: number) => void = () => {};
+    const input = Computable.from<number>(res => {
+      resolveInput = res;
+    });
+    resolveInput(1);
+
+    /* Each run returns a fresh, manually-resolved inner (an async computation). */
+    const inners: Array<(value: number) => void> = [];
+    let runs = 0;
+    const node = input.then(() => {
+      runs++;
+      return Computable.from<number>(res => inners.push(res));
+    });
+    const values: number[] = [];
+    node.then(v => values.push(v));
+
+    expect(runs).to.equal(1); // ran once, pending on inner0 — not yet settled
+    expect(values).to.deep.equal([]);
+
+    /* Input changes while inner0 is still in flight: the node re-runs (inner1). */
+    resolveInput(2);
+    expect(runs).to.equal(2);
+
+    /* The stale inner0 finally resolves — it was superseded, so it's ignored. */
+    inners[0](100);
+    expect(values).to.deep.equal([]);
+
+    /* The fresh inner1 resolves — that's the value that settles. */
+    inners[1](200);
+    expect(values).to.deep.equal([200]);
+  });
+
+  it("lets an in-flight child settle through a bare invalidate, corrected on the next re-settle", () => {
+    /* The interleaving: parent runs (child C1 in flight), parent's input is
+     * invalidated AGAIN while C1 runs, then C1 finishes. Whether C1's settle lands
+     * depends on whether that second invalidation re-ran the parent (unbinding C1)
+     * or merely marked it. A *bare* invalidate (no new value) does NOT re-run the
+     * parent — so C1 settles through. This is NOT the two-phase flush pattern, where
+     * invalidate is followed synchronously by settle, which re-runs the parent and
+     * sheds C1 (see "ignores a stale async result…"). */
+    const input = new TestSource<number>();
+    const children: Array<(value: number) => void> = [];
+    let runs = 0;
+    const parent = input.then(() => {
+      runs++;
+      return Computable.from<number>(res => children.push(res));
+    });
+    const values: number[] = [];
+    parent.then(v => values.push(v));
+    input.set(1);
+    expect(runs).to.equal(1);
+    expect(values).to.deep.equal([]); // C1 in flight, parent not yet settled
+
+    input.invalidate(); // bare — marks stale, does not re-run the parent
+    expect(runs).to.equal(1);
+    children[0](100); // stale C1 finishes — and settles through
+    expect(values).to.deep.equal([100]);
+
+    /* But it's a transient, not a lost update: an actual re-settle re-runs the parent. */
+    input.set(2);
+    expect(runs).to.equal(2);
+    children[1](200);
+    expect(values).to.deep.equal([100, 200]);
+  });
+
   it("finally runs its side effect on either outcome and passes the result through", () => {
     let resolve: (value: number) => void = () => {};
     const src = Computable.from<number>(res => {
