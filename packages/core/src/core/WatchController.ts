@@ -41,6 +41,11 @@ export interface WatchEntry {
   recompute(): Computable<PreparedUpdate | null>;
 }
 
+/** The result of recomputing one entry in a batch: its update (possibly `null`
+ * for a no-op), or the error that entry raised — captured per entry so a single
+ * failure doesn't reject the whole batch's {@link Computable.forAll}. */
+type EntryOutcome = { entry: WatchEntry; update: PreparedUpdate | null } | { entry: WatchEntry; error: Error };
+
 /**
  * Injectable timer so the debounce is deterministically testable (a fake clock)
  * without real `setTimeout` delays.
@@ -68,6 +73,10 @@ const defaultTimer: WatchTimer = {
 export class WatchController {
   private readonly dirty = new Set<WatchEntry>();
   private handle: unknown;
+  /** True while a batch is being recomputed/applied. Only one flush runs at a
+   * time: a timer firing during it is a no-op, and the flush re-arms on completion
+   * if more work accrued — so batches can't overlap and settle out of order. */
+  private flushing = false;
   private readonly closers = new Set<() => void | Promise<void>>();
   private closed = false;
 
@@ -109,6 +118,11 @@ export class WatchController {
       return;
     }
     this.dirty.add(entry);
+    this.scheduleFlush();
+  }
+
+  /** (Re)arm the quiet-window timer for a flush. */
+  private scheduleFlush(): void {
     if (this.handle !== undefined) {
       this.timer.clear(this.handle);
     }
@@ -117,25 +131,69 @@ export class WatchController {
 
   private flush(): void {
     this.handle = undefined;
+    /* Only one batch in flight: a timer firing mid-flush is a no-op — the running
+     * flush re-arms on completion if more accrued. This serializes batches so a
+     * slow batch can't settle after a newer one and stick (and lets us drop an
+     * entry re-touched mid-flight, below). */
+    if (this.flushing) {
+      return;
+    }
     const batch = Array.from(this.dirty);
     this.dirty.clear();
     if (batch.length === 0) {
       return;
     }
+    this.flushing = true;
+    /* Recompute every entry independently so one entry's failure can't sink the
+     * rest of the batch: each yields either its update or its error. The good
+     * updates are applied atomically; a failed entry is surfaced via onError and
+     * re-marked dirty (retried on a later flush), settling nothing — its leaf
+     * keeps its last-good value, consistent because the memo only advances in a
+     * settle that never ran. */
     Computable.forAll(
-      batch.map(entry => entry.recompute()),
-      (...updates) => {
-        const changed = updates.filter((update): update is PreparedUpdate => update !== null);
-        if (changed.length === 0) {
+      batch.map(entry =>
+        entry.recompute().then<EntryOutcome>(
+          update => ({ entry, update }),
+          (error: Error) => ({ entry, error })
+        )
+      ),
+      (...outcomes) => {
+        this.flushing = false;
+        if (this.closed) {
           return;
         }
-        this.onBeforeApply();
-        /* Two phases: invalidate the whole affected frontier, THEN settle it, so
-         * a node fed by several changed leaves recomputes once, not once each. */
-        changed.forEach(update => update.invalidate());
-        changed.forEach(update => update.settle());
+        const changed: PreparedUpdate[] = [];
+        for (const outcome of outcomes) {
+          /* Re-touched while this flush ran → its result is already stale; skip it
+           * (never settle it), leaving it dirty for the next flush to recompute
+           * from fresh state — so the superseded value never enters the graph. */
+          if (this.dirty.has(outcome.entry)) {
+            continue;
+          }
+          if ("error" in outcome) {
+            this.dirty.add(outcome.entry);
+            this.onError(outcome.error);
+          } else if (outcome.update) {
+            changed.push(outcome.update);
+          }
+        }
+        if (changed.length > 0) {
+          this.onBeforeApply();
+          /* Two phases: invalidate the whole affected frontier, THEN settle it, so
+           * a node fed by several changed leaves recomputes once, not once each. */
+          changed.forEach(update => update.invalidate());
+          changed.forEach(update => update.settle());
+        }
+        /* Anything still dirty — superseded (skipped above) or re-marked on error —
+         * gets its own flush once the quiet window elapses again. */
+        if (this.dirty.size > 0) {
+          this.scheduleFlush();
+        }
       },
-      err => this.onError(err)
+      err => {
+        this.flushing = false;
+        this.onError(err);
+      }
     );
   }
 
