@@ -23,7 +23,7 @@ import { hashString, isNotFound, readFileBuffer, stat } from "./FSWrapper";
 import { BuildCache } from "./BuildCache";
 import { FSFile, FSFileSource } from "./FSFileSource";
 import { FileSet, IFile } from "./FileSet";
-import { Name } from "../model/Name";
+import { Name } from "./Name";
 import { WatchController } from "./WatchController";
 
 /**

@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Name } from "./Name";
+import { Name } from "../core/Name";
 import { StringReader } from "../support/StringReader";
 import { FileSource } from "../core/FileSet";
 import { ISourceSpan } from "../support/Log";
@@ -64,6 +64,7 @@ export enum PropertyType {
   StringList,
   FileSetList,
   OutputFileSet,
+  Rewrite,
 }
 
 export interface IPropertySchema {

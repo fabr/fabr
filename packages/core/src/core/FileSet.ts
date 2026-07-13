@@ -18,11 +18,10 @@
  */
 
 import * as path from "path";
-import { Name } from "../model/Name";
+import { Name } from "./Name";
 import { Computable, ComputableSource } from "./Computable";
 import { IProvenanceStep } from "./Provenance";
 import { ConflictError } from "./Errors";
-import { globMatcher } from "../support/Glob";
 
 export interface IFile {
   hash: string;
@@ -112,14 +111,11 @@ export class FileSet implements FileSource {
   }
 
   public find(name: Name, prefix = ""): Computable<FileSet> {
-    const newContent = new Map<string, IFile>();
-    const matcher = globMatcher(name.toString());
-    for (const [path, file] of this.content) {
-      if (matcher(path)) {
-        newContent.set(prefix + path, file);
-      }
-    }
-    return Computable.resolve(new FileSet(newContent, this.origin));
+    /* The name owns what a projection means (glob-select under `prefix`, or a
+     * `sel -> tmpl` rename); find just applies it. Through the checked rename so
+     * a user rename's name collisions surface — a plain glob projection can't
+     * collide (distinct paths stay distinct under a constant prefix). */
+    return Computable.resolve(this.rename(name.makeProjector(prefix)));
   }
 
   /**
@@ -207,6 +203,40 @@ export class FileSet implements FileSource {
       }
     }
 
+    return new FileSet(result, this.origin);
+  }
+
+  /**
+   * Apply a name projection: `renamer` maps each file's path to its result name
+   * (undefined drops it), returning a new FileSet. This is the loop behind
+   * {@link find} — a plain glob projection and a `sel -> tmpl` rename alike — and
+   * the direct home of the collision rule: unlike {@link remap} (silently
+   * last-wins, for rule-internal layout), two *different* files projected to one
+   * name is a **conflict**, reported with both sides attributed via provenance;
+   * the same file arriving twice at one name is fine (identity dedup, as in
+   * {@link unionAll}). A plain glob projection never collides (distinct paths
+   * stay distinct), so only a user rename can trip it.
+   */
+  public rename(renamer: (name: string, file: IFile) => string | undefined): FileSet {
+    const result = new Map<string, IFile>();
+    const sourceName = new Map<string, string>();
+    for (const [name, file] of this.content) {
+      const newName = renamer(name, file);
+      if (newName === undefined) {
+        continue;
+      }
+      const existing = result.get(newName);
+      if (existing && !existing.isSameFile(file)) {
+        throw new ConflictError(
+          "renamed files",
+          newName,
+          { provenance: this.origin, detail: sourceName.get(newName) ?? existing.getDisplayName() },
+          { provenance: this.origin, detail: name }
+        );
+      }
+      result.set(newName, file);
+      sourceName.set(newName, name);
+    }
     return new FileSet(result, this.origin);
   }
 

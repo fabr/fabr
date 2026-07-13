@@ -22,7 +22,7 @@ import { FileSet, FileSource } from "./FileSet";
 import { PackageFileSet } from "./PackageFileSet";
 import { RunnableFileSet } from "./RunnableFileSet";
 import { chainSteps, IProvenanceStep } from "./Provenance";
-import { Name } from "../model/Name";
+import { Name } from "./Name";
 
 /**
  * One resolved root of a {@link Resolution}: the input reference and the name
@@ -155,9 +155,10 @@ export class RepositoryRef {
    * Finding within a reference yields a narrower reference: once resolved,
    * only the files matching the given name remain (still resolved together
    * with everything else at the collection point), renamed under the given
-   * prefix per the written-name rule. Note that a RepositoryRef is
-   * deliberately NOT a FileSource — it cannot honestly promise files, only a
-   * narrower reference.
+   * prefix per the written-name rule. A rename projection rides as a facet on
+   * `name` (`sel -> tmpl`), applied by find like any other. Note that a
+   * RepositoryRef is deliberately NOT a FileSource — it cannot honestly promise
+   * files, only a narrower reference.
    */
   public find(name: Name, prefix = ""): RepositoryRef {
     return new RepositoryRef(this.source, this.name, [...this.projections, { pattern: name, prefix }], this.steps);
@@ -172,7 +173,8 @@ export class RepositoryRef {
     for (const projection of this.projections) {
       /* Each projection narrows on the artifact's own terms (FileSource.find):
        * a package filters files (remapped under the prefix); a runnable re-points
-       * its launch entry, ignoring the prefix. */
+       * its launch entry, ignoring the prefix; a rename target (a facet on the
+       * pattern) replays result names, degrading a subtype to a plain FileSet. */
       result = result.then(files => files.find(projection.pattern, projection.prefix));
     }
     return result.then(files => {

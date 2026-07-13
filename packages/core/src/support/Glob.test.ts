@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { globMatcher, globPrefixRegex, globScan } from "./Glob";
+import { globCaptureRegex, globMatcher, globPrefixRegex } from "./Glob";
 
 describe("globMatcher", () => {
   it("matches dotfiles under a directory expansion", () => {
@@ -57,14 +57,31 @@ describe("globPrefixRegex", () => {
   });
 });
 
-describe("globScan", () => {
-  it("extracts the static base and glob-ness of a pattern", () => {
-    const globbed = globScan("packages/core/src/**/*.ts");
-    expect(globbed.base).to.equal("packages/core/src");
-    expect(globbed.isGlob).to.equal(true);
+describe("globCaptureRegex", () => {
+  const caps = (glob: string, path: string): (string | undefined)[] | null => {
+    const m = globCaptureRegex(glob).exec(path);
+    return m ? m.slice(1) : null;
+  };
 
-    const literal = globScan("src/foo.ts");
-    expect(literal.base).to.equal("src/foo.ts");
-    expect(literal.isGlob).to.equal(false);
+  it("captures one group per wildcard in order", () => {
+    expect(caps("*.ts", "foo.ts")).to.deep.equal(["foo"]);
+    expect(caps("*/*.ts", "a/foo.ts")).to.deep.equal(["a", "foo"]);
+    expect(caps("*.min.js", "foo.min.js")).to.deep.equal(["foo"]);
+  });
+
+  it("leaves a zero-segment globstar group unmatched (String.replace substitutes it as '')", () => {
+    expect(caps("**/*.ts", "a/b/foo.ts")).to.deep.equal(["a/b", "foo"]);
+    expect(caps("**/*.ts", "foo.ts")).to.deep.equal([undefined, "foo"]);
+    expect(caps("src/**", "src/a/b")).to.deep.equal(["a/b"]);
+    expect(caps("src/**", "src")).to.deep.equal([undefined]);
+    expect(caps("src/**/x.ts", "src/x.ts")).to.deep.equal([undefined]);
+  });
+
+  it("is anchored — null for a non-match", () => {
+    expect(globCaptureRegex("*.ts").exec("foo.js")).to.equal(null);
+  });
+
+  it("matches dotfiles (same policy as globMatcher)", () => {
+    expect(caps("**/*", "a/.hidden/x")).to.deep.equal(["a/.hidden", "x"]);
   });
 });

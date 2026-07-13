@@ -28,6 +28,7 @@ export enum PropertyType {
   StringList,
   FileSetList,
   OutputFileSet,
+  Rewrite,
 }
 
 /**

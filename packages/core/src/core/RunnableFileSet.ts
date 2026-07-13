@@ -18,7 +18,7 @@
  */
 
 import * as path from "path";
-import { Name } from "../model/Name";
+import { Name } from "./Name";
 import { Computable } from "./Computable";
 import { EMPTY_FILESET, FileSet, IFile } from "./FileSet";
 import { IProvenanceStep } from "./Provenance";
@@ -93,6 +93,12 @@ export class RunnableFileSet extends FileSet {
    * find, so a miss reports through the shared "matched no files" path. The
    * written-name `prefix` renames result files, meaningless here, so it is ignored
    * (this override omits it).
+   *
+   * A rename projection (`sel -> tmpl`) rides the same path — FileSet.find applies
+   * it to the surface names, still re-wrapped as a runnable (`find` on a runnable
+   * always yields a runnable). It renames only the find-surface, not the install:
+   * a bin still launches by its rename-invariant target. (Renaming a runnable is a
+   * degenerate operation — nothing depends on it — but is allowed for uniformity.)
    */
   public find(name: Name): Computable<FileSet> {
     return (this.selected ?? this.surface)

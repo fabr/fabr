@@ -33,7 +33,7 @@ import {
   PropertyType,
 } from "./AST";
 import { Diagnostic, ISourcePosition, Log, LogLevel } from "../support/Log";
-import { Name, NameBuilder, NameConstraint } from "./Name";
+import { Name, NameBuilder, NameConstraint } from "../core/Name";
 import { EMPTY_FILESET, FileSource } from "../core/FileSet";
 
 enum TokenType {
@@ -48,6 +48,7 @@ enum TokenType {
   RANGLE,
   COMMA,
   SEMI,
+  ARROW,
   ERROR = -1,
 }
 
@@ -105,11 +106,17 @@ const TOKEN_NAME_MAP = {
   [TokenType.RANGLE]: "'>'",
   [TokenType.COMMA]: "','",
   [TokenType.SEMI]: "';'",
+  [TokenType.ARROW]: "'->'",
   [TokenType.ERROR]: "ERROR",
 };
 
 function isWhitespace(ch: number): boolean {
   return ch === CHAR_NEWLINE || isWhiteSpaceChar(ch);
+}
+
+/** The `->` arrow must be whitespace-delimited: what may follow the `>`. */
+function isArrowTerminator(ch: number | undefined): boolean {
+  return ch === undefined || isWhitespace(ch);
 }
 
 function isFirstIdentChar(ch: number): boolean {
@@ -175,6 +182,10 @@ const DIAG_DUP_CONSTRAINT = new Diagnostic<{ key: string; loc: ISourcePosition }
 const DIAG_UNEXPECTED_EOF = new Diagnostic<{ expected: string; loc: ISourcePosition }>(
   LogLevel.Error,
   "Unexpected end of file, expected {expected}"
+);
+const DIAG_RENAME_TEMPLATE = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
+  LogLevel.Error,
+  "Invalid rename template: {detail}"
 );
 const DIAG_INVALID_INCLUDE = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
@@ -497,6 +508,21 @@ export class BuildParser {
         this.reader.next();
         this.token = { type: TokenType.SEMI, start };
         break;
+      case CHAR_DASH:
+        /* A whitespace-delimited `->` is the rename ARROW (`sel -> tmpl`); a `-`
+         * anywhere else stays a name char. The leading gap is guaranteed (this
+         * runs at a token start), so we only require `>` to abut and a
+         * whitespace/EOF terminator after it. `sel-> x` never reaches here — the
+         * NAME read swallows `-` and stops at `>` (RANGLE), a parse error the
+         * value parser flags with a spacing hint. */
+        if (this.reader.peekAt(1) === CHAR_RANGLE && isArrowTerminator(this.reader.peekAt(2))) {
+          this.reader.next(); /* the '-' */
+          this.reader.next(); /* the '>' */
+          this.token = { type: TokenType.ARROW, start };
+          break;
+        }
+        this.token = this.readNameOrIdentifier();
+        break;
       default:
         /* It's a NAME */
         this.token = this.readNameOrIdentifier();
@@ -583,6 +609,10 @@ export class BuildParser {
         endOffset: this.prevTokenEnd,
         value,
       };
+    } else if (token.type === TokenType.RANGLE) {
+      /* A bare `>` in value position is almost always a mis-spaced rename arrow
+       * (`sel-> x`, where the NAME read swallowed the `-` and stopped at `>`). */
+      this.renameTemplateError("the '->' arrow must be surrounded by spaces (`sel -> tmpl`)");
     } else {
       this.unexpectedTokenError("Name, ';', or '}'");
     }
@@ -624,7 +654,43 @@ export class BuildParser {
       }
       name = name.withConstraints(constraints);
     }
+    /* `Reference (ARROW Template)?` — the rename half. The arrow is spaced, so it
+     * binds regardless of any preceding `<...>`/`:proj`. */
+    if (this.token.type === TokenType.ARROW) {
+      name = name.withRenameTo(this.parseRenameTemplate());
+    }
     return name;
+  }
+
+  /**
+   * Template ::= IDENTIFIER | SIMPLE_NAME | NAME
+   *
+   * Assumes the current token is the ARROW; consumes it and the single template
+   * token. A template is a name pattern, never a reference: an abutting `<...>`
+   * (constraints), a chained `-> ` (second arrow), or a missing template are
+   * errors here; the value-level content rules (no `:`, `*`/`**` slots only,
+   * matching wildcard counts) are enforced later in Validate.
+   */
+  private parseRenameTemplate(): Name {
+    this.consumeToken(TokenType.ARROW);
+    const token = this.peekRefToken();
+    if (!token) {
+      this.unexpectedTokenError("a rename template");
+    }
+    const template = this.tokenToName(token);
+    this.nextToken();
+    if (this.token.type === TokenType.LANGLE && this.tokenAbutsPrev) {
+      this.renameTemplateError("a rename template cannot carry constraints");
+    }
+    if (this.token.type === TokenType.ARROW) {
+      this.renameTemplateError("rename templates cannot be chained");
+    }
+    return template;
+  }
+
+  private renameTemplateError(detail: string): never {
+    this.log.log(DIAG_RENAME_TEMPLATE, { detail, loc: { ...this.source, offset: this.token.start } });
+    throw new Error(PARSE_ERROR);
   }
 
   /**
@@ -782,7 +848,7 @@ export class BuildParser {
         this.nextToken();
         let next = this.consumeToken(TokenType.EQUALS);
         if (next.type !== TokenType.IDENTIFIER) {
-          this.unexpectedTokenError("'STRING' or 'FILES' or 'REQUIRED'");
+          this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'REQUIRED'");
         } else {
           while (next.type === TokenType.IDENTIFIER) {
             switch (next.text) {
@@ -795,14 +861,17 @@ export class BuildParser {
               case "FILES":
                 type = PropertyType.FileSet;
                 break;
+              case "REWRITE":
+                type = PropertyType.Rewrite;
+                break;
               default:
-                this.unexpectedTokenError("'STRING' or 'FILES' or 'REQUIRED'");
+                this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'REQUIRED'");
             }
             next = this.nextToken();
           }
         }
         if (type === undefined) {
-          this.unexpectedTokenError("'STRING' or 'Files'");
+          this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE'");
         } else {
           result[name.text] = { required, type };
         }

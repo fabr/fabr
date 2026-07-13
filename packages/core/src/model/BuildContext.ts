@@ -39,7 +39,8 @@ import {
   NoRuleFoundError,
   ReferenceFailedError,
 } from "./Errors";
-import { Name } from "./Name";
+import { ConflictError, IConflictSide, IConflictSource } from "../core/Errors";
+import { Name, RewriteFn, makeRewrite } from "../core/Name";
 import { parseName } from "./Parser";
 import { IPrefixMatch } from "./Namespace";
 import { Property } from "./Property";
@@ -343,11 +344,32 @@ export class BuildContext {
     return this.execution.buildCache.getOrFetch(url, tag, process);
   }
 
-  public resolveStringProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<Property> {
+  /**
+   * Resolve a property's values to their substituted Names (facets intact) —
+   * the shared core of {@link resolveStringProperty} (which stringifies) and
+   * {@link resolveRewrite} (which reads the rename template facet). References
+   * are NOT resolved: a REWRITE/STRING value is inert, never a collection point.
+   */
+  public resolveNameProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<Name[]> {
     return Computable.forAll(
       prop.values.map(value => this.substituteNameVars(value.value, { property: prop, target, context: this, value, next: stack })),
-      (...resolved) => new Property(resolved.map(name => name.toString()))
+      (...resolved) => resolved
     );
+  }
+
+  public resolveStringProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<Property> {
+    return this.resolveNameProperty(prop, target, stack).then(names => new Property(names.map(name => name.toString())));
+  }
+
+  /**
+   * Resolve a REWRITE property to a name-mapping function: each value is either
+   * a `sel -> tmpl` rename (selected paths replay into the template) or a bare
+   * constant (every path maps to it). Values are tried in written order,
+   * first match wins; undefined means no value matched (the rule decides what
+   * that means — passthrough, a default, or an error).
+   */
+  public resolveRewrite(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<RewriteFn> {
+    return this.resolveNameProperty(prop, target, stack).then(makeRewrite);
   }
 
   /**
@@ -381,6 +403,15 @@ export class BuildContext {
              * "required by <target> <property>" against the written value. */
             if (err instanceof DependencyFailedError || err instanceof NoRuleFoundError) {
               throw new ReferenceFailedError(value, prop, target, err);
+            }
+            /* A conflict raised *during* this value's resolution (e.g. a rename
+             * projection collapsing two files onto one name, or a union across
+             * its containers) is thrown before withModelRef stamps the result,
+             * so its sides lack this reference's step. Chain it on now, so the
+             * driver traces the conflict back to the written value (the rename
+             * expression included). */
+            if (err instanceof ConflictError) {
+              throw this.withConflictModelRef(err, value, prop, target);
             }
             throw err;
           });
@@ -419,12 +450,33 @@ export class BuildContext {
     });
   }
 
+  private modelRefStep(value: IValue, property: IPropertyDecl, target?: ITargetDecl): IModelRefStep {
+    return { kind: MODEL_REF_PROVENANCE, value, constraints: this.constraints, property, target };
+  }
+
   private withModelRef(source: SourceRef, value: IValue, property: IPropertyDecl, target?: ITargetDecl): SourceRef {
-    const step: IModelRefStep = { kind: MODEL_REF_PROVENANCE, value, constraints: this.constraints, property, target };
+    const step = this.modelRefStep(value, property, target);
     if (source instanceof FileSet || source instanceof RepositoryRef) {
       return source.withStep(step);
     }
     return source;
+  }
+
+  /** Chain this reference's model-ref step onto both sides of a conflict raised
+   * mid-resolution (before withModelRef ran), so the driver attributes it to the
+   * written value. */
+  private withConflictModelRef(
+    err: ConflictError,
+    value: IValue,
+    property: IPropertyDecl,
+    target?: ITargetDecl
+  ): ConflictError {
+    const step = this.modelRefStep(value, property, target);
+    const chain = (side: IConflictSide): IConflictSource => ({
+      provenance: { ...step, parent: side.provenance },
+      detail: side.detail,
+    });
+    return new ConflictError(err.kind, err.key, chain(err.left), chain(err.right));
   }
 
   /**
@@ -465,10 +517,14 @@ export class BuildContext {
           if (rest.isEmpty()) {
             return target.then(sources => ({ sources, decl }));
           } else {
-            /* Names into a repository become references, deferred until the
-             * consuming collection point resolves them jointly (and finding
-             * into an existing reference narrows it); container sources answer
-             * immediately. Result names follow the written-name rule: a
+            /* `rest` is the projection after the target; a `sel -> tmpl` rename
+             * (final naming) rides on it as a facet (getPrefixMatch/splitReference
+             * carry it through the split — see Name.substring), so find applies it
+             * with no special handling here (the rename target's names supersede
+             * retainedPrefix). Names into a repository become references, deferred
+             * until the consuming collection point resolves them jointly (and
+             * finding into an existing reference narrows it); container sources
+             * answer immediately. Result names follow the written-name rule: a
              * slash-form reference keeps the written prefix, a colon-form
              * reference strips it. */
             return target.then((t): IResolvedFileSource | Computable<IResolvedFileSource> => {
@@ -482,14 +538,18 @@ export class BuildContext {
                    * projection into the delivered content — the repository claims
                    * its identity (`esbuild:0.28.1`), the remainder projects into
                    * the resolved package (`:package.json`), riding the normal
-                   * find/naming path. The written-name rule applies to the
+                   * find/naming path (splitReference carries any rename facet onto
+                   * the projection). The written-name rule applies to the
                    * projection, not to the requirement itself. */
                   const split = source.splitReference(rest);
                   const ref = new RepositoryRef(source, split.requirement);
-                  references.push(split.projection ? ref.find(split.projection.pattern, split.projection.prefix) : ref);
+                  references.push(
+                    split.projection ? ref.find(split.projection.pattern, split.projection.prefix) : ref
+                  );
                 } else {
                   /* A container projects on its own terms (FileSource.find): a
-                   * fileset filters + prefixes; a runnable re-points its entry. */
+                   * fileset filters + prefixes (or renames, per the facet); a
+                   * runnable re-points its entry. */
                   containers.push(source);
                 }
               }
@@ -747,6 +807,10 @@ export abstract class TargetContext {
    * input (for which materialization is the identity). */
   public abstract getFileSources(name: string, overrides?: Constraints): Computable<SourceRef[]>;
 
+  /** Resolve a REWRITE property to its name-mapping function (see
+   * resolveRewrite); the empty rewrite (no such property) maps nothing. */
+  public abstract getRewrite(name: string, overrides?: Constraints): Computable<RewriteFn>;
+
   /** Announce the declared target this evaluation belongs to as building
    * (once) — see DeclaredTargetContext; an anonymous target delegates to its
    * declared owner. */
@@ -960,6 +1024,14 @@ export class DeclaredTargetContext extends TargetContext {
     return this.context.resolveFileProperty(prop, this.target, this.stack, overrides);
   }
 
+  public getRewrite(name: string, overrides?: Constraints): Computable<RewriteFn> {
+    const prop = this.props[name];
+    if (!prop) {
+      return Computable.resolve(() => undefined);
+    }
+    return this.getContext(overrides).resolveRewrite(prop, this.target, this.stack);
+  }
+
   public getDeclaredContext(): DeclaredTargetContext {
     return this;
   }
@@ -1034,6 +1106,12 @@ export class AnonymousTargetContext extends TargetContext {
       return Computable.resolve([]);
     }
     return Computable.resolve((Array.isArray(value) ? value : [value]) as SourceRef[]);
+  }
+
+  /** Sub-targets take concrete inputs, not REWRITE property declarations, so the
+   * rewrite is always empty here. */
+  public getRewrite(): Computable<RewriteFn> {
+    return Computable.resolve(() => undefined);
   }
 
   public getDeclaredContext(): DeclaredTargetContext {

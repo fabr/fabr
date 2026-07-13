@@ -46,7 +46,7 @@ export * from "./model/BuildModel";
 export * from "./model/ExecutionContext";
 export * from "./model/Loader";
 export * from "./model/Errors";
-export * from "./model/Name";
+export * from "./core/Name";
 export * from "./model/Property";
 export { declPosn } from "./model/AST";
 export * from "./resolver/MVSResolver";

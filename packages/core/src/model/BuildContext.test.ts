@@ -6,7 +6,7 @@ import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { Repository, RepositoryRef, Resolution, SourceRef } from "../core/Repository";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { Name } from "./Name";
+import { Name } from "../core/Name";
 import { renderProvenance } from "../core/Provenance";
 import { ConflictError } from "../core/Errors";
 import { LogFormatter, LogLevel } from "../support/Log";
@@ -72,8 +72,30 @@ registerRule("test_override", {}, context =>
 registerRule("test_file", {}, context =>
   context.getRequiredString("content").then(content => new FileSet(new Map([["f.txt", MemoryFile.from(content)]])))
 );
+/* Produces a small multi-file, multi-directory tree, for exercising rename
+ * projections (`sel -> tmpl`) into a target's content. */
+registerRule("test_dir", {}, () =>
+  Computable.resolve(
+    new FileSet(
+      new Map([
+        ["a.expect", MemoryFile.from("A")],
+        ["sub/b.expect", MemoryFile.from("B")],
+        ["c.txt", MemoryFile.from("C")],
+      ])
+    )
+  )
+);
 /* Registered only under a specific constraint, so selection under {} fails */
 registerRule("test_constrained", { FLAVOR: "special" }, () => Computable.resolve(EMPTY_FILESET));
+/* Reads a REWRITE property and applies it to a fixed set of names, so a test
+ * can observe the resolved name mapping. */
+let lastRewrite: Array<string | undefined> | undefined;
+registerRule("test_rw", {}, context =>
+  context.getRewrite("out").then(rewrite => {
+    lastRewrite = ["a.entry.js", "b.entry.js", "keep.txt"].map(name => rewrite(name));
+    return EMPTY_FILESET;
+  })
+);
 
 /* Repository double: resolves each reference to a single file, and records
  * the batches it was asked to resolve */
@@ -255,6 +277,42 @@ describe("BuildContext", () => {
     }
   });
 
+  it("Attributes a conflict raised mid-resolution to the written value that caused it", async () => {
+    /* A projection into a multi-source property (`x:f.txt`) unions two producers
+     * that both emit `f.txt` — the conflict is raised inside the value's own
+     * resolution (a rename projection collapsing names is the same path), before
+     * the model-ref step is stamped, so it must be chained on so the driver
+     * traces it to the written `x:f.txt`, not just the underlying producers. */
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_file { content = STRING; }\n" +
+      "test_file c1 { content = one; }\n" +
+      "test_file c2 { content = two; }\n" +
+      "x = c1 c2;\n" +
+      "test_good a { deps = x:f.txt; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    try {
+      await model.getConfig({}, execution).getTarget("a");
+      expect.fail("expected target a to fail");
+    } catch (err) {
+      expect(err).to.be.instanceOf(DependencyFailedError);
+      const cause = (err as DependencyFailedError).cause;
+      expect(cause).to.be.instanceOf(ConflictError);
+      const conflict = cause as ConflictError;
+      /* The outermost provenance hop is the written value `x:f.txt` in a's deps,
+       * chained on by the mid-resolution enrichment — above the producing
+       * targets' own steps. */
+      const rendered = renderProvenance(conflict.left.provenance, { path: "f.txt" });
+      expect(rendered[0].message).to.equal("from 'x:f.txt' (a deps)");
+      const pos = rendered[0].loc!.reader.resolvePosition(rendered[0].loc!.offset)!;
+      expect(pos.lineText).to.equal("test_good a { deps = x:f.txt; }");
+    }
+  });
+
   it("Wraps an unmatched target type per written reference, like a failed build", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
@@ -367,6 +425,103 @@ describe("BuildContext", () => {
       const cause = (err as DependencyFailedError).cause;
       expect(cause).to.be.instanceOf(NameResolutionError);
       expect(cause.message).to.equal("Unable to resolve 'b:missing.txt'");
+    }
+  });
+
+  it("Renames a recursive projection into a target, structure-preserving", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_dir { }\n" +
+      "test_dir d { }\n" +
+      "test_good a { deps = d:**/*.expect -> **/*.out; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}, execution).getTarget("a");
+    /* `.expect` files renamed to `.out`, directory structure kept, `c.txt`
+     * dropped (not selected); the root-level file gets no leading slash. */
+    expect(lastDeps && [...lastDeps].map(([name]) => name).sort()).to.deep.equal(["a.out", "sub/b.out"]);
+  });
+
+  it("Handles a colon reaching the projection selector (multi-colon ref), renamed", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    /* `d:sub:*.expect` — getPrefixMatch stops at target `d`, so the projection
+     * selector is `sub:*.expect` (a reached colon): it matches `sub/…` and the
+     * `sub/` alias is stripped, then renamed. */
+    const input =
+      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_dir { }\n" +
+      "test_dir d { }\n" +
+      "test_good a { deps = d:sub:*.expect -> *.out; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}, execution).getTarget("a");
+    expect(lastDeps && [...lastDeps].map(([name]) => name).sort()).to.deep.equal(["b.out"]);
+  });
+
+  it("Renames a single-segment projection, leaving subdirectories unselected", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_dir { }\n" +
+      "test_dir d { }\n" +
+      "test_good a { deps = d:*.expect -> *.out; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}, execution).getTarget("a");
+    /* `*` is segment-bounded, so only the root `a.expect` matches. */
+    expect(lastDeps && [...lastDeps].map(([name]) => name).sort()).to.deep.equal(["a.out"]);
+  });
+
+  it("Resolves a REWRITE property to a first-match name mapping", async () => {
+    lastRewrite = undefined;
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_rw { out = REWRITE; }\n" + "test_rw t { out = *.entry.js -> *.min.js; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}, execution).getTarget("t");
+    /* Matched names replay into the template; an unmatched name maps to undefined. */
+    expect(lastRewrite).to.deep.equal(["a.min.js", "b.min.js", undefined]);
+  });
+
+  it("Resolves a bare REWRITE value as a constant output name", async () => {
+    lastRewrite = undefined;
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "targetdef test_rw { out = REWRITE; }\n" + "test_rw t { out = bundle.js; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}, execution).getTarget("t");
+    /* A bare constant maps every input to itself. */
+    expect(lastRewrite).to.deep.equal(["bundle.js", "bundle.js", "bundle.js"]);
+  });
+
+  it("Rejects rename values that violate the wildcard rules", () => {
+    const cases: Array<[string, string]> = [
+      ["test_rw t { out = *.a -> *.b.*; }", "equal wildcard counts"],
+      ["test_rw t { out = a?.js -> a?.out; }", "must be '*' or '**'"],
+      ["test_rw t { out = *.js; }", "must be a literal constant"],
+      ["test_rw t { out = a:b -> c; }", "cannot contain ':'"],
+    ];
+    for (const [decl, fragment] of cases) {
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      toBuildModel(
+        [parseBuildString(EMPTY_FILESET, "TEST.fabr", "targetdef test_rw { out = REWRITE; }\n" + decl + "\n", logger)],
+        logger,
+        testContributions
+      );
+      expect(errors.join("\n"), decl).to.contain(fragment);
     }
   });
 

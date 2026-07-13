@@ -71,6 +71,16 @@ export class StringReader {
   }
 
   /**
+   * Peek at the codepoint `delta` UTF-16 units ahead of the current position
+   * without advancing, or undefined past end-of-input. Intended for short ASCII
+   * lookahead (e.g. distinguishing the `->` arrow from a `-` name char); `delta`
+   * is a raw index offset, so it is only exact for BMP characters in between.
+   */
+  public peekAt(delta: number): number | undefined {
+    return this.data.codePointAt(this.offset + delta);
+  }
+
+  /**
    * @return the next codepoint, or undefined for end of string.
    */
   public next(): number | undefined {

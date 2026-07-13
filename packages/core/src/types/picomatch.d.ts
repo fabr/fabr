@@ -36,6 +36,8 @@ declare module "picomatch" {
     noglobstar?: boolean;
     /** Match the basename when the pattern contains no slashes. */
     basename?: boolean;
+    /** Wrap each wildcard in a capture group in the compiled regex. */
+    capture?: boolean;
   }
 
   /** Tests a single forward-slash path against the compiled pattern. */
@@ -57,6 +59,9 @@ declare module "picomatch" {
   namespace picomatch {
     function scan(pattern: string, options?: PicomatchOptions): ScanResult;
     function parse(input: string, options?: PicomatchOptions): ParseResult;
+    /** Compile a pattern to an anchored RegExp; with `capture`, each wildcard
+     * becomes a capture group (an unmatched globstar group is `null`). */
+    function makeRe(input: string, options?: PicomatchOptions): RegExp;
   }
 
   export = picomatch;

@@ -18,7 +18,7 @@
  */
 
 import { DeclKind, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
-import { NAME_COMPONENT_SEPARATOR, Name } from "./Name";
+import { NAME_COMPONENT_SEPARATOR, Name } from "../core/Name";
 
 type ContentType = Namespace | ITargetDecl | IPropertyDecl;
 

@@ -35,6 +35,23 @@ export function globMatcher(glob: string): GlobMatcher {
 }
 
 /**
+ * Compile a glob into an anchored *capturing* regex, for the rename projection
+ * (`sel -> tmpl`): each `*`/`**` becomes a capture group, so a match substitutes
+ * into a `$1`/`$2`-style template via `String.replace` (see Name.makeRenamer). A
+ * zero-segment globstar leaves its group unmatched, which `replace` substitutes
+ * as `""` — Name.makeRenamer then cleans up the stray slash.
+ *
+ * The caller guarantees (via Validate) that a rename glob uses only `*`/`**`
+ * wildcards — `?` and `[...]` are rejected, because picomatch captures them
+ * inconsistently (`?` not at all, a class as a group), which would desync the
+ * positional `$n` references. With only `*`/`**` present picomatch emits exactly
+ * one group per wildcard in order.
+ */
+export function globCaptureRegex(glob: string): RegExp {
+  return picomatch.makeRe(glob, { dot: true, capture: true });
+}
+
+/**
  * Compile a fixed leading path prefix into an anchored regex, for stripping that
  * prefix from result names (the colon-form naming rule: `src:**` names results
  * relative to `src`). Uses the same dotfile policy as {@link globMatcher}, so a
@@ -42,14 +59,4 @@ export function globMatcher(glob: string): GlobMatcher {
  */
 export function globPrefixRegex(prefix: string): RegExp {
   return new RegExp("^" + picomatch.parse(prefix, { dot: true }).output);
-}
-
-/**
- * Split a pattern into its static (non-glob) leading `base` and whether it globs
- * at all — used to choose the directory a filesystem walk starts from. Purely
- * structural (where the glob tokens begin), so unlike {@link globMatcher} it is
- * unaffected by the dotfile policy; no options apply.
- */
-export function globScan(pattern: string): { base: string; isGlob: boolean } {
-  return picomatch.scan(pattern);
 }

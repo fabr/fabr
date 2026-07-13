@@ -25,7 +25,7 @@
  */
 
 import { IPropertyDecl, ITargetDecl, IValue } from "./AST";
-import { Name } from "./Name";
+import { Name } from "../core/Name";
 import { ISourceSpan } from "../support/Log";
 import type { Constraints } from "./BuildContext";
 

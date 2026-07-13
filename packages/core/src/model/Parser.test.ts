@@ -21,7 +21,7 @@ import { expect } from "chai";
 import { EMPTY_FILESET } from "../core/FileSet";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { IBuildFileContents, IPropertyDecl, PropertyType } from "./AST";
-import { Name, NamePart, NamePartKind } from "./Name";
+import { Name, NamePart, NamePartKind } from "../core/Name";
 import { parseBuildString, parseName } from "./Parser";
 
 function parseValid(text: string): IBuildFileContents {
@@ -387,6 +387,80 @@ describe("Parser Tests", () => {
 
     it("returns an empty name for empty input", () => {
       expect(parseName("").toString()).to.equal("");
+    });
+  });
+
+  describe("rename templates", () => {
+    function firstValue(text: string): Name {
+      return parseValid(text).properties[0].values[0].value;
+    }
+
+    it("parses a selector -> template pair and round-trips it", () => {
+      const name = firstValue("out = golden:*.expect -> *.out;");
+      expect(name.toString()).to.equal("golden:*.expect -> *.out");
+      expect(name.getRenameTo()?.toString()).to.equal("*.out");
+    });
+
+    it("parses a bare REWRITE value with no arrow (no template)", () => {
+      const name = firstValue("out = bundle.js;");
+      expect(name.getRenameTo()).to.equal(undefined);
+      expect(name.toString()).to.equal("bundle.js");
+    });
+
+    it("binds the arrow after a constraint delta", () => {
+      const name = firstValue("out = pkg<BUILD_TYPE=release>:*.js -> *.mjs;");
+      expect(name.toString()).to.equal("pkg:*.js<BUILD_TYPE=release> -> *.mjs");
+      expect(name.getRenameTo()?.toString()).to.equal("*.mjs");
+    });
+
+    it("substitutes variables in the template", () => {
+      const name = firstValue("out = *.entry.js -> *.${BUILD_NO}.min.js;");
+      expect(name.getVariables()).to.deep.equal(["BUILD_NO"]);
+      expect(name.substitute(["BUILD_NO"], ["7"]).toString()).to.equal("*.entry.js -> *.7.min.js");
+    });
+
+    it("parses on a command-line name (parseName parity)", () => {
+      const name = parseName("golden:*.expect -> *.out");
+      expect(name.toString()).to.equal("golden:*.expect -> *.out");
+    });
+
+    it("rejects a missing template after the arrow", () => {
+      expect(parseInvalid("out = *.expect -> ;")).to.deep.equal([
+        diagnosticBlock(1, 18, "Read ';' but expected a rename template", "out = *.expect -> ;"),
+      ]);
+    });
+
+    it("rejects constraints on the template", () => {
+      expect(parseInvalid("out = *.expect -> *.out<A=1>;")).to.deep.equal([
+        diagnosticBlock(
+          1,
+          24,
+          "Invalid rename template: a rename template cannot carry constraints",
+          "out = *.expect -> *.out<A=1>;"
+        ),
+      ]);
+    });
+
+    it("rejects a chained arrow", () => {
+      expect(parseInvalid("out = *.a -> *.b -> *.c;")).to.deep.equal([
+        diagnosticBlock(
+          1,
+          17,
+          "Invalid rename template: rename templates cannot be chained",
+          "out = *.a -> *.b -> *.c;"
+        ),
+      ]);
+    });
+
+    it("hints when the arrow is not spaced", () => {
+      expect(parseInvalid("out = a-> *.b;")).to.deep.equal([
+        diagnosticBlock(
+          1,
+          9,
+          "Invalid rename template: the '->' arrow must be surrounded by spaces (`sel -> tmpl`)",
+          "out = a-> *.b;"
+        ),
+      ]);
     });
   });
 });

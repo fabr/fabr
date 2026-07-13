@@ -7,7 +7,7 @@ import { Repository, RepositoryRef, Resolution } from "../core/Repository";
 import { ConflictError, RequirementResolutionError } from "../core/Errors";
 import { MemoryFile } from "../core/MemoryFS";
 import { BuildCache } from "../core/BuildCache";
-import { Name } from "../model/Name";
+import { Name } from "../core/Name";
 import { RepositoryContext, TargetContext } from "../model/BuildContext";
 import { BuildModel } from "../model/BuildModel";
 import { ExecutionContext } from "../model/ExecutionContext";

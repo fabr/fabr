@@ -20,14 +20,13 @@
 import * as parcelWatcher from "@parcel/watcher";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Name } from "../model/Name";
+import { Name } from "./Name";
 
 import { Computable, ComputableSource, ComputableState } from "./Computable";
 import { FileSet, IFile, FileSource } from "./FileSet";
 import { hashFile, isNotFound, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
 import { toError } from "./Errors";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
-import { globMatcher, globPrefixRegex, globScan } from "../support/Glob";
 
 export interface FSFileStats {
   size: number;
@@ -77,8 +76,6 @@ export class FSFile implements IFile {
   }
 }
 
-type Matcher = (rel: string) => boolean;
-
 /**
  * A reactive query over the source tree: a {@link ComputableSource} that IS both the
  * graph node and its FS-side registration. It **attaches** (registers with the source
@@ -94,15 +91,19 @@ type Matcher = (rel: string) => boolean;
  */
 class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   private readonly files = new Map<string, Computable<FSFile | undefined>>();
-  private matches: Matcher = () => false;
+  /* The name's projection: decides membership (a matched path maps to a name,
+   * undefined drops it) AND names the result — one derivation for enumeration,
+   * live-change filtering and result naming alike. Built once the tree is
+   * enumerated (a bare directory expands to its contents there); until then it
+   * drops everything, so an early change event is ignored (enumeration picks it up). */
+  private project: Projector = () => undefined;
   private lastManifest: string | undefined;
 
   constructor(
     private readonly owner: FSFileSource,
     private readonly root: string,
-    private readonly searchString: string,
-    private readonly prefix: string,
-    private readonly stripPrefix: RegExp | undefined
+    private readonly name: Name,
+    private readonly prefix: string
   ) {
     super();
   }
@@ -114,9 +115,9 @@ class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     super.attach();
     this.owner.registerQuery(this);
     this.files.clear();
-    enumerateGlob(this.root, this.searchString).then(({ names, matches }) => {
+    enumerate(this.root, this.name, this.prefix).then(({ names, project }) => {
       names.forEach(name => this.files.set(name, this.owner.ingest(name)));
-      this.matches = matches;
+      this.project = project;
       this.deliver();
     }, err => this.settle(ComputableState.Error, toError(err)));
   }
@@ -129,7 +130,7 @@ class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   /** Apply a filesystem change: if `rel` is one of ours, update the file map and return
    * true (so the source schedules our re-settle); otherwise ignore it and return false. */
   public applyEvent(rel: string, removed: boolean): boolean {
-    if (!this.matches(rel)) {
+    if (this.project(rel) === undefined) {
       return false;
     }
     if (removed) {
@@ -141,7 +142,7 @@ class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   }
 
   private build(): Computable<FileSet> {
-    return buildFileSet(this.files, this.prefix, this.stripPrefix);
+    return buildFileSet(this.files, this.project);
   }
 
   private deliver(): void {
@@ -204,11 +205,9 @@ export class FSFileSource implements FileSource {
   }
 
   public find(name: Name, prefix = ""): ComputableSource<FileSet> {
-    const nameString = name.toString();
-    const colonIdx = nameString.lastIndexOf(":");
-    const stripPrefix = colonIdx === -1 ? undefined : globPrefixRegex(nameString.substring(0, colonIdx) + "/");
-    const searchString = nameString.replace(":", "/");
-    return new TreeQuery(this, this.root, searchString, prefix, stripPrefix);
+    /* The name owns the projection (glob + colon-strip / rename naming); this
+     * only supplies the tree to walk. See TreeQuery. */
+    return new TreeQuery(this, this.root, name, prefix);
   }
 
   /** Register a live query with the dispatch set and ensure the subscription (a
@@ -300,7 +299,7 @@ export class FSFileSource implements FileSource {
      * parse) into a model reload. The name is normalised to a root-relative path, since
      * callers pass it either relative (the project entry) or absolute (a resolved include). */
     const target = toPosix(path.relative(this.root, path.resolve(this.root, name)));
-    return new TreeQuery(this, this.root, target, "", undefined).then(fileSet => fileSet.getSingleFile());
+    return new TreeQuery(this, this.root, Name.fromLiteral(target), "").then(fileSet => fileSet.getSingleFile());
   }
 }
 
@@ -320,34 +319,29 @@ export const FS = {
   },
 };
 
-/** Resolve a query's held files into a FileSet, each name reprefixed (the
- * `alias:path` strip + the caller's `prefix`). Shared by the one-shot and live
- * `find` paths. */
+/** The name's compiled projection: a tree-relative path to its result name, or
+ * undefined for a non-member. See {@link Name.makeProjector}. */
+type Projector = (input: string) => string | undefined;
+
+/** Resolve a query's held files into a FileSet, each named by the query's
+ * projection. Shared by the one-shot and live `find` paths. */
 function buildFileSet(
   files: Map<string, Computable<FSFile | undefined>>,
-  prefix: string,
-  stripPrefix: RegExp | undefined
+  project: Projector
 ): Computable<FileSet> {
   return Computable.forAll(
     Array.from(files.values()),
     (...done: (FSFile | undefined)[]) =>
       new FileSet(
-        done.reduce(
-          (result, file) => (file ? result.set(prefix + removePrefix(file.name, stripPrefix), file) : result),
-          new Map<string, IFile>()
-        )
+        done.reduce((result, file) => {
+          const name = file ? project(file.name) : undefined;
+          if (file && name !== undefined) {
+            result.set(name, file);
+          }
+          return result;
+        }, new Map<string, IFile>())
       )
   );
-}
-
-function removePrefix(filename: string, pattern: RegExp | undefined): string {
-  if (pattern) {
-    const match = pattern.exec(filename);
-    if (match) {
-      return filename.substring(match[0].length);
-    }
-  }
-  return filename;
 }
 
 const WATCH_OPTIONS: parcelWatcher.Options = { ignore: ["**/node_modules/**", "**/.git/**"] };
@@ -382,10 +376,6 @@ function subscribeWithFallback(
   });
 }
 
-function makeMatcher(glob: string): Matcher {
-  return globMatcher(glob);
-}
-
 /** Normalise an OS path to forward slashes so glob matching and FileSet names
  * are platform-independent (matching chokidar's old behaviour). */
 function toPosix(p: string): string {
@@ -393,43 +383,51 @@ function toPosix(p: string): string {
 }
 
 /**
- * Enumerate the files under `root` matching `searchString`, returning both the
- * matching root-relative names and the matcher (reused to filter live change
- * events, so enumeration and watching agree). A plain file matches itself; a
- * bare directory means every file beneath it. Only the glob's static base is
- * walked, and node_modules/.git are skipped.
+ * The name's static leading path (its `:` alias separator is a path separator on
+ * disk): the whole path for a literal name, the walk base for a glob. The
+ * naming/membership rule stays on the {@link Name.makeProjector} projection.
  */
-function enumerateGlob(root: string, searchString: string): Computable<{ names: string[]; matches: Matcher }> {
-  const scanned = globScan(searchString);
-  if (!scanned.isGlob) {
-    const literal = makeMatcher(searchString);
-    return stat(path.resolve(root, searchString)).then(
-      fileStat =>
-        fileStat.isFile()
-          ? { names: [toPosix(searchString)], matches: literal }
-          : /* A directory reference means every file beneath it. */
-            walkGlob(root, `${searchString.replace(/\/+$/, "")}/**`),
-      /* Nothing there yet — an empty set a later create-event can fill. */
-      () => ({ names: [], matches: literal })
-    );
+function staticPath(name: Name): string {
+  return name.getLiteralPathPrefix().replaceAll(":", "/");
+}
+
+/**
+ * Enumerate the files under `root` selected by `name`, returning the matching
+ * root-relative paths and the name's projection (which filters and names them —
+ * reused so enumeration and watching agree). A plain file matches itself; a bare
+ * directory means every file beneath it (the name expands to `dir/**`). Only the
+ * name's static base is walked, and node_modules/.git are skipped.
+ */
+function enumerate(root: string, name: Name, prefix: string): Computable<{ names: string[]; project: Projector }> {
+  if (name.hasGlob()) {
+    return walkGlob(root, name, prefix);
   }
-  return walkGlob(root, searchString);
+  const file = staticPath(name);
+  return stat(path.resolve(root, file)).then(
+    fileStat =>
+      fileStat.isFile()
+        ? { names: [toPosix(file)], project: name.makeProjector(prefix) }
+        : /* A directory reference means every file beneath it. */
+          walkGlob(root, name.appendGlobstar(), prefix),
+    /* Nothing there yet — an empty set a later create-event can fill. */
+    () => ({ names: [], project: name.makeProjector(prefix) })
+  );
 }
 
-function walkGlob(root: string, pattern: string): Computable<{ names: string[]; matches: Matcher }> {
-  const matches = makeMatcher(pattern);
-  const base = path.resolve(root, globScan(pattern).base);
-  return walk(root, base, matches).then(names => ({ names, matches }));
+function walkGlob(root: string, name: Name, prefix: string): Computable<{ names: string[]; project: Projector }> {
+  const project = name.makeProjector(prefix);
+  const base = path.resolve(root, staticPath(name));
+  return walk(root, base, project).then(names => ({ names, project }));
 }
 
-function walk(root: string, dir: string, matches: Matcher): Computable<string[]> {
+function walk(root: string, dir: string, project: Projector): Computable<string[]> {
   const names: string[] = [];
   return walkTree(
     dir,
     (entry, abs) => {
       if (entry.isFile()) {
         const rel = toPosix(path.relative(root, abs));
-        if (matches(rel)) {
+        if (project(rel) !== undefined) {
           names.push(rel);
         }
       }

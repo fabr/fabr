@@ -21,7 +21,7 @@ import { INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AS
 import { IPrefixMatch, Namespace } from "./Namespace";
 import { BuildContext, Constraints } from "./BuildContext";
 import { ExecutionContext } from "./ExecutionContext";
-import { Name } from "./Name";
+import { Name } from "../core/Name";
 import { IRuleDefinition, PluginContribution, RepositoryProvider } from "../rules/Types";
 
 /**

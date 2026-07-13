@@ -20,7 +20,7 @@
 import { validateTarget } from "./Validate";
 import { Diagnostic, ISourcePosition, Log } from "../support/Log";
 import { DeclKind, declPosn, getDeclKindName, INamedDecl, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
-import { NAME_COMPONENT_SEPARATOR } from "./Name";
+import { NAME_COMPONENT_SEPARATOR } from "../core/Name";
 import { Namespace } from "./Namespace";
 
 const DIAG_DUPLICATE_DECL = Diagnostic.Error<{ kind: string; name: string; loc: ISourcePosition }>(

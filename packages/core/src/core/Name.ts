@@ -17,6 +17,8 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { globCaptureRegex, globMatcher, globPrefixRegex } from "../support/Glob";
+
 export enum NamePartKind {
   Literal,
   Glob,
@@ -55,14 +57,25 @@ export class Name {
    * Ordered (not a map) precisely so that round-trip is faithful.
    */
   private readonly constraints: readonly NameConstraint[];
+  /**
+   * The rename target written on this reference (the `tmpl` of `sel -> tmpl`), or
+   * undefined. Like {@link constraints} it rides *alongside* `parts` (which hold
+   * only the resolvable selector): a FILES consumer replays this pattern over the
+   * selector's captures to rename the selected files ({@link replay}), while
+   * `toString` re-renders it so a value used as a plain string round-trips. Its
+   * own `parts` are the target's literal text and `*`/`**` replay slots; it never
+   * itself carries a rename target or constraints (parser-enforced).
+   */
+  private readonly renameTo: Name | undefined;
 
-  constructor(parts: NamePart[], constraints: readonly NameConstraint[] = []) {
+  constructor(parts: NamePart[], constraints: readonly NameConstraint[] = [], renameTo?: Name) {
     if (parts.length === 0) {
       this.parts = [{ kind: NamePartKind.Literal, value: "" }];
     } else {
       this.parts = parts;
     }
     this.constraints = constraints;
+    this.renameTo = renameTo;
   }
 
   /**
@@ -77,12 +90,133 @@ export class Name {
    * any it already had). The parts are unchanged — constraints ride alongside.
    */
   public withConstraints(constraints: readonly NameConstraint[]): Name {
-    return new Name(this.parts, constraints);
+    return new Name(this.parts, constraints, this.renameTo);
   }
 
   /** @return the constraint delta written on this reference (empty if none). */
   public getConstraints(): readonly NameConstraint[] {
     return this.constraints;
+  }
+
+  /**
+   * @return a copy of this name carrying the given rename target (replacing any
+   * it already had; `undefined` clears it). The parts (the selector) are
+   * unchanged. Accepting `undefined` lets a caller re-attach an optional target
+   * onto a selector unconditionally.
+   */
+  public withRenameTo(renameTo: Name | undefined): Name {
+    return new Name(this.parts, this.constraints, renameTo);
+  }
+
+  /** @return the rename target written on this reference (undefined if none). */
+  public getRenameTo(): Name | undefined {
+    return this.renameTo;
+  }
+
+  /**
+   * The glob wildcard units of this name in written order — one entry per
+   * `*`/`**`/`?`/`[...]` run (a maximal run of glob metacharacters). Used by
+   * Validate to enforce the rename rules: a rename glob's units must all be
+   * `*` or `**` (so picomatch captures line up positionally with
+   * {@link replay}'s slots), and the selector's and rename target's unit counts
+   * must match. A plain (non-rename) selector is unrestricted, so this is only
+   * consulted on rename surfaces.
+   */
+  public getGlobUnits(): string[] {
+    return this.parts.filter(part => part.kind === NamePartKind.Glob).map(part => part.value);
+  }
+
+  /**
+   * This rename target as a `String.replace` **replacement string**: each `*`/`**`
+   * slot becomes its positional capture reference (`$1`, `$2`, …), literal text
+   * verbatim (with `$` escaped so it isn't read as a group reference). Paired with
+   * the selector's {@link globCaptureRegex} by {@link makeRenamer}. Assumes
+   * substitution has run and (via Validate) that the slot count matches the
+   * selector's wildcard count.
+   */
+  public toReplacement(): string {
+    let slot = 0;
+    return this.parts
+      .map(part =>
+        /* A literal `$` must be doubled so `replace` reads it as text, not a group
+         * ref. The function replacer inserts its result verbatim — a plain string
+         * `"$$"` would instead be read as an escape for a single `$` (a no-op). */
+        part.kind === NamePartKind.Glob ? `$${++slot}` : part.value.replaceAll("$", () => "$$")
+      )
+      .join("");
+  }
+
+  /**
+   * Compile a renamer using this name as the *selector* and `renameTo` as the
+   * template: a function mapping a path to its renamed form, or undefined for a
+   * non-match (so a caller can drop unselected files). A rename is just a
+   * capturing-regex replace — the selector's `*`/`**` groups substitute into the
+   * template's positional `$1`/`$2`. The selector matches on this name's own glob
+   * (its `parts`, not its facets), so it works whether the selector is a whole
+   * REWRITE value or the post-`:` projection remainder. Assumes substitution has
+   * run and (via Validate) that the selector and rename target wildcard counts
+   * agree.
+   */
+  public makeRenamer(renameTo: Name): (path: string) => string | undefined {
+    /* Match on the path (every `:`→`/`, as makeProjector does) so a colon-form
+     * selector matches the slash paths on disk / in a package; the rename target
+     * owns result names, so the alias segments are matched but never carried into
+     * them. (A no-op for a colon-free selector — every REWRITE / single-`:` ref;
+     * it bites only a multi-`:` reference like `d:sub:*.x -> *.y`.) */
+    const re = globCaptureRegex(this.renderParts().replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR));
+    const replacement = renameTo.toReplacement();
+    /* An unmatched globstar group substitutes as "" (native to `replace`), which
+     * can leave a doubled or edge slash (a root-level recursive prefix); fabr
+     * names are relative paths, so collapse runs of `/` and trim the ends — this
+     * makes a recursive rename structure-preserving at every depth, root too. */
+    return (path: string) =>
+      re.test(path) ? path.replace(re, replacement).replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "") : undefined;
+  }
+
+  /**
+   * Compile this name into a **projection**: a function mapping an input path to
+   * its result name, or undefined for a non-match (drop it). This is the whole
+   * of what a projection *means*, owned by the name so a `find` is just applying
+   * it to a dataset. With a `sel -> tmpl` facet it is the rename ({@link
+   * makeRenamer}). Otherwise it selects by glob and rewrites the match under
+   * `prefix` (the degenerate rename — "prefix-strip is just a rename"). Either
+   * way it honors the written-name rule: the alias separator `:` is a path
+   * separator on disk / within a package (`src:**` matches `src/…`) and marks the
+   * strip boundary — the segment before it is removed from result names, the rest
+   * is the glob; a slash-form name (no `:`) retains its full path. Assumes
+   * substitution has run.
+   */
+  public makeProjector(prefix = ""): (input: string) => string | undefined {
+    if (this.renameTo) {
+      return this.makeRenamer(this.renameTo);
+    }
+    const selector = this.toString();
+    const matcher = globMatcher(selector.replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR));
+    const alias = selector.lastIndexOf(NAME_LEVEL_SEPARATOR);
+    if (alias === -1) {
+      return input => (matcher(input) ? prefix + input : undefined);
+    }
+    /* Colon form: match on the path (every `:`→`/`) and strip the alias — all of
+     * it, up to the last `:` (consistent with getPrefixMatch), which may itself
+     * glob — from each result name. */
+    const strip = globPrefixRegex(
+      selector.substring(0, alias).replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR) + NAME_COMPONENT_SEPARATOR
+    );
+    return input => (matcher(input) ? prefix + input.replace(strip, "") : undefined);
+  }
+
+  /**
+   * @return a copy naming everything at or below this path: appends a `**`
+   * globstar, inserting a `/` unless the name already ends at a separator (`/` or
+   * the `:` alias boundary). For a bare directory reference — `src` → `src/**`,
+   * `src:` → `src:**` — so the same {@link makeProjector} rules then apply.
+   */
+  public appendGlobstar(): Name {
+    const written = this.toString();
+    const last = written.charAt(written.length - 1);
+    const sep = last === NAME_COMPONENT_SEPARATOR || last === NAME_LEVEL_SEPARATOR ? "" : NAME_COMPONENT_SEPARATOR;
+    const tail: NamePart[] = sep ? [{ kind: NamePartKind.Literal, value: sep }, { kind: NamePartKind.Glob, value: "**" }] : [{ kind: NamePartKind.Glob, value: "**" }];
+    return this.concat(new Name(tail));
   }
 
   /**
@@ -128,6 +262,13 @@ export class Name {
     return this.parts.some(part => part.kind === NamePartKind.Glob);
   }
 
+  /** Whether any literal part contains the `:` level separator — used by Validate
+   * to reject it in a rename template (and in a REWRITE selector), where the
+   * pattern is matched/replayed against package-relative names, not references. */
+  public hasLevelSeparator(): boolean {
+    return this.parts.some(part => part.kind === NamePartKind.Literal && part.value.includes(NAME_LEVEL_SEPARATOR));
+  }
+
   public hasVarSubst(): boolean {
     return this.parts.some(part => part.kind === NamePartKind.VarSubst);
   }
@@ -136,7 +277,12 @@ export class Name {
     const own = this.parts.filter(part => part.kind === NamePartKind.VarSubst).map(part => part.value);
     /* Constraint values may themselves reference variables (`<K=${X}>`), which
      * must be resolved before the delta is applied. */
-    return this.constraints.reduce<string[]>((vars, [, value]) => vars.concat(value.getVariables()), own);
+    const withConstraints = this.constraints.reduce<string[]>(
+      (vars, [, value]) => vars.concat(value.getVariables()),
+      own
+    );
+    /* The rename target may reference variables too (`-> *.${BUILD_NO}.js`). */
+    return this.renameTo ? withConstraints.concat(this.renameTo.getVariables()) : withConstraints;
   }
 
   /**
@@ -166,7 +312,10 @@ export class Name {
     /* Constraint values are substituted too (they share the variable space), so
      * `<K=${X}>` resolves before the delta is applied / rendered. */
     const constraints = this.constraints.map<NameConstraint>(([key, value]) => [key, value.substitute(varNames, values)]);
-    return new Name(parts, constraints);
+    /* The rename target shares the variable space (`-> *.${BUILD_NO}.js`), and
+     * is collapsed to literal parts here so replay never sees a VarSubst. */
+    const renameTo = this.renameTo?.substitute(varNames, values);
+    return new Name(parts, constraints, renameTo);
   }
 
   /**
@@ -194,17 +343,25 @@ export class Name {
     return new Name([head, ...parts]);
   }
 
+  /**
+   * @return the tail of this name from `start` (a suffix of its literal head),
+   * carrying the rename target but NOT the constraint delta. The sole use is
+   * splitting a reference into target + projection (getPrefixMatch,
+   * splitReference): the tail IS the projection, so a `-> tmpl` rename (final
+   * naming) rides onto it, while the constraint delta stays behind on the target
+   * it constrains (and is consumed at target resolution).
+   */
   public substring(start: number): Name {
     const [head, ...parts] = this.parts;
     if (head.kind === NamePartKind.Literal && (head.value.length >= start || parts.length === 0)) {
       const rest = head.value.substring(start);
       if (rest === "") {
-        return new Name(parts);
+        return new Name(parts, [], this.renameTo);
       } else {
-        return new Name([{ kind: NamePartKind.Literal, value: rest }, ...parts]);
+        return new Name([{ kind: NamePartKind.Literal, value: rest }, ...parts], [], this.renameTo);
       }
     }
-    return new Name([head, ...parts]);
+    return new Name([head, ...parts], [], this.renameTo);
   }
 
   /**
@@ -265,10 +422,12 @@ export class Name {
   }
 
   /**
-   * @return a string suitable for use with a globbing implementation (ie with literal metacharacters escaped).
+   * Render just the resolvable selector (`parts`), with literal metacharacters
+   * escaped — the glob string a matcher compiles. Excludes the `<...>` / `-> `
+   * facets, which {@link toString} appends.
    */
-  public toString(): string {
-    const base = this.parts.reduce((result, part) => {
+  private renderParts(): string {
+    return this.parts.reduce((result, part) => {
       switch (part.kind) {
         case NamePartKind.Literal:
           return result + escapeGlob(part.value);
@@ -278,14 +437,58 @@ export class Name {
           return result + "${" + part.value + "}";
       }
     }, "");
-    if (this.constraints.length === 0) {
-      return base;
-    }
-    /* Re-render the delta so a value used as a plain string reproduces its
-     * original text (`foo<a=b, c=d>`). */
-    const delta = this.constraints.map(([key, value]) => `${key}=${value.toString()}`).join(", ");
-    return `${base}<${delta}>`;
   }
+
+  /**
+   * @return a string suitable for use with a globbing implementation (ie with literal metacharacters escaped).
+   */
+  public toString(): string {
+    let result = this.renderParts();
+    if (this.constraints.length > 0) {
+      /* Re-render the delta so a value used as a plain string reproduces its
+       * original text (`foo<a=b, c=d>`). */
+      const delta = this.constraints.map(([key, value]) => `${key}=${value.toString()}`).join(", ");
+      result = `${result}<${delta}>`;
+    }
+    if (this.renameTo !== undefined) {
+      /* Canonical spaced arrow, mirroring the constraint round-trip (a STRING
+       * consumer sees `sel -> tmpl`; byte-exact input is recovered by quoting). */
+      result = `${result} -> ${this.renameTo.toString()}`;
+    }
+    return result;
+  }
+}
+
+/** A resolved REWRITE property: a path to its renamed form, or undefined if no
+ * value in the property matched (rule policy decides what that means). */
+export type RewriteFn = (name: string) => string | undefined;
+
+/**
+ * Compose a {@link RewriteFn} from a REWRITE property's (already substituted)
+ * values, first-match-wins in written order: a `sel -> tmpl` value renames
+ * selected paths (replaying captures into the rename target), a bare value is a
+ * constant every path maps to (multi-entry misuse surfaces later as a rename
+ * collision). Pure name logic — the only "resolution" a REWRITE needs is the
+ * variable substitution the caller runs before handing the Names here.
+ */
+export function makeRewrite(names: Name[]): RewriteFn {
+  const rules = names.map(name => {
+    const renameTo = name.getRenameTo();
+    if (renameTo) {
+      return name.makeRenamer(renameTo);
+    }
+    const constant = name.toString();
+    return () => constant;
+  });
+  return (path: string) => {
+    for (const rule of rules) {
+      const out = rule(path);
+      if (out !== undefined) {
+        return out;
+      }
+    }
+    return undefined;
+  };
 }
 
 export class NameBuilder {

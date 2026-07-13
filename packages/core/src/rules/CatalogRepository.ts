@@ -24,7 +24,7 @@ import { RunnableFileSet } from "../core/RunnableFileSet";
 import { groupByRepository, IProjection, Repository, RepositoryRef, Resolution } from "../core/Repository";
 import { chainSteps } from "../core/Provenance";
 import { attachHelp, ConflictError, IConflictSource, RequirementResolutionError, toError } from "../core/Errors";
-import { Name } from "../model/Name";
+import { Name } from "../core/Name";
 import { BUILD_OPERATION, RepositoryContext } from "../model/BuildContext";
 import { RepositoryRegistration } from "./Types";
 

@@ -21,6 +21,7 @@ import { expect } from "chai";
 import * as path from "path";
 import { FileSet } from "./FileSet";
 import { MemoryFile } from "./MemoryFS";
+import { Name, NameBuilder } from "./Name";
 import { RunnableFileSet } from "./RunnableFileSet";
 
 describe("RunnableFileSet", () => {
@@ -51,6 +52,24 @@ describe("RunnableFileSet.toCommandLine", () => {
     /* interpreter-less: the anchored (absolute) entry becomes argv[0] itself. */
     const bare = RunnableFileSet.forEntry(new Map(), "bin/tool", []);
     expect(bare.toCommandLine([], { anchor: "/staged" })).to.deep.equal([path.resolve("/staged", "bin/tool")]);
+  });
+});
+
+describe("RunnableFileSet.find with a rename", () => {
+  it("renames the surface but stays a runnable, launching by the bin's rename-invariant target", async () => {
+    /* forEntry gives a one-bin surface: command "tool" → SymlinkFile("bin/tool"). */
+    const runnable = RunnableFileSet.forEntry(new Map([["bin/tool", MemoryFile.from("x")]]), "bin/tool");
+    const rename = new NameBuilder().appendLiteralString("tool").name().withRenameTo(Name.fromLiteral("renamed"));
+
+    const result = await runnable.find(rename);
+
+    /* find on a runnable yields a runnable (not degraded to plain files)... */
+    expect(result).to.be.instanceOf(RunnableFileSet);
+    const rf = result as RunnableFileSet;
+    /* ...with the find-surface command renamed... */
+    expect([...rf.selected!].map(([name]) => name)).to.deep.equal(["renamed"]);
+    /* ...but the launch entry is the bin's target, untouched by the rename. */
+    expect(rf.toCommandLine()).to.deep.equal(["bin/tool"]);
   });
 });
 

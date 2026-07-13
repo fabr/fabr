@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { declPosn, ITargetDecl, ITargetDefDecl } from "./AST";
+import { declPosn, IPropertyDecl, IValue, ITargetDecl, ITargetDefDecl, PropertyType } from "./AST";
 import { Diagnostic, ISourcePosition, Log, LogLevel } from "../support/Log";
 
 interface ITargetPropertyError {
@@ -38,6 +38,10 @@ const DIAG_DUPLICATE_PROPERTY = new Diagnostic<ITargetPropertyError>(
 const DIAG_MISSING_PROPERTY = new Diagnostic<ITargetPropertyError>(
   LogLevel.Error,
   "Missing required property '{property} in {type} ttarget '{target}'"
+);
+const DIAG_INVALID_REWRITE = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
+  LogLevel.Error,
+  "Invalid rename: {detail}"
 );
 
 /**
@@ -86,5 +90,74 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
       });
     }
   });
+
+  /* Rename-value rules: the `sel -> tmpl` primitive on a REWRITE property or a
+   * templated FILES value. Checks that need both sides (wildcard kinds/counts)
+   * and the value's type live here, where the schema is known. */
+  decl.properties.forEach(prop => {
+    const type = targetDef.properties[prop.name]?.type;
+    if (type === undefined) {
+      return; /* already reported as unrecognized */
+    }
+    prop.values.forEach(value => {
+      if (!validateRenameValue(prop, value, type, log)) {
+        isValid = false;
+      }
+    });
+  });
+
   return isValid;
+}
+
+/** Validate a single property value's rename facet (if any) against its
+ * property type; returns false and logs on a violation. */
+function validateRenameValue(prop: IPropertyDecl, value: IValue, type: PropertyType, log: Log): boolean {
+  const name = value.value;
+  const isRewrite = type === PropertyType.Rewrite;
+  const renameTo = name.getRenameTo();
+
+  const fail = (detail: string): boolean => {
+    log.log(DIAG_INVALID_REWRITE, { detail, loc: declPosn(prop) });
+    return false;
+  };
+
+  if (!renameTo) {
+    /* A bare REWRITE value is a constant literal: a wildcard has no meaning
+     * with no rename target to replay it into. Other property types ignore a
+     * plain value here. */
+    if (isRewrite && name.hasGlob()) {
+      return fail("a bare REWRITE value must be a literal constant (no wildcards); add `-> template` to rename");
+    }
+    return true;
+  }
+
+  /* A REWRITE selector is a bare pattern (never a reference): no `:` and no
+   * `<constraints>`. (A templated FILES value's selector is a real projection,
+   * so its `:` and delta are fine.) */
+  if (isRewrite && name.hasLevelSeparator()) {
+    return fail("a REWRITE selector cannot contain ':'");
+  }
+  if (isRewrite && name.hasConstraints()) {
+    return fail("a REWRITE selector cannot carry constraints");
+  }
+  /* A rename template is a name pattern, never a reference. */
+  if (renameTo.hasLevelSeparator()) {
+    return fail("a rename template cannot contain ':'");
+  }
+  /* Only `*`/`**` capture-and-replay (picomatch captures `?`/`[...]`
+   * inconsistently), so both sides are restricted to them, and their counts
+   * must match for positional replay. */
+  const selectorUnits = name.getGlobUnits();
+  const templateUnits = renameTo.getGlobUnits();
+  for (const unit of [...selectorUnits, ...templateUnits]) {
+    if (unit !== "*" && unit !== "**") {
+      return fail(`rename wildcards must be '*' or '**' (found '${unit}')`);
+    }
+  }
+  if (selectorUnits.length !== templateUnits.length) {
+    return fail(
+      `selector and template must have equal wildcard counts (${selectorUnits.length} vs ${templateUnits.length})`
+    );
+  }
+  return true;
 }

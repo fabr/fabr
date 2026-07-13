@@ -1,4 +1,4 @@
-import { Name } from "../model/Name";
+import { Name } from "./Name";
 import { Computable } from "./Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "./FileSet";
 
