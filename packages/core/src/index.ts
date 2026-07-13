@@ -58,5 +58,6 @@ export * from "./support/Log";
 export * from "./support/Platform";
 export * from "./support/TestResult";
 export * from "./support/Unpack";
+export * from "./rules/CatalogRepository";
 export * from "./rules/ExecAction";
 export * from "./rules/Types";

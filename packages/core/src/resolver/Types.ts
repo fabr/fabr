@@ -80,7 +80,7 @@ export interface Selected<V> {
  * so that callers can decide how to present them, and because a rejected
  * Computable currently halts the graph without user-visible diagnostics.
  */
-export interface Resolution<V> {
+export interface MVSResolution<V> {
   selections: Selected<V>[];
   errors: string[];
 }

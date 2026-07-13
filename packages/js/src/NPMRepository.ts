@@ -23,8 +23,11 @@ import {
   RepositoryRegistration,
   Requirement,
   RequirementResolutionError,
+  Resolution,
+  ResolvedRoot,
   resolveMVS,
   ROOT_REQUIRER,
+  RunnableFileSet,
   Selected,
   SEMVER,
   SemverVersion,
@@ -176,6 +179,20 @@ export function unsupportedPlatformReason(meta: PlatformGates, target: NpmPlatfo
   return parts.length === 0 ? undefined : parts.join("; ");
 }
 
+/**
+ * npm's private {@link Resolution}: the joint version selection + reachable tree,
+ * plus the operation it was resolved under (so materialize delivers the same
+ * package-vs-runnable shape without a second context read). `selections`/`rootIndex`
+ * are empty under the `files` operation, where materialize fetches per-reference.
+ */
+interface NpmResolution extends Resolution {
+  readonly roots: ResolvedRoot[];
+  readonly operation: string;
+  readonly selections: Selected<SemverVersion>[];
+  /** requirementKey → index into the resolution's roots (the space `reachableFrom` indexes). */
+  readonly rootIndex: Map<string, number>;
+}
+
 export class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
   private readonly url: string;
   private readonly context: RepositoryContext;
@@ -189,87 +206,112 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
   }
 
   /**
-   * Resolve a batch of references jointly: one minimal-version-selection
-   * instance over all of the root requirements together, so that shared
-   * packages resolve to a single agreed version (and user overrides dominate
-   * sibling dependencies' requirements, per the max-of-minimums rule).
-   * Each reference receives its root as a PackageFileSet (files relative to
-   * the package root), carrying the subset of the joint closure reachable from
-   * that root as its resolved dependencies; laying the packages out (mounting)
-   * is the consumer's decision.
+   * Phase 1 — resolve a batch of references jointly (one minimal-version-selection
+   * over all root requirements, so shared packages agree on a version and user
+   * overrides dominate per max-of-minimums) WITHOUT fetching. Returns the
+   * selection tree; `materialize` fetches a subset of it on demand.
+   *
+   * Under `files` the consumer wants each package's own files standalone — no
+   * closure, no joint resolution — so resolution is a no-op that just records the
+   * root names (fetch happens per-reference in materialize). This is what lets
+   * `fabr cat @npm:pkg:ver:file` succeed when the closure is unresolvable here.
    *
    * Only semver versions/ranges are accepted: dist-tags (e.g. 'latest') are
    * mutable pointers and would make the build non-deterministic, so they are
-   * deliberately not supported. This also means every document we fetch from the
-   * repository is immutable, and so cacheable indefinitely with no refresh policy.
+   * deliberately not supported — every document we fetch is immutable, cacheable
+   * indefinitely with no refresh policy.
    */
-  public resolveAll(references: RepositoryRef[]): Computable<FileSet[]> {
-    /* The operation is a property of this collection point, read from the
-     * context (this instance is interned per BuildContext, so it reflects the
-     * config these references were consumed under). Closure members are always
-     * plain packages — only the requested roots take the run delivery. */
-    return this.context.getGlobalString(BUILD_OPERATION).then(operation => this.deliver(references, operation));
+  public resolve(references: RepositoryRef[]): Computable<Resolution> {
+    /* The operation is a property of this collection point, read from the context
+     * (this instance is interned per BuildContext, so it reflects the config these
+     * references were consumed under). */
+    return this.context.getGlobalString(BUILD_OPERATION).then(operation => {
+      const requirements = references.map(reference => {
+        try {
+          return this.parseRequirement(reference.name);
+        } catch (err) {
+          throw new RequirementResolutionError([reference], asError(err));
+        }
+      });
+      const roots: ResolvedRoot[] = references.map((reference, index) => ({ reference, name: requirements[index].pkg }));
+      if (operation === FILES_OPERATION) {
+        return Computable.resolve<NpmResolution>({ roots, operation, selections: [], rootIndex: new Map() });
+      }
+      /* Canonicalize the roots so the resolution (and its memo key, and the
+       * reachableFrom indices) are independent of reference order */
+      const byKey = new Map(requirements.map(req => [requirementKey(req), req]));
+      const rootKeys = [...byKey.keys()].sort();
+      const rootReqs = rootKeys.map(key => byKey.get(key)!);
+      const rootIndex = new Map(rootKeys.map((key, index) => [key, index]));
+      return this.getJointResolution(rootReqs, rootKeys)
+        .then(selections => {
+          checkSingleVersions(selections, rootKeys.join(", "));
+          return { roots, operation, selections, rootIndex } satisfies NpmResolution;
+        })
+        .catch(err => this.attributeMetadataFailure(err, references, requirements));
+    });
   }
 
-  private deliver(references: RepositoryRef[], operation: string): Computable<FileSet[]> {
-    /* Under `files` the consumer wants each package's own files and nothing
-     * more (a projection into it, or the whole thing as raw content — never a
-     * mountable package or a runnable), so there is no need to resolve — or even
-     * fetch — the dependency closure, nor to resolve the roots jointly: each is
-     * delivered standalone at its own constraint minimum. This is what lets
-     * `fabr cat @npm:pkg:ver:file` succeed even when the package's dependencies
-     * are unresolvable on this host. */
-    if (operation === FILES_OPERATION) {
+  /**
+   * Phase 2 — fetch + assemble the requested references (a subset of `resolution`).
+   * Only the closure reachable from the requested roots is fetched, from the
+   * pre-resolved tree — so a subset materialization keeps the joint pin. The
+   * operation (captured in the resolution) decides the shape: run → each root
+   * becomes a runnable, otherwise the plain packages.
+   */
+  public materialize(references: RepositoryRef[], resolution: Resolution): Computable<FileSet[]> {
+    const resolved = resolution as NpmResolution;
+    if (resolved.operation === FILES_OPERATION) {
       return Computable.forAll(
         references.map(reference => this.attributedTo(reference, () => this.resolveBarePackage(reference))),
         (...delivered: FileSet[]) => delivered
       );
     }
-    const requirements = references.map(reference => {
-      try {
-        return this.parseRequirement(reference.name);
-      } catch (err) {
-        throw new RequirementResolutionError([reference], asError(err));
-      }
-    });
-    /* Canonicalize the roots so the resolution (and its memo key, and the
-     * reachableFrom indices) are independent of reference order */
-    const byKey = new Map(requirements.map(req => [requirementKey(req), req]));
-    const rootKeys = [...byKey.keys()].sort();
-    const roots = rootKeys.map(key => byKey.get(key)!);
-    const rootIndex = new Map(rootKeys.map((key, index) => [key, index]));
-    return this.getJointResolution(roots, rootKeys)
-      .then(selections => {
-        checkSingleVersions(selections, rootKeys.join(", "));
-        return Computable.forAll(
-          selections.map(sel => this.fetch(sel.pkg, sel.version)),
-          (...packages: PackageFileSet[]) =>
-            Computable.forAll(
-              requirements.map(req =>
-                this.assembleClosure(req, rootIndex.get(requirementKey(req))!, selections, packages, operation)
-              ),
+    const { selections, rootIndex, operation } = resolved;
+    const requirements = references.map(reference => this.parseRequirement(reference.name));
+    const requestedRoots = new Set(requirements.map(req => rootIndex.get(requirementKey(req))!));
+    /* Fetch only the selections reachable from the requested roots (indexed by
+     * their position in `selections`, so assembleClosure can pick each root's
+     * reachable subset). */
+    const needed = selections.flatMap((sel, selIndex) =>
+      sel.reachableFrom?.some(root => requestedRoots.has(root)) ? [{ sel, selIndex }] : []
+    );
+    return Computable.forAll(
+      needed.map(({ sel }) => this.fetch(sel.pkg, sel.version)),
+      (...fetched: PackageFileSet[]) => {
+        const packages = new Map<number, PackageFileSet>(needed.map(({ selIndex }, k) => [selIndex, fetched[k]]));
+        const assembled = requirements.map(req =>
+          this.assembleClosure(req, rootIndex.get(requirementKey(req))!, selections, packages)
+        );
+        return operation === "run"
+          ? Computable.forAll(
+              assembled.map(pkg => this.makeRunnable(pkg)),
               (...delivered: FileSet[]) => delivered
             )
-        );
-      })
-      .catch(err => {
-        /* A metadata failure names the root package whose closure reached it
-         * (the resolver's first-reacher chain): attribute it to the written
-         * reference(s) requiring that root, whose carried provenance lets the
-         * driver point at the requirement as written. */
-        if (err instanceof MetadataFetchError) {
-          const culpable = references.filter((_, index) => requirements[index].pkg === err.rootPkg);
-          if (culpable.length > 0) {
-            throw new RequirementResolutionError(culpable, err);
-          }
-        }
-        throw asError(err);
-      });
+          : assembled;
+      }
+    ).catch(err => this.attributeMetadataFailure(err, references, requirements));
+  }
+
+  /**
+   * A metadata failure names the root package whose closure reached it (the
+   * resolver's first-reacher chain): attribute it to the written reference(s)
+   * requiring that root, whose carried provenance lets the driver point at the
+   * requirement as written.
+   */
+  private attributeMetadataFailure(err: unknown, references: RepositoryRef[], requirements: Requirement[]): never {
+    if (err instanceof MetadataFetchError) {
+      const culpable = references.filter((_, index) => requirements[index].pkg === err.rootPkg);
+      if (culpable.length > 0) {
+        throw new RequirementResolutionError(culpable, err);
+      }
+    }
+    throw asError(err);
   }
 
   /**
    * Run one reference's own delivery, attributing any failure to it (the
-   * per-reference analogue of resolveAll's batch attribution).
+   * per-reference analogue of the batch attribution).
    */
   private attributedTo(reference: RepositoryRef, deliver: () => Computable<FileSet>): Computable<FileSet> {
     try {
@@ -286,13 +328,21 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
    * the reachable members of the joint closure as resolved dependencies, all
    * stamped with the resolution's provenance.
    */
+  /**
+   * Make an already-resolved npm package launchable, keeping the exact closure
+   * it carries (no re-resolution). Shared by this repository's own `run`
+   * delivery and by a catalog delegating a jointly-pinned member.
+   */
+  public makeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet> {
+    return makeNpmRunnable(pkg);
+  }
+
   private assembleClosure(
     req: Requirement,
     index: number,
     selections: Selected<SemverVersion>[],
-    packages: PackageFileSet[],
-    operation: string
-  ): Computable<FileSet> {
+    packages: Map<number, PackageFileSet>
+  ): PackageFileSet {
     const origin: IResolutionOrigin<SemverVersion> = {
       kind: PACKAGE_RESOLUTION_PROVENANCE,
       repository: this.url,
@@ -302,7 +352,7 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
       packageOfPath: npmPackageOfPath,
     };
     const reachable = selections.flatMap((sel, selIndex) =>
-      sel.reachableFrom?.includes(index) ? [{ sel, files: packages[selIndex] }] : []
+      sel.reachableFrom?.includes(index) ? [{ sel, files: packages.get(selIndex)! }] : []
     );
     const root = reachable.find(entry => entry.sel.pkg === req.pkg);
     if (!root) {
@@ -310,11 +360,9 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
       throw new Error(`Resolution of ${requirementKey(req)} does not contain its own root package`);
     }
     const dependencies = reachable.filter(entry => entry !== root).map(entry => entry.files.withOrigin(origin));
-    const pkg = new PackageFileSet(root.files, root.files.packageName, root.files.version, dependencies, origin);
-    /* Under `run`, hand back a runnable (the npm package's own bin, launched with
-     * its closure mounted) — making a package runnable is this repository's own
-     * npm-specific business. Everything else gets the plain package. */
-    return operation === "run" ? makeNpmRunnable(pkg) : Computable.resolve(pkg);
+    /* The plain resolved package with its joint closure carried; the operation's
+     * delivery shape (a runnable under `run`) is applied upstream in `deliver`. */
+    return new PackageFileSet(root.files, root.files.packageName, root.files.version, dependencies, origin);
   }
 
   /**

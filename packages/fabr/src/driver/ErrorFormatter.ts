@@ -26,7 +26,7 @@ import {
   describeUseSite,
   Diagnostic,
   ExecutionError,
-  FileConflictError,
+  ConflictError,
   IDiagnosticDetail,
   IDiagnosticNote,
   IModelRefStep,
@@ -182,11 +182,12 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       const site = cause.useSite ? ` - required by ${describeUseSite(cause.useSite.property, cause.useSite.target)}` : "";
       return { message: cause.message + site, loc: cause.position, help: helpOf(cause) };
     }
-    if (owner && cause instanceof FileConflictError) {
+    if (owner && cause instanceof ConflictError) {
+      /* Both contributors that claim `key`, each traced to where it was written;
+       * the concrete detail keeps identical-provenance conflicts diagnosable. */
       const notes = [cause.left, cause.right].flatMap(side => [
-        ...this.chainNotes(side.provenance, side.label, cause.path),
-        /* The concrete file, so identical-provenance conflicts stay diagnosable */
-        { message: `at ${side.file.getDisplayName()}` },
+        ...this.chainNotes(side.provenance, side.label, cause.key),
+        ...(side.detail ? [{ message: `at ${side.detail}` }] : []),
       ]);
       return { message: `Failed to build ${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target), notes };
     }

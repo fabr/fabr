@@ -1,7 +1,14 @@
 import { Readable } from "stream";
 import { Computable } from "../core/Computable";
 import { FileSet, FileSource } from "../core/FileSet";
-import { isRepository, materializeAll, materializeShallow, Repository, RepositoryRef, SourceRef } from "../core/Repository";
+import {
+  isRepository,
+  materializeLists,
+  materializeShallow,
+  Repository,
+  RepositoryRef,
+  SourceRef,
+} from "../core/Repository";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { Flag } from "../core/Flag";
 import {
@@ -789,8 +796,8 @@ export abstract class TargetContext {
    */
   public getFileSets(name: string, overrides?: Constraints): Computable<FileSet[]> {
     return this.getFileSources(name, overrides)
-      .then(sources => materializeAll(sources))
-      .then(sources => sources.filter((source): source is FileSet => source instanceof FileSet));
+      .then(sources => materializeLists([sources]))
+      .then(([resolved]) => resolved.filter((source): source is FileSet => source instanceof FileSet));
   }
 
   public getFileSet(name: string, overrides?: Constraints): Computable<FileSet> {
@@ -814,19 +821,14 @@ export abstract class TargetContext {
         const value = parts[name];
         return value instanceof Computable ? value : Computable.resolve(value);
       }),
-      (...lists: SourceRef[][]) => {
-        const flat = lists.flat();
-        return materializeAll(flat).then(resolved => {
+      (...lists: SourceRef[][]) =>
+        materializeLists(lists).then(partitions => {
           const result: Record<string, FileSet[]> = {};
-          let index = 0;
           names.forEach((name, i) => {
-            const slice = resolved.slice(index, index + lists[i].length);
-            index += lists[i].length;
-            result[name] = slice.filter((source): source is FileSet => source instanceof FileSet);
+            result[name] = partitions[i].filter((source): source is FileSet => source instanceof FileSet);
           });
           return result;
-        });
-      }
+        })
     );
   }
 
@@ -861,7 +863,8 @@ export abstract class TargetContext {
   public getGlobalTarget(name: string, overrides?: Constraints): Computable<(FileSource | Repository)[]> {
     return this.getContext(overrides)
       .getTarget(name, this.stack)
-      .then(sources => materializeAll(sources));
+      .then(sources => materializeLists([sources]))
+      .then(([resolved]) => resolved);
   }
 
   /**
@@ -1112,6 +1115,22 @@ export class RepositoryContext {
       throw new Error("Missing required property " + name);
     }
     return this.context.resolveStringProperty(prop, this.target).then(prop => prop.toString());
+  }
+
+  /**
+   * Resolve a FILES property of this repository's declaration to its deferred
+   * sources — external references (as inert RepositoryRefs, not yet resolved or
+   * fetched) and any local targets (evaluated/built during resolution). The
+   * primitive a repository provider reads a property through; `overrides` layer
+   * over the ambient config (e.g. a catalog forces `BUILD_OPERATION=build` so its
+   * members resolve as mountable packages). A missing property is the empty set.
+   */
+  public getFileSources(name: string, overrides?: Constraints): Computable<SourceRef[]> {
+    const prop = this.props[name];
+    if (!prop) {
+      return Computable.resolve([]);
+    }
+    return this.context.resolveFileProperty(prop, this.target, undefined, overrides);
   }
 
   /**

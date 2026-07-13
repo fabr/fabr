@@ -21,7 +21,7 @@ import { Computable } from "../core/Computable";
 import { resolveMVS } from "./MVSResolver";
 import { SEMVER, SemverVersion, versionToString } from "./Semver";
 import { MetadataFetchError } from "../core/Errors";
-import { PackageRegistry, Requirement, Resolution, Selected } from "./Types";
+import { PackageRegistry, Requirement, MVSResolution, Selected } from "./Types";
 import { expect } from "chai";
 
 /**
@@ -42,8 +42,8 @@ function mockRegistry(data: Record<string, Record<string, Record<string, string>
 function resolve(
   roots: Record<string, string>,
   data: Record<string, Record<string, Record<string, string>>>
-): Resolution<SemverVersion> {
-  let result: Resolution<SemverVersion> | undefined;
+): MVSResolution<SemverVersion> {
+  let result: MVSResolution<SemverVersion> | undefined;
   resolveMVS(
     Object.entries(roots).map(([pkg, constraint]) => ({ pkg, constraint })),
     SEMVER,
@@ -73,7 +73,7 @@ function resolveError(roots: Record<string, string>, data: Record<string, Record
   return error!;
 }
 
-function selectionStrings(resolution: Resolution<SemverVersion>): string[] {
+function selectionStrings(resolution: MVSResolution<SemverVersion>): string[] {
   return resolution.selections.map(sel => `${sel.pkg}@${versionToString(sel.version)}`);
 }
 

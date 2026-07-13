@@ -20,34 +20,64 @@
 import { Computable } from "./Computable";
 import { FileSet, FileSource } from "./FileSet";
 import { PackageFileSet } from "./PackageFileSet";
+import { RunnableFileSet } from "./RunnableFileSet";
 import { chainSteps, IProvenanceStep } from "./Provenance";
 import { Name } from "../model/Name";
 
 /**
+ * One resolved root of a {@link Resolution}: the input reference and the name
+ * the repository resolved it to — the one thing a caller can read out of an
+ * otherwise-opaque Resolution, so it can key/address entries (a catalog keys its
+ * members by this) *without* fetching them. `name` is whatever identity the
+ * repository addresses entries by (npm: the package name).
+ */
+export interface ResolvedRoot {
+  readonly reference: RepositoryRef;
+  readonly name: string;
+}
+
+/**
+ * The result of a repository's {@link Repository.resolve} phase: versions +
+ * dependency tree, but nothing fetched. Opaque to everyone but the repository
+ * that produced it (which hands it back to {@link Repository.materialize}),
+ * *except* for `roots`. Ecosystem specifics (npm's version selection + reachable
+ * tree) live in a private subtype; the generic surface is only `roots`.
+ */
+export interface Resolution {
+  readonly roots: ReadonlyArray<ResolvedRoot>;
+}
+
+/**
  * A repository resolves named requirements into file content — as distinct
  * from a FileSource, which is a container that can answer queries about files
- * it already has. A repository is the resolution domain: all of the references
- * against it that reach one collection point are resolved together, so that
- * the result of each requirement can depend on what else is being resolved
- * with it (e.g. joint minimal-version-selection).
+ * it already has. Resolution is a domain (all references against it at one
+ * collection point resolve together, e.g. joint minimal-version-selection),
+ * split into two phases so *fetching* can be deferred past *resolving*:
+ * `resolve` fixes versions + the tree (cheap, eager — the pin); `materialize`
+ * fetches + assembles a *subset* of that resolution on demand. `resolveAll`
+ * (via {@link resolveAndMaterialize}) is just the two composed — what a normal
+ * consumer, which needs all of its own references, uses.
  */
 export interface Repository {
   /**
-   * Resolve a batch of references together, returning the base files for each
-   * reference in order. Projections and provenance carried by the references
-   * are applied by the caller (see materializeAll). The repository delivers the
-   * artifact its *operation* asks for — a plain package for build/test, or (its
-   * ecosystem's notion of) a runnable for run — reading that operation (and any
-   * other global config it selects on, e.g. a host platform) from its
-   * RepositoryContext, which is interned per BuildContext and so reflects the
-   * constraints these references were consumed under. Making a package runnable
-   * is the repository's own business; the `run` delivery is a sealed launch
-   * install, not files for the consumer to lay out, so "consumers decide layout"
-   * is intact. Under the `files` operation the consumer wants only a package's
-   * own files (see FILES_OPERATION), so a repository may deliver them without
-   * resolving the dependency closure at all.
+   * Phase 1 — resolve versions + dependency tree over the batch, WITHOUT
+   * fetching. Returns an opaque, repository-specific Resolution the caller holds
+   * and hands back to `materialize`; its `roots` name each resolved reference so
+   * a caller (a catalog) can key by name without fetching.
    */
-  resolveAll(references: RepositoryRef[]): Computable<FileSet[]>;
+  resolve(references: RepositoryRef[]): Computable<Resolution>;
+
+  /**
+   * Phase 2 — materialize (fetch + assemble) the given references, a SUBSET of a
+   * prior Resolution. Each reference's dependency closure comes from that
+   * pre-resolved tree, never re-resolved, so a subset fetch preserves the joint
+   * pin. The repository delivers the artifact its *operation* asks for — a plain
+   * package for build/test, a runnable for run — reading it (and any global
+   * config it selects on, e.g. a host platform) from its RepositoryContext,
+   * interned per BuildContext. Projections and provenance carried by the
+   * references are applied by the caller (see materializeAll).
+   */
+  materialize(references: RepositoryRef[], resolution: Resolution): Computable<FileSet[]>;
 
   /**
    * Claim the identity portion of a reference name that this repository
@@ -55,10 +85,33 @@ export interface Repository {
    * *into* the resolved package.
    */
   splitReference(name: Name): { requirement: Name; projection?: IProjection };
+
+  /**
+   * Repackage an already-resolved package (its closure carried) as a runnable,
+   * **without re-resolving** — a pure, ecosystem-specific transform (for npm:
+   * mount the closure as node_modules + a bin surface from package.json). It is
+   * separate from `materialize`'s run delivery precisely so that a package
+   * resolved in one place can be launched with the *exact* closure it was
+   * resolved with: a catalog pins its members' versions jointly, then hands one
+   * back here to be made runnable, keeping that joint closure rather than letting
+   * a fresh resolution pick different (wrong) dependencies. The package must be
+   * one this repository produced (a catalog delegates to its member's source).
+   */
+  makeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet>;
+}
+
+/**
+ * The eager one-shot: resolve a batch and immediately materialize the whole of
+ * it — a normal consumer needs all of its own references, so it resolves and
+ * fetches together. The collection point ({@link materializeAll}) uses this; a
+ * catalog does NOT — it holds the Resolution and materializes members on demand.
+ */
+export function resolveAndMaterialize(repository: Repository, references: RepositoryRef[]): Computable<FileSet[]> {
+  return repository.resolve(references).then(resolution => repository.materialize(references, resolution));
 }
 
 export function isRepository(source: SourceRef): source is Repository {
-  return typeof (source as Partial<Repository>).resolveAll === "function";
+  return typeof (source as Partial<Repository>).resolve === "function";
 }
 
 /**
@@ -168,7 +221,7 @@ export function materializeShallow(sources: SourceRef[]): Computable<(FileSource
   }
   const batches = [...groupByRepository(references).entries()];
   return Computable.forAll(
-    batches.map(([repository, refs]) => repository.resolveAll(refs)),
+    batches.map(([repository, refs]) => resolveAndMaterialize(repository, refs)),
     (...results: FileSet[][]) => {
       const finished = new Map<RepositoryRef, Computable<FileSet>>();
       batches.forEach(([, refs], batchIndex) =>
@@ -203,7 +256,7 @@ export function materializeAll(sources: SourceRef[]): Computable<(FileSource | R
   }
   const batches = [...groupByRepository(references).entries()];
   return Computable.forAll(
-    batches.map(([repository, refs]) => repository.resolveAll(refs)),
+    batches.map(([repository, refs]) => resolveAndMaterialize(repository, refs)),
     (...results: FileSet[][]) => {
       const finished = new Map<RepositoryRef, Computable<FileSet>>();
       batches.forEach(([, refs], batchIndex) =>
@@ -227,6 +280,25 @@ export function materializeAll(sources: SourceRef[]): Computable<(FileSource | R
 }
 
 /**
+ * Materialize several gathered source-lists through ONE joint {@link materializeAll}
+ * — so every reference across all of them resolves together — returning the
+ * results partitioned back per input list. The shared core of the collection-point
+ * accessors (`getFileSets`, `getGlobalTarget`, `collect`): each is just this plus
+ * its own shaping (filter to FileSet / keep repositories / key per name).
+ */
+export function materializeLists(lists: SourceRef[][]): Computable<(FileSource | Repository)[][]> {
+  return materializeAll(lists.flat()).then(resolved => {
+    const partitioned: (FileSource | Repository)[][] = [];
+    let index = 0;
+    for (const list of lists) {
+      partitioned.push(resolved.slice(index, index + list.length));
+      index += list.length;
+    }
+    return partitioned;
+  });
+}
+
+/**
  * @return every reference among the sources, plus those carried by packages —
  * recursively through their built-package deps — deduplicated by identity.
  */
@@ -246,7 +318,7 @@ function gatherReferences(sources: SourceRef[]): RepositoryRef[] {
   return references;
 }
 
-function groupByRepository(references: RepositoryRef[]): Map<Repository, RepositoryRef[]> {
+export function groupByRepository(references: RepositoryRef[]): Map<Repository, RepositoryRef[]> {
   const groups = new Map<Repository, RepositoryRef[]>();
   for (const reference of references) {
     const group = groups.get(reference.source);

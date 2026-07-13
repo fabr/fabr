@@ -37,31 +37,22 @@ import {
 } from "@fabr/core";
 import { makeNpmRunnable } from "../JSPackage";
 
-/* The package (built under build), its deps' flags, and NODE_TYPES are resolved
- * under build, since the ambient operation here is run. */
+/* The package is built under build, since the ambient operation here is run. */
 const BUILD_OP: Constraints = { [BUILD_OPERATION]: "build" };
 
 function runJsPackage(context: TargetContext): Computable<RuleResult> {
-  return Computable.forAll(
-    [context.context.getTargetWithOverrides(context.name, BUILD_OP), context.getFlags("deps", BUILD_OP)],
-    (buildResult, flags): Computable<RuleResult> => {
-      const built = buildResult.find((s): s is PackageFileSet => s instanceof PackageFileSet);
-      if (!built) {
-        throw new Error("internal: js_package[build] did not yield a package");
-      }
-      /* Resolve the package's carried deps at this collection point (the NODE_TYPES
-       * pin joins the batch for node packages, so the carried @types resolve — the
-       * same pin the package's own build used), then make the fully-resolved
-       * package runnable via its generated package.json bin: the same path an
-       * external `@npm:` package takes. */
-      return context
-        .collect({
-          pkg: [built],
-          ...(flags.some(f => f.name === "nodejs") ? { nodeTypes: context.getGlobalSources("NODE_TYPES", BUILD_OP) } : {}),
-        })
-        .then(({ pkg }) => makeNpmRunnable(pkg[0] as PackageFileSet));
+  return context.context.getTargetWithOverrides(context.name, BUILD_OP).then((buildResult): Computable<RuleResult> => {
+    const built = buildResult.find((s): s is PackageFileSet => s instanceof PackageFileSet);
+    if (!built) {
+      throw new Error("internal: js_package[build] did not yield a package");
     }
-  );
+    /* Resolve the package's carried deps at this collection point (a carried
+     * @types dep needing @types/node is satisfied by the package's own explicit
+     * @types/node dep, in the same batch), then make the fully-resolved package
+     * runnable via its generated package.json bin: the same path an external
+     * `@npm:` package takes. */
+    return context.collect({ pkg: [built] }).then(({ pkg }) => makeNpmRunnable(pkg[0] as PackageFileSet));
+  });
 }
 
 export const runJsPackageRule: RuleRegistration = {

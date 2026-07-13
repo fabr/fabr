@@ -24,7 +24,6 @@
  * presentation is exclusively the driver's job.
  */
 
-import { IFile } from "./FileSet";
 import { describeProvenance, IProvenanceStep } from "./Provenance";
 import { RepositoryRef } from "./Repository";
 
@@ -124,40 +123,52 @@ export class TestsFailedError extends Error {
 }
 
 /**
- * One side of a file conflict: the file, and the provenance chain of the
- * fileset it arrived in.
+ * One side of a conflict: the provenance chain of the contributor and, for
+ * disambiguating same-provenance conflicts, an optional concrete `detail` (a
+ * file's display name, a package's version).
  */
 export interface IConflictSource {
-  file: IFile;
   provenance?: IProvenanceStep;
+  detail?: string;
 }
 
-/** A conflict side as reported: the label is derived from the provenance */
+/** A conflict side as reported: the label is derived from the provenance. */
 export interface IConflictSide extends IConflictSource {
   label: string;
 }
 
-export class FileConflictError extends Error {
-  public readonly path: string;
+/**
+ * Two provenance-attributed sources supply the same `key` with different
+ * content — a naming conflict. `kind` names what collides ("files", "catalog
+ * entries", ...); both sides are attributed so whoever reports it (the driver)
+ * can point at each. A single joint version-selection already coalesces two
+ * versions of one package, so a package-name collision here is genuinely
+ * distinct sources, not a version disagreement.
+ */
+export class ConflictError extends Error {
   public readonly left: IConflictSide;
   public readonly right: IConflictSide;
 
-  constructor(path: string, left: IConflictSource, right: IConflictSource) {
+  constructor(
+    public readonly kind: string,
+    public readonly key: string,
+    left: IConflictSource,
+    right: IConflictSource
+  ) {
     const leftSide = describeSide(left);
     const rightSide = describeSide(right);
     super(
       leftSide.label === rightSide.label
-        ? `Conflicting files for ${path} (within '${leftSide.label}')`
-        : `Conflicting files for ${path} (from '${leftSide.label}' and '${rightSide.label}')`
+        ? `Conflicting ${kind} for ${key} (within '${leftSide.label}')`
+        : `Conflicting ${kind} for ${key} (from '${leftSide.label}' and '${rightSide.label}')`
     );
-    this.path = path;
     this.left = leftSide;
     this.right = rightSide;
   }
 }
 
 function describeSide(source: IConflictSource): IConflictSide {
-  return { ...source, label: describeProvenance(source.provenance) ?? source.file.getDisplayName() };
+  return { ...source, label: describeProvenance(source.provenance) ?? source.detail ?? "unknown" };
 }
 
 /**
@@ -197,3 +208,4 @@ export class RequirementResolutionError extends Error {
     super(cause.message);
   }
 }
+

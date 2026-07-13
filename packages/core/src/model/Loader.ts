@@ -34,6 +34,7 @@ import { flagRule } from "../rules/FlagTarget";
 import { defaultFilesRule } from "../rules/DefaultFilesRule";
 import { scriptRunRule } from "../rules/RunScript";
 import { runRule } from "../rules/BuildRun";
+import { catalogRepositoryRegistration } from "../rules/CatalogRepository";
 import { computableWorkList } from "../core/WorkList";
 
 /**
@@ -44,6 +45,7 @@ import { computableWorkList } from "../core/WorkList";
 export function coreContribution(): PluginContribution {
   return {
     rules: [flagRule, defaultFilesRule, scriptRunRule, runRule],
+    repositories: [catalogRepositoryRegistration],
     includes: [packageLibFile("@fabr/core", "STD.fabr")],
   };
 }

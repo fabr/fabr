@@ -19,7 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { MetadataFetchError } from "../core/Errors";
-import { PackageRegistry, Requirement, Resolution, ROOT_REQUIRER, Selected, VersionDomain } from "./Types";
+import { PackageRegistry, Requirement, MVSResolution, ROOT_REQUIRER, Selected, VersionDomain } from "./Types";
 
 /**
  * Minimal Version Selection resolver (after Go's MVS): every constraint is
@@ -29,7 +29,7 @@ import { PackageRegistry, Requirement, Resolution, ROOT_REQUIRER, Selected, Vers
  * The result therefore depends only on what the packages in the graph declare,
  * never on what else the repository happens to contain, so it is deterministic
  * without a lockfile (provided published metadata is immutable). Upper bounds
- * are checked after selection; violations are reported in Resolution.errors
+ * are checked after selection; violations are reported in MVSResolution.errors
  * (the deterministic remedy is a user-supplied override, i.e. an additional
  * root requirement, which dominates naturally by the max rule).
  *
@@ -37,13 +37,13 @@ import { PackageRegistry, Requirement, Resolution, ROOT_REQUIRER, Selected, Vers
  * rejects with a MetadataFetchError identifying the failing package and the
  * requirement chain that first reached it (the requirement graph cannot be
  * determined, which is unlike a constraint violation and so is not reported
- * via Resolution.errors).
+ * via MVSResolution.errors).
  */
 export function resolveMVS<V, C>(
   roots: Requirement[],
   domain: VersionDomain<V, C>,
   registry: PackageRegistry<V>
-): Computable<Resolution<V>> {
+): Computable<MVSResolution<V>> {
   return Computable.from((resolve, reject) => {
     /* Highest minimum seen so far, per resolution key */
     const selected = new Map<string, Selected<V>>();

@@ -4,10 +4,11 @@ import * as nodePath from "node:path";
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
-import { Repository, RepositoryRef, SourceRef } from "../core/Repository";
+import { Repository, RepositoryRef, Resolution, SourceRef } from "../core/Repository";
+import { RunnableFileSet } from "../core/RunnableFileSet";
 import { Name } from "./Name";
 import { renderProvenance } from "../core/Provenance";
-import { FileConflictError } from "../core/Errors";
+import { ConflictError } from "../core/Errors";
 import { LogFormatter, LogLevel } from "../support/Log";
 import {
   BuildAction,
@@ -80,14 +81,23 @@ const batchCalls: string[][] = [];
 class TestRepo implements Repository {
   private readonly cache = new Map<string, FileSet>();
 
-  public resolveAll(references: RepositoryRef[]): Computable<FileSet[]> {
+  /* The joint batch is the resolve phase — that's where batchCalls records. */
+  public resolve(references: RepositoryRef[]): Computable<Resolution> {
     batchCalls.push(references.map(reference => reference.name.toString()));
+    return Computable.resolve({ roots: references.map(reference => ({ reference, name: reference.name.toString() })) });
+  }
+
+  public materialize(references: RepositoryRef[]): Computable<FileSet[]> {
     return Computable.resolve(references.map(reference => this.filesFor(reference.name.toString())));
   }
 
   /* No sub-package grammar: the whole name is the requirement, nothing projects. */
   public splitReference(name: Name): { requirement: Name } {
     return { requirement: name };
+  }
+
+  public makeRunnable(): Computable<RunnableFileSet> {
+    throw new Error("test_repo does not produce runnables");
   }
 
   private filesFor(name: string): FileSet {
@@ -218,9 +228,9 @@ describe("BuildContext", () => {
       expect(err).to.be.instanceOf(DependencyFailedError);
       const cause = (err as DependencyFailedError).cause;
       expect(cause.message).to.equal("Conflicting files for f.txt (from 'c1' and 'c2')");
-      expect(cause).to.be.instanceOf(FileConflictError);
-      const conflict = cause as FileConflictError;
-      expect(conflict.path).to.equal("f.txt");
+      expect(cause).to.be.instanceOf(ConflictError);
+      const conflict = cause as ConflictError;
+      expect(conflict.key).to.equal("f.txt");
       expect(conflict.left.label).to.equal("c1");
       expect(conflict.right.label).to.equal("c2");
 

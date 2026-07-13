@@ -32,6 +32,7 @@ import {
   parseVersion,
   RepositoryContext,
   RepositoryRef,
+  resolveAndMaterialize,
   ROOT_REQUIRER,
   Selected,
   SemverVersion,
@@ -320,7 +321,7 @@ describe("NPMRepository resolveAll under files", () => {
     const repo = new NPMRepository(REG, fakeContext(FILES_OPERATION, served, fetched));
     const ref = new RepositoryRef(repo, Name.fromLiteral("@parcel/watcher:2.4.1"));
 
-    const [delivered] = await toPromise(repo.resolveAll([ref]));
+    const [delivered] = await toPromise(resolveAndMaterialize(repo, [ref]));
 
     expect(delivered).to.be.instanceOf(PackageFileSet);
     const pkg = delivered as PackageFileSet;
@@ -341,7 +342,7 @@ describe("NPMRepository resolveAll under files", () => {
     const repo = new NPMRepository(REG, fakeContext(FILES_OPERATION, served, fetched));
     const ref = new RepositoryRef(repo, Name.fromLiteral("left-pad:^1.2.0"));
 
-    const [delivered] = await toPromise(repo.resolveAll([ref]));
+    const [delivered] = await toPromise(resolveAndMaterialize(repo, [ref]));
 
     expect((delivered as PackageFileSet).version).to.equal("1.2.0");
   });
@@ -350,7 +351,7 @@ describe("NPMRepository resolveAll under files", () => {
     const repo = new NPMRepository(REG, fakeContext(FILES_OPERATION, {}, []));
     const ref = new RepositoryRef(repo, Name.fromLiteral("left-pad:*"));
 
-    const err = await rejection(() => repo.resolveAll([ref]));
+    const err = await rejection(() => resolveAndMaterialize(repo, [ref]));
     expect(err.message).to.match(/unconstrained/);
   });
 });

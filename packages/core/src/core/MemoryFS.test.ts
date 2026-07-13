@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { FileConflictError } from "./Errors";
+import { ConflictError } from "./Errors";
 import { FileSet } from "./FileSet";
 import { MemoryFile } from "./MemoryFS";
 
@@ -29,7 +29,7 @@ describe("MemoryFile", () => {
 
   it("a conflict between generated files reports rather than crashing", () => {
     /* Two different generated package.json at one path, with no provenance:
-     * the FileConflictError message falls back to getDisplayName, which used to
+     * the ConflictError message falls back to getDisplayName, which used to
      * throw "Method not implemented" and mask the real conflict diagnostic. */
     const a = new FileSet(new Map([["pkg/package.json", MemoryFile.from('{"a":1}')]]));
     const b = new FileSet(new Map([["pkg/package.json", MemoryFile.from('{"b":2}')]]));
@@ -39,7 +39,7 @@ describe("MemoryFile", () => {
     } catch (e) {
       err = e;
     }
-    expect(err).to.be.instanceOf(FileConflictError);
+    expect(err).to.be.instanceOf(ConflictError);
     expect((err as Error).message).to.include("Conflicting files for pkg/package.json");
     expect((err as Error).message).to.include("<generated file>");
   });

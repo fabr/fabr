@@ -47,3 +47,16 @@ targetdef run {
     args = STRING;
     output = STRING;
 }
+
+#
+# A catalog pins a fixed set of external requirements in one place. Its 'deps'
+# are resolved jointly and once (a single version selection over the whole set),
+# and each resolved package is exposed by its package name: reference it as
+# '<catalog>:<package>' wherever a dependency is wanted, with the version fixed
+# here rather than repeated at each use. Because the whole set resolves together,
+# every consumer sees one consistent version of everything the catalog covers,
+# and does no resolution of its own.
+#
+targetdef catalog {
+    deps = FILES;
+}

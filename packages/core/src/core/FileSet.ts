@@ -21,7 +21,7 @@ import * as path from "path";
 import { Name } from "../model/Name";
 import { Computable, ComputableSource } from "./Computable";
 import { IProvenanceStep } from "./Provenance";
-import { FileConflictError } from "./Errors";
+import { ConflictError } from "./Errors";
 import { globMatcher } from "../support/Glob";
 
 export interface IFile {
@@ -241,7 +241,12 @@ export class FileSet implements FileSource {
         const old = result.get(path);
         if (old && !old.isSameFile(file)) {
           const owner = firstOwner.get(path) ?? fs;
-          throw new FileConflictError(path, { file: old, provenance: owner.origin }, { file, provenance: fs.origin });
+          throw new ConflictError(
+            "files",
+            path,
+            { provenance: owner.origin, detail: old.getDisplayName() },
+            { provenance: fs.origin, detail: file.getDisplayName() }
+          );
         }
         result.set(path, file);
         if (!firstOwner.has(path)) {

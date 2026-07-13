@@ -37,14 +37,7 @@ import {
   SourceRef,
   TargetContext,
 } from "@fabr/core";
-import {
-  binByConvention,
-  compileJsSources,
-  hasTypescriptSources,
-  JSTarget,
-  parseJSTarget,
-  stripPackageJson,
-} from "../JSPackage";
+import { binByConvention, compileJsSources, JSTarget, parseJSTarget, stripPackageJson } from "../JSPackage";
 
 function buildJsPackage(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
@@ -65,23 +58,18 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
 
       const jsTarget = parseJSTarget(target);
       const compileSources = sources.minus(tests);
-      const typechecks = hasTypescriptSources(compileSources);
 
-      /* THE collection point: the deps and the node @types (under nodejs)
-       * materialize through one joint resolution, so e.g. the NODE_TYPES pin
-       * satisfies an unconstrained @types/node arriving via the deps. TSC is
-       * the compiler's own concern (resolved in js_compile), independent of
-       * what it compiles. */
-      const gathered = context.collect({
-        deps: depSources,
-        ...(typechecks && flags.find(f => f.name === "nodejs") ? { nodeTypes: context.getGlobalSources("NODE_TYPES") } : {}),
-      });
+      /* THE collection point: the deps materialize through one joint resolution
+       * (a package needing Node APIs lists `@types/node` among them). TSC is the
+       * compiler's own concern (resolved in js_compile), independent of what it
+       * compiles. */
+      const gathered = context.collect({ deps: depSources });
 
-      return Computable.forAll([gathered, seedJson], ({ deps, nodeTypes }, seed) => {
+      return Computable.forAll([gathered, seedJson], ({ deps }, seed) => {
         /* Compile against the deps laid out scoped: the sources see only these
          * direct deps, while the transitive closure is reachable only by the
          * deps themselves (assembleScopedNodeModules). */
-        const { compiled, copied } = compileJsSources(context, compileSources, deps, jsTarget, flags, nodeTypes);
+        const { compiled, copied } = compileJsSources(context, compileSources, deps, jsTarget, flags);
 
         /* The package's DIRECT deps as written (built packages as packages,
          * external requirements as inert references, resolved fresh at each

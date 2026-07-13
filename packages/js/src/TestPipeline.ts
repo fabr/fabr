@@ -56,7 +56,7 @@ import {
   TestsFailedError,
   writeFileSet,
 } from "@fabr/core";
-import { assembleNodeModules, compileJsSources, hasTypescriptSources, JSTarget, parseJSTarget, stripPackageJson } from "./JSPackage";
+import { assembleNodeModules, compileJsSources, JSTarget, parseJSTarget, stripPackageJson } from "./JSPackage";
 
 /** Test files are conventionally named *.test.ts (or .tsx) */
 export const TEST_FILE_PATTERN = /\.test\.tsx?$/;
@@ -164,16 +164,12 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
   const sources = FileSet.unionAll(inputs.sources, inputs.tests).remap(name =>
     name === RUNNER_GLOBALS_TYPES ? undefined : name
   );
-  const typechecks = hasTypescriptSources(sources);
   return context
     .collect({
       deps: inputs.depSources,
       testDeps: inputs.testDepSources,
-      ...(typechecks && inputs.flags.find(f => f.name === "nodejs")
-        ? { nodeTypes: context.getGlobalSources("NODE_TYPES", BUILD_OP) }
-        : {}),
     })
-    .then(({ deps, testDeps, nodeTypes }): Computable<RuleResult> => {
+    .then(({ deps, testDeps }): Computable<RuleResult> => {
       /* The test compile may import the package's deps, the test_deps, and the
        * runner globals directly; the runtime install is the flat closure. */
       const runtimeModules = assembleNodeModules([...deps, ...testDeps]);
@@ -182,8 +178,7 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
         sources,
         [...deps, ...testDeps, globalsTypes],
         jsTarget,
-        inputs.flags,
-        nodeTypes
+        inputs.flags
       );
       if (!compiled) {
         /* Test files are TypeScript, so a compile is always present; guard

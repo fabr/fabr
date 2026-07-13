@@ -22,7 +22,6 @@ default JS_TARGET = es6-esm;
 #
 
 default TSC = @npm:typescript:5.4.5;
-default NODE_TYPES = @npm:@types/node:20.12.7;
 
 # The test runner ('fabr test' / js_test) is fabr's own: it is sourced directly
 # from the installed @fabr/js providing the js rules, not resolved as a build
@@ -105,4 +104,3 @@ flag es2015 { provides = es5; }
 flag es5 { }
 es6 = es2015;
 es7 = es2016;
-flag nodejs {}

@@ -119,10 +119,10 @@ export interface ICompiledSources {
  * single TS compile path shared by the package build and the test run.
  * TypeScript sources yield `compiled` (the sub-target's cached output);
  * anything not compiled is returned in `copied`. `directDeps` are the deps the
- * sources may import directly (the package's own deps, plus test_deps / runner
- * globals for a test compile); the NODE_TYPES delivery (`nodeTypes`, under the
- * nodejs flag) is folded in as another direct type dep. All were resolved
- * jointly by the caller's collection point. They are laid out *scoped*
+ * sources may import directly (the package's own deps — `@types/node` among them
+ * where the sources use Node APIs — plus test_deps / runner globals for a test
+ * compile), resolved jointly by the caller's collection point. They are laid out
+ * *scoped*
  * (`assembleScopedNodeModules`): the sources see only these direct deps at the
  * top of node_modules, while the full transitive closure is reachable only by
  * the deps themselves — so a source importing an undeclared transitive dep fails
@@ -187,8 +187,7 @@ export function compileJsSources(
   sources: FileSet,
   directDeps: FileSet[],
   jsTarget: JSTarget,
-  flags: Flag[],
-  nodeTypes?: FileSet[]
+  flags: Flag[]
 ): ICompiledSources {
   const sourceGroups = sources.partition(path => {
     const lower = path.toLowerCase();
@@ -222,15 +221,14 @@ export function compileJsSources(
     /* Both .ts(x) and .js(x) go through js_compile: with allowJs, tsc downlevels
      * the JS to JS_TARGET and lets a .ts import a local .js. .d.ts joins as an
      * ambient input (it is also copied through as a resource, below).
-     * Hand js_compile the direct deps (plus, under nodejs, the node @types) as
-     * they are: it owns the node_modules layout (assembleScopedNodeModules) and
-     * the JSX-runtime detection, since those need the ordered package list and
-     * are compile concerns. TSC is added by js_compile itself. */
-    const deps = nodeTypes ? [...directDeps, ...nodeTypes] : directDeps;
+     * Hand js_compile the direct deps as they are: it owns the node_modules
+     * layout (assembleScopedNodeModules) and the JSX-runtime detection, since
+     * those need the ordered package list and are compile concerns. TSC is added
+     * by js_compile itself. */
     const srcs = FileSet.unionAll(sourceGroups.ts ?? EMPTY_FILESET, sourceGroups.js ?? EMPTY_FILESET, declarations);
     compiled = context.subTarget(
       "js_compile",
-      { srcs, deps, runtime: getESRuntime(flags, jsTarget.version) },
+      { srcs, deps: directDeps, runtime: getESRuntime(flags, jsTarget.version) },
       { label: "Compiling", constraints: { [BUILD_OPERATION]: "build" } }
     );
   }
