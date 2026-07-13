@@ -278,6 +278,122 @@ describe("Computable", () => {
     expect(values).to.deep.equal([2, 30]);
   });
 
+  it("crosses a resolveTo binding with the maybe-invalid frontier (no glitch)", () => {
+    let resolve: (value: number) => void = () => {};
+    const src = Computable.from<number>(res => {
+      resolve = res;
+    });
+    resolve(1);
+
+    /* A diamond over `src`: one arm direct, the other reaching `src` through a
+     * resolveTo binding (a node whose fn *returns* an inner computable). Both
+     * arms feed the same consumer. */
+    const direct = src.then(v => v);
+    const inner = src.then(v => v * 10);
+    const bound = Computable.resolve(0).then(() => inner);
+    let runs = 0;
+    const values: number[] = [];
+    const consumer = Computable.forAll([direct, bound], (a, b) => {
+      runs++;
+      return a + b;
+    });
+    consumer.then(v => values.push(v));
+    expect(values).to.deep.equal([11]);
+    expect(runs).to.equal(1);
+
+    /* One coherent change to src updates both arms. The maybe-invalid frontier
+     * must cross the resolveTo binding so the consumer waits for the bound arm
+     * too — it recomputes exactly once, never transiently with the new `direct`
+     * and the stale `bound` (which would surface an interim 2 + 10 = 12). */
+    resolve(2);
+    expect(values).to.deep.equal([11, 22]);
+    expect(runs).to.equal(2);
+  });
+
+  it("crosses the binding when the inner re-settles directly (no prior invalidate)", () => {
+    let resolve: (value: number) => void = () => {};
+    const inner = Computable.from<number>(res => {
+      resolve = res;
+    });
+    /* `sibling` is registered on `inner` FIRST, so a re-settle notifies it before
+     * the binding; both arms feed the same consumer. */
+    const sibling = inner.then(v => v + 1);
+    const bound = Computable.resolve(0).then(() => inner);
+    const pairs: string[] = [];
+    Computable.forAll([sibling, bound], (a, b) => {
+      pairs.push(`${a},${b}`);
+    });
+    resolve(1);
+    expect(pairs).to.deep.equal(["2,1"]);
+
+    /* A direct re-settle — no invalidate wave first, the from() re-resolve
+     * pattern — reaches the binding as a hard invalidate rather than a
+     * markMaybeInvalid. The binding must still unsettle its outer, or the
+     * consumer runs against the fresh `sibling` and the stale `bound`
+     * (surfacing an interim 6,1). */
+    resolve(5);
+    expect(pairs).to.deep.equal(["2,1", "6,5"]);
+  });
+
+  it("revalidates through a binding without recomputation when the inner is unchanged", () => {
+    let resolve: (value: number) => void = () => {};
+    const src = Computable.from<number>(res => {
+      resolve = res;
+    });
+    resolve(1);
+    let innerRuns = 0;
+    const inner = src.then(v => {
+      innerRuns++;
+      return v * 10;
+    });
+    const bound = Computable.resolve(0).then(() => inner);
+    let consumerRuns = 0;
+    const seen: number[] = [];
+    bound.then(v => {
+      consumerRuns++;
+      seen.push(v);
+    });
+    expect(seen).to.deep.equal([10]);
+
+    /* Revalidate with the same value: the wave crosses the binding as revalidate,
+     * settling the whole chain back without running anything. */
+    src.invalidate();
+    resolve(1);
+    expect(innerRuns).to.equal(1);
+    expect(consumerRuns).to.equal(1);
+
+    /* An actual change recomputes as usual. */
+    resolve(2);
+    expect(seen).to.deep.equal([10, 20]);
+    expect(consumerRuns).to.equal(2);
+  });
+
+  it("finally runs its side effect on either outcome and passes the result through", () => {
+    let resolve: (value: number) => void = () => {};
+    const src = Computable.from<number>(res => {
+      resolve = res;
+    });
+    let calls = 0;
+    const values: number[] = [];
+    src.finally(() => calls++).then(v => values.push(v));
+    resolve(5);
+    expect(calls).to.equal(1);
+    expect(values).to.deep.equal([5]);
+
+    /* Persistent: a re-settlement runs the side effect again. */
+    resolve(6);
+    expect(calls).to.equal(2);
+    expect(values).to.deep.equal([5, 6]);
+
+    /* The error path runs the side effect and rethrows the original error. */
+    const caught: string[] = [];
+    Computable.reject<number>(new Error("boom"))
+      .finally(() => calls++)
+      .catch(err => caught.push(err.message));
+    expect(calls).to.equal(3);
+    expect(caught).to.deep.equal(["boom"]);
+  });
+
   it("restores an errored node without recomputation when inputs revalidate unchanged", () => {
     let resolve: (value: number) => void = () => {};
     const src = Computable.from<number>(res => {
@@ -457,8 +573,8 @@ describe("Computable attach/detach", () => {
     c.then(() => undefined);
 
     /* Reattaching C registers C->B then B->A, reruns B, then reruns C — each node
-     * exactly once, bottom-up. B settling mid-attach must NOT re-run C early (the
-     * `attaching` guard suppresses it), so C is not run twice. */
+     * exactly once, bottom-up. B settling mid-attach must NOT re-run C early
+     * (maybeRecompute's Detached guard suppresses it), so C is not run twice. */
     expect(bRuns).to.equal(2);
     expect(cRuns).to.equal(2);
     expect(order).to.deep.equal(["b", "c"]);
@@ -521,5 +637,59 @@ describe("Computable attach/detach", () => {
     expect(seenVictim).to.deep.equal([0]);
     /* src stays attached — mutator still depends on it. */
     expect(src.detaches).to.equal(0);
+  });
+
+  it("releases the superseded inner subgraph when a re-run binds elsewhere", () => {
+    const srcA = new TestSource<number>();
+    const srcB = new TestSource<number>();
+    srcA.set(1);
+    srcB.set(2);
+    let resolve: (value: number) => void = () => {};
+    const sel = Computable.from<number>(res => {
+      resolve = res;
+    });
+    /* Fresh-per-run factory: each run builds a new inner chain over the selected source. */
+    const outer = sel.then(which => (which === 0 ? srcA : srcB).then(v => v * 10));
+    const seen: number[] = [];
+    outer.then(v => seen.push(v));
+
+    resolve(0);
+    expect(seen).to.deep.equal([10]);
+    expect(srcA.attaches).to.equal(1);
+    expect(srcB.attaches).to.equal(0); // untouched until selected
+
+    /* Re-running the outer supersedes the old binding: the srcA chain unwinds
+     * (its subscription released) and the srcB chain attaches. */
+    resolve(1);
+    expect(seen).to.deep.equal([10, 20]);
+    expect(srcA.detaches).to.equal(1);
+    expect(srcB.attaches).to.equal(1);
+
+    /* The released source no longer propagates into the outer. */
+    srcA.set(7);
+    expect(seen).to.deep.equal([10, 20]);
+  });
+
+  it("releases the inner through the binding when the outer itself detaches", () => {
+    const src = new TestSource<number>();
+    src.set(3);
+    const inner = src.then(v => v * 2);
+    const outer = Computable.resolve(0).then(() => inner);
+    const obs = outer.then(v => v);
+    expect(outer.value).to.equal(6);
+    expect(src.attaches).to.equal(1);
+
+    /* The outer's last dependant leaves: unbind must release the binding, so the
+     * inner chain (and the source's subscription) unwinds with it. */
+    unlink(outer, obs);
+    expect(src.detaches).to.equal(1);
+
+    /* A fresh observer re-runs the outer, which re-binds and re-acquires the
+     * source, recomputing from its current value. */
+    src.set(5);
+    const seen: number[] = [];
+    outer.then(v => seen.push(v));
+    expect(src.attaches).to.equal(2);
+    expect(seen).to.deep.equal([10]);
   });
 });

@@ -91,7 +91,7 @@ export abstract class ComputableSource<T> {
   /** Doubles as the attached/detached bit; see the class doc's Attachment note. */
   protected currentState: ComputableState = ComputableState.Detached;
   /** Nodes depending on this one — typed at the base contract the cascade uses (its
-   * hooks), not the concrete `Computable` they always are in practice (via then/forAll). */
+   * cascade methods), not the concrete `Computable` they always are in practice (via then/forAll). */
   private readonly dependants: ComputableSource<any>[] = [];
 
   public get state(): ComputableState {
@@ -253,10 +253,13 @@ export class Computable<T> extends ComputableSource<T> {
   private dependsOn: ComputableSource<any>[] = [];
   private fn: ((...args: any[]) => any) | undefined = undefined;
   private errfn: CatchHandler<any> | undefined = undefined;
-  /** When resolved *to* another source, the intermediary link feeding us from it
-   * — tracked so a re-resolve detaches the previous one, releasing the old inner
+  /** When resolved *to* another source, the binding node feeding us from it —
+   * tracked so a re-resolve detaches the previous one, releasing the old inner
    * subgraph (and any watches under it) once it has no other dependants. */
-  private binding?: Computable<any>;
+  private binding?: Computable<T>;
+  /** Set only on a binding node: the outer Computable that resolved to this node's
+   * sole dependency, and which mirrors our cascade (see {@link resolveTo}). */
+  private outer?: Computable<T>;
 
   /** Core derivation: a node computing `fn` over `deps` (or `errfn` on failure). */
   public static deriving<U>(
@@ -265,11 +268,17 @@ export class Computable<T> extends ComputableSource<T> {
     errfn?: CatchHandler<U>
   ): Computable<U> {
     const result = new Computable<U>();
-    result.dependsOn = deps.slice();
-    result.fn = fn;
     result.errfn = errfn;
-    result.attach();
+    result.setDerivation(deps, fn);
     return result;
+  }
+
+  /** Initialise a derived node's inputs + fn and enter the graph — the shared tail
+   * of {@link deriving} and {@link resolveTo}'s binding construction. */
+  private setDerivation(deps: ComputableSource<any>[], fn: (...args: any[]) => any): void {
+    this.dependsOn = deps.slice();
+    this.fn = fn;
+    this.attach();
   }
 
   public static forAll<U, D extends readonly ComputableSource<unknown>[] | []>(
@@ -348,7 +357,7 @@ export class Computable<T> extends ComputableSource<T> {
       return;
     }
     this.detachFrom(this.dependsOn);
-    this.binding?.detach();
+    this.unbind();
     super.detach();
   }
 
@@ -361,8 +370,7 @@ export class Computable<T> extends ComputableSource<T> {
      * inner subgraph (and any watches under it) unwinds once orphaned. This is the
      * ONLY supersede point — resolveTo below keeps the current link attached so
      * the inner re-settling (a source change flowing through) still re-delivers. */
-    this.binding?.detach();
-    this.binding = undefined;
+    this.unbind();
     const errors: Error[] = [];
     for (const dep of this.dependsOn) {
       if (dep.state === ComputableState.Error) {
@@ -387,14 +395,33 @@ export class Computable<T> extends ComputableSource<T> {
   }
 
   private resolveTo(value: T | Computable<T>): void {
-    /* Bind to the inner source and keep the link (it stays a live dependant, so
-     * the inner re-settling re-delivers to us — that's how a source change flows
-     * through). Superseding on re-run is handled in run(), not here. */
+    /* Resolving to another source: link to it through a binding — an identity node
+     * that sits on the inner as its sole dependant and mirrors the inner's cascade
+     * (maybe-invalid, revalidate, settle) into us, its `outer` (the overrides
+     * below). Being a real dependant is what carries the maybe-invalid frontier
+     * across the boundary (a batch invalidation must reach us and our dependants);
+     * forwarding the settle rather than recomputing us is what stops a
+     * fresh-per-call factory (`x.then(v => build(v))`) from thrashing. Superseding
+     * on re-run is handled in run(); a stray re-resolve (from() may fire more than
+     * once) is superseded here via unbind. */
     if (value instanceof ComputableSource) {
-      this.binding = value.then(this.resolveTo.bind(this), this.rejectWith.bind(this));
+      this.unbind();
+      const binding = new Computable<T>();
+      /* Wire the outer before entering the graph: an already-settled inner
+       * settles the binding during setDerivation's attach, which must forward. */
+      binding.outer = this;
+      binding.setDerivation([value], IDENTITY);
+      this.binding = binding;
     } else {
-      this.settle(ComputableState.Valid, value as T);
+      this.settle(ComputableState.Valid, value);
     }
+  }
+
+  /** Tear down the current resolveTo binding, releasing the inner subgraph once
+   * it has no other dependants. */
+  private unbind(): void {
+    this.binding?.detach();
+    this.binding = undefined;
   }
 
   private rejectWith(err: Error): void {
@@ -415,4 +442,37 @@ export class Computable<T> extends ComputableSource<T> {
       }
     }
   }
+
+  /* A binding node mirrors the full cascade into its outer (no-ops elsewhere —
+   * `outer` is only ever set on a binding): the maybe-invalid frontier, the
+   * revalidation wave, and the settle itself (state + value adopted verbatim,
+   * never recomputed — re-running the outer's fn would mint a fresh inner). */
+
+  /** A hard invalidate (the inner re-settled a changed value with no prior
+   * maybe-invalid wave) must still unsettle the outer, or a consumer sharing
+   * another arm of the diamond reads the outer's stale value mid-cascade. The
+   * outer only ever needs maybe: the definite new value arrives via settle. */
+  public override invalidate(): void {
+    super.invalidate();
+    this.outer?.markMaybeInvalid();
+  }
+
+  protected override markMaybeInvalid(): void {
+    super.markMaybeInvalid();
+    this.outer?.markMaybeInvalid();
+  }
+
+  protected override revalidate(): void {
+    super.revalidate();
+    this.outer?.revalidate();
+  }
+
+  protected override settle(state: ComputableState.Valid | ComputableState.Error, value: T | Error): void {
+    super.settle(state, value);
+    this.outer?.settle(state, value);
+  }
 }
+
+/** A binding is a pure identity over its inner — shared, since it captures
+ * nothing (its forwarding rides the `outer` link, not the fn). */
+const IDENTITY = (value: unknown): unknown => value;
