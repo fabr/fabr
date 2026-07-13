@@ -23,12 +23,12 @@
  * that builds the `js_compile` sub-target.
  */
 
+import { posix } from "path";
 import {
   BUILD_OPERATION,
   Computable,
   EMPTY_FILESET,
   FileSet,
-  Flag,
   IFile,
   PackageFileSet,
   RunnableFileSet,
@@ -42,55 +42,33 @@ export interface JSTarget {
   environment: "node" | "browser";
 }
 
+/** ECMAScript version names (es5, es2018, esnext) accepted as a JS target's
+ * version component. */
+const ES_VERSION = /^es(next|\d+)$/;
+
 /**
- * Parse a JS target triple
- * @param target
+ * Parse a JS target triple `<esversion>[-commonjs|-esm][-node|-browser]`
+ * (e.g. `es2018-esm`, `es6-esm-browser`). Malformed triples — an unknown module
+ * or environment component, extra components, a non-ES version — are rejected
+ * rather than silently mis-parsed to the defaults.
  */
 export function parseJSTarget(target: string): JSTarget {
-  const bits = target.split("-");
-
-  const result: JSTarget = { version: bits[0], module: "commonjs", environment: "node" };
-
-  if (bits.length > 1 && bits[1] === "esm") {
-    result.module = "esm";
+  const [version, module = "commonjs", environment = "node", ...rest] = target.split("-");
+  if (rest.length > 0) {
+    throw new Error(`Malformed JS target '${target}': expected '<esversion>[-commonjs|-esm][-node|-browser]'`);
   }
-  if (bits.length > 2 && bits[2] === "browser") {
-    result.environment = "browser";
+  if (!ES_VERSION.test(version)) {
+    throw new Error(`Malformed JS target '${target}': '${version}' is not an ECMAScript version (es5, es2018, esnext)`);
   }
-  return result;
-}
-
-/**
- * Simplify flags by removing flags that are provided (directly on indirectly) by another flag.
- * @param flags
- */
-function simplifyFlags(flags: Flag[]): Flag[] {
-  const closure = getFlagProvidesClosure(flags);
-  return flags.filter(flag => !closure.has(flag));
-}
-
-/**
- * @returns all Flags provided by the input list of Flags, not including the flags themselves
- * (unless they are provided by another flag).
- */
-function getFlagProvidesClosure(flags: Flag[]): Set<Flag> {
-  const provided = new Set<Flag>();
-  const queue: Flag[] = [...flags];
-  let elem: Flag | undefined;
-  while ((elem = queue.pop())) {
-    elem.provides.forEach(p => {
-      if (!provided.has(p)) {
-        provided.add(p);
-        queue.push(p);
-      }
-    });
+  if (module !== "commonjs" && module !== "esm") {
+    throw new Error(`Malformed JS target '${target}': module must be 'commonjs' or 'esm', not '${module}'`);
   }
-  return provided;
+  if (environment !== "node" && environment !== "browser") {
+    throw new Error(`Malformed JS target '${target}': environment must be 'node' or 'browser', not '${environment}'`);
+  }
+  return { version, module, environment };
 }
 
-function getESRuntime(flags: Flag[], defaultRuntime: string): string {
-  return simplifyFlags(flags).find(flag => flag.name.startsWith("es"))?.name ?? defaultRuntime;
-}
 
 /**
  * @return whether the tree holds TypeScript sources that will be *typechecked*
@@ -186,8 +164,7 @@ export function compileJsSources(
   context: TargetContext,
   sources: FileSet,
   directDeps: FileSet[],
-  jsTarget: JSTarget,
-  flags: Flag[]
+  jsTarget: JSTarget
 ): ICompiledSources {
   const sourceGroups = sources.partition(path => {
     const lower = path.toLowerCase();
@@ -228,7 +205,7 @@ export function compileJsSources(
     const srcs = FileSet.unionAll(sourceGroups.ts ?? EMPTY_FILESET, sourceGroups.js ?? EMPTY_FILESET, declarations);
     compiled = context.subTarget(
       "js_compile",
-      { srcs, deps: directDeps, runtime: getESRuntime(flags, jsTarget.version) },
+      { srcs, deps: directDeps, runtime: jsTarget.version },
       { label: "Compiling", constraints: { [BUILD_OPERATION]: "build" } }
     );
   }
@@ -392,6 +369,14 @@ export function makeNpmRunnable(pkg: PackageFileSet): Computable<RunnableFileSet
  * bare string (the command is the package's unscoped name) or an object; a
  * package.json with no `bin` (or none at all) yields an empty map — not runnable.
  */
+/** Normalize a package.json bin path to a clean install-relative path — typescript
+ * declares `"./bin/tsc"`, whose leading `./` would otherwise survive into the
+ * SymlinkFile target (`<root>/./bin/tsc`) and defeat the same-install-path dedup
+ * `makeNpmRunnable`/`toCommandLine` rely on (a spurious second candidate entry). */
+function normalizeBinPath(binPath: string): string {
+  return posix.normalize(binPath);
+}
+
 function binOf(pkg: PackageFileSet): Computable<Record<string, string>> {
   return pkg.get("package.json").then(file => {
     if (!file) {
@@ -400,9 +385,14 @@ function binOf(pkg: PackageFileSet): Computable<Record<string, string>> {
     return file.readString().then(text => {
       const bin = (JSON.parse(text) as { bin?: unknown }).bin;
       if (typeof bin === "string") {
-        return { [pkg.packageName.replace(/^@[^/]+\//, "")]: bin };
+        return { [pkg.packageName.replace(/^@[^/]+\//, "")]: normalizeBinPath(bin) };
       }
-      return bin && typeof bin === "object" ? (bin as Record<string, string>) : {};
+      if (bin && typeof bin === "object") {
+        return Object.fromEntries(
+          Object.entries(bin as Record<string, string>).map(([command, path]) => [command, normalizeBinPath(path)])
+        );
+      }
+      return {};
     });
   });
 }

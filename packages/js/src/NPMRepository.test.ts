@@ -43,6 +43,7 @@ import {
   matchesTargetPlatform,
   NPMRepository,
   npmPackageOfPath,
+  parseMetadataResponse,
   platformGateAdmits,
   splitNpmReference,
   unsupportedPlatformReason,
@@ -353,5 +354,74 @@ describe("NPMRepository resolveAll under files", () => {
 
     const err = await rejection(() => resolveAndMaterialize(repo, [ref]));
     expect(err.message).to.match(/unconstrained/);
+  });
+});
+
+describe("parseMetadataResponse", () => {
+  const metaBuf = (extra: object = {}): Buffer =>
+    Buffer.from(
+      JSON.stringify({
+        name: "pkg",
+        version: "1.2.3",
+        dist: { tarball: `${REG}/pkg/-/pkg-1.2.3.tgz`, shasum: "s", integrity: "i", signatures: [] },
+        ...extra,
+      })
+    );
+
+  it("accepts a valid single-version metadata document", () => {
+    expect(parseMetadataResponse(metaBuf(), "pkg/1.2.3").version).to.equal("1.2.3");
+  });
+
+  it("accepts metadata even when it carries a spurious error/code field (its package.json echoed)", () => {
+    expect(parseMetadataResponse(metaBuf({ error: "oops", code: "E" }), "pkg/1.2.3").name).to.equal("pkg");
+  });
+
+  it("rejects a full packument as the wrong URL, not a single version", () => {
+    const doc = Buffer.from(JSON.stringify({ name: "pkg", "dist-tags": {}, versions: {} }));
+    expect(() => parseMetadataResponse(doc, "pkg")).to.throw(/wrong URL/i);
+  });
+
+  it("treats every non-version, non-packument body as an unusable response", () => {
+    /* HTTP-level failures are handled upstream; a body reaching here that isn't a
+     * version or packument — an error body, non-JSON, empty, or a non-object — is
+     * simply not installable, so they all collapse to one 'unusable' error. */
+    const unusable = [
+      Buffer.from(JSON.stringify({ error: "Not Found" })), // error body
+      Buffer.from(JSON.stringify({ code: "E500", message: "boom" })), // error body
+      Buffer.from("<html><body>502 Bad Gateway</body></html>"), // non-JSON (HTML)
+      Buffer.from(""), // empty
+      Buffer.from('"just a string"'), // valid JSON, not an object
+      Buffer.from("null"), // valid JSON, not an object
+    ];
+    for (const body of unusable) {
+      expect(() => parseMetadataResponse(body, "pkg/1")).to.throw(/Invalid response/i);
+    }
+  });
+});
+
+describe("NPMRepository metadata memo", () => {
+  it("does not poison the in-process memo with a transient fetch failure", async () => {
+    const url = `${REG}/pkg/1.0.0`;
+    const good = metadataFor("pkg", "1.0.0", {});
+    let failNext = true;
+    const globals: Record<string, string> = { [BUILD_OPERATION]: "build", [TARGET]: "arm64-apple-macosx15.0" };
+    const context = {
+      getGlobalString: (name: string) =>
+        name in globals ? Computable.resolve(globals[name]) : Computable.reject(new Error(`unexpected property: ${name}`)),
+      fetch: (u: string) => {
+        if (u === url && failNext) {
+          failNext = false;
+          return Computable.reject(new Error("network blip"));
+        }
+        return u === url ? Computable.resolve(good) : Computable.reject(new Error(`unexpected fetch: ${u}`));
+      },
+    } as unknown as RepositoryContext;
+    const repo = new NPMRepository(REG, context);
+
+    /* The first resolve hits the transient failure. */
+    await rejection(() => toPromise(repo.getRequirements("pkg", parseVersion("1.0.0"))));
+    /* A retry must re-fetch and succeed — the rejection was not cached. */
+    const requirements = await toPromise(repo.getRequirements("pkg", parseVersion("1.0.0")));
+    expect(requirements).to.be.an("array");
   });
 });

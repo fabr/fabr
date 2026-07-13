@@ -30,14 +30,13 @@ function testJsPackage(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
       context.getFileSet("srcs", BUILD_OP),
-      context.getFlags("deps", BUILD_OP),
       context.getFileSet("tests", BUILD_OP),
       context.getGlobalString("JS_TARGET", BUILD_OP),
       context.getFileSources("deps", BUILD_OP),
       context.getFileSources("test_deps", BUILD_OP),
     ],
-    (sources, flags, tests, target, depSources, testDepSources) =>
-      compileAndRunTests(context, { sources, tests, flags, target, depSources, testDepSources })
+    (sources, tests, target, depSources, testDepSources) =>
+      compileAndRunTests(context, { sources, tests, target, depSources, testDepSources })
   );
 }
 

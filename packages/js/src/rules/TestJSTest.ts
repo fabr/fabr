@@ -29,13 +29,12 @@ function runJsTest(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
       context.getFileSet("srcs", BUILD_OP),
-      context.getFlags("deps", BUILD_OP),
       context.getGlobalString("JS_TARGET", BUILD_OP),
       context.getFileSources("deps", BUILD_OP),
     ],
-    (sources, flags, target, depSources) => {
+    (sources, target, depSources) => {
       const tests = sources.remap(name => (TEST_FILE_PATTERN.test(name) ? name : undefined));
-      return compileAndRunTests(context, { sources, tests, flags, target, depSources, testDepSources: [] });
+      return compileAndRunTests(context, { sources, tests, target, depSources, testDepSources: [] });
     }
   );
 }

@@ -19,7 +19,13 @@
 
 import { expect } from "chai";
 import { Computable, FileSet, IFile, MemoryFile, PackageFileSet, SymlinkFile } from "@fabr/core";
-import { assembleScopedNodeModules, hasPackageExport, resolveJsxImportSource } from "./JSPackage";
+import {
+  assembleScopedNodeModules,
+  hasPackageExport,
+  makeNpmRunnable,
+  parseJSTarget,
+  resolveJsxImportSource,
+} from "./JSPackage";
 
 /** A package with a single `index.js` and the given (already-built) deps. */
 function pkg(name: string, deps: PackageFileSet[] = []): PackageFileSet {
@@ -128,5 +134,43 @@ describe("resolveJsxImportSource", () => {
 
   it("errors when several dependencies provide one (ambiguous)", async () => {
     expect(await rejectionMessage(resolveJsxImportSource([react, preact]))).to.match(/Multiple JSX runtimes.*react.*preact/);
+  });
+});
+
+describe("parseJSTarget", () => {
+  it("parses valid triples into version/module/environment", () => {
+    expect(parseJSTarget("es2018-commonjs")).to.deep.equal({ version: "es2018", module: "commonjs", environment: "node" });
+    expect(parseJSTarget("es2021-esm")).to.deep.equal({ version: "es2021", module: "esm", environment: "node" });
+    expect(parseJSTarget("esnext-esm-browser")).to.deep.equal({ version: "esnext", module: "esm", environment: "browser" });
+    expect(parseJSTarget("es2020")).to.deep.equal({ version: "es2020", module: "commonjs", environment: "node" });
+  });
+
+  it("rejects a malformed triple rather than silently mis-parsing it to the defaults", () => {
+    /* 'browser' in the module slot — the old parser silently produced commonjs/node. */
+    expect(() => parseJSTarget("es2020-browser")).to.throw(/module must be/);
+    expect(() => parseJSTarget("es2018-esmm")).to.throw(/module must be/);
+    expect(() => parseJSTarget("es2018-esm-nodejs")).to.throw(/environment must be/);
+    expect(() => parseJSTarget("es2018-esm-node-extra")).to.throw(/expected/);
+    expect(() => parseJSTarget("es20x8-esm")).to.throw(/ECMAScript version/);
+  });
+});
+
+describe("makeNpmRunnable", () => {
+  it("normalizes a './'-prefixed package.json bin path in the surface symlink", async () => {
+    const json = JSON.stringify({ name: "typescript", version: "5.4.5", bin: { tsc: "./bin/tsc" } });
+    const pkg = new PackageFileSet(
+      new Map<string, IFile>([
+        ["package.json", MemoryFile.from(json)],
+        ["bin/tsc", MemoryFile.from("#!/usr/bin/env node\n")],
+      ]),
+      "typescript",
+      "5.4.5"
+    );
+    const runnable = await settle(makeNpmRunnable(pkg));
+    /* The bin command 'tsc' resolves to a SymlinkFile whose target has no stray
+     * '/./' — otherwise the same-install-path dedup at launch sees two entries. */
+    const link = new Map(runnable.surface).get("tsc");
+    expect(link).to.be.instanceOf(SymlinkFile);
+    expect((link as SymlinkFile).target).to.equal("node_modules/typescript/bin/tsc");
   });
 });

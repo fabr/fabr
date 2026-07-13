@@ -90,17 +90,3 @@ targetdef npm_repository {
 npm_repository @npm {
     url = ${NPM_REPOSITORY_URL};
 }
-
-################## Runtime dependencies #####################
-
-flag es2022 { provides = es2021; }
-flag es2021 { provides = es2020; }
-flag es2020 { provides = es2019; }
-flag es2019 { provides = es2018; }
-flag es2018 { provides = es2017; }
-flag es2017 { provides = es2016; }
-flag es2016 { provides = es2015; }
-flag es2015 { provides = es5; }
-flag es5 { }
-es6 = es2015;
-es7 = es2016;

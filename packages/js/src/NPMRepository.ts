@@ -79,25 +79,6 @@ interface INPMPackageMetadata {
   /* and potentially lots of other stuff that we don't need */
 }
 
-interface INPMPackageVersions {
-  name: string;
-  description: string;
-  "dist-tags": Record<string, string>;
-  versions: Record<string, INPMPackageMetadata>;
-  license: string;
-}
-
-interface INPMError {
-  code: string;
-  message: string;
-}
-
-interface INPMError2 {
-  error: string;
-}
-
-type INPMResponse = INPMError | INPMError2 | INPMPackageVersions | INPMPackageMetadata;
-
 const METADATA_FILE = "metadata.json";
 const RESOLUTION_FILE = "resolution.json";
 
@@ -595,13 +576,21 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
         .then(files => files.readFile(METADATA_FILE))
         .then(data => JSON.parse(data) as INPMPackageMetadata)
         .catch(err => {
-          /* Translate the registry's HTTP 404 into the fact it means */
+          /* Translate the registry's HTTP 404 into the fact it means. */
           if (err instanceof HttpStatusError && err.statusCode === 404) {
             throw new Error(`NPM package ${pkg}@${version} not found at ${this.url}`);
           }
           throw err;
         });
       this.metadataCache.set(key, result);
+      /* Evict the memo on failure so a transient transport error (dropped
+       * connection, timeout) is retried, not cached for the whole run. This is a
+       * deliberate side-effect observer: `.catch` returns a *new*, discarded
+       * computable — the returned `result` is unchanged and still rejects for
+       * callers; only the map entry is dropped. It is attached *after* set() on
+       * purpose — a synchronous rejection would otherwise run before set() and
+       * evict nothing, leaving set() to cache the failure. */
+      result.catch(() => this.metadataCache.delete(key));
     }
     return result;
   }
@@ -625,24 +614,46 @@ function asError(err: unknown): Error {
 }
 
 /**
- * Validate a registry response as an exact-version metadata document, before it
- * gets anywhere near the cache (error responses must never be cached).
+ * Interpret a registry response, before it gets anywhere near the cache (error
+ * responses must never be cached). It's a three-way split — HTTP-level failures
+ * (404, 5xx) are already surfaced upstream, so no error-body taxonomy is needed:
+ *  - a single-version metadata document (the documented shape: `name` + `version`
+ *    + `dist.tarball`) — the thing we asked for; return it;
+ *  - a full packument (`versions`) — we resolved the wrong URL, a bug;
+ *  - anything else (an error body, non-JSON, a truncated/HTML page) — unusable.
  */
-function parseMetadataResponse(data: Buffer, key: string): INPMPackageMetadata {
-  const response = JSON.parse(data.toString()) as INPMResponse;
-  if ("error" in response) {
-    if (response.error === "Not Found") {
-      throw new Error(`${key} not found in NPM repository`);
-    } else {
-      throw new Error(`NPM repository error on '${key}': ${response.error}`);
-    }
-  } else if ("code" in response) {
-    throw new Error(`NPM repository error on '${key}': ${response.message}`);
-  } else if ("versions" in response) {
-    throw new Error(`'${key}' does not identify a single package version`);
-  } else {
+export function parseMetadataResponse(data: Buffer, key: string): INPMPackageMetadata {
+  const response = parseJsonObject(data);
+  if (response && isVersionMetadata(response)) {
     return response;
   }
+  if (response && "versions" in response) {
+    throw new Error(`NPM repository returned a package document, not a single version, for '${key}' (wrong URL?)`);
+  }
+  throw new Error(`Invalid response from NPM repository for '${key}'`);
+}
+
+/** Parse a body as a JSON object, or undefined if it is not JSON / not an object. */
+function parseJsonObject(data: Buffer): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(data.toString());
+    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a body is a single-version metadata document — `name` + `version` +
+ * a `dist.tarball` (a full packument has none of the latter two). */
+function isVersionMetadata(response: Record<string, unknown>): response is INPMPackageMetadata & Record<string, unknown> {
+  const meta = response as unknown as INPMPackageMetadata;
+  return (
+    typeof meta.name === "string" &&
+    typeof meta.version === "string" &&
+    typeof meta.dist === "object" &&
+    meta.dist !== null &&
+    typeof meta.dist.tarball === "string"
+  );
 }
 
 function isSemverConstraint(text: string): boolean {

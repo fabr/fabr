@@ -11,7 +11,7 @@ catalog @pkg {
 }
 
 TSC = @pkg:typescript:tsc;
-JS_TARGET = es2018-commonjs;
+JS_TARGET = es2021-commonjs;
 
 chai = @pkg:chai @pkg:@types/chai @pkg:chai-as-promised @pkg:@types/chai-as-promised;
 unicode_properties = @pkg:unicode-properties @pkg:@types/unicode-properties;
@@ -20,26 +20,26 @@ tar_stream = @pkg:tar-stream @pkg:@types/tar-stream;
 js_package @fabr/core {
   srcs = packages/core/src:**/*.ts packages/core:lib/**;
   tests = packages/core/src:**/*.test.ts;
-  deps = es2021 @pkg:@types/node @pkg:@parcel/watcher @pkg:picomatch unicode_properties tar_stream;
+  deps = @pkg:@types/node @pkg:@parcel/watcher @pkg:picomatch unicode_properties tar_stream;
   test_deps = chai;
 }
 
 js_package @fabr/js {
   srcs = packages/js/src:**/*.ts packages/js:lib/**;
   tests = packages/js/src:**/*.test.ts;
-  deps = es2021 @pkg:@types/node @fabr/core;
+  deps = @pkg:@types/node @fabr/core;
   test_deps = chai;
 }
 
 js_package @fabr/fabr {
   srcs = packages/fabr/src:**/*.ts;
   tests = packages/fabr/src:**/*.test.ts;
-  deps = es2021 @pkg:@types/node @fabr/core @fabr/js;
+  deps = @pkg:@types/node @fabr/core @fabr/js;
   test_deps = chai;
 }
 
 # End-to-end tests: drive the built fabr CLI directly.
 js_test e2e_tests {
   srcs = packages/fabr/test:**/*.ts;
-  deps = es2021 @pkg:@types/node chai @fabr/fabr;
+  deps = @pkg:@types/node chai @fabr/fabr;
 }

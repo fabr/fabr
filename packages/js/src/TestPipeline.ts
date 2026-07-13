@@ -41,7 +41,6 @@ import {
   FileSet,
   fileSetInput,
   findExecutable,
-  Flag,
   formatTestFailures,
   getResultFileSet,
   IBuildActionDefinition,
@@ -127,7 +126,6 @@ export const BUILD_OP: Constraints = { [BUILD_OPERATION]: "build" };
 export interface ITestInputs {
   sources: FileSet;
   tests: FileSet;
-  flags: Flag[];
   target: string;
   /** The as-written (unmaterialized) dependency sources */
   depSources: SourceRef[];
@@ -173,13 +171,7 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
       /* The test compile may import the package's deps, the test_deps, and the
        * runner globals directly; the runtime install is the flat closure. */
       const runtimeModules = assembleNodeModules([...deps, ...testDeps]);
-      const { compiled, copied } = compileJsSources(
-        context,
-        sources,
-        [...deps, ...testDeps, globalsTypes],
-        jsTarget,
-        inputs.flags
-      );
+      const { compiled, copied } = compileJsSources(context, sources, [...deps, ...testDeps, globalsTypes], jsTarget);
       if (!compiled) {
         /* Test files are TypeScript, so a compile is always present; guard
          * defensively rather than emit an empty run */
