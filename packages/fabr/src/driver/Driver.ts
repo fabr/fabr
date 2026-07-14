@@ -280,11 +280,16 @@ function runWatched(
   log: Log,
   controller: WatchController
 ): Promise<void> {
-  process.on("SIGINT", () => {
+  const shutdown = (): void => {
     /* Await teardown before exiting: unsubscribe stops a native watcher thread,
-     * and exiting mid-flight crashes the kqueue backend (SIGABRT). */
+     * and exiting mid-flight crashes the kqueue backend (SIGABRT). The explicit
+     * process.exit then fires the 'exit' hooks — including a RunSupervisor's
+     * synchronous child cleanup — which a *default* SIGTERM disposition would
+     * skip entirely, orphaning the launched program and leaking its staged dir. */
     void controller.close().finally(() => process.exit(0));
-  });
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 
   /* This observer re-fires every time the operation's Computable re-settles (the
    * revalidation cascade after a change), so status/failure render per cycle. */

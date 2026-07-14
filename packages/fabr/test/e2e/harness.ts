@@ -144,8 +144,9 @@ export interface WatchSession {
   write(rel: string, content: string): void;
   /** Resolve once `pattern` has appeared at least `count` times on stderr (or reject on timeout). */
   waitFor(pattern: string | RegExp, opts?: { count?: number; timeoutMs?: number }): Promise<void>;
-  /** SIGINT the process and resolve with its exit code, cleaning up the dir. */
-  stop(): Promise<number>;
+  /** Signal the process (SIGINT by default) and resolve with its exit code,
+   * cleaning up the dir. */
+  stop(signal?: NodeJS.Signals): Promise<number>;
 }
 
 function toGlobalRegExp(pattern: string | RegExp): RegExp {
@@ -223,7 +224,7 @@ export function startFabrWatch(files: Record<string, string>, args: string[]): W
         waiters.add(waiter);
       });
     },
-    stop(): Promise<number> {
+    stop(signal: NodeJS.Signals = "SIGINT"): Promise<number> {
       return new Promise<number>(resolve => {
         const finish = (code: number | null): void => {
           fs.rmSync(dir, { recursive: true, force: true });
@@ -238,7 +239,7 @@ export function startFabrWatch(files: Record<string, string>, args: string[]): W
           return;
         }
         child.on("exit", finish);
-        child.kill("SIGINT");
+        child.kill(signal);
       });
     },
   };

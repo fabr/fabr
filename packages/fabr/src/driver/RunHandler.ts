@@ -88,8 +88,11 @@ export class RunSupervisor {
   private generation = 0;
 
   constructor(private readonly name: string, private readonly callerArgs: string[], private readonly log: Log) {
-    /* Whatever ends fabr (SIGINT → exit 0, an error, a stall) must take the
-     * child with it — a synchronous exit hook kills it and clears its install. */
+    /* Whatever ends fabr (SIGINT/SIGTERM → exit 0, an error, a stall) must take
+     * the child with it — a synchronous exit hook kills it and clears its
+     * install. This relies on the process ending via `process.exit` (the watch
+     * lifecycle routes both signals through it); a default signal disposition
+     * would bypass the hook, which is why those signals are handled explicitly. */
     process.on("exit", () => this.stop());
   }
 
@@ -101,17 +104,23 @@ export class RunSupervisor {
     }
     const wasRunning = this.child !== undefined;
     const generation = ++this.generation;
-    this.stop();
+    /* Stage the replacement install BEFORE touching the running child: the old
+     * process keeps serving while we write, and a staging failure leaves it
+     * running (killing it up front would leave nothing to fall back to). The
+     * running child is only stopped once the new install is ready to launch. */
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-run-"));
     const argv = runnable.toCommandLine(this.callerArgs, { anchor: dir });
     writeFileSet(dir, runnable).then(
       () => {
-        /* A newer update raced ahead while we staged — discard this one. */
+        /* A newer update raced ahead while we staged — discard this one and leave
+         * the current child alone (that newer update will supersede it). */
         if (generation !== this.generation) {
           fs.rmSync(dir, { recursive: true, force: true });
           return;
         }
         try {
+          /* Staging succeeded — now swap: stop the old child, launch the new. */
+          this.stop();
           if (wasRunning) {
             this.log.log(DIAG_RESTART, { name: this.name });
           }
