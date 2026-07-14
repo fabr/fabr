@@ -20,6 +20,38 @@
 import { expect } from "chai";
 import { Mode, parseCommandLine } from "./Command";
 
+/** Thrown by the stubbed process.exit to unwind parseCommandLine. */
+class ExitSignal extends Error {}
+
+/** Run parseCommandLine capturing an exit code and the stdout/stderr writes, so
+ * the error/usage paths (which call process.exit) are testable in-process. */
+function capture(args: string[]): { exit?: number; out: string[]; err: string[] } {
+  const out: string[] = [];
+  const err: string[] = [];
+  const origExit = process.exit;
+  const origLog = console.log;
+  const origErr = console.error;
+  let exit: number | undefined;
+  process.exit = ((code?: number) => {
+    exit = code ?? 0;
+    throw new ExitSignal();
+  }) as unknown as typeof process.exit;
+  console.log = (message?: unknown) => out.push(String(message));
+  console.error = (message?: unknown) => err.push(String(message));
+  try {
+    parseCommandLine(["node", "fabr", ...args]);
+  } catch (e) {
+    if (!(e instanceof ExitSignal)) {
+      throw e;
+    }
+  } finally {
+    process.exit = origExit;
+    console.log = origLog;
+    console.error = origErr;
+  }
+  return { exit, out, err };
+}
+
 describe("Command", () => {
   it("defaults to the build command", () => {
     expect(parseCommandLine(["node", "fabr", "foo"])).to.deep.equal({
@@ -88,5 +120,33 @@ describe("Command", () => {
     expect(options.properties).to.deep.equal({ x: "1" });
     expect(options.targets).to.deep.equal(["mytool"]);
     expect(options.runArgs).to.deep.equal(["-Dy=2"]);
+  });
+
+  it("splits -D at the first '=', so the value may itself contain '='/':'", () => {
+    expect(parseCommandLine(["node", "fabr", "-DTSC=@npm:typescript:5.4.5", "foo"]).properties).to.deep.equal({
+      TSC: "@npm:typescript:5.4.5",
+    });
+  });
+
+  it("rejects a -D with no '=' — error + usage to stderr, exit 1, nothing on stdout", () => {
+    const { exit, out, err } = capture(["-DFOO"]);
+    expect(exit).to.equal(1);
+    expect(err.join("\n")).to.match(/Malformed option '-DFOO'/);
+    expect(out).to.deep.equal([]);
+  });
+
+  it("sends an unrecognized-option error AND the usage to stderr, not stdout", () => {
+    const { exit, out, err } = capture(["--bogus"]);
+    expect(exit).to.equal(1);
+    expect(err.join("\n")).to.match(/Unrecognized command-line option '--bogus'/);
+    expect(err.join("\n")).to.match(/Usage: fabr/);
+    expect(out).to.deep.equal([]);
+  });
+
+  it("prints usage to stdout and exits 0 with no target (the de-facto help)", () => {
+    const { exit, out, err } = capture([]);
+    expect(exit).to.equal(0);
+    expect(out.join("\n")).to.match(/Usage: fabr/);
+    expect(err).to.deep.equal([]);
   });
 });

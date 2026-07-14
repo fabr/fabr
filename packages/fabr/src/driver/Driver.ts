@@ -28,6 +28,7 @@ import {
   ExecutionContext,
   FileSet,
   formatTestSummary,
+  IFile,
   getSourceFileSource,
   getTestReport,
   loadProject,
@@ -37,6 +38,7 @@ import {
   ProgressListener,
   RunnableFileSet,
   SourceRef,
+  toError,
   WatchController,
 } from "@fabr/core";
 import { DiagnosticErrorFormatter, ErrorFormatter } from "./ErrorFormatter";
@@ -48,7 +50,7 @@ import * as pluginApi from "@fabr/core";
 import { Mode, Options } from "./Command";
 import { getSourceRoot, getBuildCacheRoot, getHostProperties, PROJECT_FILENAME } from "./Environment";
 
-const DIAG_BUILD_COMPLETE = Diagnostic.Info<{ count: number }>("Built {count} target(s)");
+const DIAG_BUILD_COMPLETE = Diagnostic.Info<{ targets: string }>("Built {targets}");
 const DIAG_UP_TO_DATE = Diagnostic.Info<Record<string, never>>("Already up to date");
 const DIAG_BUILD_FAILED = Diagnostic.Error<Record<string, never>>("Build failed");
 const DIAG_ERROR = Diagnostic.Error<{ message: string }>("{message}");
@@ -88,6 +90,24 @@ function reportFailure(log: Log, err: Error): void {
   errorFormatter.report(log, err);
 }
 
+/**
+ * Exit with `code`, but only after stdout/stderr have drained. `process.exit()`
+ * on its own discards whatever is still buffered in those streams when they are
+ * pipes rather than TTYs — truncating a piped `fabr cat`. A trailing zero-length
+ * write's callback fires once everything queued ahead of it has flushed, so we
+ * exit from there.
+ */
+function flushAndExit(code: number): void {
+  let pending = 2;
+  const done = (): void => {
+    if (--pending === 0) {
+      process.exit(code);
+    }
+  };
+  process.stdout.write("", done);
+  process.stderr.write("", done);
+}
+
 /** What to do with the loaded model — the per-command work, run inside the
  * harness's lifecycle. The run's surroundings (log, cache, progress) ride on
  * `execution`; the command (and so `options`) is closed over by the caller. */
@@ -125,7 +145,7 @@ export function runFabr(options: Options): Promise<void> {
          * target re-settles to a new value, whereas a `.then` on the void result
          * would be short-circuited by the value-equality cutoff. */
         return Computable.forAll(targets, (...results) =>
-          reportTestResults(execution.log, options, results).then(() => buildStatus(execution, targets.length))
+          reportTestResults(execution.log, options, results).then(() => buildStatus(execution))
         );
       }, watch);
     case "run":
@@ -135,7 +155,7 @@ export function runFabr(options: Options): Promise<void> {
         const targets = buildTargets(model, options, execution, "build");
         /* Report inside the callback (see the test case) so a watch rebuild
          * re-prints its status rather than being cut off at the void result. */
-        return Computable.forAll(targets, () => buildStatus(execution, targets.length));
+        return Computable.forAll(targets, () => buildStatus(execution));
       }, watch);
   }
 }
@@ -171,7 +191,7 @@ function runProgram(
       supervisor.update(runnable);
       return;
     }
-    return runInteractive(runnable, options.runArgs ?? []).then(code => process.exit(code));
+    return runInteractive(runnable, options.runArgs ?? []).then(code => flushAndExit(code));
   });
 }
 
@@ -199,39 +219,49 @@ async function runWith(operation: Operation, watch = false): Promise<void> {
     });
   }
 
-  const sourceRoot = await getSourceRoot();
-  const buildCache = new BuildCache(getBuildCacheRoot());
-  const execution = new ExecutionContext(buildCache, log);
-  execution.onProgress(progressListener(log));
+  try {
+    const sourceRoot = await getSourceRoot();
+    const buildCache = new BuildCache(getBuildCacheRoot());
+    const execution = new ExecutionContext(buildCache, log);
+    execution.onProgress(progressListener(log));
 
-  /* Watching is fixed at the source's construction (not toggled later), so build
-   * the controller first. The build cache doubles as the content-addressed blob
-   * store the source snapshots into, so it too precedes the source file source. */
-  const controller = watch
-    ? new WatchController(
-        WATCH_QUIET_MS,
-        undefined,
-        err => reportFailure(log, err),
-        () => execution.beginBuildCycle(),
-        message => log.log(DIAG_WATCH_WARNING, { message })
-      )
-    : undefined;
-  const sourceFileSource = getSourceFileSource(sourceRoot, buildCache, controller);
+    /* Watching is fixed at the source's construction (not toggled later), so build
+     * the controller first. The build cache doubles as the content-addressed blob
+     * store the source snapshots into, so it too precedes the source file source. */
+    const controller = watch
+      ? new WatchController(
+          WATCH_QUIET_MS,
+          undefined,
+          err => reportFailure(log, err),
+          () => execution.beginBuildCycle(),
+          message => log.log(DIAG_WATCH_WARNING, { message })
+        )
+      : undefined;
+    const sourceFileSource = getSourceFileSource(sourceRoot, buildCache, controller);
 
-  if (controller) {
-    return runWatched(operation, sourceFileSource, execution, log, controller);
+    if (controller) {
+      return runWatched(operation, sourceFileSource, execution, log, controller);
+    }
+
+    /* The system include path defaults to the directories the loaded rule
+     * packages registered (core + js via their imports; plugins later) */
+    return loadProject(sourceFileSource, PROJECT_FILENAME, log, pluginApi)
+      .then(model => operation(model, execution))
+      .then(() => flushAndExit(0))
+      .catch(err => {
+        reportFailure(log, err);
+        log.log(DIAG_BUILD_FAILED, {});
+        flushAndExit(1);
+      });
+  } catch (err) {
+    /* A failure while *setting up* the run — before the build graph exists (no
+     * project at/above cwd, an unusable cache dir) — is outside the loadProject
+     * chain's own `.catch`, so it would otherwise escape as a raw unhandled
+     * rejection. Report it like any other failure and exit. */
+    reportFailure(log, toError(err));
+    log.log(DIAG_BUILD_FAILED, {});
+    flushAndExit(1);
   }
-
-  /* The system include path defaults to the directories the loaded rule
-   * packages registered (core + js via their imports; plugins later) */
-  return loadProject(sourceFileSource, PROJECT_FILENAME, log, pluginApi)
-    .then(model => operation(model, execution))
-    .then(() => process.exit(0))
-    .catch(err => {
-      reportFailure(log, err);
-      log.log(DIAG_BUILD_FAILED, {});
-      process.exit(1);
-    });
 }
 
 /**
@@ -297,11 +327,16 @@ function resolveNames(model: BuildModel, options: Options, execution: ExecutionC
 
 /** Print the terminal build-status line: nothing built (this cycle), or a count.
  * Uses the per-cycle delta so a watch rebuild reports only what it rebuilt. */
-function buildStatus(execution: ExecutionContext, count: number): void {
-  if (execution.takeBuildCount() === 0) {
+function buildStatus(execution: ExecutionContext): void {
+  /* Report which declared targets actually rebuilt this cycle (the per-target
+   * "Building X" lines already scrolled past during the build; this is the
+   * completion marker — useful especially in watch mode). Nothing built ⇒ the
+   * run was a no-op. */
+  const built = execution.takeBuiltTargets();
+  if (built.length === 0) {
     execution.log.log(DIAG_UP_TO_DATE, {});
   } else {
-    execution.log.log(DIAG_BUILD_COMPLETE, { count });
+    execution.log.log(DIAG_BUILD_COMPLETE, { targets: built.join(", ") });
   }
 }
 
@@ -342,15 +377,23 @@ function progressListener(log: Log): ProgressListener {
  * error. Content is data, so it goes straight to stdout.
  */
 function catTarget(options: Options, results: SourceRef[][]): Computable<void> {
-  return Computable.forAll(
-    results.map((sources, i) => {
-      const files = FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet));
-      if (files.isEmpty()) {
-        throw matchedNoFiles(options.targets[i]);
-      }
-      return dumpFiles(files);
-    }),
-    () => {}
+  /* Resolve every name to its files up front — synchronously, so a name matching
+   * nothing fails before a single byte is written (no partial output). The order
+   * is fixed here: argument order across names, sorted by filename within each. */
+  const files: IFile[] = [];
+  results.forEach((sources, i) => {
+    const set = FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet));
+    if (set.isEmpty()) {
+      throw matchedNoFiles(options.targets[i]);
+    }
+    files.push(...[...set].sort(([a], [b]) => a.localeCompare(b)).map(([, file]) => file));
+  });
+  /* Stream each file's contents to stdout in that order, one at a time — reading
+   * the next only after the previous is written, so the whole set is never held
+   * in memory at once (`cat` may dump large artifacts). */
+  return files.reduce<Computable<void>>(
+    (prev, file) => prev.then(() => file.getBuffer()).then(buffer => void process.stdout.write(Uint8Array.from(buffer))),
+    Computable.resolve(undefined)
   );
 }
 
@@ -362,17 +405,6 @@ function catTarget(options: Options, results: SourceRef[][]): Computable<void> {
  */
 function matchedNoFiles(name: string): Error {
   return new Error(`'${name}' matched no files`);
-}
-
-/** Write every file in the set (sorted by name) to stdout, contents only. */
-function dumpFiles(files: FileSet): Computable<void> {
-  const entries = [...files].sort(([a], [b]) => a.localeCompare(b));
-  return Computable.forAll(
-    entries.map(([, file]) => file.getBuffer()),
-    (...buffers) => {
-      buffers.forEach(buffer => process.stdout.write(Uint8Array.from(buffer)));
-    }
-  );
 }
 
 /**

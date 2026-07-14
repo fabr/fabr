@@ -182,14 +182,20 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       const site = cause.useSite ? ` - required by ${describeUseSite(cause.useSite.property, cause.useSite.target)}` : "";
       return { message: cause.message + site, loc: cause.position, help: helpOf(cause) };
     }
-    if (owner && cause instanceof ConflictError) {
+    if (cause instanceof ConflictError) {
       /* Both contributors that claim `key`, each traced to where it was written;
-       * the concrete detail keeps identical-provenance conflicts diagnosable. */
+       * the concrete detail keeps identical-provenance conflicts diagnosable.
+       * Rendered whether or not the conflict arose inside a target build: the
+       * driver's own cat/ls/run `unionAll` raises it ownerless (no enclosing
+       * DependencyFailedError), and those two sides are exactly what makes the
+       * clash diagnosable — so they must not depend on `owner`. */
       const notes = [cause.left, cause.right].flatMap(side => [
         ...this.chainNotes(side.provenance, side.label, cause.key),
         ...(side.detail ? [{ message: `at ${side.detail}` }] : []),
       ]);
-      return { message: `Failed to build ${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target), notes };
+      return owner
+        ? { message: `Failed to build ${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target), notes }
+        : { message: cause.message, notes };
     }
     if (owner && cause instanceof TestsFailedError) {
       /* Tests failed: the target built fine, so report the (pre-rendered)

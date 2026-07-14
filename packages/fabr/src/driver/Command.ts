@@ -41,9 +41,11 @@ export interface Options {
   properties: Constraints;
 }
 
-function printUsage(): void {
-  console.log(
-    "Usage: fabrjs [command] [-w] <targets>\n" +
+/** Write the usage text to the given sink — stdout for an explicit `-h` or the
+ * bare no-target invocation (the de-facto help), stderr for a usage *error*. */
+function printUsage(write: (message: string) => void = console.log): void {
+  write(
+    "Usage: fabr [command] [-w] <targets>\n" +
       "Commands:\n" +
       "  build             Build the given targets (the default)\n" +
       "  test              Run the given targets' tests\n" +
@@ -57,9 +59,12 @@ function printUsage(): void {
   );
 }
 
-function parseDefine(def: string): [string, string] {
-  const arr = def.split("=", 2);
-  return [arr[0].trim(), arr[1]?.trim()];
+/** A malformed invocation: the diagnostic *and* the usage go to stderr (data
+ * streams stay clean), and we exit non-zero. */
+function usageError(message: string): never {
+  console.error(message);
+  printUsage(console.error);
+  process.exit(1);
 }
 
 export function parseCommandLine(args: string[]): Options {
@@ -81,12 +86,16 @@ export function parseCommandLine(args: string[]): Options {
         printUsage();
         process.exit(0);
       } else if (arg.startsWith("-D")) {
-        const [key, value] = parseDefine(arg.substring(2));
-        options.properties[key] = value;
+        /* -DKEY=VALUE: split at the *first* `=` so the value may contain more
+         * (e.g. -DTSC=@npm:x:1); no `=` (or an empty key) is malformed. */
+        const def = arg.substring(2);
+        const eq = def.indexOf("=");
+        if (eq <= 0) {
+          usageError(`Malformed option '${arg}' (expected -DKEY=VALUE)`);
+        }
+        options.properties[def.slice(0, eq).trim()] = def.slice(eq + 1).trim();
       } else {
-        console.error(`Unrecognized command-line option '${arg}'`);
-        printUsage();
-        process.exit(1);
+        usageError(`Unrecognized command-line option '${arg}'`);
       }
     } else if (!commandGiven && options.targets.length === 0 && COMMANDS.has(arg)) {
       /* The first positional argument may name the operation; a target with

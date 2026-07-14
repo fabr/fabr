@@ -105,13 +105,13 @@ export class ExecutionContext {
   public readonly log: Log;
   private progressListener?: ProgressListener;
   private generation = 0;
-  /** Work signalled this run and the amount already reported, so watch mode can
-   * take a per-rebuild delta. Counted from the progress events (every one is
-   * emitted from a cache-miss path — never a cache hit), so "work happened" is
-   * exactly "some progress event fired"; no separate tally is threaded through
-   * the store. */
-  private workSignals = 0;
-  private reportedWork = 0;
+  /** The top-level (directly-requested) targets that actually built since the
+   * last {@link takeBuiltTargets} — accumulated from `target-build` progress
+   * events (emitted only from a cache-miss path — never a cache hit), so an empty
+   * set is exactly "nothing happened". Sub-targets (a `label`) and transitive
+   * dependencies (a non-empty `requiredBy`) are excluded; the driver reports
+   * these names per watch cycle. */
+  private readonly builtTargets = new Set<string>();
 
   constructor(buildCache: BuildCache, log: Log) {
     this.buildCache = buildCache;
@@ -119,15 +119,15 @@ export class ExecutionContext {
   }
 
   /**
-   * @return the number of work events (builds/fetches/resolutions) since the
-   * previous call (or since the start), resetting that baseline — so each
-   * watch-mode rebuild reports only what it did. A one-shot run calls this once;
-   * zero means the run had no effect ("already up to date").
+   * @return the declared targets that built since the previous call (or since the
+   * start), clearing that baseline — so each watch-mode rebuild reports only what
+   * it did. A one-shot run calls this once; an empty list means the run had no
+   * effect ("already up to date").
    */
-  public takeBuildCount(): number {
-    const delta = this.workSignals - this.reportedWork;
-    this.reportedWork = this.workSignals;
-    return delta;
+  public takeBuiltTargets(): string[] {
+    const names = [...this.builtTargets];
+    this.builtTargets.clear();
+    return names;
   }
 
   /**
@@ -153,9 +153,12 @@ export class ExecutionContext {
   }
 
   public notifyProgress(event: ProgressEvent): void {
-    /* Every progress event marks real work (never a cache hit), so this doubles
-     * as the "was anything done" tally the driver's status line reads. */
-    this.workSignals++;
+    /* Record which *top-level* targets built — a directly-requested declared
+     * target (empty `requiredBy`, and no sub-target `label`) — for the driver's
+     * per-cycle status line. Every event is from a cache-miss path. */
+    if (event.kind === "target-build" && event.label === undefined && event.requiredBy.length === 0) {
+      this.builtTargets.add(event.target.name);
+    }
     this.progressListener?.(event);
   }
 }

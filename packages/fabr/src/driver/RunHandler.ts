@@ -51,10 +51,9 @@ export function runInteractive(runnable: RunnableFileSet, callerArgs: string[]):
   const argv = runnable.toCommandLine(callerArgs, { anchor: dir });
   return writeFileSet(dir, runnable)
     .then(() => executeInteractive(findExecutable(argv[0]), argv.slice(1)))
-    .then(code => {
-      fs.rmSync(dir, { recursive: true, force: true });
-      return code;
-    });
+    /* Remove the staged install whichever way the run ends — a staging or launch
+     * failure must not leak the temp dir (only the success path did before). */
+    .finally(() => fs.rmSync(dir, { recursive: true, force: true }));
 }
 
 const DIAG_RESTART = Diagnostic.Info<{ name: string }>("Restarting {name}");

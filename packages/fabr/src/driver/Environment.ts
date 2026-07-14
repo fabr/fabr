@@ -38,10 +38,14 @@ export async function getSourceRoot(): Promise<string> {
     try {
       await fsPromises.access(path.resolve(dir, PROJECT_FILENAME), fs.constants.R_OK);
       return dir;
-    } catch (err) {
+    } catch {
       const parent = path.dirname(dir);
       if (parent === dir) {
-        throw err;
+        /* Reached the filesystem root without finding a project marker: report
+         * the actual situation, not the raw `access` ENOENT on `/PROJECT.fabr`. */
+        throw new Error(
+          `No ${PROJECT_FILENAME} found in ${process.cwd()} or any parent directory — is this a fabr project?`
+        );
       } else {
         dir = parent;
       }

@@ -225,11 +225,19 @@ export function startFabrWatch(files: Record<string, string>, args: string[]): W
     },
     stop(): Promise<number> {
       return new Promise<number>(resolve => {
-        child.on("exit", code => {
+        const finish = (code: number | null): void => {
           fs.rmSync(dir, { recursive: true, force: true });
           fs.rmSync(cacheDir, { recursive: true, force: true });
           resolve(code ?? -1);
-        });
+        };
+        /* If the child already exited (e.g. it crashed — exactly the case where a
+         * test most needs stop() to complete so its diagnostics surface), resolve
+         * now; the 'exit' listener would never fire again and hang forever. */
+        if (child.exitCode !== null || child.signalCode !== null) {
+          finish(child.exitCode);
+          return;
+        }
+        child.on("exit", finish);
         child.kill("SIGINT");
       });
     },

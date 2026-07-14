@@ -50,10 +50,10 @@ describe("e2e: watch mode (fabr build -w)", () => {
       await session.waitFor("Watching for changes", { timeoutMs: 60000 });
 
       /* Editing the source triggers exactly one more build cycle: the target
-       * re-announces ("Building gen" again) and re-reports ("Built ..."). */
+       * re-announces ("Building gen" again) and re-reports ("Built gen"). */
       session.write("src/gen.sh", 'mkdir -p out\nprintf "V2\\n" > out/msg.txt\n');
       await session.waitFor("Building gen", { count: 2, timeoutMs: 60000 });
-      await session.waitFor("Built 1 target", { count: 2, timeoutMs: 60000 });
+      await session.waitFor("Built gen", { count: 2, timeoutMs: 60000 });
     } finally {
       const code = await session.stop();
       expect(code).to.equal(0);

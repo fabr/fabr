@@ -71,6 +71,17 @@ describe("LogFormatter", () => {
     expect(lines[4]).to.equal("  |        ^");
   });
 
+  it("renders a locless diagnostic's notes as a block rather than dropping them", () => {
+    /* A diagnostic with no primary span but with notes (e.g. a conflict raised
+     * outside any target build, anchored only by its two attributed sides) still
+     * renders the headline and every note — a positioned note keeps its excerpt. */
+    const lines = render({ notes: [{ message: "one side", loc: spanAt(18, 21) }, { message: "at /path/to/file" }] });
+    expect(lines[0]).to.equal("error: something went wrong");
+    expect(lines).to.include("note: one side");
+    expect(lines).to.include("2 | deps = one two;"); /* the positioned note keeps its excerpt */
+    expect(lines).to.include("note: at /path/to/file");
+  });
+
   it("renders notes with their own excerpts, and help lines", () => {
     const lines = render({
       loc: spanAt(18, 21),

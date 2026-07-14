@@ -148,9 +148,15 @@ export class LogFormatter implements Log {
       return;
     }
     const message = diagnostic.message(params);
-    /* A diagnostic without a resolvable primary position stays a plain
-     * one-liner (progress and status lines depend on this form). */
-    if (!params.loc?.reader.resolvePosition(params.loc.offset)) {
+    /* A diagnostic with neither a resolvable primary position nor any secondary
+     * detail stays a plain one-liner (progress and status lines depend on this
+     * form). But notes/help are meaningful even without a primary span — e.g. a
+     * conflict raised outside any target build (the driver's own cat/ls/run
+     * `unionAll`) has two attributed sides but no owning declaration to anchor —
+     * so render the block whenever there is detail to show. */
+    const positioned = params.loc?.reader.resolvePosition(params.loc.offset);
+    const hasDetail = (params.notes?.length ?? 0) > 0 || (params.help?.length ?? 0) > 0;
+    if (!positioned && !hasDetail) {
       this.emit(`${getLogLevelName(level)}:${message}`);
       return;
     }
@@ -182,7 +188,11 @@ export class LogFormatter implements Log {
     const lines: string[] = [];
     const [headline, ...restLines] = message.split("\n");
     lines.push(`${this.paint(sevSgr, getLogLevelName(level))}${this.paint(SGR_BOLD, `: ${headline}`)}`);
-    this.pushSpan(lines, width, detail.loc!, detail.label, sevSgr);
+    /* A block with no resolvable primary span (a locless diagnostic carried here
+     * only for its notes) skips the `-->`/underline and heads straight into them. */
+    if (detail.loc?.reader.resolvePosition(detail.loc.offset)) {
+      this.pushSpan(lines, width, detail.loc, detail.label, sevSgr);
+    }
     lines.push(...restLines);
     for (const note of detail.notes ?? []) {
       const [first, ...rest] = note.message.split("\n");
