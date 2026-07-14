@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc -b && node scripts/copylibs.js",
     "test": "jest",
-    "lint": "eslint packages",
+    "lint": "eslint packages test",
     "fabr": "node packages/fabr/build/index.js",
     "bootstrap": "yarn build && yarn fabr @fabr/core @fabr/js @fabr/fabr && yarn fabr test @fabr/core @fabr/js @fabr/fabr e2e_tests",
     "dist": "yarn build && yarn test && yarn lint"
