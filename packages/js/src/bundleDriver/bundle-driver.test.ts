@@ -21,7 +21,7 @@
 
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import { isBareSpecifier, packageOf } from "./bundle-driver";
+import { isBareSpecifier, packageOf, rewriteStyledImport } from "./bundle-driver";
 
 describe("packageOf", () => {
   it("takes the first segment of an unscoped specifier", () => {
@@ -45,5 +45,27 @@ describe("isBareSpecifier", () => {
     assert.equal(isBareSpecifier("./local"), false);
     assert.equal(isBareSpecifier("../up"), false);
     assert.equal(isBareSpecifier("/abs/path"), false);
+  });
+});
+
+describe("rewriteStyledImport", () => {
+  it("maps a Sass css-module import to its proxy .js", () => {
+    assert.equal(rewriteStyledImport("./Foo.module.scss"), "./Foo.module.js");
+    assert.equal(rewriteStyledImport("../a/Foo.module.sass"), "../a/Foo.module.js");
+  });
+
+  it("maps a plain Sass import to its compiled .css", () => {
+    assert.equal(rewriteStyledImport("./styles.scss"), "./styles.css");
+    assert.equal(rewriteStyledImport("./styles.sass"), "./styles.css");
+  });
+
+  it("leaves plain .css (incl. the scoped .module.css the proxy imports) unchanged", () => {
+    assert.equal(rewriteStyledImport("./Foo.module.css"), "./Foo.module.css");
+    assert.equal(rewriteStyledImport("./app.css"), "./app.css");
+  });
+
+  it("leaves non-styled specifiers unchanged", () => {
+    assert.equal(rewriteStyledImport("./util.js"), "./util.js");
+    assert.equal(rewriteStyledImport("react"), "react");
   });
 });

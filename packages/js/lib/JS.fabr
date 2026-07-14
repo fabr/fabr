@@ -29,6 +29,16 @@ default TSC = @npm:typescript:5.4.5;
 
 default ESBUILD = @npm:esbuild:0.28.1;
 
+#
+# The CSS toolchain the css_compile driver uses: the Sass compiler and the
+# lightningcss library (css-modules scoping + prefixing/minify). Pinned like any
+# tool; lightningcss is native and rides the same os/cpu platform-gating as
+# esbuild, so its per-platform binary resolves automatically.
+#
+
+default SASS = @npm:sass-embedded:1.100.0;
+default LIGHTNINGCSS = @npm:lightningcss:1.30.2;
+
 # The test runner ('fabr test' / js_test) is fabr's own: it is sourced directly
 # from the installed @fabr/js providing the js rules, not resolved as a build
 # target. Selecting an alternative runner is deferred to a future version.
@@ -69,6 +79,21 @@ targetdef js_bundle {
     entry = REQUIRED FILES;
     deps = FILES;
     output = REWRITE;
+}
+
+#
+# Lower a styled source tree to plain CSS. 'srcs' are the styled sources
+# (.scss/.sass, css-modules .module.{scss,css}, plain .css); 'deps' are scss
+# packages mounted for Sass '@use'/'@import' resolution (the Sass loadPaths
+# analogue of node_modules). Each plain source becomes a .css; each .module.*
+# becomes a scoped .css plus a proxy .js (the class-name value map + a
+# side-effect import of the scoped CSS). Composed automatically by js_bundle for
+# any styled sources; also declarable directly. Uses SASS + LIGHTNINGCSS.
+#
+
+targetdef css_compile {
+    srcs = FILES;
+    deps = FILES;
 }
 
 #

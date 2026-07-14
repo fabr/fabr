@@ -37,6 +37,7 @@ import { buildJsPackageRule } from "./rules/BuildJSPackage";
 import { runJsPackageRule } from "./rules/RunJSPackage";
 import { jsCompileRule } from "./rules/BuildJSCompile";
 import { buildJsBundleRule } from "./rules/BuildJSBundle";
+import { buildCssCompileRule } from "./rules/BuildCSSCompile";
 import { testJsPackageRule } from "./rules/TestJSPackage";
 import { jsTestRule } from "./rules/TestJSTest";
 import { jsScriptRule } from "./rules/RunJSScript";
@@ -55,7 +56,16 @@ export { assembleNodeModules, compileJsSources, ICompiledSources, JSTarget, pars
  */
 export function activate(api: typeof fabr): fabr.PluginContribution {
   return {
-    rules: [buildJsPackageRule, runJsPackageRule, jsCompileRule, buildJsBundleRule, testJsPackageRule, jsTestRule, jsScriptRule],
+    rules: [
+      buildJsPackageRule,
+      runJsPackageRule,
+      jsCompileRule,
+      buildJsBundleRule,
+      buildCssCompileRule,
+      testJsPackageRule,
+      jsTestRule,
+      jsScriptRule,
+    ],
     repositories: [npmRepositoryRegistration],
     includes: [api.packageLibFile("@fabr/js", "JS.fabr")],
   };

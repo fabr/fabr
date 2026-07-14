@@ -8,6 +8,8 @@ module.exports = {
     "!**/packages/js/src/testRunner/**",
     /* The bundle driver executes standalone in the bundle step (requires esbuild) */
     "!**/packages/js/src/bundleDriver/**",
+    /* The CSS driver executes standalone in the css step (requires sass-embedded + lightningcss) */
+    "!**/packages/js/src/cssDriver/**",
   ],
   globals: {
     "ts-jest": {
@@ -26,5 +28,11 @@ module.exports = {
   testRegex: ".*\\.test\\.ts$",
   /* The runner runtime's tests are node:test based and run under the fabr
    * test harness itself (fabr test @fabr/js), not under jest */
-  testPathIgnorePatterns: ["/node_modules/", "/build/", "/packages/js/src/testRunner/", "/packages/js/src/bundleDriver/"],
+  testPathIgnorePatterns: [
+    "/node_modules/",
+    "/build/",
+    "/packages/js/src/testRunner/",
+    "/packages/js/src/bundleDriver/",
+    "/packages/js/src/cssDriver/",
+  ],
 };

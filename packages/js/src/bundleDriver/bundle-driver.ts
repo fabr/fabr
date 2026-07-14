@@ -131,6 +131,25 @@ export function isBareSpecifier(specifier: string): boolean {
 }
 
 /**
+ * The css_compile resolve convention (option B): a styled-source import maps to
+ * that source's driver output — a Sass css-module (`.module.scss`/`.sass`) to
+ * its proxy `.js` (the locals map + a side-effect import of the scoped CSS), a
+ * plain Sass file to its compiled `.css`. Plain `.css` (including the scoped
+ * output the proxy itself imports) is returned unchanged and left to esbuild —
+ * so this stays a naming rule, not a CSS transform. Returns the specifier
+ * unchanged when no rule applies.
+ */
+export function rewriteStyledImport(specifier: string): string {
+  if (/\.module\.(scss|sass)$/i.test(specifier)) {
+    return specifier.replace(/\.module\.(scss|sass)$/i, ".module.js");
+  }
+  if (/\.(scss|sass)$/i.test(specifier)) {
+    return specifier.replace(/\.(scss|sass)$/i, ".css");
+  }
+  return specifier;
+}
+
+/**
  * The fabr resolver plugin — membership + single-variant (see file header). The
  * bundle's native kind is the resolution kind bare specifiers are normalized to.
  */
@@ -163,10 +182,24 @@ function fabrResolverPlugin(options: IBundleOptions): IPlugin {
           return probe.errors.length ? { path: args.path, external: true } : null;
         }
 
-        /* Relative/absolute imports are within-variant — let esbuild resolve
-         * them (a genuine miss there is a real error). */
+        /* Relative/absolute imports are within-variant. A styled-source import
+         * (.scss/.sass) is redirected to its css_compile output (proxy .js /
+         * compiled .css) — the only CSS knowledge the driver has, a naming rule.
+         * Everything else esbuild resolves (a genuine miss there is a real error). */
         if (!isBareSpecifier(args.path)) {
-          return null;
+          const rewritten = rewriteStyledImport(args.path);
+          if (rewritten === args.path) {
+            return null;
+          }
+          const resolved = await build.resolve(rewritten, {
+            kind: args.kind,
+            importer: args.importer,
+            resolveDir: args.resolveDir,
+            pluginData: { fabr: true },
+          });
+          return resolved.errors.length
+            ? { errors: resolved.errors }
+            : { path: resolved.path, external: resolved.external, namespace: resolved.namespace };
         }
 
         /* A declared dep is externalized by identity: its import survives. */
