@@ -57,11 +57,6 @@ import {
 } from "@fabr/core";
 import { assembleNodeModules, compileJsSources, JSTarget, parseJSTarget, stripPackageJson } from "./JSPackage";
 
-/** Test files are conventionally named *.test.ts (or .tsx) */
-export const TEST_FILE_PATTERN = /\.test\.tsx?$/;
-/** Compilable sources (the runner executes their compiled .js) */
-const TS_FILE_PATTERN = /\.tsx?$/;
-
 /* Fabr's own test runner lives in this @fabr/js installation, next to the
  * compiled rule code (packages/js/build/testRunner in the devchain build, or
  * testRunner/ within the fabr-built package — the same relative layout). */
@@ -149,9 +144,9 @@ export interface ITestInputs {
  * from this installation (see {@link getHostRunner}).
  */
 export function compileAndRunTests(context: TargetContext, inputs: ITestInputs): Computable<RuleResult> {
-  const testFiles = compiledTestFiles(inputs.tests);
-  if (testFiles.length === 0) {
-    /* Nothing to run is trivially green (and no runner is needed) */
+  if (inputs.tests.isEmpty()) {
+    /* No tests declared: trivially green (and no runner is needed). A declared
+     * test that yields no runnable output is NOT this case — it errors below. */
     return Computable.resolve(EMPTY_FILESET);
   }
   const jsTarget = parseJSTarget(inputs.target);
@@ -162,6 +157,10 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
   const sources = FileSet.unionAll(inputs.sources, inputs.tests).remap(name =>
     name === RUNNER_GLOBALS_TYPES ? undefined : name
   );
+  /* The declared test sources' stems (path minus extension). Their compiled `.js`
+   * are picked out of the *actual* compiled tree by stem in planTestRun, so the
+   * source→output naming is never re-derived here — js_compile owns it. */
+  const testStems = new Set([...inputs.tests].map(([name]) => stripExtension(name)));
   return context
     .collect({
       deps: inputs.depSources,
@@ -173,20 +172,27 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
       const runtimeModules = assembleNodeModules([...deps, ...testDeps]);
       const { compiled, copied } = compileJsSources(context, sources, [...deps, ...testDeps, globalsTypes], jsTarget);
       if (!compiled) {
-        /* Test files are TypeScript, so a compile is always present; guard
-         * defensively rather than emit an empty run */
-        return Computable.resolve(EMPTY_FILESET);
+        /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
+         * so there is nothing to run — a loud failure, not a silent green. */
+        throw new Error("Test target declares test files but none is a compilable source");
       }
-      return planTestRun(compiled, copied, runtimeModules, runnerRuntime, testFiles, jsTarget);
+      return planTestRun(compiled, copied, runtimeModules, runnerRuntime, testStems, jsTarget);
     });
 }
 
-/** @return the compiled (.js) names of the given test sources, sorted for determinism */
-function compiledTestFiles(tests: FileSet): string[] {
-  return [...tests]
+/** Strip a file's final extension: `a/foo.test.ts` → `a/foo.test`. Used to match
+ * a declared test source against its compiled `.js` output by stem. */
+function stripExtension(name: string): string {
+  return name.replace(/\.[^./]+$/, "");
+}
+
+/** The runnable test files: the `.js` entries of the *actual* compiled tree whose
+ * stem is one of the declared tests' stems, sorted for determinism. No
+ * source→output name is predicted — js_compile named these; we only select. */
+export function selectCompiledTestFiles(compiled: FileSet, testStems: Set<string>): string[] {
+  return [...compiled]
     .map(([name]) => name)
-    .filter(name => TS_FILE_PATTERN.test(name) && !name.endsWith(".d.ts"))
-    .map(name => name.replace(TS_FILE_PATTERN, ".js"))
+    .filter(name => name.endsWith(".js") && testStems.has(stripExtension(name)))
     .sort();
 }
 
@@ -205,10 +211,17 @@ function planTestRun(
   copied: FileSet,
   nodeModules: FileSet,
   runnerRuntime: FileSet,
-  testFiles: string[],
+  testStems: Set<string>,
   jsTarget: JSTarget
 ): Computable<RuleResult> {
   return compiled.then(compiledTree => {
+    /* Pick the runnable test files out of the real compiled tree (js_compile named
+     * them) rather than re-deriving names from the sources. Empty here means the
+     * declared tests produced no runnable output — a loud failure, not a green. */
+    const testFiles = selectCompiledTestFiles(compiledTree, testStems);
+    if (testFiles.length === 0) {
+      throw new Error("Test target declares test files but none produced a runnable .js output");
+    }
     const packageJson = MemoryFile.from(
       JSON.stringify({ name: "fabr-test", private: true, type: jsTarget.module === "esm" ? "module" : "commonjs" })
     );

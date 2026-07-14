@@ -18,24 +18,24 @@
  */
 
 /**
- * The js_test[test] rule: compile srcs against deps and run the *.test.* files
- * under fabr's own runner (a standalone test target, deps given explicitly).
+ * The js_test[test] rule: a standalone test target `{ tests, deps }`. The `tests`
+ * are compiled and run under fabr's own runner; `deps` are given explicitly and
+ * carry both packages and any plain-source support (e.g. a test harness), which
+ * compiles as a sibling but is never run.
  */
 
-import { BUILD_OPERATION, Computable, RuleRegistration, RuleResult, TargetContext } from "@fabr/core";
-import { BUILD_OP, compileAndRunTests, TEST_FILE_PATTERN } from "../TestPipeline";
+import { BUILD_OPERATION, Computable, EMPTY_FILESET, RuleRegistration, RuleResult, TargetContext } from "@fabr/core";
+import { BUILD_OP, compileAndRunTests } from "../TestPipeline";
 
 function runJsTest(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
-      context.getFileSet("srcs", BUILD_OP),
+      context.getFileSet("tests", BUILD_OP),
       context.getGlobalString("JS_TARGET", BUILD_OP),
       context.getFileSources("deps", BUILD_OP),
     ],
-    (sources, target, depSources) => {
-      const tests = sources.remap(name => (TEST_FILE_PATTERN.test(name) ? name : undefined));
-      return compileAndRunTests(context, { sources, tests, target, depSources, testDepSources: [] });
-    }
+    (tests, target, depSources) =>
+      compileAndRunTests(context, { sources: EMPTY_FILESET, tests, target, depSources, testDepSources: [] })
   );
 }
 

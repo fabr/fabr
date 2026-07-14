@@ -38,8 +38,9 @@ js_package @fabr/fabr {
   test_deps = chai;
 }
 
-# End-to-end tests: drive the built fabr CLI directly.
+# End-to-end tests: drive the built fabr CLI directly. The harness is a plain
+# source dep — compiled as a sibling (so `./harness` resolves) but never run.
 js_test e2e_tests {
-  srcs = packages/fabr/test:**/*.ts;
-  deps = @pkg:@types/node chai @fabr/fabr;
+  tests = packages/fabr/test:**/*.test.ts;
+  deps = packages/fabr/test:**/*.ts @pkg:@types/node chai @fabr/fabr;
 }

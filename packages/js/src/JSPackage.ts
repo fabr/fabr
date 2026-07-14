@@ -193,19 +193,33 @@ export function compileJsSources(
 
   const declarations = sourceGroups.dts ?? EMPTY_FILESET;
 
+  /* Deps split by kind: a built package mounts as node_modules (assembled by
+   * js_compile); a *non-package* dep is plain source the target needs but does
+   * not distribute — a `.d.ts` type shim, or test support like a harness. It
+   * joins the compile inputs (tsc sees it, and a relative `./x` import resolves
+   * to it as a sibling) but never `copied`, so it's compiled-against yet not
+   * shipped: a `.d.ts` emits nothing; a `.ts`'s output rides the compiled tree
+   * (into a js_test run install; a js_package would vendor it — use a package to
+   * avoid that). */
+  const packageDeps = directDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+  const sourceDeps = directDeps.filter(dep => !(dep instanceof PackageFileSet));
+
   let compiled: Computable<FileSet> | undefined;
-  if ("ts" in sourceGroups || "js" in sourceGroups) {
+  if ("ts" in sourceGroups || "js" in sourceGroups || sourceDeps.length > 0) {
     /* Both .ts(x) and .js(x) go through js_compile: with allowJs, tsc downlevels
      * the JS to JS_TARGET and lets a .ts import a local .js. .d.ts joins as an
-     * ambient input (it is also copied through as a resource, below).
-     * Hand js_compile the direct deps as they are: it owns the node_modules
-     * layout (assembleScopedNodeModules) and the JSX-runtime detection, since
-     * those need the ordered package list and are compile concerns. TSC is added
-     * by js_compile itself. */
-    const srcs = FileSet.unionAll(sourceGroups.ts ?? EMPTY_FILESET, sourceGroups.js ?? EMPTY_FILESET, declarations);
+     * ambient input (it is also copied through as a resource, below). js_compile
+     * owns the node_modules layout (assembleScopedNodeModules) and JSX-runtime
+     * detection; TSC is added by js_compile itself. */
+    const srcs = FileSet.unionAll(
+      sourceGroups.ts ?? EMPTY_FILESET,
+      sourceGroups.js ?? EMPTY_FILESET,
+      declarations,
+      ...sourceDeps
+    );
     compiled = context.subTarget(
       "js_compile",
-      { srcs, deps: directDeps, runtime: jsTarget.version },
+      { srcs, deps: packageDeps, runtime: jsTarget.version },
       { label: "Compiling", constraints: { [BUILD_OPERATION]: "build" } }
     );
   }

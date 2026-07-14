@@ -72,13 +72,14 @@ targetdef js_bundle {
 }
 
 #
-# Standalone Javascript test target: srcs are compiled against deps (the
-# package under test is just a dependency) and any *.test.ts files are run
-# under fabr's own test runner.
+# Standalone Javascript test target: 'tests' are the test files, compiled and
+# run under fabr's own test runner; 'deps' are everything they need but that
+# isn't itself a test — packages, and plain-source support (e.g. a test harness,
+# which compiles as a sibling so `./harness` resolves, but is never run).
 #
 
 targetdef js_test {
-    srcs = FILES;
+    tests = FILES;
     deps = FILES;
 }
 
