@@ -23,6 +23,12 @@ default JS_TARGET = es6-esm;
 
 default TSC = @npm:typescript:5.4.5;
 
+#
+# The default esbuild bundler used for JS bundling. 
+#
+
+default ESBUILD = @npm:esbuild:0.28.1;
+
 # The test runner ('fabr test' / js_test) is fabr's own: it is sourced directly
 # from the installed @fabr/js providing the js rules, not resolved as a build
 # target. Selecting an alternative runner is deferred to a future version.
@@ -43,6 +49,26 @@ targetdef js_package {
     # test runner.
     test_deps = FILES;
     version = STRING;
+}
+
+#
+# Bundle a JavaScript/TypeScript source tree into a self-contained artifact. 
+# 'srcs' is the extra sources allowed INTO the bundle (plain files land at the
+# working root; packages mount under node_modules and are inlined); 'entry' is
+# the source(s) to bundle (a glob gives N independent bundles) — entry files are
+# included automatically, so they need not also be listed in 'srcs'; 'deps'
+# is what the RUNTIME provides — externalized by package identity, so their
+# imports survive verbatim (the lambda case: handler + vendored libs in srcs,
+# @aws-sdk/* in deps). 'output' optionally renames each entry's default output
+# (identity modulo .ts/.tsx -> .js), e.g. `*.entry.js -> *.min.js`. Minify and
+# sourcemaps follow BUILD_TYPE; platform/format follow JS_TARGET.
+#
+
+targetdef js_bundle {
+    srcs = FILES;
+    entry = REQUIRED FILES;
+    deps = FILES;
+    output = REWRITE;
 }
 
 #

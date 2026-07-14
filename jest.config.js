@@ -6,6 +6,8 @@ module.exports = {
     "!**/*.d.ts",
     /* The runner runtime executes standalone under fabr test, not under jest */
     "!**/packages/js/src/testRunner/**",
+    /* The bundle driver executes standalone in the bundle step (requires esbuild) */
+    "!**/packages/js/src/bundleDriver/**",
   ],
   globals: {
     "ts-jest": {
@@ -24,5 +26,5 @@ module.exports = {
   testRegex: ".*\\.test\\.ts$",
   /* The runner runtime's tests are node:test based and run under the fabr
    * test harness itself (fabr test @fabr/js), not under jest */
-  testPathIgnorePatterns: ["/node_modules/", "/build/", "/packages/js/src/testRunner/"],
+  testPathIgnorePatterns: ["/node_modules/", "/build/", "/packages/js/src/testRunner/", "/packages/js/src/bundleDriver/"],
 };
