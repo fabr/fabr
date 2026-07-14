@@ -364,7 +364,8 @@ describe("Parser Tests", () => {
     it("requires the '<' to abut the reference", () => {
       /* A whitespace-separated '<' cannot start a value, so it is an error */
       expect(parseInvalid("dep = mylib <A=1>;")).to.deep.equal([
-        diagnosticBlock(1, 12, "Read '<' but expected Name, ';', or '}'", "dep = mylib <A=1>;"),
+        /* The caret sits on the '<' itself (col 13), not the space before it. */
+        diagnosticBlock(1, 13, "Read '<' but expected Name, ';', or '}'", "dep = mylib <A=1>;"),
       ]);
     });
 
@@ -426,7 +427,8 @@ describe("Parser Tests", () => {
 
     it("rejects a missing template after the arrow", () => {
       expect(parseInvalid("out = *.expect -> ;")).to.deep.equal([
-        diagnosticBlock(1, 18, "Read ';' but expected a rename template", "out = *.expect -> ;"),
+        /* The caret sits on the ';' itself (col 19), not the space before it. */
+        diagnosticBlock(1, 19, "Read ';' but expected a rename template", "out = *.expect -> ;"),
       ]);
     });
 
@@ -445,7 +447,8 @@ describe("Parser Tests", () => {
       expect(parseInvalid("out = *.a -> *.b -> *.c;")).to.deep.equal([
         diagnosticBlock(
           1,
-          17,
+          /* The caret sits on the second '->' itself (col 18), not the space before it. */
+          18,
           "Invalid rename template: rename templates cannot be chained",
           "out = *.a -> *.b -> *.c;"
         ),

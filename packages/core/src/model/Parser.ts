@@ -472,41 +472,45 @@ export class BuildParser {
     });
 
     /* `start` was captured at the end of the previous token (before any
-     * whitespace here); if the first content char sits right there, this token
-     * abuts the previous with no gap. */
-    this.tokenAbutsPrev = this.reader.currentOffset() === start;
+     * whitespace here); the real token begins here, past the skipped gap. If the
+     * two coincide, this token abuts the previous with no gap. Operators and EOF
+     * must be positioned at `tokenStart`, not `start` — otherwise a diagnostic
+     * anchored on them points at the start of the *preceding whitespace* rather
+     * than the token (name tokens already recapture this in readNameOrIdentifier). */
+    const tokenStart = this.reader.currentOffset();
+    this.tokenAbutsPrev = tokenStart === start;
 
     switch (ch) {
       case undefined:
-        this.token = { type: TokenType.EOF, start };
+        this.token = { type: TokenType.EOF, start: tokenStart };
         break;
       case CHAR_EQUALS:
         this.reader.next();
-        this.token = { type: TokenType.EQUALS, start };
+        this.token = { type: TokenType.EQUALS, start: tokenStart };
         break;
       case CHAR_LBRACE:
         this.reader.next();
-        this.token = { type: TokenType.LBRACE, start };
+        this.token = { type: TokenType.LBRACE, start: tokenStart };
         break;
       case CHAR_RBRACE:
         this.reader.next();
-        this.token = { type: TokenType.RBRACE, start };
+        this.token = { type: TokenType.RBRACE, start: tokenStart };
         break;
       case CHAR_LANGLE:
         this.reader.next();
-        this.token = { type: TokenType.LANGLE, start };
+        this.token = { type: TokenType.LANGLE, start: tokenStart };
         break;
       case CHAR_RANGLE:
         this.reader.next();
-        this.token = { type: TokenType.RANGLE, start };
+        this.token = { type: TokenType.RANGLE, start: tokenStart };
         break;
       case CHAR_COMMA:
         this.reader.next();
-        this.token = { type: TokenType.COMMA, start };
+        this.token = { type: TokenType.COMMA, start: tokenStart };
         break;
       case CHAR_SEMI:
         this.reader.next();
-        this.token = { type: TokenType.SEMI, start };
+        this.token = { type: TokenType.SEMI, start: tokenStart };
         break;
       case CHAR_DASH:
         /* A whitespace-delimited `->` is the rename ARROW (`sel -> tmpl`); a `-`
@@ -518,7 +522,7 @@ export class BuildParser {
         if (this.reader.peekAt(1) === CHAR_RANGLE && isArrowTerminator(this.reader.peekAt(2))) {
           this.reader.next(); /* the '-' */
           this.reader.next(); /* the '>' */
-          this.token = { type: TokenType.ARROW, start };
+          this.token = { type: TokenType.ARROW, start: tokenStart };
           break;
         }
         this.token = this.readNameOrIdentifier();

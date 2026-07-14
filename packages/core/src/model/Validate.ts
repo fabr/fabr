@@ -37,7 +37,7 @@ const DIAG_DUPLICATE_PROPERTY = new Diagnostic<ITargetPropertyError>(
 );
 const DIAG_MISSING_PROPERTY = new Diagnostic<ITargetPropertyError>(
   LogLevel.Error,
-  "Missing required property '{property} in {type} ttarget '{target}'"
+  "Missing required property '{property}' in {type} target '{target}'"
 );
 const DIAG_INVALID_REWRITE = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
   LogLevel.Error,

@@ -116,9 +116,12 @@ function firstLine(text: string): string {
 }
 
 /**
- * @return the parsed test report delivered by a test target's sources, if
- * there is one (an artifact that isn't a recognizable report is treated as
- * absent rather than failing the caller's rendering).
+ * @return the parsed test report a test target delivered, or `undefined` if the
+ * target produced no report artifact at all (rendered as "no tests"). A report
+ * that IS present but cannot be parsed — malformed JSON, or valid JSON that
+ * isn't a recognizable CTRF report — is a genuine failure and rejects, rather
+ * than being silently swallowed as "no tests": a corrupt report is a real
+ * problem worth surfacing.
  */
 export function getTestReport(sources: SourceRef[]): Computable<ITestReport | undefined> {
   const sets = sources.filter((source): source is FileSet => source instanceof FileSet);
@@ -126,9 +129,19 @@ export function getTestReport(sources: SourceRef[]): Computable<ITestReport | un
     sets.map(set => set.get(TEST_REPORT_FILENAME)),
     (...files): Computable<ITestReport | undefined> | undefined => {
       const file = files.find(f => f !== undefined);
-      return file?.readString().then(content => {
-        const report = JSON.parse(content) as Partial<ITestReport>;
-        return report.results?.summary && Array.isArray(report.results.tests) ? (report as ITestReport) : undefined;
+      return file?.readString().then((content): ITestReport => {
+        let report: Partial<ITestReport>;
+        try {
+          report = JSON.parse(content) as Partial<ITestReport>;
+        } catch (err) {
+          throw new Error(
+            `Malformed test report (${TEST_REPORT_FILENAME}): ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+        if (!report.results?.summary || !Array.isArray(report.results.tests)) {
+          throw new Error(`Malformed test report (${TEST_REPORT_FILENAME}): not a recognizable CTRF report`);
+        }
+        return report as ITestReport;
       });
     }
   );

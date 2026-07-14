@@ -53,6 +53,27 @@ describe("e2e: run watch mode (fabr run -w)", () => {
     }
   });
 
+  it("tears down cleanly on SIGTERM, not just SIGINT", async () => {
+    /* A default SIGTERM disposition would kill fabr outright (exit 143) without
+     * running the exit hook that stops the supervised child — orphaning it and
+     * leaking its staged install. The watch lifecycle handles SIGTERM like
+     * SIGINT, so fabr exits 0 and the child is cleaned up. */
+    const session = startFabrWatch(
+      {
+        "PROJECT.fabr": "script server { deps = src:server.sh; entry = server.sh; }\n",
+        "src/server.sh": 'echo "SERVER up" >&2\nexec sleep 300\n',
+      },
+      ["run", "-w", "server"]
+    );
+    try {
+      await session.waitFor("SERVER up", { timeoutMs: 60000 });
+      await session.waitFor("Watching for changes", { timeoutMs: 60000 });
+    } finally {
+      const code = await session.stop("SIGTERM");
+      expect(code).to.equal(0);
+    }
+  });
+
   it("does not relaunch when the rebuilt program is unchanged", async () => {
     const server = 'echo "SERVER up" >&2\nexec sleep 300\n';
     const session = startFabrWatch(
