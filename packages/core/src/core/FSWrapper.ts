@@ -45,6 +45,12 @@ export function isNotFound(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
 }
 
+/** True if `err` is an EISDIR — the path is a directory where a file operation
+ * (open/read) expected a regular file. */
+export function isDirectoryError(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException | null)?.code === "EISDIR";
+}
+
 export function readFile(filepath: string, encoding: BufferEncoding = "utf8"): Computable<string> {
   return Computable.from<string>((resolve, reject) => {
     fs.readFile(filepath, encoding, (err, data) => {

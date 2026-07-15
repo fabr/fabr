@@ -24,7 +24,7 @@ import { Name } from "./Name";
 
 import { Computable, ComputableSource, ComputableState } from "./Computable";
 import { FileSet, IFile, FileSource } from "./FileSet";
-import { hashFile, isNotFound, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
+import { hashFile, isDirectoryError, isNotFound, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
 import { toError } from "./Errors";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
 
@@ -89,21 +89,31 @@ export class FSFile implements IFile {
  * a {@link FileSet}; `get` projects the single file via {@link FileSet.getSingleFile}
  * (a single-file `get` is just a query over a literal, non-glob path).
  */
-class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
+export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   private readonly files = new Map<string, Computable<FSFile | undefined>>();
   /* The name's projection: decides membership (a matched path maps to a name,
    * undefined drops it) AND names the result — one derivation for enumeration,
    * live-change filtering and result naming alike. Built once the tree is
-   * enumerated (a bare directory expands to its contents there); until then it
-   * drops everything, so an early change event is ignored (enumeration picks it up). */
+   * enumerated (a bare directory expands to its contents there). */
   private project: Projector = () => undefined;
   private lastManifest: string | undefined;
+  /* The subscription is live from the moment we register (before enumeration
+   * completes), and enumeration is async — so events can arrive while `project`
+   * is still unknown. We buffer them here and replay them once enumeration lands,
+   * rather than dropping them (which would lose a create in that window, or let
+   * the stale enumeration snapshot resurrect a file deleted in it). */
+  private enumerating = true;
+  private readonly pendingEvents: [string, boolean][] = [];
 
   constructor(
     private readonly owner: FSFileSource,
     private readonly root: string,
     private readonly name: Name,
-    private readonly prefix: string
+    private readonly prefix: string,
+    /* Injectable only so tests can drive the async enumeration window
+     * deterministically; production leaves it undefined and uses the real tree
+     * enumeration (see attach). */
+    private readonly enumerator?: () => Computable<{ names: string[]; project: Projector }>
   ) {
     super();
   }
@@ -115,9 +125,20 @@ class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     super.attach();
     this.owner.registerQuery(this);
     this.files.clear();
-    enumerate(this.root, this.name, this.prefix).then(({ names, project }) => {
+    this.enumerating = true;
+    this.pendingEvents.length = 0;
+    const enumerator = this.enumerator ?? (() => enumerate(this.root, this.name, this.prefix));
+    enumerator().then(({ names, project }) => {
       names.forEach(name => this.files.set(name, this.owner.ingest(name)));
       this.project = project;
+      this.enumerating = false;
+      /* Replay events that arrived during the enumeration window against the
+       * now-known projection, before the first settle, so the delivered set is
+       * current (buffered creates added, buffered deletes removed). */
+      for (const [rel, removed] of this.pendingEvents) {
+        this.applyDelta(rel, removed);
+      }
+      this.pendingEvents.length = 0;
       this.deliver();
     }, err => this.settle(ComputableState.Error, toError(err)));
   }
@@ -130,6 +151,19 @@ class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   /** Apply a filesystem change: if `rel` is one of ours, update the file map and return
    * true (so the source schedules our re-settle); otherwise ignore it and return false. */
   public applyEvent(rel: string, removed: boolean): boolean {
+    /* Before enumeration resolves the projection is unknown — buffer the event to
+     * replay once it lands (see attach), rather than dropping it. Return false so
+     * the source schedules no re-settle now; the enumeration's own deliver()
+     * settles the up-to-date set. */
+    if (this.enumerating) {
+      this.pendingEvents.push([rel, removed]);
+      return false;
+    }
+    return this.applyDelta(rel, removed);
+  }
+
+  /** Apply a change against the (known) projection: true iff it was one of ours. */
+  private applyDelta(rel: string, removed: boolean): boolean {
     if (this.project(rel) === undefined) {
       return false;
     }
@@ -283,9 +317,12 @@ export class FSFileSource implements FileSource {
     return hashFile(filepath)
       .then(hash => stat(filepath).then(stats => new FSFile(this.root, filename, stats, hash)))
       .catch(err => {
-        /* Gone since the event fired (the save-rename dance): treat as absent —
-         * a later create/change event re-adds it — never a hard error. */
-        if (isNotFound(err)) {
+        /* Gone since the event fired (the save-rename dance), or the path is a
+         * directory (a not-yet-existing reference whose entry itself surfaced as
+         * an event — see enumerate's not-found branch): either way it is not a
+         * file, so treat it as absent — a later create/change event re-adds real
+         * files — never a hard error. */
+        if (isNotFound(err) || isDirectoryError(err)) {
           return undefined;
         }
         throw err;
@@ -402,15 +439,29 @@ function enumerate(root: string, name: Name, prefix: string): Computable<{ names
   if (name.hasGlob()) {
     return walkGlob(root, name, prefix);
   }
+  /* A non-glob reference names either the path itself (when it's a file) or, when
+   * it's a directory, everything beneath it — and which one holds can change over
+   * the query's life, or be unknown when the path doesn't exist yet. So the
+   * membership test is the SAME union in every case — the path, OR anything under
+   * it — making live matching independent of the FS state at enumeration time;
+   * `stat` only seeds the *initial* contents. A directory that matches the literal
+   * side (its own create/modify event) ingests to `undefined` — a directory is
+   * not a file — and drops out (see FSFileSource.ingest), so the set is exactly
+   * the path-as-file or the directory's files, whichever materializes. This is
+   * also what lets a bare reference to a not-yet-existing directory fill when its
+   * children are later created. */
   const file = staticPath(name);
-  return stat(path.resolve(root, file)).then(
+  const abs = path.resolve(root, file);
+  const literal = name.makeProjector(prefix);
+  const subtree = name.appendGlobstar().makeProjector(prefix);
+  const project: Projector = rel => literal(rel) ?? subtree(rel);
+  return stat(abs).then(
     fileStat =>
       fileStat.isFile()
-        ? { names: [toPosix(file)], project: name.makeProjector(prefix) }
-        : /* A directory reference means every file beneath it. */
-          walkGlob(root, name.appendGlobstar(), prefix),
-    /* Nothing there yet — an empty set a later create-event can fill. */
-    () => ({ names: [], project: name.makeProjector(prefix) })
+        ? { names: [toPosix(file)], project }
+        : walk(root, abs, project).then(names => ({ names, project })),
+    /* Nothing there yet — an empty set a later create-event fills. */
+    () => ({ names: [], project })
   );
 }
 
