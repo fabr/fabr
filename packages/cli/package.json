@@ -1,5 +1,5 @@
 {
-  "name": "@fabr/fabr",
+  "name": "@fabr-build/cli",
   "version": "0.1.0",
   "license": "GPL-3.0-or-later",
   "homepage": "https://github.com/fabr/fabrjs",
@@ -8,7 +8,7 @@
     "fabr": "build/index.js"
   },
   "dependencies": {
-    "@fabr/core": "0.1.0",
-    "@fabr/js": "0.1.0"
+    "@fabr-build/core": "0.1.0",
+    "@fabr-build/js": "0.1.0"
   }
 }

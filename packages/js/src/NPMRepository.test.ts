@@ -38,7 +38,7 @@ import {
   SemverVersion,
   TARGET,
   versionToString,
-} from "@fabr/core";
+} from "@fabr-build/core";
 import {
   matchesTargetPlatform,
   NPMRepository,

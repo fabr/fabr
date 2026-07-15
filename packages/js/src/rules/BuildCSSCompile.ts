@@ -43,7 +43,7 @@ import {
   RuleRegistration,
   RuleResult,
   TargetContext,
-} from "@fabr/core";
+} from "@fabr-build/core";
 import { assembleNodeModules } from "../JSPackage";
 import { buildCssOptions, CSS_DRIVER_ENTRY, CSS_OUTDIR, CSS_SRC_ROOT, getCssDriver, SCSS_DEPS_DIR } from "../CSSCompile";
 

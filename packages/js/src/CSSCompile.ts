@@ -22,14 +22,14 @@
  * document handed to the standalone CSS driver (see cssDriver/css-driver.ts) and
  * loading the driver runtime for staging. Everything here runs in the host during
  * evaluation; the sass/lightningcss invocation itself is the driver's job. Kept
- * apart from the driver so it can import @fabr/core and be unit-tested under jest
+ * apart from the driver so it can import @fabr-build/core and be unit-tested under jest
  * (the driver runs standalone in the css build step and must not depend on core
  * at runtime).
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { FileSet, IFile, MemoryFile } from "@fabr/core";
+import { FileSet, IFile, MemoryFile } from "@fabr-build/core";
 
 /** Where the driver writes, and the rule collects, the compiled CSS from. */
 export const CSS_OUTDIR = "out";
@@ -45,7 +45,7 @@ export const SCSS_DEPS_DIR = "scss_deps";
 /** The driver's entry, launched under node inside the css build step. */
 export const CSS_DRIVER_ENTRY = "css-driver.js";
 
-/* Fabr's own CSS driver lives in this @fabr/js installation, next to the
+/* Fabr's own CSS driver lives in this @fabr-build/js installation, next to the
  * compiled helpers (build/cssDriver in the devchain build, or cssDriver/ within
  * the fabr-built package — the same relative layout as the bundle driver). */
 const CSS_DRIVER_DIR = path.join(__dirname, "cssDriver");

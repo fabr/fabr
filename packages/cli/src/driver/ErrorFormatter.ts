@@ -42,7 +42,7 @@ import {
   RepositoryRef,
   RequirementResolutionError,
   TestsFailedError,
-} from "@fabr/core";
+} from "@fabr-build/core";
 
 /** All failures render through one template: describe() produces the final
  * message, and the structured detail (span, label, notes, help) rides along. */

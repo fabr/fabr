@@ -22,11 +22,11 @@
  * runs the built fabr CLI against it as a subprocess, capturing stdout / stderr
  * / exit status. These tests exercise the whole stack through the real command
  * line. They dual-run like every other suite: under jest, and under `fabr test`
- * itself via the `fabr_e2e` js_test target (which carries @fabr/fabr as a dep,
+ * itself via the `fabr_e2e` js_test target (which carries @fabr-build/cli as a dep,
  * so the CLI under test is the one that {@link FABR} resolves — see below).
  *
  * Plugins resolve from the fabr installation (`require.resolve`), not the
- * project dir, so `plugin @fabr/js;` works from a temp dir with no node_modules.
+ * project dir, so `plugin @fabr-build/js;` works from a temp dir with no node_modules.
  * A stub `tsc` (STUB_TSC / STUB_TSC_CONFIG) lets TS-compiling fixtures avoid the
  * real typescript download; it copies each `src/*.ts` to `build/*.js` verbatim,
  * so fixture "TypeScript" must be type-annotation-free (valid JS).
@@ -38,11 +38,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 /* The CLI under test, resolved as a runtime dependency rather than a build-dir
- * path: @fabr/fabr is a dep of the enclosing test target, so it mounts into
+ * path: @fabr-build/cli is a dep of the enclosing test target, so it mounts into
  * node_modules and require.resolve finds its entry — the same line works under
  * jest (the workspace symlink → build/index.js) and under `fabr test` (the
  * staged built package → index.js). */
-const FABR = require.resolve("@fabr/fabr");
+const FABR = require.resolve("@fabr-build/cli");
 
 /* Spawns inherit no PATH under `fabr test`'s clean env, so name the node binary
  * explicitly and give the child an explicit PATH holding the tools its fixtures

@@ -21,7 +21,7 @@
  * lib/ are core's contribution to every build's registry — assembled by
  * `coreContribution()` (model/Loader) and seeded per load, not registered by an
  * import side effect. Language-specific rules live in their own packages
- * (@fabr/js et al) and contribute via their plugin `activate()`: the bootstrap
+ * (@fabr-build/js et al) and contribute via their plugin `activate()`: the bootstrap
  * set is core + js + fabr; anything beyond that can be built by fabr itself and
  * loaded via a plugin declaration. */
 

@@ -27,7 +27,7 @@ describe("e2e: js_script (runnable) + run", () => {
     const result = runFabr(
       {
         "PROJECT.fabr":
-          "plugin @fabr/js;\n\n" +
+          "plugin @fabr-build/js;\n\n" +
           "js_script gen_prog { deps = src:gen.js; entry = gen.js; }\n" +
           "run gen { tool = gen_prog; output = out:**; }\n",
         "src/gen.js": 'require("fs").mkdirSync("out", { recursive: true });\nrequire("fs").writeFileSync("out/msg.txt", "e2e ran\\n");\n',
@@ -42,7 +42,7 @@ describe("e2e: js_script (runnable) + run", () => {
     const result = runFabr(
       {
         "PROJECT.fabr":
-          "plugin @fabr/js;\n\n" +
+          "plugin @fabr-build/js;\n\n" +
           "js_script gen_prog { deps = src:gen.js; entry = gen.js; }\n" +
           "run gen { tool = gen_prog; args = Ada Lovelace; output = out:**; }\n",
         "src/gen.js": 'require("fs").mkdirSync("out", { recursive: true });\nrequire("fs").writeFileSync("out/msg.txt", process.argv.slice(2).join(" "));\n',
@@ -58,7 +58,7 @@ describe("e2e: js_script (runnable) + run", () => {
       {
         ...STUB_TSC,
         "PROJECT.fabr":
-          "plugin @fabr/js;\n\n" +
+          "plugin @fabr-build/js;\n\n" +
           STUB_TSC_CONFIG +
           "\njs_package greeter { srcs = pkgsrc:**; }\n\n" +
           "js_script greeter_prog { deps = greeter; entry = node_modules/greeter/cli.js; }\n" +
@@ -77,7 +77,7 @@ describe("e2e: js_script (runnable) + run", () => {
     const result = runFabr(
       {
         "PROJECT.fabr":
-          "plugin @fabr/js;\n\n" +
+          "plugin @fabr-build/js;\n\n" +
           "js_script gen_prog { deps = src:gen.js; entry = missing.js; }\n" +
           "run gen { tool = gen_prog; output = out:**; }\n",
         "src/gen.js": "// present, but not the entry\n",
@@ -95,7 +95,7 @@ describe("e2e: js_package bin convention", () => {
       {
         ...STUB_TSC,
         "PROJECT.fabr":
-          "plugin @fabr/js;\n\n" + STUB_TSC_CONFIG + "\njs_package tool { srcs = src:**; }\n",
+          "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_package tool { srcs = src:**; }\n",
         "src/bin/mytool.ts": 'console.log("hi");\n',
         "src/index.ts": "exports.x = 1;\n",
       },
@@ -112,7 +112,7 @@ describe("e2e: fabr run a package's bin", () => {
       {
         ...STUB_TSC,
         "PROJECT.fabr":
-          "plugin @fabr/js;\n\n" + STUB_TSC_CONFIG + "\njs_package tool { srcs = src:**; }\n",
+          "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_package tool { srcs = src:**; }\n",
         "src/bin/mytool.ts": 'process.stdout.write("tool:" + process.argv.slice(2).join(","));\n',
       },
       ["-DJS_TARGET=es2020", "run", "tool", "a", "b"]
@@ -126,7 +126,7 @@ describe("e2e: fabr run a package's bin", () => {
       {
         ...STUB_TSC,
         "PROJECT.fabr":
-          "plugin @fabr/js;\n\n" + STUB_TSC_CONFIG + "\njs_package lib { srcs = src:**; }\n",
+          "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_package lib { srcs = src:**; }\n",
         "src/index.ts": "exports.x = 1;\n",
       },
       ["-DJS_TARGET=es2020", "run", "lib"]
@@ -140,7 +140,7 @@ describe("e2e: fabr run — selecting an entry (multi-bin)", () => {
   const project = {
     ...STUB_TSC,
     "PROJECT.fabr":
-      "plugin @fabr/js;\n\n" + STUB_TSC_CONFIG + "\njs_package multi { srcs = src:**; }\n",
+      "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_package multi { srcs = src:**; }\n",
     "src/bin/one.ts": 'process.stdout.write("ran one");\n',
     "src/bin/two.ts": 'process.stdout.write("ran two");\n',
   };
@@ -188,7 +188,7 @@ describe("e2e: fabr run — selecting an entry (multi-bin)", () => {
 
 describe("e2e: fabr run", () => {
   const project = {
-    "PROJECT.fabr": "plugin @fabr/js;\n\njs_script hello { deps = src:hello.js; entry = hello.js; }\n",
+    "PROJECT.fabr": "plugin @fabr-build/js;\n\njs_script hello { deps = src:hello.js; entry = hello.js; }\n",
     "src/hello.js":
       'process.stdout.write("hi " + process.argv.slice(2).join(" "));\nprocess.exit(process.argv.includes("--fail") ? 7 : 0);\n',
   };

@@ -24,7 +24,7 @@ import { PluginContribution } from "../rules/Types";
  * The shape a plugin package's entry point must export: `activate` is a pure
  * function that RETURNS the plugin's contribution (rules, repositories, include
  * dirs) — it performs no global registration. It receives the host's own
- * @fabr/core module instance as the api. The full plugin contract is documented
+ * @fabr-build/core module instance as the api. The full plugin contract is documented
  * in PLUGINS.md.
  */
 interface IFabrPluginModule {

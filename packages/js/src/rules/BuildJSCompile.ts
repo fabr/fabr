@@ -34,7 +34,7 @@
  */
 
 
-import { Computable, createExecAction, FileSet, MemoryFile, RuleRegistration, RuleResult, TargetContext } from "@fabr/core";
+import { Computable, createExecAction, FileSet, MemoryFile, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
 import { assembleScopedNodeModules, JSTarget, parseJSTarget, resolveJsxImportSource } from "../JSPackage";
 
 /** Where the toolchain is mounted in the working dir — disjoint from src/node_modules/build. */

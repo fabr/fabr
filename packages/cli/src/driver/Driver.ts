@@ -40,13 +40,13 @@ import {
   SourceRef,
   toError,
   WatchController,
-} from "@fabr/core";
+} from "@fabr-build/core";
 import { DiagnosticErrorFormatter, ErrorFormatter } from "./ErrorFormatter";
 import { runInteractive, RunSupervisor } from "./RunHandler";
-/* The whole of @fabr/core doubles as the api object injected into plugins:
+/* The whole of @fabr-build/core doubles as the api object injected into plugins:
  * handing plugins the host's own module instance keeps every class and
  * registry shared (a plugin must never load a second copy of the core). */
-import * as pluginApi from "@fabr/core";
+import * as pluginApi from "@fabr-build/core";
 import { Mode, Options } from "./Command";
 import { getSourceRoot, getBuildCacheRoot, getHostProperties, PROJECT_FILENAME } from "./Environment";
 

@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { FileSet, IFile, MemoryFile } from "@fabr/core";
+import { FileSet, IFile, MemoryFile } from "@fabr-build/core";
 import { selectCompiledTestFiles } from "./TestPipeline";
 
 /** A FileSet with the given names (contents irrelevant to selection). */

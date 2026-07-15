@@ -18,8 +18,8 @@
  */
 
 /**
- * @fabr/js: the Javascript/NPM ecosystem support for fabr, loaded as a fabr
- * plugin (`plugin @fabr/js;` — see PLUGINS.md for the plugin contract):
+ * @fabr-build/js: the Javascript/NPM ecosystem support for fabr, loaded as a fabr
+ * plugin (`plugin @fabr-build/js;` — see PLUGINS.md for the plugin contract):
  * activation registers the js rules (js_package build+test, js_test,
  * js_script, npm_repository) and this package's lib/ (JS.fabr) on the system
  * include path.
@@ -32,7 +32,7 @@
  * dependency on the host's core at runtime), and nothing here imports it.
  */
 
-import type * as fabr from "@fabr/core";
+import type * as fabr from "@fabr-build/core";
 import { buildJsPackageRule } from "./rules/BuildJSPackage";
 import { runJsPackageRule } from "./rules/RunJSPackage";
 import { jsCompileRule } from "./rules/BuildJSCompile";
@@ -51,7 +51,7 @@ export { assembleNodeModules, compileJsSources, ICompiledSources, JSTarget, pars
  * Plugin entry point: return this package's contribution — the js rules
  * (js_package build/run/test, js_test, js_script, js_compile, js_bundle), the npm
  * repository type, and this package's `.fabr` library (JS.fabr), which a
- * `plugin @fabr/js;` declaration auto-includes. Pure: no global registration
+ * `plugin @fabr-build/js;` declaration auto-includes. Pure: no global registration
  * (see PLUGINS.md); the host merges this into the build model's rule tables.
  */
 export function activate(api: typeof fabr): fabr.PluginContribution {
@@ -67,6 +67,6 @@ export function activate(api: typeof fabr): fabr.PluginContribution {
       jsScriptRule,
     ],
     repositories: [npmRepositoryRegistration],
-    includes: [api.packageLibFile("@fabr/js", "JS.fabr")],
+    includes: [api.packageLibFile("@fabr-build/js", "JS.fabr")],
   };
 }

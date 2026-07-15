@@ -58,7 +58,7 @@ export class RunnableFileSet extends FileSet {
     public readonly args: string[] = [],
     /** A PATH tool that runs the entry (e.g. "node"); omitted → the entry is itself executable. */
     public readonly interpreter?: string,
-    /** The primary package's mount within the install (e.g. `node_modules/@fabr/fabr`); a `surface` file resolves to `root`/name. */
+    /** The primary package's mount within the install (e.g. `node_modules/@fabr-build/cli`); a `surface` file resolves to `root`/name. */
     public readonly root: string = "",
     /** The launch surface: package files (by path) + a SymlinkFile per bin (by command → install path). `find` searches this. */
     public readonly surface: FileSet = EMPTY_FILESET,

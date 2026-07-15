@@ -258,8 +258,8 @@ describe("Parser Tests", () => {
   });
 
   it("Plugin Decl", () => {
-    expect(summarize(parseValid("plugin @fabr/js;\nplugin simple;"))).to.deep.equal(
-      summary({ plugins: ["@fabr/js", "simple"] })
+    expect(summarize(parseValid("plugin @fabr-build/js;\nplugin simple;"))).to.deep.equal(
+      summary({ plugins: ["@fabr-build/js", "simple"] })
     );
   });
 

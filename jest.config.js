@@ -17,8 +17,8 @@ module.exports = {
     },
   },
   moduleNameMapper: {
-    "^@fabr/core$": "<rootDir>/packages/core/src/index.ts",
-    "^@fabr/js$": "<rootDir>/packages/js/src/index.ts",
+    "^@fabr-build/core$": "<rootDir>/packages/core/src/index.ts",
+    "^@fabr-build/js$": "<rootDir>/packages/js/src/index.ts",
   },
   transform: {
     "^.+\\.ts$": "ts-jest",
@@ -27,7 +27,7 @@ module.exports = {
   moduleFileExtensions: ["ts", "js"],
   testRegex: ".*\\.test\\.ts$",
   /* The runner runtime's tests are node:test based and run under the fabr
-   * test harness itself (fabr test @fabr/js), not under jest */
+   * test harness itself (fabr test @fabr-build/js), not under jest */
   testPathIgnorePatterns: [
     "/node_modules/",
     "/build/",

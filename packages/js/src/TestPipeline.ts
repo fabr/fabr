@@ -21,9 +21,9 @@
  * The shared test pipeline behind both js test rules (js_test and
  * js_package[test]): compile the source tree (tests included), assemble the
  * runnable installation, and run the runner over the compiled test files,
- * reporting through the test report contract defined by @fabr/core.
+ * reporting through the test report contract defined by @fabr-build/core.
  *
- * The runner is fabr's own, sourced directly from this @fabr/js installation
+ * The runner is fabr's own, sourced directly from this @fabr-build/js installation
  * (see {@link getHostRunner}) and executed standalone inside the test working
  * directory — it is not resolved as a build target.
  */
@@ -54,10 +54,10 @@ import {
   TEST_REPORT_FILENAME,
   TestsFailedError,
   writeFileSet,
-} from "@fabr/core";
+} from "@fabr-build/core";
 import { assembleNodeModules, compileJsSources, JSTarget, parseJSTarget, stripPackageJson } from "./JSPackage";
 
-/* Fabr's own test runner lives in this @fabr/js installation, next to the
+/* Fabr's own test runner lives in this @fabr-build/js installation, next to the
  * compiled rule code (packages/js/build/testRunner in the devchain build, or
  * testRunner/ within the fabr-built package — the same relative layout). */
 const HOST_TESTRUNNER_DIR = path.join(__dirname, "testRunner");
@@ -69,8 +69,8 @@ const GLOBALS_TYPES_FILE = "test-globals.d.ts";
  * ambient-types file mounts so tsc auto-includes it for the test compile */
 const RUNNER_STAGE_DIR = ".fabr-testrunner";
 const GLOBALS_TYPES_MOUNT = "@types/fabr-test-globals/index.d.ts";
-/* The runner's own globals .d.ts as it appears in @fabr/js's srcs, dropped
- * when @fabr/js tests itself so it doesn't collide with the synthetic mount. */
+/* The runner's own globals .d.ts as it appears in @fabr-build/js's srcs, dropped
+ * when @fabr-build/js tests itself so it doesn't collide with the synthetic mount. */
 const RUNNER_GLOBALS_TYPES = "testRunner/test-globals.d.ts";
 
 interface IHostRunner {
@@ -83,7 +83,7 @@ interface IHostRunner {
 let hostRunnerCache: IHostRunner | undefined;
 
 /**
- * Load fabr's own test runner from this @fabr/js installation's testRunner
+ * Load fabr's own test runner from this @fabr-build/js installation's testRunner
  * directory: the runtime .js (runner.js + its helpers + the globals shim,
  * executed in the test process) and the hand-authored globals .d.ts (mounted
  * into the test compile). Read once and memoized — the runner is fixed per

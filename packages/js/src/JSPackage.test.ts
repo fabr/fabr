@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { Computable, FileSet, IFile, MemoryFile, PackageFileSet, SymlinkFile } from "@fabr/core";
+import { Computable, FileSet, IFile, MemoryFile, PackageFileSet, SymlinkFile } from "@fabr-build/core";
 import {
   assembleScopedNodeModules,
   hasPackageExport,

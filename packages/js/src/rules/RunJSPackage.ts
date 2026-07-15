@@ -34,7 +34,7 @@ import {
   RuleRegistration,
   RuleResult,
   TargetContext,
-} from "@fabr/core";
+} from "@fabr-build/core";
 import { makeNpmRunnable } from "../JSPackage";
 
 /* The package is built under build, since the ambient operation here is run. */

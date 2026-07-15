@@ -23,7 +23,7 @@
  * resolve) and run against the package's deps.
  */
 
-import { BUILD_OPERATION, Computable, RuleRegistration, RuleResult, TargetContext } from "@fabr/core";
+import { BUILD_OPERATION, Computable, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
 import { BUILD_OP, compileAndRunTests } from "../TestPipeline";
 
 function testJsPackage(context: TargetContext): Computable<RuleResult> {

@@ -27,7 +27,7 @@ import { loadProject } from "./Loader";
 
 /* Includes are now: core's STD.fabr (always, no explicit include — exercised by
  * the bootstrap/e2e against the real built lib/, not here), a `plugin` decl's
- * auto-included files (bootstrap/e2e against real @fabr/js), and explicit
+ * auto-included files (bootstrap/e2e against real @fabr-build/js), and explicit
  * path-relative `include ./p;`. There is no system include path. These unit tests
  * cover the include mechanics with a STUB base contribution whose `includes` are
  * empty, so they touch no real on-disk lib/ (unavailable under ts-jest). */

@@ -34,7 +34,7 @@ import {
   RunnableFileSet,
   SymlinkFile,
   TargetContext,
-} from "@fabr/core";
+} from "@fabr-build/core";
 
 export interface JSTarget {
   version: string;

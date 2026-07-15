@@ -26,7 +26,7 @@ import {
   MultiError,
   Name,
   ReferenceFailedError,
-} from "@fabr/core";
+} from "@fabr-build/core";
 import { DiagnosticErrorFormatter } from "./ErrorFormatter";
 
 /* The AST decl types aren't exported, so recover them from the error constructors.

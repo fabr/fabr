@@ -22,7 +22,7 @@
 
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import type { ITestResult } from "@fabr/core";
+import type { ITestResult } from "@fabr-build/core";
 import { buildReport, formatTestFailures, formatTestSummary } from "./Report";
 
 function test(name: string, status: ITestResult["status"], extra?: Partial<ITestResult>): ITestResult {

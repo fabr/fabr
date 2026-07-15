@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { IFile, MemoryFile, PackageFileSet, RewriteFn } from "@fabr/core";
+import { IFile, MemoryFile, PackageFileSet, RewriteFn } from "@fabr-build/core";
 import { buildBundleOptions, computeBundleEntries, computeExternalNames } from "./JSBundle";
 import { parseJSTarget } from "./JSPackage";
 

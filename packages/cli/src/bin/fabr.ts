@@ -18,9 +18,9 @@
  */
 
 /**
- * The `fabr` command entry point. Placed under `bin/` so a built `@fabr/fabr`
+ * The `fabr` command entry point. Placed under `bin/` so a built `@fabr-build/cli`
  * package announces it by convention (`"bin": { "fabr": "bin/fabr.js" }`),
- * making the package runnable (`fabr run @fabr/fabr …`). Runs the CLI via the
+ * making the package runnable (`fabr run @fabr-build/cli …`). Runs the CLI via the
  * package's main entry.
  */
 

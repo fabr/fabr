@@ -5,12 +5,15 @@
   "license": "GPL-3.0-or-later",
   "homepage": "https://github.com/fabr/fabrjs",
   "workspaces": ["packages/*"],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -b && node scripts/copylibs.js",
     "test": "jest",
     "lint": "eslint packages test",
-    "fabr": "node packages/fabr/build/index.js",
-    "bootstrap": "yarn build && yarn fabr @fabr/core @fabr/js @fabr/fabr && yarn fabr test @fabr/core @fabr/js @fabr/fabr e2e_tests",
+    "fabr": "node packages/cli/build/index.js",
+    "bootstrap": "yarn build && yarn fabr @fabr-build/core @fabr-build/js @fabr-build/cli && yarn fabr test @fabr-build/core @fabr-build/js @fabr-build/cli e2e_tests",
     "dist": "yarn build && yarn test && yarn lint"
   },
   "devDependencies": {

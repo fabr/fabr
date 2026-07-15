@@ -125,7 +125,7 @@ function isFirstIdentChar(ch: number): boolean {
 
 /* An IDENTIFIER — keywords, property names, constraint keys, target *types* —
  * is `@`/`_`/alphanumeric only. A SIMPLE_NAME (a target or plugin name such as
- * `@fabr/js`, `my-target`, `lodash.merge`) additionally allows `/`, `-`, `.`.
+ * `@fabr-build/js`, `my-target`, `lodash.merge`) additionally allows `/`, `-`, `.`.
  * Both start like an identifier; the extras are interior-only, so a leading
  * `.`/`-`/`/` (a relative include `./x`, a version `1.2.3`) stays a NAME. */
 function isIdentChar(ch: number): boolean {

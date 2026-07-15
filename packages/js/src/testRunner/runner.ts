@@ -32,7 +32,7 @@
 import { run } from "node:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ITestResult } from "@fabr/core";
+import type { ITestResult } from "@fabr-build/core";
 import { buildReport, formatTestFailures, formatTestSummary, TEST_REPORT_FILENAME } from "./Report";
 
 /**

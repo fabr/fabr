@@ -45,7 +45,7 @@ import {
   RuleRegistration,
   RuleResult,
   TargetContext,
-} from "@fabr/core";
+} from "@fabr-build/core";
 import { assembleNodeModules, JSTarget, parseJSTarget } from "../JSPackage";
 import {
   buildBundleOptions,

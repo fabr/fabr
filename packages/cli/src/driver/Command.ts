@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Constraints } from "@fabr/core";
+import { Constraints } from "@fabr-build/core";
 
 export enum Mode {
   Normal,

@@ -38,7 +38,7 @@ import {
   RuleResult,
   RunnableFileSet,
   TargetContext,
-} from "@fabr/core";
+} from "@fabr-build/core";
 import { assembleNodeModules } from "../JSPackage";
 
 function defineJsRunnable(context: TargetContext): Computable<RuleResult> {

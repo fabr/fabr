@@ -46,7 +46,7 @@ export function coreContribution(): PluginContribution {
   return {
     rules: [flagRule, defaultFilesRule, scriptRunRule, runRule],
     repositories: [catalogRepositoryRegistration],
-    includes: [packageLibFile("@fabr/core", "STD.fabr")],
+    includes: [packageLibFile("@fabr-build/core", "STD.fabr")],
   };
 }
 

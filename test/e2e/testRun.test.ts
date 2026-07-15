@@ -21,16 +21,16 @@ import { expect } from "chai";
 import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
 
 /* `fabr test` end to end: compile a package's tests and run them under fabr's
- * own runner (sourced from the installed @fabr/js — no runner configuration,
+ * own runner (sourced from the installed @fabr-build/js — no runner configuration,
  * no npm), proving both outcomes through the real CLI. The fixture asserts with
  * node:assert so it needs no downloaded assertion library; the stub tsc copies
  * the type-free test verbatim. A red run must fail the command AND render the
  * failure as a test outcome, not a build error. */
-describe("e2e: fabr test (runner from @fabr/js)", () => {
+describe("e2e: fabr test (runner from @fabr-build/js)", () => {
   const project = (body: string): Record<string, string> => ({
     ...STUB_TSC,
     "PROJECT.fabr":
-      "plugin @fabr/js;\n\n" +
+      "plugin @fabr-build/js;\n\n" +
       STUB_TSC_CONFIG +
       "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; }\n",
     "src/thing.test.ts": `const assert = require("node:assert");\n${body}\n`,

@@ -32,7 +32,7 @@
  *
  * Like the bundle driver, this file runs in the *build* process, not in fabr:
  * it `require`s sass-embedded + lightningcss from its own staged node_modules
- * and must not depend on @fabr/core at runtime (the ICssOptions import is
+ * and must not depend on @fabr-build/core at runtime (the ICssOptions import is
  * type-only, erased at compile). The tools are required lazily inside {@link
  * main} so the pure helpers stay importable (for the unit tests) without them
  * installed.

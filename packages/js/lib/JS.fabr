@@ -40,7 +40,7 @@ default SASS = @npm:sass-embedded:1.100.0;
 default LIGHTNINGCSS = @npm:lightningcss:1.30.2;
 
 # The test runner ('fabr test' / js_test) is fabr's own: it is sourced directly
-# from the installed @fabr/js providing the js rules, not resolved as a build
+# from the installed @fabr-build/js providing the js rules, not resolved as a build
 # target. Selecting an alternative runner is deferred to a future version.
 
 ################### JS-specific targets ####################

@@ -36,7 +36,7 @@ import {
   RuleResult,
   SourceRef,
   TargetContext,
-} from "@fabr/core";
+} from "@fabr-build/core";
 import { binByConvention, compileJsSources, JSTarget, parseJSTarget, stripPackageJson } from "../JSPackage";
 
 function buildJsPackage(context: TargetContext): Computable<RuleResult> {

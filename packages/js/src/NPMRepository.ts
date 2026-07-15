@@ -35,7 +35,7 @@ import {
   tripleToNpm,
   unpackStream,
   versionToString,
-} from "@fabr/core";
+} from "@fabr-build/core";
 import { makeNpmRunnable } from "./JSPackage";
 
 interface ISignature {

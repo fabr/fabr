@@ -24,7 +24,7 @@
  *
  * Like the test runner, this file runs in the *build* process, not in fabr:
  * it `require`s esbuild from its own staged node_modules and must not depend on
- * @fabr/core at runtime (the IBundleOptions import is type-only, erased at
+ * @fabr-build/core at runtime (the IBundleOptions import is type-only, erased at
  * compile). esbuild is required lazily inside {@link main} so the pure helpers
  * stay importable (for the unit tests) without esbuild installed.
  *

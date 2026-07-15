@@ -33,7 +33,7 @@ import type { SourceRef } from "../core/Repository";
  * Note the summary start/stop are wall-clock times of the original run: a
  * cached-green report deliberately retains its original timings.
  *
- * (The runner side is standalone at runtime, so @fabr/js carries its own
+ * (The runner side is standalone at runtime, so @fabr-build/js carries its own
  * implementation of this contract; the shapes must be kept in sync.)
  */
 

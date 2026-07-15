@@ -19,14 +19,14 @@
 
 /**
  * The runner-side implementation of the test report contract. The contract
- * itself — a CTRF document (https://ctrf.io) — is defined by @fabr/core
+ * itself — a CTRF document (https://ctrf.io) — is defined by @fabr-build/core
  * (support/TestResult.ts) and consumed there by the rules and the driver; the
  * runner executes standalone inside the test working directory — it cannot
  * reach the host's core at runtime — so it carries its own copies of the
  * (small) helpers. Keep them in sync with core.
  */
 
-import type { ITestReport, ITestResult, ITestSummary } from "@fabr/core";
+import type { ITestReport, ITestResult, ITestSummary } from "@fabr-build/core";
 
 /** The report filename, relative to the test working directory (= core's TEST_REPORT_FILENAME) */
 export const TEST_REPORT_FILENAME = "ctrf-report.json";

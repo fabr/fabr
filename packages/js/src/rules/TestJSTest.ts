@@ -24,7 +24,7 @@
  * compiles as a sibling but is never run.
  */
 
-import { BUILD_OPERATION, Computable, EMPTY_FILESET, RuleRegistration, RuleResult, TargetContext } from "@fabr/core";
+import { BUILD_OPERATION, Computable, EMPTY_FILESET, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
 import { BUILD_OP, compileAndRunTests } from "../TestPipeline";
 
 function runJsTest(context: TargetContext): Computable<RuleResult> {
