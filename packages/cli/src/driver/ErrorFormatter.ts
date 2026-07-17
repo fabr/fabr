@@ -185,10 +185,10 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
     if (cause instanceof ConflictError) {
       /* Both contributors that claim `key`, each traced to where it was written;
        * the concrete detail keeps identical-provenance conflicts diagnosable.
-       * Rendered whether or not the conflict arose inside a target build: the
-       * driver's own cat/ls/run `unionAll` raises it ownerless (no enclosing
-       * DependencyFailedError), and those two sides are exactly what makes the
-       * clash diagnosable — so they must not depend on `owner`. */
+       * The two sides render whether or not the conflict arose inside a target
+       * build (an ownerless one has no enclosing DependencyFailedError) — they
+       * are exactly what makes the clash diagnosable, so they must not depend
+       * on `owner`. */
       const notes = [cause.left, cause.right].flatMap(side => [
         ...this.chainNotes(side.provenance, side.label, cause.key),
         ...(side.detail ? [{ message: `at ${side.detail}` }] : []),

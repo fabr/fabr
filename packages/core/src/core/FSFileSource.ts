@@ -34,7 +34,7 @@ export interface FSFileStats {
 }
 
 export class FSFile implements IFile {
-  private root: string;
+  private readonly root: string;
   public stat: FSFileStats;
   public name: string;
   public hash: string;

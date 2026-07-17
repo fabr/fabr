@@ -60,3 +60,20 @@ targetdef run {
 targetdef catalog {
     deps = FILES;
 }
+
+#
+# A sync publishes built content to one or more destination coordinates. Its body
+# is a set of members written as '<destination>:<address> = content' (the
+# coordinate is the key, the identityless built content the value); the address's
+# shape is the destination's — an npm registry's is '<name>:<version>', e.g.
+#   sync release { @npm:@fabr/core:0.1.0 = core; @npm:@fabr/cli:0.1.0 = cli; }
+# Each destination packages its members jointly with the whole release as context
+# (npm rewrites a member's manifest dependency on another member to that member's
+# assigned version). Building the sync target produces the wire artifacts (a
+# dry-run); 'fabr sync' uploads them, deps-first. The members are reference-keyed
+# bindings rather than fixed schema properties; '* = FILES' types them — any
+# coordinate key maps to a FILES (content) value.
+#
+targetdef sync {
+    * = FILES;
+}

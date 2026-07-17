@@ -36,7 +36,7 @@ const testLog = new LogFormatter(LogLevel.Info, console.error);
 
 /* The runtime surroundings for evaluation: none of these tests reach the
  * cache, so a single throwaway instance serves them all */
-const execution = new ExecutionContext(new BuildCache("."), testLog);
+const execution = new ExecutionContext(new BuildCache("."), testLog, EMPTY_FILESET, EMPTY_FILESET);
 
 /* These tests exercise the evaluation engine with throwaway rules. Rules now
  * ride the model's registry (not a global), so collect them into a contribution
@@ -103,6 +103,15 @@ const batchCalls: string[][] = [];
 class TestRepo implements Repository {
   private readonly cache = new Map<string, FileSet>();
 
+  /* No sub-package grammar: the whole name is the requirement, nothing projects. */
+  public getRepositoryRef(name: Name): RepositoryRef {
+    return new RepositoryRef(this, name);
+  }
+
+  public getRepositoryPublishRef(name: Name): never {
+    throw new Error(`test_repo is not a publish destination ('${name.toString()}')`);
+  }
+
   /* The joint batch is the resolve phase — that's where batchCalls records. */
   public resolve(references: RepositoryRef[]): Computable<Resolution> {
     batchCalls.push(references.map(reference => reference.name.toString()));
@@ -113,13 +122,12 @@ class TestRepo implements Repository {
     return Computable.resolve(references.map(reference => this.filesFor(reference.name.toString())));
   }
 
-  /* No sub-package grammar: the whole name is the requirement, nothing projects. */
-  public splitReference(name: Name): { requirement: Name } {
-    return { requirement: name };
-  }
-
   public makeRunnable(): Computable<RunnableFileSet> {
     throw new Error("test_repo does not produce runnables");
+  }
+
+  public declaredRequirement(): Computable<undefined> {
+    return Computable.resolve(undefined);
   }
 
   private filesFor(name: string): FileSet {
@@ -679,7 +687,7 @@ describe("BuildContext", () => {
         const errors: string[] = [];
         const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
         const events: string[] = [];
-        const runExecution = new ExecutionContext(new BuildCache(root), testLog);
+        const runExecution = new ExecutionContext(new BuildCache(root), testLog, EMPTY_FILESET, EMPTY_FILESET);
         runExecution.onProgress(event => events.push(event.kind));
         const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
         expect(errors).to.deep.equal([]);
@@ -712,7 +720,7 @@ describe("BuildContext", () => {
       const run = async (): Promise<FileSet> => {
         const errors: string[] = [];
         const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-        const runExecution = new ExecutionContext(new BuildCache(root), testLog);
+        const runExecution = new ExecutionContext(new BuildCache(root), testLog, EMPTY_FILESET, EMPTY_FILESET);
         const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
         expect(errors).to.deep.equal([]);
         const sources = await new Promise<SourceRef[]>((resolve, reject) =>
@@ -750,7 +758,7 @@ describe("BuildContext", () => {
 
     /* Configs are per execution context: a fresh run never shares evaluation
      * state with another */
-    const other = new ExecutionContext(new BuildCache("."), testLog);
+    const other = new ExecutionContext(new BuildCache("."), testLog, EMPTY_FILESET, EMPTY_FILESET);
     expect(model.getConfig({ x: "1" }, other)).to.not.equal(model.getConfig({ x: "1" }, execution));
   });
 

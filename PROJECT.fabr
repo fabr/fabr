@@ -1,5 +1,8 @@
 plugin @fabr-build/js;
 
+FABR_VERSION=0.1.0;
+
+
 catalog @pkg {
   deps = @npm:typescript:5.4.5 @npm:@types/node:20.12.7
          @npm:chai:4.3.6 @npm:@types/chai:4.3.1
@@ -43,4 +46,10 @@ js_package @fabr-build/cli {
 js_test e2e_tests {
   tests = test:**/*.test.ts;
   deps = test:**/*.ts @pkg:@types/node chai @fabr-build/cli;
+}
+
+sync release {
+  @npm:@fabr-build/cli:${FABR_VERSION} = @fabr-build/cli;
+  @npm:@fabr-build/core:${FABR_VERSION} = @fabr-build/core;
+  @npm:@fabr-build/js:${FABR_VERSION} = @fabr-build/js;
 }

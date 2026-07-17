@@ -21,7 +21,15 @@ import { Computable } from "../core/Computable";
 import { FileSet, FileSource } from "../core/FileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { groupByRepository, IProjection, Repository, RepositoryRef, Resolution } from "../core/Repository";
+import {
+  groupByRepository,
+  Repository,
+  RepositoryPublishRef,
+  RepositoryReader,
+  RepositoryRef,
+  Resolution,
+} from "../core/Repository";
+import { Requirement } from "../resolver/Types";
 import { chainSteps } from "../core/Provenance";
 import { attachHelp, ConflictError, IConflictSource, RequirementResolutionError, toError } from "../core/Errors";
 import { Name } from "../core/Name";
@@ -37,11 +45,11 @@ import { RepositoryRegistration } from "./Types";
  * closure), so every consumer gets the same versions and does no resolution of
  * its own.
  *
- * Mechanically it is just a {@link Repository} whose `resolveAll` is a **table
- * lookup** rather than a fetch: the joint resolution is the catalog's own
- * collection point (RepositoryContext.resolvePackageSet, forced to build), and
- * every consuming reference rides the normal RepositoryRef path — grouped by
- * this instance at the consumer's collection point and answered from the table.
+ * Mechanically it is just a {@link Repository} whose read face answers from a
+ * **table** rather than a registry: the joint resolution is the catalog's own
+ * collection point (resolveDeps, forced to build), and every consuming
+ * reference rides the normal RepositoryRef path — grouped by this instance at
+ * the consumer's collection point and answered from the table.
  *
  * This is a deliberate, sanctioned exception to "the resolution boundary is the
  * consuming target, never a context-global fixpoint": the catalog IS a shared
@@ -55,10 +63,10 @@ import { RepositoryRegistration } from "./Types";
  * resolution, so eager).
  */
 type CatalogMember =
-  | { readonly kind: "repository"; readonly source: Repository; readonly reference: RepositoryRef; readonly resolution: Resolution }
+  | { readonly kind: "repository"; readonly source: RepositoryReader; readonly reference: RepositoryRef; readonly resolution: Resolution }
   | { readonly kind: "local"; readonly pkg: PackageFileSet };
 
-export class CatalogRepository implements Repository {
+export class CatalogRepository implements Repository, RepositoryReader {
   constructor(
     private readonly catalogName: string,
     /* The operation (BUILD_OPERATION) this instance is consumed under: the
@@ -173,21 +181,43 @@ export class CatalogRepository implements Repository {
   }
 
   /**
+   * The requirement a member was **declared** with in the catalog's `deps` — NOT
+   * the version the joint resolution pinned it to. A locally-built member is
+   * versionless (its version is assigned at publish), contributing `*`; an external
+   * member delegates to its own source repository (which reads the declaration off
+   * `@npm:pkg:1.2.3`), so the catalog parses no version syntax itself.
+   */
+  public declaredRequirement(ref: RepositoryRef): Computable<Requirement | undefined> {
+    const name = ref.name.toString();
+    return this.pinned.then(table => {
+      const member = table.get(name);
+      if (!member) {
+        return Computable.resolve(undefined);
+      }
+      return member.kind === "local"
+        ? Computable.resolve<Requirement | undefined>({ pkg: name, constraint: member.pkg.version ?? "*" })
+        : member.reference.source.declaredRequirement(member.reference);
+    });
+  }
+
+  /**
    * The alias is the whole literal up to a projection `:` — there is no
    * `name:version` to peel (versions live in the catalog, not the reference), so
    * a `/` inside a scoped alias (`@types/node`) is part of the key, not a
    * boundary. A trailing `:tail` projects into the pinned package.
    */
-  public splitReference(name: Name): { requirement: Name; projection?: IProjection } {
+  public getRepositoryRef(name: Name): RepositoryRef {
     const lit = name.getLiteralPrefix();
     const colon = lit.indexOf(":");
     if (colon === -1) {
-      return { requirement: name };
+      return new RepositoryRef(this, name);
     }
-    return {
-      requirement: Name.fromLiteral(lit.substring(0, colon)),
-      projection: { pattern: name.substring(colon + 1), prefix: "" },
-    };
+    return new RepositoryRef(this, Name.fromLiteral(lit.substring(0, colon))).find(name.substring(colon + 1));
+  }
+
+  /** A catalog pins versions for reading; it is not a place content goes. */
+  public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
+    throw new Error(`a catalog is not a publish destination (cannot sync to '${name.toString()}')`);
   }
 }
 
@@ -204,7 +234,7 @@ function conflictSide(member: CatalogMember): IConflictSource {
  * repository the entries came from (members materialize on demand from these),
  * plus any already-built local entries. */
 interface ResolvedPackageSet {
-  readonly resolutions: ReadonlyArray<{ source: Repository; resolution: Resolution }>;
+  readonly resolutions: ReadonlyArray<{ source: RepositoryReader; resolution: Resolution }>;
   readonly local: ReadonlyArray<FileSource>;
 }
 
@@ -223,7 +253,7 @@ function resolveDeps(context: RepositoryContext): Computable<ResolvedPackageSet>
       [...groupByRepository(references).entries()].map(([source, refs]) =>
         source.resolve(refs).then(resolution => ({ source, resolution }))
       ),
-      (...resolutions: { source: Repository; resolution: Resolution }[]) => ({ resolutions, local })
+      (...resolutions: { source: RepositoryReader; resolution: Resolution }[]) => ({ resolutions, local })
     );
   });
 }

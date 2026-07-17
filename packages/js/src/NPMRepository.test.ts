@@ -17,19 +17,27 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import * as http from "node:http";
+import { AddressInfo } from "node:net";
 import { expect } from "chai";
 import {
   BUILD_OPERATION,
+  BuildCache,
   Computable,
+  ExecutionContext,
   explainResolutionPath,
   FILES_OPERATION,
   FileSet,
+  IFile,
   IRequirementEdge,
   IResolutionOrigin,
+  LogFormatter,
+  LogLevel,
   MemoryFile,
   Name,
   PackageFileSet,
   parseVersion,
+  RepositoryPublishRef,
   RepositoryContext,
   RepositoryRef,
   resolveAndMaterialize,
@@ -39,15 +47,15 @@ import {
   TARGET,
   versionToString,
 } from "@fabr-build/core";
+import { NPMRepository } from "./NPMRepository";
 import {
   matchesTargetPlatform,
-  NPMRepository,
   npmPackageOfPath,
   parseMetadataResponse,
   platformGateAdmits,
   splitNpmReference,
   unsupportedPlatformReason,
-} from "./NPMRepository";
+} from "./NPMProtocol";
 
 function selection(
   pkg: string,
@@ -276,6 +284,16 @@ function packageTarball(): FileSet {
   );
 }
 
+/** A real ExecutionContext backing the fake contexts: `getOrCreatePluginContext`
+ *  (the js plugin's shared-config machinery) is genuine in-memory logic, and a
+ *  `.npmrc` — when a test supplies one — is served through the source FileSource,
+ *  exactly as at runtime. The user `~/.npmrc` (absolute source) is always empty. */
+function fakeExecution(npmrc?: string): ExecutionContext {
+  const source = new FileSet(new Map(npmrc !== undefined ? [[".npmrc", MemoryFile.from(npmrc)]] : []));
+  const log = new LogFormatter(LogLevel.Info, () => undefined);
+  return new ExecutionContext(new BuildCache("."), log, source, new FileSet(new Map()));
+}
+
 /**
  * A minimal RepositoryContext that serves a fixed set of URLs and records every
  * fetch, so a test can assert which documents were (and were not) requested.
@@ -294,6 +312,7 @@ function fakeContext(operation: string, served: Record<string, FileSet>, fetched
       fetched.push(url);
       return url in served ? Computable.resolve(served[url]) : Computable.reject(new Error(`unexpected fetch: ${url}`));
     },
+    execution: fakeExecution(),
   } as unknown as RepositoryContext;
 }
 
@@ -415,6 +434,7 @@ describe("NPMRepository metadata memo", () => {
         }
         return u === url ? Computable.resolve(good) : Computable.reject(new Error(`unexpected fetch: ${u}`));
       },
+      execution: fakeExecution(),
     } as unknown as RepositoryContext;
     const repo = new NPMRepository(REG, context);
 
@@ -423,5 +443,286 @@ describe("NPMRepository metadata memo", () => {
     /* A retry must re-fetch and succeed — the rejection was not cached. */
     const requirements = await toPromise(repo.getRequirements("pkg", parseVersion("1.0.0")));
     expect(requirements).to.be.an("array");
+  });
+});
+
+/** A stub RepositoryContext serving a project `.npmrc` (the credential source)
+ *  through the execution's source FileSource; package()/publish() otherwise don't touch it. */
+function npmrcContext(npmrc?: string): RepositoryContext {
+  return {
+    execution: fakeExecution(npmrc),
+  } as unknown as RepositoryContext;
+}
+
+/** A publish coordinate: an address (`name:version`) vended by its npm destination. */
+function coord(destination: NPMRepository, literal: string): RepositoryPublishRef {
+  return destination.getRepositoryPublishRef(Name.fromLiteral(literal));
+}
+
+function publishFileSet(entries: Record<string, string>): FileSet {
+  const map = new Map<string, IFile>();
+  for (const [name, content] of Object.entries(entries)) {
+    map.set(name, MemoryFile.from(content));
+  }
+  return new FileSet(map);
+}
+
+interface CapturedPut {
+  method?: string;
+  url?: string;
+  auth?: string | string[];
+  body: string;
+}
+
+function captureServer(status: number, response: string): Promise<{ port: number; captured: () => CapturedPut | undefined; close: () => void }> {
+  return new Promise(resolve => {
+    let captured: CapturedPut | undefined;
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", c => chunks.push(c));
+      req.on("end", () => {
+        captured = { method: req.method, url: req.url, auth: req.headers.authorization, body: Buffer.concat(chunks).toString() };
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(response);
+      });
+    });
+    server.listen(0, "127.0.0.1", () =>
+      resolve({ port: (server.address() as AddressInfo).port, captured: () => captured, close: () => server.close() })
+    );
+  });
+}
+
+describe("NPMRepository getRepositoryPublishRef", () => {
+  const repo = new NPMRepository(REG, npmrcContext());
+
+  it("vends a publish ref for a scoped name:version with an exact version", () => {
+    const ref = repo.getRepositoryPublishRef(Name.fromLiteral("@fabr/core:1.2.3"));
+    expect(ref.source).to.equal(repo);
+    expect(ref.toString()).to.equal("@fabr/core:1.2.3");
+  });
+
+  it("rejects a coordinate that names no version", () => {
+    expect(() => repo.getRepositoryPublishRef(Name.fromLiteral("@fabr/core"))).to.throw(/must name a version/);
+  });
+
+  it("rejects a range where a coordinate must pin an exact version", () => {
+    expect(() => repo.getRepositoryPublishRef(Name.fromLiteral("@fabr/core:^1.0.0"))).to.throw(/exact version/);
+  });
+});
+
+describe("NPMRepository publish", () => {
+  it("packages with version+dep rewrite and PUTs the libnpmpublish envelope", async () => {
+    const server = await captureServer(201, "{}");
+    try {
+      /* The credential comes from a project `.npmrc` keyed by the registry
+       * (env substitution + per-registry keys are covered in NPMConfig.test). */
+      const repo = new NPMRepository(
+        `http://127.0.0.1:${server.port}`,
+        npmrcContext(`//127.0.0.1:${server.port}/:_authToken=tok123`)
+      );
+      const src = publishFileSet({
+        "package.json": JSON.stringify({ name: "demo", version: "0.0.0-dev", dependencies: { "@scope/dep": "*", left: "^1" } }),
+        "index.js": "module.exports = 1;\n",
+      });
+
+      /* The release spans destinations: `@scope/dep` is a member of the sync but
+       * not of this batch (published to another npm registry) — its dep is still
+       * rewritten. */
+      const other = new NPMRepository(REG, npmrcContext());
+      const demo = coord(repo, "demo:1.2.3");
+      const release = [demo, coord(other, "@scope/dep:2.0.0")];
+      const [carrier] = await repo.package([{ destination: demo, content: src }], release);
+
+      /* The carrier IS the wire artifact, with the manifest rewritten (versionless
+       * content → coordinate version; a release member dep → its assigned version;
+       * a non-member dep left alone), providing its name and recording the member
+       * dep for upload ordering. */
+      expect(await carrier.get("demo-1.2.3.tgz")).to.not.equal(undefined);
+      const manifest = JSON.parse(await (await carrier.get("package.json"))!.readString());
+      expect(manifest.version).to.equal("1.2.3");
+      expect(manifest.dependencies["@scope/dep"]).to.equal("^2.0.0");
+      expect(manifest.dependencies.left).to.equal("^1");
+      expect(carrier.destination).to.equal(demo);
+      expect(carrier.provides).to.equal("demo");
+      expect([...carrier.dependsOn]).to.deep.equal(["@scope/dep"]);
+
+      expect(await repo.publish(carrier)).to.equal("published");
+
+      const put = server.captured()!;
+      expect(put.method).to.equal("PUT");
+      expect(put.url).to.equal("/demo");
+      expect(put.auth).to.equal("Bearer tok123");
+      const envelope = JSON.parse(put.body);
+      expect(envelope._id).to.equal("demo");
+      expect(envelope["dist-tags"]).to.deep.equal({ latest: "1.2.3" });
+      const version = envelope.versions["1.2.3"];
+      expect(version.dist.integrity).to.match(/^sha512-/);
+      expect(version.dist.shasum).to.match(/^[0-9a-f]{40}$/);
+      expect(version.dist.tarball).to.equal(`http://127.0.0.1:${server.port}/demo/-/demo-1.2.3.tgz`);
+      expect(envelope._attachments["demo-1.2.3.tgz"].content_type).to.equal("application/octet-stream");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("PUTs a scoped name percent-encoded, attachment keyed by the scoped basename", async () => {
+    const server = await captureServer(201, "{}");
+    try {
+      const repo = new NPMRepository(`http://127.0.0.1:${server.port}`, npmrcContext());
+      const src = publishFileSet({ "package.json": JSON.stringify({ name: "@fabr/core", version: "0" }) });
+      const destination = coord(repo, "@fabr/core:0.1.0");
+      const [carrier] = await repo.package([{ destination, content: src }], [destination]);
+      await repo.publish(carrier);
+      const put = server.captured()!;
+      expect(put.url).to.equal("/@fabr%2fcore");
+      expect(JSON.parse(put.body)._attachments["@fabr/core-0.1.0.tgz"]).to.not.equal(undefined);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("treats a 409 (version already present) as the already-synced outcome, not an error", async () => {
+    const server = await captureServer(409, '{"error":"cannot modify pre-existing version"}');
+    try {
+      const repo = new NPMRepository(`http://127.0.0.1:${server.port}`, npmrcContext());
+      const src = publishFileSet({ "package.json": JSON.stringify({ name: "demo", version: "0" }) });
+      const destination = coord(repo, "demo:1.0.0");
+      const [carrier] = await repo.package([{ destination, content: src }], [destination]);
+      expect(await repo.publish(carrier)).to.equal("already-synced");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("rejects a member whose dependency has no version — built here but not in the sync", async () => {
+    const repo = new NPMRepository(REG, npmrcContext());
+    const src = publishFileSet({
+      "package.json": JSON.stringify({ name: "demo", version: "0", dependencies: { orphan: "*" } }),
+    });
+    const destination = coord(repo, "demo:1.0.0");
+    /* `orphan` is a versionless built dep and the release doesn't publish it:
+     * the published manifest would carry an unconstrained requirement. */
+    const err = await rejection(() => toPromise(repo.package([{ destination, content: src }], [destination])));
+    expect(err.message).to.match(/no version to record for 'orphan'/);
+  });
+
+  it("prefers this destination's own assignment when the release assigns a dep two versions", async () => {
+    const repo = new NPMRepository(REG, npmrcContext());
+    const other = new NPMRepository(REG, npmrcContext());
+    const app = coord(repo, "app:1.0.0");
+    const base1 = coord(repo, "base:1.0.0");
+    const base2 = coord(other, "base:2.0.0"); /* the other registry's line */
+    const [carrier] = await repo.package(
+      [
+        {
+          destination: app,
+          content: publishFileSet({ "package.json": JSON.stringify({ name: "app", dependencies: { base: "*" } }) }),
+        },
+        { destination: base1, content: publishFileSet({ "package.json": JSON.stringify({ name: "base" }) }) },
+      ],
+      [app, base1, base2]
+    );
+    /* app publishes alongside base@1.0.0 here — its consumers resolve THIS
+     * registry's line, so that is the version its manifest declares. */
+    const manifest = JSON.parse(await (await carrier.get("package.json"))!.readString());
+    expect(manifest.dependencies.base).to.equal("^1.0.0");
+  });
+
+  it("rejects a dep the release assigns two versions when neither is at this destination", async () => {
+    const repo = new NPMRepository(REG, npmrcContext());
+    const other = new NPMRepository(REG, npmrcContext());
+    const app = coord(repo, "app:1.0.0");
+    const content = publishFileSet({ "package.json": JSON.stringify({ name: "app", dependencies: { base: "*" } }) });
+    /* base goes to two OTHER registries at different versions: this destination
+     * has no line of its own to prefer, and there is no single release-wide
+     * version — which one app's consumers would resolve is unknowable. */
+    const err = await rejection(() =>
+      toPromise(
+        repo.package([{ destination: app, content }], [app, coord(other, "base:1.0.0"), coord(other, "base:2.0.0")])
+      )
+    );
+    expect(err.message).to.match(/no version to record for 'base'/);
+  });
+
+  it("rewrites by the release-wide assignment when twins share one version", async () => {
+    const repo = new NPMRepository(REG, npmrcContext());
+    const other = new NPMRepository(REG, npmrcContext());
+    const app = coord(repo, "app:1.0.0");
+    const content = publishFileSet({ "package.json": JSON.stringify({ name: "app", dependencies: { base: "*" } }) });
+    /* base is published to two registries at the SAME version (maintained in
+     * sync): one distinct version, so the rewrite is well-defined. */
+    const [carrier] = await repo.package(
+      [{ destination: app, content }],
+      [app, coord(other, "base:1.5.0"), coord(other, "base:1.5.0")]
+    );
+    const manifest = JSON.parse(await (await carrier.get("package.json"))!.readString());
+    expect(manifest.dependencies.base).to.equal("^1.5.0");
+  });
+});
+
+/** Like fakeContext, but records the auth headers passed with each fetch and
+ *  serves a project `.npmrc` (the credential source), so a test can assert which
+ *  requests carried the registry credential. */
+function authCapturingContext(
+  operation: string,
+  served: Record<string, FileSet>,
+  captured: Record<string, Record<string, string> | undefined>,
+  npmrc?: string
+): RepositoryContext {
+  const globals: Record<string, string> = { [BUILD_OPERATION]: operation, [TARGET]: "arm64-apple-macosx15.0" };
+  return {
+    getGlobalString: (name: string) =>
+      name in globals ? Computable.resolve(globals[name]) : Computable.reject(new Error(`unexpected property: ${name}`)),
+    fetch: (url: string, _tag: string, _process: unknown, _resource: string | undefined, headers?: Record<string, string>) => {
+      captured[url] = headers;
+      return url in served ? Computable.resolve(served[url]) : Computable.reject(new Error(`unexpected fetch: ${url}`));
+    },
+    execution: fakeExecution(npmrc),
+  } as unknown as RepositoryContext;
+}
+
+describe("NPMRepository read authentication", () => {
+  it("sends the registry credential on same-host reads, but never to an off-host tarball", async () => {
+    const captured: Record<string, Record<string, string> | undefined> = {};
+    const metadataUrl = `${REG}/left-pad/1.2.0`;
+    const cdnTarball = "https://cdn.example.net/left-pad-1.2.0.tgz";
+    const meta = {
+      name: "left-pad",
+      version: "1.2.0",
+      dependencies: {},
+      dist: { tarball: cdnTarball, integrity: "", shasum: "", signatures: [] },
+    };
+    const served = {
+      [metadataUrl]: new FileSet(new Map([[METADATA_FILE, MemoryFile.from(JSON.stringify(meta))]])),
+      [cdnTarball]: packageTarball(),
+    };
+    const repo = new NPMRepository(
+      REG,
+      authCapturingContext(FILES_OPERATION, served, captured, "//registry.example.org/:_authToken=secret-token")
+    );
+    const ref = new RepositoryRef(repo, Name.fromLiteral("left-pad:1.2.0"));
+
+    await toPromise(resolveAndMaterialize(repo, [ref]));
+
+    /* Metadata is on the registry host → authenticated; the tarball is on a
+     * different host (a CDN whose url came from the metadata) → no credential
+     * (empty header set, never the registry token). */
+    expect(captured[metadataUrl]).to.deep.equal({ Authorization: "Bearer secret-token" });
+    expect(captured[cdnTarball]).to.deep.equal({});
+  });
+
+  it("sends no auth header when no credential is configured (public access)", async () => {
+    const captured: Record<string, Record<string, string> | undefined> = {};
+    const metadataUrl = `${REG}/left-pad/1.2.0`;
+    const served = {
+      [metadataUrl]: metadataFor("left-pad", "1.2.0", {}),
+      [`${REG}/tarball/1.2.0.tgz`]: packageTarball(),
+    };
+    const repo = new NPMRepository(REG, authCapturingContext(FILES_OPERATION, served, captured));
+    const ref = new RepositoryRef(repo, Name.fromLiteral("left-pad:1.2.0"));
+
+    await toPromise(resolveAndMaterialize(repo, [ref]));
+
+    expect(captured[metadataUrl]).to.deep.equal({});
   });
 });

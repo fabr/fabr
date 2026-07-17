@@ -62,20 +62,22 @@ export interface IUseSite {
 }
 
 /**
- * A literal (wildcard-free) name written in a FILES property that named no
- * target and matched no file: there is no reading under which the user meant
- * "nothing", so it is an error rather than a silently-empty resolution. A
- * glob matching nothing stays lenient (an empty match can be legitimate).
- * Carries the written value's own source span so the report underlines the
- * name, not just the enclosing target.
+ * A written name that failed to resolve, positioned at the name itself (its own
+ * source span) so the report underlines it, not just the enclosing target. The
+ * default case is a literal (wildcard-free) name in a FILES property that named
+ * no target and matched no file — there is no reading under which the user meant
+ * "nothing", so it is an error rather than a silently-empty resolution (a glob
+ * matching nothing stays lenient). A caller with a *specific* reason — a `sync`
+ * coordinate that names no repository, names no publish target, or carries a bad
+ * version — passes it as `reason` for the message.
  */
 export class NameResolutionError extends Error {
   public readonly position: ISourceSpan;
   /** Where the name was written (property + owning target), when known */
   public readonly useSite?: IUseSite;
 
-  constructor(name: Name, position: ISourceSpan, useSite?: IUseSite) {
-    super(`Unable to resolve '${name.toString()}'`);
+  constructor(name: Name, position: ISourceSpan, useSite?: IUseSite, reason?: string) {
+    super(reason ?? `Unable to resolve '${name.toString()}'`);
     this.position = position;
     this.useSite = useSite;
   }

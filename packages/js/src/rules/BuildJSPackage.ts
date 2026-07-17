@@ -32,9 +32,9 @@ import {
   MemoryFile,
   PackageFileSet,
   RepositoryRef,
+  Requirement,
   RuleRegistration,
   RuleResult,
-  SourceRef,
   TargetContext,
 } from "@fabr-build/core";
 import { binByConvention, compileJsSources, JSTarget, parseJSTarget, stripPackageJson } from "../JSPackage";
@@ -64,7 +64,13 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
        * compiles. */
       const gathered = context.collect({ deps: depSources });
 
-      return Computable.forAll([gathered, seedJson], ({ deps }, seed) => {
+      /* Declared (not resolved) requirements for the generated manifest: each dep
+       * source reports the version it was *declared* with — an inline `@npm:pkg:1.2.3`
+       * off its own ref, a catalog dep from the catalog's pin — not the version the
+       * joint resolution selected. */
+      const declaredDeps = context.collectDeclaredRequirements(depSources);
+
+      return Computable.forAll([gathered, seedJson, declaredDeps], ({ deps }, seed, declared) => {
         /* Compile against the deps laid out scoped: the sources see only these
          * direct deps, while the transitive closure is reachable only by the
          * deps themselves (assembleScopedNodeModules). */
@@ -85,7 +91,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
          * runtime-only identity each time. */
         const deliver = (built: FileSet): FileSource => {
           const contents = FileSet.unionAll(built, stripPackageJson(copied));
-          const packageJson = createPackageJson(contents, seed, context.name, version?.toString(), depSources, jsTarget);
+          const packageJson = createPackageJson(contents, seed, context.name, version?.toString(), declared, jsTarget);
           const assembled = FileSet.unionAll(contents, new FileSet(new Map([["package.json", packageJson]])));
           return new PackageFileSet(assembled, context.name, version?.toString(), carried);
         };
@@ -110,7 +116,7 @@ function createPackageJson(
   seed: Record<string, unknown> | undefined,
   name: string,
   version: string | undefined,
-  depSources: SourceRef[],
+  declared: (Requirement | undefined)[],
   jsTarget: JSTarget
 ): MemoryFile {
   const packageJson: Record<string, unknown> = { ...(seed ?? {}) };
@@ -132,7 +138,7 @@ function createPackageJson(
     packageJson.bin = bin;
   }
 
-  const { dependencies, devDependencies } = packageDependencies(depSources);
+  const { dependencies, devDependencies } = packageDependencies(declared);
   if (Object.keys(dependencies).length > 0) {
     packageJson.dependencies = dependencies;
   }
@@ -144,27 +150,21 @@ function createPackageJson(
 }
 
 /**
- * The direct package requirements for the generated package.json: npm refs as
- * written, built-package deps by their identity, with @types/* split into
- * devDependencies per convention.
+ * The direct dependencies for the generated package.json — the declared
+ * requirements split into `dependencies` and `devDependencies` (@types/* to the
+ * latter, per convention). The version each states is the declaration, not what
+ * fabr's joint resolution selected: a published manifest says what the package
+ * *requires*, and the consumer resolves it.
  */
-function packageDependencies(depSources: SourceRef[]): {
+function packageDependencies(declared: (Requirement | undefined)[]): {
   dependencies: Record<string, string>;
   devDependencies: Record<string, string>;
 } {
   const dependencies: Record<string, string> = {};
   const devDependencies: Record<string, string> = {};
-  for (const source of depSources) {
-    if (source instanceof RepositoryRef) {
-      const requirement = source.name.toString();
-      const idx = requirement.lastIndexOf(":");
-      if (idx > 0) {
-        const pkg = requirement.substring(0, idx);
-        const constraint = requirement.substring(idx + 1);
-        (pkg.startsWith("@types/") ? devDependencies : dependencies)[pkg] = constraint;
-      }
-    } else if (source instanceof PackageFileSet) {
-      dependencies[source.packageName] = source.version ?? "*";
+  for (const req of declared) {
+    if (req) {
+      (req.pkg.startsWith("@types/") ? devDependencies : dependencies)[req.pkg] = req.constraint;
     }
   }
   return { dependencies, devDependencies };

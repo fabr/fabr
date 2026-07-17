@@ -24,10 +24,10 @@ export enum Mode {
   Watch,
 }
 
-/** The commands the command line can request. All except `ls`/`cat` are
- * BUILD_OPERATION values; `ls` and `cat` are driver-side verbs that build under
- * BUILD_OPERATION=build and then list / dump the results. */
-const COMMANDS = new Set(["build", "test", "run", "ls", "cat"]);
+/** The commands the command line can request. All except `ls`/`cat`/`sync` are
+ * BUILD_OPERATION values; `ls`/`cat`/`sync` are driver-side verbs that build under
+ * BUILD_OPERATION=build and then list / dump / publish the results. */
+const COMMANDS = new Set(["build", "test", "run", "ls", "cat", "sync"]);
 
 export interface Options {
   command: string;

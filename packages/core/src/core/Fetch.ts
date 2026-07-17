@@ -9,7 +9,54 @@ export function fetchUrl(urlstring: string): Computable<Buffer> {
   return openUrlStream(urlstring).then(readStream);
 }
 
-export function openUrlStream(urlstring: string): Computable<Readable> {
+export interface HttpRequest {
+  method: string;
+  headers?: Record<string, string>;
+  /** Request body, sent verbatim; Content-Length is derived when not supplied. */
+  body?: Buffer | string;
+}
+
+export interface HttpResponse {
+  statusCode: number;
+  headers: http.IncomingHttpHeaders;
+  body: Buffer;
+}
+
+/**
+ * Perform a single buffered HTTP(S) request/response. Unlike {@link openUrlStream}
+ * (a streaming GET that *rejects* on any non-200), this returns the response
+ * whatever its status — the caller inspects `statusCode` and reads the body,
+ * which for a write (a registry publish) carries the server's JSON error detail
+ * that a bare status code would lose. The whole response is buffered, so this is
+ * for control-plane calls (publish, dist-tag), not bulk downloads.
+ */
+export function sendRequest(urlstring: string, request: HttpRequest): Computable<HttpResponse> {
+  return Computable.from<HttpResponse>((resolve, reject) => {
+    const url = new URL(urlstring);
+    const transport = url.protocol === "https:" ? https : url.protocol === "http:" ? http : undefined;
+    if (!transport) {
+      reject(new Error("Unsupported protocol: " + url.protocol));
+      return;
+    }
+    const headers = { ...request.headers };
+    if (request.body !== undefined && headers["content-length"] === undefined) {
+      headers["content-length"] = String(Buffer.byteLength(request.body));
+    }
+    const req = transport.request(url, { method: request.method, headers }, res => {
+      const chunks: Buffer[] = [];
+      res.on("data", chunk => chunks.push(chunk));
+      res.on("end", () => resolve({ statusCode: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }));
+      res.on("error", err => reject(err));
+    });
+    req.on("error", err => reject(err));
+    if (request.body !== undefined) {
+      req.write(request.body);
+    }
+    req.end();
+  });
+}
+
+export function openUrlStream(urlstring: string, headers?: Record<string, string>): Computable<Readable> {
   return Computable.from<Readable>((resolve, reject) => {
     function handleResponse(res: http.IncomingMessage): void {
       if (res.statusCode !== 200) {
@@ -23,10 +70,10 @@ export function openUrlStream(urlstring: string): Computable<Readable> {
     let req;
     switch (url.protocol) {
       case "https:":
-        req = https.request(url, { method: "GET" }, handleResponse);
+        req = https.request(url, { method: "GET", headers }, handleResponse);
         break;
       case "http:":
-        req = http.request(url, { method: "GET" }, handleResponse);
+        req = http.request(url, { method: "GET", headers }, handleResponse);
         break;
       default:
         reject(new Error("Unsupported protocol: " + url.protocol));

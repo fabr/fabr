@@ -77,12 +77,18 @@ export class BuildAction {
 }
 
 /**
- * What a rule's evaluate yields: either final content directly (a
- * FileSource — flags, an in-memory result, or a sub-target's output reshaped
- * by resolution), or a BuildAction the framework keys/caches/executes to
- * produce the target's content.
+ * What a rule's evaluate yields: final content directly (a FileSource — flags,
+ * an in-memory result, or a sub-target's output reshaped by resolution), a
+ * BuildAction the framework keys/caches/executes to produce the target's
+ * content, or a *list* of FileSources — a target whose result is a set of
+ * things (a `sync`'s per-member publish carriers). Name resolution is
+ * list-shaped everywhere (a target's output flows as `SourceRef[]`), so a
+ * scalar result is just the one-element case; a list yields its elements as
+ * the target's sources directly, each provenance-stamped. Only declared
+ * targets may be plural: an anonymous sub-target's output composes 1:1 into
+ * its owner's evaluation.
  */
-export type RuleResult = FileSource | BuildAction;
+export type RuleResult = FileSource | FileSource[] | BuildAction;
 
 /**
  * A rule: the knowledge of how to build targets of a type. A single evaluate

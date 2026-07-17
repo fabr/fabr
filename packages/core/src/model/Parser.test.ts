@@ -216,6 +216,21 @@ describe("Parser Tests", () => {
     );
   });
 
+  it("parses coordinate-keyed members (sync)", () => {
+    const contents = parseValid("sync fabr_release {\n @npm:@fabr/core:0.1 = core;\n @npm:@fabr/cli:0.2 = cli;\n}");
+    const target = contents.targets.find(t => t.name === "fabr_release");
+    expect(target?.type).to.equal("sync");
+    expect(target?.properties.length).to.equal(2);
+    const [core, cli] = target!.properties;
+    /* The coordinate is carried as a parsed reference on keyRef (and its canonical
+     * string is the property name); the value is the content target. */
+    expect(core.keyRef?.toString()).to.equal("@npm:@fabr/core:0.1");
+    expect(core.name).to.equal("@npm:@fabr/core:0.1");
+    expect(core.values.map(v => v.value.toString())).to.deep.equal(["core"]);
+    expect(cli.keyRef?.toString()).to.equal("@npm:@fabr/cli:0.2");
+    expect(cli.values.map(v => v.value.toString())).to.deep.equal(["cli"]);
+  });
+
   it("recovers after a bad statement and parses the subsequent ones", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
@@ -228,7 +243,7 @@ describe("Parser Tests", () => {
 
   it("Missing Close Brace", () => {
     expect(parseInvalid("js_package fabr {\nsrcs=src:**/*.ts; deps= es2019\n node \nunicode-properties;")).to.deep.equal([
-      diagnosticBlock(4, 20, "Read EOF but expected Identifier or '}'", "unicode-properties;"),
+      diagnosticBlock(4, 20, "Read EOF but expected Identifier, reference, or '}'", "unicode-properties;"),
     ]);
   });
 
@@ -254,6 +269,12 @@ describe("Parser Tests", () => {
           js_package: { deps: "FILES", srcs: "REQUIRED FILES", version: "STRING" },
         },
       })
+    );
+  });
+
+  it("Targetdef with a wildcard member (* = FILES)", () => {
+    expect(summarize(parseValid("targetdef sync {\n  * = FILES;\n}"))).to.deep.equal(
+      summary({ targetdefs: { sync: { "*": "FILES" } } })
     );
   });
 

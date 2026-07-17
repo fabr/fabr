@@ -36,6 +36,27 @@ import { Diagnostic, ISourcePosition, Log, LogLevel } from "../support/Log";
 import { Name, NameBuilder, NameConstraint } from "../core/Name";
 import { EMPTY_FILESET, FileSource } from "../core/FileSet";
 
+/**
+ * The three name tiers form a widening ladder, classified purely by the
+ * characters a bare token contains — narrowest first:
+ *
+ * - `IDENTIFIER` — `@`/`_`/alphanumeric only. The tier for things the grammar
+ *   NAMES atomically: keywords, property names, constraint keys, target *types*.
+ * - `SIMPLE_NAME` — IDENTIFIER plus interior `/`, `-`, `.` (`@fabr-build/js`,
+ *   `my-target`, `lib/utils`, `lodash.merge`). The tier for a *declared name* or
+ *   a simple path — anything the grammar accepts as its own name — and the base
+ *   of a reference that carries no `:`.
+ * - `NAME` — anything wider: contains `:` (a reference/projection separator, so
+ *   `@npm:pkg:1.2.3`) or a glob char (`* ? [`). This is the "reference-ish" tier;
+ *   a declared name is deliberately NOT allowed to reach it (`foo:bar` as a target
+ *   name would collide with projecting `bar` out of target `foo`).
+ *
+ * The tiers classify only the BARE token. A reference's `<constraint>` /
+ * `-> rename` facets are their own tokens (`LANGLE`/`ARROW`) that
+ * {@link Parser.parseReference} layers onto a base of any of these three tiers —
+ * so "a full reference = base + facets" is a parse-level structure, not a
+ * property of the base token's tier.
+ */
 enum TokenType {
   EOF = 0,
   IDENTIFIER,
@@ -123,11 +144,11 @@ function isFirstIdentChar(ch: number): boolean {
   return isAlphabetic(ch) || ch === CHAR_UNDERSCORE || ch === CHAR_AT;
 }
 
-/* An IDENTIFIER — keywords, property names, constraint keys, target *types* —
- * is `@`/`_`/alphanumeric only. A SIMPLE_NAME (a target or plugin name such as
- * `@fabr-build/js`, `my-target`, `lodash.merge`) additionally allows `/`, `-`, `.`.
- * Both start like an identifier; the extras are interior-only, so a leading
- * `.`/`-`/`/` (a relative include `./x`, a version `1.2.3`) stays a NAME. */
+/* The interior char classes behind the {@link TokenType} name tiers. IDENTIFIER
+ * and SIMPLE_NAME both start like an identifier; SIMPLE_NAME's extras (`/ - .`)
+ * are interior-only, so a leading `.`/`-`/`/` (a relative include `./x`, a
+ * version `1.2.3`) stays a NAME. `:` is NOT a SIMPLE_NAME char — it bumps a token
+ * to the NAME tier (see the {@link TokenType} doc). */
 function isIdentChar(ch: number): boolean {
   return isFirstIdentChar(ch) || isDigit(ch);
 }
@@ -750,7 +771,7 @@ export class BuildParser {
    * @param name
    * @param nameOffset
    */
-  private parsePropertyDecl(name: string, nameOffset: number): IPropertyDecl {
+  private parsePropertyDecl(name: string, nameOffset: number, keyRef?: Name): IPropertyDecl {
     const values: IValue[] = [];
     this.consumeToken(TokenType.EQUALS);
     while (this.token.type !== TokenType.SEMI && this.token.type !== TokenType.RBRACE) {
@@ -762,6 +783,7 @@ export class BuildParser {
       source: this.source,
       name,
       offset: nameOffset,
+      keyRef,
       values,
     };
   }
@@ -769,12 +791,26 @@ export class BuildParser {
   private parsePropertyList(): IPropertyDecl[] {
     const list: IPropertyDecl[] = [];
     while (this.token.type !== TokenType.RBRACE) {
-      const name = this.token;
-      if (name.type === TokenType.IDENTIFIER) {
+      const token = this.token;
+      if (token.type === TokenType.IDENTIFIER) {
         this.nextToken();
-        list.push(this.parsePropertyDecl(name.text, name.start));
+        list.push(this.parsePropertyDecl(token.text, token.start));
+      } else if (token.type === TokenType.NAME || token.type === TokenType.SIMPLE_NAME) {
+        /* A reference in key position — a `sync` member coordinate (`@npm:pkg:ver =
+         * srcs`), or a bare-name/path key (`@fabr-build/core`, `lib/x` — a SIMPLE_NAME).
+         * A plain property name is an IDENTIFIER (handled above); any wider key is a
+         * reference. Parse the full reference as the key; its canonical string is the
+         * property name, and the Name is carried on `keyRef` for the rule to read. */
+        const start = token.start;
+        const keyRef = this.parseReference();
+        const keyEnd = this.prevTokenEnd;
+        const decl = this.parsePropertyDecl(keyRef.toString(), start, keyRef);
+        /* Span the coordinate (not the whole `key = value`), so a per-member
+         * error underlines the offending reference. */
+        decl.endOffset = keyEnd;
+        list.push(decl);
       } else {
-        this.unexpectedTokenError("Identifier or '}'");
+        this.unexpectedTokenError("Identifier, reference, or '}'");
       }
     }
     return list;
@@ -845,45 +881,52 @@ export class BuildParser {
   private parsePropertyTypeList(): Record<string, IPropertySchema> {
     const result: Record<string, IPropertySchema> = {};
     while (this.token.type !== TokenType.RBRACE) {
-      const name = this.token;
+      const token = this.token;
       let required = false;
       let type: PropertyType | undefined;
-      if (name.type === TokenType.IDENTIFIER) {
-        this.nextToken();
-        let next = this.consumeToken(TokenType.EQUALS);
-        if (next.type !== TokenType.IDENTIFIER) {
-          this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'REQUIRED'");
-        } else {
-          while (next.type === TokenType.IDENTIFIER) {
-            switch (next.text) {
-              case "REQUIRED":
-                required = true;
-                break;
-              case "STRING":
-                type = PropertyType.String;
-                break;
-              case "FILES":
-                type = PropertyType.FileSet;
-                break;
-              case "REWRITE":
-                type = PropertyType.Rewrite;
-                break;
-              default:
-                this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'REQUIRED'");
-            }
-            next = this.nextToken();
-          }
-        }
-        if (type === undefined) {
-          this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE'");
-        } else {
-          result[name.text] = { required, type };
-        }
-        if (next.type !== TokenType.RBRACE) {
-          this.consumeToken(TokenType.SEMI);
-        }
+      /* The key is a property name (`srcs`), or `*` — the wildcard, typing any
+       * further keys a target of this type may carry (a `sync`'s reference-keyed
+       * members). `*` lexes as a glob NAME, so match it by its canonical form. */
+      let key: string;
+      if (token.type === TokenType.IDENTIFIER) {
+        key = token.text;
+      } else if (token.type === TokenType.NAME && this.tokenToName(token).toString() === "*") {
+        key = "*";
       } else {
-        this.unexpectedTokenError("Identifier or '}'");
+        this.unexpectedTokenError("Identifier, '*', or '}'");
+      }
+      this.nextToken();
+      let next = this.consumeToken(TokenType.EQUALS);
+      if (next.type !== TokenType.IDENTIFIER) {
+        this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'REQUIRED'");
+      } else {
+        while (next.type === TokenType.IDENTIFIER) {
+          switch (next.text) {
+            case "REQUIRED":
+              required = true;
+              break;
+            case "STRING":
+              type = PropertyType.String;
+              break;
+            case "FILES":
+              type = PropertyType.FileSet;
+              break;
+            case "REWRITE":
+              type = PropertyType.Rewrite;
+              break;
+            default:
+              this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'REQUIRED'");
+          }
+          next = this.nextToken();
+        }
+      }
+      if (type === undefined) {
+        this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE'");
+      } else {
+        result[key] = { required, type };
+      }
+      if (next.type !== TokenType.RBRACE) {
+        this.consumeToken(TokenType.SEMI);
       }
     }
     return result;

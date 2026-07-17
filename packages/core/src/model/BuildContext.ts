@@ -3,6 +3,7 @@ import { Computable } from "../core/Computable";
 import { FileSet, FileSource } from "../core/FileSet";
 import {
   isRepository,
+  RepositoryPublishRef,
   materializeLists,
   materializeShallow,
   Repository,
@@ -10,6 +11,8 @@ import {
   SourceRef,
 } from "../core/Repository";
 import { RunnableFileSet } from "../core/RunnableFileSet";
+import { PackageFileSet } from "../core/PackageFileSet";
+import { Requirement } from "../resolver/Types";
 import { Flag } from "../core/Flag";
 import {
   IProvenanceStep,
@@ -293,7 +296,7 @@ export class BuildContext {
     } else {
       const def = this.model.getDecl(name);
       if (def?.kind === DeclKind.Target) {
-        const result = this.resolveTarget(def, stack).then((target): SourceRef[] => [target]);
+        const result = this.resolveTarget(def, stack);
         this.targetCache[name] = result;
         return result;
       } else if (def?.kind === DeclKind.Property) {
@@ -339,9 +342,10 @@ export class BuildContext {
   public getCachedOrFetch(
     url: string,
     tag: string,
-    process: (content: Readable, targetDir: string) => Computable<FileSet>
+    process: (content: Readable, targetDir: string) => Computable<FileSet>,
+    headers?: Record<string, string>
   ): Computable<FileSet> {
-    return this.execution.buildCache.getOrFetch(url, tag, process);
+    return this.execution.buildCache.getOrFetch(url, tag, process, headers);
   }
 
   /**
@@ -518,7 +522,7 @@ export class BuildContext {
             return target.then(sources => ({ sources, decl }));
           } else {
             /* `rest` is the projection after the target; a `sel -> tmpl` rename
-             * (final naming) rides on it as a facet (getPrefixMatch/splitReference
+             * (final naming) rides on it as a facet (getPrefixMatch/getRepositoryRef
              * carry it through the split — see Name.substring), so find applies it
              * with no special handling here (the rename target's names supersede
              * retainedPrefix). Names into a repository become references, deferred
@@ -535,17 +539,14 @@ export class BuildContext {
                   references.push(source.find(rest, retainedPrefix));
                 } else if (isRepository(source)) {
                   /* The rest is a requirement identifier followed by an optional
-                   * projection into the delivered content — the repository claims
-                   * its identity (`esbuild:0.28.1`), the remainder projects into
-                   * the resolved package (`:package.json`), riding the normal
-                   * find/naming path (splitReference carries any rename facet onto
-                   * the projection). The written-name rule applies to the
+                   * projection into the delivered content — the repository vends
+                   * the ref for the whole name: its identity portion claimed
+                   * (`esbuild:0.28.1`), the remainder packed in as a projection
+                   * into the resolved package (`:package.json`), riding the
+                   * normal find/naming path (any rename facet rides the
+                   * projection). The written-name rule applies to the
                    * projection, not to the requirement itself. */
-                  const split = source.splitReference(rest);
-                  const ref = new RepositoryRef(source, split.requirement);
-                  references.push(
-                    split.projection ? ref.find(split.projection.pattern, split.projection.prefix) : ref
-                  );
+                  references.push(source.getRepositoryRef(rest));
                 } else {
                   /* A container projects on its own terms (FileSource.find): a
                    * fileset filters + prefixes (or renames, per the facet); a
@@ -586,7 +587,7 @@ export class BuildContext {
     });
   }
 
-  private substituteNameVars(name: Name, stack?: IDependencyStack): Computable<Name> {
+  public substituteNameVars(name: Name, stack?: IDependencyStack): Computable<Name> {
     const vars = name.getVariables();
     return Computable.forAll(
       vars.map(varName => this.getProperty(varName, stack)),
@@ -600,7 +601,7 @@ export class BuildContext {
     );
   }
 
-  private resolveTarget(target: ITargetDecl, stack?: IDependencyStack): Computable<FileSource | Repository> {
+  private resolveTarget(target: ITargetDecl, stack?: IDependencyStack): Computable<SourceRef[]> {
     const targetDef = this.model.getTargetDef(target.type);
     if (!targetDef) {
       throw new Error("Targetdef '" + target.type + "' not found"); /* Can't happen due to earlier checks */
@@ -610,9 +611,12 @@ export class BuildContext {
      * events, no build-cache entries of its own. */
     const provider = this.model.getRepositoryProvider(target.type);
     if (provider) {
-      return provider(new RepositoryContext(target, this)).catch(err => {
-        throw new DependencyFailedError(target, err);
-      });
+      return provider(new RepositoryContext(target, this)).then(
+        (repository): SourceRef[] => [repository],
+        err => {
+          throw new DependencyFailedError(target, err);
+        }
+      );
     }
     const rule = this.model.getTargetRule(target.type, this.constraints);
     if (!rule) {
@@ -625,14 +629,21 @@ export class BuildContext {
    * The shared evaluation core, uniform for declared and anonymous targets:
    * run the rule's evaluate, execute a yielded BuildAction through the cache,
    * stamp the producing target's provenance, and make the target the error
-   * boundary (any failure wrapped to identify it). No reporting happens here —
-   * the model layer doesn't log; the driver renders the failure tree.
+   * boundary (any failure wrapped to identify it). A target's sources always
+   * flow as a list, so a rule's scalar result is just the one-element case; a
+   * plural result (a `sync`'s member carriers) yields each element as its own
+   * source, each stamped. No reporting happens here — the model layer doesn't
+   * log; the driver renders the failure tree.
    */
-  private evaluateTarget(context: TargetContext, rule: IRuleDefinition): Computable<FileSource | Repository> {
+  private evaluateTarget(context: TargetContext, rule: IRuleDefinition): Computable<SourceRef[]> {
     return rule
       .evaluate(context)
       .then(result => (result instanceof BuildAction ? this.runAction(result, context) : result))
-      .then(result => (result instanceof FileSet ? context.stampProvenance(result) : result))
+      .then(result =>
+        (Array.isArray(result) ? result : [result]).map(source =>
+          source instanceof FileSet ? context.stampProvenance(source) : source
+        )
+      )
       .catch(err => {
         throw context.failure(err);
       });
@@ -640,31 +651,28 @@ export class BuildContext {
 
   /**
    * Build an anonymous target of the given (typically internal) type with the
-   * given concrete inputs, returning its cached output — the mechanism a rule
-   * composes sub-builds with (compile → run, object → link). It is an ordinary
-   * target: same evaluation core, its own context (bag-backed), provenance and
-   * error boundary — differing from a declared target only in having no
-   * namespace entry and in receiving its inputs directly. Rule selection runs
-   * under the owner's constraints (with explicit overrides available).
+   * given concrete inputs — the delegation a rule composes sub-builds with
+   * (compile → run, object → link): "a <type> of these inputs, however the
+   * system of rules builds one". It is an ordinary target: same evaluation
+   * core, same rule selection (under the owner's constraints, with explicit
+   * overrides available), same result contract — the delegate's sources, as
+   * evaluated, unrestricted — its own context (bag-backed), provenance and
+   * error boundary. It differs from a declared target only in having no
+   * namespace entry and in receiving its inputs directly.
    */
   public buildSubTarget(
     owner: TargetContext,
     type: string,
     inputs: BuildActionInputs,
     options?: { label?: string; constraints?: Constraints }
-  ): Computable<FileSet> {
+  ): Computable<SourceRef[]> {
     const buildContext = options?.constraints ? this.getContextWithOverrides(options.constraints) : this;
     const rule = this.model.getTargetRule(type, buildContext.constraints);
     if (!rule) {
       throw new Error(`No rule found for anonymous target type '${type}'`);
     }
     const context = new AnonymousTargetContext(buildContext, inputs, owner.getDeclaredContext(), options?.label ?? type, owner.stack);
-    return buildContext.evaluateTarget(context, rule).then(result => {
-      if (result instanceof FileSet) {
-        return result;
-      }
-      throw new Error(`Anonymous target type '${type}' did not produce file content`);
-    });
+    return buildContext.evaluateTarget(context, rule);
   }
 
   /**
@@ -785,6 +793,19 @@ function asRunnable(sources: readonly unknown[], name: string): RunnableFileSet 
   return runnable;
 }
 
+/** The requirement one dep source declares (see {@link TargetContext.collectDeclaredRequirements}). */
+function declaredRequirementOf(source: SourceRef): Computable<Requirement | undefined> {
+  if (source instanceof RepositoryRef) {
+    return source.source.declaredRequirement(source);
+  }
+  if (source instanceof PackageFileSet) {
+    /* A built-package dep is versionless until publish, contributing `*` (rewritten at sync). */
+    return Computable.resolve({ pkg: source.packageName, constraint: source.version ?? "*" });
+  }
+  /* A plain source dep (a compile input, not a package) carries no identity. */
+  return Computable.resolve(undefined);
+}
+
 export abstract class TargetContext {
   public readonly context: BuildContext;
   public readonly stack?: IDependencyStack;
@@ -829,6 +850,40 @@ export abstract class TargetContext {
    * identifying the declared target (an anonymous sub-target additionally
    * carries its action-verb label, for "Compiling X failed" rendering). */
   public abstract failure(err: Error): DependencyFailedError;
+
+  /** The wildcard (reference-keyed) properties written in this target's body — the
+   * members of a `sync` (`@npm:@fabr/core:${VERSION} = core`): each property's
+   * coordinate `key` (the parsed reference, variables substituted) plus its `decl`
+   * (for the written span, so a rule can attribute a per-member error, and for its
+   * `name`, under which the right-hand side content resolves via `getFileSources`).
+   * Enumeration only — no content is gathered, so a rule can validate every
+   * coordinate before building anything. Ordinary schema properties are not
+   * returned; an anonymous target has none. */
+  public abstract getWildcardProperties(): Computable<{ key: Name; decl: IPropertyDecl }[]>;
+
+  /**
+   * Resolve a *write* coordinate — a `sync` member's `@npm:@fabr/core:0.1`,
+   * which names where content goes rather than content to read (and may not
+   * exist on the registry yet) — to a vended publish ref: the repository alias
+   * splits off (the same prefix match the read path uses) and the repository
+   * vends a ref for the remainder ({@link Repository.getRepositoryPublishRef} — which throws,
+   * without fetching anything, if the address is malformed or the repository is
+   * not a publish destination). The reference is expected already
+   * variable-substituted (`getWildcardProperties` does that for a sync's keys).
+   */
+  public resolvePublishRef(name: Name): Computable<RepositoryPublishRef> {
+    const match = this.context.getPrefixTargetIfExists(name, this.stack);
+    if (!match) {
+      return Computable.reject(new Error(`'${name.toString()}' does not name a repository`));
+    }
+    return match.target.then(sources => {
+      const repository = sources.find((source): source is Repository => isRepository(source));
+      if (!repository) {
+        throw new Error(`'${name.toString()}' does not name a repository`);
+      }
+      return repository.getRepositoryPublishRef(match.rest);
+    });
+  }
 
   public getRequiredProperty(name: string, overrides?: Constraints): Computable<Property> {
     return this.getProperty(name, overrides).then(prop => {
@@ -897,18 +952,42 @@ export abstract class TargetContext {
   }
 
   /**
+   * The declared requirement each of `sources` states — the sibling of
+   * {@link collect}: where collect materializes sources to content, this reads
+   * their declared identity, for generating a manifest (a lockfile-free dependency
+   * list records what was *declared*, not what resolution pinned). A repository
+   * reference asks its own repository (npm reads `pkg:1.2.3` off the ref; a catalog
+   * looks the member up and delegates to its source); a built-package dep is
+   * versionless until publish (`*`); anything else declares nothing. The result is
+   * parallel to `sources`, undefined where a source declares nothing to record.
+   */
+  public collectDeclaredRequirements(sources: SourceRef[]): Computable<(Requirement | undefined)[]> {
+    return Computable.forAll(sources.map(declaredRequirementOf), (...requirements) => requirements);
+  }
+
+  /**
    * Build an anonymous target of the given internal type with concrete
    * inputs, returning its cached output — how a rule composes a sub-build
    * (e.g. the compiled tree consumed by both the package and the test run).
    * The sub-target's rule reads those inputs through the same context
-   * accessors (getFileSet, getRequiredString, …) as any target.
+   * accessors (getFileSet, getRequiredString, …) as any target. The delegation
+   * itself is unrestricted (whatever rule selection picks, whatever it
+   * yields — see buildSubTarget); this narrows to the common case, one
+   * FileSet, because the caller wires the result straight into inputs or
+   * reshaping. A delegate yielding anything else is an error *here*, at the
+   * expectation, not in the mechanism.
    */
   public subTarget(
     type: string,
     inputs: BuildActionInputs,
     options?: { label?: string; constraints?: Constraints }
   ): Computable<FileSet> {
-    return this.context.buildSubTarget(this, type, inputs, options);
+    return this.context.buildSubTarget(this, type, inputs, options).then(result => {
+      if (result.length === 1 && result[0] instanceof FileSet) {
+        return result[0];
+      }
+      throw new Error(`Anonymous target type '${type}' did not produce a single file content`);
+    });
   }
 
   /** Emit a progress event on behalf of this target (see ProgressEvent) */
@@ -1032,8 +1111,20 @@ export class DeclaredTargetContext extends TargetContext {
     return this.getContext(overrides).resolveRewrite(prop, this.target, this.stack);
   }
 
-  public getDeclaredContext(): DeclaredTargetContext {
+  public getDeclaredContext(): this {
     return this;
+  }
+
+  public getWildcardProperties(): Computable<{ key: Name; decl: IPropertyDecl }[]> {
+    const keyed = this.target.properties.filter(
+      (prop): prop is IPropertyDecl & { keyRef: Name } => prop.keyRef !== undefined
+    );
+    /* Enumeration only: substitute the coordinate keys and hand back their decls;
+     * content is gathered later so coordinates can be validated first. */
+    return Computable.forAll(
+      keyed.map(prop => this.context.substituteNameVars(prop.keyRef, this.stack)),
+      (...keys: Name[]) => keys.map((key, i) => ({ key, decl: keyed[i] }))
+    );
   }
 
   public stampProvenance(result: FileSet): FileSet {
@@ -1090,6 +1181,11 @@ export class AnonymousTargetContext extends TargetContext {
 
   public get name(): string {
     return this.declared.name;
+  }
+
+  /** An anonymous sub-target has no declaration body, so no wildcard properties. */
+  public getWildcardProperties(): Computable<{ key: Name; decl: IPropertyDecl }[]> {
+    return Computable.resolve([]);
   }
 
   public getProperty(name: string): Computable<Property | undefined> {
@@ -1243,12 +1339,30 @@ export class RepositoryContext {
     url: string,
     tag: string,
     process: (content: Readable, targetDir: string) => Computable<FileSet>,
-    resource?: string
+    resource?: string,
+    headers?: Record<string, string>
   ): Computable<FileSet> {
-    return this.context.getCachedOrFetch(url, tag, (content, targetDir) => {
-      this.notifyProgress({ kind: "fetch", url, target: this.target, resource });
-      return process(content, targetDir);
-    });
+    return this.context.getCachedOrFetch(
+      url,
+      tag,
+      (content, targetDir) => {
+        this.notifyProgress({ kind: "fetch", url, target: this.target, resource });
+        return process(content, targetDir);
+      },
+      headers
+    );
+  }
+
+  /**
+   * The run's fixed surroundings — the build cache, log, source/absolute
+   * FileSources (for config a repository consults, e.g. a `.npmrc` read through
+   * the source FS so it participates in watch-mode invalidation), and per-plugin
+   * state (see {@link ExecutionContext.getOrCreatePluginContext}). Shared by every
+   * BuildContext of the run, so it is where a plugin keeps state common to its
+   * per-context instances.
+   */
+  public get execution(): ExecutionContext {
+    return this.context.execution;
   }
 
   public notifyProgress(event: ProgressEvent): void {

@@ -139,9 +139,14 @@ export class BuildCache {
   public getOrFetch(
     url: string,
     tag: string,
-    process: (content: Readable, targetDir: string) => Computable<FileSet>
+    process: (content: Readable, targetDir: string) => Computable<FileSet>,
+    headers?: Record<string, string>
   ): Computable<FileSet> {
-    return this.getOrCreate(`fetch:${tag} ${url}`, targetDir => openUrlStream(url).then(ins => process(ins, targetDir)));
+    /* `headers` (e.g. a registry auth token) authenticate the request only — they
+     * are deliberately NOT part of the cache key (the content is a function of the
+     * URL, not who fetched it), so an authenticated fetch of a private package
+     * caches by URL like any other. */
+    return this.getOrCreate(`fetch:${tag} ${url}`, targetDir => openUrlStream(url, headers).then(ins => process(ins, targetDir)));
   }
 
   /**

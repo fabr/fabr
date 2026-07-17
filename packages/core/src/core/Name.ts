@@ -346,10 +346,10 @@ export class Name {
   /**
    * @return the tail of this name from `start` (a suffix of its literal head),
    * carrying the rename target but NOT the constraint delta. The sole use is
-   * splitting a reference into target + projection (getPrefixMatch,
-   * splitReference): the tail IS the projection, so a `-> tmpl` rename (final
-   * naming) rides onto it, while the constraint delta stays behind on the target
-   * it constrains (and is consumed at target resolution).
+   * splitting a reference into target + projection (getPrefixMatch, a
+   * repository's getRepositoryRef): the tail IS the projection, so a `-> tmpl`
+   * rename (final naming) rides onto it, while the constraint delta stays behind
+   * on the target it constrains (and is consumed at target resolution).
    */
   public substring(start: number): Name {
     const [head, ...parts] = this.parts;

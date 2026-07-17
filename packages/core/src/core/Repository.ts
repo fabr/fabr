@@ -23,6 +23,8 @@ import { PackageFileSet } from "./PackageFileSet";
 import { RunnableFileSet } from "./RunnableFileSet";
 import { chainSteps, IProvenanceStep } from "./Provenance";
 import { Name } from "./Name";
+import type { PublishableFileSet } from "./PublishableFileSet";
+import type { Requirement } from "../resolver/Types";
 
 /**
  * One resolved root of a {@link Resolution}: the input reference and the name
@@ -48,17 +50,55 @@ export interface Resolution {
 }
 
 /**
- * A repository resolves named requirements into file content — as distinct
- * from a FileSource, which is a container that can answer queries about files
- * it already has. Resolution is a domain (all references against it at one
- * collection point resolve together, e.g. joint minimal-version-selection),
- * split into two phases so *fetching* can be deferred past *resolving*:
- * `resolve` fixes versions + the tree (cheap, eager — the pin); `materialize`
- * fetches + assembles a *subset* of that resolution on demand. `resolveAll`
- * (via {@link resolveAndMaterialize}) is just the two composed — what a normal
- * consumer, which needs all of its own references, uses.
+ * A repository owns a namespace and vends references into it — the whole thing,
+ * read and write faces alike (as distinct from a FileSource, which is a
+ * container that can answer queries about files it already has). Capability is
+ * discovered by asking: each vend method returns a ref carrying the matching
+ * provider ({@link RepositoryReader} / {@link RepositoryWriter}) or throws — a
+ * read-only repository (a catalog) refuses to vend publish refs, a write-only
+ * one refuses read refs, and a vended ref IS the proof of capability, so no
+ * consumer ever capability-tests or hits an unsupported operation. How a name
+ * parses is the repository's own syntax, re-read from the ref's name wherever
+ * it is consumed — a ref is carried currency, never a parsed struct.
  */
 export interface Repository {
+  /**
+   * Vend a read reference for the whole written `name`: the repository claims
+   * the identity portion it resolves (npm: `name:version`) and packs anything
+   * left over into the ref as a projection *into* the resolved content (the
+   * written-name rule rides on it) — so the caller holds one deferred ref, with
+   * nothing of the name left to interpret. Throws if this repository cannot be
+   * read from, or the name is no valid identity.
+   */
+  getRepositoryRef(name: Name): RepositoryRef;
+
+  /**
+   * Vend a publish ref: validate `name` as an address in this repository's
+   * namespace to *write* (npm: `name:version` with an exact version; a file
+   * destination: a contained relative path), throwing if it is malformed or
+   * this repository is not a publish destination. Cheap, no content — the sync
+   * rule vends every member's ref before anything builds, so a bad coordinate
+   * fails fast, positioned. Unlike a read ref it admits no projection: you
+   * cannot project into an address you are creating.
+   */
+  getRepositoryPublishRef(name: Name): RepositoryPublishRef;
+}
+
+export function isRepository(source: SourceRef): source is Repository {
+  return typeof (source as Partial<Repository>).getRepositoryRef === "function";
+}
+
+/**
+ * The read face of a repository, carried by every {@link RepositoryRef} it
+ * vends: resolution of named requirements into file content. Resolution is a
+ * domain (all references against it at one collection point resolve together,
+ * e.g. joint minimal-version-selection), split into two phases so *fetching*
+ * can be deferred past *resolving*: `resolve` fixes versions + the tree (cheap,
+ * eager — the pin); `materialize` fetches + assembles a *subset* of that
+ * resolution on demand. {@link resolveAndMaterialize} is just the two composed —
+ * what a normal consumer, which needs all of its own references, uses.
+ */
+export interface RepositoryReader {
   /**
    * Phase 1 — resolve versions + dependency tree over the batch, WITHOUT
    * fetching. Returns an opaque, repository-specific Resolution the caller holds
@@ -80,13 +120,6 @@ export interface Repository {
   materialize(references: RepositoryRef[], resolution: Resolution): Computable<FileSet[]>;
 
   /**
-   * Claim the identity portion of a reference name that this repository
-   * resolves (e.g. npm's `name:version`); anything left over is a projection
-   * *into* the resolved package.
-   */
-  splitReference(name: Name): { requirement: Name; projection?: IProjection };
-
-  /**
    * Repackage an already-resolved package (its closure carried) as a runnable,
    * **without re-resolving** — a pure, ecosystem-specific transform (for npm:
    * mount the closure as node_modules + a bin surface from package.json). It is
@@ -98,6 +131,58 @@ export interface Repository {
    * one this repository produced (a catalog delegates to its member's source).
    */
   makeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet>;
+
+  /**
+   * The requirement `ref` declares — package name + the version constraint as
+   * WRITTEN — for a generated manifest (which records what a package *requires*,
+   * not what fabr's joint resolution pinned, which a transitive constraint may
+   * have bumped). Undefined if the reference declares no version to record. npm
+   * reads it off the reference's own name (`pkg:1.2.3`); a catalog, whose refs
+   * carry no inline version, looks the member up and delegates to *its* source.
+   */
+  declaredRequirement(ref: RepositoryRef): Computable<Requirement | undefined>;
+}
+
+/**
+ * The write face of a repository, carried by every {@link RepositoryPublishRef}
+ * it vends. Packaging is **batch-shaped**, the write-side dual of `resolve`'s
+ * per-repository joint batches: the sync partitions its members by destination
+ * and each destination packages its whole batch jointly, so ecosystem packaging
+ * policy — co-member dependency rewriting, unresolvable-dependency errors —
+ * lives behind this interface, never in the generic rule. Release-level
+ * orchestration is NOT here: the carriers announce what they reference
+ * (`provides`/`dependsOn`, minted ecosystem-side, carried generically), and
+ * ordering uploads deps-first / skipping the dependants of a failure is the
+ * generic layer's job (the sync rule orders; the driver walks). The two halves
+ * straddle the pure/side-effect line: `package` is a pure, cacheable transform
+ * (building/`cat`-ing its result is the dry-run); `publish` is the one
+ * non-idempotent, credentialed, never-cached network write, to this
+ * repository's single `url`.
+ */
+export interface RepositoryWriter {
+  /**
+   * Package this destination's members into its wire form (npm: a
+   * `package/`-rooted `.tgz` + the final manifest per member), jointly. `release`
+   * is every coordinate the whole sync assigns — across ALL destinations — as
+   * ecosystem-read context: npm rewrites a member's manifest dependency on a
+   * release member to its assigned version, reading the coordinates addressed to
+   * npm destinations (so a maintained-in-sync twin published to another registry
+   * still rewrites, its own destination's assignments taking precedence over the
+   * release-wide one) and ignoring addresses it doesn't understand. How to
+   * rewrite, and that a dependency on a built but unpublished package is
+   * unresolvable (an error), is this ecosystem's policy. Pure/cacheable — the
+   * carriers' files ARE the wire artifact, returned parallel to `members`.
+   */
+  package(members: PublishMember[], release: readonly RepositoryPublishRef[]): Computable<PublishableFileSet[]>;
+
+  /**
+   * Upload one prior {@link package} result to this repository's `url` — the one
+   * side effect: pure upload mechanics (envelope, credential, what counts as
+   * already-published), nothing about the rest of the release. Authentication is
+   * the repository's own business — it knows its registry and its ecosystem's
+   * credential conventions — so no token is threaded in.
+   */
+  publish(artifact: PublishableFileSet): Computable<PublishStatus>;
 }
 
 /**
@@ -106,13 +191,22 @@ export interface Repository {
  * fetches together. The collection point ({@link materializeAll}) uses this; a
  * catalog does NOT — it holds the Resolution and materializes members on demand.
  */
-export function resolveAndMaterialize(repository: Repository, references: RepositoryRef[]): Computable<FileSet[]> {
-  return repository.resolve(references).then(resolution => repository.materialize(references, resolution));
+export function resolveAndMaterialize(reader: RepositoryReader, references: RepositoryRef[]): Computable<FileSet[]> {
+  return reader.resolve(references).then(resolution => reader.materialize(references, resolution));
 }
 
-export function isRepository(source: SourceRef): source is Repository {
-  return typeof (source as Partial<Repository>).resolve === "function";
+/** One member of a destination's publish batch: where the content goes (the
+ *  vended publish ref) and the identityless built content to publish there. */
+export interface PublishMember {
+  readonly destination: RepositoryPublishRef;
+  readonly content: FileSet;
 }
+
+/** A successful {@link RepositoryWriter.publish}'s report: whether the upload
+ *  happened, or the coordinate already held the content (sync is declarative —
+ *  already-there is success, reported distinctly). A failure is an ordinary
+ *  rejection. */
+export type PublishStatus = "published" | "already-synced";
 
 /**
  * One narrowing step of a reference: the pattern to match (against the names
@@ -123,6 +217,29 @@ export function isRepository(source: SourceRef): source is Repository {
 export interface IProjection {
   pattern: Name;
   prefix: string;
+}
+
+/**
+ * A vended write address: where a `sync` member's content goes — validated by
+ * the destination at vend time ({@link Repository.getRepositoryPublishRef}), so holding one
+ * proves the name is a well-formed, writable address. The write dual of
+ * {@link RepositoryRef} (a name in a repository's namespace plus the provider
+ * its operations need), minus projections (you cannot project into an address
+ * you are creating) and provenance; it is never resolved — the destination
+ * re-parses `name` in `package`/`publish`.
+ */
+export class RepositoryPublishRef {
+  constructor(
+    public readonly source: RepositoryWriter,
+    /** The address as written (the remainder after the repository alias),
+     *  uninterpreted — its syntax is the destination's own. */
+    public readonly name: Name
+  ) {}
+
+  /** The display form for messages. */
+  public toString(): string {
+    return this.name.toString();
+  }
 }
 
 /**
@@ -138,11 +255,20 @@ export interface IProjection {
  */
 export class RepositoryRef {
   constructor(
-    public readonly source: Repository,
+    public readonly source: RepositoryReader,
+    /** The reference remainder written after the repository alias,
+     *  uninterpreted — how it parses is the repository's own syntax, re-read
+     *  wherever it is consumed (each phase parses afresh; a ref is carried
+     *  currency, never a parsed struct). */
     public readonly name: Name,
     public readonly projections: ReadonlyArray<IProjection> = [],
     public readonly steps: ReadonlyArray<IProvenanceStep> = []
   ) {}
+
+  /** The name as written — the display form for messages. */
+  public toString(): string {
+    return this.name.toString();
+  }
 
   /**
    * @return a copy carrying an additional provenance step (innermost first).
@@ -320,8 +446,8 @@ function gatherReferences(sources: SourceRef[]): RepositoryRef[] {
   return references;
 }
 
-export function groupByRepository(references: RepositoryRef[]): Map<Repository, RepositoryRef[]> {
-  const groups = new Map<Repository, RepositoryRef[]>();
+export function groupByRepository(references: RepositoryRef[]): Map<RepositoryReader, RepositoryRef[]> {
+  const groups = new Map<RepositoryReader, RepositoryRef[]>();
   for (const reference of references) {
     const group = groups.get(reference.source);
     if (group) {

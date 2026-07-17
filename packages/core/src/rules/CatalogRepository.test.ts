@@ -4,6 +4,7 @@ import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { CatalogRepository, catalogRepositoryRegistration } from "./CatalogRepository";
 import { Repository, RepositoryRef, Resolution } from "../core/Repository";
+import { Requirement } from "../resolver/Types";
 import { ConflictError, RequirementResolutionError } from "../core/Errors";
 import { MemoryFile } from "../core/MemoryFS";
 import { BuildCache } from "../core/BuildCache";
@@ -17,27 +18,32 @@ import { LogFormatter, LogLevel } from "../support/Log";
 import { PluginContribution, RuleRegistration } from "./Types";
 import { expect } from "chai";
 
-/* splitReference is pure — an empty catalog suffices. */
+/* getRepositoryRef vending is pure — an empty catalog suffices. */
 const emptyCatalog = new CatalogRepository("@cat", Computable.resolve("build"), Computable.resolve(new Map()));
 
-describe("CatalogRepository.splitReference", () => {
+describe("CatalogRepository.getRepositoryRef", () => {
   it("claims a plain alias, no projection", () => {
-    const split = emptyCatalog.splitReference(Name.fromLiteral("chai"));
-    expect(split.requirement.toString()).to.equal("chai");
-    expect(split.projection).to.be.undefined;
+    const ref = emptyCatalog.getRepositoryRef(Name.fromLiteral("chai"));
+    expect(ref.name.toString()).to.equal("chai");
+    expect(ref.projections).to.be.empty;
   });
 
   it("keys a scoped package by its full name (the '/' is part of the alias)", () => {
-    const split = emptyCatalog.splitReference(Name.fromLiteral("@types/node"));
-    expect(split.requirement.toString()).to.equal("@types/node");
-    expect(split.projection).to.be.undefined;
+    const ref = emptyCatalog.getRepositoryRef(Name.fromLiteral("@types/node"));
+    expect(ref.name.toString()).to.equal("@types/node");
+    expect(ref.projections).to.be.empty;
   });
 
-  it("splits a trailing ':tail' as a projection into the pinned package", () => {
-    const split = emptyCatalog.splitReference(Name.fromLiteral("typescript:bin/tsc"));
-    expect(split.requirement.toString()).to.equal("typescript");
-    expect(split.projection?.pattern.toString()).to.equal("bin/tsc");
-    expect(split.projection?.prefix).to.equal("");
+  it("packs a trailing ':tail' into the ref as a projection into the pinned package", () => {
+    const ref = emptyCatalog.getRepositoryRef(Name.fromLiteral("typescript:bin/tsc"));
+    expect(ref.name.toString()).to.equal("typescript");
+    expect(ref.projections).to.have.length(1);
+    expect(ref.projections[0].pattern.toString()).to.equal("bin/tsc");
+    expect(ref.projections[0].prefix).to.equal("");
+  });
+
+  it("refuses to vend a write ref (a catalog is read-only)", () => {
+    expect(() => emptyCatalog.getRepositoryPublishRef(Name.fromLiteral("chai:1.0.0"))).to.throw(/not a publish destination/);
   });
 });
 
@@ -65,6 +71,14 @@ describe("CatalogRepository (through the model)", () => {
     public readonly materialized: string[] = [];
     public readonly ran: string[] = [];
 
+    public getRepositoryRef(name: Name): RepositoryRef {
+      return new RepositoryRef(this, name);
+    }
+
+    public getRepositoryPublishRef(name: Name): never {
+      throw new Error(`package_repo is not a publish destination ('${name.toString()}')`);
+    }
+
     /* Version resolution — cheap, up front; records the joint batch. */
     public resolve(references: RepositoryRef[]): Computable<Resolution> {
       this.resolved.push(references.map(reference => reference.name.toString()));
@@ -82,13 +96,17 @@ describe("CatalogRepository (through the model)", () => {
       );
     }
 
-    public splitReference(name: Name): { requirement: Name } {
-      return { requirement: name };
-    }
-
     public makeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet> {
       this.ran.push(pkg.packageName);
       return Computable.resolve(RunnableFileSet.forEntry(pkg, `${pkg.packageName}/data.txt`, [], "node"));
+    }
+
+    /* The member's own source reads its declared version off `name:version`
+     * (a catalog delegates here for a consumer's manifest). */
+    public declaredRequirement(ref: RepositoryRef): Computable<Requirement | undefined> {
+      const name = ref.name.toString();
+      const idx = name.lastIndexOf(":");
+      return Computable.resolve(idx > 0 ? { pkg: name.substring(0, idx), constraint: name.substring(idx + 1) } : undefined);
     }
   }
 
@@ -121,7 +139,7 @@ describe("CatalogRepository (through the model)", () => {
       ],
     },
   ];
-  const execution = new ExecutionContext(new BuildCache("."), new LogFormatter(LogLevel.Info, () => undefined));
+  const execution = new ExecutionContext(new BuildCache("."), new LogFormatter(LogLevel.Info, () => undefined), EMPTY_FILESET, EMPTY_FILESET);
 
   /* STD isn't loaded for a raw-string model; the catalog reads the operation,
    * which the real build always has via STD's default. */

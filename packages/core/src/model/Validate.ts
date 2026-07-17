@@ -57,9 +57,14 @@ const DIAG_INVALID_REWRITE = new Diagnostic<{ detail: string; loc: ISourcePositi
 export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log: Log): boolean {
   const seen = new Set();
   let isValid = true;
+  /* A `* = TYPE` entry in the targetdef admits any further keys — a target of this
+   * type may carry members not named in the schema (a `sync`'s reference-keyed
+   * coordinates), each typed by the wildcard. Without it, an unrecognized key
+   * (including a reference key) is an error. */
+  const wildcard = targetDef.properties["*"];
 
   decl.properties.forEach(prop => {
-    if (!(prop.name in targetDef.properties)) {
+    if (!(prop.name in targetDef.properties) && !wildcard) {
       isValid = false;
       log.log(DIAG_UNEXPECTED_PROPERTY, {
         loc: declPosn(prop),
@@ -80,7 +85,7 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
     }
   });
   Object.entries(targetDef.properties).forEach(([key, value]) => {
-    if (value.required && !seen.has(key)) {
+    if (key !== "*" && value.required && !seen.has(key)) {
       isValid = false;
       log.log(DIAG_MISSING_PROPERTY, {
         loc: declPosn(decl),
@@ -93,9 +98,10 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
 
   /* Rename-value rules: the `sel -> tmpl` primitive on a REWRITE property or a
    * templated FILES value. Checks that need both sides (wildcard kinds/counts)
-   * and the value's type live here, where the schema is known. */
+   * and the value's type live here, where the schema is known — a wildcard member
+   * is typed by the `*` entry. */
   decl.properties.forEach(prop => {
-    const type = targetDef.properties[prop.name]?.type;
+    const type = (targetDef.properties[prop.name] ?? wildcard)?.type;
     if (type === undefined) {
       return; /* already reported as unrecognized */
     }

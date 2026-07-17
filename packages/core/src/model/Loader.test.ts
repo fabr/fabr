@@ -18,12 +18,20 @@
  */
 
 import { expect } from "chai";
-import { FileSet } from "../core/FileSet";
+import { BuildCache } from "../core/BuildCache";
+import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { DeclKind } from "./AST";
 import { BuildModel } from "./BuildModel";
+import { ExecutionContext } from "./ExecutionContext";
 import { loadProject } from "./Loader";
+
+/** A minimal ExecutionContext for the loader: the project tree as the source, an
+ *  empty absolute source (these tests use NO_BASE, so no lib files are read). */
+function exec(project: FileSet, log: LogFormatter): ExecutionContext {
+  return new ExecutionContext(new BuildCache("."), log, project, EMPTY_FILESET);
+}
 
 /* Includes are now: core's STD.fabr (always, no explicit include — exercised by
  * the bootstrap/e2e against the real built lib/, not here), a `plugin` decl's
@@ -41,7 +49,7 @@ function files(entries: Record<string, string>): FileSet {
 async function load(project: FileSet, startFile: string): Promise<BuildModel> {
   const errors: string[] = [];
   const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-  const model = await loadProject(project, startFile, logger, undefined, NO_BASE);
+  const model = await loadProject(exec(project, logger), startFile, undefined, NO_BASE);
   expect(errors).to.deep.equal([]);
   return model;
 }
@@ -88,7 +96,7 @@ describe("Loader", () => {
     const logger = new LogFormatter(LogLevel.Info, () => undefined);
     let error: Error | undefined;
     try {
-      await loadProject(project, "PROJECT.fabr", logger, undefined, NO_BASE);
+      await loadProject(exec(project, logger), "PROJECT.fabr", undefined, NO_BASE);
     } catch (err) {
       error = err as Error;
     }
@@ -100,7 +108,7 @@ describe("Loader", () => {
     const logger = new LogFormatter(LogLevel.Info, () => undefined);
     let error: Error | undefined;
     try {
-      await loadProject(project, "PROJECT.fabr", logger, undefined, NO_BASE);
+      await loadProject(exec(project, logger), "PROJECT.fabr", undefined, NO_BASE);
     } catch (err) {
       error = err as Error;
     }

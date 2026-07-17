@@ -88,6 +88,14 @@ export interface IValue extends IBaseDecl {
 export interface IPropertyDecl extends IBaseDecl {
   kind: DeclKind.Property;
   name: string;
+  /**
+   * The property key parsed as a reference, when it was written as one rather than
+   * a bare identifier (a `sync` member coordinate, `@npm:pkg:ver = srcs`). `name`
+   * is then its canonical string. Absent for ordinary schema properties. Such
+   * properties are enumerated by their rule (not looked up by name) and bypass the
+   * targetdef schema check.
+   */
+  keyRef?: Name;
   values: IValue[];
 }
 

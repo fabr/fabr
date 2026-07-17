@@ -5,17 +5,24 @@ import {
   FILES_OPERATION,
   FileSet,
   HttpStatusError,
-  IProjection,
   IRequirementEdge,
   IResolutionOrigin,
+  IFile,
   MemoryFile,
   MetadataFetchError,
   Name,
   NpmPlatform,
   PACKAGE_RESOLUTION_PROVENANCE,
   PackageFileSet,
+  packToTarball,
   PackageRegistry,
   parseVersion,
+  PublishableFileSet,
+  RepositoryPublishRef,
+  RepositoryReader,
+  RepositoryWriter,
+  PublishMember,
+  PublishStatus,
   readStream,
   Repository,
   RepositoryContext,
@@ -37,47 +44,25 @@ import {
   versionToString,
 } from "@fabr-build/core";
 import { makeNpmRunnable } from "./JSPackage";
-
-interface ISignature {
-  keyid: string;
-  sig: string;
-}
-interface INPMPackageMetadata {
-  dependencies?: Record<string, string>;
-  /**
-   * Deps npm installs when they can be installed but tolerates the absence of.
-   * The dominant use is os/cpu-gated native binaries (esbuild's @esbuild/<plat>,
-   * rollup, swc, …): every platform variant is listed here, each self-gated by
-   * its own package's `os`/`cpu`, and only the host-matching one(s) are kept.
-   */
-  optionalDependencies?: Record<string, string>;
-  /**
-   * Installability gates declared by a package on itself, in Node's
-   * process.platform / process.arch vocabulary (plus glibc/musl for `libc`); each
-   * is an allow-list, with a leading `!` negating an entry. Absent/empty means
-   * "any". Gated against the TARGET platform (see targetPlatform). `libc` splits
-   * rollup/swc/sharp native builds; it is irrelevant to esbuild, whose Go binary
-   * is statically linked.
-   */
-  os?: string[];
-  cpu?: string[];
-  libc?: string[];
-  dist: {
-    fileCount?: number;
-    integrity: string;
-    "npm-signature"?: string;
-    shasum: string;
-    signatures: ISignature[];
-    tarball: string;
-    unpackedSize?: number;
-  };
-  name: string;
-  version: string;
-  license: string;
-  typings?: string;
-  types?: string;
-  /* and potentially lots of other stuff that we don't need */
-}
+import {
+  INPMPackageMetadata,
+  isSemverConstraint,
+  matchesTargetPlatform,
+  memberDependencies,
+  NpmPublishIdentity,
+  npmPackageOfPath,
+  parseMetadataResponse,
+  publishToRegistry,
+  rewriteManifest,
+  splitNameVersion,
+  splitNpmReference,
+  stripArchiveRoot,
+  tarballBasename,
+  unresolvableDependencies,
+  unsupportedPlatformReason,
+} from "./NPMProtocol";
+import { NPMConfig } from "./NPMConfig";
+import { jsPluginContext } from "./JSPluginContext";
 
 const METADATA_FILE = "metadata.json";
 const RESOLUTION_FILE = "resolution.json";
@@ -102,65 +87,6 @@ function requirementKey(req: Requirement): string {
 }
 
 /**
- * npm's os/cpu gate semantics: the list is an allow-list of process.platform /
- * process.arch values, an entry prefixed `!` negating it. An empty/absent list
- * imposes no constraint. A value is rejected if explicitly blocked (`!value`);
- * otherwise it must appear in the allow-list, unless the list is negations-only.
- * A gated package on a host whose fact is unknown cannot be confirmed to match.
- */
-export function platformGateAdmits(gate: string[] | undefined, value: string | undefined): boolean {
-  if (!gate || gate.length === 0) {
-    return true;
-  }
-  if (value === undefined) {
-    return false;
-  }
-  if (gate.some(entry => entry.startsWith("!") && entry.slice(1) === value)) {
-    return false;
-  }
-  const allowed = gate.filter(entry => !entry.startsWith("!"));
-  return allowed.length === 0 || allowed.includes(value);
-}
-
-type PlatformGates = { os?: string[]; cpu?: string[]; libc?: string[] };
-
-/**
- * Whether a package declaring these os/cpu/libc gates in its own metadata may run
- * on the given target platform — the test that keeps only the target-matching
- * native-binary variants out of a package's full set of platform optional
- * dependencies.
- */
-export function matchesTargetPlatform(meta: PlatformGates, target: NpmPlatform): boolean {
-  return (
-    platformGateAdmits(meta.os, target.os) &&
-    platformGateAdmits(meta.cpu, target.cpu) &&
-    platformGateAdmits(meta.libc, target.libc)
-  );
-}
-
-/**
- * A human-readable reason a package declaring these os/cpu/libc gates cannot run
- * on the given target platform, or undefined if it can. Optional dependencies are
- * filtered out silently before selection; this is for the other side of npm's
- * contract — a *non-optional* dependency (or a direct requirement) on a package
- * built for another platform, which npm rejects as EBADPLATFORM rather than
- * mounting an unusable install.
- */
-export function unsupportedPlatformReason(meta: PlatformGates, target: NpmPlatform): string | undefined {
-  const parts: string[] = [];
-  if (!platformGateAdmits(meta.os, target.os)) {
-    parts.push(`os '${target.os ?? "(unknown)"}' is not in [${(meta.os ?? []).join(", ")}]`);
-  }
-  if (!platformGateAdmits(meta.cpu, target.cpu)) {
-    parts.push(`cpu '${target.cpu ?? "(unknown)"}' is not in [${(meta.cpu ?? []).join(", ")}]`);
-  }
-  if (!platformGateAdmits(meta.libc, target.libc)) {
-    parts.push(`libc '${target.libc ?? "(unknown)"}' is not in [${(meta.libc ?? []).join(", ")}]`);
-  }
-  return parts.length === 0 ? undefined : parts.join("; ");
-}
-
-/**
  * npm's private {@link Resolution}: the joint version selection + reachable tree,
  * plus the operation it was resolved under (so materialize delivers the same
  * package-vs-runnable shape without a second context read). `selections`/`rootIndex`
@@ -174,7 +100,17 @@ interface NpmResolution extends Resolution {
   readonly rootIndex: Map<string, number>;
 }
 
-export class NPMRepository implements Repository, PackageRegistry<SemverVersion> {
+/** name → version for the names `assignments` assign exactly one distinct
+ *  version — the names a manifest dependency can be unambiguously rewritten to. */
+function uniqueAssignments(assignments: readonly NpmPublishIdentity[]): Map<string, string> {
+  const byName = new Map<string, Set<string>>();
+  for (const { name, version } of assignments) {
+    byName.set(name, (byName.get(name) ?? new Set()).add(version));
+  }
+  return new Map([...byName].flatMap(([name, versions]) => (versions.size === 1 ? [[name, [...versions][0]] as const] : [])));
+}
+
+export class NPMRepository implements Repository, RepositoryReader, RepositoryWriter, PackageRegistry<SemverVersion> {
   private readonly url: string;
   private readonly context: RepositoryContext;
   /* In-process memo over the persistent metadata cache, keyed by "pkg/version" */
@@ -184,6 +120,164 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
     this.url = url.replace(/\/+$/, "");
     this.context = context;
     this.metadataCache = new Map();
+  }
+
+  /* The combined project + user `.npmrc`, loaded once per run and shared across
+   * every NPMRepository instance (held on the ExecutionContext via the js plugin
+   * context, not per instance); the project part is read through the source FS,
+   * so it re-settles if it changes in watch mode. */
+  private npmConfig(): Computable<NPMConfig> {
+    return jsPluginContext(this.context.execution).npmConfig();
+  }
+
+  /**
+   * The `Authorization` header for a request to `url`, from the combined `.npmrc`
+   * — used for both reads (private packages / a private registry) and the publish
+   * write. Auth is keyed per registry (longest-prefix match), so a request to a
+   * host with no configured credential — a public registry, or a tarball CDN whose
+   * url came from registry metadata — is anonymous, with no risk of leaking a
+   * credential off-registry.
+   */
+  private authHeadersFor(url: string): Computable<Record<string, string>> {
+    return this.npmConfig().then(config => config.getHeadersFor(url));
+  }
+
+  public getRepositoryRef(name: Name): RepositoryRef {
+    const { requirement, projection } = splitNpmReference(name);
+    const ref = new RepositoryRef(this, requirement);
+    return projection ? ref.find(projection.pattern, projection.prefix) : ref;
+  }
+
+  public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
+    this.coordinateIdentity(name); /* validate the address shape up front */
+    return new RepositoryPublishRef(this, name);
+  }
+
+  /** The name + exact version a publish coordinate assigns, re-parsed from the
+   *  written name (an address is carried as its Name; each consumer parses
+   *  afresh, as the read side does with reference names). */
+  private coordinateIdentity(ref: Name): NpmPublishIdentity {
+    const split = splitNameVersion(ref);
+    if (!split) {
+      const literal = ref.toString();
+      throw new Error(`publish coordinate '${literal}' must name a version (e.g. ${literal}:1.0.0)`);
+    }
+    const { identifier: name, version } = split;
+    /* A coordinate pins an exact version (unlike a read requirement's range). */
+    try {
+      parseVersion(version);
+    } catch {
+      throw new Error(`publish coordinate '${name}' must pin an exact version, got '${version}'`);
+    }
+    return { name, version };
+  }
+
+  /**
+   * Package this registry's members into the npm wire form (pure — the dry-run
+   * artifacts), jointly. Each member's built `package.json` is the final
+   * manifest: rewritten with its assigned name/version and, for any dependency
+   * naming a release member, that member's assigned version. The rewrite map
+   * prefers **this destination's own assignments** — a dependant published
+   * alongside one line of a package that the release assigns different versions
+   * at different registries declares *its* registry's line, since that is what
+   * its consumers will resolve — falling back to the release-wide assignment for
+   * names this batch doesn't cover (the maintained-in-sync twin published
+   * elsewhere). At either scope a name only rewrites when assigned a single
+   * distinct version; any install-relevant dependency still versionless after
+   * rewriting (a built package this sync does not publish, or one it publishes
+   * at conflicting versions with none at this destination) is unresolvable for
+   * every consumer, so packaging fails. Each member's files are laid out under
+   * `package/` and gzip-tarred; its carrier holds that `.tgz` plus the rewritten
+   * manifest as a sidecar (sans `dist`, which `publish` injects) and the
+   * co-member dependency names for deps-first upload ordering.
+   */
+  public package(members: PublishMember[], release: readonly RepositoryPublishRef[]): Computable<PublishableFileSet[]> {
+    /* The npm-shaped slice of the release: coordinates addressed to ANY npm
+     * destination (so a cross-registry npm twin participates in the rewrite),
+     * their identities re-parsed from the written name; an address in some other
+     * ecosystem's namespace (a file path, say) has no name/version and is
+     * ignored. */
+    const npmRelease = release
+      .filter(coordinate => coordinate.source instanceof NPMRepository)
+      .map(coordinate => this.coordinateIdentity(coordinate.name));
+    /* Later entries win the merge: own-batch assignments over release-wide. (A
+     * name can't be batch-unique but release-ambiguous *and missing* from the
+     * batch map — own coordinates are a subset of the release's.) */
+    const memberVersions = new Map([
+      ...uniqueAssignments(npmRelease),
+      ...uniqueAssignments(members.map(member => this.coordinateIdentity(member.destination.name))),
+    ]);
+    const memberNames = new Set(npmRelease.map(identity => identity.name));
+    return Computable.forAll(
+      members.map(member => this.packageMember(member, memberVersions, memberNames)),
+      (...carriers: PublishableFileSet[]) => carriers
+    );
+  }
+
+  private packageMember(
+    member: PublishMember,
+    memberVersions: ReadonlyMap<string, string>,
+    memberNames: ReadonlySet<string>
+  ): Computable<PublishableFileSet> {
+    const identity = this.coordinateIdentity(member.destination.name);
+    const { content } = member;
+    return content.get("package.json").then(manifestFile => {
+      if (!manifestFile) {
+        throw new Error(`cannot publish ${identity.name}: the built package has no package.json`);
+      }
+      return manifestFile.getBuffer().then(buffer => {
+        const manifest = rewriteManifest(JSON.parse(buffer.toString("utf8")), identity, memberVersions);
+        const dangling = unresolvableDependencies(manifest);
+        if (dangling.length > 0) {
+          throw new Error(
+            `cannot publish ${identity.name}: no version to record for ${dangling
+              .map(dep => `'${dep}'`)
+              .join(", ")} — a dependency built here must be published by this sync (at a single version) for its ` +
+              `dependants to be resolvable`
+          );
+        }
+        const manifestJson = JSON.stringify(manifest, undefined, 2);
+        const rooted = new Map<string, IFile>();
+        for (const [name, file] of content) {
+          if (name !== "package.json") {
+            rooted.set(`package/${name}`, file);
+          }
+        }
+        rooted.set("package/package.json", MemoryFile.from(manifestJson));
+        return packToTarball(new FileSet(rooted)).then(tgz => {
+          const files = new Map<string, IFile>([
+            [tarballBasename(identity.name, identity.version), new MemoryFile(tgz)],
+            ["package.json", MemoryFile.from(manifestJson)],
+          ]);
+          /* provides = the package name (what a co-member's dependsOn references). */
+          return new PublishableFileSet(files, member.destination, identity.name, memberDependencies(manifest, memberNames));
+        });
+      });
+    });
+  }
+
+  /**
+   * Upload a packaged artifact to this registry (the one side effect): reads the
+   * sidecar manifest, hashes the tarball for `dist.integrity`/`shasum`, builds
+   * the `libnpmpublish` packument envelope, and PUTs it to the escaped package
+   * name; a 409 (version already present) is the already-synced status. Pure
+   * upload mechanics — release orchestration (ordering, skipping) is the generic
+   * layer's. The credential is resolved here — the repository owns its own
+   * authentication — from the environment or the per-registry `.npmrc`.
+   */
+  public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
+    const identity = this.coordinateIdentity(artifact.destination.name);
+    const { name, version } = identity;
+    const tgzFile = artifact.get(tarballBasename(name, version));
+    const manifestFile = artifact.get("package.json");
+    return Computable.forAll([tgzFile, manifestFile, this.npmConfig()], (tgz, manifest, config) => {
+      if (!tgz || !manifest) {
+        throw new Error(`internal error: publish artifact for ${name}@${version} is missing its tarball or manifest`);
+      }
+      return Computable.forAll([tgz.getBuffer(), manifest.readString()], (data, manifestJson) => ({ data, manifestJson, config }));
+    }).then(({ data, manifestJson, config }) =>
+      publishToRegistry(this.url, identity, data, JSON.parse(manifestJson), config.getHeadersFor(this.url))
+    );
   }
 
   /**
@@ -305,11 +399,6 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
   }
 
   /**
-   * Assemble the delivery for one root requirement: its own package, carrying
-   * the reachable members of the joint closure as resolved dependencies, all
-   * stamped with the resolution's provenance.
-   */
-  /**
    * Make an already-resolved npm package launchable, keeping the exact closure
    * it carries (no re-resolution). Shared by this repository's own `run`
    * delivery and by a catalog delegating a jointly-pinned member.
@@ -318,6 +407,11 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
     return makeNpmRunnable(pkg);
   }
 
+  /**
+   * Assemble the delivery for one root requirement: its own package, carrying
+   * the reachable members of the joint closure as resolved dependencies, all
+   * stamped with the resolution's provenance.
+   */
   private assembleClosure(
     req: Requirement,
     index: number,
@@ -348,7 +442,7 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
 
   /**
    * Deliver a single package's own files, resolved standalone — the `files`
-   * operation's delivery (see resolveAll). A top-level root's minimal-version
+   * operation's delivery (see resolve). A top-level root's minimal-version
    * selection is simply its constraint's lower bound (nothing else constrains
    * it), so this is exactly the version the joint path would give the root, but
    * reached without walking — or fetching — the dependency closure. The result
@@ -378,18 +472,21 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
     return this.fetch(req.pkg, version).then(pkg => new PackageFileSet(pkg, pkg.packageName, pkg.version, [], origin));
   }
 
-  public splitReference(name: Name): { requirement: Name; projection?: IProjection } {
-    return splitNpmReference(name);
+  /** The requirement a reference declares, read straight off its own `name:version`
+   *  (a manifest records the declared constraint). Undefined for a versionless ref. */
+  public declaredRequirement(ref: RepositoryRef): Computable<Requirement | undefined> {
+    const split = splitNameVersion(ref.name);
+    return Computable.resolve(split ? { pkg: split.identifier, constraint: split.version } : undefined);
   }
 
   private parseRequirement(name: Name): Requirement {
-    const prefix = name.getLiteralPathPrefix();
-    const idx = prefix.lastIndexOf(":");
-    if (idx === -1) {
-      throw new Error(`Missing version in package reference '${prefix}' (expected '<name>:<version-or-range>')`);
+    const split = splitNameVersion(name);
+    if (!split) {
+      throw new Error(
+        `Missing version in package reference '${name.getLiteralPathPrefix()}' (expected '<name>:<version-or-range>')`
+      );
     }
-    const pkg = prefix.substring(0, idx);
-    const constraint = prefix.substring(idx + 1);
+    const { identifier: pkg, version: constraint } = split;
     if (!isSemverConstraint(constraint)) {
       throw attachHelp(
         new Error(`'${constraint}' is not a valid version constraint for '${pkg}'`),
@@ -562,16 +659,20 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
     const key = pkg + "/" + version;
     let result = this.metadataCache.get(key);
     if (!result) {
-      result = this.context
-        .fetch(
-          `${this.url}/${key}`,
-          "npm:metadata:1",
-          content =>
-            readStream(content).then(data => {
-              const meta = parseMetadataResponse(data, key);
-              return new FileSet(new Map([[METADATA_FILE, MemoryFile.from(JSON.stringify(meta))]]));
-            }),
-          "metadata"
+      const metadataUrl = `${this.url}/${key}`;
+      result = this.authHeadersFor(metadataUrl)
+        .then(headers =>
+          this.context.fetch(
+            metadataUrl,
+            "npm:metadata:1",
+            content =>
+              readStream(content).then(data => {
+                const meta = parseMetadataResponse(data, key);
+                return new FileSet(new Map([[METADATA_FILE, MemoryFile.from(JSON.stringify(meta))]]));
+              }),
+            "metadata",
+            headers
+          )
         )
         .then(files => files.readFile(METADATA_FILE))
         .then(data => JSON.parse(data) as INPMPackageMetadata)
@@ -597,12 +698,15 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
 
   private fetch(pkg: string, version: SemverVersion): Computable<PackageFileSet> {
     return this.getVersionMetadata(pkg, versionToString(version)).then(meta =>
-      this.context
-        .fetch(
-          meta.dist.tarball,
-          "npm:tarball:1",
-          (content, targetDir) => unpackStream(content, targetDir).then(stripArchiveRoot),
-          "package"
+      this.authHeadersFor(meta.dist.tarball)
+        .then(headers =>
+          this.context.fetch(
+            meta.dist.tarball,
+            "npm:tarball:1",
+            (content, targetDir) => unpackStream(content, targetDir).then(stripArchiveRoot),
+            "package",
+            headers
+          )
         )
         .then(files => new PackageFileSet(files, meta.name, meta.version))
     );
@@ -611,58 +715,6 @@ export class NPMRepository implements Repository, PackageRegistry<SemverVersion>
 
 function asError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
-}
-
-/**
- * Interpret a registry response, before it gets anywhere near the cache (error
- * responses must never be cached). It's a three-way split — HTTP-level failures
- * (404, 5xx) are already surfaced upstream, so no error-body taxonomy is needed:
- *  - a single-version metadata document (the documented shape: `name` + `version`
- *    + `dist.tarball`) — the thing we asked for; return it;
- *  - a full packument (`versions`) — we resolved the wrong URL, a bug;
- *  - anything else (an error body, non-JSON, a truncated/HTML page) — unusable.
- */
-export function parseMetadataResponse(data: Buffer, key: string): INPMPackageMetadata {
-  const response = parseJsonObject(data);
-  if (response && isVersionMetadata(response)) {
-    return response;
-  }
-  if (response && "versions" in response) {
-    throw new Error(`NPM repository returned a package document, not a single version, for '${key}' (wrong URL?)`);
-  }
-  throw new Error(`Invalid response from NPM repository for '${key}'`);
-}
-
-/** Parse a body as a JSON object, or undefined if it is not JSON / not an object. */
-function parseJsonObject(data: Buffer): Record<string, unknown> | undefined {
-  try {
-    const parsed = JSON.parse(data.toString());
-    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Whether a body is a single-version metadata document — `name` + `version` +
- * a `dist.tarball` (a full packument has none of the latter two). */
-function isVersionMetadata(response: Record<string, unknown>): response is INPMPackageMetadata & Record<string, unknown> {
-  const meta = response as unknown as INPMPackageMetadata;
-  return (
-    typeof meta.name === "string" &&
-    typeof meta.version === "string" &&
-    typeof meta.dist === "object" &&
-    meta.dist !== null &&
-    typeof meta.dist.tarball === "string"
-  );
-}
-
-function isSemverConstraint(text: string): boolean {
-  try {
-    SEMVER.parseConstraint(text);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -687,54 +739,8 @@ function checkSingleVersions(selections: Selected<SemverVersion>[], root: string
   }
 }
 
-/**
- * The package owning a path within a mounted closure, per the node_modules
- * naming convention consumers mount packages with ("@scope/name/..." or
- * "name/...").
- */
-export function npmPackageOfPath(path: string): string {
-  const parts = path.split("/");
-  return parts[0].startsWith("@") && parts.length > 1 ? `${parts[0]}/${parts[1]}` : parts[0];
-}
-
-/**
- * Split an npm reference name into its identity (`name:version`) and an optional
- * projection into the resolved package. Since neither `:` nor `/` is legal in a
- * registry version, the identity ends at the first `:` or `/` after the
- * `name:version` separator; the remainder (plus any trailing glob) is the
- * projection, named per the written-name rule (`:` strips, `/` retains). A pure
- * parse — no resolution (see Repository.splitReference).
- */
-export function splitNpmReference(name: Name): { requirement: Name; projection?: IProjection } {
-  const lit = name.getLiteralPrefix();
-  const firstColon = lit.indexOf(":");
-  if (firstColon === -1) {
-    return { requirement: name }; // no version — parseRequirement reports it
-  }
-  const nextColon = lit.indexOf(":", firstColon + 1);
-  const nextSlash = lit.indexOf("/", firstColon + 1);
-  const boundary = nextColon === -1 ? nextSlash : nextSlash === -1 ? nextColon : Math.min(nextColon, nextSlash);
-  if (boundary === -1) {
-    return { requirement: name }; // identity runs to the end; no projection
-  }
-  const prefix = lit[boundary] === "/" ? lit.substring(0, boundary) + "/" : "";
-  return { requirement: Name.fromLiteral(lit.substring(0, boundary)), projection: { pattern: name.substring(boundary + 1), prefix } };
-}
-
 function createRepository(context: RepositoryContext): Computable<NPMRepository> {
   return context.getRequiredString("url").then(url => new NPMRepository(url, context));
-}
-
-/**
- * npm tarballs wrap the package contents in a single root directory
- * (conventionally "package/", but not reliably so); strip it, so the stored
- * package's files are named relative to the package root.
- */
-function stripArchiveRoot(files: FileSet): FileSet {
-  return files.remap(name => {
-    const idx = name.indexOf("/");
-    return idx === -1 ? undefined : name.substring(idx + 1);
-  });
 }
 
 export const npmRepositoryRegistration: RepositoryRegistration = { type: "npm_repository", provider: createRepository };

@@ -18,6 +18,7 @@
  */
 
 import { BuildCache } from "../core/BuildCache";
+import { FileSource } from "../core/FileSet";
 import { Log } from "../support/Log";
 import { ITargetDecl } from "./AST";
 
@@ -89,6 +90,42 @@ export type ProgressEvent = ITargetBuildEvent | IRepositoryResolveEvent | IFetch
 export type ProgressListener = (event: ProgressEvent) => void;
 
 /**
+ * A typed handle a plugin uses to stash its own per-run state on the
+ * ExecutionContext — the plugin equivalent of core simply holding a field here.
+ * One key per plugin; `T` is the plugin's context object. Identity is by object
+ * (the `name` is debug-only), so two keys never collide even with the same name.
+ * A plugin declares one as a module constant and reads its state back through
+ * {@link ExecutionContext.getOrCreatePluginContext}.
+ */
+export class PluginKey<T> {
+  constructor(public readonly name: string) {}
+  /* Makes T load-bearing at the type level (never assigned). */
+  declare private readonly _type: T;
+}
+
+/**
+ * The monotonic build-cycle counter. In watch mode the driver advances it once
+ * per applied batch (before the graph re-settles), so a target that already
+ * announced itself in an earlier cycle announces again for the new one (the
+ * per-target announce flag is keyed by the cycle, not a plain boolean). Split out
+ * of the ExecutionContext so the watch controller and the execution can share it
+ * WITHOUT a construction cycle — the controller is built with the source FS, which
+ * the execution then holds, so it's built first and both are wired to it.
+ */
+export class BuildCycle {
+  private count = 0;
+
+  public get current(): number {
+    return this.count;
+  }
+
+  /** Advance to the next build cycle (watch mode, before re-settling the graph). */
+  public advance(): void {
+    this.count++;
+  }
+}
+
+/**
  * The fixed runtime surroundings of a build run, as distinct from the model
  * (which is purely the declarations as written): the build cache to run
  * against, the driver's diagnostic log, and its progress observer. Constructed
@@ -103,8 +140,23 @@ export type ProgressListener = (event: ProgressEvent) => void;
 export class ExecutionContext {
   public readonly buildCache: BuildCache;
   public readonly log: Log;
+  /**
+   * The project's source tree (the tree containing PROJECT.fabr), watched when
+   * watch mode is enabled.
+   */
+  public readonly sourceFileSource: FileSource;
+  /**
+   * A FileSource for reading files by absolute path, for general host filesystem
+   * access — the loader's plugin/core lib `.fabr` files, and absolute config a
+   * repository consults (e.g. a user `~/.npmrc`). Not watched.
+   */
+  public readonly absFileSource: FileSource;
+  /** The build-cycle counter, shared with the watch controller (which advances it). */
+  private readonly cycle: BuildCycle;
   private progressListener?: ProgressListener;
-  private generation = 0;
+  /** Per-run state a plugin keeps here, keyed by its {@link PluginKey}. Lazily
+   *  populated on first access (see {@link getOrCreatePluginContext}). */
+  private readonly pluginContexts = new Map<PluginKey<unknown>, unknown>();
   /** The top-level (directly-requested) targets that actually built since the
    * last {@link takeBuiltTargets} — accumulated from `target-build` progress
    * events (emitted only from a cache-miss path — never a cache hit), so an empty
@@ -113,9 +165,20 @@ export class ExecutionContext {
    * these names per watch cycle. */
   private readonly builtTargets = new Set<string>();
 
-  constructor(buildCache: BuildCache, log: Log) {
+  constructor(
+    buildCache: BuildCache,
+    log: Log,
+    sourceFileSource: FileSource,
+    absFileSource: FileSource,
+    /* Shared with the watch controller (which advances it); defaulted so a
+     * non-watch construction — including tests — gets its own. */
+    cycle: BuildCycle = new BuildCycle()
+  ) {
     this.buildCache = buildCache;
     this.log = log;
+    this.sourceFileSource = sourceFileSource;
+    this.absFileSource = absFileSource;
+    this.cycle = cycle;
   }
 
   /**
@@ -130,19 +193,10 @@ export class ExecutionContext {
     return names;
   }
 
-  /**
-   * A monotonically increasing "build cycle" counter. In watch mode the driver
-   * advances it before each rebuild so a target that already announced itself in
-   * an earlier cycle announces again for the new one (the per-target announce
-   * flag is keyed by this, not a plain boolean).
-   */
+  /** The current build cycle — a target's per-cycle announce flag is keyed by it
+   *  (see {@link BuildCycle}). */
   public get buildGeneration(): number {
-    return this.generation;
-  }
-
-  /** Advance to the next build cycle (watch mode, before re-settling the graph). */
-  public beginBuildCycle(): void {
-    this.generation++;
+    return this.cycle.current;
   }
 
   /**
@@ -150,6 +204,24 @@ export class ExecutionContext {
    */
   public onProgress(listener: ProgressListener): void {
     this.progressListener = listener;
+  }
+
+  /** This run's state for `key`, or undefined if no plugin has established it
+   *  yet. Use {@link getOrCreatePluginContext} to read-or-initialize in one step. */
+  public getPluginContext<T>(key: PluginKey<T>): T | undefined {
+    return this.pluginContexts.get(key as PluginKey<unknown>) as T | undefined;
+  }
+
+  /** This run's state for `key`, creating it on first access via `create` (so a
+   *  plugin's per-run state — e.g. a parsed `.npmrc` — is built once and shared by
+   *  all its instances across the run's BuildContexts). */
+  public getOrCreatePluginContext<T>(key: PluginKey<T>, create: () => T): T {
+    let context = this.getPluginContext(key);
+    if (context === undefined) {
+      context = create();
+      this.pluginContexts.set(key as PluginKey<unknown>, context);
+    }
+    return context;
   }
 
   public notifyProgress(event: ProgressEvent): void {

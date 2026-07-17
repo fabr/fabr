@@ -20,20 +20,19 @@
 import * as path from "node:path";
 
 import { Computable } from "../core/Computable";
-import { FSFileSource } from "../core/FSFileSource";
 import { StringReader } from "../support/StringReader";
 import { parseBuildFile } from "./Parser";
 import { IBuildFileContents, IIncludeDecl, IPluginDecl } from "./AST";
-import { Log } from "../support/Log";
 import { BuildModel } from "./BuildModel";
+import { ExecutionContext } from "./ExecutionContext";
 import { activatePlugin } from "./Plugin";
 import { toBuildModel } from "./Sema";
-import { FileSource } from "../core/FileSet";
 import { PluginContribution } from "../rules/Types";
 import { flagRule } from "../rules/FlagTarget";
 import { defaultFilesRule } from "../rules/DefaultFilesRule";
 import { scriptRunRule } from "../rules/RunScript";
 import { runRule } from "../rules/BuildRun";
+import { syncRule } from "../rules/BuildSync";
 import { catalogRepositoryRegistration } from "../rules/CatalogRepository";
 import { computableWorkList } from "../core/WorkList";
 
@@ -44,7 +43,7 @@ import { computableWorkList } from "../core/WorkList";
  */
 export function coreContribution(): PluginContribution {
   return {
-    rules: [flagRule, defaultFilesRule, scriptRunRule, runRule],
+    rules: [flagRule, defaultFilesRule, scriptRunRule, runRule, syncRule],
     repositories: [catalogRepositoryRegistration],
     includes: [packageLibFile("@fabr-build/core", "STD.fabr")],
   };
@@ -66,11 +65,6 @@ export function packageLibDir(packageName: string): string {
 export function packageLibFile(packageName: string, file: string): string {
   return path.join(packageLibDir(packageName), file);
 }
-
-/** A FileSource for reading absolute paths — plugin/core lib `.fabr` files, named
- * absolutely in a contribution's `includes` (project files use their own source).
- * `get(absPath)` resolves to `absPath` regardless of this root. */
-const absFileSource = new FSFileSource(path.sep);
 
 /* A work-list key is a bare file path: which source reads it rides on the name's
  * shape, per the naming contract — project files are named relative to the project
@@ -107,9 +101,8 @@ interface LoadedFile {
  * per-model rather than process-global.
  */
 export function loadProject(
-  fileSource: FileSource,
+  execution: ExecutionContext,
   startFile: string,
-  log: Log,
   pluginApi?: unknown,
   /* The always-present base contribution — core's rules + STD.fabr. A parameter
    * (defaulting to the real thing) only so tests can substitute a stub whose
@@ -129,13 +122,13 @@ export function loadProject(
   const libFiles = (contribution: PluginContribution): string[] => contribution.includes ?? [];
 
   return computableWorkList<string, LoadedFile>([startFile, ...libFiles(core)], file => {
-    const fs = path.isAbsolute(file) ? absFileSource : fileSource;
+    const fs = path.isAbsolute(file) ? execution.absFileSource : execution.sourceFileSource;
     return fs.get(file).then(f => {
       if (!f) {
         throw new Error("File not found: " + file);
       }
       return f.readString().then(content => {
-        const decls = parseBuildFile({ fs, file, reader: new StringReader(content) }, log);
+        const decls = parseBuildFile({ fs, file, reader: new StringReader(content) }, execution.log);
         const plugins = decls.plugins.map(activate);
         return {
           value: { decls, plugins },
@@ -147,6 +140,6 @@ export function loadProject(
     const files = [...loaded.values()];
     /* Identity-dedup suffices: activation memoized by name ⇒ one instance per plugin. */
     const plugins = [...new Set(files.flatMap(file => file.plugins))];
-    return toBuildModel(files.map(file => file.decls), log, [core, ...plugins]);
+    return toBuildModel(files.map(file => file.decls), execution.log, [core, ...plugins]);
   });
 }

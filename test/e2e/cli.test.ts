@@ -47,23 +47,38 @@ describe("e2e: driver CLI", () => {
     expect(result.stderr).to.match(/matched no files/);
   });
 
-  it("renders both sides of a naming conflict raised by the driver's own union", () => {
+  it("cats each source of a multi-source name in turn, never unioning them", () => {
     /* `both` is a multi-value property whose two values resolve to filesets that
-     * each name `dup.txt` at a different underlying file. `cat both` unions them
-     * in the driver (no enclosing target build), so the ConflictError is
-     * ownerless — the formatter must still surface both attributed sides, not
-     * just the one-line message. */
-    const conflict = {
+     * each name `dup.txt` at a different underlying file. A name's sources are
+     * iterated, not unioned — `cat both` behaves exactly like `cat adir bdir`
+     * (value order, sorted within each source), so a same-named file in two
+     * sources is two files to print, not a conflict. (Checked unions still
+     * conflict where content genuinely merges: inside a target build.) */
+    const twoSources = {
       "PROJECT.fabr": "adir = src:a/* -> *;\nbdir = src:b/* -> *;\nboth = adir bdir;\n",
       "src/a/dup.txt": "FROM A\n",
       "src/b/dup.txt": "FROM B\n",
     };
-    const result = runFabr(conflict, ["cat", "both"]);
+    const result = runFabr(twoSources, ["cat", "both"]);
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("FROM A\nFROM B\n");
+  });
+
+  it("renders both sides of a naming conflict raised by a target's own union", () => {
+    /* A `script`'s deps union flat into one install, so two deps that each name
+     * `dup.txt` at a different underlying file conflict inside the target build.
+     * The formatter must surface both attributed sides — each contributor traced
+     * to its underlying file — not just the one-line message. */
+    const conflict = {
+      "PROJECT.fabr":
+        "adir = src:a/* -> *;\nbdir = src:b/* -> *;\nscript clash { deps = adir bdir; entry = go.sh; }\n",
+      "src/a/dup.txt": "FROM A\n",
+      "src/b/dup.txt": "FROM B\n",
+    };
+    const result = runFabr(conflict, ["run", "clash"]);
     expect(result.status).to.equal(1);
     expect(result.stdout).to.equal("");
     expect(result.stderr).to.match(/Conflicting files for dup\.txt/);
-    /* The two sides — dropped before the fix (owner-gated), now rendered as
-     * notes tracing each contributor to its underlying file. */
     expect(result.stderr).to.match(/src\/a\/dup\.txt/);
     expect(result.stderr).to.match(/src\/b\/dup\.txt/);
   });

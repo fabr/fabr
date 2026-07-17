@@ -29,6 +29,7 @@ import {
   FileSet,
   formatTestSummary,
   IFile,
+  BuildCycle,
   getSourceFileSource,
   getTestReport,
   loadProject,
@@ -36,13 +37,16 @@ import {
   LogFormatter,
   LogLevel,
   ProgressListener,
+  PublishableFileSet,
   RunnableFileSet,
   SourceRef,
   toError,
   WatchController,
+  FSFileSource,
 } from "@fabr-build/core";
 import { DiagnosticErrorFormatter, ErrorFormatter } from "./ErrorFormatter";
 import { runInteractive, RunSupervisor } from "./RunHandler";
+import { publishSync } from "./SyncHandler";
 /* The whole of @fabr-build/core doubles as the api object injected into plugins:
  * handing plugins the host's own module instance keeps every class and
  * registry shared (a plugin must never load a second copy of the core). */
@@ -124,7 +128,7 @@ export type Operation = (model: BuildModel, execution: ExecutionContext) => Comp
 export function runFabr(options: Options): Promise<void> {
   /* Watch is meaningful for the build-graph verbs and for `run` (relaunch the
    * program on change — a dev server over built artifacts); ls/cat are one-shot
-   * queries. */
+   * queries and sync is a one-shot publish. */
   const watch =
     options.mode === Mode.Watch &&
     (options.command === "build" || options.command === "test" || options.command === "run");
@@ -150,6 +154,8 @@ export function runFabr(options: Options): Promise<void> {
       }, watch);
     case "run":
       return runWith((model, execution) => runProgram(model, options, execution, watch), watch);
+    case "sync":
+      return runWith((model, execution) => syncTargets(model, options, execution));
     default: /* build */
       return runWith((model, execution) => {
         const targets = buildTargets(model, options, execution, "build");
@@ -196,6 +202,28 @@ function runProgram(
 }
 
 /**
+ * `fabr sync <target>…`: build each sync target under `build` to get its wire
+ * artifacts (one PublishableFileSet  per member — a sync target's sources
+ * ARE its members), then upload them. Building is the pure/cacheable half (the
+ * same as a dry-run); the upload is the driver-level side effect, with the
+ * credential read here (never a build input). Not watchable — publishing is a
+ * one-shot.
+ */
+function syncTargets(model: BuildModel, options: Options, execution: ExecutionContext): Computable<void> {
+  const targets = buildTargets(model, options, execution, "build");
+  return Computable.forAll(targets, (...results: SourceRef[][]) => {
+    const publishable = results.flatMap((sources, i) => {
+      const members = sources.filter((source): source is PublishableFileSet => source instanceof PublishableFileSet);
+      if (members.length === 0) {
+        throw new Error(`'${options.targets[i]}' is not a sync target`);
+      }
+      return members;
+    });
+    return publishSync(execution, publishable);
+  });
+}
+
+/**
  * The driver lifecycle harness: establish the run's surroundings (stderr log,
  * cache, source tree, progress-reporting ExecutionContext), load the project,
  * then hand the model to `operation` — exiting 0 on success and rendering the
@@ -222,30 +250,34 @@ async function runWith(operation: Operation, watch = false): Promise<void> {
   try {
     const sourceRoot = await getSourceRoot();
     const buildCache = new BuildCache(getBuildCacheRoot());
-    const execution = new ExecutionContext(buildCache, log);
-    execution.onProgress(progressListener(log));
 
-    /* Watching is fixed at the source's construction (not toggled later), so build
-     * the controller first. The build cache doubles as the content-addressed blob
-     * store the source snapshots into, so it too precedes the source file source. */
+    /* The build cycle is shared: the watch controller advances it before each
+     * re-settle, and the execution reads it. Built first (it depends on nothing),
+     * so the controller — whose `onBeforeApply` advances it — and the execution —
+     * which is built with the source file source that is built with the controller
+     * — can both be wired to it without a construction cycle. */
+    const cycle = new BuildCycle();
     const controller = watch
       ? new WatchController(
           WATCH_QUIET_MS,
           undefined,
           err => reportFailure(log, err),
-          () => execution.beginBuildCycle(),
+          () => cycle.advance(),
           message => log.log(DIAG_WATCH_WARNING, { message })
         )
       : undefined;
     const sourceFileSource = getSourceFileSource(sourceRoot, buildCache, controller);
+    const absFileSource = new FSFileSource("/");
+    const execution = new ExecutionContext(buildCache, log, sourceFileSource, absFileSource, cycle);
+    execution.onProgress(progressListener(log));
 
     if (controller) {
-      return runWatched(operation, sourceFileSource, execution, log, controller);
+      return runWatched(operation, execution, log, controller);
     }
 
     /* The system include path defaults to the directories the loaded rule
      * packages registered (core + js via their imports; plugins later) */
-    return loadProject(sourceFileSource, PROJECT_FILENAME, log, pluginApi)
+    return loadProject(execution, PROJECT_FILENAME, pluginApi)
       .then(model => operation(model, execution))
       .then(() => flushAndExit(0))
       .catch(err => {
@@ -275,7 +307,6 @@ async function runWith(operation: Operation, watch = false): Promise<void> {
  */
 function runWatched(
   operation: Operation,
-  sourceFileSource: ReturnType<typeof getSourceFileSource>,
   execution: ExecutionContext,
   log: Log,
   controller: WatchController
@@ -293,7 +324,7 @@ function runWatched(
 
   /* This observer re-fires every time the operation's Computable re-settles (the
    * revalidation cascade after a change), so status/failure render per cycle. */
-  loadProject(sourceFileSource, PROJECT_FILENAME, log, pluginApi)
+  loadProject(execution, PROJECT_FILENAME, pluginApi)
     .then(model => operation(model, execution))
     .then(
       () => log.log(DIAG_WATCHING, {}),
@@ -384,14 +415,18 @@ function progressListener(log: Log): ProgressListener {
 function catTarget(options: Options, results: SourceRef[][]): Computable<void> {
   /* Resolve every name to its files up front — synchronously, so a name matching
    * nothing fails before a single byte is written (no partial output). The order
-   * is fixed here: argument order across names, sorted by filename within each. */
+   * is fixed here: argument order across names, then source order within a name
+   * (a multi-source target — a sync's members — cats each source in turn, as if
+   * each were named), sorted by filename within each source. */
   const files: IFile[] = [];
   results.forEach((sources, i) => {
-    const set = FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet));
-    if (set.isEmpty()) {
+    const sets = sources.filter((source): source is FileSet => source instanceof FileSet);
+    if (sets.every(set => set.isEmpty())) {
       throw matchedNoFiles(options.targets[i]);
     }
-    files.push(...[...set].sort(([a], [b]) => a.localeCompare(b)).map(([, file]) => file));
+    for (const set of sets) {
+      files.push(...[...set].sort(([a], [b]) => a.localeCompare(b)).map(([, file]) => file));
+    }
   });
   /* Stream each file's contents to stdout in that order, one at a time — reading
    * the next only after the previous is written, so the whole set is never held
@@ -416,19 +451,23 @@ function matchedNoFiles(name: string): Error {
  * For `fabr ls`, the listing is the outcome: print each built target's
  * contents (sorted by name), with a `target:` header when more than one
  * target was requested. A target is by definition a built thing, so its
- * results are FileSets already — union and enumerate them directly. Listing
- * output is the command's data, so it goes straight to stdout rather than
- * through the diagnostic log.
+ * results are FileSets already — enumerated per source, blank-line separated
+ * (a multi-source target — a sync's members — lists each source as if each
+ * were named, never unioned into one flat set). Listing output is the
+ * command's data, so it goes straight to stdout rather than through the
+ * diagnostic log.
  */
 function listTargets(options: Options, results: SourceRef[][]): Computable<void> {
   return Computable.forAll(
     results.map(sources =>
-      renderListing(
-        FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet)),
-        options.longListing
+      Computable.forAll(
+        sources
+          .filter((source): source is FileSet => source instanceof FileSet)
+          .map(set => renderListing(set, options.longListing)),
+        (...perSource: string[][]) => perSource.flatMap((lines, i) => (i > 0 ? ["", ...lines] : lines))
       )
     ),
-    (...listings) => {
+    (...listings: string[][]) => {
       listings.forEach((lines, i) => {
         if (listings.length > 1) {
           console.log(`${i > 0 ? "\n" : ""}${options.targets[i]}:`);
