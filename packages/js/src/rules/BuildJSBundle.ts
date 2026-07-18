@@ -68,6 +68,10 @@ interface IBundleInputs {
   jsTarget: JSTarget;
   buildType: string;
   rewrite: RewriteFn;
+  /** Compile-time constant substitutions (the `defines` MAP): each value is
+   * esbuild `define` code text, verbatim as written (a string constant is
+   * shell-quoted in source, `'"production"'`, exactly as esbuild's own CLI). */
+  defines: Record<string, string>;
   entrySet: FileSet;
   srcs: FileSet[];
   deps: FileSet[];
@@ -85,14 +89,14 @@ function stageBundle(
   plainTree: FileSet,
   css: FileSet
 ): RuleResult {
-  const { jsTarget, buildType, rewrite, entrySet, srcs, deps, esbuild } = inputs;
+  const { jsTarget, buildType, rewrite, defines, entrySet, srcs, deps, esbuild } = inputs;
   const entryNames = [...entrySet].map(([name]) => name);
   if (entryNames.length === 0) {
     throw new Error("js_bundle 'entry' resolved to no files — name at least one source to bundle");
   }
   const entries = computeBundleEntries(entryNames, rewrite);
   const external = computeExternalNames(srcs, deps);
-  const options = buildBundleOptions(jsTarget, buildType, entries, external);
+  const options = buildBundleOptions(jsTarget, buildType, entries, external, defines);
 
   const staged = FileSet.unionAll(
     plainTree,
@@ -138,18 +142,32 @@ function composeBundle(context: TargetContext, inputs: IBundleInputs): Computabl
 }
 
 function buildJsBundle(context: TargetContext): Computable<RuleResult> {
+  const config = Computable.forAll(
+    [context.getGlobalString("JS_TARGET"), context.getGlobalString("BUILD_TYPE")],
+    (target, buildType) => ({ target, buildType })
+  );
   return Computable.forAll(
     [
       context.getFileSources("srcs"),
       context.getFileSet("entry"),
       context.getFileSources("deps"),
-      context.getGlobalString("JS_TARGET"),
-      context.getGlobalString("BUILD_TYPE"),
+      config,
       context.getGlobalSources("ESBUILD"),
       context.getRewrite("output"),
+      context.getMap("defines"),
     ],
-    (srcSources, entrySet, depSources, target, buildType, esbuildSources, rewrite) => {
+    (srcSources, entrySet, depSources, { target, buildType }, esbuildSources, rewrite, defineMap) => {
       const jsTarget = parseJSTarget(target);
+      /* esbuild `define` takes code text per identifier; a map value is that
+       * text verbatim (esbuild's own contract — no probing). Sub-maps have no
+       * meaning as code text, so defines is flat by contract. */
+      const defines: Record<string, string> = {};
+      for (const [key, value] of defineMap) {
+        if (typeof value !== "string") {
+          throw new TypeError(`defines value '${key}' must be a scalar string (a define is esbuild code text)`);
+        }
+        defines[key] = value;
+      }
       /* THE collection point for the bundle's contents: srcs and deps resolve
        * jointly. esbuild is resolved separately below — a build tool is
        * independent of what it compiles, so its version doesn't co-resolve with
@@ -158,7 +176,7 @@ function buildJsBundle(context: TargetContext): Computable<RuleResult> {
       const tool = context.collect({ esbuild: esbuildSources });
 
       return Computable.forAll([contents, tool], ({ srcs, deps }, { esbuild }) =>
-        composeBundle(context, { jsTarget, buildType, rewrite, entrySet, srcs, deps, esbuild })
+        composeBundle(context, { jsTarget, buildType, rewrite, defines, entrySet, srcs, deps, esbuild })
       );
     }
   );

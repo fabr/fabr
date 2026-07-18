@@ -1,7 +1,21 @@
 plugin @fabr-build/js;
 
 FABR_VERSION=0.1.0;
-
+FABR_METADATA = {
+  license = GPL-3.0-or-later;
+  homepage = https://fabr.build/;
+  author = {
+    name = Nathan Keynes;
+    email = nkeynes@deadcoderemoval.net;
+  }
+  repository = {
+    type = git;
+    url = https://github.com/fabr/fabr;
+  }
+  bugs = {
+    url = https://github.com/fabr/fabr/issues;
+  }
+};
 
 catalog @pkg {
   deps = @npm:typescript:5.4.5 @npm:@types/node:20.12.7
@@ -25,6 +39,7 @@ js_package @fabr-build/core {
   tests = packages/core/src:**/*.test.ts;
   deps = @pkg:@types/node @pkg:@parcel/watcher @pkg:picomatch unicode_properties tar_stream;
   test_deps = chai;
+  metadata = FABR_METADATA
 }
 
 js_package @fabr-build/js {
@@ -32,6 +47,7 @@ js_package @fabr-build/js {
   tests = packages/js/src:**/*.test.ts;
   deps = @pkg:@types/node @fabr-build/core;
   test_deps = chai;
+  metadata = FABR_METADATA
 }
 
 js_package @fabr-build/cli {
@@ -39,6 +55,7 @@ js_package @fabr-build/cli {
   tests = packages/cli/src:**/*.test.ts;
   deps = @pkg:@types/node @fabr-build/core @fabr-build/js;
   test_deps = chai;
+  metadata = FABR_METADATA
 }
 
 # End-to-end tests: drive the built fabr CLI directly. The harness is a plain

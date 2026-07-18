@@ -20,7 +20,7 @@
 import { expect } from "chai";
 import { EMPTY_FILESET } from "../core/FileSet";
 import { LogFormatter, LogLevel } from "../support/Log";
-import { IBuildFileContents, IPropertyDecl, PropertyType } from "./AST";
+import { DeclKind, IBuildFileContents, IMapItemDecl, IPropertyDecl, PropertyType } from "./AST";
 import { Name, NamePart, NamePartKind } from "../core/Name";
 import { parseBuildString, parseName } from "./Parser";
 
@@ -78,6 +78,19 @@ function partText(part: NamePart): string {
   }
 }
 
+function propertyTypeName(type: PropertyType): string {
+  switch (type) {
+    case PropertyType.String:
+      return "STRING";
+    case PropertyType.Rewrite:
+      return "REWRITE";
+    case PropertyType.Map:
+      return "MAP";
+    default:
+      return "FILES";
+  }
+}
+
 function propertyValues(properties: IPropertyDecl[]): Record<string, string[]> {
   const result: Record<string, string[]> = {};
   for (const prop of properties) {
@@ -97,7 +110,7 @@ function summarize(contents: IBuildFileContents): Record<string, unknown> {
     targetdefs[def.name] = Object.fromEntries(
       Object.entries(def.properties).map(([name, schema]) => [
         name,
-        `${schema.required ? "REQUIRED " : ""}${schema.type === PropertyType.String ? "STRING" : "FILES"}`,
+        `${schema.required ? "REQUIRED " : ""}${propertyTypeName(schema.type)}`,
       ])
     );
   }
@@ -484,6 +497,113 @@ describe("Parser Tests", () => {
           "Invalid rename template: the '->' arrow must be surrounded by spaces (`sel -> tmpl`)",
           "out = a-> *.b;"
         ),
+      ]);
+    });
+  });
+
+  describe("MAP properties", () => {
+    it("parses the MAP keyword in a targetdef schema", () => {
+      expect(summarize(parseValid("targetdef js_bundle {\n  defines = MAP;\n}"))).to.deep.equal(
+        summary({ targetdefs: { js_bundle: { defines: "MAP" } } })
+      );
+    });
+
+    /** Narrow a block's items to its `key = value;` entries (no splices). */
+    function blockEntries(items: IMapItemDecl[] | undefined): IPropertyDecl[] {
+      return (items ?? []).filter((item): item is IPropertyDecl => item.kind === DeclKind.Property);
+    }
+
+    /** The entries of the first target's first property's sole block value, as
+     * key -> rendered values. */
+    function firstBlock(text: string): Record<string, string[]> {
+      const values = parseValid(text).targets[0].properties[0].values;
+      expect(values).to.have.lengthOf(1);
+      const entries = values[0].entries;
+      expect(entries).to.not.equal(undefined);
+      return Object.fromEntries(blockEntries(entries).map(entry => [entry.name, entry.values.map(v => nameText(v.value))]));
+    }
+
+    it("parses a block as a single value carrying ordered entries", () => {
+      const prop = parseValid("js_bundle b {\n  defines = { DEBUG = false; NAME = production; }\n}").targets[0]
+        .properties[0];
+      expect(prop.values).to.have.lengthOf(1);
+      expect(prop.values[0].entries).to.not.equal(undefined);
+      expect(firstBlock("js_bundle b {\n  defines = { DEBUG = false; NAME = production; }\n}")).to.deep.equal({
+        DEBUG: ["false"],
+        NAME: ["production"],
+      });
+    });
+
+    it("closes a block entry without a ';' (like a target body)", () => {
+      /* Nested block entries and the top-level property alike end at their '}';
+       * the next NAME starts the next entry/statement. */
+      const contents = parseValid(
+        "js_bundle b {\n  meta = {\n    author = {\n      name = ann;\n    }\n    repository = {\n      type = git;\n    }\n  }\n}\nAFTER = 1;"
+      );
+      const entries = blockEntries(contents.targets[0].properties[0].values[0].entries);
+      expect(entries.map(entry => entry.name)).to.deep.equal(["author", "repository"]);
+      expect(contents.properties[0].name).to.equal("AFTER");
+    });
+
+    it("parses a nested block and a list of blocks", () => {
+      const values = parseValid(
+        "js_bundle b {\n  meta = { repository = { type = git; url = u; }; maintainers = { name = a; } { name = b; }; }\n}"
+      ).targets[0].properties[0].values;
+      const entries = blockEntries(values[0].entries);
+      const repository = entries[0];
+      expect(repository.name).to.equal("repository");
+      expect(repository.values).to.have.lengthOf(1);
+      expect(blockEntries(repository.values[0].entries).map(entry => entry.name)).to.deep.equal(["type", "url"]);
+      const maintainers = entries[1];
+      expect(maintainers.name).to.equal("maintainers");
+      expect(maintainers.values).to.have.lengthOf(2);
+      expect(maintainers.values.every(value => value.entries !== undefined)).to.equal(true);
+    });
+
+    it("parses a bare reference statement as a splice", () => {
+      const items = parseValid(
+        "js_bundle b {\n  meta = {\n    FABR_METADATA;\n    description = CLI package;\n  };\n}"
+      ).targets[0].properties[0].values[0].entries;
+      expect(items).to.have.lengthOf(2);
+      const [splice, entry] = items ?? [];
+      expect(splice.kind).to.equal(DeclKind.MapSplice);
+      expect(splice.kind === DeclKind.MapSplice && splice.ref.toString()).to.equal("FABR_METADATA");
+      expect(entry.kind).to.equal(DeclKind.Property);
+      expect(entry.kind === DeclKind.Property && entry.name).to.equal("description");
+    });
+
+    it("accepts dotted foreign names as keys (not resolved as references)", () => {
+      expect(firstBlock("js_bundle b {\n  defines = { process.env.NODE_ENV = production; }\n}")).to.deep.equal({
+        "process.env.NODE_ENV": ["production"],
+      });
+    });
+
+    it("interpolates ${...} in entry values", () => {
+      const entries = blockEntries(
+        parseValid("js_bundle b {\n  defines = { VERSION = ${BUILD_NO}; }\n}").targets[0].properties[0].values[0].entries
+      );
+      expect(entries[0].values[0].value.getVariables()).to.deep.equal(["BUILD_NO"]);
+    });
+
+    it("parses an empty block", () => {
+      expect(firstBlock("js_bundle b {\n  defines = {}\n}")).to.deep.equal({});
+    });
+
+    it("parses a bare name before '}' as a splice (final ';' optional)", () => {
+      const items = parseValid("js_bundle b {\n  defines = { DEBUG }\n}").targets[0].properties[0].values[0].entries;
+      expect(items).to.have.lengthOf(1);
+      expect(items?.[0].kind).to.equal(DeclKind.MapSplice);
+    });
+
+    it("rejects a second name where '=' or ';' must follow", () => {
+      expect(parseInvalid("js_bundle b {\n  defines = { DEBUG extra = 1; }\n}")).to.deep.equal([
+        diagnosticBlock(2, 21, "Read Identifier but expected '=' or ';'", "  defines = { DEBUG extra = 1; }"),
+      ]);
+    });
+
+    it("rejects a block with a missing key", () => {
+      expect(parseInvalid("js_bundle b {\n  defines = { = false; }\n}")).to.deep.equal([
+        diagnosticBlock(2, 15, "Read '=' but expected a map key, a map reference, or '}'", "  defines = { = false; }"),
       ]);
     });
   });

@@ -100,6 +100,9 @@ export interface IBundleOptions {
   sourcemap: "linked" | false;
   /** Where the driver writes outputs, relative to the working directory. */
   outdir: string;
+  /** esbuild `define`: identifier -> replacement code text (the `defines` MAP,
+   * verbatim). Omitted when no defines were declared. */
+  define?: Record<string, string>;
 }
 
 /** Every package name reachable from the given roots — the roots themselves plus
@@ -217,7 +220,8 @@ export function buildBundleOptions(
   jsTarget: JSTarget,
   buildType: string,
   entries: IBundleEntry[],
-  external: string[]
+  external: string[],
+  defines: Record<string, string>
 ): IBundleOptions {
   const format = jsTarget.module === "esm" ? "esm" : jsTarget.environment === "browser" ? "iife" : "cjs";
   const minify = buildType === "release" || buildType === "relwithdebinfo";
@@ -231,5 +235,6 @@ export function buildBundleOptions(
     minify,
     sourcemap,
     outdir: BUNDLE_OUTDIR,
+    ...(Object.keys(defines).length > 0 ? { define: defines } : {}),
   };
 }

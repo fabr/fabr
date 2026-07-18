@@ -59,6 +59,16 @@ targetdef js_package {
     # test runner.
     test_deps = FILES;
     version = STRING;
+    # Descriptive package.json fields (description, license, author, homepage,
+    # ...), overlaid onto the generated manifest. A value is a string, a nested
+    # block (an object: repository = { type = git; url = ...; };), or a list of
+    # blocks (an array of objects: maintainers = { name = a; } { name = b; };).
+    # Reuse a shared map by bare reference (metadata = COMMON;) or splice it
+    # into a block and override per package, later entries winning:
+    # metadata = { COMMON; description = This package; };
+    # A key fabr computes itself (name, version, type, main, types, bin,
+    # dependencies, devDependencies) is rejected rather than silently overridden.
+    metadata = MAP;
 }
 
 #
@@ -70,8 +80,11 @@ targetdef js_package {
 # is what the RUNTIME provides — externalized by package identity, so their
 # imports survive verbatim (the lambda case: handler + vendored libs in srcs,
 # @aws-sdk/* in deps). 'output' optionally renames each entry's default output
-# (identity modulo .ts/.tsx -> .js), e.g. `*.entry.js -> *.min.js`. Minify and
-# sourcemaps follow BUILD_TYPE; platform/format follow JS_TARGET.
+# (identity modulo .ts/.tsx -> .js), e.g. `*.entry.js -> *.min.js`. 'defines'
+# are compile-time constant substitutions (esbuild `define`): each value is code
+# text verbatim, so a string constant is shell-quoted like esbuild's own CLI
+# (`process.env.NODE_ENV = '"production"';`) while `DEBUG = false;` stays a bare
+# literal. Minify and sourcemaps follow BUILD_TYPE; platform/format follow JS_TARGET.
 #
 
 targetdef js_bundle {
@@ -79,6 +92,7 @@ targetdef js_bundle {
     entry = REQUIRED FILES;
     deps = FILES;
     output = REWRITE;
+    defines = MAP;
 }
 
 #

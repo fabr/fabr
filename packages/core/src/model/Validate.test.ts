@@ -87,3 +87,68 @@ describe("validateTarget (targetdef schema)", () => {
     expect(errors).to.deep.equal([]);
   });
 });
+
+describe("validateTarget (MAP properties)", () => {
+  const def = "targetdef m { defines = MAP; srcs = FILES; }\n";
+
+  it("accepts a well-formed MAP block", () => {
+    const errors = validationErrors(def + "m t { defines = { DEBUG = false; process.env.X = ${Y}; } }\n");
+    expect(errors).to.deep.equal([]);
+  });
+
+  it("accepts a bare reference value for a MAP property (resolved at read time)", () => {
+    /* `defines = foo;` references another block-valued property; Validate doesn't
+     * resolve it (an unknown reference is a resolution-time error). */
+    const errors = validationErrors(def + "m t { defines = foo; }\n");
+    expect(errors).to.deep.equal([]);
+  });
+
+  it("rejects a block value for a non-MAP property", () => {
+    const errors = validationErrors(def + "m t { srcs = { a = b; } }\n");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/a `\{ ... \}` block is only valid for a MAP property/);
+  });
+
+  it("rejects duplicate keys within a block", () => {
+    const errors = validationErrors(def + "m t { defines = { A = 1; A = 2; } }\n");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/duplicate map key 'A'/);
+  });
+
+  it("rejects a rename facet on a map value", () => {
+    const errors = validationErrors(def + "m t { defines = { A = x -> y; } }\n");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/a map value cannot carry a rename/);
+  });
+
+  it("accepts nested blocks and lists of blocks (sub-maps / arrays of maps)", () => {
+    const errors = validationErrors(
+      def + "m t { defines = { repository = { type = git; url = u; }; maintainers = { name = a; } { name = b; }; }; }\n"
+    );
+    expect(errors).to.deep.equal([]);
+  });
+
+  it("rejects mixing strings and blocks in one entry", () => {
+    const errors = validationErrors(def + "m t { defines = { A = x { B = c; }; }; }\n");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/either strings or maps, not a mix/);
+  });
+
+  it("rejects a list of blocks at the top level of a MAP property", () => {
+    const errors = validationErrors(def + "m t { defines = { A = 1; } { B = 2; }; }\n");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/a MAP property takes a single `\{ ... \}` block/);
+  });
+
+  it("rejects mixing a block with references at the top level", () => {
+    const errors = validationErrors(def + "m t { defines = base { A = 1; }; }\n");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/single `\{ ... \}` block or bare reference\(s\), not a mix/);
+  });
+
+  it("rejects duplicate keys within a nested block", () => {
+    const errors = validationErrors(def + "m t { defines = { A = { B = 1; B = 2; }; }; }\n");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/duplicate map key 'B'/);
+  });
+});

@@ -282,6 +282,7 @@ function toEsbuildOptions(options: IBundleOptions): Record<string, unknown> {
     sourcemap: options.sourcemap,
     logLevel: "silent",
     plugins: [fabrResolverPlugin(options)],
+    ...(options.define ? { define: options.define } : {}),
   };
 }
 

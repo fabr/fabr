@@ -89,7 +89,7 @@ describe("computeBundleEntries", () => {
 
 describe("buildBundleOptions", () => {
   it("maps an esm browser target to esm/browser and debug to a linked sourcemap", () => {
-    const options = buildBundleOptions(parseJSTarget("es2021-esm-browser"), "debug", [], []);
+    const options = buildBundleOptions(parseJSTarget("es2021-esm-browser"), "debug", [], [], {});
     expect(options.platform).to.equal("browser");
     expect(options.format).to.equal("esm");
     expect(options.target).to.equal("es2021");
@@ -98,22 +98,28 @@ describe("buildBundleOptions", () => {
   });
 
   it("uses iife for a non-esm browser bundle", () => {
-    expect(buildBundleOptions(parseJSTarget("es6-commonjs-browser"), "debug", [], []).format).to.equal("iife");
+    expect(buildBundleOptions(parseJSTarget("es6-commonjs-browser"), "debug", [], [], {}).format).to.equal("iife");
   });
 
   it("uses cjs for a non-esm node bundle", () => {
-    expect(buildBundleOptions(parseJSTarget("es2019-commonjs-node"), "debug", [], []).format).to.equal("cjs");
+    expect(buildBundleOptions(parseJSTarget("es2019-commonjs-node"), "debug", [], [], {}).format).to.equal("cjs");
   });
 
   it("minifies and drops the sourcemap for a release build", () => {
-    const options = buildBundleOptions(parseJSTarget("es2021-esm"), "release", [], []);
+    const options = buildBundleOptions(parseJSTarget("es2021-esm"), "release", [], [], {});
     expect(options.minify).to.equal(true);
     expect(options.sourcemap).to.equal(false);
   });
 
   it("minifies and keeps the sourcemap for relwithdebinfo", () => {
-    const options = buildBundleOptions(parseJSTarget("es2021-esm"), "relwithdebinfo", [], []);
+    const options = buildBundleOptions(parseJSTarget("es2021-esm"), "relwithdebinfo", [], [], {});
     expect(options.minify).to.equal(true);
     expect(options.sourcemap).to.equal("linked");
+  });
+
+  it("passes defines through as esbuild `define`, omitting the key when empty", () => {
+    const defines = { "process.env.NODE_ENV": '"production"', DEBUG: "false" };
+    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "debug", [], [], defines).define).to.deep.equal(defines);
+    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "debug", [], [], {})).to.not.have.property("define");
   });
 });

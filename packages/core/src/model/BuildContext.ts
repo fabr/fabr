@@ -26,7 +26,10 @@ import { ITargetOrigin, TARGET_PROVENANCE } from "./Target";
 import {
   DeclKind,
   declPosn,
+  hasBlockValue,
   IDecl,
+  IMapItemDecl,
+  IMapSpliceDecl,
   INamedDecl,
   INamespaceDecl,
   IPropertyDecl,
@@ -42,7 +45,7 @@ import {
   NoRuleFoundError,
   ReferenceFailedError,
 } from "./Errors";
-import { ConflictError, IConflictSide, IConflictSource } from "../core/Errors";
+import { attachHelp, ConflictError, IConflictSide, IConflictSource } from "../core/Errors";
 import { Name, RewriteFn, makeRewrite } from "../core/Name";
 import { parseName } from "./Parser";
 import { IPrefixMatch } from "./Namespace";
@@ -53,6 +56,58 @@ import { Property } from "./Property";
  * Values are plain strings by design, so that constraint sets compare by value.
  */
 export type Constraints = Record<string, string>;
+
+/**
+ * The resolved value of a MAP property: an ordered key -> value map whose
+ * values are each one string (a string-valued entry's values, space-joined), a
+ * sub-map (one nested block), or a list of sub-maps (several blocks — an array
+ * of objects, `maintainers`-style). Never a mix within one entry. The map is
+ * ecosystem-neutral; the consuming rule interprets/encodes the values.
+ */
+export type PropertyMapValue = string | PropertyMap | PropertyMap[];
+export type PropertyMap = Map<string, PropertyMapValue>;
+
+/**
+ * Ghost provenance for one resolved map entry: the written `key = value;` decl
+ * the value came from, plus the chain of reference hops it arrived through —
+ * each an in-block `NAME;` splice or a top-level bare-reference value, outermost
+ * first ("via 'FABR_METADATA'"). Runtime-only, per the provenance doctrine:
+ * carried in a WeakMap beside the resolved map (never on it), so it can never
+ * reach equality, manifests, or an encoder's output.
+ */
+export interface MapEntryOrigin {
+  entry: IPropertyDecl;
+  via: (IMapSpliceDecl | IValue)[];
+}
+
+const MAP_ORIGINS = new WeakMap<PropertyMap, Map<string, MapEntryOrigin>>();
+
+/** The origin of a resolved map's entry, if the map came from `resolveMap`
+ * (a hand-built plain Map has none). */
+export function mapEntryOrigin(map: PropertyMap, key: string): MapEntryOrigin | undefined {
+  return MAP_ORIGINS.get(map)?.get(key);
+}
+
+function recordMapOrigin(map: PropertyMap, key: string, origin: MapEntryOrigin): void {
+  let origins = MAP_ORIGINS.get(map);
+  if (!origins) {
+    origins = new Map();
+    MAP_ORIGINS.set(map, origins);
+  }
+  origins.set(key, origin);
+}
+
+/** Merge `source`'s entries into `target` (later wins), threading each entry's
+ * origin with the written reference `hop` prepended to its via-chain. */
+function mergeMapInto(target: PropertyMap, source: PropertyMap, hop: IMapSpliceDecl | IValue): void {
+  for (const [key, value] of source) {
+    target.set(key, value);
+    const origin = mapEntryOrigin(source, key);
+    if (origin) {
+      recordMapOrigin(target, key, { entry: origin.entry, via: [hop, ...origin.via] });
+    }
+  }
+}
 
 /**
  * The distinguished constraint carrying the requested operation ('build',
@@ -355,6 +410,9 @@ export class BuildContext {
    * are NOT resolved: a REWRITE/STRING value is inert, never a collection point.
    */
   public resolveNameProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<Name[]> {
+    if (hasBlockValue(prop)) {
+      return Computable.reject(mapInWrongContextError(prop, "a string"));
+    }
     return Computable.forAll(
       prop.values.map(value => this.substituteNameVars(value.value, { property: prop, target, context: this, value, next: stack })),
       (...resolved) => resolved
@@ -363,6 +421,125 @@ export class BuildContext {
 
   public resolveStringProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<Property> {
     return this.resolveNameProperty(prop, target, stack).then(names => new Property(names.map(name => name.toString())));
+  }
+
+  /**
+   * Resolve a MAP property to an ordered key -> value map. A MAP is a distinct,
+   * structured value (not a string): its value is EITHER one inline `{ key =
+   * value; ... }` block OR bare reference(s) to other block-valued properties
+   * (`metadata = SHARED;`, the FILES-list `test_deps = chai` idiom — a map is
+   * name-chased, not `${}`-interpolated). Within a block, an entry's value is
+   * either strings — resolved like a scalar STRING (substituted, space-joined
+   * into one string) — or nested block(s): one block is a sub-map, several are a
+   * list of maps (`maintainers = { ... } { ... };`), never a mix. The map is
+   * ecosystem-neutral, so the consuming rule interprets the values (esbuild
+   * `define` code text, package.json metadata, ...). Keys retain declaration
+   * order. References merge left-to-right, later value winning (extension via an
+   * inline block + reference is deferred). An empty property yields an empty map.
+   */
+  public resolveMap(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<PropertyMap> {
+    return this.resolveMapDecl(prop, target, stack, new Set());
+  }
+
+  private resolveMapDecl(
+    prop: IPropertyDecl,
+    target: ITargetDecl | undefined,
+    stack: IDependencyStack | undefined,
+    seen: Set<IPropertyDecl>
+  ): Computable<PropertyMap> {
+    if (seen.has(prop)) {
+      return Computable.reject(new Error(`Circular map reference at '${prop.name}'`));
+    }
+    const nextSeen = new Set(seen).add(prop);
+    if (hasBlockValue(prop)) {
+      /* Inline form: one block (Validate enforces this for schema'd properties;
+       * re-checked here for shared globals, which never pass a targetdef). */
+      if (prop.values.length > 1) {
+        return Computable.reject(
+          new Error(`'${prop.name}' must be a single \`{ ... }\` block or bare reference(s), not a mix`)
+        );
+      }
+      return this.resolveBlock(prop.values[0].entries ?? [], target, stack, nextSeen);
+    }
+    /* Reference form: each value names a block-valued property (resolved
+     * recursively under this context, so a shared map's `${...}` sees the
+     * consuming build's config), merged left-to-right with later winning; each
+     * merged entry's origin gains the written reference as a via-hop. */
+    return Computable.forAll(
+      prop.values.map(value =>
+        this.resolveMapReference(value.value, { property: prop, target, context: this, value, next: stack }, stack, nextSeen).then(
+          (map): [PropertyMap, IValue] => [map, value]
+        )
+      ),
+      (...maps: [PropertyMap, IValue][]) => {
+        const merged: PropertyMap = new Map();
+        for (const [map, value] of maps) {
+          mergeMapInto(merged, map, value);
+        }
+        return merged;
+      }
+    );
+  }
+
+  /** Chase a map reference (a top-level bare value or an in-block splice) to
+   * the named block-valued property and resolve it, `seen`-guarded. */
+  private resolveMapReference(
+    name: Name,
+    info: IDependencyStack | undefined,
+    stack: IDependencyStack | undefined,
+    seen: Set<IPropertyDecl>
+  ): Computable<PropertyMap> {
+    return this.substituteNameVars(name, info).then(substituted => {
+      const def = this.model.getDecl(substituted.toString());
+      if (!def || def.kind !== DeclKind.Property) {
+        throw new Error(`'${substituted.toString()}' does not name a map property`);
+      }
+      return this.resolveMapDecl(def, undefined, stack, seen);
+    });
+  }
+
+  /** Resolve one block's items in written order: a `key = value;` entry sets its
+   * key (strings joined to one string; nested blocks to a sub-map, several to a
+   * list of sub-maps — mixing rejected, statically for schema'd properties and
+   * re-checked here for shared globals); a `NAME;` splice merges the named map's
+   * entries in at that position. Later values win. Each entry records its ghost
+   * origin (the written decl, plus via-hops for splices). */
+  private resolveBlock(
+    entries: IMapItemDecl[],
+    target: ITargetDecl | undefined,
+    stack: IDependencyStack | undefined,
+    seen: Set<IPropertyDecl>
+  ): Computable<PropertyMap> {
+    return Computable.forAll(
+      entries.map((item): Computable<PropertyMapValue | PropertyMap> => {
+        if (item.kind === DeclKind.MapSplice) {
+          return this.resolveMapReference(item.ref, stack, stack, seen);
+        }
+        const blocks = item.values.filter(value => value.entries !== undefined);
+        if (blocks.length === 0) {
+          return this.resolveStringProperty(item, target, stack).then(prop => prop.toString());
+        }
+        if (blocks.length < item.values.length) {
+          return Computable.reject(new Error(`map value '${item.name}' is either strings or maps, not a mix`));
+        }
+        return Computable.forAll(
+          blocks.map(value => this.resolveBlock(value.entries ?? [], target, stack, seen)),
+          (...maps: PropertyMap[]) => (maps.length === 1 ? maps[0] : maps)
+        );
+      }),
+      (...resolved: (PropertyMapValue | PropertyMap)[]) => {
+        const map: PropertyMap = new Map();
+        entries.forEach((item, i) => {
+          if (item.kind === DeclKind.MapSplice) {
+            mergeMapInto(map, resolved[i] as PropertyMap, item);
+          } else {
+            map.set(item.name, resolved[i] as PropertyMapValue);
+            recordMapOrigin(map, item.name, { entry: item, via: [] });
+          }
+        });
+        return map;
+      }
+    );
   }
 
   /**
@@ -388,6 +565,9 @@ export class BuildContext {
     stack?: IDependencyStack,
     callerOverrides?: Constraints
   ): Computable<SourceRef[]> {
+    if (hasBlockValue(prop)) {
+      return Computable.reject(mapInWrongContextError(prop, "files"));
+    }
     return Computable.forAll(
       prop.values.map(value => {
         const info: IDependencyStack = { property: prop, target, context: this, value, next: stack };
@@ -793,6 +973,21 @@ function asRunnable(sources: readonly unknown[], name: string): RunnableFileSet 
   return runnable;
 }
 
+/**
+ * The error for reading a map (block-valued) property in a non-map context.
+ * Enforcement lives in the readers, not the targetdef schema: each resolve
+ * function refuses a value shape it cannot mean, rather than silently yielding
+ * an empty result (`version = 1.0-${MAP}` interpolating to "1.0-", `deps = MAP`
+ * contributing no files). The help line teaches the one sanctioned idiom.
+ */
+function mapInWrongContextError(prop: IPropertyDecl, context: string): Error {
+  return attachHelp(
+    new Error(`'${prop.name}' is a map and cannot be used as ${context}`),
+    `a map is referenced by bare name from a MAP property (\`metadata = ${prop.name};\`); ` +
+      `it cannot be \${...}-interpolated or read as files`
+  );
+}
+
 /** The requirement one dep source declares (see {@link TargetContext.collectDeclaredRequirements}). */
 function declaredRequirementOf(source: SourceRef): Computable<Requirement | undefined> {
   if (source instanceof RepositoryRef) {
@@ -831,6 +1026,10 @@ export abstract class TargetContext {
   /** Resolve a REWRITE property to its name-mapping function (see
    * resolveRewrite); the empty rewrite (no such property) maps nothing. */
   public abstract getRewrite(name: string, overrides?: Constraints): Computable<RewriteFn>;
+
+  /** Resolve a MAP property to its ordered key -> string map (see
+   * resolveMap); an absent property yields an empty map. */
+  public abstract getMap(name: string, overrides?: Constraints): Computable<PropertyMap>;
 
   /** Announce the declared target this evaluation belongs to as building
    * (once) — see DeclaredTargetContext; an anonymous target delegates to its
@@ -1111,6 +1310,14 @@ export class DeclaredTargetContext extends TargetContext {
     return this.getContext(overrides).resolveRewrite(prop, this.target, this.stack);
   }
 
+  public getMap(name: string, overrides?: Constraints): Computable<PropertyMap> {
+    const prop = this.props[name];
+    if (!prop) {
+      return Computable.resolve(new Map());
+    }
+    return this.getContext(overrides).resolveMap(prop, this.target, this.stack);
+  }
+
   public getDeclaredContext(): this {
     return this;
   }
@@ -1208,6 +1415,12 @@ export class AnonymousTargetContext extends TargetContext {
    * rewrite is always empty here. */
   public getRewrite(): Computable<RewriteFn> {
     return Computable.resolve(() => undefined);
+  }
+
+  /** Sub-targets take concrete inputs, not MAP property declarations, so the
+   * map is always empty here. */
+  public getMap(): Computable<PropertyMap> {
+    return Computable.resolve(new Map());
   }
 
   public getDeclaredContext(): DeclaredTargetContext {

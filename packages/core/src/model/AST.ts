@@ -30,6 +30,7 @@ export enum DeclKind {
   Include,
   Namespace,
   Plugin,
+  MapSplice,
 }
 
 interface IBaseDecl {
@@ -65,6 +66,7 @@ export enum PropertyType {
   FileSetList,
   OutputFileSet,
   Rewrite,
+  Map,
 }
 
 export interface IPropertySchema {
@@ -83,6 +85,18 @@ export interface IValue extends IBaseDecl {
   value: Name;
   /** End offset (exclusive) of the written value, for span underlines */
   endOffset: number;
+  /**
+   * The items when this value is a `{ key = value; ... }` block — a block is a
+   * *value kind* (so an entry can hold a list of blocks: an array of maps).
+   * Present (even if empty) iff a block was written; `value` is then an empty
+   * placeholder Name, never read. Each item is an ordinary property decl — its
+   * `name` the (possibly dotted, foreign) map key, its own values either
+   * strings or nested blocks — or a `NAME;` splice ({@link IMapSpliceDecl}).
+   * Parsing is schema-blind (a `{` in value position always parses as a
+   * block); Validate enforces where blocks may appear (MAP properties only, no
+   * mixing with strings in one value list).
+   */
+  entries?: IMapItemDecl[];
 }
 
 export interface IPropertyDecl extends IBaseDecl {
@@ -97,6 +111,28 @@ export interface IPropertyDecl extends IBaseDecl {
    */
   keyRef?: Name;
   values: IValue[];
+}
+
+/**
+ * A bare `NAME;` statement inside a `{ ... }` block: splices the named
+ * block-valued property's entries at that position (the in-block analogue of
+ * the top-level `metadata = SHARED;` bare-reference chase). Entries and
+ * splices apply in written order, later values winning — so an entry after a
+ * splice overrides a same-named key the splice brought in.
+ */
+export interface IMapSpliceDecl extends IBaseDecl {
+  kind: DeclKind.MapSplice;
+  ref: Name;
+  /** End offset (exclusive) of the written reference, for span underlines */
+  endOffset: number;
+}
+
+/** One item of a `{ ... }` block: a `key = value;` entry or a `NAME;` splice. */
+export type IMapItemDecl = IPropertyDecl | IMapSpliceDecl;
+
+/** @return true if any of the property's values is a `{ ... }` block. */
+export function hasBlockValue(prop: IPropertyDecl): boolean {
+  return prop.values.some(value => value.entries !== undefined);
 }
 
 export interface IIncludeDecl extends IBaseDecl {
@@ -153,6 +189,8 @@ export function getDeclKindName(kind: DeclKind): string {
       return "value";
     case DeclKind.Plugin:
       return "plugin";
+    case DeclKind.MapSplice:
+      return "splice";
   }
 }
 

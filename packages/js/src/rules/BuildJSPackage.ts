@@ -26,11 +26,17 @@
 import {
   BUILD_OPERATION,
   Computable,
+  declPosn,
   EMPTY_FILESET,
   FileSet,
   FileSource,
+  mapEntryOrigin,
   MemoryFile,
+  Name,
+  NameResolutionError,
   PackageFileSet,
+  PropertyMap,
+  PropertyMapValue,
   RepositoryRef,
   Requirement,
   RuleRegistration,
@@ -47,8 +53,9 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
       context.getGlobalString("JS_TARGET"),
       context.getProperty("version"),
       context.getFileSources("deps"),
+      context.getMap("metadata"),
     ],
-    (sources, tests, target, version, depSources) => {
+    (sources, tests, target, version, depSources, metadata) => {
       /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
       const seedJson = sources
         .get("package.json")
@@ -91,7 +98,15 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
          * runtime-only identity each time. */
         const deliver = (built: FileSet): FileSource => {
           const contents = FileSet.unionAll(built, stripPackageJson(copied));
-          const packageJson = createPackageJson(contents, seed, context.name, version?.toString(), declared, jsTarget);
+          const packageJson = createPackageJson(
+            contents,
+            seed,
+            context.name,
+            version?.toString(),
+            declared,
+            jsTarget,
+            metadata
+          );
           const assembled = FileSet.unionAll(contents, new FileSet(new Map([["package.json", packageJson]])));
           return new PackageFileSet(assembled, context.name, version?.toString(), carried);
         };
@@ -105,11 +120,52 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
   );
 }
 
+/** package.json fields fabr computes from the target itself — a `metadata` key
+ * naming one of these would be silently overridden, so it is rejected instead. */
+const COMPUTED_PACKAGE_FIELDS = new Set([
+  "name",
+  "version",
+  "type",
+  "main",
+  "types",
+  "bin",
+  "dependencies",
+  "devDependencies",
+]);
+
+/** The error for a metadata key fabr computes itself: attributed through the
+ * map's ghost origin to the written entry — even one that arrived through a
+ * shared map — with any splice/reference hops named in the message. */
+function rejectedMetadataKey(key: string, metadata: PropertyMap): Error {
+  const reason = `metadata key '${key}' is set by fabr and cannot be overridden`;
+  const origin = mapEntryOrigin(metadata, key);
+  if (!origin) {
+    return new Error(reason);
+  }
+  const via = origin.via.map(hop => ` (via '${("ref" in hop ? hop.ref : hop.value).toString()}')`).join("");
+  return new NameResolutionError(Name.fromLiteral(key), declPosn(origin.entry), undefined, reason + via);
+}
+
+/** Encode a resolved metadata value as its package.json JSON shape: a string
+ * stays a string, a sub-map becomes an object (`repository`), a list of
+ * sub-maps an array of objects (`maintainers`). */
+function encodeMetadataValue(value: PropertyMapValue): unknown {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(encodeMetadataValue);
+  }
+  return Object.fromEntries([...value].map(([key, sub]) => [key, encodeMetadataValue(sub)]));
+}
+
 /**
  * Generate the package.json for the built package: initialized from the source
- * package.json where one exists, then overlaid with what the target declares —
- * its name, version, module type, entry points, and the direct package
- * requirements from its deps.
+ * package.json where one exists, overlaid with the declared `metadata` (the
+ * descriptive fields — description, license, author, repository, ...), then
+ * with what the target computes — its name, version, module type, entry
+ * points, and the direct package requirements from its deps (these always win,
+ * so metadata may not name one of them).
  */
 function createPackageJson(
   files: FileSet,
@@ -117,9 +173,16 @@ function createPackageJson(
   name: string,
   version: string | undefined,
   declared: (Requirement | undefined)[],
-  jsTarget: JSTarget
+  jsTarget: JSTarget,
+  metadata: PropertyMap
 ): MemoryFile {
   const packageJson: Record<string, unknown> = { ...(seed ?? {}) };
+  for (const [key, value] of metadata) {
+    if (COMPUTED_PACKAGE_FIELDS.has(key)) {
+      throw rejectedMetadataKey(key, metadata);
+    }
+    packageJson[key] = encodeMetadataValue(value);
+  }
   packageJson.name = name;
   if (version !== undefined) {
     packageJson.version = version;

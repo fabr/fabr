@@ -18,7 +18,7 @@ import {
   RepositoryRegistration,
   RuleRegistration,
 } from "../rules/Types";
-import { Constraints } from "./BuildContext";
+import { Constraints, mapEntryOrigin, PropertyMap, PropertyMapValue } from "./BuildContext";
 import { DependencyFailedError, NameResolutionError, NoRuleFoundError, ReferenceFailedError } from "./Errors";
 import { ExecutionContext } from "./ExecutionContext";
 import { parseBuildString } from "./Parser";
@@ -93,6 +93,19 @@ let lastRewrite: Array<string | undefined> | undefined;
 registerRule("test_rw", {}, context =>
   context.getRewrite("out").then(rewrite => {
     lastRewrite = ["a.entry.js", "b.entry.js", "keep.txt"].map(name => rewrite(name));
+    return EMPTY_FILESET;
+  })
+);
+
+/* Reads a MAP property, so a test can observe the resolved key -> value map
+ * (order preserved, strings substituted and space-joined, sub-maps recursive);
+ * `testMapObserver` additionally receives the map itself (for origin probes). */
+let lastMap: Array<[string, PropertyMapValue]> | undefined;
+let testMapObserver: ((map: PropertyMap) => void) | undefined;
+registerRule("test_map", {}, context =>
+  context.getMap("defines").then(map => {
+    lastMap = [...map];
+    testMapObserver?.(map);
     return EMPTY_FILESET;
   })
 );
@@ -512,6 +525,204 @@ describe("BuildContext", () => {
     await model.getConfig({}, execution).getTarget("t");
     /* A bare constant maps every input to itself. */
     expect(lastRewrite).to.deep.equal(["bundle.js", "bundle.js", "bundle.js"]);
+  });
+
+  it("Resolves a MAP property to an ordered, substituted key -> string map", async () => {
+    lastMap = undefined;
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_map { defines = MAP; }\n" +
+      "NAME = production;\n" +
+      "test_map t { defines = { process.env.NODE_ENV = ${NAME}; DEBUG = false; } }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}, execution).getTarget("t");
+    expect(lastMap).to.deep.equal([
+      ["process.env.NODE_ENV", "production"],
+      ["DEBUG", "false"],
+    ]);
+  });
+
+  it("Resolves nested blocks to sub-maps and block lists to arrays of maps", async () => {
+    lastMap = undefined;
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_map { defines = MAP; }\n" +
+      "test_map t { defines = { repository = { type = git; url = ${U}; }; maintainers = { name = a; } { name = b; }; }; }\n" +
+      "U = example.com;\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}, execution).getTarget("t");
+    expect(lastMap).to.deep.equal([
+      ["repository", new Map([["type", "git"], ["url", "example.com"]])],
+      ["maintainers", [new Map([["name", "a"]]), new Map([["name", "b"]])]],
+    ]);
+  });
+
+  it("Splices a shared map into a block, later entries winning in written order", async () => {
+    lastMap = undefined;
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_map { defines = MAP; }\n" +
+      "SHARED = { license = gpl3; description = generic; }\n" +
+      "test_map t { defines = { before = x; SHARED; description = specific; }; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}, execution).getTarget("t");
+    /* The splice lands at its written position; the later literal entry
+     * overrides the spliced `description`. */
+    expect(lastMap).to.deep.equal([
+      ["before", "x"],
+      ["license", "gpl3"],
+      ["description", "specific"],
+    ]);
+  });
+
+  it("Records ghost origins through a splice (entry decl + via-hop)", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_map { defines = MAP; }\n" +
+      "SHARED = { license = gpl3; }\n" +
+      "test_map t { defines = { SHARED; description = own; }; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    let map: PropertyMap | undefined;
+    testMapObserver = resolved => {
+      map = resolved;
+    };
+    await model.getConfig({}, execution).getTarget("t");
+    testMapObserver = undefined;
+
+    /* license arrived via the SHARED splice: origin names the written entry in
+     * the shared block plus one via-hop; the literal entry has no hops. */
+    const licenseOrigin = map && mapEntryOrigin(map, "license");
+    expect(licenseOrigin?.entry.name).to.equal("license");
+    expect(licenseOrigin?.via).to.have.lengthOf(1);
+    const ownOrigin = map && mapEntryOrigin(map, "description");
+    expect(ownOrigin?.entry.name).to.equal("description");
+    expect(ownOrigin?.via).to.deep.equal([]);
+  });
+
+  it("Fails a splice cycle", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_map { defines = MAP; }\n" +
+      "A = { B; }\n" +
+      "B = { A; }\n" +
+      "test_map t { defines = A; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    let caught: Error | undefined;
+    await model
+      .getConfig({}, execution)
+      .getTarget("t")
+      .catch((err: Error) => {
+        caught = err;
+      });
+    const cause = caught instanceof DependencyFailedError ? caught.cause : caught;
+    expect(cause?.message).to.match(/Circular map reference/);
+  });
+
+  it("Resolves a MAP property written as a bare reference to a shared block", async () => {
+    lastMap = undefined;
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_map { defines = MAP; }\n" +
+      "SHARED = { license = gpl3; owner = ${WHO}; };\n" +
+      "WHO = nathan;\n" +
+      "test_map t { defines = SHARED; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}, execution).getTarget("t");
+    /* The shared block's `${WHO}` resolves under the consuming build's config. */
+    expect(lastMap).to.deep.equal([
+      ["license", "gpl3"],
+      ["owner", "nathan"],
+    ]);
+  });
+
+  it("Fails a MAP reference that does not name a map property", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "targetdef test_map { defines = MAP; }\n" + "test_map t { defines = missing; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    let caught: Error | undefined;
+    await model
+      .getConfig({}, execution)
+      .getTarget("t")
+      .catch((err: Error) => {
+        caught = err;
+      });
+    /* The reference failure is wrapped by the target boundary; its cause carries
+     * the map-reference message. */
+    const cause = caught instanceof DependencyFailedError ? caught.cause : caught;
+    expect(cause?.message).to.match(/does not name a map property/);
+  });
+
+  it("Rejects ${...}-interpolating a map property, with the bare-name hint", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_map { defines = MAP; }\n" +
+      "SHARED = { license = gpl3; };\n" +
+      "test_map t { defines = ${SHARED}; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    let caught: Error | undefined;
+    await model
+      .getConfig({}, execution)
+      .getTarget("t")
+      .catch((err: Error) => {
+        caught = err;
+      });
+    const cause = caught instanceof DependencyFailedError ? caught.cause : caught;
+    expect(cause?.message).to.match(/'SHARED' is a map and cannot be used as a string/);
+  });
+
+  it("Rejects resolving a map property as files", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "SHARED = { license = gpl3; };\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    /* `fabr cat SHARED` / `deps = SHARED` territory: a bare name resolving to a
+     * block-valued property decl in files context. */
+    let caught: Error | undefined;
+    await model
+      .getConfig({}, execution)
+      .getTarget("SHARED")
+      .catch((err: Error) => {
+        caught = err;
+      });
+    expect(caught?.message).to.match(/'SHARED' is a map and cannot be used as files/);
+  });
+
+  it("Resolves an absent MAP property to an empty map", async () => {
+    lastMap = undefined;
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "targetdef test_map { defines = MAP; }\n" + "test_map t { }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}, execution).getTarget("t");
+    expect(lastMap).to.deep.equal([]);
   });
 
   it("Rejects rename values that violate the wildcard rules", () => {

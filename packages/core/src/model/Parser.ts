@@ -24,6 +24,7 @@ import {
   IBuildFile,
   IBuildFileContents,
   IIncludeDecl,
+  IMapItemDecl,
   IPluginDecl,
   IPropertyDecl,
   IPropertySchema,
@@ -622,6 +623,20 @@ export class BuildParser {
 
   private parseValue(): IValue {
     const token = this.token;
+    if (token.type === TokenType.LBRACE) {
+      /* A `{ key = value; ... }` block value (a map, or one element of a list of
+       * maps). Schema-blind: Validate enforces where blocks may appear. */
+      const offset = token.start;
+      const entries = this.parseMapBlock();
+      return {
+        kind: DeclKind.Value,
+        source: this.source,
+        offset,
+        endOffset: this.prevTokenEnd,
+        value: Name.fromLiteral(""),
+        entries,
+      };
+    }
     if (token.type === TokenType.NAME || token.type === TokenType.IDENTIFIER || token.type === TokenType.SIMPLE_NAME) {
       const offset = token.start;
       const value = this.parseReference();
@@ -774,8 +789,19 @@ export class BuildParser {
   private parsePropertyDecl(name: string, nameOffset: number, keyRef?: Name): IPropertyDecl {
     const values: IValue[] = [];
     this.consumeToken(TokenType.EQUALS);
+    /* The value loop admits `{...}` blocks as values (parseValue), so a value
+     * list may hold names, blocks, or (per Validate, only homogeneously) several
+     * blocks — `maintainers = { ... } { ... };`. A block value swallows its own
+     * closing brace, so the loop's RBRACE test only ever sees the *enclosing*
+     * body's terminator. Like a target body, a block needs no trailing ';': a
+     * closed block ends the property unless another block follows (an array of
+     * maps) — homogeneity makes this unambiguous, since any other token can only
+     * start the next entry/statement. */
     while (this.token.type !== TokenType.SEMI && this.token.type !== TokenType.RBRACE) {
       values.push(this.parseValue());
+      if (values[values.length - 1].entries !== undefined && this.token.type !== TokenType.LBRACE) {
+        break;
+      }
     }
     this.consumeIfToken(TokenType.SEMI);
     return {
@@ -786,6 +812,54 @@ export class BuildParser {
       keyRef,
       values,
     };
+  }
+
+  /**
+   * MapBlock  ::= '{' MapItem* '}'
+   * MapItem   ::= MapKey '=' Value* ';' | MapSplice
+   * MapSplice ::= Ref ';'
+   * MapKey    ::= IDENTIFIER | SIMPLE_NAME | NAME
+   *
+   * A MAP property's value: a block of `key = value;` sub-properties and
+   * `NAME;` splices. Unlike a `sync` member coordinate, a map key is a *literal
+   * foreign name* (dotted keys like `process.env.NODE_ENV` are common), never
+   * resolved as a reference — so its canonical string is taken verbatim as the
+   * entry name. A name NOT followed by `=` is instead a *splice*: a reference
+   * to another block-valued property whose entries merge in at this position
+   * (the in-block form of the top-level bare-reference chase). Entry values are
+   * ordinary values, including nested blocks. Assumes the current token is the
+   * opening `{`.
+   */
+  private parseMapBlock(): IMapItemDecl[] {
+    this.consumeToken(TokenType.LBRACE);
+    const entries: IMapItemDecl[] = [];
+    while (this.token.type !== TokenType.RBRACE) {
+      const keyToken = this.peekRefToken();
+      if (!keyToken) {
+        this.unexpectedTokenError("a map key, a map reference, or '}'");
+      }
+      const offset = keyToken.start;
+      const name = this.tokenToName(keyToken);
+      const next = this.nextToken();
+      if (next.type === TokenType.EQUALS) {
+        entries.push(this.parsePropertyDecl(name.toString(), offset));
+      } else if (next.type === TokenType.SEMI || next.type === TokenType.RBRACE) {
+        /* A splice: the reference's Name is kept intact (it may carry `${...}`
+         * substitutions), resolved at read time. */
+        entries.push({
+          kind: DeclKind.MapSplice,
+          source: this.source,
+          offset,
+          endOffset: this.prevTokenEnd,
+          ref: name,
+        });
+        this.consumeIfToken(TokenType.SEMI);
+      } else {
+        this.unexpectedTokenError("'=' or ';'");
+      }
+    }
+    this.consumeToken(TokenType.RBRACE);
+    return entries;
   }
 
   private parsePropertyList(): IPropertyDecl[] {
@@ -898,7 +972,7 @@ export class BuildParser {
       this.nextToken();
       let next = this.consumeToken(TokenType.EQUALS);
       if (next.type !== TokenType.IDENTIFIER) {
-        this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'REQUIRED'");
+        this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'MAP' or 'REQUIRED'");
       } else {
         while (next.type === TokenType.IDENTIFIER) {
           switch (next.text) {
@@ -914,14 +988,17 @@ export class BuildParser {
             case "REWRITE":
               type = PropertyType.Rewrite;
               break;
+            case "MAP":
+              type = PropertyType.Map;
+              break;
             default:
-              this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'REQUIRED'");
+              this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'MAP' or 'REQUIRED'");
           }
           next = this.nextToken();
         }
       }
       if (type === undefined) {
-        this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE'");
+        this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'MAP'");
       } else {
         result[key] = { required, type };
       }
