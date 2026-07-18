@@ -165,7 +165,14 @@ export function rewriteManifest(
   coordinate: NpmPublishIdentity,
   memberVersions: ReadonlyMap<string, string>
 ): Record<string, unknown> {
-  const result: Record<string, unknown> = { ...manifest, name: coordinate.name, version: coordinate.version };
+  /* The assigned identity leads (a versionless built manifest has no `version`
+   * to overwrite in place — appending it last would read oddly). */
+  const result: Record<string, unknown> = { name: coordinate.name, version: coordinate.version };
+  for (const [key, value] of Object.entries(manifest)) {
+    if (!(key in result)) {
+      result[key] = value;
+    }
+  }
   for (const field of DEPENDENCY_FIELDS) {
     const deps = result[field];
     if (deps && typeof deps === "object") {

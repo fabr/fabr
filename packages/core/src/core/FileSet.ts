@@ -119,6 +119,20 @@ export class FileSet implements FileSource {
   }
 
   /**
+   * Project every source by `name` (result names under `prefix`), each source
+   * on its own terms (see FileSource.find) and each yielding its OWN FileSet —
+   * never merged: a same-named file in two sources is not a conflict here;
+   * union (and its conflict detection) is the act of a consumer that actually
+   * merges content.
+   */
+  public static findAll(sources: FileSource[], name: Name, prefix?: string): Computable<FileSet[]> {
+    return Computable.forAll(
+      sources.map(fs => fs.find(name, prefix)),
+      (...sets: FileSet[]) => sets
+    );
+  }
+
+  /**
    * Read the contents of the given file as a string (convenience method).
    * Rejects if the file is not in the set.
    * @param filepath path of a file within the set.
@@ -310,16 +324,6 @@ export class FileSet implements FileSource {
     return new FileSet(result);
   }
 
-  /**
-   * Project all sources by `name` (result names under `prefix`) and union the
-   * results — each source projects on its own terms (see FileSource.find).
-   */
-  public static findAll(sources: FileSource[], name: Name, prefix?: string): Computable<FileSet> {
-    return Computable.forAll(
-      sources.map(fs => fs.find(name, prefix)),
-      (...sets) => FileSet.unionAll(...sets)
-    );
-  }
 }
 
 export const EMPTY_FILESET: FileSet = new FileSet(new Map());

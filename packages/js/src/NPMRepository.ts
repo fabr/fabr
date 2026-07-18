@@ -236,7 +236,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
               `dependants to be resolvable`
           );
         }
-        const manifestJson = JSON.stringify(manifest, undefined, 2);
+        const manifestJson = JSON.stringify(manifest, undefined, 2) + "\n";
         const rooted = new Map<string, IFile>();
         for (const [name, file] of content) {
           if (name !== "package.json") {

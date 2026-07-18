@@ -1,6 +1,6 @@
 import { Readable } from "stream";
 import { Computable } from "../core/Computable";
-import { FileSet, FileSource } from "../core/FileSet";
+import { EMPTY_FILESET, FileSet, FileSource } from "../core/FileSet";
 import {
   isRepository,
   RepositoryPublishRef,
@@ -737,15 +737,22 @@ export class BuildContext {
               if (containers.length === 0) {
                 return { sources: references, decl };
               }
-              return FileSet.findAll(containers, rest, retainedPrefix).then(data => {
+              /* Each container projects separately and STAYS a separate source
+               * (findAll never merges — union, and its ConflictError, is the
+               * act of a consumer that merges content). Containers the
+               * projection missed are dropped; one empty set is kept when
+               * nothing matched, so an empty outcome still reaches the
+               * driver's "matched no files" report. */
+              return FileSet.findAll(containers, rest, retainedPrefix).then(projected => {
+                const matched = projected.filter(set => !set.isEmpty());
                 /* Same literal-must-resolve rule for a projection into built
                  * content, but only in a property context (a CLI name reports
                  * through the driver's "matched no files") and only when no
                  * deferred reference might still deliver the name. */
-                if (data.isEmpty() && references.length === 0 && relativeTo && !rest.hasGlob()) {
+                if (matched.length === 0 && references.length === 0 && relativeTo && !rest.hasGlob()) {
                   throw new NameResolutionError(substName, declPosn(stack?.value ?? relativeTo), useSiteOf(stack));
                 }
-                return { sources: [...references, data], decl };
+                return { sources: [...references, ...(matched.length > 0 ? matched : [EMPTY_FILESET])], decl };
               });
             });
           }
@@ -1080,7 +1087,7 @@ export abstract class TargetContext {
       if (!repository) {
         throw new Error(`'${name.toString()}' does not name a repository`);
       }
-      return repository.getRepositoryPublishRef(match.rest);
+      return repository.getRepositoryPublishRef(match.rest).withRepositoryName(match.decl.name);
     });
   }
 

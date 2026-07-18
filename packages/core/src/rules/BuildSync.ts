@@ -162,4 +162,33 @@ function validateMember(context: TargetContext, prop: { key: Name; decl: IProper
     });
 }
 
+/**
+ * The files view of a release (`BUILD_OPERATION=files` — what ls/cat build):
+ * the same carriers the build yields, laid out as ONE FileSet with each
+ * member's wire artifacts under its coordinate as a directory
+ * (`@npm/name/1.0.0/…`). The alias separator is a path separator, so the
+ * ordinary written-name rule then addresses a member's file
+ * (`release:@npm:name:1.0.0:package.json`) or subtree with plain projections —
+ * no bespoke namespace. Delegates to the build (`getTargetWithOverrides`, not
+ * re-run), so the view is of exactly the dry-run artifacts.
+ */
+function syncFiles(context: TargetContext): Computable<RuleResult> {
+  return context.context.getTargetWithOverrides(context.name, { [BUILD_OPERATION]: "build" }).then(sources => {
+    const carriers = sources.filter((source): source is PublishableFileSet => source instanceof PublishableFileSet);
+    return FileSet.unionAll(
+      ...carriers.map(carrier => {
+        /* destination.toString() is the full written coordinate (the resolver
+         * attached the repository's declared name at vend time). */
+        const dir = carrier.destination.toString().replaceAll(":", "/");
+        return carrier.rename(name => `${dir}/${name}`);
+      })
+    );
+  });
+}
+
 export const syncRule: RuleRegistration = { type: "sync", constraints: {}, evaluate: syncPackages };
+export const syncFilesRule: RuleRegistration = {
+  type: "sync",
+  constraints: { [BUILD_OPERATION]: "files" },
+  evaluate: syncFiles,
+};

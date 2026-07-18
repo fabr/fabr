@@ -4,7 +4,18 @@ import * as nodePath from "node:path";
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
-import { Repository, RepositoryRef, Resolution, SourceRef } from "../core/Repository";
+import {
+  PublishMember,
+  PublishStatus,
+  Repository,
+  RepositoryPublishRef,
+  RepositoryRef,
+  RepositoryWriter,
+  Resolution,
+  SourceRef,
+} from "../core/Repository";
+import { PublishableFileSet } from "../core/PublishableFileSet";
+import { syncFilesRule, syncRule } from "../rules/BuildSync";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { Name } from "../core/Name";
 import { renderProvenance } from "../core/Provenance";
@@ -18,7 +29,7 @@ import {
   RepositoryRegistration,
   RuleRegistration,
 } from "../rules/Types";
-import { Constraints, mapEntryOrigin, PropertyMap, PropertyMapValue } from "./BuildContext";
+import { BUILD_OPERATION, Constraints, mapEntryOrigin, PropertyMap, PropertyMapValue } from "./BuildContext";
 import { DependencyFailedError, NameResolutionError, NoRuleFoundError, ReferenceFailedError } from "./Errors";
 import { ExecutionContext } from "./ExecutionContext";
 import { parseBuildString } from "./Parser";
@@ -85,6 +96,24 @@ registerRule("test_dir", {}, () =>
     )
   )
 );
+/* Yields two separate sources (a sync-like multi-member result), each with a
+ * same-named file plus a unique one, for exercising per-source projection */
+registerRule("test_multi", {}, () =>
+  Computable.resolve([
+    new FileSet(
+      new Map([
+        ["package.json", MemoryFile.from("one")],
+        ["one.tgz", MemoryFile.from("1")],
+      ])
+    ),
+    new FileSet(
+      new Map([
+        ["package.json", MemoryFile.from("two")],
+        ["two.tgz", MemoryFile.from("2")],
+      ])
+    ),
+  ])
+);
 /* Registered only under a specific constraint, so selection under {} fails */
 registerRule("test_constrained", { FLAVOR: "special" }, () => Computable.resolve(EMPTY_FILESET));
 /* Reads a REWRITE property and applies it to a fixed set of names, so a test
@@ -121,7 +150,7 @@ class TestRepo implements Repository {
     return new RepositoryRef(this, name);
   }
 
-  public getRepositoryPublishRef(name: Name): never {
+  public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
     throw new Error(`test_repo is not a publish destination ('${name.toString()}')`);
   }
 
@@ -153,6 +182,37 @@ class TestRepo implements Repository {
   }
 }
 registerRepositoryProvider("test_repo", () => Computable.resolve(new TestRepo()));
+
+/* Publish-capable repository double: vends publish refs, and packages each
+ * member's content verbatim plus a `manifest.txt` naming its address — for
+ * exercising the sync rules. */
+class TestPubRepo extends TestRepo implements RepositoryWriter {
+  public override getRepositoryPublishRef(name: Name): RepositoryPublishRef {
+    return new RepositoryPublishRef(this, name);
+  }
+
+  public package(members: PublishMember[]): Computable<PublishableFileSet[]> {
+    return Computable.resolve(
+      members.map(
+        member =>
+          new PublishableFileSet(
+            FileSet.unionAll(
+              member.content,
+              new FileSet(new Map([["manifest.txt", MemoryFile.from(member.destination.toString())]]))
+            ),
+            member.destination
+          )
+      )
+    );
+  }
+
+  public publish(): Computable<PublishStatus> {
+    return Computable.resolve<PublishStatus>("published");
+  }
+}
+registerRepositoryProvider("test_pub", () => Computable.resolve(new TestPubRepo()));
+/* The real sync rules (build + files views), exercised against the double */
+testRules.push(syncRule, syncFilesRule);
 
 /* A rule gathering two properties and a global through ONE collection point:
  * all of their references must land in a single joint resolution batch */
@@ -446,6 +506,92 @@ describe("BuildContext", () => {
       const cause = (err as DependencyFailedError).cause;
       expect(cause).to.be.instanceOf(NameResolutionError);
       expect(cause.message).to.equal("Unable to resolve 'b:missing.txt'");
+    }
+  });
+
+  it("Projects a multi-source target per source, never unioning across members", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "targetdef test_multi { }\n" + "test_multi m { }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    const config = model.getConfig({}, execution);
+
+    /* A name every member matches: one projected source per member — the
+     * same-named files are NOT a conflict here (union, and its conflict
+     * detection, is the consumer's act). */
+    const both = await config.resolveName("m:package.json");
+    expect(both).to.have.length(2);
+    const contents = await Promise.all(
+      both.map(source => (source as FileSet).get("package.json").then(file => file!.readString()))
+    );
+    expect(contents.sort()).to.deep.equal(["one", "two"]);
+
+    /* A name only one member matches: the missed members are dropped, not
+     * kept as empty sources. */
+    const one = await config.resolveName("m:one.tgz");
+    expect(one).to.have.length(1);
+    expect([...(one[0] as FileSet)].map(([name]) => name)).to.deep.equal(["one.tgz"]);
+  });
+
+  it("Lays a sync out under member-coordinate directories for the files operation", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_pub { }\n" +
+      "targetdef test_file { content = STRING; }\n" +
+      "targetdef sync { * = FILES; }\n" +
+      "test_pub pub { }\n" +
+      "test_file c1 { content = one; }\n" +
+      "test_file c2 { content = two; }\n" +
+      "sync release { pub:alpha:1.0.0 = c1; pub:beta:2.0.0 = c2; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    const config = model.getConfig({ [BUILD_OPERATION]: "files" }, execution);
+
+    /* The whole release under `files`: ONE FileSet, each member's artifacts
+     * under its coordinate as a directory (alias separators as path
+     * separators). */
+    const all = await config.resolveName("release");
+    expect(all).to.have.length(1);
+    expect([...(all[0] as FileSet)].map(([name]) => name).sort()).to.deep.equal([
+      "pub/alpha/1.0.0/f.txt",
+      "pub/alpha/1.0.0/manifest.txt",
+      "pub/beta/2.0.0/f.txt",
+      "pub/beta/2.0.0/manifest.txt",
+    ]);
+
+    /* So the ordinary written-name rule addresses one member's file — no
+     * bespoke namespace: the coordinate matches as alias segments and is
+     * stripped colon-form. */
+    const one = await config.resolveName("release:pub:alpha:1.0.0:manifest.txt");
+    expect(one).to.have.length(1);
+    expect([...(one[0] as FileSet)].map(([name]) => name)).to.deep.equal(["manifest.txt"]);
+    /* The vended ref's display form is the full written coordinate — the
+     * resolver attached the repository's declared name (`pub`) at vend time. */
+    const file = await (one[0] as FileSet).get("manifest.txt");
+    expect(await file!.readString()).to.equal("pub:alpha:1.0.0");
+  });
+
+  it("Defers a multi-source same-name collision to the consumer that unions", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_multi { }\n" +
+      "test_multi m { }\n" +
+      "test_good a { deps = m:package.json; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    try {
+      await model.getConfig({}, execution).getTarget("a");
+      expect.fail("expected target a to fail");
+    } catch (err) {
+      expect(err).to.be.instanceOf(DependencyFailedError);
+      const cause = (err as DependencyFailedError).cause;
+      expect(cause).to.be.instanceOf(ConflictError);
+      expect((cause as ConflictError).key).to.equal("package.json");
     }
   });
 

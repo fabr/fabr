@@ -176,16 +176,24 @@ function createPackageJson(
   jsTarget: JSTarget,
   metadata: PropertyMap
 ): MemoryFile {
-  const packageJson: Record<string, unknown> = { ...(seed ?? {}) };
+  /* The identity leads (the conventional reading order — name, then version),
+   * so it is placed before the seed and metadata are copied in; a key keeps
+   * its first-placed position, while the computed assignments below still win
+   * on value. */
+  const packageJson: Record<string, unknown> = { name };
+  if (version !== undefined) {
+    packageJson.version = version;
+  }
+  for (const [key, value] of Object.entries(seed ?? {})) {
+    if (!(key in packageJson)) {
+      packageJson[key] = value;
+    }
+  }
   for (const [key, value] of metadata) {
     if (COMPUTED_PACKAGE_FIELDS.has(key)) {
       throw rejectedMetadataKey(key, metadata);
     }
     packageJson[key] = encodeMetadataValue(value);
-  }
-  packageJson.name = name;
-  if (version !== undefined) {
-    packageJson.version = version;
   }
   packageJson.type = jsTarget.module === "esm" ? "module" : "commonjs";
   const names = new Set([...files].map(([filename]) => filename));
@@ -209,7 +217,7 @@ function createPackageJson(
     packageJson.devDependencies = devDependencies;
   }
 
-  return MemoryFile.from(JSON.stringify(packageJson, undefined, 2));
+  return MemoryFile.from(JSON.stringify(packageJson, undefined, 2) + "\n");
 }
 
 /**

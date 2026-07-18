@@ -35,27 +35,27 @@ unicode_properties = @pkg:unicode-properties @pkg:@types/unicode-properties;
 tar_stream = @pkg:tar-stream @pkg:@types/tar-stream;
 
 js_package @fabr-build/core {
-  srcs = packages/core/src:**/*.ts packages/core:lib/**;
+  srcs = packages/core/src:**/*.ts packages/core:lib/** README.md COPYING -> LICENSE;
   tests = packages/core/src:**/*.test.ts;
   deps = @pkg:@types/node @pkg:@parcel/watcher @pkg:picomatch unicode_properties tar_stream;
   test_deps = chai;
-  metadata = FABR_METADATA
+  metadata = { FABR_METADATA; description = Fabr core }
 }
 
 js_package @fabr-build/js {
-  srcs = packages/js/src:**/*.ts packages/js:lib/**;
+  srcs = packages/js/src:**/*.ts packages/js:lib/** README.md COPYING -> LICENSE;
   tests = packages/js/src:**/*.test.ts;
   deps = @pkg:@types/node @fabr-build/core;
   test_deps = chai;
-  metadata = FABR_METADATA
+  metadata = { FABR_METADATA; description = Fabr JS support plugin }
 }
 
 js_package @fabr-build/cli {
-  srcs = packages/cli/src:**/*.ts;
+  srcs = packages/cli/src:**/*.ts README.md COPYING -> LICENSE;
   tests = packages/cli/src:**/*.test.ts;
   deps = @pkg:@types/node @fabr-build/core @fabr-build/js;
   test_deps = chai;
-  metadata = FABR_METADATA
+  metadata = { FABR_METADATA; description = Fabr CLI }
 }
 
 # End-to-end tests: drive the built fabr CLI directly. The harness is a plain

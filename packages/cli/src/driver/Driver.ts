@@ -452,10 +452,9 @@ function matchedNoFiles(name: string): Error {
  * contents (sorted by name), with a `target:` header when more than one
  * target was requested. A target is by definition a built thing, so its
  * results are FileSets already — enumerated per source, blank-line separated
- * (a multi-source target — a sync's members — lists each source as if each
- * were named, never unioned into one flat set). Listing output is the
- * command's data, so it goes straight to stdout rather than through the
- * diagnostic log.
+ * (a multi-source target lists each source as if each were named, never
+ * unioned into one flat set). Listing output is the command's data, so it
+ * goes straight to stdout rather than through the diagnostic log.
  */
 function listTargets(options: Options, results: SourceRef[][]): Computable<void> {
   return Computable.forAll(

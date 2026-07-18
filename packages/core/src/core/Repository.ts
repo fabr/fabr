@@ -233,12 +233,22 @@ export class RepositoryPublishRef {
     public readonly source: RepositoryWriter,
     /** The address as written (the remainder after the repository alias),
      *  uninterpreted — its syntax is the destination's own. */
-    public readonly name: Name
+    public readonly name: Name,
+    /** The declared name of the destination repository in the build's
+     *  namespace (`@npm`) — the destination cannot know what it was declared
+     *  as, so the resolver attaches it at vend time. Display-only: completes
+     *  the written coordinate (`@npm:name:version`), never parsed. */
+    public readonly repositoryName?: string
   ) {}
 
-  /** The display form for messages. */
+  public withRepositoryName(repositoryName: string): RepositoryPublishRef {
+    return new RepositoryPublishRef(this.source, this.name, repositoryName);
+  }
+
+  /** The display form for messages — the full written coordinate when the
+   *  repository name is known. */
   public toString(): string {
-    return this.name.toString();
+    return this.repositoryName === undefined ? this.name.toString() : `${this.repositoryName}:${this.name.toString()}`;
   }
 }
 
