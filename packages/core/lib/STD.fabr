@@ -25,7 +25,7 @@ targetdef flag {
 
 #
 # Define a runnable plain shell script (run it with 'fabr run', collect its
-# output with the generic 'run' target, or check it with a golden test). 'entry'
+# output with the generic 'generate' target, or check it with a golden test). 'entry'
 # is the script FILE itself — it contributes the file to the install (at its
 # resolved name) and launches it with the shell; 'deps' stage any further
 # support files (their filesets union flat — just files, no package mounting);
@@ -39,14 +39,15 @@ targetdef script {
 }
 
 #
-# Execute a runnable (a BUILD_OPERATION=run target) and collect the files it
-# writes as this target's content. 'tool' names the runnable (the program);
+# Execute a runnable and collect the files it writes as this target's content
+# (a build step — the codegen/genrule analogue, distinct from the 'fabr run'
+# verb which launches interactively). 'tool' names the runnable (the program);
 # 'srcs' are the invocation's input files, staged into the work dir at the
 # install root — for a JS tool that is the npx-in-project layout: sources at
 # the root, the tool's node_modules adjacent; 'args' are appended to the
 # runnable's own; 'output' (a name pattern, default '**') selects the result.
 #
-targetdef run {
+targetdef generate {
     tool = REQUIRED FILES;
     srcs = FILES;
     args = STRING;

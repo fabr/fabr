@@ -39,7 +39,7 @@ describe("e2e: watch mode (fabr build -w)", () => {
       {
         "PROJECT.fabr":
           "script gen_prog { entry = src:gen.sh; }\n" +
-          "run gen { tool = gen_prog; output = out:**; }\n",
+          "generate gen { tool = gen_prog; output = out:**; }\n",
         "src/gen.sh": 'mkdir -p out\nprintf "V1\\n" > out/msg.txt\n',
       },
       ["build", "-w", "gen"]

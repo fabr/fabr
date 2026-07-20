@@ -15,7 +15,7 @@ plugin @fabr/js;
   plugin's own `.fabr` library files** — no separate `include` needed (declaring `@fabr/js` brings in
   its `JS.fabr`). Each plugin is activated once per build, in declaration order.
 - **STD.fabr is always present** — core's library is included in every build without being named, so
-  the generic `flag`/`script`/`run` targetdefs are always available.
+  the generic `flag`/`script`/`generate` targetdefs are always available.
 - Plugins are resolved by **module resolution only**: the package must be installed alongside the
   fabr host (for `@fabr/*` packages, they ship with the fabr installation). There is currently no
   option to build a plugin from source as part of the build that uses it. A plugin that cannot be
