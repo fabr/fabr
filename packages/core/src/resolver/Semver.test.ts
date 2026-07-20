@@ -63,6 +63,7 @@ describe("Semver", () => {
     expect(minimumOf("^1.5.0 || ^2.0.0")).to.equal("1.5.0");
     expect(minimumOf(">1.2.3")).to.equal("1.2.4");
     expect(minimumOf(">=1.2.3 <2.0.0")).to.equal("1.2.3");
+    expect(minimumOf(">= 2.1.2 < 3.0.0")).to.equal("2.1.2");
   });
 
   it("checks constraint satisfaction", () => {
@@ -105,6 +106,13 @@ describe("Semver", () => {
     /* Prereleases sort below the corresponding release */
     expect(satisfies("1.0.0-alpha", ">=1.0.0")).to.equal(false);
     expect(satisfies("1.0.0", ">=1.0.0-alpha")).to.equal(true);
+
+    /* Whitespace between operator and version (iconv-lite's '>= 2.1.2 < 3.0.0') */
+    expect(satisfies("2.1.2", ">= 2.1.2 < 3.0.0")).to.equal(true);
+    expect(satisfies("2.9.9", ">= 2.1.2 < 3.0.0")).to.equal(true);
+    expect(satisfies("3.0.0", ">= 2.1.2 < 3.0.0")).to.equal(false);
+    expect(satisfies("1.2.9", "~ 1.2.3")).to.equal(true);
+    expect(satisfies("1.9.9", "^ 1.2.3")).to.equal(true);
   });
 
   it("assigns resolution keys per compatibility unit", () => {

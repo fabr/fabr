@@ -22,7 +22,8 @@ import { VersionDomain } from "./Types";
 /**
  * npm-flavoured semver, supporting the constraint forms that appear in practice
  * in package dependencies: exact versions, caret and tilde ranges, comparators
- * (>=, >, <, <=, =) and space-separated conjunctions thereof, x-ranges
+ * (>=, >, <, <=, =, with or without whitespace before the version, per npm)
+ * and space-separated conjunctions thereof, x-ranges
  * (1.x, 1.2.x, bare 1 or 1.2, *), and '||' disjunctions.
  *
  * Not supported (parseConstraint throws): hyphen ranges, dist-tags. Prerelease
@@ -270,7 +271,14 @@ function intersectRanges(a: IRange, b: IRange): IRange {
 }
 
 function parseRange(text: string): IRange {
-  const tokens = text.trim().split(/\s+/).filter(token => token.length > 0);
+  /* npm tolerates whitespace between an operator and its version — published
+   * metadata contains e.g. '>= 2.1.2 < 3.0.0' (iconv-lite) — so join each
+   * operator to the version it governs before splitting on conjunctions. */
+  const tokens = text
+    .replace(/(>=|<=|>|<|=|\^|~)\s+(?=[\dvxX*])/g, "$1")
+    .trim()
+    .split(/\s+/)
+    .filter(token => token.length > 0);
   if (tokens.length === 0) {
     return { min: ZERO_VERSION, minInclusive: true, maxInclusive: false };
   }

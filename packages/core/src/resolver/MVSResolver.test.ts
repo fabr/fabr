@@ -272,7 +272,10 @@ describe("MVSResolver", () => {
     );
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0"]);
     expect(result.errors).to.have.length(1);
-    expect(result.errors[0]).to.contain("A@1.0.0");
+    /* The diagnostic names the dependency the bad constraint is on, quotes the
+     * constraint verbatim, and attributes the requirer */
+    expect(result.errors[0]).to.contain("'B: 1.0.0 - 2.0.0'");
+    expect(result.errors[0]).to.contain("required by A@1.0.0");
   });
 
   it("resolves an empty root set", () => {

@@ -87,7 +87,7 @@ export function resolveMVS<V, C>(
       try {
         constraint = domain.parseConstraint(req.constraint);
       } catch (err) {
-        errors.add(`${err instanceof Error ? err.message : err} (required by ${requiredBy})`);
+        errors.add(`${err instanceof Error ? err.message : err} in requirement '${req.pkg}: ${req.constraint}' (required by ${requiredBy})`);
         return;
       }
       if (domain.isUnconstrained(constraint)) {
