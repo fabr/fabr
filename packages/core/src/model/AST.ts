@@ -72,12 +72,18 @@ export enum PropertyType {
 export interface IPropertySchema {
   required?: boolean;
   type: PropertyType;
+  /** The doc-comment prose written above this property in the targetdef, marker-
+   * stripped, or undefined if none. Runtime-only documentation metadata. */
+  docComment?: string;
 }
 
 export interface ITargetDefDecl extends IBaseDecl {
   kind: DeclKind.TargetDef;
   name: string;
   properties: Record<string, IPropertySchema>;
+  /** The doc-comment prose written above this targetdef, marker-stripped, or
+   * undefined if none. Runtime-only documentation metadata. */
+  docComment?: string;
 }
 
 export interface IValue extends IBaseDecl {

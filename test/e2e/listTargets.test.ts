@@ -67,6 +67,17 @@ describe("e2e: list-targets", () => {
     expect(result.stdout).not.to.match(/^hello/m);
   });
 
+  it("--json emits structured data (name, type, location)", () => {
+    const result = runFabr(project, ["list-targets", "--json"]);
+    expect(result.status).to.equal(0);
+    const parsed = JSON.parse(result.stdout);
+    const names = parsed.targets.map((t: { name: string }) => t.name);
+    expect(names).to.include.members(["hello", "world", "tools/inner"]);
+    const hello = parsed.targets.find((t: { name: string }) => t.name === "hello");
+    expect(hello.type).to.equal("flag");
+    expect(hello.location).to.match(/PROJECT\.fabr:\d+:\d+/);
+  });
+
   it("errors on an unknown target name rather than exiting empty", () => {
     const result = runFabr(project, ["list-targets", "nonesuch"]);
     expect(result.status).to.equal(1);

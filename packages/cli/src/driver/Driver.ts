@@ -504,8 +504,9 @@ function listTargets(options: Options, results: SourceRef[][]): Computable<void>
  * `fabr list-targets`: print the targets declared in the project (name + type),
  * recursively across namespaces. A model query — it builds nothing. Repository
  * instances are excluded (they are not buildable targets). `-l` adds each
- * target's source location; an optional list of names filters the listing.
- * Output is the command's data, so it goes to stdout.
+ * target's source location; `--json` emits the structured form; an optional
+ * list of names filters the listing. Output is the command's data, so it goes
+ * to stdout.
  */
 function listDeclaredTargets(model: BuildModel, options: Options): Computable<void> {
   const wanted = new Set(options.targets);
@@ -516,6 +517,11 @@ function listDeclaredTargets(model: BuildModel, options: Options): Computable<vo
   const missing = [...wanted].filter(name => !targets.some(target => target.name === name));
   if (missing.length > 0) {
     throw new Error(`No such target: ${missing.join(", ")}`);
+  }
+  if (options.json) {
+    const json = targets.map(({ name, decl }) => ({ name, type: decl.type, location: formatDeclLocation(decl) }));
+    console.log(JSON.stringify({ targets: json }, undefined, 2));
+    return Computable.resolve(undefined);
   }
   const nameWidth = Math.max(0, ...targets.map(target => target.name.length));
   /* In long mode a source location trails the type, so pad the type column too
@@ -561,7 +567,9 @@ function propertyTypeName(schema: IPropertySchema): string {
  * it builds nothing. An optional list of names filters to just those types;
  * `-l` appends each type's source location — its contributing lib file (core's
  * STD.fabr or a plugin's), which is where the type is defined and documented.
- * Output is the command's data, so it goes to stdout.
+ * `--json` emits the full structured form — operations, source location, and
+ * the doc-comment descriptions — for docs generation. Output is the command's
+ * data, so it goes to stdout.
  */
 function listTargetDefs(model: BuildModel, options: Options): Computable<void> {
   const wanted = new Set(options.targets);
@@ -574,6 +582,10 @@ function listTargetDefs(model: BuildModel, options: Options): Computable<void> {
   const missing = [...wanted].filter(name => !defs.some(def => def.name === name));
   if (missing.length > 0) {
     throw new Error(`No such target type: ${missing.join(", ")}`);
+  }
+  if (options.json) {
+    console.log(JSON.stringify({ targetdefs: defs.map(def => targetDefJson(model, def)) }, undefined, 2));
+    return Computable.resolve(undefined);
   }
   defs.forEach((def, i) => {
     if (i > 0) {
@@ -589,6 +601,24 @@ function listTargetDefs(model: BuildModel, options: Options): Computable<void> {
     }
   });
   return Computable.resolve(undefined);
+}
+
+/** @return the full structured form of a targetdef for `--json` — its
+ * operations, source location, description, and per-property schema with
+ * descriptions (doc comments; null when a decl carries none). */
+function targetDefJson(model: BuildModel, def: ITargetDefDecl): Record<string, unknown> {
+  return {
+    name: def.name,
+    operations: model.getOperations(def.name),
+    location: formatDeclLocation(def),
+    description: def.docComment ?? null,
+    properties: Object.entries(def.properties).map(([name, schema]) => ({
+      name,
+      type: propertyTypeName(schema),
+      required: schema.required === true,
+      description: schema.docComment ?? null,
+    })),
+  };
 }
 
 /** @return the header line for a targetdef: its name, and the operations it

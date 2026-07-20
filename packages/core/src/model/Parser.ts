@@ -97,21 +97,27 @@ const CHAR_HASH = "#".codePointAt(0);
 const CHAR_DASH = "-".codePointAt(0);
 const CHAR_DOT = ".".codePointAt(0);
 
-interface NameToken {
-  type: TokenType.NAME;
+interface TokenBase {
   start: number;
+  /** The doc-comment block immediately preceding this token (the last contiguous
+   * run of `#` comment lines before it, marker-stripped), or undefined if none.
+   * Decl parsers read it off the token that begins a declaration to attach its
+   * documentation. */
+  docComment?: string;
+}
+
+interface NameToken extends TokenBase {
+  type: TokenType.NAME;
   text: Name;
 }
 
-interface IdentToken {
+interface IdentToken extends TokenBase {
   type: TokenType.IDENTIFIER | TokenType.SIMPLE_NAME;
-  start: number;
   text: string;
 }
 
-interface NonNameToken {
+interface NonNameToken extends TokenBase {
   type: Exclude<TokenType, TokenType.NAME | TokenType.IDENTIFIER | TokenType.SIMPLE_NAME>;
-  start: number;
 }
 
 type Token = NameToken | IdentToken | NonNameToken;
@@ -139,6 +145,44 @@ function isWhitespace(ch: number): boolean {
 /** The `->` arrow must be whitespace-delimited: what may follow the `>`. */
 function isArrowTerminator(ch: number | undefined): boolean {
   return ch === undefined || isWhitespace(ch);
+}
+
+/**
+ * Extract the doc-comment block from the whitespace/comment `gap` that precedes
+ * a token: the *last contiguous* run of `#` comment lines, reached across only
+ * blank lines between it and the token. So a comment block directly above a
+ * declaration — or one separated from it by blank lines — attaches, while an
+ * earlier banner or note (itself blank-line-separated from the block) does not.
+ * Each line is stripped of its leading whitespace, `#` marker and one following
+ * space; blank marker lines at the block's edges are trimmed. Returns the prose
+ * (lines joined with newlines) or undefined if the gap holds no comment block.
+ * A trailing comment sharing a declaration's line (`x = y; # note`) is
+ * indistinguishable from a standalone one here and would mis-attach; the lib
+ * files place doc comments on their own lines, so this is not a concern.
+ */
+function extractDocComment(gap: string): string | undefined {
+  const lines = gap.split("\n");
+  let i = lines.length - 1;
+  /* Skip trailing blank lines: the blank separator(s) and the token's own
+   * leading indentation on its line. */
+  while (i >= 0 && lines[i].trim() === "") {
+    i--;
+  }
+  /* Collect the contiguous run of comment lines ending here (stopping at the
+   * first blank/non-comment line above, which cuts off any earlier block). */
+  const block: string[] = [];
+  while (i >= 0 && lines[i].trim().startsWith("#")) {
+    block.unshift(lines[i].replace(/^\s*#+ ?/, ""));
+    i--;
+  }
+  /* Drop blank marker lines (`#`) framing the prose. */
+  while (block.length > 0 && block[0].trim() === "") {
+    block.shift();
+  }
+  while (block.length > 0 && block[block.length - 1].trim() === "") {
+    block.pop();
+  }
+  return block.length > 0 ? block.join("\n") : undefined;
 }
 
 function isFirstIdentChar(ch: number): boolean {
@@ -479,6 +523,7 @@ export class BuildParser {
 
     /* Skip over whitespace and comments */
     let inComment = false;
+    let sawComment = false;
     const ch = this.reader.skipUntil(ch => {
       if (inComment) {
         if (ch === CHAR_NEWLINE) {
@@ -487,6 +532,7 @@ export class BuildParser {
         return false;
       } else if (ch === CHAR_HASH) {
         inComment = true;
+        sawComment = true;
         return false;
       } else {
         return !isWhitespace(ch);
@@ -552,6 +598,14 @@ export class BuildParser {
       default:
         /* It's a NAME */
         this.token = this.readNameOrIdentifier();
+    }
+    /* Attach any doc-comment block from the gap just skipped to this token, so a
+     * decl parser can read the documentation written above the declaration. */
+    if (sawComment) {
+      const docComment = extractDocComment(this.reader.substring(start, tokenStart));
+      if (docComment !== undefined) {
+        this.token.docComment = docComment;
+      }
     }
     return this.token;
   }
@@ -925,7 +979,7 @@ export class BuildParser {
    * @param name
    * @param nameOffset
    */
-  private parseTargetDefDecl(): ITargetDefDecl {
+  private parseTargetDefDecl(docComment: string | undefined): ITargetDefDecl {
     if (this.token.type !== TokenType.IDENTIFIER) {
       this.unexpectedTokenError("Identifier");
     } else {
@@ -942,6 +996,7 @@ export class BuildParser {
         offset: nameToken.start,
         endOffset: nameEnd,
         properties,
+        docComment,
       };
     }
   }
@@ -956,6 +1011,7 @@ export class BuildParser {
     const result: Record<string, IPropertySchema> = {};
     while (this.token.type !== TokenType.RBRACE) {
       const token = this.token;
+      const docComment = token.docComment;
       let required = false;
       let type: PropertyType | undefined;
       /* The key is a property name (`srcs`), or `*` — the wildcard, typing any
@@ -1000,7 +1056,7 @@ export class BuildParser {
       if (type === undefined) {
         this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'MAP'");
       } else {
-        result[key] = { required, type };
+        result[key] = { required, type, docComment };
       }
       if (next.type !== TokenType.RBRACE) {
         this.consumeToken(TokenType.SEMI);
@@ -1076,7 +1132,7 @@ export class BuildParser {
         this.result.properties.push(this.parsePropertyDecl(token.text, token.start));
       } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.SIMPLE_NAME) {
         if (token.text === "targetdef") {
-          this.result.targetdefs.push(this.parseTargetDefDecl());
+          this.result.targetdefs.push(this.parseTargetDefDecl(token.docComment));
         } else {
           this.result.targets.push(this.parseTargetDecl(token.text, token.start));
         }

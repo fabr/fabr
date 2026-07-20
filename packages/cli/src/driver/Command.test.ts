@@ -58,6 +58,7 @@ describe("Command", () => {
       command: "build",
       mode: Mode.Normal,
       longListing: false,
+      json: false,
       targets: ["foo"],
       properties: {},
     });
@@ -68,6 +69,7 @@ describe("Command", () => {
       command: "test",
       mode: Mode.Normal,
       longListing: false,
+      json: false,
       targets: ["foo", "bar"],
       properties: {},
     });
@@ -83,6 +85,7 @@ describe("Command", () => {
       command: "test",
       mode: Mode.Watch,
       longListing: false,
+      json: false,
       targets: ["foo"],
       properties: { x: "1" },
     });
@@ -93,6 +96,7 @@ describe("Command", () => {
       command: "ls",
       mode: Mode.Normal,
       longListing: true,
+      json: false,
       targets: ["foo", "bar"],
       properties: {},
     });
@@ -100,6 +104,13 @@ describe("Command", () => {
 
   it("treats ls after another command as a target", () => {
     expect(parseCommandLine(["node", "fabr", "build", "ls"]).targets).to.deep.equal(["ls"]);
+  });
+
+  it("parses the --json flag for a query command", () => {
+    const options = parseCommandLine(["node", "fabr", "list-targetdefs", "--json"]);
+    expect(options.command).to.equal("list-targetdefs");
+    expect(options.json).to.be.true;
+    expect(options.targets).to.deep.equal([]);
   });
 
   it("keeps cat name references whole (the model resolves the projection)", () => {

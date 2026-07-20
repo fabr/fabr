@@ -291,6 +291,43 @@ describe("Parser Tests", () => {
     );
   });
 
+  describe("doc comments", () => {
+    it("attaches a comment block directly above a targetdef", () => {
+      const def = parseValid("# A runnable thing.\ntargetdef script {\n  entry = FILES;\n}").targetdefs[0];
+      expect(def.docComment).to.equal("A runnable thing.");
+    });
+
+    it("attaches a comment separated from the targetdef by a blank line", () => {
+      /* The lib files put a blank line between a block comment and its decl;
+       * the block still attaches (only blank lines are crossed). */
+      const def = parseValid("#\n# A runnable thing.\n#\n\ntargetdef script {\n  entry = FILES;\n}").targetdefs[0];
+      expect(def.docComment).to.equal("A runnable thing.");
+    });
+
+    it("does not pull in an earlier block separated by a blank line", () => {
+      /* A banner/section comment above the doc block, blank-line-separated, is a
+       * different block and must not leak into the attached comment. */
+      const src = "# Section banner.\n\n# The real doc.\ntargetdef script {\n  entry = FILES;\n}";
+      expect(parseValid(src).targetdefs[0].docComment).to.equal("The real doc.");
+    });
+
+    it("joins a multi-line block and strips markers", () => {
+      const def = parseValid("# line one\n# line two\ntargetdef script {\n  entry = FILES;\n}").targetdefs[0];
+      expect(def.docComment).to.equal("line one\nline two");
+    });
+
+    it("attaches comments to individual properties", () => {
+      const def = parseValid("targetdef js_test {\n  # The test files.\n  tests = FILES;\n  deps = FILES;\n}").targetdefs[0];
+      expect(def.properties.tests.docComment).to.equal("The test files.");
+      expect(def.properties.deps.docComment).to.be.undefined;
+    });
+
+    it("leaves docComment undefined when there is no comment", () => {
+      const def = parseValid("targetdef script {\n  entry = FILES;\n}").targetdefs[0];
+      expect(def.docComment).to.be.undefined;
+    });
+  });
+
   it("Plugin Decl", () => {
     expect(summarize(parseValid("plugin @fabr-build/js;\nplugin simple;"))).to.deep.equal(
       summary({ plugins: ["@fabr-build/js", "simple"] })

@@ -39,6 +39,9 @@ export interface Options {
   command: string;
   mode: Mode;
   longListing: boolean;
+  /** For the model-query verbs (`list-targets`/`list-targetdefs`): emit machine-
+   * readable JSON instead of the human listing (the docs-generation interface). */
+  json: boolean;
   /** Target names, or (for `ls`/`cat`) whole name references — `pkg:build/*.js`
    * — resolved by the model, not split here. */
   targets: string[];
@@ -62,7 +65,8 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  list-targetdefs   List the available target types and their properties\n" +
       "Options:\n" +
       "  -DPROP=VALUE      Force the given property PROP to VALUE\n" +
-      "  -l                Long listing (with ls): hash and size per file\n" +
+      "  -l                Long listing: hash and size per file (ls), or source location (list-*)\n" +
+      "  --json            Emit JSON (list-targets / list-targetdefs)\n" +
       "  -w                Watch mode\n"
   );
 }
@@ -76,7 +80,14 @@ function usageError(message: string): never {
 }
 
 export function parseCommandLine(args: string[]): Options {
-  const options: Options = { command: "build", mode: Mode.Normal, longListing: false, targets: [], properties: {} };
+  const options: Options = {
+    command: "build",
+    mode: Mode.Normal,
+    longListing: false,
+    json: false,
+    targets: [],
+    properties: {},
+  };
   const opts = args.slice(2);
 
   let commandGiven = false;
@@ -90,6 +101,8 @@ export function parseCommandLine(args: string[]): Options {
         options.mode = Mode.Watch;
       } else if (arg === "-l") {
         options.longListing = true;
+      } else if (arg === "--json") {
+        options.json = true;
       } else if (arg === "-h") {
         printUsage();
         process.exit(0);

@@ -69,6 +69,23 @@ describe("e2e: list-targetdefs", () => {
     expect(result.stdout).to.match(/^script \[run\]\s+\S*STD\.fabr:\d+:\d+$/m);
   });
 
+  it("--json emits structured data: operations, descriptions, property schema", () => {
+    const result = runFabr({ "PROJECT.fabr": "# empty\n" }, ["list-targetdefs", "--json", "script"]);
+    expect(result.status).to.equal(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.targetdefs).to.have.lengthOf(1);
+    const def = parsed.targetdefs[0];
+    expect(def.name).to.equal("script");
+    expect(def.operations).to.deep.equal(["run"]);
+    /* The doc-comment prose is carried through, marker-stripped. */
+    expect(def.description).to.match(/^Define a runnable plain shell script/);
+    /* Property schema: type, required flag, and (absent here) description. */
+    const entry = def.properties.find((p: { name: string }) => p.name === "entry");
+    expect(entry).to.deep.include({ type: "FILES", required: true });
+    const deps = def.properties.find((p: { name: string }) => p.name === "deps");
+    expect(deps).to.deep.include({ required: false });
+  });
+
   it("errors on an unknown target type rather than exiting empty", () => {
     const result = runFabr({ "PROJECT.fabr": "# empty\n" }, ["list-targetdefs", "nonesuch"]);
     expect(result.status).to.equal(1);
