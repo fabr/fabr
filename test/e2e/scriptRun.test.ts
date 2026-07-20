@@ -25,7 +25,7 @@ describe("e2e: script (shell runnable) + run", () => {
     const result = runFabr(
       {
         "PROJECT.fabr":
-          "script gen_prog { deps = src:gen.sh; entry = gen.sh; }\n" +
+          "script gen_prog { entry = src:gen.sh; }\n" +
           "run gen { tool = gen_prog; output = out:**; }\n",
         "src/gen.sh": 'mkdir -p out\nprintf "e2e ran\\n" > out/msg.txt\n',
       },
@@ -39,7 +39,7 @@ describe("e2e: script (shell runnable) + run", () => {
     const result = runFabr(
       {
         "PROJECT.fabr":
-          "script hello { deps = src:hello.sh; entry = hello.sh; args = Ada; }\n",
+          "script hello { entry = src:hello.sh; args = Ada; }\n",
         "src/hello.sh": 'printf "hi %s %s" "$1" "$2"\n',
       },
       ["run", "hello", "Lovelace"]
@@ -51,7 +51,7 @@ describe("e2e: script (shell runnable) + run", () => {
   it("propagates the script's exit code", () => {
     const result = runFabr(
       {
-        "PROJECT.fabr": "script boom { deps = src:boom.sh; entry = boom.sh; }\n",
+        "PROJECT.fabr": "script boom { entry = src:boom.sh; }\n",
         "src/boom.sh": "exit 7\n",
       },
       ["run", "boom"]
@@ -59,17 +59,17 @@ describe("e2e: script (shell runnable) + run", () => {
     expect(result.status).to.equal(7);
   });
 
-  it("fails with a clear error when entry is not in the install", () => {
+  it("fails with a clear error when entry names no file", () => {
     const result = runFabr(
       {
         "PROJECT.fabr":
-          "script gen_prog { deps = src:gen.sh; entry = missing.sh; }\n" +
+          "script gen_prog { deps = src:gen.sh; entry = src:missing.sh; }\n" +
           "run gen { tool = gen_prog; output = out:**; }\n",
         "src/gen.sh": "# present, but not the entry\n",
       },
       ["build", "gen"]
     );
     expect(result.status).to.not.equal(0);
-    expect(result.stderr).to.contain("is not present in the install");
+    expect(result.stderr).to.contain("Unable to resolve 'src:missing.sh'");
   });
 });

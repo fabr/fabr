@@ -31,6 +31,7 @@ export * from "./core/Fetch";
 export * from "./core/FileSet";
 export * from "./core/FSFileSource";
 export * from "./core/PackageFileSet";
+export * from "./core/FileSetRef";
 export * from "./core/RunnableFileSet";
 export * from "./core/PublishableFileSet";
 export * from "./core/Flag";

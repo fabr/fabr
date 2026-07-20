@@ -139,7 +139,8 @@ describe("CatalogRepository (through the model)", () => {
       ],
     },
   ];
-  const execution = new ExecutionContext(new BuildCache("."), new LogFormatter(LogLevel.Info, () => undefined), EMPTY_FILESET, EMPTY_FILESET);
+  const testLog = new LogFormatter(LogLevel.Info, () => undefined);
+  const execution = new ExecutionContext(new BuildCache(".", testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
 
   /* STD isn't loaded for a raw-string model; the catalog reads the operation,
    * which the real build always has via STD's default. */

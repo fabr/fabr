@@ -38,7 +38,7 @@ describe("e2e: watch mode (fabr build -w)", () => {
     const session = startFabrWatch(
       {
         "PROJECT.fabr":
-          "script gen_prog { deps = src:gen.sh; entry = gen.sh; }\n" +
+          "script gen_prog { entry = src:gen.sh; }\n" +
           "run gen { tool = gen_prog; output = out:**; }\n",
         "src/gen.sh": 'mkdir -p out\nprintf "V1\\n" > out/msg.txt\n',
       },

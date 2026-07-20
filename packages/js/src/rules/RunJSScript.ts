@@ -18,14 +18,17 @@
  */
 
 /**
- * The js_script[run] rule: *define* a runnable JavaScript program. `deps`
- * assemble the install (packages mount under `node_modules/<name>`, loose
- * filesets land at their own paths); `entry` is a path *within* that install to
- * launch under node (so a package's own script runs from its node_modules mount
- * and its relative imports resolve); `args` are fixed leading arguments. It
- * yields a `RunnableFileSet` — the assembled install plus how to launch it — for
- * `fabr run`, the generic `run` target, or a golden test to invoke. It does not
- * itself execute (executing a runnable and collecting output is the generic
+ * The js_script[run] rule: *define* a runnable JavaScript program. `entry` is
+ * either a plain script FILE — contributed to the install at its resolved name
+ * and launched under node — or a PACKAGE (external or built) whose declared
+ * bin is the entry; package-mode exists to decorate a packaged tool with
+ * additional dependencies, so entry co-resolves with `deps` at the one
+ * collection point (one joint version selection, one node_modules). `deps`
+ * assemble the rest of the install (packages mount under `node_modules/<name>`,
+ * loose filesets land at their own paths); `args` are fixed leading arguments.
+ * It yields a `RunnableFileSet` — the assembled install plus how to launch it —
+ * for `fabr run`, the generic `run` target, or a golden test to invoke. It does
+ * not itself execute (executing a runnable and collecting output is the generic
  * `run` target's job).
  */
 
@@ -33,41 +36,65 @@ import {
   BUILD_OPERATION,
   Computable,
   FileSet,
+  FileSetRef,
+  manifestAll,
   PackageFileSet,
   RuleRegistration,
   RuleResult,
   RunnableFileSet,
   TargetContext,
 } from "@fabr-build/core";
-import { assembleNodeModules } from "../JSPackage";
+import { assembleNodeModules, makeNpmRunnable } from "../JSPackage";
 
 function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
-  /* deps are built packages — resolve them under build, not the run operation
-   * this rule is selected by (constraints otherwise propagate). */
+  /* deps/entry are built content — resolve them under build, not the run
+   * operation this rule is selected by (constraints otherwise propagate). */
   return Computable.forAll(
     [
       context.getFileSources("deps", { [BUILD_OPERATION]: "build" }),
-      context.getRequiredString("entry"),
+      context.getFileSources("entry", { [BUILD_OPERATION]: "build" }),
       context.getProperty("args"),
     ],
-    (depSources, entry, args) =>
-      /* THE collection point: deps materialize jointly, so packages resolve
-       * with the target's own pins. */
-      context.collect({ deps: depSources }).then(({ deps }) => {
-        /* Assemble the install: packages (and their closures) mount under
-         * node_modules/<name>, loose filesets land at their own paths. */
-        const packages = deps.filter((d): d is PackageFileSet => d instanceof PackageFileSet);
-        const loose = deps.filter(d => !(d instanceof PackageFileSet));
-        const install = FileSet.unionAll(FileSet.layout({ node_modules: assembleNodeModules(packages) }), ...loose);
-        return install.get(entry).then(file => {
-          if (!file) {
-            throw new Error(
-              `js_script 'entry' (${entry}) is not present in the install — add the file (or its package) to 'deps'`
-            );
+    (depSources, entrySources, args) =>
+      /* THE collection point: deps AND entry materialize jointly, so an entry
+       * package resolves with the deps' own pins (one environment). The
+       * install is a sealed program (executed, never linked against), so
+       * resolution repairs are accepted and the assembly nests npm-style.
+       * keepProjected delivers a projected package entry as a pending
+       * FileSetRef, which makeNpmRunnable consumes directly — the projection
+       * selects the RUNNABLE's entry, the written form's `fabr run` meaning. */
+      context
+        .collect({ deps: depSources, entry: entrySources }, { resolutionMode: "permissive", keepProjected: true })
+        .then(({ deps, entry }) => {
+          const argv = args ? args.getValues() : [];
+          const sole = entry.length === 1 ? entry[0] : undefined;
+          /* Package-mode: the (jointly-resolved) package IS the runnable —
+           * its declared bin (or the pending projection's pick) the entry —
+           * with the deps bundled into its install. */
+          if (sole instanceof PackageFileSet || (sole instanceof FileSetRef && sole.source instanceof PackageFileSet)) {
+            return manifestAll(deps).then(depSets => makeNpmRunnable(sole, depSets, argv));
           }
-          return RunnableFileSet.forEntry(install, entry, args ? args.getValues() : [], "node");
-        });
-      })
+          /* File-mode: the entry IS the script file, contributed to the
+           * install at its resolved name and launched under node. */
+          return Computable.forAll([manifestAll(deps), manifestAll(entry)], (depSets, entrySets) => {
+            if (entrySets.some(set => set instanceof PackageFileSet)) {
+              throw new Error("js_script 'entry' must be a single file or a single package — further packages belong in 'deps'");
+            }
+            const entrySet = FileSet.unionAll(...entrySets);
+            const names = [...entrySet].map(([name]) => name);
+            if (names.length !== 1) {
+              throw new Error(
+                names.length === 0
+                  ? "js_script 'entry' resolved to no file — name the script file (or a package) itself"
+                  : `js_script 'entry' resolved to ${names.length} files (${names.slice(0, 5).join(", ")}) — name exactly one`
+              );
+            }
+            const packages = depSets.filter((d): d is PackageFileSet => d instanceof PackageFileSet);
+            const loose = depSets.filter(d => !(d instanceof PackageFileSet));
+            const install = FileSet.unionAll(FileSet.layout({ node_modules: assembleNodeModules(packages) }), ...loose, entrySet);
+            return RunnableFileSet.forEntry(install, names[0], argv, "node");
+          });
+        })
   );
 }
 

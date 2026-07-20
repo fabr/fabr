@@ -6,7 +6,8 @@ import { HttpStatusError } from "./Errors";
 import { Readable } from "stream";
 
 export function fetchUrl(urlstring: string): Computable<Buffer> {
-  return openUrlStream(urlstring).then(readStream);
+  /* Unconditional request, so a resolved response always carries the stream */
+  return openUrlStream(urlstring).then(response => readStream(response.stream!));
 }
 
 export interface HttpRequest {
@@ -56,13 +57,59 @@ export function sendRequest(urlstring: string, request: HttpRequest): Computable
   });
 }
 
-export function openUrlStream(urlstring: string, headers?: Record<string, string>): Computable<Readable> {
-  return Computable.from<Readable>((resolve, reject) => {
+/**
+ * The HTTP cache-control facts of a response, parsed: when the copy must next
+ * be revalidated before serving, and the validators to revalidate it with.
+ * Returned by {@link openConditionalUrlStream} alongside the content (and
+ * persisted by the build cache as a non-immutable entry's `!meta` header).
+ */
+export interface ICacheControl {
+  /** Epoch-ms time after which the entry must be revalidated before serving. */
+  expires: number;
+  /** HTTP validators for conditional revalidation, as the origin sent them. */
+  etag?: string;
+  lastModified?: string;
+}
+
+/**
+ * The outcome of a (possibly conditional) GET: a fresh body stream for a 200,
+ * or no stream for a 304 (Not Modified — the caller's cached copy stands; only
+ * possible for a request that sent validators). The response's parsed
+ * cache-control facts ride along in both cases; a 304's carry the updated
+ * freshness lifetime and validators.
+ */
+export interface UrlStreamResponse {
+  cacheControl: ICacheControl;
+  /** Present for a 200; absent for a 304. */
+  stream?: Readable;
+}
+
+/**
+ * Streaming GET. A caller revalidating a cached copy supplies its validators
+ * (`if-none-match`/`if-modified-since`) among `headers`, and a 304 then
+ * resolves with no stream; a 304 to a request that sent NO validators is a
+ * server defect and rejects like any other non-200 (so an unconditional
+ * caller's resolved response always carries the stream). `now` feeds the
+ * absolute `expires` in the parsed cache-control facts (injectable for tests;
+ * defaults to the wall clock).
+ */
+export function openUrlStream(
+  urlstring: string,
+  headers?: Record<string, string>,
+  now: () => number = Date.now
+): Computable<UrlStreamResponse> {
+  const conditional =
+    headers !== undefined && Object.keys(headers).some(name => /^if-(none-match|modified-since)$/i.test(name));
+  return Computable.from<UrlStreamResponse>((resolve, reject) => {
     function handleResponse(res: http.IncomingMessage): void {
-      if (res.statusCode !== 200) {
-        reject(new HttpStatusError(res.statusCode ?? 0, res.statusMessage ?? "", urlstring));
+      if (res.statusCode === 200) {
+        resolve({ cacheControl: parseCacheControl(res.headers, now()), stream: res });
+      } else if (res.statusCode === 304 && conditional) {
+        res.resume(); /* discard the (empty) body so the socket is released */
+        resolve({ cacheControl: parseCacheControl(res.headers, now()) });
       } else {
-        resolve(res);
+        res.resume();
+        reject(new HttpStatusError(res.statusCode ?? 0, res.statusMessage ?? "", urlstring));
       }
     }
 
@@ -82,6 +129,55 @@ export function openUrlStream(urlstring: string, headers?: Record<string, string
     req.on("error", err => reject(err));
     req.end();
   });
+}
+
+/**
+ * Parse a response's cache-control facts, per plain HTTP caching semantics.
+ * The freshness remaining is the origin-declared lifetime (`max-age`; a
+ * `no-cache`/`no-store` counts as zero; else `Expires` relative to the
+ * response's own `Date`) minus the response's `Age` — a CDN edge may serve a
+ * copy that has already spent most of its lifetime in the edge cache (npmjs
+ * serves packuments via Cloudflare with `age` routinely near the `max-age`).
+ * An origin declaring nothing gets no lifetime — stale immediately,
+ * revalidated on every demand (cheap 304s when it sends validators); the
+ * origin owns its staleness contract.
+ */
+function parseCacheControl(headers: http.IncomingHttpHeaders, now: number): ICacheControl {
+  const declared = declaredLifetime(headers, now);
+  const age = Number.isFinite(Number(headers.age)) ? Number(headers.age) * 1000 : 0;
+  const lifetime = declared === undefined ? 0 : Math.max(0, declared - age);
+  return { expires: now + lifetime, etag: headers.etag, lastModified: headers["last-modified"] };
+}
+
+/**
+ * The freshness lifetime (ms) a response's own headers declare:
+ * `Cache-Control: max-age` wins (`no-cache`/`no-store` count as zero —
+ * revalidate every time); else `Expires`, aged relative to the response's
+ * `Date` (the origin's clock, avoiding skew against ours) or `now` when
+ * absent — an unparseable `Expires` (e.g. the conventional "0") means already
+ * stale. Undefined when the origin declares nothing.
+ */
+function declaredLifetime(headers: http.IncomingHttpHeaders, now: number): number | undefined {
+  const cacheControl = headers["cache-control"];
+  if (cacheControl) {
+    if (/(?:^|[,\s])no-(?:cache|store)(?:$|[,\s])/.test(cacheControl)) {
+      return 0;
+    }
+    const maxAge = /(?:^|[,\s])max-age=(\d+)/.exec(cacheControl);
+    if (maxAge) {
+      return Number(maxAge[1]) * 1000;
+    }
+  }
+  const expires = headers.expires;
+  if (expires !== undefined) {
+    const expiry = Date.parse(expires);
+    if (Number.isNaN(expiry)) {
+      return 0;
+    }
+    const base = headers.date !== undefined ? Date.parse(headers.date) : Number.NaN;
+    return Math.max(0, expiry - (Number.isNaN(base) ? now : base));
+  }
+  return undefined;
 }
 
 /**

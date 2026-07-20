@@ -18,6 +18,7 @@
  */
 
 import { Computable } from "./Computable";
+import { FileSetRef, IProjection } from "./FileSetRef";
 import { FileSet, FileSource } from "./FileSet";
 import { PackageFileSet } from "./PackageFileSet";
 import { RunnableFileSet } from "./RunnableFileSet";
@@ -116,8 +117,14 @@ export interface RepositoryReader {
    * config it selects on, e.g. a host platform) from its RepositoryContext,
    * interned per BuildContext. Projections and provenance carried by the
    * references are applied by the caller (see materializeAll).
+   *
+   * `options.resolutionMode` is the delivery-shape judgment of resolution
+   * repairs (see MaterializeOptions): a permissive delivery accepts a repaired
+   * closure (nested); a strict one (the default) errors on any repair in the
+   * delivered closure. Run delivery is permissive implicitly (a runnable is a
+   * sealed install by invariant).
    */
-  materialize(references: RepositoryRef[], resolution: Resolution): Computable<FileSet[]>;
+  materialize(references: RepositoryRef[], resolution: Resolution, options?: MaterializeOptions): Computable<FileSet[]>;
 
   /**
    * Repackage an already-resolved package (its closure carried) as a runnable,
@@ -186,13 +193,33 @@ export interface RepositoryWriter {
 }
 
 /**
+ * How a collection point consumes what it materializes — the enforcement input
+ * for resolution repairs (floor raises, coexisting versions, conflict splits;
+ * see DESIGN-tool-resolution.md). **"permissive"**: the closure is assembled
+ * into a sealed program that is executed, not linked against (a
+ * runnable-definer's install, a run delivery) — repairs are accepted and the
+ * install nests npm-style. **"strict"** (the default): the closure is linked
+ * into the consumer's own module graph — any repair in the delivered closure
+ * is an error (with its remedy suggested). The mode is structural — a fact
+ * about what the consuming rule does with the delivery, set by rule code at
+ * its collection point — deliberately not a constraint (no grammar surface).
+ */
+export interface MaterializeOptions {
+  resolutionMode?: "strict" | "permissive";
+}
+
+/**
  * The eager one-shot: resolve a batch and immediately materialize the whole of
  * it — a normal consumer needs all of its own references, so it resolves and
  * fetches together. The collection point ({@link materializeAll}) uses this; a
  * catalog does NOT — it holds the Resolution and materializes members on demand.
  */
-export function resolveAndMaterialize(reader: RepositoryReader, references: RepositoryRef[]): Computable<FileSet[]> {
-  return reader.resolve(references).then(resolution => reader.materialize(references, resolution));
+export function resolveAndMaterialize(
+  reader: RepositoryReader,
+  references: RepositoryRef[],
+  options?: MaterializeOptions
+): Computable<FileSet[]> {
+  return reader.resolve(references).then(resolution => reader.materialize(references, resolution, options));
 }
 
 /** One member of a destination's publish batch: where the content goes (the
@@ -208,16 +235,6 @@ export interface PublishMember {
  *  rejection. */
 export type PublishStatus = "published" | "already-synced";
 
-/**
- * One narrowing step of a reference: the pattern to match (against the names
- * produced by the previous step), and the prefix prepended to the matched
- * names — the written-name rule: `alias/path` keeps the written `alias/` in
- * result names, `alias:path` strips it (empty prefix).
- */
-export interface IProjection {
-  pattern: Name;
-  prefix: string;
-}
 
 /**
  * A vended write address: where a `sync` member's content goes — validated by
@@ -301,43 +318,69 @@ export class RepositoryRef {
   }
 
   /**
-   * Apply this reference's projections and provenance to its resolved base
-   * files; called by the collection point after resolution.
+   * Chain this reference's provenance steps onto its resolved base — the
+   * provenance half of finishing a delivery, kept separate from projection
+   * application (whose single mechanism is {@link FileSetRef.manifest}).
+   */
+  public stampProvenance(base: FileSet): FileSet {
+    if (this.steps.length === 0) {
+      return base;
+    }
+    if (base instanceof PackageFileSet) {
+      /* The reference's provenance applies to the whole delivery: the root
+       * package and every member of its resolved closure — including nested
+       * version overrides — arrived via the same reference. (Carried
+       * references stay as they are — they get their attribution when they
+       * are themselves resolved.) */
+      return restampPackage(base, this.steps);
+    }
+    const origin = chainSteps(this.steps, base.origin);
+    return origin ? base.withOrigin(origin) : base;
+  }
+
+  /**
+   * Finish a delivery fully: provenance stamped, projections applied — each on
+   * the artifact's own terms via polymorphic find (a runnable re-points its
+   * launch entry; a fileset filters + prefixes, or renames per the facet). A
+   * collection point that instead defers the projections (for a consumer that
+   * reinterprets them) wraps {@link stampProvenance}'s result in a
+   * {@link FileSetRef} itself.
    */
   public finishMaterialize(base: FileSet): Computable<FileSet> {
-    let result = Computable.resolve(base);
-    for (const projection of this.projections) {
-      /* Each projection narrows on the artifact's own terms (FileSource.find):
-       * a package filters files (remapped under the prefix); a runnable re-points
-       * its launch entry, ignoring the prefix; a rename target (a facet on the
-       * pattern) replays result names, degrading a subtype to a plain FileSet. */
-      result = result.then(files => files.find(projection.pattern, projection.prefix));
-    }
-    return result.then(files => {
-      if (this.steps.length === 0) {
-        return files;
-      }
-      if (files instanceof PackageFileSet) {
-        /* The reference's provenance applies to the whole delivery: the root
-         * package and every member of its resolved closure arrived via the
-         * same reference. (Carried references stay as they are — they get
-         * their attribution when they are themselves resolved.) */
-        const dependencies = files.dependencies.map(dep =>
-          dep instanceof PackageFileSet ? dep.withOrigin(chainSteps(this.steps, dep.origin)!) : dep
-        );
-        return new PackageFileSet(files, files.packageName, files.version, dependencies, chainSteps(this.steps, files.origin));
-      }
-      const origin = chainSteps(this.steps, files.origin);
-      return origin ? files.withOrigin(origin) : files;
-    });
+    return new FileSetRef(this.stampProvenance(base), this.projections).manifest();
   }
 }
 
 /**
- * A FileSource, Repository, or deferred RepositoryRef: the currency of
- * property and target resolution.
+ * Chain the reference's provenance steps onto a delivered package and its
+ * carried package deps, recursively (the tree of members and their version
+ * overrides is finite and acyclic; carried RepositoryRefs pass through).
  */
-export type SourceRef = FileSource | Repository | RepositoryRef;
+function restampPackage(pkg: PackageFileSet, steps: ReadonlyArray<IProvenanceStep>): PackageFileSet {
+  const dependencies = pkg.dependencies.map(dep => (dep instanceof PackageFileSet ? restampPackage(dep, steps) : dep));
+  return new PackageFileSet(pkg, pkg.packageName, pkg.version, dependencies, chainSteps(steps, pkg.origin));
+}
+
+
+/**
+ * A FileSource, Repository, deferred RepositoryRef, or projection-pending
+ * FileSetRef: the currency of property and target resolution.
+ */
+export type SourceRef = FileSource | Repository | RepositoryRef | FileSetRef;
+
+/** What a collection point yields per source: resolved content, a Repository
+ * (for config lookups), or — only under `keepProjected` — a still-pending
+ * {@link FileSetRef} for a consumer that reinterprets its projections. */
+export type Materialized = FileSource | Repository | FileSetRef;
+
+/** Options for the collection-point materializers: the repository-facing
+ * {@link MaterializeOptions}, plus `keepProjected` — deliver projection-pending
+ * FileSetRefs unmanifested (js_script's package entry reinterprets them on the
+ * runnable it builds); by default every ref manifests to its plain projected
+ * files, so ordinary consumers never see one. */
+export interface CollectionOptions extends MaterializeOptions {
+  keepProjected?: boolean;
+}
 
 /**
  * Shallow counterpart to {@link materializeAll} for the CLI verb entry points
@@ -354,8 +397,19 @@ export type SourceRef = FileSource | Repository | RepositoryRef;
  */
 export function materializeShallow(sources: SourceRef[]): Computable<(FileSource | Repository)[]> {
   const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
+  const finish = (finished: Map<RepositoryRef, Computable<FileSet>>): Computable<(FileSource | Repository)[]> => {
+    const resolvedSources = sources.map((source): Computable<FileSource | Repository> => {
+      if (source instanceof RepositoryRef) {
+        return finished.get(source)!;
+      } else if (source instanceof FileSetRef) {
+        return source.manifest();
+      }
+      return Computable.resolve(source);
+    });
+    return Computable.forAll(resolvedSources, (...resolved: (FileSource | Repository)[]) => resolved);
+  };
   if (references.length === 0) {
-    return Computable.resolve(sources as (FileSource | Repository)[]);
+    return finish(new Map());
   }
   const batches = [...groupByRepository(references).entries()];
   return Computable.forAll(
@@ -365,10 +419,7 @@ export function materializeShallow(sources: SourceRef[]): Computable<(FileSource
       batches.forEach(([, refs], batchIndex) =>
         refs.forEach((ref, index) => finished.set(ref, ref.finishMaterialize(results[batchIndex][index])))
       );
-      return Computable.forAll(
-        sources.map(source => (source instanceof RepositoryRef ? finished.get(source)! : Computable.resolve(source))),
-        (...resolved: (FileSource | Repository)[]) => resolved
-      );
+      return finish(finished);
     }
   );
 }
@@ -386,33 +437,54 @@ export function materializeShallow(sources: SourceRef[]): Computable<(FileSource
  * references replaced by the resolutions; other sources pass through
  * unchanged.
  */
-export function materializeAll(sources: SourceRef[]): Computable<(FileSource | Repository)[]> {
+export function materializeAll(sources: SourceRef[], options?: CollectionOptions): Computable<Materialized[]> {
   const references = gatherReferences(sources);
+  const finish = (finished: Map<RepositoryRef, Computable<FileSetRef>>): Computable<Materialized[]> => {
+    const rebuilt = new Map<PackageFileSet, Computable<PackageFileSet>>();
+    const resolvedSources = sources.map((source): Computable<Materialized> => {
+      if (source instanceof RepositoryRef) {
+        return finished.get(source)!.then<Materialized>(pending =>
+          options?.keepProjected && pending.projections.length > 0 ? pending : pending.manifest()
+        );
+      } else if (source instanceof PackageFileSet) {
+        return rebuildPackage(source, finished, rebuilt);
+      } else if (source instanceof FileSetRef) {
+        /* The pending base participates in the collection point like any
+         * package (its carried refs were gathered); the projections then
+         * either manifest (the default — plain consumers see exactly the
+         * projected files) or ride out to a consumer that reinterprets. */
+        const base =
+          source.source instanceof PackageFileSet
+            ? rebuildPackage(source.source, finished, rebuilt)
+            : Computable.resolve(source.source);
+        return base.then<Materialized>(rebuiltBase => {
+          const pending = new FileSetRef(rebuiltBase, source.projections, source.miss);
+          return options?.keepProjected ? pending : pending.manifest();
+        });
+      } else {
+        return Computable.resolve(source);
+      }
+    });
+    return Computable.forAll(resolvedSources, (...resolved: Materialized[]) => resolved);
+  };
   if (references.length === 0) {
     /* No references present, so nothing to resolve */
-    return Computable.resolve(sources as (FileSource | Repository)[]);
+    return finish(new Map());
   }
   const batches = [...groupByRepository(references).entries()];
   return Computable.forAll(
-    batches.map(([repository, refs]) => resolveAndMaterialize(repository, refs)),
+    batches.map(([repository, refs]) => resolveAndMaterialize(repository, refs, options)),
     (...results: FileSet[][]) => {
-      const finished = new Map<RepositoryRef, Computable<FileSet>>();
+      const finished = new Map<RepositoryRef, Computable<FileSetRef>>();
       batches.forEach(([, refs], batchIndex) =>
-        refs.forEach((ref, index) => finished.set(ref, ref.finishMaterialize(results[batchIndex][index])))
+        refs.forEach((ref, index) =>
+          /* Stamp here; projection application is the consumer side of the
+           * pending form — manifested by default in finish(), kept for a
+           * reinterpreting consumer under keepProjected. */
+          finished.set(ref, Computable.resolve(new FileSetRef(ref.stampProvenance(results[batchIndex][index]), ref.projections)))
+        )
       );
-      const rebuilt = new Map<PackageFileSet, Computable<PackageFileSet>>();
-      return Computable.forAll(
-        sources.map(source => {
-          if (source instanceof RepositoryRef) {
-            return finished.get(source)!;
-          } else if (source instanceof PackageFileSet) {
-            return rebuildPackage(source, finished, rebuilt);
-          } else {
-            return Computable.resolve(source);
-          }
-        }),
-        (...resolved: (FileSource | Repository)[]) => resolved
-      );
+      return finish(finished);
     }
   );
 }
@@ -424,9 +496,9 @@ export function materializeAll(sources: SourceRef[]): Computable<(FileSource | R
  * accessors (`getFileSets`, `getGlobalTarget`, `collect`): each is just this plus
  * its own shaping (filter to FileSet / keep repositories / key per name).
  */
-export function materializeLists(lists: SourceRef[][]): Computable<(FileSource | Repository)[][]> {
-  return materializeAll(lists.flat()).then(resolved => {
-    const partitioned: (FileSource | Repository)[][] = [];
+export function materializeLists(lists: SourceRef[][], options?: CollectionOptions): Computable<Materialized[][]> {
+  return materializeAll(lists.flat(), options).then(resolved => {
+    const partitioned: Materialized[][] = [];
     let index = 0;
     for (const list of lists) {
       partitioned.push(resolved.slice(index, index + list.length));
@@ -450,6 +522,10 @@ function gatherReferences(sources: SourceRef[]): RepositoryRef[] {
     } else if (source instanceof PackageFileSet && !visited.has(source)) {
       visited.add(source);
       source.dependencies.forEach(gather);
+    } else if (source instanceof FileSetRef) {
+      /* A pending projection's base still carries its refs — they resolve at
+       * this collection point like any package's. */
+      gather(source.source);
     }
   };
   sources.forEach(gather);
@@ -477,7 +553,7 @@ export function groupByRepository(references: RepositoryRef[]): Map<RepositoryRe
  */
 function rebuildPackage(
   pkg: PackageFileSet,
-  finished: Map<RepositoryRef, Computable<FileSet>>,
+  finished: Map<RepositoryRef, Computable<FileSetRef>>,
   rebuilt: Map<PackageFileSet, Computable<PackageFileSet>>
 ): Computable<PackageFileSet> {
   let result = rebuilt.get(pkg);
@@ -486,7 +562,9 @@ function rebuildPackage(
       result = Computable.resolve(pkg);
     } else {
       result = Computable.forAll(
-        pkg.dependencies.map(dep => (dep instanceof RepositoryRef ? finished.get(dep)! : rebuildPackage(dep, finished, rebuilt))),
+        pkg.dependencies.map(dep =>
+          dep instanceof RepositoryRef ? finished.get(dep)!.then(pending => pending.manifest()) : rebuildPackage(dep, finished, rebuilt)
+        ),
         (...deps) =>
           new PackageFileSet(
             pkg,

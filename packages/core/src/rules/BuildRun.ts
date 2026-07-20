@@ -21,24 +21,31 @@
  * The generic `run` target: execute a runnable and collect its output — the
  * ecosystem-neutral builder that turns "a program that writes files" into build
  * content. `tool` names a runnable target (resolved as a host runnable via
- * getRunnableProperty — it executes now, on this machine); `args` are appended to the runnable's own;
- * `output` (a dir:glob pattern, default `**`) selects the files it wrote as this
- * target's content. Any runnable plugs in — the "run and collect" the js_script
- * rule used to do itself, now generic.
+ * getRunnableProperty — it executes now, on this machine); `srcs` are the
+ * invocation's input files, staged into the work dir at the install root;
+ * `args` are appended to the runnable's own; `output` (a dir:glob pattern,
+ * default `**`) selects the files it wrote as this target's content. Any
+ * runnable plugs in — the "run and collect" the js_script rule used to do
+ * itself, now generic. The tool/srcs split is the concept: the runnable
+ * defines the *tool*, the run target says what to *do* with it.
  */
 
 import { BUILD_OPERATION, TargetContext } from "../model/BuildContext";
 import { Computable } from "../core/Computable";
+import { FileSet } from "../core/FileSet";
 import { createExecAction } from "./ExecAction";
 import { RuleRegistration, RuleResult } from "./Types";
 
 /**
  * A runnable is just a staged install plus a launch descriptor, so running it
  * and collecting its output is exactly the generic `exec` action: the install
- * is the staged fileset, and `toCommandLine` flattens the descriptor to an argv
- * (interpreter — if any — as the command, `entry` and the runnable's own args,
- * then this target's extra `args`). (An interpreter-based runnable's entry rides
- * as an
+ * — overlaid with `srcs` at its root, a plain file union with no language
+ * knowledge (for a JS tool this happens to be the npx-in-project layout:
+ * sources at the root, node_modules adjacent; a name collision with the
+ * install is the ordinary two-sided conflict) — is the staged fileset, and
+ * `toCommandLine` flattens the descriptor to an argv (interpreter — if any —
+ * as the command, `entry` and the runnable's own args, then this target's
+ * extra `args`). (An interpreter-based runnable's entry rides as an
  * *argument*, resolved by the interpreter against the work dir; only when a
  * bare executable were itself argv[0] would exec need a work-dir-relative
  * command — which won't arise once commands are absolute, path search being a
@@ -47,12 +54,18 @@ import { RuleRegistration, RuleResult } from "./Types";
  */
 function runTool(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
-    [context.getRunnableProperty("tool"), context.getProperty("args"), context.getProperty("output")],
-    (runnable, args, output) => {
+    [
+      context.getRunnableProperty("tool"),
+      context.getFileSet("srcs"),
+      context.getProperty("args"),
+      context.getProperty("output"),
+    ],
+    (runnable, srcs, args, output) => {
       /* No anchor: the exec step runs with cwd == the staged workDir, so `entry`
        * stays install-relative (resolved there by the interpreter). */
       const argv = runnable.toCommandLine(args ? args.getValues() : []);
-      return createExecAction(runnable, argv, output?.toString() ?? "**", "run");
+      const staged = FileSet.unionAll(runnable, srcs);
+      return createExecAction(staged, argv, output?.toString() ?? "**", "run");
     }
   );
 }

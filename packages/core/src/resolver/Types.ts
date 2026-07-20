@@ -73,16 +73,51 @@ export interface Selected<V> {
 }
 
 /**
- * The complete result of a resolution: the selected package versions, plus any
- * constraint violations or unparseable constraints encountered along the way.
+ * An upper-bound violation found after selection: `requiredBy` declared
+ * `constraint` on `pkg`, and the version selected under that resolution key
+ * does not satisfy it (jointly-unsatisfiable constraints — an exact transitive
+ * pin against a higher floor). Reported as data: the consumer decides whether
+ * it is an error (a linked delivery) or is repaired by a private split (a
+ * sealed tool delivery).
+ */
+export interface Violation<V> {
+  pkg: string;
+  constraint: string;
+  requiredBy: string;
+  selected: V;
+}
+
+/**
+ * A floor-raise repair: `constraint`'s declared minimum was never published, so
+ * the lowest *published* satisfying version was selected in its place (via the
+ * registry's {@link PackageRegistry.lowestAvailable} hook). Only raises that
+ * won their resolution key are reported — a raise superseded by a higher
+ * requirement's floor never shaped the result.
+ */
+export interface RaisedFloor<V> {
+  pkg: string;
+  constraint: string;
+  declared: V;
+  raised: V;
+  requiredBy: string;
+}
+
+/**
+ * The complete result of a resolution: the selected package versions, plus the
+ * repairs applied (floor raises) and constraint violations found, plus any
+ * hard errors (unparseable constraints, unconstrained-only requirements).
  *
- * Violations are reported as data rather than by rejecting the Computable, both
- * so that callers can decide how to present them, and because a rejected
- * Computable currently halts the graph without user-visible diagnostics.
+ * Violations and repairs are reported as data rather than by rejecting the
+ * Computable, both so that callers can decide how to present them (strict
+ * consumers error at delivery; sealed tool deliveries accept the repaired
+ * tree), and because a rejected Computable halts the graph without
+ * user-visible diagnostics.
  */
 export interface MVSResolution<V> {
   selections: Selected<V>[];
   errors: string[];
+  violations: Violation<V>[];
+  raises: RaisedFloor<V>[];
 }
 
 /**
@@ -152,7 +187,19 @@ export interface VersionDomain<V, C> {
 export interface PackageRegistry<V> {
   /**
    * @return the requirements declared by pkg@version (e.g. the dependencies
-   * from its package.json).
+   * from its package.json). Rejects with a VersionNotFoundError (core/Errors)
+   * when pkg@version was never published — the signal for the floor-raise
+   * repair, distinguished from transport failures.
    */
   getRequirements(pkg: string, version: V): Computable<Requirement[]>;
+
+  /**
+   * Floor-raise hook: the lowest *published* version of `pkg` satisfying
+   * `constraint`, consulted when the constraint's own minimum is not published;
+   * undefined when nothing published satisfies (a genuine failure). Reads a
+   * mutable version list, so the result is deterministic only modulo registry
+   * append — the one sanctioned relaxation, confined to broken floors. A
+   * registry without this hook keeps unpublished floors as hard failures.
+   */
+  lowestAvailable?(pkg: string, constraint: string): Computable<V | undefined>;
 }

@@ -249,7 +249,7 @@ async function runWith(operation: Operation, watch = false): Promise<void> {
 
   try {
     const sourceRoot = await getSourceRoot();
-    const buildCache = new BuildCache(getBuildCacheRoot());
+    const buildCache = new BuildCache(getBuildCacheRoot(), log);
 
     /* The build cycle is shared: the watch controller advances it before each
      * re-settle, and the execution reads it. Built first (it depends on nothing),

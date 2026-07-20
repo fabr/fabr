@@ -194,6 +194,22 @@ export class MetadataFetchError extends Error {
 }
 
 /**
+ * A specific package version does not exist in its registry (the translated
+ * 404 for a version document) — distinguished from transport failures so the
+ * resolver can attempt the floor-raise repair (an unpublished declared floor)
+ * rather than treating it as an unreachable registry.
+ */
+export class VersionNotFoundError extends Error {
+  constructor(
+    public readonly pkg: string,
+    public readonly version: string,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
+/**
  * A repository failure attributed to the written reference(s) it traces back
  * to: the underlying error (e.g. a registry 404) wrapped with the refs whose
  * requirement — or whose closure's root requirement — the failure arose from.

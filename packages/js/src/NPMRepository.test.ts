@@ -291,7 +291,7 @@ function packageTarball(): FileSet {
 function fakeExecution(npmrc?: string): ExecutionContext {
   const source = new FileSet(new Map(npmrc !== undefined ? [[".npmrc", MemoryFile.from(npmrc)]] : []));
   const log = new LogFormatter(LogLevel.Info, () => undefined);
-  return new ExecutionContext(new BuildCache("."), log, source, new FileSet(new Map()));
+  return new ExecutionContext(new BuildCache(".", log), log, source, new FileSet(new Map()));
 }
 
 /**

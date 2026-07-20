@@ -25,8 +25,27 @@ import type { RepositoryRef } from "./Repository";
 
 /**
  * A FileSet that is a package; adds package name, version, and dependencies.
- * Dependencies are carried as either direct PackageFileSets (for built dependencies)
- * or RepositoryRef for external dependencies (which a consumer may re-resolve)
+ *
+ * `dependencies` has two regimes, reflecting two classes of dependency graph:
+ *
+ * - A **built** package carries its DIRECT dependencies: built deps as
+ *   (recursively structured) PackageFileSets, external requirements as inert
+ *   RepositoryRefs that each consumer's collection point resolves fresh
+ *   against its own pins. Recursive structure is sound here because the local
+ *   build graph is acyclic by construction and the refs cut recursion at the
+ *   external boundary.
+ *
+ * - A **materialized** external delivery (a resolved, pinned closure) carries
+ *   its closure's flat-mount winners — one member per package name — and each
+ *   member carries, as its own dependencies, only its private VERSION
+ *   OVERRIDES: the (permissive-delivery) copies that diverge from the flat
+ *   winner of their name, recursively. Everything not listed resolves to the
+ *   flat winner implicitly — the same acyclic tree-encoding of a (possibly
+ *   cyclic) dependency graph that node_modules itself is, so the structure
+ *   stays a finite tree of immutable values. A strict delivery has no
+ *   overrides (single version per name enforced), so its members are flat and
+ *   empty, and the two regimes need no marker: an assembler mounts winners
+ *   flat and nests exactly the listed non-winners (see assembleNodeModules).
  *
  * Content derivations (find/remap/minus/...) deliberately return plain
  * FileSets: once you reach inside a package, the result is just files.
@@ -40,6 +59,13 @@ export class PackageFileSet extends FileSet {
     origin?: IProvenanceStep
   ) {
     super(new Map(files), origin ?? (files instanceof FileSet ? files.origin : undefined));
+  }
+
+  /** This package's semantic `name@version` id — the identity that decides
+   * flat-mount deduplication (object identity is deliberately meaningless:
+   * every delivery wraps its own instances). */
+  public get packageId(): string {
+    return `${this.packageName}@${this.version ?? "*"}`;
   }
 
   public withOrigin(origin: IProvenanceStep): PackageFileSet {

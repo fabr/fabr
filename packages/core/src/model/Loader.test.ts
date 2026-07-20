@@ -30,7 +30,7 @@ import { loadProject } from "./Loader";
 /** A minimal ExecutionContext for the loader: the project tree as the source, an
  *  empty absolute source (these tests use NO_BASE, so no lib files are read). */
 function exec(project: FileSet, log: LogFormatter): ExecutionContext {
-  return new ExecutionContext(new BuildCache("."), log, project, EMPTY_FILESET);
+  return new ExecutionContext(new BuildCache(".", log), log, project, EMPTY_FILESET);
 }
 
 /* Includes are now: core's STD.fabr (always, no explicit include — exercised by

@@ -19,12 +19,13 @@
 
 /**
  * The script[run] rule: *define* a runnable plain shell script — the
- * ecosystem-neutral analogue of js_script. `deps` stage the install (their
- * filesets union flat — no package mounting, this is just files); `entry` is a
- * path *within* that install to launch with the shell; `args` are fixed leading
- * arguments. It yields a `RunnableFileSet` — the staged files plus how to launch
- * them — for `fabr run`, the generic `run` target, or a golden test to invoke.
- * It does not itself execute (executing a runnable and collecting output is the
+ * ecosystem-neutral analogue of js_script. `entry` is the script FILE itself,
+ * contributed to the install at its resolved name and launched with the shell;
+ * `deps` stage any further support files (their filesets union flat — no
+ * package mounting, this is just files); `args` are fixed leading arguments.
+ * It yields a `RunnableFileSet` — the staged files plus how to launch them —
+ * for `fabr run`, the generic `run` target, or a golden test to invoke. It
+ * does not itself execute (executing a runnable and collecting output is the
  * generic `run` target's job).
  */
 
@@ -35,27 +36,34 @@ import { RunnableFileSet } from "../core/RunnableFileSet";
 import { RuleRegistration, RuleResult } from "./Types";
 
 function defineScriptRunnable(context: TargetContext): Computable<RuleResult> {
-  /* deps are ordinary build content — resolve them under build, not the run
-   * operation this rule is selected by (constraints otherwise propagate). */
+  /* deps/entry are ordinary build content — resolve them under build, not the
+   * run operation this rule is selected by (constraints otherwise propagate). */
   return Computable.forAll(
     [
       context.getFileSources("deps", { [BUILD_OPERATION]: "build" }),
-      context.getRequiredString("entry"),
+      context.getFileSources("entry", { [BUILD_OPERATION]: "build" }),
       context.getProperty("args"),
     ],
-    (depSources, entry, args) =>
-      /* THE collection point: deps materialize jointly, so any carried external
-       * requirements resolve with the target's own pins. */
-      context.collect({ deps: depSources }).then(({ deps }) => {
-        const install = FileSet.unionAll(...deps);
-        return install.get(entry).then(file => {
-          if (!file) {
-            throw new Error(
-              `script 'entry' (${entry}) is not present in the install — add the file (or its target) to 'deps'`
-            );
-          }
-          return RunnableFileSet.forEntry(install, entry, args ? args.getValues() : [], "sh");
-        });
+    (depSources, entrySources, args) =>
+      /* THE collection point: deps and entry materialize jointly, so any
+       * carried external requirements resolve with the target's own pins. The
+       * install is a sealed program, so resolution repairs are accepted (a
+       * multi-version npm closure in a flat-unioned script install still
+       * conflicts loudly at the union). */
+      context.collect({ deps: depSources, entry: entrySources }, { resolutionMode: "permissive" }).then(({ deps, entry }) => {
+        /* The entry is the script file itself — exactly one. (A shell script
+         * has no notion of a package bin; a packaged tool is js_script's job.) */
+        const entrySet = FileSet.unionAll(...entry);
+        const names = [...entrySet].map(([name]) => name);
+        if (names.length !== 1) {
+          throw new Error(
+            names.length === 0
+              ? "script 'entry' resolved to no file — name the script file itself"
+              : `script 'entry' resolved to ${names.length} files (${names.slice(0, 5).join(", ")}) — name exactly one`
+          );
+        }
+        const install = FileSet.unionAll(...deps, entrySet);
+        return RunnableFileSet.forEntry(install, names[0], args ? args.getValues() : [], "sh");
       })
   );
 }

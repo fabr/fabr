@@ -126,7 +126,7 @@ const rootDir = cfg.rootDir || "src", outDir = cfg.outDir || "build";
 
 /** The project lines that make the stub a runnable toolchain and point TSC at it. */
 export const STUB_TSC_CONFIG =
-  "js_script stub_tsc { deps = teststub:typescript/**; entry = typescript/bin/tsc; }\nTSC = stub_tsc;\n";
+  "js_script stub_tsc { deps = teststub:typescript/**; entry = teststub:typescript/bin/tsc; }\nTSC = stub_tsc;\n";
 
 /**
  * A live `fabr <cmd> -w` subprocess for watch-mode e2e: unlike {@link runFabr}

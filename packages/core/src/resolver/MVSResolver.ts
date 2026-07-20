@@ -18,8 +18,8 @@
  */
 
 import { Computable } from "../core/Computable";
-import { MetadataFetchError } from "../core/Errors";
-import { PackageRegistry, Requirement, MVSResolution, ROOT_REQUIRER, Selected, VersionDomain } from "./Types";
+import { MetadataFetchError, VersionNotFoundError, toError } from "../core/Errors";
+import { PackageRegistry, RaisedFloor, Requirement, MVSResolution, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
 
 /**
  * Minimal Version Selection resolver (after Go's MVS): every constraint is
@@ -29,15 +29,25 @@ import { PackageRegistry, Requirement, MVSResolution, ROOT_REQUIRER, Selected, V
  * The result therefore depends only on what the packages in the graph declare,
  * never on what else the repository happens to contain, so it is deterministic
  * without a lockfile (provided published metadata is immutable). Upper bounds
- * are checked after selection; violations are reported in MVSResolution.errors
- * (the deterministic remedy is a user-supplied override, i.e. an additional
- * root requirement, which dominates naturally by the max rule).
+ * are checked after selection; violations are reported in
+ * MVSResolution.violations — data, not failure: a strict (linked) consumer
+ * turns them into an error at delivery (the deterministic remedy is a
+ * user-supplied override, i.e. an additional root requirement, which dominates
+ * naturally by the max rule), while a sealed tool delivery repairs them by
+ * private splits (see {@link resolveWithRepairs}).
  *
- * Note: if the registry rejects a metadata fetch, the returned Computable
- * rejects with a MetadataFetchError identifying the failing package and the
- * requirement chain that first reached it (the requirement graph cannot be
- * determined, which is unlike a constraint violation and so is not reported
- * via MVSResolution.errors).
+ * The one relaxation of pure lower-bound selection is the **floor raise**:
+ * when a declared minimum was never published (the registry rejects it with
+ * VersionNotFoundError) and the registry offers `lowestAvailable`, the
+ * requirement's contribution is raised to the lowest *published* satisfying
+ * version — recorded in MVSResolution.raises when it wins its key. Without the
+ * hook, an unpublished floor fails as before.
+ *
+ * Note: if the registry rejects a metadata fetch (other than a raisable
+ * version-not-found), the returned Computable rejects with a
+ * MetadataFetchError identifying the failing package and the requirement chain
+ * that first reached it (the requirement graph cannot be determined, which is
+ * unlike a constraint violation and so is not reported via the result).
  */
 export function resolveMVS<V, C>(
   roots: Requirement[],
@@ -52,7 +62,13 @@ export function resolveMVS<V, C>(
     /* First reacher of every visited node (a node id, or ROOT_REQUIRER), for
      * attributing a metadata failure back to a root requirement */
     const nodeParents = new Map<string, string>();
+    /* The requirement(s) whose minimum demanded each node — the floor(s) to
+     * raise if the node turns out to be unpublished */
+    const nodeDemands = new Map<string, Array<{ key: string; req: Requirement; requiredBy: string }>>();
+    /* Raises applied during the walk; filtered to the winners at finish */
+    const candidateRaises: RaisedFloor<V>[] = [];
     const errors = new Set<string>();
+    const violations: Violation<V>[] = [];
     /* Outstanding metadata fetches, plus one guard token held while seeding */
     let pending = 1;
     let failed = false;
@@ -80,13 +96,45 @@ export function resolveMVS<V, C>(
          * during finish; an unconstrained-only package is an error there) */
         return;
       }
-      const key = domain.resolutionKey(req.pkg, constraint);
-      const min = domain.minimumOf(constraint);
+      attempt(domain.resolutionKey(req.pkg, constraint), req, domain.minimumOf(constraint), requiredBy);
+    };
+
+    /** Offer `version` as a lower bound for `key` (a requirement's declared
+     * minimum, or its raised floor): selected and visited iff it beats the
+     * current selection. */
+    const attempt = (key: string, req: Requirement, version: V, requiredBy: string): void => {
       const current = selected.get(key);
-      if (!current || domain.compare(min, current.version) > 0) {
-        selected.set(key, { pkg: req.pkg, version: min, selectedBy: { requiredBy, constraint: req.constraint } });
-        visit(req.pkg, min, requiredBy);
+      if (!current || domain.compare(version, current.version) > 0) {
+        selected.set(key, { pkg: req.pkg, version, selectedBy: { requiredBy, constraint: req.constraint } });
+        visit(req.pkg, version, requiredBy, { key, req });
       }
+    };
+
+    /**
+     * The demanded version was never published: raise each demanding
+     * requirement's contribution to the lowest published version satisfying
+     * its constraint (re-offered through the normal max-of-minimums rule); a
+     * requirement nothing published satisfies is a genuine failure, as is the
+     * whole node when the registry offers no raise hook.
+     */
+    const raiseFloors = (id: string, pkg: string, version: V, err: VersionNotFoundError): void => {
+      const demands = nodeDemands.get(id) ?? [];
+      Computable.forAll(
+        demands.map(demand =>
+          registry.lowestAvailable!(pkg, demand.req.constraint).then(raised => {
+            if (raised === undefined) {
+              throw annotate(id, pkg, version, err);
+            }
+            candidateRaises.push({ pkg, constraint: demand.req.constraint, declared: version, raised, requiredBy: demand.requiredBy });
+            attempt(demand.key, demand.req, raised, demand.requiredBy);
+          })
+        ),
+        () => {
+          if (--pending === 0) {
+            finish();
+          }
+        }
+      ).catch(raiseErr => fail(toError(raiseErr)));
     };
 
     /**
@@ -106,11 +154,16 @@ export function resolveMVS<V, C>(
       return new MetadataFetchError(pkg, domain.versionToString(version), path, rootPkg, cause);
     };
 
-    const visit = (pkg: string, version: V, requiredBy: string): void => {
+    const visit = (pkg: string, version: V, requiredBy: string, demand: { key: string; req: Requirement }): void => {
       const id = nodeId(pkg, version);
-      if (nodeRequirements.has(id)) {
+      const demands = nodeDemands.get(id);
+      if (demands) {
+        /* Metadata already demanded (or resolved); just record the demand for
+         * raise attribution should the node turn out unpublished. */
+        demands.push({ ...demand, requiredBy });
         return;
       }
+      nodeDemands.set(id, [{ ...demand, requiredBy }]);
       nodeRequirements.set(id, []);
       nodeParents.set(id, requiredBy);
       pending++;
@@ -125,11 +178,21 @@ export function resolveMVS<V, C>(
               finish();
             }
           },
-          err => fail(annotate(id, pkg, version, err))
+          err => {
+            if (err instanceof VersionNotFoundError && registry.lowestAvailable) {
+              raiseFloors(id, pkg, version, err);
+            } else {
+              fail(annotate(id, pkg, version, err));
+            }
+          }
         );
       } catch (err) {
-        /* A registry that throws instead of rejecting gets the same attribution */
-        fail(annotate(id, pkg, version, err));
+        /* A registry that throws instead of rejecting gets the same treatment */
+        if (err instanceof VersionNotFoundError && registry.lowestAvailable) {
+          raiseFloors(id, pkg, version, err);
+        } else {
+          fail(annotate(id, pkg, version, err));
+        }
       }
     };
 
@@ -190,10 +253,7 @@ export function resolveMVS<V, C>(
         }
         for (const selection of targets) {
           if (!domain.satisfies(selection.version, constraint)) {
-            errors.add(
-              `${selection.pkg}@${domain.versionToString(selection.version)} does not satisfy '${req.constraint}'` +
-                ` required by ${from}`
-            );
+            violations.push({ pkg: selection.pkg, constraint: req.constraint, requiredBy: from, selected: selection.version });
           }
           if (!reachable.has(selection)) {
             reachable.set(selection, { ...selection, reachedVia: { requiredBy: from, constraint: req.constraint } });
@@ -244,7 +304,21 @@ export function resolveMVS<V, C>(
         }
         return domain.compare(a.version, b.version);
       });
-      resolve({ selections, errors: [...errors] });
+      /* Keep only the raises that shaped the result: the raised version must
+       * have won its key AND be reachable (a raise superseded by a higher
+       * floor, or pruned with a superseded subtree, never mattered) — then
+       * dedup identical (pkg, constraint) raises from parallel demands. */
+      const raiseKeys = new Set<string>();
+      const raises = candidateRaises.filter(raise => {
+        const winner = selections.some(sel => sel.pkg === raise.pkg && domain.compare(sel.version, raise.raised) === 0);
+        const dedup = `${raise.pkg}\n${raise.constraint}`;
+        if (!winner || raiseKeys.has(dedup)) {
+          return false;
+        }
+        raiseKeys.add(dedup);
+        return true;
+      });
+      resolve({ selections, errors: [...errors], violations, raises });
     };
 
     for (const root of roots) {
@@ -254,4 +328,69 @@ export function resolveMVS<V, C>(
       finish();
     }
   });
+}
+
+/**
+ * A private subtree repairing one violated requirement: the violated
+ * `constraint` on `pkg` resolved standalone (its own MVS tree, floor raises
+ * included), exactly what that requirement would get in isolation —
+ * self-consistent by construction, deduplicated by (pkg, constraint) across
+ * every requirer and every level. Its root selection is the subtree's own
+ * selection of `pkg`.
+ */
+export interface SplitResolution<V> {
+  pkg: string;
+  constraint: string;
+  tree: MVSResolution<V>;
+}
+
+/** A joint resolution together with the private splits repairing its (and,
+ * recursively, their) violations — the loose-resolution result a sealed tool
+ * delivery consumes and a strict delivery judges. */
+export interface RepairableResolution<V> {
+  tree: MVSResolution<V>;
+  splits: SplitResolution<V>[];
+}
+
+/**
+ * Resolve with **conflict splits**: run the joint MVS resolution, then give
+ * every violated requirement edge a private standalone subtree, iterating over
+ * the subtrees' own violations to a fixpoint. Splits are deduplicated globally
+ * by (pkg, constraint) — a finite set given finite metadata, so the iteration
+ * terminates. Violations remain listed on their trees (they attribute the
+ * requirer); a consumer maps a violated edge to its split by (pkg, constraint).
+ * Errors on any tree (unparseable constraints, unconstrained-only
+ * requirements) remain that tree's hard errors — the caller aggregates.
+ */
+export function resolveWithRepairs<V, C>(
+  roots: Requirement[],
+  domain: VersionDomain<V, C>,
+  registry: PackageRegistry<V>
+): Computable<RepairableResolution<V>> {
+  const splits = new Map<string, SplitResolution<V>>();
+  const keyOf = (pkg: string, constraint: string): string => `${pkg}\n${constraint}`;
+  const expand = (violations: Violation<V>[]): Computable<undefined> => {
+    const fresh = new Map<string, Violation<V>>();
+    for (const violation of violations) {
+      const key = keyOf(violation.pkg, violation.constraint);
+      if (!splits.has(key) && !fresh.has(key)) {
+        fresh.set(key, violation);
+      }
+    }
+    if (fresh.size === 0) {
+      return Computable.resolve(undefined);
+    }
+    return Computable.forAll(
+      [...fresh.values()].map(violation =>
+        resolveMVS([{ pkg: violation.pkg, constraint: violation.constraint }], domain, registry).then(tree => {
+          splits.set(keyOf(violation.pkg, violation.constraint), { pkg: violation.pkg, constraint: violation.constraint, tree });
+          return tree.violations;
+        })
+      ),
+      (...nested: Violation<V>[][]) => nested.flat()
+    ).then(expand);
+  };
+  return resolveMVS(roots, domain, registry).then(tree =>
+    expand(tree.violations).then(() => ({ tree, splits: [...splits.values()] }))
+  );
 }

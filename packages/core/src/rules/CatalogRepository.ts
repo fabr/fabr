@@ -23,12 +23,15 @@ import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import {
   groupByRepository,
+  MaterializeOptions,
   Repository,
   RepositoryPublishRef,
   RepositoryReader,
   RepositoryRef,
   Resolution,
+  SourceRef,
 } from "../core/Repository";
+import { FileSetRef } from "../core/FileSetRef";
 import { Requirement } from "../resolver/Types";
 import { chainSteps } from "../core/Provenance";
 import { attachHelp, ConflictError, IConflictSource, RequirementResolutionError, toError } from "../core/Errors";
@@ -93,13 +96,20 @@ export class CatalogRepository implements Repository, RepositoryReader {
    * resolution (a member never named is never fetched). Under `run` the member
    * is made runnable, delegated to its source repository so the catalog's joint
    * closure is kept — never a fresh resolution.
+   *
+   * The catalog resolves once (forced build) but is judged per delivery: the
+   * consumer's `options.resolutionMode` — and run delivery, permissive by the
+   * sealed-runnable invariant — is forwarded to the member's source
+   * materialize, so one pinned tree can serve a permissive tool member
+   * (repairs nested) and a strict linked member (repairs erroring) side by
+   * side.
    */
-  public materialize(references: RepositoryRef[]): Computable<FileSet[]> {
+  public materialize(references: RepositoryRef[], _resolution: Resolution, options?: MaterializeOptions): Computable<FileSet[]> {
     return this.operation.then(operation =>
       this.pinned.then(table =>
         Computable.forAll(
           references.map(reference =>
-            this.attributedTo(reference, () => this.deliver(reference.name.getLiteralPrefix(), table, operation))
+            this.attributedTo(reference, () => this.deliver(reference.name.getLiteralPrefix(), table, operation, options))
           ),
           (...delivered: FileSet[]) => delivered
         )
@@ -123,7 +133,7 @@ export class CatalogRepository implements Repository, RepositoryReader {
     }
   }
 
-  private deliver(alias: string, table: Map<string, CatalogMember>, operation: string): Computable<FileSet> {
+  private deliver(alias: string, table: Map<string, CatalogMember>, operation: string, options?: MaterializeOptions): Computable<FileSet> {
     const member = table.get(alias);
     if (!member) {
       /* Just a resolution failure — like any repository not having a requirement;
@@ -133,7 +143,10 @@ export class CatalogRepository implements Repository, RepositoryReader {
         table.size > 0 ? `it pins: ${[...table.keys()].sort().join(", ")}` : "the catalog pins nothing"
       );
     }
-    const pkg = this.materializePackage(member);
+    /* Run delivery is permissive by the sealed-runnable invariant; otherwise
+     * the consumer's judgment. */
+    const mode = operation === "run" ? ({ resolutionMode: "permissive" } as MaterializeOptions) : options;
+    const pkg = this.materializePackage(member, mode);
     return operation === "run" ? pkg.then(p => this.toRunnable(alias, member, p)) : pkg;
   }
 
@@ -143,12 +156,12 @@ export class CatalogRepository implements Repository, RepositoryReader {
    * reference's provenance stamped (`@npm:pkg` as written in the catalog's deps);
    * for a local entry, the already-built package.
    */
-  private materializePackage(member: CatalogMember): Computable<PackageFileSet> {
+  private materializePackage(member: CatalogMember, options?: MaterializeOptions): Computable<PackageFileSet> {
     if (member.kind === "local") {
       return Computable.resolve(member.pkg);
     }
     return member.source
-      .materialize([member.reference], member.resolution)
+      .materialize([member.reference], member.resolution, options)
       .then(([base]) => member.reference.finishMaterialize(base))
       .then(files => files as PackageFileSet);
   }
@@ -246,16 +259,23 @@ interface ResolvedPackageSet {
  * during resolution and comes back as an eager `local` entry.
  */
 function resolveDeps(context: RepositoryContext): Computable<ResolvedPackageSet> {
-  return context.getFileSources("deps", { [BUILD_OPERATION]: "build" }).then(sources => {
-    const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
-    const local = sources.filter((source): source is FileSource => source instanceof FileSet);
-    return Computable.forAll(
-      [...groupByRepository(references).entries()].map(([source, refs]) =>
-        source.resolve(refs).then(resolution => ({ source, resolution }))
-      ),
-      (...resolutions: { source: RepositoryReader; resolution: Resolution }[]) => ({ resolutions, local })
-    );
-  });
+  return context.getFileSources("deps", { [BUILD_OPERATION]: "build" }).then(rawSources =>
+    /* A projection-pending local entry manifests here (to plain files), so it
+     * reaches the not-a-package diagnostic below instead of vanishing. */
+    Computable.forAll(
+      rawSources.map(source => (source instanceof FileSetRef ? source.manifest() : Computable.resolve(source))),
+      (...sources: SourceRef[]) => {
+        const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
+        const local = sources.filter((source): source is FileSource => source instanceof FileSet);
+        return Computable.forAll(
+          [...groupByRepository(references).entries()].map(([source, refs]) =>
+            source.resolve(refs).then(resolution => ({ source, resolution }))
+          ),
+          (...resolutions: { source: RepositoryReader; resolution: Resolution }[]) => ({ resolutions, local })
+        );
+      }
+    )
+  );
 }
 
 /**

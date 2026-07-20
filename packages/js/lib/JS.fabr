@@ -124,17 +124,22 @@ targetdef js_test {
 
 #
 # Define a runnable Javascript program (run it with 'fabr run', collect its
-# output with the generic 'run' target, or check it with a golden test). 'deps'
-# assemble the install — packages mount under node_modules, loose filesets land
-# at their own paths; 'entry' is the path WITHIN that install to launch under
-# node (so a package script runs from its node_modules mount and its relative
-# imports resolve, e.g. entry = node_modules/@babel/core/bin/babel.js); 'args'
-# are fixed leading arguments. It yields a runnable, it does not itself execute.
+# output with the generic 'run' target, or check it with a golden test).
+# 'entry' is either a plain script FILE (contributed to the install at its
+# resolved name and launched under node), or a PACKAGE — external or built —
+# that becomes the runnable via the usual npm rules (entry = @npm:astro:7.1.1;
+# its sole declared bin is the default entry, and a projection selects among
+# several — entry = @npm:typescript:5.4.5:tsc — exactly as under 'fabr run');
+# package-mode exists to decorate a packaged tool with additional
+# dependencies: entry and 'deps' resolve jointly at one collection point, so
+# the whole environment shares one version selection and mounts into one
+# node_modules (loose dep filesets land at their own paths). 'args' are fixed leading arguments. It
+# yields a runnable, it does not itself execute.
 #
 
 targetdef js_script {
     deps = FILES;
-    entry = REQUIRED STRING;
+    entry = REQUIRED FILES;
     args = STRING;
 }
 

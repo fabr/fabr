@@ -27,10 +27,13 @@ import { posix } from "path";
 import {
   BUILD_OPERATION,
   Computable,
+  compareVersions,
   EMPTY_FILESET,
   FileSet,
+  FileSetRef,
   IFile,
   PackageFileSet,
+  parseVersion,
   RunnableFileSet,
   SymlinkFile,
   TargetContext,
@@ -239,34 +242,110 @@ export function stripPackageJson(files: FileSet): FileSet {
  * written as); anything that isn't a package passes through unchanged. The
  * sources must have been materialized (any carried references resolved) by
  * the collection point before they get here.
+ *
+ * One uniform rule covers both dependency regimes (see PackageFileSet): per
+ * name a deterministic **hoist winner** — a top-level set's package always
+ * wins its own name (its entry path must resolve there); otherwise the
+ * highest version — mounts flat at `node_modules/<name>`, and a listed
+ * sub-dependency that is NOT the flat winner of its name is a private version
+ * override, mounted under its lister (`<mount>/node_modules/<name>`),
+ * recursively — exactly where node's walk-up resolution finds it: the private
+ * copy from its requirer, the flat winner from everyone else. A built
+ * package's direct deps and a strict delivery's flat closure are all winners
+ * (one version per name), so everything mounts flat, as always; a permissive
+ * delivery's listed overrides are precisely the non-winners, so they nest.
+ * Hoisting is disk/path layout; the nesting carries the correctness.
  */
 export function assembleNodeModules(sets: FileSet[]): FileSet {
-  const mounts: FileSet[] = [];
+  /* Collect every package instance (the delivered override structure is a
+   * finite tree; built-package structure is acyclic by construction). */
+  const byId = new Map<string, PackageFileSet>();
+  const loose: FileSet[] = [];
+  const roots: PackageFileSet[] = [];
+  const all: PackageFileSet[] = [];
   const seen = new Set<PackageFileSet>();
-  const mount = (pkg: PackageFileSet): void => {
-    if (!seen.has(pkg)) {
-      seen.add(pkg);
-      mounts.push(mountPackage(pkg));
-      for (const dep of pkg.dependencies) {
-        if (dep instanceof PackageFileSet) {
-          mount(dep);
-        }
+  const collect = (pkg: PackageFileSet): void => {
+    if (seen.has(pkg)) {
+      return;
+    }
+    seen.add(pkg);
+    all.push(pkg);
+    if (!byId.has(pkg.packageId)) {
+      byId.set(pkg.packageId, pkg);
+    }
+    for (const dep of pkg.dependencies) {
+      if (dep instanceof PackageFileSet) {
+        collect(dep);
       }
     }
   };
   for (const set of sets) {
     if (set instanceof PackageFileSet) {
-      mount(set);
+      roots.push(set);
+      collect(set);
     } else {
-      mounts.push(set);
+      loose.push(set);
     }
   }
-  return FileSet.unionAll(...mounts);
+
+  /* The flat (hoisted) winner per name: a root always holds its own name;
+   * otherwise the highest version. */
+  const top = new Map<string, string>();
+  for (const root of roots) {
+    top.set(root.packageName, root.packageId);
+  }
+  for (const pkg of all) {
+    const current = top.get(pkg.packageName);
+    if (current === undefined) {
+      top.set(pkg.packageName, pkg.packageId);
+    } else if (current !== pkg.packageId && !roots.some(root => root.packageId === current)) {
+      if (compareVersionText(pkg.version, byId.get(current)!.version) > 0) {
+        top.set(pkg.packageName, pkg.packageId);
+      }
+    }
+  }
+
+  const mounts: FileSet[] = [];
+  const mounted = new Set<string>();
+  /** Mount a package at `atPath`, nesting its listed non-winner deps under it. */
+  const mountAt = (pkg: PackageFileSet, atPath: string): void => {
+    const mountKey = `${pkg.packageId}\n${atPath}`;
+    if (mounted.has(mountKey)) {
+      return;
+    }
+    mounted.add(mountKey);
+    mounts.push(pkg.remap(path => `${atPath}/${path}`));
+    for (const dep of pkg.dependencies) {
+      if (dep instanceof PackageFileSet && top.get(dep.packageName) !== dep.packageId) {
+        mountAt(dep, `${atPath}/node_modules/${dep.packageName}`);
+      }
+    }
+  };
+  for (const [name, id] of top) {
+    mountAt(byId.get(id)!, name);
+  }
+  return FileSet.unionAll(...mounts, ...loose);
 }
 
-/** @return the package's files renamed under the package's mount point */
-function mountPackage(pkg: PackageFileSet): FileSet {
-  return pkg.remap(path => `${pkg.packageName}/${path}`);
+/** Compare two package version strings, semver where parseable (a locally
+ * built package may carry none — sorts lowest; unparseable falls back to
+ * string comparison). Only a tiebreak for the hoist spot: correctness rides on
+ * nesting, not on which version wins the flat mount. */
+function compareVersionText(a: string | undefined, b: string | undefined): number {
+  if (a === undefined || b === undefined) {
+    if (a === b) {
+      return 0;
+    }
+    return a === undefined ? -1 : 1;
+  }
+  try {
+    return compareVersions(parseVersion(a), parseVersion(b));
+  } catch {
+    if (a === b) {
+      return 0;
+    }
+    return a < b ? -1 : 1;
+  }
 }
 
 /** The hidden store (a dot-dir, so never itself a resolvable package name) that
@@ -353,14 +432,38 @@ export function binByConvention(names: Set<string>): Record<string, string> {
  * is `surface.find`. The default entry (no projection) is the sole bin, or a
  * bin-less package's sole file; anything else needs a projection. This is the
  * single "npm package → runnable" path — shared by an external `@npm:…` consumed
- * under `run` (via NPMRepository) and a declared `js_package[run]` (over its own
- * generated package.json bin). The package's dependencies must already be resolved
- * (PackageFileSets, not inert refs) — its collection point is responsible for that.
+ * under `run` (via NPMRepository), a declared `js_package[run]` (over its own
+ * generated package.json bin), and js_script's package-mode entry. The package's
+ * dependencies must already be resolved (PackageFileSets, not inert refs) — its
+ * collection point is responsible for that.
+ *
+ * `extras` decorate the install beyond the package's own closure (js_script's
+ * `deps` — the additional environment a packaged tool needs, e.g. a framework's
+ * integrations): packages join the node_modules assembly (they must share the
+ * entry package's collection point, so the whole install is one joint pin);
+ * loose filesets land at their own paths at the install root. `args` are fixed
+ * leading arguments carried by the runnable.
+ *
+ * The entry may be a projection-pending {@link FileSetRef} over a package
+ * (`entry = @npm:typescript:5.4.5:tsc`): the pending projections select the
+ * RUNNABLE's entry — replayed on its surface via the one application
+ * mechanism, `FileSetRef.manifest` — bin by command or file by path, the
+ * written form's `fabr run` meaning.
  */
-export function makeNpmRunnable(pkg: PackageFileSet): Computable<RunnableFileSet> {
+export function makeNpmRunnable(
+  entry: PackageFileSet | FileSetRef,
+  extras: FileSet[] = [],
+  args: string[] = []
+): Computable<RunnableFileSet> {
+  const pkg = entry instanceof FileSetRef ? entry.source : entry;
+  if (!(pkg instanceof PackageFileSet)) {
+    throw new TypeError("cannot make a runnable of a non-package fileset");
+  }
   return binOf(pkg).then(bin => {
     const root = `node_modules/${pkg.packageName}`;
-    const install = FileSet.layout({ node_modules: assembleNodeModules([pkg]) });
+    const packages = extras.filter((extra): extra is PackageFileSet => extra instanceof PackageFileSet);
+    const loose = extras.filter(extra => !(extra instanceof PackageFileSet));
+    const install = FileSet.unionAll(FileSet.layout({ node_modules: assembleNodeModules([pkg, ...packages]) }), ...loose);
     /* Bins first: a declared bin takes precedence over a package file — it wins
      * its command *name* (a file sharing it is still in the install, just not the
      * surface entry for it) and, being earlier, wins a same-*path* dedup at launch.
@@ -374,7 +477,16 @@ export function makeNpmRunnable(pkg: PackageFileSet): Computable<RunnableFileSet
         surface.set(name, file);
       }
     }
-    return new RunnableFileSet(install, [], "node", root, new FileSet(surface));
+    const runnable = new RunnableFileSet(install, args, "node", root, new FileSet(surface));
+    if (!(entry instanceof FileSetRef) || entry.projections.length === 0) {
+      return Computable.resolve(runnable);
+    }
+    return new FileSetRef(runnable, entry.projections).manifest().then(selected => {
+      if (!(selected instanceof RunnableFileSet)) {
+        throw new Error(`entry projection matched no bin or file of ${pkg.packageId} — nothing to launch`);
+      }
+      return selected;
+    });
   });
 }
 
@@ -391,7 +503,14 @@ function normalizeBinPath(binPath: string): string {
   return posix.normalize(binPath);
 }
 
-function binOf(pkg: PackageFileSet): Computable<Record<string, string>> {
+/**
+ * The package's `bin` as a command→path map, read from its package.json (npm
+ * allows `bin` to be a bare string — the command is the package's unscoped
+ * name — or an object); no package.json or no `bin` yields an empty map.
+ * Shared by makeNpmRunnable (the bin surface) and js_script's package-mode
+ * entry (the package's declared bin is the entry).
+ */
+export function binOf(pkg: PackageFileSet): Computable<Record<string, string>> {
   return pkg.get("package.json").then(file => {
     if (!file) {
       return {};

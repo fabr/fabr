@@ -18,36 +18,52 @@
  */
 
 import { Computable } from "../core/Computable";
-import { resolveMVS } from "./MVSResolver";
-import { SEMVER, SemverVersion, versionToString } from "./Semver";
-import { MetadataFetchError } from "../core/Errors";
+import { RepairableResolution, resolveMVS, resolveWithRepairs } from "./MVSResolver";
+import { parseVersion, SEMVER, SemverVersion, versionToString } from "./Semver";
+import { MetadataFetchError, VersionNotFoundError } from "../core/Errors";
 import { PackageRegistry, Requirement, MVSResolution, Selected } from "./Types";
 import { expect } from "chai";
 
 /**
  * Mock registry over a literal { pkg: { version: { dep: constraint } } } table.
+ * The versions present in the table ARE the published set; passing `raisable`
+ * additionally enables the floor-raise hook (lowestAvailable) over that set —
+ * without it an unpublished version stays a hard failure, as for a registry
+ * without the hook.
  */
-function mockRegistry(data: Record<string, Record<string, Record<string, string>>>): PackageRegistry<SemverVersion> {
-  return {
+function mockRegistry(data: Record<string, Record<string, Record<string, string>>>, raisable = false): PackageRegistry<SemverVersion> {
+  const registry: PackageRegistry<SemverVersion> = {
     getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
       const deps = data[pkg]?.[versionToString(version)];
       if (deps === undefined) {
-        throw new Error(`${pkg}@${versionToString(version)} not found in mock registry`);
+        throw new VersionNotFoundError(pkg, versionToString(version), `${pkg}@${versionToString(version)} not found in mock registry`);
       }
       return Computable.resolve(Object.entries(deps).map(([dep, constraint]) => ({ pkg: dep, constraint })));
     },
   };
+  if (raisable) {
+    registry.lowestAvailable = (pkg: string, constraint: string): Computable<SemverVersion | undefined> => {
+      const parsed = SEMVER.parseConstraint(constraint);
+      const satisfying = Object.keys(data[pkg] ?? {})
+        .map(parseVersion)
+        .filter(version => SEMVER.satisfies(version, parsed))
+        .sort(SEMVER.compare);
+      return Computable.resolve(satisfying[0]);
+    };
+  }
+  return registry;
 }
 
 function resolve(
   roots: Record<string, string>,
-  data: Record<string, Record<string, Record<string, string>>>
+  data: Record<string, Record<string, Record<string, string>>>,
+  raisable = false
 ): MVSResolution<SemverVersion> {
   let result: MVSResolution<SemverVersion> | undefined;
   resolveMVS(
     Object.entries(roots).map(([pkg, constraint]) => ({ pkg, constraint })),
     SEMVER,
-    mockRegistry(data)
+    mockRegistry(data, raisable)
   ).then(resolution => {
     result = resolution;
   });
@@ -189,7 +205,7 @@ describe("MVSResolver", () => {
     expect(result.errors).to.deep.equal([]);
   });
 
-  it("reports upper bound violations without rejecting", () => {
+  it("reports upper bound violations as data without rejecting", () => {
     const result = resolve(
       { D: "~1.1.0", E: "1.0.0" },
       {
@@ -198,9 +214,12 @@ describe("MVSResolver", () => {
       }
     );
     expect(selectionStrings(result)).to.deep.equal(["D@1.3.0", "E@1.0.0"]);
-    expect(result.errors).to.have.length(1);
-    expect(result.errors[0]).to.contain("D@1.3.0");
-    expect(result.errors[0]).to.contain("~1.1.0");
+    expect(result.errors).to.deep.equal([]);
+    expect(result.violations).to.have.lengthOf(1);
+    expect(result.violations[0].pkg).to.equal("D");
+    expect(result.violations[0].constraint).to.equal("~1.1.0");
+    expect(result.violations[0].requiredBy).to.equal("(root)");
+    expect(versionToString(result.violations[0].selected)).to.equal("1.3.0");
   });
 
   it("attributes a metadata failure on a root requirement to itself", () => {
@@ -309,6 +328,67 @@ describe("MVSResolver", () => {
     expect(d.selectedBy).to.deep.equal({ requiredBy: "C@1.0.0", constraint: "^1.3.0" });
   });
 
+  it("raises an unpublished floor to the lowest published satisfying version", () => {
+    /* B's declared floor ^1.0.0 → 1.0.0 was never published (DefinitelyTyped-style);
+     * with the raise hook, the lowest published satisfying version is selected. */
+    const result = resolve(
+      { A: "1.0.0" },
+      {
+        A: { "1.0.0": { B: "^1.0.0" } },
+        B: { "1.6.0": {}, "1.7.0": {} },
+      },
+      true
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@1.6.0"]);
+    expect(result.errors).to.deep.equal([]);
+    expect(result.raises).to.have.lengthOf(1);
+    expect(result.raises[0].pkg).to.equal("B");
+    expect(result.raises[0].constraint).to.equal("^1.0.0");
+    expect(versionToString(result.raises[0].declared)).to.equal("1.0.0");
+    expect(versionToString(result.raises[0].raised)).to.equal("1.6.0");
+    expect(result.raises[0].requiredBy).to.equal("A@1.0.0");
+  });
+
+  it("drops a raise superseded by a higher requirement's floor", () => {
+    /* A's broken floor raises B to 1.6.0, but C's published floor 1.7.0 wins the
+     * key — the raise never shaped the result, so it is not reported. */
+    const result = resolve(
+      { A: "1.0.0", C: "1.0.0" },
+      {
+        A: { "1.0.0": { B: "^1.0.0" } },
+        C: { "1.0.0": { B: "^1.7.0" } },
+        B: { "1.6.0": {}, "1.7.0": {} },
+      },
+      true
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@1.7.0", "C@1.0.0"]);
+    expect(result.raises).to.deep.equal([]);
+  });
+
+  it("fails when nothing published satisfies an unpublished floor", () => {
+    let error: Error | undefined;
+    resolveMVS([{ pkg: "A", constraint: "1.0.0" }], SEMVER, mockRegistry({ A: { "1.0.0": { B: "^2.0.0" } }, B: { "1.6.0": {} } }, true)).then(
+      () => undefined,
+      err => {
+        error = err as Error;
+      }
+    );
+    expect(error).to.be.instanceOf(MetadataFetchError);
+    expect((error as MetadataFetchError).pkg).to.equal("B");
+  });
+
+  it("without the raise hook an unpublished floor stays a hard failure", () => {
+    const err = resolveError(
+      { A: "1.0.0" },
+      {
+        A: { "1.0.0": { B: "^1.0.0" } },
+        B: { "1.6.0": {} },
+      }
+    );
+    expect(err).to.be.instanceOf(MetadataFetchError);
+    expect((err as MetadataFetchError).pkg).to.equal("B");
+  });
+
   it("keeps a version raised by a superseded requirement, and says so", () => {
     /* A@1.0.0 raises D to 1.5.0 before A itself is upgraded to 1.2.0, which only
      * needs D ^1.1.0; per MVS the raised version stands, and selectedBy records
@@ -327,5 +407,78 @@ describe("MVSResolver", () => {
     expect(d.reachedVia).to.deep.equal({ requiredBy: "A@1.2.0", constraint: "^1.1.0" });
     /* The winning node is not among the final selections */
     expect(selectionStrings(result)).to.not.contain("A@1.0.0");
+  });
+});
+
+describe("resolveWithRepairs", () => {
+  function repair(
+    roots: Record<string, string>,
+    data: Record<string, Record<string, Record<string, string>>>
+  ): RepairableResolution<SemverVersion> {
+    let result: RepairableResolution<SemverVersion> | undefined;
+    resolveWithRepairs(
+      Object.entries(roots).map(([pkg, constraint]) => ({ pkg, constraint })),
+      SEMVER,
+      mockRegistry(data, true)
+    ).then(resolution => {
+      result = resolution;
+    });
+    expect(result).to.not.equal(undefined);
+    return result!;
+  }
+
+  it("gives a violated exact pin a private split subtree", () => {
+    /* The mdn-data shape: X exact-pins M@2.0.28, Y floors it at 2.12.2 — same
+     * major, jointly unsatisfiable. The violated edge gets its own standalone
+     * subtree pinned at exactly 2.0.28. */
+    const result = repair(
+      { X: "1.0.0", Y: "1.0.0" },
+      {
+        X: { "1.0.0": { M: "2.0.28" } },
+        Y: { "1.0.0": { M: "^2.12.2" } },
+        M: { "2.0.28": {}, "2.12.2": {} },
+      }
+    );
+    expect(selectionStrings(result.tree)).to.deep.equal(["M@2.12.2", "X@1.0.0", "Y@1.0.0"]);
+    expect(result.tree.violations).to.have.lengthOf(1);
+    expect(result.splits).to.have.lengthOf(1);
+    expect(result.splits[0].pkg).to.equal("M");
+    expect(result.splits[0].constraint).to.equal("2.0.28");
+    expect(selectionStrings(result.splits[0].tree)).to.deep.equal(["M@2.0.28"]);
+  });
+
+  it("deduplicates identical violated edges and splits recursively", () => {
+    /* A and B pin the same (P, 1.0.0) — one split; inside that split P@1.0.0's
+     * own tree violates (Q, 1.0.0) — a second, nested split. */
+    const result = repair(
+      { A: "1.0.0", B: "1.0.0", C: "1.0.0" },
+      {
+        A: { "1.0.0": { P: "1.0.0" } },
+        B: { "1.0.0": { P: "1.0.0" } },
+        C: { "1.0.0": { P: "^1.5.0" } },
+        P: { "1.0.0": { Q: "1.0.0", R: "^1.0.0" }, "1.5.0": {} },
+        Q: { "1.0.0": {}, "1.2.0": {} },
+        R: { "1.0.0": { Q: "^1.2.0" } },
+      }
+    );
+    expect(result.splits.map(split => `${split.pkg}@${split.constraint}`).sort()).to.deep.equal(["P@1.0.0", "Q@1.0.0"]);
+    const p = result.splits.find(split => split.pkg === "P")!;
+    expect(selectionStrings(p.tree)).to.deep.equal(["P@1.0.0", "Q@1.2.0", "R@1.0.0"]);
+    /* P's subtree still lists its own violation, mapped to the Q split */
+    expect(p.tree.violations).to.have.lengthOf(1);
+    const q = result.splits.find(split => split.pkg === "Q")!;
+    expect(selectionStrings(q.tree)).to.deep.equal(["Q@1.0.0"]);
+  });
+
+  it("returns no splits for a violation-free tree", () => {
+    const result = repair(
+      { A: "1.0.0" },
+      {
+        A: { "1.0.0": { B: "^1.2.0" } },
+        B: { "1.2.0": {} },
+      }
+    );
+    expect(result.splits).to.deep.equal([]);
+    expect(result.tree.violations).to.deep.equal([]);
   });
 });

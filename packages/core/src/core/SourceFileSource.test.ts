@@ -38,7 +38,7 @@ describe("SourceFileSource", () => {
   beforeEach(() => {
     sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-src-test-"));
     cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-src-cache-"));
-    cache = new BuildCache(cacheRoot);
+    cache = new BuildCache(cacheRoot, { log: () => undefined });
   });
 
   afterEach(() => {

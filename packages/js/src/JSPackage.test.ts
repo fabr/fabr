@@ -20,6 +20,7 @@
 import { expect } from "chai";
 import { Computable, FileSet, IFile, MemoryFile, PackageFileSet, SymlinkFile } from "@fabr-build/core";
 import {
+  assembleNodeModules,
   assembleScopedNodeModules,
   hasPackageExport,
   makeNpmRunnable,
@@ -30,6 +31,13 @@ import {
 /** A package with a single `index.js` and the given (already-built) deps. */
 function pkg(name: string, deps: PackageFileSet[] = []): PackageFileSet {
   return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}`)]]), name, "1.0.0", deps);
+}
+
+/** A versioned package (content distinct per version) with the given carried
+ * deps — for a delivered closure: flat winners on the root, private version
+ * overrides nested on their requirers. */
+function vpkg(name: string, version: string, deps: PackageFileSet[] = []): PackageFileSet {
+  return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}@${version}`)]]), name, version, deps);
 }
 
 /** Snapshot a FileSet's entries into a plain map for synchronous inspection. */
@@ -69,6 +77,67 @@ describe("assembleScopedNodeModules", () => {
     const loose = new FileSet(new Map<string, IFile>([["loose.js", MemoryFile.from("x")]]));
     const files = entries(assembleScopedNodeModules([pkg("tar-stream"), loose]));
     expect(files.has("loose.js")).to.equal(true);
+  });
+});
+
+describe("assembleNodeModules", () => {
+  it("mounts a single-version closure flat, as always", () => {
+    const dep = pkg("b4a");
+    const root = pkg("tar-stream", [dep]);
+    const files = entries(assembleNodeModules([root]));
+    expect(files.has("tar-stream/index.js")).to.equal(true);
+    expect(files.has("b4a/index.js")).to.equal(true);
+  });
+
+  it("nests listed version overrides under their requirer (the mdn-data shape)", async () => {
+    /* svgo's delivered closure: winners flat (css-tree@3, mdn-data@2.12.2,
+     * csso), with csso carrying its private css-tree@2, which carries its
+     * private mdn-data@2.0.28 — the in-memory node_modules tree. */
+    const mdnOld = vpkg("mdn-data", "2.0.28");
+    const cssTree2 = vpkg("css-tree", "2.2.0", [mdnOld]);
+    const csso = vpkg("csso", "5.0.5", [cssTree2]);
+    const mdnNew = vpkg("mdn-data", "2.12.2");
+    const cssTree3 = vpkg("css-tree", "3.0.1");
+    const root = vpkg("svgo", "4.0.1", [mdnNew, cssTree3, csso]);
+    const files = entries(assembleNodeModules([root]));
+
+    /* Winners flat... */
+    const flatCss = await settle(files.get("css-tree/index.js")!.readString());
+    expect(flatCss).to.equal("// css-tree@3.0.1");
+    const flatMdn = await settle(files.get("mdn-data/index.js")!.readString());
+    expect(flatMdn).to.equal("// mdn-data@2.12.2");
+    /* ...csso resolves css-tree to its private @2 copy... */
+    const nestedCss = await settle(files.get("csso/node_modules/css-tree/index.js")!.readString());
+    expect(nestedCss).to.equal("// css-tree@2.2.0");
+    /* ...which resolves mdn-data to ITS private 2.0.28. */
+    const nestedMdn = await settle(files.get("csso/node_modules/css-tree/node_modules/mdn-data/index.js")!.readString());
+    expect(nestedMdn).to.equal("// mdn-data@2.0.28");
+  });
+
+  it("skips a listed dep that is the flat winner of its name (no duplicate mount)", () => {
+    /* b@1 nests under a; b@1's own listed dep points back at the flat winner
+     * a@1 — a winner is never nested, so the cycle-shaped structure stops. */
+    const a = vpkg("a", "1.0.0");
+    const b1 = vpkg("b", "1.0.0", [a]);
+    const a2 = vpkg("a", "1.0.0", [b1]); /* same id as a — winner */
+    const b2 = vpkg("b", "2.0.0");
+    const root = vpkg("top", "1.0.0", [a2, b2]);
+    const files = entries(assembleNodeModules([root]));
+    expect(files.has("a/node_modules/b/index.js")).to.equal(true);
+    /* The nested b@1 does NOT nest a copy of a (a@1.0.0 is the flat winner). */
+    expect(files.has("a/node_modules/b/node_modules/a/index.js")).to.equal(false);
+  });
+
+  it("a top-level package always wins its own name over a higher carried version", async () => {
+    const transitiveNewer = vpkg("tool", "9.9.9");
+    const carrier = vpkg("other", "1.0.0", [transitiveNewer]);
+    const root = vpkg("tool", "1.0.0", [carrier]);
+    const files = entries(assembleNodeModules([root]));
+    const flat = await settle(files.get("tool/index.js")!.readString());
+    expect(flat).to.equal("// tool@1.0.0");
+    /* The carried newer version is not the winner, so it nests under its lister. */
+    const nested = await settle(files.get("other/node_modules/tool/index.js")!.readString());
+    expect(nested).to.equal("// tool@9.9.9");
   });
 });
 

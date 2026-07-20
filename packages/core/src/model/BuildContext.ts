@@ -1,8 +1,11 @@
 import { Readable } from "stream";
+import { FetchOptions } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource } from "../core/FileSet";
 import {
+  CollectionOptions,
   isRepository,
+  MaterializeOptions,
   RepositoryPublishRef,
   materializeLists,
   materializeShallow,
@@ -10,6 +13,7 @@ import {
   RepositoryRef,
   SourceRef,
 } from "../core/Repository";
+import { FileSetRef } from "../core/FileSetRef";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { Requirement } from "../resolver/Types";
@@ -398,9 +402,10 @@ export class BuildContext {
     url: string,
     tag: string,
     process: (content: Readable, targetDir: string) => Computable<FileSet>,
-    headers?: Record<string, string>
+    headers?: Record<string, string>,
+    options?: FetchOptions
   ): Computable<FileSet> {
-    return this.execution.buildCache.getOrFetch(url, tag, process, headers);
+    return this.execution.buildCache.getOrFetch(url, tag, process, headers, options);
   }
 
   /**
@@ -714,8 +719,15 @@ export class BuildContext {
             return target.then((t): IResolvedFileSource | Computable<IResolvedFileSource> => {
               const references: SourceRef[] = [];
               const containers: FileSource[] = [];
+              /* The literal-must-resolve error, when it applies here: only in a
+               * property context (a CLI name reports through the driver's
+               * "matched no files") and only for a literal projection. */
+              const miss =
+                relativeTo && !rest.hasGlob()
+                  ? (): Error => new NameResolutionError(substName, declPosn(stack?.value ?? relativeTo), useSiteOf(stack))
+                  : undefined;
               for (const source of t) {
-                if (source instanceof RepositoryRef) {
+                if (source instanceof RepositoryRef || source instanceof FileSetRef) {
                   references.push(source.find(rest, retainedPrefix));
                 } else if (isRepository(source)) {
                   /* The rest is a requirement identifier followed by an optional
@@ -727,6 +739,15 @@ export class BuildContext {
                    * projection). The written-name rule applies to the
                    * projection, not to the requirement itself. */
                   references.push(source.getRepositoryRef(rest));
+                } else if (source instanceof PackageFileSet) {
+                  /* A projection into a package DEFERS (a FileSetRef): applied
+                   * eagerly it would erase the package identity conversion
+                   * needs (a package entry's projection selects the bin of the
+                   * runnable it becomes). Ordinary consumers see the projected
+                   * files when the ref manifests at their collection point,
+                   * carrying this site's miss error for a literal that matches
+                   * nothing. */
+                  references.push(new FileSetRef(source, [{ pattern: rest, prefix: retainedPrefix }], miss));
                 } else {
                   /* A container projects on its own terms (FileSource.find): a
                    * fileset filters + prefixes (or renames, per the facet); a
@@ -746,11 +767,10 @@ export class BuildContext {
               return FileSet.findAll(containers, rest, retainedPrefix).then(projected => {
                 const matched = projected.filter(set => !set.isEmpty());
                 /* Same literal-must-resolve rule for a projection into built
-                 * content, but only in a property context (a CLI name reports
-                 * through the driver's "matched no files") and only when no
-                 * deferred reference might still deliver the name. */
-                if (matched.length === 0 && references.length === 0 && relativeTo && !rest.hasGlob()) {
-                  throw new NameResolutionError(substName, declPosn(stack?.value ?? relativeTo), useSiteOf(stack));
+                 * content, but only when no deferred reference might still
+                 * deliver the name. */
+                if (matched.length === 0 && references.length === 0 && miss) {
+                  throw miss();
                 }
                 return { sources: [...references, ...(matched.length > 0 ? matched : [EMPTY_FILESET])], decl };
               });
@@ -1138,8 +1158,27 @@ export abstract class TargetContext {
    * repository and resolved together, with the consumer's own pins
    * participating across the lot. Results come back per name, filtered to
    * materialized FileSets (flags and other non-content sources drop out).
+   *
+   * `options.resolutionMode = "permissive"` declares this collection point's
+   * deliveries sealed program installs (a runnable-definer's assembly) —
+   * resolution repairs are accepted rather than errors; see MaterializeOptions.
+   * `options.keepProjected` delivers projection-pending FileSetRefs
+   * unmanifested, for a consumer that reinterprets them (see FileSetRef); by
+   * default they manifest to their plain projected files. Rule code only: the
+   * judgments are structural, never user configuration.
    */
-  public collect(parts: Record<string, SourceRef[] | Computable<SourceRef[]>>): Computable<Record<string, FileSet[]>> {
+  public collect(
+    parts: Record<string, SourceRef[] | Computable<SourceRef[]>>,
+    options: CollectionOptions & { keepProjected: true }
+  ): Computable<Record<string, (FileSet | FileSetRef)[]>>;
+  public collect(
+    parts: Record<string, SourceRef[] | Computable<SourceRef[]>>,
+    options?: MaterializeOptions
+  ): Computable<Record<string, FileSet[]>>;
+  public collect(
+    parts: Record<string, SourceRef[] | Computable<SourceRef[]>>,
+    options?: CollectionOptions
+  ): Computable<Record<string, (FileSet | FileSetRef)[]>> {
     const names = Object.keys(parts);
     return Computable.forAll(
       names.map(name => {
@@ -1147,10 +1186,12 @@ export abstract class TargetContext {
         return value instanceof Computable ? value : Computable.resolve(value);
       }),
       (...lists: SourceRef[][]) =>
-        materializeLists(lists).then(partitions => {
-          const result: Record<string, FileSet[]> = {};
+        materializeLists(lists, options).then(partitions => {
+          const result: Record<string, (FileSet | FileSetRef)[]> = {};
           names.forEach((name, i) => {
-            result[name] = partitions[i].filter((source): source is FileSet => source instanceof FileSet);
+            result[name] = partitions[i].filter(
+              (source): source is FileSet | FileSetRef => source instanceof FileSet || source instanceof FileSetRef
+            );
           });
           return result;
         })
@@ -1213,7 +1254,9 @@ export abstract class TargetContext {
     return this.getContext(overrides)
       .getTarget(name, this.stack)
       .then(sources => materializeLists([sources]))
-      .then(([resolved]) => resolved);
+      /* Default materialization manifests any projection-pending FileSetRef,
+       * so the delivered list holds only content and repositories. */
+      .then(([resolved]) => resolved as (FileSource | Repository)[]);
   }
 
   /**
@@ -1554,13 +1597,17 @@ export class RepositoryContext {
    * (a miss) is announced as progress, attributed to this repository. The
    * optional `resource` is a human noun for what is being fetched (e.g.
    * "metadata", "package"), carried on the progress event for display.
+   * `options.immutable = false` declares a mutable pointer document (see
+   * FetchOptions) — cached per HTTP caching semantics and revalidated,
+   * instead of frozen forever.
    */
   public fetch(
     url: string,
     tag: string,
     process: (content: Readable, targetDir: string) => Computable<FileSet>,
     resource?: string,
-    headers?: Record<string, string>
+    headers?: Record<string, string>,
+    options?: FetchOptions
   ): Computable<FileSet> {
     return this.context.getCachedOrFetch(
       url,
@@ -1569,7 +1616,8 @@ export class RepositoryContext {
         this.notifyProgress({ kind: "fetch", url, target: this.target, resource });
         return process(content, targetDir);
       },
-      headers
+      headers,
+      options
     );
   }
 

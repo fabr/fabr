@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { Readable } from "stream";
 import { Computable } from "./Computable";
-import { openUrlStream } from "./Fetch";
+import { ICacheControl, openUrlStream } from "./Fetch";
 import { FileSet, IFile } from "./FileSet";
 import { FSFile } from "./FSFileSource";
 import { deleteFile, hardlink, hashFile, hashString, readFile, readFileBuffer, rename, symlink, walkTree, writeFile } from "./FSWrapper";
@@ -10,6 +10,11 @@ import { SymlinkFile } from "./SymlinkFile";
 import { describeSystemError } from "../support/Execute";
 import { ExecutionError } from "./Errors";
 import { globMatcher } from "../support/Glob";
+import { Diagnostic, Log } from "../support/Log";
+
+const DIAG_SERVING_STALE = Diagnostic.Warn<{ url: string; reason: string }>(
+  "cannot refresh {url} ({reason}); serving the cached copy"
+);
 
 class BuildFile implements IFile {
   private readonly root: string;
@@ -46,6 +51,41 @@ class BuildFile implements IFile {
 }
 
 /**
+ * Options for {@link BuildCache.getOrFetch}: the caller's statement of the
+ * URL's content contract. **`immutable` (the default)** asserts the content
+ * can never change — the entry is cached forever, cache headers ignored (the
+ * assertion is a *content* contract, stronger than transport headers; e.g. an
+ * npm tarball, which npmjs itself serves `cache-control: immutable`). With
+ * **`immutable: false`** the entry instead honors plain HTTP caching: cached
+ * with the origin-declared freshness (`max-age`/`Expires` minus `Age`; none
+ * declared → stale immediately) and revalidated by conditional GET once stale.
+ * Only for *pointer* documents over immutable content (a registry's package
+ * version list); content that is itself replaced under one URL stays banned.
+ */
+export interface FetchOptions {
+  immutable?: boolean;
+  /** Revalidate now regardless of remaining freshness — for a caller holding
+   * evidence the copy is stale (e.g. it lacks a version known to exist). */
+  forceRevalidate?: boolean;
+}
+
+/** A cache entry as read back from disk: its files, plus freshness metadata for
+ * a mutable entry. */
+interface ICacheEntry {
+  files: FileSet;
+  meta?: ICacheControl;
+}
+
+/** Whether the entry may be served as it stands: the manifest itself says — an
+ * entry without cache-control metadata is immutable (fresh forever), one with
+ * it is fresh until its expiry. */
+function isFresh(entry: ICacheEntry, now: number): boolean {
+  return entry.meta === undefined || entry.meta.expires > now;
+}
+
+const META_PREFIX = "!meta ";
+
+/**
  * Implemements an MVP build cache.
  *
  * The Source Manifest is hashed and used to look up the target manifest. If not found,
@@ -59,6 +99,12 @@ class BuildFile implements IFile {
 export class BuildCache {
   private readonly root: string;
   private readonly blobRoot: string;
+  /** Clock for freshness decisions (injectable for tests); cache policy only,
+   * never a build input. */
+  private readonly now: () => number;
+  /** The driver's diagnostic log, for cache behavior a user should see
+   * (serving a stale copy on a fetch failure). */
+  private readonly log: Log;
 
   /** Counter for unique temp names for blob/manifest writes (with the pid, unique
    * across processes sharing the cache; the +rename is what makes each appear
@@ -78,43 +124,33 @@ export class BuildCache {
    */
   private readonly inflight = new Map<string, Computable<FileSet>>();
 
-  constructor(cachePath: string) {
+  constructor(cachePath: string, log: Log, now: () => number = Date.now) {
     this.root = cachePath;
     this.blobRoot = path.resolve(cachePath, "blob");
+    this.log = log;
+    this.now = now;
   }
 
   public getOrCreate(cacheKey: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
     const key = hashString(cacheKey);
+    return this.withLock(key, () =>
+      this.cacheGet(key).then(entry => (entry && isFresh(entry, this.now()) ? entry.files : this.createEntry(key, create)))
+    );
+  }
+
+  /**
+   * Run one attempt at an entry under the in-process locking: a concurrent
+   * demand for the same key joins the running attempt instead of starting its
+   * own (dedup + the write lock on the entry — without it two concurrent
+   * misses would both scribble over one entry dir); a settled attempt is never
+   * joined (success ≡ the manifest on disk; a failure must retry, not replay).
+   */
+  private withLock(key: string, operation: () => Computable<FileSet>): Computable<FileSet> {
     const running = this.inflight.get(key);
     if (running) {
       return running;
     }
-    const result = this.lookup(key).then(entry => {
-      if (entry) {
-        return entry;
-      } else {
-        const targetDir = path.resolve(this.root, key);
-        /* No manifest means any existing directory content is debris from a
-         * failed (or crashed) earlier attempt: start from a clean slate. */
-        fs.rmSync(targetDir, { recursive: true, force: true });
-        fs.mkdirSync(targetDir, { recursive: true });
-        return create(targetDir)
-          .then(result => this.storeContent(result))
-          .then(result => this.storeManifest(targetDir, result))
-          .then(result => {
-            /* The work dir was only scratch for the step — its outputs now live
-             * in the content pool and the manifest is written, so discard it.
-             * The `<key>.manifest` sibling file is untouched. */
-            fs.rmSync(targetDir, { recursive: true, force: true });
-            return result;
-          })
-          .catch(err => {
-            /* Remove the partial entry so a retry starts fresh */
-            fs.rmSync(targetDir, { recursive: true, force: true });
-            throw err;
-          });
-      }
-    });
+    const result = operation();
     this.inflight.set(key, result);
     result.finally(() => this.inflight.delete(key));
     return result;
@@ -132,21 +168,88 @@ export class BuildCache {
    *
    * The process callback runs before anything is recorded in the cache, so
    * throwing on invalid content guarantees error responses are never cached.
-   * Cached downloads are currently never refreshed: this must only be used for
-   * URLs whose content is immutable by contract. (Any future invalidation/TTL
-   * policy, and integrity verification of downloaded content, belongs here.)
+   *
+   * By default (`options.immutable` absent or true), a cached download is
+   * never refreshed: the caller asserts the URL's content is immutable by
+   * contract, which outranks any transport cache headers. With
+   * `immutable: false` the entry instead honors HTTP caching (see
+   * {@link FetchOptions}): served while origin-declared-fresh, then
+   * revalidated by conditional GET — 304 refreshes the lifetime in place, new
+   * content replaces the entry, and a *fetch* failure serves the held copy
+   * (stale-if-error; a `process` validation failure still propagates and
+   * leaves the previous entry standing). (Integrity verification of downloaded
+   * content also belongs here, eventually.)
    */
   public getOrFetch(
     url: string,
     tag: string,
     process: (content: Readable, targetDir: string) => Computable<FileSet>,
-    headers?: Record<string, string>
+    headers?: Record<string, string>,
+    options?: FetchOptions
   ): Computable<FileSet> {
     /* `headers` (e.g. a registry auth token) authenticate the request only — they
      * are deliberately NOT part of the cache key (the content is a function of the
      * URL, not who fetched it), so an authenticated fetch of a private package
      * caches by URL like any other. */
-    return this.getOrCreate(`fetch:${tag} ${url}`, targetDir => openUrlStream(url, headers).then(ins => process(ins, targetDir)));
+    const key = hashString(`fetch:${tag} ${url}`);
+    return this.withLock(key, () =>
+      this.cacheGet(key).then(entry => {
+        if (entry && isFresh(entry, this.now()) && !options?.forceRevalidate) {
+          return entry.files;
+        }
+        return this.fetch(key, url, process, headers, entry, options);
+      })
+    );
+  }
+
+  /**
+   * Fetch a missing-or-stale entry, conditionally when the held copy carries
+   * validators: a 304 refreshes the entry's lifetime in place (content
+   * unchanged, `process` not re-run); fresh content replaces the entry —
+   * written with its cache-control metadata for a non-immutable caller, and
+   * without any for an immutable one (fresh forever); a fetch failure serves
+   * the held copy (stale-if-error — a caller with expiring entries tolerates
+   * boundedly-stale answers).
+   */
+  private fetch(
+    key: string,
+    url: string,
+    process: (content: Readable, targetDir: string) => Computable<FileSet>,
+    headers: Record<string, string> | undefined,
+    entry: ICacheEntry | undefined,
+    options: FetchOptions | undefined
+  ): Computable<FileSet> {
+    const validators: Record<string, string> = {};
+    if (entry?.meta?.etag) {
+      validators["if-none-match"] = entry.meta.etag;
+    }
+    if (entry?.meta?.lastModified) {
+      validators["if-modified-since"] = entry.meta.lastModified;
+    }
+    return openUrlStream(url, { ...headers, ...validators }, this.now).then(
+      response => {
+        const meta = options?.immutable !== false ? undefined : response.cacheControl;
+        const stream = response.stream;
+        if (stream) {
+          return this.createEntry(key, targetDir => process(stream, targetDir), meta);
+        }
+        /* 304: only possible for a conditional request (the fetch layer rejects
+         * it otherwise), so we hold the entry the validators came from —
+         * re-putting it refreshes its lifetime in place (its files are already
+         * blob-backed, so the content ingest is a no-op). */
+        return this.cachePut(key, entry!.files, meta);
+      },
+      err => {
+        if (entry) {
+          /* Stale-if-error (per RFC 9111's cannot-reach-the-origin allowance):
+           * a held copy beats failing the build on a registry blip — but never
+           * silently. */
+          this.log.log(DIAG_SERVING_STALE, { url, reason: err instanceof Error ? err.message : String(err) });
+          return entry.files;
+        }
+        throw err;
+      }
+    );
   }
 
   /**
@@ -209,13 +312,56 @@ export class BuildCache {
     });
   }
 
-  private lookup(key: string): Computable<FileSet | undefined> {
-    const file = path.resolve(this.root, key + ".manifest");
+  /**
+   * Build (or rebuild) the entry: run `create` in a clean scratch dir, then
+   * put its outputs. The put is the commit point — on failure the scratch dir
+   * is removed and any previous manifest stands untouched.
+   */
+  private createEntry(key: string, create: (targetDir: string) => Computable<FileSet>, meta?: ICacheControl): Computable<FileSet> {
+    const targetDir = path.resolve(this.root, key);
+    /* Any existing directory content is debris from a failed (or crashed)
+     * earlier attempt: start from a clean slate. */
+    fs.rmSync(targetDir, { recursive: true, force: true });
+    fs.mkdirSync(targetDir, { recursive: true });
+    return create(targetDir)
+      .then(result => this.cachePut(key, result, meta))
+      .then(result => {
+        /* The work dir was only scratch for the step — its outputs now live
+         * in the content pool and the manifest is written, so discard it.
+         * The `<key>.manifest` sibling file is untouched. */
+        fs.rmSync(targetDir, { recursive: true, force: true });
+        return result;
+      })
+      .catch(err => {
+        /* Remove the partial entry so a retry starts fresh */
+        fs.rmSync(targetDir, { recursive: true, force: true });
+        throw err;
+      });
+  }
+
+  private manifestPath(key: string): string {
+    return path.resolve(this.root, key + ".manifest");
+  }
+
+  /** Read the entry stored under the (hashed) key, if any: its (blob-backed)
+   * files plus the cache-control metadata of a non-immutable entry. */
+  private cacheGet(key: string): Computable<ICacheEntry | undefined> {
+    const file = this.manifestPath(key);
     if (fs.existsSync(file)) {
-      return readFile(file).then(data => this.deserialiseFileSet(data));
+      return readFile(file).then(data => this.parseManifest(data));
     } else {
       return Computable.resolve(undefined);
     }
+  }
+
+  /**
+   * Store an entry under the (hashed) key: ingest the files into the blob pool
+   * (a no-op for files already there — re-putting a held entry just rewrites
+   * its manifest) and write the manifest, with the cache-control metadata for
+   * a non-immutable entry. Returns the entry's cache-backed view.
+   */
+  private cachePut(key: string, files: FileSet, meta?: ICacheControl): Computable<FileSet> {
+    return this.storeContent(files).then(stored => this.storeManifest(this.manifestPath(key), stored, meta));
   }
 
   /**
@@ -223,7 +369,8 @@ export class BuildCache {
    * serialize each file (just `hash name`) to the manifest AND build a FileSet of
    * BuildFiles rooted at the store. That view is the SAME representation a later
    * cache hit deserialises, so an entry surfaces with a stable IFile identity
-   * whether freshly built or served from disk.
+   * whether freshly built or served from disk. A mutable entry's freshness
+   * metadata leads the manifest as a `!meta` header line.
    *
    * Every file is blob-backed by now (storeContent ran), so its content path is
    * implicitly `blob/<hash>` and needn't be stored. (A symlink output, which has
@@ -231,8 +378,8 @@ export class BuildCache {
    * steps don't currently produce them; `getResultFileSet` collects only regular
    * files.)
    */
-  private storeManifest(targetDir: string, files: FileSet): Computable<FileSet> {
-    let manifest = "";
+  private storeManifest(manifestPath: string, files: FileSet, meta?: ICacheControl): Computable<FileSet> {
+    let manifest = meta ? `${META_PREFIX}${JSON.stringify(meta)}\n` : "";
     const backed = new Map<string, IFile>();
     for (const [name, file] of files) {
       manifest += `${file.hash} ${encodeURI(name)}\n`;
@@ -240,8 +387,10 @@ export class BuildCache {
     }
     /* Write atomically (temp + rename), like blobs: a crash mid-write must not
      * leave a truncated manifest that `lookup`'s bare `existsSync` would trust,
-     * deserialising to a silently-incomplete FileSet served as a hit forever. */
-    const manifestPath = targetDir + ".manifest";
+     * deserialising to a silently-incomplete FileSet served as a hit forever.
+     * The same rename atomically *replaces* an existing manifest on a mutable
+     * entry's refresh — safe for concurrent readers, whose deserialised views
+     * are blob-backed (blobs are never deleted). */
     const tmp = `${manifestPath}.tmp-${process.pid}-${this.tempCounter++}`;
     return writeFile(tmp, manifest)
       .then(() => rename(tmp, manifestPath))
@@ -259,6 +408,12 @@ export class BuildCache {
     const map = new Map<string, IFile>();
     const ops: Computable<void>[] = [];
     for (const [name, file] of files) {
+      if (file instanceof BuildFile && file.getAbsPath() === path.resolve(this.blobRoot, file.hash)) {
+        /* Already one of our blobs (a re-put entry, or content shared with
+         * another entry): nothing to ingest, not even an existence probe. */
+        map.set(name, file.name === name ? file : new BuildFile(this.blobRoot, file.hash, name));
+        continue;
+      }
       const abspath = file.getAbsPath();
       const stored = abspath === undefined ? file.getBuffer().then(buffer => this.ensureBlob(file.hash, buffer)) : this.ingestFile(file.hash, abspath);
       ops.push(stored.then(() => undefined));
@@ -267,20 +422,33 @@ export class BuildCache {
     return ops.length === 0 ? Computable.resolve(new FileSet(map)) : Computable.forAll(ops, () => new FileSet(map));
   }
 
-  private deserialiseFileSet(data: string): FileSet {
+  /**
+   * Parse a manifest: an optional `!meta` header line, then one `hash name`
+   * line per file. Only the FIRST line is ever considered as the header —
+   * matching the writer, which only puts it there — so a file line can never
+   * be mistaken for it, whatever the file is named. (It couldn't anyway: a
+   * file line begins with the content hash, whose hex alphabet excludes `!`,
+   * and the name field percent-encodes spaces — but the structural rule makes
+   * that safety independent of the hash alphabet.)
+   */
+  private parseManifest(data: string): ICacheEntry {
     const result = new Map();
-    data
-      .toString()
-      .split("\n")
-      .forEach(line => {
-        if (line) {
-          const [hash, name] = line.split(" ");
-          result.set(decodeURI(name), new BuildFile(this.blobRoot, hash, decodeURI(name)));
-        }
-      });
-    return new FileSet(result);
+    let meta: ICacheControl | undefined;
+    const lines = data.toString().split("\n");
+    if (lines[0]?.startsWith(META_PREFIX)) {
+      meta = JSON.parse(lines[0].substring(META_PREFIX.length)) as ICacheControl;
+      lines.shift();
+    }
+    for (const line of lines) {
+      if (line) {
+        const [hash, name] = line.split(" ");
+        result.set(decodeURI(name), new BuildFile(this.blobRoot, hash, decodeURI(name)));
+      }
+    }
+    return { files: new FileSet(result), meta };
   }
 }
+
 
 export function writeFileSet(targetDir: string, files: FileSet): Computable<void> {
   const operations = [];

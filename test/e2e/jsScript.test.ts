@@ -28,7 +28,7 @@ describe("e2e: js_script (runnable) + run", () => {
       {
         "PROJECT.fabr":
           "plugin @fabr-build/js;\n\n" +
-          "js_script gen_prog { deps = src:gen.js; entry = gen.js; }\n" +
+          "js_script gen_prog { entry = src:gen.js; }\n" +
           "run gen { tool = gen_prog; output = out:**; }\n",
         "src/gen.js": 'require("fs").mkdirSync("out", { recursive: true });\nrequire("fs").writeFileSync("out/msg.txt", "e2e ran\\n");\n',
       },
@@ -43,7 +43,7 @@ describe("e2e: js_script (runnable) + run", () => {
       {
         "PROJECT.fabr":
           "plugin @fabr-build/js;\n\n" +
-          "js_script gen_prog { deps = src:gen.js; entry = gen.js; }\n" +
+          "js_script gen_prog { entry = src:gen.js; }\n" +
           "run gen { tool = gen_prog; args = Ada Lovelace; output = out:**; }\n",
         "src/gen.js": 'require("fs").mkdirSync("out", { recursive: true });\nrequire("fs").writeFileSync("out/msg.txt", process.argv.slice(2).join(" "));\n',
       },
@@ -53,7 +53,10 @@ describe("e2e: js_script (runnable) + run", () => {
     expect(result.stdout).to.equal("Ada Lovelace");
   });
 
-  it("runs a script from a built package's node_modules mount (relative imports resolve)", () => {
+  it("runs a built package as the entry via its declared bin (relative imports resolve)", () => {
+    /* Package-mode entry: the package joins the install and its (generated,
+     * by-convention) package.json bin is the entry — launched from its
+     * node_modules mount, so its relative imports resolve. */
     const result = runFabr(
       {
         ...STUB_TSC,
@@ -61,10 +64,10 @@ describe("e2e: js_script (runnable) + run", () => {
           "plugin @fabr-build/js;\n\n" +
           STUB_TSC_CONFIG +
           "\njs_package greeter { srcs = pkgsrc:**; }\n\n" +
-          "js_script greeter_prog { deps = greeter; entry = node_modules/greeter/cli.js; }\n" +
+          "js_script greeter_prog { entry = greeter; }\n" +
           "run greet { tool = greeter_prog; output = out:**; }\n",
         /* type-free "TypeScript": the stub tsc copies these to .js verbatim */
-        "pkgsrc/cli.ts": 'const { greet } = require("./util");\nrequire("fs").mkdirSync("out", { recursive: true });\nrequire("fs").writeFileSync("out/greeting.txt", greet("Ada"));\n',
+        "pkgsrc/bin/cli.ts": 'const { greet } = require("../util");\nrequire("fs").mkdirSync("out", { recursive: true });\nrequire("fs").writeFileSync("out/greeting.txt", greet("Ada"));\n',
         "pkgsrc/util.ts": 'exports.greet = (name) => "hello, " + name + "!";\n',
       },
       ["-DJS_TARGET=es2020", "cat", "greet:greeting.txt"]
@@ -73,19 +76,41 @@ describe("e2e: js_script (runnable) + run", () => {
     expect(result.stdout).to.equal("hello, Ada!");
   });
 
-  it("fails with a clear error when entry is not in the install", () => {
+  it("selects a built package's bin by projection on the entry (local, multi-bin)", () => {
+    /* A projection on a package entry means the RUNNABLE's entry (the written
+     * form's `fabr run` meaning) — here selecting one of two by-convention
+     * bins of a locally built package. */
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_package multi { srcs = pkgsrc:**; }\n\n" +
+          "js_script one_prog { entry = multi:one; }\n" +
+          "run one { tool = one_prog; output = out:**; }\n",
+        "pkgsrc/bin/one.ts": 'require("fs").mkdirSync("out", { recursive: true });\nrequire("fs").writeFileSync("out/which.txt", "ran one");\n',
+        "pkgsrc/bin/two.ts": 'require("fs").mkdirSync("out", { recursive: true });\nrequire("fs").writeFileSync("out/which.txt", "ran two");\n',
+      },
+      ["-DJS_TARGET=es2020", "cat", "one:which.txt"]
+    );
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("ran one");
+  });
+
+  it("fails with a clear error when entry names no file", () => {
     const result = runFabr(
       {
         "PROJECT.fabr":
           "plugin @fabr-build/js;\n\n" +
-          "js_script gen_prog { deps = src:gen.js; entry = missing.js; }\n" +
+          "js_script gen_prog { deps = src:gen.js; entry = src:missing.js; }\n" +
           "run gen { tool = gen_prog; output = out:**; }\n",
         "src/gen.js": "// present, but not the entry\n",
       },
       ["build", "gen"]
     );
     expect(result.status).to.not.equal(0);
-    expect(result.stderr).to.contain("is not present in the install");
+    expect(result.stderr).to.contain("Unable to resolve 'src:missing.js'");
   });
 });
 
@@ -188,7 +213,7 @@ describe("e2e: fabr run — selecting an entry (multi-bin)", () => {
 
 describe("e2e: fabr run", () => {
   const project = {
-    "PROJECT.fabr": "plugin @fabr-build/js;\n\njs_script hello { deps = src:hello.js; entry = hello.js; }\n",
+    "PROJECT.fabr": "plugin @fabr-build/js;\n\njs_script hello { entry = src:hello.js; }\n",
     "src/hello.js":
       'process.stdout.write("hi " + process.argv.slice(2).join(" "));\nprocess.exit(process.argv.includes("--fail") ? 7 : 0);\n',
   };

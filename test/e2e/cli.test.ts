@@ -71,7 +71,8 @@ describe("e2e: driver CLI", () => {
      * to its underlying file — not just the one-line message. */
     const conflict = {
       "PROJECT.fabr":
-        "adir = src:a/* -> *;\nbdir = src:b/* -> *;\nscript clash { deps = adir bdir; entry = go.sh; }\n",
+        "adir = src:a/* -> *;\nbdir = src:b/* -> *;\nscript clash { deps = adir bdir; entry = src:a/go.sh; }\n",
+      "src/a/go.sh": "true\n",
       "src/a/dup.txt": "FROM A\n",
       "src/b/dup.txt": "FROM B\n",
     };

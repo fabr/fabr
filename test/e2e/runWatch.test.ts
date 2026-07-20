@@ -32,7 +32,7 @@ describe("e2e: run watch mode (fabr run -w)", () => {
   it("relaunches the program on a source change and exits cleanly on SIGINT", async () => {
     const session = startFabrWatch(
       {
-        "PROJECT.fabr": "script server { deps = src:server.sh; entry = server.sh; }\n",
+        "PROJECT.fabr": "script server { entry = src:server.sh; }\n",
         "src/server.sh": 'echo "SERVER V1 up" >&2\nexec sleep 300\n',
       },
       ["run", "-w", "server"]
@@ -60,7 +60,7 @@ describe("e2e: run watch mode (fabr run -w)", () => {
      * SIGINT, so fabr exits 0 and the child is cleaned up. */
     const session = startFabrWatch(
       {
-        "PROJECT.fabr": "script server { deps = src:server.sh; entry = server.sh; }\n",
+        "PROJECT.fabr": "script server { entry = src:server.sh; }\n",
         "src/server.sh": 'echo "SERVER up" >&2\nexec sleep 300\n',
       },
       ["run", "-w", "server"]
@@ -78,7 +78,7 @@ describe("e2e: run watch mode (fabr run -w)", () => {
     const server = 'echo "SERVER up" >&2\nexec sleep 300\n';
     const session = startFabrWatch(
       {
-        "PROJECT.fabr": "script server { deps = src:server.sh; entry = server.sh; }\n",
+        "PROJECT.fabr": "script server { entry = src:server.sh; }\n",
         "src/server.sh": server,
       },
       ["run", "-w", "server"]
