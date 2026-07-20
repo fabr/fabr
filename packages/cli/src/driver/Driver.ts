@@ -24,6 +24,7 @@ import {
   BuildContext,
   BuildModel,
   Computable,
+  declPosn,
   Diagnostic,
   ExecutionContext,
   FileSet,
@@ -36,7 +37,11 @@ import {
   Log,
   LogFormatter,
   LogLevel,
+  IPropertySchema,
+  ITargetDecl,
+  ITargetDefDecl,
   ProgressListener,
+  PropertyType,
   PublishableFileSet,
   RunnableFileSet,
   SourceRef,
@@ -156,6 +161,10 @@ export function runFabr(options: Options): Promise<void> {
       return runWith((model, execution) => runProgram(model, options, execution, watch), watch);
     case "sync":
       return runWith((model, execution) => syncTargets(model, options, execution));
+    case "list-targets":
+      return runWith(model => listDeclaredTargets(model, options));
+    case "list-targetdefs":
+      return runWith(model => listTargetDefs(model, options));
     default: /* build */
       return runWith((model, execution) => {
         const targets = buildTargets(model, options, execution, "build");
@@ -489,6 +498,103 @@ function listTargets(options: Options, results: SourceRef[][]): Computable<void>
       });
     }
   );
+}
+
+/**
+ * `fabr list-targets`: print the targets declared in the project (name + type),
+ * recursively across namespaces. A model query — it builds nothing. Repository
+ * instances are excluded (they are not buildable targets). `-l` adds each
+ * target's source location; an optional list of names filters the listing.
+ * Output is the command's data, so it goes to stdout.
+ */
+function listDeclaredTargets(model: BuildModel, options: Options): Computable<void> {
+  const wanted = new Set(options.targets);
+  const targets = model
+    .getTargets()
+    .filter(target => wanted.size === 0 || wanted.has(target.name))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const missing = [...wanted].filter(name => !targets.some(target => target.name === name));
+  if (missing.length > 0) {
+    throw new Error(`No such target: ${missing.join(", ")}`);
+  }
+  const nameWidth = Math.max(0, ...targets.map(target => target.name.length));
+  /* In long mode a source location trails the type, so pad the type column too
+   * for the locations to line up; without it (plain listing) the type ends the
+   * line and needs no padding. */
+  const typeWidth = options.longListing ? Math.max(0, ...targets.map(target => target.decl.type.length)) : 0;
+  for (const { name, decl } of targets) {
+    const location = options.longListing ? "  " + formatDeclLocation(decl) : "";
+    console.log(`${name.padEnd(nameWidth)}  ${decl.type.padEnd(typeWidth)}${location}`);
+  }
+  return Computable.resolve(undefined);
+}
+
+/** @return a `file:line:column` reference to where a declaration was written. */
+function formatDeclLocation(decl: ITargetDecl | ITargetDefDecl): string {
+  const span = declPosn(decl);
+  const pos = span.reader.resolvePosition(span.offset);
+  return pos ? `${span.file}:${pos.line}:${pos.column}` : span.file;
+}
+
+/** @return the source-level keyword for a property's type, as written in a
+ * targetdef (`FILES`, `STRING`, `MAP`, `REWRITE`). */
+function propertyTypeName(schema: IPropertySchema): string {
+  switch (schema.type) {
+    case PropertyType.FileSet:
+      return "FILES";
+    case PropertyType.String:
+      return "STRING";
+    case PropertyType.Map:
+      return "MAP";
+    case PropertyType.Rewrite:
+      return "REWRITE";
+    default:
+      return PropertyType[schema.type];
+  }
+}
+
+/**
+ * `fabr list-targetdefs`: print the available target types — the build
+ * vocabulary contributed by core and the project's active plugins — each with
+ * the operations it supports (`build`/`test`/`run`, from its registered rules)
+ * and its declared properties (name, type, whether REQUIRED). A model query:
+ * it builds nothing. An optional list of names filters to just those types;
+ * `-l` appends each type's source location — its contributing lib file (core's
+ * STD.fabr or a plugin's), which is where the type is defined and documented.
+ * Output is the command's data, so it goes to stdout.
+ */
+function listTargetDefs(model: BuildModel, options: Options): Computable<void> {
+  const wanted = new Set(options.targets);
+  const defs = model
+    .getTargetDefs()
+    .filter(def => wanted.size === 0 || wanted.has(def.name))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  /* A named-but-unknown type is a user error (a typo), not an empty success —
+   * report every name that matched no targetdef. */
+  const missing = [...wanted].filter(name => !defs.some(def => def.name === name));
+  if (missing.length > 0) {
+    throw new Error(`No such target type: ${missing.join(", ")}`);
+  }
+  defs.forEach((def, i) => {
+    if (i > 0) {
+      console.log("");
+    }
+    const location = options.longListing ? "  " + formatDeclLocation(def) : "";
+    console.log(renderTargetDefHeader(def, model.getOperations(def.name)) + location);
+    const props = Object.entries(def.properties);
+    const width = Math.max(0, ...props.map(([name]) => name.length));
+    for (const [name, schema] of props) {
+      const type = (schema.required ? "REQUIRED " : "") + propertyTypeName(schema);
+      console.log(`  ${name.padEnd(width)}  ${type}`);
+    }
+  });
+  return Computable.resolve(undefined);
+}
+
+/** @return the header line for a targetdef: its name, and the operations it
+ * supports in `[...]` (omitted when it has none — e.g. a repository type). */
+function renderTargetDefHeader(def: ITargetDefDecl, operations: string[]): string {
+  return operations.length > 0 ? `${def.name} [${operations.join(", ")}]` : def.name;
 }
 
 /**

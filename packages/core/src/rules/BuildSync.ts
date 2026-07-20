@@ -186,7 +186,11 @@ function syncFiles(context: TargetContext): Computable<RuleResult> {
   });
 }
 
-export const syncRule: RuleRegistration = { type: "sync", constraints: {}, evaluate: syncPackages };
+export const syncRule: RuleRegistration = {
+  type: "sync",
+  constraints: { [BUILD_OPERATION]: "build" },
+  evaluate: syncPackages,
+};
 export const syncFilesRule: RuleRegistration = {
   type: "sync",
   constraints: { [BUILD_OPERATION]: "files" },

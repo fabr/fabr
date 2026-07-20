@@ -79,6 +79,30 @@ export class Namespace {
     return this.getNamespacePrefix(parts)?.targetDefs[targetName];
   }
 
+  /** @return this namespace's own targetdefs, in declaration order (does not
+   * recurse into sub-namespaces — targetdefs are conventionally top-level). */
+  public getTargetDefs(): ITargetDefDecl[] {
+    return Object.values(this.targetDefs);
+  }
+
+  /** @return every target declared in this namespace and, recursively, its
+   * sub-namespaces — each paired with its fully-qualified name (a sub-namespace
+   * target carries its namespace path, `ns/target`). Repository instances share
+   * the target-decl shape and are included here; a caller wanting only buildable
+   * targets filters by type. */
+  public getTargets(prefix = ""): { name: string; decl: ITargetDecl }[] {
+    const result: { name: string; decl: ITargetDecl }[] = [];
+    for (const [key, item] of Object.entries(this.content)) {
+      const qualified = prefix === "" ? key : prefix + NAME_COMPONENT_SEPARATOR + key;
+      if (item instanceof Namespace) {
+        result.push(...item.getTargets(qualified));
+      } else if (item.kind === DeclKind.Target) {
+        result.push({ name: qualified, decl: item });
+      }
+    }
+    return result;
+  }
+
   /**
    * Given a Name, return the first target or prop that can be identified
    * as a prefix of the Name.

@@ -24,10 +24,16 @@ export enum Mode {
   Watch,
 }
 
-/** The commands the command line can request. All except `ls`/`cat`/`sync` are
+/** The commands the command line can request. `build`/`test`/`run` are
  * BUILD_OPERATION values; `ls`/`cat`/`sync` are driver-side verbs that build under
- * BUILD_OPERATION=build and then list / dump / publish the results. */
-const COMMANDS = new Set(["build", "test", "run", "ls", "cat", "sync"]);
+ * BUILD_OPERATION=build and then list / dump / publish the results;
+ * `list-targetdefs` is a model-query verb that loads the model and prints without
+ * building anything (so it needs no targets). */
+const COMMANDS = new Set(["build", "test", "run", "ls", "cat", "sync", "list-targets", "list-targetdefs"]);
+
+/** Model-query verbs: they inspect the loaded model rather than building targets,
+ * so a bare invocation (no targets) is a valid "list everything" request. */
+const QUERY_COMMANDS = new Set(["list-targets", "list-targetdefs"]);
 
 export interface Options {
   command: string;
@@ -52,6 +58,8 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  run               Execute the given targets\n" +
       "  ls                Build the given targets and list their contents\n" +
       "  cat               Build a target and write its matching files to stdout\n" +
+      "  list-targets      List the targets declared in the project\n" +
+      "  list-targetdefs   List the available target types and their properties\n" +
       "Options:\n" +
       "  -DPROP=VALUE      Force the given property PROP to VALUE\n" +
       "  -l                Long listing (with ls): hash and size per file\n" +
@@ -110,7 +118,7 @@ export function parseCommandLine(args: string[]): Options {
       }
     }
   }
-  if (options.targets.length === 0) {
+  if (options.targets.length === 0 && !QUERY_COMMANDS.has(options.command)) {
     printUsage();
     process.exit(0);
   }

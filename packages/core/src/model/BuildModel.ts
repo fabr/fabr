@@ -19,7 +19,7 @@
 
 import { INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
 import { IPrefixMatch, Namespace } from "./Namespace";
-import { BuildContext, Constraints } from "./BuildContext";
+import { BuildContext, BUILD_OPERATION, Constraints } from "./BuildContext";
 import { ExecutionContext } from "./ExecutionContext";
 import { Name } from "../core/Name";
 import { IRuleDefinition, PluginContribution, RepositoryProvider } from "../rules/Types";
@@ -93,6 +93,35 @@ export class BuildModel {
 
   public getRepositoryProvider(type: string): RepositoryProvider | undefined {
     return this.repositories[type];
+  }
+
+  /** @return every declared targetdef (the build vocabulary), in declaration
+   * order — for diagnostic listing (`fabr list-targetdefs`). */
+  public getTargetDefs(): ITargetDefDecl[] {
+    return this.root.getTargetDefs();
+  }
+
+  /** @return every buildable target declared in the project, with its
+   * fully-qualified name — for diagnostic listing (`fabr list-targets`).
+   * Repository instances (`npm_repository @npm`, `catalog @dep`) share the
+   * target-decl shape but are not buildable targets, so they are excluded (a
+   * type is a repository iff it has a registered provider). */
+  public getTargets(): { name: string; decl: ITargetDecl }[] {
+    return this.root.getTargets().filter(target => this.repositories[target.decl.type] === undefined);
+  }
+
+  /** @return the BUILD_OPERATION values for which a type-specific rule is
+   * registered for `type` — the operations that type supports (`build`,
+   * `test`, `run`, …). A rule that constrains no operation is a wildcard,
+   * reported as `"*"` (it applies to any operation). Default (all-types)
+   * rules are excluded: they apply everywhere and so say nothing about a
+   * particular type. */
+  public getOperations(type: string): string[] {
+    const ops = new Set<string>();
+    for (const rule of this.targetRules[type] ?? []) {
+      ops.add(rule.constraints[BUILD_OPERATION] ?? "*");
+    }
+    return [...ops].sort((a, b) => a.localeCompare(b));
   }
 
   /**
