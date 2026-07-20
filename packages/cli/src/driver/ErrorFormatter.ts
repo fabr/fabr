@@ -19,6 +19,7 @@
 
 import {
   BUILD_OPERATION,
+  BuildFilesInvalidError,
   chainSteps,
   constraintText,
   declPosn,
@@ -124,6 +125,12 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   constructor(private readonly ambientConstraintKeys: ReadonlySet<string>) {}
 
   public report(log: Log, err: Error): void {
+    /* The build files were invalid: each error was already reported as its own
+     * positioned diagnostic while loading, and this error only marks the run as
+     * failed. Nothing to render — the driver's "Build failed" line follows. */
+    if (err instanceof BuildFilesInvalidError) {
+      return;
+    }
     const report = new PendingReport();
     this.walk(report, err, [], undefined, undefined);
     report.flush(log);

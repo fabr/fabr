@@ -18,8 +18,8 @@ import { expect } from "chai";
 import { runFabr } from "./harness";
 
 /* The core `script` rule defines a runnable plain shell script (no plugin, no
- * toolchain); `fabr run` launches it and the generic `run` target collects its
- * output. These cases exercise that pair through the real CLI. */
+ * toolchain); `fabr run` launches it and the generic `generate` target collects
+ * its output. These cases exercise that pair through the real CLI. */
 describe("e2e: script (shell runnable) + run", () => {
   it("runs a shell script and collects its output", () => {
     const result = runFabr(

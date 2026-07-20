@@ -54,6 +54,23 @@ export class DependencyFailedError extends Error {
   }
 }
 
+/**
+ * The build files contained one or more errors (a parse error, or a
+ * sema/validation failure such as an unknown target type, an unexpected or
+ * missing property, or a naming conflict). Loading reports each such error as
+ * its own positioned diagnostic and then rejects with this to *stop* the run:
+ * the model is not sound, so no operation should proceed against it. Carries
+ * only the count — the individual errors are already on the log, so the driver
+ * renders nothing further for this (it just fails the run). In watch mode the
+ * rejection leaves the previous model resident: the reload's new (broken) model
+ * never supersedes it.
+ */
+export class BuildFilesInvalidError extends Error {
+  constructor(public readonly errorCount: number) {
+    super(`build files contain ${errorCount} error${errorCount === 1 ? "" : "s"}`);
+  }
+}
+
 /** A use site of a target: the written value, its property, its owning target. */
 export interface IUseSite {
   value: IValue;

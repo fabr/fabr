@@ -24,6 +24,7 @@ import { MemoryFile } from "../core/MemoryFS";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { DeclKind } from "./AST";
 import { BuildModel } from "./BuildModel";
+import { BuildFilesInvalidError } from "./Errors";
 import { ExecutionContext } from "./ExecutionContext";
 import { loadProject } from "./Loader";
 
@@ -113,5 +114,40 @@ describe("Loader", () => {
       error = err as Error;
     }
     expect(error?.message).to.match(/File not found/);
+  });
+
+  /* Parse and sema/validation recover to report every error rather than throwing;
+   * the load as a whole must still reject so no operation builds against an
+   * unsound model. Each error is reported to the log; the rejection just stops. */
+  async function loadErr(project: FileSet): Promise<{ error?: Error; logged: string[] }> {
+    const logged: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => logged.push(msg));
+    let error: Error | undefined;
+    try {
+      await loadProject(exec(project, logger), "PROJECT.fabr", undefined, NO_BASE);
+    } catch (err) {
+      error = err as Error;
+    }
+    return { error, logged };
+  }
+
+  it("rejects the load when a build file has a syntax error (reported, then stops)", async () => {
+    const { error, logged } = await loadErr(files({ "PROJECT.fabr": "good = value;\n@@@ not valid\n" }));
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+    expect(logged.some(msg => /error/i.test(msg))).to.equal(true);
+  });
+
+  it("rejects the load when an included file has a syntax error", async () => {
+    const { error } = await loadErr(
+      files({ "PROJECT.fabr": "include bad.fabr;\ngood = value;", "bad.fabr": "@@@ not valid\n" })
+    );
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+  });
+
+  it("counts every reported error", async () => {
+    const { error } = await loadErr(files({ "PROJECT.fabr": "targetdef good { x = STRING; }\ngood a { y = 1; z = 2; }" }));
+    /* Two unrecognized properties in one target -> two errors. */
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+    expect((error as BuildFilesInvalidError).errorCount).to.equal(2);
   });
 });

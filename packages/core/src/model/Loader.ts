@@ -20,6 +20,8 @@
 import * as path from "node:path";
 
 import { Computable } from "../core/Computable";
+import { ErrorTrackingLog } from "../support/Log";
+import { BuildFilesInvalidError } from "./Errors";
 import { StringReader } from "../support/StringReader";
 import { parseBuildFile } from "./Parser";
 import { IBuildFileContents, IIncludeDecl, IPluginDecl } from "./AST";
@@ -85,12 +87,16 @@ function resolveInclude(file: string, include: IIncludeDecl): string {
   return target;
 }
 
-/** One loaded build file: its parsed decls, plus the contribution of each plugin
- * it declares — carried on the value so collation gathers exactly the plugins
- * that are still declared by some reachable file. */
+/** One loaded build file: its parsed decls, the contribution of each plugin it
+ * declares — carried on the value so collation gathers exactly the plugins that
+ * are still declared by some reachable file — and its parse error count (parsing
+ * recovers past errors rather than throwing, so the count rides on the value to
+ * flow through the reactive graph: memoized per file, re-counted only when that
+ * file re-parses). */
 interface LoadedFile {
   decls: IBuildFileContents;
   plugins: PluginContribution[];
+  parseErrors: number;
 }
 
 /**
@@ -128,10 +134,13 @@ export function loadProject(
         throw new Error("File not found: " + file);
       }
       return f.readString().then(content => {
-        const decls = parseBuildFile({ fs, file, reader: new StringReader(content) }, execution.log);
+        /* Parsing logs each error and recovers rather than throwing, so count
+         * error diagnostics through a wrapper to know if this file parsed cleanly. */
+        const parseLog = new ErrorTrackingLog(execution.log);
+        const decls = parseBuildFile({ fs, file, reader: new StringReader(content) }, parseLog);
         const plugins = decls.plugins.map(activate);
         return {
-          value: { decls, plugins },
+          value: { decls, plugins, parseErrors: parseLog.errorCount },
           next: [...decls.includes.map(include => resolveInclude(file, include)), ...plugins.flatMap(libFiles)],
         };
       });
@@ -140,6 +149,18 @@ export function loadProject(
     const files = [...loaded.values()];
     /* Identity-dedup suffices: activation memoized by name ⇒ one instance per plugin. */
     const plugins = [...new Set(files.flatMap(file => file.plugins))];
-    return toBuildModel(files.map(file => file.decls), execution.log, [core, ...plugins]);
+    /* Collation/validation likewise reports diagnostics rather than throwing;
+     * count them too, then fail the load as a whole if the build files held any
+     * error — a parse error in any file, or a sema/validation error here. The
+     * model is not sound, so the run must stop rather than build against it (in
+     * watch mode: leave the previous model resident). Every error has already
+     * been reported to the log; the rejection just halts. */
+    const modelLog = new ErrorTrackingLog(execution.log);
+    const model = toBuildModel(files.map(file => file.decls), modelLog, [core, ...plugins]);
+    const errorCount = files.reduce((total, file) => total + file.parseErrors, 0) + modelLog.errorCount;
+    if (errorCount > 0) {
+      throw new BuildFilesInvalidError(errorCount);
+    }
+    return model;
   });
 }

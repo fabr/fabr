@@ -101,6 +101,30 @@ export interface Log {
   log<T extends Record<string, any>>(diagnostic: Diagnostic<T>, params: T & IDiagnosticDetail): void;
 }
 
+/**
+ * A Log decorator that forwards every diagnostic unchanged while counting the
+ * error-level ones. A batch phase that reports diagnostics *instead of* throwing
+ * (parsing recovers to collect several errors; sema/validation collates
+ * best-effort) can then be detected as failed by its caller — wrap the log for
+ * the phase, then check {@link errorCount} to decide whether to proceed.
+ */
+export class ErrorTrackingLog implements Log {
+  private errors = 0;
+
+  constructor(private readonly inner: Log) {}
+
+  public log<T extends Record<string, any>>(diagnostic: Diagnostic<T>, params: T & IDiagnosticDetail): void {
+    if (diagnostic.level >= LogLevel.Error) {
+      this.errors++;
+    }
+    this.inner.log(diagnostic, params);
+  }
+
+  public get errorCount(): number {
+    return this.errors;
+  }
+}
+
 function getLogLevelName(logLevel: LogLevel): string {
   switch (logLevel) {
     case LogLevel.Debug:
