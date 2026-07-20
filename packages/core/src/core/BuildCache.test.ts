@@ -23,7 +23,7 @@ import * as path from "path";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
-import { BuildCache, getResultFileSet } from "./BuildCache";
+import { BuildCache } from "./BuildCache";
 import { Computable } from "./Computable";
 import { readStream } from "./Fetch";
 import { FileSet } from "./FileSet";
@@ -435,33 +435,5 @@ describe("BuildCache non-immutable fetches", () => {
     clock += 1_000_000_000; /* far past any origin-declared lifetime */
     expect(await fetchDoc()).to.equal("one");
     expect(origin.requests).to.have.lengthOf(1);
-  });
-});
-
-describe("getResultFileSet", () => {
-  let work: string;
-
-  beforeEach(() => {
-    work = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-result-test-"));
-  });
-  afterEach(() => {
-    fs.rmSync(work, { recursive: true, force: true });
-  });
-
-  it("collects a build step's dotfile outputs rather than deleting them", async () => {
-    /* A step may legitimately emit dotfiles (.eslintrc, .babelrc); under `**`
-     * they must be collected, not silently dropped (and, worse, deleted). */
-    fs.writeFileSync(path.join(work, "index.js"), "out");
-    fs.writeFileSync(path.join(work, ".eslintrc"), "{}");
-    fs.mkdirSync(path.join(work, ".config"));
-    fs.writeFileSync(path.join(work, ".config", "nested.json"), "{}");
-
-    const result = await toPromise(getResultFileSet(work, "**"));
-
-    expect(await toPromise(result.get("index.js"))).to.not.equal(undefined);
-    expect(await toPromise(result.get(".eslintrc"))).to.not.equal(undefined);
-    expect(await toPromise(result.get(".config/nested.json"))).to.not.equal(undefined);
-    /* And the dotfile is still on disk, not deleted as a non-match. */
-    expect(fs.existsSync(path.join(work, ".eslintrc"))).to.equal(true);
   });
 });

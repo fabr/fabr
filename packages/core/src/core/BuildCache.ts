@@ -4,12 +4,7 @@ import { Readable } from "stream";
 import { Computable } from "./Computable";
 import { ICacheControl, openUrlStream } from "./Fetch";
 import { FileSet, IFile } from "./FileSet";
-import { FSFile } from "./FSFileSource";
-import { deleteFile, hardlink, hashFile, hashString, readFile, readFileBuffer, rename, symlink, walkTree, writeFile } from "./FSWrapper";
-import { SymlinkFile } from "./SymlinkFile";
-import { describeSystemError } from "../support/Execute";
-import { ExecutionError } from "./Errors";
-import { globMatcher } from "../support/Glob";
+import { deleteFile, hashString, readFile, readFileBuffer, rename, writeFile } from "./FSWrapper";
 import { Diagnostic, Log } from "../support/Log";
 
 const DIAG_SERVING_STALE = Diagnostic.Warn<{ url: string; reason: string }>(
@@ -447,79 +442,4 @@ export class BuildCache {
     }
     return { files: new FileSet(result), meta };
   }
-}
-
-
-export function writeFileSet(targetDir: string, files: FileSet): Computable<void> {
-  const operations = [];
-  let realRoot: string | undefined;
-  for (const [name, file] of files) {
-    const targetName = path.resolve(targetDir, name);
-    const dirname = path.dirname(targetName);
-    fs.mkdirSync(dirname, { recursive: true });
-    const filepath = file.getAbsPath();
-    if (file instanceof SymlinkFile) {
-      /* Security: a symlink whose target escapes the staged tree (via `..`, an
-       * absolute path, or a symlinked parent component) could point at — or,
-       * written-through, clobber — files outside it. Resolve the target against
-       * the *real* parent directory (path.resolve is purely lexical and would not
-       * follow symlinks in the path), and only stage it if it stays within the
-       * real root. */
-      realRoot ??= fs.realpathSync(path.resolve(targetDir));
-      const resolved = path.resolve(fs.realpathSync(dirname), file.target);
-      if (resolved === realRoot || resolved.startsWith(realRoot + path.sep)) {
-        operations.push(asExecutionError(symlink(file.target, targetName)));
-      }
-    } else if (filepath) {
-      operations.push(asExecutionError(hardlink(filepath, targetName)));
-    } else {
-      operations.push(asExecutionError(file.getBuffer().then(buffer => writeFile(targetName, buffer))));
-    }
-  }
-  return Computable.forAll(operations, () => {});
-}
-
-/**
- * Classify failures of a staging operation as execution errors (mechanical
- * failures of the build step, reported grouped per target).
- */
-function asExecutionError<T>(operation: Computable<T>): Computable<T> {
-  return operation.catch(err => {
-    throw new ExecutionError(describeSystemError(err));
-  });
-}
-
-export function getResultFileSet(targetDir: string, pattern: string): Computable<FileSet> {
-  /* A "dir:glob" pattern matches under dir, and names the results relative to
-   * it (consistent with the source-name convention) */
-  const colon = pattern.indexOf(":");
-  const rootDir = colon === -1 ? targetDir : path.resolve(targetDir, pattern.substring(0, colon));
-  const matcher = globMatcher(colon === -1 ? pattern : pattern.substring(colon + 1));
-  const result = new Map<string, IFile>();
-  const ops: Computable<void>[] = [];
-
-  /* Walk without following symlinks (walkTree recurses real dirs only): the work
-   * dir may contain symlinks — a scoped node_modules links its direct deps into a
-   * hidden store — and following them would visit each linked file twice and risk
-   * cycles. Keep matching files, prune everything else — a symlink by removing the
-   * link itself, never its target. Directories are neither collected nor deleted;
-   * the emptied work dir is discarded by the caller. */
-  return walkTree(targetDir, (entry, abspath) => {
-    if (entry.isDirectory()) {
-      return;
-    }
-    const relpath = path.relative(rootDir, abspath);
-    if (entry.isFile() && !relpath.startsWith("..") && matcher(relpath)) {
-      ops.push(
-        hashFile(abspath).then(hash => {
-          /* A work-dir output is path-backed (content at its relpath, not at a
-           * blob hash), so it can't be a BuildFile — storeContent then ingests
-           * it into the pool by rename. */
-          result.set(relpath, new FSFile(rootDir, relpath, fs.statSync(abspath), hash));
-        })
-      );
-    } else {
-      ops.push(asExecutionError(deleteFile(abspath)));
-    }
-  }).then(() => Computable.forAll(ops, () => new FileSet(result)));
 }

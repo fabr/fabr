@@ -194,8 +194,16 @@ function runProgram(
         : new Error(`'${options.targets[0]}' is not runnable (it has no BUILD_OPERATION=run result)`);
     }
     if (supervisor) {
-      supervisor.update(runnable);
-      return;
+      /* The per-cycle completion marker ("Built X" / "Already up to date"), as
+       * the build/test watch verbs print — but deferred until the supervisor's
+       * reaction (stage+swap or in-place sync) has landed, so the marker is the
+       * cycle's terminal line, after "Restarting"/"Updating content". The
+       * cycle's build delta is captured NOW, at settle: an overlapping next
+       * cycle must not have its builds scooped into this cycle's late marker.
+       * One-shot run stays unmarked (status noise ahead of the program's own
+       * output). */
+      const built = execution.takeBuiltTargets();
+      return supervisor.update(runnable).then(() => reportBuildStatus(execution.log, built));
     }
     return runInteractive(runnable, options.runArgs ?? []).then(code => flushAndExit(code));
   });
@@ -368,11 +376,17 @@ function buildStatus(execution: ExecutionContext): void {
    * "Building X" lines already scrolled past during the build; this is the
    * completion marker — useful especially in watch mode). Nothing built ⇒ the
    * run was a no-op. */
-  const built = execution.takeBuiltTargets();
+  reportBuildStatus(execution.log, execution.takeBuiltTargets());
+}
+
+/** The marker's rendering half, over an already-captured delta — for a caller
+ * that must take the delta at one time and print at another (run -w defers the
+ * marker past the supervisor's reaction). */
+function reportBuildStatus(log: Log, built: string[]): void {
   if (built.length === 0) {
-    execution.log.log(DIAG_UP_TO_DATE, {});
+    log.log(DIAG_UP_TO_DATE, {});
   } else {
-    execution.log.log(DIAG_BUILD_COMPLETE, { targets: built.join(", ") });
+    log.log(DIAG_BUILD_COMPLETE, { targets: built.join(", ") });
   }
 }
 

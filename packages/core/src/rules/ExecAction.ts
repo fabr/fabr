@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { getResultFileSet, writeFileSet } from "../core/BuildCache";
+import { getResultFileSet, writeFileSet } from "../core/Staging";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { execute, findExecutable } from "../support/Execute";

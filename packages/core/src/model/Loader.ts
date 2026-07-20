@@ -33,6 +33,7 @@ import { PluginContribution } from "../rules/Types";
 import { flagRule } from "../rules/FlagTarget";
 import { defaultFilesRule } from "../rules/DefaultFilesRule";
 import { scriptRunRule } from "../rules/RunScript";
+import { serveRunRule } from "../rules/RunServe";
 import { generateRule } from "../rules/BuildGenerate";
 import { syncFilesRule, syncRule } from "../rules/BuildSync";
 import { catalogRepositoryRegistration } from "../rules/CatalogRepository";
@@ -40,12 +41,12 @@ import { computableWorkList } from "../core/WorkList";
 
 /**
  * Core's own contribution to every build: the generic bootstrap rules (flag,
- * files, script[run], generate) and STD.fabr, which is therefore **always present** —
+ * files, script[run], serve[run], generate) and STD.fabr, which is therefore **always present** —
  * no explicit `include STD.fabr;` needed. Seeds every load before any plugin.
  */
 export function coreContribution(): PluginContribution {
   return {
-    rules: [flagRule, defaultFilesRule, scriptRunRule, generateRule, syncRule, syncFilesRule],
+    rules: [flagRule, defaultFilesRule, scriptRunRule, serveRunRule, generateRule, syncRule, syncFilesRule],
     repositories: [catalogRepositoryRegistration],
     includes: [packageLibFile("@fabr-build/core", "STD.fabr")],
   };

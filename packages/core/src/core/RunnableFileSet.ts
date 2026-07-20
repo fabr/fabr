@@ -64,6 +64,14 @@ export class RunnableFileSet extends FileSet {
     public readonly surface: FileSet = EMPTY_FILESET,
     /** The narrowed surface once a projection has been applied; absent → not yet projected (launch uses the default). */
     public readonly selected?: FileSet,
+    /** The hot-swappable content partition (a `serve` target's `files`): the subset of the
+     * install that is the program's *data*, synced in place under watch rather than
+     * triggering a relaunch. Empty for an ordinary runnable — everything is program. */
+    public readonly served: FileSet = EMPTY_FILESET,
+    /** Where the program launches: `caller` — the user's own directory (the npx-like tool
+     * persona; the entry is anchored at the install) — or `install` — the staged install
+     * root (the app persona: a served program's world is its own content). */
+    public readonly launchCwd: "caller" | "install" = "caller",
     origin?: IProvenanceStep
   ) {
     super(new Map(files), origin ?? (files instanceof FileSet ? files.origin : undefined));
@@ -81,7 +89,29 @@ export class RunnableFileSet extends FileSet {
   }
 
   public withOrigin(origin: IProvenanceStep): RunnableFileSet {
-    return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, this.selected, origin);
+    return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, this.selected, this.served, this.launchCwd, origin);
+  }
+
+  /**
+   * Re-wrap this runnable (the tool) over an enlarged install for serving — the
+   * `serve` rule's assembly: same launch surface/interpreter/root, `extraArgs`
+   * appended to the fixed args, `served` recorded as the hot content partition,
+   * and the launch cwd anchored at the install root (a served program's world
+   * is its staged install, not the caller's directory).
+   */
+  public withServedContent(install: FileSet, served: FileSet, extraArgs: string[]): RunnableFileSet {
+    return new RunnableFileSet(install, [...this.args, ...extraArgs], this.interpreter, this.root, this.surface, this.selected, served, "install");
+  }
+
+  /**
+   * Manifest of the **program partition** — the install minus the served-content
+   * names. With no served partition this is the whole-install manifest. What a
+   * supervisor keys restarts on (content-only changes sync in place instead);
+   * a name in `served` IS the served file — a same-name collision with the
+   * program install would already have been a ConflictError at assembly.
+   */
+  public programManifest(): string {
+    return this.served.isEmpty() ? this.toManifest() : this.minus(this.served).toManifest();
   }
 
   /**
@@ -107,7 +137,7 @@ export class RunnableFileSet extends FileSet {
   }
 
   private withSelected(selected: FileSet): RunnableFileSet {
-    return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, selected, this.origin);
+    return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, selected, this.served, this.launchCwd, this.origin);
   }
 
   /**

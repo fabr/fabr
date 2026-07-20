@@ -157,12 +157,17 @@ export class ExecutionContext {
   /** Per-run state a plugin keeps here, keyed by its {@link PluginKey}. Lazily
    *  populated on first access (see {@link getOrCreatePluginContext}). */
   private readonly pluginContexts = new Map<PluginKey<unknown>, unknown>();
-  /** The top-level (directly-requested) targets that actually built since the
-   * last {@link takeBuiltTargets} — accumulated from `target-build` progress
-   * events (emitted only from a cache-miss path — never a cache hit), so an empty
-   * set is exactly "nothing happened". Sub-targets (a `label`) and transitive
-   * dependencies (a non-empty `requiredBy`) are excluded; the driver reports
-   * these names per watch cycle. */
+  /** The top-level (directly-requested) targets that had work performed for
+   * them since the last {@link takeBuiltTargets} — accumulated from
+   * `target-build` progress events (emitted only from a cache-miss path — never
+   * a cache hit), so an empty set is exactly "nothing happened". A dependency's
+   * build is *attributed to the requester at the end of its demand chain* (the
+   * directly-requested target), not recorded under its own name: the set
+   * answers "which of the run's requests did this cycle do work for", so a
+   * request whose own evaluation yields no action (a `serve` target whose
+   * `files` dependency rebuilt) still counts as built. Sub-target events (a
+   * `label`) are skipped — their declared owner announces alongside. The driver
+   * reports these names per watch cycle. */
   private readonly builtTargets = new Set<string>();
 
   constructor(
@@ -225,11 +230,14 @@ export class ExecutionContext {
   }
 
   public notifyProgress(event: ProgressEvent): void {
-    /* Record which *top-level* targets built — a directly-requested declared
-     * target (empty `requiredBy`, and no sub-target `label`) — for the driver's
-     * per-cycle status line. Every event is from a cache-miss path. */
-    if (event.kind === "target-build" && event.label === undefined && event.requiredBy.length === 0) {
-      this.builtTargets.add(event.target.name);
+    /* Record the *top-level* target each build serves, for the driver's
+     * per-cycle status line: the announced target itself when directly
+     * requested, else the outermost requester on its demand chain
+     * (`requiredBy` is nearest-first, so its last element). Every event is
+     * from a cache-miss path. */
+    if (event.kind === "target-build" && event.label === undefined) {
+      const topLevel = event.requiredBy.length > 0 ? event.requiredBy[event.requiredBy.length - 1] : event.target;
+      this.builtTargets.add(topLevel.name);
     }
     this.progressListener?.(event);
   }

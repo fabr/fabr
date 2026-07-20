@@ -39,6 +39,26 @@ targetdef script {
 }
 
 #
+# Define a served program: a long-lived server plus the content it serves.
+# 'tool' names the server — any runnable (a script/js_script target, or an
+# external package run via its bin); 'deps' union additional support files
+# into the install; 'files' are the served content, staged at the install
+# root; 'args' are fixed leading arguments. The program launches with its
+# working directory at the staged install (its content is its world — unlike
+# a plain script under 'fabr run', which runs in the caller's directory), so
+# e.g. a stock static server serves 'files' with no path argument. Under
+# 'fabr run -w', a change to 'files' is synced into the running server's
+# staging area in place; only a change to the program itself (tool, deps,
+# args) restarts it. It yields a runnable, it does not itself execute.
+#
+targetdef serve {
+    tool = REQUIRED FILES;
+    deps = FILES;
+    args = STRING;
+    files = FILES;
+}
+
+#
 # Execute a runnable and collect the files it writes as this target's content
 # (a build step — the codegen/genrule analogue, distinct from the 'fabr run'
 # verb which launches interactively). 'tool' names the runnable (the program);

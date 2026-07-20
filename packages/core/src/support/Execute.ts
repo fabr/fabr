@@ -126,17 +126,19 @@ export function execute(cmd: string, args: string[], cwd: string, env: Record<st
 
 /**
  * Run a command interactively: the child inherits this process's stdio (tty,
- * pipes, stdin), cwd and environment, and its exit code resolves as *data* — a
+ * pipes, stdin) and environment, and its exit code resolves as *data* — a
  * program may legitimately exit non-zero, unlike `execute`, which fails the
  * build on a non-zero exit. Rejects only when the process cannot be spawned or
- * is killed by a signal. This is the launch behind `fabr run`.
+ * is killed by a signal. This is the launch behind `fabr run`. `cwd` overrides
+ * the inherited working directory — an install-anchored runnable (`launchCwd
+ * === "install"`) launches at its staged root rather than the caller's cwd.
  */
-export function executeInteractive(cmd: string, args: string[]): Computable<number> {
+export function executeInteractive(cmd: string, args: string[], cwd?: string): Computable<number> {
   /* A failed spawn emits 'error' then 'close': Computable.once keeps the informative
    * rejection and stops 'close' flipping a settled failure into a success. */
   return Computable.once((resolve, reject) => {
     const commandLine = "$ " + [cmd, ...args].map(quoteArg).join(" ");
-    const proc = spawn(cmd, args, { stdio: "inherit", windowsHide: true });
+    const proc = spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd });
     proc.on("error", e => reject(new ExecutionError(`${commandLine}\nunable to execute: ${systemErrorText(e)}`)));
     proc.on("close", (code, signal) => {
       if (signal) {
@@ -156,8 +158,8 @@ export function executeInteractive(cmd: string, args: string[]): Computable<numb
  * `fabr run -w`, where a source change relaunches the program. All process
  * spawning stays centralized here.
  */
-export function spawnInteractive(cmd: string, args: string[]): ChildProcess {
-  return spawn(cmd, args, { stdio: "inherit", windowsHide: true });
+export function spawnInteractive(cmd: string, args: string[], cwd?: string): ChildProcess {
+  return spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd });
 }
 
 /** Quote an argument for display where it wouldn't survive a shell round-trip */

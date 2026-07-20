@@ -152,6 +152,12 @@ export class FileSet implements FileSource {
     return Computable.resolve(this.content.get(name));
   }
 
+  /** Synchronous member lookup by exact name — the FileSource `get` is the
+   * Computable-valued interface form; a FileSet's membership is immediate. */
+  public getFile(name: string): IFile | undefined {
+    return this.content.get(name);
+  }
+
   public getAll(): Computable<FileSet> {
     return Computable.resolve(this);
   }

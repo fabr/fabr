@@ -30,6 +30,7 @@ export * from "./core/Computable";
 export * from "./core/Fetch";
 export * from "./core/FileSet";
 export * from "./core/FSFileSource";
+export * from "./core/Staging";
 export * from "./core/PackageFileSet";
 export * from "./core/FileSetRef";
 export * from "./core/RunnableFileSet";

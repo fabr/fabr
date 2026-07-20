@@ -24,7 +24,7 @@ import * as path from "path";
 import { FileSet } from "./FileSet";
 import { MemoryFile } from "./MemoryFS";
 import { SymlinkFile } from "./SymlinkFile";
-import { writeFileSet } from "./BuildCache";
+import { writeFileSet } from "./Staging";
 
 describe("SymlinkFile", () => {
   it("is a distinct IFile that names its target", () => {

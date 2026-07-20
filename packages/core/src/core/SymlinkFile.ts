@@ -25,7 +25,7 @@ import { IFile } from "./FileSet";
  * A symbolic link within a FileSet: an IFile that names another path (its
  * `target`) rather than carrying content of its own. It participates in a
  * FileSet like any file — matched by `find`, keyed by its own name — and stages
- * to disk as a real symlink (see BuildCache.writeFileSet). Its "content" is the
+ * to disk as a real symlink (see Staging.writeFileSet). Its "content" is the
  * link text (the target path), so `readString`/`getBuffer` return that.
  *
  * A consumer that wants to follow the link resolves `target` within the set
