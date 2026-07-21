@@ -18,6 +18,30 @@
  */
 
 import { Constraints } from "@fabr-build/core";
+import { readFileSync } from "fs";
+import { dirname, join } from "path";
+
+/** The fabr version, read from the CLI package's own package.json at runtime.
+ * The compiled module's depth below the package root differs between build
+ * layouts (`build/driver/` under the yarn/tsc devchain, but `driver/` in the
+ * fabr-built package, which strips the outDir), so rather than hardcode a hop
+ * count we walk up to the *nearest* package.json — the CLI's own in every
+ * layout. That first hit is authoritative: we never climb past it (an ancestor
+ * could be an unrelated package). The version is stamped only at release, so a
+ * present-but-versionless package.json is an unreleased build. */
+function getVersion(): string {
+  for (let dir = __dirname; ; ) {
+    try {
+      return JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).version ?? "0.0.0-dev";
+    } catch {
+      const parent = dirname(dir);
+      if (parent === dir) {
+        return "unknown";
+      }
+      dir = parent;
+    }
+  }
+}
 
 export enum Mode {
   Normal,
@@ -67,7 +91,8 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  -DPROP=VALUE      Force the given property PROP to VALUE\n" +
       "  -l                Long listing: hash and size per file (ls), or source location (list-*)\n" +
       "  --json            Emit JSON (list-targets / list-targetdefs)\n" +
-      "  -w                Watch mode\n"
+      "  -w                Watch mode\n" +
+      "  -v, --version     Print the fabr version and exit\n"
   );
 }
 
@@ -105,6 +130,9 @@ export function parseCommandLine(args: string[]): Options {
         options.json = true;
       } else if (arg === "-h") {
         printUsage();
+        process.exit(0);
+      } else if (arg === "--version" || arg === "-v") {
+        console.log(`fabr ${getVersion()}`);
         process.exit(0);
       } else if (arg.startsWith("-D")) {
         /* -DKEY=VALUE: split at the *first* `=` so the value may contain more
