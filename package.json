@@ -13,7 +13,7 @@
     "test": "jest",
     "lint": "eslint packages test",
     "fabr": "node packages/cli/build/index.js",
-    "bootstrap": "yarn build && yarn fabr @fabr-build/core @fabr-build/js @fabr-build/cli && yarn fabr test @fabr-build/core @fabr-build/js @fabr-build/cli e2e_tests",
+    "bootstrap": "yarn build && rm -Rf bootstrap && mkdir -p bootstrap/node_modules/@fabr-build && yarn fabr cp @fabr-build/core @fabr-build/js @fabr-build/cli bootstrap/node_modules/@fabr-build && node bootstrap/node_modules/@fabr-build/cli/bin/fabr.js test @fabr-build/core @fabr-build/js @fabr-build/cli e2e_tests",
     "dist": "yarn build && yarn test && yarn lint"
   },
   "devDependencies": {

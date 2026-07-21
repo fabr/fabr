@@ -34,12 +34,20 @@ import { Computable } from "./Computable";
 import { ExecutionError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
 import { FSFile } from "./FSFileSource";
-import { deleteFile, hardlink, hashFile, rename, symlink, walkTree, writeFile } from "./FSWrapper";
+import { copyFile, deleteFile, hardlink, hashFile, rename, symlink, walkTree, writeFile } from "./FSWrapper";
 import { SymlinkFile } from "./SymlinkFile";
 import { describeSystemError } from "../support/Execute";
 import { globMatcher } from "../support/Glob";
 
-export function writeFileSet(targetDir: string, files: FileSet): Computable<void> {
+/**
+ * Materialize a FileSet into `targetDir` (additive — only the given files are
+ * written; nothing else in the tree is touched). By default a cache-backed file
+ * is **hardlinked** (cheap, shares the blob) — correct for an ephemeral staged
+ * tree fabr owns. Pass `copy: true` when the destination is durable user-space
+ * (`fabr cp`): the file is copied so an edit of it can never write through to
+ * the shared cache blob.
+ */
+export function writeFileSet(targetDir: string, files: FileSet, options?: { copy?: boolean }): Computable<void> {
   const operations = [];
   let realRoot: string | undefined;
   for (const [name, file] of files) {
@@ -60,7 +68,7 @@ export function writeFileSet(targetDir: string, files: FileSet): Computable<void
         operations.push(asExecutionError(symlink(file.target, targetName)));
       }
     } else if (filepath) {
-      operations.push(asExecutionError(hardlink(filepath, targetName)));
+      operations.push(asExecutionError(options?.copy ? copyFile(filepath, targetName) : hardlink(filepath, targetName)));
     } else {
       operations.push(asExecutionError(file.getBuffer().then(buffer => writeFile(targetName, buffer))));
     }

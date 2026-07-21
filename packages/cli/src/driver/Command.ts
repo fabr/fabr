@@ -49,11 +49,11 @@ export enum Mode {
 }
 
 /** The commands the command line can request. `build`/`test`/`run` are
- * BUILD_OPERATION values; `ls`/`cat`/`sync` are driver-side verbs that build under
- * BUILD_OPERATION=build and then list / dump / publish the results;
- * `list-targetdefs` is a model-query verb that loads the model and prints without
- * building anything (so it needs no targets). */
-const COMMANDS = new Set(["build", "test", "run", "ls", "cat", "sync", "list-targets", "list-targetdefs"]);
+ * BUILD_OPERATION values; `ls`/`cat`/`cp`/`sync` are driver-side verbs that build
+ * under BUILD_OPERATION=build and then list / dump / copy-to-disk / publish the
+ * results; `list-targetdefs` is a model-query verb that loads the model and prints
+ * without building anything (so it needs no targets). */
+const COMMANDS = new Set(["build", "test", "run", "ls", "cat", "cp", "sync", "list-targets", "list-targetdefs"]);
 
 /** Model-query verbs: they inspect the loaded model rather than building targets,
  * so a bare invocation (no targets) is a valid "list everything" request. */
@@ -66,11 +66,15 @@ export interface Options {
   /** For the model-query verbs (`list-targets`/`list-targetdefs`): emit machine-
    * readable JSON instead of the human listing (the docs-generation interface). */
   json: boolean;
-  /** Target names, or (for `ls`/`cat`) whole name references — `pkg:build/*.js`
-   * — resolved by the model, not split here. */
+  /** Target names, or (for `ls`/`cat`/`cp`) whole name references — `pkg:build/*.js`
+   * — resolved by the model, not split here. For `cp` the trailing destination
+   * path has already been split off into `dest`. */
   targets: string[];
   /** For `run`: the program's argv — everything after the target, verbatim. */
   runArgs?: string[];
+  /** For `cp`: the destination directory (the final positional), a plain
+   * filesystem path resolved against the invocation cwd — not a model name. */
+  dest?: string;
   properties: Constraints;
 }
 
@@ -85,6 +89,7 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  run               Execute the given targets\n" +
       "  ls                Build the given targets and list their contents\n" +
       "  cat               Build a target and write its matching files to stdout\n" +
+      "  cp                Build targets and copy their files to a destination directory\n" +
       "  list-targets      List the targets declared in the project\n" +
       "  list-targetdefs   List the available target types and their properties\n" +
       "Options:\n" +
@@ -158,6 +163,15 @@ export function parseCommandLine(args: string[]): Options {
         options.runArgs = [];
       }
     }
+  }
+  if (options.command === "cp") {
+    /* `cp <source…> <dest>`: the final positional is the destination directory,
+     * split off here so `targets` carries only source names (resolved like
+     * cat/ls). At least one source plus a dest are required. */
+    if (options.targets.length < 2) {
+      usageError("cp requires at least one source and a destination directory");
+    }
+    options.dest = options.targets.pop();
   }
   if (options.targets.length === 0 && !QUERY_COMMANDS.has(options.command)) {
     printUsage();

@@ -95,4 +95,65 @@ describe("e2e: driver CLI", () => {
     expect(result.stderr).to.match(/No PROJECT\.fabr found/);
     expect(result.stderr).to.match(/Build failed/);
   });
+
+  it("cp of a single named file copies it flat (cp file out → out/file)", () => {
+    /* `files:a.txt` directly names one file (the `:` strips the `src` prefix), so
+     * — like `cp a.txt out/` — it lands flat at `out/a.txt`, no wrapper dir. Data
+     * goes to disk, not stdout; the confirmation is on stderr. */
+    const result = runFabr(project, ["cp", "files:a.txt", "out"], ["out/a.txt"]);
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("");
+    expect(result.files?.["out/a.txt"]).to.equal("AAA\n");
+    expect(result.stderr).to.match(/Copied 1 file/);
+  });
+
+  it("cp of a container name nests its files under a dir named for the reference", () => {
+    /* `files` names a container (a multi-file target), so — like `cp -r dir out/`
+     * → `out/dir/` — its contents nest under `out/files/`, the dir named for the
+     * entered reference's final component (not any resolved package name). */
+    const result = runFabr(project, ["cp", "files", "out"], ["out/files/a.txt", "out/files/b.txt", "out/a.txt"]);
+    expect(result.status).to.equal(0);
+    expect(result.files?.["out/files/a.txt"]).to.equal("AAA\n");
+    expect(result.files?.["out/files/b.txt"]).to.equal("BBB\n");
+    /* NOT flattened into out/ directly. */
+    expect(result.files?.["out/a.txt"]).to.be.undefined;
+  });
+
+  it("cp of a glob projection copies the matched files flat", () => {
+    /* A final glob (`files:*.txt`) is a file selection, not a container, so — like
+     * `cp *.txt out/` — the matches land directly under `out/`, no wrapper. */
+    const result = runFabr(project, ["cp", "files:*.txt", "out"], ["out/a.txt", "out/b.txt", "out/files/a.txt"]);
+    expect(result.status).to.equal(0);
+    expect(result.files?.["out/a.txt"]).to.equal("AAA\n");
+    expect(result.files?.["out/b.txt"]).to.equal("BBB\n");
+    expect(result.files?.["out/files/a.txt"]).to.be.undefined;
+  });
+
+  it("cp of several containers yields one directory per source", () => {
+    /* `cp @scope/core @scope/cli out` → `out/core`, `out/cli`: each container
+     * source becomes its own subdirectory, named for the reference's final
+     * component (here two multi-file targets stand in for packages). */
+    const twoTargets = {
+      "PROJECT.fabr": "one = a:**/*;\ntwo = b:**/*;\n",
+      "a/x.txt": "X\n",
+      "b/y.txt": "Y\n",
+    };
+    const result = runFabr(twoTargets, ["cp", "one", "two", "out"], ["out/one/x.txt", "out/two/y.txt"]);
+    expect(result.status).to.equal(0);
+    expect(result.files?.["out/one/x.txt"]).to.equal("X\n");
+    expect(result.files?.["out/two/y.txt"]).to.equal("Y\n");
+  });
+
+  it("cp fails, writing nothing, when a source matches no files", () => {
+    const result = runFabr(project, ["cp", "files:zzz.txt", "out"], ["out/zzz.txt"]);
+    expect(result.status).to.equal(1);
+    expect(result.files?.["out/zzz.txt"]).to.be.undefined;
+    expect(result.stderr).to.match(/matched no files/);
+  });
+
+  it("cp requires a destination as well as a source", () => {
+    const result = runFabr(project, ["cp", "files:a.txt"]);
+    expect(result.status).to.equal(1);
+    expect(result.stderr).to.match(/cp requires .* destination/);
+  });
 });

@@ -4,6 +4,9 @@ module.exports = {
     "**/src/**/*.ts",
     "!**/node_modules/**",
     "!**/*.d.ts",
+    /* The astro docs site (docs/src) is not a fabr TS package — its `astro:*`
+     * virtual imports don't resolve under ts-jest */
+    "!**/docs/**",
     /* The runner runtime executes standalone under fabr test, not under jest */
     "!**/packages/js/src/testRunner/**",
     /* The bundle driver executes standalone in the bundle step (requires esbuild) */

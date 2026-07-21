@@ -1,0 +1,3 @@
+#!/bin/sh
+
+node bootstrap/node_modules/@fabr-build/cli/bin/fabr.js "$@"

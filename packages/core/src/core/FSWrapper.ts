@@ -175,6 +175,22 @@ export function hardlink(target: string, filepath: string): Computable<void> {
     });
   });
 }
+
+/** Copy a file's contents to a new path — an independent duplicate, unlike
+ * {@link hardlink} which shares the inode. Used when the destination is durable
+ * user-space (e.g. `fabr cp`), where a hardlink into the content-addressed cache
+ * would let an edit of the copy write through to the shared cache blob. */
+export function copyFile(target: string, filepath: string): Computable<void> {
+  return Computable.from<void>((resolve, reject) => {
+    fs.copyFile(target, filepath, err => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
 export function hashFile(filepath: string): Computable<string> {
   return Computable.from<string>((resolve, reject) => {
     fs.readFile(filepath, (err, data) => {

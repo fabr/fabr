@@ -40,6 +40,7 @@ import {
   IPropertySchema,
   ITargetDecl,
   ITargetDefDecl,
+  PackageFileSet,
   ProgressListener,
   PropertyType,
   PublishableFileSet,
@@ -48,6 +49,7 @@ import {
   toError,
   WatchController,
   FSFileSource,
+  writeFileSet,
 } from "@fabr-build/core";
 import { DiagnosticErrorFormatter, ErrorFormatter } from "./ErrorFormatter";
 import { runInteractive, RunSupervisor } from "./RunHandler";
@@ -58,6 +60,7 @@ import { publishSync } from "./SyncHandler";
 import * as pluginApi from "@fabr-build/core";
 import { Mode, Options } from "./Command";
 import { getSourceRoot, getBuildCacheRoot, getHostProperties, PROJECT_FILENAME } from "./Environment";
+import * as path from "node:path";
 
 const DIAG_BUILD_COMPLETE = Diagnostic.Info<{ targets: string }>("Built {targets}");
 const DIAG_UP_TO_DATE = Diagnostic.Info<Record<string, never>>("Already up to date");
@@ -69,6 +72,7 @@ const DIAG_WATCHING = Diagnostic.Info<Record<string, never>>("Watching for chang
 const DIAG_WATCH_WARNING = Diagnostic.Warn<{ message: string }>("{message}");
 const DIAG_RESOLVING = Diagnostic.Info<{ requirements: string; name: string }>("Resolving {requirements} from {name}");
 const DIAG_FETCHING = Diagnostic.Info<{ resource: string; url: string }>("Fetching {resource}{url}");
+const DIAG_COPIED = Diagnostic.Info<{ count: number; dest: string }>("Copied {count} file(s) to {dest}");
 
 /** Progress verbs for the well-known operations; anything else renders as
  * "Running <operation> on <target>" */
@@ -145,6 +149,10 @@ export function runFabr(options: Options): Promise<void> {
     case "cat":
       return runWith((model, execution) =>
         Computable.forAll(resolveNames(model, options, execution), (...results) => catTarget(options, results))
+      );
+    case "cp":
+      return runWith((model, execution) =>
+        Computable.forAll(resolveNames(model, options, execution), (...results) => copyTarget(options, execution, results))
       );
     case "test":
       return runWith((model, execution) => {
@@ -458,6 +466,69 @@ function catTarget(options: Options, results: SourceRef[][]): Computable<void> {
     (prev, file) => prev.then(() => file.getBuffer()).then(buffer => void process.stdout.write(Uint8Array.from(buffer))),
     Computable.resolve(undefined)
   );
+}
+
+/**
+ * `fabr cp <source…> <dest>`: resolve each source name to its files (exactly as
+ * `cat` does — projections/globs already applied), then copy them into the
+ * destination directory following **`cp`'s own file-vs-directory rule**
+ * ({@link copyPrefix}): a source that names a directory/container (a target,
+ * package, or namespace) becomes a subdirectory named after that reference
+ * (`fabr cp @scope/core out` → `out/core/…`, `cp -r core out/` → `out/core/`),
+ * while a source that names a single file or a glob copies flat. `dest` is a
+ * plain filesystem path resolved against the invocation cwd (not a model name),
+ * created if absent. The copy is **additive** (files already in `dest` are left
+ * untouched) and breaks the cache hardlink (`copy: true`), so the copies are
+ * independent of fabr's cache. A source matching no files is an error, raised
+ * before a byte is written. (The declarative dual — laying built content into a
+ * directory as part of a `sync` release — is parked; see DESIGN-sync.md.)
+ */
+function copyTarget(options: Options, execution: ExecutionContext, results: SourceRef[][]): Computable<void> {
+  const sets: FileSet[] = [];
+  results.forEach((sources, i) => {
+    const name = options.targets[i];
+    const fileSets = sources.filter((source): source is FileSet => source instanceof FileSet);
+    if (fileSets.every(set => set.isEmpty())) {
+      throw matchedNoFiles(name);
+    }
+    const prefix = copyPrefix(name, fileSets);
+    for (const set of fileSets) {
+      sets.push(prefix ? set.rename(fileName => `${prefix}${fileName}`) : set);
+    }
+  });
+  const merged = FileSet.unionAll(...sets);
+  const dest = path.resolve(options.dest!);
+  return writeFileSet(dest, merged, { copy: true }).then(() =>
+    execution.log.log(DIAG_COPIED, { count: merged.size, dest: options.dest! })
+  );
+}
+
+/**
+ * `cp`'s file-vs-directory rule applied to one source, keyed on the name as
+ * *entered* (never the resolved package's own name): returns the subdirectory its
+ * files nest under (`"core/"`), or `""` for a flat copy. Mirrors the shell `cp`:
+ * - a **trailing `/`** or a **final glob** (`pkg:build/*.js`) → flat (contents /
+ *   the matched files land directly under dest — `cp dir/ out`, `cp *.js out`);
+ * - a source that **directly names a single file** → flat (the file keeps its
+ *   name — `cp file out` → `out/file`);
+ * - otherwise it **names a directory/container** (a package, or any reference
+ *   delivering a tree) → nested under its final name component (`cp -r dir out`
+ *   → `out/dir/`).
+ * "Directly names a file" is judged from the delivery: it wraps unless the source
+ * is a **lone delivered file whose basename is the reference's own leaf**
+ * (`files:a.txt` → `a.txt`, so flat). A package is always a container (even a
+ * single-file one); a bare target/namespace — whose leaf (`one`) names no
+ * delivered file — is a container even when it happens to deliver one file.
+ */
+function copyPrefix(name: string, sets: FileSet[]): string {
+  const leaf = name.replace(/\/+$/, "").split(/[/:]/).filter(Boolean).pop() ?? "";
+  if (name.endsWith("/") || /[*?[\]]/.test(leaf)) {
+    return "";
+  }
+  const fileNames = sets.flatMap(set => [...set].map(([fileName]) => fileName));
+  const isLoneFile =
+    !sets.some(set => set instanceof PackageFileSet) && fileNames.length === 1 && fileNames[0].split("/").pop() === leaf;
+  return isLoneFile ? "" : `${leaf}/`;
 }
 
 /**

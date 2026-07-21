@@ -62,13 +62,20 @@ export interface FabrResult {
   stdout: string;
   stderr: string;
   status: number;
+  /** Contents of the paths requested via `readback`, project-relative -> content
+   * (paths that don't exist after the run are omitted). Read before the temp dir
+   * is cleaned up, so a verb that writes into the project (e.g. `fabr cp`) can be
+   * asserted on. Undefined when no `readback` was requested. */
+  files?: Record<string, string>;
 }
 
 /**
  * Write `files` (relative path -> contents) into a fresh temp project dir and
- * run `fabr <args>` there. Returns the captured streams and exit status.
+ * run `fabr <args>` there. Returns the captured streams and exit status; when
+ * `readback` paths are given, their post-run contents too (for verbs that write
+ * files into the project).
  */
-export function runFabr(files: Record<string, string>, args: string[]): FabrResult {
+export function runFabr(files: Record<string, string>, args: string[], readback?: string[]): FabrResult {
   if (!fs.existsSync(FABR)) {
     throw new Error(`fabr is not built at ${FABR} — run 'yarn build' (the 'yarn dist' gate does this)`);
   }
@@ -84,7 +91,17 @@ export function runFabr(files: Record<string, string>, args: string[]): FabrResu
       env: { PATH: CHILD_PATH, FABR_CACHE_DIR: CACHE_DIR },
       encoding: "utf8",
     });
-    return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status ?? -1 };
+    let read: Record<string, string> | undefined;
+    if (readback) {
+      read = {};
+      for (const rel of readback) {
+        const abs = path.join(dir, rel);
+        if (fs.existsSync(abs)) {
+          read[rel] = fs.readFileSync(abs, "utf8");
+        }
+      }
+    }
+    return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status ?? -1, files: read };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
