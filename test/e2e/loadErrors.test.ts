@@ -27,7 +27,7 @@ describe("e2e: build files with errors stop the run", () => {
       {
         "PROJECT.fabr":
           "script good_prog { entry = src:gen.sh; }\n" +
-          "generate good { tool = good_prog; output = out:**; }\n" +
+          "generate good { run = good_prog; output = out:**; }\n" +
           /* Unrelated, unbuilt target with an unrecognized property. */
           "script bad_prog { entry = src:gen.sh; nonsense = oops; }\n",
         "src/gen.sh": 'mkdir -p out\nprintf "ran\\n" > out/msg.txt\n',

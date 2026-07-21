@@ -20,7 +20,18 @@
 import { expect } from "chai";
 import { EMPTY_FILESET } from "../core/FileSet";
 import { LogFormatter, LogLevel } from "../support/Log";
-import { DeclKind, IBuildFileContents, IMapItemDecl, IPropertyDecl, PropertyType } from "./AST";
+import {
+  DeclKind,
+  IBuildFileContents,
+  ICommandStage,
+  IMapItemDecl,
+  IPropertyDecl,
+  isCommandValue,
+  isMapValue,
+  isNameValue,
+  IValue,
+  PropertyType,
+} from "./AST";
 import { Name, NamePart, NamePartKind } from "../core/Name";
 import { parseBuildString, parseName } from "./Parser";
 
@@ -91,10 +102,20 @@ function propertyTypeName(type: PropertyType): string {
   }
 }
 
+/** The Name of a name value / the entries of a map value — white-box test
+ * accessors over the {@link IValue} union (assert the expected kind). */
+function nameOf(value: IValue): Name {
+  if (!isNameValue(value)) throw new Error("expected a name value, got a map block");
+  return value.value;
+}
+function entriesOf(value: IValue | undefined): IMapItemDecl[] | undefined {
+  return value !== undefined && isMapValue(value) ? value.entries : undefined;
+}
+
 function propertyValues(properties: IPropertyDecl[]): Record<string, string[]> {
   const result: Record<string, string[]> = {};
   for (const prop of properties) {
-    result[prop.name] = prop.values.map(value => nameText(value.value));
+    result[prop.name] = prop.values.map(value => nameText(nameOf(value)));
   }
   return result;
 }
@@ -239,9 +260,9 @@ describe("Parser Tests", () => {
      * string is the property name); the value is the content target. */
     expect(core.keyRef?.toString()).to.equal("@npm:@fabr/core:0.1");
     expect(core.name).to.equal("@npm:@fabr/core:0.1");
-    expect(core.values.map(v => v.value.toString())).to.deep.equal(["core"]);
+    expect(core.values.map(v => nameOf(v).toString())).to.deep.equal(["core"]);
     expect(cli.keyRef?.toString()).to.equal("@npm:@fabr/cli:0.2");
-    expect(cli.values.map(v => v.value.toString())).to.deep.equal(["cli"]);
+    expect(cli.values.map(v => nameOf(v).toString())).to.deep.equal(["cli"]);
   });
 
   it("recovers after a bad statement and parses the subsequent ones", () => {
@@ -366,7 +387,7 @@ describe("Parser Tests", () => {
   describe("constrained references", () => {
     /** The Name of the first value of the first property. */
     function firstValue(text: string): Name {
-      return parseValid(text).properties[0].values[0].value;
+      return nameOf(parseValid(text).properties[0].values[0]);
     }
     function constraintsOf(name: Name): [string, string][] {
       return name.getConstraints().map(([key, value]) => [key, value.toString()]);
@@ -432,12 +453,14 @@ describe("Parser Tests", () => {
       ]);
     });
 
-    it("requires the '<' to abut the reference", () => {
-      /* A whitespace-separated '<' cannot start a value, so it is an error */
-      expect(parseInvalid("dep = mylib <A=1>;")).to.deep.equal([
-        /* The caret sits on the '<' itself (col 13), not the space before it. */
-        diagnosticBlock(1, 13, "Read '<' but expected Name, ';', or '}'", "dep = mylib <A=1>;"),
-      ]);
+    it("does not bind a spaced '<' as a constraint (it is a stdin redirect)", () => {
+      /* The constraint binds only when it abuts the reference; a whitespace-
+       * separated `<` is instead a command stdin redirect — so the value parses
+       * to a `command`, not a value list with a constraint. */
+      const command = parseValid("run = mylib < src;").properties[0].values.find(isCommandValue);
+      expect(command?.pipeline).to.have.length(1);
+      expect(command?.pipeline[0].command.value.toString()).to.equal("mylib");
+      expect(command?.pipeline[0].stdin?.value.toString()).to.equal("src");
     });
 
     it("parses constraints on a command-line name (parseName parity)", () => {
@@ -464,7 +487,7 @@ describe("Parser Tests", () => {
 
   describe("rename templates", () => {
     function firstValue(text: string): Name {
-      return parseValid(text).properties[0].values[0].value;
+      return nameOf(parseValid(text).properties[0].values[0]);
     }
 
     it("parses a selector -> template pair and round-trips it", () => {
@@ -538,6 +561,97 @@ describe("Parser Tests", () => {
     });
   });
 
+  describe("command pipelines", () => {
+    /** Render a parsed `command` back to a canonical string (command, args, then
+     * redirects in a fixed order), to assert the pipeline structure round-trips. */
+    function renderStage(stage: ICommandStage): string {
+      const parts = [stage.command.value.toString(), ...stage.args.map(arg => arg.value.toString())];
+      if (stage.stdin !== undefined) parts.push("<", stage.stdin.value.toString());
+      if (stage.stdout !== undefined) parts.push(">", stage.stdout.value.toString());
+      if (stage.stderr !== undefined) parts.push("2>", stage.stderr.value.toString());
+      if (stage.both !== undefined) parts.push("&>", stage.both.value.toString());
+      return parts.join(" ");
+    }
+    function sequence(src: string): string {
+      const command = parseValid(src).properties[0].values.find(isCommandValue);
+      return (command?.pipeline ?? []).map(renderStage).join(" | ");
+    }
+
+    it("parses a pipeline with a redirect", () => {
+      expect(sequence("run = list_targetdefs --json | gendoc > out.mdx;")).to.equal(
+        "list_targetdefs --json | gendoc > out.mdx"
+      );
+    });
+
+    it("parses stdin, stderr and both redirects", () => {
+      expect(sequence("run = tool < src 2> err;")).to.equal("tool < src 2> err");
+      expect(sequence("run = a b &> log;")).to.equal("a b &> log");
+    });
+
+    it("keeps an abutting <k=v> a constraint on the command, not a stdin redirect", () => {
+      /* The constraint binds because it abuts; only a spaced `<` is a redirect. A
+       * pipe makes the value a command so we can read the parsed stages. */
+      expect(sequence("run = mytool<BUILD_TYPE=release> --flag | tee;")).to.equal(
+        "mytool<BUILD_TYPE=release> --flag | tee"
+      );
+    });
+
+    it("preserves glob args (expanded over srcs at resolution, not here)", () => {
+      expect(sequence("run = tool src/*.ts > out;")).to.equal("tool src/*.ts > out");
+    });
+
+    it("still flags an unspaced arrow rather than reading it as a redirect", () => {
+      expect(parseInvalid("out = a-> *.b;")).to.deep.equal([
+        diagnosticBlock(1, 9, "Invalid rename template: the '->' arrow must be surrounded by spaces (`sel -> tmpl`)", "out = a-> *.b;"),
+      ]);
+    });
+
+    it("rejects a dangling redirect with no target", () => {
+      expect(parseInvalid("run = emit >;")).to.deep.equal([
+        diagnosticBlock(1, 12, "Invalid command: redirect '>' must be followed by a target name", "run = emit >;"),
+      ]);
+    });
+
+    it("rejects an empty command beside a pipe", () => {
+      expect(parseInvalid("run = emit | ;")).to.deep.equal([
+        diagnosticBlock(1, 12, "Invalid command: empty command (nothing beside '|')", "run = emit | ;"),
+      ]);
+    });
+
+    it("rejects a leading redirect with no command", () => {
+      expect(parseInvalid("run = > out;")).to.deep.equal([
+        diagnosticBlock(1, 7, "Invalid command: a redirect must follow a command", "run = > out;"),
+      ]);
+    });
+
+    it("rejects capturing a stream twice", () => {
+      expect(parseInvalid("run = emit > a > b;")).to.deep.equal([
+        diagnosticBlock(1, 16, "Invalid command: stdout is redirected more than once", "run = emit > a > b;"),
+      ]);
+      expect(parseInvalid("run = tool < a < b;")).to.deep.equal([
+        diagnosticBlock(1, 16, "Invalid command: stdin is redirected more than once", "run = tool < a < b;"),
+      ]);
+    });
+
+    it("rejects stdout capture on a non-final stage", () => {
+      expect(parseInvalid("run = a > x | b;")).to.deep.equal([
+        diagnosticBlock(1, 13, "Invalid command: only the final stage of a pipeline can capture stdout ('>' / '&>')", "run = a > x | b;"),
+      ]);
+    });
+
+    it("rejects stdin on a non-first stage", () => {
+      expect(parseInvalid("run = a | b < x;")).to.deep.equal([
+        diagnosticBlock(1, 13, "Invalid command: only the first stage of a pipeline can take stdin ('<')", "run = a | b < x;"),
+      ]);
+    });
+
+    it("rejects a `{ ... }` block used as a command word", () => {
+      expect(parseInvalid("run = emit | { a = b; };")).to.deep.equal([
+        diagnosticBlock(1, 14, "Invalid command: a `{ ... }` block is not a command", "run = emit | { a = b; };"),
+      ]);
+    });
+  });
+
   describe("MAP properties", () => {
     it("parses the MAP keyword in a targetdef schema", () => {
       expect(summarize(parseValid("targetdef js_bundle {\n  defines = MAP;\n}"))).to.deep.equal(
@@ -555,16 +669,16 @@ describe("Parser Tests", () => {
     function firstBlock(text: string): Record<string, string[]> {
       const values = parseValid(text).targets[0].properties[0].values;
       expect(values).to.have.lengthOf(1);
-      const entries = values[0].entries;
+      const entries = entriesOf(values[0]);
       expect(entries).to.not.equal(undefined);
-      return Object.fromEntries(blockEntries(entries).map(entry => [entry.name, entry.values.map(v => nameText(v.value))]));
+      return Object.fromEntries(blockEntries(entries).map(entry => [entry.name, entry.values.map(v => nameText(nameOf(v)))]));
     }
 
     it("parses a block as a single value carrying ordered entries", () => {
       const prop = parseValid("js_bundle b {\n  defines = { DEBUG = false; NAME = production; }\n}").targets[0]
         .properties[0];
       expect(prop.values).to.have.lengthOf(1);
-      expect(prop.values[0].entries).to.not.equal(undefined);
+      expect(entriesOf(prop.values[0])).to.not.equal(undefined);
       expect(firstBlock("js_bundle b {\n  defines = { DEBUG = false; NAME = production; }\n}")).to.deep.equal({
         DEBUG: ["false"],
         NAME: ["production"],
@@ -577,7 +691,7 @@ describe("Parser Tests", () => {
       const contents = parseValid(
         "js_bundle b {\n  meta = {\n    author = {\n      name = ann;\n    }\n    repository = {\n      type = git;\n    }\n  }\n}\nAFTER = 1;"
       );
-      const entries = blockEntries(contents.targets[0].properties[0].values[0].entries);
+      const entries = blockEntries(entriesOf(contents.targets[0].properties[0].values[0]));
       expect(entries.map(entry => entry.name)).to.deep.equal(["author", "repository"]);
       expect(contents.properties[0].name).to.equal("AFTER");
     });
@@ -586,21 +700,22 @@ describe("Parser Tests", () => {
       const values = parseValid(
         "js_bundle b {\n  meta = { repository = { type = git; url = u; }; maintainers = { name = a; } { name = b; }; }\n}"
       ).targets[0].properties[0].values;
-      const entries = blockEntries(values[0].entries);
+      const entries = blockEntries(entriesOf(values[0]));
       const repository = entries[0];
       expect(repository.name).to.equal("repository");
       expect(repository.values).to.have.lengthOf(1);
-      expect(blockEntries(repository.values[0].entries).map(entry => entry.name)).to.deep.equal(["type", "url"]);
+      expect(blockEntries(entriesOf(repository.values[0])).map(entry => entry.name)).to.deep.equal(["type", "url"]);
       const maintainers = entries[1];
       expect(maintainers.name).to.equal("maintainers");
       expect(maintainers.values).to.have.lengthOf(2);
-      expect(maintainers.values.every(value => value.entries !== undefined)).to.equal(true);
+      expect(maintainers.values.every(value => entriesOf(value) !== undefined)).to.equal(true);
     });
 
     it("parses a bare reference statement as a splice", () => {
-      const items = parseValid(
-        "js_bundle b {\n  meta = {\n    FABR_METADATA;\n    description = CLI package;\n  };\n}"
-      ).targets[0].properties[0].values[0].entries;
+      const items = entriesOf(
+        parseValid("js_bundle b {\n  meta = {\n    FABR_METADATA;\n    description = CLI package;\n  };\n}").targets[0]
+          .properties[0].values[0]
+      );
       expect(items).to.have.lengthOf(2);
       const [splice, entry] = items ?? [];
       expect(splice.kind).to.equal(DeclKind.MapSplice);
@@ -617,9 +732,9 @@ describe("Parser Tests", () => {
 
     it("interpolates ${...} in entry values", () => {
       const entries = blockEntries(
-        parseValid("js_bundle b {\n  defines = { VERSION = ${BUILD_NO}; }\n}").targets[0].properties[0].values[0].entries
+        entriesOf(parseValid("js_bundle b {\n  defines = { VERSION = ${BUILD_NO}; }\n}").targets[0].properties[0].values[0])
       );
-      expect(entries[0].values[0].value.getVariables()).to.deep.equal(["BUILD_NO"]);
+      expect(nameOf(entries[0].values[0]).getVariables()).to.deep.equal(["BUILD_NO"]);
     });
 
     it("parses an empty block", () => {
@@ -627,7 +742,7 @@ describe("Parser Tests", () => {
     });
 
     it("parses a bare name before '}' as a splice (final ';' optional)", () => {
-      const items = parseValid("js_bundle b {\n  defines = { DEBUG }\n}").targets[0].properties[0].values[0].entries;
+      const items = entriesOf(parseValid("js_bundle b {\n  defines = { DEBUG }\n}").targets[0].properties[0].values[0]);
       expect(items).to.have.lengthOf(1);
       expect(items?.[0].kind).to.equal(DeclKind.MapSplice);
     });

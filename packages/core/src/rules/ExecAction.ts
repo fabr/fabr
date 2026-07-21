@@ -18,6 +18,7 @@
  */
 
 import { getResultFileSet, writeFileSet } from "../core/Staging";
+import { IActionContext } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { execute, findExecutable } from "../support/Execute";
@@ -55,7 +56,7 @@ export function stringInput(inputs: BuildActionInputs, name: string, fallback?: 
   return value;
 }
 
-function runExec(inputs: BuildActionInputs, workDir: string): Computable<FileSet> {
+function runExec(inputs: BuildActionInputs, { workDir }: IActionContext): Computable<FileSet> {
   const files = fileSetInput(inputs, "files");
   const argv = stringListInput(inputs, "argv");
   const outputs = stringInput(inputs, "outputs", "**");

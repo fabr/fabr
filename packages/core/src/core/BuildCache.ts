@@ -1,11 +1,41 @@
+import { createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
-import { Readable } from "stream";
+import { Readable, Transform, Writable } from "stream";
 import { Computable } from "./Computable";
 import { ICacheControl, openUrlStream } from "./Fetch";
 import { FileSet, IFile } from "./FileSet";
-import { deleteFile, hashString, readFile, readFileBuffer, rename, writeFile } from "./FSWrapper";
+import { deleteFile, HASH_ALGORITHM, hashString, readFile, readFileBuffer, rename, writeFile } from "./FSWrapper";
 import { Diagnostic, Log } from "../support/Log";
+
+/**
+ * A streaming output sink a build step writes to instead of buffering: the bytes
+ * are hashed as they are written and, on {@link finalize}, placed directly in the
+ * content store as a cache-backed file — no intermediate memory buffer and no
+ * work-dir round-trip. Used for output a step produces as a *stream* (a captured
+ * pipeline stream), the streaming counterpart of {@link BuildCache.ensureBlob}.
+ */
+export interface IOutputHandle {
+  /** The sink to pipe process output into (pipe with `{ end: false }`; the handle
+   * is ended by {@link finalize}/{@link discard}, not by the source). */
+  readonly stream: Writable;
+  /** End the stream, flush it, place the streamed bytes in the store under their
+   * (now-complete) hash, and return a cache-backed file named `name`. */
+  finalize(name: string): Computable<IFile>;
+  /** Abandon the stream and delete its temp file — nothing enters the store. */
+  discard(): void;
+}
+
+/**
+ * What a build step's `run` receives (see IBuildActionDefinition): the scratch
+ * work directory plus a factory for streaming outputs. Built by {@link runAction}
+ * around the cache, so a step can produce work-dir files (collected afterward) or
+ * stream output straight into the store ({@link createOutput}).
+ */
+export interface IActionContext {
+  readonly workDir: string;
+  createOutput(): IOutputHandle;
+}
 
 const DIAG_SERVING_STALE = Diagnostic.Warn<{ url: string; reason: string }>(
   "cannot refresh {url} ({reason}); serving the cached copy"
@@ -260,6 +290,53 @@ export class BuildCache {
       const tmp = `${blobPath}.tmp-${process.pid}-${this.tempCounter++}`;
       return writeFile(tmp, bytes).then(() => this.renameIntoPool(tmp, blobPath));
     });
+  }
+
+  /**
+   * A streaming write into the content store (see {@link IOutputHandle}): the
+   * streaming counterpart of {@link ensureBlob}. Bytes written to the handle's
+   * stream are hashed on the fly and spooled to a temp file; `finalize` places
+   * that file in the pool under the completed hash (reusing the same atomic
+   * placement + global dedup), so a large streamed output never buffers in memory
+   * and is hashed in a single pass. `discard` drops the temp file unplaced.
+   */
+  public getTemporaryWriteStream(): IOutputHandle {
+    fs.mkdirSync(this.blobRoot, { recursive: true });
+    const tmpPath = path.resolve(this.blobRoot, `.tmp-${process.pid}-${this.tempCounter++}`);
+    const hash = createHash(HASH_ALGORITHM);
+    const fileStream = fs.createWriteStream(tmpPath);
+    /* Baseline handler so a stream error (e.g. on discard's destroy, or a disk
+     * failure before finalize is awaited) never escalates to an uncaught crash;
+     * finalize adds its own error->reject on top. */
+    fileStream.on("error", () => undefined);
+    const sink = new Transform({
+      transform(chunk, _enc, cb) {
+        hash.update(chunk);
+        cb(null, chunk);
+      },
+    });
+    sink.on("error", () => undefined);
+    sink.pipe(fileStream);
+    return {
+      stream: sink,
+      finalize: (name: string): Computable<IFile> =>
+        Computable.once<IFile>((resolve, reject) => {
+          fileStream.once("error", reject);
+          fileStream.once("finish", () => {
+            const digest = hash.digest("hex");
+            this.materializeBlob(digest, blobPath => this.renameIntoPool(tmpPath, blobPath)).then(
+              () => resolve(new BuildFile(this.blobRoot, digest, name)),
+              reject
+            );
+          });
+          sink.end();
+        }),
+      discard: (): void => {
+        sink.destroy();
+        fileStream.destroy();
+        fs.rmSync(tmpPath, { force: true });
+      },
+    };
   }
 
   /**

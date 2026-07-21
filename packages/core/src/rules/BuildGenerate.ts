@@ -18,59 +18,68 @@
  */
 
 /**
- * The generic `generate` target: execute a runnable and collect its output —
- * the ecosystem-neutral builder that turns "a program that writes files" into
- * build content (Bazel's genrule analogue). Named `generate`, not `run`, so it
- * doesn't collide with the `fabr run` verb — it is a *build* step (its rule
- * registers under BUILD_OPERATION=build), not the interactive launch. `tool`
- * names a runnable target (resolved as a host runnable via getRunnableProperty
- * — it executes now, on this machine); `srcs` are the invocation's input files,
- * staged into the work dir at the install root; `args` are appended to the
- * runnable's own; `output` (a dir:glob pattern, default `**`) selects the files
- * it wrote as this target's content. Any runnable plugs in — the "run and
- * collect" the js_script rule used to do itself, now generic. The tool/srcs
- * split is the concept: the runnable defines the *tool*, the generate target
- * says what to *do* with it.
+ * The generic `generate` target: run a command **pipeline** and collect its
+ * output — the ecosystem-neutral genrule (Bazel's genrule analogue). Named
+ * `generate`, not `run`, so it doesn't collide with the interactive `fabr run`
+ * verb — it is a *build* step (registered under BUILD_OPERATION=build).
+ *
+ * `run` is a command line: `cmd args… [redirs] | cmd args… [redirs]`. Each
+ * command is a fabr runnable (resolved under `run` and mounted in its own
+ * sandbox subdir — tools don't share a `node_modules`); args are literal or a
+ * glob expanded over the staged `srcs` (never rewritten, never a reference —
+ * `<`/redirect targets are the only other reference position). `|` wires
+ * stdout→stdin; `> name` / `2> name` / `&> name` capture a stream as content
+ * named `name`; `< source` streams a single-file reference to the first stage's
+ * stdin. `srcs` are the input files staged at the sandbox root; `output` (a
+ * `dir:glob`) collects files the tools *wrote*, unioned with the redirect
+ * captures — omit it for a pure-redirect genrule.
  */
 
-import { BUILD_OPERATION, TargetContext } from "../model/BuildContext";
+import { BUILD_OPERATION, ResolvedCommandPipeline, TargetContext } from "../model/BuildContext";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
-import { createExecAction } from "./ExecAction";
+import { Property } from "../model/Property";
+import { StageSpec } from "../support/Execute";
+import { createPipelineAction } from "./PipelineAction";
 import { RuleRegistration, RuleResult } from "./Types";
 
-/**
- * A runnable is just a staged install plus a launch descriptor, so running it
- * and collecting its output is exactly the generic `exec` action: the install
- * — overlaid with `srcs` at its root, a plain file union with no language
- * knowledge (for a JS tool this happens to be the npx-in-project layout:
- * sources at the root, node_modules adjacent; a name collision with the
- * install is the ordinary two-sided conflict) — is the staged fileset, and
- * `toCommandLine` flattens the descriptor to an argv (interpreter — if any —
- * as the command, `entry` and the runnable's own args, then this target's
- * extra `args`). (An interpreter-based runnable's entry rides as an
- * *argument*, resolved by the interpreter against the work dir; only when a
- * bare executable were itself argv[0] would exec need a work-dir-relative
- * command — which won't arise once commands are absolute, path search being a
- * temporary hack. See findExecutable.) The exec step then runs it clean-env in
- * the work dir and collects `output`.
- */
 function generate(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
-    [
-      context.getRunnableProperty("tool"),
-      context.getFileSet("srcs"),
-      context.getProperty("args"),
-      context.getProperty("output"),
-    ],
-    (runnable, srcs, args, output) => {
-      /* No anchor: the exec step runs with cwd == the staged workDir, so `entry`
-       * stays install-relative (resolved there by the interpreter). */
-      const argv = runnable.toCommandLine(args ? args.getValues() : []);
-      const staged = FileSet.unionAll(runnable, srcs);
-      return createExecAction(staged, argv, output?.toString() ?? "**", "generate");
-    }
+    [context.getFileSet("srcs"), context.getProperty("output")],
+    (srcs: FileSet, output: Property | undefined) =>
+      context.getCommandProperty("run", srcs).then(stages => {
+        if (stages.length === 0) {
+          return Computable.reject<RuleResult>(new Error("a 'generate' target requires a 'run' command"));
+        }
+        return assemblePipeline(srcs, stages, output?.toString() ?? "");
+      })
   );
+}
+
+/**
+ * Stage the install and yield the pipeline action. A **single-stage** command
+ * runs the tool *over* `srcs` (the npx-in-project layout: the tool mounts at the
+ * sandbox root, its `node_modules` adjacent to the sources — so a source that
+ * imports the tool, e.g. `astro.config.mjs` doing `import 'astro/config'`,
+ * resolves). A **multi-stage** pipeline instead mounts each stage under its own
+ * `.fabr-cmd-<n>/` subdir so the tools don't share a `node_modules`; the streams
+ * connect them, and no source imports a pipe stage's modules.
+ */
+function assemblePipeline(srcs: FileSet, stages: ResolvedCommandPipeline, output: string): RuleResult {
+  const single = stages.length === 1;
+  const mounts: FileSet[] = [];
+  const specs: StageSpec[] = stages.map((stage, i) => {
+    const dir = single ? undefined : `.fabr-cmd-${i}`;
+    mounts.push(dir === undefined ? stage.runnable : FileSet.layout({ [dir]: stage.runnable }));
+    return {
+      argv: stage.runnable.toCommandLine(stage.args, dir === undefined ? undefined : { base: dir }),
+      stdout: stage.stdout,
+      stderr: stage.stderr,
+      both: stage.both,
+    };
+  });
+  const staged = FileSet.unionAll(srcs, ...mounts);
+  return createPipelineAction(staged, specs, stages[0].stdin, output, "generate");
 }
 
 export const generateRule: RuleRegistration = { type: "generate", constraints: { [BUILD_OPERATION]: "build" }, evaluate: generate };

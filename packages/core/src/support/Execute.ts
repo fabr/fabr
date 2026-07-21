@@ -1,9 +1,12 @@
 import { ChildProcess, spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
+import { Writable } from "stream";
 import { getSystemErrorMap } from "util";
+import type { IOutputHandle } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { ExecutionError } from "../core/Errors";
+import { FileSet, IFile } from "../core/FileSet";
 
 /**
  * @return a human-readable description of an OS-level error, without the errno
@@ -90,11 +93,17 @@ export function findExecutable(name: string): string {
  */
 const FORCE_COLOR_ENV = { FORCE_COLOR: "1", CLICOLOR_FORCE: "1" };
 
+/** The `$ cmd args…` line shown at the head of an execution error, args quoted
+ * where they wouldn't survive a shell round-trip. */
+function commandLine(cmd: string, args: string[]): string {
+  return "$ " + [cmd, ...args].map(quoteArg).join(" ");
+}
+
 export function execute(cmd: string, args: string[], cwd: string, env: Record<string, string>): Computable<void> {
   /* A failed spawn emits 'error' then a spurious 'close' (code -2): Computable.once
    * keeps the first (informative ENOENT) rejection and drops the useless "-2". */
   return Computable.once((resolve, reject) => {
-    const commandLine = "$ " + [cmd, ...args].map(quoteArg).join(" ");
+    const line = commandLine(cmd, args);
     /* stdin from /dev/null ("ignore"), not the default open pipe: a build step is
      * non-interactive, so a tool that reads stdin must get EOF at once rather than
      * blocking forever on input the parent never sends. stdout/stderr stay piped
@@ -108,20 +117,210 @@ export function execute(cmd: string, args: string[], cwd: string, env: Record<st
     /* Failure to spawn at all (e.g. missing executable) is reported through
      * the 'error' event; without a handler it would crash the process. */
     proc.on("error", err => {
-      reject(new ExecutionError(`${commandLine}\nunable to execute: ${systemErrorText(err)}`));
+      reject(new ExecutionError(`${line}\nunable to execute: ${systemErrorText(err)}`));
     });
     /* Failures report the command line that ran first, then the tool's
      * output, then how it ended. */
     proc.on("close", (code, signal) => {
       if (signal) {
-        reject(new ExecutionError(withOutput(commandLine, output, `terminated by signal ${signal}`)));
+        reject(new ExecutionError(withOutput(line, output, `terminated by signal ${signal}`)));
       } else if (code !== 0) {
-        reject(new ExecutionError(withOutput(commandLine, output, `exited with error code ${code}`)));
+        reject(new ExecutionError(withOutput(line, output, `exited with error code ${code}`)));
       } else {
         resolve();
       }
     });
   });
+}
+
+/** The output streams a pipeline stage captures as content, each named by the
+ * content its bytes become. `both` merges stdout and stderr in arrival order
+ * (the `&>` redirect); `stdout`/`stderr` collect each separately. A name being
+ * present is the signal to capture that stream (capturing stdout is only valid
+ * on the final stage — an earlier stage's stdout feeds the pipe). Shared by the
+ * resolved rule stage ({@link ResolvedCommandStage}) and the run spec. */
+export interface StageStreams {
+  stdout?: string;
+  stderr?: string;
+  both?: string;
+}
+
+/** One stage of an {@link executePipeline}: the resolved argv to run plus the
+ * streams it captures. The whole pipeline shares one cwd and the head stage's
+ * stdin, passed to executePipeline directly rather than repeated per stage. */
+export interface StageSpec extends StageStreams {
+  argv: string[];
+}
+
+function stageCommandLine(spec: StageSpec): string {
+  return commandLine(spec.argv[0], spec.argv.slice(1));
+}
+
+/** A capture in flight: the redirect target `name` and the store-write `handle`
+ * its stream(s) are piped into. */
+interface Capture {
+  name: string;
+  handle: IOutputHandle;
+}
+
+/**
+ * Run a pipeline of stages as concurrent child processes in `cwd`, stdout→stdin
+ * wired between consecutive stages, the head fed `stdin` (if any), and stream
+ * each captured redirect straight into the content store via `createOutput`.
+ * Clean environment (no FORCE_COLOR — captured content must be the tool's raw
+ * bytes, not ANSI). Fails on the first stage to exit non-zero or by signal
+ * (pipefail): a redirected stderr is the *user's* stream, so only an
+ * un-redirected stage's stderr is buffered (small) to report on failure. On
+ * success resolves a FileSet of the captured content, each file named by its
+ * redirect target; on failure every in-flight capture is discarded (nothing
+ * enters the store). A single-stage pipeline is the ordinary "run one command
+ * and capture its output" case.
+ */
+export function executePipeline(
+  specs: StageSpec[],
+  cwd: string,
+  createOutput: () => IOutputHandle,
+  stdin?: Uint8Array
+): Computable<FileSet> {
+  const captures: Capture[] = [];
+  return Computable.once<void>((resolve, reject) => {
+    /* Resolve every command to an executable up front, so a bad one rejects
+     * before any process is spawned (rather than leaving a half-built pipeline).
+     * The failure is framed like a spawn 'error' below ("unable to execute"). */
+    const argvs: string[][] = [];
+    for (const spec of specs) {
+      try {
+        argvs.push([findExecutable(spec.argv[0]), ...spec.argv.slice(1)]);
+      } catch (e) {
+        return reject(new ExecutionError(`${stageCommandLine(spec)}\nunable to execute: ${systemErrorText(e)}`));
+      }
+    }
+    const procs: ChildProcess[] = [];
+    /* Un-redirected stderr only — a stage that captures stderr sends it to a
+     * handle, so there is nothing here to report on that stage's failure. */
+    const stderr: Uint8Array[][] = specs.map(() => []);
+    const exit: Array<number | string | undefined> = specs.map(() => undefined);
+    let settled = false;
+    let remaining = specs.length;
+
+    const killAll = (): void => procs.forEach(p => p.kill());
+    const fail = (err: Error): void => {
+      if (!settled) {
+        settled = true;
+        killAll();
+        captures.forEach(c => c.handle.discard());
+        reject(err);
+      }
+    };
+    /* Open a capture handle for `name` and register it for finalize/discard. */
+    const capture = (name: string): Writable => {
+      const handle = createOutput();
+      captures.push({ name, handle });
+      return handle.stream;
+    };
+
+    /* Build and wire the pipeline; a synchronous failure (a bad spawn, a
+     * disk error opening a capture) fails the whole run, discarding any
+     * captures already opened rather than leaking them and stalling. */
+    try {
+      specs.forEach((spec, i) => {
+        const isLast = i === specs.length - 1;
+        const capBoth = spec.both !== undefined;
+        const capStdout = spec.stdout !== undefined || capBoth;
+        /* stdin: first stage from supplied bytes (else EOF); a later stage reads
+         * the previous stage's stdout (wired below). stdout: piped when captured
+         * or feeding a next stage, else discarded. stderr: always piped so a
+         * failure can report it (or a capture can consume it). */
+        const stdinCfg = i === 0 ? (stdin ? "pipe" : "ignore") : "pipe";
+        const stdoutCfg = capStdout || !isLast ? "pipe" : "ignore";
+        const proc = spawn(argvs[i][0], argvs[i].slice(1), {
+          cwd,
+          env: {},
+          stdio: [stdinCfg, stdoutCfg, "pipe"],
+          windowsHide: true,
+        });
+        procs.push(proc);
+        /* Swallow stream errors on the stdio fabr wires up: when a downstream
+         * stage exits before draining its input (the SIGPIPE case, `… | head`),
+         * writing to its closed stdin — or the head stage's stdin write below —
+         * emits EPIPE, which Node escalates to an uncaught exception (killing the
+         * whole process) if unhandled. The stage's exit code is the real failure
+         * signal (pipefail, in finish()); a broken pipe is not our error. */
+        proc.stdin?.on("error", () => undefined);
+        proc.stdout?.on("error", () => undefined);
+        /* Captures stream into store handles (piped with `{ end: false }` — the
+         * handle is ended by finalize, not by the source). `&>` merges stdout and
+         * stderr, chunk-interleaved, into one handle. */
+        if (capBoth) {
+          const merged = capture(spec.both!);
+          proc.stdout?.pipe(merged, { end: false });
+          proc.stderr?.pipe(merged, { end: false });
+        } else {
+          if (spec.stdout !== undefined) {
+            proc.stdout?.pipe(capture(spec.stdout), { end: false });
+          }
+          if (spec.stderr !== undefined) {
+            proc.stderr?.pipe(capture(spec.stderr), { end: false });
+          } else {
+            proc.stderr?.on("data", data => stderr[i].push(data));
+          }
+        }
+        proc.on("error", e => fail(new ExecutionError(`${stageCommandLine(spec)}\nunable to execute: ${systemErrorText(e)}`)));
+        proc.on("close", (code, signal) => {
+          exit[i] = signal ?? code ?? 0;
+          /* Propagate a broken pipe upstream (SIGPIPE-equivalent): if this stage
+           * exited while its producer is still writing, close fabr's read end of
+           * the producer's stdout so the producer's next write fails, rather than
+           * leaving it blocked forever on a pipe nobody drains (a hung pipeline). */
+          if (i > 0) {
+            procs[i - 1].stdout?.destroy();
+          }
+          if (--remaining === 0 && !settled) {
+            finish();
+          }
+        });
+      });
+
+      /* Wire the pipes (previous stdout → next stdin) and feed the head's stdin. */
+      for (let i = 1; i < procs.length; i++) {
+        procs[i - 1].stdout?.pipe(procs[i].stdin!);
+      }
+      if (stdin && procs[0].stdin) {
+        procs[0].stdin.write(stdin);
+        procs[0].stdin.end();
+      }
+    } catch (e) {
+      fail(e instanceof Error ? e : new ExecutionError(String(e)));
+      return;
+    }
+
+    const finish = (): void => {
+      /* pipefail: report the earliest stage that failed (discarding captures). */
+      for (let i = 0; i < specs.length; i++) {
+        const status = exit[i];
+        if (typeof status === "string") {
+          return fail(new ExecutionError(withOutput(stageCommandLine(specs[i]), stderr[i], `terminated by signal ${status}`)));
+        }
+        if (typeof status === "number" && status !== 0) {
+          return fail(new ExecutionError(withOutput(stageCommandLine(specs[i]), stderr[i], `exited with error code ${status}`)));
+        }
+      }
+      settled = true;
+      resolve();
+    };
+  }).then(() => finalizeCaptures(captures));
+}
+
+/** Place every finished capture in the store and gather them as a FileSet, each
+ * file named by its redirect target. */
+function finalizeCaptures(captures: Capture[]): Computable<FileSet> {
+  if (captures.length === 0) {
+    return Computable.resolve(new FileSet(new Map()));
+  }
+  return Computable.forAll(
+    captures.map(c => c.handle.finalize(c.name).then(file => [c.name, file] as [string, IFile])),
+    (...entries: [string, IFile][]) => new FileSet(new Map(entries))
+  );
 }
 
 /**
@@ -137,12 +336,12 @@ export function executeInteractive(cmd: string, args: string[], cwd?: string): C
   /* A failed spawn emits 'error' then 'close': Computable.once keeps the informative
    * rejection and stops 'close' flipping a settled failure into a success. */
   return Computable.once((resolve, reject) => {
-    const commandLine = "$ " + [cmd, ...args].map(quoteArg).join(" ");
+    const line = commandLine(cmd, args);
     const proc = spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd });
-    proc.on("error", e => reject(new ExecutionError(`${commandLine}\nunable to execute: ${systemErrorText(e)}`)));
+    proc.on("error", e => reject(new ExecutionError(`${line}\nunable to execute: ${systemErrorText(e)}`)));
     proc.on("close", (code, signal) => {
       if (signal) {
-        reject(new ExecutionError(`${commandLine}\nterminated by signal ${signal}`));
+        reject(new ExecutionError(`${line}\nterminated by signal ${signal}`));
       } else {
         resolve(code ?? 0);
       }

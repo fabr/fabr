@@ -29,7 +29,7 @@ describe("e2e: js_script (runnable) + generate", () => {
         "PROJECT.fabr":
           "plugin @fabr-build/js;\n\n" +
           "js_script gen_prog { entry = src:gen.js; }\n" +
-          "generate gen { tool = gen_prog; output = out:**; }\n",
+          "generate gen { run = gen_prog; output = out:**; }\n",
         "src/gen.js": 'require("fs").mkdirSync("out", { recursive: true });\nrequire("fs").writeFileSync("out/msg.txt", "e2e ran\\n");\n',
       },
       ["cat", "gen:msg.txt"]
@@ -44,7 +44,7 @@ describe("e2e: js_script (runnable) + generate", () => {
         "PROJECT.fabr":
           "plugin @fabr-build/js;\n\n" +
           "js_script gen_prog { entry = src:gen.js; }\n" +
-          "generate gen { tool = gen_prog; args = Ada Lovelace; output = out:**; }\n",
+          "generate gen { run = gen_prog Ada Lovelace; output = out:**; }\n",
         "src/gen.js": 'require("fs").mkdirSync("out", { recursive: true });\nrequire("fs").writeFileSync("out/msg.txt", process.argv.slice(2).join(" "));\n',
       },
       ["cat", "gen:msg.txt"]
@@ -65,7 +65,7 @@ describe("e2e: js_script (runnable) + generate", () => {
           STUB_TSC_CONFIG +
           "\njs_package greeter { srcs = pkgsrc:**; }\n\n" +
           "js_script greeter_prog { entry = greeter; }\n" +
-          "generate greet { tool = greeter_prog; output = out:**; }\n",
+          "generate greet { run = greeter_prog; output = out:**; }\n",
         /* type-free "TypeScript": the stub tsc copies these to .js verbatim */
         "pkgsrc/bin/cli.ts": 'const { greet } = require("../util");\nrequire("fs").mkdirSync("out", { recursive: true });\nrequire("fs").writeFileSync("out/greeting.txt", greet("Ada"));\n',
         "pkgsrc/util.ts": 'exports.greet = (name) => "hello, " + name + "!";\n',
@@ -88,7 +88,7 @@ describe("e2e: js_script (runnable) + generate", () => {
           STUB_TSC_CONFIG +
           "\njs_package multi { srcs = pkgsrc:**; }\n\n" +
           "js_script one_prog { entry = multi:one; }\n" +
-          "generate one { tool = one_prog; output = out:**; }\n",
+          "generate one { run = one_prog; output = out:**; }\n",
         "pkgsrc/bin/one.ts": 'require("fs").mkdirSync("out", { recursive: true });\nrequire("fs").writeFileSync("out/which.txt", "ran one");\n',
         "pkgsrc/bin/two.ts": 'require("fs").mkdirSync("out", { recursive: true });\nrequire("fs").writeFileSync("out/which.txt", "ran two");\n',
       },
@@ -104,7 +104,7 @@ describe("e2e: js_script (runnable) + generate", () => {
         "PROJECT.fabr":
           "plugin @fabr-build/js;\n\n" +
           "js_script gen_prog { deps = src:gen.js; entry = src:missing.js; }\n" +
-          "generate gen { tool = gen_prog; output = out:**; }\n",
+          "generate gen { run = gen_prog; output = out:**; }\n",
         "src/gen.js": "// present, but not the entry\n",
       },
       ["build", "gen"]

@@ -24,7 +24,7 @@
  * exclusively the driver's job.
  */
 
-import { IPropertyDecl, ITargetDecl, IValue } from "./AST";
+import { INameValue, IPropertyDecl, ITargetDecl } from "./AST";
 import { Name } from "../core/Name";
 import { ISourceSpan } from "../support/Log";
 import type { Constraints } from "./BuildContext";
@@ -73,7 +73,7 @@ export class BuildFilesInvalidError extends Error {
 
 /** A use site of a target: the written value, its property, its owning target. */
 export interface IUseSite {
-  value: IValue;
+  value: INameValue;
   property: IPropertyDecl;
   target?: ITargetDecl;
 }
@@ -129,7 +129,7 @@ export class NoRuleFoundError extends Error {
  */
 export class ReferenceFailedError extends Error {
   constructor(
-    public readonly value: IValue,
+    public readonly value: INameValue,
     public readonly property: IPropertyDecl,
     public readonly target: ITargetDecl | undefined,
     public readonly cause: DependencyFailedError | NoRuleFoundError

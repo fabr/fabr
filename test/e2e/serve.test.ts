@@ -88,7 +88,7 @@ describe("e2e: serve target under fabr run -w", () => {
       {
         "PROJECT.fabr":
           "script gen { entry = src:gen.sh; }\n" +
-          "generate site { tool = gen; srcs = content:**; output = out:**; }\n" +
+          "generate site { run = gen; srcs = content:**; output = out:**; }\n" +
           "script server { entry = src:server.sh; }\n" +
           "serve app { tool = server; files = site:**; }\n",
         "src/gen.sh": "mkdir -p out\ntr 'a-z' 'A-Z' < data.txt > out/data.txt\n",

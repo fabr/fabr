@@ -18,6 +18,7 @@
  */
 
 import { Computable } from "../core/Computable";
+import { IActionContext } from "../core/BuildCache";
 import { FileSet, FileSource } from "../core/FileSet";
 import { Repository } from "../core/Repository";
 import { Constraints, RepositoryContext, TargetContext } from "../model/BuildContext";
@@ -45,15 +46,16 @@ export type BuildActionInputs = Record<string, BuildActionInput>;
 
 /**
  * The build step of a build action: a pure function from resolved inputs
- * to output content, run in a framework-provided work directory. This is the
- * only unit of build caching; `id` + `version` identify the step in every
- * cache key, so a behavior change is a version bump rather than a manual
- * cache flush.
+ * to output content, run in a framework-provided {@link IActionContext} (a work
+ * directory for staged inputs / written outputs, plus a streaming-output factory
+ * for output produced as a stream). This is the only unit of build caching; `id`
+ * + `version` identify the step in every cache key, so a behavior change is a
+ * version bump rather than a manual cache flush.
  */
 export interface IBuildActionDefinition {
   id: string;
   version: number;
-  run(inputs: BuildActionInputs, workDir: string): Computable<FileSet>;
+  run(inputs: BuildActionInputs, ctx: IActionContext): Computable<FileSet>;
 }
 
 /**

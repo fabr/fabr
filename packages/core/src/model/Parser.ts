@@ -27,7 +27,12 @@ import {
   IMapItemDecl,
   IPluginDecl,
   IPropertyDecl,
+  ICommandStage,
+  ICommandValue,
+  INameValue,
   IPropertySchema,
+  isMapValue,
+  isNameValue,
   ITargetDecl,
   ITargetDefDecl,
   IValue,
@@ -71,6 +76,14 @@ enum TokenType {
   COMMA,
   SEMI,
   ARROW,
+  /* Command-pipeline operators (a `COMMAND` property value). `<` stdin and `>`
+   * stdout reuse LANGLE/RANGLE (disambiguated from a `<k=v>` constraint by not
+   * abutting); these are the forms that need their own token: the pipe, and the
+   * fd-prefixed redirects `2>`/`1>`/`&>` (recognized by an abutting `2`/`1`/`&`). */
+  PIPE,
+  REDIR_STDOUT,
+  REDIR_STDERR,
+  REDIR_BOTH,
   ERROR = -1,
 }
 
@@ -96,6 +109,7 @@ const CHAR_AT = "@".codePointAt(0);
 const CHAR_HASH = "#".codePointAt(0);
 const CHAR_DASH = "-".codePointAt(0);
 const CHAR_DOT = ".".codePointAt(0);
+const CHAR_PIPE = "|".codePointAt(0);
 
 interface TokenBase {
   start: number;
@@ -135,8 +149,47 @@ const TOKEN_NAME_MAP = {
   [TokenType.COMMA]: "','",
   [TokenType.SEMI]: "';'",
   [TokenType.ARROW]: "'->'",
+  [TokenType.PIPE]: "'|'",
+  [TokenType.REDIR_STDOUT]: "'1>'",
+  [TokenType.REDIR_STDERR]: "'2>'",
+  [TokenType.REDIR_BOTH]: "'&>'",
   [TokenType.ERROR]: "ERROR",
 };
+
+/** The redirect token for each fd-prefix word abutting `>` (`1>`/`2>`/`&>`). */
+const REDIR_FD_TOKEN: Record<string, TokenType.REDIR_STDOUT | TokenType.REDIR_STDERR | TokenType.REDIR_BOTH> = {
+  "1": TokenType.REDIR_STDOUT,
+  "2": TokenType.REDIR_STDERR,
+  "&": TokenType.REDIR_BOTH,
+};
+
+/** A pipeline operator recognised while parsing a property value. `Stdin`/`Stdout`
+ * are the spaced `<`/`>`; `Stderr`/`Both` the `2>`/`&>` folds; `Pipe` the stage
+ * separator. Parser-internal — the folded {@link ICommandValue} names its streams
+ * directly, so this kind never escapes the parser. */
+const enum CommandOpKind {
+  Pipe,
+  Stdin,
+  Stdout,
+  Stderr,
+  Both,
+}
+
+/** A pipeline operator with its source offset (for positioned errors). */
+type CommandOp = { op: CommandOpKind; at: number };
+
+const OP_SYMBOL: Record<CommandOpKind, string> = {
+  [CommandOpKind.Pipe]: "|",
+  [CommandOpKind.Stdin]: "<",
+  [CommandOpKind.Stdout]: ">",
+  [CommandOpKind.Stderr]: "2>",
+  [CommandOpKind.Both]: "&>",
+};
+
+/** The "missing target" message for a dangling redirect operator, naming it. */
+function missingTarget(op: CommandOpKind): string {
+  return `redirect '${OP_SYMBOL[op]}' must be followed by a target name`;
+}
 
 function isWhitespace(ch: number): boolean {
   return ch === CHAR_NEWLINE || isWhiteSpaceChar(ch);
@@ -252,6 +305,10 @@ const DIAG_UNEXPECTED_EOF = new Diagnostic<{ expected: string; loc: ISourcePosit
 const DIAG_RENAME_TEMPLATE = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
   LogLevel.Error,
   "Invalid rename template: {detail}"
+);
+const DIAG_INVALID_COMMAND = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
+  LogLevel.Error,
+  "Invalid command: {detail}"
 );
 const DIAG_INVALID_INCLUDE = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
@@ -580,6 +637,10 @@ export class BuildParser {
         this.reader.next();
         this.token = { type: TokenType.SEMI, start: tokenStart };
         break;
+      case CHAR_PIPE:
+        this.reader.next();
+        this.token = { type: TokenType.PIPE, start: tokenStart };
+        break;
       case CHAR_DASH:
         /* A whitespace-delimited `->` is the rename ARROW (`sel -> tmpl`); a `-`
          * anywhere else stays a name char. The leading gap is guaranteed (this
@@ -598,6 +659,16 @@ export class BuildParser {
       default:
         /* It's a NAME */
         this.token = this.readNameOrIdentifier();
+    }
+    /* Fold an fd-prefixed redirect: a bare `1`/`2`/`&` word immediately followed
+     * (no space — the name read stopped at the `>`) by `>` is one redirect
+     * operator (`2>`, `&>`), not a word then `>`. A spaced `2 >` stays a `2`
+     * argument plus a `>` redirect, as in a shell. Only meaningful in a command
+     * value; Validate rejects a redirect elsewhere. */
+    const fd = this.redirectFdText();
+    if (fd !== undefined && this.reader.current() === CHAR_RANGLE) {
+      this.reader.next(); /* the '>' */
+      this.token = { type: REDIR_FD_TOKEN[fd], start: this.token.start };
     }
     /* Attach any doc-comment block from the gap just skipped to this token, so a
      * decl parser can read the documentation written above the declaration. */
@@ -675,6 +746,181 @@ export class BuildParser {
     }
   }
 
+  /**
+   * A command-pipeline operator at the current position — consumed and returned
+   * as its {@link CommandOpKind} (with source offset), else undefined. `<`/`>`
+   * reuse LANGLE/RANGLE (a spaced `<` is not a `<k=v>` constraint, which binds
+   * only when abutting); `2>`/`&>` arrive as their own folded tokens. A `>`
+   * preceded by `-` is the mis-spaced rename arrow, not a redirect — kept as the
+   * existing spacing hint. An operator may appear in any value; it makes the
+   * property a command, which Validate restricts to COMMAND properties.
+   */
+  private tryCommandOp(): CommandOp | undefined {
+    let op: CommandOpKind;
+    switch (this.token.type) {
+      case TokenType.PIPE:
+        op = CommandOpKind.Pipe;
+        break;
+      case TokenType.LANGLE:
+        op = CommandOpKind.Stdin;
+        break;
+      case TokenType.RANGLE:
+        if (this.reader.substring(this.token.start - 1, this.token.start) === "-") {
+          this.renameTemplateError("the '->' arrow must be surrounded by spaces (`sel -> tmpl`)");
+        }
+        op = CommandOpKind.Stdout;
+        break;
+      case TokenType.REDIR_STDOUT:
+        op = CommandOpKind.Stdout;
+        break;
+      case TokenType.REDIR_STDERR:
+        op = CommandOpKind.Stderr;
+        break;
+      case TokenType.REDIR_BOTH:
+        op = CommandOpKind.Both;
+        break;
+      default:
+        return undefined;
+    }
+    const at = this.token.start;
+    this.nextToken();
+    return { op, at };
+  }
+
+  /** Whether the current token begins a command operator (peek, no consume) —
+   * the arg loop uses it to stop before an operator without swallowing it (and
+   * without the `-`-before-`>` rename hint {@link tryCommandOp} applies). */
+  private atCommandOp(): boolean {
+    switch (this.token.type) {
+      case TokenType.PIPE:
+      case TokenType.LANGLE:
+      case TokenType.RANGLE:
+      case TokenType.REDIR_STDOUT:
+      case TokenType.REDIR_STDERR:
+      case TokenType.REDIR_BOTH:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  private commandError(detail: string, offset: number): never {
+    this.log.log(DIAG_INVALID_COMMAND, { detail, loc: { ...this.source, offset } });
+    throw new Error(PARSE_ERROR);
+  }
+
+  /**
+   * Command  ::= Stage ('|' Stage)*
+   * Stage    ::= Word+ Redirect*
+   * Redirect ::= ('<' | '>' | '2>' | '&>') Word
+   *
+   * Parse a command pipeline in one pass, building the stages directly. `stage0`
+   * is the words {@link parsePropertyDecl} already collected before the first
+   * operator (this stage's command + args); `firstOp` that operator (already
+   * consumed). `|` starts the next stage, a redirect binds the following word.
+   * Cross-stage rules are enforced where they occur — a non-final stage capturing
+   * stdout is caught at the `|` that ends it, a non-first stage taking stdin at
+   * the `<`. A `{ ... }` block is not a command word.
+   */
+  private parseCommand(stage0: IValue[], firstOp: CommandOp): ICommandStage[] {
+    const stages: ICommandStage[] = [];
+    let stage = this.firstStage(stage0, firstOp);
+    let op: CommandOp | undefined = firstOp;
+    while (op !== undefined) {
+      if (op.op === CommandOpKind.Pipe) {
+        if (stage.stdout !== undefined || stage.both !== undefined) {
+          this.commandError("only the final stage of a pipeline can capture stdout ('>' / '&>')", op.at);
+        }
+        stages.push(stage);
+        stage = { command: this.parseRequiredWord(op), args: [] };
+      } else {
+        this.assignRedirect(stage, op, this.parseRequiredWord(op));
+        if (op.op === CommandOpKind.Stdin && stages.length > 0) {
+          this.commandError("only the first stage of a pipeline can take stdin ('<')", op.at);
+        }
+      }
+      /* Trailing words up to the next operator (or the property's end) are the
+       * current stage's args — args may follow a redirect (`cmd a > out b`). */
+      while (!this.atCommandOp() && this.token.type !== TokenType.SEMI && this.token.type !== TokenType.RBRACE) {
+        stage.args.push(this.parseWord());
+      }
+      op = this.tryCommandOp();
+    }
+    stages.push(stage);
+    return stages;
+  }
+
+  /** Stage 0, from the words already collected before the first operator: the
+   * first is the command, the rest args. Empty (a leading operator) or a block
+   * word is a positioned error. */
+  private firstStage(words: IValue[], firstOp: CommandOp): ICommandStage {
+    if (words.length === 0) {
+      this.commandError(
+        firstOp.op === CommandOpKind.Pipe ? "empty command (nothing beside '|')" : "a redirect must follow a command",
+        firstOp.at
+      );
+    }
+    const [command, ...args] = words;
+    return { command: this.asWord(command), args: args.map(word => this.asWord(word)) };
+  }
+
+  /** Parse one command word (a name-value reference); the caller guarantees a
+   * word is present. */
+  private parseWord(): INameValue {
+    return this.asWord(this.parseValue());
+  }
+
+  /** Parse a required word — a `|`'s next command or a redirect's target —
+   * erroring, positioned at the operator, when none follows. */
+  private parseRequiredWord(op: CommandOp): INameValue {
+    if (this.atCommandOp() || this.token.type === TokenType.SEMI || this.token.type === TokenType.RBRACE) {
+      this.commandError(op.op === CommandOpKind.Pipe ? "empty command (nothing beside '|')" : missingTarget(op.op), op.at);
+    }
+    return this.parseWord();
+  }
+
+  /** Narrow a parsed value to a command word — a `{ ... }` block is not one. */
+  private asWord(value: IValue): INameValue {
+    if (!isNameValue(value)) {
+      this.commandError("a `{ ... }` block is not a command", value.offset);
+    }
+    return value;
+  }
+
+  /** Bind a redirect's target to its stream on `stage`, erroring if that stream
+   * is already captured (`> a > b`) or captured by both a specific and a
+   * combined redirect (`&>` with `>`/`2>`). */
+  private assignRedirect(stage: ICommandStage, op: CommandOp, target: INameValue): void {
+    switch (op.op) {
+      case CommandOpKind.Stdin:
+        if (stage.stdin !== undefined) {
+          this.commandError("stdin is redirected more than once", op.at);
+        }
+        stage.stdin = target;
+        break;
+      case CommandOpKind.Stdout:
+        if (stage.stdout !== undefined || stage.both !== undefined) {
+          this.commandError("stdout is redirected more than once", op.at);
+        }
+        stage.stdout = target;
+        break;
+      case CommandOpKind.Stderr:
+        if (stage.stderr !== undefined || stage.both !== undefined) {
+          this.commandError("stderr is redirected more than once", op.at);
+        }
+        stage.stderr = target;
+        break;
+      case CommandOpKind.Both:
+        if (stage.stdout !== undefined || stage.stderr !== undefined || stage.both !== undefined) {
+          this.commandError("a stream is redirected more than once", op.at);
+        }
+        stage.both = target;
+        break;
+      default:
+        break;
+    }
+  }
+
   private parseValue(): IValue {
     const token = this.token;
     if (token.type === TokenType.LBRACE) {
@@ -683,11 +929,10 @@ export class BuildParser {
       const offset = token.start;
       const entries = this.parseMapBlock();
       return {
-        kind: DeclKind.Value,
+        kind: DeclKind.MapValue,
         source: this.source,
         offset,
         endOffset: this.prevTokenEnd,
-        value: Name.fromLiteral(""),
         entries,
       };
     }
@@ -697,7 +942,7 @@ export class BuildParser {
       /* parseReference leaves the current token positioned after the
        * reference, so the end of its last consumed token is the value's end */
       return {
-        kind: DeclKind.Value,
+        kind: DeclKind.NameValue,
         source: this.source,
         offset,
         endOffset: this.prevTokenEnd,
@@ -715,6 +960,19 @@ export class BuildParser {
   /** @return the Name for a ref token (a bare identifier is a literal name). */
   private tokenToName(token: NameToken | IdentToken): Name {
     return typeof token.text === "string" ? Name.fromLiteral(token.text) : token.text;
+  }
+
+  /** @return the current token's literal text if it is a bare `1`/`2`/`&` — the
+   * fd prefixes a `>` may fold with into a redirect operator — else undefined. */
+  private redirectFdText(): string | undefined {
+    const token = this.token;
+    let text: string | undefined;
+    if (token.type === TokenType.IDENTIFIER || token.type === TokenType.SIMPLE_NAME) {
+      text = token.text;
+    } else if (token.type === TokenType.NAME) {
+      text = token.text.toString();
+    }
+    return text !== undefined && text in REDIR_FD_TOKEN ? text : undefined;
   }
 
   /** @return the current token if it is a reference token (NAME/identifier), else undefined. */
@@ -841,8 +1099,9 @@ export class BuildParser {
    * @param nameOffset
    */
   private parsePropertyDecl(name: string, nameOffset: number, keyRef?: Name): IPropertyDecl {
-    const values: IValue[] = [];
     this.consumeToken(TokenType.EQUALS);
+    const base = { kind: DeclKind.Property as const, source: this.source, name, offset: nameOffset, keyRef };
+    const values: IValue[] = [];
     /* The value loop admits `{...}` blocks as values (parseValue), so a value
      * list may hold names, blocks, or (per Validate, only homogeneously) several
      * blocks — `maintainers = { ... } { ... };`. A block value swallows its own
@@ -850,22 +1109,32 @@ export class BuildParser {
      * body's terminator. Like a target body, a block needs no trailing ';': a
      * closed block ends the property unless another block follows (an array of
      * maps) — homogeneity makes this unambiguous, since any other token can only
-     * start the next entry/statement. */
+     * start the next entry/statement. On the first pipeline operator (`|`, `<`,
+     * `>`, …) the whole RHS is a command: hand the words gathered so far to
+     * parseCommand as stage 0. A bare `cmd args` with no operator stays a value
+     * list (getCommand folds the single stage). */
     while (this.token.type !== TokenType.SEMI && this.token.type !== TokenType.RBRACE) {
-      values.push(this.parseValue());
-      if (values[values.length - 1].entries !== undefined && this.token.type !== TokenType.LBRACE) {
+      const op = this.tryCommandOp();
+      if (op !== undefined) {
+        const pipeline = this.parseCommand(values, op);
+        this.consumeIfToken(TokenType.SEMI);
+        const command: ICommandValue = {
+          kind: DeclKind.CommandValue,
+          source: this.source,
+          offset: values.length > 0 ? values[0].offset : op.at,
+          endOffset: this.prevTokenEnd,
+          pipeline,
+        };
+        return { ...base, values: [command] };
+      }
+      const value = this.parseValue();
+      values.push(value);
+      if (isMapValue(value) && this.token.type !== TokenType.LBRACE) {
         break;
       }
     }
     this.consumeIfToken(TokenType.SEMI);
-    return {
-      kind: DeclKind.Property,
-      source: this.source,
-      name,
-      offset: nameOffset,
-      keyRef,
-      values,
-    };
+    return { ...base, values };
   }
 
   /**
@@ -1047,8 +1316,11 @@ export class BuildParser {
             case "MAP":
               type = PropertyType.Map;
               break;
+            case "COMMAND":
+              type = PropertyType.Command;
+              break;
             default:
-              this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'MAP' or 'REQUIRED'");
+              this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'MAP' or 'COMMAND' or 'REQUIRED'");
           }
           next = this.nextToken();
         }

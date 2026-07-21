@@ -20,9 +20,12 @@
 import {
   DeclKind,
   declPosn,
-  hasBlockValue,
+  hasMapValue,
   IMapItemDecl,
   IPropertyDecl,
+  isCommandValue,
+  isMapValue,
+  isNameValue,
   IValue,
   ITargetDecl,
   ITargetDefDecl,
@@ -56,6 +59,10 @@ const DIAG_INVALID_REWRITE = new Diagnostic<{ detail: string; loc: ISourcePositi
 const DIAG_INVALID_MAP = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
   LogLevel.Error,
   "Invalid map property: {detail}"
+);
+const DIAG_INVALID_COMMAND = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
+  LogLevel.Error,
+  "Invalid command: {detail}"
 );
 
 /**
@@ -118,11 +125,29 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
     if (type === undefined) {
       return; /* already reported as unrecognized */
     }
-    if (type === PropertyType.Map) {
+    if (prop.values.some(value => isCommandValue(value))) {
+      /* A pipeline (`a | b > c`) parses to a command value (well-formedness
+       * already a parse error). It is only meaningful in a COMMAND property — the
+       * mirror of a `{...}` block being MAP-only. */
+      if (type !== PropertyType.Command) {
+        log.log(DIAG_INVALID_COMMAND, {
+          detail: "pipeline operators ('|', '<', '>', '2>', '&>') are only valid in a COMMAND property",
+          loc: declPosn(prop),
+        });
+        isValid = false;
+      }
+    } else if (type === PropertyType.Command) {
+      /* A COMMAND property with no operators is a bare single-stage command
+       * (`run = astro build`) — a non-empty value list is all it needs. */
+      if (prop.values.length === 0) {
+        log.log(DIAG_INVALID_COMMAND, { detail: "a command is required", loc: declPosn(prop) });
+        isValid = false;
+      }
+    } else if (type === PropertyType.Map) {
       if (!validateMapProperty(prop, log)) {
         isValid = false;
       }
-    } else if (!hasBlockValue(prop)) {
+    } else if (!hasMapValue(prop)) {
       prop.values.forEach(value => {
         if (!validateRenameValue(prop, value, type, log)) {
           isValid = false;
@@ -144,17 +169,18 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
  * the deferred extension syntax. An inline block validates recursively via
  * {@link validateBlock}. */
 function validateMapProperty(prop: IPropertyDecl, log: Log): boolean {
-  if (!hasBlockValue(prop)) {
+  if (!hasMapValue(prop)) {
     return true; /* reference form */
   }
   if (prop.values.length > 1) {
-    const detail = prop.values.every(value => value.entries !== undefined)
+    const detail = prop.values.every(isMapValue)
       ? "a MAP property takes a single `{ ... }` block (merging is by reference: `metadata = BASE;`)"
       : "a MAP property is a single `{ ... }` block or bare reference(s), not a mix";
     log.log(DIAG_INVALID_MAP, { detail, loc: declPosn(prop) });
     return false;
   }
-  return validateBlock(prop.values[0].entries ?? [], log);
+  const block = prop.values[0];
+  return validateBlock(isMapValue(block) ? block.entries : [], log);
 }
 
 /** Recursively validate a `{ ... }` block: unique keys per level (literal
@@ -182,16 +208,16 @@ function validateBlock(entries: IMapItemDecl[], log: Log): boolean {
       isValid = fail(`duplicate map key '${entry.name}'`, entry);
     }
     keys.add(entry.name);
-    const blocks = entry.values.filter(value => value.entries !== undefined);
+    const blocks = entry.values.filter(isMapValue);
     if (blocks.length > 0 && blocks.length < entry.values.length) {
       isValid = fail(`a map value is either strings or maps, not a mix (key '${entry.name}')`, entry);
     }
     entry.values.forEach(value => {
-      if (value.entries !== undefined) {
+      if (isMapValue(value)) {
         if (!validateBlock(value.entries, log)) {
           isValid = false;
         }
-      } else if (value.value.getRenameTo()) {
+      } else if (isNameValue(value) && value.value.getRenameTo()) {
         isValid = fail(`a map value cannot carry a rename ('-> ') (key '${entry.name}')`, entry);
       }
     });
@@ -202,6 +228,9 @@ function validateBlock(entries: IMapItemDecl[], log: Log): boolean {
 /** Validate a single property value's rename facet (if any) against its
  * property type; returns false and logs on a violation. */
 function validateRenameValue(prop: IPropertyDecl, value: IValue, type: PropertyType, log: Log): boolean {
+  if (!isNameValue(value)) {
+    return true; /* a block is handled by the MAP path, never here */
+  }
   const name = value.value;
   const isRewrite = type === PropertyType.Rewrite;
   const renameTo = name.getRenameTo();

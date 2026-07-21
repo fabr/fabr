@@ -59,18 +59,21 @@ targetdef serve {
 }
 
 #
-# Execute a runnable and collect the files it writes as this target's content
-# (a build step — the codegen/genrule analogue, distinct from the 'fabr run'
-# verb which launches interactively). 'tool' names the runnable (the program);
-# 'srcs' are the invocation's input files, staged into the work dir at the
-# install root — for a JS tool that is the npx-in-project layout: sources at
-# the root, the tool's node_modules adjacent; 'args' are appended to the
-# runnable's own; 'output' (a name pattern, default '**') selects the result.
+# Run a command pipeline and collect its output — the codegen/genrule builder (a
+# build step, distinct from the interactive 'fabr run' verb). 'run' is a command
+# line: 'cmd args... [redirs] | cmd args... [redirs]'. Each command is a fabr
+# runnable (a target/tool, mounted in its own sandbox dir); args are literal or a
+# glob expanded over 'srcs'. '|' pipes stdout to the next stage's stdin; '> name'
+# / '2> name' / '&> name' capture stdout / stderr / both as content named 'name';
+# '< source' streams a single-file reference to the first stage's stdin. 'srcs'
+# are input files staged at the sandbox root; 'output' (a 'dir:glob') collects
+# files the tools wrote, unioned with the redirect captures (omit it for a pure
+# redirect genrule). Example:
+#   generate docs { run = list_targetdefs --json | gendoc > reference.mdx; }
 #
 targetdef generate {
-    tool = REQUIRED FILES;
     srcs = FILES;
-    args = STRING;
+    run = REQUIRED COMMAND;
     output = STRING;
 }
 

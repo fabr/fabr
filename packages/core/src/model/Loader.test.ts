@@ -22,7 +22,7 @@ import { BuildCache } from "../core/BuildCache";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { LogFormatter, LogLevel } from "../support/Log";
-import { DeclKind } from "./AST";
+import { DeclKind, isNameValue } from "./AST";
 import { BuildModel } from "./BuildModel";
 import { BuildFilesInvalidError } from "./Errors";
 import { ExecutionContext } from "./ExecutionContext";
@@ -57,7 +57,9 @@ async function load(project: FileSet, startFile: string): Promise<BuildModel> {
 
 function propertyValue(model: BuildModel, name: string): string | undefined {
   const decl = model.getDecl(name);
-  return decl?.kind === DeclKind.Property ? decl.values.map(value => value.value.toString()).join(" ") : undefined;
+  return decl?.kind === DeclKind.Property
+    ? decl.values.map(value => (isNameValue(value) ? value.value.toString() : "")).join(" ")
+    : undefined;
 }
 
 describe("Loader", () => {

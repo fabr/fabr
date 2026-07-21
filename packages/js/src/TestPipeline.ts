@@ -43,6 +43,7 @@ import {
   findExecutable,
   formatTestFailures,
   getResultFileSet,
+  IActionContext,
   IBuildActionDefinition,
   IFile,
   ITestReport,
@@ -246,7 +247,7 @@ function planTestRun(
  */
 const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 2, run: runTests };
 
-function runTests(inputs: BuildActionInputs, workDir: string): Computable<FileSet> {
+function runTests(inputs: BuildActionInputs, { workDir }: IActionContext): Computable<FileSet> {
   const staged = fileSetInput(inputs, "staged");
   const argv = stringListInput(inputs, "argv");
   /* Tests run with a clean environment (no ambient vars that could alter their

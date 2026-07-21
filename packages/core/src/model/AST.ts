@@ -23,7 +23,9 @@ import { FileSource } from "../core/FileSet";
 import { ISourceSpan } from "../support/Log";
 
 export enum DeclKind {
-  Value,
+  NameValue,
+  MapValue,
+  CommandValue,
   Property,
   Target,
   TargetDef,
@@ -67,6 +69,7 @@ export enum PropertyType {
   OutputFileSet,
   Rewrite,
   Map,
+  Command,
 }
 
 export interface IPropertySchema {
@@ -86,23 +89,76 @@ export interface ITargetDefDecl extends IBaseDecl {
   docComment?: string;
 }
 
-export interface IValue extends IBaseDecl {
-  kind: DeclKind.Value;
-  value: Name;
+interface IBaseValue extends IBaseDecl {
   /** End offset (exclusive) of the written value, for span underlines */
   endOffset: number;
-  /**
-   * The items when this value is a `{ key = value; ... }` block — a block is a
-   * *value kind* (so an entry can hold a list of blocks: an array of maps).
-   * Present (even if empty) iff a block was written; `value` is then an empty
-   * placeholder Name, never read. Each item is an ordinary property decl — its
-   * `name` the (possibly dotted, foreign) map key, its own values either
-   * strings or nested blocks — or a `NAME;` splice ({@link IMapSpliceDecl}).
-   * Parsing is schema-blind (a `{` in value position always parses as a
-   * block); Validate enforces where blocks may appear (MAP properties only, no
-   * mixing with strings in one value list).
-   */
-  entries?: IMapItemDecl[];
+}
+
+/** A plain value — a reference/name (`srcs`, `@npm:pkg:1.2.3`, `*.ts`). */
+export interface INameValue extends IBaseValue {
+  kind: DeclKind.NameValue;
+  value: Name;
+}
+
+/**
+ * A `{ key = value; ... }` map block value — a value kind (so an entry can hold a
+ * list of blocks: an array of maps). Each item is an ordinary property decl (its
+ * `name` the possibly-dotted foreign map key, values names or nested blocks) or a
+ * `NAME;` splice ({@link IMapSpliceDecl}). Parsing is schema-blind (a `{` in value
+ * position always parses as a block); Validate enforces where blocks may appear
+ * (MAP properties only, no mixing with names in one value list).
+ */
+export interface IMapValue extends IBaseValue {
+  kind: DeclKind.MapValue;
+  entries: IMapItemDecl[];
+}
+
+export type IValue = INameValue | IMapValue | ICommandValue;
+
+export function isMapValue(value: IValue): value is IMapValue {
+  return value.kind === DeclKind.MapValue;
+}
+
+export function isNameValue(value: IValue): value is INameValue {
+  return value.kind === DeclKind.NameValue;
+}
+
+export function isCommandValue(value: IValue): value is ICommandValue {
+  return value.kind === DeclKind.CommandValue;
+}
+
+/**
+ * One stage of a command pipeline ({@link ICommandValue}): a command reference,
+ * its args, and any stream redirects. `command`/`args`/`stdin` are fabr references
+ * (the command a runnable, args literal-or-glob, `< stdin` a single-file source);
+ * `stdout`/`stderr`/`both` are the output names their captured streams (`>`/`2>`/
+ * `&>`) become content under. Each is an {@link INameValue} — the `Name` plus its
+ * source span — so the rule can position a resolution error (an unresolvable
+ * command, a failed glob) at the exact token in the `run = …` line.
+ */
+export interface ICommandStage {
+  command: INameValue;
+  args: INameValue[];
+  stdin?: INameValue;
+  stdout?: INameValue;
+  stderr?: INameValue;
+  both?: INameValue;
+}
+
+/** A parsed command pipeline: an ordered list of {@link ICommandStage}s (the
+ * stages of `a | b | c`), names still as written. */
+export type CommandPipeline = ICommandStage[];
+
+/**
+ * A parsed command pipeline as a value — `run = a --x | b > out`. Built at parse
+ * time, where the operators (`|`, `<`, `>`, `2>`, `&>`) drive the structure and
+ * well-formedness is a parse error; the rule then resolves each stage's command to
+ * a runnable and wires the streams. A command is always the sole value of its
+ * property (there is no syntax to mix it with other values).
+ */
+export interface ICommandValue extends IBaseValue {
+  kind: DeclKind.CommandValue;
+  pipeline: CommandPipeline;
 }
 
 export interface IPropertyDecl extends IBaseDecl {
@@ -136,9 +192,9 @@ export interface IMapSpliceDecl extends IBaseDecl {
 /** One item of a `{ ... }` block: a `key = value;` entry or a `NAME;` splice. */
 export type IMapItemDecl = IPropertyDecl | IMapSpliceDecl;
 
-/** @return true if any of the property's values is a `{ ... }` block. */
-export function hasBlockValue(prop: IPropertyDecl): boolean {
-  return prop.values.some(value => value.entries !== undefined);
+/** @return true if any of the property's values is a `{ ... }` map block. */
+export function hasMapValue(prop: IPropertyDecl): boolean {
+  return prop.values.some(isMapValue);
 }
 
 export interface IIncludeDecl extends IBaseDecl {
@@ -191,8 +247,12 @@ export function getDeclKindName(kind: DeclKind): string {
       return "target";
     case DeclKind.TargetDef:
       return "targetdef";
-    case DeclKind.Value:
-      return "value";
+    case DeclKind.NameValue:
+      return "name";
+    case DeclKind.MapValue:
+      return "map";
+    case DeclKind.CommandValue:
+      return "command";
     case DeclKind.Plugin:
       return "plugin";
     case DeclKind.MapSplice:

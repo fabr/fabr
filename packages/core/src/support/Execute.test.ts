@@ -18,11 +18,45 @@
  */
 
 import { expect } from "chai";
+import { PassThrough } from "stream";
+import { IOutputHandle } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
-import { execute, executeInteractive } from "./Execute";
+import { FileSet, IFile } from "../core/FileSet";
+import { MemoryFile } from "../core/MemoryFS";
+import { execute, executeInteractive, executePipeline } from "./Execute";
 
 const NODE = process.execPath;
 const MISSING = "/nonexistent/fabr-definitely-not-here";
+const CWD = process.cwd();
+
+/** An in-memory stand-in for BuildCache.getTemporaryWriteStream: collect the
+ * piped bytes and finalize to a MemoryFile, so the pipeline tests exercise the
+ * wiring without a real content store. */
+function memoryOutput(): IOutputHandle {
+  const chunks: Buffer[] = [];
+  const stream = new PassThrough();
+  stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+  return {
+    stream,
+    finalize: (): Computable<IFile> =>
+      Computable.once<IFile>(resolve => {
+        stream.on("end", () => resolve(new MemoryFile(Buffer.concat(chunks))));
+        stream.end();
+      }),
+    discard: () => stream.destroy(),
+  };
+}
+
+function runPipeline(stages: Parameters<typeof executePipeline>[0], stdin?: Uint8Array): Promise<FileSet> {
+  return new Promise((resolve, reject) => executePipeline(stages, CWD, memoryOutput, stdin).then(resolve, reject));
+}
+
+/** The text of a captured file in the pipeline result. */
+function captured(files: FileSet, name: string): Promise<string> {
+  return new Promise((resolve, reject) =>
+    files.get(name).then(file => (file ? file.readString().then(resolve, reject) : reject(new Error(`no capture '${name}'`))), reject)
+  );
+}
 
 /* Record *every* settlement, not just the first. A spawn failure fires 'error'
  * then 'close', so a node that re-settles (the double-settle bug) shows up here
@@ -87,6 +121,70 @@ describe("execute", () => {
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("execute hung reading stdin")), 4000)),
     ]);
     expect(outcomes).to.deep.equal([{ ok: true, value: undefined }]);
+  });
+});
+
+describe("executePipeline", () => {
+  it("wires stdout->stdin between stages and captures the final stdout", async () => {
+    const files = await runPipeline([
+      { argv: [NODE, "-e", "process.stdout.write('hello')"] },
+      {
+        argv: [NODE, "-e", "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(d.toUpperCase()))"],
+        stdout: "out",
+      },
+    ]);
+    expect(await captured(files, "out")).to.equal("HELLO");
+  });
+
+  it("feeds the head stage stdin and merges stdout+stderr for '&>'", async () => {
+    const files = await runPipeline(
+      [
+        {
+          argv: [NODE, "-e", "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{process.stdout.write('O'+d);process.stderr.write('E')})"],
+          both: "log",
+        },
+      ],
+      Buffer.from("x")
+    );
+    const log = await captured(files, "log");
+    expect(log).to.contain("Ox");
+    expect(log).to.contain("E");
+  });
+
+  it("fails on the first non-zero stage (pipefail), settling exactly once", async () => {
+    const outcomes = await collectSettlements(executePipeline([{ argv: [NODE, "-e", "process.exit(4)"] }], CWD, memoryOutput));
+    expect(outcomes).to.have.length(1);
+    expect(outcomes[0].ok).to.equal(false);
+    expect(outcomes[0].err?.message).to.include("exited with error code 4");
+  });
+
+  it("does not hang or double-settle when a downstream stage exits before draining (SIGPIPE)", async () => {
+    /* The producer writes 4 MB; the consumer exits immediately without reading.
+     * Without the broken-pipe propagation the producer blocks forever on a pipe
+     * nobody drains (hang), and without the stream 'error' handlers the EPIPE
+     * crashes the process. Assert it settles once, within a bound. */
+    const settled = collectSettlements(
+      executePipeline(
+        [
+          { argv: [NODE, "-e", "process.stdout.write(Buffer.alloc(4*1024*1024, 65))"] },
+          { argv: [NODE, "-e", "process.exit(0)"], stdout: "out" },
+        ],
+        CWD,
+        memoryOutput
+      )
+    );
+    const outcomes = await Promise.race([
+      settled,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("pipeline hung on early downstream exit")), 5000)),
+    ]);
+    expect(outcomes).to.have.length(1);
+  });
+
+  it("reports a stage spawn failure once, with the exec error", async () => {
+    const outcomes = await collectSettlements(executePipeline([{ argv: [MISSING] }], CWD, memoryOutput));
+    expect(outcomes).to.have.length(1);
+    expect(outcomes[0].ok).to.equal(false);
+    expect(outcomes[0].err?.message).to.include("unable to execute");
   });
 });
 

@@ -1,5 +1,5 @@
 import { Readable } from "stream";
-import { FetchOptions } from "../core/BuildCache";
+import { FetchOptions, IActionContext } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource } from "../core/FileSet";
 import {
@@ -28,20 +28,28 @@ import { BuildAction, BuildActionInput, BuildActionInputs, IRuleDefinition, Repo
 import { ExecutionContext, ProgressEvent } from "./ExecutionContext";
 import { ITargetOrigin, TARGET_PROVENANCE } from "./Target";
 import {
+  CommandPipeline,
   DeclKind,
   declPosn,
-  hasBlockValue,
+  hasMapValue,
+  ICommandStage,
   IDecl,
   IMapItemDecl,
   IMapSpliceDecl,
   INamedDecl,
   INamespaceDecl,
+  ICommandValue,
+  IMapValue,
+  INameValue,
   IPropertyDecl,
+  isCommandValue,
+  isMapValue,
+  isNameValue,
   ITargetDecl,
   ITargetDefDecl,
-  IValue,
 } from "./AST";
 import { IDiagnosticNote } from "../support/Log";
+import type { StageStreams } from "../support/Execute";
 import {
   DependencyFailedError,
   IUseSite,
@@ -81,7 +89,7 @@ export type PropertyMap = Map<string, PropertyMapValue>;
  */
 export interface MapEntryOrigin {
   entry: IPropertyDecl;
-  via: (IMapSpliceDecl | IValue)[];
+  via: (IMapSpliceDecl | INameValue)[];
 }
 
 const MAP_ORIGINS = new WeakMap<PropertyMap, Map<string, MapEntryOrigin>>();
@@ -103,7 +111,7 @@ function recordMapOrigin(map: PropertyMap, key: string, origin: MapEntryOrigin):
 
 /** Merge `source`'s entries into `target` (later wins), threading each entry's
  * origin with the written reference `hop` prepended to its via-chain. */
-function mergeMapInto(target: PropertyMap, source: PropertyMap, hop: IMapSpliceDecl | IValue): void {
+function mergeMapInto(target: PropertyMap, source: PropertyMap, hop: IMapSpliceDecl | INameValue): void {
   for (const [key, value] of source) {
     target.set(key, value);
     const origin = mapEntryOrigin(source, key);
@@ -169,7 +177,7 @@ export const MODEL_REF_PROVENANCE = "model-ref";
  */
 export interface IModelRefStep extends IProvenanceStep {
   kind: typeof MODEL_REF_PROVENANCE;
-  value: IValue;
+  value: INameValue;
   constraints: Constraints;
   /** The property the value was written in, and its owning target (absent for
    * a global/default property) — the "required by <target> <property>" facts */
@@ -252,9 +260,57 @@ interface IDependencyStack {
   target?: ITargetDecl;
   property: IPropertyDecl;
   context: BuildContext;
-  value: IValue;
+  value: INameValue;
   next?: IDependencyStack;
 }
+
+/**
+ * A command name after variable substitution: the resolved {@link Name} paired
+ * with the {@link INameValue} it was written as. `ref` is the model-ref/stack
+ * currency the rest of the model speaks (`ref.value` the *written* form, for
+ * provenance rendering and error spans); `name` is the substituted value that
+ * then resolves to a runnable or globs over `srcs`. Internal to the two-step
+ * command resolution ({@link BuildContext.resolveCommand} substitutes,
+ * {@link TargetContext.getCommandProperty} resolves) — a rule sees only the
+ * fully-resolved {@link ResolvedCommandStage}.
+ */
+interface IPositionedName {
+  name: Name;
+  ref: INameValue;
+}
+
+/**
+ * One {@link ICommandStage} with every name variable-substituted and the
+ * bare-name chase applied (see {@link BuildContext.resolveCommand}) — the
+ * intermediate {@link TargetContext.getCommandProperty} then resolves to a
+ * {@link ResolvedCommandStage}. Not rule-facing.
+ */
+interface IResolvedCommandStage {
+  command: IPositionedName;
+  args: IPositionedName[];
+  stdin?: IPositionedName;
+  stdout?: IPositionedName;
+  stderr?: IPositionedName;
+  both?: IPositionedName;
+}
+
+/**
+ * One fully-resolved pipeline stage a `generate` rule consumes (see
+ * {@link TargetContext.getCommandProperty}): its command resolved to a
+ * `runnable`, `args` globbed over `srcs`, `stdin` to a single-file set, and the
+ * `stdout`/`stderr`/`both` redirect target names (shared {@link StageStreams}).
+ * The rule mounts each `runnable` and turns the stage into a run spec; nothing
+ * here is positional (errors were raised during resolution).
+ */
+export interface ResolvedCommandStage extends StageStreams {
+  runnable: RunnableFileSet;
+  args: string[];
+  stdin?: FileSet;
+}
+
+/** A fully-resolved command pipeline — the rule-facing counterpart of the parsed
+ * {@link CommandPipeline}, yielded by {@link TargetContext.getCommandProperty}. */
+export type ResolvedCommandPipeline = ResolvedCommandStage[];
 
 /**
  * A BuildContext is (effectively) the BuildModel instantiated with an explicit set of additional
@@ -415,11 +471,15 @@ export class BuildContext {
    * are NOT resolved: a REWRITE/STRING value is inert, never a collection point.
    */
   public resolveNameProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<Name[]> {
-    if (hasBlockValue(prop)) {
-      return Computable.reject(mapInWrongContextError(prop, "a string"));
-    }
+    /* Each value must be a name; a map block or command pipeline used as a string
+     * is rejected (the backstop for the paths Validate doesn't cover — default/
+     * top-level properties, sync coordinates). */
     return Computable.forAll(
-      prop.values.map(value => this.substituteNameVars(value.value, { property: prop, target, context: this, value, next: stack })),
+      prop.values.map(value =>
+        isNameValue(value)
+          ? this.substituteNameVars(value.value, { property: prop, target, context: this, value, next: stack })
+          : Computable.reject<Name>(nonNameValueError(prop, value, "a string"))
+      ),
       (...resolved) => resolved
     );
   }
@@ -456,7 +516,7 @@ export class BuildContext {
       return Computable.reject(new Error(`Circular map reference at '${prop.name}'`));
     }
     const nextSeen = new Set(seen).add(prop);
-    if (hasBlockValue(prop)) {
+    if (hasMapValue(prop)) {
       /* Inline form: one block (Validate enforces this for schema'd properties;
        * re-checked here for shared globals, which never pass a targetdef). */
       if (prop.values.length > 1) {
@@ -464,19 +524,20 @@ export class BuildContext {
           new Error(`'${prop.name}' must be a single \`{ ... }\` block or bare reference(s), not a mix`)
         );
       }
-      return this.resolveBlock(prop.values[0].entries ?? [], target, stack, nextSeen);
+      const block = prop.values[0];
+      return this.resolveBlock(isMapValue(block) ? block.entries : [], target, stack, nextSeen);
     }
     /* Reference form: each value names a block-valued property (resolved
      * recursively under this context, so a shared map's `${...}` sees the
      * consuming build's config), merged left-to-right with later winning; each
      * merged entry's origin gains the written reference as a via-hop. */
     return Computable.forAll(
-      prop.values.map(value =>
+      prop.values.filter(isNameValue).map(value =>
         this.resolveMapReference(value.value, { property: prop, target, context: this, value, next: stack }, stack, nextSeen).then(
-          (map): [PropertyMap, IValue] => [map, value]
+          (map): [PropertyMap, INameValue] => [map, value]
         )
       ),
-      (...maps: [PropertyMap, IValue][]) => {
+      (...maps: [PropertyMap, INameValue][]) => {
         const merged: PropertyMap = new Map();
         for (const [map, value] of maps) {
           mergeMapInto(merged, map, value);
@@ -494,12 +555,11 @@ export class BuildContext {
     stack: IDependencyStack | undefined,
     seen: Set<IPropertyDecl>
   ): Computable<PropertyMap> {
-    return this.substituteNameVars(name, info).then(substituted => {
-      const def = this.model.getDecl(substituted.toString());
-      if (!def || def.kind !== DeclKind.Property) {
+    return this.referencedProperty(name, info).then(({ prop, name: substituted }) => {
+      if (!prop) {
         throw new Error(`'${substituted.toString()}' does not name a map property`);
       }
-      return this.resolveMapDecl(def, undefined, stack, seen);
+      return this.resolveMapDecl(prop, undefined, stack, seen);
     });
   }
 
@@ -520,7 +580,7 @@ export class BuildContext {
         if (item.kind === DeclKind.MapSplice) {
           return this.resolveMapReference(item.ref, stack, stack, seen);
         }
-        const blocks = item.values.filter(value => value.entries !== undefined);
+        const blocks = item.values.filter(isMapValue);
         if (blocks.length === 0) {
           return this.resolveStringProperty(item, target, stack).then(prop => prop.toString());
         }
@@ -528,7 +588,7 @@ export class BuildContext {
           return Computable.reject(new Error(`map value '${item.name}' is either strings or maps, not a mix`));
         }
         return Computable.forAll(
-          blocks.map(value => this.resolveBlock(value.entries ?? [], target, stack, seen)),
+          blocks.map(value => this.resolveBlock(value.entries, target, stack, seen)),
           (...maps: PropertyMap[]) => (maps.length === 1 ? maps[0] : maps)
         );
       }),
@@ -570,11 +630,13 @@ export class BuildContext {
     stack?: IDependencyStack,
     callerOverrides?: Constraints
   ): Computable<SourceRef[]> {
-    if (hasBlockValue(prop)) {
-      return Computable.reject(mapInWrongContextError(prop, "files"));
-    }
+    /* Each value must be a name (reference); a map block or command pipeline read
+     * as files is rejected. */
     return Computable.forAll(
       prop.values.map(value => {
+        if (!isNameValue(value)) {
+          return Computable.reject<SourceRef[]>(nonNameValueError(prop, value, "files"));
+        }
         const info: IDependencyStack = { property: prop, target, context: this, value, next: stack };
         /* A value written as `ref<k=v>` resolves under this context overridden
          * by its delta, so the referenced target builds under those constraints
@@ -639,11 +701,11 @@ export class BuildContext {
     });
   }
 
-  private modelRefStep(value: IValue, property: IPropertyDecl, target?: ITargetDecl): IModelRefStep {
+  private modelRefStep(value: INameValue, property: IPropertyDecl, target?: ITargetDecl): IModelRefStep {
     return { kind: MODEL_REF_PROVENANCE, value, constraints: this.constraints, property, target };
   }
 
-  private withModelRef(source: SourceRef, value: IValue, property: IPropertyDecl, target?: ITargetDecl): SourceRef {
+  private withModelRef(source: SourceRef, value: INameValue, property: IPropertyDecl, target?: ITargetDecl): SourceRef {
     const step = this.modelRefStep(value, property, target);
     if (source instanceof FileSet || source instanceof RepositoryRef) {
       return source.withStep(step);
@@ -656,7 +718,7 @@ export class BuildContext {
    * written value. */
   private withConflictModelRef(
     err: ConflictError,
-    value: IValue,
+    value: INameValue,
     property: IPropertyDecl,
     target?: ITargetDecl
   ): ConflictError {
@@ -808,6 +870,107 @@ export class BuildContext {
     );
   }
 
+  /**
+   * Resolve a bare reference to the property it names, if any: substitute its
+   * variables (positioned via `info`) then look the result up. The single
+   * primitive behind chasing one same-kind property from another — a map
+   * reference (`metadata = SHARED`) or a command reference (`run = shared_cmd`);
+   * each caller decides what a non-property result means (an error, or a
+   * fallback). `name` is the substituted reference, for the caller's message.
+   */
+  private referencedProperty(ref: Name, info?: IDependencyStack): Computable<{ prop?: IPropertyDecl; name: Name }> {
+    return this.substituteNameVars(ref, info).then(name => {
+      const def = this.model.getDecl(name.toString());
+      return { prop: def?.kind === DeclKind.Property ? def : undefined, name };
+    });
+  }
+
+  /**
+   * Resolve a COMMAND property to its pipeline with every command/arg/redirect
+   * name variable-substituted — the command analogue of resolveNameProperty. A
+   * sole bare name that references another command-valued property is chased
+   * (mirroring the map-reference chase), so a reusable command can be defined
+   * once and referenced; anything else folds to a single `cmd args…` stage.
+   * Each resolved name keeps its written {@link INameValue} as `ref` for
+   * provenance and error positioning.
+   */
+  public resolveCommand(
+    prop: IPropertyDecl,
+    target?: ITargetDecl,
+    stack?: IDependencyStack
+  ): Computable<IResolvedCommandStage[]> {
+    return this.getCommandPipeline(prop, target, stack, new Set()).then(stages =>
+      Computable.forAll(
+        stages.map(stage => this.resolveCommandStage(stage, prop, target, stack)),
+        (...resolved: IResolvedCommandStage[]) => resolved
+      )
+    );
+  }
+
+  /** The raw (unsubstituted) pipeline of a command property: its parsed
+   * pipeline, a single `cmd args…` stage, or — when the sole value references
+   * another command-valued property — that property's pipeline (chased,
+   * `seen`-guarded, mirroring resolveMapDecl). */
+  private getCommandPipeline(
+    prop: IPropertyDecl,
+    target: ITargetDecl | undefined,
+    stack: IDependencyStack | undefined,
+    seen: Set<IPropertyDecl>
+  ): Computable<CommandPipeline> {
+    if (seen.has(prop)) {
+      return Computable.reject(new Error(`Circular command reference at '${prop.name}'`));
+    }
+    const commandValue = prop.values.find(isCommandValue);
+    if (commandValue !== undefined) {
+      return Computable.resolve(commandValue.pipeline);
+    }
+    const names = prop.values.filter(isNameValue);
+    if (names.length === 0) {
+      return Computable.resolve([]);
+    }
+    /* A sole bare name may reference another command-valued property (chased via
+     * the shared referencedProperty primitive — the same reference resolution a
+     * map reference uses); else it is a plain `cmd args…` single stage. */
+    if (names.length === 1) {
+      const value = names[0];
+      const info: IDependencyStack = { property: prop, target, context: this, value, next: stack };
+      const nextSeen = new Set(seen).add(prop);
+      return this.referencedProperty(value.value, info).then(({ prop: ref }) =>
+        ref ? this.getCommandPipeline(ref, undefined, stack, nextSeen) : Computable.resolve<CommandPipeline>([{ command: value, args: [] }])
+      );
+    }
+    const [command, ...args] = names;
+    return Computable.resolve([{ command, args }]);
+  }
+
+  /** Substitute every name of one stage, keeping each written {@link INameValue}
+   * as the resolved name's `ref`. */
+  private resolveCommandStage(
+    stage: ICommandStage,
+    prop: IPropertyDecl,
+    target: ITargetDecl | undefined,
+    stack: IDependencyStack | undefined
+  ): Computable<IResolvedCommandStage> {
+    const position = (value: INameValue): Computable<IPositionedName> =>
+      this.substituteNameVars(value.value, { property: prop, target, context: this, value, next: stack }).then(name => ({
+        name,
+        ref: value,
+      }));
+    const positionOpt = (value: INameValue | undefined): Computable<IPositionedName | undefined> =>
+      value ? position(value) : Computable.resolve(undefined);
+    return Computable.forAll(
+      [
+        position(stage.command),
+        Computable.forAll(stage.args.map(position), (...args: IPositionedName[]) => args),
+        positionOpt(stage.stdin),
+        positionOpt(stage.stdout),
+        positionOpt(stage.stderr),
+        positionOpt(stage.both),
+      ],
+      (command, args, stdin, stdout, stderr, both): IResolvedCommandStage => ({ command, args, stdin, stdout, stderr, both })
+    );
+  }
+
   private resolveTarget(target: ITargetDecl, stack?: IDependencyStack): Computable<SourceRef[]> {
     const targetDef = this.model.getTargetDef(target.type);
     if (!targetDef) {
@@ -891,9 +1054,14 @@ export class BuildContext {
    */
   public runAction(action: BuildAction, context: TargetContext): Computable<FileSet> {
     const key = `rule:${action.step.id}:${action.step.version}\n${manifestEvalInputs(action.inputs)}`;
+    const cache = this.execution.buildCache;
     return this.getCachedOrBuild(key, targetDir => {
       context.announceBuilding();
-      return action.step.run(action.inputs, targetDir);
+      /* The cache owns the scratch dir and the content store, so the action's
+       * context — work dir + streaming-output factory — is assembled here, at the
+       * bridge between the cache's create callback and the step. */
+      const actionContext: IActionContext = { workDir: targetDir, createOutput: () => cache.getTemporaryWriteStream() };
+      return action.step.run(action.inputs, actionContext);
     });
   }
 
@@ -1015,6 +1183,21 @@ function mapInWrongContextError(prop: IPropertyDecl, context: string): Error {
   );
 }
 
+function commandInWrongContextError(prop: IPropertyDecl): Error {
+  return attachHelp(
+    new Error(`'${prop.name}' contains a pipeline operator ('|', '<', '>', '2>', '&>'), which is only valid in a COMMAND property`),
+    "quote it to use the character literally (e.g. `'|'`)"
+  );
+}
+
+/** The rejection for a non-name value where a name/reference was required — a map
+ * block or a command pipeline, each explained. `context` names the consuming use
+ * in the map message ("a string", "files"). Resolution wants a name; anything else
+ * is reported here rather than enumerating each excluded kind at the call site. */
+function nonNameValueError(prop: IPropertyDecl, value: IMapValue | ICommandValue, context: string): Error {
+  return isMapValue(value) ? mapInWrongContextError(prop, context) : commandInWrongContextError(prop);
+}
+
 /** The requirement one dep source declares (see {@link TargetContext.collectDeclaredRequirements}). */
 function declaredRequirementOf(source: SourceRef): Computable<Requirement | undefined> {
   if (source instanceof RepositoryRef) {
@@ -1086,6 +1269,88 @@ export abstract class TargetContext {
    * coordinate before building anything. Ordinary schema properties are not
    * returned; an anonymous target has none. */
   public abstract getWildcardProperties(): Computable<{ key: Name; decl: IPropertyDecl }[]>;
+
+  /** The substituted-name pipeline of a COMMAND property (see
+   * {@link BuildContext.resolveCommand}): its parsed stages (or the single stage a
+   * bare `cmd args…` folds to, or a chased command-property reference), variables
+   * substituted, each name carrying its written span. Internal — the rule-facing
+   * form is {@link getCommandProperty}. Empty if absent; declared targets only. */
+  protected abstract getCommandStages(name: string): Computable<IResolvedCommandStage[]>;
+
+  /**
+   * The fully-resolved pipeline of a COMMAND property, ready for a `generate`
+   * rule: each stage's command resolved to a runnable, its args globbed over
+   * `srcs` (failglob), its `< source` to a single-file set, and its redirect
+   * targets to content names. Empty if the property is absent. The one command
+   * resolution surface a rule needs — substitution + the chase happen underneath
+   * ({@link getCommandStages}).
+   */
+  public getCommandProperty(name: string, srcs: FileSet): Computable<ResolvedCommandPipeline> {
+    return this.getCommandStages(name).then(stages =>
+      Computable.forAll(
+        stages.map(stage => this.resolveStage(stage, srcs)),
+        (...resolved: ResolvedCommandStage[]) => resolved
+      )
+    );
+  }
+
+  /** Resolve one substituted stage: command → runnable, args → globs over
+   * `srcs`, `< source` → single file, redirect targets → content names. */
+  private resolveStage(stage: IResolvedCommandStage, srcs: FileSet): Computable<ResolvedCommandStage> {
+    return Computable.forAll(
+      [this.getGlobalRunnable(stage.command.name.toString()), this.resolveStdin(stage.stdin), this.expandArgs(stage.args, srcs)],
+      (runnable: RunnableFileSet, stdin: FileSet | undefined, args: string[]): ResolvedCommandStage => ({
+        runnable,
+        args,
+        stdin,
+        stdout: stage.stdout?.name.toString(),
+        stderr: stage.stderr?.name.toString(),
+        both: stage.both?.name.toString(),
+      })
+    );
+  }
+
+  /** Expand a stage's args over the staged `srcs`: a glob arg matches file names
+   * in `srcs` (failglob — an empty match is a positioned error); a literal arg
+   * passes through. */
+  private expandArgs(args: IPositionedName[], srcs: FileSet): Computable<string[]> {
+    return Computable.forAll(
+      args.map(arg => {
+        if (!arg.name.hasGlob()) {
+          return Computable.resolve([arg.name.toString()]);
+        }
+        return srcs.find(arg.name).then(matched => {
+          const names = [...matched].map(([fileName]) => fileName).sort((a, b) => a.localeCompare(b));
+          if (names.length === 0) {
+            throw new NameResolutionError(arg.name, declPosn(arg.ref), useSiteOf(this.stack), "no files in 'srcs' match this glob");
+          }
+          return names;
+        });
+      }),
+      (...expanded: string[][]) => expanded.flat()
+    );
+  }
+
+  /** Resolve a stage's `< source` to a single-file set (streamed to stdin), or
+   * undefined if the stage takes no stdin. */
+  private resolveStdin(stdin: IPositionedName | undefined): Computable<FileSet | undefined> {
+    if (!stdin) {
+      return Computable.resolve(undefined);
+    }
+    return this.getGlobalTarget(stdin.name.toString()).then(sources => {
+      const set = FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet));
+      const files = [...set];
+      if (files.length !== 1) {
+        throw new NameResolutionError(
+          stdin.name,
+          declPosn(stdin.ref),
+          useSiteOf(this.stack),
+          `stdin source must resolve to exactly one file (got ${files.length})`
+        );
+      }
+      return new FileSet(new Map([[files[0][0], files[0][1]]]));
+    });
+  }
 
   /**
    * Resolve a *write* coordinate — a `sync` member's `@npm:@fabr/core:0.1`,
@@ -1384,6 +1649,14 @@ export class DeclaredTargetContext extends TargetContext {
     );
   }
 
+  protected getCommandStages(name: string): Computable<IResolvedCommandStage[]> {
+    const prop = this.props[name];
+    if (!prop) {
+      return Computable.resolve([]);
+    }
+    return this.context.resolveCommand(prop, this.target, this.stack);
+  }
+
   public stampProvenance(result: FileSet): FileSet {
     const step: ITargetOrigin = { kind: TARGET_PROVENANCE, decl: this.target, parent: result.origin };
     return result.withOrigin(step);
@@ -1442,6 +1715,11 @@ export class AnonymousTargetContext extends TargetContext {
 
   /** An anonymous sub-target has no declaration body, so no wildcard properties. */
   public getWildcardProperties(): Computable<{ key: Name; decl: IPropertyDecl }[]> {
+    return Computable.resolve([]);
+  }
+
+  /** An anonymous sub-target has no declaration body, so no command. */
+  protected getCommandStages(): Computable<IResolvedCommandStage[]> {
     return Computable.resolve([]);
   }
 
