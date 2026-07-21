@@ -32,6 +32,7 @@ import {
   FileSet,
   FileSetRef,
   IFile,
+  MemoryFile,
   PackageFileSet,
   parseVersion,
   RunnableFileSet,
@@ -72,6 +73,16 @@ export function parseJSTarget(target: string): JSTarget {
   return { version, module, environment };
 }
 
+/**
+ * A minimal `package.json` whose `type` matches the JS target's module system,
+ * so node runs the install's emitted `.js` in the right mode (ESM by default,
+ * per the `es6-esm` default target). `extra` fields (e.g. name/private for a
+ * test install) are merged ahead of the computed `type`. Shared by every node
+ * install fabr stages to run compiled output — the test runner and js_script.
+ */
+export function moduleTypeFile(module: JSTarget["module"], extra: Record<string, unknown> = {}): MemoryFile {
+  return MemoryFile.from(JSON.stringify({ ...extra, type: module === "esm" ? "module" : "commonjs" }));
+}
 
 /**
  * @return whether the tree holds TypeScript sources that will be *typechecked*

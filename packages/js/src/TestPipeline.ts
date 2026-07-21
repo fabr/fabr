@@ -56,7 +56,7 @@ import {
   TestsFailedError,
   writeFileSet,
 } from "@fabr-build/core";
-import { assembleNodeModules, compileJsSources, JSTarget, parseJSTarget, stripPackageJson } from "./JSPackage";
+import { assembleNodeModules, compileJsSources, JSTarget, moduleTypeFile, parseJSTarget, stripPackageJson } from "./JSPackage";
 
 /* Fabr's own test runner lives in this @fabr-build/js installation, next to the
  * compiled rule code (packages/js/build/testRunner in the devchain build, or
@@ -223,9 +223,7 @@ function planTestRun(
     if (testFiles.length === 0) {
       throw new Error("Test target declares test files but none produced a runnable .js output");
     }
-    const packageJson = MemoryFile.from(
-      JSON.stringify({ name: "fabr-test", private: true, type: jsTarget.module === "esm" ? "module" : "commonjs" })
-    );
+    const packageJson = moduleTypeFile(jsTarget.module, { name: "fabr-test", private: true });
     const staged = FileSet.unionAll(
       FileSet.layout({ node_modules: [nodeModules], [RUNNER_STAGE_DIR]: [runnerRuntime], "package.json": packageJson }),
       stripPackageJson(copied),

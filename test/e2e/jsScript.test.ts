@@ -98,6 +98,68 @@ describe("e2e: js_script (runnable) + generate", () => {
     expect(result.stdout).to.equal("ran one");
   });
 
+  it("compiles a TypeScript entry file and runs it (commonjs)", () => {
+    /* File-mode with a `.ts` entry: it is compiled through js_compile (here the
+     * stub tsc, copying .ts→.js) and its emitted `.js` is launched. es2020 is
+     * commonjs, so the install's package.json type lets `require` work. */
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_script gen_prog { entry = src:gen.ts; }\n" +
+          "generate gen { run = gen_prog; output = out:**; }\n",
+        "src/gen.ts": 'require("fs").mkdirSync("out", { recursive: true });\nrequire("fs").writeFileSync("out/msg.txt", "ts ran\\n");\n',
+      },
+      ["-DJS_TARGET=es2020", "cat", "gen:msg.txt"]
+    );
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("ts ran\n");
+  });
+
+  it("runs an ESM TypeScript entry under node (module type honored)", () => {
+    /* The default target (es6-esm) makes the install ESM; the staged
+     * package.json `type: module` is what lets node run the emitted `.js` with
+     * `import` rather than treating it as CommonJS. */
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_script gen_prog { entry = src:gen.ts; }\n" +
+          "generate gen { run = gen_prog; output = out:**; }\n",
+        "src/gen.ts":
+          'import { mkdirSync, writeFileSync } from "fs";\nmkdirSync("out", { recursive: true });\nwriteFileSync("out/msg.txt", "esm ran\\n");\n',
+      },
+      ["cat", "gen:msg.txt"]
+    );
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("esm ran\n");
+  });
+
+  it("compiles source deps alongside a TypeScript entry", () => {
+    /* A source (non-package) dep is a compile input: it is compiled with the
+     * entry and importable as a sibling in the install. */
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_script gen_prog { entry = src:gen.ts; deps = src:util.ts; }\n" +
+          "generate gen { run = gen_prog; output = out:**; }\n",
+        "src/gen.ts":
+          'const { greet } = require("./util");\nrequire("fs").mkdirSync("out", { recursive: true });\nrequire("fs").writeFileSync("out/msg.txt", greet("Ada"));\n',
+        "src/util.ts": 'exports.greet = (name) => "hello, " + name + "!";\n',
+      },
+      ["-DJS_TARGET=es2020", "cat", "gen:msg.txt"]
+    );
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("hello, Ada!");
+  });
+
   it("fails with a clear error when entry names no file", () => {
     const result = runFabr(
       {
