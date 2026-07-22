@@ -43,6 +43,21 @@ default LIGHTNINGCSS = @npm:lightningcss:1.30.2;
 # from the installed @fabr-build/js providing the js rules, not resolved as a build
 # target. Selecting an alternative runner is deferred to a future version.
 
+################### Source-mode flags #####################
+
+#
+# Source-interpretation flags for TypeScript compilation. The compile is strict
+# by default (matching modern TS); list one of these in a target's 'deps' to
+# relax how tsc interprets that target's sources — a per-target escape hatch.
+# 'ts/nostrict' turns strict off wholesale; the others relax a single member of
+# the strict family while the rest stay on.
+#
+
+flag ts/nostrict { }
+flag ts/allow_implicit_any { }
+flag ts/allow_implicit_null { }
+flag ts/allow_uninitialized_props { }
+
 ################### JS-specific targets ####################
 
 #

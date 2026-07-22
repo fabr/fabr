@@ -22,7 +22,17 @@ import { jsxModeFor, makeTsConfig } from "./BuildJSCompile";
 import { parseJSTarget } from "../JSPackage";
 
 interface TsConfig {
-  compilerOptions: { jsx?: string; jsxImportSource?: string; allowJs?: boolean; checkJs?: boolean };
+  compilerOptions: {
+    jsx?: string;
+    jsxImportSource?: string;
+    allowJs?: boolean;
+    checkJs?: boolean;
+    strict?: boolean;
+    noImplicitAny?: boolean;
+    skipLibCheck?: boolean;
+    resolveJsonModule?: boolean;
+    sourceMap?: boolean;
+  };
   include: string[];
 }
 
@@ -58,6 +68,35 @@ describe("makeTsConfig", () => {
     const cfg = makeTsConfig(parseJSTarget("es2018-commonjs"), "es2018") as unknown as TsConfig;
     expect(cfg.compilerOptions.jsx).to.equal(undefined);
     expect(cfg.compilerOptions.jsxImportSource).to.equal(undefined);
+  });
+
+  it("is strict by default", () => {
+    const cfg = makeTsConfig(parseJSTarget("es2018-commonjs"), "es2018") as unknown as TsConfig;
+    expect(cfg.compilerOptions.strict).to.equal(true);
+  });
+
+  it("lets a source-mode overlay override the strict defaults", () => {
+    const cfg = makeTsConfig(parseJSTarget("es2018-commonjs"), "es2018", undefined, {
+      strict: false,
+      noImplicitAny: false,
+    }) as unknown as TsConfig;
+    expect(cfg.compilerOptions.strict).to.equal(false);
+    expect(cfg.compilerOptions.noImplicitAny).to.equal(false);
+  });
+
+  it("enables the ecosystem-baseline options", () => {
+    const cfg = makeTsConfig(parseJSTarget("es2018-commonjs"), "es2018") as unknown as TsConfig;
+    expect(cfg.compilerOptions.skipLibCheck).to.equal(true);
+    expect(cfg.compilerOptions.resolveJsonModule).to.equal(true);
+  });
+
+  it("emits JS source maps for debug and relwithdebinfo, not release", () => {
+    const cfg = (bt?: string): TsConfig =>
+      makeTsConfig(parseJSTarget("es2018-commonjs"), "es2018", undefined, {}, bt) as unknown as TsConfig;
+    expect(cfg("debug").compilerOptions.sourceMap).to.equal(true);
+    expect(cfg("relwithdebinfo").compilerOptions.sourceMap).to.equal(true);
+    expect(cfg("release").compilerOptions.sourceMap).to.equal(undefined);
+    expect(cfg(undefined).compilerOptions.sourceMap).to.equal(undefined);
   });
 });
 

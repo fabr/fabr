@@ -56,10 +56,18 @@ export function jsxModeFor(buildType: string | undefined): "react-jsx" | "react-
  * transform is emitted — a JSX source's code imports `<jsxImportSource>/jsx-runtime`,
  * so the target must carry that runtime as a dep (auto-detected, see resolveJsxImportSource).
  */
+/** BUILD_TYPEs that carry JS source maps: full debugging (`debug`) and
+ * optimized-but-debuggable (`relwithdebinfo`); `release` strips them. */
+function emitsSourceMap(buildType: string | undefined): boolean {
+  return buildType === "debug" || buildType === "relwithdebinfo";
+}
+
 export function makeTsConfig(
   jsTarget: JSTarget,
   runtime: string,
-  jsx?: { mode: string; importSource: string }
+  jsx?: { mode: string; importSource: string },
+  modeOverlay: Record<string, unknown> = {},
+  buildType?: string
 ): Record<string, unknown> {
   return {
     compilerOptions: {
@@ -67,8 +75,17 @@ export function makeTsConfig(
       declarationMap: true,
       outDir: "build",
       rootDir: "src",
-      /* Strict by default; TODO: needs a way to flag it off per target */
+      /* Strict by default (fabr's own code and modern TS); a target relaxes it
+       * per its `deps` source-mode flags, folded in via `modeOverlay` below. */
       strict: true,
+      /* Ecosystem-baseline options every real tsconfig sets: skip typechecking
+       * dependency .d.ts (a broken third-party type can't fail the build, and
+       * it's faster) and allow `import data from "./x.json"`. Both additive —
+       * code that didn't need them is unaffected. (esModuleInterop is a stronger
+       * candidate still, but it changes `import * as` callable semantics, so it
+       * is deferred rather than defaulted here.) */
+      skipLibCheck: true,
+      resolveJsonModule: true,
       /* Accept .js/.jsx as compile inputs (downleveled to `target`, and
        * importable from .ts), but never typecheck them. */
       allowJs: true,
@@ -77,11 +94,17 @@ export function makeTsConfig(
       lib: jsTarget.environment === "browser" ? [runtime, "dom"] : [runtime],
       module: jsTarget.module === "esm" ? "esnext" : "commonjs",
       moduleResolution: "node",
+      /* JS source maps for debuggable builds; `release` omits them. tsc always
+       * writes the `//# sourceMappingURL=` link comment when `sourceMap` is on. */
+      ...(emitsSourceMap(buildType) ? { sourceMap: true } : {}),
       ...(jsx ? { jsx: jsx.mode, jsxImportSource: jsx.importSource } : {}),
       /* tsc ignores FORCE_COLOR (it only checks its own TTY), so formatted
        * diagnostics must be forced here; unwanted codes are stripped at
        * render time. Note this also overrides the child's NO_COLOR. */
       pretty: true,
+      /* Source-mode relaxations last, so they override the defaults above
+       * (e.g. `strict: false`, `noImplicitAny: false`). */
+      ...modeOverlay,
     },
     exclude: ["node_modules"],
     include: ["./src/**/*.ts", "./src/**/*.tsx", "./src/**/*.js", "./src/**/*.jsx"],
@@ -97,8 +120,12 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       context.getGlobalString("JS_TARGET"),
       context.getGlobalRunnable("TSC"),
       context.getGlobalString("BUILD_TYPE"),
+      context.getProperty("mode"),
     ],
-    (srcs, deps, runtime, target, tsc, buildType) => {
+    (srcs, deps, runtime, target, tsc, buildType, mode) => {
+      /* The source-mode overlay (tsconfig relaxations from the caller's deps
+       * flags), a JSON string input; absent for a default (strict) compile. */
+      const modeOverlay = mode ? (JSON.parse(mode.toString()) as Record<string, unknown>) : {};
       /* js_compile owns its node_modules layout (only it needs it) and its JSX
        * runtime: both read the ordered direct deps directly. A .tsx/.jsx source
        * needs a jsxImportSource (auto-detected from the deps); a JSX-free compile
@@ -109,7 +136,7 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       });
       const build = (jsxImportSource: string): RuleResult => {
         const jsx = jsxImportSource ? { mode: jsxModeFor(buildType), importSource: jsxImportSource } : undefined;
-        const tsconfig = makeTsConfig(parseJSTarget(target), runtime, jsx);
+        const tsconfig = makeTsConfig(parseJSTarget(target), runtime, jsx, modeOverlay, buildType);
         const workingDir = FileSet.layout({
           node_modules: assembleScopedNodeModules(deps),
           src: srcs,

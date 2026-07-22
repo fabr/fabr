@@ -39,6 +39,7 @@ import {
   EMPTY_FILESET,
   FileSet,
   FileSetRef,
+  Flag,
   manifestAll,
   PackageFileSet,
   RuleRegistration,
@@ -103,7 +104,10 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
              * runs the emitted code (ESM by default) in the right mode. */
             if (/\.tsx?$/i.test(entryName)) {
               const jsTarget = parseJSTarget(target);
-              const { compiled, copied } = compileJsSources(context, entrySet, depSets, jsTarget);
+              /* Source-mode flags (strictness relaxations) among the deps are
+               * folded into the compile's tsconfig by compileJsSources. */
+              const modeFlags = depSources.filter((source): source is Flag => source instanceof Flag);
+              const { compiled, copied } = compileJsSources(context, entrySet, depSets, jsTarget, modeFlags);
               const launchName = entryName.replace(/\.tsx?$/i, ".js");
               return (compiled ?? Computable.resolve(EMPTY_FILESET)).then(compiledTree => {
                 const install = FileSet.unionAll(

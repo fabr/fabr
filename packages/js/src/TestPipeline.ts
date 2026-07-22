@@ -41,6 +41,7 @@ import {
   FileSet,
   fileSetInput,
   findExecutable,
+  Flag,
   formatTestFailures,
   getResultFileSet,
   IActionContext,
@@ -171,7 +172,18 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
       /* The test compile may import the package's deps, the test_deps, and the
        * runner globals directly; the runtime install is the flat closure. */
       const runtimeModules = assembleNodeModules([...deps, ...testDeps]);
-      const { compiled, copied } = compileJsSources(context, sources, [...deps, ...testDeps, globalsTypes], jsTarget);
+      /* Source-mode flags (strictness relaxations) among the deps/test_deps are
+       * folded into the compile's tsconfig by compileJsSources. */
+      const modeFlags = [...inputs.depSources, ...inputs.testDepSources].filter(
+        (source): source is Flag => source instanceof Flag
+      );
+      const { compiled, copied } = compileJsSources(
+        context,
+        sources,
+        [...deps, ...testDeps, globalsTypes],
+        jsTarget,
+        modeFlags
+      );
       if (!compiled) {
         /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
          * so there is nothing to run — a loud failure, not a silent green. */

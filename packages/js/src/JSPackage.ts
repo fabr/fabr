@@ -26,11 +26,13 @@
 import { posix } from "path";
 import {
   BUILD_OPERATION,
+  BuildActionInputs,
   Computable,
   compareVersions,
   EMPTY_FILESET,
   FileSet,
   FileSetRef,
+  Flag,
   IFile,
   MemoryFile,
   PackageFileSet,
@@ -174,11 +176,50 @@ export function resolveJsxImportSource(directDeps: FileSet[]): Computable<string
   );
 }
 
+/**
+ * Source-interpretation (tsconfig) options a target opts into by listing a
+ * source-mode `flag` in its `deps` (shipped in JS.fabr; see the vocabulary
+ * there). The compile is strict by default — matching fabr's own code and
+ * modern TS — so these flags name *deviations* from that baseline: relaxations
+ * of the strict family. A flag is recognized by its qualified target name
+ * ({@link Flag.name}) and maps to a `compilerOptions` fragment merged after the
+ * defaults (so `strict: false` overrides the default `strict: true`). A flag's
+ * `provides` closure is walked too, so a composite flag expands to its members;
+ * an unrecognized flag is ignored here (it may address a different rule).
+ */
+const SOURCE_MODE_OPTIONS: Record<string, Record<string, unknown>> = {
+  "ts/nostrict": { strict: false },
+  "ts/allow_implicit_any": { noImplicitAny: false },
+  "ts/allow_implicit_null": { strictNullChecks: false },
+  "ts/allow_uninitialized_props": { strictPropertyInitialization: false },
+};
+
+/**
+ * Fold a set of source-mode flags (with their `provides` closures) into the
+ * `compilerOptions` overlay they request. Later flags win on a shared key; an
+ * empty result means the default (strict) tsconfig stands unchanged.
+ */
+export function resolveSourceMode(flags: Flag[]): Record<string, unknown> {
+  const overlay: Record<string, unknown> = {};
+  const seen = new Set<Flag>();
+  const walk = (flag: Flag): void => {
+    if (seen.has(flag)) {
+      return;
+    }
+    seen.add(flag);
+    Object.assign(overlay, SOURCE_MODE_OPTIONS[flag.name]);
+    flag.provides.forEach(walk);
+  };
+  flags.forEach(walk);
+  return overlay;
+}
+
 export function compileJsSources(
   context: TargetContext,
   sources: FileSet,
   directDeps: FileSet[],
-  jsTarget: JSTarget
+  jsTarget: JSTarget,
+  modeFlags: Flag[] = []
 ): ICompiledSources {
   const sourceGroups = sources.partition(path => {
     const lower = path.toLowerCase();
@@ -231,11 +272,17 @@ export function compileJsSources(
       declarations,
       ...sourceDeps
     );
-    compiled = context.subTarget(
-      "js_compile",
-      { srcs, deps: packageDeps, runtime: jsTarget.version },
-      { label: "Compiling", constraints: { [BUILD_OPERATION]: "build" } }
-    );
+    /* The source-mode overlay rides as an extra `mode` input only when non-empty,
+     * so a default (strict) compile keeps its old cache key — no spurious recompile. */
+    const inputs: BuildActionInputs = { srcs, deps: packageDeps, runtime: jsTarget.version };
+    const mode = resolveSourceMode(modeFlags);
+    if (Object.keys(mode).length > 0) {
+      inputs.mode = JSON.stringify(mode);
+    }
+    compiled = context.subTarget("js_compile", inputs, {
+      label: "Compiling",
+      constraints: { [BUILD_OPERATION]: "build" },
+    });
   }
 
   return { compiled, copied: FileSet.unionAll(sourceGroups.copy ?? EMPTY_FILESET, declarations) };

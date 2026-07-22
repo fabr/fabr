@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { Computable, FileSet, IFile, MemoryFile, PackageFileSet, SymlinkFile } from "@fabr-build/core";
+import { Computable, FileSet, Flag, IFile, MemoryFile, PackageFileSet, SymlinkFile } from "@fabr-build/core";
 import {
   assembleNodeModules,
   assembleScopedNodeModules,
@@ -26,6 +26,7 @@ import {
   makeNpmRunnable,
   parseJSTarget,
   resolveJsxImportSource,
+  resolveSourceMode,
 } from "./JSPackage";
 
 /** A package with a single `index.js` and the given (already-built) deps. */
@@ -221,6 +222,33 @@ describe("parseJSTarget", () => {
     expect(() => parseJSTarget("es2018-esm-nodejs")).to.throw(/environment must be/);
     expect(() => parseJSTarget("es2018-esm-node-extra")).to.throw(/expected/);
     expect(() => parseJSTarget("es20x8-esm")).to.throw(/ECMAScript version/);
+  });
+});
+
+describe("resolveSourceMode", () => {
+  it("is empty (default strict) with no flags", () => {
+    expect(resolveSourceMode([])).to.deep.equal({});
+  });
+
+  it("ignores unrecognized flags (they may address other rules)", () => {
+    expect(resolveSourceMode([new Flag("some/other-flag", [])])).to.deep.equal({});
+  });
+
+  it("maps a recognized flag to its compilerOptions fragment", () => {
+    expect(resolveSourceMode([new Flag("ts/nostrict", [])])).to.deep.equal({ strict: false });
+    expect(resolveSourceMode([new Flag("ts/allow_implicit_any", [])])).to.deep.equal({ noImplicitAny: false });
+  });
+
+  it("merges several flags into one overlay", () => {
+    expect(resolveSourceMode([new Flag("ts/allow_implicit_any", []), new Flag("ts/allow_implicit_null", [])])).to.deep.equal({
+      noImplicitAny: false,
+      strictNullChecks: false,
+    });
+  });
+
+  it("walks a composite flag's provides closure", () => {
+    const composite = new Flag("my/relaxed", [new Flag("ts/nostrict", []), new Flag("ts/allow_implicit_any", [])]);
+    expect(resolveSourceMode([composite])).to.deep.equal({ strict: false, noImplicitAny: false });
   });
 });
 
