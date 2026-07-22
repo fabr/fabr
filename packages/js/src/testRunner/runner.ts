@@ -116,6 +116,14 @@ function finish(results: ITestResult[], reportPath: string, start: number): void
   process.exitCode = failed > 0 ? 1 : 0;
 }
 
+/* Per-test timeout: a safety net so a hung test (a runaway loop, a subprocess
+ * blocked on stdin that never closes) fails as a timeout rather than hanging the
+ * whole run forever — node:test defaults to no timeout, unlike jest's 5s. Baked
+ * in (tests run with a clean env, so an env knob could not reach here) and set
+ * generously — well above the slowest legit test (the watch/serve suites cap
+ * themselves at 90s) — so it only ever catches a genuine hang. */
+const TEST_TIMEOUT_MS = 120_000;
+
 export function main(argv: string[]): void {
   const options = parseArgs(argv);
   const results: ITestResult[] = [];
@@ -124,7 +132,7 @@ export function main(argv: string[]): void {
    * shim (describe/it/expect/...) into them via the inherited environment */
   const preload = `--require ${JSON.stringify(path.join(__dirname, "globals.js"))}`;
   process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, preload].filter(Boolean).join(" ");
-  const stream = run({ files: options.files.map(file => path.resolve(file)) });
+  const stream = run({ files: options.files.map(file => path.resolve(file)), timeout: TEST_TIMEOUT_MS });
   stream.on("test:pass", data => record(results, data as unknown as ITestEvent, "pass"));
   stream.on("test:fail", data => record(results, data as unknown as ITestEvent, "fail"));
   stream.once("end", () => finish(results, options.report, start));
