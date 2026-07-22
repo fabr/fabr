@@ -33,6 +33,11 @@ const TOOL_FILES = {
   "src/upper.js": "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(d.toUpperCase()));\n",
 };
 
+/* A tool that WRITES A FILE (rather than to a stream), to exercise the `output`
+ * glob that collects files the command wrote. */
+const WRITER = "plugin @fabr-build/js;\njs_script writer { entry = src:writer.js; }\n";
+const WRITER_FILES = { "src/writer.js": "require('fs').writeFileSync('made.txt','content\\n');\n" };
+
 describe("e2e: generate command pipelines", () => {
   it("captures a command's stdout as content ('> name')", () => {
     const result = runFabr(
@@ -95,6 +100,46 @@ describe("e2e: generate command pipelines", () => {
     );
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal("hello\n");
+  });
+
+  it("collects files the command wrote via the 'output' glob", () => {
+    const result = runFabr(
+      { "PROJECT.fabr": WRITER + "generate g { run = writer; output = made.txt; }\n", ...WRITER_FILES },
+      ["cat", "g:made.txt"]
+    );
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("content\n");
+  });
+
+  it("errors when the 'output' glob matches nothing the command wrote (not a silent empty success)", () => {
+    /* The command succeeds but writes made.txt, which `dist:**` never matches:
+     * a declared output that collects zero files is a build error, positioned at
+     * the target with a help hint — not a green build with no output. */
+    const result = runFabr(
+      { "PROJECT.fabr": WRITER + "generate g { run = writer; output = dist:**; }\n", ...WRITER_FILES },
+      ["build", "g"]
+    );
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.match(/no files matching output pattern 'dist:\*\*'/);
+    expect(result.stderr).to.match(/help:/);
+  });
+
+  it("streams a successful command's output to stderr by default, suppressed with -q", () => {
+    /* A successful step's un-redirected output is shown live on fabr's stderr, and
+     * -q silences it. Each run uses a DISTINCT marker so both are genuine cache
+     * misses (the e2e cache is shared + content-addressed — an identical build
+     * would be a hit and run nothing, forwarding nothing regardless of -q). */
+    const project = (marker: string): Record<string, string> => ({
+      "PROJECT.fabr": "plugin @fabr-build/js;\njs_script noisy { entry = src:noisy.js; }\ngenerate g { run = noisy > out.txt; }\n",
+      "src/noisy.js": `process.stderr.write(${JSON.stringify(marker)});\n`,
+    });
+    const shown = runFabr(project("MARK-SHOWN-a1b2"), ["build", "g"]);
+    expect(shown.status).to.equal(0);
+    expect(shown.stderr).to.contain("MARK-SHOWN-a1b2");
+
+    const quiet = runFabr(project("MARK-QUIET-c3d4"), ["build", "-q", "g"]);
+    expect(quiet.status).to.equal(0);
+    expect(quiet.stderr).to.not.contain("MARK-QUIET-c3d4");
   });
 
   it("rejects a pipeline operator in a non-COMMAND target property (Validate)", () => {

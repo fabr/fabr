@@ -154,6 +154,11 @@ export class ExecutionContext {
   /** The build-cycle counter, shared with the watch controller (which advances it). */
   private readonly cycle: BuildCycle;
   private progressListener?: ProgressListener;
+  /** Whether a subcommand's output is captured to a buffer and shown only on
+   * failure (`-q`), rather than inherited live to fabr's stderr as the step runs.
+   * Read by {@link BuildContext.runAction} into each action's context; set by the
+   * driver, and defaults to inherit-live. */
+  public quiet = false;
   /** Per-run state a plugin keeps here, keyed by its {@link PluginKey}. Lazily
    *  populated on first access (see {@link getOrCreatePluginContext}). */
   private readonly pluginContexts = new Map<PluginKey<unknown>, unknown>();

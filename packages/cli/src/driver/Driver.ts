@@ -53,6 +53,7 @@ import {
 } from "@fabr-build/core";
 import { DiagnosticErrorFormatter, ErrorFormatter } from "./ErrorFormatter";
 import { runInteractive, RunSupervisor } from "./RunHandler";
+import { shellInto } from "./ShellHandler";
 import { publishSync } from "./SyncHandler";
 import { Mode, Options } from "./Command";
 import { getSourceRoot, getBuildCacheRoot, getHostProperties, PROJECT_FILENAME } from "./Environment";
@@ -139,16 +140,25 @@ export function runFabr(options: Options): Promise<void> {
     (options.command === "build" || options.command === "test" || options.command === "run");
   switch (options.command) {
     case "ls":
-      return runWith((model, execution) =>
-        Computable.forAll(resolveNames(model, options, execution), (...results) => listTargets(options, results))
+      return runWith(
+        (model, execution) =>
+          Computable.forAll(resolveNames(model, options, execution), (...results) => listTargets(options, results)),
+        false,
+        options.quiet
       );
     case "cat":
-      return runWith((model, execution) =>
-        Computable.forAll(resolveNames(model, options, execution), (...results) => catTarget(options, results))
+      return runWith(
+        (model, execution) =>
+          Computable.forAll(resolveNames(model, options, execution), (...results) => catTarget(options, results)),
+        false,
+        options.quiet
       );
     case "cp":
-      return runWith((model, execution) =>
-        Computable.forAll(resolveNames(model, options, execution), (...results) => copyTarget(options, execution, results))
+      return runWith(
+        (model, execution) =>
+          Computable.forAll(resolveNames(model, options, execution), (...results) => copyTarget(options, execution, results)),
+        false,
+        options.quiet
       );
     case "test":
       return runWith((model, execution) => {
@@ -160,11 +170,13 @@ export function runFabr(options: Options): Promise<void> {
         return Computable.forAll(targets, (...results) =>
           reportTestResults(execution.log, options, results).then(() => buildStatus(execution))
         );
-      }, watch);
+      }, watch, options.quiet);
     case "run":
-      return runWith((model, execution) => runProgram(model, options, execution, watch), watch);
+      return runWith((model, execution) => runProgram(model, options, execution, watch), watch, options.quiet);
+    case "shell":
+      return runWith((model, execution) => shellTarget(model, options, execution), false, options.quiet);
     case "sync":
-      return runWith((model, execution) => syncTargets(model, options, execution));
+      return runWith((model, execution) => syncTargets(model, options, execution), false, options.quiet);
     case "list-targets":
       return runWith(model => listDeclaredTargets(model, options));
     case "list-targetdefs":
@@ -175,7 +187,7 @@ export function runFabr(options: Options): Promise<void> {
         /* Report inside the callback (see the test case) so a watch rebuild
          * re-prints its status rather than being cut off at the void result. */
         return Computable.forAll(targets, () => buildStatus(execution));
-      }, watch);
+      }, watch, options.quiet);
   }
 }
 
@@ -223,6 +235,20 @@ function runProgram(
 }
 
 /**
+ * `fabr shell <target>`: resolve the target's build action WITHOUT running it,
+ * then stage its sandbox and open a shell in it (see {@link shellInto}). Builds
+ * under `build` like the real step, so the inputs that fill the sandbox are the
+ * real ones. Exits with the shell's own code.
+ */
+function shellTarget(model: BuildModel, options: Options, execution: ExecutionContext): Computable<void> {
+  const config = model.getConfig({ ...getHostProperties(), [BUILD_OPERATION]: "build", ...options.properties }, execution);
+  return config
+    .resolveActionForShell(options.targets[0])
+    .then(action => shellInto(options.targets[0], action, execution.log))
+    .then(code => flushAndExit(code));
+}
+
+/**
  * `fabr sync <target>…`: build each sync target under `build` to get its wire
  * artifacts (one PublishableFileSet  per member — a sync target's sources
  * ARE its members), then upload them. Building is the pure/cacheable half (the
@@ -251,7 +277,7 @@ function syncTargets(model: BuildModel, options: Options, execution: ExecutionCo
  * failure tree (exit 1) on error. Reaching a drained event loop without an
  * explicit exit is a stall bug, reported loudly (exit 2).
  */
-async function runWith(operation: Operation, watch = false): Promise<void> {
+async function runWith(operation: Operation, watch = false, quiet = false): Promise<void> {
   /* Diagnostics and progress go to stderr; command data (ls listings, cat
    * file contents) goes to stdout, so a build can be filtered from its output.
    * Color is a render-time decision only (NO_COLOR is any non-empty value):
@@ -291,6 +317,9 @@ async function runWith(operation: Operation, watch = false): Promise<void> {
     const absFileSource = new FSFileSource("/");
     const execution = new ExecutionContext(buildCache, log, sourceFileSource, absFileSource, cycle);
     execution.onProgress(progressListener(log));
+    /* Under -q a subcommand's output is captured and shown only on failure;
+     * otherwise the step inherits fabr's stderr and streams live as it runs. */
+    execution.quiet = quiet;
 
     if (controller) {
       return runWatched(operation, execution, log, controller);

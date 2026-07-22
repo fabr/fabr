@@ -53,7 +53,7 @@ export enum Mode {
  * under BUILD_OPERATION=build and then list / dump / copy-to-disk / publish the
  * results; `list-targetdefs` is a model-query verb that loads the model and prints
  * without building anything (so it needs no targets). */
-const COMMANDS = new Set(["build", "test", "run", "ls", "cat", "cp", "sync", "list-targets", "list-targetdefs"]);
+const COMMANDS = new Set(["build", "test", "run", "shell", "ls", "cat", "cp", "sync", "list-targets", "list-targetdefs"]);
 
 /** Model-query verbs: they inspect the loaded model rather than building targets,
  * so a bare invocation (no targets) is a valid "list everything" request. */
@@ -66,6 +66,9 @@ export interface Options {
   /** For the model-query verbs (`list-targets`/`list-targetdefs`): emit machine-
    * readable JSON instead of the human listing (the docs-generation interface). */
   json: boolean;
+  /** Suppress the live subcommand output that is otherwise streamed to stderr as
+   * build steps run (`-q`/`--quiet`); failure messages still include it. */
+  quiet: boolean;
   /** Target names, or (for `ls`/`cat`/`cp`) whole name references — `pkg:build/*.js`
    * — resolved by the model, not split here. For `cp` the trailing destination
    * path has already been split off into `dest`. */
@@ -87,6 +90,7 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  build             Build the given targets (the default)\n" +
       "  test              Run the given targets' tests\n" +
       "  run               Execute the given targets\n" +
+      "  shell             Stage a target's build sandbox and open a shell in it (debugging)\n" +
       "  ls                Build the given targets and list their contents\n" +
       "  cat               Build a target and write its matching files to stdout\n" +
       "  cp                Build targets and copy their files to a destination directory\n" +
@@ -97,6 +101,7 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  -l                Long listing: hash and size per file (ls), or source location (list-*)\n" +
       "  --json            Emit JSON (list-targets / list-targetdefs)\n" +
       "  -w                Watch mode\n" +
+      "  -q, --quiet       Suppress live subcommand output (shown by default as steps run)\n" +
       "  -v, --version     Print the fabr version and exit\n"
   );
 }
@@ -115,6 +120,7 @@ export function parseCommandLine(args: string[]): Options {
     mode: Mode.Normal,
     longListing: false,
     json: false,
+    quiet: false,
     targets: [],
     properties: {},
   };
@@ -133,6 +139,8 @@ export function parseCommandLine(args: string[]): Options {
         options.longListing = true;
       } else if (arg === "--json") {
         options.json = true;
+      } else if (arg === "-q" || arg === "--quiet") {
+        options.quiet = true;
       } else if (arg === "-h") {
         printUsage();
         process.exit(0);

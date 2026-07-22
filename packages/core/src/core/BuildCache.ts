@@ -35,6 +35,10 @@ export interface IOutputHandle {
 export interface IActionContext {
   readonly workDir: string;
   createOutput(): IOutputHandle;
+  /** Whether the action should capture a subprocess's output and show it only on
+   * failure (`-q`), rather than inherit fabr's stderr and let it stream live. Set
+   * by the framework from the run's verbosity. */
+  readonly quiet: boolean;
 }
 
 const DIAG_SERVING_STALE = Diagnostic.Warn<{ url: string; reason: string }>(

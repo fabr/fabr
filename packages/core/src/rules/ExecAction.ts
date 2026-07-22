@@ -56,12 +56,12 @@ export function stringInput(inputs: BuildActionInputs, name: string, fallback?: 
   return value;
 }
 
-function runExec(inputs: BuildActionInputs, { workDir }: IActionContext): Computable<FileSet> {
+function runExec(inputs: BuildActionInputs, { workDir, quiet }: IActionContext): Computable<FileSet> {
   const files = fileSetInput(inputs, "files");
   const argv = stringListInput(inputs, "argv");
   const outputs = stringInput(inputs, "outputs", "**");
   return writeFileSet(workDir, files)
-    .then(() => execute(findExecutable(argv[0]), argv.slice(1), workDir, {}))
+    .then(() => execute(findExecutable(argv[0]), argv.slice(1), workDir, {}, quiet))
     .then(() => getResultFileSet(workDir, outputs));
 }
 

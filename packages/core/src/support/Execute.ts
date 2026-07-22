@@ -85,11 +85,12 @@ export function findExecutable(name: string): string {
 }
 
 /**
- * Because the child's output is captured (a pipe, not a TTY), tools would
- * suppress their color/formatting; these conventional variables ask them not
- * to. Set unconditionally — never conditioned on the driver's own terminal —
- * so a step's environment stays deterministic; the driver strips the codes at
- * render time when its output isn't a TTY. A caller's own env entries win.
+ * Ask tools to keep their color/formatting: set unconditionally so a step's
+ * environment stays deterministic — never conditioned on the driver's terminal
+ * (a step's inputs, and thus its cache key, must not depend on it). When output
+ * is captured (quiet), the driver strips the codes at render time if its own
+ * output isn't a TTY; when inherited (live), the child writes straight to fabr's
+ * stderr and the codes stand as-is. A caller's own env entries win.
  */
 const FORCE_COLOR_ENV = { FORCE_COLOR: "1", CLICOLOR_FORCE: "1" };
 
@@ -99,35 +100,41 @@ function commandLine(cmd: string, args: string[]): string {
   return "$ " + [cmd, ...args].map(quoteArg).join(" ");
 }
 
-export function execute(cmd: string, args: string[], cwd: string, env: Record<string, string>): Computable<void> {
+export function execute(cmd: string, args: string[], cwd: string, env: Record<string, string>, quiet = true): Computable<void> {
   /* A failed spawn emits 'error' then a spurious 'close' (code -2): Computable.once
    * keeps the first (informative ENOENT) rejection and drops the useless "-2". */
   return Computable.once((resolve, reject) => {
     const line = commandLine(cmd, args);
     /* stdin from /dev/null ("ignore"), not the default open pipe: a build step is
      * non-interactive, so a tool that reads stdin must get EOF at once rather than
-     * blocking forever on input the parent never sends. stdout/stderr stay piped
-     * so their output is captured below. */
-    const proc = spawn(cmd, args, { cwd, env: { ...FORCE_COLOR_ENV, ...env }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    /* Capture the tool's output (both streams, in arrival order) so that a
-     * failure can report what the tool actually said. */
+     * blocking forever on input the parent never sends. Then two modes for the
+     * output streams: `quiet` PIPES and captures them, showing them only if the
+     * step fails; otherwise the child INHERITS fabr's stderr for both (fd 2), so
+     * output goes straight to the terminal, live, and a failure needn't reprint
+     * what already scrolled by. Both streams go to *stderr*, never stdout: fabr's
+     * stdout is reserved for its own data (cat/ls), and a genrule runs during those
+     * too. The environment (color forced) is the same either way — deterministic,
+     * and a captured or inherited failure reads well on a TTY. */
     const output: Uint8Array[] = [];
-    proc.stdout.on("data", data => output.push(data));
-    proc.stderr.on("data", data => output.push(data));
+    const stdio: Array<"ignore" | "pipe" | number> = quiet ? ["ignore", "pipe", "pipe"] : ["ignore", 2, 2];
+    const proc = spawn(cmd, args, { cwd, env: { ...FORCE_COLOR_ENV, ...env }, stdio, windowsHide: true });
+    if (quiet) {
+      proc.stdout?.on("data", data => output.push(data));
+      proc.stderr?.on("data", data => output.push(data));
+    }
     /* Failure to spawn at all (e.g. missing executable) is reported through
      * the 'error' event; without a handler it would crash the process. */
     proc.on("error", err => {
       reject(new ExecutionError(`${line}\nunable to execute: ${systemErrorText(err)}`));
     });
-    /* Failures report the command line that ran first, then the tool's
-     * output, then how it ended. */
+    /* Failures report the command line, then (quiet only) the captured output,
+     * then how it ended; inherited output already reached the terminal live. */
     proc.on("close", (code, signal) => {
-      if (signal) {
-        reject(new ExecutionError(withOutput(line, output, `terminated by signal ${signal}`)));
-      } else if (code !== 0) {
-        reject(new ExecutionError(withOutput(line, output, `exited with error code ${code}`)));
-      } else {
+      const how = signal ? `terminated by signal ${signal}` : code !== 0 ? `exited with error code ${code}` : undefined;
+      if (how === undefined) {
         resolve();
+      } else {
+        reject(new ExecutionError(quiet ? withOutput(line, output, how) : `${line}\n${how}`));
       }
     });
   });
@@ -180,7 +187,8 @@ export function executePipeline(
   specs: StageSpec[],
   cwd: string,
   createOutput: () => IOutputHandle,
-  stdin?: Uint8Array
+  stdin?: Uint8Array,
+  quiet = true
 ): Computable<FileSet> {
   const captures: Capture[] = [];
   return Computable.once<void>((resolve, reject) => {
@@ -227,16 +235,20 @@ export function executePipeline(
         const isLast = i === specs.length - 1;
         const capBoth = spec.both !== undefined;
         const capStdout = spec.stdout !== undefined || capBoth;
-        /* stdin: first stage from supplied bytes (else EOF); a later stage reads
-         * the previous stage's stdout (wired below). stdout: piped when captured
-         * or feeding a next stage, else discarded. stderr: always piped so a
-         * failure can report it (or a capture can consume it). */
+        const capStderr = spec.stderr !== undefined || capBoth;
+        /* stdin: first stage from supplied bytes (else EOF); a later stage reads the
+         * previous stage's stdout (wired below). A stream captured as content or
+         * feeding the next stage is PIPED. A user-facing un-redirected stream is
+         * INHERITED to fabr's stderr (fd 2, live) — or, under `quiet`, piped and
+         * buffered (stderr, to report on failure) / discarded (a final stdout nobody
+         * reads). Env stays clean ({}) either way: captured content must be raw. */
         const stdinCfg = i === 0 ? (stdin ? "pipe" : "ignore") : "pipe";
-        const stdoutCfg = capStdout || !isLast ? "pipe" : "ignore";
+        const stdoutCfg = capStdout || !isLast ? "pipe" : quiet ? "ignore" : 2;
+        const stderrCfg = capStderr ? "pipe" : quiet ? "pipe" : 2;
         const proc = spawn(argvs[i][0], argvs[i].slice(1), {
           cwd,
           env: {},
-          stdio: [stdinCfg, stdoutCfg, "pipe"],
+          stdio: [stdinCfg, stdoutCfg, stderrCfg],
           windowsHide: true,
         });
         procs.push(proc);
@@ -261,7 +273,9 @@ export function executePipeline(
           }
           if (spec.stderr !== undefined) {
             proc.stderr?.pipe(capture(spec.stderr), { end: false });
-          } else {
+          } else if (quiet) {
+            /* Un-redirected stderr, buffered (small) to report on failure; not
+             * quiet, it was inherited to fd 2 above and there is nothing to buffer. */
             proc.stderr?.on("data", data => stderr[i].push(data));
           }
         }
@@ -331,13 +345,21 @@ function finalizeCaptures(captures: Capture[]): Computable<FileSet> {
  * is killed by a signal. This is the launch behind `fabr run`. `cwd` overrides
  * the inherited working directory — an install-anchored runnable (`launchCwd
  * === "install"`) launches at its staged root rather than the caller's cwd.
+ * `env` (when given) REPLACES the inherited environment — `fabr shell` passes the
+ * build step's own (clean) env so the sandbox matches what the build runs under;
+ * omitted, the child inherits this process's env (the `fabr run` case).
  */
-export function executeInteractive(cmd: string, args: string[], cwd?: string): Computable<number> {
+export function executeInteractive(
+  cmd: string,
+  args: string[],
+  cwd?: string,
+  env?: Record<string, string>
+): Computable<number> {
   /* A failed spawn emits 'error' then 'close': Computable.once keeps the informative
    * rejection and stops 'close' flipping a settled failure into a success. */
   return Computable.once((resolve, reject) => {
     const line = commandLine(cmd, args);
-    const proc = spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd });
+    const proc = spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd, env });
     proc.on("error", e => reject(new ExecutionError(`${line}\nunable to execute: ${systemErrorText(e)}`)));
     proc.on("close", (code, signal) => {
       if (signal) {

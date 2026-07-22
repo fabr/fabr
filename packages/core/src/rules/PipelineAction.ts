@@ -17,6 +17,7 @@
 import { getResultFileSet, writeFileSet } from "../core/Staging";
 import { IActionContext } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
+import { attachHelp } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { executePipeline, StageSpec } from "../support/Execute";
 import { BuildAction, BuildActionInputs } from "./Types";
@@ -39,11 +40,26 @@ function runPipeline(inputs: BuildActionInputs, ctx: IActionContext): Computable
 
   return writeFileSet(ctx.workDir, files)
     .then(() => stdinBytes(stdin))
-    .then(bytes => executePipeline(specs, ctx.workDir, () => ctx.createOutput(), bytes))
+    .then(bytes => executePipeline(specs, ctx.workDir, () => ctx.createOutput(), bytes, ctx.quiet))
     .then(captured =>
       /* Plus any files the tools wrote, when an `output` glob is given (a pure
-       * redirect genrule omits it and collects only the captures). */
-      output === "" ? Computable.resolve(captured) : getResultFileSet(ctx.workDir, output).then(written => FileSet.unionAll(written, captured))
+       * redirect genrule omits it and collects only the captures). A given
+       * `output` glob that matches nothing is an error, not a silent empty
+       * success: the command ran but produced none of the files the target
+       * declares it collects — almost always a wrong pattern or a tool that
+       * wrote elsewhere. (A pure-redirect genrule has output === "" and skips
+       * this; its captures are the output.) */
+      output === ""
+        ? Computable.resolve(captured)
+        : getResultFileSet(ctx.workDir, output).then(written => {
+            if (written.isEmpty()) {
+              throw attachHelp(
+                new Error(`the command produced no files matching output pattern '${output}'`),
+                `check the output pattern, or that the command writes its output where '${output}' looks`
+              );
+            }
+            return FileSet.unionAll(written, captured);
+          })
     );
 }
 
@@ -57,7 +73,9 @@ function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | undefined> 
   return files.length === 0 ? Computable.resolve(undefined) : files[0][1].getBuffer();
 }
 
-export const PIPELINE_ACTION = { id: "core:command-pipeline", version: 1, run: runPipeline };
+/* v2: a declared `output` glob that matches nothing is now an error, not a
+ * cached empty success — bump so entries cached green under v1 re-run. */
+export const PIPELINE_ACTION = { id: "core:command-pipeline", version: 2, run: runPipeline };
 
 /** @return a command-pipeline action from the resolved per-stage specs, the
  * combined staged fileset, an optional single-file stdin, and the `output`

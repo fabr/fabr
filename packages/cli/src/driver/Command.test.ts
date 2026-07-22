@@ -59,6 +59,7 @@ describe("Command", () => {
       mode: Mode.Normal,
       longListing: false,
       json: false,
+      quiet: false,
       targets: ["foo"],
       properties: {},
     });
@@ -70,6 +71,7 @@ describe("Command", () => {
       mode: Mode.Normal,
       longListing: false,
       json: false,
+      quiet: false,
       targets: ["foo", "bar"],
       properties: {},
     });
@@ -86,6 +88,7 @@ describe("Command", () => {
       mode: Mode.Watch,
       longListing: false,
       json: false,
+      quiet: false,
       targets: ["foo"],
       properties: { x: "1" },
     });
@@ -97,6 +100,7 @@ describe("Command", () => {
       mode: Mode.Normal,
       longListing: true,
       json: false,
+      quiet: false,
       targets: ["foo", "bar"],
       properties: {},
     });
