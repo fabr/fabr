@@ -5,7 +5,10 @@
   "homepage": "https://github.com/fabr/fabrjs",
   "main": "build/index.js",
   "types": "build/index.d.ts",
-  "dependencies": {
+  "peerDependencies": {
+    "@fabr-build/core": "0.1.0"
+  },
+  "devDependencies": {
     "@fabr-build/core": "0.1.0"
   }
 }

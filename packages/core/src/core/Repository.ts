@@ -194,8 +194,8 @@ export interface RepositoryWriter {
 
 /**
  * How a collection point consumes what it materializes — the enforcement input
- * for resolution repairs (floor raises, coexisting versions, conflict splits;
- * see DESIGN-tool-resolution.md). **"permissive"**: the closure is assembled
+ * for resolution repairs (floor raises, coexisting versions, conflict splits).
+ * **"permissive"**: the closure is assembled
  * into a sealed program that is executed, not linked against (a
  * runnable-definer's install, a run delivery) — repairs are accepted and the
  * install nests npm-style. **"strict"** (the default): the closure is linked

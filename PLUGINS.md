@@ -32,24 +32,25 @@ registration and has no side effects; the host merges the returned `PluginContri
 build model's rule tables and auto-includes its files.
 
 ```ts
-import type * as fabr from "@fabr/core";
-import type { PluginContribution } from "@fabr/core";
+import { packageLibFile, PluginContribution } from "@fabr/core";
 
-export function activate(api: typeof fabr): PluginContribution {
+export function activate(): PluginContribution {
   return {
     rules: [
       { type: "my_thing", constraints: { BUILD_OPERATION: "build" }, evaluate: buildMyThing },
     ],
     repositories: [{ type: "my_repository", provider: createMyRepository }],
-    includes: [api.packageLibFile("@my/plugin", "MYLIB.fabr")],
+    includes: [packageLibFile("@my/plugin", "MYLIB.fabr")],
   };
 }
 ```
 
-- `activate(api)` is a **pure function**: it returns a `PluginContribution` and registers nothing
-  globally. It is called once per load (per build); a plugin declared from several files
-  contributes once. The `api` object is the **host's own `@fabr/core` module instance** (the full
-  module namespace) — used for helpers like `packageLibFile`, not for registration.
+- `activate()` is a **pure function**: it takes no arguments, returns a `PluginContribution`, and
+  registers nothing globally. It is called once per load (per build); a plugin declared from several
+  files contributes once. A plugin reaches the host's facilities — helpers like `packageLibFile`,
+  the `TargetContext` types, `Computable`, etc. — by **importing `@fabr/core` directly**. That is
+  sound because a plugin always shares the host's single `@fabr/core` instance (see the single-copy
+  requirement below); it must never load a second copy.
 - `includes` are absolute paths to the plugin's own `.fabr` library files, auto-parsed and merged
   into the model when the plugin is declared. By convention a plugin ships them in `lib/`, next to
   its entry point, and names them with `packageLibFile("<its-own-name>", "FILE.fabr")` — which
@@ -84,7 +85,7 @@ export function activate(api: typeof fabr): PluginContribution {
     composition is always via sub-targets.
 
   The evaluation/caching model these hang off is described in `CLAUDE.md` and
-  `DESIGN-rules-and-caching.md`; this document covers only the registration surface.
+  `RATIONALE.md`; this document covers only the registration surface.
 - `repositories` — each `{ type, provider }` contributes a repository type. Repositories resolve
   requirements and are not rule-built targets: the provider is constructed lazily per build
   configuration against a narrow `RepositoryContext` (declared config properties,
@@ -111,7 +112,7 @@ they erase at compile time).
 ```
 my-plugin/
   package.json          main -> the module exporting activate()
-  index.js              activate(api): returns rules + lib files
+  index.js              activate(): returns rules + lib files
   lib/
     MYTHING.fabr        targetdefs, defaults, convenience targets
   ...rule modules...
@@ -130,11 +131,13 @@ my_thing hello {
 
 ## Current limitations
 
-- No build-plugin-from-source: the package must be installed. (A future variant may allow a plugin
-  to be built by fabr itself and loaded from the build cache — such a plugin would have to keep
-  its `@fabr/core` imports type-only and work purely through the `activate` api, since the cache
-  directory has no `node_modules`.)
-- The api injects only `@fabr/core`. A plugin cannot build on another plugin's exports (e.g.
+- No build-plugin-from-source: the package must be installed, because a plugin reaches `@fabr/core`
+  by ordinary module resolution (a direct import). (A future variant may allow a plugin to be built
+  by fabr itself and loaded from the build cache — but the cache directory has no `node_modules`, so
+  it would first need a way to hand the cache-loaded module the host's own `@fabr/core` instance,
+  the seam the old injected `api` argument once provided.)
+- A plugin builds on `@fabr/core` only. It cannot build on another plugin's exports (e.g.
   `@fabr/js`'s compile-pipeline helpers) without loading a second copy of that plugin, so
   cross-plugin extension isn't supported yet.
-- The api surface is currently the whole of `@fabr/core` and is not yet versioned or stable.
+- The available surface is the whole of `@fabr/core`, imported directly, and is not yet versioned or
+  stable.

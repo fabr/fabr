@@ -176,17 +176,37 @@ export function rewriteManifest(
   for (const field of DEPENDENCY_FIELDS) {
     const deps = result[field];
     if (deps && typeof deps === "object") {
-      const rewritten: Record<string, string> = { ...(deps as Record<string, string>) };
-      for (const dep of Object.keys(rewritten)) {
-        const memberVersion = memberVersions.get(dep);
-        if (memberVersion !== undefined) {
-          rewritten[dep] = `^${memberVersion}`;
-        }
-      }
-      result[field] = rewritten;
+      /* A peerDependency pins exact; the rest take a caret range (see
+       * {@link rewriteCoMemberField}). */
+      result[field] = rewriteCoMemberField(deps as Record<string, string>, memberVersions, field === "peerDependencies");
     }
   }
   return result;
+}
+
+/**
+ * Rewrite one dependency block's co-member entries to the members' assigned
+ * versions. A `peerDependencies` entry pins **exact**: a peer is singleton-by-
+ * identity (a `provided_deps` peer — see RATIONALE.md), so the consumer must
+ * supply the EXACT co-member instance the package was built against, not merely
+ * a semver-compatible one — a range can't express "the same loaded module".
+ * Every other field takes a caret range. (A stable inter-package ABI might later
+ * widen the others too; the peer stays exact regardless, since identity-compat
+ * is strictly stronger than API-compat.)
+ */
+function rewriteCoMemberField(
+  deps: Record<string, string>,
+  memberVersions: ReadonlyMap<string, string>,
+  exact: boolean
+): Record<string, string> {
+  const rewritten: Record<string, string> = { ...deps };
+  for (const dep of Object.keys(rewritten)) {
+    const memberVersion = memberVersions.get(dep);
+    if (memberVersion !== undefined) {
+      rewritten[dep] = exact ? memberVersion : `^${memberVersion}`;
+    }
+  }
+  return rewritten;
 }
 
 /** The release members this manifest depends on (for deps-first upload ordering). */

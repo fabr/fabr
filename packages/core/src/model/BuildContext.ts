@@ -135,7 +135,7 @@ export const BUILD_OPERATION = "BUILD_OPERATION";
  * The platform triple (clang/LLVM form, e.g. `arm64-apple-macosx15.0`,
  * `x86_64-linux-gnu`) fabr is actually running on — a driver-injected fact, not
  * meant to be overridden. Native rules consume it verbatim; the npm gate reads a
- * lossy {os,cpu,libc} projection off it. See DESIGN-target-triple.md.
+ * lossy {os,cpu,libc} projection off it.
  */
 export const HOST = "HOST";
 

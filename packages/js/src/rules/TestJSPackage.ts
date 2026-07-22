@@ -33,10 +33,20 @@ function testJsPackage(context: TargetContext): Computable<RuleResult> {
       context.getFileSet("tests", BUILD_OP),
       context.getGlobalString("JS_TARGET", BUILD_OP),
       context.getFileSources("deps", BUILD_OP),
+      context.getFileSources("provided_deps", BUILD_OP),
       context.getFileSources("test_deps", BUILD_OP),
     ],
-    (sources, tests, target, depSources, testDepSources) =>
-      compileAndRunTests(context, { sources, tests, target, depSources, testDepSources })
+    (sources, tests, target, depSources, providedSources, testDepSources) =>
+      /* A test install is self-contained — there is no fabr host to supply the
+       * provided (peer) deps — so they are just more `deps` here: compiled and
+       * installed identically, with no manifest to distinguish them. */
+      compileAndRunTests(context, {
+        sources,
+        tests,
+        target,
+        depSources: [...depSources, ...providedSources],
+        testDepSources,
+      })
   );
 }
 

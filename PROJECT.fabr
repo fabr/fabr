@@ -45,7 +45,10 @@ js_package @fabr-build/core {
 js_package @fabr-build/js {
   srcs = packages/js/src:**/*.ts packages/js:lib/** README.md COPYING -> LICENSE;
   tests = packages/js/src:**/*.test.ts;
-  deps = @pkg:@types/node @fabr-build/core;
+  deps = @pkg:@types/node;
+  # @fabr-build/js is a plugin: the fabr host supplies the one shared @fabr-build/core
+  # instance at runtime (peerDependency), so core is compiled against but not vendored.
+  provided_deps = @fabr-build/core;
   test_deps = chai;
   metadata = { FABR_METADATA; description = Fabr JS support plugin }
 }
@@ -69,4 +72,32 @@ sync release {
   @npm:@fabr-build/cli:${FABR_VERSION} = @fabr-build/cli;
   @npm:@fabr-build/core:${FABR_VERSION} = @fabr-build/core;
   @npm:@fabr-build/js:${FABR_VERSION} = @fabr-build/js;
+}
+
+# Documentation site: an Astro + Starlight project under docs/
+js_script astro {
+  entry = @npm:astro:7.1.1;
+  deps = @npm:@astrojs/starlight:0.41.3;
+}
+
+js_script gendoc {
+  entry = scripts/gendoc.ts;
+  deps = @pkg:@types/node;
+}
+
+generate reference_docs {
+  srcs = tools/docgen:PROJECT.fabr;
+  run = @fabr-build/cli list-targetdefs --json | gendoc > src/content/docs/reference/targets.md;
+}
+
+generate docs_site {
+  srcs = docs:** reference_docs;
+  run = astro build;
+  output = dist:**;
+}
+
+serve docs_serve {
+  tool = @npm:http-server:14.1.1;
+  files = docs_site;
+  args = .;
 }

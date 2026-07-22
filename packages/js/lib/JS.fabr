@@ -67,6 +67,11 @@ flag ts/allow_uninitialized_props { }
 targetdef js_package {
     srcs = FILES;
     deps = FILES;
+    # Host-provided (peer) dependencies: compiled and resolved against exactly
+    # like 'deps', but the host supplies the single shared copy at runtime, so
+    # they are emitted as peerDependencies (not dependencies) in the generated
+    # package.json rather than bundled. Used by a plugin for @fabr-build/core.
+    provided_deps = FILES;
     tests = FILES;
     # Extra packages for compiling and running the tests only (assertion
     # libraries and their @types); never part of the package's own
@@ -82,7 +87,8 @@ targetdef js_package {
     # into a block and override per package, later entries winning:
     # metadata = { COMMON; description = This package; };
     # A key fabr computes itself (name, version, type, main, types, bin,
-    # dependencies, devDependencies) is rejected rather than silently overridden.
+    # dependencies, devDependencies, peerDependencies) is rejected rather than
+    # silently overridden.
     metadata = MAP;
 }
 

@@ -658,6 +658,26 @@ describe("NPMRepository publish", () => {
     const manifest = JSON.parse(await (await carrier.get("package.json"))!.readString());
     expect(manifest.dependencies.base).to.equal("^1.5.0");
   });
+
+  it("pins a peerDependency to a co-member's exact version, not a caret", async () => {
+    const repo = new NPMRepository(REG, npmrcContext());
+    const app = coord(repo, "app:1.0.0");
+    const base = coord(repo, "base:1.5.0");
+    const [carrier] = await repo.package(
+      [
+        {
+          destination: app,
+          content: publishFileSet({ "package.json": JSON.stringify({ name: "app", peerDependencies: { base: "*" } }) }),
+        },
+        { destination: base, content: publishFileSet({ "package.json": JSON.stringify({ name: "base" }) }) },
+      ],
+      [app, base]
+    );
+    /* A peer is singleton-by-identity: the consumer must supply THIS exact
+     * instance, so it pins exact where a plain dependency takes a caret. */
+    const manifest = JSON.parse(await (await carrier.get("package.json"))!.readString());
+    expect(manifest.peerDependencies.base).to.equal("1.5.0");
+  });
 });
 
 /** Like fakeContext, but records the auth headers passed with each fetch and

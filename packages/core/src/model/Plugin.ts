@@ -23,12 +23,13 @@ import { PluginContribution } from "../rules/Types";
 /**
  * The shape a plugin package's entry point must export: `activate` is a pure
  * function that RETURNS the plugin's contribution (rules, repositories, include
- * dirs) — it performs no global registration. It receives the host's own
- * @fabr-build/core module instance as the api. The full plugin contract is documented
- * in PLUGINS.md.
+ * dirs) — it performs no global registration and takes no arguments. It reaches
+ * the host's facilities by importing `@fabr-build/core` directly; the single-copy
+ * invariant (a plugin shares the host's core instance, never a second copy) is
+ * what makes that sound. The full plugin contract is documented in PLUGINS.md.
  */
 interface IFabrPluginModule {
-  activate?: (api: unknown) => PluginContribution | undefined;
+  activate?: () => PluginContribution | undefined;
 }
 
 /**
@@ -39,10 +40,7 @@ interface IFabrPluginModule {
  * beyond the one-time module load — the loader may call it during the walk (to
  * learn a plugin's auto-included files) and dedupes contributions by plugin name.
  */
-export function activatePlugin(decl: IPluginDecl, api: unknown): PluginContribution {
-  if (api === undefined) {
-    throw new Error(`This host does not support plugins (requested by plugin '${decl.name}')`);
-  }
+export function activatePlugin(decl: IPluginDecl): PluginContribution {
   let entry: string;
   try {
     entry = require.resolve(decl.name);
@@ -54,5 +52,5 @@ export function activatePlugin(decl: IPluginDecl, api: unknown): PluginContribut
   if (typeof plugin.activate !== "function") {
     throw new Error(`Plugin '${decl.name}' does not export an activate() function`);
   }
-  return plugin.activate(api) ?? {};
+  return plugin.activate() ?? {};
 }

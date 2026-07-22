@@ -110,7 +110,6 @@ interface LoadedFile {
 export function loadProject(
   execution: ExecutionContext,
   startFile: string,
-  pluginApi?: unknown,
   /* The always-present base contribution — core's rules + STD.fabr. A parameter
    * (defaulting to the real thing) only so tests can substitute a stub whose
    * `includes` don't point at a real on-disk lib/ (unavailable under ts-jest,
@@ -121,7 +120,7 @@ export function loadProject(
   const activate = (decl: IPluginDecl): PluginContribution => {
     let contribution = contributions.get(decl.name);
     if (contribution === undefined) {
-      contribution = activatePlugin(decl, pluginApi);
+      contribution = activatePlugin(decl);
       contributions.set(decl.name, contribution);
     }
     return contribution;

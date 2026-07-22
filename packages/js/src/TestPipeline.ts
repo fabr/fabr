@@ -124,7 +124,10 @@ export interface ITestInputs {
   sources: FileSet;
   tests: FileSet;
   target: string;
-  /** The as-written (unmaterialized) dependency sources */
+  /** The as-written (unmaterialized) dependency sources. A js_package[test]
+   * folds its `provided_deps` in here — a test install is self-contained, so a
+   * peer is just another dep with no host to supply it and no manifest to
+   * distinguish it. */
   depSources: SourceRef[];
   /** Test-only packages (assertion libraries and their @types), available to
    * both the test compile and the test run but never to the package build */

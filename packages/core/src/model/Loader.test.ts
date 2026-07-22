@@ -50,7 +50,7 @@ function files(entries: Record<string, string>): FileSet {
 async function load(project: FileSet, startFile: string): Promise<BuildModel> {
   const errors: string[] = [];
   const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-  const model = await loadProject(exec(project, logger), startFile, undefined, NO_BASE);
+  const model = await loadProject(exec(project, logger), startFile, NO_BASE);
   expect(errors).to.deep.equal([]);
   return model;
 }
@@ -99,7 +99,7 @@ describe("Loader", () => {
     const logger = new LogFormatter(LogLevel.Info, () => undefined);
     let error: Error | undefined;
     try {
-      await loadProject(exec(project, logger), "PROJECT.fabr", undefined, NO_BASE);
+      await loadProject(exec(project, logger), "PROJECT.fabr", NO_BASE);
     } catch (err) {
       error = err as Error;
     }
@@ -111,7 +111,7 @@ describe("Loader", () => {
     const logger = new LogFormatter(LogLevel.Info, () => undefined);
     let error: Error | undefined;
     try {
-      await loadProject(exec(project, logger), "PROJECT.fabr", undefined, NO_BASE);
+      await loadProject(exec(project, logger), "PROJECT.fabr", NO_BASE);
     } catch (err) {
       error = err as Error;
     }
@@ -126,7 +126,7 @@ describe("Loader", () => {
     const logger = new LogFormatter(LogLevel.Info, msg => logged.push(msg));
     let error: Error | undefined;
     try {
-      await loadProject(exec(project, logger), "PROJECT.fabr", undefined, NO_BASE);
+      await loadProject(exec(project, logger), "PROJECT.fabr", NO_BASE);
     } catch (err) {
       error = err as Error;
     }

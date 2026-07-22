@@ -26,7 +26,7 @@
  *  - **css-modules** (lightningcss) — .module.* → scoped CSS + a value map; the
  *    proxy .js (a dual JS-value + CSS-side-effect module) is synthesized here.
  *  - **post** (lightningcss) — vendor prefix / minify over the emitted output —
- *    NOT wired yet (a later graph position; see DESIGN-css-pipeline.md).
+ *    NOT wired yet (a later graph position).
  *
  * Usage: node css-driver.js --manifest=<path-to-manifest.json>
  *

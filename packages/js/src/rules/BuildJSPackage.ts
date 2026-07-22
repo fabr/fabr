@@ -54,9 +54,10 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
       context.getGlobalString("JS_TARGET"),
       context.getProperty("version"),
       context.getFileSources("deps"),
+      context.getFileSources("provided_deps"),
       context.getMap("metadata"),
     ],
-    (sources, tests, target, version, depSources, metadata) => {
+    (sources, tests, target, version, depSources, providedSources, metadata) => {
       /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
       const seedJson = sources
         .get("package.json")
@@ -66,31 +67,53 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
       const jsTarget = parseJSTarget(target);
       const compileSources = sources.minus(tests);
 
-      /* THE collection point: the deps materialize through one joint resolution
-       * (a package needing Node APIs lists `@types/node` among them). TSC is the
-       * compiler's own concern (resolved in js_compile), independent of what it
-       * compiles. */
-      const gathered = context.collect({ deps: depSources });
+      /* THE collection point: deps AND provided_deps materialize through one
+       * joint resolution (a package needing Node APIs lists `@types/node` among
+       * them). `provided_deps` are host-provided, singleton-by-identity peers
+       * (the plugin↔core relationship — see `provided_deps` in RATIONALE.md):
+       * they take part in resolution, the compile, AND the carried closure exactly
+       * like `deps` (flatten + per-name uniqueness already yields the one shared
+       * instance the peer wants). They differ only in the generated manifest —
+       * `peerDependencies`, not `dependencies` — and in strict-singleton resolution
+       * enforcement (deferred). TSC is the compiler's own concern (resolved in
+       * js_compile), independent of what it compiles. */
+      const gathered = context.collect({ deps: depSources, provided: providedSources });
 
       /* Declared (not resolved) requirements for the generated manifest: each dep
        * source reports the version it was *declared* with — an inline `@npm:pkg:1.2.3`
        * off its own ref, a catalog dep from the catalog's pin — not the version the
-       * joint resolution selected. */
+       * joint resolution selected. Provided deps declare `peerDependencies`. */
       const declaredDeps = context.collectDeclaredRequirements(depSources);
+      const declaredProvided = context.collectDeclaredRequirements(providedSources);
 
-      return Computable.forAll([gathered, seedJson, declaredDeps], ({ deps }, seed, declared) => {
+      return Computable.forAll(
+        [gathered, seedJson, declaredDeps, declaredProvided],
+        ({ deps, provided }, seed, declared, providedDeclared) => {
         /* Compile against the deps laid out scoped: the sources see only these
          * direct deps, while the transitive closure is reachable only by the
-         * deps themselves (assembleScopedNodeModules). */
+         * deps themselves (assembleScopedNodeModules). Provided deps are on the
+         * compile path too (js codes against core's types), just not delivered. */
         /* Source-mode flags (strictness relaxations) ride alongside the file
          * deps; compileJsSources folds them into the compile's tsconfig. */
         const modeFlags = depSources.filter((source): source is Flag => source instanceof Flag);
-        const { compiled, copied } = compileJsSources(context, compileSources, deps, jsTarget, modeFlags);
+        const { compiled, copied } = compileJsSources(
+          context,
+          compileSources,
+          [...deps, ...provided],
+          jsTarget,
+          modeFlags
+        );
 
         /* The package's DIRECT deps as written (built packages as packages,
          * external requirements as inert references, resolved fresh at each
-         * consuming collection point) — carried on the delivered package. */
-        const carried = depSources.filter(
+         * consuming collection point) — carried on the delivered package.
+         * `provided_deps` are carried too: a carried dep is a reference the
+         * consumer re-resolves and flat-mounts (never bundled into this package),
+         * and flatten + per-name uniqueness already collapses it to the single
+         * shared instance the peer contract wants. Provided differs from a plain
+         * dep only in the manifest (peerDependencies, below) and in strict-
+         * singleton resolution enforcement (deferred). */
+        const carried = [...depSources, ...providedSources].filter(
           (source): source is PackageFileSet | RepositoryRef =>
             source instanceof PackageFileSet || source instanceof RepositoryRef
         );
@@ -108,6 +131,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
             context.name,
             version?.toString(),
             declared,
+            providedDeclared,
             jsTarget,
             metadata
           );
@@ -135,6 +159,7 @@ const COMPUTED_PACKAGE_FIELDS = new Set([
   "bin",
   "dependencies",
   "devDependencies",
+  "peerDependencies",
 ]);
 
 /** The error for a metadata key fabr computes itself: attributed through the
@@ -168,8 +193,9 @@ function encodeMetadataValue(value: PropertyMapValue): unknown {
  * package.json where one exists, overlaid with the declared `metadata` (the
  * descriptive fields — description, license, author, repository, ...), then
  * with what the target computes — its name, version, module type, entry
- * points, and the direct package requirements from its deps (these always win,
- * so metadata may not name one of them).
+ * points, the direct package requirements from its `deps` (`dependencies`), and
+ * from its `provided_deps` (`peerDependencies`) (these always win, so metadata
+ * may not name one of them).
  */
 function createPackageJson(
   files: FileSet,
@@ -177,6 +203,7 @@ function createPackageJson(
   name: string,
   version: string | undefined,
   declared: (Requirement | undefined)[],
+  providedDeclared: (Requirement | undefined)[],
   jsTarget: JSTarget,
   metadata: PropertyMap
 ): MemoryFile {
@@ -220,6 +247,11 @@ function createPackageJson(
   if (Object.keys(devDependencies).length > 0) {
     packageJson.devDependencies = devDependencies;
   }
+  /* provided_deps → peerDependencies: the host supplies the one shared copy. */
+  const peerDependencies = peerDependenciesOf(providedDeclared);
+  if (Object.keys(peerDependencies).length > 0) {
+    packageJson.peerDependencies = peerDependencies;
+  }
 
   return MemoryFile.from(JSON.stringify(packageJson, undefined, 2) + "\n");
 }
@@ -243,6 +275,22 @@ function packageDependencies(declared: (Requirement | undefined)[]): {
     }
   }
   return { dependencies, devDependencies };
+}
+
+/**
+ * The `peerDependencies` for the generated package.json — the declared
+ * requirements of `provided_deps`. Like `dependencies`, the version stated is the
+ * declaration (what the package requires of its host), not what resolution pinned;
+ * unlike `dependencies` there is no `@types/*` split — a peer is a runtime peer.
+ */
+function peerDependenciesOf(providedDeclared: (Requirement | undefined)[]): Record<string, string> {
+  const peerDependencies: Record<string, string> = {};
+  for (const req of providedDeclared) {
+    if (req) {
+      peerDependencies[req.pkg] = req.constraint;
+    }
+  }
+  return peerDependencies;
 }
 
 export const buildJsPackageRule: RuleRegistration = {

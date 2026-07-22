@@ -28,8 +28,7 @@
  * cwd at the working root and yields the generic `exec` action (output: `out/**`).
  *
  * The bundler stays dumb about CSS: this produces plain CSS + per-module proxy
- * modules; esbuild concatenates/orders/splits them via the JS import graph
- * (see DESIGN-css-pipeline.md).
+ * modules; esbuild concatenates/orders/splits them via the JS import graph.
  */
 
 import { posix } from "node:path";

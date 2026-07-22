@@ -86,7 +86,7 @@ function getBaseCacheDir(): string {
  * The host machine facts injected as ambient constraints at every getConfig site.
  * A single HOST platform triple (`arm64-apple-macosx15.0`, …) — TARGET defaults to
  * it (STD.fabr) and consumers gate on TARGET; the npm/native mapping lives in
- * core's Platform helper. See DESIGN-target-triple.md.
+ * core's Platform helper.
  */
 export function getHostProperties(): Record<string, string> {
   return {

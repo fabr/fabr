@@ -54,10 +54,6 @@ import {
 import { DiagnosticErrorFormatter, ErrorFormatter } from "./ErrorFormatter";
 import { runInteractive, RunSupervisor } from "./RunHandler";
 import { publishSync } from "./SyncHandler";
-/* The whole of @fabr-build/core doubles as the api object injected into plugins:
- * handing plugins the host's own module instance keeps every class and
- * registry shared (a plugin must never load a second copy of the core). */
-import * as pluginApi from "@fabr-build/core";
 import { Mode, Options } from "./Command";
 import { getSourceRoot, getBuildCacheRoot, getHostProperties, PROJECT_FILENAME } from "./Environment";
 import * as path from "node:path";
@@ -300,9 +296,7 @@ async function runWith(operation: Operation, watch = false): Promise<void> {
       return runWatched(operation, execution, log, controller);
     }
 
-    /* The system include path defaults to the directories the loaded rule
-     * packages registered (core + js via their imports; plugins later) */
-    return loadProject(execution, PROJECT_FILENAME, pluginApi)
+    return loadProject(execution, PROJECT_FILENAME)
       .then(model => operation(model, execution))
       .then(() => flushAndExit(0))
       .catch(err => {
@@ -349,7 +343,7 @@ function runWatched(
 
   /* This observer re-fires every time the operation's Computable re-settles (the
    * revalidation cascade after a change), so status/failure render per cycle. */
-  loadProject(execution, PROJECT_FILENAME, pluginApi)
+  loadProject(execution, PROJECT_FILENAME)
     .then(model => operation(model, execution))
     .then(
       () => log.log(DIAG_WATCHING, {}),
@@ -481,7 +475,7 @@ function catTarget(options: Options, results: SourceRef[][]): Computable<void> {
  * untouched) and breaks the cache hardlink (`copy: true`), so the copies are
  * independent of fabr's cache. A source matching no files is an error, raised
  * before a byte is written. (The declarative dual — laying built content into a
- * directory as part of a `sync` release — is parked; see DESIGN-sync.md.)
+ * directory as part of a `sync` release — is parked.)
  */
 function copyTarget(options: Options, execution: ExecutionContext, results: SourceRef[][]): Computable<void> {
   const sets: FileSet[] = [];

@@ -32,7 +32,7 @@
  * dependency on the host's core at runtime), and nothing here imports it.
  */
 
-import type * as fabr from "@fabr-build/core";
+import { packageLibFile, PluginContribution } from "@fabr-build/core";
 import { buildJsPackageRule } from "./rules/BuildJSPackage";
 import { runJsPackageRule } from "./rules/RunJSPackage";
 import { jsCompileRule } from "./rules/BuildJSCompile";
@@ -54,7 +54,7 @@ export { assembleNodeModules, compileJsSources, ICompiledSources, JSTarget, pars
  * `plugin @fabr-build/js;` declaration auto-includes. Pure: no global registration
  * (see PLUGINS.md); the host merges this into the build model's rule tables.
  */
-export function activate(api: typeof fabr): fabr.PluginContribution {
+export function activate(): PluginContribution {
   return {
     rules: [
       buildJsPackageRule,
@@ -67,6 +67,6 @@ export function activate(api: typeof fabr): fabr.PluginContribution {
       jsScriptRule,
     ],
     repositories: [npmRepositoryRegistration],
-    includes: [api.packageLibFile("@fabr-build/js", "JS.fabr")],
+    includes: [packageLibFile("@fabr-build/js", "JS.fabr")],
   };
 }
