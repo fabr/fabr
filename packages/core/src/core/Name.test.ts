@@ -107,6 +107,20 @@ describe("Name", () => {
       expect(rename("foo.other")).to.equal(undefined);
     });
 
+    it("keeps the rename and constraint facets when re-rooted relative to a file", () => {
+      /* A file-relative reference (`./DOCGEN.fabr -> PROJECT.fabr`) is re-rooted
+       * against its including file via relativeTo → withPrefix; the facets must
+       * survive so the rename (and any delta) still applies at the new path. */
+      const name = new NameBuilder()
+        .appendLiteralString("DOCGEN.fabr")
+        .name()
+        .withConstraints([["BUILD_TYPE", Name.fromLiteral("release")]])
+        .withRenameTo(new NameBuilder().appendLiteralString("PROJECT.fabr").name());
+      const rerooted = name.relativeTo("docs/BUILD.fabr");
+      expect(rerooted.getRenameTo()?.toString()).to.equal("PROJECT.fabr");
+      expect(rerooted.getConstraints().map(([k, v]) => [k, v.toString()])).to.deep.equal([["BUILD_TYPE", "release"]]);
+    });
+
     it("preserves directory structure under a recursive rename", () => {
       const recSel = new NameBuilder()
         .appendGlobMetachars("**")

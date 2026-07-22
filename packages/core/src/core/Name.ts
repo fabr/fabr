@@ -366,13 +366,17 @@ export class Name {
 
   /**
    * @return a new name with the given initial literal prefix added to the name.
+   * A pure structural re-rooting of the path (used by {@link relativeTo}): the
+   * constraint delta and `-> tmpl` rename facet ride along unchanged, so a
+   * file-relative reference keeps them (`./x.fabr -> PROJECT.fabr` re-rooted
+   * against its including file still renames).
    */
   public withPrefix(prefix: string): Name {
     if (this.parts[0].kind === NamePartKind.Literal) {
       const [head, ...rest] = this.parts;
-      return new Name([{ kind: NamePartKind.Literal, value: prefix + head.value }, ...rest]);
+      return new Name([{ kind: NamePartKind.Literal, value: prefix + head.value }, ...rest], this.constraints, this.renameTo);
     } else {
-      return new Name([{ kind: NamePartKind.Literal, value: prefix }, ...this.parts]);
+      return new Name([{ kind: NamePartKind.Literal, value: prefix }, ...this.parts], this.constraints, this.renameTo);
     }
   }
 

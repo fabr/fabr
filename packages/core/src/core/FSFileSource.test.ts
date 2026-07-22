@@ -141,3 +141,41 @@ describe("FSFileSource enumeration window (TreeQuery)", () => {
     expect(query.applyEvent("watchdir/child.ts", false)).to.equal(true);
   });
 });
+
+/* Resolving a `-> tmpl` rename against the real tree: a single file renames, a
+ * bare directory reference renames its whole subtree structure-preservingly (the
+ * `dir -> out` ≡ `dir/** -> out/**` alias), and a leading `./` on the reference
+ * doesn't defeat the rename. */
+describe("FSFileSource rename resolution", () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-fs-ren-"));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const resolved = async (name: Name): Promise<string[]> => {
+    const set = await toPromise(new FSFileSource(root).find(name));
+    return [...set].map(([n]) => n).sort();
+  };
+
+  it("renames a single file, with or without a leading ./ on the reference", async () => {
+    fs.writeFileSync(path.join(root, "single.txt"), "x");
+    const to = Name.fromLiteral("renamed.txt");
+    expect(await resolved(Name.fromLiteral("single.txt").withRenameTo(to))).to.deep.equal(["renamed.txt"]);
+    /* The regression: picomatch strips a leading `./` from the rename pattern but
+     * not the input, so a `./single.txt` name used to match nothing. */
+    expect(await resolved(Name.fromLiteral("./single.txt").withRenameTo(to))).to.deep.equal(["renamed.txt"]);
+  });
+
+  it("expands a bare directory rename to a structure-preserving subtree rename", async () => {
+    fs.mkdirSync(path.join(root, "stuff", "sub"), { recursive: true });
+    fs.writeFileSync(path.join(root, "stuff", "one.txt"), "a");
+    fs.writeFileSync(path.join(root, "stuff", "sub", "two.txt"), "b");
+    /* `stuff -> out` behaves as `stuff/** -> out/**`: every file keeps its path
+     * under the new root, at every depth. */
+    const dir = Name.fromLiteral("stuff").withRenameTo(Name.fromLiteral("out"));
+    expect(await resolved(dir)).to.deep.equal(["out/one.txt", "out/sub/two.txt"]);
+  });
+});

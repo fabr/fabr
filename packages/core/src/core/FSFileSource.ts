@@ -423,9 +423,15 @@ function toPosix(p: string): string {
  * The name's static leading path (its `:` alias separator is a path separator on
  * disk): the whole path for a literal name, the walk base for a glob. The
  * naming/membership rule stays on the {@link Name.makeProjector} projection.
+ *
+ * A leading `./` is dropped: it's a redundant "current directory" marker, and
+ * keeping it would make the single-file result name (`toPosix(staticPath)`)
+ * disagree with the walk case (which names files by their `./`-free disk-relative
+ * path) — and, worse, never match its own rename projection, since picomatch
+ * strips a leading `./` from a pattern but not from the input it tests.
  */
 function staticPath(name: Name): string {
-  return name.getLiteralPathPrefix().replaceAll(":", "/");
+  return name.getLiteralPathPrefix().replace(/^\.\//, "").replaceAll(":", "/");
 }
 
 /**
@@ -452,8 +458,21 @@ function enumerate(root: string, name: Name, prefix: string): Computable<{ names
    * children are later created. */
   const file = staticPath(name);
   const abs = path.resolve(root, file);
+  /* The two membership cases each honor a `-> tmpl` rename. `literal` covers the
+   * path-is-a-file case: `makeProjector` renames the single file it names (a
+   * non-glob name's rename is a literal 0-wildcard template — Validate rejects a
+   * mismatch). `subtree` covers the path-is-a-directory case: just as a bare `dir`
+   * expands to `dir/**`, a bare `dir -> out` expands structure-preservingly to
+   * `dir/** -> out/**`, so each file keeps its relative path under the new root
+   * (append the globstar to selector AND template to keep the wildcard counts
+   * balanced). A rename-free name gets the plain subtree glob. The two never
+   * overlap (`dir` vs `dir/…`), so `??` is unambiguous. */
+  const renameTo = name.getRenameTo();
+  const subtreeName = renameTo
+    ? name.appendGlobstar().withRenameTo(renameTo.appendGlobstar())
+    : name.appendGlobstar();
   const literal = name.makeProjector(prefix);
-  const subtree = name.appendGlobstar().makeProjector(prefix);
+  const subtree = subtreeName.makeProjector(prefix);
   const project: Projector = rel => literal(rel) ?? subtree(rel);
   return stat(abs).then(
     fileStat =>
