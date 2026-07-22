@@ -20,11 +20,11 @@
 import * as path from "node:path";
 
 import { Computable } from "../core/Computable";
-import { ErrorTrackingLog } from "../support/Log";
+import { Diagnostic, ErrorTrackingLog, IDiagnosticNote, ISourceSpan, LogLevel } from "../support/Log";
 import { BuildFilesInvalidError } from "./Errors";
 import { StringReader } from "../support/StringReader";
 import { parseBuildFile } from "./Parser";
-import { IBuildFileContents, IIncludeDecl, IPluginDecl } from "./AST";
+import { declPosn, IBuildFileContents, IIncludeDecl, IPluginDecl } from "./AST";
 import { BuildModel } from "./BuildModel";
 import { ExecutionContext } from "./ExecutionContext";
 import { activatePlugin } from "./Plugin";
@@ -38,6 +38,14 @@ import { generateRule } from "../rules/BuildGenerate";
 import { syncFilesRule, syncRule } from "../rules/BuildSync";
 import { catalogRepositoryRegistration } from "../rules/CatalogRepository";
 import { computableWorkList } from "../core/WorkList";
+
+/** An `include`d file could not be found on disk, positioned at the offending
+ * `include` decl so the report underlines it (with a `-->` back to the file that
+ * wrote the include) rather than emitting a bare, unattributed path. */
+const DIAG_INCLUDE_NOT_FOUND = new Diagnostic<{ filename: string; loc: ISourceSpan }>(
+  LogLevel.Error,
+  "Included file not found: {filename}"
+);
 
 /**
  * Core's own contribution to every build: the generic bootstrap rules (flag,
@@ -88,17 +96,46 @@ function resolveInclude(file: string, include: IIncludeDecl): string {
   return target;
 }
 
+/** The trail of `include`s that reached the file `site` lives in — one `note:`
+ * per hop, walking parent-to-root through the discovering-include map, so a
+ * failure deep in an include chain (`A included from B included from C…`) shows
+ * the whole path back to the project file, not just its immediate includer.
+ * Cycle-guarded (an include cycle keeps every file on it present, but a missing
+ * file reached *through* one could otherwise loop the walk). */
+function includeChain(sites: ReadonlyMap<string, IIncludeDecl>, site: IIncludeDecl): IDiagnosticNote[] {
+  const notes: IDiagnosticNote[] = [];
+  const seen = new Set<string>();
+  for (let parent = sites.get(site.source.file); parent && !seen.has(parent.source.file); ) {
+    seen.add(parent.source.file);
+    notes.push({ message: "included from here", loc: declPosn(parent) });
+    parent = sites.get(parent.source.file);
+  }
+  return notes;
+}
+
 /** One loaded build file: its parsed decls, the contribution of each plugin it
  * declares — carried on the value so collation gathers exactly the plugins that
- * are still declared by some reachable file — and its parse error count (parsing
- * recovers past errors rather than throwing, so the count rides on the value to
- * flow through the reactive graph: memoized per file, re-counted only when that
- * file re-parses). */
+ * are still declared by some reachable file — and its error count (parsing
+ * recovers past errors rather than throwing, and a missing `include` target is
+ * reported the same way, so the count rides on the value to flow through the
+ * reactive graph: memoized per file, re-counted only when that file re-parses). */
 interface LoadedFile {
   decls: IBuildFileContents;
   plugins: PluginContribution[];
   parseErrors: number;
 }
+
+/** The empty decl set for a file that failed to load (a missing include): it
+ * contributes no decls, plugins, or further includes, only its logged error. */
+const NO_DECLS: IBuildFileContents = {
+  namespaces: [],
+  targets: [],
+  targetdefs: [],
+  properties: [],
+  defaults: [],
+  includes: [],
+  plugins: [],
+};
 
 /**
  * Load and collate the project's build files into a BuildModel. Core is always
@@ -126,12 +163,31 @@ export function loadProject(
     return contribution;
   };
   const libFiles = (contribution: PluginContribution): string[] => contribution.includes ?? [];
+  /* The `include` decl that first pulled in each reached path, so a file that
+   * fails to load can be attributed to the include that named it (the work-list
+   * keys only on the path, losing the site otherwise). First writer wins — one
+   * positioned diagnostic per missing file is enough. */
+  const includeSites = new Map<string, IIncludeDecl>();
 
   return computableWorkList<string, LoadedFile>([startFile, ...libFiles(core)], file => {
     const fs = path.isAbsolute(file) ? execution.absFileSource : execution.sourceFileSource;
     return fs.get(file).then(f => {
       if (!f) {
-        throw new Error("File not found: " + file);
+        /* An include naming a missing file is a build-file error like any parse
+         * failure: report it positioned at the include and count it (so the load
+         * halts via BuildFilesInvalidError below), rather than a bare unattributed
+         * path. A missing seed/plugin-lib file has no include site — that stays a
+         * hard error (no project, or a broken installed plugin). */
+        const site = includeSites.get(file);
+        if (!site) {
+          throw new Error("File not found: " + file);
+        }
+        execution.log.log(DIAG_INCLUDE_NOT_FOUND, {
+          filename: site.filename,
+          loc: declPosn(site),
+          notes: includeChain(includeSites, site),
+        });
+        return { value: { decls: NO_DECLS, plugins: [], parseErrors: 1 }, next: [] };
       }
       return f.readString().then(content => {
         /* Parsing logs each error and recovers rather than throwing, so count
@@ -139,9 +195,16 @@ export function loadProject(
         const parseLog = new ErrorTrackingLog(execution.log);
         const decls = parseBuildFile({ fs, file, reader: new StringReader(content) }, parseLog);
         const plugins = decls.plugins.map(activate);
+        const includes = decls.includes.map(include => {
+          const target = resolveInclude(file, include);
+          if (!includeSites.has(target)) {
+            includeSites.set(target, include);
+          }
+          return target;
+        });
         return {
           value: { decls, plugins, parseErrors: parseLog.errorCount },
-          next: [...decls.includes.map(include => resolveInclude(file, include)), ...plugins.flatMap(libFiles)],
+          next: [...includes, ...plugins.flatMap(libFiles)],
         };
       });
     });

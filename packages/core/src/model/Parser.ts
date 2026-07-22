@@ -717,6 +717,7 @@ export class BuildParser {
           kind: DeclKind.Include,
           source: this.source,
           offset: token.start,
+          endOffset: token.start + simpleName.length,
           filename: simpleName,
         };
       }

@@ -106,16 +106,28 @@ describe("Loader", () => {
     expect(error?.message).to.match(/outside the project tree/);
   });
 
-  it("errors on a missing include", async () => {
-    const project = files({ "PROJECT.fabr": "include missing.fabr;" });
-    const logger = new LogFormatter(LogLevel.Info, () => undefined);
-    let error: Error | undefined;
-    try {
-      await loadProject(exec(project, logger), "PROJECT.fabr", NO_BASE);
-    } catch (err) {
-      error = err as Error;
-    }
-    expect(error?.message).to.match(/File not found/);
+  it("reports a missing include positioned at the include, then stops", async () => {
+    const { error, logged } = await loadErr(files({ "PROJECT.fabr": "include missing.fabr;" }));
+    /* Halts like any build-file error, and the diagnostic is a block naming the
+     * missing file and pointing back at the `include` that wrote it. */
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+    expect(logged.join("\n")).to.match(/Included file not found: missing\.fabr/);
+    expect(logged.join("\n")).to.match(/PROJECT\.fabr:1:9/);
+  });
+
+  it("traces a missing include back through the whole include chain", async () => {
+    const { error, logged } = await loadErr(
+      files({
+        "PROJECT.fabr": "include mid.fabr;",
+        "mid.fabr": "include gone.fabr;",
+      })
+    );
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+    const out = logged.join("\n");
+    /* Primary at the include that named the missing file, then a note per hop
+     * back to the project file. */
+    expect(out).to.match(/Included file not found: gone\.fabr[\s\S]*mid\.fabr:1:9/);
+    expect(out).to.match(/included from here[\s\S]*PROJECT\.fabr:1:9/);
   });
 
   /* Parse and sema/validation recover to report every error rather than throwing;
