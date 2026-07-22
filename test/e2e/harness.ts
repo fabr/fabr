@@ -90,6 +90,11 @@ export function runFabr(files: Record<string, string>, args: string[], readback?
       cwd: dir,
       env: { PATH: CHILD_PATH, FABR_CACHE_DIR: CACHE_DIR },
       encoding: "utf8",
+      /* stdin from /dev/null: these runs are non-interactive, so a fabr verb that
+       * spawns a stdin-reading child with inherited stdio (`fabr shell`'s shell)
+       * gets an immediate EOF and exits, rather than blocking on a stdin that
+       * never closes — which would hang the whole test with no timeout to catch it. */
+      stdio: ["ignore", "pipe", "pipe"],
     });
     let read: Record<string, string> | undefined;
     if (readback) {

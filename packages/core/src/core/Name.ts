@@ -369,12 +369,16 @@ export class Name {
    * A pure structural re-rooting of the path (used by {@link relativeTo}): the
    * constraint delta and `-> tmpl` rename facet ride along unchanged, so a
    * file-relative reference keeps them (`./x.fabr -> PROJECT.fabr` re-rooted
-   * against its including file still renames).
+   * against its including file still renames). A leading `./` on the head is
+   * dropped at the seam so the joined path is `dir/x`, not `dir/./x` — the
+   * latter's interior `/./` is not glob-normalized (picomatch strips only a
+   * *leading* `./`), which would make a re-rooted glob match nothing.
    */
   public withPrefix(prefix: string): Name {
     if (this.parts[0].kind === NamePartKind.Literal) {
       const [head, ...rest] = this.parts;
-      return new Name([{ kind: NamePartKind.Literal, value: prefix + head.value }, ...rest], this.constraints, this.renameTo);
+      const value = prefix + head.value.replace(/^\.\//, "");
+      return new Name([{ kind: NamePartKind.Literal, value }, ...rest], this.constraints, this.renameTo);
     } else {
       return new Name([{ kind: NamePartKind.Literal, value: prefix }, ...this.parts], this.constraints, this.renameTo);
     }

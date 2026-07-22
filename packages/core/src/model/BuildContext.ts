@@ -1,4 +1,5 @@
 import { Readable } from "stream";
+import * as path from "node:path";
 import { FetchOptions, IActionContext } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource } from "../core/FileSet";
@@ -839,13 +840,29 @@ export class BuildContext {
             });
           }
         } else if (relativeTo) {
-          /* Not an identified target; check the filesystem relative to the target decl */
+          /* Not an identified target; check the filesystem relative to the file the
+           * reference is written in. The build-file's directory is prepended to
+           * *locate* the files, but the result name is the path relative to that
+           * dir (its written name): `./astro.config.mjs` in `docs/BUILD.fabr` is
+           * the file `astro.config.mjs`, not `docs/astro.config.mjs` — the dir is a
+           * retained prefix, exactly like a colon-form projection. */
           const baseName = relativeTo.source.file;
+          const dir = path.posix.dirname(baseName);
           return relativeTo.source.fs.find(substName.relativeTo(baseName)).then(data => {
             if (data.isEmpty() && !substName.hasGlob()) {
               throw new NameResolutionError(substName, declPosn(stack?.value ?? relativeTo), useSiteOf(stack));
             }
-            return { sources: [data] };
+            /* Name each file relative to the build file's dir, then drop any leading
+             * `../`. A flat sandbox has no "above", so a reference climbing out of
+             * its dir (`../scripts/gendoc.ts`, a tool a level up) flattens to its
+             * tail (`scripts/gendoc.ts`) — the rule is simply "a leading `../` is
+             * stripped", independent of where the build file sits (RATIONALE.md).
+             * `path.posix.relative` normalizes both sides, so the glob walk's
+             * pre-normalized names and a single file's literal `dir/../x` agree. Two
+             * files flattening to one name collide at the consuming union — a clear
+             * error, by design, not a silent drop. */
+            const named = data.remap(fileName => path.posix.relative(dir, fileName).replace(/^(?:\.\.\/)+/, ""));
+            return { sources: [named] };
           });
         } else {
           /* A command-line name that names no known target (no decl to resolve
@@ -996,6 +1013,33 @@ export class BuildContext {
   }
 
   /**
+   * Resolve a declared target to the {@link BuildAction} its rule yields, WITHOUT
+   * running it — the basis for `fabr shell`, which stages the action's sandbox
+   * and drops the user into a shell there instead of executing. The target's
+   * *inputs* build as usual (they are what fills the sandbox: `srcs`, tool
+   * mounts); only the target's own action is withheld. Resolves undefined when
+   * the target's rule yields plain content (a flag, a passthrough) — there is no
+   * command to shell into. Errors are wrapped to the target, as in a normal build.
+   */
+  public resolveActionForShell(name: string, stack?: IDependencyStack): Computable<BuildAction | undefined> {
+    const def = this.model.getDecl(name);
+    if (def?.kind !== DeclKind.Target) {
+      throw new Error(`'${name}' is not a target that runs a command`);
+    }
+    const rule = this.model.getTargetRule(def.type, this.constraints);
+    if (!rule) {
+      throw new NoRuleFoundError(def, this.constraints);
+    }
+    const context = new DeclaredTargetContext(def, this, stack);
+    return rule
+      .evaluate(context)
+      .then(result => (result instanceof BuildAction ? result : undefined))
+      .catch(err => {
+        throw context.failure(err);
+      });
+  }
+
+  /**
    * The shared evaluation core, uniform for declared and anonymous targets:
    * run the rule's evaluate, execute a yielded BuildAction through the cache,
    * stamp the producing target's provenance, and make the target the error
@@ -1060,7 +1104,11 @@ export class BuildContext {
       /* The cache owns the scratch dir and the content store, so the action's
        * context — work dir + streaming-output factory — is assembled here, at the
        * bridge between the cache's create callback and the step. */
-      const actionContext: IActionContext = { workDir: targetDir, createOutput: () => cache.getTemporaryWriteStream() };
+      const actionContext: IActionContext = {
+        workDir: targetDir,
+        createOutput: () => cache.getTemporaryWriteStream(),
+        quiet: this.execution.quiet,
+      };
       return action.step.run(action.inputs, actionContext);
     });
   }
