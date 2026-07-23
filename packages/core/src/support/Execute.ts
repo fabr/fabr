@@ -378,9 +378,37 @@ export function executeInteractive(
  * {@link executeInteractive} (the one-shot form that resolves on exit); it backs
  * `fabr run -w`, where a source change relaunches the program. All process
  * spawning stays centralized here.
+ *
+ * Spawned **detached**, so the child leads its own process group: a launched
+ * program that forks its own workers (every real dev server does) puts them in
+ * that group, and {@link killProcessGroup} then tears the whole tree down as a
+ * unit rather than orphaning the workers. (The child is *not* unref'd — the
+ * supervisor still tracks it and waits on its exit.) One consequence of the new
+ * session: the controlling terminal no longer delivers Ctrl-C straight to the
+ * child — only fabr receives it, and the supervisor forwards it to the group,
+ * which is exactly the supervision we want.
  */
 export function spawnInteractive(cmd: string, args: string[], cwd?: string): ChildProcess {
-  return spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd });
+  return spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd, detached: true });
+}
+
+/**
+ * Signal a detached child's whole process **group** (the negative-pid form), so a
+ * launched program that forked its own workers is torn down as a unit instead of
+ * leaving orphans behind. Only meaningful for a child spawned by
+ * {@link spawnInteractive} (a group leader). A no-op if the child never got a pid
+ * or has already exited (so a recycled pid is never signalled); ESRCH — the group
+ * is already gone — is swallowed, since "not running" is precisely the goal.
+ */
+export function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    /* ESRCH: the group already exited — the desired end state, nothing to do. */
+  }
 }
 
 /** Quote an argument for display where it wouldn't survive a shell round-trip */

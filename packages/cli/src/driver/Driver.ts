@@ -369,12 +369,13 @@ function runWatched(
     /* Await teardown before exiting: unsubscribe stops a native watcher thread,
      * and exiting mid-flight crashes the kqueue backend (SIGABRT). The explicit
      * process.exit then fires the 'exit' hooks — including a RunSupervisor's
-     * synchronous child cleanup — which a *default* SIGTERM disposition would
+     * synchronous child cleanup — which a *default* signal disposition would
      * skip entirely, orphaning the launched program and leaking its staged dir. */
     void controller.close().finally(() => process.exit(0));
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+  process.on("SIGHUP", shutdown);
 
   /* This observer re-fires every time the operation's Computable re-settles (the
    * revalidation cascade after a change), so status/failure render per cycle. */
@@ -643,7 +644,7 @@ function formatDeclLocation(decl: ITargetDecl | ITargetDefDecl | IPropertyDecl):
 }
 
 /** @return the source-level keyword for a property's type, as written in a
- * targetdef (`FILES`, `STRING`, `MAP`, `REWRITE`). */
+ * targetdef (`FILES`, `STRING`, `MAP`, `COMMAND`, `REWRITE`). */
 function propertyTypeName(schema: IPropertySchema): string {
   switch (schema.type) {
     case PropertyType.FileSet:
@@ -652,6 +653,8 @@ function propertyTypeName(schema: IPropertySchema): string {
       return "STRING";
     case PropertyType.Map:
       return "MAP";
+    case PropertyType.Command:
+      return "COMMAND";
     case PropertyType.Rewrite:
       return "REWRITE";
     default:

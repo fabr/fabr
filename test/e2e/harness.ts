@@ -58,6 +58,39 @@ const CHILD_PATH = [path.dirname(NODE), "/usr/bin", "/bin", process.env.PATH]
  * fixtures just reuses the stub-tsc / package builds. Left for the OS to reap. */
 const CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-cache-"));
 
+/* Every live watch subprocess, so the reaper below can tear any survivor down.
+ * A watch child is the fabr supervisor, which owns (and, on a signal, tears down)
+ * the app/server it launched — so signalling fabr cleans up the whole tree; the
+ * harness needn't know the launched program's own (detached) process group. The
+ * normal path (a test's finally { session.stop() }) empties this set; the reaper
+ * is the safety net for the paths that skip it — a test that times out
+ * mid-await, or the runner process itself being interrupted. */
+const liveWatchers = new Set<ChildProcess>();
+
+/* SIGTERM every watch subprocess still alive when the runner exits or is
+ * interrupted, so a timed-out test (or a Ctrl-C'd `yarn bootstrap`) can't leave
+ * orphaned `fabr run -w` trees behind: each fabr handles the SIGTERM and kills
+ * its own launched app before exiting (fabr is a separate process, so it
+ * survives the runner's exit long enough to do so). Registered once; the exit
+ * hook is synchronous (the only safe kind), and the signal handlers exit after
+ * so the runner still terminates. SIGKILL of the runner is unstoppable and
+ * unavoidably orphans — nothing can run cleanup after it. */
+let reaperInstalled = false;
+function installWatchReaper(): void {
+  if (reaperInstalled) {
+    return;
+  }
+  reaperInstalled = true;
+  const reap = (): void => liveWatchers.forEach(child => child.kill("SIGTERM"));
+  process.on("exit", reap);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(signal, () => {
+      reap();
+      process.exit(1);
+    });
+  }
+}
+
 export interface FabrResult {
   stdout: string;
   stderr: string;
@@ -196,10 +229,12 @@ export function startFabrWatch(files: Record<string, string>, args: string[]): W
    * the store while other e2e suites build in parallel — an isolated cache keeps
    * that fs contention (and any cross-process cache racing) off the shared pool. */
   const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-watch-cache-"));
+  installWatchReaper();
   const child: ChildProcess = spawn(NODE, [FABR, ...args], {
     cwd: dir,
     env: { PATH: CHILD_PATH, FABR_CACHE_DIR: cacheDir },
   });
+  liveWatchers.add(child);
   let stderr = "";
   interface Waiter {
     satisfied(): boolean;
@@ -249,6 +284,7 @@ export function startFabrWatch(files: Record<string, string>, args: string[]): W
     stop(signal: NodeJS.Signals = "SIGINT"): Promise<number> {
       return new Promise<number>(resolve => {
         const finish = (code: number | null): void => {
+          liveWatchers.delete(child);
           fs.rmSync(dir, { recursive: true, force: true });
           fs.rmSync(cacheDir, { recursive: true, force: true });
           resolve(code ?? -1);
