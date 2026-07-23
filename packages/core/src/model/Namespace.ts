@@ -103,6 +103,23 @@ export class Namespace {
     return result;
   }
 
+  /** @return every property declared in this namespace and, recursively, its
+   * sub-namespaces, each paired with its fully-qualified name — the effective
+   * set (a `default` folded in unless overridden). Used to document the global
+   * configuration surface (`BUILD_TYPE`, `JS_TARGET`, …). */
+  public getProperties(prefix = ""): { name: string; decl: IPropertyDecl }[] {
+    const result: { name: string; decl: IPropertyDecl }[] = [];
+    for (const [key, item] of Object.entries(this.content)) {
+      const qualified = prefix === "" ? key : prefix + NAME_COMPONENT_SEPARATOR + key;
+      if (item instanceof Namespace) {
+        result.push(...item.getProperties(qualified));
+      } else if (item.kind === DeclKind.Property) {
+        result.push({ name: qualified, decl: item });
+      }
+    }
+    return result;
+  }
+
   /**
    * Given a Name, return the first target or prop that can be identified
    * as a prefix of the Name.

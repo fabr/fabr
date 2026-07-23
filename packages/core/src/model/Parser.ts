@@ -342,6 +342,10 @@ export class BuildParser {
   private tokenAbutsPrev = false;
   /** End offset (exclusive) of the most recently consumed token */
   private prevTokenEnd = 0;
+  /** Suppress the fd-redirect token fold (`1>`, `2>`) while lexing inside a `<k=v>`
+   * constraint: there a `>` closes the constraint, so a numeric value like
+   * `<X=1>` must lex as value `1` + `>`, not the redirect `1>`. */
+  private suppressRedirect = false;
 
   private source: IBuildFile;
   private result: IBuildFileContents;
@@ -666,7 +670,7 @@ export class BuildParser {
      * argument plus a `>` redirect, as in a shell. Only meaningful in a command
      * value; Validate rejects a redirect elsewhere. */
     const fd = this.redirectFdText();
-    if (fd !== undefined && this.reader.current() === CHAR_RANGLE) {
+    if (!this.suppressRedirect && fd !== undefined && this.reader.current() === CHAR_RANGLE) {
       this.reader.next(); /* the '>' */
       this.token = { type: REDIR_FD_TOKEN[fd], start: this.token.start };
     }
@@ -1057,32 +1061,40 @@ export class BuildParser {
     this.consumeToken(TokenType.LANGLE);
     const constraints: NameConstraint[] = [];
     const seen = new Set<string>();
-    for (;;) {
-      const key = this.token;
-      if (key.type !== TokenType.IDENTIFIER) {
-        this.unexpectedTokenError("a constraint key");
+    /* Inside the `<...>`, a `>` closes the constraint — never a redirect (see
+     * suppressRedirect). Restored in `finally` so an error, or the tail after the
+     * `>`, lexes redirects normally again. */
+    this.suppressRedirect = true;
+    try {
+      for (;;) {
+        const key = this.token;
+        if (key.type !== TokenType.IDENTIFIER) {
+          this.unexpectedTokenError("a constraint key");
+        }
+        if (seen.has(key.text)) {
+          this.duplicateConstraintError(key.text);
+        }
+        seen.add(key.text);
+        this.nextToken();
+        this.consumeToken(TokenType.EQUALS);
+        const value = this.token;
+        if (
+          value.type !== TokenType.IDENTIFIER &&
+          value.type !== TokenType.SIMPLE_NAME &&
+          value.type !== TokenType.NAME
+        ) {
+          this.unexpectedTokenError("a constraint value");
+        }
+        constraints.push([key.text, this.tokenToName(value)]);
+        this.nextToken();
+        /* Continue on a comma (unless it was trailing, before the '>'); otherwise
+         * the list is done and a '>' must follow. */
+        if (!this.consumeIfToken(TokenType.COMMA) || this.token.type === TokenType.RANGLE) {
+          break;
+        }
       }
-      if (seen.has(key.text)) {
-        this.duplicateConstraintError(key.text);
-      }
-      seen.add(key.text);
-      this.nextToken();
-      this.consumeToken(TokenType.EQUALS);
-      const value = this.token;
-      if (
-        value.type !== TokenType.IDENTIFIER &&
-        value.type !== TokenType.SIMPLE_NAME &&
-        value.type !== TokenType.NAME
-      ) {
-        this.unexpectedTokenError("a constraint value");
-      }
-      constraints.push([key.text, this.tokenToName(value)]);
-      this.nextToken();
-      /* Continue on a comma (unless it was trailing, before the '>'); otherwise
-       * the list is done and a '>' must follow. */
-      if (!this.consumeIfToken(TokenType.COMMA) || this.token.type === TokenType.RANGLE) {
-        break;
-      }
+    } finally {
+      this.suppressRedirect = false;
     }
     this.consumeToken(TokenType.RANGLE);
     return constraints;
@@ -1099,9 +1111,9 @@ export class BuildParser {
    * @param name
    * @param nameOffset
    */
-  private parsePropertyDecl(name: string, nameOffset: number, keyRef?: Name): IPropertyDecl {
+  private parsePropertyDecl(name: string, nameOffset: number, keyRef?: Name, docComment?: string): IPropertyDecl {
     this.consumeToken(TokenType.EQUALS);
-    const base = { kind: DeclKind.Property as const, source: this.source, name, offset: nameOffset, keyRef };
+    const base = { kind: DeclKind.Property as const, source: this.source, name, offset: nameOffset, keyRef, docComment };
     const values: IValue[] = [];
     /* The value loop admits `{...}` blocks as values (parseValue), so a value
      * list may hold names, blocks, or (per Validate, only homogeneously) several
@@ -1220,7 +1232,7 @@ export class BuildParser {
    * @param name
    * @param nameOffset
    */
-  private parseTargetDecl(type: string, typeOffset: number): ITargetDecl {
+  private parseTargetDecl(type: string, typeOffset: number, docComment?: string): ITargetDecl {
     if (this.token.type !== TokenType.IDENTIFIER && this.token.type !== TokenType.SIMPLE_NAME) {
       this.unexpectedTokenError("Path");
     } else {
@@ -1239,6 +1251,7 @@ export class BuildParser {
         offset: nameToken.start,
         endOffset: nameEnd,
         properties,
+        docComment,
       };
     }
   }
@@ -1393,6 +1406,9 @@ export class BuildParser {
   public parseStatement(): void {
     const token = this.token;
     if (token.type === TokenType.IDENTIFIER) {
+      /* The doc comment rides on the statement's leading token — a keyword, a
+       * property name, or a target type — so capture it before advancing. */
+      const doc = token.docComment;
       const next = this.nextToken();
       if (token.text === "include") {
         this.result.includes.push(this.parseIncludeDecl());
@@ -1400,14 +1416,14 @@ export class BuildParser {
         this.result.plugins.push(this.parsePluginDecl());
       } else if (token.text === "default" && next.type === TokenType.IDENTIFIER) {
         this.nextToken();
-        this.result.defaults.push(this.parsePropertyDecl(next.text, next.start));
+        this.result.defaults.push(this.parsePropertyDecl(next.text, next.start, undefined, doc));
       } else if (next.type === TokenType.EQUALS) {
-        this.result.properties.push(this.parsePropertyDecl(token.text, token.start));
+        this.result.properties.push(this.parsePropertyDecl(token.text, token.start, undefined, doc));
       } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.SIMPLE_NAME) {
         if (token.text === "targetdef") {
-          this.result.targetdefs.push(this.parseTargetDefDecl(token.docComment));
+          this.result.targetdefs.push(this.parseTargetDefDecl(doc));
         } else {
-          this.result.targets.push(this.parseTargetDecl(token.text, token.start));
+          this.result.targets.push(this.parseTargetDecl(token.text, token.start, doc));
         }
       } else {
         this.unexpectedTokenError("Identifier or '='");

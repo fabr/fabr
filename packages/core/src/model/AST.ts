@@ -59,6 +59,10 @@ export interface ITargetDecl extends IBaseDecl {
   typeOffset: number;
   name: string;
   properties: IPropertyDecl[];
+  /** The doc-comment prose written above this target, marker-stripped, or
+   * undefined if none. Runtime-only documentation metadata (read for docs of
+   * config targets like the `flag` instances `ts/nostrict`). */
+  docComment?: string;
 }
 
 export enum PropertyType {
@@ -173,6 +177,10 @@ export interface IPropertyDecl extends IBaseDecl {
    */
   keyRef?: Name;
   values: IValue[];
+  /** The doc-comment prose written above this property, marker-stripped, or
+   * undefined if none. Runtime-only documentation metadata (read for docs of
+   * global config properties like `BUILD_TYPE`, `JS_TARGET`). */
+  docComment?: string;
 }
 
 /**

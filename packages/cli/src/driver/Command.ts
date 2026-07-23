@@ -53,11 +53,24 @@ export enum Mode {
  * under BUILD_OPERATION=build and then list / dump / copy-to-disk / publish the
  * results; `list-targetdefs` is a model-query verb that loads the model and prints
  * without building anything (so it needs no targets). */
-const COMMANDS = new Set(["build", "test", "run", "shell", "ls", "cat", "cp", "sync", "list-targets", "list-targetdefs"]);
+const COMMANDS = new Set([
+  "build",
+  "test",
+  "run",
+  "shell",
+  "ls",
+  "cat",
+  "cp",
+  "sync",
+  "list-targets",
+  "list-targetdefs",
+  "list-properties",
+  "list-all",
+]);
 
 /** Model-query verbs: they inspect the loaded model rather than building targets,
  * so a bare invocation (no targets) is a valid "list everything" request. */
-const QUERY_COMMANDS = new Set(["list-targets", "list-targetdefs"]);
+const QUERY_COMMANDS = new Set(["list-targets", "list-targetdefs", "list-properties", "list-all"]);
 
 export interface Options {
   command: string;
@@ -94,12 +107,15 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  ls                Build the given targets and list their contents\n" +
       "  cat               Build a target and write its matching files to stdout\n" +
       "  cp                Build targets and copy their files to a destination directory\n" +
+      "  sync              Build and publish a sync target to its destination coordinates\n" +
       "  list-targets      List the targets declared in the project\n" +
       "  list-targetdefs   List the available target types and their properties\n" +
+      "  list-properties   List the global configuration properties and flags\n" +
+      "  list-all          Emit the whole vocabulary (types, properties, flags) as JSON, for tooling\n" +
       "Options:\n" +
       "  -DPROP=VALUE      Force the given property PROP to VALUE\n" +
       "  -l                Long listing: hash and size per file (ls), or source location (list-*)\n" +
-      "  --json            Emit JSON (list-targets / list-targetdefs)\n" +
+      "  --json            Emit JSON (the list-* verbs)\n" +
       "  -w                Watch mode\n" +
       "  -q, --quiet       Suppress live subcommand output (shown by default as steps run)\n" +
       "  -v, --version     Print the fabr version and exit\n"

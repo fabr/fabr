@@ -110,6 +110,13 @@ export class BuildModel {
     return this.root.getTargets().filter(target => this.repositories[target.decl.type] === undefined);
   }
 
+  /** @return every property declared in the project (effective set — a `default`
+   * counts unless overridden), for documenting the configuration surface
+   * (`fabr list-targetdefs --json` emits the documented ones). */
+  public getProperties(): { name: string; decl: IPropertyDecl }[] {
+    return this.root.getProperties();
+  }
+
   /** @return the BUILD_OPERATION values for which a type-specific rule is
    * registered for `type` — the operations that type supports (`build`,
    * `test`, `run`, …). A rule that constrains no operation is a wildcard,

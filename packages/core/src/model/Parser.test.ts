@@ -415,6 +415,15 @@ describe("Parser Tests", () => {
       ]);
     });
 
+    it("accepts a purely-numeric constraint value (the closing '>' is not an fd redirect)", () => {
+      /* `<X=1>` must lex as value `1` then `>`, not the `1>` redirect operator. */
+      expect(constraintsOf(firstValue("dep = a<X=1>;"))).to.deep.equal([["X", "1"]]);
+      expect(constraintsOf(firstValue("dep = a<X=2, Y=1>;"))).to.deep.equal([
+        ["X", "2"],
+        ["Y", "1"],
+      ]);
+    });
+
     it("reassembles a projection tail after the constraint", () => {
       const name = firstValue("dep = pkg<BUILD_TYPE=release>:build/*.js;");
       expect(name.toString()).to.equal("pkg:build/*.js<BUILD_TYPE=release>");

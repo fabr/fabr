@@ -351,6 +351,21 @@ export class BuildContext {
     return this.getContextWithOverrides(overrides).getTarget(name);
   }
 
+  /**
+   * Build the target named by a whole reference — a target name plus an optional
+   * `<k=v>` constraint delta (`mylib<BUILD_TYPE=release>`). The delta re-roots the
+   * build config for that target exactly as it would in a build script; a plain
+   * name resolves as {@link getTarget}. This is what the CLI's `build`/`test`/
+   * `sync`/`shell` verbs use so a constrained reference works on the command line
+   * as it does in a script. (A `:projection` doesn't apply — these verbs build the
+   * whole target — so the reference is used only for its name and constraints.)
+   */
+  public getTargetRef(name: string, stack?: IDependencyStack): Computable<SourceRef[]> {
+    return this.resolvingContextFor(parseName(name), undefined, stack).then(({ context, reference }) =>
+      context.getTarget(reference.toString(), stack)
+    );
+  }
+
   public getContextWithOverrides(overrides: Constraints): BuildContext {
     const combined = { ...this.constraints, ...overrides };
     return this.model.getConfig(combined, this.execution);
@@ -1022,6 +1037,12 @@ export class BuildContext {
    * command to shell into. Errors are wrapped to the target, as in a normal build.
    */
   public resolveActionForShell(name: string, stack?: IDependencyStack): Computable<BuildAction | undefined> {
+    return this.resolvingContextFor(parseName(name), undefined, stack).then(({ context, reference }) =>
+      context.resolveActionForShellDecl(reference.toString(), stack)
+    );
+  }
+
+  private resolveActionForShellDecl(name: string, stack?: IDependencyStack): Computable<BuildAction | undefined> {
     const def = this.model.getDecl(name);
     if (def?.kind !== DeclKind.Target) {
       throw new Error(`'${name}' is not a target that runs a command`);

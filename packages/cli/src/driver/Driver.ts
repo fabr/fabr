@@ -37,7 +37,9 @@ import {
   Log,
   LogFormatter,
   LogLevel,
+  IPropertyDecl,
   IPropertySchema,
+  isNameValue,
   ITargetDecl,
   ITargetDefDecl,
   PackageFileSet,
@@ -181,6 +183,10 @@ export function runFabr(options: Options): Promise<void> {
       return runWith(model => listDeclaredTargets(model, options));
     case "list-targetdefs":
       return runWith(model => listTargetDefs(model, options));
+    case "list-properties":
+      return runWith(model => listProperties(model, options));
+    case "list-all":
+      return runWith(model => listAll(model));
     default: /* build */
       return runWith((model, execution) => {
         const targets = buildTargets(model, options, execution, "build");
@@ -397,7 +403,7 @@ function buildTargets(
   operation: string
 ): Computable<SourceRef[]>[] {
   const config = configFor(model, options, execution, operation);
-  return options.targets.map(name => config.getTarget(name));
+  return options.targets.map(name => config.getTargetRef(name));
 }
 
 /** Resolve each whole name (target + projection) under the `files` operation:
@@ -630,7 +636,7 @@ function listDeclaredTargets(model: BuildModel, options: Options): Computable<vo
 }
 
 /** @return a `file:line:column` reference to where a declaration was written. */
-function formatDeclLocation(decl: ITargetDecl | ITargetDefDecl): string {
+function formatDeclLocation(decl: ITargetDecl | ITargetDefDecl | IPropertyDecl): string {
   const span = declPosn(decl);
   const pos = span.reader.resolvePosition(span.offset);
   return pos ? `${span.file}:${pos.line}:${pos.column}` : span.file;
@@ -697,6 +703,57 @@ function listTargetDefs(model: BuildModel, options: Options): Computable<void> {
   return Computable.resolve(undefined);
 }
 
+/**
+ * `fabr list-properties`: print the global configuration surface — the documented
+ * config properties (`BUILD_TYPE`, `JS_TARGET`, …) with their defaults, and the
+ * `flag` switches (`ts/nostrict`, …). These are what you *configure*, as opposed
+ * to the target *types* (`list-targetdefs`) and target *instances* (`list-targets`);
+ * flags happen to be `flag` targets, but they read as configuration, so they are
+ * listed here. A model query — it builds nothing. `--json` emits the structured
+ * form (value, source location, doc comment) for docs generation.
+ */
+function listProperties(model: BuildModel, options: Options): Computable<void> {
+  const properties = configPropertiesJson(model);
+  const flags = flagTargetsJson(model);
+  if (options.json) {
+    console.log(JSON.stringify({ properties, flags }, undefined, 2));
+    return Computable.resolve(undefined);
+  }
+  const width = Math.max(0, ...properties.map(prop => (prop.name as string).length));
+  properties.forEach(prop => {
+    const location = options.longListing ? "  " + prop.location : "";
+    console.log(`${(prop.name as string).padEnd(width)} = ${prop.value}${location}`);
+  });
+  if (flags.length > 0) {
+    console.log("\nFlags:");
+    flags.forEach(flag => console.log(`  ${flag.name}${options.longListing ? "  " + flag.location : ""}`));
+  }
+  return Computable.resolve(undefined);
+}
+
+/**
+ * `fabr list-all`: the whole build vocabulary in one machine-readable document —
+ * target types, config properties, and flags together (`{ targetdefs, properties,
+ * flags }`). The union of `list-targetdefs` and `list-properties`, so a single
+ * consumer (docs generation) reads everything from one invocation rather than
+ * stitching several. Always JSON — it exists for tooling, not human listing.
+ */
+function listAll(model: BuildModel): Computable<void> {
+  const defs = model.getTargetDefs().sort((a, b) => a.name.localeCompare(b.name));
+  console.log(
+    JSON.stringify(
+      {
+        targetdefs: defs.map(def => targetDefJson(model, def)),
+        properties: configPropertiesJson(model),
+        flags: flagTargetsJson(model),
+      },
+      undefined,
+      2
+    )
+  );
+  return Computable.resolve(undefined);
+}
+
 /** @return the full structured form of a targetdef for `--json` — its
  * operations, source location, description, and per-property schema with
  * descriptions (doc comments; null when a decl carries none). */
@@ -713,6 +770,42 @@ function targetDefJson(model: BuildModel, def: ITargetDefDecl): Record<string, u
       description: schema.docComment ?? null,
     })),
   };
+}
+
+/** @return the documented global configuration properties (`BUILD_TYPE`,
+ * `JS_TARGET`, `TSC`, …) — only those carrying a doc comment, each with its
+ * default value, source location, and description — for docs generation. */
+function configPropertiesJson(model: BuildModel): Record<string, unknown>[] {
+  return model
+    .getProperties()
+    .filter(({ decl }) => decl.docComment !== undefined)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(({ name, decl }) => ({
+      name,
+      value: renderPropertyValue(decl),
+      location: formatDeclLocation(decl),
+      description: decl.docComment ?? null,
+    }));
+}
+
+/** @return the `flag` targets (source-mode switches like `ts/nostrict`) with
+ * their descriptions — the flags a user lists in a target's `deps`. */
+function flagTargetsJson(model: BuildModel): Record<string, unknown>[] {
+  return model
+    .getTargets()
+    .filter(({ decl }) => decl.type === "flag")
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(({ name, decl }) => ({ name, location: formatDeclLocation(decl), description: decl.docComment ?? null }));
+}
+
+/** @return a property's written value as a display string (its name-valued
+ * words joined; non-scalar values omitted) — the default shown in the config
+ * reference (`JS_TARGET` → `es2021-commonjs`, `TARGET` → `${HOST}`). */
+function renderPropertyValue(decl: IPropertyDecl): string {
+  return decl.values
+    .filter(isNameValue)
+    .map(value => value.value.toString())
+    .join(" ");
 }
 
 /** @return the header line for a targetdef: its name, and the operations it
