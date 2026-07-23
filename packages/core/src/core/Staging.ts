@@ -76,6 +76,12 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
   return Computable.forAll(operations, () => {});
 }
 
+/** Monotonic across the whole process, so no two temp siblings ever share a name
+ * — a per-call counter (reset to 0 each sync) would reuse `<pid>-0`, `<pid>-1`, …
+ * every call, and a temp left behind by one failed sync would then collide (EEXIST)
+ * with every later sync in the same process. */
+let tempCounter = 0;
+
 /**
  * Update an already-staged tree in place to match `after`: write files that are
  * new or changed (judged by content hash against `before`), remove files that
@@ -85,20 +91,23 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
  * renamed into place, so a concurrent reader (the running program, an fs
  * watcher) never observes a half-written file — and an existing hardlink into
  * the cache is never written through (the link is replaced; the blob stays
- * untouched). Removals prune now-empty parent directories best-effort. Resolves
- * to the applied delta counts, for progress reporting.
+ * untouched). Writes and file removals run concurrently, but **directory
+ * pruning is deferred to a final phase, once the whole tree has settled**: a
+ * removal that empties a directory must not rmdir it while a sibling write is
+ * still renaming a new file into that same directory (which left renames failing
+ * ENOENT — content-hashed shards replace a directory's entire contents wholesale,
+ * so removes and writes routinely target the same dir). Resolves to the applied
+ * delta counts, for progress reporting.
  */
 export function syncFileSet(targetDir: string, before: FileSet, after: FileSet): Computable<{ written: number; removed: number }> {
-  const operations = [];
+  const root = path.resolve(targetDir);
+  const writes = [];
   let realRoot: string | undefined;
-  let written = 0;
-  let removed = 0;
-  let tempCounter = 0;
   for (const [name, file] of after) {
     if (before.getFile(name)?.hash === file.hash) {
       continue;
     }
-    const targetName = path.resolve(targetDir, name);
+    const targetName = path.resolve(root, name);
     const dirname = path.dirname(targetName);
     fs.mkdirSync(dirname, { recursive: true });
     const temp = `${targetName}.fabr-sync-${process.pid}-${tempCounter++}`;
@@ -106,48 +115,67 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
     if (file instanceof SymlinkFile) {
       /* Same containment guard as writeFileSet: a target escaping the staged
        * tree is silently not staged. */
-      realRoot ??= fs.realpathSync(path.resolve(targetDir));
+      realRoot ??= fs.realpathSync(root);
       const resolved = path.resolve(fs.realpathSync(dirname), file.target);
       if (resolved !== realRoot && !resolved.startsWith(realRoot + path.sep)) {
         continue;
       }
-      operations.push(asExecutionError(symlink(file.target, temp).then(() => rename(temp, targetName))));
+      writes.push(stageWrite(temp, targetName, symlink(file.target, temp)));
     } else if (filepath) {
-      operations.push(asExecutionError(hardlink(filepath, temp).then(() => rename(temp, targetName))));
+      writes.push(stageWrite(temp, targetName, hardlink(filepath, temp)));
     } else {
-      operations.push(
-        asExecutionError(
-          file
-            .getBuffer()
-            .then(buffer => writeFile(temp, buffer))
-            .then(() => rename(temp, targetName))
-        )
-      );
+      writes.push(stageWrite(temp, targetName, file.getBuffer().then(buffer => writeFile(temp, buffer))));
     }
-    written++;
   }
+  /* Unlink the gone files (concurrent with the writes — disjoint names), and note
+   * their parent directories as prune candidates for after everything settles. */
+  const removals = [];
+  const prunable = new Set<string>();
   for (const [name] of before) {
     if (after.getFile(name) === undefined) {
-      operations.push(asExecutionError(removeStaged(targetDir, name)));
-      removed++;
+      const targetName = path.resolve(root, name);
+      removals.push(asExecutionError(deleteFile(targetName)));
+      prunable.add(path.dirname(targetName));
     }
   }
-  return Computable.forAll(operations, () => ({ written, removed }));
+  const written = writes.length;
+  const removed = removals.length;
+  return Computable.forAll([...writes, ...removals], () => {})
+    .then(() => pruneEmptyDirs(root, prunable))
+    .then(() => ({ written, removed }));
 }
 
-/** Remove one synced-away file and prune its now-empty parent dirs (best-effort,
- * never past the staged root — a non-empty parent just stops the walk). */
-function removeStaged(targetDir: string, name: string): Computable<void> {
-  const root = path.resolve(targetDir);
-  return deleteFile(path.resolve(root, name)).then(() => {
-    for (let dir = path.dirname(path.resolve(root, name)); dir !== root && dir.startsWith(root + path.sep); dir = path.dirname(dir)) {
+/** Finish one staged write: `create` has produced the temp sibling; rename it
+ * atomically over the target. On any failure, remove the temp best-effort so a
+ * partial sync leaves no debris behind (a stale temp would otherwise linger, and
+ * — before the counter went process-monotonic — poison later syncs). */
+function stageWrite(temp: string, targetName: string, create: Computable<void>): Computable<void> {
+  return asExecutionError(
+    create.then(() => rename(temp, targetName)).catch(err => {
+      try {
+        fs.rmSync(temp, { force: true });
+      } catch {
+        /* best-effort — never outrank the original failure */
+      }
+      throw err;
+    })
+  );
+}
+
+/** Prune directories emptied by removals, walking up from each candidate towards
+ * (but never reaching) the staged root — a non-empty parent just stops the walk.
+ * Best-effort and run only after every write/removal has settled, so an rmdir can
+ * never race a concurrent create into the same directory. */
+function pruneEmptyDirs(root: string, candidates: Set<string>): void {
+  for (const start of candidates) {
+    for (let dir = start; dir !== root && dir.startsWith(root + path.sep); dir = path.dirname(dir)) {
       try {
         fs.rmdirSync(dir);
       } catch {
         break;
       }
     }
-  });
+  }
 }
 
 /**

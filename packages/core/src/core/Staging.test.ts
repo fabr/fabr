@@ -119,6 +119,38 @@ describe("syncFileSet", () => {
     expect(fs.readFileSync(path.join(work, "sub", "keep.txt"), "utf8")).to.equal("keep");
   });
 
+  it("writes new files into a directory whose old occupants are all removed", async () => {
+    /* Content-hashed outputs (e.g. pagefind's index shards) fill a directory with
+     * one generation of names, then replace them with a wholly different set in
+     * the same directory. The removals must not prune the directory out from under
+     * the concurrent writes landing new files into it (renames were failing ENOENT
+     * on the vanished parent, and the leftover temps then collided EEXIST). */
+    const before = fileset({ "idx/old_a.dat": "a", "idx/old_b.dat": "b", "idx/old_c.dat": "c" });
+    await toPromise(writeFileSet(work, before));
+
+    const after = fileset({ "idx/new_a.dat": "x", "idx/new_b.dat": "y", "idx/new_c.dat": "z" });
+    const delta = await toPromise(syncFileSet(work, before, after));
+
+    expect(delta).to.deep.equal({ written: 3, removed: 3 });
+    expect(fs.existsSync(path.join(work, "idx", "old_a.dat"))).to.equal(false);
+    expect(fs.readFileSync(path.join(work, "idx", "new_a.dat"), "utf8")).to.equal("x");
+    expect(fs.readFileSync(path.join(work, "idx", "new_c.dat"), "utf8")).to.equal("z");
+    /* No temp siblings left behind. */
+    expect(fs.readdirSync(path.join(work, "idx")).some(n => n.includes(".fabr-sync-"))).to.equal(false);
+  });
+
+  it("runs cleanly a second time in the same process (no temp-name collision)", async () => {
+    /* Two syncs in one process must not reuse temp names — a regression guard for
+     * the per-call counter reset that let a leftover temp poison later syncs. */
+    const v1 = fileset({ "a.txt": "1" });
+    await toPromise(writeFileSet(work, v1));
+    await toPromise(syncFileSet(work, v1, fileset({ "a.txt": "2" })));
+    const delta = await toPromise(syncFileSet(work, fileset({ "a.txt": "2" }), fileset({ "a.txt": "3" })));
+
+    expect(delta).to.deep.equal({ written: 1, removed: 0 });
+    expect(fs.readFileSync(path.join(work, "a.txt"), "utf8")).to.equal("3");
+  });
+
   it("is a no-op on an identical set", async () => {
     const before = fileset({ "index.html": "v1" });
     await toPromise(writeFileSet(work, before));
