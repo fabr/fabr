@@ -1116,6 +1116,15 @@ export class BuildContext {
     options?: { label?: string; constraints?: Constraints }
   ): Computable<SourceRef[]> {
     const buildContext = options?.constraints ? this.getContextWithOverrides(options.constraints) : this;
+    /* A sub-target type is part of the build vocabulary like any other: it must
+     * be a registered targetdef, not merely a code-registered rule. A missing
+     * targetdef is an internal inconsistency (the rule package forgot to declare
+     * the type), never a user error — so a plain Error, not a diagnostic. Unlike
+     * a declared target, a sub-target doesn't route through resolveTarget (it has
+     * no decl), so the rule is checked here too rather than downstream. */
+    if (!this.model.getTargetDef(type)) {
+      throw new Error(`Internal error: sub-target type '${type}' has no registered targetdef`);
+    }
     const rule = this.model.getTargetRule(type, buildContext.constraints);
     if (!rule) {
       throw new Error(`No rule found for anonymous target type '${type}'`);

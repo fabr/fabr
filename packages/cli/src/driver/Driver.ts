@@ -673,10 +673,10 @@ function propertyTypeName(schema: IPropertySchema): string {
  */
 function listTargetDefs(model: BuildModel, options: Options): Computable<void> {
   const wanted = new Set(options.targets);
-  const defs = model
-    .getTargetDefs()
-    .filter(def => wanted.size === 0 || wanted.has(def.name))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  /* Declaration order (as written in the lib files), not alphabetical: the
+   * author curates the reading order by placement — e.g. the compile primitives
+   * are declared last so they document last. Same order feeds `list-all`/docs. */
+  const defs = model.getTargetDefs().filter(def => wanted.size === 0 || wanted.has(def.name));
   /* A named-but-unknown type is a user error (a typo), not an empty success —
    * report every name that matched no targetdef. */
   const missing = [...wanted].filter(name => !defs.some(def => def.name === name));
@@ -739,7 +739,7 @@ function listProperties(model: BuildModel, options: Options): Computable<void> {
  * stitching several. Always JSON — it exists for tooling, not human listing.
  */
 function listAll(model: BuildModel): Computable<void> {
-  const defs = model.getTargetDefs().sort((a, b) => a.name.localeCompare(b.name));
+  const defs = model.getTargetDefs(); /* declaration order — see listTargetDefs */
   console.log(
     JSON.stringify(
       {

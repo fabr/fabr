@@ -264,6 +264,15 @@ registerRule("test_composer", {}, context =>
   )
 );
 
+/* A composer that builds a sub-target whose type has a rule but NO targetdef —
+ * used to assert subTarget rejects a type missing from the build vocabulary. */
+registerRule("test_orphan_sub", {}, context =>
+  context.getRequiredString("data").then(data => new BuildAction(TEST_LEAF_STEP, { data }, "orphan"))
+);
+registerRule("test_orphan_composer", {}, context =>
+  context.getRequiredString("content").then(content => context.subTarget("test_orphan_sub", { data: content }, { label: "sub" }))
+);
+
 const testContributions: PluginContribution[] = [{ rules: testRules, repositories: testRepos }];
 
 async function testGetProperty(input: string, prop: string, constraints?: Constraints): Promise<string[]> {
@@ -1070,7 +1079,10 @@ describe("BuildContext", () => {
 
   it("Builds a sub-target once and reshapes its output in resolution every run", async () => {
     const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-subtarget-test-"));
-    const input = "targetdef test_composer { content = STRING; }\ntest_composer a { content = shape; }\n";
+    const input =
+      "targetdef test_sub { data = STRING; }\n" +
+      "targetdef test_composer { content = STRING; }\n" +
+      "test_composer a { content = shape; }\n";
     leafRuns = 0;
     wrapRuns = 0;
     try {
@@ -1102,6 +1114,38 @@ describe("BuildContext", () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("Rejects a sub-target whose type has no registered targetdef", async () => {
+    const input =
+      "targetdef test_orphan_composer { content = STRING; }\n" + "test_orphan_composer a { content = shape; }\n";
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    /* test_orphan_sub has a rule but no targetdef, so building it as a sub-target
+     * is an internal inconsistency — wrapped to the composing declared target. */
+    let caught: Error | undefined;
+    await new Promise<void>(resolve =>
+      model
+        .getConfig({}, execution)
+        .getTarget("a")
+        .then(
+          () => resolve(),
+          err => {
+            caught = err;
+            resolve();
+          }
+        )
+    );
+    expect(caught).to.be.instanceOf(Error);
+    /* The guard error is wrapped to the composing declared target; walk the
+     * cause chain for it. */
+    const messages: string[] = [];
+    for (let e: unknown = caught; e instanceof Error; e = (e as { cause?: unknown }).cause) {
+      messages.push(e.message);
+    }
+    expect(messages.join(" | ")).to.match(/sub-target type 'test_orphan_sub' has no registered targetdef/);
   });
 
   it("Interns configurations by constraint value", () => {

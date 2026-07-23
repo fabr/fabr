@@ -47,21 +47,30 @@ default LIGHTNINGCSS = @npm:lightningcss:1.30.2;
 
 #
 # Source-interpretation flags for TypeScript compilation. The compile is strict
-# by default (matching modern TS); list one of these in a target's 'deps' to
+# by default (matching modern TS); list one of these in a target's `deps` to
 # relax how tsc interprets that target's sources — a per-target escape hatch.
-# 'ts/nostrict' turns strict off wholesale; the others relax a single member of
+# `ts/nostrict` turns strict off wholesale; the others relax a single member of
 # the strict family while the rest stay on.
 #
 
+# Turn TypeScript strict mode off wholesale for this target's sources.
 flag ts/nostrict { }
+# Allow implicit `any` (relax `noImplicitAny`) for this target's sources.
 flag ts/allow_implicit_any { }
+# Allow implicitly-nullable values (relax `strictNullChecks`) for this target's sources.
 flag ts/allow_implicit_null { }
+# Allow class properties with no definite assignment (relax
+# `strictPropertyInitialization`) for this target's sources.
 flag ts/allow_uninitialized_props { }
 
 ################### JS-specific targets ####################
 
 #
-# Standard Javascript / NPM package.
+# A standard JavaScript/TypeScript npm package: compile a source tree and produce
+# an installable package (with a generated `package.json`). `srcs` are the sources
+# to compile; `deps` are its dependencies (packages, or plain-source siblings);
+# `tests` are compiled and run under `fabr test`. It builds a package for `build`,
+# runs its bin for `run`, and runs its tests for `test`.
 #
 
 targetdef js_package {
@@ -93,19 +102,19 @@ targetdef js_package {
 }
 
 #
-# Bundle a JavaScript/TypeScript source tree into a self-contained artifact. 
-# 'srcs' is the extra sources allowed INTO the bundle (plain files land at the
-# working root; packages mount under node_modules and are inlined); 'entry' is
+# Bundle a JavaScript/TypeScript source tree into a self-contained artifact.
+# `srcs` is the extra sources allowed INTO the bundle (plain files land at the
+# working root; packages mount under `node_modules` and are inlined); `entry` is
 # the source(s) to bundle (a glob gives N independent bundles) — entry files are
-# included automatically, so they need not also be listed in 'srcs'; 'deps'
+# included automatically, so they need not also be listed in `srcs`; `deps`
 # is what the RUNTIME provides — externalized by package identity, so their
-# imports survive verbatim (the lambda case: handler + vendored libs in srcs,
-# @aws-sdk/* in deps). 'output' optionally renames each entry's default output
-# (identity modulo .ts/.tsx -> .js), e.g. `*.entry.js -> *.min.js`. 'defines'
+# imports survive verbatim (the lambda case: handler + vendored libs in `srcs`,
+# `@aws-sdk/*` in `deps`). `output` optionally renames each entry's default output
+# (identity modulo `.ts`/`.tsx` -> `.js`), e.g. `*.entry.js -> *.min.js`. `defines`
 # are compile-time constant substitutions (esbuild `define`): each value is code
 # text verbatim, so a string constant is shell-quoted like esbuild's own CLI
 # (`process.env.NODE_ENV = '"production"';`) while `DEBUG = false;` stays a bare
-# literal. Minify and sourcemaps follow BUILD_TYPE; platform/format follow JS_TARGET.
+# literal. Minify and sourcemaps follow `BUILD_TYPE`; platform/format follow `JS_TARGET`.
 #
 
 targetdef js_bundle {
@@ -117,23 +126,8 @@ targetdef js_bundle {
 }
 
 #
-# Lower a styled source tree to plain CSS. 'srcs' are the styled sources
-# (.scss/.sass, css-modules .module.{scss,css}, plain .css); 'deps' are scss
-# packages mounted for Sass '@use'/'@import' resolution (the Sass loadPaths
-# analogue of node_modules). Each plain source becomes a .css; each .module.*
-# becomes a scoped .css plus a proxy .js (the class-name value map + a
-# side-effect import of the scoped CSS). Composed automatically by js_bundle for
-# any styled sources; also declarable directly. Uses SASS + LIGHTNINGCSS.
-#
-
-targetdef css_compile {
-    srcs = FILES;
-    deps = FILES;
-}
-
-#
-# Standalone Javascript test target: 'tests' are the test files, compiled and
-# run under fabr's own test runner; 'deps' are everything they need but that
+# Standalone JavaScript test target: `tests` are the test files, compiled and
+# run under fabr's own test runner; `deps` are everything they need but that
 # isn't itself a test — packages, and plain-source support (e.g. a test harness,
 # which compiles as a sibling so `./harness` resolves, but is never run).
 #
@@ -144,18 +138,18 @@ targetdef js_test {
 }
 
 #
-# Define a runnable Javascript program (run it with 'fabr run', collect its
-# output with the generic 'run' target, or check it with a golden test).
-# 'entry' is either a plain script FILE (contributed to the install at its
+# Define a runnable JavaScript program (run it with `fabr run`, collect its
+# output with the generic `generate` target, or check it with a golden test).
+# `entry` is either a plain script FILE (contributed to the install at its
 # resolved name and launched under node), or a PACKAGE — external or built —
-# that becomes the runnable via the usual npm rules (entry = @npm:astro:7.1.1;
-# its sole declared bin is the default entry, and a projection selects among
-# several — entry = @npm:typescript:5.4.5:tsc — exactly as under 'fabr run');
-# package-mode exists to decorate a packaged tool with additional
-# dependencies: entry and 'deps' resolve jointly at one collection point, so
-# the whole environment shares one version selection and mounts into one
-# node_modules (loose dep filesets land at their own paths). 'args' are fixed leading arguments. It
-# yields a runnable, it does not itself execute.
+# that becomes the runnable via the usual npm rules (`entry = @npm:astro:7.1.1;`
+# — its sole declared bin is the default entry, and a projection selects among
+# several — `entry = @npm:typescript:5.4.5:tsc` — exactly as under `fabr run`);
+# package-mode exists to decorate a packaged tool with additional dependencies:
+# `entry` and `deps` resolve jointly at one collection point, so the whole
+# environment shares one version selection and mounts into one `node_modules`
+# (loose dep filesets land at their own paths). `args` are fixed leading
+# arguments. It yields a runnable, it does not itself execute.
 #
 
 targetdef js_script {
@@ -170,6 +164,46 @@ targetdef js_script {
 
 targetdef npm_repository {
     url = REQUIRED STRING;
+}
+
+#
+# The compile primitives below are normally composed automatically by the target
+# types above rather than declared by hand; they are documented last for that
+# reason.
+#
+
+#
+# Compile a JavaScript/TypeScript source tree to plain JS — the one TS-compile
+# path. `srcs` are the sources (`.ts`/`.tsx`/`.js`/`.jsx`, plus ambient `.d.ts`);
+# `deps` are the packages the sources are compiled against (mounted as
+# `node_modules`). `runtime` is the ES lib level and `mode` an optional
+# source-strictness overlay — both derived from `JS_TARGET` and the `ts/*` flags
+# by the composing rule, so a hand-declared `js_compile` normally omits them.
+# `TSC` (resolved as a runnable, independent of what it compiles) is mounted
+# apart from the workspace. Composed automatically by `js_package`/`js_test`/
+# `js_script`; also declarable directly.
+#
+
+targetdef js_compile {
+    srcs = FILES;
+    deps = FILES;
+    runtime = STRING;
+    mode = STRING;
+}
+
+#
+# Lower a styled source tree to plain CSS. `srcs` are the styled sources
+# (`.scss`/`.sass`, css-modules `.module.{scss,css}`, plain `.css`); `deps` are
+# scss packages mounted for Sass `@use`/`@import` resolution (the Sass loadPaths
+# analogue of `node_modules`). Each plain source becomes a `.css`; each `.module.*`
+# becomes a scoped `.css` plus a proxy `.js` (the class-name value map + a
+# side-effect import of the scoped CSS). Composed automatically by `js_bundle` for
+# any styled sources; also declarable directly. Uses `SASS` + `LIGHTNINGCSS`.
+#
+
+targetdef css_compile {
+    srcs = FILES;
+    deps = FILES;
 }
 
 
