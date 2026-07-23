@@ -20,13 +20,36 @@ default TARGET = ${HOST};
 
 
 #
-# A `flag` yields file content directly, with no build step. Its main use is as
-# a named switch that a target lists in its `deps` to opt into some behaviour
-# (the `ts/*` source-mode flags are instances of this type); `provides` may also
-# expose a computed set of files as the flag's result.
+# A catalog pins a fixed set of external requirements in one place. Its `deps`
+# are resolved jointly and once (a single version selection over the whole set),
+# and each resolved package is exposed by its package name: reference it as
+# `<catalog>:<package>` wherever a dependency is wanted, with the version fixed
+# here rather than repeated at each use. Because the whole set resolves together,
+# every consumer sees one consistent version of everything the catalog covers,
+# and does no resolution of its own.
 #
-targetdef flag {
-    provides = FILES;
+targetdef catalog {
+    deps = FILES;
+}
+
+#
+# Run a command pipeline and collect its output — the codegen/genrule builder (a
+# build step, distinct from the interactive `fabr run` verb). `run` is a command
+# line: `cmd args... [redirs] | cmd args... [redirs]`. Each command is a fabr
+# runnable (a target/tool, mounted in its own sandbox dir); args are literal or a
+# glob expanded over `srcs`. `|` pipes stdout to the next stage's stdin; `> name`
+# / `2> name` / `&> name` capture stdout / stderr / both as content named `name`;
+# `< source` streams a single-file reference to the first stage's stdin. `srcs`
+# are input files staged at the sandbox root; `output` (a `dir:glob`) collects
+# files the tools wrote, unioned with the redirect captures (omit it for a pure
+# redirect genrule). Example:
+#
+#     generate docs { run = list_targetdefs --json | gendoc > reference.md; }
+#
+targetdef generate {
+    srcs = FILES;
+    run = REQUIRED COMMAND;
+    output = STRING;
 }
 
 #
@@ -65,39 +88,6 @@ targetdef serve {
 }
 
 #
-# Run a command pipeline and collect its output — the codegen/genrule builder (a
-# build step, distinct from the interactive `fabr run` verb). `run` is a command
-# line: `cmd args... [redirs] | cmd args... [redirs]`. Each command is a fabr
-# runnable (a target/tool, mounted in its own sandbox dir); args are literal or a
-# glob expanded over `srcs`. `|` pipes stdout to the next stage's stdin; `> name`
-# / `2> name` / `&> name` capture stdout / stderr / both as content named `name`;
-# `< source` streams a single-file reference to the first stage's stdin. `srcs`
-# are input files staged at the sandbox root; `output` (a `dir:glob`) collects
-# files the tools wrote, unioned with the redirect captures (omit it for a pure
-# redirect genrule). Example:
-#
-#     generate docs { run = list_targetdefs --json | gendoc > reference.md; }
-#
-targetdef generate {
-    srcs = FILES;
-    run = REQUIRED COMMAND;
-    output = STRING;
-}
-
-#
-# A catalog pins a fixed set of external requirements in one place. Its `deps`
-# are resolved jointly and once (a single version selection over the whole set),
-# and each resolved package is exposed by its package name: reference it as
-# `<catalog>:<package>` wherever a dependency is wanted, with the version fixed
-# here rather than repeated at each use. Because the whole set resolves together,
-# every consumer sees one consistent version of everything the catalog covers,
-# and does no resolution of its own.
-#
-targetdef catalog {
-    deps = FILES;
-}
-
-#
 # A sync publishes built content to one or more destination coordinates. Its body
 # is a set of members written as `<destination>:<address> = content` (the
 # coordinate is the key, the identityless built content the value); the address's
@@ -115,3 +105,14 @@ targetdef catalog {
 targetdef sync {
     * = FILES;
 }
+
+#
+# A `flag` yields file content directly, with no build step. Its main use is as
+# a named switch that a target lists in its `deps` to opt into some behaviour
+# (the `ts/*` source-mode flags are instances of this type); `provides` may also
+# expose a computed set of files as the flag's result.
+#
+targetdef flag {
+    provides = FILES;
+}
+

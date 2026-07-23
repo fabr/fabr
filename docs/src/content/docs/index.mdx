@@ -1,0 +1,41 @@
+---
+title: Fabr
+description: A declarative, deterministic build orchestration tool.
+template: splash
+hero:
+  tagline: Build your world.
+  actions:
+    - text: Get started
+      link: /quickstart-js/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/fabr/fabr
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+Fabr is a declarative, deterministic build orchestration tool. It aims at fast, accurate, and — above all —
+**reliable** builds, while making the most complex build scenarios: multiple languages, cross-compilation, 
+and multi-stage builds trivial to specify.
+
+<CardGrid>
+  <Card title="Deterministic, no lockfiles" icon="approve-check">
+    The same inputs always produce the same outputs. Versions are chosen deterministically by
+    [minimal version selection](/introduction/#determinism-and-no-lockfiles) — no lockfile to drift,
+    and the cache is a pure memo you can delete at any time.
+  </Card>
+  <Card title="Describe once, build any way" icon="puzzle">
+    A [target](/introduction/) says *what* you want; a rule knows *how*; configuration is separate. The
+    same target builds, tests, cross-compiles, or runs with no rewriting.
+  </Card>
+  <Card title="A live dev loop" icon="rocket">
+    Add `-w` and fabr rebuilds, retests, or relaunches the moment a source changes — and a
+    [`serve`](/guides/watch/) target hot-syncs a dev server's content without a restart.
+  </Card>
+  <Card title="JavaScript & TypeScript today" icon="seti:typescript">
+    Compile, bundle, test, and run TS/JS with no `package.json`, `tsconfig`, or config files — just a
+    [`PROJECT.fabr`](/quickstart-js/) and your sources.
+  </Card>
+</CardGrid>

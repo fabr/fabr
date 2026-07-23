@@ -1,0 +1,34 @@
+# Documentation site: an Astro + Starlight project under docs/
+js_script astro {
+  entry = @npm:astro:7.1.1;
+  deps = @npm:@astrojs/starlight:0.41.3;
+}
+
+js_script gendoc {
+  entry = ../scripts/gendoc.ts;
+  deps = @pkg:@types/node;
+}
+
+# The target reference is generated from the live build model: `list-all` emits
+# the whole vocabulary (types, config, flags) and gendoc writes one page per
+# source package (core -> standard-rules.md, JS plugin -> js-rules.md). gendoc
+# writes them by bare name; docs_site places them under the content tree with a
+# rename projection.
+generate reference_docs {
+  srcs = ./DOCGEN.fabr -> PROJECT.fabr;
+  run = @fabr-build/cli list-all --json | gendoc;
+  output = *.md;
+}
+
+generate docs_site {
+  srcs = ./src/** ./astro.config.mjs reference_docs:*.md -> src/content/docs/reference/*.md;
+  run = astro build;
+  output = dist:**;
+}
+
+serve docs_serve {
+  tool = @npm:http-server:14.1.1;
+  files = docs_site;
+  # -c-1 disables http-server's cache-control (max-age -1), so edits show on reload.
+  args = -c-1 .;
+}

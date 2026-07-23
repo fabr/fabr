@@ -1,0 +1,55 @@
+/*
+ * Copyright (c) 2026 Nathan Keynes <nkeynes@deadcoderemoval.net>
+ *
+ * This file is part of Fabr.
+ *
+ * Fabr is free software: you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * Fabr is distributed in the hope that it will be useful, but WITHOUT ANY
+ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * Fabr. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+// @ts-check
+import { defineConfig } from "astro/config";
+import starlight from "@astrojs/starlight";
+
+// Fabr's own documentation site. Built by fabr itself (`fabr build docs`), not
+// yarn/npm: the astro CLI is wrapped as an opaque passthrough target — see
+// PROJECT.fabr's `docs_build_tool` / `docs` targets.
+export default defineConfig({
+  site: "https://fabr.build",
+  integrations: [
+    starlight({
+      title: "Fabr",
+      description: "A dataflow-based build tool for fast, accurate, deterministic builds.",
+      social: [{ icon: "github", label: "GitHub", href: "https://github.com/fabr/fabr" }],
+      sidebar: [
+        { label: "Introduction", link: "/introduction/" },
+        { label: "Quick start (JS/TS)", link: "/quickstart-js/" },
+        {
+          label: "Guides",
+          items: [{ label: "Watch mode & dev servers", link: "/guides/watch/" }],
+        },
+        {
+          label: "Reference",
+          items: [
+            { label: "Command line", link: "/reference/command-line/" },
+            { label: "Language syntax", link: "/reference/syntax/" },
+            { label: "Core reference", link: "/reference/standard-rules/" },
+            { label: "JavaScript reference", link: "/reference/js-rules/" },
+          ],
+        },
+        { label: "Known limitations", link: "/known-limitations/" },
+        { label: "Getting involved", link: "/contributing/" },
+      ],
+    }),
+  ],
+});
