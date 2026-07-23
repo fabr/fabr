@@ -19,6 +19,7 @@ import { IActionContext } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { attachHelp } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
+import { Name } from "../core/Name";
 import { executePipeline, StageSpec } from "../support/Execute";
 import { BuildAction, BuildActionInputs } from "./Types";
 import { fileSetInput, stringInput } from "./ExecAction";
@@ -35,27 +36,29 @@ import { fileSetInput, stringInput } from "./ExecAction";
 function runPipeline(inputs: BuildActionInputs, ctx: IActionContext): Computable<FileSet> {
   const files = fileSetInput(inputs, "files");
   const specs: StageSpec[] = JSON.parse(stringInput(inputs, "spec"));
-  const output = stringInput(inputs, "output", "");
+  /* `output` is a projection Name (selector + optional `-> tmpl` rename), or
+   * absent for a pure-redirect genrule that collects only its captures. */
+  const output = inputs.output instanceof Name ? inputs.output : undefined;
   const stdin = inputs.stdin instanceof FileSet ? inputs.stdin : undefined;
 
   return writeFileSet(ctx.workDir, files)
     .then(() => stdinBytes(stdin))
     .then(bytes => executePipeline(specs, ctx.workDir, () => ctx.createOutput(), bytes, ctx.quiet))
     .then(captured =>
-      /* Plus any files the tools wrote, when an `output` glob is given (a pure
-       * redirect genrule omits it and collects only the captures). A given
-       * `output` glob that matches nothing is an error, not a silent empty
-       * success: the command ran but produced none of the files the target
-       * declares it collects — almost always a wrong pattern or a tool that
-       * wrote elsewhere. (A pure-redirect genrule has output === "" and skips
-       * this; its captures are the output.) */
-      output === ""
+      /* Plus any files the tools wrote, when an `output` projection is given (a
+       * pure redirect genrule omits it and collects only the captures). A given
+       * `output` that matches nothing is an error, not a silent empty success:
+       * the command ran but produced none of the files the target declares it
+       * collects — almost always a wrong selector or a tool that wrote
+       * elsewhere. (A pure-redirect genrule has no output and skips this; its
+       * captures are the output.) */
+      output === undefined
         ? Computable.resolve(captured)
         : getResultFileSet(ctx.workDir, output).then(written => {
             if (written.isEmpty()) {
               throw attachHelp(
-                new Error(`the command produced no files matching output pattern '${output}'`),
-                `check the output pattern, or that the command writes its output where '${output}' looks`
+                new Error(`the command produced no files matching output pattern '${output.toString()}'`),
+                `check the output pattern, or that the command writes its output where '${output.toString()}' looks`
               );
             }
             return FileSet.unionAll(written, captured);
@@ -79,15 +82,18 @@ export const PIPELINE_ACTION = { id: "core:command-pipeline", version: 2, run: r
 
 /** @return a command-pipeline action from the resolved per-stage specs, the
  * combined staged fileset, an optional single-file stdin, and the `output`
- * glob (empty to collect only the redirect captures). */
+ * projection (absent to collect only the redirect captures). */
 export function createPipelineAction(
   files: FileSet,
   specs: StageSpec[],
   stdin: FileSet | undefined,
-  output: string,
+  output: Name | undefined,
   label?: string
 ): BuildAction {
-  const inputs: BuildActionInputs = { files, spec: JSON.stringify(specs), output };
+  const inputs: BuildActionInputs = { files, spec: JSON.stringify(specs) };
+  if (output) {
+    inputs.output = output;
+  }
   if (stdin) {
     inputs.stdin = stdin;
   }

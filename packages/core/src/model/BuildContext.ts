@@ -635,6 +635,20 @@ export class BuildContext {
   }
 
   /**
+   * Resolve a single-valued projection property to its substituted Name (see
+   * {@link TargetContext.getProjection}). A projection is one selector; more than
+   * one value is a declaration error caught here.
+   */
+  public resolveProjection(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<Name | undefined> {
+    return this.resolveNameProperty(prop, target, stack).then(names => {
+      if (names.length > 1) {
+        throw new Error(`property '${prop.name}' is a projection and takes a single value (found ${names.length})`);
+      }
+      return names[0];
+    });
+  }
+
+  /**
    * Resolve a FILES property to its sources. Each resolved source is wrapped
    * with a model-ref provenance step recording the written value and the
    * constraints in effect — chained onto whatever provenance it already
@@ -1306,6 +1320,12 @@ export abstract class TargetContext {
    * resolveRewrite); the empty rewrite (no such property) maps nothing. */
   public abstract getRewrite(name: string, overrides?: Constraints): Computable<RewriteFn>;
 
+  /** Resolve a single-valued projection property (a selector + optional `-> tmpl`
+   * rename, e.g. `generate`'s `output`) to its substituted Name — the input a
+   * step applies via {@link Name.makeProjector}. Undefined when the property is
+   * absent; a multi-value property is an error (a projection is one selector). */
+  public abstract getProjection(name: string, overrides?: Constraints): Computable<Name | undefined>;
+
   /** Resolve a MAP property to its ordered key -> string map (see
    * resolveMap); an absent property yields an empty map. */
   public abstract getMap(name: string, overrides?: Constraints): Computable<PropertyMap>;
@@ -1694,6 +1714,14 @@ export class DeclaredTargetContext extends TargetContext {
     return this.getContext(overrides).resolveRewrite(prop, this.target, this.stack);
   }
 
+  public getProjection(name: string, overrides?: Constraints): Computable<Name | undefined> {
+    const prop = this.props[name];
+    if (!prop) {
+      return Computable.resolve(undefined);
+    }
+    return this.getContext(overrides).resolveProjection(prop, this.target, this.stack);
+  }
+
   public getMap(name: string, overrides?: Constraints): Computable<PropertyMap> {
     const prop = this.props[name];
     if (!prop) {
@@ -1814,6 +1842,13 @@ export class AnonymousTargetContext extends TargetContext {
     return Computable.resolve(() => undefined);
   }
 
+  /** A sub-target's projection input, if the caller supplied a Name in the bag
+   * (a bare selector or a `-> tmpl` rename); anything else declares none. */
+  public getProjection(name: string): Computable<Name | undefined> {
+    const value = this.inputs[name];
+    return Computable.resolve(value instanceof Name ? value : undefined);
+  }
+
   /** Sub-targets take concrete inputs, not MAP property declarations, so the
    * map is always empty here. */
   public getMap(): Computable<PropertyMap> {
@@ -1869,6 +1904,11 @@ function manifestEvalInput(value: BuildActionInput): string {
   }
   if (Array.isArray(value)) {
     return "[" + value.map(element => manifestEvalInput(element)).join(",") + "]";
+  }
+  /* A Name (a projection input) manifests by its canonical text — selector plus
+   * any `<constraints>` / `-> tmpl` facet all round-trip through toString. */
+  if (value instanceof Name) {
+    return JSON.stringify(value.toString());
   }
   return "{\n" + value.toManifest() + "\n}";
 }

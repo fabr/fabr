@@ -38,20 +38,20 @@
 import { BUILD_OPERATION, ResolvedCommandPipeline, TargetContext } from "../model/BuildContext";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
-import { Property } from "../model/Property";
+import { Name } from "../core/Name";
 import { StageSpec } from "../support/Execute";
 import { createPipelineAction } from "./PipelineAction";
 import { RuleRegistration, RuleResult } from "./Types";
 
 function generate(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
-    [context.getFileSet("srcs"), context.getProperty("output")],
-    (srcs: FileSet, output: Property | undefined) =>
+    [context.getFileSet("srcs"), context.getProjection("output")],
+    (srcs: FileSet, output: Name | undefined) =>
       context.getCommandProperty("run", srcs).then(stages => {
         if (stages.length === 0) {
           return Computable.reject<RuleResult>(new Error("a 'generate' target requires a 'run' command"));
         }
-        return assemblePipeline(srcs, stages, output?.toString() ?? "");
+        return assemblePipeline(srcs, stages, output);
       })
   );
 }
@@ -65,7 +65,7 @@ function generate(context: TargetContext): Computable<RuleResult> {
  * `.fabr-cmd-<n>/` subdir so the tools don't share a `node_modules`; the streams
  * connect them, and no source imports a pipe stage's modules.
  */
-function assemblePipeline(srcs: FileSet, stages: ResolvedCommandPipeline, output: string): RuleResult {
+function assemblePipeline(srcs: FileSet, stages: ResolvedCommandPipeline, output: Name | undefined): RuleResult {
   const single = stages.length === 1;
   const mounts: FileSet[] = [];
   const specs: StageSpec[] = stages.map((stage, i) => {

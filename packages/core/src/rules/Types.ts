@@ -20,6 +20,7 @@
 import { Computable } from "../core/Computable";
 import { IActionContext } from "../core/BuildCache";
 import { FileSet, FileSource } from "../core/FileSet";
+import { Name } from "../core/Name";
 import { Repository } from "../core/Repository";
 import { Constraints, RepositoryContext, TargetContext } from "../model/BuildContext";
 
@@ -40,8 +41,14 @@ export enum PropertyType {
  * construction. A rule that needs one action's output as another's input
  * builds the first as a sub-target (`ResolveContext.subTarget`) and passes
  * its resolved FileSet here; there is no action nesting.
+ *
+ * A `Name` may cross as an input where a step consumes a **projection** (a
+ * selector + optional `-> tmpl` rename — e.g. `generate`'s `output`): its
+ * canonical `toString()` manifests it, and on a cache miss the step receives
+ * the live `Name` and applies it via `makeProjector` (no text re-parse, which
+ * would need the model layer).
  */
-export type BuildActionInput = string | string[] | FileSet | FileSet[];
+export type BuildActionInput = string | string[] | FileSet | FileSet[] | Name;
 export type BuildActionInputs = Record<string, BuildActionInput>;
 
 /**

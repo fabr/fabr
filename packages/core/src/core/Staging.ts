@@ -31,10 +31,11 @@
 import * as fs from "fs";
 import * as path from "path";
 import { Computable } from "./Computable";
-import { ExecutionError } from "./Errors";
+import { ConflictError, ExecutionError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
 import { FSFile } from "./FSFileSource";
 import { copyFile, deleteFile, hardlink, hashFile, rename, symlink, walkTree, writeFile } from "./FSWrapper";
+import { Name } from "./Name";
 import { SymlinkFile } from "./SymlinkFile";
 import { describeSystemError } from "../support/Execute";
 import { globMatcher } from "../support/Glob";
@@ -188,37 +189,83 @@ function asExecutionError<T>(operation: Computable<T>): Computable<T> {
   });
 }
 
-export function getResultFileSet(targetDir: string, pattern: string): Computable<FileSet> {
-  /* A "dir:glob" pattern matches under dir, and names the results relative to
-   * it (consistent with the source-name convention) */
-  const colon = pattern.indexOf(":");
-  const rootDir = colon === -1 ? targetDir : path.resolve(targetDir, pattern.substring(0, colon));
-  const matcher = globMatcher(colon === -1 ? pattern : pattern.substring(colon + 1));
+/**
+ * Collect the files a build step wrote under `targetDir` that the `output`
+ * projection selects, naming each by its projected name; delete everything the
+ * projection drops. `output` is either a plain `dir:glob` string (select under
+ * `dir`, name relative to it) or a {@link Name} projection — a selector with the
+ * usual `:`-strip / slash-retain rule, optionally carrying a `sel -> tmpl`
+ * rename. The two are the same primitive: a `dir:glob` string is exactly the
+ * degenerate no-rename projection, so both compile to one `path -> name?`
+ * function ({@link outputProjector}). A rename can collapse two written files
+ * onto one output name — a {@link ConflictError}, mirroring FileSet.rename.
+ */
+export function getResultFileSet(targetDir: string, output: Name | string): Computable<FileSet> {
+  const project = outputProjector(output);
   const result = new Map<string, IFile>();
+  /* Source path each output name came from, for a rename-collision message. */
+  const source = new Map<string, string>();
   const ops: Computable<void>[] = [];
 
   /* Walk without following symlinks (walkTree recurses real dirs only): the work
    * dir may contain symlinks — a scoped node_modules links its direct deps into a
    * hidden store — and following them would visit each linked file twice and risk
-   * cycles. Keep matching files, prune everything else — a symlink by removing the
+   * cycles. Keep selected files, prune everything else — a symlink by removing the
    * link itself, never its target. Directories are neither collected nor deleted;
    * the emptied work dir is discarded by the caller. */
   return walkTree(targetDir, (entry, abspath) => {
     if (entry.isDirectory()) {
       return;
     }
-    const relpath = path.relative(rootDir, abspath);
-    if (entry.isFile() && !relpath.startsWith("..") && matcher(relpath)) {
+    const rel = path.relative(targetDir, abspath);
+    const name = entry.isFile() ? project(rel) : undefined;
+    if (name !== undefined) {
       ops.push(
         hashFile(abspath).then(hash => {
-          /* A work-dir output is path-backed (content at its relpath, not at a
-           * blob hash), so it can't be a BuildFile — storeContent then ingests
-           * it into the pool by rename. */
-          result.set(relpath, new FSFile(rootDir, relpath, fs.statSync(abspath), hash));
+          /* A work-dir output is path-backed (content at its on-disk rel, not at
+           * a blob hash), so it can't be a BuildFile — storeContent then ingests
+           * it into the pool by rename. The FileSet key is the *projected* name;
+           * the file itself stays anchored at its real location. */
+          const file = new FSFile(targetDir, rel, fs.statSync(abspath), hash);
+          const existing = result.get(name);
+          if (existing && !existing.isSameFile(file)) {
+            throw new ConflictError(
+              "collected files",
+              name,
+              { provenance: undefined, detail: source.get(name) ?? existing.getDisplayName() },
+              { provenance: undefined, detail: rel }
+            );
+          }
+          result.set(name, file);
+          source.set(name, rel);
         })
       );
     } else {
       ops.push(asExecutionError(deleteFile(abspath)));
     }
   }).then(() => Computable.forAll(ops, () => new FileSet(result)));
+}
+
+/**
+ * Compile an `output` selector to a `workDir-relative path -> result name`
+ * function (undefined ⇒ not selected). A {@link Name} owns what its projection
+ * means (glob-select, `:`-strip, `-> tmpl` rename), so it is just its
+ * {@link Name.makeProjector}. A `dir:glob` string is the degenerate case:
+ * strip the `dir/` prefix and name results relative to it — equivalent to the
+ * colon projection, without needing the model parser to build a Name here.
+ */
+function outputProjector(output: Name | string): (rel: string) => string | undefined {
+  if (output instanceof Name) {
+    return output.makeProjector();
+  }
+  const colon = output.indexOf(":");
+  const prefix = colon === -1 ? "" : output.substring(0, colon) + path.sep;
+  const matcher = globMatcher(colon === -1 ? output : output.substring(colon + 1));
+  return rel => {
+    if (prefix !== "" && !rel.startsWith(prefix)) {
+      return undefined;
+    }
+    const inner = rel.substring(prefix.length);
+    return matcher(inner) ? inner : undefined;
+  };
 }

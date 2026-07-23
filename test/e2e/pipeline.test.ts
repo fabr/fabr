@@ -111,6 +111,17 @@ describe("e2e: generate command pipelines", () => {
     expect(result.stdout).to.equal("content\n");
   });
 
+  it("renames collected files via an 'output' rename projection ('sel -> tmpl')", () => {
+    /* `output` is a projection, not just a glob: a `-> tmpl` facet renames the
+     * files the command wrote (here, relocating made.txt under dist/). */
+    const result = runFabr(
+      { "PROJECT.fabr": WRITER + "generate g { run = writer; output = *.txt -> dist/*.txt; }\n", ...WRITER_FILES },
+      ["cat", "g:dist/made.txt"]
+    );
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("content\n");
+  });
+
   it("errors when the 'output' glob matches nothing the command wrote (not a silent empty success)", () => {
     /* The command succeeds but writes made.txt, which `dist:**` never matches:
      * a declared output that collects zero files is a build error, positioned at

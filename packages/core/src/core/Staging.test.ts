@@ -21,13 +21,34 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { Computable } from "./Computable";
+import { ConflictError } from "./Errors";
 import { FileSet } from "./FileSet";
 import { MemoryFile } from "./MemoryFS";
+import { Name, NameBuilder } from "./Name";
 import { getResultFileSet, syncFileSet, writeFileSet } from "./Staging";
 import { expect } from "chai";
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.then(resolve, reject));
+}
+
+/** Build a `selector -> template` rename Name from bare glob/literal segments,
+ * bypassing the parser (a core test can't reach the model layer). Each segment
+ * is `{lit}` (literal text) or `{glob}` (a `*`/`**` wildcard). */
+type Seg = { lit?: string; glob?: string };
+function renameName(selector: Seg[], template: Seg[]): Name {
+  const build = (segs: Seg[]): Name => {
+    const b = new NameBuilder();
+    for (const s of segs) {
+      if (s.glob !== undefined) {
+        b.appendGlobMetachars(s.glob);
+      } else {
+        b.appendLiteralString(s.lit ?? "");
+      }
+    }
+    return b.name();
+  };
+  return build(selector).withRenameTo(build(template));
 }
 
 describe("getResultFileSet", () => {
@@ -55,6 +76,48 @@ describe("getResultFileSet", () => {
     expect(await toPromise(result.get(".config/nested.json"))).to.not.equal(undefined);
     /* And the dotfile is still on disk, not deleted as a non-match. */
     expect(fs.existsSync(path.join(work, ".eslintrc"))).to.equal(true);
+  });
+
+  it("collects under a subdir and names results relative to it (string dir:glob)", async () => {
+    /* The plain-string path (the exec/test-report callers) is unchanged by the
+     * projection unification: `dir:glob` selects under dir, names relative to it. */
+    fs.mkdirSync(path.join(work, "site"));
+    fs.writeFileSync(path.join(work, "site", "index.html"), "page");
+    fs.writeFileSync(path.join(work, "stray.html"), "outside");
+
+    const result = await toPromise(getResultFileSet(work, "site:*.html"));
+
+    expect([...result].map(([name]) => name)).to.deep.equal(["index.html"]);
+    /* A file outside the selected dir is dropped (deleted), not collected. */
+    expect(fs.existsSync(path.join(work, "stray.html"))).to.equal(false);
+  });
+
+  it("applies an output rename projection, renaming collected files", async () => {
+    fs.writeFileSync(path.join(work, "foo.md"), "F");
+    fs.writeFileSync(path.join(work, "bar.md"), "B");
+    fs.writeFileSync(path.join(work, "skip.txt"), "S");
+
+    /* `*.md -> out/*.md` */
+    const output = renameName([{ glob: "*" }, { lit: ".md" }], [{ lit: "out/" }, { glob: "*" }, { lit: ".md" }]);
+    const result = await toPromise(getResultFileSet(work, output));
+
+    expect([...result].map(([name]) => name).sort()).to.deep.equal(["out/bar.md", "out/foo.md"]);
+    expect(await toPromise(result.readFile("out/foo.md"))).to.equal("F");
+    /* An unselected file is dropped (deleted), same as a non-matching glob. */
+    expect(fs.existsSync(path.join(work, "skip.txt"))).to.equal(false);
+  });
+
+  it("reports a rename that collapses two files onto one name as a conflict", async () => {
+    fs.writeFileSync(path.join(work, "a.txt"), "A");
+    fs.writeFileSync(path.join(work, "b.txt"), "B");
+
+    /* `*.txt -> dup.txt` — a constant target every match lands on. */
+    const output = renameName([{ glob: "*" }, { lit: ".txt" }], [{ lit: "dup.txt" }]);
+
+    await toPromise(getResultFileSet(work, output)).then(
+      () => expect.fail("expected a ConflictError"),
+      err => expect(err).to.be.instanceOf(ConflictError)
+    );
   });
 });
 
