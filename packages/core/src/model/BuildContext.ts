@@ -59,6 +59,7 @@ import {
   ReferenceFailedError,
 } from "./Errors";
 import { attachHelp, ConflictError, IConflictSide, IConflictSource } from "../core/Errors";
+import { closestMatch } from "../support/Suggest";
 import { Name, RewriteFn, makeRewrite } from "../core/Name";
 import { parseName } from "./Parser";
 import { IPrefixMatch } from "./Namespace";
@@ -246,6 +247,9 @@ interface IBuildModel {
   getDecl(name: string): IPropertyDecl | ITargetDecl | INamespaceDecl | undefined;
   getTargetDef(name: string): ITargetDefDecl | undefined;
   getPrefixMatch(name: Name): IPrefixMatch | undefined;
+  /** Name enumerations, for nearest-match suggestions on an unresolved name. */
+  getTargets(): { name: string; decl: ITargetDecl }[];
+  getProperties(): { name: string; decl: IPropertyDecl }[];
   /** The model's registry: rule selection and repository providers ride the
    * model (built per load from core + active plugins), not a global. */
   getTargetRule(type: string, constraints: Constraints): IRuleDefinition | undefined;
@@ -388,6 +392,19 @@ export class BuildContext {
     return this.constraints;
   }
 
+  /**
+   * The unresolved-name error for `name`: positioned at the referencing value
+   * when a dependency stack is present (a name written in a build file), a
+   * plain message otherwise (a command-line name — nothing to point at), with
+   * the given hints (a nearest-match suggestion etc.) as its `help:` line.
+   */
+  private unresolvedNameError(name: string, stack: IDependencyStack | undefined, reason: string, hints: string[]): Error {
+    const err = stack
+      ? new NameResolutionError(Name.fromLiteral(name), declPosn(stack.value), useSiteOf(stack), reason)
+      : new Error(reason);
+    return hints.length > 0 ? attachHelp(err, hints.join("; ")) : err;
+  }
+
   public getProperty(name: string, stack?: IDependencyStack): Computable<Property> {
     this.assertNonCircularProperty(name, stack);
     if (name in this.propCache) {
@@ -401,7 +418,11 @@ export class BuildContext {
     } else {
       const def = this.model.getDecl(name);
       if (!def || def.kind !== DeclKind.Property) {
-        throw new Error("Unresolved property name '" + name + "'"); /* TODO: actual error reporting */
+        const reason = def
+          ? `'${name}' names a ${def.kind === DeclKind.Target ? "target" : "namespace"}, not a property`
+          : `Unresolved property name '${name}'`;
+        const nearest = def ? undefined : closestMatch(name, this.model.getProperties().map(prop => prop.name));
+        throw this.unresolvedNameError(name, stack, reason, nearest ? [`did you mean '${nearest}'?`] : []);
       }
       const result = this.resolveStringProperty(def, undefined, stack);
       this.propCache[name] = result;
@@ -435,7 +456,23 @@ export class BuildContext {
         this.targetCache[name] = result;
         return result;
       } else {
-        throw new Error("Unresolved name '" + name + "'"); /* TODO: actual error reporting */
+        const hints: string[] = [];
+        const nearest = closestMatch(name, [
+          ...this.model.getTargets().map(target => target.name),
+          ...this.model.getProperties().map(prop => prop.name),
+        ]);
+        if (name.includes(":")) {
+          /* getTarget resolves whole declared names only (the build/test CLI
+           * path) — a ':' here is a file projection, which those verbs don't
+           * take. */
+          hints.push("'build' and 'test' take whole target names; a ':' projection into a target's files applies to ls, cat, and run");
+        }
+        if (nearest) {
+          hints.push(!stack ? `did you mean '${nearest}'? ('fabr list-targets' shows the available targets)` : `did you mean '${nearest}'?`);
+        } else if (!stack) {
+          hints.push("'fabr list-targets' shows the available targets");
+        }
+        throw this.unresolvedNameError(name, stack, `Unresolved name '${name}'`, hints);
       }
     }
   }
@@ -896,8 +933,17 @@ export class BuildContext {
           });
         } else {
           /* A command-line name that names no known target (no decl to resolve
-           * a bare path against) */
-          throw new Error(`Unknown target '${name.toString()}'`);
+           * a bare path against). Suggest against the literal head of the
+           * written name — the part before any ':' projection — since that is
+           * the target the user was naming. */
+          const written = name.toString();
+          const nearest = closestMatch(written.split(":")[0], this.model.getTargets().map(target => target.name));
+          throw attachHelp(
+            new Error(`Unknown target '${written}'`),
+            nearest
+              ? `did you mean '${nearest}'? ('fabr list-targets' shows the available targets)`
+              : "'fabr list-targets' shows the available targets"
+          );
         }
       }
     });

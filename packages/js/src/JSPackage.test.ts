@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { Computable, FileSet, Flag, IFile, MemoryFile, PackageFileSet, SymlinkFile } from "@fabr-build/core";
+import { Computable, ConflictError, FileSet, Flag, IFile, MemoryFile, PackageFileSet, SymlinkFile } from "@fabr-build/core";
 import {
   assembleNodeModules,
   assembleScopedNodeModules,
@@ -80,6 +80,15 @@ describe("assembleScopedNodeModules", () => {
     const files = entries(assembleScopedNodeModules([pkg("tar-stream"), loose]));
     expect(files.has("loose.js")).to.equal(true);
   });
+
+  it("reports two different packages under one name in the closure as a package conflict", () => {
+    /* The flat store has one slot per name; a two-version closure is
+     * unrepresentable, and the error must name the packages — not the raw
+     * store-file collision the union would otherwise trip over. */
+    const a = vpkg("a", "1.0.0", [vpkg("shared", "1.0.0")]);
+    const b = vpkg("b", "1.0.0", [vpkg("shared", "2.0.0")]);
+    expect(() => assembleScopedNodeModules([a, b])).to.throw(ConflictError, /Conflicting packages for shared/);
+  });
 });
 
 describe("assembleNodeModules", () => {
@@ -140,6 +149,20 @@ describe("assembleNodeModules", () => {
     /* The carried newer version is not the winner, so it nests under its lister. */
     const nested = await settle(files.get("other/node_modules/tool/index.js")!.readString());
     expect(nested).to.equal("// tool@9.9.9");
+  });
+
+  it("reports two different roots sharing a name as a conflict, not a silent drop", () => {
+    /* Every root was directly listed and must hold its own top-level mount —
+     * two can't, and roots cannot nest the way a transitive non-winner can. */
+    expect(() => assembleNodeModules([vpkg("tool", "1.0.0"), vpkg("tool", "2.0.0")])).to.throw(
+      ConflictError,
+      /Conflicting packages for tool/
+    );
+  });
+
+  it("accepts the same-identity root arriving twice", () => {
+    const files = entries(assembleNodeModules([vpkg("tool", "1.0.0"), vpkg("tool", "1.0.0")]));
+    expect(files.has("tool/index.js")).to.equal(true);
   });
 });
 

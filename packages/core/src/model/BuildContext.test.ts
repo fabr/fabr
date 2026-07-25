@@ -1207,3 +1207,61 @@ describe("BuildContext", () => {
     expect(await lastDeps!.get("f.txt").then(file => file?.readString())).to.equal("caller");
   });
 });
+
+describe("unresolved-name diagnostics", () => {
+  function modelOf(input: string): ReturnType<typeof toBuildModel> {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    return model;
+  }
+
+  it("positions a typo'd ${property} at its use and suggests the near name", () => {
+    /* The substitution site carries a dependency stack, so the error is the
+     * positioned NameResolutionError, anchored at the referencing value. */
+    const input = "FOO = x;\nBAR = ${FOOO};\n";
+    const context = modelOf(input).getConfig({}, execution);
+    try {
+      context.getProperty("BAR");
+      expect.fail("expected a throw");
+    } catch (e) {
+      const err = e as NameResolutionError & { help?: string };
+      expect(err.message).to.contain("Unresolved property name 'FOOO'");
+      expect(err.help).to.contain("did you mean 'FOO'?");
+      expect(err).to.be.instanceOf(NameResolutionError);
+      expect(err.position.offset).to.be.greaterThan(0);
+    }
+  });
+
+  it("names the kind when a property reference hits a target", () => {
+    const input = "targetdef test_file { content = STRING; }\ntest_file thing { content = x; }\n";
+    const context = modelOf(input).getConfig({}, execution);
+    expect(() => context.getProperty("thing")).to.throw(/'thing' names a target, not a property/);
+  });
+
+  it("suggests a near target name and points at list-targets for a CLI name", () => {
+    const input = "targetdef test_file { content = STRING; }\ntest_file mytarget { content = x; }\n";
+    const context = modelOf(input).getConfig({}, execution);
+    try {
+      context.getTarget("mytargt");
+      expect.fail("expected a throw");
+    } catch (e) {
+      const err = e as Error & { help?: string };
+      expect(err.message).to.contain("Unresolved name 'mytargt'");
+      expect(err.help).to.contain("did you mean 'mytarget'?");
+      expect(err.help).to.contain("fabr list-targets");
+    }
+  });
+
+  it("hints that build/test take whole targets when the name carries a projection", () => {
+    const input = "targetdef test_file { content = STRING; }\ntest_file mytarget { content = x; }\n";
+    const context = modelOf(input).getConfig({}, execution);
+    try {
+      context.getTarget("mytarget:build/x.js");
+      expect.fail("expected a throw");
+    } catch (e) {
+      expect((e as { help?: string }).help).to.contain("whole target names");
+    }
+  });
+});

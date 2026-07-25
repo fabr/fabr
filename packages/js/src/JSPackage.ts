@@ -29,6 +29,7 @@ import {
   BuildActionInputs,
   Computable,
   compareVersions,
+  ConflictError,
   EMPTY_FILESET,
   FileSet,
   FileSetRef,
@@ -348,9 +349,21 @@ export function assembleNodeModules(sets: FileSet[]): FileSet {
   }
 
   /* The flat (hoisted) winner per name: a root always holds its own name;
-   * otherwise the highest version. */
+   * otherwise the highest version. Two *different* roots sharing a name is a
+   * conflict, not a pick: every root was directly listed, so each must hold its
+   * own top-level mount, and two can't — the layout is unrepresentable (roots
+   * cannot nest under each other the way a transitive non-winner can). */
   const top = new Map<string, string>();
   for (const root of roots) {
+    const existing = top.get(root.packageName);
+    if (existing !== undefined && existing !== root.packageId) {
+      throw new ConflictError(
+        "packages",
+        root.packageName,
+        { provenance: byId.get(existing)!.origin, detail: existing },
+        { provenance: root.origin, detail: root.packageId }
+      );
+    }
     top.set(root.packageName, root.packageId);
   }
   for (const pkg of all) {
@@ -427,9 +440,26 @@ const SCOPED_STORE = ".pkgs/node_modules";
 export function assembleScopedNodeModules(directSets: FileSet[]): FileSet {
   const store: FileSet[] = [];
   const seen = new Set<PackageFileSet>();
+  const storedByName = new Map<string, PackageFileSet>();
   const toStore = (pkg: PackageFileSet): void => {
     if (!seen.has(pkg)) {
       seen.add(pkg);
+      /* The store is flat (one slot per name — that's what lets siblings resolve
+       * each other), so a closure carrying two *different* packages under one
+       * name is unrepresentable: report the packages, not the raw file collision
+       * the union would eventually trip over. Two instances with the same
+       * identity are fine (deliveries wrap their own instances; the union dedups
+       * their identical files). */
+      const existing = storedByName.get(pkg.packageName);
+      if (existing && existing.packageId !== pkg.packageId) {
+        throw new ConflictError(
+          "packages",
+          pkg.packageName,
+          { provenance: existing.origin, detail: existing.packageId },
+          { provenance: pkg.origin, detail: pkg.packageId }
+        );
+      }
+      storedByName.set(pkg.packageName, pkg);
       store.push(pkg.remap(path => `${SCOPED_STORE}/${pkg.packageName}/${path}`));
       for (const dep of pkg.dependencies) {
         if (dep instanceof PackageFileSet) {
