@@ -21,21 +21,24 @@ Fabr is a declarative, deterministic build orchestration tool. It aims at fast, 
 and multi-stage builds trivial to specify.
 
 <CardGrid>
-  <Card title="Deterministic, no lockfiles" icon="approve-check">
-    The same inputs always produce the same outputs. Versions are chosen deterministically by
-    [minimal version selection](/introduction/#determinism-and-no-lockfiles) — no lockfile to drift,
-    and the cache is a pure memo you can delete at any time.
+  <Card title="Every step is a pure transform" icon="puzzle">
+    Every build step — a compile, a bundle, even an arbitrary [`generate`](/reference/standard-rules/#generate)
+    command — is a pure function from its declared inputs to its outputs. So every step lands in the
+    same dependency graph, cached by its inputs, with nothing running blind on the side.
   </Card>
-  <Card title="Describe once, build any way" icon="puzzle">
-    A [target](/introduction/) says *what* you want; a rule knows *how*; configuration is separate. The
-    same target builds, tests, cross-compiles, or runs with no rewriting.
+  <Card title="Reproducible, no lockfiles" icon="approve-check">
+    A build is a pure function of its inputs, so it runs the same on your laptop and in CI. And unlike
+    every JS package manager, there's no lockfile — versions resolve
+    [deterministically](/introduction/#determinism-and-no-lockfiles) from what you actually require,
+    with nothing to drift or merge-conflict.
   </Card>
   <Card title="A live dev loop" icon="rocket">
     Add `-w` and fabr rebuilds, retests, or relaunches the moment a source changes — and a
     [`serve`](/guides/watch/) target hot-syncs a dev server's content without a restart.
   </Card>
-  <Card title="JavaScript & TypeScript today" icon="seti:typescript">
-    Compile, bundle, test, and run TS/JS with no `package.json`, `tsconfig`, or config files — just a
-    [`PROJECT.fabr`](/quickstart-js/) and your sources.
+  <Card title="One tool, not five" icon="seti:typescript">
+    Compile, bundle, test, and run TS/JS with a single tool in place of your package manager, compiler,
+    bundler, and test runner — and no config files. Just a [`PROJECT.fabr`](/quickstart-js/) and your
+    sources.
   </Card>
 </CardGrid>

@@ -19,7 +19,7 @@
 
 import * as path from "path";
 import { Computable, ComputableSource } from "./Computable";
-import { hashString, isNotFound, readFileBuffer, stat } from "./FSWrapper";
+import { hashString, isDirectoryError, isNotFound, readFileBuffer, stat } from "./FSWrapper";
 import { BuildCache } from "./BuildCache";
 import { FSFile, FSFileSource } from "./FSFileSource";
 import { FileSet, IFile } from "./FileSet";
@@ -83,9 +83,12 @@ export class SourceFileSource extends FSFileSource {
         })
       )
       .catch(err => {
-        /* Gone since the event fired: absent, not an error (and never a sync
-         * throw into the watcher callback, as the old statSync could be). */
-        if (isNotFound(err)) {
+        /* Gone since the event fired, or the path is a directory (a watch event
+         * on a directory the tree gained — e.g. a served tool's own cache/output
+         * dirs): either way it is not a file, so treat it as absent, not an error
+         * (and never a sync throw into the watcher callback, as the old statSync
+         * could be). Mirrors the base FSFileSource.ingest. */
+        if (isNotFound(err) || isDirectoryError(err)) {
           return undefined;
         }
         throw err;

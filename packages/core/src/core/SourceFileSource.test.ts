@@ -76,6 +76,15 @@ describe("SourceFileSource", () => {
     expect(await toPromise(computable)).to.equal(undefined);
   });
 
+  it("treats a directory as absent, not an EISDIR error", async () => {
+    /* A watch event can surface a directory the tree gained (a served tool's own
+     * cache/output dirs): the blob-backing ingest reads bytes, so it must map
+     * EISDIR to 'absent' exactly as the base does — not throw into the watcher. */
+    fs.mkdirSync(path.join(sourceRoot, "subdir"));
+    const src = new SourceFileSource(sourceRoot, cache);
+    expect(await toPromise(src.ingest("subdir"))).to.equal(undefined);
+  });
+
   it("serves source content from an immutable blob, keeping the source path as its display name", async () => {
     const filePath = path.join(sourceRoot, "a.txt");
     fs.writeFileSync(filePath, "original");

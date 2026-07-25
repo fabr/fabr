@@ -3,7 +3,7 @@ title: Getting involved
 description: How the fabr repository is laid out, how to build and test it, and how to contribute.
 ---
 
-Fabr is free software (GPL-3.0-or-later) and an active experiment. Contributions, bug reports, and
+Fabr is free software (GPL-3.0-or-later) and under active development. Contributions, bug reports, and
 design discussion are all welcome.
 
 - **Source:** [github.com/fabr/fabr](https://github.com/fabr/fabr)
