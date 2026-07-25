@@ -881,16 +881,17 @@ export class BuildContext {
             if (data.isEmpty() && !substName.hasGlob()) {
               throw new NameResolutionError(substName, declPosn(stack?.value ?? relativeTo), useSiteOf(stack));
             }
-            /* Name each file relative to the build file's dir, then drop any leading
-             * `../`. A flat sandbox has no "above", so a reference climbing out of
-             * its dir (`../scripts/gendoc.ts`, a tool a level up) flattens to its
-             * tail (`scripts/gendoc.ts`) — the rule is simply "a leading `../` is
-             * stripped", independent of where the build file sits (RATIONALE.md).
-             * `path.posix.relative` normalizes both sides, so the glob walk's
-             * pre-normalized names and a single file's literal `dir/../x` agree. Two
-             * files flattening to one name collide at the consuming union — a clear
-             * error, by design, not a silent drop. */
-            const named = data.remap(fileName => path.posix.relative(dir, fileName).replace(/^(?:\.\.\/)+/, ""));
+            /* Name each file relative to the build file's dir. A reference climbing
+             * out of its dir (`../scripts/gendoc.ts`, a tool a level up) flattens to
+             * its tail (`scripts/gendoc.ts`): a flat sandbox has no "above", so a
+             * leading `../` is stripped, independent of where the build file sits
+             * (RATIONALE.md) — the general FileSet namespace rule, enforced by name
+             * canonicalization in remap itself (see canonicalFileName), which also
+             * makes two files flattening to one name a checked conflict, not a
+             * silent drop. `path.posix.relative` normalizes both sides, so the glob
+             * walk's pre-normalized names and a single file's literal `dir/../x`
+             * agree. */
+            const named = data.remap(fileName => path.posix.relative(dir, fileName));
             return { sources: [named] };
           });
         } else {

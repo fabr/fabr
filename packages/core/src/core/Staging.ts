@@ -50,9 +50,11 @@ import { globMatcher } from "../support/Glob";
  */
 export function writeFileSet(targetDir: string, files: FileSet, options?: { copy?: boolean }): Computable<void> {
   const operations = [];
+  const root = path.resolve(targetDir);
   let realRoot: string | undefined;
   for (const [name, file] of files) {
-    const targetName = path.resolve(targetDir, name);
+    const targetName = path.resolve(root, name);
+    assertContained(root, targetName, name);
     const dirname = path.dirname(targetName);
     fs.mkdirSync(dirname, { recursive: true });
     const filepath = file.getAbsPath();
@@ -75,6 +77,17 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
     }
   }
   return Computable.forAll(operations, () => {});
+}
+
+/** Belt-and-braces backstop for the FileSet canonical-name invariant: names are
+ * canonicalized at construction (no `../`, no absolute paths — see
+ * canonicalFileName), so a resolved write target always stays inside the staged
+ * root. But staging is the boundary where a violated invariant becomes
+ * filesystem damage, so containment is asserted here regardless of producer. */
+function assertContained(root: string, targetName: string, name: string): void {
+  if (targetName !== root && !targetName.startsWith(root + path.sep)) {
+    throw new Error(`Internal error: file name '${name}' resolves outside the staging directory '${root}'`);
+  }
 }
 
 /** Monotonic across the whole process, so no two temp siblings ever share a name
@@ -109,6 +122,7 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
       continue;
     }
     const targetName = path.resolve(root, name);
+    assertContained(root, targetName, name);
     const dirname = path.dirname(targetName);
     fs.mkdirSync(dirname, { recursive: true });
     const temp = `${targetName}.fabr-sync-${process.pid}-${tempCounter++}`;
@@ -135,6 +149,7 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
   for (const [name] of before) {
     if (after.getFile(name) === undefined) {
       const targetName = path.resolve(root, name);
+      assertContained(root, targetName, name);
       removals.push(asExecutionError(deleteFile(targetName)));
       prunable.add(path.dirname(targetName));
     }

@@ -26,7 +26,7 @@
  * concern here.
  */
 
-import { Computable, FileSet, IProjection, Name, NpmPlatform, SEMVER, sendRequest } from "@fabr-build/core";
+import { Computable, FileSet, IProjection, isCanonicalFileName, Name, NpmPlatform, SEMVER, sendRequest } from "@fabr-build/core";
 import * as crypto from "node:crypto";
 
 export interface ISignature {
@@ -323,9 +323,37 @@ export function publishToRegistry(
  *  - a full packument (`versions`) — we resolved the wrong URL, a bug;
  *  - anything else (an error body, non-JSON, a truncated/HTML page) — unusable.
  */
+/**
+ * A package name is used *verbatim* as path structure — mounted at
+ * `node_modules/<name>` (identity decides mounting, so a name that
+ * canonicalization would rewrite could silently occupy another package's mount
+ * point) — so validity is exactly "already canonical as a path": the same rule
+ * every FileSet name obeys, nothing npm-specific. We deliberately do NOT
+ * enforce npm's own name grammar (charset, length, leading-character rules):
+ * a merely-un-npm-ish name that is still a clean path simply 404s at any
+ * honest registry, with normal attribution — while policing the grammar risks
+ * rejecting legacy names npm itself serves. Checked at the wire boundary
+ * (registry documents, before caching) and at requirement parse (user-written
+ * references).
+ */
+export function isValidPackageName(name: string): boolean {
+  return isCanonicalFileName(name);
+}
+
 export function parseMetadataResponse(data: Buffer, key: string): INPMPackageMetadata {
   const response = parseJsonObject(data);
   if (response && isVersionMetadata(response)) {
+    /* The document's `name` is what fabr stamps as the delivered package's
+     * identity (and so its mount path), so it must be usable as one — thrown
+     * from the fetch's process callback, so an invalid document is never
+     * cached (the validate-before-cache invariant). Dependency names need no
+     * check here: a dep key is only an opaque resolution key and a URL
+     * component — it either fails to resolve (an ordinary attributed error) or
+     * resolves to a document whose own `name` passes through this same check
+     * before it can become an identity. */
+    if (!isValidPackageName(response.name)) {
+      throw new Error(`Invalid package name ${JSON.stringify(response.name)} in registry metadata for '${key}'`);
+    }
     return response;
   }
   if (response && "versions" in response) {

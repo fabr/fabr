@@ -22,6 +22,7 @@ import { Computable, FileSet, Flag, IFile, MemoryFile, PackageFileSet, SymlinkFi
 import {
   assembleNodeModules,
   assembleScopedNodeModules,
+  binOf,
   hasPackageExport,
   makeNpmRunnable,
   parseJSTarget,
@@ -269,5 +270,30 @@ describe("makeNpmRunnable", () => {
     const link = new Map(runnable.surface).get("tsc");
     expect(link).to.be.instanceOf(SymlinkFile);
     expect((link as SymlinkFile).target).to.equal("node_modules/typescript/bin/tsc");
+  });
+});
+
+describe("binOf", () => {
+  /* package.json is untrusted content from an arbitrary package: bin commands
+   * and targets must never carry path structure out of the package. */
+  function pkgWithBin(bin: unknown): PackageFileSet {
+    const json = JSON.stringify({ name: "tool", version: "1.0.0", bin });
+    return new PackageFileSet(new Map<string, IFile>([["package.json", MemoryFile.from(json)]]), "tool", "1.0.0");
+  }
+
+  it("uses only the basename of a bin command key (npm's rule)", async () => {
+    const bins = await settle(binOf(pkgWithBin({ "nested/dir/tool-cli": "lib/cli.js" })));
+    expect(bins).to.deep.equal({ "tool-cli": "lib/cli.js" });
+  });
+
+  it("rejects a bin command that reduces to no name", async () => {
+    expect(await rejectionMessage(binOf(pkgWithBin({ "..": "lib/cli.js" })))).to.match(/invalid bin name/);
+  });
+
+  it("rejects a bin target escaping the package", async () => {
+    /* Judged by the canonical-name rule, but with error-not-flatten semantics:
+     * a repaired escape would silently re-point the bin inside the package. */
+    expect(await rejectionMessage(binOf(pkgWithBin({ tool: "../../outside.js" })))).to.match(/invalid bin target/);
+    expect(await rejectionMessage(binOf(pkgWithBin({ tool: "/etc/passwd" })))).to.match(/invalid bin target/);
   });
 });

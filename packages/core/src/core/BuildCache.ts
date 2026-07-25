@@ -4,7 +4,7 @@ import * as path from "path";
 import { Readable, Transform, Writable } from "stream";
 import { Computable } from "./Computable";
 import { ICacheControl, openUrlStream } from "./Fetch";
-import { FileSet, IFile } from "./FileSet";
+import { CANONICAL, FileSet, IFile } from "./FileSet";
 import { deleteFile, HASH_ALGORITHM, hashString, readFile, readFileBuffer, rename, writeFile } from "./FSWrapper";
 import { Diagnostic, Log } from "../support/Log";
 
@@ -470,7 +470,7 @@ export class BuildCache {
     const tmp = `${manifestPath}.tmp-${process.pid}-${this.tempCounter++}`;
     return writeFile(tmp, manifest)
       .then(() => rename(tmp, manifestPath))
-      .then(() => new FileSet(backed));
+      .then(() => new FileSet(backed, undefined, CANONICAL));
   }
 
   /**
@@ -495,7 +495,9 @@ export class BuildCache {
       ops.push(stored.then(() => undefined));
       map.set(name, new BuildFile(this.blobRoot, file.hash, name));
     }
-    return ops.length === 0 ? Computable.resolve(new FileSet(map)) : Computable.forAll(ops, () => new FileSet(map));
+    return ops.length === 0
+      ? Computable.resolve(new FileSet(map, undefined, CANONICAL))
+      : Computable.forAll(ops, () => new FileSet(map, undefined, CANONICAL));
   }
 
   /**
@@ -521,6 +523,9 @@ export class BuildCache {
         result.set(decodeURI(name), new BuildFile(this.blobRoot, hash, decodeURI(name)));
       }
     }
-    return { files: new FileSet(result), meta };
+    /* A manifest is fabr's own memo of a canonical FileSet — its names were
+     * canonicalized when the set was constructed and encoded when it was
+     * written, so a read-back is trusted without rechecking. */
+    return { files: new FileSet(result, undefined, CANONICAL), meta };
   }
 }

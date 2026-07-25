@@ -53,6 +53,7 @@ import { makeNpmRunnable } from "./JSPackage";
 import {
   INPMPackageMetadata,
   isSemverConstraint,
+  isValidPackageName,
   matchesTargetPlatform,
   memberDependencies,
   NpmPublishIdentity,
@@ -767,6 +768,9 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
       );
     }
     const { identifier: pkg, version: constraint } = split;
+    if (!isValidPackageName(pkg)) {
+      throw new Error(`'${pkg}' is not a valid package name`);
+    }
     if (!isSemverConstraint(constraint)) {
       throw attachHelp(
         new Error(`'${constraint}' is not a valid version constraint for '${pkg}'`),

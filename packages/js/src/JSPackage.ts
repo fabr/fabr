@@ -34,6 +34,7 @@ import {
   FileSetRef,
   Flag,
   IFile,
+  isCanonicalFileName,
   MemoryFile,
   PackageFileSet,
   parseVersion,
@@ -553,20 +554,39 @@ export function makeNpmRunnable(
  * bare string (the command is the package's unscoped name) or an object; a
  * package.json with no `bin` (or none at all) yields an empty map — not runnable.
  */
-/** Normalize a package.json bin path to a clean install-relative path — typescript
- * declares `"./bin/tsc"`, whose leading `./` would otherwise survive into the
- * SymlinkFile target (`<root>/./bin/tsc`) and defeat the same-install-path dedup
- * `makeNpmRunnable`/`toCommandLine` rely on (a spurious second candidate entry). */
-function normalizeBinPath(binPath: string): string {
-  return posix.normalize(binPath);
+/**
+ * Normalize + validate one package.json bin entry, untrusted content from an
+ * arbitrary package — both halves judged by the general canonical-name rule
+ * (see canonicalFileName). The command follows npm's rule — only the
+ * **basename** of the key is used — and must be a canonical single name. The
+ * target is normalized (typescript declares `"./bin/tsc"`, whose leading `./`
+ * would otherwise survive into the SymlinkFile target and defeat the
+ * same-install-path dedup `makeNpmRunnable`/`toCommandLine` rely on) and must
+ * *already* be canonical: a target an escape would flatten is an **error**,
+ * never repaired — flattening would silently re-point the bin at a different
+ * in-package path, and it must stay inside the package (npm's bin-links
+ * enforces the same) since it becomes a symlink target within the mounted
+ * closure.
+ */
+function binEntry(packageName: string, command: string, target: string): [string, string] {
+  const cleanCommand = posix.basename(command);
+  if (!isCanonicalFileName(cleanCommand)) {
+    throw new Error(`Package '${packageName}' declares an invalid bin name ${JSON.stringify(command)}`);
+  }
+  const cleanTarget = posix.normalize(target);
+  if (!isCanonicalFileName(cleanTarget)) {
+    throw new Error(`Package '${packageName}' declares an invalid bin target ${JSON.stringify(target)} for '${cleanCommand}'`);
+  }
+  return [cleanCommand, cleanTarget];
 }
 
 /**
  * The package's `bin` as a command→path map, read from its package.json (npm
  * allows `bin` to be a bare string — the command is the package's unscoped
  * name — or an object); no package.json or no `bin` yields an empty map.
- * Shared by makeNpmRunnable (the bin surface) and js_script's package-mode
- * entry (the package's declared bin is the entry).
+ * Entries are normalized/validated via {@link binEntry}. Shared by
+ * makeNpmRunnable (the bin surface) and js_script's package-mode entry (the
+ * package's declared bin is the entry).
  */
 export function binOf(pkg: PackageFileSet): Computable<Record<string, string>> {
   return pkg.get("package.json").then(file => {
@@ -576,11 +596,11 @@ export function binOf(pkg: PackageFileSet): Computable<Record<string, string>> {
     return file.readString().then(text => {
       const bin = (JSON.parse(text) as { bin?: unknown }).bin;
       if (typeof bin === "string") {
-        return { [pkg.packageName.replace(/^@[^/]+\//, "")]: normalizeBinPath(bin) };
+        return Object.fromEntries([binEntry(pkg.packageName, pkg.packageName.replace(/^@[^/]+\//, ""), bin)]);
       }
       if (bin && typeof bin === "object") {
         return Object.fromEntries(
-          Object.entries(bin as Record<string, string>).map(([command, path]) => [command, normalizeBinPath(path)])
+          Object.entries(bin as Record<string, string>).map(([command, path]) => binEntry(pkg.packageName, command, path))
         );
       }
       return {};

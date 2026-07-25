@@ -19,6 +19,7 @@
 
 import { expect } from "chai";
 import { FileSet } from "./FileSet";
+import { canonicalFileName } from "../support/Paths";
 import { MemoryFile } from "./MemoryFS";
 import { ConflictError } from "./Errors";
 
@@ -49,5 +50,69 @@ describe("FileSet.rename", () => {
   it("reports a conflict when two different files rename to one name", () => {
     const files = set({ "a.in": "1", "b.in": "2" });
     expect(() => files.rename(() => "collide.out")).to.throw(ConflictError);
+  });
+});
+
+describe("FileSet name canonicalization", () => {
+  it("keeps already-canonical names as written", () => {
+    const files = set({ "a/b/c.txt": "1", "top.txt": "2" });
+    expect([...files].map(([name]) => name).sort()).to.deep.equal(["a/b/c.txt", "top.txt"]);
+  });
+
+  it("flattens a leading ../ run to its tail (the flat sandbox has no above)", () => {
+    const files = set({ "../scripts/x.ts": "1", "../../deep/y.ts": "2" });
+    expect([...files].map(([name]) => name).sort()).to.deep.equal(["deep/y.ts", "scripts/x.ts"]);
+  });
+
+  it("resolves ./ and interior .. segments and strips a leading /", () => {
+    const files = set({ "./a/x": "1", "a/../b/y": "2", "/rooted/z": "3" });
+    expect([...files].map(([name]) => name).sort()).to.deep.equal(["a/x", "b/y", "rooted/z"]);
+  });
+
+  it("rejects backslashes and control characters", () => {
+    expect(() => set({ "a\\b": "1" })).to.throw(/Invalid file name/);
+    expect(() => set({ "a\nb": "1" })).to.throw(/Invalid file name/);
+  });
+
+  it("rejects names that name no path", () => {
+    expect(() => set({ "..": "1" })).to.throw(/names no path/);
+    expect(() => set({ ".": "1" })).to.throw(/names no path/);
+  });
+
+  it("conflicts when two different files flatten to one name", () => {
+    expect(() => set({ "../scripts/x": "1", "scripts/x": "2" })).to.throw(ConflictError);
+  });
+
+  it("dedups the same file arriving under two spellings of one name", () => {
+    const shared = MemoryFile.from("x");
+    const files = new FileSet(
+      new Map([
+        ["./same", shared],
+        ["same", shared],
+      ])
+    );
+    expect(files.size).to.equal(1);
+    expect(files.getFile("same")).to.equal(shared);
+  });
+
+  it("canonicalFileName flattens and rejects as documented", () => {
+    expect(canonicalFileName("../a/./b/../c")).to.equal("a/c");
+    expect(canonicalFileName("/abs/path")).to.equal("abs/path");
+    expect(() => canonicalFileName("../..")).to.throw(/names no path/);
+  });
+});
+
+describe("FileSet.remap", () => {
+  it("is checked: two different files remapped to one name is a conflict", () => {
+    const files = set({ "a.in": "1", "b.in": "2" });
+    expect(() => files.remap(() => "collide")).to.throw(ConflictError);
+  });
+
+  it("canonicalizes remapped names, conflicting on a post-flatten collision", () => {
+    const files = set({ "x.in": "1" });
+    const remapped = files.remap(name => `../out/${name}`);
+    expect([...remapped].map(([name]) => name)).to.deep.equal(["out/x.in"]);
+    const two = set({ "out/x": "1", x: "2" });
+    expect(() => two.remap(name => (name.startsWith("out/") ? name : `../out/${name}`))).to.throw(ConflictError);
   });
 });

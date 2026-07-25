@@ -22,7 +22,7 @@ import * as os from "os";
 import * as path from "path";
 import { Computable } from "./Computable";
 import { ConflictError } from "./Errors";
-import { FileSet } from "./FileSet";
+import { CANONICAL, FileSet } from "./FileSet";
 import { MemoryFile } from "./MemoryFS";
 import { Name, NameBuilder } from "./Name";
 import { getResultFileSet, syncFileSet, writeFileSet } from "./Staging";
@@ -223,5 +223,36 @@ describe("syncFileSet", () => {
 
     expect(delta).to.deep.equal({ written: 0, removed: 0 });
     expect(fs.statSync(path.join(work, "index.html")).ino).to.equal(ino);
+  });
+});
+
+describe("staging containment backstop", () => {
+  /* FileSet canonicalization makes an escaping name unconstructible through the
+   * normal path, so these deliberately violate the invariant via the CANONICAL
+   * trust marker — the backstop must hold even against a buggy trusted producer
+   * (staging is where a violated invariant becomes filesystem damage). */
+  let work: string;
+
+  beforeEach(() => {
+    work = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-contain-test-"));
+  });
+  afterEach(() => {
+    fs.rmSync(work, { recursive: true, force: true });
+  });
+
+  function escapingSet(name: string): FileSet {
+    return new FileSet(new Map([[name, MemoryFile.from("evil")]]), undefined, CANONICAL);
+  }
+
+  it("writeFileSet refuses a name resolving outside the target dir", () => {
+    expect(() => writeFileSet(path.join(work, "stage"), escapingSet("../escape.txt"))).to.throw(/outside the staging directory/);
+    expect(fs.existsSync(path.join(work, "escape.txt"))).to.equal(false);
+  });
+
+  it("syncFileSet refuses an escaping write and an escaping removal", () => {
+    const stage = path.join(work, "stage");
+    fs.mkdirSync(stage);
+    expect(() => syncFileSet(stage, new FileSet(new Map()), escapingSet("../escape.txt"))).to.throw(/outside the staging directory/);
+    expect(() => syncFileSet(stage, escapingSet("../victim.txt"), new FileSet(new Map()))).to.throw(/outside the staging directory/);
   });
 });

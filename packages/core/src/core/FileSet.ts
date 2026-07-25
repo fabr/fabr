@@ -22,6 +22,7 @@ import { Name } from "./Name";
 import { Computable, ComputableSource } from "./Computable";
 import { IProvenanceStep } from "./Provenance";
 import { ConflictError } from "./Errors";
+import { canonicalFileName, isCanonicalFileName } from "../support/Paths";
 
 export interface IFile {
   hash: string;
@@ -76,8 +77,27 @@ export interface FileSource {
 type FileSetContent = Map<string, IFile>;
 
 /**
+ * Construction-site marker asserting that a content map's names are already
+ * canonical, so the constructor skips canonicalization. For names that are
+ * canonical *by construction* only: a set derived name-unchanged from an
+ * existing FileSet (union, minus, partition), or one read back from a
+ * fabr-written cache manifest (the cache is a memo of a canonical set — reads
+ * are trusted without rechecking). Any site introducing NEW names goes through
+ * the canonicalizing constructor.
+ */
+export const CANONICAL: unique symbol = Symbol("canonical-names");
+
+/**
  * Represents a set of files that may originate from arbitrary points of the file system
  * (or not even be on the filesystem). FileSets are immutable after construction.
+ *
+ * Every name is **canonical** (see {@link canonicalFileName}): the constructor
+ * canonicalizes whatever it is handed — so "no `../`, no absolute paths, no
+ * control characters" holds for every FileSet *by construction*, whoever the
+ * producer is (staging containment then cannot be escaped by a crafted name).
+ * The common already-clean case costs one scan and keeps the map as given;
+ * construction sites whose names are canonical by construction pass
+ * {@link CANONICAL} to skip even that.
  *
  * Current implementation is just a Map<string,IFile> but other code shouldn't depend on that.
  */
@@ -90,16 +110,53 @@ export class FileSet implements FileSource {
    */
   public readonly origin: IProvenanceStep | undefined;
 
-  constructor(content: FileSetContent, origin?: IProvenanceStep) {
-    this.content = content;
+  constructor(content: FileSetContent, origin?: IProvenanceStep, trust?: typeof CANONICAL) {
+    this.content = trust === CANONICAL ? content : FileSet.canonicalizeContent(content, origin);
     this.origin = origin;
+  }
+
+  /**
+   * Canonicalize a raw content map's names. Fast path: every name already
+   * canonical (the overwhelmingly common case) returns the map as given, no
+   * allocation. Otherwise the map is rebuilt under canonical names, and two
+   * *different* files landing on one canonical name is a {@link ConflictError}
+   * (the same file twice dedups by identity, as in {@link unionAll}).
+   */
+  private static canonicalizeContent(content: FileSetContent, origin?: IProvenanceStep): FileSetContent {
+    let clean = true;
+    for (const name of content.keys()) {
+      if (!isCanonicalFileName(name)) {
+        clean = false;
+        break;
+      }
+    }
+    if (clean) {
+      return content;
+    }
+    const result = new Map<string, IFile>();
+    const sourceName = new Map<string, string>();
+    for (const [name, file] of content) {
+      const canonical = canonicalFileName(name);
+      const existing = result.get(canonical);
+      if (existing && !existing.isSameFile(file)) {
+        throw new ConflictError(
+          "files",
+          canonical,
+          { provenance: origin, detail: sourceName.get(canonical) ?? existing.getDisplayName() },
+          { provenance: origin, detail: name }
+        );
+      }
+      result.set(canonical, file);
+      sourceName.set(canonical, name);
+    }
+    return result;
   }
 
   /**
    * @return a copy of the receiver carrying the given provenance.
    */
   public withOrigin(origin: IProvenanceStep): FileSet {
-    return new FileSet(this.content, origin);
+    return new FileSet(this.content, origin, CANONICAL);
   }
 
   /**
@@ -203,7 +260,7 @@ export class FileSet implements FileSource {
     for (const [path, file] of this.content) {
       const dest = cb(path);
       if (!(dest in partitions)) {
-        partitions[dest] = new FileSet(new Map(), this.origin);
+        partitions[dest] = new FileSet(new Map(), this.origin, CANONICAL);
       }
       partitions[dest].content.set(path, file);
     }
@@ -212,39 +269,37 @@ export class FileSet implements FileSource {
 
   /**
    * Remap the files in the fileset, and return a new FileSet with the result.
+   * A synonym of {@link rename} (the name used where the intent is layout
+   * rather than projection) — same canonicalization, same collision rule.
    * @param fn A function that either returns the new name for the given file, or undefined to exclude it from the result.
    */
   public remap(fn: (name: string, file: IFile) => string | undefined): FileSet {
-    const result = new Map();
-    for (const [name, file] of this.content) {
-      const newName = fn(name, file);
-      if (newName !== undefined) {
-        result.set(newName, file);
-      }
-    }
-
-    return new FileSet(result, this.origin);
+    return this.rename(fn);
   }
 
   /**
    * Apply a name projection: `renamer` maps each file's path to its result name
    * (undefined drops it), returning a new FileSet. This is the loop behind
-   * {@link find} — a plain glob projection and a `sel -> tmpl` rename alike — and
-   * the direct home of the collision rule: unlike {@link remap} (silently
-   * last-wins, for rule-internal layout), two *different* files projected to one
-   * name is a **conflict**, reported with both sides attributed via provenance;
-   * the same file arriving twice at one name is fine (identity dedup, as in
-   * {@link unionAll}). A plain glob projection never collides (distinct paths
-   * stay distinct), so only a user rename can trip it.
+   * {@link find} — a plain glob projection and a `sel -> tmpl` rename alike —
+   * and the direct home of the collision rule: two *different* files landing on
+   * one result name is a **conflict**, reported with both sides attributed via
+   * provenance; the same file arriving twice at one name is fine (identity
+   * dedup, as in {@link unionAll}). Result names are canonicalized as they are
+   * produced (a renamer yielding `../x` flattens to `x` — the namespace rule),
+   * and the collision check runs on the *canonical* names, so two names that
+   * only collide after flattening still conflict rather than silently collapse.
+   * A plain glob projection never collides (distinct paths stay distinct under
+   * a constant prefix).
    */
   public rename(renamer: (name: string, file: IFile) => string | undefined): FileSet {
     const result = new Map<string, IFile>();
     const sourceName = new Map<string, string>();
     for (const [name, file] of this.content) {
-      const newName = renamer(name, file);
-      if (newName === undefined) {
+      const rawName = renamer(name, file);
+      if (rawName === undefined) {
         continue;
       }
+      const newName = canonicalFileName(rawName);
       const existing = result.get(newName);
       if (existing && !existing.isSameFile(file)) {
         throw new ConflictError(
@@ -257,7 +312,7 @@ export class FileSet implements FileSource {
       result.set(newName, file);
       sourceName.set(newName, name);
     }
-    return new FileSet(result, this.origin);
+    return new FileSet(result, this.origin, CANONICAL);
   }
 
   /**
@@ -270,7 +325,7 @@ export class FileSet implements FileSource {
     for (const [name] of files.content) {
       result.delete(name);
     }
-    return new FileSet(result, this.origin);
+    return new FileSet(result, this.origin, CANONICAL);
   }
 
   /**
@@ -304,10 +359,13 @@ export class FileSet implements FileSource {
         }
       }
     }
-    return new FileSet(result);
+    return new FileSet(result, undefined, CANONICAL);
   }
 
   public static layout(data: Record<string, FileSet | Array<FileSet | undefined> | IFile | undefined>): FileSet {
+    /* Prefixes introduce new names, so the result goes through the
+     * canonicalizing constructor (posix join — names are `/`-separated
+     * everywhere, whatever the host platform). */
     const result = new Map<string, IFile>();
     for (const prefix in data) {
       const files = data[prefix];
@@ -315,13 +373,13 @@ export class FileSet implements FileSource {
         for (const fs of files) {
           if (fs) {
             for (const [name, file] of fs) {
-              result.set(path.join(prefix, name), file);
+              result.set(path.posix.join(prefix, name), file);
             }
           }
         }
       } else if (files instanceof FileSet) {
         for (const [name, file] of files) {
-          result.set(path.join(prefix, name), file);
+          result.set(path.posix.join(prefix, name), file);
         }
       } else if (files !== undefined) {
         result.set(prefix, files);
