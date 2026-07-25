@@ -28,6 +28,7 @@ import {
   parseJSTarget,
   resolveJsxImportSource,
   resolveSourceMode,
+  withBinShebangs,
 } from "./JSPackage";
 
 /** A package with a single `index.js` and the given (already-built) deps. */
@@ -293,6 +294,44 @@ describe("makeNpmRunnable", () => {
     const link = new Map(runnable.surface).get("tsc");
     expect(link).to.be.instanceOf(SymlinkFile);
     expect((link as SymlinkFile).target).to.equal("node_modules/typescript/bin/tsc");
+  });
+});
+
+describe("withBinShebangs", () => {
+  async function shebang(files: Record<string, string>): Promise<Map<string, IFile>> {
+    const set = new FileSet(new Map(Object.entries(files).map(([name, body]) => [name, MemoryFile.from(body)])));
+    return entries(await settle(withBinShebangs(set)));
+  }
+  const body = (file: IFile | undefined): Promise<string> => settle(file!.readString());
+
+  it("prepends a node shebang to a convention bin that lacks one", async () => {
+    const out = await shebang({ "bin/fabr.js": "require('../index');\n" });
+    expect(await body(out.get("bin/fabr.js"))).to.equal("#!/usr/bin/env node\nrequire('../index');\n");
+  });
+
+  it("leaves a bin that already has a shebang untouched (no double)", async () => {
+    const original = "#!/usr/bin/env node\nrun();\n";
+    const out = await shebang({ "bin/fabr.js": original });
+    expect(await body(out.get("bin/fabr.js"))).to.equal(original);
+  });
+
+  it("respects a bundled bin's own interpreter line", async () => {
+    const original = "#!/bin/sh\necho hi\n";
+    const out = await shebang({ "bin/tool.sh": original });
+    expect(await body(out.get("bin/tool.sh"))).to.equal(original);
+  });
+
+  it("touches only files under bin/, and skips .d.ts / .map siblings", async () => {
+    const out = await shebang({
+      "bin/cli.js": "x\n",
+      "bin/cli.d.ts": "export {};\n",
+      "bin/cli.js.map": "{}\n",
+      "index.js": "y\n",
+    });
+    expect(await body(out.get("bin/cli.js"))).to.equal("#!/usr/bin/env node\nx\n");
+    expect(await body(out.get("bin/cli.d.ts"))).to.equal("export {};\n");
+    expect(await body(out.get("bin/cli.js.map"))).to.equal("{}\n");
+    expect(await body(out.get("index.js"))).to.equal("y\n");
   });
 });
 

@@ -44,7 +44,7 @@ import {
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
-import { binByConvention, compileJsSources, JSTarget, parseJSTarget, stripPackageJson } from "../JSPackage";
+import { binByConvention, compileJsSources, JSTarget, parseJSTarget, stripPackageJson, withBinShebangs } from "../JSPackage";
 
 function buildJsPackage(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
@@ -123,20 +123,25 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
          * identity + carried deps. This runs in resolution on every evaluation
          * (whether the compile sub-target hit or missed), reconstructing the
          * runtime-only identity each time. */
-        const deliver = (built: FileSet): FileSource => {
+        const deliver = (built: FileSet): Computable<FileSource> => {
           const contents = FileSet.unionAll(built, stripPackageJson(copied));
-          const packageJson = createPackageJson(
-            contents,
-            seed,
-            context.name,
-            version?.toString(),
-            declared,
-            providedDeclared,
-            jsTarget,
-            metadata
-          );
-          const assembled = FileSet.unionAll(contents, new FileSet(new Map([["package.json", packageJson]])));
-          return new PackageFileSet(assembled, context.name, version?.toString(), carried);
+          /* Guarantee every declared bin opens with an interpreter line so the
+           * installed npm command is launchable — derived from the bin convention,
+           * not a hand-written source shebang (see withBinShebangs). */
+          return withBinShebangs(contents).then(shebanged => {
+            const packageJson = createPackageJson(
+              shebanged,
+              seed,
+              context.name,
+              version?.toString(),
+              declared,
+              providedDeclared,
+              jsTarget,
+              metadata
+            );
+            const assembled = FileSet.unionAll(shebanged, new FileSet(new Map([["package.json", packageJson]])));
+            return new PackageFileSet(assembled, context.name, version?.toString(), carried);
+          });
         };
 
         /* With TS sources the compile is a sub-target (its output wrapped

@@ -5,7 +5,7 @@
   "homepage": "https://github.com/fabr/fabrjs",
   "main": "build/index.js",
   "bin": {
-    "fabr": "build/index.js"
+    "fabr": "build/bin/fabr.js"
   },
   "dependencies": {
     "@fabr-build/core": "0.1.0",

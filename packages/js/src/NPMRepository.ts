@@ -1,5 +1,6 @@
 import {
   attachHelp,
+  attributedTo,
   BUILD_OPERATION,
   Computable,
   FILES_OPERATION,
@@ -45,6 +46,7 @@ import {
   SemverConstraint,
   SemverVersion,
   TARGET,
+  toError,
   tripleToNpm,
   unpackStream,
   VersionNotFoundError,
@@ -421,7 +423,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
         try {
           return this.parseRequirement(reference.name);
         } catch (err) {
-          throw new RequirementResolutionError([reference], asError(err));
+          throw new RequirementResolutionError([reference], toError(err));
         }
       });
       const roots: ResolvedRoot[] = references.map((reference, index) => ({ reference, name: requirements[index].pkg }));
@@ -444,7 +446,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
       const rootIndex = new Map(rootKeys.map((key, index) => [key, index]));
       return this.getJointResolution(rootReqs, rootKeys)
         .then(repairs => ({ roots, operation, rootIndex, ...repairs }) satisfies NpmResolution)
-        .catch(err => this.attributeMetadataFailure(err, references, requirements));
+        .catch(err => this.attributeResolutionFailure(err, references, requirements));
     });
   }
 
@@ -467,7 +469,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     const resolved = resolution as NpmResolution;
     if (resolved.operation === FILES_OPERATION) {
       return Computable.forAll(
-        references.map(reference => this.attributedTo(reference, () => this.resolveBarePackage(reference))),
+        references.map(reference => attributedTo(reference, () => this.resolveBarePackage(reference))),
         (...delivered: FileSet[]) => delivered
       );
     }
@@ -523,7 +525,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
             : Computable.resolve(assembled);
         });
       }
-    ).catch(err => this.attributeMetadataFailure(err, references, requirements));
+    ).catch(err => this.attributeResolutionFailure(err, references, requirements));
   }
 
   /**
@@ -588,12 +590,13 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
   }
 
   /**
-   * A metadata failure names the root package whose closure reached it (the
-   * resolver's first-reacher chain): attribute it to the written reference(s)
-   * requiring that root, whose carried provenance lets the driver point at the
+   * Attribute a batch resolution failure to the written reference(s) whose
+   * requirement pulled it in, via the root package each failure names — a
+   * MetadataFetchError's first-reacher chain, or each of a ResolutionWalkError's
+   * per-error roots. The refs' carried provenance lets the driver point at the
    * requirement as written.
    */
-  private attributeMetadataFailure(err: unknown, references: RepositoryRef[], requirements: Requirement[]): never {
+  private attributeResolutionFailure(err: unknown, references: RepositoryRef[], requirements: Requirement[]): never {
     const culpableFor = (rootPkg: string): RepositoryRef[] => references.filter((_, index) => requirements[index].pkg === rootPkg);
     if (err instanceof MetadataFetchError) {
       const culpable = culpableFor(err.rootPkg);
@@ -613,22 +616,9 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
         })
       );
     }
-    throw asError(err);
+    throw toError(err);
   }
 
-  /**
-   * Run one reference's own delivery, attributing any failure to it (the
-   * per-reference analogue of the batch attribution).
-   */
-  private attributedTo(reference: RepositoryRef, deliver: () => Computable<FileSet>): Computable<FileSet> {
-    try {
-      return deliver().catch(err => {
-        throw new RequirementResolutionError([reference], asError(err));
-      });
-    } catch (err) {
-      throw new RequirementResolutionError([reference], asError(err));
-    }
-  }
 
   /**
    * Make an already-resolved npm package launchable, keeping the exact closure
@@ -1090,9 +1080,6 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
   }
 }
 
-function asError(err: unknown): Error {
-  return err instanceof Error ? err : new Error(String(err));
-}
 
 function serializeSelection(sel: Selected<SemverVersion>): IResolutionEntry {
   return {

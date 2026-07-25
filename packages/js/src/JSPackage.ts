@@ -27,6 +27,7 @@ import { posix } from "path";
 import {
   BUILD_OPERATION,
   BuildActionInputs,
+  CANONICAL,
   Computable,
   compareVersions,
   ConflictError,
@@ -510,6 +511,42 @@ export function binByConvention(names: Set<string>): Record<string, string> {
     }
   }
   return bin;
+}
+
+/** The interpreter line fabr supplies for a bin that lacks one. */
+const NODE_SHEBANG = "#!/usr/bin/env node\n";
+
+/**
+ * Make the package's convention bins launchable as npm commands. An installed
+ * npm bin is symlinked and exec'd by the OS directly, so it must open with a
+ * `#!` interpreter line — a fact fabr already holds (a declared bin, in a
+ * js_package, so: node) and the source needn't restate; leaving it to a
+ * hand-written source shebang lets a bin ship without one (self-hosting can't
+ * catch it — fabr launches via the runnable descriptor, never the shebang). So
+ * any bin whose bytes don't already start with `#!` (a bundled shell script
+ * carries its own) gets `#!/usr/bin/env node` prepended here. The exec bit tsc
+ * drops — and which fabr can't yet stamp without per-entry mode in the manifest —
+ * npm restores on install.
+ */
+export function withBinShebangs(contents: FileSet): Computable<FileSet> {
+  const files = new Map<string, IFile>(contents);
+  const binPaths = [...new Set(Object.values(binByConvention(new Set(files.keys()))))];
+  if (binPaths.length === 0) {
+    return Computable.resolve(contents);
+  }
+  return Computable.forAll(
+    binPaths.map(path => files.get(path)!.readString().then(text => [path, text] as const)),
+    (...loaded) => {
+      for (const [path, text] of loaded) {
+        /* A bundled shell script carries its own `#!`; only a bare bin needs ours. */
+        if (!text.startsWith("#!")) {
+          files.set(path, MemoryFile.from(NODE_SHEBANG + text));
+        }
+      }
+      /* Names are unchanged — only the shebang'd bins' identities differ. */
+      return new FileSet(files, undefined, CANONICAL);
+    }
+  );
 }
 
 /**

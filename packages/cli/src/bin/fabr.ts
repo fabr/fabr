@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /*
  * Copyright (c) 2026 Nathan Keynes <nkeynes@deadcoderemoval.net>
  *
