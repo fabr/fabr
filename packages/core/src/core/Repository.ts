@@ -18,6 +18,7 @@
  */
 
 import { Computable } from "./Computable";
+import { RequirementResolutionError, toError } from "./Errors";
 import { FileSetRef, IProjection } from "./FileSetRef";
 import { FileSet, FileSource } from "./FileSet";
 import { PackageFileSet } from "./PackageFileSet";
@@ -214,6 +215,24 @@ export interface MaterializeOptions {
  * fetches together. The collection point ({@link materializeAll}) uses this; a
  * catalog does NOT — it holds the Resolution and materializes members on demand.
  */
+/**
+ * Run one reference's delivery, attributing any failure to the written
+ * reference: the ref's carried provenance lets the driver point back at the
+ * requirement as written (`@npm:pkg:ver`, `@catalog:name`), not just at the
+ * consuming target. The shared per-reference attribution helper for repository
+ * implementations (the batch-level analogue lives with each repository's
+ * resolve, which knows its own root mapping).
+ */
+export function attributedTo(reference: RepositoryRef, deliver: () => Computable<FileSet>): Computable<FileSet> {
+  try {
+    return deliver().catch(err => {
+      throw new RequirementResolutionError([reference], toError(err));
+    });
+  } catch (err) {
+    throw new RequirementResolutionError([reference], toError(err));
+  }
+}
+
 export function resolveAndMaterialize(
   reader: RepositoryReader,
   references: RepositoryRef[],

@@ -122,8 +122,32 @@ describe("Semver", () => {
     expect(resolutionKey("@scope/foo", "~3.1.0")).to.equal("@scope/foo@3");
   });
 
+  it("parses hyphen ranges per npm ('A - B', partials widening the right bound)", () => {
+    expect(satisfies("1.2.3", "1.2.3 - 2.3.4")).to.equal(true);
+    expect(satisfies("2.3.4", "1.2.3 - 2.3.4")).to.equal(true);
+    expect(satisfies("1.2.2", "1.2.3 - 2.3.4")).to.equal(false);
+    expect(satisfies("2.3.5", "1.2.3 - 2.3.4")).to.equal(false);
+    expect(minimumOf("1.2.3 - 2.3.4")).to.equal("1.2.3");
+
+    /* A partial right bound admits its whole prefix (the '<=' partial rule);
+     * a partial left bound zero-fills. */
+    expect(satisfies("2.3.9", "1.2.3 - 2.3")).to.equal(true);
+    expect(satisfies("2.4.0", "1.2.3 - 2.3")).to.equal(false);
+    expect(satisfies("2.9.9", "1.2 - 2")).to.equal(true);
+    expect(satisfies("3.0.0", "1.2 - 2")).to.equal(false);
+    expect(minimumOf("1.2 - 2")).to.equal("1.2.0");
+
+    /* Composes with disjunctions and conjunctions. */
+    expect(satisfies("3.5.0", "1.2.3 - 2.0.0 || 3.x")).to.equal(true);
+    expect(satisfies("2.5.0", "1.2.3 - 2.0.0 || 3.x")).to.equal(false);
+
+    /* The spaces are load-bearing: an unspaced hyphen is a prerelease. */
+    expect(satisfies("1.2.3-rc", "1.2.3-rc")).to.equal(true);
+    expect(() => SEMVER.parseConstraint("1.2.3 -")).to.throw(/hyphen range/);
+    expect(() => SEMVER.parseConstraint("- 2.0.0")).to.throw(/hyphen range/);
+  });
+
   it("rejects unsupported constraint syntax", () => {
-    expect(() => SEMVER.parseConstraint("1.2.3 - 2.0.0")).to.throw();
     expect(() => SEMVER.parseConstraint("latest")).to.throw();
     expect(() => SEMVER.parseConstraint("workspace:*")).to.throw();
   });

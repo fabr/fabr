@@ -194,6 +194,19 @@ export class MetadataFetchError extends Error {
 }
 
 /**
+ * Hard errors found during a resolution walk (an unparseable constraint in
+ * registry metadata, an unconstrained-only requirement), each attributed to
+ * the root package whose subtree contains it — carried structured so the
+ * repository can map every failure back to the written reference(s) requiring
+ * that root (the walk-errors analogue of MetadataFetchError's rootPkg).
+ */
+export class ResolutionWalkError extends Error {
+  constructor(public readonly failures: ReadonlyArray<{ message: string; rootPkg: string }>) {
+    super(failures.map(failure => failure.message).join("\n"));
+  }
+}
+
+/**
  * A specific package version does not exist in its registry (the translated
  * 404 for a version document) — distinguished from transport failures so the
  * resolver can attempt the floor-raise repair (an unpublished declared floor)

@@ -22,6 +22,7 @@ import { FileSet, FileSource } from "../core/FileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import {
+  attributedTo,
   groupByRepository,
   MaterializeOptions,
   Repository,
@@ -34,7 +35,7 @@ import {
 import { FileSetRef } from "../core/FileSetRef";
 import { Requirement } from "../resolver/Types";
 import { chainSteps } from "../core/Provenance";
-import { attachHelp, ConflictError, IConflictSource, RequirementResolutionError, toError } from "../core/Errors";
+import { attachHelp, ConflictError, IConflictSource } from "../core/Errors";
 import { Name } from "../core/Name";
 import { BUILD_OPERATION, RepositoryContext } from "../model/BuildContext";
 import { RepositoryRegistration } from "./Types";
@@ -109,7 +110,7 @@ export class CatalogRepository implements Repository, RepositoryReader {
       this.pinned.then(table =>
         Computable.forAll(
           references.map(reference =>
-            this.attributedTo(reference, () => this.deliver(reference.name.getLiteralPrefix(), table, operation, options))
+            attributedTo(reference, () => this.deliver(reference.name.getLiteralPrefix(), table, operation, options))
           ),
           (...delivered: FileSet[]) => delivered
         )
@@ -117,21 +118,6 @@ export class CatalogRepository implements Repository, RepositoryReader {
     );
   }
 
-  /**
-   * Run one reference's delivery, attributing any failure to the written
-   * reference (as NPMRepository does): the ref's carried provenance lets the
-   * driver point back at `@catalog:name` as written, not just at the consuming
-   * target.
-   */
-  private attributedTo(reference: RepositoryRef, deliver: () => Computable<FileSet>): Computable<FileSet> {
-    try {
-      return deliver().catch(err => {
-        throw new RequirementResolutionError([reference], toError(err));
-      });
-    } catch (err) {
-      throw new RequirementResolutionError([reference], toError(err));
-    }
-  }
 
   private deliver(alias: string, table: Map<string, CatalogMember>, operation: string, options?: MaterializeOptions): Computable<FileSet> {
     const member = table.get(alias);

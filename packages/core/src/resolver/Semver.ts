@@ -24,12 +24,13 @@ import { VersionDomain } from "./Types";
  * in package dependencies: exact versions, caret and tilde ranges, comparators
  * (>=, >, <, <=, =, with or without whitespace before the version, per npm)
  * and space-separated conjunctions thereof, x-ranges
- * (1.x, 1.2.x, bare 1 or 1.2, *), and '||' disjunctions.
+ * (1.x, 1.2.x, bare 1 or 1.2, *), hyphen ranges ('1.2.3 - 2.3.4'), and '||'
+ * disjunctions.
  *
- * Not supported (parseConstraint throws): hyphen ranges, dist-tags. Prerelease
- * versions are ordered per the semver spec, but the npm rule that prereleases
- * only match ranges explicitly mentioning a prerelease of the same triple is
- * not implemented (plain ordering is used instead).
+ * Not supported (parseConstraint throws): dist-tags. Prerelease versions are
+ * ordered per the semver spec, but the npm rule that prereleases only match
+ * ranges explicitly mentioning a prerelease of the same triple is not
+ * implemented (plain ordering is used instead).
  */
 
 export interface SemverVersion {
@@ -270,6 +271,25 @@ function intersectRanges(a: IRange, b: IRange): IRange {
   return { min, minInclusive, max, maxInclusive };
 }
 
+/**
+ * npm hyphen range: 'A - B' is >=A together with the <= reading of B — a
+ * partial B admits its whole prefix ('1.2.3 - 2.3' is <2.4.0, '1.2.3 - 2' is
+ * <3.0.0; per npm, mirroring the '<=' partial rule), a wildcard B is
+ * unbounded above. Each side reuses the ordinary partial-version machinery.
+ */
+function hyphenRange(left: string, right: string): IRange {
+  const lower = lowerOf(parsePartial(left));
+  const p = parsePartial(right);
+  if (p.major === undefined) {
+    return { min: lower, minInclusive: true, maxInclusive: false };
+  }
+  const implied = upperOfPartial(p);
+  if (p.patch === undefined && implied) {
+    return { min: lower, minInclusive: true, max: implied, maxInclusive: false };
+  }
+  return { min: lower, minInclusive: true, max: lowerOf(p), maxInclusive: true };
+}
+
 function parseRange(text: string): IRange {
   /* npm tolerates whitespace between an operator and its version — published
    * metadata contains e.g. '>= 2.1.2 < 3.0.0' (iconv-lite) — so join each
@@ -282,7 +302,24 @@ function parseRange(text: string): IRange {
   if (tokens.length === 0) {
     return { min: ZERO_VERSION, minInclusive: true, maxInclusive: false };
   }
-  return tokens.map(parseComparator).reduce(intersectRanges);
+  /* A standalone '-' token is a hyphen range joining its two neighbours (the
+   * spaces are required — an unspaced '1.2.3-rc' hyphen is a prerelease). */
+  const ranges: IRange[] = [];
+  for (let idx = 0; idx < tokens.length; idx++) {
+    if (tokens[idx] === "-") {
+      throw new Error(`Invalid hyphen range in '${text.trim()}' (expected '<version> - <version>')`);
+    }
+    if (tokens[idx + 1] === "-") {
+      if (idx + 2 >= tokens.length) {
+        throw new Error(`Invalid hyphen range in '${text.trim()}' (expected '<version> - <version>')`);
+      }
+      ranges.push(hyphenRange(tokens[idx], tokens[idx + 2]));
+      idx += 2;
+    } else {
+      ranges.push(parseComparator(tokens[idx]));
+    }
+  }
+  return ranges.reduce(intersectRanges);
 }
 
 export function parseConstraint(text: string): SemverConstraint {

@@ -176,7 +176,11 @@ describe("MVSResolver", () => {
     );
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0"]);
     expect(result.errors).to.deep.equal([
-      "'B' is required by A@1.0.0 without a version constraint ('*'), and no versioned requirement for it exists — add one explicitly",
+      {
+        message:
+          "'B' is required by A@1.0.0 without a version constraint ('*'), and no versioned requirement for it exists — add one explicitly",
+        rootPkg: "A",
+      },
     ]);
   });
 
@@ -264,18 +268,22 @@ describe("MVSResolver", () => {
   });
 
   it("reports unparseable constraints as errors", () => {
+    /* (Hyphen ranges used to be the specimen here; they parse now, so the
+     * unparseable case is a protocol-prefixed constraint.) */
     const result = resolve(
       { A: "^1.0.0" },
       {
-        A: { "1.0.0": { B: "1.0.0 - 2.0.0" } },
+        A: { "1.0.0": { B: "workspace:*" } },
       }
     );
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0"]);
     expect(result.errors).to.have.length(1);
     /* The diagnostic names the dependency the bad constraint is on, quotes the
-     * constraint verbatim, and attributes the requirer */
-    expect(result.errors[0]).to.contain("'B: 1.0.0 - 2.0.0'");
-    expect(result.errors[0]).to.contain("required by A@1.0.0");
+     * constraint verbatim, attributes the requirer, and carries the root whose
+     * subtree contains it (for written-reference attribution). */
+    expect(result.errors[0].message).to.contain("'B: workspace:*'");
+    expect(result.errors[0].message).to.contain("required by A@1.0.0");
+    expect(result.errors[0].rootPkg).to.equal("A");
   });
 
   it("resolves an empty root set", () => {

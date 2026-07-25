@@ -115,9 +115,22 @@ export interface RaisedFloor<V> {
  */
 export interface MVSResolution<V> {
   selections: Selected<V>[];
-  errors: string[];
+  errors: IResolutionError[];
   violations: Violation<V>[];
   raises: RaisedFloor<V>[];
+}
+
+/**
+ * A hard resolution error, attributed to the root package whose subtree
+ * contains it — the errors' analogue of MetadataFetchError's rootPkg, so a
+ * repository can map the failure back to the written reference(s) requiring
+ * that root rather than reporting it against the whole collection point.
+ */
+export interface IResolutionError {
+  message: string;
+  /** The root requirement whose subtree reached the error; the erring
+   * requirement's own package when it is itself a root. */
+  rootPkg: string;
 }
 
 /**

@@ -19,7 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { MetadataFetchError, VersionNotFoundError, toError } from "../core/Errors";
-import { PackageRegistry, RaisedFloor, Requirement, MVSResolution, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
+import { IResolutionError, PackageRegistry, RaisedFloor, Requirement, MVSResolution, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
 
 /**
  * Minimal Version Selection resolver (after Go's MVS): every constraint is
@@ -67,7 +67,22 @@ export function resolveMVS<V, C>(
     const nodeDemands = new Map<string, Array<{ key: string; req: Requirement; requiredBy: string }>>();
     /* Raises applied during the walk; filtered to the winners at finish */
     const candidateRaises: RaisedFloor<V>[] = [];
-    const errors = new Set<string>();
+    const errors = new Map<string, IResolutionError>();
+
+    /** The root package whose subtree contains `requirer` (for attributing an
+     * error on one of its requirements): walk the first-reacher parents to the
+     * root, as `annotate` does for fetch failures. A ROOT_REQUIRER requirer
+     * means the erring requirement is itself a root — it is its own root. */
+    const rootPkgOf = (requirer: string, ownPkg: string): string => {
+      if (requirer === ROOT_REQUIRER) {
+        return ownPkg;
+      }
+      let rootId = requirer;
+      for (let parent = nodeParents.get(rootId); parent && parent !== ROOT_REQUIRER; parent = nodeParents.get(parent)) {
+        rootId = parent;
+      }
+      return rootId.substring(0, rootId.lastIndexOf("@"));
+    };
     const violations: Violation<V>[] = [];
     /* Outstanding metadata fetches, plus one guard token held while seeding */
     let pending = 1;
@@ -87,7 +102,8 @@ export function resolveMVS<V, C>(
       try {
         constraint = domain.parseConstraint(req.constraint);
       } catch (err) {
-        errors.add(`${err instanceof Error ? err.message : err} in requirement '${req.pkg}: ${req.constraint}' (required by ${requiredBy})`);
+        const message = `${err instanceof Error ? err.message : err} in requirement '${req.pkg}: ${req.constraint}' (required by ${requiredBy})`;
+        errors.set(message, { message, rootPkg: rootPkgOf(requiredBy, req.pkg) });
         return;
       }
       if (domain.isUnconstrained(constraint)) {
@@ -245,10 +261,10 @@ export function resolveMVS<V, C>(
         }
         const targets = targetsOf(req);
         if (targets.length === 0 && domain.isUnconstrained(constraint)) {
-          errors.add(
+          const message =
             `'${req.pkg}' is required by ${from} without a version constraint ('${req.constraint}'),` +
-              ` and no versioned requirement for it exists — add one explicitly`
-          );
+            ` and no versioned requirement for it exists — add one explicitly`;
+          errors.set(message, { message, rootPkg: rootPkgOf(from, req.pkg) });
           return;
         }
         for (const selection of targets) {
@@ -318,7 +334,7 @@ export function resolveMVS<V, C>(
         raiseKeys.add(dedup);
         return true;
       });
-      resolve({ selections, errors: [...errors], violations, raises });
+      resolve({ selections, errors: [...errors.values()], violations, raises });
     };
 
     for (const root of roots) {

@@ -11,6 +11,7 @@ import {
   MaterializeOptions,
   MemoryFile,
   MetadataFetchError,
+  MultiError,
   Name,
   NpmPlatform,
   PACKAGE_RESOLUTION_PROVENANCE,
@@ -34,6 +35,7 @@ import {
   Requirement,
   RequirementResolutionError,
   Resolution,
+  ResolutionWalkError,
   ResolvedRoot,
   resolveWithRepairs,
   ROOT_REQUIRER,
@@ -592,11 +594,24 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    * requirement as written.
    */
   private attributeMetadataFailure(err: unknown, references: RepositoryRef[], requirements: Requirement[]): never {
+    const culpableFor = (rootPkg: string): RepositoryRef[] => references.filter((_, index) => requirements[index].pkg === rootPkg);
     if (err instanceof MetadataFetchError) {
-      const culpable = references.filter((_, index) => requirements[index].pkg === err.rootPkg);
+      const culpable = culpableFor(err.rootPkg);
       if (culpable.length > 0) {
         throw new RequirementResolutionError(culpable, err);
       }
+    }
+    if (err instanceof ResolutionWalkError) {
+      /* Each walk failure attributes independently (they may sit under
+       * different roots); one without a matching written reference reports
+       * plain. MultiError unwraps a sole failure. */
+      throw MultiError.of(
+        err.failures.map(failure => {
+          const culpable = culpableFor(failure.rootPkg);
+          const cause = new Error(failure.message);
+          return culpable.length > 0 ? new RequirementResolutionError(culpable, cause) : cause;
+        })
+      );
     }
     throw asError(err);
   }
@@ -944,7 +959,10 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
              * requirements) on any tree are not repairable in any mode. */
             const errors = [...result.tree.errors, ...result.splits.flatMap(split => split.tree.errors)];
             if (errors.length > 0) {
-              throw new Error(`Unable to resolve ${rootKeys.join(", ")}:\n  ${errors.join("\n  ")}`);
+              /* Typed + per-error root attribution, so the resolve() catch can
+               * map each failure to the written reference(s) that pulled its
+               * subtree in, instead of blaming the whole collection point. */
+              throw new ResolutionWalkError(errors);
             }
             return this.verifiedResolutionDoc(roots, result, target);
           });
