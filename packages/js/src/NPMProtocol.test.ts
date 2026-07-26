@@ -18,34 +18,10 @@
  */
 
 import { expect } from "chai";
-import { isValidPackageName, parseMetadataResponse } from "./NPMProtocol";
-
-describe("isValidPackageName", () => {
-  it("accepts real-world names, scoped and legacy-uppercase included", () => {
-    for (const name of ["lodash", "@types/node", "@esbuild/darwin-arm64", "JSONStream", "socket.io-client", "co-body"]) {
-      expect(isValidPackageName(name), name).to.equal(true);
-    }
-  });
-
-  it("rejects names that could not be used as the paths they become", () => {
-    /* Validity is "already canonical as a path" (the FileSet name rule), because
-     * the name is mounted verbatim at node_modules/<name>: a name that
-     * canonicalization would rewrite could silently occupy another package's
-     * mount point. */
-    for (const name of ["../evil", "a/../b", "@scope/../up", "./a", "/rooted", "\\evil", "a\nb", "", ".", ".."]) {
-      expect(isValidPackageName(name), JSON.stringify(name)).to.equal(false);
-    }
-  });
-
-  it("does not police npm's own name grammar", () => {
-    /* Un-npm-ish but path-clean names pass: no honest registry hosts them, so
-     * they simply 404 at fetch with normal attribution — while enforcing the
-     * grammar would risk rejecting legacy names npm itself serves. */
-    for (const name of ["a b", "%2e%2e", "UPPER!(case)", "a/b/c", "a".repeat(300)]) {
-      expect(isValidPackageName(name), JSON.stringify(name)).to.equal(true);
-    }
-  });
-});
+import * as crypto from "node:crypto";
+import { Readable } from "node:stream";
+import { IntegrityError } from "@fabr-build/core";
+import { expectedTarballDigest, parseMetadataResponse, verifyTarballStream } from "./NPMProtocol";
 
 describe("parseMetadataResponse", () => {
   function doc(overrides: Record<string, unknown>): Buffer {
@@ -67,5 +43,69 @@ describe("parseMetadataResponse", () => {
      * error) or resolves to a document validated by this same check. */
     expect(() => parseMetadataResponse(doc({ name: "../evil" }), "pkg/1.0.0")).to.throw(/Invalid package name/);
     expect(() => parseMetadataResponse(doc({ dependencies: { "../evil": "^1.0.0" } }), "pkg/1.0.0")).to.not.throw();
+  });
+});
+
+describe("expectedTarballDigest", () => {
+  it("prefers the strongest SRI algorithm over a weaker one and the legacy shasum", () => {
+    expect(expectedTarballDigest({ integrity: "sha256-aaa sha512-bbb", shasum: "ccc" })).to.deep.equal({
+      algorithm: "sha512",
+      encoding: "base64",
+      value: "bbb",
+    });
+  });
+
+  it("falls back to the legacy sha1 shasum (lowercased) when no SRI is present", () => {
+    expect(expectedTarballDigest({ shasum: "ABCDEF01" })).to.deep.equal({
+      algorithm: "sha1",
+      encoding: "hex",
+      value: "abcdef01",
+    });
+  });
+
+  it("ignores a sha1 SRI entry — sha1 is honored only via shasum", () => {
+    expect(expectedTarballDigest({ integrity: "sha1-aaa" })).to.equal(undefined);
+  });
+
+  it("is undefined when neither integrity nor shasum is promised", () => {
+    expect(expectedTarballDigest({})).to.equal(undefined);
+  });
+});
+
+describe("verifyTarballStream", () => {
+  const bytes = Buffer.from("a plausible tarball payload");
+  const sha512 = crypto.createHash("sha512").update(bytes).digest("base64");
+  const sha1 = crypto.createHash("sha1").update(bytes).digest("hex");
+
+  /** Feed `bytes` through the hashing pass-through to completion, then verify. */
+  async function check(dist: { integrity?: string; shasum?: string }): Promise<void> {
+    const { hashing, verify } = verifyTarballStream(dist, "https://example.com/pkg-1.0.0.tgz");
+    await new Promise<void>((resolve, reject) => {
+      hashing.on("data", () => undefined);
+      hashing.on("end", resolve);
+      hashing.on("error", reject);
+      Readable.from([bytes]).pipe(hashing);
+    });
+    verify();
+  }
+
+  it("passes a tarball matching its sha512 SRI", async () => {
+    await check({ integrity: `sha512-${sha512}` });
+  });
+
+  it("passes a tarball matching its legacy sha1 shasum", async () => {
+    await check({ shasum: sha1 });
+  });
+
+  it("passes when the metadata promises no digest", async () => {
+    await check({});
+  });
+
+  it("throws IntegrityError on a digest mismatch", async () => {
+    const wrong = crypto.createHash("sha512").update("something else").digest("base64");
+    let thrown: unknown;
+    await check({ integrity: `sha512-${wrong}` }).catch(err => (thrown = err));
+    expect(thrown).to.be.instanceOf(IntegrityError);
+    expect((thrown as IntegrityError).algorithm).to.equal("sha512");
   });
 });

@@ -14,17 +14,12 @@ module.exports = {
     /* The CSS driver executes standalone in the css step (requires sass-embedded + lightningcss) */
     "!**/packages/js/src/cssDriver/**",
   ],
-  globals: {
-    "ts-jest": {
-      tsconfig: "tsconfig.base.json",
-    },
-  },
   moduleNameMapper: {
     "^@fabr-build/core$": "<rootDir>/packages/core/src/index.ts",
     "^@fabr-build/js$": "<rootDir>/packages/js/src/index.ts",
   },
   transform: {
-    "^.+\\.ts$": "ts-jest",
+    "^.+\\.ts$": ["ts-jest", { tsconfig: "tsconfig.base.json" }],
   },
   moduleDirectories: ["node_modules"],
   moduleFileExtensions: ["ts", "js"],

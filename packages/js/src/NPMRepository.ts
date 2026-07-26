@@ -57,7 +57,6 @@ import { makeNpmRunnable } from "./JSPackage";
 import {
   INPMPackageMetadata,
   isSemverConstraint,
-  isValidPackageName,
   matchesTargetPlatform,
   memberDependencies,
   NpmPublishIdentity,
@@ -71,6 +70,7 @@ import {
   tarballBasename,
   unresolvableDependencies,
   unsupportedPlatformReason,
+  verifyTarballStream,
 } from "./NPMProtocol";
 import { NPMConfig } from "./NPMConfig";
 import { jsPluginContext } from "./JSPluginContext";
@@ -773,9 +773,6 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
       );
     }
     const { identifier: pkg, version: constraint } = split;
-    if (!isValidPackageName(pkg)) {
-      throw new Error(`'${pkg}' is not a valid package name`);
-    }
     if (!isSemverConstraint(constraint)) {
       throw attachHelp(
         new Error(`'${constraint}' is not a valid version constraint for '${pkg}'`),
@@ -1070,7 +1067,18 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
           this.context.fetch(
             meta.dist.tarball,
             "npm:tarball:1",
-            (content, targetDir) => unpackStream(content, targetDir).then(stripArchiveRoot),
+            (content, targetDir) => {
+              /* Verify the tarball against the registry's promised digest as it
+               * streams: a mismatch throws before the entry commits, so tampered
+               * or truncated-but-valid content never enters the immutable cache. */
+              const { hashing, verify } = verifyTarballStream(meta.dist, meta.dist.tarball);
+              content.on("error", err => hashing.destroy(err instanceof Error ? err : new Error(String(err))));
+              content.pipe(hashing);
+              return unpackStream(hashing, targetDir).then(files => {
+                verify();
+                return stripArchiveRoot(files);
+              });
+            },
             "package",
             headers
           )

@@ -17,7 +17,7 @@
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { expect } from "chai";
-import { sendRequest } from "./Fetch";
+import { fetchUrl, openUrlStream, sendRequest } from "./Fetch";
 
 interface Received {
   method?: string;
@@ -76,6 +76,91 @@ describe("sendRequest", () => {
       expect(res.body.toString()).to.contain("existing version");
     } finally {
       server.close();
+    }
+  });
+});
+
+/** A server driven by a per-path handler, plus a record of the auth header seen
+ * at each path — for asserting redirect following and cross-origin auth drop. */
+function routeServer(routes: (path: string) => { status: number; location?: string; body?: string } | undefined): Promise<{
+  origin: string;
+  authAt: Map<string, string | undefined>;
+  close: () => Promise<void>;
+}> {
+  const authAt = new Map<string, string | undefined>();
+  const server = http.createServer((req, res) => {
+    authAt.set(req.url ?? "", req.headers.authorization);
+    const route = routes(req.url ?? "");
+    if (!route) {
+      res.writeHead(404).end();
+      return;
+    }
+    const headers: http.OutgoingHttpHeaders = {};
+    if (route.location) {
+      headers.location = route.location;
+    }
+    res.writeHead(route.status, headers).end(route.body ?? "");
+  });
+  return new Promise(resolve =>
+    server.listen(0, "127.0.0.1", () => {
+      const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      resolve({ origin, authAt, close: () => new Promise(r => server.close(() => r())) });
+    })
+  );
+}
+
+describe("openUrlStream redirects", () => {
+  it("follows a redirect to the final 200 body", async () => {
+    const server = await routeServer(path =>
+      path === "/start"
+        ? { status: 302, location: "/final" }
+        : path === "/final"
+          ? { status: 200, body: "arrived" }
+          : undefined
+    );
+    try {
+      const body = await fetchUrl(`${server.origin}/start`);
+      expect(body.toString()).to.equal("arrived");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("rejects rather than looping forever on a redirect cycle", async () => {
+    /* A server that redirects to itself: following is bounded, so this fails
+     * (undici surfaces its loop detection) instead of spinning. */
+    const server = await routeServer(() => ({ status: 302, location: "/loop" }));
+    try {
+      let thrown: unknown;
+      await fetchUrl(`${server.origin}/loop`).catch(err => (thrown = err));
+      expect(thrown).to.be.instanceOf(Error);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("keeps auth on a same-origin redirect", async () => {
+    const server = await routeServer(path =>
+      path === "/a" ? { status: 302, location: "/b" } : path === "/b" ? { status: 200, body: "ok" } : undefined
+    );
+    try {
+      await openUrlStream(`${server.origin}/a`, { authorization: "Bearer tok" }).then(r => r.stream?.resume());
+      expect(server.authAt.get("/b")).to.equal("Bearer tok");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("drops auth on a cross-origin redirect", async () => {
+    const dest = await routeServer(() => ({ status: 200, body: "ok" }));
+    const src = await routeServer(() => ({ status: 302, location: `${dest.origin}/x` }));
+    try {
+      await openUrlStream(`${src.origin}/start`, { authorization: "Bearer tok" }).then(r => r.stream?.resume());
+      expect(src.authAt.get("/start")).to.equal("Bearer tok");
+      expect(dest.authAt.get("/x")).to.equal(undefined);
+    } finally {
+      await src.close();
+      await dest.close();
     }
   });
 });

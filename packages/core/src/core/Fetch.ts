@@ -1,9 +1,32 @@
-import * as https from "https";
 import * as http from "http";
 import { URL } from "url";
+import { Readable } from "stream";
+import { EnvHttpProxyAgent, interceptors, request as httpRequest } from "undici";
 import { Computable } from "./Computable";
 import { HttpStatusError } from "./Errors";
-import { Readable } from "stream";
+
+/** Bounded redirect following npmjs serves tarballs directly, but GitHub
+ * Packages, Artifactory, and most corporate mirrors 302 to blob storage. */
+const MAX_REDIRECTS = 5;
+
+/**
+ * The one dispatcher every fabr HTTP(S) request rides. It combines two things
+ * node's raw `http`/`https` don't do:
+ *  - **Proxy** from the standard environment (`http_proxy`/`https_proxy`/
+ *    `no_proxy`, upper- or lower-case) — {@link EnvHttpProxyAgent} reads them
+ *    once at construction and CONNECT-tunnels or routes accordingly.
+ *  - **Redirects**, bounded to {@link MAX_REDIRECTS}; undici's redirect
+ *    interceptor drops credential-bearing headers on cross-origin hops.
+ * A single pooling instance for the process (agents reuse keep-alive sockets).
+ */
+const dispatcher = new EnvHttpProxyAgent().compose(interceptors.redirect({ maxRedirections: MAX_REDIRECTS }));
+
+/** Reject a non-HTTP(S) URL with a clear message rather than a transport-layer
+ * error; fabr only ever fetches over http/https. */
+function unsupportedProtocol(urlstring: string): Error | undefined {
+  const protocol = new URL(urlstring).protocol;
+  return protocol === "https:" || protocol === "http:" ? undefined : new Error("Unsupported protocol: " + protocol);
+}
 
 export function fetchUrl(urlstring: string): Computable<Buffer> {
   /* Unconditional request, so a resolved response always carries the stream */
@@ -33,27 +56,25 @@ export interface HttpResponse {
  */
 export function sendRequest(urlstring: string, request: HttpRequest): Computable<HttpResponse> {
   return Computable.from<HttpResponse>((resolve, reject) => {
-    const url = new URL(urlstring);
-    const transport = url.protocol === "https:" ? https : url.protocol === "http:" ? http : undefined;
-    if (!transport) {
-      reject(new Error("Unsupported protocol: " + url.protocol));
+    const unsupported = unsupportedProtocol(urlstring);
+    if (unsupported) {
+      reject(unsupported);
       return;
     }
-    const headers = { ...request.headers };
-    if (request.body !== undefined && headers["content-length"] === undefined) {
-      headers["content-length"] = String(Buffer.byteLength(request.body));
-    }
-    const req = transport.request(url, { method: request.method, headers }, res => {
-      const chunks: Buffer[] = [];
-      res.on("data", chunk => chunks.push(chunk));
-      res.on("end", () => resolve({ statusCode: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }));
-      res.on("error", err => reject(err));
-    });
-    req.on("error", err => reject(err));
-    if (request.body !== undefined) {
-      req.write(request.body);
-    }
-    req.end();
+    /* undici derives Content-Length from the body and follows redirects itself. */
+    httpRequest(urlstring, { method: request.method, headers: request.headers, body: request.body, dispatcher }).then(
+      response =>
+        response.body.arrayBuffer().then(
+          buffer =>
+            resolve({
+              statusCode: response.statusCode,
+              headers: response.headers as http.IncomingHttpHeaders,
+              body: Buffer.from(buffer),
+            }),
+          reject
+        ),
+      reject
+    );
   });
 }
 
@@ -101,33 +122,25 @@ export function openUrlStream(
   const conditional =
     headers !== undefined && Object.keys(headers).some(name => /^if-(none-match|modified-since)$/i.test(name));
   return Computable.from<UrlStreamResponse>((resolve, reject) => {
-    function handleResponse(res: http.IncomingMessage): void {
-      if (res.statusCode === 200) {
-        resolve({ cacheControl: parseCacheControl(res.headers, now()), stream: res });
-      } else if (res.statusCode === 304 && conditional) {
-        res.resume(); /* discard the (empty) body so the socket is released */
-        resolve({ cacheControl: parseCacheControl(res.headers, now()) });
+    const unsupported = unsupportedProtocol(urlstring);
+    if (unsupported) {
+      reject(unsupported);
+      return;
+    }
+    /* Redirects are followed transparently by the dispatcher, so the response
+     * we see is the final hop (a 200, a conditional 304, or an error status). */
+    httpRequest(urlstring, { method: "GET", headers, dispatcher }).then(response => {
+      const resHeaders = response.headers as http.IncomingHttpHeaders;
+      if (response.statusCode === 200) {
+        resolve({ cacheControl: parseCacheControl(resHeaders, now()), stream: response.body });
+      } else if (response.statusCode === 304 && conditional) {
+        void response.body.dump(); /* discard the (empty) body so the socket is released */
+        resolve({ cacheControl: parseCacheControl(resHeaders, now()) });
       } else {
-        res.resume();
-        reject(new HttpStatusError(res.statusCode ?? 0, res.statusMessage ?? "", urlstring));
+        void response.body.dump();
+        reject(new HttpStatusError(response.statusCode, "", urlstring));
       }
-    }
-
-    const url = new URL(urlstring);
-    let req;
-    switch (url.protocol) {
-      case "https:":
-        req = https.request(url, { method: "GET", headers }, handleResponse);
-        break;
-      case "http:":
-        req = http.request(url, { method: "GET", headers }, handleResponse);
-        break;
-      default:
-        reject(new Error("Unsupported protocol: " + url.protocol));
-        return;
-    }
-    req.on("error", err => reject(err));
-    req.end();
+    }, reject);
   });
 }
 

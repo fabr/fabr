@@ -96,6 +96,24 @@ export class HttpStatusError extends Error {
 }
 
 /**
+ * Downloaded content failed to match the integrity digest its metadata
+ * promised — TLS alone can't catch a truncated-but-valid payload or a tampered
+ * mirror, so a mismatch fails the fetch (and, since it throws inside the fetch
+ * `process` callback, the entry is never cached). `algorithm` names the digest
+ * compared (`sha512`, `sha1`, …); `expected`/`actual` are its encoded values.
+ */
+export class IntegrityError extends Error {
+  constructor(
+    public readonly url: string,
+    public readonly algorithm: string,
+    public readonly expected: string,
+    public readonly actual: string
+  ) {
+    super(`integrity check failed for ${url}: ${algorithm} expected ${expected}, got ${actual}`);
+  }
+}
+
+/**
  * A mechanical failure while executing a build step (spawning processes,
  * staging files, ...) — as opposed to a semantic diagnostic like a conflict or
  * resolution failure. Multiple execution errors from one target are reported

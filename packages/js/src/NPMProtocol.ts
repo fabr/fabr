@@ -26,8 +26,19 @@
  * concern here.
  */
 
-import { Computable, FileSet, IProjection, isCanonicalFileName, Name, NpmPlatform, SEMVER, sendRequest } from "@fabr-build/core";
+import {
+  Computable,
+  FileSet,
+  IntegrityError,
+  IProjection,
+  isCanonicalFileName,
+  Name,
+  NpmPlatform,
+  SEMVER,
+  sendRequest,
+} from "@fabr-build/core";
 import * as crypto from "node:crypto";
+import { Transform } from "node:stream";
 
 export interface ISignature {
   keyid: string;
@@ -153,6 +164,65 @@ export interface NpmPublishIdentity {
  */
 export function tarballBasename(name: string, version: string): string {
   return `${name}-${version}.tgz`;
+}
+
+/** SRI algorithms fabr will verify against, strongest first — sha1 is accepted
+ * only via the legacy `dist.shasum`, never as an SRI entry. */
+const SRI_ALGORITHMS = ["sha512", "sha384", "sha256"] as const;
+
+/** The digest a registry's `dist` metadata promises for a tarball: the strongest
+ * SRI in `dist.integrity` (base64), else the legacy sha1 `dist.shasum` (hex).
+ * Undefined when `dist` carries neither — nothing to verify against. */
+export function expectedTarballDigest(dist: {
+  integrity?: string;
+  shasum?: string;
+}): { algorithm: string; encoding: "base64" | "hex"; value: string } | undefined {
+  if (dist.integrity) {
+    const entries = dist.integrity.trim().split(/\s+/);
+    for (const algorithm of SRI_ALGORITHMS) {
+      const match = entries.find(entry => entry.startsWith(`${algorithm}-`));
+      if (match) {
+        return { algorithm, encoding: "base64", value: match.slice(algorithm.length + 1) };
+      }
+    }
+  }
+  if (dist.shasum) {
+    return { algorithm: "sha1", encoding: "hex", value: dist.shasum.toLowerCase() };
+  }
+  return undefined;
+}
+
+/**
+ * Prepare integrity verification for a streamed tarball. Returns a hashing
+ * pass-through to feed the unpacker (`content.pipe(hashing)`, then unpack
+ * `hashing`) and a `verify` to call once the stream is fully consumed: it hashes
+ * every byte that passed through and throws {@link IntegrityError} on mismatch —
+ * inside the fetch `process` callback, so a bad tarball never enters the cache.
+ * A `dist` with no usable digest yields an identity pass-through and a no-op
+ * `verify` (nothing promised, nothing to check — npm behaves the same).
+ */
+export function verifyTarballStream(
+  dist: { integrity?: string; shasum?: string },
+  url: string
+): { hashing: Transform; verify: () => void } {
+  const expected = expectedTarballDigest(dist);
+  const hash = expected ? crypto.createHash(expected.algorithm) : undefined;
+  const hashing = new Transform({
+    transform(chunk, _encoding, callback): void {
+      hash?.update(chunk);
+      callback(undefined, chunk);
+    },
+  });
+  const verify = (): void => {
+    if (!expected || !hash) {
+      return;
+    }
+    const actual = hash.digest(expected.encoding);
+    if (actual !== expected.value) {
+      throw new IntegrityError(url, expected.algorithm, expected.value, actual);
+    }
+  };
+  return { hashing, verify };
 }
 
 /**
@@ -323,23 +393,6 @@ export function publishToRegistry(
  *  - a full packument (`versions`) — we resolved the wrong URL, a bug;
  *  - anything else (an error body, non-JSON, a truncated/HTML page) — unusable.
  */
-/**
- * A package name is used *verbatim* as path structure — mounted at
- * `node_modules/<name>` (identity decides mounting, so a name that
- * canonicalization would rewrite could silently occupy another package's mount
- * point) — so validity is exactly "already canonical as a path": the same rule
- * every FileSet name obeys, nothing npm-specific. We deliberately do NOT
- * enforce npm's own name grammar (charset, length, leading-character rules):
- * a merely-un-npm-ish name that is still a clean path simply 404s at any
- * honest registry, with normal attribution — while policing the grammar risks
- * rejecting legacy names npm itself serves. Checked at the wire boundary
- * (registry documents, before caching) and at requirement parse (user-written
- * references).
- */
-export function isValidPackageName(name: string): boolean {
-  return isCanonicalFileName(name);
-}
-
 export function parseMetadataResponse(data: Buffer, key: string): INPMPackageMetadata {
   const response = parseJsonObject(data);
   if (response && isVersionMetadata(response)) {
@@ -351,7 +404,7 @@ export function parseMetadataResponse(data: Buffer, key: string): INPMPackageMet
      * component — it either fails to resolve (an ordinary attributed error) or
      * resolves to a document whose own `name` passes through this same check
      * before it can become an identity. */
-    if (!isValidPackageName(response.name)) {
+    if (!isCanonicalFileName(response.name)) {
       throw new Error(`Invalid package name ${JSON.stringify(response.name)} in registry metadata for '${key}'`);
     }
     return response;
