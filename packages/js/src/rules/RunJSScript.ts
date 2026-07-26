@@ -47,7 +47,15 @@ import {
   RunnableFileSet,
   TargetContext,
 } from "@fabr-build/core";
-import { assembleNodeModules, compileJsSources, makeNpmRunnable, moduleTypeFile, parseJSTarget, stripPackageJson } from "../JSPackage";
+import {
+  assembleNodeModules,
+  compileJsSources,
+  makeNpmRunnable,
+  moduleTypeFile,
+  parseJSTarget,
+  resourceFiles,
+  stripPackageJson,
+} from "../JSPackage";
 
 function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
   /* deps/entry are built content — resolve them under build, not the run
@@ -109,11 +117,19 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
               const modeFlags = depSources.filter((source): source is Flag => source instanceof Flag);
               const { compiled, copied } = compileJsSources(context, entrySet, depSets, jsTarget, modeFlags);
               const launchName = entryName.replace(/\.tsx?$/i, ".js");
+              /* Loose-dep runtime resources (.json, templates, assets): tsc
+               * neither compiles nor emits them, so they never ride compiledTree
+               * and must be carried into the install explicitly — rooted at the
+               * package root, next to the compiled entry, so a `./x.json` import
+               * resolves. Compilable loose deps are excluded (their output is
+               * already in compiledTree — and a raw .js would collide by name). */
+              const resources = resourceFiles(depSets.filter(d => !(d instanceof PackageFileSet)));
               return (compiled ?? Computable.resolve(EMPTY_FILESET)).then(compiledTree => {
                 const install = FileSet.unionAll(
                   FileSet.layout({ node_modules: assembleNodeModules(packages) }),
                   stripPackageJson(copied),
                   compiledTree,
+                  resources,
                   new FileSet(new Map([["package.json", moduleTypeFile(jsTarget.module)]]))
                 );
                 return RunnableFileSet.forEntry(install, launchName, argv, "node");

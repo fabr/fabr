@@ -217,6 +217,48 @@ export function resolveSourceMode(flags: Flag[]): Record<string, unknown> {
   return overlay;
 }
 
+/**
+ * Classify a source file by what js_compile does with it: `"ts"`/`"js"` are
+ * compiled (tsc emits `.js`/`.d.ts`), `"dts"` is a hand-written declaration
+ * (a compile input that emits nothing), and `"copy"` is everything tsc neither
+ * compiles nor emits — a runtime resource (`.json`, templates, `.sh`, assets).
+ * The single source of truth for the extension → role mapping.
+ */
+export function classifyJsSource(path: string): "ts" | "dts" | "js" | "copy" {
+  const lower = path.toLowerCase();
+  const extidx = lower.lastIndexOf(".");
+  if (extidx !== -1) {
+    const ext = lower.substring(extidx + 1);
+    switch (ext) {
+      case "ts":
+        /* A hand-written .d.ts is both a compile *input* (ambient types tsc
+         * must see — e.g. the local picomatch shim) and a shipped *resource*
+         * (e.g. the test runner's globals .d.ts, read back from the installed
+         * package): it joins both the compile srcs and the copied output. */
+        if (lower.endsWith(".d.ts")) {
+          return "dts";
+        }
+      /* fallthrough */
+      case "tsx":
+        return "ts";
+      case "js":
+      case "jsx":
+        return "js";
+    }
+  }
+  return "copy";
+}
+
+/**
+ * The runtime *resources* among `sets` — the files tsc never emits (`.json`,
+ * templates, assets), which a compiled tree therefore drops. A runnable install
+ * must carry them alongside the compiled entry; a package/test build does not
+ * (see compileJsSources: source deps are compiled-against, not shipped).
+ */
+export function resourceFiles(sets: FileSet[]): FileSet {
+  return FileSet.unionAll(...sets.map(set => set.partition(classifyJsSource).copy ?? EMPTY_FILESET));
+}
+
 export function compileJsSources(
   context: TargetContext,
   sources: FileSet,
@@ -224,30 +266,7 @@ export function compileJsSources(
   jsTarget: JSTarget,
   modeFlags: Flag[] = []
 ): ICompiledSources {
-  const sourceGroups = sources.partition(path => {
-    const lower = path.toLowerCase();
-    const extidx = lower.lastIndexOf(".");
-    if (extidx !== -1) {
-      const ext = lower.substring(extidx + 1);
-      switch (ext) {
-        case "ts":
-          /* A hand-written .d.ts is both a compile *input* (ambient types tsc
-           * must see — e.g. the local picomatch shim) and a shipped *resource*
-           * (e.g. the test runner's globals .d.ts, read back from the installed
-           * package): it joins both the compile srcs and the copied output. */
-          if (lower.endsWith(".d.ts")) {
-            return "dts";
-          }
-        /* fallthrough */
-        case "tsx":
-          return "ts";
-        case "js":
-        case "jsx":
-          return "js";
-      }
-    }
-    return "copy";
-  });
+  const sourceGroups = sources.partition(classifyJsSource);
 
   const declarations = sourceGroups.dts ?? EMPTY_FILESET;
 
