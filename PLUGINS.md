@@ -2,22 +2,22 @@
 
 Rule packages beyond the core engine are fabr *plugins*: ordinary npm packages, installed
 alongside fabr, that contribute their build rules and `.fabr` library files to the host when a
-project declares them. `@fabr/js` — the JavaScript/NPM ecosystem support — is itself a plugin and
+project declares them. `@fabr-build/js` — the JavaScript/NPM ecosystem support — is itself a plugin and
 the canonical example.
 
 ## Declaring
 
 ```
-plugin @fabr/js;
+plugin @fabr-build/js;
 ```
 
 - `plugin <packagename>;` may appear in any build file. A plugin declaration **auto-includes the
-  plugin's own `.fabr` library files** — no separate `include` needed (declaring `@fabr/js` brings in
+  plugin's own `.fabr` library files** — no separate `include` needed (declaring `@fabr-build/js` brings in
   its `JS.fabr`). Each plugin is activated once per build, in declaration order.
 - **STD.fabr is always present** — core's library is included in every build without being named, so
   the generic `flag`/`script`/`generate` targetdefs are always available.
 - Plugins are resolved by **module resolution only**: the package must be installed alongside the
-  fabr host (for `@fabr/*` packages, they ship with the fabr installation). There is currently no
+  fabr host (for `@fabr-build/*` packages, they ship with the fabr installation). There is currently no
   option to build a plugin from source as part of the build that uses it. A plugin that cannot be
   resolved is an error.
 - The only explicit `include` is a **path-relative** one — `include ./shared.fabr;`, resolved
@@ -32,7 +32,7 @@ registration and has no side effects; the host merges the returned `PluginContri
 build model's rule tables and auto-includes its files.
 
 ```ts
-import { packageLibFile, PluginContribution } from "@fabr/core";
+import { packageLibFile, PluginContribution } from "@fabr-build/core";
 
 export function activate(): PluginContribution {
   return {
@@ -48,8 +48,8 @@ export function activate(): PluginContribution {
 - `activate()` is a **pure function**: it takes no arguments, returns a `PluginContribution`, and
   registers nothing globally. It is called once per load (per build); a plugin declared from several
   files contributes once. A plugin reaches the host's facilities — helpers like `packageLibFile`,
-  the `TargetContext` types, `Computable`, etc. — by **importing `@fabr/core` directly**. That is
-  sound because a plugin always shares the host's single `@fabr/core` instance (see the single-copy
+  the `TargetContext` types, `Computable`, etc. — by **importing `@fabr-build/core` directly**. That is
+  sound because a plugin always shares the host's single `@fabr-build/core` instance (see the single-copy
   requirement below); it must never load a second copy.
 - `includes` are absolute paths to the plugin's own `.fabr` library files, auto-parsed and merged
   into the model when the plugin is declared. By convention a plugin ships them in `lib/`, next to
@@ -78,7 +78,7 @@ export function activate(): PluginContribution {
     workDir) }`) is the unit of build caching, keyed by `id:version` + a manifest of its concrete
     inputs (materialized FileSets and strings only); bump `version` when its behavior changes.
     Prefer `createExecAction`; write a bespoke step only where semantics demand it (e.g.
-    `@fabr/js`'s `js:test-run`).
+    `@fabr-build/js`'s `js:test-run`).
   - **To compose builds**, use `context.subTarget(type, inputs, {label, constraints})`. It builds
     an anonymous target of `type` and returns its cached output as a `Computable<FileSet>`, which
     you wire into a later action's inputs or reshape into final content. Actions never nest;
@@ -94,17 +94,17 @@ export function activate(): PluginContribution {
 
 ## Module identity
 
-The host and its plugins must share a single copy of `@fabr/core`: class identities (`instanceof`)
+The host and its plugins must share a single copy of `@fabr-build/core`: class identities (`instanceof`)
 and the `Computable`/`FileSet`/etc. machinery a rule builds on must be the host's own. (The rule
 tables themselves are *not* global — they are built per load from core's and the active plugins'
 contributions and carried by the build model — but a plugin's `evaluate` still runs against the
-host's core classes.) An installed plugin shares the host's `node_modules`, so importing `@fabr/core`
+host's core classes.) An installed plugin shares the host's `node_modules`, so importing `@fabr-build/core`
 directly from plugin code is safe and normal (node resolves it to the host's instance). What a
 plugin must never do is bundle or vendor its own copy of core.
 
-Code that a plugin arranges to run in *client* processes — such as `@fabr/js`'s test runner, which
+Code that a plugin arranges to run in *client* processes — such as `@fabr-build/js`'s test runner, which
 executes inside test working directories — is a different matter: it cannot reach the host's core
-at runtime at all, and must be dependency-free (type-only imports of `@fabr/core` are fine, since
+at runtime at all, and must be dependency-free (type-only imports of `@fabr-build/core` are fine, since
 they erase at compile time).
 
 ## Anatomy of a plugin package
@@ -131,13 +131,13 @@ my_thing hello {
 
 ## Current limitations
 
-- No build-plugin-from-source: the package must be installed, because a plugin reaches `@fabr/core`
+- No build-plugin-from-source: the package must be installed, because a plugin reaches `@fabr-build/core`
   by ordinary module resolution (a direct import). (A future variant may allow a plugin to be built
   by fabr itself and loaded from the build cache — but the cache directory has no `node_modules`, so
-  it would first need a way to hand the cache-loaded module the host's own `@fabr/core` instance,
+  it would first need a way to hand the cache-loaded module the host's own `@fabr-build/core` instance,
   the seam the old injected `api` argument once provided.)
-- A plugin builds on `@fabr/core` only. It cannot build on another plugin's exports (e.g.
-  `@fabr/js`'s compile-pipeline helpers) without loading a second copy of that plugin, so
+- A plugin builds on `@fabr-build/core` only. It cannot build on another plugin's exports (e.g.
+  `@fabr-build/js`'s compile-pipeline helpers) without loading a second copy of that plugin, so
   cross-plugin extension isn't supported yet.
-- The available surface is the whole of `@fabr/core`, imported directly, and is not yet versioned or
+- The available surface is the whole of `@fabr-build/core`, imported directly, and is not yet versioned or
   stable.
