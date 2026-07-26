@@ -80,6 +80,15 @@ registerRule("test_override", {}, context =>
     return EMPTY_FILESET;
   })
 );
+/* Resolves a GLOBAL under a caller-supplied override, for testing override
+ * precedence against a <k=v> delta written on the global's value (the
+ * getGlobalTarget path — e.g. getGlobalRunnable forcing BUILD_OPERATION=run). */
+registerRule("test_globaltool", {}, context =>
+  context.getGlobalTarget("GLOBALTOOL", { FLAVOR: "caller" }).then(sources => {
+    lastDeps = FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet));
+    return EMPTY_FILESET;
+  })
+);
 registerRule("test_file", {}, context =>
   context.getRequiredString("content").then(content => new FileSet(new Map([["f.txt", MemoryFile.from(content)]])))
 );
@@ -1200,6 +1209,27 @@ describe("BuildContext", () => {
       "default FLAVOR = ambient;\n" +
       "test_file leaf { content = ${FLAVOR}; }\n" +
       "test_override root { dep = leaf<FLAVOR=ref>; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig({}, execution).getTarget("root");
+    expect(await lastDeps!.get("f.txt").then(file => file?.readString())).to.equal("caller");
+  });
+
+  it("A caller's override also wins over a delta on a GLOBAL's value", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    /* Same precedence rule, through getGlobalTarget: the rule forces
+     * {FLAVOR: caller} while the global's written value carries <FLAVOR=ref>.
+     * The override must ride as callerOverrides (applied after the delta),
+     * not be demoted to the ambient set (which the delta would beat). */
+    const input =
+      "targetdef test_globaltool { }\n" +
+      "targetdef test_file { content = STRING; }\n" +
+      "default FLAVOR = ambient;\n" +
+      "test_file leaf { content = ${FLAVOR}; }\n" +
+      "GLOBALTOOL = leaf<FLAVOR=ref>;\n" +
+      "test_globaltool root { }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 

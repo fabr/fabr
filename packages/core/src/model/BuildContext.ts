@@ -352,7 +352,9 @@ export class BuildContext {
   }
 
   public getTargetWithOverrides(name: string, overrides: Constraints): Computable<SourceRef[]> {
-    return this.getContextWithOverrides(overrides).getTarget(name);
+    /* Through getTarget's callerOverrides so a property's value delta cannot
+     * beat the explicit override (a direct target decl folds as before). */
+    return this.getTarget(name, undefined, overrides);
   }
 
   /**
@@ -370,7 +372,14 @@ export class BuildContext {
     );
   }
 
-  public getContextWithOverrides(overrides: Constraints): BuildContext {
+  /**
+   * The context for this one overridden by the given constraints — the
+   * receiver itself when there are none: contexts are interned by constraint
+   * set, so an undefined/empty override resolves to the same instance (which
+   * is what lets callers pass an optional override straight through without
+   * conditioning on it).
+   */
+  public getContextWithOverrides(overrides?: Constraints): BuildContext {
     const combined = { ...this.constraints, ...overrides };
     return this.model.getConfig(combined, this.execution);
   }
@@ -430,8 +439,25 @@ export class BuildContext {
     }
   }
 
-  public getTarget(name: string, stack?: IDependencyStack): Computable<SourceRef[]> {
+  public getTarget(name: string, stack?: IDependencyStack, callerOverrides?: Constraints): Computable<SourceRef[]> {
     this.assertNonCircularTarget(name, stack);
+    if (callerOverrides) {
+      /* A caller's explicit override must outrank a `<k=v>` delta written on a
+       * property's value (ambient < reference delta < caller override — see
+       * resolvingContextFor), so for a property it rides into the SAME value
+       * resolution the per-target property path uses, rather than being folded
+       * into a context's ambient set (which a delta would beat). The other
+       * branches — a `-D` repin, a direct target decl — have no written delta
+       * to fight, so they keep the ambient fold, delegating to the overridden
+       * context (whose own targetCache memoizes them). The property case is
+       * uncached here: targetCache keys by bare name, and the referenced
+       * targets' builds stay memoized in their own constraint contexts. */
+      const def = this.model.getDecl(name);
+      if (!(name in this.constraints) && def?.kind === DeclKind.Property) {
+        return this.resolveFileProperty(def, undefined, stack, callerOverrides);
+      }
+      return this.getContextWithOverrides(callerOverrides).getTarget(name, stack);
+    }
     if (name in this.targetCache) {
       /* Already seen */
       return this.targetCache[name];
@@ -754,7 +780,7 @@ export class BuildContext {
     stack?: IDependencyStack
   ): Computable<{ context: BuildContext; reference: Name }> {
     if (!name.hasConstraints()) {
-      const context = callerOverrides ? this.getContextWithOverrides(callerOverrides) : this;
+      const context = this.getContextWithOverrides(callerOverrides);
       return Computable.resolve({ context, reference: name });
     }
     return this.substituteNameVars(name, stack).then(substituted => {
@@ -1162,7 +1188,7 @@ export class BuildContext {
     inputs: BuildActionInputs,
     options?: { label?: string; constraints?: Constraints }
   ): Computable<SourceRef[]> {
-    const buildContext = options?.constraints ? this.getContextWithOverrides(options.constraints) : this;
+    const buildContext = this.getContextWithOverrides(options?.constraints);
     /* A sub-target type is part of the build vocabulary like any other: it must
      * be a registered targetdef, not merely a code-registered rule. A missing
      * targetdef is an internal inconsistency (the rule package forgot to declare
@@ -1661,8 +1687,11 @@ export abstract class TargetContext {
   }
 
   public getGlobalTarget(name: string, overrides?: Constraints): Computable<(FileSource | Repository)[]> {
-    return this.getContext(overrides)
-      .getTarget(name, this.stack)
+    /* Overrides ride as callerOverrides (not folded into a context's ambient
+     * set) so they keep caller precedence over a delta written on the global's
+     * value — the same layering the per-target property path uses. */
+    return this.context
+      .getTarget(name, this.stack, overrides)
       .then(sources => materializeLists([sources]))
       /* Default materialization manifests any projection-pending FileSetRef,
        * so the delivered list holds only content and repositories. */
@@ -1708,11 +1737,11 @@ export abstract class TargetContext {
    * so they resolve jointly with the evaluation's other requirements.
    */
   public getGlobalSources(name: string, overrides?: Constraints): Computable<SourceRef[]> {
-    return this.getContext(overrides).getTarget(name, this.stack);
+    return this.context.getTarget(name, this.stack, overrides);
   }
 
   protected getContext(overrides?: Constraints): BuildContext {
-    return overrides ? this.context.getContextWithOverrides(overrides) : this.context;
+    return this.context.getContextWithOverrides(overrides);
   }
 }
 
