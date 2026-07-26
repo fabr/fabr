@@ -47,7 +47,7 @@ import {
   TARGET,
   versionToString,
 } from "@fabr-build/core";
-import { NPMRepository } from "./NPMRepository";
+import { NPMRepository, strictRepairError } from "./NPMRepository";
 import {
   matchesTargetPlatform,
   npmPackageOfPath,
@@ -265,12 +265,13 @@ describe("unsupportedPlatformReason", () => {
 const METADATA_FILE = "metadata.json";
 const REG = "https://registry.example.org";
 
-function metadataFor(pkg: string, version: string, deps: Record<string, string>): FileSet {
+function metadataFor(pkg: string, version: string, deps: Record<string, string>, extra: Record<string, unknown> = {}): FileSet {
   const meta = {
     name: pkg,
     version,
     dependencies: deps,
     dist: { tarball: `${REG}/tarball/${version}.tgz`, integrity: "", shasum: "", signatures: [] },
+    ...extra,
   };
   return new FileSet(new Map([[METADATA_FILE, MemoryFile.from(JSON.stringify(meta))]]));
 }
@@ -443,6 +444,32 @@ describe("NPMRepository metadata memo", () => {
     /* A retry must re-fetch and succeed — the rejection was not cached. */
     const requirements = await toPromise(repo.getRequirements("pkg", parseVersion("1.0.0")));
     expect(requirements).to.be.an("array");
+  });
+
+  it("treats non-optional peerDependencies as ordinary requirements", async () => {
+    /* The plugin pattern: the peer joins the joint pin like any requirement
+       ("present at a compatible version"); sharing holds by construction in a
+       strict closure. An optional-flagged peer ("if present, must match") is
+       never auto-installed — npm parity. */
+    const url = `${REG}/plugin/1.0.0`;
+    const meta = metadataFor("plugin", "1.0.0", { lodash: "^4.0.0" }, {
+      peerDependencies: { eslint: "^9.0.0", typescript: ">=5" },
+      peerDependenciesMeta: { typescript: { optional: true } },
+    });
+    const globals: Record<string, string> = { [BUILD_OPERATION]: "build", [TARGET]: "arm64-apple-macosx15.0" };
+    const context = {
+      getGlobalString: (name: string) =>
+        name in globals ? Computable.resolve(globals[name]) : Computable.reject(new Error(`unexpected property: ${name}`)),
+      fetch: (u: string) => (u === url ? Computable.resolve(meta) : Computable.reject(new Error(`unexpected fetch: ${u}`))),
+      execution: fakeExecution(),
+    } as unknown as RepositoryContext;
+    const repo = new NPMRepository(REG, context);
+
+    const requirements = await toPromise(repo.getRequirements("plugin", parseVersion("1.0.0")));
+    expect(requirements).to.deep.equal([
+      { pkg: "lodash", constraint: "^4.0.0" },
+      { pkg: "eslint", constraint: "^9.0.0", soft: true },
+    ]);
   });
 });
 
@@ -744,5 +771,31 @@ describe("NPMRepository read authentication", () => {
     await toPromise(resolveAndMaterialize(repo, [ref]));
 
     expect(captured[metadataUrl]).to.deep.equal({});
+  });
+});
+
+describe("strictRepairError", () => {
+  const raise = {
+    pkg: "B",
+    constraint: "^1.0.0",
+    declared: parseVersion("1.0.0"),
+    raised: parseVersion("1.6.0"),
+    requiredBy: "A@1.0.0",
+  };
+
+  it("offers the complete pin set when raises are the only repairs", () => {
+    const err = strictRepairError("A:^1.0.0", [], [raise], []) as Error & { help?: string };
+    expect(err.message).to.contain("pin '@npm:B:1.6.0'");
+    expect(err.help).to.contain("pinning @npm:B:1.6.0");
+    expect(err.help).to.contain("repair-free");
+  });
+
+  it("does not claim a complete fix when violations or duplicates remain", () => {
+    /* Pins are floors: they cannot bring a selection back under a violated
+     * upper bound, so the pin set is only 'the fix' when raises stand alone. */
+    const violation = { pkg: "C", constraint: "^2.0.0", requiredBy: "A@1.0.0", selected: parseVersion("3.0.0") };
+    const err = strictRepairError("A:^1.0.0", [violation], [raise], []) as Error & { help?: string };
+    expect(err.help).to.not.contain("repair-free");
+    expect(err.help).to.contain("sealed tool install");
   });
 });

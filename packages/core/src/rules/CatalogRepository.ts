@@ -252,6 +252,18 @@ function resolveDeps(context: RepositoryContext): Computable<ResolvedPackageSet>
       rawSources.map(source => (source instanceof FileSetRef ? source.manifest() : Computable.resolve(source))),
       (...sources: SourceRef[]) => {
         const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
+        /* A catalog pins whole packages: an entry projecting *into* one
+         * (`@npm:pkg:1.0.0:lib/*`) would materialize to plain files, not a
+         * PackageFileSet — reject it here rather than let the projected
+         * delivery reach a consumer expecting package identity. (The local
+         * analogue manifests above and hits the not-a-package diagnostic.) */
+        const projected = references.find(reference => reference.projections.length > 0);
+        if (projected) {
+          throw attachHelp(
+            new Error(`Catalog entry '${projected.name.toString()}' projects into a package`),
+            "a catalog pins whole packages — project at the point of use instead (`@catalog:pkg:path`)"
+          );
+        }
         const local = sources.filter((source): source is FileSource => source instanceof FileSet);
         return Computable.forAll(
           [...groupByRepository(references).entries()].map(([source, refs]) =>

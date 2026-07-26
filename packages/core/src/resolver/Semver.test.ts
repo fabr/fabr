@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { compareVersions, parseVersion, SEMVER, versionToString } from "./Semver";
+import { compareVersions, lowestSatisfying, parseVersion, SEMVER, versionToString } from "./Semver";
 import { expect } from "chai";
 
 function minimumOf(constraint: string): string {
@@ -150,6 +150,23 @@ describe("Semver", () => {
   it("rejects unsupported constraint syntax", () => {
     expect(() => SEMVER.parseConstraint("latest")).to.throw();
     expect(() => SEMVER.parseConstraint("workspace:*")).to.throw();
+  });
+
+  it("lowestSatisfying never invents a prerelease the constraint didn't opt into", () => {
+    const pick = (versions: string[], constraint: string): string | undefined => {
+      const found = lowestSatisfying(versions.map(parseVersion), SEMVER.parseConstraint(constraint));
+      return found && versionToString(found);
+    };
+    /* A prerelease sorts BELOW its release, so a naive lowest-satisfying pick
+     * would prefer the rc over the available release — npm's contract is that
+     * '^4.0.0' admits no prerelease at all. */
+    expect(pick(["4.0.1-rc.0", "4.0.1", "4.1.0"], "^4.0.0")).to.equal("4.0.1");
+    /* No release in range: nothing, rather than a silent rc (npm makes
+     * prereleases opt-in; the remedy is pinning it explicitly). */
+    expect(pick(["4.0.1-rc.0"], "^4.0.0")).to.equal(undefined);
+    /* A constraint mentioning a prerelease opts in. */
+    expect(pick(["1.2.3-beta.5", "1.2.4"], "^1.2.3-beta.4")).to.equal("1.2.3-beta.5");
+    expect(pick(["1.0.1", "1.2.0"], "^1.0.0")).to.equal("1.0.1");
   });
 
   it("classifies unconstrained requirements", () => {

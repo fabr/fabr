@@ -3,12 +3,14 @@ import {
   attributedTo,
   BUILD_OPERATION,
   Computable,
+  compareVersions,
   FILES_OPERATION,
   FileSet,
   HttpStatusError,
   IRequirementEdge,
   IResolutionOrigin,
   IFile,
+  lowestSatisfying,
   MaterializeOptions,
   MemoryFile,
   MetadataFetchError,
@@ -114,7 +116,7 @@ interface ISplitEntry {
   raises: IRaiseEntry[];
 }
 
-/** Serialized form of a persisted joint resolution (memo tag npm:resolve:5) */
+/** Serialized form of a persisted joint resolution (memo tag npm:resolve:8) */
 interface IResolutionDoc {
   roots: Requirement[];
   selections: IResolutionEntry[];
@@ -157,6 +159,16 @@ function edgeTargetIn(selections: Selected<SemverVersion>[], req: Requirement): 
   }
   if (SEMVER.isUnconstrained(parsed)) {
     const highest = candidates.reduce((a, b) => (SEMVER.compare(a.version, b.version) >= 0 ? a : b), candidates[0]);
+    return selectionId(highest);
+  }
+  if (req.soft) {
+    /* Attach-first, mirroring the resolver's targetsOf: any satisfying
+     * selection whatever its key (a peer range may span majors); none
+     * satisfying → the highest candidate (the violated edge, which the split
+     * table then repairs — the --legacy-peer-deps posture). */
+    const satisfying = candidates.filter(sel => SEMVER.satisfies(sel.version, parsed));
+    const pool = satisfying.length > 0 ? satisfying : candidates;
+    const highest = pool.reduce((a, b) => (SEMVER.compare(a.version, b.version) >= 0 ? a : b), pool[0]);
     return selectionId(highest);
   }
   const key = SEMVER.resolutionKey(req.pkg, parsed);
@@ -481,12 +493,17 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     /* The selections reachable from the requested roots — the fetch set. */
     const needed = selections.filter(sel => sel.reachableFrom?.some(root => requestedRoots.has(root)));
     const reachableIds = new Set(needed.map(selectionId));
-    /* A repair is in scope iff its requirer is reachable (a root-requirement
-     * repair: iff that root is among the requested). */
-    const inScope = (requiredBy: string, pkg: string, constraint: string): boolean =>
+    /* A violation is a property of an *edge*: in scope iff its requirer is in
+     * the delivered closure (a root-requirement violation: iff that root is
+     * among the requested). A raise is a property of a *selection* — its
+     * demander may be a superseded node kept for attribution — so it is in
+     * scope iff the raised version itself is being delivered. */
+    const edgeInScope = (requiredBy: string, pkg: string, constraint: string): boolean =>
       requiredBy === ROOT_REQUIRER ? requestedKeys.has(`${pkg}:${constraint}`) : reachableIds.has(requiredBy);
-    const scopedViolations = violations.filter(violation => inScope(violation.requiredBy, violation.pkg, violation.constraint));
-    const scopedRaises = raises.filter(raise => inScope(raise.requiredBy, raise.pkg, raise.constraint));
+    const scopedViolations = violations.filter(violation => edgeInScope(violation.requiredBy, violation.pkg, violation.constraint));
+    const scopedRaises = raises.filter(raise =>
+      needed.some(sel => sel.pkg === raise.pkg && compareVersions(sel.version, raise.raised) === 0)
+    );
     if (!permissive) {
       const duplicates = duplicateVersions(needed);
       if (scopedViolations.length > 0 || scopedRaises.length > 0 || duplicates.length > 0) {
@@ -755,7 +772,25 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
       versionToString,
       packageOfPath: npmPackageOfPath,
     };
-    return this.fetch(req.pkg, version).then(pkg => new PackageFileSet(pkg, pkg.packageName, pkg.version, [], origin));
+    return this.fetch(req.pkg, version)
+      .then(pkg => new PackageFileSet(pkg, pkg.packageName, pkg.version, [], origin))
+      .catch(err => {
+        /* The written minimum was never published. The joint (build/test) path
+         * would floor-raise here; the standalone files path stays exact by
+         * design, but the error should name the raise the build would take. */
+        if (err instanceof VersionNotFoundError) {
+          return this.lowestAvailable(req.pkg, req.constraint).then(raised => {
+            throw raised
+              ? attachHelp(
+                  err,
+                  `the lowest published version satisfying '${req.constraint}' is ${versionToString(raised)} — ` +
+                    `pin '${req.pkg}:${versionToString(raised)}' (a build resolves this automatically via a floor raise)`
+                )
+              : err;
+          });
+        }
+        throw err;
+      });
   }
 
   /** The requirement a reference declares, read straight off its own `name:version`
@@ -795,10 +830,21 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
 
   /**
    * PackageRegistry implementation: the requirements of pkg@version are its
-   * declared `dependencies`, plus the `optionalDependencies` that are installable
-   * on the target. The dominant use of the latter is os/cpu-gated native binaries
-   * (esbuild's @esbuild/<platform> engine): all variants are listed, and only the
-   * target-matching one(s) are kept. peerDependencies remain ignored.
+   * declared `dependencies` and (non-optional) `peerDependencies`, plus the
+   * `optionalDependencies` that are installable on the target. The dominant use
+   * of the latter is os/cpu-gated native binaries (esbuild's @esbuild/<platform>
+   * engine): all variants are listed, and only the target-matching one(s) are
+   * kept. Peers are **soft** (attach-first) requirements (see RATIONALE.md):
+   * satisfied by any selection in range whatever its resolution key — a wide
+   * multi-major peer range must not spawn its floor as a coexisting major —
+   * demanding their minimum only when the converged tree selects nothing for
+   * the package. "Shared, one instance" holds by construction in a strict
+   * closure (one version per name, flat mount) — the peer/regular distinction
+   * only exists to work around duplicate-tolerant regular deps, which fabr
+   * doesn't have. A violated peer surfaces as an ordinary violation (strict error, or
+   * a sealed-tool split — npm's --legacy-peer-deps posture). An
+   * `optional: true` peer ("if present, must match") is never auto-installed,
+   * npm parity; devDependencies stay ignored.
    */
   public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
     return this.getVersionMetadata(pkg, versionToString(version)).then(meta => {
@@ -808,9 +854,16 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
        * binaries in both — treating them as required would reject the ones for
        * other platforms as EBADPLATFORM. */
       const optionalNames = new Set(Object.keys(meta.optionalDependencies ?? {}));
-      const required = Object.entries(meta.dependencies ?? {})
-        .filter(([dep]) => !optionalNames.has(dep))
-        .map(([dep, constraint]) => ({ pkg: dep, constraint }));
+      const peerMeta = meta.peerDependenciesMeta ?? {};
+      const peers = Object.entries(meta.peerDependencies ?? {})
+        .filter(([dep]) => !peerMeta[dep]?.optional && !optionalNames.has(dep))
+        .map(([dep, constraint]) => ({ pkg: dep, constraint, soft: true }));
+      const required = [
+        ...Object.entries(meta.dependencies ?? {})
+          .filter(([dep]) => !optionalNames.has(dep))
+          .map(([dep, constraint]) => ({ pkg: dep, constraint })),
+        ...peers,
+      ];
       const optional = Object.entries(meta.optionalDependencies ?? {}).map(([dep, constraint]) => ({ pkg: dep, constraint }));
       if (optional.length === 0) {
         return Computable.resolve(required);
@@ -845,8 +898,9 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     } catch {
       return Computable.resolve(undefined);
     }
-    const pick = (versions: SemverVersion[]): SemverVersion | undefined =>
-      versions.filter(version => SEMVER.satisfies(version, parsed)).sort(SEMVER.compare)[0];
+    /* npm-consistent candidates: no prerelease unless the constraint opts in
+     * (lowestSatisfying) — the raise must never silently pin an -rc. */
+    const pick = (versions: SemverVersion[]): SemverVersion | undefined => lowestSatisfying(versions, parsed);
     return this.publishedVersions(pkg, false).then(versions => {
       const found = pick(versions);
       if (found) {
@@ -938,7 +992,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     return this.targetPlatform().then(target => {
       const targetKey = `${target.os ?? "?"}-${target.cpu ?? "?"}-${target.libc ?? "?"}`;
       return this.context
-        .memoize("npm:resolve:5", `${this.url} ${targetKey} ${rootKeys.join(" ")}`, () => {
+        .memoize("npm:resolve:8", `${this.url} ${targetKey} ${rootKeys.join(" ")}`, () => {
           /* A memo miss means real resolution work on behalf of the consumer */
           this.context.notifyProgress({ kind: "repository-resolve", repository: this.context.target, requirements: rootKeys });
           return resolveWithRepairs(roots, SEMVER, this).then(result => {
@@ -1168,7 +1222,7 @@ function duplicateVersions(selections: Selected<SemverVersion>[]): Array<[string
  * their pin remedy, violations and coexisting versions as the structural facts
  * they are — rather than one build-fail-pin iteration each.
  */
-function strictRepairError(
+export function strictRepairError(
   root: string,
   violations: Violation<SemverVersion>[],
   raises: RaisedFloor<SemverVersion>[],
@@ -1194,10 +1248,16 @@ function strictRepairError(
         `which the flat package layout cannot represent`
     );
   }
-  return attachHelp(
-    new Error(`Unable to resolve ${root}:\n  ${lines.join("\n  ")}`),
-    "a sealed tool install (js_script deps, fabr run) accepts these by nesting; linked deps need the pins above"
-  );
+  /* The complete-fix pin set, when one exists: raises are the only repair a
+   * pin can fix (pins are floors — they cannot bring a selection back under a
+   * violated upper bound, nor unify coexisting majors), so the set is offered
+   * as the fix exactly when raises are the only repairs present. */
+  const pins = raises.map(raise => `@npm:${raise.pkg}:${versionToString(raise.raised)}`).join(" ");
+  const help =
+    raises.length > 0 && violations.length === 0 && duplicates.length === 0
+      ? `pinning ${pins} alongside the existing requirements makes this resolution repair-free`
+      : "a sealed tool install (js_script deps, fabr run) accepts these by nesting; linked deps need the pins above";
+  return attachHelp(new Error(`Unable to resolve ${root}:\n  ${lines.join("\n  ")}`), help);
 }
 
 function createRepository(context: RepositoryContext): Computable<NPMRepository> {

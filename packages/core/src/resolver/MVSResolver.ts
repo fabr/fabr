@@ -40,8 +40,19 @@ import { IResolutionError, PackageRegistry, RaisedFloor, Requirement, MVSResolut
  * when a declared minimum was never published (the registry rejects it with
  * VersionNotFoundError) and the registry offers `lowestAvailable`, the
  * requirement's contribution is raised to the lowest *published* satisfying
- * version — recorded in MVSResolution.raises when it wins its key. Without the
- * hook, an unpublished floor fails as before.
+ * version — recorded in MVSResolution.raises when it wins its key.
+ *
+ * Repairs fire only when no repair-free resolution exists: resolution runs
+ * first with repairs disabled, tolerating an unpublished demanded version as
+ * an unexpandable pending selection (a transient winner superseded by a higher
+ * declared floor never mattered, and must not trigger — or be failed by — a
+ * repair). Only if the CONVERGED tree still selects an unpublished version —
+ * the proof that the tree is unresolvable without repair — is the walk rerun
+ * with the raise hook active. This also makes the outcome independent of visit
+ * order (an eagerly-probed transient floor whose range had no published
+ * version used to hard-fail resolutions that a later declared floor would have
+ * made clean). Without the hook the same tolerance applies, and a live
+ * unpublished winner at convergence is the terminal failure.
  *
  * Note: if the registry rejects a metadata fetch (other than a raisable
  * version-not-found), the returned Computable rejects with a
@@ -53,6 +64,29 @@ export function resolveMVS<V, C>(
   roots: Requirement[],
   domain: VersionDomain<V, C>,
   registry: PackageRegistry<V>
+): Computable<MVSResolution<V>> {
+  return resolvePhase(roots, domain, registry, false).catch(err => {
+    if (err instanceof RepairsRequired) {
+      return resolvePhase(roots, domain, registry, true);
+    }
+    throw err;
+  });
+}
+
+/** Internal phase-1 signal: the converged tree demands unpublished versions,
+ * so no repair-free resolution exists — rerun with repairs enabled. Never
+ * escapes resolveMVS. */
+class RepairsRequired extends Error {
+  constructor() {
+    super("resolution requires repairs");
+  }
+}
+
+function resolvePhase<V, C>(
+  roots: Requirement[],
+  domain: VersionDomain<V, C>,
+  registry: PackageRegistry<V>,
+  repair: boolean
 ): Computable<MVSResolution<V>> {
   return Computable.from((resolve, reject) => {
     /* Highest minimum seen so far, per resolution key */
@@ -67,6 +101,17 @@ export function resolveMVS<V, C>(
     const nodeDemands = new Map<string, Array<{ key: string; req: Requirement; requiredBy: string }>>();
     /* Raises applied during the walk; filtered to the winners at finish */
     const candidateRaises: RaisedFloor<V>[] = [];
+    /* Nodes whose demanded version turned out unpublished, tolerated as
+     * unexpandable pending selections outside repair mode: a transient winner
+     * a higher declared floor later supersedes never mattered. Judged at
+     * convergence — only a still-live winner proves repair is required. */
+    const unpublished = new Map<string, { pkg: string; version: V; err: VersionNotFoundError }>();
+    /* Soft (peer) requirements deferred to quiescence: each is primarily a
+     * constraint on whatever the tree selects; one whose package the converged
+     * tree doesn't select at all fires as an ordinary demand (auto-install as
+     * last resort). */
+    const softReqs: Array<{ req: Requirement; requiredBy: string }> = [];
+    const softFired = new Set<{ req: Requirement; requiredBy: string }>();
     const errors = new Map<string, IResolutionError>();
 
     /** The root package whose subtree contains `requirer` (for attributing an
@@ -112,6 +157,10 @@ export function resolveMVS<V, C>(
          * during finish; an unconstrained-only package is an error there) */
         return;
       }
+      if (req.soft) {
+        softReqs.push({ req, requiredBy });
+        return;
+      }
       attempt(domain.resolutionKey(req.pkg, constraint), req, domain.minimumOf(constraint), requiredBy);
     };
 
@@ -147,7 +196,7 @@ export function resolveMVS<V, C>(
         ),
         () => {
           if (--pending === 0) {
-            finish();
+            settle();
           }
         }
       ).catch(raiseErr => fail(toError(raiseErr)));
@@ -191,12 +240,19 @@ export function resolveMVS<V, C>(
               enqueue(req, id);
             }
             if (--pending === 0) {
-              finish();
+              settle();
             }
           },
           err => {
-            if (err instanceof VersionNotFoundError && registry.lowestAvailable) {
-              raiseFloors(id, pkg, version, err);
+            if (err instanceof VersionNotFoundError) {
+              if (repair && registry.lowestAvailable) {
+                raiseFloors(id, pkg, version, err);
+              } else {
+                unpublished.set(id, { pkg, version, err });
+                if (--pending === 0) {
+                  settle();
+                }
+              }
             } else {
               fail(annotate(id, pkg, version, err));
             }
@@ -204,11 +260,46 @@ export function resolveMVS<V, C>(
         );
       } catch (err) {
         /* A registry that throws instead of rejecting gets the same treatment */
-        if (err instanceof VersionNotFoundError && registry.lowestAvailable) {
-          raiseFloors(id, pkg, version, err);
+        if (err instanceof VersionNotFoundError) {
+          if (repair && registry.lowestAvailable) {
+            raiseFloors(id, pkg, version, err);
+          } else {
+            unpublished.set(id, { pkg, version, err });
+            if (--pending === 0) {
+              settle();
+            }
+          }
         } else {
           fail(annotate(id, pkg, version, err));
         }
+      }
+    };
+
+    /**
+     * Quiescence gate: before finishing, fire any deferred soft requirement
+     * whose package the tree selects nothing for — as an ordinary demand,
+     * stripped of softness — and keep walking. Judged at quiescence so the
+     * outcome is a function of the converged state, not of visit order (the
+     * same discipline as the repair phases); a fired demand may itself declare
+     * more soft requirements, so this repeats until quiet.
+     */
+    const settle = (): void => {
+      if (failed) {
+        return;
+      }
+      const selectedPkgs = new Set([...selected.values()].map(sel => sel.pkg));
+      const firing = softReqs.filter(entry => !softFired.has(entry) && !selectedPkgs.has(entry.req.pkg));
+      if (firing.length === 0) {
+        finish();
+        return;
+      }
+      pending++;
+      for (const entry of firing) {
+        softFired.add(entry);
+        enqueue({ pkg: entry.req.pkg, constraint: entry.req.constraint }, entry.requiredBy);
+      }
+      if (--pending === 0) {
+        settle();
       }
     };
 
@@ -241,6 +332,24 @@ export function resolveMVS<V, C>(
         }
         if (domain.isUnconstrained(constraint)) {
           return selectionsByPkg.get(req.pkg) ?? [];
+        }
+        if (req.soft) {
+          /* Attach-first: any selection satisfying the range, whatever its key
+           * (a wide peer range spans majors). None satisfying → the highest
+           * candidate, so followEdge reports the violation against what is
+           * actually delivered (npm's ERESOLVE analogue) and reachability
+           * matches the runtime require(). No candidate at all cannot happen —
+           * settle() fired the demand. */
+          const candidates = selectionsByPkg.get(req.pkg) ?? [];
+          const satisfying = candidates.filter(sel => domain.satisfies(sel.version, constraint));
+          if (satisfying.length > 0) {
+            return satisfying;
+          }
+          const highest = candidates.reduce(
+            (a, b) => (domain.compare(a.version, b.version) >= 0 ? a : b),
+            candidates[0]
+          );
+          return highest ? [highest] : [];
         }
         return [selected.get(domain.resolutionKey(req.pkg, constraint))!];
       };
@@ -320,6 +429,19 @@ export function resolveMVS<V, C>(
         }
         return domain.compare(a.version, b.version);
       });
+      /* Convergence judgment on tolerated unpublished versions: one still a
+       * live (reachable) winner means the tree is unresolvable without repair —
+       * trigger the repair phase when the registry offers one, else fail with
+       * the usual metadata attribution. Superseded/pruned entries never
+       * mattered and are dropped silently. */
+      const liveUnpublished = [...unpublished.entries()].filter(([id]) =>
+        selections.some(sel => nodeId(sel.pkg, sel.version) === id)
+      );
+      if (liveUnpublished.length > 0) {
+        const [id, info] = liveUnpublished[0];
+        fail(registry.lowestAvailable ? new RepairsRequired() : annotate(id, info.pkg, info.version, info.err));
+        return;
+      }
       /* Keep only the raises that shaped the result: the raised version must
        * have won its key AND be reachable (a raise superseded by a higher
        * floor, or pruned with a superseded subtree, never mattered) — then
@@ -341,7 +463,7 @@ export function resolveMVS<V, C>(
       enqueue(root, ROOT_REQUIRER);
     }
     if (--pending === 0) {
-      finish();
+      settle();
     }
   });
 }

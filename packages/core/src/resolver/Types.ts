@@ -26,6 +26,17 @@ import { Computable } from "../core/Computable";
 export interface Requirement {
   pkg: string;
   constraint: string;
+  /**
+   * Attach-first (peer) semantics: primarily a constraint on whatever the tree
+   * selects for `pkg` — satisfied by any selection in range, whatever its
+   * resolution key — demanding its own minimum only when the converged tree
+   * selects nothing for the package at all (npm's peer auto-install as a last
+   * resort). This is what keeps a wide multi-major peer range (chai
+   * '>= 2.1.2 < 5') from spawning a coexisting second major beside an
+   * already-satisfying selection: keying such a demand by its minimum's major
+   * would select the range's floor alongside the real one.
+   */
+  soft?: boolean;
 }
 
 /**

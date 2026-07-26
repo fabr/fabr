@@ -210,6 +210,29 @@ describe("CatalogRepository (through the model)", () => {
     }
   });
 
+  it("rejects a catalog entry that projects into a package", async () => {
+    /* A projected entry would materialize to plain files, not a package —
+     * caught at resolveDeps, before any resolution work. The inner catalog is
+     * the projection producer here: its getRepositoryRef packs ':data.txt'
+     * into the ref as a projection (pinned by its own unit test above). */
+    const model = build(
+      "package_repo @backing { }\n" +
+        "catalog @inner { deps = @backing:foo; }\n" +
+        "catalog @outer { deps = @inner:foo:data.txt; }\n" +
+        "test_deps a { deps = @outer:foo; }\n"
+    );
+    try {
+      await model.getConfig({}, execution).getTarget("a");
+      expect.fail("expected the projected entry to be rejected");
+    } catch (err) {
+      let message = "";
+      for (let current: unknown = err; current instanceof Error; current = (current as { cause?: unknown }).cause) {
+        message = current.message;
+      }
+      expect(message).to.contain("projects into a package");
+    }
+  });
+
   it("reports two entries claiming one package name (from different sources) as a two-sided conflict", async () => {
     /* Two repositories each resolve a package named 'dup' — a genuine conflict
      * (not two versions of one package), reported as the general ConflictError

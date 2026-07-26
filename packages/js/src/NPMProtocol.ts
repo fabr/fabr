@@ -55,6 +55,17 @@ export interface INPMPackageMetadata {
    */
   optionalDependencies?: Record<string, string>;
   /**
+   * Host-supplied singleton requirements (the plugin pattern: an eslint plugin
+   * peers on eslint). Fabr treats them as ordinary requirements — see
+   * getRequirements: the peer/regular distinction exists to work around npm's
+   * tolerance of duplicated regular deps, which fabr's strict single-version
+   * closures don't have.
+   */
+  peerDependencies?: Record<string, string>;
+  /** Per-peer flags; an `optional: true` peer is "if present, must match" —
+   * never auto-installed (npm parity), so it contributes no requirement. */
+  peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+  /**
    * Installability gates declared by a package on itself, in Node's
    * process.platform / process.arch vocabulary (plus glibc/musl for `libc`); each
    * is an allow-list, with a leading `!` negating an entry. Absent/empty means

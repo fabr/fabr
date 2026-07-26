@@ -38,7 +38,11 @@ function mockRegistry(data: Record<string, Record<string, Record<string, string>
       if (deps === undefined) {
         throw new VersionNotFoundError(pkg, versionToString(version), `${pkg}@${versionToString(version)} not found in mock registry`);
       }
-      return Computable.resolve(Object.entries(deps).map(([dep, constraint]) => ({ pkg: dep, constraint })));
+      return Computable.resolve(
+        Object.entries(deps).map(([dep, constraint]) =>
+          constraint.startsWith("peer ") ? { pkg: dep, constraint: constraint.substring(5), soft: true } : { pkg: dep, constraint }
+        )
+      );
     },
   };
   if (raisable) {
@@ -374,6 +378,104 @@ describe("MVSResolver", () => {
     );
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@1.7.0", "C@1.0.0"]);
     expect(result.raises).to.deep.equal([]);
+  });
+
+  it("tolerates a transient unpublished floor that a later declared floor supersedes", () => {
+    /* A@1.0.0's floor ~2.0.5 was never published and NOTHING published
+     * satisfies ~2.0.5 — but the root's ^2.6.0 supersedes it within the key,
+     * so a repair-free resolution exists and repairs must not fire. (Before
+     * the two-phase split, the eager probe of 2.0.5 hard-failed the whole
+     * resolution whenever it was visited first — a walk-order dependence.) */
+    const result = resolve(
+      { A: "1.0.0", C: "^2.6.0" },
+      {
+        A: { "1.0.0": { C: "~2.0.5" } },
+        C: { "2.6.0": {} },
+      },
+      true
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@2.6.0"]);
+    expect(result.raises).to.deep.equal([]);
+    expect(result.errors).to.deep.equal([]);
+  });
+
+  it("without the hook, a transient unpublished floor is tolerated too", () => {
+    const result = resolve(
+      { A: "1.0.0", C: "^2.6.0" },
+      {
+        A: { "1.0.0": { C: "~2.0.5" } },
+        C: { "2.6.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@2.6.0"]);
+  });
+
+  it("a soft (peer) requirement attaches to a satisfying selection across majors", () => {
+    /* chai-as-promised peers on chai '>= 2.1.2 < 5' while the tree already
+     * selects chai@4: attach-first semantics must satisfy the peer against the
+     * existing selection, not key the range's floor into a coexisting chai@2
+     * (whose own deps would then walk and conflict). */
+    const result = resolve(
+      { A: "1.0.0" },
+      {
+        A: { "1.0.0": { chai: "^4.2.0", plugin: "1.0.0" } },
+        plugin: { "1.0.0": { chai: "peer >=2.1.2 <5" } },
+        chai: { "4.2.0": {}, "2.1.2": { "assertion-error": "1.0.0" } },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "chai@4.2.0", "plugin@1.0.0"]);
+    expect(result.violations).to.deep.equal([]);
+    expect(result.errors).to.deep.equal([]);
+  });
+
+  it("a soft requirement whose package nothing selects fires as an ordinary demand", () => {
+    /* The R6 crash shape: a plugin consumed alone must get its peer in the
+     * closure (npm's auto-install as last resort), at the range's minimum. */
+    const result = resolve(
+      { plugin: "1.0.0" },
+      {
+        plugin: { "1.0.0": { eslint: "peer ^9.0.0" } },
+        eslint: { "9.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["eslint@9.0.0", "plugin@1.0.0"]);
+    expect(result.violations).to.deep.equal([]);
+  });
+
+  it("an unsatisfiable soft requirement reports a violation against the delivered version", () => {
+    const result = resolve(
+      { A: "1.0.0" },
+      {
+        A: { "1.0.0": { chai: "^5.0.0", plugin: "1.0.0" } },
+        plugin: { "1.0.0": { chai: "peer <5" } },
+        chai: { "5.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "chai@5.0.0", "plugin@1.0.0"]);
+    expect(result.violations).to.have.lengthOf(1);
+    expect(result.violations[0].pkg).to.equal("chai");
+    expect(result.violations[0].constraint).to.equal("<5");
+    expect(result.violations[0].requiredBy).to.equal("plugin@1.0.0");
+  });
+
+  it("repairs only when the converged tree needs it (a transient floor never fires)", () => {
+    /* D's floor genuinely needs a raise (nothing supersedes it) — that alone
+     * triggers the repair phase. A's transient ~2.0.5 floor, superseded by the
+     * root's ^2.6.0, contributes nothing to the result even though the repair
+     * phase probes eagerly (its candidate is dropped at finish: 2.6.0 won). */
+    const result = resolve(
+      { A: "1.0.0", C: "^2.6.0", D: "^1.0.0" },
+      {
+        A: { "1.0.0": { C: "~2.0.5" } },
+        C: { "2.0.9": {}, "2.6.0": {} },
+        D: { "1.0.1": {} },
+      },
+      true
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@2.6.0", "D@1.0.1"]);
+    expect(result.raises).to.have.lengthOf(1);
+    expect(result.raises[0].pkg).to.equal("D");
+    expect(versionToString(result.raises[0].raised)).to.equal("1.0.1");
   });
 
   it("fails when nothing published satisfies an unpublished floor", () => {
