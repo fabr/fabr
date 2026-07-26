@@ -17,6 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import * as path from "path";
 import { globCaptureRegex, globMatcher, globPrefixRegex } from "../support/Glob";
 
 export enum NamePartKind {
@@ -35,6 +36,31 @@ export interface NamePart {
  */
 export const NAME_COMPONENT_SEPARATOR = "/";
 export const NAME_LEVEL_SEPARATOR = ":";
+
+/** The glob metacharacters — the boundary past which lexical path
+ * normalization must not reach (`normalize` would fold a `..` *through* a `*`
+ * segment, silently changing what it names). */
+const GLOB_METACHAR = /[*?[]/;
+
+/**
+ * Normalize the literal head of a slash-form selector (resolve `.`/`..`,
+ * collapse separator runs) without touching anything at or after the first
+ * glob metachar. Matching happens in canonical path space — walked and
+ * FileSet names arrive normalized — so a selector's static head must be
+ * canonical too, or a written climb (`docs/../scripts/*.ts`) matches nothing.
+ * A `..` that survives at the front (climbing past the namespace root) or
+ * sits after a glob is left as written: it can never match a canonical input,
+ * which is the honest outcome for a query naming outside its namespace.
+ */
+function normalizeHead(pathForm: string): string {
+  const meta = pathForm.search(GLOB_METACHAR);
+  const cut = meta === -1 ? pathForm.length : pathForm.lastIndexOf(NAME_COMPONENT_SEPARATOR, meta) + 1;
+  if (cut === 0) {
+    return pathForm;
+  }
+  const head = path.posix.normalize(pathForm.substring(0, cut));
+  return (head === "." || head === "./" ? "" : head) + pathForm.substring(cut);
+}
 
 /**
  * A string expression, potentially consisting of literal, wildcard, and variable substitution parts
@@ -158,12 +184,13 @@ export class Name {
    * agree.
    */
   public makeRenamer(renameTo: Name): (path: string) => string | undefined {
-    /* Match on the path (every `:`→`/`, as makeProjector does) so a colon-form
-     * selector matches the slash paths on disk / in a package; the rename target
-     * owns result names, so the alias segments are matched but never carried into
-     * them. (A no-op for a colon-free selector — every REWRITE / single-`:` ref;
-     * it bites only a multi-`:` reference like `d:sub:*.x -> *.y`.) */
-    const re = globCaptureRegex(this.renderParts().replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR));
+    /* Match on the path (every `:`→`/`, head-normalized — see makeProjector) so
+     * a colon-form selector matches the slash paths on disk / in a package; the
+     * rename target owns result names, so the alias segments are matched but
+     * never carried into them. (A no-op for a colon-free selector — every
+     * REWRITE / single-`:` ref; it bites only a multi-`:` reference like
+     * `d:sub:*.x -> *.y`.) */
+    const re = globCaptureRegex(normalizeHead(this.renderParts().replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR)));
     const replacement = renameTo.toReplacement();
     /* An unmatched globstar group substitutes as "" (native to `replace`), which
      * can leave a doubled or edge slash (a root-level recursive prefix); fabr
@@ -181,27 +208,36 @@ export class Name {
    * makeRenamer}). Otherwise it selects by glob and rewrites the match under
    * `prefix` (the degenerate rename — "prefix-strip is just a rename"). Either
    * way it honors the written-name rule: the alias separator `:` is a path
-   * separator on disk / within a package (`src:**` matches `src/…`) and marks the
-   * strip boundary — the segment before it is removed from result names, the rest
-   * is the glob; a slash-form name (no `:`) retains its full path. Assumes
-   * substitution has run.
+   * separator on disk / within a package (`src:**` matches `src/…`) and is the
+   * **naming root** — a result is named by its path relative to the alias (all
+   * of it, up to the last `:`); a slash-form name (no `:`) retains its full
+   * path. Matching happens in canonical path space: inputs (walked or FileSet
+   * names) arrive normalized, so the selector's literal head is normalized
+   * before compiling ({@link normalizeHead}). Assumes substitution has run.
    */
   public makeProjector(prefix = ""): (input: string) => string | undefined {
     if (this.renameTo) {
       return this.makeRenamer(this.renameTo);
     }
     const selector = this.toString();
-    const matcher = globMatcher(selector.replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR));
+    const matcher = globMatcher(normalizeHead(selector.replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR)));
     const alias = selector.lastIndexOf(NAME_LEVEL_SEPARATOR);
     if (alias === -1) {
       return input => (matcher(input) ? prefix + input : undefined);
     }
-    /* Colon form: match on the path (every `:`→`/`) and strip the alias — all of
-     * it, up to the last `:` (consistent with getPrefixMatch), which may itself
-     * glob — from each result name. */
-    const strip = globPrefixRegex(
-      selector.substring(0, alias).replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR) + NAME_COMPONENT_SEPARATOR
-    );
+    const aliasPath = selector.substring(0, alias).replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR);
+    if (!GLOB_METACHAR.test(aliasPath)) {
+      /* Literal alias: name each result relative to the alias dir (relative()
+       * normalizes its operands itself). A remainder that climbs out of the
+       * alias (`lib:../tools/*.js`) names as its climbed path (`../tools/y.js`),
+       * which FileSet name canonicalization then flattens to its tail — the
+       * familiar prefix-strip is the non-climbing degenerate case of this rule. */
+      return input => (matcher(input) ? prefix + path.posix.relative(aliasPath, input) : undefined);
+    }
+    /* Glob alias (`pkg*:lib/*`): no concrete dir to name relative to, so strip
+     * the matched alias textually. A remainder climbing under a glob alias has
+     * no coherent naming and never matches (its `..` survives in the pattern). */
+    const strip = globPrefixRegex(aliasPath + NAME_COMPONENT_SEPARATOR);
     return input => (matcher(input) ? prefix + input.replace(strip, "") : undefined);
   }
 
@@ -385,12 +421,21 @@ export class Name {
   }
 
   /**
-   * @return a new name with the dirname of filename prepended to the receiver.
-   * e.g. given the Name "mylib/lib/*" and filename "src/lib/BUILD.fabr", returns
-   * the Name "src/lib/mylib/lib/*".
+   * @return a new name re-rooted at the dirname of `filename`, joined as a `:`
+   * alias: the dir *locates* the files (an alias is a path separator on disk)
+   * but is stripped from result names by `find`'s own projection — the
+   * colon-form rule, which the written-name rule then falls out of with no
+   * post-find renaming. A slash-form written name keeps its full written path
+   * (only the dir strips); a colon-form name strips its own alias too (the
+   * strip runs to the LAST `:`); a `../` climb in the written path flattens
+   * to its tail under FileSet name canonicalization.
+   * e.g. given the Name "mylib/lib/*" and filename "src/lib/BUILD.fabr",
+   * returns the Name "src/lib:mylib/lib/*", whose results are named
+   * "mylib/lib/…".
    *
-   * If the filename does not have a dirname (e.g. "foo"), the original name is returned
-   * unmodified.
+   * If the filename does not have a dirname (e.g. "foo", a root-level build
+   * file), the original name is returned unmodified — the degenerate no-prefix
+   * case, uniform with the above.
    *
    * Note: Does not attempt to interpret "." or ".."
    * @param filename
@@ -400,8 +445,31 @@ export class Name {
     if (idx === -1 || idx === 0) {
       return this;
     } else {
-      return this.withPrefix(filename.substring(0, idx + 1));
+      return this.withPrefix(filename.substring(0, idx) + NAME_LEVEL_SEPARATOR);
     }
+  }
+
+  /**
+   * @return this name re-expressed in the namespace of a source rooted at
+   * `root`: an absolute literal head under `root` sheds the root prefix — a
+   * source's names are root-relative (see FSFileSource: `find` results are
+   * named `relative(root, ·)`, and `get` applies this same normalization to
+   * its path argument). Anything else returns unchanged: a relative name
+   * already is in the namespace, and an absolute head *outside* `root` cannot
+   * name anything in this source — left as written, it matches nothing. The
+   * facets ride along untouched.
+   */
+  public rebase(root: string): Name {
+    const head = this.parts[0];
+    if (head.kind !== NamePartKind.Literal || !head.value.startsWith(NAME_COMPONENT_SEPARATOR)) {
+      return this;
+    }
+    const prefix = root.endsWith(NAME_COMPONENT_SEPARATOR) ? root : root + NAME_COMPONENT_SEPARATOR;
+    if (!head.value.startsWith(prefix)) {
+      return this;
+    }
+    const rebased: NamePart = { kind: NamePartKind.Literal, value: head.value.substring(prefix.length) };
+    return new Name([rebased, ...this.parts.slice(1)], this.constraints, this.renameTo);
   }
 
   /**

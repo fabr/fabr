@@ -291,6 +291,89 @@ describe("Name", () => {
     });
   });
 
+  /* Matching and naming happen in canonical path space: walked / FileSet names
+   * arrive normalized, so a selector's literal head is normalized before
+   * compiling, and the alias is a naming ROOT (results are named relative to
+   * it — prefix-strip being the non-climbing degenerate case). This is what
+   * lets a file-relative reference climb (`lib:../tools/*.js` from a build
+   * file re-rooted at `lib`) and still match + name coherently. */
+  describe("makeProjector in canonical path space", () => {
+    it("matches a climbing selector against normalized inputs and names relative to the alias", () => {
+      /* `../tools/*.js` written in a file whose dir alias is `lib` — the walk
+       * delivers normalized names (`tools/y.js`); the result is named by its
+       * path relative to the alias (`../tools/y.js` — FileSet canonicalization
+       * later flattens the climb to `tools/y.js`). */
+      const name = new NameBuilder()
+        .appendLiteralString("lib:../tools/")
+        .appendGlobMetachars("*")
+        .appendLiteralString(".js")
+        .name();
+      const project = name.makeProjector();
+      expect(project("tools/y.js")).to.equal("../tools/y.js");
+      expect(project("lib/y.js")).to.equal(undefined);
+    });
+
+    it("normalizes an interior climb in a slash-form glob head", () => {
+      const name = new NameBuilder()
+        .appendLiteralString("docs/../scripts/")
+        .appendGlobMetachars("*")
+        .appendLiteralString(".ts")
+        .name();
+      /* Slash form retains the written path as the name — but matching must be
+       * on the normalized head or the query silently matches nothing. */
+      expect(name.makeProjector()("scripts/gendoc.ts")).to.equal("scripts/gendoc.ts");
+    });
+
+    it("matches a climbing rename selector against normalized inputs", () => {
+      const rename = new NameBuilder()
+        .appendLiteralString("lib:../golden/")
+        .appendGlobMetachars("*")
+        .appendLiteralString(".expect")
+        .name()
+        .withRenameTo(new NameBuilder().appendGlobMetachars("*").appendLiteralString(".out").name());
+      expect(rename.makeProjector()("golden/b.expect")).to.equal("b.out");
+    });
+
+    it("does not normalize a climb through a glob (cannot be resolved lexically)", () => {
+      /* a glob segment followed by `..` (a/&ast;/../b.txt) — what the `..`
+       * climbs out of is unknown until match time, so lexical normalization
+       * must leave it alone (it then never matches a canonical input, the
+       * honest outcome). */
+      const name = new NameBuilder()
+        .appendLiteralString("a/")
+        .appendGlobMetachars("*")
+        .appendLiteralString("/../b.txt")
+        .name();
+      expect(name.makeProjector()("a/b.txt")).to.equal(undefined);
+    });
+  });
+
+  describe("rebase", () => {
+    it("sheds the root prefix from an absolute head, keeping facets", () => {
+      const name = new NameBuilder()
+        .appendLiteralString("/tmp/proj/lib:../tool/")
+        .appendGlobMetachars("*")
+        .appendLiteralString(".js")
+        .name()
+        .withConstraints([["BUILD_TYPE", Name.fromLiteral("release")]]);
+      const rebased = name.rebase("/");
+      expect(rebased.toString()).to.equal("tmp/proj/lib:../tool/*.js<BUILD_TYPE=release>");
+      expect(rebased.getConstraints().map(([k, v]) => [k, v.toString()])).to.deep.equal([["BUILD_TYPE", "release"]]);
+    });
+
+    it("leaves a relative name and an out-of-root absolute name unchanged", () => {
+      const relative = new NameBuilder().appendLiteralString("src/x.ts").name();
+      expect(relative.rebase("/some/root")).to.equal(relative);
+      const outside = new NameBuilder().appendLiteralString("/elsewhere/x.ts").name();
+      expect(outside.rebase("/some/root")).to.equal(outside);
+    });
+
+    it("rebases against a non-slash root", () => {
+      const name = new NameBuilder().appendLiteralString("/home/me/proj/docs/x.ts").name();
+      expect(name.rebase("/home/me/proj").toString()).to.equal("docs/x.ts");
+    });
+  });
+
   describe("appendGlobstar", () => {
     it("appends /** to a slash-form directory (retained)", () => {
       const dir = Name.fromLiteral("src");

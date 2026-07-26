@@ -1326,17 +1326,23 @@ describe("unresolved-name diagnostics", () => {
  * general FileSet namespace rule). Also exercises an `@`-prefixed name on an
  * ordinary (non-repository) target decl. */
 describe("contributed-lib-relative FILES", () => {
-  it("resolves an entry relative to an absolute lib file and names it by its flattened tail", async () => {
+  it("resolves literal and glob references relative to an absolute lib file, named by their flattened tails", async () => {
     const tmp = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-libentry-"));
     try {
       fs.mkdirSync(nodePath.join(tmp, "tool"));
       fs.mkdirSync(nodePath.join(tmp, "lib"));
       fs.writeFileSync(nodePath.join(tmp, "tool", "run.sh"), "#!/bin/sh\necho hi\n");
+      fs.writeFileSync(nodePath.join(tmp, "tool", "helper.js"), "// helper\n");
+      fs.writeFileSync(nodePath.join(tmp, "tool", "extra.js"), "// extra\n");
       const errors: string[] = [];
       const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      /* The entry exercises the literal single-file path; the deps glob
+       * exercises the walk — an absolute query head (rebased into the source's
+       * namespace) whose remainder climbs out of the lib dir, matched in
+       * canonical path space and named relative to the dir alias. */
       const input =
         "targetdef script { deps = FILES; entry = REQUIRED FILES; args = STRING; }\n" +
-        "script @plug/drv { entry = ../tool/run.sh; }\n";
+        "script @plug/drv { entry = ../tool/run.sh; deps = ../tool/*.js; }\n";
       const model = toBuildModel(
         [parseBuildString(new FSFileSource("/"), nodePath.join(tmp, "lib", "LIB.fabr"), input, logger)],
         logger,
@@ -1346,8 +1352,8 @@ describe("contributed-lib-relative FILES", () => {
       const sources = await model.getConfig({ [BUILD_OPERATION]: "run" }, execution).getTarget("@plug/drv");
       const runnable = sources.find((source): source is RunnableFileSet => source instanceof RunnableFileSet);
       expect(runnable, "expected a RunnableFileSet").to.not.equal(undefined);
-      const names = [...(runnable as RunnableFileSet)].map(([name]) => name);
-      expect(names).to.deep.equal(["tool/run.sh"]);
+      const names = [...(runnable as RunnableFileSet)].map(([name]) => name).sort();
+      expect(names).to.deep.equal(["tool/extra.js", "tool/helper.js", "tool/run.sh"]);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

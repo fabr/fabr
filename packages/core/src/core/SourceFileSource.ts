@@ -21,7 +21,7 @@ import * as path from "path";
 import { Computable, ComputableSource } from "./Computable";
 import { hashString, isDirectoryError, isNotFound, readFileBuffer, stat } from "./FSWrapper";
 import { BuildCache } from "./BuildCache";
-import { FSFile, FSFileSource } from "./FSFileSource";
+import { FSFile, FSFileSource, staticPath } from "./FSFileSource";
 import { FileSet, IFile } from "./FileSet";
 import { Name } from "./Name";
 import { WatchController } from "./WatchController";
@@ -61,7 +61,13 @@ export class SourceFileSource extends FSFileSource {
   }
 
   public override find(name: Name, prefix = ""): ComputableSource<FileSet> {
-    if (!this.contains(name.toString())) {
+    /* Judge containment on the name's PATH interpretation (its static leading
+     * path, `:` read as a path separator — where the walk actually lands), not
+     * its written form: a `<k=v>`/`-> tmpl` facet is not path structure and
+     * must not trip the check, and an alias prefix hiding a `..` climb must
+     * not slip past it. The glob remainder never moves the walk base, so it
+     * plays no part. */
+    if (!this.contains(staticPath(name))) {
       return Computable.reject(new Error(`'${name.toString()}' is outside the source tree`));
     }
     return super.find(name, prefix);

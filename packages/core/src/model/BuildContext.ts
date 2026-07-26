@@ -18,7 +18,6 @@
  */
 
 import { Readable } from "stream";
-import * as path from "node:path";
 import { FetchOptions, IActionContext } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource } from "../core/FileSet";
@@ -78,7 +77,6 @@ import {
   ReferenceFailedError,
 } from "./Errors";
 import { attachHelp, ConflictError, IConflictSide, IConflictSource } from "../core/Errors";
-import { canonicalFileName } from "../support/Paths";
 import { closestMatch } from "../support/Suggest";
 import { Name, RewriteFn, makeRewrite } from "../core/Name";
 import { parseName } from "./Parser";
@@ -952,37 +950,23 @@ export class BuildContext {
             });
           }
         } else if (relativeTo) {
-          /* Not an identified target; check the filesystem relative to the file the
-           * reference is written in. The build-file's directory is prepended to
-           * *locate* the files, but the result name is the path relative to that
-           * dir (its written name): `./astro.config.mjs` in `docs/BUILD.fabr` is
-           * the file `astro.config.mjs`, not `docs/astro.config.mjs` — the dir is a
-           * retained prefix, exactly like a colon-form projection. */
-          const baseName = relativeTo.source.file;
-          const dir = path.posix.dirname(baseName);
-          /* The found names live in the FileSet's canonical relative namespace
-           * (leading `/` stripped, `..` resolved — see canonicalFileName). A
-           * project build file's dir is already there, but an absolute one (a
-           * contributed plugin lib file, resolving via the absFileSource) must
-           * have its dir expressed in that same namespace, or the relative()
-           * naming below mis-anchors. */
-          const namesDir = path.posix.isAbsolute(dir) ? canonicalFileName(dir) : dir;
-          return relativeTo.source.fs.find(substName.relativeTo(baseName)).then(data => {
+          /* Not an identified target; check the filesystem relative to the file
+           * the reference is written in. `Name.relativeTo` joins the build-file's
+           * dir as a `:` alias — it *locates* the files (works equally for a
+           * project-relative dir and a contributed lib file's absolute one), and
+           * `find`'s own projection strips it, so results carry their written
+           * names directly: `./astro.config.mjs` in `docs/BUILD.fabr` is the file
+           * `astro.config.mjs`, not `docs/astro.config.mjs`. A reference climbing
+           * out of its dir (`../scripts/gendoc.ts`, a tool a level up) flattens
+           * to its tail (`scripts/gendoc.ts`): a flat sandbox has no "above", so
+           * the leading `../` strips under FileSet name canonicalization
+           * (RATIONALE.md) — which also makes two files flattening to one name a
+           * checked conflict, not a silent drop. */
+          return relativeTo.source.fs.find(substName.relativeTo(relativeTo.source.file)).then(data => {
             if (data.isEmpty() && !substName.hasGlob()) {
               throw new NameResolutionError(substName, declPosn(stack?.value ?? relativeTo), useSiteOf(stack));
             }
-            /* Name each file relative to the build file's dir. A reference climbing
-             * out of its dir (`../scripts/gendoc.ts`, a tool a level up) flattens to
-             * its tail (`scripts/gendoc.ts`): a flat sandbox has no "above", so a
-             * leading `../` is stripped, independent of where the build file sits
-             * (RATIONALE.md) — the general FileSet namespace rule, enforced by name
-             * canonicalization in remap itself (see canonicalFileName), which also
-             * makes two files flattening to one name a checked conflict, not a
-             * silent drop. `path.posix.relative` normalizes both sides, so the glob
-             * walk's pre-normalized names and a single file's literal `dir/../x`
-             * agree. */
-            const named = data.remap(fileName => path.posix.relative(namesDir, fileName));
-            return { sources: [named] };
+            return { sources: [data] };
           });
         } else {
           /* A command-line name that names no known target (no decl to resolve

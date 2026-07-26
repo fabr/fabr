@@ -239,9 +239,13 @@ export class FSFileSource implements FileSource {
   }
 
   public find(name: Name, prefix = ""): ComputableSource<FileSet> {
-    /* The name owns the projection (glob + colon-strip / rename naming); this
-     * only supplies the tree to walk. See TreeQuery. */
-    return new TreeQuery(this, this.root, name, prefix);
+    /* The name owns the projection (glob + alias-relative / rename naming);
+     * this only supplies the tree to walk. The query is first expressed in
+     * this source's namespace — results are named root-relative (see walk),
+     * so an absolute head (a contributed lib file's reference) must shed the
+     * root or the compiled matcher and the walked names would live in
+     * different domains. The same normalization `get` applies to its path. */
+    return new TreeQuery(this, this.root, name.rebase(this.root), prefix);
   }
 
   /** Register a live query with the dispatch set and ensure the subscription (a
@@ -423,15 +427,23 @@ function toPosix(p: string): string {
  * The name's static leading path (its `:` alias separator is a path separator on
  * disk): the whole path for a literal name, the walk base for a glob. The
  * naming/membership rule stays on the {@link Name.makeProjector} projection.
+ * Exported as the PATH interpretation of a name — what containment must judge
+ * (see SourceFileSource.find): the facets and any glob remainder never reach
+ * the walk base, so they play no part in where a query can land.
  *
- * A leading `./` is dropped: it's a redundant "current directory" marker, and
- * keeping it would make the single-file result name (`toPosix(staticPath)`)
- * disagree with the walk case (which names files by their `./`-free disk-relative
- * path) — and, worse, never match its own rename projection, since picomatch
- * strips a leading `./` from a pattern but not from the input it tests.
+ * The path is normalized (`.`/`..` resolved, separator runs collapsed): result
+ * names live in canonical path space — the walk names files by their
+ * normalized disk-relative path — so the single-file echo (`toPosix(staticPath)`)
+ * and the containment judgment must be canonical too, or a literal name written
+ * with a climb (`lib/../tool/run.sh`) would disagree with its own projection.
  */
-function staticPath(name: Name): string {
-  return name.getLiteralPathPrefix().replace(/^\.\//, "").replaceAll(":", "/");
+export function staticPath(name: Name): string {
+  const literal = name.getLiteralPathPrefix().replaceAll(":", "/");
+  if (literal === "") {
+    return "";
+  }
+  const normalized = path.posix.normalize(literal);
+  return normalized === "." || normalized === "./" ? "" : normalized;
 }
 
 /**
