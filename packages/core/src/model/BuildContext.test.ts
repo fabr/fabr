@@ -48,6 +48,8 @@ import {
   RepositoryRegistration,
   RuleRegistration,
 } from "../rules/Types";
+import { FSFileSource } from "../core/FSFileSource";
+import { scriptRunRule } from "../rules/RunScript";
 import { BUILD_OPERATION, Constraints, mapEntryOrigin, PropertyMap, PropertyMapValue } from "./BuildContext";
 import { DependencyFailedError, NameResolutionError, NoRuleFoundError, ReferenceFailedError } from "./Errors";
 import { ExecutionContext } from "./ExecutionContext";
@@ -1311,6 +1313,43 @@ describe("unresolved-name diagnostics", () => {
       expect.fail("expected a throw");
     } catch (e) {
       expect((e as { help?: string }).help).to.contain("whole target names");
+    }
+  });
+});
+
+/* The mechanism behind plugin-declared driver tools (JS.fabr's `js_script
+ * @fabr-build/js/css-driver { entry = ../cssDriver/css-driver.js; }`): a decl
+ * written in an absolutely-pathed contributed lib file resolves a relative
+ * FILES value against that file's own directory through its own FileSource
+ * (the loader's absFileSource — no project-tree containment), and the result
+ * is named by the written path's flattened tail (a leading `../` strips — the
+ * general FileSet namespace rule). Also exercises an `@`-prefixed name on an
+ * ordinary (non-repository) target decl. */
+describe("contributed-lib-relative FILES", () => {
+  it("resolves an entry relative to an absolute lib file and names it by its flattened tail", async () => {
+    const tmp = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-libentry-"));
+    try {
+      fs.mkdirSync(nodePath.join(tmp, "tool"));
+      fs.mkdirSync(nodePath.join(tmp, "lib"));
+      fs.writeFileSync(nodePath.join(tmp, "tool", "run.sh"), "#!/bin/sh\necho hi\n");
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const input =
+        "targetdef script { deps = FILES; entry = REQUIRED FILES; args = STRING; }\n" +
+        "script @plug/drv { entry = ../tool/run.sh; }\n";
+      const model = toBuildModel(
+        [parseBuildString(new FSFileSource("/"), nodePath.join(tmp, "lib", "LIB.fabr"), input, logger)],
+        logger,
+        [{ rules: [scriptRunRule] }]
+      );
+      expect(errors).to.deep.equal([]);
+      const sources = await model.getConfig({ [BUILD_OPERATION]: "run" }, execution).getTarget("@plug/drv");
+      const runnable = sources.find((source): source is RunnableFileSet => source instanceof RunnableFileSet);
+      expect(runnable, "expected a RunnableFileSet").to.not.equal(undefined);
+      const names = [...(runnable as RunnableFileSet)].map(([name]) => name);
+      expect(names).to.deep.equal(["tool/run.sh"]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
 });

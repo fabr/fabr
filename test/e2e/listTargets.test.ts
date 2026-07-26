@@ -78,6 +78,44 @@ describe("e2e: list-targets", () => {
     expect(hello.location).to.match(/PROJECT\.fabr:\d+:\d+/);
   });
 
+  /* System-contributed targets (declared in core's / a plugin's lib files —
+   * e.g. fabr's own driver tools in JS.fabr) are origin-filtered from the
+   * default listing: it shows *your* targets. `--all` lifts the filter, and an
+   * explicitly-named system target always shows (naming it is explicit
+   * interest). */
+  const withPlugin = {
+    "PROJECT.fabr": "plugin @fabr-build/js;\nflag only { provides = x; }\n",
+  };
+
+  it("hides system-contributed targets by default and shows them under --all", () => {
+    const hidden = runFabr(withPlugin, ["list-targets"]);
+    expect(hidden.status).to.equal(0);
+    expect(hidden.stdout).to.match(/^only\s+flag$/m);
+    expect(hidden.stdout).not.to.match(/css-driver|ts\/nostrict/);
+    const all = runFabr(withPlugin, ["list-targets", "--all"]);
+    expect(all.status).to.equal(0);
+    expect(all.stdout).to.match(/^only\s+flag$/m);
+    expect(all.stdout).to.match(/^@fabr-build\/js-tools\/bundle-driver\s+js_script$/m);
+    expect(all.stdout).to.match(/^@fabr-build\/js-tools\/css-driver\s+js_script$/m);
+  });
+
+  it("shows an explicitly-named system target without --all", () => {
+    const result = runFabr(withPlugin, ["list-targets", "@fabr-build/js-tools/css-driver"]);
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.match(/^@fabr-build\/js-tools\/css-driver\s+js_script$/m);
+    expect(result.stdout).not.to.match(/^only/m);
+  });
+
+  it("--json carries each target's origin ('system' or 'project')", () => {
+    const result = runFabr(withPlugin, ["list-targets", "--json", "--all"]);
+    expect(result.status).to.equal(0);
+    const parsed = JSON.parse(result.stdout);
+    const own = parsed.targets.find((t: { name: string }) => t.name === "only");
+    expect(own.origin).to.equal("project");
+    const driver = parsed.targets.find((t: { name: string }) => t.name === "@fabr-build/js-tools/css-driver");
+    expect(driver.origin).to.equal("system");
+  });
+
   it("errors on an unknown target name rather than exiting empty", () => {
     const result = runFabr(project, ["list-targets", "nonesuch"]);
     expect(result.status).to.equal(1);

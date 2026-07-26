@@ -24,13 +24,13 @@ default JS_TARGET = es6-esm;
 default TSC = @npm:typescript:5.4.5;
 
 #
-# The default esbuild bundler used for JS bundling. 
+# The esbuild library the bundle driver requires for JS bundling.
 #
 
 default ESBUILD = @npm:esbuild:0.28.1;
 
 #
-# The CSS toolchain the css_compile driver uses: the Sass compiler and the
+# The CSS toolchain the css driver requires: the Sass compiler and the
 # lightningcss library (css-modules scoping + prefixing/minify). Pinned like any
 # tool; lightningcss is native and rides the same os/cpu platform-gating as
 # esbuild, so its per-platform binary resolves automatically.
@@ -39,9 +39,61 @@ default ESBUILD = @npm:esbuild:0.28.1;
 default SASS = @npm:sass-embedded:1.100.0;
 default LIGHTNINGCSS = @npm:lightningcss:1.30.2;
 
-# The test runner ('fabr test' / js_test) is fabr's own: it is sourced directly
-# from the installed @fabr-build/js providing the js rules, not resolved as a build
-# target. Selecting an alternative runner is deferred to a future version.
+##################### Driver tools ########################
+
+#
+# Fabr's own driver scripts, declared as ordinary runnable targets over the
+# compiled entries shipped in this @fabr-build/js installation (entry paths are
+# relative to this file). The `js_bundle` / `css_compile` rules resolve them
+# through the JS_BUNDLER / CSS_COMPILER globals, so an alternative driver
+# honoring the same options-manifest contract can be swapped in by overriding
+# the global. (Named under `@fabr-build/js-tools` — our npm scope, but NOT the
+# plugin's own package name: `@fabr-build/js` is a declared target in any
+# project that builds the plugin itself, and a name cannot be both a target
+# and a namespace.)
+#
+
+js_script @fabr-build/js-tools/bundle-driver {
+    entry = ../bundleDriver/bundle-driver.js;
+    deps = ${ESBUILD};
+}
+
+js_script @fabr-build/js-tools/css-driver {
+    entry = ../cssDriver/css-driver.js;
+    deps = ${SASS} ${LIGHTNINGCSS};
+}
+
+# Fabr's own test runner ('fabr test' / js_test / js_package tests): wraps
+# node:test, preloads the describe/it globals, and writes the CTRF report. Its
+# test-globals.d.ts rides in the install — the test rules mount it into the
+# test compile as ambient types, so a swapped runner carries its own globals
+# typings. A replacement must honor the runner contract: invoked in the staged
+# test install as `<runner> --report=<file> <test files...>`, exit status red
+# on failure, report written as CTRF.
+js_script @fabr-build/js-tools/test-runner {
+    entry = ../testRunner/runner.js;
+    deps = ../testRunner/Report.js ../testRunner/globals.js ../testRunner/test-globals.d.ts;
+}
+
+#
+# The bundler `js_bundle` runs (fabr's esbuild driver: reads the rule's
+# options manifest, maps it onto esbuild).
+#
+
+default JS_BUNDLER = @fabr-build/js-tools/bundle-driver;
+
+#
+# The CSS compiler `css_compile` runs (fabr's driver: Sass lowering +
+# lightningcss css-modules scoping, driven by the rule's manifest).
+#
+
+default CSS_COMPILER = @fabr-build/js-tools/css-driver;
+
+#
+# The test runner the js test rules run (fabr's own by default).
+#
+
+default JS_TEST_RUNNER = @fabr-build/js-tools/test-runner;
 
 ################### Source-mode flags #####################
 

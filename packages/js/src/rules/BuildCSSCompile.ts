@@ -21,17 +21,17 @@
  * The css_compile rule: lower a styled source tree to plain CSS, a self-contained
  * target `{ srcs = FILES; deps = FILES }`. `srcs` are the styled sources
  * (.scss/.sass/.module.{scss,css}/.css); `deps` are scss packages mounted for
- * Sass `@use`/`@import` resolution (loadPaths). It resolves its *own* toolchain
- * — SASS (sass-embedded) + LIGHTNINGCSS — as libraries the fabr CSS driver
- * requires, mounted **apart** from the sources under a tool dir (their deps must
- * not collide with — nor be visible to — the styled tree). The driver runs with
- * cwd at the working root and yields the generic `exec` action (output: `out/**`).
+ * Sass `@use`/`@import` resolution (loadPaths). The compiler is a build *tool*,
+ * independent of what it lowers, so it is resolved apart as the CSS_COMPILER
+ * runnable (fabr's own Sass+lightningcss driver, declared in JS.fabr — the TSC
+ * precedent) and mounted under a tool dir (its deps must not collide with — nor
+ * be visible to — the styled tree). The driver runs with cwd at the working
+ * root and yields the generic `exec` action (output: `out/**`).
  *
  * The bundler stays dumb about CSS: this produces plain CSS + per-module proxy
  * modules; esbuild concatenates/orders/splits them via the JS import graph.
  */
 
-import { posix } from "node:path";
 import {
   BUILD_OPERATION,
   Computable,
@@ -44,7 +44,7 @@ import {
   TargetContext,
 } from "@fabr-build/core";
 import { assembleNodeModules } from "../JSPackage";
-import { buildCssOptions, CSS_DRIVER_ENTRY, CSS_OUTDIR, CSS_SRC_ROOT, getCssDriver, SCSS_DEPS_DIR } from "../CSSCompile";
+import { buildCssOptions, CSS_OUTDIR, CSS_SRC_ROOT, SCSS_DEPS_DIR } from "../CSSCompile";
 
 /** Where the CSS toolchain + driver mount — disjoint from the styled tree so the
  * tools' deps neither collide with nor are visible to the sources. */
@@ -52,40 +52,26 @@ const TOOL_DIR = ".fabr-css";
 
 function buildCssCompile(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
-    [
-      context.getFileSet("srcs"),
-      context.getFileSets("deps"),
-      context.getGlobalSources("SASS"),
-      context.getGlobalSources("LIGHTNINGCSS"),
-    ],
-    (srcs, deps, sassSources, lcssSources): RuleResult | Computable<RuleResult> => {
+    [context.getFileSet("srcs"), context.getFileSets("deps"), context.getGlobalRunnable("CSS_COMPILER")],
+    (srcs, deps, compiler): RuleResult => {
       const fileNames = [...srcs].map(([name]) => name);
       if (fileNames.length === 0) {
         /* No styled sources — nothing to lower. Skip staging/running the driver. */
         return EMPTY_FILESET;
       }
-      /* The tools resolve separately from the sources (a build tool is
-       * independent of what it processes — the TSC/esbuild precedent), so their
-       * pins don't co-resolve with the styled tree's deps. */
-      const tool = context.collect({ sass: sassSources, lightningcss: lcssSources });
-      return tool.then(({ sass, lightningcss }) => {
-        const options = buildCssOptions(fileNames);
-        const staged = FileSet.unionAll(
-          FileSet.layout({
-            [CSS_SRC_ROOT]: srcs,
-            [SCSS_DEPS_DIR]: assembleNodeModules(deps),
-            [TOOL_DIR]: FileSet.unionAll(
-              getCssDriver(),
-              FileSet.layout({ node_modules: assembleNodeModules([...sass, ...lightningcss]) })
-            ),
-            "css-manifest.json": MemoryFile.from(JSON.stringify(options)),
-          })
-        );
-        /* Bare "node": the exec step resolves it against the fabr process's PATH
-         * at run time, keeping the manifest free of a host-specific absolute path. */
-        const argv = ["node", posix.join(TOOL_DIR, CSS_DRIVER_ENTRY), "--manifest=css-manifest.json"];
-        return createExecAction(staged, argv, `${CSS_OUTDIR}:**`, "compile-css");
-      });
+      const options = buildCssOptions(fileNames);
+      const staged = FileSet.unionAll(
+        FileSet.layout({
+          [CSS_SRC_ROOT]: srcs,
+          [SCSS_DEPS_DIR]: assembleNodeModules(deps),
+          [TOOL_DIR]: compiler,
+          "css-manifest.json": MemoryFile.from(JSON.stringify(options)),
+        })
+      );
+      /* The driver launches from its own mount (its deps resolve there); cwd is
+       * the working root, so the manifest and src/out roots resolve against it. */
+      const argv = compiler.toCommandLine(["--manifest=css-manifest.json"], { base: TOOL_DIR });
+      return createExecAction(staged, argv, `${CSS_OUTDIR}:**`, "compile-css");
     }
   );
 }

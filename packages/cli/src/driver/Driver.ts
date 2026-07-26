@@ -180,7 +180,7 @@ export function runFabr(options: Options): Promise<void> {
     case "sync":
       return runWith((model, execution) => syncTargets(model, options, execution), false, options.quiet);
     case "list-targets":
-      return runWith(model => listDeclaredTargets(model, options));
+      return runWith((model, execution) => listDeclaredTargets(model, options, execution));
     case "list-targetdefs":
       return runWith(model => listTargetDefs(model, options));
     case "list-properties":
@@ -604,23 +604,36 @@ function listTargets(options: Options, results: SourceRef[][]): Computable<void>
 /**
  * `fabr list-targets`: print the targets declared in the project (name + type),
  * recursively across namespaces. A model query — it builds nothing. Repository
- * instances are excluded (they are not buildable targets). `-l` adds each
- * target's source location; `--json` emits the structured form; an optional
- * list of names filters the listing. Output is the command's data, so it goes
- * to stdout.
+ * instances are excluded (they are not buildable targets), and by default so
+ * are system-contributed targets (declared in core's or a plugin's lib files —
+ * e.g. fabr's own driver tools): the listing is *your* targets. `--all` lifts
+ * that, and an explicitly-named target always shows (naming it is explicit
+ * interest). `-l` adds each target's source location; `--json` emits the
+ * structured form, each target carrying its `origin` (`system` or `project`).
+ * Output is the command's data, so it goes to stdout.
  */
-function listDeclaredTargets(model: BuildModel, options: Options): Computable<void> {
+function listDeclaredTargets(model: BuildModel, options: Options, execution: ExecutionContext): Computable<void> {
+  /* A system decl is one whose build file was loaded from outside the project
+   * tree — core's or a plugin's contributed lib file, which the loader reads
+   * through the absFileSource (project files read through the source tree), so
+   * the identity of the decl's fs is the whole test. */
+  const isSystem = (decl: ITargetDecl): boolean => decl.source.fs === execution.absFileSource;
   const wanted = new Set(options.targets);
   const targets = model
     .getTargets()
-    .filter(target => wanted.size === 0 || wanted.has(target.name))
+    .filter(target => (wanted.size > 0 ? wanted.has(target.name) : options.all || !isSystem(target.decl)))
     .sort((a, b) => a.name.localeCompare(b.name));
   const missing = [...wanted].filter(name => !targets.some(target => target.name === name));
   if (missing.length > 0) {
     throw new Error(`No such target: ${missing.join(", ")}`);
   }
   if (options.json) {
-    const json = targets.map(({ name, decl }) => ({ name, type: decl.type, location: formatDeclLocation(decl) }));
+    const json = targets.map(({ name, decl }) => ({
+      name,
+      type: decl.type,
+      origin: isSystem(decl) ? "system" : "project",
+      location: formatDeclLocation(decl),
+    }));
     console.log(JSON.stringify({ targets: json }, undefined, 2));
     return Computable.resolve(undefined);
   }

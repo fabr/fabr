@@ -21,53 +21,19 @@
  * Pure (esbuild-independent) helpers behind the js_bundle rule: computing the
  * externalized-dependency name set, mapping each entry to its output name via
  * the `output` REWRITE, and assembling the fabr-level options document handed to
- * the standalone bundle driver (see bundleDriver/bundle-driver.ts). Everything
- * here runs in the host during evaluation; the esbuild invocation itself is the
- * driver's job. Kept apart from the driver so it can import @fabr-build/core and be
+ * the standalone bundle driver (see bundleDriver/bundle-driver.ts — resolved as
+ * the JS_BUNDLER runnable declared in JS.fabr). Everything here runs in the
+ * host during evaluation; the esbuild invocation itself is the driver's job.
+ * Kept apart from the driver so it can import @fabr-build/core and be
  * unit-tested under jest (the driver runs standalone in the bundle build step
  * and must not depend on core at runtime).
  */
 
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { FileSet, IFile, MemoryFile, PackageFileSet, RepositoryRef, RewriteFn } from "@fabr-build/core";
+import { FileSet, PackageFileSet, RepositoryRef, RewriteFn } from "@fabr-build/core";
 import { JSTarget } from "./JSPackage";
 
 /** Where esbuild writes and the rule collects the bundle output from. */
 export const BUNDLE_OUTDIR = "out";
-
-/** The driver's entry, launched under node inside the bundle step. */
-export const BUNDLE_DRIVER_ENTRY = "bundle-driver.js";
-
-/* Fabr's own bundle driver lives in this @fabr-build/js installation, next to the
- * compiled helpers (build/bundleDriver in the devchain build, or bundleDriver/
- * within the fabr-built package — the same relative layout as the test runner). */
-const BUNDLE_DRIVER_DIR = path.join(__dirname, "bundleDriver");
-
-let driverCache: FileSet | undefined;
-
-/**
- * Load fabr's esbuild bundle driver from this installation's bundleDriver
- * directory: its runtime .js (bundle-driver.js + any helpers), named at the
- * directory root, ready to stage into the bundle step's tool mount. Read once
- * and memoized — the driver is fixed per fabr version. Files enter as in-memory
- * content, so the bundle-run cache key stays content-addressed.
- */
-export function getBundleDriver(): FileSet {
-  if (!driverCache) {
-    const runtime: Record<string, IFile> = {};
-    for (const name of fs.readdirSync(BUNDLE_DRIVER_DIR)) {
-      if (name.endsWith(".js") && !name.endsWith(".test.js")) {
-        runtime[name] = MemoryFile.from(fs.readFileSync(path.join(BUNDLE_DRIVER_DIR, name), "utf8"));
-      }
-    }
-    if (!runtime[BUNDLE_DRIVER_ENTRY]) {
-      throw new Error(`fabr bundle driver is missing its ${BUNDLE_DRIVER_ENTRY} entry in ${BUNDLE_DRIVER_DIR}`);
-    }
-    driverCache = FileSet.layout(runtime);
-  }
-  return driverCache;
-}
 
 /** One entry point and its output name (relative to {@link BUNDLE_OUTDIR}); the
  * `out` is extensionless — the driver hands it to esbuild, which appends `.js`. */

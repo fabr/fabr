@@ -78,6 +78,7 @@ import {
   ReferenceFailedError,
 } from "./Errors";
 import { attachHelp, ConflictError, IConflictSide, IConflictSource } from "../core/Errors";
+import { canonicalFileName } from "../support/Paths";
 import { closestMatch } from "../support/Suggest";
 import { Name, RewriteFn, makeRewrite } from "../core/Name";
 import { parseName } from "./Parser";
@@ -959,6 +960,13 @@ export class BuildContext {
            * retained prefix, exactly like a colon-form projection. */
           const baseName = relativeTo.source.file;
           const dir = path.posix.dirname(baseName);
+          /* The found names live in the FileSet's canonical relative namespace
+           * (leading `/` stripped, `..` resolved — see canonicalFileName). A
+           * project build file's dir is already there, but an absolute one (a
+           * contributed plugin lib file, resolving via the absFileSource) must
+           * have its dir expressed in that same namespace, or the relative()
+           * naming below mis-anchors. */
+          const namesDir = path.posix.isAbsolute(dir) ? canonicalFileName(dir) : dir;
           return relativeTo.source.fs.find(substName.relativeTo(baseName)).then(data => {
             if (data.isEmpty() && !substName.hasGlob()) {
               throw new NameResolutionError(substName, declPosn(stack?.value ?? relativeTo), useSiteOf(stack));
@@ -973,7 +981,7 @@ export class BuildContext {
              * silent drop. `path.posix.relative` normalizes both sides, so the glob
              * walk's pre-normalized names and a single file's literal `dir/../x`
              * agree. */
-            const named = data.remap(fileName => path.posix.relative(dir, fileName));
+            const named = data.remap(fileName => path.posix.relative(namesDir, fileName));
             return { sources: [named] };
           });
         } else {

@@ -79,6 +79,10 @@ export interface Options {
   /** For the model-query verbs (`list-targets`/`list-targetdefs`): emit machine-
    * readable JSON instead of the human listing (the docs-generation interface). */
   json: boolean;
+  /** For `list-targets`: include system-contributed targets (declared in core's
+   * or a plugin's lib files) alongside the project's own, which are otherwise
+   * the only ones listed. */
+  all: boolean;
   /** Suppress the live subcommand output that is otherwise streamed to stderr as
    * build steps run (`-q`/`--quiet`); failure messages still include it. */
   quiet: boolean;
@@ -116,6 +120,7 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  -DPROP=VALUE      Force the given property PROP to VALUE\n" +
       "  -l                Long listing: hash and size per file (ls), or source location (list-*)\n" +
       "  --json            Emit JSON (the list-* verbs)\n" +
+      "  --all             Include system-contributed targets (list-targets)\n" +
       "  -w                Watch mode\n" +
       "  -q, --quiet       Suppress live subcommand output (shown by default as steps run)\n" +
       "  -v, --version     Print the fabr version and exit\n"
@@ -136,6 +141,7 @@ export function parseCommandLine(args: string[]): Options {
     mode: Mode.Normal,
     longListing: false,
     json: false,
+    all: false,
     quiet: false,
     targets: [],
     properties: {},
@@ -155,6 +161,8 @@ export function parseCommandLine(args: string[]): Options {
         options.longListing = true;
       } else if (arg === "--json") {
         options.json = true;
+      } else if (arg === "--all") {
+        options.all = true;
       } else if (arg === "-q" || arg === "--quiet") {
         options.quiet = true;
       } else if (arg === "-h") {

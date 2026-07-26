@@ -19,17 +19,13 @@
 
 /**
  * Host-side (tool-independent) helpers behind the css_compile rule: the options
- * document handed to the standalone CSS driver (see cssDriver/css-driver.ts) and
- * loading the driver runtime for staging. Everything here runs in the host during
- * evaluation; the sass/lightningcss invocation itself is the driver's job. Kept
- * apart from the driver so it can import @fabr-build/core and be unit-tested under jest
- * (the driver runs standalone in the css build step and must not depend on core
- * at runtime).
+ * document handed to the standalone CSS driver (see cssDriver/css-driver.ts —
+ * resolved as the CSS_COMPILER runnable declared in JS.fabr). Everything here
+ * runs in the host during evaluation; the sass/lightningcss invocation itself
+ * is the driver's job. Kept apart from the driver so it can import
+ * @fabr-build/core and be unit-tested under jest (the driver runs standalone in
+ * the css build step and must not depend on core at runtime).
  */
-
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { FileSet, IFile, MemoryFile } from "@fabr-build/core";
 
 /** Where the driver writes, and the rule collects, the compiled CSS from. */
 export const CSS_OUTDIR = "out";
@@ -41,16 +37,6 @@ export const CSS_SRC_ROOT = "src";
  * against which `@use "@scope/pkg/partial"` resolves (the Sass analogue of the
  * node_modules mount). */
 export const SCSS_DEPS_DIR = "scss_deps";
-
-/** The driver's entry, launched under node inside the css build step. */
-export const CSS_DRIVER_ENTRY = "css-driver.js";
-
-/* Fabr's own CSS driver lives in this @fabr-build/js installation, next to the
- * compiled helpers (build/cssDriver in the devchain build, or cssDriver/ within
- * the fabr-built package — the same relative layout as the bundle driver). */
-const CSS_DRIVER_DIR = path.join(__dirname, "cssDriver");
-
-let driverCache: FileSet | undefined;
 
 /**
  * The options document fabr writes for the CSS driver — a plain, tool-free
@@ -95,27 +81,4 @@ export function buildCssOptions(fileNames: string[]): ICssOptions {
     loadPaths: [SCSS_DEPS_DIR],
     outdir: CSS_OUTDIR,
   };
-}
-
-/**
- * Load fabr's CSS driver from this installation's cssDriver directory: its
- * runtime .js (css-driver.js + any helpers), named at the directory root, ready
- * to stage into the css step's tool mount. Read once and memoized — the driver
- * is fixed per fabr version. Files enter as in-memory content, so the css-compile
- * cache key stays content-addressed.
- */
-export function getCssDriver(): FileSet {
-  if (!driverCache) {
-    const runtime: Record<string, IFile> = {};
-    for (const name of fs.readdirSync(CSS_DRIVER_DIR)) {
-      if (name.endsWith(".js") && !name.endsWith(".test.js")) {
-        runtime[name] = MemoryFile.from(fs.readFileSync(path.join(CSS_DRIVER_DIR, name), "utf8"));
-      }
-    }
-    if (!runtime[CSS_DRIVER_ENTRY]) {
-      throw new Error(`fabr css driver is missing its ${CSS_DRIVER_ENTRY} entry in ${CSS_DRIVER_DIR}`);
-    }
-    driverCache = FileSet.layout(runtime);
-  }
-  return driverCache;
 }

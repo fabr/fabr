@@ -25,14 +25,13 @@
  * bundle; output optionally renames each entry's result.
  *
  * srcs and deps resolve through ONE collection point (so they can't version-fork
- * across the bundle boundary). esbuild is a build *tool*, independent of what it
- * bundles, so it is resolved separately (its own pins don't co-resolve with the
- * sources' — the TSC precedent) and mounted apart under a tool dir; fabr's own
- * bundle driver runs there and requires esbuild from that mount. The bundle is a
- * terminal artifact, delivered as a plain FileSet.
+ * across the bundle boundary). The bundler is a build *tool*, independent of what
+ * it bundles, so it is resolved apart as the JS_BUNDLER runnable (fabr's own
+ * esbuild driver, declared in JS.fabr — the TSC precedent) and mounted under a
+ * tool dir, its deps neither colliding with nor visible to the sources. The
+ * bundle is a terminal artifact, delivered as a plain FileSet.
  */
 
-import { posix } from "node:path";
 import {
   BUILD_OPERATION,
   Computable,
@@ -44,17 +43,11 @@ import {
   RewriteFn,
   RuleRegistration,
   RuleResult,
+  RunnableFileSet,
   TargetContext,
 } from "@fabr-build/core";
 import { assembleNodeModules, JSTarget, parseJSTarget } from "../JSPackage";
-import {
-  buildBundleOptions,
-  BUNDLE_DRIVER_ENTRY,
-  BUNDLE_OUTDIR,
-  computeBundleEntries,
-  computeExternalNames,
-  getBundleDriver,
-} from "../JSBundle";
+import { buildBundleOptions, BUNDLE_OUTDIR, computeBundleEntries, computeExternalNames } from "../JSBundle";
 import { isStyledSource } from "../CSSCompile";
 
 /** Where the esbuild toolchain + driver mount — disjoint from the workspace's
@@ -63,7 +56,7 @@ import { isStyledSource } from "../CSSCompile";
 const TOOL_DIR = ".fabr-esbuild";
 
 /** The resolved inputs a bundle is staged from: the target config plus the
- * collected contents (srcs/deps) and tool (esbuild). */
+ * collected contents (srcs/deps) and the bundler runnable. */
 interface IBundleInputs {
   jsTarget: JSTarget;
   buildType: string;
@@ -75,7 +68,7 @@ interface IBundleInputs {
   entrySet: FileSet;
   srcs: FileSet[];
   deps: FileSet[];
-  esbuild: FileSet[];
+  bundler: RunnableFileSet;
 }
 
 /** Stage the working dir and yield the bundle action, given the resolved inputs
@@ -89,7 +82,7 @@ function stageBundle(
   plainTree: FileSet,
   css: FileSet
 ): RuleResult {
-  const { jsTarget, buildType, rewrite, defines, entrySet, srcs, deps, esbuild } = inputs;
+  const { jsTarget, buildType, rewrite, defines, entrySet, srcs, deps, bundler } = inputs;
   const entryNames = [...entrySet].map(([name]) => name);
   if (entryNames.length === 0) {
     throw new Error("js_bundle 'entry' resolved to no files — name at least one source to bundle");
@@ -103,13 +96,13 @@ function stageBundle(
     css,
     FileSet.layout({
       node_modules: assembleNodeModules(srcPackages),
-      [TOOL_DIR]: FileSet.unionAll(getBundleDriver(), FileSet.layout({ node_modules: assembleNodeModules(esbuild) })),
+      [TOOL_DIR]: bundler,
       "bundle-options.json": MemoryFile.from(JSON.stringify(options)),
     })
   );
-  /* Bare "node": the exec step resolves it against the fabr process's PATH at
-   * run time, keeping the manifest free of a host-specific absolute path. */
-  const argv = ["node", posix.join(TOOL_DIR, BUNDLE_DRIVER_ENTRY), "--options=bundle-options.json"];
+  /* The bundler launches from its own mount (its deps resolve there); cwd is
+   * the working root, so the options manifest and outdir resolve against it. */
+  const argv = bundler.toCommandLine(["--options=bundle-options.json"], { base: TOOL_DIR });
   return createExecAction(staged, argv, `${BUNDLE_OUTDIR}:**`, "bundle");
 }
 
@@ -152,11 +145,11 @@ function buildJsBundle(context: TargetContext): Computable<RuleResult> {
       context.getFileSet("entry"),
       context.getFileSources("deps"),
       config,
-      context.getGlobalSources("ESBUILD"),
+      context.getGlobalRunnable("JS_BUNDLER"),
       context.getRewrite("output"),
       context.getMap("defines"),
     ],
-    (srcSources, entrySet, depSources, { target, buildType }, esbuildSources, rewrite, defineMap) => {
+    (srcSources, entrySet, depSources, { target, buildType }, bundler, rewrite, defineMap) => {
       const jsTarget = parseJSTarget(target);
       /* esbuild `define` takes code text per identifier; a map value is that
        * text verbatim (esbuild's own contract — no probing). Sub-maps have no
@@ -169,14 +162,12 @@ function buildJsBundle(context: TargetContext): Computable<RuleResult> {
         defines[key] = value;
       }
       /* THE collection point for the bundle's contents: srcs and deps resolve
-       * jointly. esbuild is resolved separately below — a build tool is
-       * independent of what it compiles, so its version doesn't co-resolve with
-       * the sources' pins. */
+       * jointly. The bundler resolved above is a build tool, independent of
+       * what it compiles — its pins don't co-resolve with the sources'. */
       const contents = context.collect({ srcs: srcSources, deps: depSources });
-      const tool = context.collect({ esbuild: esbuildSources });
 
-      return Computable.forAll([contents, tool], ({ srcs, deps }, { esbuild }) =>
-        composeBundle(context, { jsTarget, buildType, rewrite, defines, entrySet, srcs, deps, esbuild })
+      return contents.then(({ srcs, deps }) =>
+        composeBundle(context, { jsTarget, buildType, rewrite, defines, entrySet, srcs, deps, bundler })
       );
     }
   );
