@@ -198,13 +198,6 @@ export async function main(argv: string[]): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const lightningcss = require("lightningcss") as ILightning;
 
-  // TEMP DEBUG
-  try {
-    process.stderr.write("DEBUG tool node_modules: " + fs.readdirSync(path.join(__dirname, "node_modules")).join(", ") + "\n");
-  } catch (e) {
-    process.stderr.write("DEBUG no tool node_modules: " + String(e) + "\n");
-  }
-
   const options = JSON.parse(fs.readFileSync(parseManifestPath(argv), "utf8")) as ICssOptions;
   const compiler = await sass.initAsyncCompiler();
   try {
