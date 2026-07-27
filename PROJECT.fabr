@@ -6,6 +6,9 @@ FABR_VERSION=0.1.0;
 FABR_METADATA = {
   license = GPL-3.0-or-later;
   homepage = https://fabr.build/;
+  engines = {
+    node = ">=20";
+  }
   author = {
     name = Nathan Keynes;
     email = nkeynes@deadcoderemoval.net;

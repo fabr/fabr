@@ -2,7 +2,7 @@
   "name": "@fabr-build/core",
   "version": "0.1.0",
   "license": "GPL-3.0-or-later",
-  "homepage": "https://github.com/fabr/fabrjs",
+  "homepage": "https://github.com/fabr/fabr",
   "main": "build/index.js",
   "types": "build/index.d.ts",
   "dependencies": {
