@@ -103,6 +103,33 @@ function reportFailure(log: Log, err: Error): void {
 }
 
 /**
+ * A consumer closing the pipe early (`fabr cat … | head`, `… | jq -e`) makes the
+ * next write to our stdout/stderr emit an `EPIPE` `'error'`; with no listener
+ * Node turns that into a raw uncaught-exception stack — exactly the crash
+ * presentation the driver otherwise never shows. Core swallows EPIPE for the
+ * *child* pipes it spawns, but nothing covers fabr's own streams.
+ *
+ * We *swallow* it but deliberately do NOT exit from here: the command's own
+ * control flow still runs to its `flushAndExit(code)`, so the exit status stays
+ * the real outcome. Exiting 0 on any EPIPE would be wrong — a *failing* build
+ * whose diagnostics pipe broke (`fabr build 2>&1 | head`) hits EPIPE on stderr
+ * mid-report, and a blanket exit-0 would report that failure as success. Once a
+ * consumer is gone, further writes to that stream keep erroring harmlessly (all
+ * swallowed) and the trailing zero-length writes' callbacks still fire, so the
+ * flush-and-exit path neither crashes nor hangs. Any non-EPIPE stream error is
+ * genuinely unexpected and rethrown.
+ */
+function ignorePipeErrors(): void {
+  const onError = (err: NodeJS.ErrnoException): void => {
+    if (err.code !== "EPIPE") {
+      throw err;
+    }
+  };
+  process.stdout.on("error", onError);
+  process.stderr.on("error", onError);
+}
+
+/**
  * Exit with `code`, but only after stdout/stderr have drained. `process.exit()`
  * on its own discards whatever is still buffered in those streams when they are
  * pipes rather than TTYs — truncating a piped `fabr cat`. A trailing zero-length
@@ -134,6 +161,7 @@ export type Operation = (model: BuildModel, execution: ExecutionContext) => Comp
  * verbs take a bare target name.
  */
 export function runFabr(options: Options): Promise<void> {
+  ignorePipeErrors();
   /* Watch is meaningful for the build-graph verbs and for `run` (relaunch the
    * program on change — a dev server over built artifacts); ls/cat are one-shot
    * queries and sync is a one-shot publish. */
@@ -490,12 +518,22 @@ function catTarget(options: Options, results: SourceRef[][]): Computable<void> {
     }
   });
   /* Stream each file's contents to stdout in that order, one at a time — reading
-   * the next only after the previous is written, so the whole set is never held
-   * in memory at once (`cat` may dump large artifacts). */
+   * the next only after the previous is *flushed*, so the whole set is never held
+   * in memory at once (`cat` may dump large artifacts). The write callback fires
+   * once the chunk has been handled by the stream, so resolving from it honors a
+   * slow consumer's backpressure rather than queueing everything ahead. */
   return files.reduce<Computable<void>>(
-    (prev, file) => prev.then(() => file.getBuffer()).then(buffer => void process.stdout.write(Uint8Array.from(buffer))),
+    (prev, file) => prev.then(() => file.getBuffer()).then(buffer => writeStdout(Uint8Array.from(buffer))),
     Computable.resolve(undefined)
   );
+}
+
+/** Write `bytes` to stdout, resolving from the write callback so a slow (or
+ * closing) consumer applies backpressure — the next read waits for this flush. */
+function writeStdout(bytes: Uint8Array): Computable<void> {
+  return Computable.from(resolve => {
+    process.stdout.write(bytes, () => resolve(undefined));
+  });
 }
 
 /**

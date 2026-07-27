@@ -202,6 +202,35 @@ describe("BuildCache", () => {
     const content = await toPromise(files.readFile("meta.json"));
     expect(content).to.equal('{"name":"test"}');
   });
+
+  it("streams a write into a content-addressed blob via getTemporaryWriteStream", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const handle = cache.getTemporaryWriteStream();
+    handle.stream.write("hello ");
+    handle.stream.write("stream");
+    const file = await toPromise(handle.finalize("out.txt"));
+    expect(file.hash).to.equal(hashString(Buffer.from("hello stream")));
+    expect(await toPromise(file.readString())).to.equal("hello stream");
+    /* The temp spool file was renamed into the pool, not left behind */
+    expect(fs.readdirSync(path.join(root, "blob")).some(name => name.includes(".tmp-"))).to.equal(false);
+  });
+
+  it("rejects finalize (rather than hanging) when the stream errored first", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const handle = cache.getTemporaryWriteStream();
+    handle.stream.write("partial");
+    /* A pre-finalize stream failure (e.g. ENOSPC): the destination unpipes and no
+     * `finish` will ever fire, so finalize must reject on the recorded error
+     * instead of waiting forever. */
+    handle.stream.destroy(new Error("disk full"));
+    let failure: Error | undefined;
+    try {
+      await toPromise(handle.finalize("out.txt"));
+    } catch (err) {
+      failure = err as Error;
+    }
+    expect(failure?.message).to.equal("disk full");
+  });
 });
 
 type Responder = (req: http.IncomingMessage, res: http.ServerResponse) => void;

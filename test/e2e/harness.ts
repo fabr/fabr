@@ -146,6 +146,54 @@ export function runFabr(files: Record<string, string>, args: string[], readback?
 }
 
 /**
+ * Run `fabr <args>` but slam the read end of one of its output streams shut as
+ * soon as the child is up — the `… | head` case, where a consumer stops reading
+ * mid-stream. The next write to that stream in the child then hits `EPIPE`; a
+ * well-behaved fabr swallows it (rather than dumping a raw Node stack) while
+ * still exiting with its real status. Returns the exit code and whatever it
+ * managed to write to the *other*, still-open stream. (Needs a real async spawn
+ * — {@link runFabr}'s `spawnSync` drains the streams fully and can't close one
+ * early.) `close` picks which reader to drop; a `cat` of many files (or one
+ * larger than the pipe buffer) makes a stdout close land a write after the drop.
+ */
+export function runFabrClosingStream(
+  files: Record<string, string>,
+  args: string[],
+  close: "stdout" | "stderr" = "stdout"
+): Promise<FabrResult> {
+  if (!fs.existsSync(FABR)) {
+    throw new Error(`fabr is not built at ${FABR} — run 'yarn build' (the 'yarn dist' gate does this)`);
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-proj-"));
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+  }
+  const child = spawn(NODE, [FABR, ...args], {
+    cwd: dir,
+    env: { PATH: CHILD_PATH, FABR_CACHE_DIR: CACHE_DIR },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  /* Capture the stream we're leaving open; close the other's read end so the
+   * child's next write to it has no reader and fails with EPIPE. */
+  const open = close === "stdout" ? child.stderr : child.stdout;
+  let captured = "";
+  open?.setEncoding("utf8");
+  open?.on("data", (chunk: string) => (captured += chunk));
+  (close === "stdout" ? child.stdout : child.stderr)?.destroy();
+  return new Promise<FabrResult>(resolve => {
+    child.on("exit", (code, signal) => {
+      fs.rmSync(dir, { recursive: true, force: true });
+      /* A raw uncaught EPIPE would kill the child by SIGPIPE/stack, not a clean
+       * exit; surface the signal as a negative status so the test can catch it. */
+      const status = code ?? (signal ? -1 : -1);
+      resolve(close === "stdout" ? { stdout: "", stderr: captured, status } : { stdout: captured, stderr: "", status });
+    });
+  });
+}
+
+/**
  * A stub `tsc` package for fixtures that compile TypeScript, avoiding the real
  * typescript download. Spread into the fixture files and add STUB_TSC_CONFIG to
  * the project. It reads the generated tsconfig (rootDir/outDir) and copies each

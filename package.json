@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "GPL-3.0-or-later",
-  "homepage": "https://github.com/fabr/fabrjs",
+  "homepage": "https://github.com/fabr/fabr",
   "workspaces": [
     "packages/*"
   ],

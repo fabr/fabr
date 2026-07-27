@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { runFabr } from "./harness";
+import { runFabr, runFabrClosingStream } from "./harness";
 
 /* Driver-level CLI behaviours exercised through the real command line: `cat`
  * output ordering/atomicity, and setup-failure reporting. */
@@ -82,6 +82,34 @@ describe("e2e: driver CLI", () => {
     expect(result.stderr).to.match(/Conflicting files for dup\.txt/);
     expect(result.stderr).to.match(/src\/a\/dup\.txt/);
     expect(result.stderr).to.match(/src\/b\/dup\.txt/);
+  });
+
+  it("exits quietly (not a raw EPIPE crash) when the stdout consumer closes early", async () => {
+    /* `fabr cat many | head`: the consumer stops reading mid-stream, closing the
+     * pipe. The next stdout write hits EPIPE — which, unhandled, Node turns into a
+     * raw uncaught-exception stack. fabr must swallow it and exit cleanly instead.
+     * Many files (so many separate writes) makes the failure land mid-stream and
+     * deterministic: a single write can race the process's own exit and mask it. */
+    const files: Record<string, string> = { "PROJECT.fabr": "files = src:**/*;\n" };
+    for (let i = 0; i < 2000; i++) {
+      files[`src/f${i}.txt`] = `content of file ${i}\n`;
+    }
+    const result = await runFabrClosingStream(files, ["cat", "files:**/*.txt"]);
+    /* Clean exit, and no Node error stack / EPIPE mention leaked to stderr. */
+    expect(result.status).to.equal(0);
+    expect(result.stderr).to.not.match(/EPIPE/);
+    expect(result.stderr).to.not.match(/Unhandled 'error' event/);
+  });
+
+  it("keeps a failing command's non-zero status when its stderr pipe breaks", async () => {
+    /* A failing command whose diagnostics pipe is gone (`fabr … 2>&1 | head`)
+     * still exits non-zero: swallowing EPIPE must not swallow the failure. This
+     * locks the contract that EPIPE handling never overrides the real exit status
+     * — the reason the handler swallows rather than force-exiting 0 (which, if it
+     * won the race against a mid-operation write, would report failure as success). */
+    const project = { "PROJECT.fabr": "files = src:**/*;\n", "src/a.txt": "AAA\n" };
+    const result = await runFabrClosingStream(project, ["cat", "files:missing.txt"], "stderr");
+    expect(result.status).to.equal(1);
   });
 
   it("reports a formatted diagnostic (not a raw crash) when run outside a project", () => {

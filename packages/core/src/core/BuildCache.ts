@@ -328,24 +328,40 @@ export class BuildCache {
     const tmpPath = path.resolve(this.blobRoot, `.tmp-${process.pid}-${this.tempCounter++}`);
     const hash = createHash(HASH_ALGORITHM);
     const fileStream = fs.createWriteStream(tmpPath);
-    /* Baseline handler so a stream error (e.g. on discard's destroy, or a disk
-     * failure before finalize is awaited) never escalates to an uncaught crash;
-     * finalize adds its own error->reject on top. */
-    fileStream.on("error", () => undefined);
+    /* Record (don't swallow) the first stream error, on either the sink or the
+     * spool: `pipe` auto-unpipes on a destination error and no `finish` will ever
+     * fire, so finalize can't wait on `finish` alone or it hangs. We capture the
+     * first error and, if finalize is already awaiting, reject it — covering an
+     * error that preceded finalize (ENOSPC before the await), one that arrives
+     * after it, and a stray error (e.g. discard's destroy) that must not escalate
+     * to an uncaught crash. */
+    let firstError: Error | undefined;
+    let pendingReject: ((err: Error) => void) | undefined;
+    const recordError = (err: Error): void => {
+      if (firstError) return;
+      firstError = err;
+      pendingReject?.(err);
+    };
+    fileStream.on("error", recordError);
     const sink = new Transform({
       transform(chunk, _enc, cb) {
         hash.update(chunk);
         cb(null, chunk);
       },
     });
-    sink.on("error", () => undefined);
+    sink.on("error", recordError);
     sink.pipe(fileStream);
     return {
       stream: sink,
       finalize: (name: string): Computable<IFile> =>
         Computable.once<IFile>((resolve, reject) => {
-          fileStream.once("error", reject);
+          if (firstError) {
+            reject(firstError);
+            return;
+          }
+          pendingReject = reject;
           fileStream.once("finish", () => {
+            pendingReject = undefined;
             const digest = hash.digest("hex");
             this.materializeBlob(digest, blobPath => this.renameIntoPool(tmpPath, blobPath)).then(
               () => resolve(new BuildFile(this.blobRoot, digest, name)),
