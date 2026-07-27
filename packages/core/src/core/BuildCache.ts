@@ -22,6 +22,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { Readable, Transform, Writable } from "stream";
 import { Computable } from "./Computable";
+import { HttpStatusError } from "./Errors";
 import { ICacheControl, openUrlStream } from "./Fetch";
 import { CANONICAL, DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
 import { deleteFile, HASH_ALGORITHM, hashString, readFile, readFileBuffer, readOnlyPermissions, rename, writeFile } from "./FSWrapper";
@@ -64,6 +65,23 @@ export interface IActionContext {
 const DIAG_SERVING_STALE = Diagnostic.Warn<{ url: string; reason: string }>(
   "cannot refresh {url} ({reason}); serving the cached copy"
 );
+
+/**
+ * Whether a refresh failure is transient enough to justify serving a stale copy
+ * (stale-if-error). A transport failure (timeout, DNS, connection reset — never
+ * an {@link HttpStatusError}) means the origin was unreachable, and a 5xx is a
+ * server-side blip: both leave the held copy the best available answer. Two 4xx
+ * are likewise retry-later signals — 408 (the origin timed out waiting) and 429
+ * (rate-limited). Every *other* 4xx is a *definite* origin answer — 401/403
+ * (expired credentials), 404 (unpublished or yanked) — and must surface as itself
+ * rather than hide behind stale content.
+ */
+function isTransientFetchError(err: unknown): boolean {
+  if (!(err instanceof HttpStatusError)) {
+    return true;
+  }
+  return err.statusCode >= 500 || err.statusCode === 408 || err.statusCode === 429;
+}
 
 class BuildFile implements IFile {
   private readonly root: string;
@@ -299,10 +317,13 @@ export class BuildCache {
         return this.cachePut(key, entry!.files, meta);
       },
       err => {
-        if (entry) {
+        if (entry && isTransientFetchError(err)) {
           /* Stale-if-error (per RFC 9111's cannot-reach-the-origin allowance):
            * a held copy beats failing the build on a registry blip — but never
-           * silently. */
+           * silently, and only for a genuinely transient failure. A 4xx
+           * (401/403 expired token, 404 unpublished) is a definite answer, not a
+           * blip: degrading it to a stale copy would mask an auth/existence error
+           * behind boundlessly-old content, so it propagates. */
           this.log.log(DIAG_SERVING_STALE, { url, reason: err instanceof Error ? err.message : String(err) });
           return entry.files;
         }

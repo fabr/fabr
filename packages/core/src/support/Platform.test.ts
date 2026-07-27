@@ -50,6 +50,23 @@ describe("tripleToNpm", () => {
   it("leaves an unrecognized arch/os undefined rather than guessing", () => {
     expect(tripleToNpm("sparc-sun-solaris")).to.deep.equal({ os: undefined, cpu: undefined, libc: undefined });
   });
+
+  it("gates android on os:android, not the linux the triple also names", () => {
+    /* npm's `os` vocabulary has android as its own value; bionic isn't glibc/musl. */
+    expect(tripleToNpm("aarch64-linux-android")).to.deep.equal({ os: "android", cpu: "arm64", libc: undefined });
+    expect(tripleToNpm("armv7a-unknown-linux-androideabi")).to.deep.equal({
+      os: "android",
+      cpu: "arm",
+      libc: undefined,
+    });
+  });
+
+  it("maps the less-common arch fields to node's cpu vocabulary", () => {
+    expect(tripleToNpm("powerpc64le-unknown-linux-gnu").cpu).to.equal("ppc64");
+    expect(tripleToNpm("s390x-ibm-linux-gnu").cpu).to.equal("s390x");
+    expect(tripleToNpm("riscv64-unknown-linux-gnu").cpu).to.equal("riscv64");
+    expect(tripleToNpm("loongarch64-unknown-linux-gnu").cpu).to.equal("loong64");
+  });
 });
 
 describe("hostTriple", () => {

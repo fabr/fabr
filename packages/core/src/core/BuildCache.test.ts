@@ -427,6 +427,38 @@ describe("BuildCache non-immutable fetches", () => {
     expect(warnings[0].url).to.equal(origin.url);
   });
 
+  it("propagates a definite 4xx on revalidation rather than serving stale (auth/not-found)", async () => {
+    const warnings: Record<string, unknown>[] = [];
+    const logging = new BuildCache(root, { log: (_diagnostic, params) => warnings.push(params) }, () => clock);
+    const fetchLogged = (): Promise<string> =>
+      toPromise(logging.getOrFetch(origin.url, "test:1", store, undefined, { immutable: false }).then(files => files.readFile("doc.txt")));
+    origin.respond(serve(200, { "cache-control": "max-age=300" }, "one"));
+    await fetchLogged();
+    clock += 301_000; /* stale */
+    origin.respond(serve(403, {})); /* expired token: a definite answer, not a blip */
+    let failure: Error | undefined;
+    try {
+      await fetchLogged();
+    } catch (err) {
+      failure = err as Error;
+    }
+    expect(failure).to.be.an("error");
+    expect(warnings).to.have.lengthOf(0); /* not degraded to a stale-serve warning */
+  });
+
+  it("serves the stale copy on a retry-later 4xx (429 rate-limited)", async () => {
+    const warnings: Record<string, unknown>[] = [];
+    const logging = new BuildCache(root, { log: (_diagnostic, params) => warnings.push(params) }, () => clock);
+    const fetchLogged = (): Promise<string> =>
+      toPromise(logging.getOrFetch(origin.url, "test:1", store, undefined, { immutable: false }).then(files => files.readFile("doc.txt")));
+    origin.respond(serve(200, { "cache-control": "max-age=300" }, "one"));
+    await fetchLogged();
+    clock += 301_000; /* stale */
+    origin.respond(serve(429, {})); /* rate-limited: a transient try-later signal */
+    expect(await fetchLogged()).to.equal("one");
+    expect(warnings).to.have.lengthOf(1);
+  });
+
   it("propagates a validation failure and keeps the previous entry standing", async () => {
     origin.respond(serve(200, { "cache-control": "max-age=300", etag: '"v1"' }, "one"));
     await fetchDoc({ immutable: false });

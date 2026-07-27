@@ -32,17 +32,24 @@ export function tripleToNpm(triple: string): NpmPlatform {
   let os: string | undefined;
   if (parts.some(p => p === "darwin" || p.startsWith("macosx") || p === "apple" || p.startsWith("ios"))) {
     os = "darwin";
+  } else if (parts.some(p => p.startsWith("android"))) {
+    /* An android triple names linux too (`aarch64-linux-android`, and the eabi
+     * form `…-androideabi`), but npm gates android packages on `os:"android"`,
+     * not linux — so it must win the match. */
+    os = "android";
   } else if (parts.includes("linux")) {
     os = "linux";
   } else if (parts.some(p => p.startsWith("windows") || p === "win32" || p === "mingw32" || p === "msvc")) {
     os = "win32";
   }
-  /* libc is the linux abi field only; darwin/windows have no libc notion. */
+  /* libc is the linux abi field only; darwin/windows/android have no npm libc
+   * notion (android's bionic isn't in npm's glibc/musl vocabulary). */
   const libc = os === "linux" ? (parts.some(p => p.includes("musl")) ? "musl" : "glibc") : undefined;
   return { os, cpu, libc };
 }
 
-/** Triple arch field → node arch vocabulary. */
+/** Triple arch field → node arch vocabulary (covers both canonical GNU/LLVM
+ * spellings and the node-verbatim forms {@link hostTriple} emits by fallback). */
 const ARCH_TO_NODE: Record<string, string> = {
   x86_64: "x64",
   amd64: "x64",
@@ -53,7 +60,16 @@ const ARCH_TO_NODE: Record<string, string> = {
   arm64: "arm64",
   armv7: "arm",
   armv7l: "arm",
+  armv7a: "arm",
   arm: "arm",
+  powerpc64: "ppc64",
+  powerpc64le: "ppc64",
+  ppc64: "ppc64",
+  ppc64le: "ppc64",
+  s390x: "s390x",
+  riscv64: "riscv64",
+  loongarch64: "loong64",
+  loong64: "loong64",
 };
 
 /** node/npm platform vocabulary: process.platform / process.arch, plus libc. */

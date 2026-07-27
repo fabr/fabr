@@ -29,6 +29,18 @@ import { HttpStatusError } from "./Errors";
 const MAX_REDIRECTS = 5;
 
 /**
+ * Explicit HTTP timeouts, so the worst case is fabr's choice rather than
+ * undici's inherited defaults. `connectTimeout`/`headersTimeout` bound reaching
+ * the origin and its first response (a wedged registry fails fast); `bodyTimeout`
+ * bounds only the *idle gap between body chunks*, not total transfer, so a large
+ * tarball on a slow-but-live link still completes — it fires only when a stream
+ * stalls. All are inter-event idle timeouts, not overall deadlines.
+ */
+const CONNECT_TIMEOUT_MS = 30_000;
+const HEADERS_TIMEOUT_MS = 30_000;
+const BODY_TIMEOUT_MS = 120_000;
+
+/**
  * The one dispatcher every fabr HTTP(S) request rides. It combines two things
  * node's raw `http`/`https` don't do:
  *  - **Proxy** from the standard environment (`http_proxy`/`https_proxy`/
@@ -38,7 +50,11 @@ const MAX_REDIRECTS = 5;
  *    interceptor drops credential-bearing headers on cross-origin hops.
  * A single pooling instance for the process (agents reuse keep-alive sockets).
  */
-const dispatcher = new EnvHttpProxyAgent().compose(interceptors.redirect({ maxRedirections: MAX_REDIRECTS }));
+const dispatcher = new EnvHttpProxyAgent({
+  connectTimeout: CONNECT_TIMEOUT_MS,
+  headersTimeout: HEADERS_TIMEOUT_MS,
+  bodyTimeout: BODY_TIMEOUT_MS,
+}).compose(interceptors.redirect({ maxRedirections: MAX_REDIRECTS }));
 
 /** Reject a non-HTTP(S) URL with a clear message rather than a transport-layer
  * error; fabr only ever fetches over http/https. */
