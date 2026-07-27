@@ -245,7 +245,7 @@ interface ResolvedPackageSet {
  * during resolution and comes back as an eager `local` entry.
  */
 function resolveDeps(context: RepositoryContext): Computable<ResolvedPackageSet> {
-  return context.getFileSources("deps", { [BUILD_OPERATION]: "build" }).then(rawSources =>
+  return context.getFileProperty("deps", { [BUILD_OPERATION]: "build" }).then(rawSources =>
     /* A projection-pending local entry manifests here (to plain files), so it
      * reaches the not-a-package diagnostic below instead of vanishing. */
     Computable.forAll(

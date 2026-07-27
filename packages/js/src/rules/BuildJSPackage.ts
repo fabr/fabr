@@ -49,15 +49,16 @@ import { binByConvention, compileJsSources, JSTarget, parseJSTarget, stripPackag
 function buildJsPackage(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
-      context.getFileSet("srcs"),
-      context.getFileSet("tests"),
+      context.getFileSetProperties(["srcs", "tests"]),
       context.getGlobalString("JS_TARGET"),
       context.getProperty("version"),
-      context.getFileSources("deps"),
-      context.getFileSources("provided_deps"),
+      context.getFileProperty("deps"),
+      context.getFileProperty("provided_deps"),
       context.getMap("metadata"),
     ],
-    (sources, tests, target, version, depSources, providedSources, metadata) => {
+    ({ srcs: srcSets, tests: testSets }, target, version, depSources, providedSources, metadata) => {
+      const sources = FileSet.unionAll(...srcSets);
+      const tests = FileSet.unionAll(...testSets);
       /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
       const seedJson = sources
         .get("package.json")

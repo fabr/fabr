@@ -45,14 +45,16 @@ import { RuleRegistration, RuleResult } from "./Types";
 
 function generate(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
-    [context.getFileSet("srcs"), context.getProjection("output")],
-    (srcs: FileSet, output: Name | undefined) =>
-      context.getCommandProperty("run", srcs).then(stages => {
+    [context.getFileSetProperties(["srcs"]), context.getProjection("output")],
+    ({ srcs: srcSets }, output: Name | undefined) => {
+      const srcs = FileSet.unionAll(...srcSets);
+      return context.getCommandProperty("run", srcs).then(stages => {
         if (stages.length === 0) {
           return Computable.reject<RuleResult>(new Error("a 'generate' target requires a 'run' command"));
         }
         return assemblePipeline(srcs, stages, output);
-      })
+      });
+    }
   );
 }
 

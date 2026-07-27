@@ -102,6 +102,22 @@ describe("e2e: generate command pipelines", () => {
     expect(result.stdout).to.equal("hello\n");
   });
 
+  it("reads stdin from a file path ('< path'), not only a declared name", () => {
+    /* stdin resolves through the same file core as a FILES value, so a bare
+     * `< src/input.txt` names a file relative to the build file — previously
+     * only an exact declared target/property name resolved. */
+    const result = runFabr(
+      {
+        "PROJECT.fabr": TOOLS + "generate g { run = upper < src/input.txt > out.txt; }\n",
+        ...TOOL_FILES,
+        "src/input.txt": "hello\n",
+      },
+      ["cat", "g:out.txt"]
+    );
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("HELLO\n");
+  });
+
   it("collects files the command wrote via the 'output' glob", () => {
     const result = runFabr(
       { "PROJECT.fabr": WRITER + "generate g { run = writer; output = made.txt; }\n", ...WRITER_FILES },

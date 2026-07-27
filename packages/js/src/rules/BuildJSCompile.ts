@@ -21,7 +21,7 @@
  * The js_compile rule: the one TS-compile path, a self-contained target
  * `{ srcs = FILES; deps = FILES }`. `deps` is the node_modules the sources are
  * compiled against (package deps + any @types, already resolved by the caller
- * so `getFileSet` here is a no-op materialization). It resolves its *own*
+ * so materialization here is a no-op). It resolves its *own*
  * toolchain — `TSC` (a build tool, independent of what it compiles) as a
  * **runnable** (`BUILD_OPERATION=run`), so it needn't know how to launch it —
  * and its own `JS_TARGET`, derives the tsconfig, and lays out the working
@@ -114,15 +114,15 @@ export function makeTsConfig(
 function compileTypescript(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
-      context.getFileSet("srcs"),
-      context.getFileSets("deps"),
+      context.getFileSetProperties(["srcs", "deps"]),
       context.getRequiredString("runtime"),
       context.getGlobalString("JS_TARGET"),
       context.getGlobalRunnable("TSC"),
       context.getGlobalString("BUILD_TYPE"),
       context.getProperty("mode"),
     ],
-    (srcs, deps, runtime, target, tsc, buildType, mode) => {
+    ({ srcs: srcSets, deps }, runtime, target, tsc, buildType, mode) => {
+      const srcs = FileSet.unionAll(...srcSets);
       /* The source-mode overlay (tsconfig relaxations from the caller's deps
        * flags), a JSON string input; absent for a default (strict) compile. */
       const modeOverlay = mode ? (JSON.parse(mode.toString()) as Record<string, unknown>) : {};

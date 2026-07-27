@@ -40,8 +40,8 @@ function defineScriptRunnable(context: TargetContext): Computable<RuleResult> {
    * run operation this rule is selected by (constraints otherwise propagate). */
   return Computable.forAll(
     [
-      context.getFileSources("deps", { [BUILD_OPERATION]: "build" }),
-      context.getFileSources("entry", { [BUILD_OPERATION]: "build" }),
+      context.getFileProperty("deps", { [BUILD_OPERATION]: "build" }),
+      context.getFileProperty("entry", { [BUILD_OPERATION]: "build" }),
       context.getProperty("args"),
     ],
     (depSources, entrySources, args) =>

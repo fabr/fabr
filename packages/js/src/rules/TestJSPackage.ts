@@ -23,26 +23,25 @@
  * resolve) and run against the package's deps.
  */
 
-import { BUILD_OPERATION, Computable, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
+import { BUILD_OPERATION, Computable, FileSet, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
 import { BUILD_OP, compileAndRunTests } from "../TestPipeline";
 
 function testJsPackage(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
-      context.getFileSet("srcs", BUILD_OP),
-      context.getFileSet("tests", BUILD_OP),
+      context.getFileSetProperties(["srcs", "tests"], BUILD_OP),
       context.getGlobalString("JS_TARGET", BUILD_OP),
-      context.getFileSources("deps", BUILD_OP),
-      context.getFileSources("provided_deps", BUILD_OP),
-      context.getFileSources("test_deps", BUILD_OP),
+      context.getFileProperty("deps", BUILD_OP),
+      context.getFileProperty("provided_deps", BUILD_OP),
+      context.getFileProperty("test_deps", BUILD_OP),
     ],
-    (sources, tests, target, depSources, providedSources, testDepSources) =>
+    ({ srcs, tests }, target, depSources, providedSources, testDepSources) =>
       /* A test install is self-contained — there is no fabr host to supply the
        * provided (peer) deps — so they are just more `deps` here: compiled and
        * installed identically, with no manifest to distinguish them. */
       compileAndRunTests(context, {
-        sources,
-        tests,
+        sources: FileSet.unionAll(...srcs),
+        tests: FileSet.unionAll(...tests),
         target,
         depSources: [...depSources, ...providedSources],
         testDepSources,

@@ -24,18 +24,24 @@
  * compiles as a sibling but is never run.
  */
 
-import { BUILD_OPERATION, Computable, EMPTY_FILESET, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
+import { BUILD_OPERATION, Computable, EMPTY_FILESET, FileSet, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
 import { BUILD_OP, compileAndRunTests } from "../TestPipeline";
 
 function runJsTest(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
-      context.getFileSet("tests", BUILD_OP),
+      context.getFileSetProperties(["tests"], BUILD_OP),
       context.getGlobalString("JS_TARGET", BUILD_OP),
-      context.getFileSources("deps", BUILD_OP),
+      context.getFileProperty("deps", BUILD_OP),
     ],
-    (tests, target, depSources) =>
-      compileAndRunTests(context, { sources: EMPTY_FILESET, tests, target, depSources, testDepSources: [] })
+    ({ tests }, target, depSources) =>
+      compileAndRunTests(context, {
+        sources: EMPTY_FILESET,
+        tests: FileSet.unionAll(...tests),
+        target,
+        depSources,
+        testDepSources: [],
+      })
   );
 }
 

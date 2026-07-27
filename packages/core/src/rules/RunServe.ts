@@ -43,8 +43,8 @@ function defineServeRunnable(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
       context.getRunnableProperty("tool"),
-      context.getFileSources("deps", { [BUILD_OPERATION]: "build" }),
-      context.getFileSources("files", { [BUILD_OPERATION]: "build" }),
+      context.getFileProperty("deps", { [BUILD_OPERATION]: "build" }),
+      context.getFileProperty("files", { [BUILD_OPERATION]: "build" }),
       context.getProperty("args"),
     ],
     (tool, depSources, fileSources, args) =>

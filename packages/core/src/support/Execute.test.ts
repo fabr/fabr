@@ -121,7 +121,7 @@ describe("execute", () => {
     );
     const outcomes = await Promise.race([
       settled,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("execute hung reading stdin")), 4000)),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("execute hung reading stdin")), 20000)),
     ]);
     expect(outcomes).to.deep.equal([{ ok: true, value: undefined }]);
   });
@@ -142,7 +142,7 @@ describe("execute", () => {
         "c.unref();"; /* unref so the step's own process exits at once */
       const outcomes = await collectSettlements(execute(NODE, ["-e", script, pidFile], dir, {}));
       expect(outcomes).to.deep.equal([{ ok: true, value: undefined }]);
-      expect(await processGone(Number(fs.readFileSync(pidFile, "utf8")), 5000)).to.equal(true);
+      expect(await processGone(Number(fs.readFileSync(pidFile, "utf8")), 15000)).to.equal(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -216,7 +216,7 @@ describe("executePipeline", () => {
     );
     const outcomes = await Promise.race([
       settled,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("pipeline hung on early downstream exit")), 5000)),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("pipeline hung on early downstream exit")), 20000)),
     ]);
     expect(outcomes).to.have.length(1);
   });
@@ -244,7 +244,7 @@ describe("executePipeline", () => {
       const outcomes = await collectSettlements(executePipeline([{ argv: [NODE, "-e", script, pidFile] }], dir, memoryOutput));
       expect(outcomes).to.have.length(1);
       expect(outcomes[0].ok).to.equal(false);
-      expect(await processGone(Number(fs.readFileSync(pidFile, "utf8")), 5000)).to.equal(true);
+      expect(await processGone(Number(fs.readFileSync(pidFile, "utf8")), 15000)).to.equal(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

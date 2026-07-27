@@ -87,8 +87,8 @@ function registerRepositoryProvider(type: string, provider: RepositoryProvider):
 /* Trivial rules for exercising target-to-target dependency behaviour */
 let lastDeps: FileSet | undefined;
 registerRule("test_good", {}, context =>
-  context.getFileSet("deps").then(files => {
-    lastDeps = files;
+  context.getFileSetProperties(["deps"]).then(({ deps }) => {
+    lastDeps = FileSet.unionAll(...deps);
     return EMPTY_FILESET;
   })
 );
@@ -96,17 +96,27 @@ registerRule("test_fail", {}, () => Computable.reject(new Error("reasons")));
 /* Resolves its dep under a caller-supplied constraint override, for testing
  * override precedence against a reference's own <k=v> delta. */
 registerRule("test_override", {}, context =>
-  context.getFileSet("dep", { FLAVOR: "caller" }).then(files => {
-    lastDeps = files;
+  context.getFileSetProperties(["dep"], { FLAVOR: "caller" }).then(({ dep }) => {
+    lastDeps = FileSet.unionAll(...dep);
     return EMPTY_FILESET;
   })
 );
 /* Resolves a GLOBAL under a caller-supplied override, for testing override
  * precedence against a <k=v> delta written on the global's value (the
- * getGlobalTarget path — e.g. getGlobalRunnable forcing BUILD_OPERATION=run). */
+ * getGlobalFileProperty path — e.g. getGlobalRunnable forcing BUILD_OPERATION=run). */
 registerRule("test_globaltool", {}, context =>
-  context.getGlobalTarget("GLOBALTOOL", { FLAVOR: "caller" }).then(sources => {
-    lastDeps = FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet));
+  context.collect({ tool: context.getGlobalFileProperty("GLOBALTOOL", { FLAVOR: "caller" }) }).then(({ tool }) => {
+    lastDeps = FileSet.unionAll(...tool);
+    return EMPTY_FILESET;
+  })
+);
+/* Reads a STRING global under a caller override, for testing override precedence
+ * against a <k=v> delta written on the global's value (the getGlobalString /
+ * string path — the counterpart of test_globaltool). */
+let lastString: string | undefined;
+registerRule("test_globalstr", {}, context =>
+  context.getGlobalString("GLOBALSTR", { FLAVOR: "caller" }).then(value => {
+    lastString = value;
     return EMPTY_FILESET;
   })
 );
@@ -249,9 +259,9 @@ testRules.push(syncRule, syncFilesRule);
 registerRule("test_joint", {}, context =>
   context
     .collect({
-      adeps: context.getFileSources("adeps"),
-      bdeps: context.getFileSources("bdeps"),
-      globalSrc: context.getGlobalSources("JOINT_GLOBAL"),
+      adeps: context.getFileProperty("adeps"),
+      bdeps: context.getFileProperty("bdeps"),
+      globalSrc: context.getGlobalFileProperty("JOINT_GLOBAL"),
     })
     .then(({ adeps, bdeps, globalSrc }) => {
       lastDeps = FileSet.unionAll(...adeps, ...bdeps, ...globalSrc);
@@ -1257,6 +1267,44 @@ describe("BuildContext", () => {
     await model.getConfig({}, execution).getTarget("root");
     expect(await lastDeps!.get("f.txt").then(file => file?.readString())).to.equal("caller");
   });
+
+  it("A caller's override wins over a delta on a STRING global's value too", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    /* The string path layers overrides identically to the file path: the rule
+     * forces {FLAVOR: caller} while the global's value carries <FLAVOR=ref>, so
+     * the override (threaded as callerOverrides, applied last) wins — rather than
+     * being folded into ambient, which the delta would beat. */
+    const input =
+      "targetdef test_globalstr { }\n" +
+      "default FLAVOR = ambient;\n" +
+      "GLOBALSTR = ${FLAVOR}<FLAVOR=ref>;\n" +
+      "test_globalstr root { }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    lastString = undefined;
+    await model.getConfig({}, execution).getTarget("root");
+    expect(lastString).to.equal("caller");
+  });
+
+  it("getTargetRef substitutes ${vars} in the target name (build/test parity with cat/ls)", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    /* build/test resolve a whole target name via getTargetRef; a ${...} in that
+     * name is substituted just as it is on the file/CLI path — previously it was
+     * substituted only when the reference also carried a <k=v> delta. */
+    const input =
+      "targetdef test_file { content = STRING; }\n" +
+      "default WHICH = leaf;\n" +
+      "test_file leaf { content = hi; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    const sources = await model.getConfig({}, execution).getTargetRef("${WHICH}");
+    const files = FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet));
+    expect(await files.get("f.txt").then(file => file?.readString())).to.equal("hi");
+  });
 });
 
 describe("unresolved-name diagnostics", () => {
@@ -1268,14 +1316,16 @@ describe("unresolved-name diagnostics", () => {
     return model;
   }
 
-  it("positions a typo'd ${property} at its use and suggests the near name", () => {
+  it("positions a typo'd ${property} at its use and suggests the near name", async () => {
     /* The substitution site carries a dependency stack, so the error is the
-     * positioned NameResolutionError, anchored at the referencing value. */
+     * positioned NameResolutionError, anchored at the referencing value —
+     * delivered via Computable rejection (as the file path always has), the
+     * string path now resolving each value through the same context path. */
     const input = "FOO = x;\nBAR = ${FOOO};\n";
     const context = modelOf(input).getConfig({}, execution);
     try {
-      context.getProperty("BAR");
-      expect.fail("expected a throw");
+      await context.getProperty("BAR");
+      expect.fail("expected a rejection");
     } catch (e) {
       const err = e as NameResolutionError & { help?: string };
       expect(err.message).to.contain("Unresolved property name 'FOOO'");

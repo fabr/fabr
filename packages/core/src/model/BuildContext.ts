@@ -55,7 +55,6 @@ import {
   IDecl,
   IMapItemDecl,
   IMapSpliceDecl,
-  INamedDecl,
   INamespaceDecl,
   ICommandValue,
   IMapValue,
@@ -365,10 +364,6 @@ export class BuildContext {
     return k1.length === k2.length && k1.every(k => k in constraints && constraints[k] === this.constraints[k]);
   }
 
-  public getPropertyWithOverrides(name: string, overrides: Constraints): Computable<Property> {
-    return this.getContextWithOverrides(overrides).getProperty(name);
-  }
-
   public getTargetWithOverrides(name: string, overrides: Constraints): Computable<SourceRef[]> {
     /* Through getTarget's callerOverrides so a property's value delta cannot
      * beat the explicit override (a direct target decl folds as before). */
@@ -432,29 +427,37 @@ export class BuildContext {
     return hints.length > 0 ? attachHelp(err, hints.join("; ")) : err;
   }
 
-  public getProperty(name: string, stack?: IDependencyStack): Computable<Property> {
+  public getProperty(name: string, stack?: IDependencyStack, callerOverrides?: Constraints): Computable<Property> {
     this.assertNonCircularProperty(name, stack);
+    if (callerOverrides) {
+      /* Mirror getTarget's override path: a caller's explicit override outranks a
+       * `<k=v>` delta on the property's value (ambient < delta < caller), so for a
+       * declared property it threads into the SAME value resolution rather than
+       * folding into ambient (which a delta would beat); a constrained name has no
+       * written delta to fight, so it keeps the ambient fold. Uncached, as there. */
+      if (!(name in this.constraints)) {
+        const def = this.model.getDecl(name);
+        if (def?.kind === DeclKind.Property) {
+          return this.resolveStringProperty(def, undefined, stack, callerOverrides);
+        }
+      }
+      return this.getContextWithOverrides(callerOverrides).getProperty(name, stack);
+    }
     if (name in this.propCache) {
       /* Already seen */
-      const result = this.propCache[name];
-      if (result === null) {
-        throw new Error("Circular dependency at '" + name + "'");
-      } else {
-        return result;
-      }
-    } else {
-      const def = this.model.getDecl(name);
-      if (!def || def.kind !== DeclKind.Property) {
-        const reason = def
-          ? `'${name}' names a ${def.kind === DeclKind.Target ? "target" : "namespace"}, not a property`
-          : `Unresolved property name '${name}'`;
-        const nearest = def ? undefined : closestMatch(name, this.model.getProperties().map(prop => prop.name));
-        throw this.unresolvedNameError(name, stack, reason, nearest ? [`did you mean '${nearest}'?`] : []);
-      }
-      const result = this.resolveStringProperty(def, undefined, stack);
-      this.propCache[name] = result;
-      return result;
+      return this.propCache[name];
     }
+    const def = this.model.getDecl(name);
+    if (!def || def.kind !== DeclKind.Property) {
+      const reason = def
+        ? `'${name}' names a ${def.kind === DeclKind.Target ? "target" : "namespace"}, not a property`
+        : `Unresolved property name '${name}'`;
+      const nearest = def ? undefined : closestMatch(name, this.model.getProperties().map(prop => prop.name));
+      throw this.unresolvedNameError(name, stack, reason, nearest ? [`did you mean '${nearest}'?`] : []);
+    }
+    const result = this.resolveStringProperty(def, undefined, stack);
+    this.propCache[name] = result;
+    return result;
   }
 
   public getTarget(name: string, stack?: IDependencyStack, callerOverrides?: Constraints): Computable<SourceRef[]> {
@@ -482,11 +485,11 @@ export class BuildContext {
     } else if (name in this.constraints) {
       /* A constraint overrides how the name resolves — to files as well as to a
        * string (`${name}`, via the pre-forced propCache): resolve the override
-       * value as a reference in place of the declared property/target. This is
-       * why `-Dchai=@npm:chai:5.0.0` repins a dependency written as a bare `chai`. */
-      const result = this.resolveFileSource(Name.fromLiteral(this.constraints[name]), undefined, stack).then(
-        resolved => resolved.sources
-      );
+       * value as a reference in place of the declared property/target. Parsed as
+       * a full reference (not a bare literal), so `-Dchai=@npm:chai:5.0.0` repins
+       * a dependency written as a bare `chai`, and a `:`/`<k=v>` on the override
+       * is honoured as it would be in a script. */
+      const result = this.resolveFileValue(parseName(this.constraints[name]), stack);
       this.targetCache[name] = result;
       return result;
     } else {
@@ -562,27 +565,81 @@ export class BuildContext {
   }
 
   /**
-   * Resolve a property's values to their substituted Names (facets intact) —
-   * the shared core of {@link resolveStringProperty} (which stringifies) and
-   * {@link resolveRewrite} (which reads the rename template facet). References
-   * are NOT resolved: a REWRITE/STRING value is inert, never a collection point.
+   * The shared per-property skeleton behind both the string and file contexts:
+   * for each value reject a non-name (a map block / command pipeline) with a
+   * context-appropriate message (`expects` names the consuming use — "a string",
+   * "files"), build that value's dependency-stack node, and hand it to a
+   * context-specific `tail` ({@link resolveStringValue} / {@link
+   * resolveFileValue}). Each value must be a name; the guard is the backstop for
+   * the paths Validate doesn't cover (default/top-level properties, sync
+   * coordinates).
    */
-  public resolveNameProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<Name[]> {
-    /* Each value must be a name; a map block or command pipeline used as a string
-     * is rejected (the backstop for the paths Validate doesn't cover — default/
-     * top-level properties, sync coordinates). */
+  private resolveValues<T>(
+    prop: IPropertyDecl,
+    target: ITargetDecl | undefined,
+    stack: IDependencyStack | undefined,
+    expects: string,
+    tail: (value: INameValue, info: IDependencyStack) => Computable<T>
+  ): Computable<T[]> {
     return Computable.forAll(
       prop.values.map(value =>
         isNameValue(value)
-          ? this.substituteNameVars(value.value, { property: prop, target, context: this, value, next: stack })
-          : Computable.reject<Name>(nonNameValueError(prop, value, "a string"))
+          ? tail(value, { property: prop, target, context: this, value, next: stack })
+          : Computable.reject<T>(nonNameValueError(prop, value, expects))
       ),
-      (...resolved) => resolved
+      (...resolved: T[]) => resolved
     );
   }
 
-  public resolveStringProperty(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<Property> {
-    return this.resolveNameProperty(prop, target, stack).then(names => new Property(names.map(name => name.toString())));
+  /**
+   * Resolve a property's values to their substituted Names — the shared core of
+   * {@link resolveStringProperty} (which stringifies) and {@link resolveRewrite}
+   * (which reads the rename template facet). References are NOT resolved: a
+   * REWRITE/STRING value is inert, never a collection point.
+   */
+  public resolveNameProperty(
+    prop: IPropertyDecl,
+    target?: ITargetDecl,
+    stack?: IDependencyStack,
+    callerOverrides?: Constraints
+  ): Computable<Name[]> {
+    return this.resolveValues(prop, target, stack, "a string", (value, info) =>
+      this.resolveStringValue(value.value, info, callerOverrides)
+    );
+  }
+
+  /**
+   * Resolve one written value in a STRING context to its substituted Name. A
+   * STRING is inert — no references are resolved and no provenance is stamped —
+   * but it flows through the SAME context resolution as {@link resolveFileValue}
+   * (the value's `<k=v>` delta, and any caller override, re-root the resolving
+   * context via {@link resolvingContextFor}), so overrides layer uniformly
+   * (ambient < delta < caller) across the string and file contexts, and
+   * conditional properties, which gate a value on that context, will read the
+   * two symmetrically. The returned Name keeps its rename facet (only the
+   * constraints facet is consumed here), for REWRITE/projection readers.
+   */
+  private resolveStringValue(name: Name, info: IDependencyStack, callerOverrides?: Constraints): Computable<Name> {
+    /* A STRING's value IS its content, so — unlike a file reference, whose name
+     * is an address resolved under ambient while the delta/override re-roots the
+     * *referenced target's* build — the delta and override must reach the value's
+     * own `${...}` substitution. So substitute the original name (facet stripped)
+     * under the merged context, not resolvingContextFor's ambient-substituted
+     * reference. */
+    return this.resolvingContextFor(name, callerOverrides, info).then(({ context }) =>
+      context.substituteNameVars(name.withConstraints([]), info)
+    );
+  }
+
+  public resolveStringProperty(
+    prop: IPropertyDecl,
+    target?: ITargetDecl,
+    stack?: IDependencyStack,
+    callerOverrides?: Constraints
+  ): Computable<Property> {
+    return this.resolveNameProperty(prop, target, stack, callerOverrides).then(
+      names => new Property(names.map(name => name.toString()))
+    );
   }
 
   /**
@@ -599,15 +656,21 @@ export class BuildContext {
    * order. References merge left-to-right, later value winning (extension via an
    * inline block + reference is deferred). An empty property yields an empty map.
    */
-  public resolveMap(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<PropertyMap> {
-    return this.resolveMapDecl(prop, target, stack, new Set());
+  public resolveMap(
+    prop: IPropertyDecl,
+    target?: ITargetDecl,
+    stack?: IDependencyStack,
+    callerOverrides?: Constraints
+  ): Computable<PropertyMap> {
+    return this.resolveMapDecl(prop, target, stack, new Set(), callerOverrides);
   }
 
   private resolveMapDecl(
     prop: IPropertyDecl,
     target: ITargetDecl | undefined,
     stack: IDependencyStack | undefined,
-    seen: Set<IPropertyDecl>
+    seen: Set<IPropertyDecl>,
+    callerOverrides?: Constraints
   ): Computable<PropertyMap> {
     if (seen.has(prop)) {
       return Computable.reject(new Error(`Circular map reference at '${prop.name}'`));
@@ -622,7 +685,7 @@ export class BuildContext {
         );
       }
       const block = prop.values[0];
-      return this.resolveBlock(isMapValue(block) ? block.entries : [], target, stack, nextSeen);
+      return this.resolveMapBlock(isMapValue(block) ? block.entries : [], target, stack, nextSeen, callerOverrides);
     }
     /* Reference form: each value names a block-valued property (resolved
      * recursively under this context, so a shared map's `${...}` sees the
@@ -630,7 +693,7 @@ export class BuildContext {
      * merged entry's origin gains the written reference as a via-hop. */
     return Computable.forAll(
       prop.values.filter(isNameValue).map(value =>
-        this.resolveMapReference(value.value, { property: prop, target, context: this, value, next: stack }, stack, nextSeen).then(
+        this.resolveMapReference(value.value, { property: prop, target, context: this, value, next: stack }, stack, nextSeen, callerOverrides).then(
           (map): [PropertyMap, INameValue] => [map, value]
         )
       ),
@@ -650,13 +713,14 @@ export class BuildContext {
     name: Name,
     info: IDependencyStack | undefined,
     stack: IDependencyStack | undefined,
-    seen: Set<IPropertyDecl>
+    seen: Set<IPropertyDecl>,
+    callerOverrides?: Constraints
   ): Computable<PropertyMap> {
     return this.referencedProperty(name, info).then(({ prop, name: substituted }) => {
       if (!prop) {
         throw new Error(`'${substituted.toString()}' does not name a map property`);
       }
-      return this.resolveMapDecl(prop, undefined, stack, seen);
+      return this.resolveMapDecl(prop, undefined, stack, seen, callerOverrides);
     });
   }
 
@@ -666,26 +730,27 @@ export class BuildContext {
    * re-checked here for shared globals); a `NAME;` splice merges the named map's
    * entries in at that position. Later values win. Each entry records its ghost
    * origin (the written decl, plus via-hops for splices). */
-  private resolveBlock(
+  private resolveMapBlock(
     entries: IMapItemDecl[],
     target: ITargetDecl | undefined,
     stack: IDependencyStack | undefined,
-    seen: Set<IPropertyDecl>
+    seen: Set<IPropertyDecl>,
+    callerOverrides?: Constraints
   ): Computable<PropertyMap> {
     return Computable.forAll(
       entries.map((item): Computable<PropertyMapValue | PropertyMap> => {
         if (item.kind === DeclKind.MapSplice) {
-          return this.resolveMapReference(item.ref, stack, stack, seen);
+          return this.resolveMapReference(item.ref, stack, stack, seen, callerOverrides);
         }
         const blocks = item.values.filter(isMapValue);
         if (blocks.length === 0) {
-          return this.resolveStringProperty(item, target, stack).then(prop => prop.toString());
+          return this.resolveStringProperty(item, target, stack, callerOverrides).then(prop => prop.toString());
         }
         if (blocks.length < item.values.length) {
           return Computable.reject(new Error(`map value '${item.name}' is either strings or maps, not a mix`));
         }
         return Computable.forAll(
-          blocks.map(value => this.resolveBlock(value.entries, target, stack, seen)),
+          blocks.map(value => this.resolveMapBlock(value.entries, target, stack, seen, callerOverrides)),
           (...maps: PropertyMap[]) => (maps.length === 1 ? maps[0] : maps)
         );
       }),
@@ -711,8 +776,13 @@ export class BuildContext {
    * first match wins; undefined means no value matched (the rule decides what
    * that means — passthrough, a default, or an error).
    */
-  public resolveRewrite(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<RewriteFn> {
-    return this.resolveNameProperty(prop, target, stack).then(makeRewrite);
+  public resolveRewrite(
+    prop: IPropertyDecl,
+    target?: ITargetDecl,
+    stack?: IDependencyStack,
+    callerOverrides?: Constraints
+  ): Computable<RewriteFn> {
+    return this.resolveNameProperty(prop, target, stack, callerOverrides).then(makeRewrite);
   }
 
   /**
@@ -720,8 +790,13 @@ export class BuildContext {
    * {@link TargetContext.getProjection}). A projection is one selector; more than
    * one value is a declaration error caught here.
    */
-  public resolveProjection(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<Name | undefined> {
-    return this.resolveNameProperty(prop, target, stack).then(names => {
+  public resolveProjection(
+    prop: IPropertyDecl,
+    target?: ITargetDecl,
+    stack?: IDependencyStack,
+    callerOverrides?: Constraints
+  ): Computable<Name | undefined> {
+    return this.resolveNameProperty(prop, target, stack, callerOverrides).then(names => {
       if (names.length > 1) {
         throw new Error(`property '${prop.name}' is a projection and takes a single value (found ${names.length})`);
       }
@@ -741,45 +816,70 @@ export class BuildContext {
     stack?: IDependencyStack,
     callerOverrides?: Constraints
   ): Computable<SourceRef[]> {
-    /* Each value must be a name (reference); a map block or command pipeline read
-     * as files is rejected. */
-    return Computable.forAll(
-      prop.values.map(value => {
-        if (!isNameValue(value)) {
-          return Computable.reject<SourceRef[]>(nonNameValueError(prop, value, "files"));
-        }
-        const info: IDependencyStack = { property: prop, target, context: this, value, next: stack };
-        /* A value written as `ref<k=v>` resolves under this context overridden
-         * by its delta, so the referenced target builds under those constraints
-         * and the model-ref step (stamped by that context) records them. */
-        return this.resolvingContextFor(value.value, callerOverrides, info)
-          .then(({ context, reference }) =>
-            context.resolveFileSource(reference, prop, info).then(resolved =>
-              resolved.sources.map(source => context.withModelRef(source, value, prop, target))
-            )
-          )
-          .catch(err => {
-            /* A referenced target's failure crossing this written reference
-             * (it failed to build, or no rule matched it): record the use
-             * site, so the driver can render the dependant chain as
-             * "required by <target> <property>" against the written value. */
-            if (err instanceof DependencyFailedError || err instanceof NoRuleFoundError) {
-              throw new ReferenceFailedError(value, prop, target, err);
-            }
-            /* A conflict raised *during* this value's resolution (e.g. a rename
-             * projection collapsing two files onto one name, or a union across
-             * its containers) is thrown before withModelRef stamps the result,
-             * so its sides lack this reference's step. Chain it on now, so the
-             * driver traces the conflict back to the written value (the rename
-             * expression included). */
-            if (err instanceof ConflictError) {
-              throw this.withConflictModelRef(err, value, prop, target);
-            }
-            throw err;
-          });
-      }),
-      (...resolved) => resolved.flat()
-    );
+    return this.resolveValues(prop, target, stack, "files", (value, info) =>
+      this.resolveFileValue(value.value, info, { callerOverrides, provenance: { value, property: prop, target } })
+    ).then(lists => lists.flat());
+  }
+
+  /**
+   * Resolve one file reference to its sources — the single choke point every
+   * file resolution flows through: a property value ({@link resolveFileProperty}),
+   * a `-D` constraint override ({@link getTarget}), a CLI `ls`/`cat`/`run` name
+   * ({@link resolveName}), a command stage's `< stdin` redirect ({@link
+   * resolveRedirectSource}). The reference's `<k=v>` delta (and any caller
+   * override) re-roots the resolving context (see {@link resolvingContextFor}),
+   * under which it resolves to sources — target-prefix + `:`/glob projection etc.
+   * ({@link resolveFileSource}), `relativeTo` rooting a bare path at the build
+   * file it was written in. For a property value (`provenance` present) each
+   * source is stamped with a model-ref step and a referenced target's failure /
+   * mid-resolution conflict is wrapped against the written value; the
+   * property-less callers carry no written value, so they stamp none (CLI/
+   * override provenance origins are future work).
+   */
+  private resolveFileValue(
+    name: Name,
+    stack: IDependencyStack | undefined,
+    options?: {
+      callerOverrides?: Constraints;
+      relativeTo?: IDecl;
+      provenance?: { value: INameValue; property: IPropertyDecl; target?: ITargetDecl };
+    }
+  ): Computable<SourceRef[]> {
+    const provenance = options?.provenance;
+    /* A property value roots bare paths at its own decl; an explicit relativeTo
+     * (a stdin redirect) overrides. */
+    const relativeTo = options?.relativeTo ?? provenance?.property;
+    /* A value written as `ref<k=v>` resolves under this context overridden by its
+     * delta, so the referenced target builds under those constraints and the
+     * model-ref step (stamped by that context) records them. */
+    return this.resolvingContextFor(name, options?.callerOverrides, stack).then(({ context, reference }) => {
+      const resolved = context.resolveFileSource(reference, relativeTo, stack);
+      if (!provenance) {
+        return resolved.then(result => result.sources);
+      }
+      const { value, property, target } = provenance;
+      return resolved
+        .then(result => result.sources.map(source => context.withModelRef(source, value, property, target)))
+        .catch(err => {
+          /* A referenced target's failure crossing this written reference (it
+           * failed to build, or no rule matched it): record the use site, so the
+           * driver can render the dependant chain as "required by <target>
+           * <property>" against the written value. */
+          if (err instanceof DependencyFailedError || err instanceof NoRuleFoundError) {
+            throw new ReferenceFailedError(value, property, target, err);
+          }
+          /* A conflict raised *during* this value's resolution (e.g. a rename
+           * projection collapsing two files onto one name, or a union across its
+           * containers) is thrown before withModelRef stamps the result, so its
+           * sides lack this reference's step. Chain it on now, so the driver
+           * traces the conflict back to the written value (the rename expression
+           * included). */
+          if (err instanceof ConflictError) {
+            throw this.withConflictModelRef(err, value, property, target);
+          }
+          throw err;
+        });
+    });
   }
 
   /**
@@ -789,19 +889,21 @@ export class BuildContext {
    * reference delta overrides the ambient config (its whole point), but a
    * consumer's *explicit* override — e.g. a rule forcing `BUILD_OPERATION=run`
    * on the tool it needs — is the operative requirement and wins over a stray
-   * delta on the same key. A `ref<k=v>` is returned pre-substituted (bare parts),
-   * so resolution proceeds on the parts and the merged context governs the build.
+   * delta on the same key. The reference is returned **fully substituted** with
+   * its `<k=v>` delta stripped (bare parts), so resolution proceeds on the parts
+   * and the merged context governs the build — and so every entry point that
+   * routes through here (build/test/sync target names, file values, CLI names)
+   * gets `${...}` substitution uniformly, not only the ones carrying a delta.
    */
   private resolvingContextFor(
     name: Name,
     callerOverrides?: Constraints,
     stack?: IDependencyStack
   ): Computable<{ context: BuildContext; reference: Name }> {
-    if (!name.hasConstraints()) {
-      const context = this.getContextWithOverrides(callerOverrides);
-      return Computable.resolve({ context, reference: name });
-    }
     return this.substituteNameVars(name, stack).then(substituted => {
+      if (!substituted.hasConstraints()) {
+        return { context: this.getContextWithOverrides(callerOverrides), reference: substituted };
+      }
       const overrides: Constraints = {};
       for (const [key, value] of substituted.getConstraints()) {
         overrides[key] = value.toString();
@@ -859,14 +961,23 @@ export class BuildContext {
    * ls/cat and would re-resolve under the wrong operation (see materializeShallow).
    */
   public resolveName(name: string, stack?: IDependencyStack): Computable<SourceRef[]> {
-    return this.resolvingContextFor(parseName(name), undefined, stack)
-      .then(({ context, reference }) => context.resolveFileSource(reference, undefined, stack))
-      .then(resolved => materializeShallow(resolved.sources));
+    return this.resolveFileValue(parseName(name), stack).then(materializeShallow);
+  }
+
+  /**
+   * Resolve an already-substituted file reference (a command stage's `< stdin`
+   * redirect) to its sources through the same file core a FILES value uses —
+   * target-prefix + `:`/glob projection and, crucially, a bare path rooted at
+   * the build file it was written in (`writtenAt`). This is what lets
+   * `< src/input.txt` name a plain file, not only a declared target/property.
+   */
+  public resolveRedirectSource(name: Name, writtenAt: INameValue, stack?: IDependencyStack): Computable<SourceRef[]> {
+    return this.resolveFileValue(name, stack, { relativeTo: writtenAt });
   }
 
   private resolveFileSource(
     name: Name,
-    relativeTo: INamedDecl | undefined,
+    relativeTo: IDecl | undefined,
     stack?: IDependencyStack
   ): Computable<IResolvedFileSource> {
     return this.substituteNameVars(name, stack).then((substName): IResolvedFileSource | Computable<IResolvedFileSource> => {
@@ -1329,7 +1440,7 @@ function requestingTargets(target: ITargetDecl, stack?: IDependencyStack): ITarg
  *
  * A rule cannot tell whether it is building a declared or an anonymous target:
  * the interface is uniform, and only the two raw-value primitives
- * (`getProperty`, `getFileSources`) and `announceBuilding` differ between the
+ * (`getProperty`, `getFileProperty`) and `announceBuilding` differ between the
  * two implementations. Everything else — materialization, flag extraction,
  * collection, globals, sub-targets — derives from those and is shared here.
  */
@@ -1407,7 +1518,7 @@ export abstract class TargetContext {
   /** The unmaterialized sources of a FILES property — resolved from the model
    * (references still inert), or the anonymous target's already-materialized
    * input (for which materialization is the identity). */
-  public abstract getFileSources(name: string, overrides?: Constraints): Computable<SourceRef[]>;
+  public abstract getFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]>;
 
   /** Resolve a REWRITE property to its name-mapping function (see
    * resolveRewrite); the empty rewrite (no such property) maps nothing. */
@@ -1446,11 +1557,12 @@ export abstract class TargetContext {
    * members of a `sync` (`@npm:@fabr/core:${VERSION} = core`): each property's
    * coordinate `key` (the parsed reference, variables substituted) plus its `decl`
    * (for the written span, so a rule can attribute a per-member error, and for its
-   * `name`, under which the right-hand side content resolves via `getFileSources`).
+   * `name`, under which the right-hand side content resolves via `getFileProperty`).
    * Enumeration only — no content is gathered, so a rule can validate every
    * coordinate before building anything. Ordinary schema properties are not
-   * returned; an anonymous target has none. */
-  public abstract getWildcardProperties(): Computable<{ key: Name; decl: IPropertyDecl }[]>;
+   * returned; an anonymous target has none. `overrides` set the context the
+   * coordinate's `${...}` substitutes under, uniform with the other accessors. */
+  public abstract getWildcardProperties(overrides?: Constraints): Computable<{ key: Name; decl: IPropertyDecl }[]>;
 
   /** The substituted-name pipeline of a COMMAND property (see
    * {@link BuildContext.resolveCommand}): its parsed stages (or the single stage a
@@ -1514,24 +1626,28 @@ export abstract class TargetContext {
   }
 
   /** Resolve a stage's `< source` to a single-file set (streamed to stdin), or
-   * undefined if the stage takes no stdin. */
+   * undefined if the stage takes no stdin. Resolved through the file core (like a
+   * FILES value), so a `< src/input.txt` path works, not only a declared name. */
   private resolveStdin(stdin: IPositionedName | undefined): Computable<FileSet | undefined> {
     if (!stdin) {
       return Computable.resolve(undefined);
     }
-    return this.getGlobalTarget(stdin.name.toString()).then(sources => {
-      const set = FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet));
-      const files = [...set];
-      if (files.length !== 1) {
-        throw new NameResolutionError(
-          stdin.name,
-          declPosn(stdin.ref),
-          useSiteOf(this.stack),
-          `stdin source must resolve to exactly one file (got ${files.length})`
-        );
-      }
-      return new FileSet(new Map([[files[0][0], files[0][1]]]));
-    });
+    return this.context
+      .resolveRedirectSource(stdin.name, stdin.ref, this.stack)
+      .then(sources => materializeLists([sources]))
+      .then(([resolved]) => {
+        const set = FileSet.unionAll(...resolved.filter((source): source is FileSet => source instanceof FileSet));
+        const files = [...set];
+        if (files.length !== 1) {
+          throw new NameResolutionError(
+            stdin.name,
+            declPosn(stdin.ref),
+            useSiteOf(this.stack),
+            `stdin source must resolve to exactly one file (got ${files.length})`
+          );
+        }
+        return new FileSet(new Map([[files[0][0], files[0][1]]]));
+      });
   }
 
   /**
@@ -1572,34 +1688,37 @@ export abstract class TargetContext {
   }
 
   public getFlags(name: string, overrides?: Constraints): Computable<Flag[]> {
-    return this.getFileSources(name, overrides).then(sources => sources.filter(source => source instanceof Flag) as Flag[]);
+    return this.getFileProperty(name, overrides).then(sources => sources.filter(source => source instanceof Flag) as Flag[]);
   }
 
   /**
-   * Resolve a FILES property to its individual (fully materialized) FileSets —
-   * one per contributing source, before any merging.
-   *
-   * Note: each call is its own materialization. THE collection point of an
-   * evaluation is singular by design — a rule whose external requirements
-   * span several properties/globals must gather them through one `collect`
-   * call so they resolve jointly; per-property materialization is only
-   * appropriate when the property is the evaluation's sole requirement
-   * surface (or holds no external references at all, e.g. srcs).
+   * Resolve several named FILES properties to their materialized FileSets (one
+   * list per property, per contributing source, before any merging) through a
+   * SINGLE joint materialization — the common-case sugar for {@link collect}:
+   * `getFileSetProperties(["srcs", "deps"])` yields `{ srcs, deps }`, both
+   * resolved together so their references pin jointly. This IS the evaluation's
+   * collection point; naming every file property in the one call is what makes
+   * it singular by design (there is no per-property materializer left to
+   * fragment it). `overrides` apply uniformly to the batch. Reach for the
+   * underlying {@link getFileProperty} + {@link collect} only when you also need
+   * the raw sources (a manifest via {@link collectDeclaredRequirements}), must
+   * merge or mix in a global, or feed a shared helper.
    */
-  public getFileSets(name: string, overrides?: Constraints): Computable<FileSet[]> {
-    return this.getFileSources(name, overrides)
-      .then(sources => materializeLists([sources]))
-      .then(([resolved]) => resolved.filter((source): source is FileSet => source instanceof FileSet));
-  }
-
-  public getFileSet(name: string, overrides?: Constraints): Computable<FileSet> {
-    return this.getFileSets(name, overrides).then(sets => FileSet.unionAll(...sets));
+  public getFileSetProperties<const N extends readonly string[]>(
+    names: N,
+    overrides?: Constraints
+  ): Computable<{ [K in N[number]]: FileSet[] }> {
+    const parts: Record<string, Computable<SourceRef[]>> = {};
+    for (const name of names) {
+      parts[name] = this.getFileProperty(name, overrides);
+    }
+    return this.collect(parts) as Computable<{ [K in N[number]]: FileSet[] }>;
   }
 
   /**
    * THE collection point of this evaluation: materialize several named
-   * source lists (properties via getFileSources, globals via
-   * getGlobalSources, or already-gathered arrays) through a SINGLE joint
+   * source lists (properties via getFileProperty, globals via
+   * getGlobalFileProperty, or already-gathered arrays) through a SINGLE joint
    * materialization, so every deferred reference they carry — however many
    * properties and globals it spans — is partitioned into one batch per
    * repository and resolved together, with the consumer's own pins
@@ -1664,7 +1783,7 @@ export abstract class TargetContext {
    * inputs, returning its cached output — how a rule composes a sub-build
    * (e.g. the compiled tree consumed by both the package and the test run).
    * The sub-target's rule reads those inputs through the same context
-   * accessors (getFileSet, getRequiredString, …) as any target. The delegation
+   * accessors (getFileSetProperties, getRequiredString, …) as any target. The delegation
    * itself is unrestricted (whatever rule selection picks, whatever it
    * yields — see buildSubTarget); this narrows to the common case, one
    * FileSet, because the caller wires the result straight into inputs or
@@ -1694,19 +1813,7 @@ export abstract class TargetContext {
   }
 
   public getGlobalProperty(name: string, overrides?: Constraints): Computable<Property> {
-    return this.getContext(overrides).getProperty(name, this.stack);
-  }
-
-  public getGlobalTarget(name: string, overrides?: Constraints): Computable<(FileSource | Repository)[]> {
-    /* Overrides ride as callerOverrides (not folded into a context's ambient
-     * set) so they keep caller precedence over a delta written on the global's
-     * value — the same layering the per-target property path uses. */
-    return this.context
-      .getTarget(name, this.stack, overrides)
-      .then(sources => materializeLists([sources]))
-      /* Default materialization manifests any projection-pending FileSetRef,
-       * so the delivered list holds only content and repositories. */
-      .then(([resolved]) => resolved as (FileSource | Repository)[]);
+    return this.context.getProperty(name, this.stack, overrides);
   }
 
   /**
@@ -1727,7 +1834,13 @@ export abstract class TargetContext {
    * runnable — see getRunnableProperty; this is the global-property counterpart.
    */
   public getGlobalRunnable(name: string): Computable<RunnableFileSet> {
-    return this.getGlobalTarget(name, this.runOverrides()).then(sources => asRunnable(sources, name));
+    /* A tool resolves *apart* from the workspace's collection point — its pins
+     * deliberately don't co-resolve with what it builds — so it materializes on
+     * its own here rather than through `collect`. */
+    return this.context
+      .getTarget(name, this.stack, this.runOverrides())
+      .then(sources => materializeLists([sources]))
+      .then(([resolved]) => asRunnable(resolved, name));
   }
 
   /**
@@ -1739,20 +1852,20 @@ export abstract class TargetContext {
    * internal by design: a consumer resolving a tool to run it needn't restate it.
    */
   public getRunnableProperty(name: string): Computable<RunnableFileSet> {
-    return this.getFileSets(name, this.runOverrides()).then(sources => asRunnable(sources, name));
+    return this.getFileProperty(name, this.runOverrides())
+      .then(sources => materializeLists([sources]))
+      .then(([resolved]) => asRunnable(resolved, name));
   }
 
   /**
-   * The unmaterialized counterpart of getGlobalTarget: the global's sources
-   * with any repository references still inert, for feeding into `collect`
-   * so they resolve jointly with the evaluation's other requirements.
+   * A global (build-config) FILES property's unmaterialized sources — the global
+   * counterpart of {@link getFileProperty}, with any repository references still
+   * inert, for feeding into `collect` so they resolve jointly with the
+   * evaluation's other requirements. Overrides ride as callerOverrides (caller
+   * precedence over a delta on the global's value).
    */
-  public getGlobalSources(name: string, overrides?: Constraints): Computable<SourceRef[]> {
+  public getGlobalFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]> {
     return this.context.getTarget(name, this.stack, overrides);
-  }
-
-  protected getContext(overrides?: Constraints): BuildContext {
-    return this.context.getContextWithOverrides(overrides);
   }
 }
 
@@ -1783,22 +1896,24 @@ export class DeclaredTargetContext extends TargetContext {
     return this.target.name;
   }
 
+  /* Every accessor resolves on the ambient context and threads the caller's
+   * override through as callerOverrides, so it is applied *last* (winning over
+   * any per-reference `<k=v>` delta) — the uniform ambient < delta < caller
+   * layering, rather than pre-baking the override into ambient (where a delta
+   * would beat it). */
   public getProperty(name: string, overrides?: Constraints): Computable<Property | undefined> {
     const prop = this.props[name];
     if (!prop) {
       return Computable.resolve(undefined);
     }
-    return this.getContext(overrides).resolveStringProperty(prop, this.target, this.stack);
+    return this.context.resolveStringProperty(prop, this.target, this.stack, overrides);
   }
 
-  public getFileSources(name: string, overrides?: Constraints): Computable<SourceRef[]> {
+  public getFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]> {
     const prop = this.props[name];
     if (!prop) {
       return Computable.resolve([]);
     }
-    /* Resolve on the ambient context and pass the caller's explicit override
-     * through, so it is applied *last* (winning over any per-reference delta) —
-     * rather than pre-baked, where a reference's own <k=v> would override it. */
     return this.context.resolveFileProperty(prop, this.target, this.stack, overrides);
   }
 
@@ -1807,7 +1922,7 @@ export class DeclaredTargetContext extends TargetContext {
     if (!prop) {
       return Computable.resolve(() => undefined);
     }
-    return this.getContext(overrides).resolveRewrite(prop, this.target, this.stack);
+    return this.context.resolveRewrite(prop, this.target, this.stack, overrides);
   }
 
   public getProjection(name: string, overrides?: Constraints): Computable<Name | undefined> {
@@ -1815,7 +1930,7 @@ export class DeclaredTargetContext extends TargetContext {
     if (!prop) {
       return Computable.resolve(undefined);
     }
-    return this.getContext(overrides).resolveProjection(prop, this.target, this.stack);
+    return this.context.resolveProjection(prop, this.target, this.stack, overrides);
   }
 
   public getMap(name: string, overrides?: Constraints): Computable<PropertyMap> {
@@ -1823,21 +1938,26 @@ export class DeclaredTargetContext extends TargetContext {
     if (!prop) {
       return Computable.resolve(new Map());
     }
-    return this.getContext(overrides).resolveMap(prop, this.target, this.stack);
+    return this.context.resolveMap(prop, this.target, this.stack, overrides);
   }
 
   public getDeclaredContext(): this {
     return this;
   }
 
-  public getWildcardProperties(): Computable<{ key: Name; decl: IPropertyDecl }[]> {
+  public getWildcardProperties(overrides?: Constraints): Computable<{ key: Name; decl: IPropertyDecl }[]> {
     const keyed = this.target.properties.filter(
       (prop): prop is IPropertyDecl & { keyRef: Name } => prop.keyRef !== undefined
     );
-    /* Enumeration only: substitute the coordinate keys and hand back their decls;
-     * content is gathered later so coordinates can be validated first. */
+    /* Enumeration only: substitute the coordinate keys (under any caller override,
+     * so their `${...}` resolves consistently with every other name) and hand
+     * back their decls; content is gathered later so coordinates can be validated
+     * first. A coordinate is a write address, not a build reference — it carries
+     * no `<k=v>` delta to layer against the override — so setting the context
+     * (getContextWithOverrides) is equivalent here to threading callerOverrides. */
+    const context = this.context.getContextWithOverrides(overrides);
     return Computable.forAll(
-      keyed.map(prop => this.context.substituteNameVars(prop.keyRef, this.stack)),
+      keyed.map(prop => context.substituteNameVars(prop.keyRef, this.stack)),
       (...keys: Name[]) => keys.map((key, i) => ({ key, decl: keyed[i] }))
     );
   }
@@ -1924,7 +2044,7 @@ export class AnonymousTargetContext extends TargetContext {
     return Computable.resolve(new Property((Array.isArray(value) ? value : [value]) as string[]));
   }
 
-  public getFileSources(name: string): Computable<SourceRef[]> {
+  public getFileProperty(name: string): Computable<SourceRef[]> {
     const value = this.inputs[name];
     if (value === undefined) {
       return Computable.resolve([]);
@@ -2045,7 +2165,7 @@ export class RepositoryContext {
    * over the ambient config (e.g. a catalog forces `BUILD_OPERATION=build` so its
    * members resolve as mountable packages). A missing property is the empty set.
    */
-  public getFileSources(name: string, overrides?: Constraints): Computable<SourceRef[]> {
+  public getFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]> {
     const prop = this.props[name];
     if (!prop) {
       return Computable.resolve([]);

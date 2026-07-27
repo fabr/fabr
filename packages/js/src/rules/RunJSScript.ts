@@ -62,8 +62,8 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
    * operation this rule is selected by (constraints otherwise propagate). */
   return Computable.forAll(
     [
-      context.getFileSources("deps", { [BUILD_OPERATION]: "build" }),
-      context.getFileSources("entry", { [BUILD_OPERATION]: "build" }),
+      context.getFileProperty("deps", { [BUILD_OPERATION]: "build" }),
+      context.getFileProperty("entry", { [BUILD_OPERATION]: "build" }),
       context.getProperty("args"),
       context.getGlobalString("JS_TARGET"),
     ],

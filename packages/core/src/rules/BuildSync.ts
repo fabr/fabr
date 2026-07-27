@@ -109,7 +109,7 @@ function syncPackages(context: TargetContext): Computable<RuleResult> {
        * all coordinates are good. */
       const sources: Record<string, Computable<SourceRef[]>> = {};
       for (const member of members) {
-        sources[member.decl.name] = context.getFileSources(member.decl.name, {
+        sources[member.decl.name] = context.getFileProperty(member.decl.name, {
           [BUILD_OPERATION]: "build",
         });
       }

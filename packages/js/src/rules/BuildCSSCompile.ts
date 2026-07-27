@@ -52,8 +52,9 @@ const TOOL_DIR = ".fabr-css";
 
 function buildCssCompile(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
-    [context.getFileSet("srcs"), context.getFileSets("deps"), context.getGlobalRunnable("CSS_COMPILER")],
-    (srcs, deps, compiler): RuleResult => {
+    [context.getFileSetProperties(["srcs", "deps"]), context.getGlobalRunnable("CSS_COMPILER")],
+    ({ srcs: srcSets, deps }, compiler): RuleResult => {
+      const srcs = FileSet.unionAll(...srcSets);
       const fileNames = [...srcs].map(([name]) => name);
       if (fileNames.length === 0) {
         /* No styled sources — nothing to lower. Skip staging/running the driver. */

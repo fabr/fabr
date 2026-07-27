@@ -512,8 +512,9 @@ export function materializeAll(sources: SourceRef[], options?: CollectionOptions
  * Materialize several gathered source-lists through ONE joint {@link materializeAll}
  * — so every reference across all of them resolves together — returning the
  * results partitioned back per input list. The shared core of the collection-point
- * accessors (`getFileSets`, `getGlobalTarget`, `collect`): each is just this plus
- * its own shaping (filter to FileSet / keep repositories / key per name).
+ * accessors (`collect` / `getFileSetProperties`, and the apart tool resolutions
+ * `getGlobalRunnable`/`getRunnableProperty`): each is just this plus its own
+ * shaping (filter to FileSet / assert a runnable / key per name).
  */
 export function materializeLists(lists: SourceRef[][], options?: CollectionOptions): Computable<Materialized[][]> {
   return materializeAll(lists.flat(), options).then(resolved => {

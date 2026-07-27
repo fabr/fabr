@@ -134,8 +134,8 @@ describe("CatalogRepository (through the model)", () => {
     type: "test_deps",
     constraints: {},
     evaluate: (context: TargetContext) =>
-      context.getFileSet("deps").then(files => {
-        lastDeps = files;
+      context.getFileSetProperties(["deps"]).then(({ deps }) => {
+        lastDeps = FileSet.unionAll(...deps);
         return EMPTY_FILESET;
       }),
   };
@@ -144,8 +144,8 @@ describe("CatalogRepository (through the model)", () => {
     type: "test_run",
     constraints: {},
     evaluate: (context: TargetContext) =>
-      context.getFileSet("tool", { BUILD_OPERATION: "run" }).then(files => {
-        lastTool = files;
+      context.getFileSetProperties(["tool"], { BUILD_OPERATION: "run" }).then(({ tool }) => {
+        lastTool = FileSet.unionAll(...tool);
         return EMPTY_FILESET;
       }),
   };

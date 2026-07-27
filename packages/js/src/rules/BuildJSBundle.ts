@@ -141,15 +141,15 @@ function buildJsBundle(context: TargetContext): Computable<RuleResult> {
   );
   return Computable.forAll(
     [
-      context.getFileSources("srcs"),
-      context.getFileSet("entry"),
-      context.getFileSources("deps"),
+      context.getFileProperty("srcs"),
+      context.getFileProperty("entry"),
+      context.getFileProperty("deps"),
       config,
       context.getGlobalRunnable("JS_BUNDLER"),
       context.getRewrite("output"),
       context.getMap("defines"),
     ],
-    (srcSources, entrySet, depSources, { target, buildType }, bundler, rewrite, defineMap) => {
+    (srcSources, entrySources, depSources, { target, buildType }, bundler, rewrite, defineMap) => {
       const jsTarget = parseJSTarget(target);
       /* esbuild `define` takes code text per identifier; a map value is that
        * text verbatim (esbuild's own contract — no probing). Sub-maps have no
@@ -161,13 +161,22 @@ function buildJsBundle(context: TargetContext): Computable<RuleResult> {
         }
         defines[key] = value;
       }
-      /* THE collection point for the bundle's contents: srcs and deps resolve
-       * jointly. The bundler resolved above is a build tool, independent of
-       * what it compiles — its pins don't co-resolve with the sources'. */
-      const contents = context.collect({ srcs: srcSources, deps: depSources });
+      /* THE collection point for the bundle's contents: srcs, entry and deps
+       * resolve jointly. The bundler resolved above is a build tool, independent
+       * of what it compiles — its pins don't co-resolve with the sources'. */
+      const contents = context.collect({ srcs: srcSources, entry: entrySources, deps: depSources });
 
-      return contents.then(({ srcs, deps }) =>
-        composeBundle(context, { jsTarget, buildType, rewrite, defines, entrySet, srcs, deps, bundler })
+      return contents.then(({ srcs, entry, deps }) =>
+        composeBundle(context, {
+          jsTarget,
+          buildType,
+          rewrite,
+          defines,
+          entrySet: FileSet.unionAll(...entry),
+          srcs,
+          deps,
+          bundler,
+        })
       );
     }
   );

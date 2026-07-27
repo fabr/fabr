@@ -89,20 +89,6 @@ export function moduleTypeFile(module: JSTarget["module"], extra: Record<string,
   return MemoryFile.from(JSON.stringify({ ...extra, type: module === "esm" ? "module" : "commonjs" }));
 }
 
-/**
- * @return whether the tree holds TypeScript sources that will be *typechecked*
- * (so ambient @types — e.g. @types/node — are needed). Plain .js is compiled too
- * (allowJs) but with checkJs off, so it needs no ambient types; hence this stays
- * TS-only. Note the compile step itself now also runs for pure-JS trees — this
- * predicate no longer decides *whether* to compile, only whether types apply.
- */
-export function hasTypescriptSources(files: FileSet): boolean {
-  return [...files].some(([name]) => {
-    const lower = name.toLowerCase();
-    return (lower.endsWith(".ts") || lower.endsWith(".tsx")) && !lower.endsWith(".d.ts");
-  });
-}
-
 export interface ICompiledSources {
   /** The compiled tree's output (from the js_compile sub-target); undefined
    * when there are no TypeScript sources to compile */
