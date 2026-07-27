@@ -17,13 +17,16 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import * as zlib from "zlib";
 import { Readable } from "stream";
+import * as tar from "tar-stream";
 import { expect } from "chai";
 import { packToTarball } from "./Pack";
 import { unpackStream } from "./Unpack";
 import { Computable } from "../core/Computable";
 import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
+import { SymlinkFile } from "../core/SymlinkFile";
 
 function fileSetOf(entries: Record<string, string>): FileSet {
   const map = new Map<string, IFile>();
@@ -33,11 +36,12 @@ function fileSetOf(entries: Record<string, string>): FileSet {
   return new FileSet(map);
 }
 
-/** A minimal on-disk IFile probe: the mode contract packToTarball reads is
- *  "an IFile with an abs path", carried by the blob, not the IFile. */
+/** A minimal on-disk IFile probe carrying its real permission bits (packToTarball
+ *  emits the entry mode from IFile.mode). */
 function diskFile(abspath: string): IFile {
   const file: IFile = {
     hash: abspath,
+    mode: fs.statSync(abspath).mode & 0o7777,
     readString: encoding => Computable.resolve(fs.readFileSync(abspath, encoding ?? "utf8")),
     getDisplayName: () => abspath,
     isSameFile: other => other === file,
@@ -64,6 +68,50 @@ describe("Pack", () => {
       expect(back, `missing ${name}`).to.not.equal(undefined);
       expect(back?.hash).to.equal(file.hash);
     }
+  });
+
+  it("round-trips a symlink as a symlink (not a regular file of the target text)", async () => {
+    const source = new FileSet(
+      new Map<string, IFile>([
+        ["real.txt", MemoryFile.from("hi")],
+        ["link.txt", new SymlinkFile("real.txt")],
+      ])
+    );
+
+    const tarball = await packToTarball(source);
+    const unpacked = await unpackStream(Readable.from(tarball), "/tmp");
+
+    expect(unpacked.size).to.equal(2);
+    const back = await unpacked.get("link.txt");
+    expect(back).to.be.instanceOf(SymlinkFile);
+    expect((back as SymlinkFile).target).to.equal("real.txt");
+  });
+
+  it("dedups identical content as a hardlink to the first entry", async () => {
+    const tarball = await packToTarball(fileSetOf({ "a.txt": "same", "b.txt": "same", "c.txt": "diff" }));
+
+    /* Read the raw entry headers: in sorted order a.txt is the content, b.txt a
+     * hardlink to it (identical bytes packed once), c.txt its own content. */
+    const headers: { name: string; type: string }[] = [];
+    const extract = tar.extract();
+    await new Promise<void>((resolve, reject) => {
+      extract.on("entry", (h, stream, next) => {
+        headers.push({ name: h.name, type: h.type as string });
+        stream.on("end", next);
+        stream.resume();
+      });
+      extract.on("finish", () => resolve());
+      extract.on("error", reject);
+      Readable.from(zlib.gunzipSync(tarball)).pipe(extract);
+    });
+    expect(headers.find(h => h.name === "a.txt")?.type).to.equal("file");
+    expect(headers.find(h => h.name === "b.txt")?.type).to.equal("link");
+    expect(headers.find(h => h.name === "c.txt")?.type).to.equal("file");
+
+    /* It round-trips: both names come back sharing one content hash. */
+    const unpacked = await unpackStream(Readable.from(tarball), "/tmp");
+    expect(unpacked.size).to.equal(3);
+    expect((await unpacked.get("a.txt"))?.hash).to.equal((await unpacked.get("b.txt"))?.hash);
   });
 
   it("preserves the exec bit — an executable blob packs as 0o755", async () => {

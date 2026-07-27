@@ -23,6 +23,7 @@ import * as os from "os";
 import * as path from "path";
 import * as tar from "tar-stream";
 import { unpackStream } from "./Unpack";
+import { SymlinkFile } from "../core/SymlinkFile";
 import { Computable } from "../core/Computable";
 import { expect } from "chai";
 
@@ -82,6 +83,34 @@ describe("Unpack", () => {
       /* 0o111 = any execute bit; the plain file must not have gained one. */
       expect(fs.statSync(path.resolve(dir, "package/bin/tool")).mode & 0o111).to.not.equal(0);
       expect(fs.statSync(path.resolve(dir, "package/lib/plain.js")).mode & 0o111).to.equal(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("translates a symlink to a SymlinkFile and resolves a hardlink to shared content", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-unpack-"));
+    try {
+      const pack = tar.pack();
+      pack.entry({ name: "package/real.js", mode: 0o644 }, "module.exports = 1;\n");
+      pack.entry({ name: "package/link.js", type: "symlink", linkname: "real.js" });
+      /* A hardlink shares the earlier entry's content — content-addressed
+       * storage makes it a dedup: same hash under a second name. */
+      pack.entry({ name: "package/hard.js", type: "link", linkname: "package/real.js" });
+      /* A hardlink to a target that never appears (or was dropped) is itself dropped. */
+      pack.entry({ name: "package/dangling.js", type: "link", linkname: "package/missing.js" });
+      pack.finalize();
+
+      const result = await unpackStream(pack, dir);
+      expect(result.size).to.equal(3);
+      const link = await result.get("package/link.js");
+      expect(link).to.be.instanceOf(SymlinkFile);
+      expect((link as SymlinkFile).target).to.equal("real.js");
+      const real = await result.get("package/real.js");
+      const hard = await result.get("package/hard.js");
+      expect(hard).to.not.equal(undefined);
+      expect(hard?.hash).to.equal(real?.hash);
+      expect(await result.get("package/dangling.js")).to.equal(undefined);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

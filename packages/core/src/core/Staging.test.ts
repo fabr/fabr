@@ -119,6 +119,38 @@ describe("getResultFileSet", () => {
       err => expect(err).to.be.instanceOf(ConflictError)
     );
   });
+
+  it("preserves the permission bits of collected outputs", async () => {
+    fs.writeFileSync(path.join(work, "run.sh"), "#!/bin/sh\n", { mode: 0o755 });
+    fs.writeFileSync(path.join(work, "data.txt"), "x", { mode: 0o644 });
+
+    const result = await toPromise(getResultFileSet(work, "**"));
+
+    expect((await toPromise(result.get("run.sh")))!.mode & 0o111, "exec bit lost").to.not.equal(0);
+    expect((await toPromise(result.get("data.txt")))!.mode & 0o111, "stray exec bit").to.equal(0);
+  });
+});
+
+describe("writeFileSet modes", () => {
+  let work: string;
+  beforeEach(() => {
+    work = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-writemode-test-"));
+  });
+  afterEach(() => {
+    fs.rmSync(work, { recursive: true, force: true });
+  });
+
+  it("applies an in-memory file's mode (a generated file lands executable)", async () => {
+    const files = new FileSet(
+      new Map<string, import("./FileSet").IFile>([
+        ["bin/gen.sh", new MemoryFile(Buffer.from("#!/bin/sh\n"), 0o755)],
+        ["plain.txt", new MemoryFile(Buffer.from("x"), 0o644)],
+      ])
+    );
+    await toPromise(writeFileSet(work, files));
+    expect(fs.statSync(path.join(work, "bin/gen.sh")).mode & 0o111, "exec bit not applied").to.not.equal(0);
+    expect(fs.statSync(path.join(work, "plain.txt")).mode & 0o111, "stray exec bit").to.equal(0);
+  });
 });
 
 describe("syncFileSet", () => {

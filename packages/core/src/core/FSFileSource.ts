@@ -23,7 +23,7 @@ import * as path from "node:path";
 import { Name } from "./Name";
 
 import { Computable, ComputableSource, ComputableState } from "./Computable";
-import { FileSet, IFile, FileSource } from "./FileSet";
+import { DEFAULT_FILE_MODE, FileSet, IFile, FileSource } from "./FileSet";
 import { hashFile, isDirectoryError, isNotFound, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
 import { toError } from "./Errors";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
@@ -31,6 +31,10 @@ import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
 export interface FSFileStats {
   size: number;
   mtime: Date;
+  /** POSIX permission bits (low 12). Optional because some producers supply a
+   * partial stat; absent ⇒ {@link DEFAULT_FILE_MODE}. `fs.Stats.mode` carries
+   * the high type bits too, so it is masked to 0o7777 on read. */
+  mode?: number;
 }
 
 export class FSFile implements IFile {
@@ -53,6 +57,10 @@ export class FSFile implements IFile {
     this.stat = stat;
     this.hash = hash;
     this.contentPath = contentPath ?? path.resolve(root, name);
+  }
+
+  public get mode(): number {
+    return this.stat.mode === undefined ? DEFAULT_FILE_MODE : this.stat.mode & 0o7777;
   }
 
   public readString(encoding?: BufferEncoding): Computable<string> {

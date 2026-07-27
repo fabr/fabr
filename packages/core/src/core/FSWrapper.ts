@@ -164,6 +164,17 @@ export function symlink(target: string, filepath: string): Computable<void> {
   });
 }
 
+/** The read-only permission bits for a content-addressed file: 0o444, or 0o555
+ * when `mode` is executable. Cache blobs and any file staged to mirror one (a
+ * hardlink into the pool, or an in-memory file materialized alongside them) use
+ * this — read-only so a launched tool can't write through into a shared blob,
+ * executable-if-executable so a staged tool still runs. Never writable, never
+ * setuid. The file's *real* mode is preserved separately (IFile.mode / the cache
+ * manifest) and reapplied on export to user space (`fabr cp`, tar pack). */
+export function readOnlyPermissions(mode: number): number {
+  return mode & 0o111 ? 0o555 : 0o444;
+}
+
 export function hardlink(target: string, filepath: string): Computable<void> {
   return Computable.from<void>((resolve, reject) => {
     fs.link(target, filepath, err => {

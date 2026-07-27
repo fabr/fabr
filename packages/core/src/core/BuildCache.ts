@@ -23,8 +23,9 @@ import * as path from "path";
 import { Readable, Transform, Writable } from "stream";
 import { Computable } from "./Computable";
 import { ICacheControl, openUrlStream } from "./Fetch";
-import { CANONICAL, FileSet, IFile } from "./FileSet";
-import { deleteFile, HASH_ALGORITHM, hashString, readFile, readFileBuffer, rename, writeFile } from "./FSWrapper";
+import { CANONICAL, DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
+import { deleteFile, HASH_ALGORITHM, hashString, readFile, readFileBuffer, readOnlyPermissions, rename, writeFile } from "./FSWrapper";
+import { SymlinkFile } from "./SymlinkFile";
 import { Diagnostic, Log } from "../support/Log";
 
 /**
@@ -69,7 +70,10 @@ class BuildFile implements IFile {
   public name: string;
   public hash: string;
 
-  constructor(root: string, hash: string, name: string) {
+  /** The file's original permission bits, read back from the manifest — NOT the
+   * mode of the backing blob (which is read-only 0o444/0o555). Reapplied when the
+   * file is exported to user space (`fabr cp`) or packed. */
+  constructor(root: string, hash: string, name: string, public mode: number = DEFAULT_FILE_MODE) {
     this.root = root;
     this.hash = hash;
     this.name = name;
@@ -132,6 +136,13 @@ function isFresh(entry: ICacheEntry, now: number): boolean {
 }
 
 const META_PREFIX = "!meta ";
+
+/* A symlink manifest line: `@link <encodeURI(target)> <encodeURI(name)>`. The
+ * target rides inline (it is the symlink's whole content — no blob), and both
+ * fields are URI-encoded so the single space stays an unambiguous separator. A
+ * regular file line leads with a hex content hash, so it can never be mistaken
+ * for one of these (or for the `!meta` header). */
+const LINK_PREFIX = "@link ";
 
 /**
  * Implemements an MVP build cache.
@@ -306,10 +317,11 @@ export class BuildCache {
    * build output). Keying it by the same hash the manifest uses guarantees the
    * bytes compiled are exactly the bytes that hash names. Written atomically
    * (temp + rename) so a crash or concurrent writer can never leave a *partial*
-   * blob a later `existsSync` would trust.
+   * blob a later `existsSync` would trust. `mode` (default non-executable) sets
+   * the blob's read-only permissions (see {@link materializeBlob}).
    */
-  public ensureBlob(hash: string, bytes: Buffer): Computable<string> {
-    return this.materializeBlob(hash, blobPath => {
+  public ensureBlob(hash: string, bytes: Buffer, mode: number = DEFAULT_FILE_MODE): Computable<string> {
+    return this.materializeBlob(hash, mode, blobPath => {
       const tmp = `${blobPath}.tmp-${process.pid}-${this.tempCounter++}`;
       return writeFile(tmp, bytes).then(() => this.renameIntoPool(tmp, blobPath));
     });
@@ -363,7 +375,9 @@ export class BuildCache {
           fileStream.once("finish", () => {
             pendingReject = undefined;
             const digest = hash.digest("hex");
-            this.materializeBlob(digest, blobPath => this.renameIntoPool(tmpPath, blobPath)).then(
+            /* A streamed output (e.g. captured genrule stdout) is a plain
+             * non-executable file. */
+            this.materializeBlob(digest, DEFAULT_FILE_MODE, blobPath => this.renameIntoPool(tmpPath, blobPath)).then(
               () => resolve(new BuildFile(this.blobRoot, digest, name)),
               reject
             );
@@ -381,13 +395,13 @@ export class BuildCache {
   /**
    * Move an already-written file (a build step's output, sitting in its work
    * dir) into the pool under `hash` — a rename, not a copy, since we already
-   * hashed it. Rename preserves the file's mode, so a unique-content executable
-   * keeps its exec bit. (Two byte-identical files that want *different* modes
-   * would share one blob — rare, and the same content-vs-mode limitation as
-   * source snapshots; a per-entry mode in the manifest is the eventual fix.)
+   * hashed it. `mode` is the file's real permission bits, used to set the blob
+   * read-only (0o444/0o555 — see {@link readOnlyPermissions}); the *original* mode
+   * lives in the manifest, so two byte-identical files with different modes share
+   * one blob yet still export at their own mode.
    */
-  private ingestFile(hash: string, sourcePath: string): Computable<string> {
-    return this.materializeBlob(hash, blobPath => this.renameIntoPool(sourcePath, blobPath));
+  private ingestFile(hash: string, sourcePath: string, mode: number): Computable<string> {
+    return this.materializeBlob(hash, mode, blobPath => this.renameIntoPool(sourcePath, blobPath));
   }
 
   /**
@@ -395,15 +409,34 @@ export class BuildCache {
    * else `materialise` it (which must place it *atomically* at the given path).
    * No in-flight lock is needed — the atomic rename makes concurrent writers of
    * the same hash safe (identical content, atomic replace); the worst case is a
-   * redundant temp-write that never corrupts the result.
+   * redundant temp-write that never corrupts the result. The blob is chmod'd
+   * read-only (executable iff `mode` is), so a launched tool cannot write through
+   * a staged hardlink into the shared blob; a later executable demand of an
+   * existing non-exec blob upgrades it to 0o555 (adding exec is safe on read-only
+   * content, and a hardlink can't be chmod'd apart from its blob).
    */
-  private materializeBlob(hash: string, materialise: (blobPath: string) => Computable<void>): Computable<string> {
+  private materializeBlob(hash: string, mode: number, materialise: (blobPath: string) => Computable<void>): Computable<string> {
     const blobPath = path.resolve(this.blobRoot, hash);
     if (fs.existsSync(blobPath)) {
+      /* Only ever ADD the exec bit, never remove it: two byte-identical files
+       * with different modes share this one blob, and a hardlink can't be
+       * chmod'd apart from it, so a non-executable demand must not strip the
+       * exec bit an executable one needs (a non-exec hit is otherwise a no-op —
+       * the blob is already read-only). */
+      if (readOnlyPermissions(mode) & 0o111) {
+        fs.chmodSync(blobPath, 0o555);
+      }
       return Computable.resolve(blobPath);
     }
     fs.mkdirSync(this.blobRoot, { recursive: true });
-    return materialise(blobPath).then(() => blobPath);
+    return materialise(blobPath).then(() => {
+      /* Read the freshly-placed mode rather than assuming: a concurrent writer
+       * of the same hash may have won the rename and already set exec, which we
+       * must not clobber (exec stays sticky). */
+      const exec = (fs.statSync(blobPath).mode & 0o111) !== 0 || (readOnlyPermissions(mode) & 0o111) !== 0;
+      fs.chmodSync(blobPath, exec ? 0o555 : 0o444);
+      return blobPath;
+    });
   }
 
   /** Atomically move `from` into place at `blobPath`. If another writer got
@@ -483,18 +516,25 @@ export class BuildCache {
    * whether freshly built or served from disk. A mutable entry's freshness
    * metadata leads the manifest as a `!meta` header line.
    *
-   * Every file is blob-backed by now (storeContent ran), so its content path is
-   * implicitly `blob/<hash>` and needn't be stored. (A symlink output, which has
-   * no content hash, would need a distinct line form recording its target — build
-   * steps don't currently produce them; `getResultFileSet` collects only regular
-   * files.)
+   * Every regular file is blob-backed by now (storeContent ran), so its content
+   * path is implicitly `blob/<hash>` and needn't be stored — but its original
+   * mode does (as octal), since the blob itself is read-only 0o444/0o555 and the
+   * true permission bits must survive to reapply on export. A symlink has no
+   * blob — its target is its whole content — so it gets a distinct `@link` line
+   * carrying the target inline (see LINK_PREFIX); today only npm-tarball unpack
+   * produces one, since `getResultFileSet` collects only regular files.
    */
   private storeManifest(manifestPath: string, files: FileSet, meta?: ICacheControl): Computable<FileSet> {
     let manifest = meta ? `${META_PREFIX}${JSON.stringify(meta)}\n` : "";
     const backed = new Map<string, IFile>();
     for (const [name, file] of files) {
-      manifest += `${file.hash} ${encodeURI(name)}\n`;
-      backed.set(name, new BuildFile(this.blobRoot, file.hash, name));
+      if (file instanceof SymlinkFile) {
+        manifest += `${LINK_PREFIX}${encodeURI(file.target)} ${encodeURI(name)}\n`;
+        backed.set(name, file);
+        continue;
+      }
+      manifest += `${file.hash} ${file.mode.toString(8)} ${encodeURI(name)}\n`;
+      backed.set(name, new BuildFile(this.blobRoot, file.hash, name, file.mode));
     }
     /* Write atomically (temp + rename), like blobs: a crash mid-write must not
      * leave a truncated manifest that `lookup`'s bare `existsSync` would trust,
@@ -519,16 +559,27 @@ export class BuildCache {
     const map = new Map<string, IFile>();
     const ops: Computable<void>[] = [];
     for (const [name, file] of files) {
+      if (file instanceof SymlinkFile) {
+        /* A symlink carries its target inline in the manifest, not a blob:
+         * pass it through unchanged (storeManifest serialises it as a link
+         * line). Its "content" is the link text, which would otherwise become
+         * a regular blob and lose its symlink-ness across the cache. */
+        map.set(name, file);
+        continue;
+      }
       if (file instanceof BuildFile && file.getAbsPath() === path.resolve(this.blobRoot, file.hash)) {
         /* Already one of our blobs (a re-put entry, or content shared with
          * another entry): nothing to ingest, not even an existence probe. */
-        map.set(name, file.name === name ? file : new BuildFile(this.blobRoot, file.hash, name));
+        map.set(name, file.name === name ? file : new BuildFile(this.blobRoot, file.hash, name, file.mode));
         continue;
       }
       const abspath = file.getAbsPath();
-      const stored = abspath === undefined ? file.getBuffer().then(buffer => this.ensureBlob(file.hash, buffer)) : this.ingestFile(file.hash, abspath);
+      const stored =
+        abspath === undefined
+          ? file.getBuffer().then(buffer => this.ensureBlob(file.hash, buffer, file.mode))
+          : this.ingestFile(file.hash, abspath, file.mode);
       ops.push(stored.then(() => undefined));
-      map.set(name, new BuildFile(this.blobRoot, file.hash, name));
+      map.set(name, new BuildFile(this.blobRoot, file.hash, name, file.mode));
     }
     return ops.length === 0
       ? Computable.resolve(new FileSet(map, undefined, CANONICAL))
@@ -536,13 +587,14 @@ export class BuildCache {
   }
 
   /**
-   * Parse a manifest: an optional `!meta` header line, then one `hash name`
-   * line per file. Only the FIRST line is ever considered as the header —
-   * matching the writer, which only puts it there — so a file line can never
-   * be mistaken for it, whatever the file is named. (It couldn't anyway: a
-   * file line begins with the content hash, whose hex alphabet excludes `!`,
-   * and the name field percent-encodes spaces — but the structural rule makes
-   * that safety independent of the hash alphabet.)
+   * Parse a manifest: an optional `!meta` header line, then one line per file
+   * — `hash octalmode name` for a regular file, `@link target name` for a
+   * symlink. Only the FIRST line is ever considered as the header — matching
+   * the writer, which only puts it there — so a file line can never be mistaken
+   * for it, whatever the file is named. (It couldn't anyway: a file line begins
+   * with the content hash, whose hex alphabet excludes `!`, and the name field
+   * percent-encodes spaces — but the structural rule makes that safety
+   * independent of the hash alphabet.)
    */
   private parseManifest(data: string): ICacheEntry {
     const result = new Map();
@@ -553,9 +605,12 @@ export class BuildCache {
       lines.shift();
     }
     for (const line of lines) {
-      if (line) {
-        const [hash, name] = line.split(" ");
-        result.set(decodeURI(name), new BuildFile(this.blobRoot, hash, decodeURI(name)));
+      if (line.startsWith(LINK_PREFIX)) {
+        const [target, name] = line.substring(LINK_PREFIX.length).split(" ");
+        result.set(decodeURI(name), new SymlinkFile(decodeURI(target)));
+      } else if (line) {
+        const [hash, mode, name] = line.split(" ");
+        result.set(decodeURI(name), new BuildFile(this.blobRoot, hash, decodeURI(name), parseInt(mode, 8)));
       }
     }
     /* A manifest is fabr's own memo of a canonical FileSet — its names were

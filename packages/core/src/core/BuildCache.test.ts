@@ -29,6 +29,7 @@ import { readStream } from "./Fetch";
 import { FileSet } from "./FileSet";
 import { hashString } from "./FSWrapper";
 import { MemoryFile } from "./MemoryFS";
+import { SymlinkFile } from "./SymlinkFile";
 import { Log } from "../support/Log";
 import { expect } from "chai";
 
@@ -62,6 +63,77 @@ describe("BuildCache", () => {
     expect(abspath).to.not.equal(undefined);
     expect(abspath!.startsWith(root)).to.equal(true);
     expect(fs.readFileSync(abspath!, "utf8")).to.equal('{"name":"test"}');
+  });
+
+  it("preserves file mode through the manifest and stores blobs read-only", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const store = (): Computable<FileSet> =>
+      cache.getOrCreate(
+        "with modes",
+        () =>
+          Computable.resolve(
+            new FileSet(
+              new Map<string, import("./FileSet").IFile>([
+                ["bin/tool", new MemoryFile(Buffer.from("#!/bin/sh\n"), 0o755)],
+                ["lib/plain.js", new MemoryFile(Buffer.from("x"), 0o644)],
+              ])
+            )
+          )
+      );
+    const fresh = await toPromise(store());
+
+    /* Blobs are read-only; the executable's blob keeps an exec bit, the plain
+     * one does not — so a launched tool can't write through a staged hardlink. */
+    const execBlob = (await toPromise(fresh.get("bin/tool")))!.getAbsPath()!;
+    const plainBlob = (await toPromise(fresh.get("lib/plain.js")))!.getAbsPath()!;
+    expect(fs.statSync(execBlob).mode & 0o777).to.equal(0o555);
+    expect(fs.statSync(plainBlob).mode & 0o777).to.equal(0o444);
+
+    /* A fresh cache reads the original modes back from the manifest — not the
+     * read-only blob's permission bits. */
+    const reopened = new BuildCache(root, NULL_LOG);
+    const files = await toPromise(
+      reopened.getOrCreate("with modes", () => {
+        throw new Error("cache entry should not be rebuilt");
+      })
+    );
+    expect((await toPromise(files.get("bin/tool")))!.mode).to.equal(0o755);
+    expect((await toPromise(files.get("lib/plain.js")))!.mode).to.equal(0o644);
+  });
+
+  it("round-trips a symlink through the manifest without materialising a blob", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    await toPromise(
+      cache.getOrCreate(
+        "with symlink",
+        () =>
+          Computable.resolve(
+            new FileSet(
+              new Map<string, import("./FileSet").IFile>([
+                ["real.txt", MemoryFile.from("hi")],
+                ["link.txt", new SymlinkFile("real.txt")],
+              ])
+            )
+          )
+      )
+    );
+    /* The link's target rides in the manifest, so no blob is created for its
+     * "content" — only the one real file's blob exists in the pool. */
+    const blobDir = path.join(root, "blob");
+    expect(fs.readdirSync(blobDir).length).to.equal(1);
+
+    /* A fresh cache deserialises the link back as a SymlinkFile (not a regular
+     * file containing the target text), with its target intact. */
+    const reopened = new BuildCache(root, NULL_LOG);
+    const files = await toPromise(
+      reopened.getOrCreate("with symlink", () => {
+        throw new Error("cache entry should not be rebuilt");
+      })
+    );
+    const link = await toPromise(files.get("link.txt"));
+    expect(link).to.be.instanceOf(SymlinkFile);
+    expect((link as SymlinkFile).target).to.equal("real.txt");
+    expect(await toPromise(files.readFile("real.txt"))).to.equal("hi");
   });
 
   it("writes the manifest atomically, leaving no temp debris", async () => {

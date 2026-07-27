@@ -34,7 +34,7 @@ import { Computable } from "./Computable";
 import { ConflictError, ExecutionError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
 import { FSFile } from "./FSFileSource";
-import { copyFile, deleteFile, hardlink, hashFile, rename, symlink, walkTree, writeFile } from "./FSWrapper";
+import { copyFile, deleteFile, hardlink, hashFile, readOnlyPermissions, rename, symlink, walkTree, writeFile } from "./FSWrapper";
 import { Name } from "./Name";
 import { SymlinkFile } from "./SymlinkFile";
 import { describeSystemError } from "../support/Execute";
@@ -71,9 +71,21 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
         operations.push(asExecutionError(symlink(file.target, targetName)));
       }
     } else if (filepath) {
-      operations.push(asExecutionError(options?.copy ? copyFile(filepath, targetName) : hardlink(filepath, targetName)));
+      /* A hardlink shares the read-only cache blob's mode (0o444/0o555). A copy
+       * (`fabr cp`) is durable user space, so reapply the file's real mode —
+       * restoring writability and the exact original bits the blob dropped. */
+      operations.push(
+        asExecutionError(
+          options?.copy ? copyFile(filepath, targetName).then(() => fs.chmodSync(targetName, file.mode & 0o7777)) : hardlink(filepath, targetName)
+        )
+      );
     } else {
-      operations.push(asExecutionError(file.getBuffer().then(buffer => writeFile(targetName, buffer))));
+      /* An in-memory file mirrors what a blob-backed file gets in the same
+       * context: a copy (`fabr cp`) exports at its real mode (writable, durable
+       * user space), while a staged file matches the read-only 0o444/0o555 of the
+       * hardlinked blobs beside it (exec-if-executable, so a generated tool runs). */
+      const mode = options?.copy ? file.mode & 0o7777 : readOnlyPermissions(file.mode);
+      operations.push(asExecutionError(file.getBuffer().then(buffer => writeFile(targetName, buffer)).then(() => fs.chmodSync(targetName, mode))));
     }
   }
   return Computable.forAll(operations, () => {});
@@ -139,7 +151,10 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
     } else if (filepath) {
       writes.push(stageWrite(temp, targetName, hardlink(filepath, temp)));
     } else {
-      writes.push(stageWrite(temp, targetName, file.getBuffer().then(buffer => writeFile(temp, buffer))));
+      /* A served install is nominally hardlink output, so an in-memory file
+       * matches the read-only 0o444/0o555 of the blobs beside it; chmod the temp
+       * before the atomic rename so it never appears at the wrong mode. */
+      writes.push(stageWrite(temp, targetName, file.getBuffer().then(buffer => writeFile(temp, buffer)).then(() => fs.chmodSync(temp, readOnlyPermissions(file.mode)))));
     }
   }
   /* Unlink the gone files (concurrent with the writes — disjoint names), and note

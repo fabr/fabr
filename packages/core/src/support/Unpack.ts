@@ -26,8 +26,9 @@ import * as fs from "fs";
 import * as tar from "tar-stream";
 import { Computable } from "../core/Computable";
 import { HASH_ALGORITHM } from "../core/FSWrapper";
-import { FileSet } from "../core/FileSet";
+import { FileSet, IFile } from "../core/FileSet";
 import { FSFile } from "../core/FSFileSource";
+import { SymlinkFile } from "../core/SymlinkFile";
 
 export enum ArchiveType {
   AUTO,
@@ -61,8 +62,15 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
         }
         case ArchiveType.TAR: {
           const extract = tar.extract();
-          const files: Computable<FSFile>[] = [];
+          const files: Computable<[string, IFile]>[] = [];
+          /* Every emitted entry, keyed by its in-archive name, so a later
+           * hardlink can resolve to the file its `linkname` already produced. */
+          const byName = new Map<string, Computable<IFile>>();
           const root = path.resolve(targetdir);
+          const emit = (name: string, file: Computable<[string, IFile]>): void => {
+            files.push(file);
+            byName.set(name, file.then(([, f]) => f));
+          };
           extract.on("entry", (headers, entry, next) => {
             entry.on("end", () => {
               next();
@@ -74,18 +82,39 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
                * `targetdir` (a tar-slip via a `../` or absolute name — untrusted,
                * these tarballs come from the network) is dropped for security. */
               entry.resume();
+            } else if (headers.type === "symlink") {
+              /* A symlink names its target (`linkname`, relative to the link's
+               * own directory) and has no body — emit a SymlinkFile carrying
+               * the target and drain the (empty) entry. The target may escape
+               * the tree; that is guarded when the set is staged, not here. */
+              emit(headers.name, Computable.resolve([headers.name, new SymlinkFile(headers.linkname ?? "")]));
+              entry.resume();
+            } else if (headers.type === "link") {
+              /* A hardlink has no body — its `linkname` names an earlier entry
+               * (archive-root-relative, tar orders targets first) whose content
+               * it shares. Content-addressed storage makes that a pure dedup:
+               * reuse the target's file (same hash → one blob, two manifest
+               * names). An unknown target — dropped for escaping, or malformed —
+               * drops the link too. */
+              const target = byName.get(headers.linkname ?? "");
+              if (target) {
+                emit(headers.name, target.then(f => [headers.name, f]));
+              }
+              entry.resume();
             } else {
-              files.push(
-                Computable.from((resolveFile, rejectFile) => {
+              emit(
+                headers.name,
+                Computable.from<[string, IFile]>((resolveFile, rejectFile) => {
                   const hash = crypto.createHash(HASH_ALGORITHM);
                   const dir = path.dirname(pathname);
                   fs.mkdirSync(dir, { recursive: true });
-                  /* Preserve the entry's permission bits (masked; setuid/setgid/
-                   * sticky dropped) so an executable — e.g. esbuild's native
-                   * binary in @esbuild/<platform> — lands runnable. Staging
-                   * hardlinks the cache file, so the bit propagates for free; it
-                   * travels with the content, so it stays out of the hash/manifest. */
-                  const mode = (headers.mode ?? 0o644) & 0o777;
+                  /* Preserve the entry's full permission bits (including
+                   * setuid/setgid/sticky) so an executable — e.g. esbuild's
+                   * native binary in @esbuild/<platform> — lands runnable, and so
+                   * the original mode survives to a later export. The mode rides
+                   * the FSFile (→ manifest); the on-disk work file is written with
+                   * it too, but BuildCache re-chmods the pooled blob read-only. */
+                  const mode = (headers.mode ?? 0o644) & 0o7777;
                   const outfile = fs.createWriteStream(pathname, { mode });
                   const hashTransform = new Transform({
                     transform: (chunk, _enc, cb) => {
@@ -100,14 +129,15 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
                    * so a stalled tar (finish never fires) can't hang the outer. */
                   pipeline(entry, hashTransform, outfile)
                     .then(() =>
-                      resolveFile(
+                      resolveFile([
+                        headers.name,
                         new FSFile(
                           targetdir,
                           headers.name,
-                          { mtime: headers.mtime ?? new Date(), size: headers.size ?? 0 },
+                          { mtime: headers.mtime ?? new Date(), size: headers.size ?? 0, mode },
                           hash.digest("hex")
-                        )
-                      )
+                        ),
+                      ])
                     )
                     .catch(err => {
                       rejectFile(err);
@@ -120,8 +150,8 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
           extract.on("finish", () => {
             resolve(
               Computable.forAll(files, (...f) => {
-                const fileMap = new Map();
-                f.forEach(file => fileMap.set(file.name, file));
+                const fileMap = new Map<string, IFile>();
+                f.forEach(([name, file]) => fileMap.set(name, file));
                 return new FileSet(fileMap);
               })
             );

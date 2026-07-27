@@ -24,8 +24,26 @@ import { IProvenanceStep } from "./Provenance";
 import { ConflictError } from "./Errors";
 import { canonicalFileName, isCanonicalFileName } from "../support/Paths";
 
+/** The permission bits (`man 2 stat`, the low 12 bits — rwx triples plus
+ * setuid/setgid/sticky) fabr records for a file when none are otherwise known:
+ * a plain non-executable file. A file's real mode is carried on {@link IFile.mode}
+ * and preserved through the cache (see BuildCache's manifest) so it can be
+ * reapplied on export (`fabr cp`, tar pack). */
+export const DEFAULT_FILE_MODE = 0o644;
+
 export interface IFile {
   hash: string;
+
+  /**
+   * The file's POSIX permission bits (low 12 bits, `0o7777` — including
+   * setuid/setgid/sticky). Authoritative and preserved verbatim through the
+   * cache manifest; reapplied when the file is exported to user space (`fabr cp`)
+   * or packed into a tarball. The content-addressed blob a file is stored in is
+   * *not* this mode — a blob is read-only (0o444, or 0o555 when this mode is
+   * executable), since one blob may back several files with differing modes.
+   */
+  mode: number;
+
   readString(encoding?: BufferEncoding): Computable<string>;
 
   /**
@@ -240,7 +258,10 @@ export class FileSet implements FileSource {
   public toManifest(): string {
     const result = [];
     for (const name of [...this.content.keys()].sort()) {
-      result.push(`${this.content.get(name)?.hash} ${name}`);
+      const file = this.content.get(name);
+      /* Mode participates in the manifest (octal): a consumer's cache key must
+       * turn over when an input's permission bits change, not just its content. */
+      result.push(`${file?.hash} ${(file?.mode ?? DEFAULT_FILE_MODE).toString(8)} ${name}`);
     }
     return result.join("\n");
   }

@@ -19,13 +19,15 @@
 
 import { Computable } from "./Computable";
 import { hashString } from "./FSWrapper";
-import { IFile } from "./FileSet";
+import { DEFAULT_FILE_MODE, IFile } from "./FileSet";
 
 export class MemoryFile implements IFile {
   private content: Buffer;
   public hash: string;
 
-  constructor(buffer: Buffer) {
+  /** An in-memory file is a non-executable regular file unless a producer asks
+   * otherwise (e.g. a rule stamping a generated script executable). */
+  constructor(buffer: Buffer, public mode: number = DEFAULT_FILE_MODE) {
     this.content = buffer;
     this.hash = hashString(buffer);
   }

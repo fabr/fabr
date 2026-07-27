@@ -21,7 +21,7 @@ import { createGzip } from "zlib";
 import * as tar from "tar-stream";
 import { Computable } from "../core/Computable";
 import { FileSet, IFile } from "../core/FileSet";
-import { stat } from "../core/FSWrapper";
+import { SymlinkFile } from "../core/SymlinkFile";
 
 /**
  * A fixed mtime stamped on every entry: the tarball must be a pure function of
@@ -32,31 +32,58 @@ import { stat } from "../core/FSWrapper";
 const FIXED_MTIME = new Date(0);
 
 /**
- * An entry's tar mode: 0o755 if the backing file is executable, else 0o644 —
- * exactly two values, so the archive stays deterministic. The exec bit rides
- * the on-disk blob, never the IFile or its hash (the dual of {@link unpackStream}
- * preserving it on the way in), so a path-less in-memory file is plain 0o644.
+ * The tar-ready form of one entry — the dual of the split {@link unpackStream}
+ * produces on the way in:
+ *   - `file`: a regular file, its content + normalized mode.
+ *   - `symlink`: names its target (`linkname`), no body. Fixed 0o777 mode (its
+ *     content is the target, so it has no exec bit of its own).
+ *   - `hardlink`: a later entry whose content is byte-identical to an earlier
+ *     one — emitted as a tar hardlink (`type: "link"`) to that first entry
+ *     rather than packing the bytes twice. Content-addressed storage already
+ *     dedups the blob; this dedups the archive. No body; fixed mode (a hardlink
+ *     shares the target inode, so its own mode field is ignored on extraction).
  */
-function entryMode(file: IFile): Computable<number> {
-  const abspath = file.getAbsPath();
-  return abspath === undefined
-    ? Computable.resolve(0o644)
-    : stat(abspath).then(stats => ((stats.mode & 0o100) !== 0 ? 0o755 : 0o644));
+type PackEntry =
+  | { kind: "file"; buffer: Buffer; mode: number }
+  | { kind: "symlink"; linkname: string }
+  | { kind: "hardlink"; linkname: string };
+
+function entryContent(file: IFile): Computable<PackEntry> {
+  if (file instanceof SymlinkFile) {
+    return Computable.resolve({ kind: "symlink", linkname: file.target });
+  }
+  /* The file's original mode (full 0o7777, from the manifest) — the tarball is a
+   * faithful export, and it is deterministic because mode is a stored property,
+   * not read from the read-only blob's own permission bits. */
+  return file.getBuffer().then((buffer: Buffer) => ({ kind: "file", buffer, mode: file.mode & 0o7777 }));
 }
 
 /**
  * Pack a FileSet into a single gzip-compressed tar archive — the inverse of
  * {@link unpackStream}. Entries are emitted in sorted name order with a fixed
- * mtime and normalized modes (0o755/0o644 by the source's exec bit) so the
- * output is deterministic (byte-identical for identical content).
+ * mtime and each file's own (stored) mode, so the output is deterministic
+ * (byte-identical for identical content).
  * Names are taken verbatim: any layout convention (npm's `package/` prefix,
  * say) is the caller's to impose on the FileSet first.
  */
 export function packToTarball(files: FileSet): Computable<Buffer> {
   const entries = [...files].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  /* First entry (in sorted order) to carry each content hash — a repeat becomes
+   * a hardlink to it, so identical content is packed once. Symlinks are excluded
+   * (their "content" is the target text); the sorted order keeps this stable. */
+  const firstByHash = new Map<string, string>();
   return Computable.forAll(
-    entries.map(([, file]) => Computable.forAll([file.getBuffer(), entryMode(file)], (buffer: Buffer, mode: number) => ({ buffer, mode }))),
-    (...contents: { buffer: Buffer; mode: number }[]) => contents
+    entries.map(([name, file]) => {
+      if (!(file instanceof SymlinkFile)) {
+        const linkname = firstByHash.get(file.hash);
+        if (linkname !== undefined) {
+          return Computable.resolve<PackEntry>({ kind: "hardlink", linkname });
+        }
+        firstByHash.set(file.hash, name);
+      }
+      return entryContent(file);
+    }),
+    (...contents: PackEntry[]) => contents
   ).then(
     contents =>
       Computable.from<Buffer>((resolve, reject) => {
@@ -76,11 +103,19 @@ export function packToTarball(files: FileSet): Computable<Buffer> {
             return;
           }
           const [name] = entries[index];
-          const { buffer, mode } = contents[index];
+          const entry = contents[index];
           index++;
-          pack.entry({ name, size: buffer.length, mtime: FIXED_MTIME, mode }, buffer, err =>
-            err ? reject(err) : writeNext()
-          );
+          const done = (err?: Error | null): void => (err ? reject(err) : writeNext());
+          if (entry.kind === "symlink") {
+            /* A symlink carries no body; its target rides in `linkname`. */
+            pack.entry({ name, type: "symlink", linkname: entry.linkname, mtime: FIXED_MTIME, mode: 0o777 }, done);
+          } else if (entry.kind === "hardlink") {
+            /* A hardlink carries no body; `linkname` names the entry it shares
+             * content with (packed earlier in sorted order). */
+            pack.entry({ name, type: "link", linkname: entry.linkname, mtime: FIXED_MTIME, mode: 0o644 }, done);
+          } else {
+            pack.entry({ name, size: entry.buffer.length, mtime: FIXED_MTIME, mode: entry.mode }, entry.buffer, done);
+          }
         };
         writeNext();
       })

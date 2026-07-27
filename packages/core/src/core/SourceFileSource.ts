@@ -84,8 +84,8 @@ export class SourceFileSource extends FSFileSource {
         stat(filepath).then(fileStat => {
           const hash = hashString(bytes);
           return this.cache
-            .ensureBlob(hash, bytes)
-            .then(blobPath => new FSFile(this.root, filename, { size: fileStat.size, mtime: fileStat.mtime }, hash, blobPath));
+            .ensureBlob(hash, bytes, fileStat.mode)
+            .then(blobPath => new FSFile(this.root, filename, { size: fileStat.size, mtime: fileStat.mtime, mode: fileStat.mode }, hash, blobPath));
         })
       )
       .catch(err => {

@@ -36,6 +36,10 @@ import { IFile } from "./FileSet";
  */
 export class SymlinkFile implements IFile {
   public readonly hash: string;
+  /** A symlink's own permission bits are conventionally 0o777 and ignored on
+   * most systems (the target's mode governs); carried only to satisfy IFile —
+   * a symlink stages as a link, never through the read-only blob path. */
+  public readonly mode = 0o777;
 
   constructor(public readonly target: string) {
     this.hash = hashString(Buffer.from("symlink\0" + target));
