@@ -246,12 +246,9 @@ function createPackageJson(
     packageJson.bin = bin;
   }
 
-  const { dependencies, devDependencies } = packageDependencies(declared);
+  const dependencies = packageDependencies(declared);
   if (Object.keys(dependencies).length > 0) {
     packageJson.dependencies = dependencies;
-  }
-  if (Object.keys(devDependencies).length > 0) {
-    packageJson.devDependencies = devDependencies;
   }
   /* provided_deps → peerDependencies: the host supplies the one shared copy. */
   const peerDependencies = peerDependenciesOf(providedDeclared);
@@ -263,24 +260,26 @@ function createPackageJson(
 }
 
 /**
- * The direct dependencies for the generated package.json — the declared
- * requirements split into `dependencies` and `devDependencies` (@types/* to the
- * latter, per convention). The version each states is the declaration, not what
- * fabr's joint resolution selected: a published manifest says what the package
- * *requires*, and the consumer resolves it.
+ * The direct `dependencies` for the generated package.json — every declared
+ * requirement, including `@types/*`. A `@types/*` dep can leak into the shipped
+ * `.d.ts` (a node type in an exported signature emits `/// <reference
+ * types="node" />`), making it part of the package's public type surface, so a
+ * consumer type-checking against us needs it — DefinitelyTyped's own convention
+ * (`@types/express` lists `@types/node` under `dependencies`). We don't yet scan
+ * the emitted declarations to tell a leaked type dep from a compile-only one, so
+ * the safe default is a plain `dependency` (harmless if unused: the consumer
+ * dedupes it, and `@types/node` is near-ubiquitous). The version each states is
+ * the declaration, not what fabr's joint resolution selected: a published
+ * manifest says what the package *requires*, and the consumer resolves it.
  */
-function packageDependencies(declared: (Requirement | undefined)[]): {
-  dependencies: Record<string, string>;
-  devDependencies: Record<string, string>;
-} {
+function packageDependencies(declared: (Requirement | undefined)[]): Record<string, string> {
   const dependencies: Record<string, string> = {};
-  const devDependencies: Record<string, string> = {};
   for (const req of declared) {
     if (req) {
-      (req.pkg.startsWith("@types/") ? devDependencies : dependencies)[req.pkg] = req.constraint;
+      dependencies[req.pkg] = req.constraint;
     }
   }
-  return { dependencies, devDependencies };
+  return dependencies;
 }
 
 /**

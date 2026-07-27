@@ -57,7 +57,8 @@ export function jsxModeFor(buildType: string | undefined): "react-jsx" | "react-
  * so the target must carry that runtime as a dep (auto-detected, see resolveJsxImportSource).
  */
 /** BUILD_TYPEs that carry JS source maps: full debugging (`debug`) and
- * optimized-but-debuggable (`relwithdebinfo`); `release` strips them. */
+ * optimized-but-debuggable (`relwithdebinfo`); `release` strips them. The
+ * default BUILD_TYPE is `debug` (STD.fabr), so a plain build is debuggable. */
 function emitsSourceMap(buildType: string | undefined): boolean {
   return buildType === "debug" || buildType === "relwithdebinfo";
 }
@@ -72,7 +73,10 @@ export function makeTsConfig(
   return {
     compilerOptions: {
       declaration: true,
-      declarationMap: true,
+      /* No declarationMap: a `.d.ts.map` can only resolve against a shipped
+       * `src/` tree (unlike a JS map, `inlineSources` does NOT embed sources
+       * into it), which we don't ship — so it would only ever dangle. Editor
+       * go-to-definition into the `.ts` awaits a future ship-source flag. */
       outDir: "build",
       rootDir: "src",
       /* Strict by default (fabr's own code and modern TS); a target relaxes it
@@ -94,9 +98,11 @@ export function makeTsConfig(
       lib: jsTarget.environment === "browser" ? [runtime, "dom"] : [runtime],
       module: jsTarget.module === "esm" ? "esnext" : "commonjs",
       moduleResolution: "node",
-      /* JS source maps for debuggable builds; `release` omits them. tsc always
-       * writes the `//# sourceMappingURL=` link comment when `sourceMap` is on. */
-      ...(emitsSourceMap(buildType) ? { sourceMap: true } : {}),
+      /* JS source maps for debuggable builds; `release` omits them. `inlineSources`
+       * embeds the original TS into each `.js.map`, so the maps are self-contained
+       * and debuggable at runtime without shipping a `src/` tree. tsc always writes
+       * the `//# sourceMappingURL=` link comment when `sourceMap` is on. */
+      ...(emitsSourceMap(buildType) ? { sourceMap: true, inlineSources: true } : {}),
       ...(jsx ? { jsx: jsx.mode, jsxImportSource: jsx.importSource } : {}),
       /* tsc ignores FORCE_COLOR (it only checks its own TTY), so formatted
        * diagnostics must be forced here; unwanted codes are stripped at

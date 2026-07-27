@@ -32,6 +32,9 @@ interface TsConfig {
     skipLibCheck?: boolean;
     resolveJsonModule?: boolean;
     sourceMap?: boolean;
+    inlineSources?: boolean;
+    declaration?: boolean;
+    declarationMap?: boolean;
   };
   include: string[];
 }
@@ -90,13 +93,26 @@ describe("makeTsConfig", () => {
     expect(cfg.compilerOptions.resolveJsonModule).to.equal(true);
   });
 
-  it("emits JS source maps for debug and relwithdebinfo, not release", () => {
+  it("emits self-contained JS source maps for debug and relwithdebinfo, not release", () => {
     const cfg = (bt?: string): TsConfig =>
       makeTsConfig(parseJSTarget("es2018-commonjs"), "es2018", undefined, {}, bt) as unknown as TsConfig;
-    expect(cfg("debug").compilerOptions.sourceMap).to.equal(true);
-    expect(cfg("relwithdebinfo").compilerOptions.sourceMap).to.equal(true);
+    /* debug/relwithdebinfo: sourceMap + inlineSources (the source is embedded in
+     * the map, so it's debuggable without shipping a src/ tree). */
+    for (const bt of ["debug", "relwithdebinfo"]) {
+      expect(cfg(bt).compilerOptions.sourceMap).to.equal(true);
+      expect(cfg(bt).compilerOptions.inlineSources).to.equal(true);
+    }
     expect(cfg("release").compilerOptions.sourceMap).to.equal(undefined);
-    expect(cfg(undefined).compilerOptions.sourceMap).to.equal(undefined);
+    expect(cfg("release").compilerOptions.inlineSources).to.equal(undefined);
+  });
+
+  it("ships declarations but never a declaration map (it would dangle without a src/ tree)", () => {
+    const cfg = (bt?: string): TsConfig =>
+      makeTsConfig(parseJSTarget("es2018-commonjs"), "es2018", undefined, {}, bt) as unknown as TsConfig;
+    for (const bt of ["debug", "relwithdebinfo", "release", undefined]) {
+      expect(cfg(bt).compilerOptions.declaration).to.equal(true);
+      expect(cfg(bt).compilerOptions.declarationMap).to.equal(undefined);
+    }
   });
 });
 
