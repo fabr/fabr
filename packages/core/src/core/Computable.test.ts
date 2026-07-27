@@ -218,6 +218,58 @@ describe("Computable", () => {
     expect(errors[0].message).to.equal("plain string");
   });
 
+  it("rejects when a from() executor throws synchronously (like new Promise)", () => {
+    const errors: Error[] = [];
+    Computable.from<number>(() => {
+      throw new Error("setup failed");
+    }).catch(err => errors.push(err));
+    expect(errors).to.have.length(1);
+    expect(errors[0].message).to.equal("setup failed");
+  });
+
+  it("coerces a non-Error thrown by a from() executor", () => {
+    const errors: Error[] = [];
+    Computable.from<number>(() => {
+      throw "plain string";
+    }).catch(err => errors.push(err));
+    expect(errors).to.have.length(1);
+    expect(errors[0]).to.be.an.instanceOf(Error);
+    expect(errors[0].message).to.equal("plain string");
+  });
+
+  it("keeps a from() resolve that precedes a later executor throw (throw dropped)", () => {
+    const values: number[] = [];
+    const errors: Error[] = [];
+    const c = Computable.from<number>(res => {
+      res(7);
+      throw new Error("too late");
+    });
+    c.then(v => values.push(v), err => errors.push(err));
+    expect(values).to.deep.equal([7]);
+    expect(errors).to.have.length(0);
+    expect(c.state).to.equal(ComputableState.Valid);
+  });
+
+  it("rejects when a once() executor throws synchronously", () => {
+    const errors: Error[] = [];
+    Computable.once<number>(() => {
+      throw new Error("once setup failed");
+    }).catch(err => errors.push(err));
+    expect(errors).to.have.length(1);
+    expect(errors[0].message).to.equal("once setup failed");
+  });
+
+  it("keeps a once() resolve that precedes a later executor throw", () => {
+    const values: number[] = [];
+    const errors: Error[] = [];
+    Computable.once<number>(res => {
+      res(3);
+      throw new Error("too late");
+    }).then(v => values.push(v), err => errors.push(err));
+    expect(values).to.deep.equal([3]);
+    expect(errors).to.have.length(0);
+  });
+
   it("restores a valid node without recomputation when inputs revalidate unchanged", () => {
     let resolve: (value: number) => void = () => {};
     const src = Computable.from<number>(res => {
@@ -885,5 +937,67 @@ describe("Computable attach/detach", () => {
     resolve(9);
     expect(cell.state).to.equal(ComputableState.Valid);
     expect(cell.value).to.equal(9);
+  });
+});
+
+describe("Computable unhandled-error surface", () => {
+  /** Drain the microtask queue so the deferred terminal-error check runs. */
+  const flush = (): Promise<void> => new Promise<void>(resolve => setImmediate(resolve));
+
+  let reported: Error[];
+  beforeEach(() => {
+    reported = [];
+    ComputableSource.onUnhandledError = err => reported.push(err);
+  });
+  afterEach(() => {
+    ComputableSource.onUnhandledError = undefined;
+  });
+
+  it("reports an eager fire-and-forget tail whose upstream fails", async () => {
+    const boom = new Error("boom");
+    Computable.reject<number>(boom).then(v => v + 1); /* one-arg tail, no catch, no dependant */
+    await flush();
+    expect(reported).to.deep.equal([boom]);
+  });
+
+  it("does not report a tail whose handler attaches synchronously afterwards", async () => {
+    const c = Computable.reject<number>(new Error("boom")).then(v => v + 1);
+    c.catch(() => 0); /* handler on the next line — within the deferral window */
+    await flush();
+    expect(reported).to.deep.equal([]);
+  });
+
+  it("does not report when the error is absorbed by a two-arg then", async () => {
+    Computable.reject<number>(new Error("boom")).then(
+      v => v,
+      () => 0
+    );
+    await flush();
+    expect(reported).to.deep.equal([]);
+  });
+
+  it("does not report an explicit reject() constant — a deliberate value, not lost work", async () => {
+    Computable.reject<number>(new Error("boom")); /* never consumed, but never computed either */
+    await flush();
+    expect(reported).to.deep.equal([]);
+  });
+
+  it("does not report a binding node's forwarded error (its outer observes it)", async () => {
+    /* `fn` returns a rejected source: the outer flatMaps through a binding, which
+     * settles Error but forwards to its outer — only the outer (a real terminal
+     * tail) should count, and here it too is caught, so nothing is reported. */
+    const outer = Computable.resolve(1).then(() => Computable.reject<number>(new Error("boom")));
+    outer.catch(() => 0);
+    await flush();
+    expect(reported).to.deep.equal([]);
+  });
+
+  it("reports each stranded tail exactly once (no duplicates across a shared upstream)", async () => {
+    const boom = new Error("boom");
+    const src = Computable.reject<number>(boom);
+    src.then(v => v + 1); /* two independent fire-and-forget tails over one failed source */
+    src.then(v => v + 2);
+    await flush();
+    expect(reported).to.deep.equal([boom, boom]); /* one per tail, none doubled */
   });
 });

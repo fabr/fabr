@@ -101,6 +101,11 @@ export abstract class ComputableSource<T> {
    * cascade methods), not the concrete `Computable` they always are in practice (via then/forAll). */
   private readonly dependants: ComputableSource<any>[] = [];
 
+  /**
+   * Global event listener for otherwise unhandled rejections.
+   */
+  public static onUnhandledError: ((err: Error) => void) | undefined;
+
   public get state(): ComputableState {
     return this.currentState;
   }
@@ -224,6 +229,7 @@ export abstract class ComputableSource<T> {
       this.eachDependant(dep => dep.invalidate());
     }
     this.notifyDependants();
+    this.checkUnhandledError();
   }
 
   /**
@@ -265,6 +271,39 @@ export abstract class ComputableSource<T> {
    * this to run (or revalidate) from its inputs.
    */
   protected maybeRecompute(): void {}
+
+  /**
+   * Would this node's settled error go unobserved? True when it is settled Error
+   * and in the graph with no dependant to read it. {@link Computable} narrows it
+   * to also exclude a binding node (which forwards to its `outer`). The
+   * `dependants` check already excludes a detached node: a derived node that loses
+   * its last dependant *detaches* (Detached, not Error), so only an eager,
+   * still-live terminal tail reaches here.
+   */
+  protected isUnhandledError(): boolean {
+    return this.currentState === ComputableState.Error && this.dependants.length === 0;
+  }
+
+  /**
+   * Report a stranded computed error, deferred one microtask past the synchronous
+   * graph-building burst — a handler attached on the next line
+   * (`const c = x.then(f); c.catch(g)`) settles within that window and clears the
+   * candidacy, exactly as V8 suppresses a rejected-then-handled promise. Fires per
+   * strand event: a persistent node that re-errors on a later (watch-mode) rebuild
+   * reports again, which is the honest signal — it stranded again. A settle with
+   * dependants (ordinary error propagation) fails {@link isUnhandledError} here and
+   * costs nothing.
+   */
+  private checkUnhandledError(): void {
+    if (ComputableSource.onUnhandledError === undefined || !this.isUnhandledError()) {
+      return;
+    }
+    queueMicrotask(() => {
+      if (this.isUnhandledError()) {
+        ComputableSource.onUnhandledError?.(this.currentValue as Error);
+      }
+    });
+  }
 }
 
 /**
@@ -338,7 +377,17 @@ export class Computable<T> extends ComputableSource<T> {
      * guard. Fn-less, so it never detaches; attach here is just the
      * Detached -> Unresolved (pending) transition. */
     result.attach();
-    fn(result.resolveTo.bind(result), err => result.rejectWith(err));
+    /* A synchronous throw in the executor becomes a rejection, mirroring native
+     * `new Promise(exec)` and run()'s own discipline — the error flows through the
+     * graph rather than escaping sideways at the call site. Guarded on isSettled so
+     * an executor that resolves and *then* throws stays resolved (the throw is dropped). */
+    try {
+      fn(result.resolveTo.bind(result), err => result.rejectWith(err));
+    } catch (err) {
+      if (!result.isSettled()) {
+        result.rejectWith(toError(err));
+      }
+    }
     return result;
   }
 
@@ -353,20 +402,29 @@ export class Computable<T> extends ComputableSource<T> {
     result.attach(); // in the graph from birth — see from()
     let settled = false;
 
-    fn(
-      value => {
-        if (!settled) {
-          settled = true;
-          result.resolveTo(value);
+    /* As from(), a synchronous executor throw rejects — but only if nothing has
+     * settled yet, upholding once()'s settle-exactly-once contract. */
+    try {
+      fn(
+        value => {
+          if (!settled) {
+            settled = true;
+            result.resolveTo(value);
+          }
+        },
+        err => {
+          if (!settled) {
+            settled = true;
+            result.rejectWith(err);
+          }
         }
-      },
-      err => {
-        if (!settled) {
-          settled = true;
-          result.rejectWith(err);
-        }
+      );
+    } catch (err) {
+      if (!settled) {
+        settled = true;
+        result.rejectWith(toError(err));
       }
-    );
+    }
     return result;
   }
 
@@ -479,6 +537,12 @@ export class Computable<T> extends ComputableSource<T> {
 
   private rejectWith(err: Error): void {
     this.settle(ComputableState.Error, err);
+  }
+
+  protected override isUnhandledError(): boolean {
+    /* A binding forwards its settle to its `outer`, so its error IS observed —
+     * exclude it, else every forwarded error would double as a false strand. */
+    return this.outer === undefined && super.isUnhandledError();
   }
 
   protected override maybeRecompute(): void {

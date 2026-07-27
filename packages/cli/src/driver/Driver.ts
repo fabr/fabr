@@ -69,6 +69,7 @@ const DIAG_TEST_RESULT = Diagnostic.Info<{ name: string; summary: string }>("{na
 const DIAG_BUILDING = Diagnostic.Info<{ verb: string; name: string; chain: string }>("{verb} {name}{chain}");
 const DIAG_WATCHING = Diagnostic.Info<Record<string, never>>("Watching for changes (Ctrl-C to stop)");
 const DIAG_WATCH_WARNING = Diagnostic.Warn<{ message: string }>("{message}");
+const DIAG_UNHANDLED = Diagnostic.Warn<{ message: string }>("Unhandled error: {message}");
 const DIAG_RESOLVING = Diagnostic.Info<{ requirements: string; name: string }>("Resolving {requirements} from {name}");
 const DIAG_FETCHING = Diagnostic.Info<{ resource: string; url: string }>("Fetching {resource}{url}");
 const DIAG_COPIED = Diagnostic.Info<{ count: number; dest: string }>("Copied {count} file(s) to {dest}");
@@ -323,6 +324,8 @@ async function runWith(operation: Operation, watch = false, quiet = false): Prom
    * captured tool output arrives colored regardless and is stripped when off. */
   const color = process.stderr.isTTY === true && !process.env.NO_COLOR;
   const log = new LogFormatter(LogLevel.Info, line => process.stderr.write(line + "\n"), color);
+
+  Computable.onUnhandledError = err => log.log(DIAG_UNHANDLED, { message: err.message });
 
   /* In watch mode a drained event loop is the normal idle state (the watchers
    * keep the process alive), so the stall guard would misfire. */
