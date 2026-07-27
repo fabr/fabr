@@ -28,7 +28,56 @@ import { startFabrWatch } from "./harness";
  * `jest` name (undeclared in the fabr test compile) never appears. */
 (globalThis as { jest?: { setTimeout(ms: number): void } }).jest?.setTimeout(90000);
 
+/* A server that binds a Unix socket at a *stable* cwd-relative path (a `script`
+ * runs in the caller's cwd, unchanged across restarts) and, on SIGTERM, holds it
+ * for ~600ms — under the 2s restart grace, so it exits and unlinks cleanly — then
+ * frees it. A replacement that binds before the old one exits fails with
+ * EADDRINUSE (printed as "BIND FAILED"); the socket path models a listening port
+ * without a flaky real port. `exec node` so node replaces the shell and takes the
+ * SIGTERM directly. The node script uses only double quotes, so it nests safely
+ * inside the single-quoted `-e`. */
+const SOCKET_SERVER = (version: string): string =>
+  `echo "${version} starting" >&2\n` +
+  "exec node -e '" +
+  'const net=require("net"),fs=require("fs"),path=require("path");' +
+  'const sock=path.join(process.cwd(),"srv.sock");' +
+  "const s=net.createServer();" +
+  's.on("error",e=>{console.error("BIND FAILED "+e.code);process.exit(1);});' +
+  `s.listen(sock,()=>console.error("${version} up"));` +
+  'process.on("SIGTERM",()=>{setTimeout(()=>{try{s.close();fs.unlinkSync(sock);}catch(e){}process.exit(0);},600);});' +
+  "'\n";
+
 describe("e2e: run watch mode (fabr run -w)", () => {
+  it("waits for the old child to exit before binding the replacement (no port race)", async () => {
+    const session = startFabrWatch(
+      {
+        "PROJECT.fabr": "script server { entry = src:server.sh; }\n",
+        "src/server.sh": SOCKET_SERVER("SERVER V1"),
+      },
+      ["run", "-w", "server"]
+    );
+    try {
+      await session.waitFor("SERVER V1 up", { timeoutMs: 60000 });
+      await session.waitFor("Watching for changes", { timeoutMs: 60000 });
+
+      /* Change the program: the old server keeps its socket for ~600ms after
+       * SIGTERM. If the supervisor spawned the replacement synchronously (the old
+       * bug), it would try to bind while the old one still holds the address and
+       * fail (EADDRINUSE). It must instead wait for the old child to exit — then
+       * the new one binds cleanly. */
+      session.write("src/server.sh", SOCKET_SERVER("SERVER V2"));
+      await session.waitFor("Restarting server", { timeoutMs: 60000 });
+      /* Settle on whichever the replacement did — bind, or fail to — so the race
+       * (BIND FAILED) fails this test promptly rather than via a 60s timeout. */
+      await session.waitFor(/SERVER V2 up|BIND FAILED/, { timeoutMs: 60000 });
+      expect(session.stderr).to.not.match(/BIND FAILED/);
+      expect(session.stderr).to.match(/SERVER V2 up/);
+    } finally {
+      const code = await session.stop();
+      expect(code).to.equal(0);
+    }
+  });
+
   it("relaunches the program on a source change and exits cleanly on SIGINT", async () => {
     const session = startFabrWatch(
       {
