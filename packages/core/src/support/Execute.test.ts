@@ -18,6 +18,9 @@
  */
 
 import { expect } from "chai";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { PassThrough } from "stream";
 import { IOutputHandle } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
@@ -122,7 +125,45 @@ describe("execute", () => {
     ]);
     expect(outcomes).to.deep.equal([{ ok: true, value: undefined }]);
   });
+
+  it("sweeps a step's leaked background process when the step exits", async () => {
+    /* A step that spawns a long-lived child and exits without cleaning it up —
+     * ill-behaved tooling fabr must not rely on. The step runs in its own
+     * process group; on the step's exit the group is swept, so the straggler
+     * dies instead of surviving as an orphan (and, had it inherited the step's
+     * output pipes, hanging the build's stream-close wait). */
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-exec-sweep-"));
+    try {
+      const pidFile = path.join(dir, "pid.txt");
+      const script =
+        'const { spawn } = require("child_process");' +
+        'const c = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });' +
+        'require("fs").writeFileSync(process.argv[1], String(c.pid));' +
+        "c.unref();"; /* unref so the step's own process exits at once */
+      const outcomes = await collectSettlements(execute(NODE, ["-e", script, pidFile], dir, {}));
+      expect(outcomes).to.deep.equal([{ ok: true, value: undefined }]);
+      expect(await processGone(Number(fs.readFileSync(pidFile, "utf8")), 5000)).to.equal(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
+
+/** Poll until `pid` no longer exists (true) or `timeoutMs` elapses (false). */
+async function processGone(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    if (Date.now() > deadline) {
+      return false;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
 
 describe("executePipeline", () => {
   it("wires stdout->stdin between stages and captures the final stdout", async () => {
@@ -185,6 +226,28 @@ describe("executePipeline", () => {
     expect(outcomes).to.have.length(1);
     expect(outcomes[0].ok).to.equal(false);
     expect(outcomes[0].err?.message).to.include("unable to execute");
+  });
+
+  it("sweeps a failing stage's leaked child (pipefail leaves no orphans)", async () => {
+    /* The genrule shape of the same guarantee: a stage that spawned a long-lived
+     * child and then failed must not leave that child behind — each stage is a
+     * group leader and its group is swept when it exits, whichever way. */
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pipe-sweep-"));
+    try {
+      const pidFile = path.join(dir, "pid.txt");
+      const script =
+        'const { spawn } = require("child_process");' +
+        'const c = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });' +
+        'require("fs").writeFileSync(process.argv[1], String(c.pid));' +
+        "c.unref();" +
+        "process.exit(1);";
+      const outcomes = await collectSettlements(executePipeline([{ argv: [NODE, "-e", script, pidFile] }], dir, memoryOutput));
+      expect(outcomes).to.have.length(1);
+      expect(outcomes[0].ok).to.equal(false);
+      expect(await processGone(Number(fs.readFileSync(pidFile, "utf8")), 5000)).to.equal(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

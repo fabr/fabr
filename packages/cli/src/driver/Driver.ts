@@ -95,6 +95,11 @@ function renderConstraints(constraints: Record<string, string>): string {
  * rebuild — long enough to coalesce an editor's save, short enough to feel live. */
 const WATCH_QUIET_MS = 100;
 
+/** How long a signalled watch process's teardown may take before the shutdown
+ * deadline force-exits — generous for a native watcher unsubscribe, short
+ * enough that a stuck teardown can't hang a test runner or CI. */
+const SHUTDOWN_GRACE_MS = 5000;
+
 /** The presentation of build failures — swappable; see ErrorFormatter. */
 const errorFormatter: ErrorFormatter = new DiagnosticErrorFormatter(AMBIENT_CONSTRAINT_KEYS);
 
@@ -359,6 +364,21 @@ async function runWith(operation: Operation, watch = false, quiet = false): Prom
       return runWatched(operation, execution, log, controller);
     }
 
+    /* One-shot runs must route termination signals through process.exit rather
+     * than the default disposition: build steps run detached in their own
+     * process groups (see Execute.ts), so the terminal's Ctrl-C no longer
+     * reaches them — the exit hooks (Execute's group sweep, the run
+     * supervisor's cleanup) are what stop in-flight work, and a default-killed
+     * process runs no hooks. Codes follow the 128+signal convention. (The watch
+     * path already routes its signals through process.exit in runWatched.) */
+    for (const [signal, code] of [
+      ["SIGINT", 130],
+      ["SIGTERM", 143],
+      ["SIGHUP", 129],
+    ] as const) {
+      process.on(signal, () => process.exit(code));
+    }
+
     return loadProject(execution, PROJECT_FILENAME)
       .then(model => operation(model, execution))
       .then(() => flushAndExit(0))
@@ -394,6 +414,10 @@ function runWatched(
   controller: WatchController
 ): Promise<void> {
   const shutdown = (): void => {
+    /* Hard deadline first: teardown must never be able to pin a signalled watch
+     * process alive (a hung native unsubscribe, a stuck closer) — exit 1 marks
+     * the unclean teardown. Unref'd so the deadline itself never holds the loop. */
+    setTimeout(() => process.exit(1), SHUTDOWN_GRACE_MS).unref();
     /* Await teardown before exiting: unsubscribe stops a native watcher thread,
      * and exiting mid-flight crashes the kqueue backend (SIGABRT). The explicit
      * process.exit then fires the 'exit' hooks — including a RunSupervisor's

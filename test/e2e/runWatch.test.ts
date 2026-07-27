@@ -15,7 +15,7 @@
  */
 
 import { expect } from "chai";
-import { startFabrWatch } from "./harness";
+import { spawnOrphanReaper, startFabrWatch } from "./harness";
 
 /* Watch mode over `fabr run`: a long-lived program (a stand-in "server" that
  * announces itself on stderr then blocks) is supervised across source edits —
@@ -120,6 +120,46 @@ describe("e2e: run watch mode (fabr run -w)", () => {
     } finally {
       const code = await session.stop("SIGTERM");
       expect(code).to.equal(0);
+    }
+  });
+
+  it("is reaped by the harness's orphan daemon when the harness's pipe drops (SIGKILL-proof)", async () => {
+    /* SIGKILL of a test worker runs no exit hook, so the in-process reaper
+     * can't fire — the leak that used to accumulate orphaned `run -w`
+     * processes. The backstop is the orphan-reaper daemon: it holds a pipe from
+     * the harness and sweeps its registered pids when that pipe closes. The
+     * kernel closes the pipe identically on SIGKILL and on an explicit drop, so
+     * dropPipe() here exercises the exact death signal without this test having
+     * to kill its own process. */
+    const session = startFabrWatch(
+      {
+        "PROJECT.fabr": "script server { entry = src:server.sh; }\n",
+        "src/server.sh": 'echo "SERVER up" >&2\nexec sleep 300\n',
+      },
+      ["run", "-w", "server"]
+    );
+    const reaper = spawnOrphanReaper(); /* a private instance, so the harness's own daemon stays armed */
+    try {
+      await session.waitFor("Watching for changes", { timeoutMs: 60000 });
+      expect(session.pid).to.not.equal(undefined);
+      reaper.register(session.pid!);
+      reaper.dropPipe(); /* ≡ the harness dying — the daemon SIGTERMs the watcher */
+
+      const deadline = Date.now() + 20000;
+      let alive = true;
+      while (alive && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 250));
+        try {
+          process.kill(session.pid!, 0);
+        } catch {
+          alive = false;
+        }
+      }
+      expect(alive).to.equal(false);
+    } finally {
+      /* The daemon killed fabr out from under the session; stop() handles an
+       * already-exited child and cleans the fixture dirs. */
+      await session.stop();
     }
   });
 

@@ -124,6 +124,20 @@ function finish(results: ITestResult[], reportPath: string, start: number): void
  * themselves at 90s) — so it only ever catches a genuine hang. */
 const TEST_TIMEOUT_MS = 120_000;
 
+/* The timeout's complement: the timeout fails a hung TEST, but cannot make a
+ * test-file PROCESS exit — JS can't preempt, so a test that leaked live handles
+ * (child pipes, watchers, timers) keeps the file's event loop alive after its
+ * tests finish, the run's stream never ends, and the whole build hangs waiting.
+ * forceExit exits each file's process once its tests complete regardless of
+ * stray handles; anything the tests *spawned* and left behind is then reaped by
+ * the host's process-group sweep at the action boundary (see core's Execute).
+ * Not available before node 20.14/22.0 — older hosts keep the old behavior
+ * rather than choke on an unknown option. */
+function forceExitOption(): { forceExit?: boolean } {
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  return major >= 22 || (major === 20 && minor >= 14) ? { forceExit: true } : {};
+}
+
 export function main(argv: string[]): void {
   const options = parseArgs(argv);
   const results: ITestResult[] = [];
@@ -132,7 +146,7 @@ export function main(argv: string[]): void {
    * shim (describe/it/expect/...) into them via the inherited environment */
   const preload = `--require ${JSON.stringify(path.join(__dirname, "globals.js"))}`;
   process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, preload].filter(Boolean).join(" ");
-  const stream = run({ files: options.files.map(file => path.resolve(file)), timeout: TEST_TIMEOUT_MS });
+  const stream = run({ files: options.files.map(file => path.resolve(file)), timeout: TEST_TIMEOUT_MS, ...forceExitOption() });
   stream.on("test:pass", data => record(results, data as unknown as ITestEvent, "pass"));
   stream.on("test:fail", data => record(results, data as unknown as ITestEvent, "fail"));
   stream.once("end", () => finish(results, options.report, start));

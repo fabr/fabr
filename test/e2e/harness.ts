@@ -58,6 +58,11 @@ const CHILD_PATH = [path.dirname(NODE), "/usr/bin", "/bin", process.env.PATH]
  * fixtures just reuses the stub-tsc / package builds. Left for the OS to reap. */
 const CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-cache-"));
 
+/** How long {@link WatchSession.stop} gives the child to exit on its signal
+ * before SIGKILLing it. Longer than fabr's own SHUTDOWN_GRACE_MS deadline, so
+ * the clean (and the deadline-forced) exits win whenever fabr is responsive. */
+const STOP_KILL_GRACE_MS = 8000;
+
 /* Every live watch subprocess, so the reaper below can tear any survivor down.
  * A watch child is the fabr supervisor, which owns (and, on a signal, tears down)
  * the app/server it launched — so signalling fabr cleans up the whole tree; the
@@ -128,6 +133,12 @@ export function runFabr(files: Record<string, string>, args: string[], readback?
        * gets an immediate EOF and exits, rather than blocking on a stdin that
        * never closes — which would hang the whole test with no timeout to catch it. */
       stdio: ["ignore", "pipe", "pipe"],
+      /* Hard cap: spawnSync blocks the worker's event loop, so a fabr that hangs
+       * (a regression in the no-hung-builds guarantee) would freeze the whole
+       * runner with no per-test timeout able to fire. SIGKILL because a hung
+       * fabr may be beyond signal handlers; the null status reads as -1. */
+      timeout: 180_000,
+      killSignal: "SIGKILL",
     });
     let read: Record<string, string> | undefined;
     if (readback) {
@@ -194,6 +205,70 @@ export function runFabrClosingStream(
 }
 
 /**
+ * The orphan-reaper daemon: a detached helper process holding a pipe from this
+ * (harness) process. The kernel closes that pipe when we die by ANY means —
+ * including the SIGKILL of a force-exited jest worker, which runs no exit hook
+ * — and the daemon then SIGTERMs every registered watcher pid (SIGKILL after a
+ * grace, for a natively-wedged fabr that can't run a signal handler) and exits.
+ * This keeps the "reap me if my creator is hard-killed" contract entirely in
+ * the harness: fabr itself needs no parent-death behavior (which would break
+ * deliberate daemonization — setsid/disown a `fabr build -w`).
+ *
+ * The in-process exit-hook reaper ({@link installWatchReaper}) remains the
+ * first line of defense (it runs on every orderly exit, before pid-reuse could
+ * matter); the daemon is the SIGKILL-proof backstop. Registered pids are
+ * forgotten on a session's normal stop, so the daemon's sweep only ever sees
+ * watchers whose sessions never completed.
+ */
+const REAPER_SCRIPT =
+  "const kids=new Set();let buf=\"\";" +
+  'process.stdin.setEncoding("utf8");' +
+  'process.stdin.on("data",d=>{buf+=d;let i;while((i=buf.indexOf("\\n"))>=0){' +
+  "const [cmd,pid]=buf.slice(0,i).split(\" \");buf=buf.slice(i+1);" +
+  'if(cmd==="WATCH")kids.add(Number(pid));' +
+  'if(cmd==="FORGET")kids.delete(Number(pid));}});' +
+  "const reap=()=>{" +
+  'for(const pid of kids){try{process.kill(pid,"SIGTERM");}catch{}}' +
+  "setTimeout(()=>{" +
+  'for(const pid of kids){try{process.kill(pid,"SIGKILL");}catch{}}' +
+  "process.exit(0);},5000);};" +
+  'process.stdin.on("end",reap);process.stdin.on("close",reap);';
+
+export interface OrphanReaper {
+  register(pid: number): void;
+  forget(pid: number): void;
+  /** Simulate the harness dying (kernel-close of the pipe): the daemon reaps.
+   * Exposed for the e2e that pins the mechanism — a SIGKILL of this process
+   * closes the pipe identically, the daemon cannot tell the difference. */
+  dropPipe(): void;
+}
+
+/** Spawn a reaper daemon. Fully unref'd: it must never keep the harness's own
+ * event loop alive (that's the wedge that used to hang `fabr test` runs). */
+export function spawnOrphanReaper(): OrphanReaper {
+  const daemon = spawn(NODE, ["-e", REAPER_SCRIPT], { stdio: ["pipe", "ignore", "ignore"] });
+  daemon.unref();
+  const stdin = daemon.stdin!;
+  stdin.on("error", () => undefined); /* daemon already gone — nothing to reap */
+  (stdin as unknown as { unref?: () => void }).unref?.();
+  return {
+    register: pid => stdin.write(`WATCH ${pid}\n`),
+    forget: pid => stdin.write(`FORGET ${pid}\n`),
+    dropPipe: () => stdin.destroy(),
+  };
+}
+
+/** The harness's own daemon, lazily started with the first watch session. */
+let orphanReaper: OrphanReaper | undefined;
+function reaperFor(child: ChildProcess): OrphanReaper {
+  orphanReaper ??= spawnOrphanReaper();
+  if (child.pid !== undefined) {
+    orphanReaper.register(child.pid);
+  }
+  return orphanReaper;
+}
+
+/**
  * A stub `tsc` package for fixtures that compile TypeScript, avoiding the real
  * typescript download. Spread into the fixture files and add STUB_TSC_CONFIG to
  * the project. It reads the generated tsconfig (rootDir/outDir) and copies each
@@ -241,6 +316,8 @@ export const STUB_TSC_CONFIG =
 export interface WatchSession {
   /** The project directory (mutate fixture files here via {@link write}). */
   readonly dir: string;
+  /** The fabr process's pid (for liveness assertions in the reaper e2e). */
+  readonly pid: number | undefined;
   /** Everything the process has written to stderr so far. */
   readonly stderr: string;
   /** Write/overwrite a fixture file (relative to the project dir). */
@@ -283,6 +360,9 @@ export function startFabrWatch(files: Record<string, string>, args: string[]): W
     env: { PATH: CHILD_PATH, FABR_CACHE_DIR: cacheDir },
   });
   liveWatchers.add(child);
+  /* SIGKILL-proof backstop: the daemon reaps this pid if the harness process
+   * itself dies without running its exit hook (a force-exited jest worker). */
+  const reaper = reaperFor(child);
   let stderr = "";
   interface Waiter {
     satisfied(): boolean;
@@ -305,6 +385,7 @@ export function startFabrWatch(files: Record<string, string>, args: string[]): W
 
   return {
     dir,
+    pid: child.pid,
     get stderr(): string {
       return stderr;
     },
@@ -332,11 +413,25 @@ export function startFabrWatch(files: Record<string, string>, args: string[]): W
     stop(signal: NodeJS.Signals = "SIGINT"): Promise<number> {
       return new Promise<number>(resolve => {
         const finish = (code: number | null): void => {
+          clearTimeout(killer);
           liveWatchers.delete(child);
+          if (child.pid !== undefined) {
+            reaper.forget(child.pid);
+          }
           fs.rmSync(dir, { recursive: true, force: true });
           fs.rmSync(cacheDir, { recursive: true, force: true });
           resolve(code ?? -1);
         };
+        /* A wedged fabr (e.g. the @parcel/watcher native deadlock — see
+         * KNOWN-ISSUES) can't run ANY signal handler, so waiting on 'exit' alone
+         * can hang forever — and the child's open pipes then pin the runner's
+         * event loop, so even the exit-hook reaper never fires (jest force-exits
+         * the worker, skipping the reaper and orphaning the child; `fabr test`
+         * has no force-exit and hangs the whole build). Escalate to SIGKILL
+         * after a grace so a stuck child becomes a visible test failure (-1 /
+         * non-zero exit), never a hang. */
+        const killer = setTimeout(() => child.kill("SIGKILL"), STOP_KILL_GRACE_MS);
+        killer.unref();
         /* If the child already exited (e.g. it crashed — exactly the case where a
          * test most needs stop() to complete so its diagnostics surface), resolve
          * now; the 'exit' listener would never fire again and hang forever. */

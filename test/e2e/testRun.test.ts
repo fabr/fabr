@@ -18,6 +18,7 @@
  */
 
 import { expect } from "chai";
+import * as fs from "node:fs";
 import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
 
 /* `fabr test` end to end: compile a package's tests and run them under fabr's
@@ -54,5 +55,48 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     );
     expect(result.status).to.equal(0);
     expect(result.stderr).to.contain("1 test passed");
+  });
+
+  it("survives ill-behaved test code: leaked handles don't hang, spawned processes are reaped", async () => {
+    /* Adversarial test code, both ways it can hurt: (1) it leaks live handles
+     * (an interval, a child's pipes) — without the runner's forceExit the
+     * test-file process would idle forever and hang `fabr test` at the
+     * stream-close wait; (2) it spawns a long-lived process and never kills it
+     * — without the action-boundary group sweep, an orphan. The fixture test
+     * PASSES, so no timeout/failure path is involved: good behavior is simply
+     * never relied upon. The straggler's pid goes to a fixed temp path (the
+     * runner gives tests a clean env and a staged cwd, so the project dir is
+     * unreachable from inside). */
+    const pidPath = "/tmp/fabr-e2e-straggler.pid";
+    fs.rmSync(pidPath, { force: true });
+    const body =
+      'describe("thing", () => { it("misbehaves after passing", () => {' +
+      "setInterval(() => undefined, 1000);" +
+      'const child = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });' +
+      `require("node:fs").writeFileSync(${JSON.stringify(pidPath)}, String(child.pid));` +
+      "assert.equal(1, 1);" +
+      "}); });";
+    try {
+      const result = runFabr(project(body), ["-DJS_TARGET=es2020", "test", "thing"]);
+      /* (1) completed at all — no hang (a regression trips runFabr's 180s
+       * SIGKILL cap into status -1) — and green: the test itself passed. */
+      expect(result.status).to.equal(0);
+      expect(result.stderr).to.contain("1 test passed");
+      /* (2) the spawned straggler did not outlive the run. */
+      const pid = Number(fs.readFileSync(pidPath, "utf8"));
+      const deadline = Date.now() + 8000;
+      let alive = true;
+      while (alive && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        try {
+          process.kill(pid, 0);
+        } catch {
+          alive = false;
+        }
+      }
+      expect(alive).to.equal(false);
+    } finally {
+      fs.rmSync(pidPath, { force: true });
+    }
   });
 });

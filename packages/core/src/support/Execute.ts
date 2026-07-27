@@ -104,6 +104,92 @@ export function findExecutable(name: string): string {
 }
 
 /**
+ * Build steps run in **driver-owned process groups** (POSIX; Windows keeps the
+ * plain spawn): each step's process is spawned detached, leading its own group,
+ * and when it exits the group is swept — SIGTERM immediately (a straggler that
+ * cleans its own children on TERM, like a supervised watcher, gets to), SIGKILL
+ * after a grace. This makes the step boundary a real containment boundary: fabr
+ * must not rely on the tools — or a test suite's code — being well behaved, and
+ * anything a step leaves running would otherwise leak as an orphan (and, by
+ * holding the step's output pipes open, could hang the build waiting for a
+ * stream close that never comes; the sweep is what forces those pipes shut).
+ * Only a child that starts its *own* session escapes the sweep — the TERM'd
+ * parent cleaning up behind itself is the recovery there.
+ *
+ * Because a detached step no longer sits in the terminal's foreground group,
+ * Ctrl-C stops reaching it directly — the driver compensates by routing its own
+ * termination signals through `process.exit`, which fires {@link sweepAllGroups}
+ * from the exit hook installed here.
+ *
+ * The sweep signals the group by the (exited) leader's pid; POSIX keeps that
+ * pgid reserved while any member survives, so the signal is precise whenever
+ * there is anything to kill. An *empty* group has dissolved and the sweep gets
+ * ESRCH — with a theoretical pid-reuse window between dissolve and sweep that
+ * is accepted (microseconds against a full pid-space cycle).
+ */
+const GROUPS_SUPPORTED = process.platform !== "win32";
+
+/** Grace between the sweep's SIGTERM and its SIGKILL escalation — long enough
+ * for a straggler to tear down its own children, short enough not to dawdle. */
+const SWEEP_KILL_GRACE_MS = 5000;
+
+/** Group leaders of in-flight steps (and of sweeps still in their KILL grace),
+ * so the exit hook can sweep whatever is live when fabr itself dies. */
+const liveGroups = new Set<number>();
+let exitSweepInstalled = false;
+
+/** Register a just-spawned step leader for the exit sweep. */
+function trackGroup(pid: number | undefined): void {
+  if (!GROUPS_SUPPORTED || pid === undefined) {
+    return;
+  }
+  if (!exitSweepInstalled) {
+    exitSweepInstalled = true;
+    /* Fabr is dying: no grace — guaranteeing no orphans outranks giving a
+     * straggler a graceful window (same rationale as the run supervisor). */
+    process.on("exit", () => {
+      for (const gid of liveGroups) {
+        try {
+          process.kill(-gid, "SIGKILL");
+        } catch {
+          /* already gone */
+        }
+      }
+    });
+  }
+  liveGroups.add(pid);
+}
+
+/** The step's own process exited — sweep its group for stragglers. */
+function sweepGroup(pid: number | undefined): void {
+  if (!GROUPS_SUPPORTED || pid === undefined) {
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    /* ESRCH: the group dissolved with the leader — the common, clean case. */
+    liveGroups.delete(pid);
+    return;
+  }
+  /* Something survived the step. TERM was just delivered; escalate to KILL
+   * after the grace (a natively-wedged process handles no signal but KILL).
+   * The group stays registered until then so a concurrent fabr exit still
+   * KILLs it via the exit hook. */
+  setTimeout(() => {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      /* gone during the grace */
+    }
+    liveGroups.delete(pid);
+  }, SWEEP_KILL_GRACE_MS).unref();
+}
+
+/** Spawn options putting a step in its own group where supported. */
+const DETACHED = GROUPS_SUPPORTED ? { detached: true } : {};
+
+/**
  * Ask tools to keep their color/formatting: set unconditionally so a step's
  * environment stays deterministic — never conditioned on the driver's terminal
  * (a step's inputs, and thus its cache key, must not depend on it). When output
@@ -136,7 +222,12 @@ export function execute(cmd: string, args: string[], cwd: string, env: Record<st
      * and a captured or inherited failure reads well on a TTY. */
     const output: Uint8Array[] = [];
     const stdio: Array<"ignore" | "pipe" | number> = quiet ? ["ignore", "pipe", "pipe"] : ["ignore", 2, 2];
-    const proc = spawn(cmd, args, { cwd, env: { ...FORCE_COLOR_ENV, ...env }, stdio, windowsHide: true });
+    const proc = spawn(cmd, args, { cwd, env: { ...FORCE_COLOR_ENV, ...env }, stdio, windowsHide: true, ...DETACHED });
+    trackGroup(proc.pid);
+    /* Sweep on 'exit', not 'close': a straggler holding the step's output pipes
+     * open is exactly what keeps 'close' from ever firing — the sweep is what
+     * unblocks it (killed stragglers drop the pipes, 'close' follows, settle). */
+    proc.on("exit", () => sweepGroup(proc.pid));
     if (quiet) {
       proc.stdout?.on("data", data => output.push(data));
       proc.stderr?.on("data", data => output.push(data));
@@ -230,7 +321,11 @@ export function executePipeline(
     let settled = false;
     let remaining = specs.length;
 
-    const killAll = (): void => procs.forEach(p => p.kill());
+    /* Pipefail teardown kills each running stage's whole GROUP (the stages are
+     * group leaders now), so a driver that doesn't forward signals to its own
+     * children no longer leaves them briefly orphaned; an already-exited stage
+     * was swept by its own exit handler (killProcessGroup no-ops on it). */
+    const killAll = (): void => procs.forEach(p => killProcessGroup(p, "SIGTERM"));
     const fail = (err: Error): void => {
       if (!settled) {
         settled = true;
@@ -269,7 +364,10 @@ export function executePipeline(
           env: {},
           stdio: [stdinCfg, stdoutCfg, stderrCfg],
           windowsHide: true,
+          ...DETACHED,
         });
+        trackGroup(proc.pid);
+        proc.on("exit", () => sweepGroup(proc.pid));
         procs.push(proc);
         /* Swallow stream errors on the stdio fabr wires up: when a downstream
          * stage exits before draining its input (the SIGPIPE case, `… | head`),
@@ -414,8 +512,9 @@ export function spawnInteractive(cmd: string, args: string[], cwd?: string): Chi
 /**
  * Signal a detached child's whole process **group** (the negative-pid form), so a
  * launched program that forked its own workers is torn down as a unit instead of
- * leaving orphans behind. Only meaningful for a child spawned by
- * {@link spawnInteractive} (a group leader). A no-op if the child never got a pid
+ * leaving orphans behind. Only meaningful for a group leader — a child spawned by
+ * {@link spawnInteractive}, or a build-step/pipeline-stage process (all spawned
+ * detached; see the group-ownership note above). A no-op if the child never got a pid
  * or has already exited (so a recycled pid is never signalled); ESRCH — the group
  * is already gone — is swallowed, since "not running" is precisely the goal.
  */
