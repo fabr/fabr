@@ -104,6 +104,10 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
    * the stale enumeration snapshot resurrect a file deleted in it). */
   private enumerating = true;
   private readonly pendingEvents: [string, boolean][] = [];
+  /* Bumped each attach; captured by that attach's async enumeration so a result
+   * that lands after the query has detached (last dependant left) or reattached
+   * (a newer enumeration is now authoritative) is discarded — see attach. */
+  private attachGeneration = 0;
 
   constructor(
     private readonly owner: FSFileSource,
@@ -123,12 +127,23 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
      * won't briefly serve the stale value while we re-enumerate the current tree
      * (picking up anything changed while unsubscribed) and settle. */
     super.attach();
+    /* Capture this attach's generation. Enumeration is async, so its result can
+     * land after we have since detached (last dependant left — a superseded watch
+     * evaluation orphaning its subgraph) or reattached (a newer enumeration is now
+     * authoritative). A superseded result must not mutate the shared
+     * file/projection state under a newer attach — the base settle guard can't
+     * cover that (the node is attached again), only the generation can; see
+     * isCurrent for the split. */
+    const generation = ++this.attachGeneration;
     this.owner.registerQuery(this);
     this.files.clear();
     this.enumerating = true;
     this.pendingEvents.length = 0;
     const enumerator = this.enumerator ?? (() => enumerate(this.root, this.name, this.prefix));
     enumerator().then(({ names, project }) => {
+      if (!this.isCurrent(generation)) {
+        return;
+      }
       names.forEach(name => this.files.set(name, this.owner.ingest(name)));
       this.project = project;
       this.enumerating = false;
@@ -139,13 +154,29 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
         this.applyDelta(rel, removed);
       }
       this.pendingEvents.length = 0;
-      this.deliver();
-    }, err => this.settle(ComputableState.Error, toError(err)));
+      this.deliver(generation);
+    }, err => {
+      if (this.isCurrent(generation)) {
+        this.settle(ComputableState.Error, toError(err));
+      }
+    });
   }
 
   protected override detach(): void {
     super.detach();
     this.owner.unregisterQuery(this);
+  }
+
+  /** Whether the attach that captured `generation` is still the live one. The
+   * generation check is the load-bearing half for a *reattached* query — the node
+   * is attached again, so the base settle guard passes; only the generation tells
+   * a superseded enumeration from the authoritative one, keeping it from
+   * clobbering the newer attach's file/projection state. The Detached check
+   * short-circuits the work for an orphan that never reattached: its settle would
+   * be dropped at the base anyway (settle is inert while Detached), but there is
+   * no point ingesting/hashing files for a dead node. */
+  private isCurrent(generation: number): boolean {
+    return generation === this.attachGeneration && this.state !== ComputableState.Detached;
   }
 
   /** Apply a filesystem change: if `rel` is one of ours, update the file map and return
@@ -179,11 +210,20 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     return buildFileSet(this.files, this.project);
   }
 
-  private deliver(): void {
+  private deliver(generation: number): void {
     this.build().then(fileSet => {
+      /* build() is a further async hop, so re-check: a detach/reattach between
+       * enumeration and here must not settle this (stale) result. */
+      if (!this.isCurrent(generation)) {
+        return;
+      }
       this.lastManifest = fileSet.toManifest();
       this.settle(ComputableState.Valid, fileSet);
-    }, err => this.settle(ComputableState.Error, toError(err)));
+    }, err => {
+      if (this.isCurrent(generation)) {
+        this.settle(ComputableState.Error, toError(err));
+      }
+    });
   }
 
   /** WatchController entry: rebuild from the (dispatcher-updated) files and, unless the
@@ -268,7 +308,9 @@ export class FSFileSource implements FileSource {
    * to every registered query ({@link TreeQuery.applyEvent}), scheduling a (debounced)
    * re-settle for each that claims it. @parcel/watcher's FSEvents backend delivers
    * reliably under heavy load where chokidar silently dropped events (the reason for the
-   * switch, and the exact 2.4.1 pin — 2.5.x fails to start FSEvents on macOS 15).
+   * switch). Pinned exact at >=2.5.0: 2.4.1 can deadlock natively when the kqueue
+   * fallback races a failing FSEvents start (upstream #187, fixed by #189 in 2.5.0 —
+   * see KNOWN-ISSUES.md; the wedged process ignores every signal but SIGKILL).
    */
   private ensureSubscription(controller: WatchController): void {
     if (this.subscription) {

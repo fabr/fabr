@@ -405,14 +405,15 @@ describe("Computable", () => {
     expect(values).to.deep.equal([200]);
   });
 
-  it("lets an in-flight child settle through a bare invalidate, corrected on the next re-settle", () => {
+  it("holds an in-flight child's settle while the parent's own input is invalidated (no stale transient)", () => {
     /* The interleaving: parent runs (child C1 in flight), parent's input is
-     * invalidated AGAIN while C1 runs, then C1 finishes. Whether C1's settle lands
-     * depends on whether that second invalidation re-ran the parent (unbinding C1)
-     * or merely marked it. A *bare* invalidate (no new value) does NOT re-run the
-     * parent — so C1 settles through. This is NOT the two-phase flush pattern, where
-     * invalidate is followed synchronously by settle, which re-runs the parent and
-     * sheds C1 (see "ignores a stale async result…"). */
+     * invalidated while C1 runs, then C1 finishes. C1 was computed from the
+     * now-stale input generation, so it must NOT settle through: the parent's
+     * settled-ness is the conjunction of its own inputs and its binding, and the
+     * input side is unsettled. The held value is not lost — the input's re-settle
+     * re-runs the parent, whose fresh child delivers coherently. (The two-phase
+     * flush pattern — invalidate followed synchronously by settle — sheds C1 via
+     * the re-run instead; see "ignores a stale async result…".) */
     const input = new TestSource<number>();
     const children: Array<(value: number) => void> = [];
     let runs = 0;
@@ -426,16 +427,16 @@ describe("Computable", () => {
     expect(runs).to.equal(1);
     expect(values).to.deep.equal([]); // C1 in flight, parent not yet settled
 
-    input.invalidate(); // bare — marks stale, does not re-run the parent
+    input.invalidate(); // bare — marks the input stale; the parent doesn't re-run yet
     expect(runs).to.equal(1);
-    children[0](100); // stale C1 finishes — and settles through
-    expect(values).to.deep.equal([100]);
+    children[0](100); // stale C1 finishes — held: the input side is unsettled
+    expect(values).to.deep.equal([]);
 
-    /* But it's a transient, not a lost update: an actual re-settle re-runs the parent. */
+    /* The input's re-settle re-runs the parent; the fresh child's value lands. */
     input.set(2);
     expect(runs).to.equal(2);
     children[1](200);
-    expect(values).to.deep.equal([100, 200]);
+    expect(values).to.deep.equal([200]);
   });
 
   it("finally runs its side effect on either outcome and passes the result through", () => {
@@ -761,5 +762,128 @@ describe("Computable attach/detach", () => {
     outer.then(v => seen.push(v));
     expect(src.attaches).to.equal(2);
     expect(seen).to.deep.equal([10]);
+  });
+
+  /* The enforced settle-while-attached invariant: a raw source whose async work
+   * completes after its detach must have that completion *dropped* at the base —
+   * a subclass needs no guard of its own. The probe deliberately has none (unlike
+   * TestSource, which models buffer semantics): it calls settle/revalidate
+   * unconditionally, as a naive source subclass would. */
+  class UnguardedSource extends ComputableSource<number> {
+    public trySettle(value: number): void {
+      this.settle(ComputableState.Valid, value);
+    }
+    public tryRevalidate(): void {
+      this.revalidate();
+    }
+  }
+
+  it("drops a settle landing on a detached node, so a re-demand still reattaches", () => {
+    const probe = new UnguardedSource();
+    const dep = probe.then(v => v);
+    unlink(probe, dep); /* last dependant leaves mid-flight */
+    expect(probe.state).to.equal(ComputableState.Detached);
+
+    probe.trySettle(42); /* the superseded async completion lands late */
+    /* Not flipped to Valid: stranding it Valid-while-detached would make
+     * addDependant's Detached check never fire — never reattached, permanently
+     * stale (the TreeQuery watch brick). */
+    expect(probe.state).to.equal(ComputableState.Detached);
+    expect(probe.value).to.equal(undefined);
+
+    /* Re-demand reattaches (pending), and a fresh attached settle delivers. */
+    const seen: number[] = [];
+    probe.then(v => seen.push(v));
+    expect(probe.state).to.equal(ComputableState.Unresolved);
+    probe.trySettle(7);
+    expect(seen).to.deep.equal([7]);
+  });
+
+  it("drops a revalidate landing on a detached node (would mint a Valid from nothing)", () => {
+    const probe = new UnguardedSource();
+    const dep = probe.then(v => v);
+    unlink(probe, dep);
+    probe.tryRevalidate();
+    expect(probe.state).to.equal(ComputableState.Detached);
+  });
+
+  it("never lets a consumer observe mixed generations across a resolveTo binding (diamond)", () => {
+    /* Diamond: both consumer arms derive from src. armB's value changes with src
+     * and recomputes first (created first → earlier in src's dependants order);
+     * gate depends on src but re-settles UNCHANGED, putting outer on the
+     * return-from-maybe path; outer's fn resolves to inner (a binding), and inner
+     * — still recomputing at that moment — carries the old generation. Without
+     * the conjunction gate, outer revalidates Valid-stale from the gate side
+     * alone and the consumer runs once with (old outer, new armB). */
+    let setSrc!: (v: number) => void;
+    const src = Computable.from<number>(res => {
+      setSrc = res;
+    });
+    setSrc(1);
+    const armB = src.then(v => v);
+    const gate = src.then(() => "constant");
+    const inner = src.then(v => v * 10);
+    const outer = gate.then(() => inner);
+
+    const seen: string[] = [];
+    Computable.forAll([outer, armB], (o, b) => {
+      seen.push(`outer=${o} armB=${b}`);
+      return 0;
+    });
+
+    setSrc(2);
+    /* No mixed-generation interim ("outer=10 armB=2") — one coherent update. */
+    expect(seen).to.deep.equal(["outer=10 armB=1", "outer=20 armB=2"]);
+  });
+
+  it("holds a binding's forwarded settle until the outer's own deps are settled (converse)", () => {
+    /* The other direction: the INNER side lands first while the outer's own dep
+     * is still unsettled. The forwarded settle must be held — the outer settling
+     * would expose a new-generation value beside its stale own-dep side — and
+     * then delivered when the own-dep side re-settles (unchanged → the
+     * maybe-branch adopts the binding's result, including a CHANGED inner value
+     * a plain revalidate would have discarded). */
+    let setA!: (v: number) => void;
+    const srcA = Computable.from<number>(res => {
+      setA = res;
+    });
+    let setB!: (v: number) => void;
+    const srcB = Computable.from<number>(res => {
+      setB = res;
+    });
+    setA(1);
+    setB(1);
+    const gate = srcA.then(() => "constant");
+    const inner = srcB.then(v => v * 10);
+    const outer = gate.then(() => inner);
+    const values: number[] = [];
+    outer.then(v => values.push(v));
+    expect(values).to.deep.equal([10]);
+
+    srcA.invalidate(); /* the own-dep side goes stale/pending */
+    setB(2); /* the inner side lands a NEW value: forwarded settle must hold */
+    expect(values).to.deep.equal([10]);
+    expect(outer.isSettled()).to.equal(false);
+
+    /* Own-dep side re-settles unchanged: the outer adopts the binding's held
+     * result — the new inner value, not a revalidation of the stale 10. */
+    setA(1);
+    expect(values).to.deep.equal([10, 20]);
+  });
+
+  it("from/once cells are in the graph from birth (pending, not Detached)", () => {
+    /* Their executor is eager (runs in the factory) — they are producer-driven,
+     * never demand-deferred — so they must not sit Detached while pending: the
+     * settle guard would drop their own resolve. */
+    expect(Computable.from<number>(() => undefined).state).to.equal(ComputableState.Unresolved);
+    expect(Computable.once<number>(() => undefined).state).to.equal(ComputableState.Unresolved);
+    /* And a resolve arriving with zero dependants still lands (fire-and-forget). */
+    let resolve!: (v: number) => void;
+    const cell = Computable.from<number>(res => {
+      resolve = res;
+    });
+    resolve(9);
+    expect(cell.state).to.equal(ComputableState.Valid);
+    expect(cell.value).to.equal(9);
   });
 });

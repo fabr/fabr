@@ -20,13 +20,20 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { Computable, ComputableSource } from "./Computable";
+import { Computable, ComputableSource, ComputableState } from "./Computable";
 import { FSFileSource, TreeQuery } from "./FSFileSource";
 import { Name } from "./Name";
 import { expect } from "chai";
 
 function toPromise<T>(computable: ComputableSource<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.then(resolve, reject));
+}
+
+/* `removeDependant` is protected structural plumbing; reach it here to drive the
+ * detach lifecycle directly — production tears edges down via the cascade, never
+ * an outside call (mirrors Computable.test.ts's `unlink`). */
+function unlink<P, D>(source: ComputableSource<P>, dependant: ComputableSource<D>): void {
+  (source as unknown as { removeDependant(d: ComputableSource<D>): void }).removeDependant(dependant);
 }
 
 /** The shape TreeQuery's injectable enumerator resolves to. */
@@ -81,18 +88,26 @@ describe("FSFileSource enumeration window (TreeQuery)", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  /** A TreeQuery whose enumeration this test resolves manually, plus the resolver. */
-  function windowedQuery(name: string): { query: TreeQuery; resolveEnum: (v: EnumResult) => void } {
+  /** A TreeQuery whose enumeration this test resolves manually. `resolveEnum`
+   * drives the *latest* attach's enumeration; `resolvers` holds one resolver per
+   * attach in order (so a test can land a stale enumeration after a reattach). */
+  function windowedQuery(name: string): {
+    query: TreeQuery;
+    resolveEnum: (v: EnumResult) => void;
+    resolvers: ((v: EnumResult) => void)[];
+  } {
     const src = new FSFileSource(root);
     let resolveEnum!: (v: EnumResult) => void;
+    const resolvers: ((v: EnumResult) => void)[] = [];
     const enumerator = (): Computable<EnumResult> =>
       Computable.from<EnumResult>(resolve => {
         resolveEnum = resolve;
+        resolvers.push(resolve);
       });
     const query = new TreeQuery(src, root, Name.fromLiteral(name), "", enumerator);
     /* Wrap, not capture: `resolveEnum` is only assigned once the query attaches
      * (in toPromise below), which is after this returns. */
-    return { query, resolveEnum: (v: EnumResult) => resolveEnum(v) };
+    return { query, resolveEnum: (v: EnumResult) => resolveEnum(v), resolvers };
   }
 
   it("replays a create that arrived during the window (not dropped)", async () => {
@@ -139,6 +154,63 @@ describe("FSFileSource enumeration window (TreeQuery)", () => {
     fs.writeFileSync(path.join(root, "watchdir", "child.ts"), "x");
     /* The event is claimed (true); the old literal-only matcher dropped it (false). */
     expect(query.applyEvent("watchdir/child.ts", false)).to.equal(true);
+  });
+
+  it("discards an enumeration landing after detach, and reattaches (not permanently bricked)", async () => {
+    /* A superseded watch evaluation orphans its subgraph: the last dependant
+     * leaves while enumeration is in flight. When the result lands the node is
+     * Detached — it must NOT settle (a source settles only while attached).
+     * Settling here would strand it Valid, so addDependant's Detached check never
+     * fires and a later re-demand never reattaches — permanently stale. */
+    fs.mkdirSync(path.join(root, "dir"));
+    fs.writeFileSync(path.join(root, "dir", "old.ts"), "x");
+    fs.writeFileSync(path.join(root, "dir", "new.ts"), "x");
+    const { query, resolvers } = windowedQuery("dir");
+
+    const dep = query.then(() => undefined); /* attach: enumeration #1 pending */
+    expect(query.state).to.not.equal(ComputableState.Detached);
+    unlink(query, dep); /* last dependant leaves → detach mid-enumeration */
+    expect(query.state).to.equal(ComputableState.Detached);
+
+    resolvers[0]({ names: ["dir/old.ts"], project: rel => rel }); /* stale result lands */
+    /* Let its whole async settle (ingest + build) run to completion: without the
+     * guard it would flip the detached node to Valid here. It must stay Detached. */
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(query.state).to.equal(ComputableState.Detached);
+
+    /* Re-demand: it reattaches and a FRESH enumeration settles the current tree —
+     * the proof it wasn't bricked. With the bug, the node is Valid (not Detached),
+     * so addDependant never reattaches: the new dependant is served the stale set
+     * (and no enumeration #2 is even started). */
+    const settled = toPromise(query);
+    resolvers[1]({ names: ["dir/new.ts"], project: rel => rel });
+    const fileSet = await settled;
+    expect([...fileSet].map(([n]) => n)).to.deep.equal(["dir/new.ts"]);
+  });
+
+  it("a reattach supersedes an in-flight enumeration (no interleave on shared state)", async () => {
+    /* detach → immediate reattach starts enumeration #2 while #1 is still in
+     * flight. When #1 lands the node is attached (not Detached), so only the
+     * attach-generation guard rejects it; without it, #1 would mutate the shared
+     * file/projection state under #2 and its stale file would leak into the set. */
+    fs.mkdirSync(path.join(root, "dir"));
+    fs.writeFileSync(path.join(root, "dir", "stale.ts"), "x");
+    fs.writeFileSync(path.join(root, "dir", "second.ts"), "x");
+    const { query, resolvers } = windowedQuery("dir");
+
+    const dep = query.then(() => undefined); /* attach #1: enumeration #1 pending */
+    unlink(query, dep); /* detach */
+    const settled = toPromise(query); /* reattach: attach #2, enumeration #2 pending */
+    expect(query.state).to.not.equal(ComputableState.Detached);
+
+    /* The stale #1 enumeration lands now — attached, so the generation guard (not
+     * the Detached check) must reject it. */
+    resolvers[0]({ names: ["dir/stale.ts"], project: rel => rel });
+    await Promise.resolve();
+    /* #2 completes and is the only contributor to the settled set. */
+    resolvers[1]({ names: ["dir/second.ts"], project: rel => rel });
+    const fileSet = await settled;
+    expect([...fileSet].map(([n]) => n)).to.deep.equal(["dir/second.ts"]);
   });
 });
 

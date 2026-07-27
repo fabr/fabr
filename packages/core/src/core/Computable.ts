@@ -69,17 +69,24 @@ type CatchHandler<U> = (err: Error) => U | Computable<U>;
  * {@link Computable}.
  *
  * **Attachment.** A raw source is born {@link ComputableState.Detached} and attaches on
- * its first dependant; a derived node attaches eagerly on creation (so fire-and-forget
- * tails run). On losing its last dependant a node detaches — unregisters from its
- * dependencies, cascading up, releasing an orphaned subgraph's filesystem watches with
- * no disposal. Reattaching recomputes (a detached node missed any invalidations; sources
- * re-read external state). A node born with no dependants, never given one, never drops.
+ * its first dependant; every other node enters the graph at birth — a derived node
+ * attaches eagerly on creation (so fire-and-forget tails run), a `from`/`once` cell
+ * attaches in its factory (its executor runs eagerly there — it is producer-driven,
+ * never demand-deferred), and `resolve`/`reject` are born already settled. On losing its
+ * last dependant a node detaches — unregisters from its dependencies, cascading up,
+ * releasing an orphaned subgraph's filesystem watches with no disposal. Reattaching
+ * recomputes (a detached node missed any invalidations; sources re-read external state).
+ * A node born with no dependants, never given one, never drops.
  *
  * Two invariants. **Detachable ⟺ reconstructable:** only a node that can re-establish
  * its value on reattach detaches — a derived node with an `fn`, or a re-reading source;
  * a constant (`resolve`/`reject`/`from`) never detaches, serving its value at zero
- * dependants. **A source settles only while attached** — never while detached, so
- * `Detached` never coexists with a live value (a prerequisite for new source subclasses).
+ * dependants. **A source settles only while attached** — enforced: {@link settle} and
+ * {@link revalidate} are no-ops on a detached node, so the async tail of a superseded
+ * evaluation landing after its detach is simply discarded (a reattach re-derives), and
+ * `Detached` never coexists with a live value. A source subclass therefore needs no
+ * settle-time guard of its own — but work that *mutates its own state* before settling
+ * must still discard superseded completions itself (see TreeQuery's generation check).
  *
  * Persistence: a derived node is recomputed when an input changes, and so on
  * throughout the (attached) graph; this applies to errors too. Multiple failed
@@ -200,6 +207,17 @@ export abstract class ComputableSource<T> {
   }
 
   protected settle(state: ComputableState.Valid | ComputableState.Error, value: T | Error): void {
+    /* Inert while Detached (the enforced invariant — see the class doc): a
+     * detached node is out of the graph and holds no value, which is what makes
+     * detach reversible. The async tail of a superseded evaluation (an orphaned
+     * TreeQuery's enumeration, a watch batch's prepared update) routinely
+     * completes after the detach; dropping it here discards the stale result —
+     * a reattach re-derives from current state. Without the guard a late settle
+     * would strand the node serving a stale value at zero dependants, and
+     * addDependant's Detached check would never reattach it. */
+    if (this.currentState === ComputableState.Detached) {
+      return;
+    }
     this.currentState = state;
     if (value !== this.currentValue) {
       this.currentValue = value;
@@ -214,6 +232,12 @@ export abstract class ComputableSource<T> {
    * the whole maybe-invalidated subgraph must return to its settled state.
    */
   protected revalidate(): void {
+    /* Inert while Detached, like settle: revalidation restores a *settled*
+     * state and a detached node has none — the ternary below would otherwise
+     * mint a Valid out of nothing if a stray cascade brushed an orphan. */
+    if (this.currentState === ComputableState.Detached) {
+      return;
+    }
     this.currentState = this.currentState === ComputableState.MaybeError ? ComputableState.Error : ComputableState.Valid;
     this.notifyDependants();
   }
@@ -298,12 +322,22 @@ export class Computable<T> extends ComputableSource<T> {
 
   public static reject<T>(err: Error): Computable<T> {
     const result = new Computable<T>();
-    result.rejectWith(err);
+    /* Born settled, mirroring resolve(): a constant enters the graph already
+     * holding its outcome — settle() is for a node transitioning while attached,
+     * and would drop the value on a Detached-born node. */
+    result.currentValue = err;
+    result.currentState = ComputableState.Error;
     return result;
   }
 
   public static from<T>(fn: (resolve: (value: T | Computable<T>) => void, reject: (err: Error) => void) => void): Computable<T> {
     const result = new Computable<T>();
+    /* In the graph from birth: the executor runs eagerly (right here), so this
+     * cell is producer-driven, never demand-deferred — it must not sit Detached
+     * while pending, or its own resolve would be dropped by settle's detached
+     * guard. Fn-less, so it never detaches; attach here is just the
+     * Detached -> Unresolved (pending) transition. */
+    result.attach();
     fn(result.resolveTo.bind(result), err => result.rejectWith(err));
     return result;
   }
@@ -316,6 +350,7 @@ export class Computable<T> extends ComputableSource<T> {
    */
   public static once<T>(fn: (resolve: (value: T | Computable<T>) => void, reject: (err: Error) => void) => void): Computable<T> {
     const result = new Computable<T>();
+    result.attach(); // in the graph from birth — see from()
     let settled = false;
 
     fn(
@@ -412,6 +447,24 @@ export class Computable<T> extends ComputableSource<T> {
       binding.outer = this;
       binding.setDerivation([value], IDENTITY);
       this.binding = binding;
+      /* An already-settled inner settled the binding during attach, but its
+       * forward may have been held: mid-re-run this node is Invalid, which the
+       * forward's coherence gate cannot tell apart from a stale binding under a
+       * pending re-run (see acceptFromBinding). THIS binding is definitionally
+       * current — just created from the current inputs — so pull its result
+       * directly. (Already delivered ⇒ settled ⇒ skipped.) */
+      if (binding.isSettled() && !this.isSettled()) {
+        this.settle(binding.state as ComputableState.Valid | ComputableState.Error, binding.value as T | Error);
+      } else if (this.currentState === ComputableState.Invalid) {
+        /* A re-run bound a still-pending inner: `fn` has now consumed the
+         * (settled) inputs, so Invalid — "a re-run is owed" — no longer
+         * describes this node; it is awaiting its inner, exactly the state a
+         * first attach waits in. Normalizing to Unresolved is what lets
+         * acceptFromBinding read Invalid as *always* meaning a pending re-run
+         * (hold, the binding is about to be superseded) while the awaited
+         * inner's eventual forward lands (deliver). */
+        this.currentState = ComputableState.Unresolved;
+      }
     } else {
       this.settle(ComputableState.Valid, value);
     }
@@ -436,17 +489,68 @@ export class Computable<T> extends ComputableSource<T> {
     }
     if (!this.isSettled() && this.canRun()) {
       if (this.state === ComputableState.MaybeValid || this.state === ComputableState.MaybeError) {
-        this.revalidate();
+        /* Returning to settled after a maybe-invalid wave. With a live binding,
+         * this node's settled-ness is the CONJUNCTION of its own deps (all
+         * settled — canRun above) and the binding: revalidating from the
+         * own-deps side alone would re-serve the stale inner value while the
+         * inner is still recomputing — exactly the mixed-generation interim the
+         * maybe-invalid frontier exists to forbid. So adopt a settled binding's
+         * result (settle dedups an unchanged value into the equivalent of a
+         * revalidation — and adopts a *changed* one, which plain revalidate
+         * would silently discard); hold on a pending one — its forward delivers
+         * when the inner side lands. */
+        const binding = this.binding;
+        if (!binding) {
+          this.revalidate();
+        } else if (binding.isSettled()) {
+          this.settle(binding.state as ComputableState.Valid | ComputableState.Error, binding.value as T | Error);
+        }
       } else {
         this.run();
       }
     }
   }
 
+  /**
+   * The binding delivering the inner's settled result. It lands only when this
+   * node is coherent to receive it: own deps settled (canRun) and no re-run
+   * pending — Invalid means an own-dep *value* changed and `fn` hasn't consumed
+   * it yet; run() will unbind this binding and rebind from fresh inputs, so its
+   * value must not land now (settling here would make maybeRecompute see a
+   * settled node and skip the re-run, freezing the stale binding in place). A
+   * held delivery is not lost: once the own-dep side settles, maybeRecompute
+   * adopts the binding's result (own deps unchanged) or run() rebinds (changed).
+   */
+  private acceptFromBinding(state: ComputableState.Valid | ComputableState.Error, value: T | Error): void {
+    if (this.canRun() && this.currentState !== ComputableState.Invalid) {
+      this.settle(state, value);
+    }
+  }
+
+  /**
+   * The binding reporting that the inner revalidated unchanged: return to
+   * settled only if the own-dep side is settled too and we are in a maybe state
+   * (the only states a revalidation can restore); otherwise hold — the own-dep
+   * side's own settle/revalidate converges us through maybeRecompute.
+   */
+  private revalidateFromBinding(): void {
+    if (
+      this.canRun() &&
+      (this.currentState === ComputableState.MaybeValid || this.currentState === ComputableState.MaybeError)
+    ) {
+      this.revalidate();
+    }
+  }
+
   /* A binding node mirrors the full cascade into its outer (no-ops elsewhere —
    * `outer` is only ever set on a binding): the maybe-invalid frontier, the
    * revalidation wave, and the settle itself (state + value adopted verbatim,
-   * never recomputed — re-running the outer's fn would mint a fresh inner). */
+   * never recomputed — re-running the outer's fn would mint a fresh inner).
+   * The invalidating direction forwards unconditionally (unsettling is always
+   * safe); the SETTLING direction is coherence-gated on the outer
+   * (acceptFromBinding / revalidateFromBinding): the outer returns to settled
+   * only when both its own deps and the binding agree, so a consumer never
+   * observes mixed-generation inputs across the boundary. */
 
   /** A hard invalidate (the inner re-settled a changed value with no prior
    * maybe-invalid wave) must still unsettle the outer, or a consumer sharing
@@ -464,12 +568,23 @@ export class Computable<T> extends ComputableSource<T> {
 
   protected override revalidate(): void {
     super.revalidate();
-    this.outer?.revalidate();
+    /* Forward only what actually landed (the base drops a revalidate on a
+     * detached binding); the outer applies its own coherence gate. */
+    if (this.currentState !== ComputableState.Detached) {
+      this.outer?.revalidateFromBinding();
+    }
   }
 
   protected override settle(state: ComputableState.Valid | ComputableState.Error, value: T | Error): void {
     super.settle(state, value);
-    this.outer?.settle(state, value);
+    /* Forward only what actually landed: if the base dropped the settle (this
+     * binding detached — unbound by a supersede), the outer must not adopt the
+     * stale value either. Post-drop the state is still Detached, so this check
+     * distinguishes a landed settle from a discarded one. The outer then applies
+     * its own coherence gate (acceptFromBinding). */
+    if (this.currentState !== ComputableState.Detached) {
+      this.outer?.acceptFromBinding(state, value);
+    }
   }
 }
 
