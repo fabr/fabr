@@ -151,6 +151,48 @@ describe("writeFileSet modes", () => {
     expect(fs.statSync(path.join(work, "bin/gen.sh")).mode & 0o111, "exec bit not applied").to.not.equal(0);
     expect(fs.statSync(path.join(work, "plain.txt")).mode & 0o111, "stray exec bit").to.equal(0);
   });
+
+  it("fails cleanly (does not clobber) when a staged path already exists", async () => {
+    /* Exclusive staging: writing over an existing path is an error, not a silent
+     * overwrite — the mechanism that, on a case-insensitive fs, catches two names
+     * differing only in case. Tested deterministically with an exact pre-existing
+     * name (fs-independent). */
+    fs.writeFileSync(path.join(work, "keep.txt"), "original");
+    const files = new FileSet(new Map([["keep.txt", new MemoryFile(Buffer.from("new"), 0o644)]]));
+    let error: Error | undefined;
+    await toPromise(writeFileSet(work, files)).catch((e: Error) => (error = e));
+    expect(error).to.be.an.instanceOf(ConflictError);
+    expect(error?.message).to.match(/case-colliding names/);
+    expect(fs.readFileSync(path.join(work, "keep.txt"), "utf8")).to.equal("original");
+  });
+
+  it("a copy (fabr cp) overwrites an existing file, mirroring system cp", async () => {
+    fs.writeFileSync(path.join(work, "keep.txt"), "original");
+    const files = new FileSet(new Map([["keep.txt", new MemoryFile(Buffer.from("new"), 0o644)]]));
+    await toPromise(writeFileSet(work, files, { copy: true }));
+    expect(fs.readFileSync(path.join(work, "keep.txt"), "utf8")).to.equal("new");
+  });
+
+  it("rejects two staged names differing only in case (case-insensitive fs only)", async () => {
+    /* Probe the work fs: does 'Probe' also answer to 'probe'? */
+    fs.writeFileSync(path.join(work, "Probe"), "");
+    const caseInsensitive = fs.existsSync(path.join(work, "probe"));
+    fs.rmSync(path.join(work, "Probe"));
+    if (!caseInsensitive) {
+      return; /* case-sensitive fs: both names legitimately coexist — nothing to assert */
+    }
+    const files = new FileSet(
+      new Map([
+        ["Foo.txt", new MemoryFile(Buffer.from("a"), 0o644)],
+        ["foo.txt", new MemoryFile(Buffer.from("b"), 0o644)],
+      ])
+    );
+    let error: Error | undefined;
+    await toPromise(writeFileSet(work, files)).catch((e: Error) => (error = e));
+    expect(error, "expected a case-collision error").to.be.an.instanceOf(ConflictError);
+    /* Both folded names are reported. */
+    expect(error?.message).to.match(/Foo\.txt/).and.to.match(/foo\.txt/);
+  });
 });
 
 describe("syncFileSet", () => {

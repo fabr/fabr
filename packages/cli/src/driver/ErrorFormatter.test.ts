@@ -19,6 +19,7 @@
 
 import { expect } from "chai";
 import {
+  ConflictError,
   DependencyFailedError,
   ExecutionError,
   IDiagnosticNote,
@@ -26,6 +27,7 @@ import {
   MultiError,
   Name,
   ReferenceFailedError,
+  registerProvenanceRenderer,
 } from "@fabr-build/core";
 import { DiagnosticErrorFormatter } from "./ErrorFormatter";
 
@@ -98,5 +100,37 @@ describe("DiagnosticErrorFormatter", () => {
     expect(depDiag, "shared failure reported once").to.not.equal(undefined);
     const requiredBy = (depDiag?.notes ?? []).filter(n => n.message.startsWith("required by")).map(n => n.message);
     expect([...requiredBy].sort((a, b) => a.localeCompare(b))).to.deep.equal(["required by app deps", "required by lib deps"]);
+  });
+
+  it("renders a same-source conflict's chain once, then lists both files", () => {
+    /* A case-collision within one package: both sides share the origin and key,
+     * so the breadcrumb is identical — render it once, not per side. */
+    registerProvenanceRenderer("test-chain", () => [{ message: "A -> B" }]);
+    const origin = { kind: "test-chain" };
+    const conflict = new ConflictError(
+      "case-colliding names",
+      "node_modules/pkg/readme.md",
+      { provenance: origin, detail: "node_modules/pkg/README.md" },
+      { provenance: origin, detail: "node_modules/pkg/readme.md" }
+    );
+    const [diag] = capture(conflict);
+    expect((diag.notes ?? []).map(n => n.message)).to.deep.equal([
+      "A -> B",
+      "at node_modules/pkg/README.md",
+      "at node_modules/pkg/readme.md",
+    ]);
+  });
+
+  it("renders both chains for a genuine two-source conflict", () => {
+    registerProvenanceRenderer("test-left", () => [{ message: "left-chain" }]);
+    registerProvenanceRenderer("test-right", () => [{ message: "right-chain" }]);
+    const conflict = new ConflictError(
+      "files",
+      "x",
+      { provenance: { kind: "test-left" }, detail: "a" },
+      { provenance: { kind: "test-right" }, detail: "b" }
+    );
+    const [diag] = capture(conflict);
+    expect((diag.notes ?? []).map(n => n.message)).to.deep.equal(["left-chain", "at a", "right-chain", "at b"]);
   });
 });

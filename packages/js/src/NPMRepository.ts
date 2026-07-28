@@ -1145,14 +1145,14 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
           this.context.fetch(
             meta.dist.tarball,
             "npm:tarball:1",
-            (content, targetDir) => {
+            (content, { createOutput }) => {
               /* Verify the tarball against the registry's promised digest as it
                * streams: a mismatch throws before the entry commits, so tampered
                * or truncated-but-valid content never enters the immutable cache. */
               const { hashing, verify } = verifyTarballStream(meta.dist, meta.dist.tarball);
               content.on("error", err => hashing.destroy(err instanceof Error ? err : new Error(String(err))));
               content.pipe(hashing);
-              return unpackStream(hashing, targetDir).then(files => {
+              return unpackStream(hashing, createOutput).then(files => {
                 verify();
                 return stripArchiveRoot(files);
               });

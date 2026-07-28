@@ -17,17 +17,13 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Readable, Transform, Writable } from "stream";
-import { pipeline } from "stream/promises";
+import { Readable, Writable } from "stream";
 import { createUnzip } from "zlib";
-import * as crypto from "crypto";
 import * as path from "path";
-import * as fs from "fs";
 import * as tar from "tar-stream";
+import type { IOutputHandle } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
-import { HASH_ALGORITHM } from "../core/FSWrapper";
 import { FileSet, IFile } from "../core/FileSet";
-import { FSFile } from "../core/FSFileSource";
 import { SymlinkFile } from "../core/SymlinkFile";
 
 export enum ArchiveType {
@@ -46,12 +42,28 @@ const MIN_HEAD_LENGTH = 262; /* For TAR */
  * cumulative decompressed-size ceiling — the real bomb defense — is future work. */
 const MAX_COMPRESSION_LAYERS = 4;
 
+/** Normalize a tar entry name to a safe relative FileSet key: strip a leading
+ * `/` (an absolute archive name → relative, standard tar behavior) and collapse
+ * `.`/`..` segments. A name that still escapes the tree (a `../` traversal in an
+ * untrusted network tarball) or is empty returns undefined — dropped. */
+function normalizeEntryName(raw: string): string | undefined {
+  const normalized = path.posix.normalize(raw.replace(/^\/+/, ""));
+  if (normalized === "" || normalized === "." || normalized === ".." || normalized.startsWith("../")) {
+    return undefined;
+  }
+  return normalized;
+}
+
 /**
- *
- * @param
- * @param targetdir
+ * Unpack an archive stream into a {@link FileSet}, streaming each entry directly
+ * into the content-addressed store via `createOutput` — no scratch directory. So
+ * an archive name never places bytes at an on-disk path: tar-slip is structurally
+ * impossible, and two entries differing only in case survive as distinct blobs
+ * (rejected only if actually staged to a case-folding filesystem — see
+ * writeFileSet). An absolute entry name is made relative (leading `/` stripped,
+ * standard tar behavior); a `../` traversal that escapes the tree is dropped.
  */
-export function unpackStream(ins: Readable, targetdir: string): Computable<FileSet> {
+export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): Computable<FileSet> {
   /* This is fed the live network response, so any hop can fail (a header
    * truncated below MIN_HEAD_LENGTH, a mid-stream connection drop, a write
    * error) via several independent listeners: Computable.once keeps the first
@@ -72,98 +84,64 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
         case ArchiveType.TAR: {
           const extract = tar.extract();
           const files: Computable<[string, IFile]>[] = [];
-          /* Every emitted entry, keyed by its in-archive name, so a later
-           * hardlink can resolve to the file its `linkname` already produced. */
+          /* Every emitted entry, keyed by its (normalized) in-archive name, so a
+           * later hardlink can resolve to the file its `linkname` already produced. */
           const byName = new Map<string, Computable<IFile>>();
-          const root = path.resolve(targetdir);
           const emit = (name: string, file: Computable<[string, IFile]>): void => {
             files.push(file);
             byName.set(name, file.then(([, f]) => f));
           };
           extract.on("entry", (headers, entry, next) => {
-            entry.on("end", () => {
-              next();
-            });
-            const pathname = path.resolve(targetdir, headers.name);
-            const contained = pathname === root || pathname.startsWith(root + path.sep);
-            if (headers.type === "directory" || !contained) {
-              /* Directories carry no file to write; an entry whose path escapes
-               * `targetdir` (a tar-slip via a `../` or absolute name — untrusted,
-               * these tarballs come from the network) is dropped for security. */
+            entry.on("end", () => next());
+            const name = normalizeEntryName(headers.name);
+            if (name === undefined || headers.type === "directory") {
+              /* A directory carries no file; a name that escapes the tree (a `../`
+               * traversal in an untrusted network tarball) is dropped. */
               entry.resume();
             } else if (headers.type === "symlink") {
-              /* A symlink names its target (`linkname`, relative to the link's
-               * own directory) and has no body — emit a SymlinkFile carrying
-               * the target and drain the (empty) entry. The target may escape
-               * the tree; that is guarded when the set is staged, not here. */
-              emit(headers.name, Computable.resolve([headers.name, new SymlinkFile(headers.linkname ?? "")]));
+              /* A symlink names its target (`linkname`, relative to the link's own
+               * directory) and has no body — emit a SymlinkFile carrying the target
+               * and drain the (empty) entry. The target may escape the tree; that
+               * is guarded when the set is staged (writeFileSet), not here. */
+              emit(name, Computable.resolve([name, new SymlinkFile(headers.linkname ?? "")]));
               entry.resume();
             } else if (headers.type === "link") {
               /* A hardlink has no body — its `linkname` names an earlier entry
-               * (archive-root-relative, tar orders targets first) whose content
-               * it shares. Content-addressed storage makes that a pure dedup:
-               * reuse the target's file (same hash → one blob, two manifest
-               * names). An unknown target — dropped for escaping, or malformed —
+               * whose content it shares. Content-addressed storage makes that a
+               * pure dedup: reuse the target's file (same hash → one blob, two
+               * names). An unknown target (dropped for escaping, or malformed)
                * drops the link too. */
-              const target = byName.get(headers.linkname ?? "");
+              const target = byName.get(normalizeEntryName(headers.linkname ?? "") ?? "");
               if (target) {
-                emit(headers.name, target.then(f => [headers.name, f]));
+                emit(name, target.then(f => [name, f]));
               }
               entry.resume();
             } else {
+              /* A regular file: stream its body straight into a CAS blob (the sink
+               * hashes as it writes), preserving the entry's full permission bits
+               * (setuid/setgid/sticky included) so an executable — e.g. esbuild's
+               * native binary in @esbuild/<platform> — lands runnable. `finalize`
+               * places the blob under its content hash and yields the file;
+               * `{ end: false }` leaves the sink for finalize to end, not the pipe. */
+              const mode = (headers.mode ?? 0o644) & 0o7777;
+              const output = createOutput();
               emit(
-                headers.name,
+                name,
                 Computable.from<[string, IFile]>((resolveFile, rejectFile) => {
-                  /* An entry whose path already exists is a collision — most often
-                   * two names differing only in case on a case-insensitive
-                   * filesystem (APFS/NTFS), which would otherwise share one inode:
-                   * the later write overwrites the earlier, and ingest would then
-                   * store one entry's bytes under the other's hash — a blob whose
-                   * content doesn't match its key. Fail cleanly instead. */
-                  if (fs.existsSync(pathname)) {
-                    const err = new Error(`Archive entry '${headers.name}' collides with an existing path (case-insensitive filesystem?)`);
+                  /* A write/read failure settles this file AND the whole unpack (a
+                   * stalled tar whose `finish` never fires can't hang the outer),
+                   * and drops the half-written blob. */
+                  const fail = (err: Error): void => {
+                    output.discard();
                     rejectFile(err);
                     reject(err);
-                    return;
-                  }
-                  const hash = crypto.createHash(HASH_ALGORITHM);
-                  const dir = path.dirname(pathname);
-                  fs.mkdirSync(dir, { recursive: true });
-                  /* Preserve the entry's full permission bits (including
-                   * setuid/setgid/sticky) so an executable — e.g. esbuild's
-                   * native binary in @esbuild/<platform> — lands runnable, and so
-                   * the original mode survives to a later export. The mode rides
-                   * the FSFile (→ manifest); the on-disk work file is written with
-                   * it too, but BuildCache re-chmods the pooled blob read-only. */
-                  const mode = (headers.mode ?? 0o644) & 0o7777;
-                  const outfile = fs.createWriteStream(pathname, { mode });
-                  const hashTransform = new Transform({
-                    transform: (chunk, _enc, cb) => {
-                      hash.update(chunk);
-                      cb(null, chunk);
-                    },
+                  };
+                  output.stream.on("error", fail);
+                  entry.on("error", fail);
+                  entry.pipe(output.stream, { end: false });
+                  entry.on("end", () => {
+                    output.finalize(name, mode).then(file => resolveFile([name, file]), fail);
                   });
-                  /* Await the pipeline (not fire-and-forget): its promise is the one
-                   * place that settles this file — a write/read failure would
-                   * otherwise be an unhandled rejection and leave the entry never
-                   * `next()`-ed. A file failure also fails the whole unpack directly,
-                   * so a stalled tar (finish never fires) can't hang the outer. */
-                  pipeline(entry, hashTransform, outfile)
-                    .then(() =>
-                      resolveFile([
-                        headers.name,
-                        new FSFile(
-                          targetdir,
-                          headers.name,
-                          { mtime: headers.mtime ?? new Date(), size: headers.size ?? 0, mode },
-                          hash.digest("hex")
-                        ),
-                      ])
-                    )
-                    .catch(err => {
-                      rejectFile(err);
-                      reject(err);
-                    });
                 })
               );
             }

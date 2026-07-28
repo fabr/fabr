@@ -18,7 +18,7 @@
  */
 
 import { Readable } from "stream";
-import { FetchOptions, IActionContext } from "../core/BuildCache";
+import { FetchOptions, IActionContext, IFetchContext } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource } from "../core/FileSet";
 import {
@@ -557,7 +557,7 @@ export class BuildContext {
   public getCachedOrFetch(
     url: string,
     tag: string,
-    process: (content: Readable, targetDir: string) => Computable<FileSet>,
+    process: (content: Readable, ctx: IFetchContext) => Computable<FileSet>,
     headers?: Record<string, string>,
     options?: FetchOptions
   ): Computable<FileSet> {
@@ -2207,7 +2207,7 @@ export class RepositoryContext {
   public fetch(
     url: string,
     tag: string,
-    process: (content: Readable, targetDir: string) => Computable<FileSet>,
+    process: (content: Readable, ctx: IFetchContext) => Computable<FileSet>,
     resource?: string,
     headers?: Record<string, string>,
     options?: FetchOptions
@@ -2215,9 +2215,9 @@ export class RepositoryContext {
     return this.context.getCachedOrFetch(
       url,
       tag,
-      (content, targetDir) => {
+      (content, ctx) => {
         this.notifyProgress({ kind: "fetch", url, target: this.target, resource });
-        return process(content, targetDir);
+        return process(content, ctx);
       },
       headers,
       options

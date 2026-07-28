@@ -52,6 +52,39 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
   const operations = [];
   const root = path.resolve(targetDir);
   let realRoot: string | undefined;
+  /* Staging is fail-on-clobber: a hardlink/symlink already refuses to overwrite,
+   * and an in-memory write uses `wx`, so two staged names that map to one path on
+   * the target filesystem — most often names differing only in case on a
+   * case-insensitive one — surface as a clear error here instead of one file
+   * silently overwriting the other (which, for a cache-bound install, would store
+   * one file's bytes under the other's hash). Let the filesystem be the detector:
+   * exclusive create is atomic and only collides on a genuinely case-folding fs.
+   * A `copy` (`fabr cp`) is user space and mirrors system `cp` — overwrite. */
+  const stage = (op: Computable<void>, name: string): Computable<void> =>
+    op.catch((err: unknown) => {
+      if (!options?.copy && (err as NodeJS.ErrnoException)?.code === "EEXIST") {
+        /* Two staged names fold to one path on a case-insensitive filesystem.
+         * Find the earlier-written variant (an O(N) scan, only on this error
+         * path) to name both sides, and attribute each through the install's
+         * lazy merge provenance so the diagnostic traces back to the source
+         * (e.g. the offending npm package and its resolution chain). */
+        const folded = name.toLowerCase();
+        let other: string | undefined;
+        for (const [candidate] of files) {
+          if (candidate !== name && candidate.toLowerCase() === folded) {
+            other = candidate;
+            break;
+          }
+        }
+        throw new ConflictError(
+          "case-colliding names",
+          name,
+          { provenance: files.origin, detail: other ?? "an existing file at that path" },
+          { provenance: files.origin, detail: name }
+        );
+      }
+      throw new ExecutionError(describeSystemError(err));
+    });
   for (const [name, file] of files) {
     const targetName = path.resolve(root, name);
     assertContained(root, targetName, name);
@@ -68,15 +101,16 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
       realRoot ??= fs.realpathSync(path.resolve(targetDir));
       const resolved = path.resolve(fs.realpathSync(dirname), file.target);
       if (resolved === realRoot || resolved.startsWith(realRoot + path.sep)) {
-        operations.push(asExecutionError(symlink(file.target, targetName)));
+        operations.push(stage(symlink(file.target, targetName), name));
       }
     } else if (filepath) {
       /* A hardlink shares the read-only cache blob's mode (0o444/0o555). A copy
        * (`fabr cp`) is durable user space, so reapply the file's real mode —
        * restoring writability and the exact original bits the blob dropped. */
       operations.push(
-        asExecutionError(
-          options?.copy ? copyFile(filepath, targetName).then(() => fs.chmodSync(targetName, file.mode & 0o7777)) : hardlink(filepath, targetName)
+        stage(
+          options?.copy ? copyFile(filepath, targetName).then(() => fs.chmodSync(targetName, file.mode & 0o7777)) : hardlink(filepath, targetName),
+          name
         )
       );
     } else {
@@ -85,7 +119,15 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
        * user space), while a staged file matches the read-only 0o444/0o555 of the
        * hardlinked blobs beside it (exec-if-executable, so a generated tool runs). */
       const mode = options?.copy ? file.mode & 0o7777 : readOnlyPermissions(file.mode);
-      operations.push(asExecutionError(file.getBuffer().then(buffer => writeFile(targetName, buffer)).then(() => fs.chmodSync(targetName, mode))));
+      operations.push(
+        stage(
+          file
+            .getBuffer()
+            .then(buffer => writeFile(targetName, buffer, { exclusive: !options?.copy }))
+            .then(() => fs.chmodSync(targetName, mode)),
+          name
+        )
+      );
     }
   }
   return Computable.forAll(operations, () => {});

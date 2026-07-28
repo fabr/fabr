@@ -22,6 +22,7 @@ import { FileSet } from "./FileSet";
 import { canonicalFileName } from "../support/Paths";
 import { MemoryFile } from "./MemoryFS";
 import { ConflictError } from "./Errors";
+import { registerProvenanceRenderer, renderProvenance } from "./Provenance";
 
 function set(entries: Record<string, string>): FileSet {
   return new FileSet(new Map(Object.entries(entries).map(([name, content]) => [name, MemoryFile.from(content)])));
@@ -114,5 +115,33 @@ describe("FileSet.remap", () => {
     expect([...remapped].map(([name]) => name)).to.deep.equal(["out/x.in"]);
     const two = set({ "out/x": "1", x: "2" });
     expect(() => two.remap(name => (name.startsWith("out/") ? name : `../out/${name}`))).to.throw(ConflictError);
+  });
+});
+
+describe("FileSet merge provenance (lazy)", () => {
+  /* A source origin whose renderer echoes the path it is asked to explain — lets
+   * a test observe exactly what path the merge step delegates with. Registered in
+   * the describe body (runs before the `it`s; no mocha `before` under jest). */
+  registerProvenanceRenderer("test-echo", (_step, ctx) => [{ message: `echo:${ctx.path}` }]);
+
+  it("unionAll delegates to the source that owns a given file's path", () => {
+    const a = set({ "a.txt": "1" }).withOrigin({ kind: "test-echo" });
+    const b = set({ "b.txt": "2" }).withOrigin({ kind: "test-echo" });
+    const merged = FileSet.unionAll(a, b);
+    expect(renderProvenance(merged.origin, { path: "b.txt" })).to.deep.equal([{ message: "echo:b.txt" }]);
+  });
+
+  it("layout strips the mount prefix before delegating, through nested merges", () => {
+    const pkg = set({ "readme.md": "x" }).withOrigin({ kind: "test-echo" });
+    const install = FileSet.layout({ node_modules: FileSet.layout({ yallist: pkg }) });
+    /* node_modules/yallist/readme.md → (strip node_modules/) yallist/readme.md
+     * → (strip yallist/) readme.md, delegated to the package origin. */
+    expect(renderProvenance(install.origin, { path: "node_modules/yallist/readme.md" })).to.deep.equal([
+      { message: "echo:readme.md" },
+    ]);
+  });
+
+  it("carries no origin when no contributor has one (nothing to attribute)", () => {
+    expect(FileSet.unionAll(set({ "a.txt": "1" }), set({ "b.txt": "2" })).origin).to.equal(undefined);
   });
 });

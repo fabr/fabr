@@ -20,7 +20,8 @@
 import * as path from "path";
 import { Name } from "./Name";
 import { Computable, ComputableSource } from "./Computable";
-import { IProvenanceStep } from "./Provenance";
+import { IDiagnosticNote } from "../support/Log";
+import { IProvenanceStep, registerProvenanceRenderer, renderProvenance } from "./Provenance";
 import { ConflictError } from "./Errors";
 import { canonicalFileName, isCanonicalFileName } from "../support/Paths";
 
@@ -380,7 +381,9 @@ export class FileSet implements FileSource {
         }
       }
     }
-    return new FileSet(result, undefined, CANONICAL);
+    /* Lazy merge provenance: retain the contributors (not a per-file map) so a
+     * later diagnostic can trace any file back to its source (see IMergeOrigin). */
+    return new FileSet(result, mergeOrigin(sets.map(fileset => ({ prefix: "", fileset }))), CANONICAL);
   }
 
   public static layout(data: Record<string, FileSet | Array<FileSet | undefined> | IFile | undefined>): FileSet {
@@ -388,27 +391,81 @@ export class FileSet implements FileSource {
      * canonicalizing constructor (posix join — names are `/`-separated
      * everywhere, whatever the host platform). */
     const result = new Map<string, IFile>();
+    /* Contributors and the prefix each was mounted under, for lazy merge
+     * provenance (see IMergeOrigin) — a raw IFile carries no origin, so only
+     * FileSet sources are recorded. */
+    const sources: IMergeSource[] = [];
     for (const prefix in data) {
       const files = data[prefix];
+      const mount = prefix === "" ? "" : prefix + "/";
       if (Array.isArray(files)) {
         for (const fs of files) {
           if (fs) {
             for (const [name, file] of fs) {
               result.set(path.posix.join(prefix, name), file);
             }
+            sources.push({ prefix: mount, fileset: fs });
           }
         }
       } else if (files instanceof FileSet) {
         for (const [name, file] of files) {
           result.set(path.posix.join(prefix, name), file);
         }
+        sources.push({ prefix: mount, fileset: files });
       } else if (files !== undefined) {
         result.set(prefix, files);
       }
     }
-    return new FileSet(result);
+    return new FileSet(result, mergeOrigin(sources));
   }
 
 }
 
 export const EMPTY_FILESET: FileSet = new FileSet(new Map());
+
+/**
+ * Provenance for a FileSet assembled from several sources (a `unionAll`, or a
+ * prefixed `layout`). A single `origin` slot can't represent multiple sources,
+ * so combinations used to drop it; instead this step retains only its
+ * contributor FileSets (O(K) references — never a per-file map) and reconstructs
+ * one file's origin **lazily**, at render/error time: given the file's path it
+ * strips the matching mount prefix, finds the contributor that holds it, and
+ * delegates to *that* set's origin — recursing through nested merges down to a
+ * single-source origin (e.g. a package resolution) that explains the path.
+ * Nothing is computed unless a diagnostic actually asks.
+ */
+export const FILESET_MERGE_PROVENANCE = "fileset-merge";
+
+interface IMergeSource {
+  /** The layout prefix this source was mounted under ("" for a bare union). */
+  readonly prefix: string;
+  readonly fileset: FileSet;
+}
+
+interface IMergeOrigin extends IProvenanceStep {
+  readonly kind: typeof FILESET_MERGE_PROVENANCE;
+  readonly sources: ReadonlyArray<IMergeSource>;
+}
+
+/** A merge-provenance step over `sources`, or undefined when none carries an
+ * origin — nothing to attribute, so don't pay for a step that can never explain. */
+function mergeOrigin(sources: IMergeSource[]): IMergeOrigin | undefined {
+  return sources.some(source => source.fileset.origin !== undefined)
+    ? { kind: FILESET_MERGE_PROVENANCE, sources }
+    : undefined;
+}
+
+registerProvenanceRenderer(FILESET_MERGE_PROVENANCE, (step, context): IDiagnosticNote[] => {
+  const merge = step as IMergeOrigin;
+  if (context.path !== undefined) {
+    for (const { prefix, fileset } of merge.sources) {
+      if (context.path.startsWith(prefix)) {
+        const rel = context.path.slice(prefix.length);
+        if (fileset.getFile(rel) !== undefined && fileset.origin !== undefined) {
+          return renderProvenance(fileset.origin, { ...context, path: rel });
+        }
+      }
+    }
+  }
+  return [];
+});

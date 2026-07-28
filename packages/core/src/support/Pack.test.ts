@@ -23,6 +23,8 @@ import * as tar from "tar-stream";
 import { expect } from "chai";
 import { packToTarball } from "./Pack";
 import { unpackStream } from "./Unpack";
+import { BuildCache } from "../core/BuildCache";
+import { LogFormatter, LogLevel } from "./Log";
 import { Computable } from "../core/Computable";
 import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
@@ -56,9 +58,10 @@ function diskFile(abspath: string): IFile {
  * debris from a prior run). The returned FileSet's hashes are computed during
  * unpack, so it stays valid after the dir is removed. */
 async function unpackInTemp(tarball: Buffer): Promise<FileSet> {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pack-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pack-cache-"));
+  const cache = new BuildCache(dir, new LogFormatter(LogLevel.Info, () => undefined));
   try {
-    return await unpackStream(Readable.from(tarball), dir);
+    return await unpackStream(Readable.from(tarball), () => cache.getTemporaryWriteStream());
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -140,12 +143,16 @@ describe("Pack", () => {
       );
 
       const tarball = await packToTarball(source);
-      const out = path.join(dir, "out");
-      fs.mkdirSync(out);
-      await unpackStream(Readable.from(tarball), out);
-
-      expect(fs.statSync(path.join(out, "bin/cli.sh")).mode & 0o111, "exec bit lost").to.not.equal(0);
-      expect(fs.statSync(path.join(out, "readme.txt")).mode & 0o111, "stray exec bit").to.equal(0);
+      /* The exec bit rides the unpacked (blob-backed) IFile's mode, round-tripped
+       * through the tar entry's mode. */
+      const result = await unpackInTemp(tarball);
+      const cli = await result.get("bin/cli.sh");
+      const readme = await result.get("readme.txt");
+      if (!cli || !readme) {
+        throw new Error("expected both entries");
+      }
+      expect(cli.mode & 0o111, "exec bit lost").to.not.equal(0);
+      expect(readme.mode & 0o111, "stray exec bit").to.equal(0);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

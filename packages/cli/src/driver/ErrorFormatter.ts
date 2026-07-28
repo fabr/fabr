@@ -196,10 +196,18 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
        * build (an ownerless one has no enclosing DependencyFailedError) — they
        * are exactly what makes the clash diagnosable, so they must not depend
        * on `owner`. */
-      const notes = [cause.left, cause.right].flatMap(side => [
-        ...this.chainNotes(side.provenance, side.label, cause.key),
-        ...(side.detail ? [{ message: `at ${side.detail}` }] : []),
-      ]);
+      /* When both sides trace to the same source (a case-collision within one
+       * package — both names have the same origin, keyed on the same path), the
+       * two chains are identical: render it once and list both files, rather than
+       * repeating the whole breadcrumb per side. */
+      const detailNote = (side: typeof cause.left): IDiagnosticNote[] => (side.detail ? [{ message: `at ${side.detail}` }] : []);
+      const sameSource = cause.left.provenance !== undefined && cause.left.provenance === cause.right.provenance;
+      const notes = sameSource
+        ? [...this.chainNotes(cause.left.provenance, cause.left.label, cause.key), ...detailNote(cause.left), ...detailNote(cause.right)]
+        : [cause.left, cause.right].flatMap(side => [
+            ...this.chainNotes(side.provenance, side.label, cause.key),
+            ...detailNote(side),
+          ]);
       return owner
         ? { message: `Failed to build ${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target), notes }
         : { message: cause.message, notes };

@@ -23,8 +23,10 @@ import * as os from "os";
 import * as path from "path";
 import * as tar from "tar-stream";
 import { unpackStream } from "./Unpack";
+import { BuildCache, IOutputHandle } from "../core/BuildCache";
 import { SymlinkFile } from "../core/SymlinkFile";
 import { Computable } from "../core/Computable";
+import { LogFormatter, LogLevel } from "./Log";
 import { expect } from "chai";
 
 /* Settle a Computable to a promise with a hard timeout, so a *hang* — the failure
@@ -46,6 +48,20 @@ function withTimeout<T>(c: Computable<T>, ms = 2000): Promise<T> {
 }
 
 describe("Unpack", () => {
+  /* Unpack now streams each entry straight into the content-addressed store, so
+   * a test provides a CAS-output factory backed by a temp BuildCache (rather than
+   * a scratch directory). The returned FileSet holds blob-backed files. */
+  let cacheDir: string;
+  let createOutput: () => IOutputHandle;
+  beforeEach(() => {
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-unpack-cache-"));
+    const cache = new BuildCache(cacheDir, new LogFormatter(LogLevel.Info, () => undefined));
+    createOutput = () => cache.getTemporaryWriteStream();
+  });
+  afterEach(() => {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  });
+
   it("tar.gz", async () => {
     const input = Buffer.from(
       `H4sICKfHJGYAA3Rlc3QudGFyAO2UzY6bMBDHc85ToBz2VJuvAKs97aFSLz30CVI54A1OwFges2pU
@@ -63,131 +79,106 @@ describe("Unpack", () => {
     );
 
     const ins = Readable.from(input);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-unpack-"));
-    try {
-      const result = await unpackStream(ins, dir);
-      expect(result.size).to.equal(1);
-      const file = await result.get("package.json");
-      expect(file?.hash).to.equal("ff344d6ce0cb6497bcc78b026420dee7538870af60809bab61e9a2e83b70a287");
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    const result = await unpackStream(ins, createOutput);
+    expect(result.size).to.equal(1);
+    const file = await result.get("package.json");
+    expect(file?.hash).to.equal("ff344d6ce0cb6497bcc78b026420dee7538870af60809bab61e9a2e83b70a287");
   });
 
   it("preserves the executable bit from tar entry modes", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-unpack-"));
-    try {
-      const pack = tar.pack();
-      pack.entry({ name: "package/bin/tool", mode: 0o755 }, "#!/bin/sh\n");
-      pack.entry({ name: "package/lib/plain.js", mode: 0o644 }, "module.exports = 1;\n");
-      pack.finalize();
+    const pack = tar.pack();
+    pack.entry({ name: "package/bin/tool", mode: 0o755 }, "#!/bin/sh\n");
+    pack.entry({ name: "package/lib/plain.js", mode: 0o644 }, "module.exports = 1;\n");
+    pack.finalize();
 
-      const result = await unpackStream(pack, dir);
-      expect(result.size).to.equal(2);
-      /* 0o111 = any execute bit; the plain file must not have gained one. */
-      expect(fs.statSync(path.resolve(dir, "package/bin/tool")).mode & 0o111).to.not.equal(0);
-      expect(fs.statSync(path.resolve(dir, "package/lib/plain.js")).mode & 0o111).to.equal(0);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+    const result = await unpackStream(pack, createOutput);
+    expect(result.size).to.equal(2);
+    /* The mode rides the (blob-backed) IFile; 0o111 = any execute bit. */
+    const tool = await result.get("package/bin/tool");
+    const plain = await result.get("package/lib/plain.js");
+    if (!tool || !plain) {
+      throw new Error("expected both entries");
     }
+    expect(tool.mode & 0o111).to.not.equal(0);
+    expect(plain.mode & 0o111).to.equal(0);
   });
 
   it("translates a symlink to a SymlinkFile and resolves a hardlink to shared content", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-unpack-"));
-    try {
-      const pack = tar.pack();
-      pack.entry({ name: "package/real.js", mode: 0o644 }, "module.exports = 1;\n");
-      pack.entry({ name: "package/link.js", type: "symlink", linkname: "real.js" });
-      /* A hardlink shares the earlier entry's content — content-addressed
-       * storage makes it a dedup: same hash under a second name. */
-      pack.entry({ name: "package/hard.js", type: "link", linkname: "package/real.js" });
-      /* A hardlink to a target that never appears (or was dropped) is itself dropped. */
-      pack.entry({ name: "package/dangling.js", type: "link", linkname: "package/missing.js" });
-      pack.finalize();
+    const pack = tar.pack();
+    pack.entry({ name: "package/real.js", mode: 0o644 }, "module.exports = 1;\n");
+    pack.entry({ name: "package/link.js", type: "symlink", linkname: "real.js" });
+    /* A hardlink shares the earlier entry's content — content-addressed
+     * storage makes it a dedup: same hash under a second name. */
+    pack.entry({ name: "package/hard.js", type: "link", linkname: "package/real.js" });
+    /* A hardlink to a target that never appears (or was dropped) is itself dropped. */
+    pack.entry({ name: "package/dangling.js", type: "link", linkname: "package/missing.js" });
+    pack.finalize();
 
-      const result = await unpackStream(pack, dir);
-      expect(result.size).to.equal(3);
-      const link = await result.get("package/link.js");
-      expect(link).to.be.instanceOf(SymlinkFile);
-      expect((link as SymlinkFile).target).to.equal("real.js");
-      const real = await result.get("package/real.js");
-      const hard = await result.get("package/hard.js");
-      expect(hard).to.not.equal(undefined);
-      expect(hard?.hash).to.equal(real?.hash);
-      expect(await result.get("package/dangling.js")).to.equal(undefined);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    const result = await unpackStream(pack, createOutput);
+    expect(result.size).to.equal(3);
+    const link = await result.get("package/link.js");
+    expect(link).to.be.instanceOf(SymlinkFile);
+    expect((link as SymlinkFile).target).to.equal("real.js");
+    const real = await result.get("package/real.js");
+    const hard = await result.get("package/hard.js");
+    expect(hard).to.not.equal(undefined);
+    expect(hard?.hash).to.equal(real?.hash);
+    expect(await result.get("package/dangling.js")).to.equal(undefined);
   });
 
   it("rejects (rather than hanging) when the stream errors before a full header", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-unpack-"));
+    const ins = new Readable({ read() {} });
+    const result = unpackStream(ins, createOutput);
+    /* Fewer than MIN_HEAD_LENGTH bytes arrive, then the connection fails. */
+    setImmediate(() => {
+      ins.push(Buffer.alloc(16));
+      ins.destroy(new Error("connection reset"));
+    });
+    let err: Error | undefined;
     try {
-      const ins = new Readable({ read() {} });
-      const result = unpackStream(ins, dir);
-      /* Fewer than MIN_HEAD_LENGTH bytes arrive, then the connection fails. */
-      setImmediate(() => {
-        ins.push(Buffer.alloc(16));
-        ins.destroy(new Error("connection reset"));
-      });
-      let err: Error | undefined;
-      try {
-        await withTimeout(result);
-      } catch (e) {
-        err = e as Error;
-      }
-      expect(err?.message).to.equal("connection reset");
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await withTimeout(result);
+    } catch (e) {
+      err = e as Error;
     }
+    expect(err?.message).to.equal("connection reset");
   });
 
   it("rejects (rather than crashing) when the stream drops mid-archive", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-unpack-"));
+    /* A valid TAR magic (ustar at offset 257) clears the header phase; the
+     * connection then drops, exercising the live pipe's error path. */
+    const head = Buffer.alloc(512);
+    head.write("ustar", 257, "ascii");
+    const ins = new Readable({ read() {} });
+    const result = unpackStream(ins, createOutput);
+    setImmediate(() => {
+      ins.push(head);
+      setImmediate(() => ins.destroy(new Error("connection dropped")));
+    });
+    let err: Error | undefined;
     try {
-      /* A valid TAR magic (ustar at offset 257) clears the header phase; the
-       * connection then drops, exercising the live pipe's error path. */
-      const head = Buffer.alloc(512);
-      head.write("ustar", 257, "ascii");
-      const ins = new Readable({ read() {} });
-      const result = unpackStream(ins, dir);
-      setImmediate(() => {
-        ins.push(head);
-        setImmediate(() => ins.destroy(new Error("connection dropped")));
-      });
-      let err: Error | undefined;
-      try {
-        await withTimeout(result);
-      } catch (e) {
-        err = e as Error;
-      }
-      expect(err).to.be.instanceOf(Error);
-      expect(err?.message).to.not.equal("timed out (hang)");
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await withTimeout(result);
+    } catch (e) {
+      err = e as Error;
     }
+    expect(err).to.be.instanceOf(Error);
+    expect(err?.message).to.not.equal("timed out (hang)");
   });
 
-  it("drops tar entries whose path escapes the target dir (tar-slip)", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-unpack-"));
-    const escape = path.resolve(dir, "..", "fabr-tar-slip.txt");
-    try {
-      const pack = tar.pack();
-      pack.entry({ name: "package/ok.txt" }, "safe");
-      pack.entry({ name: "../fabr-tar-slip.txt" }, "evil");
-      pack.entry({ name: "/etc/fabr-tar-slip.txt" }, "evil");
-      pack.finalize();
+  it("strips a leading '/' (absolute → relative) and drops a '../' escape", async () => {
+    const pack = tar.pack();
+    pack.entry({ name: "package/ok.txt" }, "safe");
+    /* A `../` traversal escapes the tree → dropped. An absolute name has its
+     * leading `/` stripped → a relative key, kept (it stages under the install
+     * root, contained). Under CAS nothing is written by name at all — these are
+     * pure FileSet-key semantics. */
+    pack.entry({ name: "../fabr-tar-slip.txt" }, "evil");
+    pack.entry({ name: "/etc/fabr-tar-slip.txt" }, "abs");
+    pack.finalize();
 
-      const result = await unpackStream(pack, dir);
-      /* Only the contained entry survives; the escaping ones are neither in the
-       * result nor written to disk outside the target dir. */
-      expect(result.size).to.equal(1);
-      expect(await result.get("package/ok.txt")).to.not.equal(undefined);
-      expect(fs.existsSync(escape)).to.equal(false);
-      expect(fs.existsSync("/etc/fabr-tar-slip.txt")).to.equal(false);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-      fs.rmSync(escape, { force: true });
-    }
+    const result = await unpackStream(pack, createOutput);
+    expect(result.size).to.equal(2);
+    expect(await result.get("package/ok.txt")).to.not.equal(undefined);
+    expect(await result.get("etc/fabr-tar-slip.txt"), "absolute name stripped to relative, kept").to.not.equal(undefined);
+    expect(await result.get("../fabr-tar-slip.txt"), "'../' escape dropped").to.equal(undefined);
   });
 });

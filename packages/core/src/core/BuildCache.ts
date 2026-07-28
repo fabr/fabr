@@ -41,10 +41,23 @@ export interface IOutputHandle {
    * is ended by {@link finalize}/{@link discard}, not by the source). */
   readonly stream: Writable;
   /** End the stream, flush it, place the streamed bytes in the store under their
-   * (now-complete) hash, and return a cache-backed file named `name`. */
-  finalize(name: string): Computable<IFile>;
+   * (now-complete) hash, and return a cache-backed file named `name`. `mode` is
+   * the file's real permission bits (default non-executable) — carried on the
+   * IFile so an unpacked executable (e.g. an esbuild binary) survives to export. */
+  finalize(name: string, mode?: number): Computable<IFile>;
   /** Abandon the stream and delete its temp file — nothing enters the store. */
   discard(): void;
+}
+
+/** What a fetch `process` callback is handed alongside the response stream. A
+ * consumer that assembles an in-memory document (metadata) writes nothing; one
+ * that reifies large content (an archive unpack) streams each file straight into
+ * the content store via {@link createOutput}, never through the scratch dir. */
+export interface IFetchContext {
+  /** A cache-owned scratch dir the process may write files into. */
+  readonly targetDir: string;
+  /** A streaming CAS-output factory (see {@link getTemporaryWriteStream}). */
+  readonly createOutput: () => IOutputHandle;
 }
 
 /**
@@ -260,7 +273,7 @@ export class BuildCache {
   public getOrFetch(
     url: string,
     tag: string,
-    process: (content: Readable, targetDir: string) => Computable<FileSet>,
+    process: (content: Readable, ctx: IFetchContext) => Computable<FileSet>,
     headers?: Record<string, string>,
     options?: FetchOptions
   ): Computable<FileSet> {
@@ -291,7 +304,7 @@ export class BuildCache {
   private fetch(
     key: string,
     url: string,
-    process: (content: Readable, targetDir: string) => Computable<FileSet>,
+    process: (content: Readable, ctx: IFetchContext) => Computable<FileSet>,
     headers: Record<string, string> | undefined,
     entry: ICacheEntry | undefined,
     options: FetchOptions | undefined
@@ -308,7 +321,11 @@ export class BuildCache {
         const meta = options?.immutable !== false ? undefined : response.cacheControl;
         const stream = response.stream;
         if (stream) {
-          return this.createEntry(key, targetDir => process(stream, targetDir), meta);
+          return this.createEntry(
+            key,
+            targetDir => process(stream, { targetDir, createOutput: () => this.getTemporaryWriteStream() }),
+            meta
+          );
         }
         /* 304: only possible for a conditional request (the fetch layer rejects
          * it otherwise), so we hold the entry the validators came from —
@@ -386,7 +403,7 @@ export class BuildCache {
     sink.pipe(fileStream);
     return {
       stream: sink,
-      finalize: (name: string): Computable<IFile> =>
+      finalize: (name: string, mode: number = DEFAULT_FILE_MODE): Computable<IFile> =>
         Computable.once<IFile>((resolve, reject) => {
           if (firstError) {
             reject(firstError);
@@ -396,10 +413,10 @@ export class BuildCache {
           fileStream.once("finish", () => {
             pendingReject = undefined;
             const digest = hash.digest("hex");
-            /* A streamed output (e.g. captured genrule stdout) is a plain
-             * non-executable file. */
-            this.materializeBlob(digest, DEFAULT_FILE_MODE, blobPath => this.renameIntoPool(tmpPath, blobPath)).then(
-              () => resolve(new BuildFile(this.blobRoot, digest, name)),
+            /* `mode` defaults non-executable (a captured genrule stdout); an
+             * unpacked entry passes its real tar mode so an executable survives. */
+            this.materializeBlob(digest, mode, blobPath => this.renameIntoPool(tmpPath, blobPath)).then(
+              () => resolve(new BuildFile(this.blobRoot, digest, name, mode)),
               reject
             );
           });
