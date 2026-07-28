@@ -168,4 +168,57 @@ describe("Command", () => {
     expect(out.join("\n")).to.match(/Usage: fabr/);
     expect(err).to.deep.equal([]);
   });
+
+  it("rejects a flag that doesn't apply to the command (cat --json)", () => {
+    const { exit, out, err } = capture(["cat", "foo", "--json"]);
+    expect(exit).to.equal(1);
+    expect(err.join("\n")).to.match(/Option '--json' is not valid for the 'cat' command/);
+    expect(out).to.deep.equal([]);
+  });
+
+  it("rejects -l on build and -w on ls", () => {
+    expect(capture(["build", "-l", "foo"]).err.join("\n")).to.match(/'-l' is not valid for the 'build'/);
+    expect(capture(["ls", "-w", "foo"]).err.join("\n")).to.match(/'-w' is not valid for the 'ls'/);
+  });
+
+  it("reports the flag as the user typed it (--quiet vs -q)", () => {
+    expect(capture(["list-targets", "--quiet"]).err.join("\n")).to.match(
+      /Option '--quiet' is not valid for the 'list-targets' command/
+    );
+  });
+
+  it("rejects a second target for a single-target command (shell)", () => {
+    const { exit, out, err } = capture(["shell", "a", "b"]);
+    expect(exit).to.equal(1);
+    expect(err.join("\n")).to.match(/The 'shell' command takes a single target/);
+    expect(out).to.deep.equal([]);
+  });
+
+  it("accepts a single target for shell", () => {
+    expect(parseCommandLine(["node", "fabr", "shell", "a"]).targets).to.deep.equal(["a"]);
+  });
+
+  it("still forwards extra run positionals as program args, not a target error", () => {
+    const options = parseCommandLine(["node", "fabr", "run", "tool", "a", "b"]);
+    expect(options.targets).to.deep.equal(["tool"]);
+    expect(options.runArgs).to.deep.equal(["a", "b"]);
+  });
+
+  it("accepts a valid command flag given before the command (-w test)", () => {
+    const options = parseCommandLine(["node", "fabr", "-w", "test", "foo"]);
+    expect(options.mode).to.equal(Mode.Watch);
+  });
+
+  for (const flag of ["-h", "--help"]) {
+    it(`prints per-command usage to stdout and exits 0 for ${flag}`, () => {
+      const { exit, out, err } = capture([flag]);
+      expect(exit).to.equal(0);
+      const text = out.join("\n");
+      expect(text).to.match(/Usage: fabr/);
+      /* Each command lists its own options inline, e.g. `fabr run [-w] <target…>` */
+      expect(text).to.match(/fabr run \[-w\] <target/);
+      expect(text).to.match(/fabr ls \[-l\] <names>/);
+      expect(err).to.deep.equal([]);
+    });
+  }
 });

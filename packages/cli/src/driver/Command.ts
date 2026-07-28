@@ -48,25 +48,71 @@ export enum Mode {
   Watch,
 }
 
-/** The commands the command line can request. `build`/`test`/`run` are
- * BUILD_OPERATION values; `ls`/`cat`/`cp`/`sync` are driver-side verbs that build
- * under BUILD_OPERATION=build and then list / dump / copy-to-disk / publish the
- * results; `list-targetdefs` is a model-query verb that loads the model and prints
- * without building anything (so it needs no targets). */
-const COMMANDS = new Set([
-  "build",
-  "test",
-  "run",
-  "shell",
-  "ls",
-  "cat",
-  "cp",
-  "sync",
-  "list-targets",
-  "list-targetdefs",
-  "list-properties",
-  "list-all",
-]);
+/** One command's help entry: its own argument synopsis (options that apply to it,
+ * shown inline — `fabr <name> <synopsis>`) and a one-line summary. The set of
+ * commands the command line accepts is derived from this table, so a new command
+ * is added in exactly one place and is self-documenting.
+ *
+ * `build`/`test`/`run` are BUILD_OPERATION values; `ls`/`cat`/`cp`/`sync` are
+ * driver-side verbs that build under BUILD_OPERATION=build and then list / dump /
+ * copy-to-disk / publish the results; the `list-*` verbs are model-query verbs
+ * that load the model and print without building anything (so they need no
+ * targets). */
+interface CommandSpec {
+  name: string;
+  synopsis: string;
+  summary: string;
+  /** The command-specific option flags this command accepts (canonical form —
+   * `--quiet` is recorded as `-q`), used both for the synopsis and to *reject* a
+   * flag applied to a command it means nothing for (`fabr cat --json`). The
+   * universal options (`-D`, `-h`/`--help`, `-v`/`--version`) are always allowed
+   * and are not listed here. `-q` is accepted by every command that runs build
+   * steps but omitted from the synopses (like `-D`) to keep them focused. */
+  accepts: string[];
+  /** This command acts on exactly one target (`shell` stages a single sandbox),
+   * so a second target is a usage error rather than being silently dropped.
+   * `run` needs no marker — it captures one target and forwards the rest as the
+   * program's argv. */
+  singleTarget?: boolean;
+}
+
+const COMMAND_SPECS: CommandSpec[] = [
+  { name: "build", synopsis: "[-w] <targets>", summary: "Build the given targets (the default command)", accepts: ["-w", "-q"] },
+  { name: "test", synopsis: "[-w] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-q"] },
+  { name: "run", synopsis: "[-w] <target> [args…]", summary: "Execute a target, forwarding trailing args to it", accepts: ["-w", "-q"] },
+  { name: "shell", synopsis: "<target>", summary: "Stage a target's build sandbox and open a shell in it (debugging)", accepts: ["-q"], singleTarget: true },
+  { name: "ls", synopsis: "[-l] <names>", summary: "Build the given targets and list their contents", accepts: ["-l", "-q"] },
+  { name: "cat", synopsis: "<names>", summary: "Build a target and write its matching files to stdout", accepts: ["-q"] },
+  { name: "cp", synopsis: "<sources…> <dest>", summary: "Build targets and copy their files to a destination directory", accepts: ["-q"] },
+  { name: "sync", synopsis: "<target>", summary: "Build and publish a sync target to its destination coordinates", accepts: ["-q"] },
+  {
+    name: "list-targets",
+    synopsis: "[-l] [--all] [--json] [names]",
+    summary: "List the targets declared in the project",
+    accepts: ["-l", "--all", "--json"],
+  },
+  {
+    name: "list-targetdefs",
+    synopsis: "[-l] [--json]",
+    summary: "List the available target types and their properties",
+    accepts: ["-l", "--json"],
+  },
+  {
+    name: "list-properties",
+    synopsis: "[-l] [--json]",
+    summary: "List the global configuration properties and flags",
+    accepts: ["-l", "--json"],
+  },
+  {
+    name: "list-all",
+    synopsis: "[--json]",
+    summary: "Emit the whole vocabulary (types, properties, flags) as JSON, for tooling",
+    accepts: ["--json"],
+  },
+];
+
+const COMMANDS = new Set(COMMAND_SPECS.map((c) => c.name));
+const COMMAND_BY_NAME = new Map(COMMAND_SPECS.map((c) => [c.name, c]));
 
 /** Model-query verbs: they inspect the loaded model rather than building targets,
  * so a bare invocation (no targets) is a valid "list everything" request. */
@@ -98,31 +144,32 @@ export interface Options {
   properties: Constraints;
 }
 
-/** Write the usage text to the given sink — stdout for an explicit `-h` or the
- * bare no-target invocation (the de-facto help), stderr for a usage *error*. */
+/** Write the usage text to the given sink — stdout for an explicit `-h`/`--help`
+ * or the bare no-target invocation (the de-facto help), stderr for a usage
+ * *error*. Each command is listed with its own `fabr <name> <synopsis>` line so
+ * the options that apply to it are visible in place; the Options section then
+ * explains each flag once. */
 function printUsage(write: (message: string) => void = console.log): void {
+  /* Pad each `fabr <name> <synopsis>` to a common width so the summaries align. */
+  const synopses = COMMAND_SPECS.map((c) => `fabr ${c.name} ${c.synopsis}`);
+  const width = Math.max(...synopses.map((s) => s.length));
+  const commandLines = COMMAND_SPECS.map(
+    (c, i) => `  ${synopses[i].padEnd(width)}  ${c.summary}`
+  ).join("\n");
   write(
-    "Usage: fabr [command] [-w] <targets>\n" +
+    "Usage: fabr [command] [options] <targets>\n" +
+      "The command defaults to 'build'; a target named like a command is reached by\n" +
+      "giving the command explicitly first.\n\n" +
       "Commands:\n" +
-      "  build             Build the given targets (the default)\n" +
-      "  test              Run the given targets' tests\n" +
-      "  run               Execute the given targets\n" +
-      "  shell             Stage a target's build sandbox and open a shell in it (debugging)\n" +
-      "  ls                Build the given targets and list their contents\n" +
-      "  cat               Build a target and write its matching files to stdout\n" +
-      "  cp                Build targets and copy their files to a destination directory\n" +
-      "  sync              Build and publish a sync target to its destination coordinates\n" +
-      "  list-targets      List the targets declared in the project\n" +
-      "  list-targetdefs   List the available target types and their properties\n" +
-      "  list-properties   List the global configuration properties and flags\n" +
-      "  list-all          Emit the whole vocabulary (types, properties, flags) as JSON, for tooling\n" +
-      "Options:\n" +
-      "  -DPROP=VALUE      Force the given property PROP to VALUE\n" +
+      commandLines +
+      "\n\nOptions:\n" +
+      "  -DPROP=VALUE      Force the given property PROP to VALUE (before the target for run)\n" +
+      "  -w                Watch mode: rebuild / re-run as inputs change (build/test/run)\n" +
       "  -l                Long listing: hash and size per file (ls), or source location (list-*)\n" +
       "  --json            Emit JSON (the list-* verbs)\n" +
       "  --all             Include system-contributed targets (list-targets)\n" +
-      "  -w                Watch mode\n" +
       "  -q, --quiet       Suppress live subcommand output (shown by default as steps run)\n" +
+      "  -h, --help        Print this help and exit\n" +
       "  -v, --version     Print the fabr version and exit\n"
   );
 }
@@ -148,6 +195,11 @@ export function parseCommandLine(args: string[]): Options {
   };
   const opts = args.slice(2);
 
+  /* Command-specific flags seen, paired with their canonical form, validated
+   * against the resolved command once the whole line is parsed — an option may
+   * precede its command (`fabr -w test x`), so the command isn't yet known here. */
+  const seenFlags: { raw: string; flag: string }[] = [];
+
   let commandGiven = false;
   for (const arg of opts) {
     /* For `run`, once the target is captured everything else — flags included —
@@ -157,15 +209,20 @@ export function parseCommandLine(args: string[]): Options {
     } else if (arg[0] === "-") {
       if (arg === "-w") {
         options.mode = Mode.Watch;
+        seenFlags.push({ raw: arg, flag: "-w" });
       } else if (arg === "-l") {
         options.longListing = true;
+        seenFlags.push({ raw: arg, flag: "-l" });
       } else if (arg === "--json") {
         options.json = true;
+        seenFlags.push({ raw: arg, flag: "--json" });
       } else if (arg === "--all") {
         options.all = true;
+        seenFlags.push({ raw: arg, flag: "--all" });
       } else if (arg === "-q" || arg === "--quiet") {
         options.quiet = true;
-      } else if (arg === "-h") {
+        seenFlags.push({ raw: arg, flag: "-q" });
+      } else if (arg === "-h" || arg === "--help") {
         printUsage();
         process.exit(0);
       } else if (arg === "--version" || arg === "-v") {
@@ -195,6 +252,20 @@ export function parseCommandLine(args: string[]): Options {
         options.runArgs = [];
       }
     }
+  }
+  const spec = COMMAND_BY_NAME.get(options.command);
+  /* Reject a flag applied to a command it means nothing for (`fabr cat --json`,
+   * `fabr build -l`) rather than silently ignoring it. */
+  const accepts = new Set(spec?.accepts);
+  for (const { raw, flag } of seenFlags) {
+    if (!accepts.has(flag)) {
+      usageError(`Option '${raw}' is not valid for the '${options.command}' command`);
+    }
+  }
+  /* A single-target command (`shell`) errors on a second target rather than
+   * silently building only the first. */
+  if (spec?.singleTarget && options.targets.length > 1) {
+    usageError(`The '${options.command}' command takes a single target`);
   }
   if (options.command === "cp") {
     /* `cp <source…> <dest>`: the final positional is the destination directory,
