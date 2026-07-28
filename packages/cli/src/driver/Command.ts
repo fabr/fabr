@@ -169,6 +169,7 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  --json            Emit JSON (the list-* verbs)\n" +
       "  --all             Include system-contributed targets (list-targets)\n" +
       "  -q, --quiet       Suppress live subcommand output (shown by default as steps run)\n" +
+      "  --                End of options: following arguments are targets, even if they start with '-'\n" +
       "  -h, --help        Print this help and exit\n" +
       "  -v, --version     Print the fabr version and exit\n"
   );
@@ -201,12 +202,18 @@ export function parseCommandLine(args: string[]): Options {
   const seenFlags: { raw: string; flag: string }[] = [];
 
   let commandGiven = false;
+  let noMoreOptions = false;
   for (const arg of opts) {
     /* For `run`, once the target is captured everything else — flags included —
      * is passed verbatim to the program (fabr's own options go before it). */
     if (options.runArgs) {
       options.runArgs.push(arg);
-    } else if (arg[0] === "-") {
+    } else if (!noMoreOptions && arg === "--") {
+      /* A bare `--` ends fabr's option parsing: every following argument is a
+       * positional (a target/name), so a name that begins with `-` can be given.
+       * Only the first `--` is special — a later one is an ordinary positional. */
+      noMoreOptions = true;
+    } else if (!noMoreOptions && arg[0] === "-") {
       if (arg === "-w") {
         options.mode = Mode.Watch;
         seenFlags.push({ raw: arg, flag: "-w" });

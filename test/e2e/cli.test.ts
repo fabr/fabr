@@ -172,6 +172,34 @@ describe("e2e: driver CLI", () => {
     expect(result.files?.["out/two/y.txt"]).to.equal("Y\n");
   });
 
+  it("cp of a constrained container nests under the facet-stripped name, not the literal", () => {
+    /* A `<k=v>` delta on the source (`one<BUILD_TYPE=release>`) constrains its
+     * build; it must NOT leak into the destination directory name — the reference
+     * is parsed and its facets stripped before its leaf becomes the wrapper dir,
+     * so the files land under `out/one/`, never `out/one<BUILD_TYPE=release>/`. */
+    const result = runFabr(
+      { "PROJECT.fabr": "one = a:**/*;\n", "a/x.txt": "X\n" },
+      ["cp", "one<BUILD_TYPE=release>", "out"],
+      ["out/one/x.txt", "out/one<BUILD_TYPE=release>/x.txt"]
+    );
+    expect(result.status).to.equal(0);
+    expect(result.files?.["out/one/x.txt"]).to.equal("X\n");
+    expect(result.files?.["out/one<BUILD_TYPE=release>/x.txt"]).to.be.undefined;
+  });
+
+  it("cp of a glob projection carrying a constraint still copies flat", () => {
+    /* The facet strips before the flatness check too: a final glob copies flat
+     * whether or not the source also carries a `<k=v>` delta. */
+    const result = runFabr(
+      { "PROJECT.fabr": "one = a:**/*;\n", "a/x.txt": "X\n" },
+      ["cp", "one<BUILD_TYPE=release>:*.txt", "out"],
+      ["out/x.txt", "out/one/x.txt"]
+    );
+    expect(result.status).to.equal(0);
+    expect(result.files?.["out/x.txt"]).to.equal("X\n");
+    expect(result.files?.["out/one/x.txt"]).to.be.undefined;
+  });
+
   it("cp fails, writing nothing, when a source matches no files", () => {
     const result = runFabr(project, ["cp", "files:zzz.txt", "out"], ["out/zzz.txt"]);
     expect(result.status).to.equal(1);

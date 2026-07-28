@@ -49,6 +49,7 @@ export * from "./model/BuildModel";
 export * from "./model/ExecutionContext";
 export * from "./model/Loader";
 export * from "./model/Errors";
+export { parseName } from "./model/Parser";
 export * from "./core/Name";
 export * from "./model/Property";
 export { declPosn, isNameValue, PropertyType } from "./model/AST";

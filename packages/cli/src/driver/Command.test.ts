@@ -187,6 +187,27 @@ describe("Command", () => {
     );
   });
 
+  it("treats arguments after -- as targets, even dash-prefixed ones", () => {
+    const options = parseCommandLine(["node", "fabr", "cat", "--", "-weird", "pkg:-x.js"]);
+    expect(options.command).to.equal("cat");
+    expect(options.targets).to.deep.equal(["-weird", "pkg:-x.js"]);
+  });
+
+  it("does not consume -- itself as a target", () => {
+    expect(parseCommandLine(["node", "fabr", "build", "--", "foo"]).targets).to.deep.equal(["foo"]);
+  });
+
+  it("treats a second -- as an ordinary positional", () => {
+    expect(parseCommandLine(["node", "fabr", "cat", "--", "--", "x"]).targets).to.deep.equal(["--", "x"]);
+  });
+
+  it("still parses options that come before --", () => {
+    const options = parseCommandLine(["node", "fabr", "ls", "-l", "--", "-x"]);
+    expect(options.command).to.equal("ls");
+    expect(options.longListing).to.be.true;
+    expect(options.targets).to.deep.equal(["-x"]);
+  });
+
   it("rejects a second target for a single-target command (shell)", () => {
     const { exit, out, err } = capture(["shell", "a", "b"]);
     expect(exit).to.equal(1);

@@ -34,6 +34,7 @@ import {
   getSourceFileSource,
   getTestReport,
   loadProject,
+  parseName,
   Log,
   LogFormatter,
   LogLevel,
@@ -42,7 +43,6 @@ import {
   isNameValue,
   ITargetDecl,
   ITargetDefDecl,
-  PackageFileSet,
   ProgressListener,
   PropertyType,
   PublishableFileSet,
@@ -599,30 +599,35 @@ function copyTarget(options: Options, execution: ExecutionContext, results: Sour
 }
 
 /**
- * `cp`'s file-vs-directory rule applied to one source, keyed on the name as
- * *entered* (never the resolved package's own name): returns the subdirectory its
- * files nest under (`"core/"`), or `""` for a flat copy. Mirrors the shell `cp`:
+ * `cp`'s file-vs-directory rule applied to one source: returns the subdirectory
+ * its files nest under (`"core/"`), or `""` for a flat copy. `cp` is a pure file
+ * operation — exactly `cp -R`, never package-aware — so the name is always the
+ * source **reference as written**, never the resolved package's own identity
+ * (`cp -R node_modules/@scope/package out` yields `out/package`, and by the same
+ * rule `@npm:esbuild:0.28.1` yields `out/0.28.1` — the reference's final component
+ * whatever it happens to be):
  * - a **trailing `/`** or a **final glob** (`pkg:build/*.js`) → flat (contents /
  *   the matched files land directly under dest — `cp dir/ out`, `cp *.js out`);
  * - a source that **directly names a single file** → flat (the file keeps its
  *   name — `cp file out` → `out/file`);
- * - otherwise it **names a directory/container** (a package, or any reference
- *   delivering a tree) → nested under its final name component (`cp -r dir out`
- *   → `out/dir/`).
- * "Directly names a file" is judged from the delivery: it wraps unless the source
- * is a **lone delivered file whose basename is the reference's own leaf**
- * (`files:a.txt` → `a.txt`, so flat). A package is always a container (even a
- * single-file one); a bare target/namespace — whose leaf (`one`) names no
- * delivered file — is a container even when it happens to deliver one file.
+ * - otherwise it **names a directory/container** → nested under its final path
+ *   component (`cp -r dir out` → `out/dir/`).
+ * The final component is taken from the *parsed* name so its `<k=v>` / `-> tmpl`
+ * facets are stripped first (`mylib<BUILD_TYPE=release>` nests under `mylib`, not
+ * the literal facet text — a delta constrains the build, it is not part of the
+ * name). "Directly names a file" wraps unless the source is a **lone delivered
+ * file whose basename is that leaf** (`files:a.txt` → `a.txt`, flat).
  */
 function copyPrefix(name: string, sets: FileSet[]): string {
-  const leaf = name.replace(/\/+$/, "").split(/[/:]/).filter(Boolean).pop() ?? "";
-  if (name.endsWith("/") || /[*?[\]]/.test(leaf)) {
+  /* Parse then drop the facets, so the selector we inspect for flatness and leaf
+   * is the resolvable text alone. */
+  const selector = parseName(name).withConstraints([]).withRenameTo(undefined).toString();
+  const leaf = selector.replace(/\/+$/, "").split(/[/:]/).filter(Boolean).pop() ?? "";
+  if (selector.endsWith("/") || /[*?[\]]/.test(leaf)) {
     return "";
   }
   const fileNames = sets.flatMap(set => [...set].map(([fileName]) => fileName));
-  const isLoneFile =
-    !sets.some(set => set instanceof PackageFileSet) && fileNames.length === 1 && fileNames[0].split("/").pop() === leaf;
+  const isLoneFile = fileNames.length === 1 && fileNames[0].split("/").pop() === leaf;
   return isLoneFile ? "" : `${leaf}/`;
 }
 
