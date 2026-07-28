@@ -18,6 +18,13 @@
  */
 
 module.exports = {
+  /* Many suites spawn real OS processes (the e2e CLI, Execute's pipeline tests);
+   * under full-suite parallelism their process startup contends for CPU, so the
+   * 5s jest default is too tight and flakes. 30s gives headroom while still
+   * failing a genuine hang in bounded time (the e2e harness has its own 180s
+   * spawnSync cap; watch/serve suites raise this further per-file). A future
+   * cleanup is for unit tests not to spawn real processes at all. */
+  testTimeout: 30000,
   collectCoverage: true,
   collectCoverageFrom: [
     "**/src/**/*.ts",
