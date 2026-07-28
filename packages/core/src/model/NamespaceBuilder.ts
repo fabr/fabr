@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { validateTarget } from "./Validate";
+import { validateProperty, validateTarget } from "./Validate";
 import { Diagnostic, ISourcePosition, Log } from "../support/Log";
 import { DeclKind, declPosn, getDeclKindName, INamedDecl, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
 import { NAME_COMPONENT_SEPARATOR } from "../core/Name";
@@ -154,18 +154,30 @@ export class NamespaceBuilder {
   public resolve(node: NSBuilderNode = this.root): void {
     Object.values(node.content).forEach(child => {
       if ("kind" in child) {
-        if (child.kind === DeclKind.Target) {
-          const targetDef = this.resolveTargetDef(child.type);
-          if (!targetDef) {
-            this.unknownTargetDefError(child);
-          } else {
-            validateTarget(child, targetDef, this.log);
-          }
-        }
+        this.validateDecl(child);
       } else {
         this.resolve(child);
       }
     });
+    /* Default properties/targets live apart from `content` but are validated the
+     * same way (a `default X = …;` is a schema-less property like any global). */
+    Object.values(node.defaultContent).forEach(child => this.validateDecl(child));
+  }
+
+  /** Validate one collated declaration: a target against its targetdef schema, a
+   * schema-less property (global or default) structurally. A targetdef itself
+   * has nothing to check here. */
+  private validateDecl(decl: ITargetDefDecl | ITargetDecl | IPropertyDecl): void {
+    if (decl.kind === DeclKind.Target) {
+      const targetDef = this.resolveTargetDef(decl.type);
+      if (!targetDef) {
+        this.unknownTargetDefError(decl);
+      } else {
+        validateTarget(decl, targetDef, this.log);
+      }
+    } else if (decl.kind === DeclKind.Property) {
+      validateProperty(decl, this.log);
+    }
   }
 
   private buildNamespace(node: NSBuilderNode): Namespace {

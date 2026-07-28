@@ -151,4 +151,34 @@ describe("validateTarget (MAP properties)", () => {
     expect(errors).to.have.lengthOf(1);
     expect(errors[0]).to.match(/duplicate map key 'B'/);
   });
+
+  it("rejects a command (pipeline) inside a map block", () => {
+    const errors = validationErrors(def + "m t { defines = { A = a | b; }; }\n");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/a command .*is not valid in a map block/);
+  });
+});
+
+describe("validateProperty (global / schema-less properties)", () => {
+  it("validates a global map block's internals (duplicate key)", () => {
+    const errors = validationErrors("meta = { A = 1; A = 2; };");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/duplicate map key 'A'/);
+  });
+
+  it("accepts a well-formed global map block", () => {
+    expect(validationErrors("meta = { A = 1; B = 2; };")).to.deep.equal([]);
+  });
+
+  it("validates a default property's map block too", () => {
+    const errors = validationErrors("default meta = { A = 1; A = 2; };");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/duplicate map key 'A'/);
+  });
+
+  it("does not statically reject a command in a standalone property (the chase)", () => {
+    /* A pipeline defined in a standalone property is legit until it lands in a
+     * non-COMMAND slot — a resolution-time backstop, not a static error. */
+    expect(validationErrors("shared = a | b;")).to.deep.equal([]);
+  });
 });

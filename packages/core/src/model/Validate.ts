@@ -163,6 +163,27 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
   return isValid;
 }
 
+/**
+ * Validate a schema-less property — a top-level/global or `default` property,
+ * which has no targetdef to give it a type. Only the structural (type-independent)
+ * rules apply: a `{ ... }` block validates as a map (its internals, and no
+ * block/name mix). A plain name/reference list has nothing to check without a
+ * schema.
+ *
+ * A command value is deliberately NOT rejected here: a pipeline may be defined in
+ * a standalone property and *referenced* into a target's COMMAND property (the
+ * "chase"), so whether it lands in a COMMAND slot is only knowable at resolution
+ * — an invalid placement is caught by the resolution-time backstop, not statically.
+ *
+ * @return true if validation succeeds, otherwise false (errors written to the log).
+ */
+export function validateProperty(prop: IPropertyDecl, log: Log): boolean {
+  if (hasMapValue(prop)) {
+    return validateMapProperty(prop, log);
+  }
+  return true;
+}
+
 /** Validate a MAP property. Its value is either one `{ ... }` block or bare
  * reference(s) to other block-valued properties (`metadata = SHARED;`, resolved
  * at read time), never a mix; a list of blocks at the top level is reserved for
@@ -213,7 +234,11 @@ function validateBlock(entries: IMapItemDecl[], log: Log): boolean {
       isValid = fail(`a map value is either strings or maps, not a mix (key '${entry.name}')`, entry);
     }
     entry.values.forEach(value => {
-      if (isMapValue(value)) {
+      if (isCommandValue(value)) {
+        /* A `k = a | b;` inside a block parses to a command value; a map holds
+         * only strings/maps, so pipeline operators are meaningless here. */
+        isValid = fail(`a command (pipeline operators) is not valid in a map block (key '${entry.name}')`, entry);
+      } else if (isMapValue(value)) {
         if (!validateBlock(value.entries, log)) {
           isValid = false;
         }
