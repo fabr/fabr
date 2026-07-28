@@ -183,6 +183,27 @@ describe("Parser Tests", () => {
     ]);
   });
 
+  it("treats tabs and CRLF as insignificant whitespace", () => {
+    /* Tab indentation and Windows CRLF line endings must parse identically to
+     * space-indented LF: the full POSIX [[:space:]] set is whitespace. */
+    expect(summarize(parseValid("\ttsc=@npm:typescript;\r\n\tjs_target=es5;\r\n"))).to.deep.equal(
+      summary({ properties: { tsc: ["@npm:typescript"], js_target: ["es5"] } })
+    );
+  });
+
+  it("keeps Object.prototype names out of parsed property-schema records", () => {
+    /* Property names are user-controlled and later tested with `x in properties`
+     * (Validate), so the schema record must be null-prototype: a builtin name
+     * like `toString` must not read as a phantom member, and a property named
+     * `__proto__` must be a real own key, not the record's prototype. */
+    const props = parseValid("targetdef t { __proto__ = STRING; toString = FILES; }").targetdefs[0].properties;
+    expect(Object.getPrototypeOf(props)).to.equal(null);
+    expect("valueOf" in props).to.equal(false);
+    expect(Object.hasOwn(props, "__proto__")).to.equal(true);
+    expect(props["__proto__"].type).to.equal(PropertyType.String);
+    expect(props["toString"].type).to.equal(PropertyType.FileSet);
+  });
+
   it("rejects a 'default' with a non-identifier name (not a target of type 'default')", () => {
     /* `default` is a keyword; a `/`-bearing name must error positioned at the
      * name, rather than silently parsing as a target of type `default`. */

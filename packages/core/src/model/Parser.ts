@@ -193,7 +193,10 @@ function missingTarget(op: CommandOpKind): string {
 }
 
 function isWhitespace(ch: number): boolean {
-  return ch === CHAR_NEWLINE || isWhiteSpaceChar(ch);
+  // unicode-properties' isWhiteSpace covers space and the Unicode Zs category
+  // but NOT the ASCII control whitespace (TAB, LF, VT, FF, CR = 0x09–0x0D), so
+  // this is the full POSIX [[:space:]] set: tab-indented and CRLF files parse.
+  return (ch >= 0x09 && ch <= 0x0d) || isWhiteSpaceChar(ch);
 }
 
 /** The `->` arrow must be whitespace-delimited: what may follow the `>`. */
@@ -1468,7 +1471,10 @@ export class BuildParser {
    *
    */
   private parsePropertyTypeList(): Record<string, IPropertySchema> {
-    const result: Record<string, IPropertySchema> = {};
+    /* Null-prototype: keys are user property names, later tested with `x in
+     * properties` (Validate), so `toString`/`__proto__` must not resolve to an
+     * inherited member or corrupt the schema. */
+    const result: Record<string, IPropertySchema> = Object.create(null);
     while (this.token.type !== TokenType.RBRACE) {
       const token = this.token;
       const docComment = token.docComment;
