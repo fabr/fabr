@@ -71,6 +71,7 @@ import {
   tripleToNpm,
   unpackStream,
   VersionNotFoundError,
+  select,
   versionToString,
   Violation,
 } from "@fabr-build/core";
@@ -256,7 +257,7 @@ function uniqueAssignments(assignments: readonly NpmPublishIdentity[]): Map<stri
   for (const { name, version } of assignments) {
     byName.set(name, (byName.get(name) ?? new Set()).add(version));
   }
-  return new Map([...byName].flatMap(([name, versions]) => (versions.size === 1 ? [[name, [...versions][0]] as const] : [])));
+  return new Map(select([...byName], ([name, versions]) => (versions.size === 1 ? ([name, [...versions][0]] as const) : undefined)));
 }
 
 export class NPMRepository implements Repository, RepositoryReader, RepositoryWriter, PackageRegistry<SemverVersion> {

@@ -183,6 +183,18 @@ describe("Parser Tests", () => {
     ]);
   });
 
+  it("rejects a 'default' with a non-identifier name (not a target of type 'default')", () => {
+    /* `default` is a keyword; a `/`-bearing name must error positioned at the
+     * name, rather than silently parsing as a target of type `default`. */
+    expect(parseInvalid("default foo/bar = x;")).to.deep.equal([
+      diagnosticBlock(1, 9, "Read Name but expected a property name after 'default'", "default foo/bar = x;"),
+    ]);
+  });
+
+  it("parses a well-formed default property", () => {
+    expect(summarize(parseValid("default FLAVOR = plain;"))).to.deep.equal(summary({ defaults: { FLAVOR: ["plain"] } }));
+  });
+
   it("Property with Subst var", () => {
     expect(summarize(parseValid("A=b; B=${A};"))).to.deep.equal(summary({ properties: { A: ["b"], B: ["var(A)"] } }));
   });
@@ -222,6 +234,15 @@ describe("Parser Tests", () => {
     expect(summarize(parseValid("A='a b'; B=a b '${A}';"))).to.deep.equal(
       summary({ properties: { A: ["a b"], B: ["a", "b", "${A}"] } })
     );
+  });
+
+  it("positions an unterminated-quote error at the opening quote", () => {
+    expect(parseInvalid("A = 'oops;")).to.deep.equal([
+      diagnosticBlock(1, 5, "Unexpected end of file, expected '", "A = 'oops;"),
+    ]);
+    expect(parseInvalid('A = "oops;')).to.deep.equal([
+      diagnosticBlock(1, 5, 'Unexpected end of file, expected "', 'A = "oops;'),
+    ]);
   });
 
   it("Target Decl", () => {
@@ -275,9 +296,26 @@ describe("Parser Tests", () => {
     expect(errors).to.have.length(1);
   });
 
+  it("recovers within a target body — one diagnostic per error, no top-level leak", () => {
+    const count = (src: string): number => {
+      const errors: string[] = [];
+      parseBuildString(EMPTY_FILESET, "PROJECT.fabr", src, new LogFormatter(LogLevel.Info, m => errors.push(m)));
+      return errors.length;
+    };
+    /* A bad property mid-body must not cascade: previously the recovery resumed
+     * top-level parsing *inside* the body, leaking the remaining properties and
+     * misreporting the closing `}`. Now each real error yields exactly one. */
+    expect(count("js_package foo {\n  srcs = = ;\n  deps = bar;\n}\nother = ok;")).to.equal(1);
+    expect(count("js_package foo {\n  a = = ;\n  b = = ;\n  c = ok;\n}\nx = ok;")).to.equal(2);
+    /* A bad entry inside a map-block value stays contained in the block. */
+    expect(count("js_package foo {\n  meta = { k = = ; };\n  deps = bar;\n}\nother = ok;")).to.equal(1);
+  });
+
   it("Missing Close Brace", () => {
+    /* An unterminated body runs to EOF; the body loop ends at EOF and the missing
+     * `}` is reported directly, rather than as a property-list continuation. */
     expect(parseInvalid("js_package fabr {\nsrcs=src:**/*.ts; deps= es2019\n node \nunicode-properties;")).to.deep.equal([
-      diagnosticBlock(4, 20, "Read EOF but expected Identifier, reference, or '}'", "unicode-properties;"),
+      diagnosticBlock(4, 20, "Read EOF but expected '}'", "unicode-properties;"),
     ]);
   });
 
@@ -462,14 +500,54 @@ describe("Parser Tests", () => {
       ]);
     });
 
-    it("does not bind a spaced '<' as a constraint (it is a stdin redirect)", () => {
-      /* The constraint binds only when it abuts the reference; a whitespace-
-       * separated `<` is instead a command stdin redirect — so the value parses
-       * to a `command`, not a value list with a constraint. */
+    it("treats a spaced '< file' with no '=' as a stdin redirect", () => {
+      /* A spaced `<` is disambiguated by content: without a `key=` it is a
+       * command stdin redirect, so the value parses to a `command`. */
       const command = parseValid("run = mylib < src;").properties[0].values.find(isCommandValue);
       expect(command?.pipeline).to.have.length(1);
       expect(command?.pipeline[0].command.value.toString()).to.equal("mylib");
       expect(command?.pipeline[0].stdin?.value.toString()).to.equal("src");
+    });
+
+    it("binds a spaced '<k=v>' as a constraint (disambiguated by the '=')", () => {
+      /* A space before `<` no longer forces a redirect: `<key=` can only be a
+       * constraint (never a redirect target), so it binds to the reference. */
+      const name = firstValue("dep = mylib <BUILD_TYPE=release>;");
+      expect(name.toString()).to.equal("mylib<BUILD_TYPE=release>");
+      expect(constraintsOf(name)).to.deep.equal([["BUILD_TYPE", "release"]]);
+    });
+
+    it("binds a spaced constraint with a projection tail", () => {
+      const name = firstValue("dep = mylib <BUILD_TYPE=release>:build/*.js;");
+      expect(name.toString()).to.equal("mylib:build/*.js<BUILD_TYPE=release>");
+      expect(constraintsOf(name)).to.deep.equal([["BUILD_TYPE", "release"]]);
+    });
+
+    it("does not glue non-projection text after a constraint (foo<k=v>bar)", () => {
+      /* Only a `:`/`/`-led projection tail rejoins; arbitrary abutting text is a
+       * separate value, not silently glued into `foobar<k=v>`. */
+      const values = parseValid("dep = foo<K=V>bar;").properties[0].values;
+      expect(values.map(nameOf).map(name => name.toString())).to.deep.equal(["foo<K=V>", "bar"]);
+    });
+
+    it("binds a spaced constraint to the preceding value in a list", () => {
+      const values = parseValid("dep = a b <K=V>;").properties[0].values;
+      expect(values).to.have.length(2);
+      expect(nameOf(values[0]).toString()).to.equal("a");
+      expect(nameOf(values[1]).toString()).to.equal("b<K=V>");
+    });
+
+    it("keeps a spaced bare-identifier redirect a redirect (not a constraint)", () => {
+      /* `< input` shares the IDENTIFIER prefix with a constraint key but has no
+       * `=`, so the left-factoring commits it to a redirect target. */
+      const command = parseValid("run = cmd < input;").properties[0].values.find(isCommandValue);
+      expect(command?.pipeline[0].stdin?.value.toString()).to.equal("input");
+    });
+
+    it("keeps both spaced redirects working around the left-factoring", () => {
+      const command = parseValid("run = cmd < in > out;").properties[0].values.find(isCommandValue);
+      expect(command?.pipeline[0].stdin?.value.toString()).to.equal("in");
+      expect(command?.pipeline[0].stdout?.value.toString()).to.equal("out");
     });
 
     it("parses constraints on a command-line name (parseName parity)", () => {

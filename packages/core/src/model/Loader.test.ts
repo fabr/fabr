@@ -145,6 +145,14 @@ describe("Loader", () => {
     return { error, logged };
   }
 
+  it("reports a plugin activation failure positioned at the declaration, then stops", async () => {
+    const { error, logged } = await loadErr(files({ "PROJECT.fabr": "plugin @fabr/definitely-not-installed;" }));
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+    const out = logged.join("\n");
+    expect(out).to.match(/not installed/);
+    expect(out).to.match(/PROJECT\.fabr:1:8/);
+  });
+
   it("rejects the load when a build file has a syntax error (reported, then stops)", async () => {
     const { error, logged } = await loadErr(files({ "PROJECT.fabr": "good = value;\n@@@ not valid\n" }));
     expect(error).to.be.an.instanceOf(BuildFilesInvalidError);

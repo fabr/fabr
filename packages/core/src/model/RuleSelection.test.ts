@@ -79,4 +79,33 @@ describe("BuildModel rule selection", () => {
   it("prefers a type-specific rule over a default rule matching the same operation", () => {
     expect(model.getTargetRule("reg_override", { BUILD_OPERATION: "reg_default" })?.evaluate).to.equal(overrideRule);
   });
+
+  it("errors on an ambiguous (equally-specific) rule tie rather than picking first-registered", () => {
+    const tied = toBuildModel([], logger, [
+      {
+        rules: [
+          { type: "amb", constraints: { BUILD_OPERATION: "test" }, evaluate: testRule },
+          { type: "amb", constraints: { arch: "armv7" }, evaluate: specificTestRule },
+        ],
+      },
+    ]);
+    /* Both rules have one constraint and both match, so neither is more specific. */
+    expect(() => tied.getTargetRule("amb", { BUILD_OPERATION: "test", arch: "armv7" })).to.throw(/Ambiguous 'amb' rule selection/);
+    /* But a config satisfying only one of them selects cleanly. */
+    expect(tied.getTargetRule("amb", { BUILD_OPERATION: "test" })?.evaluate).to.equal(testRule);
+  });
+});
+
+describe("BuildModel repository registration", () => {
+  const provider = (): never => {
+    throw new Error("unused");
+  };
+  it("rejects a duplicate repository type across contributions", () => {
+    expect(() =>
+      toBuildModel([], logger, [
+        { repositories: [{ type: "dup", provider }] },
+        { repositories: [{ type: "dup", provider }] },
+      ])
+    ).to.throw(/Duplicate repository type 'dup'/);
+  });
 });

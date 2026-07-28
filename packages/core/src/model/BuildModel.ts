@@ -30,15 +30,35 @@ import { IRuleDefinition, PluginContribution, RepositoryProvider } from "../rule
  * specific match (most constraints) wins; a rule with no constraints acts as a
  * wildcard. Returns undefined if none match.
  */
-function selectMostSpecific(candidates: IRuleDefinition[], constraints: Constraints): IRuleDefinition | undefined {
-  let best: IRuleDefinition | undefined;
-  let bestCount = -1;
-  for (const candidate of candidates) {
-    const entries = Object.entries(candidate.constraints);
-    if (entries.length > bestCount && entries.every(([key, value]) => constraints[key] === value)) {
-      best = candidate;
-      bestCount = entries.length;
+function selectMostSpecific(
+  candidates: IRuleDefinition[],
+  constraints: Constraints,
+  ruleSet: string
+): IRuleDefinition | undefined {
+  const matching = candidates.filter(candidate =>
+    Object.entries(candidate.constraints).every(([key, value]) => constraints[key] === value)
+  );
+  if (matching.length === 0) {
+    return undefined;
+  }
+  let best = matching[0];
+  let bestCount = Object.keys(best.constraints).length;
+  let tiedAt: IRuleDefinition | undefined;
+  for (let i = 1; i < matching.length; i++) {
+    const count = Object.keys(matching[i].constraints).length;
+    if (count > bestCount) {
+      best = matching[i];
+      bestCount = count;
+      tiedAt = undefined;
+    } else if (count === bestCount) {
+      tiedAt = matching[i];
     }
+  }
+  if (tiedAt) {
+    /* Two equally-specific rules both match — the selection would be an arbitrary
+     * registration-order accident, so reject it rather than silently pick one. */
+    const show = (rule: IRuleDefinition): string => `{${Object.entries(rule.constraints).map(([k, v]) => `${k}=${v}`).join(", ")}}`;
+    throw new Error(`Ambiguous ${ruleSet} rule selection: ${show(best)} and ${show(tiedAt)} are equally specific`);
   }
   return best;
 }
@@ -75,6 +95,12 @@ export class BuildModel {
         }
       }
       for (const repository of contribution.repositories ?? []) {
+        /* A repository type names a resolution mechanism; two contributions
+         * claiming the same type is a plugin conflict, not a silent last-wins
+         * override — reject it. */
+        if (repository.type in this.repositories) {
+          throw new Error(`Duplicate repository type '${repository.type}' registered by more than one plugin`);
+        }
         this.repositories[repository.type] = repository.provider;
       }
     }
@@ -88,7 +114,10 @@ export class BuildModel {
    * anonymous targets.
    */
   public getTargetRule(type: string, constraints: Constraints): IRuleDefinition | undefined {
-    return selectMostSpecific(this.targetRules[type] ?? [], constraints) ?? selectMostSpecific(this.defaultRules, constraints);
+    return (
+      selectMostSpecific(this.targetRules[type] ?? [], constraints, `'${type}'`) ??
+      selectMostSpecific(this.defaultRules, constraints, "default")
+    );
   }
 
   public getRepositoryProvider(type: string): RepositoryProvider | undefined {

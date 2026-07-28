@@ -372,11 +372,12 @@ export class BuildParser {
    * @param builder NameBuilder to receive the quoted content
    */
   private readSingleQuotedString(builder?: NameBuilder): void {
+    const quoteStart = this.reader.currentOffset();
     this.reader.consume(CHAR_QUOTE);
     const start = this.reader.currentOffset();
     const next = this.reader.skipUntil(ch => ch === CHAR_QUOTE);
     if (next === undefined) {
-      this.unexpectedEndOfFile("'");
+      this.unexpectedEndOfFile("'", quoteStart);
     }
     builder?.appendLiteralString(this.reader.substring(start));
     this.reader.next(); /* Consume the closing quote */
@@ -385,6 +386,7 @@ export class BuildParser {
   /* Double quotes can contain variables (which can contain double quotes).
    * Consumes everything up to and including the closing quote. */
   private readDoubleQuotedString(builder?: NameBuilder): void {
+    const quoteStart = this.reader.currentOffset();
     this.reader.consume(CHAR_DQUOTE);
     let posn = this.reader.currentOffset();
     const next = this.reader.scanUntil(ch => {
@@ -404,7 +406,7 @@ export class BuildParser {
       return false;
     });
     if (next === undefined) {
-      this.unexpectedEndOfFile('"');
+      this.unexpectedEndOfFile('"', quoteStart);
     }
     builder?.appendEscapedString(this.reader.substring(posn));
     this.reader.next(); /* Consume the closing quote */
@@ -827,10 +829,14 @@ export class BuildParser {
    * stdout is caught at the `|` that ends it, a non-first stage taking stdin at
    * the `<`. A `{ ... }` block is not a command word.
    */
-  private parseCommand(stage0: IValue[], firstOp: CommandOp): ICommandStage[] {
+  private parseCommand(stage0: IValue[], firstOp: CommandOp, firstTarget?: INameValue): ICommandStage[] {
     const stages: ICommandStage[] = [];
     let stage = this.firstStage(stage0, firstOp);
     let op: CommandOp | undefined = firstOp;
+    /* `firstTarget` supplies the target of `firstOp` when the value loop already
+     * read it (the left-factored spaced-`<` redirect path: the shared IDENTIFIER
+     * prefix was consumed to discriminate constraint-vs-redirect). Only the first
+     * op consumes it; later ops parse their own target. */
     while (op !== undefined) {
       if (op.op === CommandOpKind.Pipe) {
         if (stage.stdout !== undefined || stage.both !== undefined) {
@@ -839,11 +845,12 @@ export class BuildParser {
         stages.push(stage);
         stage = { command: this.parseRequiredWord(op), args: [] };
       } else {
-        this.assignRedirect(stage, op, this.parseRequiredWord(op));
+        this.assignRedirect(stage, op, firstTarget ?? this.parseRequiredWord(op));
         if (op.op === CommandOpKind.Stdin && stages.length > 0) {
           this.commandError("only the first stage of a pipeline can take stdin ('<')", op.at);
         }
       }
+      firstTarget = undefined;
       /* Trailing words up to the next operator (or the property's end) are the
        * current stage's args — args may follow a redirect (`cmd a > out b`). */
       while (!this.atCommandOp() && this.token.type !== TokenType.SEMI && this.token.type !== TokenType.RBRACE) {
@@ -998,21 +1005,48 @@ export class BuildParser {
    * after the reference. A `<...>`/`:tail` separated by whitespace does not bind.
    */
   private parseReference(): Name {
-    let name = this.tokenToName(this.token as NameToken | IdentToken);
+    const name = this.tokenToName(this.token as NameToken | IdentToken);
     this.nextToken();
+    return this.parseRefSuffix(name);
+  }
+
+  /**
+   * The optional suffix after a reference's base token: an abutting `<k=v>`
+   * constraint delta and/or a `-> template` rename. Factored out so the
+   * left-factored spaced-`<` path (a detached constraint on a preceding value,
+   * or a redirect target reference) reuses the exact same tail handling.
+   */
+  private parseRefSuffix(name: Name): Name {
     if (this.token.type === TokenType.LANGLE && this.tokenAbutsPrev) {
-      const constraints = this.parseConstraints();
-      /* A `<...>` splits what would be one reference token, so a projection tail
-       * (`:build/*.js`) arrives as a separate, hugging token — rejoin it. */
-      const tail = this.tokenAbutsPrev ? this.peekRefToken() : undefined;
-      if (tail) {
-        name = name.concat(this.tokenToName(tail));
-        this.nextToken();
-      }
-      name = name.withConstraints(constraints);
+      this.nextToken(); /* consume '<' */
+      return this.applyConstraintsAndRename(name, this.parseConstraintList());
     }
     /* `Reference (ARROW Template)?` — the rename half. The arrow is spaced, so it
      * binds regardless of any preceding `<...>`/`:proj`. */
+    if (this.token.type === TokenType.ARROW) {
+      name = name.withRenameTo(this.parseRenameTemplate());
+    }
+    return name;
+  }
+
+  /** Attach a parsed constraint list to `name` (rejoining any hugging projection
+   * tail — a `<...>` splits what would be one reference token, so a tail like
+   * `:build/*.js` arrives as a separate, abutting token), then apply a trailing
+   * `-> rename`. Shared by the abutting `ref<k=v>` and detached `ref <k=v>` paths. */
+  private applyConstraintsAndRename(name: Name, constraints: NameConstraint[]): Name {
+    const tail = this.tokenAbutsPrev ? this.peekRefToken() : undefined;
+    /* A `<...>` splits a reference before its projection, so a `:`/`/`-led tail
+     * (`pkg<k=v>:build/*.js`, `pkg<k=v>/lib/x`) rejoins. Arbitrary abutting text
+     * (`foo<k=v>bar`) is NOT a projection — leave it unconsumed so it errors or
+     * parses separately, rather than silently gluing into `foobar<k=v>`. */
+    if (tail) {
+      const tailLiteral = this.tokenToName(tail).getLiteralPrefix();
+      if (tailLiteral.startsWith(":") || tailLiteral.startsWith("/")) {
+        name = name.concat(this.tokenToName(tail));
+        this.nextToken();
+      }
+    }
+    name = name.withConstraints(constraints);
     if (this.token.type === TokenType.ARROW) {
       name = name.withRenameTo(this.parseRenameTemplate());
     }
@@ -1054,11 +1088,15 @@ export class BuildParser {
    * Constraints ::= '<' Constraint ( ',' Constraint )* ','? '>'
    * Constraint  ::= IDENTIFIER '=' ( IDENTIFIER | SIMPLE_NAME | NAME )
    *
-   * Consumes from the opening `<` through the closing `>`. An empty `<>`, a
-   * non-identifier key, and a repeated key are all errors.
+   * Parse a `<k=v, …>` constraint body — the opening `<` already consumed —
+   * through the closing `>`. An empty `<>`, a non-identifier key, and a repeated
+   * key are all errors. When `firstKey` is given, its key identifier is *also*
+   * already consumed and the current token is its `=` (the left-factored
+   * spaced-`<` path, where the value loop reads the shared `<`+IDENTIFIER prefix
+   * before the `=` discriminator decides constraint vs redirect); otherwise the
+   * first key is read here (the ordinary abutting `ref<k=v>` path).
    */
-  private parseConstraints(): NameConstraint[] {
-    this.consumeToken(TokenType.LANGLE);
+  private parseConstraintList(firstKey?: { text: string; start: number }): NameConstraint[] {
     const constraints: NameConstraint[] = [];
     const seen = new Set<string>();
     /* Inside the `<...>`, a `>` closes the constraint — never a redirect (see
@@ -1066,16 +1104,27 @@ export class BuildParser {
      * `>`, lexes redirects normally again. */
     this.suppressRedirect = true;
     try {
+      let pending = firstKey;
       for (;;) {
-        const key = this.token;
-        if (key.type !== TokenType.IDENTIFIER) {
-          this.unexpectedTokenError("a constraint key");
+        let keyText: string;
+        let keyStart: number;
+        if (pending) {
+          keyText = pending.text;
+          keyStart = pending.start;
+          pending = undefined;
+        } else {
+          const key = this.token;
+          if (key.type !== TokenType.IDENTIFIER) {
+            this.unexpectedTokenError("a constraint key");
+          }
+          keyText = key.text;
+          keyStart = key.start;
+          this.nextToken();
         }
-        if (seen.has(key.text)) {
-          this.duplicateConstraintError(key.text);
+        if (seen.has(keyText)) {
+          this.duplicateConstraintError(keyText, keyStart);
         }
-        seen.add(key.text);
-        this.nextToken();
+        seen.add(keyText);
         this.consumeToken(TokenType.EQUALS);
         const value = this.token;
         if (
@@ -1085,7 +1134,7 @@ export class BuildParser {
         ) {
           this.unexpectedTokenError("a constraint value");
         }
-        constraints.push([key.text, this.tokenToName(value)]);
+        constraints.push([keyText, this.tokenToName(value)]);
         this.nextToken();
         /* Continue on a comma (unless it was trailing, before the '>'); otherwise
          * the list is done and a '>' must follow. */
@@ -1100,8 +1149,8 @@ export class BuildParser {
     return constraints;
   }
 
-  private duplicateConstraintError(key: string): never {
-    this.log.log(DIAG_DUP_CONSTRAINT, { key, loc: { ...this.source, offset: this.token.start } });
+  private duplicateConstraintError(key: string, offset: number): never {
+    this.log.log(DIAG_DUP_CONSTRAINT, { key, loc: { ...this.source, offset } });
     throw new Error(PARSE_ERROR);
   }
 
@@ -1127,18 +1176,44 @@ export class BuildParser {
      * parseCommand as stage 0. A bare `cmd args` with no operator stays a value
      * list (getCommand folds the single stage). */
     while (this.token.type !== TokenType.SEMI && this.token.type !== TokenType.RBRACE) {
+      /* A spaced `<` after a reference is ambiguous between a detached `<k=v>`
+       * constraint on that reference and a stdin redirect. Left-factor it: the
+       * two productions share a leading IDENTIFIER (a constraint key, or a
+       * bare-identifier redirect target), so consume `<` and that identifier,
+       * then the current token discriminates — `=` ⟹ constraint, else ⟹ redirect.
+       * Only relevant when a constrainable reference precedes it. */
+      if (this.token.type === TokenType.LANGLE && values.length > 0 && isNameValue(values[values.length - 1])) {
+        const langleAt = this.token.start;
+        const afterLangle = this.nextToken(); /* consume '<' */
+        if (afterLangle.type === TokenType.IDENTIFIER) {
+          const keyToken = { text: afterLangle.text, start: afterLangle.start };
+          const afterKey = this.nextToken(); /* consume the shared identifier prefix */
+          if (afterKey.type === TokenType.EQUALS) {
+            /* A detached constraint: attach to the preceding reference, exactly
+             * as an abutting `ref<k=v>` would (constraints + `-> rename` tail). */
+            const last = values[values.length - 1] as INameValue;
+            const refined = this.applyConstraintsAndRename(last.value, this.parseConstraintList(keyToken));
+            values[values.length - 1] = { ...last, value: refined, endOffset: this.prevTokenEnd };
+            continue;
+          }
+          /* Not a constraint: a stdin redirect whose target starts with this
+           * identifier (which may carry its own abutting `<k=v>`/`->` suffix). */
+          const target: INameValue = {
+            kind: DeclKind.NameValue,
+            source: this.source,
+            offset: keyToken.start,
+            value: this.parseRefSuffix(Name.fromLiteral(keyToken.text)),
+            endOffset: this.prevTokenEnd,
+          };
+          return this.finishCommandProperty(base, values, this.parseCommand(values, { op: CommandOpKind.Stdin, at: langleAt }, target));
+        }
+        /* A spaced `<` before a non-identifier: an ordinary stdin redirect whose
+         * target the command path parses (a SIMPLE_NAME/NAME/reference). */
+        return this.finishCommandProperty(base, values, this.parseCommand(values, { op: CommandOpKind.Stdin, at: langleAt }));
+      }
       const op = this.tryCommandOp();
       if (op !== undefined) {
-        const pipeline = this.parseCommand(values, op);
-        this.consumeIfToken(TokenType.SEMI);
-        const command: ICommandValue = {
-          kind: DeclKind.CommandValue,
-          source: this.source,
-          offset: values.length > 0 ? values[0].offset : op.at,
-          endOffset: this.prevTokenEnd,
-          pipeline,
-        };
-        return { ...base, values: [command] };
+        return this.finishCommandProperty(base, values, this.parseCommand(values, op));
       }
       const value = this.parseValue();
       values.push(value);
@@ -1148,6 +1223,21 @@ export class BuildParser {
     }
     this.consumeIfToken(TokenType.SEMI);
     return { ...base, values };
+  }
+
+  /** Wrap a parsed pipeline as the property's single command value. `values` are
+   * the words gathered before the first operator (stage 0); its first element,
+   * or `prevTokenEnd`, positions the value. */
+  private finishCommandProperty(base: Omit<IPropertyDecl, "values">, values: IValue[], pipeline: ICommandStage[]): IPropertyDecl {
+    this.consumeIfToken(TokenType.SEMI);
+    const command: ICommandValue = {
+      kind: DeclKind.CommandValue,
+      source: this.source,
+      offset: values.length > 0 ? values[0].offset : this.prevTokenEnd,
+      endOffset: this.prevTokenEnd,
+      pipeline,
+    };
+    return { ...base, values: [command] };
   }
 
   /**
@@ -1169,29 +1259,39 @@ export class BuildParser {
   private parseMapBlock(): IMapItemDecl[] {
     this.consumeToken(TokenType.LBRACE);
     const entries: IMapItemDecl[] = [];
-    while (this.token.type !== TokenType.RBRACE) {
-      const keyToken = this.peekRefToken();
-      if (!keyToken) {
-        this.unexpectedTokenError("a map key, a map reference, or '}'");
-      }
-      const offset = keyToken.start;
-      const name = this.tokenToName(keyToken);
-      const next = this.nextToken();
-      if (next.type === TokenType.EQUALS) {
-        entries.push(this.parsePropertyDecl(name.toString(), offset));
-      } else if (next.type === TokenType.SEMI || next.type === TokenType.RBRACE) {
-        /* A splice: the reference's Name is kept intact (it may carry `${...}`
-         * substitutions), resolved at read time. */
-        entries.push({
-          kind: DeclKind.MapSplice,
-          source: this.source,
-          offset,
-          endOffset: this.prevTokenEnd,
-          ref: name,
-        });
-        this.consumeIfToken(TokenType.SEMI);
-      } else {
-        this.unexpectedTokenError("'=' or ';'");
+    while (this.token.type !== TokenType.RBRACE && this.token.type !== TokenType.EOF) {
+      try {
+        const keyToken = this.peekRefToken();
+        if (!keyToken) {
+          this.unexpectedTokenError("a map key, a map reference, or '}'");
+        }
+        const offset = keyToken.start;
+        const name = this.tokenToName(keyToken);
+        const next = this.nextToken();
+        if (next.type === TokenType.EQUALS) {
+          entries.push(this.parsePropertyDecl(name.toString(), offset));
+        } else if (next.type === TokenType.SEMI || next.type === TokenType.RBRACE) {
+          /* A splice: the reference's Name is kept intact (it may carry `${...}`
+           * substitutions), resolved at read time. */
+          entries.push({
+            kind: DeclKind.MapSplice,
+            source: this.source,
+            offset,
+            endOffset: this.prevTokenEnd,
+            ref: name,
+          });
+          this.consumeIfToken(TokenType.SEMI);
+        } else {
+          this.unexpectedTokenError("'=' or ';'");
+        }
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== PARSE_ERROR) {
+          throw error;
+        }
+        /* Recover within the block (as parsePropertyList does for a target body),
+         * so a bad entry doesn't collapse the whole block and leak the enclosing
+         * body's `}`. */
+        this.recoverInBody();
       }
     }
     this.consumeToken(TokenType.RBRACE);
@@ -1200,30 +1300,71 @@ export class BuildParser {
 
   private parsePropertyList(): IPropertyDecl[] {
     const list: IPropertyDecl[] = [];
-    while (this.token.type !== TokenType.RBRACE) {
-      const token = this.token;
-      if (token.type === TokenType.IDENTIFIER) {
-        this.nextToken();
-        list.push(this.parsePropertyDecl(token.text, token.start));
-      } else if (token.type === TokenType.NAME || token.type === TokenType.SIMPLE_NAME) {
-        /* A reference in key position — a `sync` member coordinate (`@npm:pkg:ver =
-         * srcs`), or a bare-name/path key (`@fabr-build/core`, `lib/x` — a SIMPLE_NAME).
-         * A plain property name is an IDENTIFIER (handled above); any wider key is a
-         * reference. Parse the full reference as the key; its canonical string is the
-         * property name, and the Name is carried on `keyRef` for the rule to read. */
-        const start = token.start;
-        const keyRef = this.parseReference();
-        const keyEnd = this.prevTokenEnd;
-        const decl = this.parsePropertyDecl(keyRef.toString(), start, keyRef);
-        /* Span the coordinate (not the whole `key = value`), so a per-member
-         * error underlines the offending reference. */
-        decl.endOffset = keyEnd;
-        list.push(decl);
-      } else {
-        this.unexpectedTokenError("Identifier, reference, or '}'");
+    while (this.token.type !== TokenType.RBRACE && this.token.type !== TokenType.EOF) {
+      try {
+        const token = this.token;
+        if (token.type === TokenType.IDENTIFIER) {
+          this.nextToken();
+          list.push(this.parsePropertyDecl(token.text, token.start));
+        } else if (token.type === TokenType.NAME || token.type === TokenType.SIMPLE_NAME) {
+          /* A reference in key position — a `sync` member coordinate (`@npm:pkg:ver =
+           * srcs`), or a bare-name/path key (`@fabr-build/core`, `lib/x` — a SIMPLE_NAME).
+           * A plain property name is an IDENTIFIER (handled above); any wider key is a
+           * reference. Parse the full reference as the key; its canonical string is the
+           * property name, and the Name is carried on `keyRef` for the rule to read. */
+          const start = token.start;
+          const keyRef = this.parseReference();
+          const keyEnd = this.prevTokenEnd;
+          const decl = this.parsePropertyDecl(keyRef.toString(), start, keyRef);
+          /* Span the coordinate (not the whole `key = value`), so a per-member
+           * error underlines the offending reference. */
+          decl.endOffset = keyEnd;
+          list.push(decl);
+        } else {
+          this.unexpectedTokenError("Identifier, reference, or '}'");
+        }
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== PARSE_ERROR) {
+          throw error;
+        }
+        /* Recover *within* this body: skip to the next `;` (resume with the next
+         * property, keeping this target and the properties that parsed) or the
+         * body's own `}` (end the body). Without this, the error would propagate
+         * to the top-level recovery, which resyncs INTO the body — leaking the
+         * remaining body properties to the top level and misreporting the `}`. */
+        this.recoverInBody();
       }
     }
     return list;
+  }
+
+  /** Skip tokens after a body property error until the next statement boundary
+   * within the current `{...}` body: a `;` at body depth (consumed — resume the
+   * next property) or the body's own closing `}` (left in place — the caller
+   * consumes it). Nested `{}` (a map-block value) are balanced so their `}` is
+   * not mistaken for the body close. */
+  private recoverInBody(): void {
+    let depth = 0;
+    while (this.token.type !== TokenType.EOF) {
+      switch (this.token.type) {
+        case TokenType.LBRACE:
+          depth++;
+          break;
+        case TokenType.RBRACE:
+          if (depth === 0) {
+            return; /* the body's own close — leave it for parseTargetDecl */
+          }
+          depth--;
+          break;
+        case TokenType.SEMI:
+          if (depth === 0) {
+            this.nextToken(); /* consume the `;`, resume at the next property */
+            return;
+          }
+          break;
+      }
+      this.nextToken();
+    }
   }
 
   /**
@@ -1367,9 +1508,9 @@ export class BuildParser {
     throw new Error(PARSE_ERROR);
   }
 
-  private unexpectedEndOfFile(expected: string): never {
+  private unexpectedEndOfFile(expected: string, offset: number = this.token.start): never {
     this.log.log(DIAG_UNEXPECTED_EOF, {
-      loc: { ...this.source, offset: this.token.start },
+      loc: { ...this.source, offset },
       expected,
     });
     throw new Error(PARSE_ERROR);
@@ -1414,7 +1555,13 @@ export class BuildParser {
         this.result.includes.push(this.parseIncludeDecl());
       } else if (token.text === "plugin") {
         this.result.plugins.push(this.parsePluginDecl());
-      } else if (token.text === "default" && next.type === TokenType.IDENTIFIER) {
+      } else if (token.text === "default") {
+        /* `default` is a keyword — `default <prop> = <value>;`. The name must be
+         * an identifier property name; a `/`-bearing SIMPLE_NAME (or anything
+         * else) is a positioned error, NOT a target of type `default`. */
+        if (next.type !== TokenType.IDENTIFIER) {
+          this.unexpectedTokenError("a property name after 'default'");
+        }
         this.nextToken();
         this.result.defaults.push(this.parsePropertyDecl(next.text, next.start, undefined, doc));
       } else if (next.type === TokenType.EQUALS) {

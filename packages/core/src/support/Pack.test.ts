@@ -51,6 +51,19 @@ function diskFile(abspath: string): IFile {
   return file;
 }
 
+/** Unpack into a fresh temp dir (production always unpacks into a clean
+ * cache-owned scratch dir; a shared dir would trip the case-collision guard on
+ * debris from a prior run). The returned FileSet's hashes are computed during
+ * unpack, so it stays valid after the dir is removed. */
+async function unpackInTemp(tarball: Buffer): Promise<FileSet> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pack-"));
+  try {
+    return await unpackStream(Readable.from(tarball), dir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 describe("Pack", () => {
   it("round-trips a FileSet through pack + unpack", async () => {
     const source = fileSetOf({
@@ -60,7 +73,7 @@ describe("Pack", () => {
     });
 
     const tarball = await packToTarball(source);
-    const unpacked = await unpackStream(Readable.from(tarball), "/tmp");
+    const unpacked = await unpackInTemp(tarball);
 
     expect(unpacked.size).to.equal(source.size);
     for (const [name, file] of source) {
@@ -79,7 +92,7 @@ describe("Pack", () => {
     );
 
     const tarball = await packToTarball(source);
-    const unpacked = await unpackStream(Readable.from(tarball), "/tmp");
+    const unpacked = await unpackInTemp(tarball);
 
     expect(unpacked.size).to.equal(2);
     const back = await unpacked.get("link.txt");
@@ -109,7 +122,7 @@ describe("Pack", () => {
     expect(headers.find(h => h.name === "c.txt")?.type).to.equal("file");
 
     /* It round-trips: both names come back sharing one content hash. */
-    const unpacked = await unpackStream(Readable.from(tarball), "/tmp");
+    const unpacked = await unpackInTemp(tarball);
     expect(unpacked.size).to.equal(3);
     expect((await unpacked.get("a.txt"))?.hash).to.equal((await unpacked.get("b.txt"))?.hash);
   });

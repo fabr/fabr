@@ -38,6 +38,7 @@ import { generateRule } from "../rules/BuildGenerate";
 import { syncFilesRule, syncRule } from "../rules/BuildSync";
 import { catalogRepositoryRegistration } from "../rules/CatalogRepository";
 import { computableWorkList } from "../core/WorkList";
+import { select } from "../support/Functional";
 
 /** An `include`d file could not be found on disk, positioned at the offending
  * `include` decl so the report underlines it (with a `-->` back to the file that
@@ -45,6 +46,14 @@ import { computableWorkList } from "../core/WorkList";
 const DIAG_INCLUDE_NOT_FOUND = new Diagnostic<{ filename: string; loc: ISourceSpan }>(
   LogLevel.Error,
   "Included file not found: {filename}"
+);
+
+/** A `plugin <name>;` whose activation failed (not installed, no `activate()`,
+ * or `activate()` threw) — positioned at the declaration, with the underlying
+ * reason as its detail. */
+const DIAG_PLUGIN_ACTIVATION = new Diagnostic<{ detail: string; loc: ISourceSpan }>(
+  LogLevel.Error,
+  "{detail}"
 );
 
 /**
@@ -194,7 +203,23 @@ export function loadProject(
          * error diagnostics through a wrapper to know if this file parsed cleanly. */
         const parseLog = new ErrorTrackingLog(execution.log);
         const decls = parseBuildFile({ fs, file, reader: new StringReader(content) }, parseLog);
-        const plugins = decls.plugins.map(activate);
+        /* Activation can fail (plugin not installed, no `activate()`, or it
+         * threw); report it positioned at the declaration and drop the plugin,
+         * counting it as a load error (halts the load like a parse error) rather
+         * than letting a bare, unpositioned Error escape. */
+        let pluginErrors = 0;
+        const plugins = select(decls.plugins, decl => {
+          try {
+            return activate(decl);
+          } catch (err) {
+            execution.log.log(DIAG_PLUGIN_ACTIVATION, {
+              detail: err instanceof Error ? err.message : String(err),
+              loc: declPosn(decl),
+            });
+            pluginErrors++;
+            return undefined;
+          }
+        });
         const includes = decls.includes.map(include => {
           const target = resolveInclude(file, include);
           if (!includeSites.has(target)) {
@@ -203,7 +228,7 @@ export function loadProject(
           return target;
         });
         return {
-          value: { decls, plugins, parseErrors: parseLog.errorCount },
+          value: { decls, plugins, parseErrors: parseLog.errorCount + pluginErrors },
           next: [...includes, ...plugins.flatMap(libFiles)],
         };
       });

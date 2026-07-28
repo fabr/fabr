@@ -147,8 +147,7 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
       /* The test compile may import the package's deps, the test_deps, and the
        * runner globals directly; the runtime install is the flat closure. */
       const runtimeModules = assembleNodeModules([...deps, ...testDeps]);
-      /* Source-mode flags (strictness relaxations) among the deps/test_deps ride
-       * as empty marker FileSets; js_compile reads them into the compile's tsconfig. */
+
       const { compiled, copied } = compileJsSources(context, sources, [
         ...deps,
         ...testDeps,
