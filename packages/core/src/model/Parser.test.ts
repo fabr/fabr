@@ -648,6 +648,50 @@ describe("Parser Tests", () => {
     });
   });
 
+  describe("character classes", () => {
+    it("reads a plain char class as a single glob unit", () => {
+      expect(nameText(parseName("[abc]"))).to.equal("glob([abc])");
+      expect(nameText(parseName("[a-z]"))).to.equal("glob([a-z])");
+    });
+
+    it("keeps a ']' immediately after '[' a literal member", () => {
+      expect(nameText(parseName("[]a]"))).to.equal("glob([]a])");
+    });
+
+    it("treats the contents as literal characters — no variable substitution", () => {
+      /* A '$' inside a class matches a literal '$'; it is never a substitution
+       * (which would show as a var(...) part, splitting the glob unit). */
+      expect(nameText(parseName("[$x]"))).to.equal("glob([$x])");
+      expect(nameText(parseName("[${}]"))).to.equal("glob([${}])");
+    });
+
+    it("keeps a POSIX class element whole (its inner ':]' is not the class close)", () => {
+      expect(nameText(parseName("[[:alpha:]]"))).to.equal("glob([[:alpha:]])");
+      expect(nameText(parseName("[[:alpha:][:digit:]]"))).to.equal("glob([[:alpha:][:digit:]])");
+      /* Collating '[.x.]' and equivalence '[=e=]' elements likewise. */
+      expect(nameText(parseName("[[.-.]a]"))).to.equal("glob([[.-.]a])");
+    });
+
+    it("composes a POSIX class with surrounding literals", () => {
+      /* The class and the following '*' are adjacent globs, so they merge into a
+       * single glob unit (the builder collapses same-kind neighbours). */
+      expect(nameText(parseName("src/[[:digit:]]*.ts"))).to.equal("src/+glob([[:digit:]]*)+.ts");
+    });
+
+    it("keeps a stray '[' inside a class a literal member (not a POSIX element)", () => {
+      /* '[x]' — the inner '[' has no ':'/'.'/'=' after it, so it is an ordinary
+       * class member and the first ']' closes the class. */
+      expect(nameText(parseName("[[x]"))).to.equal("glob([[x])");
+    });
+
+    it("rejects an unterminated char class", () => {
+      /* The class runs to EOF with no ']'; rejected like any unterminated
+       * construct (a build-file parse emits a positioned "expected ']'"
+       * diagnostic — the CLI parseName path surfaces the generic parse error). */
+      expect(() => parseName("[abc")).to.throw();
+    });
+  });
+
   describe("command pipelines", () => {
     /** Render a parsed `command` back to a canonical string (command, args, then
      * redirects in a fixed order), to assert the pipeline structure round-trips. */

@@ -109,6 +109,7 @@ const CHAR_AT = "@".codePointAt(0);
 const CHAR_HASH = "#".codePointAt(0);
 const CHAR_DASH = "-".codePointAt(0);
 const CHAR_DOT = ".".codePointAt(0);
+const CHAR_COLON = ":".codePointAt(0);
 const CHAR_PIPE = "|".codePointAt(0);
 
 interface TokenBase {
@@ -459,15 +460,50 @@ export class BuildParser {
     const start = this.reader.currentOffset();
     const next = this.reader.consume(CHAR_LSQUARE);
     if (next === CHAR_RSQUARE) {
-      this.reader.next(); /* initial ']' gets special handling */
+      this.reader.next(); /* a ']' right after '[' (or '[^') is a literal member */
     }
-    /* TODO: allow variable substitutions and 'special classes' inside the char class */
-    const last = this.reader.skipUntil(ch => ch === CHAR_RSQUARE);
+    /* Scan to the closing ']'. The contents are literal characters — there is no
+     * variable substitution inside a class (a '$' here matches a literal '$').
+     * The one structured element is a POSIX class ('[:alpha:]', '[.coll.]',
+     * '[=e=]'): consume it whole so its inner ':]' / '.]' / '=]' isn't mistaken
+     * for the class close. The whole span is handed to picomatch, which supports
+     * these forms. */
+    const last = this.reader.scanUntil(ch => {
+      if (ch === CHAR_LSQUARE) {
+        const len = this.posixClassLength();
+        for (let i = 0; i < len; i++) {
+          this.reader.next();
+        }
+        return false;
+      }
+      return ch === CHAR_RSQUARE;
+    });
     if (last === undefined) {
       this.unexpectedEndOfFile("]");
     }
     this.reader.next();
     builder?.appendGlobMetachars(this.reader.substring(start));
+  }
+
+  /* Pure lookahead: if the reader is at the '[' of a well-formed POSIX class
+   * element ('[:name:]', '[.coll.]', '[=equiv=]'), return its full length
+   * including both brackets, else 0. A form is well-formed only if its own
+   * closing '<kind>]' is reached before a bare ']' (the enclosing class close)
+   * or end-of-input — so a stray '[' inside a class stays a literal member. */
+  private posixClassLength(): number {
+    const kind = this.reader.peekAt(1);
+    if (kind !== CHAR_COLON && kind !== CHAR_DOT && kind !== CHAR_EQUALS) {
+      return 0;
+    }
+    for (let d = 2; ; d++) {
+      const ch = this.reader.peekAt(d);
+      if (ch === undefined || ch === CHAR_RSQUARE) {
+        return 0;
+      }
+      if (ch === kind && this.reader.peekAt(d + 1) === CHAR_RSQUARE) {
+        return d + 2;
+      }
+    }
   }
 
   private readNameOrIdentifier(): Token {
