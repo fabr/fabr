@@ -49,6 +49,7 @@ import {
   IActionContext,
   IBuildActionDefinition,
   ITestReport,
+  PackageFileSet,
   RunnableFileSet,
   TargetContext,
   RuleResult,
@@ -58,7 +59,7 @@ import {
   TestsFailedError,
   writeFileSet,
 } from "@fabr-build/core";
-import { assembleNodeModules, compileJsSources, JSTarget, moduleTypeFile, parseJSTarget, stripPackageJson } from "./JSPackage";
+import { assembleNodeModules, compileJsSources, JSTarget, moduleTypeFile, parseJSTarget, resourceFiles, stripPackageJson } from "./JSPackage";
 
 /** The runner's ambient types for its preloaded globals, anywhere in its install */
 const GLOBALS_TYPES_FILE = "test-globals.d.ts";
@@ -145,20 +146,24 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
     ],
     (runner, { deps, testDeps }): Computable<RuleResult> => {
       /* The test compile may import the package's deps, the test_deps, and the
-       * runner globals directly; the runtime install is the flat closure. */
-      const runtimeModules = assembleNodeModules([...deps, ...testDeps]);
+       * runner globals directly (all passed to compileJsSources). The runtime
+       * install splits them like RunJSScript: packages mount as node_modules,
+       * while a loose *resource* dep (.json, a template — tsc never emits it)
+       * stages at the install root next to the compiled tests, so a `./x.json`
+       * import resolves. Compilable loose deps (.ts/.js) are excluded here — their
+       * output already rides the compiled tree (and a raw .js would collide). */
+      const allDeps = [...deps, ...testDeps];
+      const packages = allDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+      const runtimeModules = assembleNodeModules(packages);
+      const resources = resourceFiles(allDeps.filter(dep => !(dep instanceof PackageFileSet)));
 
-      const { compiled, copied } = compileJsSources(context, sources, [
-        ...deps,
-        ...testDeps,
-        runnerGlobalsTypes(runner),
-      ]);
+      const { compiled, copied } = compileJsSources(context, sources, [...deps, ...testDeps, runnerGlobalsTypes(runner)]);
       if (!compiled) {
         /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
          * so there is nothing to run — a loud failure, not a silent green. */
         throw new Error("Test target declares test files but none is a compilable source");
       }
-      return planTestRun(compiled, copied, runtimeModules, runner, testStems, jsTarget);
+      return planTestRun(compiled, copied, runtimeModules, resources, runner, testStems, jsTarget);
     }
   );
 }
@@ -193,6 +198,7 @@ function planTestRun(
   compiled: Computable<FileSet>,
   copied: FileSet,
   nodeModules: FileSet,
+  resources: FileSet,
   runner: RunnableFileSet,
   testStems: Set<string>,
   jsTarget: JSTarget
@@ -209,6 +215,7 @@ function planTestRun(
     const staged = FileSet.unionAll(
       FileSet.layout({ node_modules: [nodeModules], [RUNNER_STAGE_DIR]: [runner], "package.json": packageJson }),
       stripPackageJson(copied),
+      resources,
       compiledTree
     );
     /* Bare interpreter (e.g. "node"): resolved against PATH inside the step, so

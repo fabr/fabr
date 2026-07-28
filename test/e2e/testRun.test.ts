@@ -57,6 +57,29 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(result.stderr).to.contain("1 test passed");
   });
 
+  it("stages a non-package resource dep at the install root for a test to read", () => {
+    /* J3: a loose resource dep (a .json tsc reads but never emits) must be carried
+     * into the test install at the root — next to the compiled tests — while
+     * packages mount under node_modules, as RunJSScript does. Without it the .json
+     * would land at node_modules/config.json and the relative require would miss. */
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; deps = data:config.json; }\n",
+        "src/thing.test.ts":
+          'const assert = require("node:assert");\nconst cfg = require("./config.json");\n' +
+          'describe("thing", () => { it("reads its resource dep", () => { assert.equal(cfg.answer, 42); }); });',
+        "data/config.json": '{ "answer": 42 }\n',
+      },
+      ["-DJS_TARGET=es2020", "test", "thing"]
+    );
+    expect(result.status).to.equal(0);
+    expect(result.stderr).to.contain("1 test passed");
+  });
+
   it("survives ill-behaved test code: leaked handles don't hang, spawned processes are reaped", async () => {
     /* Adversarial test code, both ways it can hurt: (1) it leaks live handles
      * (an interval, a child's pipes) — without the runner's forceExit the
