@@ -17,26 +17,31 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Name } from "./Name";
-import { Computable } from "./Computable";
-import { EMPTY_FILESET, FileSet, FileSource, IFile } from "./FileSet";
+import { FileSet } from "./FileSet";
+import { IProvenanceStep } from "./Provenance";
 
 /**
- * A Flag is a special target that has no contents and exists purely as a named marker.
+ * A Flag is a named marker carried among a target's `deps` — it selects a
+ * build-mode option (e.g. `ts/nostrict`) rather than contributing files. It **is
+ * an (empty) FileSet**, so it rides the ordinary source / materialization paths
+ * like any other dep: it survives materialization as itself (a rule reads it back
+ * with `getFlags`) and mounts to nothing wherever a FileSet's content is consumed
+ * (its inherited `find` returns no files). `provides` is its closure of implied
+ * flags.
  */
-export class Flag implements FileSource {
-  public name: string;
-  public provides: Flag[];
+export class Flag extends FileSet {
+  public readonly name: string;
+  public readonly provides: Flag[];
 
-  constructor(name: string, provides: Flag[]) {
+  constructor(name: string, provides: Flag[], origin?: IProvenanceStep) {
+    super(new Map(), origin);
     this.name = name;
     this.provides = provides;
   }
 
-  find(name: Name): Computable<FileSet> {
-    return Computable.resolve(EMPTY_FILESET);
-  }
-  get(name: string): Computable<IFile | undefined> {
-    return Computable.resolve(undefined);
+  /** Preserve flag identity through provenance stamping (the PackageFileSet
+   * pattern); content derivations deliberately fall back to a plain FileSet. */
+  public withOrigin(origin: IProvenanceStep): Flag {
+    return new Flag(this.name, this.provides, origin);
   }
 }

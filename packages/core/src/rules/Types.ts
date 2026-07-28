@@ -34,22 +34,40 @@ export enum PropertyType {
 }
 
 /**
- * The resolved inputs a build action's step sees: a manifestable bag.
- * Everything a step consumes arrives here — FileSets fully materialized
- * (inert references never cross this boundary), strings as values — so the
- * cache key (step id + version + canonical manifest of this bag) is sound by
- * construction. A rule that needs one action's output as another's input
- * builds the first as a sub-target (`ResolveContext.subTarget`) and passes
- * its resolved FileSet here; there is no action nesting.
+ * A build action's resolved inputs: a bag of plain, **manifestable** data —
+ * FileSets fully materialized (inert references never cross), strings as values,
+ * a `Name` for a projection. The action step sees exactly this bag, and it is the
+ * cached unit: the cache key (step id + version + canonical manifest of the bag)
+ * is a sound function of the inputs, so every member must reduce to a stable
+ * manifest. That is why the type is narrow. A rule needing one action's output as
+ * another's input builds the first as a sub-target and passes its resolved FileSet
+ * here; there is no action nesting.
  *
- * A `Name` may cross as an input where a step consumes a **projection** (a
- * selector + optional `-> tmpl` rename — e.g. `generate`'s `output`): its
- * canonical `toString()` manifests it, and on a cache miss the step receives
- * the live `Name` and applies it via `makeProjector` (no text re-parse, which
- * would need the model layer).
+ * A `Name` crosses where a step consumes a **projection** (a selector + optional
+ * `-> tmpl` rename — e.g. `generate`'s `output`): its canonical `toString()`
+ * manifests it, and on a cache miss the step receives the live `Name` and applies
+ * it via `makeProjector` (no text re-parse, which would need the model layer).
  */
 export type BuildActionInput = string | string[] | FileSet | FileSet[] | Name;
 export type BuildActionInputs = Record<string, BuildActionInput>;
+
+/**
+ * A sub-target's inputs ({@link TargetContext.subTarget}). Distinct from
+ * {@link BuildActionInputs} because a sub-target is a **fully-fledged target**,
+ * not an action: its rule's *evaluate* re-runs every build (it is not itself a
+ * persistent-cache unit), reading these inputs through the anonymous
+ * `TargetContext` exactly as a declared target reads its properties. So the bag
+ * may carry the same un-reduced **model sources** a property holds — notably a
+ * `Flag` (a `FileSource`) read back via `getFlags` — not only the plain,
+ * manifestable data an action's bag is limited to. These inputs never form a
+ * cache key directly; they reach one only through the action(s) evaluate yields
+ * (e.g. js_compile reads its `mode` flags here and folds the resolved overlay
+ * into the tsconfig *inside* the exec action's `files`). The manifestability
+ * constraint is the action role's alone; a sub-target must instead satisfy the
+ * ordinary target contract — its inputs make sense as properties on their own.
+ */
+export type SubTargetInput = BuildActionInput | FileSource | FileSource[];
+export type SubTargetInputs = Record<string, SubTargetInput>;
 
 /**
  * The build step of a build action: a pure function from resolved inputs

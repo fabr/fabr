@@ -26,7 +26,7 @@
 import { posix } from "path";
 import {
   BUILD_OPERATION,
-  BuildActionInputs,
+  SubTargetInputs,
   CANONICAL,
   Computable,
   compareVersions,
@@ -97,23 +97,6 @@ export interface ICompiledSources {
   copied: FileSet;
 }
 
-/**
- * Compile a JS/TS source tree by building the `js_compile` sub-target — the
- * single TS compile path shared by the package build and the test run.
- * TypeScript sources yield `compiled` (the sub-target's cached output);
- * anything not compiled is returned in `copied`. `directDeps` are the deps the
- * sources may import directly (the package's own deps — `@types/node` among them
- * where the sources use Node APIs — plus test_deps / runner globals for a test
- * compile), resolved jointly by the caller's collection point. They are laid out
- * *scoped*
- * (`assembleScopedNodeModules`): the sources see only these direct deps at the
- * top of node_modules, while the full transitive closure is reachable only by
- * the deps themselves — so a source importing an undeclared transitive dep fails
- * to compile. TSC is the compiler's own concern, resolved inside js_compile. The
- * sub-target builds under BUILD_OPERATION=build (a compile is a build even for a
- * test target). Plain .js/.jsx sources go through the same compile (tsc allowJs),
- * so they are downleveled to JS_TARGET and a .ts may import a local .js.
- */
 /** True iff a `package.json` declares the given `subpath` in its `exports` map
  * (e.g. `./jsx-runtime`). The general "does this package expose subpath X" test
  * that subpath-shaped capability signals build on. Malformed JSON reads as no. */
@@ -245,27 +228,40 @@ export function resourceFiles(sets: FileSet[]): FileSet {
   return FileSet.unionAll(...sets.map(set => set.partition(classifyJsSource).copy ?? EMPTY_FILESET));
 }
 
-export function compileJsSources(
-  context: TargetContext,
-  sources: FileSet,
-  directDeps: FileSet[],
-  jsTarget: JSTarget,
-  modeFlags: Flag[] = []
-): ICompiledSources {
+/**
+ * Compile a JS/TS source tree by building the `js_compile` sub-target — the
+ * single TS compile path shared by the package build and the test run.
+ * TypeScript sources yield `compiled` (the sub-target's cached output);
+ * anything not compiled is returned in `copied`. `directDeps` are the deps the
+ * sources may import directly (the package's own deps — `@types/node` among them
+ * where the sources use Node APIs — plus test_deps / runner globals for a test
+ * compile), resolved jointly by the caller's collection point. They are laid out
+ * *scoped*
+ * (`assembleScopedNodeModules`): the sources see only these direct deps at the
+ * top of node_modules, while the full transitive closure is reachable only by
+ * the deps themselves — so a source importing an undeclared transitive dep fails
+ * to compile. TSC is the compiler's own concern, resolved inside js_compile. The
+ * sub-target builds under BUILD_OPERATION=build (a compile is a build even for a
+ * test target). Plain .js/.jsx sources go through the same compile (tsc allowJs),
+ * so they are downleveled to JS_TARGET and a .ts may import a local .js.
+ */
+export function compileJsSources(context: TargetContext, sources: FileSet, directDeps: FileSet[]): ICompiledSources {
   const sourceGroups = sources.partition(classifyJsSource);
 
   const declarations = sourceGroups.dts ?? EMPTY_FILESET;
 
-  /* Deps split by kind: a built package mounts as node_modules (assembled by
-   * js_compile); a *non-package* dep is plain source the target needs but does
-   * not distribute — a `.d.ts` type shim, or test support like a harness. It
-   * joins the compile inputs (tsc sees it, and a relative `./x` import resolves
-   * to it as a sibling) but never `copied`, so it's compiled-against yet not
-   * shipped: a `.d.ts` emits nothing; a `.ts`'s output rides the compiled tree
-   * (into a js_test run install; a js_package would vendor it — use a package to
-   * avoid that). */
-  const packageDeps = directDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
-  const sourceDeps = directDeps.filter(dep => !(dep instanceof PackageFileSet));
+  /* Deps split by kind. A built package mounts as node_modules, and a source-mode
+   * `Flag` rides alongside it — both are `deps` to js_compile (a Flag is an empty
+   * FileSet, so it mounts nothing; js_compile reads it back with getFlags("deps")
+   * to fold its tsconfig overlay). A *non-package* content dep is plain source the
+   * target needs but does not distribute — a `.d.ts` type shim, or test support
+   * like a harness. It joins the compile inputs (tsc sees it, and a relative `./x`
+   * import resolves to it as a sibling) but never `copied`, so it's compiled-
+   * against yet not shipped: a `.d.ts` emits nothing; a `.ts`'s output rides the
+   * compiled tree (into a js_test run install; a js_package would vendor it — use a
+   * package to avoid that). */
+  const mountDeps = directDeps.filter(dep => dep instanceof PackageFileSet || dep instanceof Flag);
+  const sourceDeps = directDeps.filter(dep => !(dep instanceof PackageFileSet) && !(dep instanceof Flag));
 
   let compiled: Computable<FileSet> | undefined;
   if ("ts" in sourceGroups || "js" in sourceGroups || sourceDeps.length > 0) {
@@ -280,13 +276,7 @@ export function compileJsSources(
       declarations,
       ...sourceDeps
     );
-    /* The source-mode overlay rides as an extra `mode` input only when non-empty,
-     * so a default (strict) compile keeps its old cache key — no spurious recompile. */
-    const inputs: BuildActionInputs = { srcs, deps: packageDeps, runtime: jsTarget.version };
-    const mode = resolveSourceMode(modeFlags);
-    if (Object.keys(mode).length > 0) {
-      inputs.mode = JSON.stringify(mode);
-    }
+    const inputs: SubTargetInputs = { srcs, deps: mountDeps };
     compiled = context.subTarget("js_compile", inputs, {
       label: "Compiling",
       constraints: { [BUILD_OPERATION]: "build" },

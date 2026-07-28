@@ -28,14 +28,12 @@
  * directory. The tool is **mounted apart** from the workspace (under `TOOL_DIR`,
  * not merged into `node_modules`): the tool's own dependencies must not collide
  * with — nor be visible to — the sources' `node_modules`. It runs with cwd at
- * the workspace root and yields the `exec` action (output: `build/**`). The
- * `runtime` input carries the ES lib level (from the target's `es*` flags,
- * which can't survive materialization into `deps`).
+ * the workspace root and yields the `exec` action (output: `build/**`).
  */
 
 
 import { Computable, createExecAction, FileSet, MemoryFile, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
-import { assembleScopedNodeModules, JSTarget, parseJSTarget, resolveJsxImportSource } from "../JSPackage";
+import { assembleScopedNodeModules, JSTarget, parseJSTarget, resolveJsxImportSource, resolveSourceMode } from "../JSPackage";
 
 /** Where the toolchain is mounted in the working dir — disjoint from src/node_modules/build. */
 const TOOL_DIR = ".tools/tsc";
@@ -65,7 +63,6 @@ function emitsSourceMap(buildType: string | undefined): boolean {
 
 export function makeTsConfig(
   jsTarget: JSTarget,
-  runtime: string,
   jsx?: { mode: string; importSource: string },
   modeOverlay: Record<string, unknown> = {},
   buildType?: string
@@ -95,7 +92,7 @@ export function makeTsConfig(
       allowJs: true,
       checkJs: false,
       target: jsTarget.version,
-      lib: jsTarget.environment === "browser" ? [runtime, "dom"] : [runtime],
+      lib: jsTarget.environment === "browser" ? [jsTarget.version, "dom"] : [jsTarget.version],
       module: jsTarget.module === "esm" ? "esnext" : "commonjs",
       moduleResolution: "node",
       /* JS source maps for debuggable builds; `release` omits them. `inlineSources`
@@ -121,17 +118,19 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
       context.getFileSetProperties(["srcs", "deps"]),
-      context.getRequiredString("runtime"),
       context.getGlobalString("JS_TARGET"),
       context.getGlobalRunnable("TSC"),
       context.getGlobalString("BUILD_TYPE"),
-      context.getProperty("mode"),
+      context.getFlags("deps"),
     ],
-    ({ srcs: srcSets, deps }, runtime, target, tsc, buildType, mode) => {
+    ({ srcs: srcSets, deps }, target, tsc, buildType, depFlags) => {
       const srcs = FileSet.unionAll(...srcSets);
-      /* The source-mode overlay (tsconfig relaxations from the caller's deps
-       * flags), a JSON string input; absent for a default (strict) compile. */
-      const modeOverlay = mode ? (JSON.parse(mode.toString()) as Record<string, unknown>) : {};
+      /* Source-mode flags (strictness relaxations) ride among `deps` like any
+       * other dep — read here with getFlags and recognized into a compilerOptions
+       * overlay (the flag→option table lives with the tsconfig it feeds). Empty
+       * (the default) leaves the strict tsconfig unchanged. The materialized
+       * `deps` above carries the packages; a flag materializes to nothing. */
+      const modeOverlay = resolveSourceMode(depFlags);
       /* js_compile owns its node_modules layout (only it needs it) and its JSX
        * runtime: both read the ordered direct deps directly. A .tsx/.jsx source
        * needs a jsxImportSource (auto-detected from the deps); a JSX-free compile
@@ -142,7 +141,7 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       });
       const build = (jsxImportSource: string): RuleResult => {
         const jsx = jsxImportSource ? { mode: jsxModeFor(buildType), importSource: jsxImportSource } : undefined;
-        const tsconfig = makeTsConfig(parseJSTarget(target), runtime, jsx, modeOverlay, buildType);
+        const tsconfig = makeTsConfig(parseJSTarget(target), jsx, modeOverlay, buildType);
         const workingDir = FileSet.layout({
           node_modules: assembleScopedNodeModules(deps),
           src: srcs,

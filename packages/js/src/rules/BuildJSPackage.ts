@@ -30,7 +30,6 @@ import {
   EMPTY_FILESET,
   FileSet,
   FileSource,
-  Flag,
   mapEntryOrigin,
   MemoryFile,
   Name,
@@ -94,16 +93,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
          * direct deps, while the transitive closure is reachable only by the
          * deps themselves (assembleScopedNodeModules). Provided deps are on the
          * compile path too (js codes against core's types), just not delivered. */
-        /* Source-mode flags (strictness relaxations) ride alongside the file
-         * deps; compileJsSources folds them into the compile's tsconfig. */
-        const modeFlags = depSources.filter((source): source is Flag => source instanceof Flag);
-        const { compiled, copied } = compileJsSources(
-          context,
-          compileSources,
-          [...deps, ...provided],
-          jsTarget,
-          modeFlags
-        );
+        const { compiled, copied } = compileJsSources(context, compileSources, [...deps, ...provided]);
 
         /* The package's DIRECT deps as written (built packages as packages,
          * external requirements as inert references, resolved fresh at each

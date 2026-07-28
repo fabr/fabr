@@ -43,7 +43,7 @@ import {
   registerProvenanceDescriber,
   registerProvenanceRenderer,
 } from "../core/Provenance";
-import { BuildAction, BuildActionInput, BuildActionInputs, IRuleDefinition, RepositoryProvider } from "../rules/Types";
+import { BuildAction, BuildActionInput, BuildActionInputs, IRuleDefinition, RepositoryProvider, SubTargetInputs } from "../rules/Types";
 import { ExecutionContext, ProgressEvent } from "./ExecutionContext";
 import { ITargetOrigin, TARGET_PROVENANCE } from "./Target";
 import {
@@ -1307,7 +1307,7 @@ export class BuildContext {
   public buildSubTarget(
     owner: TargetContext,
     type: string,
-    inputs: BuildActionInputs,
+    inputs: SubTargetInputs,
     options?: { label?: string; constraints?: Constraints }
   ): Computable<SourceRef[]> {
     const buildContext = this.getContextWithOverrides(options?.constraints);
@@ -1792,7 +1792,7 @@ export abstract class TargetContext {
    */
   public subTarget(
     type: string,
-    inputs: BuildActionInputs,
+    inputs: SubTargetInputs,
     options?: { label?: string; constraints?: Constraints }
   ): Computable<FileSet> {
     return this.context.buildSubTarget(this, type, inputs, options).then(result => {
@@ -2005,13 +2005,13 @@ export class DeclaredTargetContext extends TargetContext {
  * and the build announcement delegates to the declared owner.
  */
 export class AnonymousTargetContext extends TargetContext {
-  private readonly inputs: BuildActionInputs;
+  private readonly inputs: SubTargetInputs;
   private readonly declared: DeclaredTargetContext;
   private readonly label: string;
 
   constructor(
     context: BuildContext,
-    inputs: BuildActionInputs,
+    inputs: SubTargetInputs,
     declared: DeclaredTargetContext,
     label: string,
     stack?: IDependencyStack

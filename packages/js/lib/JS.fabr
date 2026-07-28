@@ -228,19 +228,13 @@ targetdef npm_repository {
 # Compile a JavaScript/TypeScript source tree to plain JS — the one TS-compile
 # path. `srcs` are the sources (`.ts`/`.tsx`/`.js`/`.jsx`, plus ambient `.d.ts`);
 # `deps` are the packages the sources are compiled against (mounted as
-# `node_modules`). `runtime` is the ES lib level and `mode` an optional
-# source-strictness overlay — both derived from `JS_TARGET` and the `ts/*` flags
-# by the composing rule, so a hand-declared `js_compile` normally omits them.
-# `TSC` (resolved as a runnable, independent of what it compiles) is mounted
-# apart from the workspace. Composed automatically by `js_package`/`js_test`/
+# `node_modules`). Composed automatically by `js_package`/`js_test`/
 # `js_script`; also declarable directly.
 #
 
 targetdef js_compile {
     srcs = FILES;
     deps = FILES;
-    runtime = STRING;
-    mode = STRING;
 }
 
 #
