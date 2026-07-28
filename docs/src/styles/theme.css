@@ -1,0 +1,67 @@
+/*
+ * Fabr docs theme — a distinct violet accent (with a cyan companion for splash
+ * flourishes) over lightly violet-tinted grays, layered on Starlight's defaults.
+ * Only colour custom properties are overridden, so contrast/readability stay
+ * within Starlight's tested ranges. Dark theme is `:root`; light is
+ * `:root[data-theme='light']`.
+ */
+
+:root {
+  /* Accent — vivid violet. accent-high is the light-on-dark shade (links, hover). */
+  --sl-color-accent-low: #271658;
+  --sl-color-accent: #6d4aff;
+  --sl-color-accent-high: #cbbcff;
+
+  /* Grays carry a faint violet tint so surfaces read as part of the palette,
+     not a separate neutral. gray-1 = brightest (text) … gray-7 = deep bg. */
+  --sl-color-gray-1: #eceaf6;
+  --sl-color-gray-2: #c1bfd2;
+  --sl-color-gray-3: #8a889c;
+  --sl-color-gray-4: #56546a;
+  --sl-color-gray-5: #363548;
+  --sl-color-gray-6: #24232f;
+  --sl-color-gray-7: #17161f;
+
+  /* A companion cyan, used only for the splash hero gradient. */
+  --fabr-cyan: #38e0d6;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #e7ddff;
+  --sl-color-accent: #5b34d6;
+  --sl-color-accent-high: #271656;
+
+  --sl-color-gray-1: #26243a;
+  --sl-color-gray-2: #46445d;
+  --sl-color-gray-3: #767488;
+  --sl-color-gray-4: #9896ab;
+  --sl-color-gray-5: #c7c5d6;
+  --sl-color-gray-6: #e6e4f0;
+  --sl-color-gray-7: #f5f4fb;
+
+  --fabr-cyan: #0d9b91;
+}
+
+/* Splash hero: give the big title a violet→cyan gradient for landing impact.
+   Large decorative text, so the gradient reads clearly without affecting body
+   readability. Falls back to the accent colour where background-clip is
+   unsupported. */
+.hero h1 {
+  background: linear-gradient(120deg, var(--sl-color-accent-high), var(--fabr-cyan));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: var(--sl-color-accent-high);
+  -webkit-text-fill-color: transparent;
+}
+
+:root[data-theme='light'] .hero h1 {
+  background: linear-gradient(120deg, var(--sl-color-accent), var(--fabr-cyan));
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+/* A soft accent glow behind the splash hero, so the landing page feels less
+   flat than the stock template without touching text contrast. */
+.hero {
+  background: radial-gradient(60% 60% at 50% 0%, color-mix(in oklab, var(--sl-color-accent) 18%, transparent), transparent 70%);
+}

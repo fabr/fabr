@@ -30,6 +30,7 @@ export default defineConfig({
     starlight({
       title: "Fabr",
       description: "A dataflow-based build tool for fast, accurate, deterministic builds.",
+      customCss: ["./src/styles/theme.css"],
       social: [{ icon: "github", label: "GitHub", href: "https://github.com/fabr/fabr" }],
       sidebar: [
         { label: "Introduction", link: "/introduction/" },

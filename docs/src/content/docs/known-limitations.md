@@ -1,14 +1,14 @@
 ---
 title: Known limitations
-description: Current limitations and rough edges in fabr you should be aware of — host-tool hermeticity, test-runner support, and npm version resolution.
+description: Current limitations and rough edges in fabr you should be aware of — host-tool hermeticity, test-runner support, npm version resolution, cache concurrency, and watch-mode cleanup.
 ---
 
-Fabr is an active experiment. It is fully self-hosting and builds, tests, and runs real
+Fabr is under active development. It is fully self-hosting and builds, tests, and runs real
 JavaScript/TypeScript projects, but several things are deliberately incomplete or behave differently
 from the tools you may be used to. The most important ones to know about are below. (This page is
 about present behaviour; planned features that simply don't exist yet are a separate matter.)
 
-## Host tools aren't hermetically sealed
+## Host tools aren't hermetically sealed yet
 
 Fabr aims at [deterministic builds](/introduction/#determinism-and-no-lockfiles), but there is one
 significant gap today: **host programs are not modelled as identified dependencies.** The `node`
@@ -41,7 +41,7 @@ target's `test_deps` — [chai](https://www.chaijs.com/), for example) and impor
 Results are reported in [CTRF](https://ctrf.io) form.
 
 **Popular third-party runners — [jest](https://jestjs.io) and
-[vitest](https://vitest.dev) — are not supported.** Their APIs are not available: no `jest.mock` /
+[vitest](https://vitest.dev) — are not yet supported.** Their APIs are not available: no `jest.mock` /
 `vi.mock` module mocking, no `jest.fn` spies, no built-in snapshot testing, no auto-magic transforms
 or their configuration. A suite written against jest or vitest will not run under `fabr test` as-is,
 and there is currently no way to select an alternative runner.
@@ -70,7 +70,42 @@ range at install time", so the results can differ:
 - **Install-time behaviours don't happen.** Fabr fetches and assembles package contents; it does not
   run `postinstall` scripts or auto-install peer dependencies the way an npm client would. A package
   that depends on such behaviour may not work out of the box.
+- **Unconstrained optional dependencies are skipped silently.** An optional dependency pinned only as
+  `*` (for example `fsevents: "*"`) has no deterministic version under MVS and no lockfile to freeze
+  one, so fabr drops it — the correct choice for reproducibility, but currently with no warning. If
+  you need such an optional package, pin it with an explicit requirement.
 
 **Workaround:** add explicit version requirements to raise floors, and use a
 [`catalog`](/reference/js-rules/) to pin one consistent set of versions across a project. A genuine
 need for two coexisting majors of a *linked* dependency is a current limitation.
+
+## Concurrent fabr processes can race on the cache
+
+Fabr deduplicates in-flight work and effectively write-locks cache entries **within a single
+process**, so all of one build's internal parallelism is safe. There is, however, **no cross-process
+lock** on the build cache: two fabr processes running at the same time that both miss the same cache
+entry can write it simultaneously and corrupt it.
+
+**Workaround:** don't run two fabr builds against the same cache concurrently. If you need to, give
+each one its own cache directory via `FABR_CACHE_DIR`.
+
+## Watch mode can leave a program running if fabr is force-killed
+
+`fabr run -w` and `serve -w` supervise the program they launch and tear down its whole process group
+— including any workers it forked — on every restart and on every orderly exit (Ctrl-C, `SIGTERM`,
+`SIGHUP`, or an uncaught error). But if fabr **itself** is force-killed — `SIGKILL`, an
+out-of-memory kill, or a crash — nothing can run to clean up, and the launched program is orphaned,
+left running with no supervisor. Only a hard kill of fabr does this; every ordinary way of stopping
+it shuts the program down cleanly.
+
+**Workaround:** stop a watching fabr with Ctrl-C or `SIGTERM` rather than `kill -9`. If a program is
+orphaned, stop it by hand (for a server, finding it by the port it holds is usually easiest).
+
+## A TypeScript source in a package's `deps` is emitted into the package
+
+A target's `deps` can carry plain source files that it compiles against but doesn't distribute. A
+`.d.ts` type-only file emits nothing and is correctly never shipped, but a **`.ts` source file** in
+`deps` is compiled and its resulting `.js` currently ends up in the built **package** output.
+
+**Workaround:** to share compiled TypeScript between targets, declare it as its own package and
+depend on that, rather than adding the raw `.ts` file to `deps`.
