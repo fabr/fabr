@@ -40,6 +40,12 @@ export enum ArchiveType {
 
 const MIN_HEAD_LENGTH = 262; /* For TAR */
 
+/* Cap on nested compression layers: a real package is a single gzip layer over
+ * a tar (`.tgz`), so anything beyond a small bound is a malformed or hostile
+ * archive (an unbounded gzip-of-gzip nesting from a compromised registry). The
+ * cumulative decompressed-size ceiling — the real bomb defense — is future work. */
+const MAX_COMPRESSION_LAYERS = 4;
+
 /**
  *
  * @param
@@ -55,7 +61,10 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
     function handleHeader(data: Buffer): Writable | null {
       switch (getMagic(data)) {
         case ArchiveType.GZIP: {
-          depth++; // TODO
+          if (++depth > MAX_COMPRESSION_LAYERS) {
+            reject(new Error(`Archive nests more than ${MAX_COMPRESSION_LAYERS} compression layers`));
+            return null;
+          }
           const zip = createUnzip();
           magicByteStream(zip, MIN_HEAD_LENGTH, handleHeader, reject);
           return zip;
@@ -105,6 +114,18 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
               emit(
                 headers.name,
                 Computable.from<[string, IFile]>((resolveFile, rejectFile) => {
+                  /* An entry whose path already exists is a collision — most often
+                   * two names differing only in case on a case-insensitive
+                   * filesystem (APFS/NTFS), which would otherwise share one inode:
+                   * the later write overwrites the earlier, and ingest would then
+                   * store one entry's bytes under the other's hash — a blob whose
+                   * content doesn't match its key. Fail cleanly instead. */
+                  if (fs.existsSync(pathname)) {
+                    const err = new Error(`Archive entry '${headers.name}' collides with an existing path (case-insensitive filesystem?)`);
+                    rejectFile(err);
+                    reject(err);
+                    return;
+                  }
                   const hash = crypto.createHash(HASH_ALGORITHM);
                   const dir = path.dirname(pathname);
                   fs.mkdirSync(dir, { recursive: true });
@@ -158,8 +179,11 @@ export function unpackStream(ins: Readable, targetdir: string): Computable<FileS
           });
           return extract;
         }
+        case ArchiveType.ZIP:
+          reject(new Error("ZIP archives are not supported (expected a gzip-compressed tarball)"));
+          return null;
         default:
-          reject(new Error("Unsupported archive file"));
+          reject(new Error("Unsupported archive file (expected a gzip-compressed tarball)"));
           return null;
       }
     }

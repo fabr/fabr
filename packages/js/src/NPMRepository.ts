@@ -1011,7 +1011,11 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     return this.targetPlatform().then(target => {
       const targetKey = `${target.os ?? "?"}-${target.cpu ?? "?"}-${target.libc ?? "?"}`;
       return this.context
-        .memoize("npm:resolve:8", `${this.url} ${targetKey} ${rootKeys.join(" ")}`, () => {
+        /* Newline-join the roots: a semver constraint may contain spaces (a quoted
+         * hyphen range, `1.2.3 - 2.3.4`), so a space delimiter isn't obviously
+         * injective — a newline can appear in neither a package name nor a
+         * constraint, matching how file deps are already newline-separated. */
+        .memoize("npm:resolve:9", `${this.url} ${targetKey}\n${rootKeys.join("\n")}`, () => {
           /* A memo miss means real resolution work on behalf of the consumer */
           this.context.notifyProgress({ kind: "repository-resolve", repository: this.context.target, requirements: rootKeys });
           return resolveWithRepairs(roots, SEMVER, this).then(result => {

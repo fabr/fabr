@@ -63,11 +63,15 @@ describe("Unpack", () => {
     );
 
     const ins = Readable.from(input);
-    const result = await unpackStream(ins, "/tmp");
-    expect(result.size).to.equal(1);
-    const file = await result.get("package.json");
-    console.log(file);
-    expect(file?.hash).to.equal("ff344d6ce0cb6497bcc78b026420dee7538870af60809bab61e9a2e83b70a287");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-unpack-"));
+    try {
+      const result = await unpackStream(ins, dir);
+      expect(result.size).to.equal(1);
+      const file = await result.get("package.json");
+      expect(file?.hash).to.equal("ff344d6ce0cb6497bcc78b026420dee7538870af60809bab61e9a2e83b70a287");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("preserves the executable bit from tar entry modes", async () => {

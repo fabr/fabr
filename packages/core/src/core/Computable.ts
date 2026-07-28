@@ -118,6 +118,13 @@ export abstract class ComputableSource<T> {
     return this.currentState === ComputableState.Valid || this.currentState === ComputableState.Error;
   }
 
+  /**
+   * Derive a node from this one. Unlike a Promise, the callback runs
+   * **synchronously** when the receiver is already settled (this is a reactive
+   * cell, not a microtask queue — a derived node eager-attaches and, with a
+   * settled input, computes in-line). Do not rely on a `then` callback deferring
+   * to a later tick; if you need that, defer explicitly.
+   */
   public then<U>(fn: (value: T) => U | Computable<U>, onError?: CatchHandler<U>): Computable<U> {
     return Computable.deriving([this], (value: T) => fn(value), onError);
   }

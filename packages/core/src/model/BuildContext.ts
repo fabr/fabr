@@ -2109,7 +2109,7 @@ export class AnonymousTargetContext extends TargetContext {
  */
 function manifestEvalInputs(inputs: BuildActionInputs): string {
   return Object.keys(inputs)
-    .sort((a, b) => a.localeCompare(b))
+    .sort()
     .map(name => `${name}=${manifestEvalInput(inputs[name])}`)
     .join("\n");
 }

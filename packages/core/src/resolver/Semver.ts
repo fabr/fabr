@@ -30,7 +30,11 @@ import { VersionDomain } from "./Types";
  * Not supported (parseConstraint throws): dist-tags. Prerelease versions are
  * ordered per the semver spec, but the npm rule that prereleases only match
  * ranges explicitly mentioning a prerelease of the same triple is not
- * implemented (plain ordering is used instead).
+ * implemented (plain ordering is used instead). Build metadata (`1.2.3+abc`) is
+ * accepted by the grammar but discarded — SemverVersion has no field for it —
+ * so it never round-trips through versionToString; harmless for npm, which
+ * forbids build metadata in published versions (so it never appears in registry
+ * metadata or a fetch key).
  */
 
 export interface SemverVersion {

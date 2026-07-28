@@ -512,11 +512,21 @@ export class BuildCache {
    * files plus the cache-control metadata of a non-immutable entry. */
   private cacheGet(key: string): Computable<ICacheEntry | undefined> {
     const file = this.manifestPath(key);
-    if (fs.existsSync(file)) {
-      return readFile(file).then(data => this.parseManifest(data));
-    } else {
+    if (!fs.existsSync(file)) {
       return Computable.resolve(undefined);
     }
+    return readFile(file).then(data => {
+      try {
+        return this.parseManifest(data);
+      } catch {
+        /* A corrupt or truncated manifest is treated as a miss, not a hard
+         * failure: delete it so the entry rebuilds cleanly. This honors "the
+         * cache is safe to delete" at entry grain — a half-written line (a
+         * missing field, an undecodable name) must never fail the build forever. */
+        fs.rmSync(file, { force: true });
+        return undefined;
+      }
+    });
   }
 
   /**
@@ -628,9 +638,15 @@ export class BuildCache {
     for (const line of lines) {
       if (line.startsWith(LINK_PREFIX)) {
         const [target, name] = line.substring(LINK_PREFIX.length).split(" ");
+        if (target === undefined || name === undefined) {
+          throw new Error(`Malformed cache manifest link line: '${line}'`);
+        }
         result.set(decodeURI(name), new SymlinkFile(decodeURI(target)));
       } else if (line) {
         const [hash, mode, name] = line.split(" ");
+        if (hash === undefined || mode === undefined || name === undefined) {
+          throw new Error(`Malformed cache manifest line: '${line}'`);
+        }
         result.set(decodeURI(name), new BuildFile(this.blobRoot, hash, decodeURI(name), parseInt(mode, 8)));
       }
     }

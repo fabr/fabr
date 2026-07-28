@@ -146,9 +146,13 @@ function resolvePhase<V, C>(
       let constraint: C;
       try {
         constraint = domain.parseConstraint(req.constraint);
-      } catch (err) {
-        const message = `${err instanceof Error ? err.message : err} in requirement '${req.pkg}: ${req.constraint}' (required by ${requiredBy})`;
-        errors.set(message, { message, rootPkg: rootPkgOf(requiredBy, req.pkg) });
+      } catch {
+        /* An unparseable constraint is reported at the reachability walk
+         * (followEdge), not here: the fixpoint walk visits superseded/pruned
+         * requirements too, and a bad constraint in one that doesn't survive
+         * pruning must not fail the whole resolution. followEdge reparses the
+         * constraint anyway (deterministically the same error) on exactly the
+         * edges that are in effect, so reporting there is both truthful and free. */
         return;
       }
       if (domain.isUnconstrained(constraint)) {
@@ -365,8 +369,13 @@ function resolvePhase<V, C>(
         let constraint: C;
         try {
           constraint = domain.parseConstraint(req.constraint);
-        } catch {
-          return; /* Already reported during the walk */
+        } catch (err) {
+          /* An unparseable constraint on an edge that is actually in effect
+           * (reachable through selected versions): report it here, where
+           * pruning has already dropped superseded/unreachable requirements. */
+          const message = `${err instanceof Error ? err.message : err} in requirement '${req.pkg}: ${req.constraint}' (required by ${from})`;
+          errors.set(message, { message, rootPkg: rootPkgOf(from, req.pkg) });
+          return;
         }
         const targets = targetsOf(req);
         if (targets.length === 0 && domain.isUnconstrained(constraint)) {
