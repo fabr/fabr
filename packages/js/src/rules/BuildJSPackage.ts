@@ -62,7 +62,16 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
       const seedJson = sources
         .get("package.json")
         .then(file => file?.readString())
-        .then(content => (content ? (JSON.parse(content) as Record<string, unknown>) : undefined));
+        .then(content => {
+          if (!content) {
+            return undefined;
+          }
+          try {
+            return JSON.parse(content) as Record<string, unknown>;
+          } catch (err) {
+            throw new Error(`Invalid JSON in input package.json: ${err instanceof Error ? err.message : err}`);
+          }
+        });
 
       const jsTarget = parseJSTarget(target);
       const compileSources = sources.minus(tests);

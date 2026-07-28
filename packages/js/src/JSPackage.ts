@@ -549,7 +549,8 @@ export function withBinShebangs(contents: FileSet): Computable<FileSet> {
  * dependency closure as node_modules, and launch a bin under node. The runnable's
  * launch **surface** is the package's own files (findable by path) unioned with a
  * `SymlinkFile` per package.json `bin` (findable by command, targeting the bin's
- * install path — files added first, so a file wins a same-path tie); a projection
+ * install path — bins added first, so a bin wins its command name and a same-path
+ * tie over a like-named file); a projection
  * is `surface.find`. The default entry (no projection) is the sole bin, or a
  * bin-less package's sole file; anything else needs a projection. This is the
  * single "npm package → runnable" path — shared by an external `@npm:…` consumed

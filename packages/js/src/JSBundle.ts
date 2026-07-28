@@ -166,7 +166,7 @@ function refPackageName(ref: RepositoryRef): string {
  */
 export function computeBundleEntries(entryNames: string[], rewrite: RewriteFn): IBundleEntry[] {
   return entryNames.map(name => {
-    const defaulted = name.replace(/\.tsx?$/, ".js");
+    const defaulted = name.replace(/\.tsx?$/i, ".js");
     const output = rewrite(defaulted) ?? defaulted;
     if (!output.endsWith(".js")) {
       throw new Error(`js_bundle output '${output}' (from entry '${name}') must end in '.js'`);
