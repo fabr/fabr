@@ -233,6 +233,16 @@ function toPublishedVersions(json: unknown): string[] {
   return Object.keys(json.versions);
 }
 
+/**
+ * A package name as ONE registry path segment: npm percent-encodes the `/` of a
+ * scoped name (`@types/node` → `@types%2fnode`) on every read. npmjs also
+ * accepts the raw slash, but a registry or proxy routing on path segments reads
+ * that as a package `@types` with a sub-resource, and answers 404.
+ */
+function packagePath(pkg: string): string {
+  return pkg.replace(/\//g, "%2f");
+}
+
 export class NPMRepository implements Repository, RepositoryReader, RepositoryWriter, PackageRegistry<SemverVersion> {
   private readonly url: string;
   private readonly context: RepositoryContext;
@@ -891,7 +901,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    * pointer document — fetched with a freshness lifetime, not frozen).
    * Unparseable version strings are skipped. */
   private publishedVersions(pkg: string, forceRevalidate: boolean): Computable<SemverVersion[]> {
-    const url = `${this.url}/${pkg}`;
+    const url = `${this.url}/${packagePath(pkg)}`;
     return this.authHeadersFor(url)
       .then(headers =>
         this.context.fetch(
@@ -1057,7 +1067,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     const key = pkg + "/" + version;
     let result = this.metadataCache.get(key);
     if (!result) {
-      const metadataUrl = `${this.url}/${key}`;
+      const metadataUrl = `${this.url}/${packagePath(pkg)}/${version}`;
       result = this.authHeadersFor(metadataUrl)
         .then(headers =>
           this.context.fetch(

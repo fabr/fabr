@@ -197,6 +197,12 @@ describe("Command", () => {
     expect(parseCommandLine(["node", "fabr", "build", "--", "foo"]).targets).to.deep.equal(["foo"]);
   });
 
+  it("shields a command word after --, so a target named like a command builds", () => {
+    const options = parseCommandLine(["node", "fabr", "--", "test"]);
+    expect(options.command).to.equal("build");
+    expect(options.targets).to.deep.equal(["test"]);
+  });
+
   it("treats a second -- as an ordinary positional", () => {
     expect(parseCommandLine(["node", "fabr", "cat", "--", "--", "x"]).targets).to.deep.equal(["--", "x"]);
   });

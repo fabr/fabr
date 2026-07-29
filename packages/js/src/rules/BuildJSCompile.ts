@@ -110,7 +110,18 @@ export function makeTsConfig(
       ...modeOverlay,
     },
     exclude: ["node_modules"],
-    include: ["./src/**/*.ts", "./src/**/*.tsx", "./src/**/*.js", "./src/**/*.jsx"],
+    /* Every extension classifyJsSource routes here — an omission would leave the
+     * source silently uncompiled rather than failing. */
+    include: [
+      "./src/**/*.ts",
+      "./src/**/*.mts",
+      "./src/**/*.cts",
+      "./src/**/*.tsx",
+      "./src/**/*.js",
+      "./src/**/*.mjs",
+      "./src/**/*.cjs",
+      "./src/**/*.jsx",
+    ],
   };
 }
 

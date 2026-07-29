@@ -799,7 +799,14 @@ export class BuildCache {
         if (hash === undefined || mode === undefined || name === undefined) {
           throw new Error(`Malformed cache manifest line: '${line}'`);
         }
-        result.set(decodeURI(name), new BuildFile(this.blobRoot, hash, decodeURI(name), parseInt(mode, 8)));
+        /* Validated, not merely parsed: `parseInt` yields NaN for a corrupt
+         * field, which would ride on the IFile as a bogus permission mask
+         * instead of failing the parse (and so rebuilding the entry). */
+        const bits = parseInt(mode, 8);
+        if (!/^[0-7]+$/.test(mode) || !Number.isInteger(bits)) {
+          throw new Error(`Malformed cache manifest line: '${line}'`);
+        }
+        result.set(decodeURI(name), new BuildFile(this.blobRoot, hash, decodeURI(name), bits));
       }
     }
     /* A manifest is fabr's own memo of a canonical FileSet — its names were

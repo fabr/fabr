@@ -141,12 +141,11 @@ export class Name {
 
   /**
    * The glob wildcard units of this name in written order — one entry per
-   * `*`/`**`/`?`/`[...]` run (a maximal run of glob metacharacters). Used by
-   * Validate to enforce the rename rules: a rename glob's units must all be
-   * `*` or `**` (so picomatch captures line up positionally with
-   * {@link replay}'s slots), and the selector's and rename target's unit counts
-   * must match. A plain (non-rename) selector is unrestricted, so this is only
-   * consulted on rename surfaces.
+   * `*`/`**`/`?`/`[...]` run (a maximal run of glob metacharacters). Read by the
+   * parser to enforce the rename rules: a rename glob's units must all be `*` or
+   * `**` (so picomatch captures line up positionally with the template's slots),
+   * and the selector's and template's unit counts must match. A plain (non-rename)
+   * selector is unrestricted, so this is only consulted on rename surfaces.
    */
   public getGlobUnits(): string[] {
     return this.parts.filter(part => part.kind === NamePartKind.Glob).map(part => part.value);
@@ -180,8 +179,8 @@ export class Name {
    * template's positional `$1`/`$2`. The selector matches on this name's own glob
    * (its `parts`, not its facets), so it works whether the selector is a whole
    * REWRITE value or the post-`:` projection remainder. Assumes substitution has
-   * run and (via Validate) that the selector and rename target wildcard counts
-   * agree.
+   * run, and that the wildcard counts agree — which the parser guarantees for
+   * every name it attaches the facet to.
    */
   public makeRenamer(renameTo: Name): (path: string) => string | undefined {
     /* Match on the path (every `:`→`/`, head-normalized — see makeProjector) so

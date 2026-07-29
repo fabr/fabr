@@ -1571,7 +1571,7 @@ export abstract class TargetContext {
           return Computable.resolve([arg.name.toString()]);
         }
         return srcs.find(arg.name).then(matched => {
-          const names = [...matched].map(([fileName]) => fileName).sort((a, b) => a.localeCompare(b));
+          const names = [...matched].map(([fileName]) => fileName).sort();
           if (names.length === 0) {
             throw new NameResolutionError(arg.name, declPosn(arg.ref), useSiteOf(this.stack), "no files in 'srcs' match this glob");
           }

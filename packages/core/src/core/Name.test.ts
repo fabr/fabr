@@ -389,4 +389,5 @@ describe("Name", () => {
       expect(project("src/a/b.ts")).to.equal("a/b.ts");
     });
   });
+
 });

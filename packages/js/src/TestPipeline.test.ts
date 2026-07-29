@@ -47,4 +47,9 @@ describe("selectCompiledTestFiles", () => {
     const tree = fileSetOf("foo.js", "foo.d.ts");
     expect(selectCompiledTestFiles(tree, new Set(["foo.test"]))).to.deep.equal([]);
   });
+
+  it("picks up a .mts/.cts test's compiled .mjs/.cjs output", () => {
+    const tree = fileSetOf("a.test.mjs", "b.test.cjs", "a.test.d.mts");
+    expect(selectCompiledTestFiles(tree, new Set(["a.test", "b.test"]))).to.deep.equal(["a.test.mjs", "b.test.cjs"]);
+  });
 });

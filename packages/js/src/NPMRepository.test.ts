@@ -358,7 +358,7 @@ describe("NPMRepository resolveAll under files", () => {
     /* The metadata declares a dependency whose fetch is NOT served: if the
      * closure were walked, resolving it would reject with 'unexpected fetch'. */
     const served = {
-      [`${REG}/@parcel/watcher/2.4.1`]: metadataFor("@parcel/watcher", "2.4.1", { "node-addon-api": "^7.0.0" }),
+      [`${REG}/@parcel%2fwatcher/2.4.1`]: metadataFor("@parcel/watcher", "2.4.1", { "node-addon-api": "^7.0.0" }),
       [`${REG}/tarball/2.4.1.tgz`]: packageTarball(),
     };
     const repo = new NPMRepository(REG, fakeContext(FILES_OPERATION, served, fetched));
@@ -373,7 +373,7 @@ describe("NPMRepository resolveAll under files", () => {
     expect(pkg.dependencies).to.deep.equal([]);
     expect([...pkg].map(([name]) => name).sort()).to.deep.equal(["index.js", "package.json"]);
     /* Only the root's own metadata + tarball were fetched — never the dep. */
-    expect(fetched).to.deep.equal([`${REG}/@parcel/watcher/2.4.1`, `${REG}/tarball/2.4.1.tgz`]);
+    expect(fetched).to.deep.equal([`${REG}/@parcel%2fwatcher/2.4.1`, `${REG}/tarball/2.4.1.tgz`]);
   });
 
   it("resolves a range standalone at its constraint minimum", async () => {

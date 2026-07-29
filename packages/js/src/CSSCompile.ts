@@ -76,7 +76,7 @@ export function isStyledSource(name: string): boolean {
  */
 export function buildCssOptions(fileNames: string[]): ICssOptions {
   return {
-    files: [...fileNames].sort((a, b) => a.localeCompare(b)),
+    files: [...fileNames].sort(),
     srcRoot: CSS_SRC_ROOT,
     loadPaths: [SCSS_DEPS_DIR],
     outdir: CSS_OUTDIR,

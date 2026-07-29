@@ -168,7 +168,8 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
  * which has no targetdef to give it a type. Only the structural (type-independent)
  * rules apply: a `{ ... }` block validates as a map (its internals, and no
  * block/name mix). A plain name/reference list has nothing to check without a
- * schema.
+ * schema — a rename's own rules read only the written name, so the parser has
+ * already enforced them.
  *
  * A command value is deliberately NOT rejected here: a pipeline may be defined in
  * a standalone property and *referenced* into a target's COMMAND property (the
@@ -250,58 +251,40 @@ function validateBlock(entries: IMapItemDecl[], log: Log): boolean {
   return isValid;
 }
 
-/** Validate a single property value's rename facet (if any) against its
- * property type; returns false and logs on a violation. */
+/**
+ * Validate a single property value's rename facet (if any) against its property
+ * type; returns false and logs on a violation. Only the rules that NEED the
+ * schema type live here — the rename's own well-formedness (`*`/`**` only, equal
+ * wildcard counts, no `:` in the template) reads the written name alone and is
+ * enforced by the parser, for every name including one no Validate pass sees.
+ */
 function validateRenameValue(prop: IPropertyDecl, value: IValue, type: PropertyType, log: Log): boolean {
-  if (!isNameValue(value)) {
+  if (!isNameValue(value) || type !== PropertyType.Rewrite) {
     return true; /* a block is handled by the MAP path, never here */
   }
   const name = value.value;
-  const isRewrite = type === PropertyType.Rewrite;
-  const renameTo = name.getRenameTo();
 
   const fail = (detail: string): boolean => {
     log.log(DIAG_INVALID_REWRITE, { detail, loc: declPosn(prop) });
     return false;
   };
 
-  if (!renameTo) {
+  if (!name.getRenameTo()) {
     /* A bare REWRITE value is a constant literal: a wildcard has no meaning
-     * with no rename target to replay it into. Other property types ignore a
-     * plain value here. */
-    if (isRewrite && name.hasGlob()) {
+     * with no rename target to replay it into. */
+    if (name.hasGlob()) {
       return fail("a bare REWRITE value must be a literal constant (no wildcards); add `-> template` to rename");
     }
     return true;
   }
-
   /* A REWRITE selector is a bare pattern (never a reference): no `:` and no
    * `<constraints>`. (A templated FILES value's selector is a real projection,
    * so its `:` and delta are fine.) */
-  if (isRewrite && name.hasLevelSeparator()) {
+  if (name.hasLevelSeparator()) {
     return fail("a REWRITE selector cannot contain ':'");
   }
-  if (isRewrite && name.hasConstraints()) {
+  if (name.hasConstraints()) {
     return fail("a REWRITE selector cannot carry constraints");
-  }
-  /* A rename template is a name pattern, never a reference. */
-  if (renameTo.hasLevelSeparator()) {
-    return fail("a rename template cannot contain ':'");
-  }
-  /* Only `*`/`**` capture-and-replay (picomatch captures `?`/`[...]`
-   * inconsistently), so both sides are restricted to them, and their counts
-   * must match for positional replay. */
-  const selectorUnits = name.getGlobUnits();
-  const templateUnits = renameTo.getGlobUnits();
-  for (const unit of [...selectorUnits, ...templateUnits]) {
-    if (unit !== "*" && unit !== "**") {
-      return fail(`rename wildcards must be '*' or '**' (found '${unit}')`);
-    }
-  }
-  if (selectorUnits.length !== templateUnits.length) {
-    return fail(
-      `selector and template must have equal wildcard counts (${selectorUnits.length} vs ${templateUnits.length})`
-    );
   }
   return true;
 }

@@ -664,6 +664,54 @@ describe("Parser Tests", () => {
         ),
       ]);
     });
+
+    /* The wildcard rules read the written name alone, so they are enforced here
+     * rather than in Validate — which means they also hold for a name that gets
+     * no Validate pass: a schema-less global, and a CLI reference. */
+    it("rejects unequal wildcard counts, in either direction", () => {
+      expect(parseInvalid("out = *.a -> *.b.*;")).to.deep.equal([
+        diagnosticBlock(
+          1,
+          11,
+          "Invalid rename template: selector and template must have equal wildcard counts (1 vs 2)",
+          "out = *.a -> *.b.*;"
+        ),
+      ]);
+      expect(parseInvalid("out = *.a.* -> *.b;")).to.deep.equal([
+        diagnosticBlock(
+          1,
+          13,
+          "Invalid rename template: selector and template must have equal wildcard counts (2 vs 1)",
+          "out = *.a.* -> *.b;"
+        ),
+      ]);
+    });
+
+    it("rejects a wildcard picomatch does not capture positionally", () => {
+      expect(parseInvalid("out = a?.js -> a?.out;")).to.deep.equal([
+        diagnosticBlock(
+          1,
+          13,
+          "Invalid rename template: rename wildcards must be '*' or '**' (found '?')",
+          "out = a?.js -> a?.out;"
+        ),
+      ]);
+    });
+
+    it("rejects a ':' in the template (a pattern, not a reference)", () => {
+      expect(parseInvalid("out = *.a -> pkg:*.b;")).to.deep.equal([
+        diagnosticBlock(
+          1,
+          11,
+          "Invalid rename template: a rename template cannot contain ':'",
+          "out = *.a -> pkg:*.b;"
+        ),
+      ]);
+    });
+
+    it("rejects them on a command-line name too (parseName parity)", () => {
+      expect(() => parseName("x:*.a -> *.b.*")).to.throw(/equal wildcard counts/);
+    });
   });
 
   describe("character classes", () => {
@@ -907,5 +955,24 @@ describe("Parser Tests", () => {
         diagnosticBlock(2, 15, "Read '=' but expected a map key, a map reference, or '}'", "  defines = { = false; }"),
       ]);
     });
+
+    it("reports nesting past the depth limit as a diagnostic, not a stack overflow", () => {
+      const depth = 50_000;
+      const text = `js_bundle b {\n  defines = ${"{ k = ".repeat(depth)}v${" }".repeat(depth)};\n}`;
+      const errors = parseInvalid(text);
+      expect(errors.length).to.be.greaterThan(0);
+      expect(errors[0]).to.contain("Block nesting is too deep");
+    });
+  });
+
+  it("skips a UTF-8 BOM rather than reporting it as an unexpected character", () => {
+    expect(summarize(parseValid("\uFEFFwhich = relative;"))).to.deep.equal(summary({ properties: { which: ["relative"] } }));
+  });
+
+  it("reports a duplicate targetdef property rather than silently taking the last", () => {
+    const errors = parseInvalid("targetdef t { srcs = FILES; srcs = STRING; }");
+    expect(errors).to.deep.equal([
+      diagnosticBlock(1, 29, "Duplicate property 'srcs' in targetdef", "targetdef t { srcs = FILES; srcs = STRING; }"),
+    ]);
   });
 });

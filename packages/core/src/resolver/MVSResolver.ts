@@ -67,17 +67,26 @@ import {
  * requirement's contribution is raised to the lowest *published* satisfying
  * version — recorded in MVSResolution.raises when it wins its key.
  *
- * Repairs fire only when no repair-free resolution exists: resolution runs
- * first with repairs disabled, tolerating an unpublished demanded version as
- * an unexpandable pending selection (a transient winner superseded by a higher
- * declared floor never mattered, and must not trigger — or be failed by — a
- * repair). Only if the CONVERGED tree still selects an unpublished version —
- * the proof that the tree is unresolvable without repair — is the walk rerun
- * with the raise hook active. This also makes the outcome independent of visit
- * order (an eagerly-probed transient floor whose range had no published
- * version used to hard-fail resolutions that a later declared floor would have
- * made clean). Without the hook the same tolerance applies, and a live
- * unpublished winner at convergence is the terminal failure.
+ * Repairs fire only when no repair-free resolution exists, and only for the
+ * nodes that prove it: resolution runs first with repairs disabled, tolerating
+ * an unpublished demanded version as an unexpandable pending selection (a
+ * transient winner superseded by a higher declared floor never mattered, and
+ * must not trigger — or be failed by — a repair). Only if the CONVERGED tree
+ * still selects an unpublished version — the proof that the tree is
+ * unresolvable without repair — is the walk rerun, with the raise hook armed
+ * for **exactly those nodes**. Each rerun can expose further blocking nodes (a
+ * raise changes selections), so the armed set grows and the walk repeats until
+ * the tree converges clean or stops growing; it is bounded by the finite node
+ * set, so this terminates.
+ *
+ * The hook is armed per node, not globally for the rerun: a broken floor phase 1
+ * tolerated *is* tolerable, and raising it would move a selection nothing asked
+ * to be moved — coupling that package's version to whether some unrelated
+ * subtree needed repairing. The judgment is likewise independent of visit order:
+ * an eagerly-probed transient floor whose range has no published version must
+ * not fail a tree a later declared floor makes clean. Without the hook the same
+ * tolerance applies, and a live unpublished winner at convergence is the
+ * terminal failure.
  *
  * Note: if the registry rejects a metadata fetch (other than a raisable
  * version-not-found), the returned Computable rejects with a
@@ -90,19 +99,23 @@ export function resolveMVS<V, C>(
   domain: VersionDomain<V, C>,
   registry: PackageRegistry<V>
 ): Computable<MVSResolution<V>> {
-  return resolvePhase(roots, domain, registry, false).catch(err => {
-    if (err instanceof RepairsRequired) {
-      return resolvePhase(roots, domain, registry, true);
-    }
-    throw err;
-  });
+  const attempt = (repairable: ReadonlySet<string>): Computable<MVSResolution<V>> =>
+    resolvePhase(roots, domain, registry, repairable).catch(err => {
+      if (err instanceof RepairsRequired) {
+        return attempt(new Set([...repairable, ...err.nodes]));
+      }
+      throw err;
+    });
+  return attempt(new Set());
 }
 
-/** Internal phase-1 signal: the converged tree demands unpublished versions,
- * so no repair-free resolution exists — rerun with repairs enabled. Never
- * escapes resolveMVS. */
+/** Internal signal: the converged tree selects these (unpublished) nodes, whose
+ * floors the hook has not yet been armed for — so no repair-free resolution
+ * exists and the walk must rerun with them raisable. Never escapes resolveMVS;
+ * `nodes` is non-empty (a converged tree whose blocking nodes were all already
+ * armed is the terminal failure instead). */
 class RepairsRequired extends Error {
-  constructor() {
+  constructor(public readonly nodes: string[]) {
     super("resolution requires repairs");
   }
 }
@@ -129,9 +142,15 @@ function resolvePhase<V, C>(
   roots: Requirement[],
   domain: VersionDomain<V, C>,
   registry: PackageRegistry<V>,
-  repair: boolean
+  /** Node ids ({@link nodeId}) whose floors this walk may raise — the ones a
+   * previous walk converged on as unpublished *winners*. Empty on the first
+   * walk, so it is repair-free. */
+  repairable: ReadonlySet<string>
 ): Computable<MVSResolution<V>> {
   return Computable.from((resolve, reject) => {
+    /** Whether this walk may raise the floors demanding `id`: the registry must
+     * offer the hook, and the node must be one a converged tree proved blocking. */
+    const canRepair = (id: string): boolean => registry.lowestAvailable !== undefined && repairable.has(id);
     /* Highest minimum seen so far, per resolution key */
     const selected = new Map<string, Selected<V>>();
     /* Declared requirements of every pkg@version visited (including superseded ones) */
@@ -295,7 +314,7 @@ function resolvePhase<V, C>(
      */
     const nodeNotPublished = (id: string, pkg: string, version: V, err: VersionNotFoundError): void => {
       notPublished.set(id, err);
-      if (repair && registry.lowestAvailable) {
+      if (canRepair(id)) {
         raiseFloors(pkg, version, err, nodeDemands.get(id) ?? []);
         return;
       }
@@ -333,7 +352,7 @@ function resolvePhase<V, C>(
          * side of it. */
         demands.push(entry);
         const known = notPublished.get(id);
-        if (known && repair && registry.lowestAvailable) {
+        if (known && canRepair(id)) {
           pending++;
           raiseFloors(pkg, version, known, [entry]);
         }
@@ -505,20 +524,24 @@ function resolvePhase<V, C>(
         return domain.compare(a.version, b.version);
       });
       /* Convergence judgment on tolerated unpublished versions: one still a
-       * live (reachable) winner means the tree is unresolvable without repair —
-       * trigger the repair phase when the registry offers one, else fail with
-       * the usual metadata attribution. Superseded/pruned entries never
-       * mattered and are dropped silently. In the repair phase the raise hook
-       * has already had its turn (a live entry there is one nothing published
-       * satisfies), so the failure is terminal rather than a second signal.
-       * Ordered by node id so the reported failure doesn't depend on which
-       * metadata answer landed first. */
+       * live (reachable) winner means the tree is unresolvable without repair.
+       * Those the hook was not armed for are handed back as the next walk's
+       * repairable set (only they need raising — see resolveMVS); one that WAS
+       * armed has already had its turn, so nothing published satisfies it and
+       * the failure is terminal. Superseded/pruned entries never mattered and
+       * are dropped silently. Ordered by node id so the reported failure doesn't
+       * depend on which metadata answer landed first. */
       const liveUnpublished = [...unpublished.entries()]
         .filter(([id]) => selections.some(sel => nodeId(sel.pkg, sel.version) === id))
         .sort(([a], [b]) => compareText(a, b));
       if (liveUnpublished.length > 0) {
+        const unarmed = liveUnpublished.filter(([id]) => !repairable.has(id)).map(([id]) => id);
         const [id, info] = liveUnpublished[0];
-        fail(!repair && registry.lowestAvailable ? new RepairsRequired() : annotate(id, info.pkg, info.version, info.err));
+        fail(
+          registry.lowestAvailable && unarmed.length > 0
+            ? new RepairsRequired(unarmed)
+            : annotate(id, info.pkg, info.version, info.err)
+        );
         return;
       }
       /* Keep only the raises that shaped the result: the raised version must

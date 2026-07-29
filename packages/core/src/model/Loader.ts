@@ -48,6 +48,13 @@ const DIAG_INCLUDE_NOT_FOUND = new Diagnostic<{ filename: string; loc: ISourceSp
   "Included file not found: {filename}"
 );
 
+/** An `include` resolving outside the project tree, positioned at the offending
+ * decl (with a `-->` back through the include chain that reached it). */
+const DIAG_INCLUDE_OUTSIDE = new Diagnostic<{ filename: string; loc: ISourceSpan }>(
+  LogLevel.Error,
+  "Included file not found: {filename} (outside the project tree)"
+);
+
 /** A `plugin <name>;` whose activation failed (not installed, no `activate()`,
  * or `activate()` threw) — positioned at the declaration, with the underlying
  * reason as its detail. */
@@ -96,11 +103,12 @@ export function packageLibFile(packageName: string, file: string): string {
  * rather than the process cwd. Absolute include paths are rejected at parse; a
  * project file's include is additionally confined to the project tree (a lib
  * file's includes resolve within its installed package, which activation
- * already vouches for). */
-function resolveInclude(file: string, include: IIncludeDecl): string {
+ * already vouches for) — `undefined` for one that climbs out, reported by the
+ * caller against the decl. */
+function resolveInclude(file: string, include: IIncludeDecl): string | undefined {
   const target = path.join(path.dirname(file), include.filename);
   if (!path.isAbsolute(file) && (target === ".." || target.startsWith(".." + path.sep))) {
-    throw new Error(`Invalid include '${include.filename}' in ${file}: outside the project tree`);
+    return undefined;
   }
   return target;
 }
@@ -220,15 +228,27 @@ export function loadProject(
             return undefined;
           }
         });
-        const includes = decls.includes.map(include => {
+        /* An include climbing out of the project tree is dropped and reported
+         * against its decl, like a missing one. */
+        let includeErrors = 0;
+        const includes = select(decls.includes, include => {
           const target = resolveInclude(file, include);
+          if (target === undefined) {
+            execution.log.log(DIAG_INCLUDE_OUTSIDE, {
+              filename: include.filename,
+              loc: declPosn(include),
+              notes: includeChain(includeSites, include),
+            });
+            includeErrors++;
+            return undefined;
+          }
           if (!includeSites.has(target)) {
             includeSites.set(target, include);
           }
           return target;
         });
         return {
-          value: { decls, plugins, parseErrors: parseLog.errorCount + pluginErrors },
+          value: { decls, plugins, parseErrors: parseLog.errorCount + pluginErrors + includeErrors },
           next: [...includes, ...plugins.flatMap(libFiles)],
         };
       });

@@ -83,6 +83,25 @@ const DIAG_UPDATE = Diagnostic.Info<{ name: string; count: number }>("Updating {
 const DIAG_RUN_ERROR = Diagnostic.Error<{ name: string; message: string }>("Failed to launch {name}: {message}");
 
 /**
+ * One staged install of the program: the directory it was written to, the
+ * `programKey` (program manifest + launch argv) identifying *which* program it
+ * is, the `served` partition currently written into it (a content sync advances
+ * this), and the child running it once launched.
+ *
+ * A swap has two of these live at once — the old child keeps serving out of its
+ * own dir while the replacement is staged — so the supervisor's state is this
+ * one type plus two pointers into it ({@link RunSupervisor.target},
+ * {@link RunSupervisor.current}), which coincide from launch to the next update.
+ */
+interface Install {
+  readonly dir: string;
+  readonly programKey: string;
+  served: FileSet;
+  /** Absent until launched — and again once the child has exited. */
+  child?: ChildProcess;
+}
+
+/**
  * `fabr run -w`'s execution half: supervise a single long-lived child across the
  * watch session, reacting when the rebuilt install actually changes.
  *
@@ -110,22 +129,19 @@ const DIAG_RUN_ERROR = Diagnostic.Error<{ name: string; message: string }>("Fail
  * a notify channel telling the server what a sync changed).
  */
 export class RunSupervisor {
-  private child?: ChildProcess;
-  private stagedDir?: string;
-  /** Program key (program manifest + argv) of the currently-launched install
-   * (undefined ⇒ nothing running), so an identical rebuild is a no-op. */
-  private programKey?: string;
-  /** The launched install's served-content partition, the base the next
-   * content-only change diffs against. */
-  private served?: FileSet;
+  /** Every install staged on disk, so a shutdown removes the lot. */
+  private readonly installs = new Set<Install>();
+  /** The install we are *committed to* — running, or staged and waiting for the
+   * old child to exit; undefined ⇒ the next update stages and launches. An
+   * update is judged against this rather than against what is *running*, or a
+   * revert-to-what-is-running (save, then undo) mid-swap would read as
+   * unchanged and leave the in-flight swap to launch the superseded program. */
+  private target?: Install;
+  /** The install whose child is live. */
+  private current?: Install;
   /** Bumped per state-changing reaction; a slower async stage (or sync) checks
    * it to bail out when a newer reaction has superseded it. */
   private generation = 0;
-  /** Staged installs written but not yet owned by a running child — a dir is
-   * here while staging, and while waiting for the old child to exit before the
-   * new one launches. Tracked so a shutdown ({@link stop}) mid-restart removes
-   * them (an owned install is cleaned via {@link stagedDir}/{@link onChildGone}). */
-  private readonly pendingDirs = new Set<string>();
   /** Serializes content syncs: each chains behind the previous, so overlapping
    * re-settles can't interleave their per-file writes out of order. */
   private lastSync: Computable<void> = Computable.resolve(undefined);
@@ -153,49 +169,58 @@ export class RunSupervisor {
     /* Key on the install-relative argv (no anchor), identical across staged
      * dirs — so an args/entry-only change relaunches, a mere restage doesn't. */
     const programKey = `${runnable.programManifest()}\n$ ${runnable.toCommandLine(this.callerArgs).join("\0")}`;
-    if (this.child && programKey === this.programKey) {
+    if (programKey === this.target?.programKey) {
       return this.updateContent(runnable);
     }
-    const wasRunning = this.child !== undefined;
+    const wasRunning = this.current !== undefined;
     const generation = ++this.generation;
     /* Stage the replacement install BEFORE touching the running child: the old
      * process keeps serving while we write, and a staging failure leaves it
      * running (killing it up front would leave nothing to fall back to). The
      * running child is only stopped once the new install is ready to launch. */
-    const dir = this.cache.createWorkDir("run-");
-    this.pendingDirs.add(dir);
-    const argv = launchArgv(runnable, this.callerArgs, dir);
-    return writeFileSet(dir, runnable).then(
-      () => this.swap(dir, argv, runnable, programKey, generation, wasRunning),
+    const install: Install = { dir: this.cache.createWorkDir("run-"), programKey, served: runnable.served };
+    this.installs.add(install);
+    /* Commit at stage time, not at launch, so an update arriving mid-swap is
+     * judged against what we are heading for and a content sync lands in this
+     * install whether or not the child has been swapped over to it yet. */
+    this.target = install;
+    const argv = launchArgv(runnable, this.callerArgs, install.dir);
+    const staged = writeFileSet(install.dir, runnable);
+    /* Syncs queue behind the staging write — the dir does not exist until it lands. */
+    this.lastSync = staged.then(
+      () => undefined,
+      () => undefined
+    );
+    return staged.then(
+      () => this.swap(install, argv, runnable, generation, wasRunning),
       err => {
-        this.discardPending(dir);
+        this.discard(install);
         this.logRunError(err);
       }
     );
   }
 
-  /** Staging of `dir` succeeded — stop the old child (if any) and launch the
-   * replacement once it has *actually exited*. The wait matters: a real server
-   * still holds its port until it exits, so binding the replacement synchronously
-   * races it (EADDRINUSE) — exactly the dev-server case run supervises. Resolves
-   * when the new child is running (or the update was superseded meanwhile). */
+  /** `install` is staged — stop the old child (if any) and launch it once that
+   * child has *actually exited*. The wait matters: a real server still holds its
+   * port until it exits, so binding the replacement synchronously races it
+   * (EADDRINUSE) — exactly the dev-server case run supervises. Resolves when the
+   * new child is running (or the update was superseded meanwhile). */
   private swap(
-    dir: string,
+    install: Install,
     argv: string[],
     runnable: RunnableFileSet,
-    programKey: string,
     generation: number,
     wasRunning: boolean
   ): Computable<void> {
     /* A newer update raced ahead while we staged — discard this one and leave the
      * current child alone (that newer update will supersede it). */
     if (generation !== this.generation) {
-      this.discardPending(dir);
+      this.discard(install);
       return Computable.resolve(undefined);
     }
-    const old = this.child;
+    const old = this.current?.child;
     if (!old) {
-      this.launch(dir, argv, runnable, programKey, generation, wasRunning);
+      this.launch(install, argv, runnable, generation, wasRunning);
       return Computable.resolve(undefined);
     }
     /* Stop the old child gracefully and defer the launch to its exit — its own
@@ -205,51 +230,54 @@ export class RunSupervisor {
      * that overruns the grace window; that kill's exit still drives the launch. */
     return Computable.from(resolve => {
       old.once("exit", () => {
-        this.launch(dir, argv, runnable, programKey, generation, wasRunning);
+        this.launch(install, argv, runnable, generation, wasRunning);
         resolve(undefined);
       });
       this.stopChildGroup(old);
     });
   }
 
-  /** Bind the staged install as the running child. Generation-guarded: a newer
-   * update that superseded us while the old child was exiting discards this
-   * now-stale staged dir instead of launching it. */
+  /** Give `install` its child. Generation-guarded: a newer update that superseded
+   * us while the old child was exiting discards this now-stale install instead of
+   * launching it. */
   private launch(
-    dir: string,
+    install: Install,
     argv: string[],
     runnable: RunnableFileSet,
-    programKey: string,
     generation: number,
     wasRunning: boolean
   ): void {
     if (generation !== this.generation) {
-      this.discardPending(dir);
+      this.discard(install);
       return;
     }
     try {
       if (wasRunning) {
         this.log.log(DIAG_RESTART, { name: this.name });
       }
-      const child = spawnInteractive(findExecutable(argv[0]), argv.slice(1), launchDir(runnable, dir));
-      this.pendingDirs.delete(dir);
-      this.child = child;
-      this.stagedDir = dir;
-      this.programKey = programKey;
-      this.served = runnable.served;
-      child.on("error", err => this.onChildGone(child, dir, err));
-      child.on("exit", () => this.onChildGone(child, dir));
+      const child = spawnInteractive(findExecutable(argv[0]), argv.slice(1), launchDir(runnable, install.dir));
+      install.child = child;
+      this.current = install;
+      /* `target` is not re-pointed here — it was set when this install was staged,
+       * and a content sync that landed since has already advanced its `served`. */
+      child.on("error", err => this.onChildGone(install, err));
+      child.on("exit", () => this.onChildGone(install));
     } catch (err) {
-      this.discardPending(dir);
+      this.discard(install);
       this.logRunError(err);
     }
   }
 
-  /** Drop a staged install that was never launched (superseded, or a staging/
-   * launch failure): forget it and remove it from disk. */
-  private discardPending(dir: string): void {
-    this.pendingDirs.delete(dir);
-    this.cache.releaseWorkDir(dir);
+  /** Forget an install and remove it from disk — superseded, failed to stage or
+   * launch, or its child has gone. Idempotent. If it was still the commitment
+   * (rather than a newer update having taken over) that goes with it, so the next
+   * update stages afresh instead of matching a dead install's key. */
+  private discard(install: Install): void {
+    this.installs.delete(install);
+    if (this.target === install) {
+      this.target = undefined;
+    }
+    this.cache.releaseWorkDir(install.dir);
   }
 
   private logRunError(err: unknown): void {
@@ -265,23 +293,23 @@ export class RunSupervisor {
     setTimeout(() => killProcessGroup(child, "SIGKILL"), RESTART_GRACE_MS).unref();
   }
 
-  /** The program is unchanged and running — apply a served-content delta (if
-   * any) to its staged dir in place. Chained behind any earlier sync so writes
-   * apply in settle order; generation-guarded so a restart that supersedes a
-   * queued sync discards it (and silences its failures — its dir may be gone).
-   * Settles when this cycle's sync has landed (or proved unnecessary). */
+  /** The program is unchanged — apply a served-content delta (if any) to the
+   * committed install's dir in place. Chained behind that dir's staging write
+   * and any earlier sync so writes apply in settle order; generation-guarded so
+   * a restart that supersedes a queued sync discards it (and silences its
+   * failures — its dir may be gone). Settles when this cycle's sync has landed
+   * (or proved unnecessary). */
   private updateContent(runnable: RunnableFileSet): Computable<void> {
     const generation = this.generation;
     const sync = this.lastSync.then(() => {
-      const dir = this.stagedDir;
-      const before = this.served;
-      if (generation !== this.generation || !dir || !before || before.toManifest() === runnable.served.toManifest()) {
+      const target = this.target;
+      if (generation !== this.generation || !target || target.served.toManifest() === runnable.served.toManifest()) {
         return undefined;
       }
-      return syncFileSet(dir, before, runnable.served).then(
+      return syncFileSet(target.dir, target.served, runnable.served).then(
         ({ written, removed }) => {
           if (generation === this.generation) {
-            this.served = runnable.served;
+            target.served = runnable.served;
             this.log.log(DIAG_UPDATE, { name: this.name, count: written + removed });
           }
         },
@@ -296,45 +324,36 @@ export class RunSupervisor {
     return sync;
   }
 
-  /** The child ended (crash, one-shot completion, or a spawn error). Clear it so
-   * the next change relaunches, and drop its install. Guarded on identity so a
-   * stale handler can't clobber a newer child. */
-  private onChildGone(child: ChildProcess, dir: string, err?: Error): void {
+  /** `install`'s child ended (crash, one-shot completion, or a spawn error): drop
+   * it, so the next change relaunches. Keyed on the install, so a handler for a
+   * superseded one can't clear the live child. */
+  private onChildGone(install: Install, err?: Error): void {
     if (err) {
       this.log.log(DIAG_RUN_ERROR, { name: this.name, message: err.message });
     }
-    if (this.child === child) {
-      this.child = undefined;
-      this.programKey = undefined;
-      this.served = undefined;
+    install.child = undefined;
+    if (this.current === install) {
+      this.current = undefined;
     }
-    if (this.stagedDir === dir) {
-      this.stagedDir = undefined;
-    }
-    this.cache.releaseWorkDir(dir);
+    this.discard(install);
   }
 
-  /** Kill the running child's whole process group and remove every staged
-   * install (the running one and any mid-restart pending dirs). Synchronous,
-   * hard (SIGKILL), so it is safe and reliable from a `process.on("exit")` hook:
-   * fabr is already leaving, so guaranteeing no orphaned workers outranks giving
-   * the child a graceful window. The whole group is signalled, not just the
-   * direct child, so a program that forked its own workers isn't left orphaned. */
+  /** Kill every live child's whole process group and remove every staged install
+   * — one loop, since `installs` is exactly what is on disk (the running one plus
+   * any staged mid-restart). Synchronous and hard (SIGKILL), so it is safe and
+   * reliable from a `process.on("exit")` hook: fabr is already leaving, so
+   * guaranteeing no orphaned workers outranks giving the child a graceful window.
+   * The whole group is signalled, not just the direct child, so a program that
+   * forked its own workers isn't left orphaned. */
   public stop(): void {
-    const child = this.child;
-    if (child) {
-      killProcessGroup(child, "SIGKILL");
-      this.child = undefined;
+    for (const install of this.installs) {
+      if (install.child) {
+        killProcessGroup(install.child, "SIGKILL");
+      }
+      this.cache.releaseWorkDir(install.dir);
     }
-    this.programKey = undefined;
-    this.served = undefined;
-    if (this.stagedDir) {
-      this.cache.releaseWorkDir(this.stagedDir);
-      this.stagedDir = undefined;
-    }
-    for (const dir of this.pendingDirs) {
-      this.cache.releaseWorkDir(dir);
-    }
-    this.pendingDirs.clear();
+    this.installs.clear();
+    this.target = undefined;
+    this.current = undefined;
   }
 }

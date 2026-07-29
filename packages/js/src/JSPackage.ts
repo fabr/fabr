@@ -207,18 +207,24 @@ export function classifyJsSource(path: string): "ts" | "dts" | "js" | "copy" {
   if (extidx !== -1) {
     const ext = lower.substring(extidx + 1);
     switch (ext) {
+      /* The module-flavoured spellings compile like their plain forms: tsc emits
+       * `.mts`→`.mjs` and `.cts`→`.cjs`, and reads `.mjs`/`.cjs` under allowJs. */
       case "ts":
+      case "mts":
+      case "cts":
         /* A hand-written .d.ts is both a compile *input* (ambient types tsc
          * must see — e.g. the local picomatch shim) and a shipped *resource*
          * (e.g. the test runner's globals .d.ts, read back from the installed
          * package): it joins both the compile srcs and the copied output. */
-        if (lower.endsWith(".d.ts")) {
+        if (/\.d\.[cm]?ts$/.test(lower)) {
           return "dts";
         }
       /* fallthrough */
       case "tsx":
         return "ts";
       case "js":
+      case "mjs":
+      case "cjs":
       case "jsx":
         return "js";
     }
@@ -648,13 +654,32 @@ function storeLink(packageName: string): SymlinkFile {
  * package.json bin (js_package[build]); running reads that field back via
  * makeNpmRunnable, so a fabr-built package and an external npm one launch the
  * same way.
+ *
+ * Two bins sharing a stem (`bin/x.js` and `bin/x.sh`) both claim the command
+ * `x`, which the convention cannot decide: a {@link ConflictError}, not a pick.
+ * It takes the whole FileSet rather than its names so that conflict carries the
+ * set's provenance; each side is identified by its path *within* the package,
+ * which is what distinguishes the two claimants (their display names would not —
+ * a generated bin has none).
  */
-export function binByConvention(names: Set<string>): Map<string, string> {
+export function binByConvention(contents: FileSet): Map<string, string> {
   const bin = new Map<string, string>();
-  for (const filename of names) {
+  /* Sorted, so which of a colliding pair is the conflict's left side doesn't
+   * depend on the set's iteration order. */
+  for (const filename of [...contents].map(([name]) => name).sort()) {
     const match = /^bin\/([^/]+)$/.exec(filename);
     if (match && !/\.d\.[cm]?ts$|\.map$/.test(match[1])) {
-      bin.set(match[1].replace(/\.[^.]+$/, ""), filename);
+      const command = match[1].replace(/\.[^.]+$/, "");
+      const existing = bin.get(command);
+      if (existing !== undefined) {
+        throw new ConflictError(
+          "bin commands",
+          command,
+          { provenance: contents.origin, detail: existing },
+          { provenance: contents.origin, detail: filename }
+        );
+      }
+      bin.set(command, filename);
     }
   }
   return bin;
@@ -677,7 +702,7 @@ const NODE_SHEBANG = "#!/usr/bin/env node\n";
  */
 export function withBinShebangs(contents: FileSet): Computable<FileSet> {
   const files = new Map<string, IFile>(contents);
-  const binPaths = [...new Set(binByConvention(new Set(files.keys())).values())];
+  const binPaths = [...new Set(binByConvention(contents).values())];
   if (binPaths.length === 0) {
     return Computable.resolve(contents);
   }

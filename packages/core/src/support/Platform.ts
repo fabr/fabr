@@ -49,13 +49,18 @@ export function tripleToNpm(triple: string): NpmPlatform {
 }
 
 /** Triple arch field → node arch vocabulary (covers both canonical GNU/LLVM
- * spellings and the node-verbatim forms {@link hostTriple} emits by fallback). */
+ * spellings and the node-verbatim forms {@link hostTriple} emits by fallback).
+ * Every `process.arch` value must appear (mapping to itself where no GNU
+ * spelling shares it), since the fallback triple is `<process.arch>-<platform>`
+ * and an unrecognized arch field silently drops npm's `cpu` gate. */
 const ARCH_TO_NODE: Record<string, string> = {
   x86_64: "x64",
   amd64: "x64",
+  x64: "x64",
   i686: "ia32",
   i386: "ia32",
   x86: "ia32",
+  ia32: "ia32",
   aarch64: "arm64",
   arm64: "arm64",
   armv7: "arm",
@@ -66,6 +71,11 @@ const ARCH_TO_NODE: Record<string, string> = {
   powerpc64le: "ppc64",
   ppc64: "ppc64",
   ppc64le: "ppc64",
+  powerpc: "ppc",
+  ppc: "ppc",
+  mips: "mips",
+  mipsel: "mipsel",
+  s390: "s390",
   s390x: "s390x",
   riscv64: "riscv64",
   loongarch64: "loong64",

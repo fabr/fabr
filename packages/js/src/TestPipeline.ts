@@ -37,6 +37,7 @@ import {
   EMPTY_FILESET,
   BuildActionInputs,
   execute,
+  ExecutionError,
   FileSet,
   fileSetInput,
   findExecutable,
@@ -83,8 +84,10 @@ function runnerGlobalsTypes(runner: FileSet): FileSet {
 
 
 export interface ITestInputs {
-  sources: FileSet;
-  tests: FileSet;
+  /** The as-written source and test sources: they join the same collection point
+   * as the deps, so everything this evaluation consumes resolves jointly. */
+  sourceRefs: SourceRef[];
+  testRefs: SourceRef[];
   target: string;
   /** The as-written (unmaterialized) dependency sources. A js_package[test]
    * folds its `provided_deps` in here — a test install is self-contained, so a
@@ -104,60 +107,70 @@ export interface ITestInputs {
  * artifact is the test report; a red run fails the target with the report's
  * failure summary.
  *
- * Everything the evaluation consumes from the build graph — deps, test-only
- * deps, and the compile toolchain — goes through ONE collection point, so
- * every requirement resolves jointly and the consumer's pins participate
- * across the lot. The runner is not among them: it is a *tool*, independent
- * of what it tests, so it resolves apart as the JS_TEST_RUNNER runnable (the
- * TSC precedent — its pins don't co-resolve with the tests' deps).
+ * Everything the evaluation consumes from the build graph — sources, tests,
+ * deps and test-only deps — goes through ONE collection point, so every
+ * requirement resolves jointly and the consumer's pins participate across the
+ * lot. The runner and the compile toolchain are not among them: they are
+ * *tools*, independent of what they test/compile, and resolve apart.
  */
 export function compileAndRunTests(context: TargetContext, inputs: ITestInputs): Computable<RuleResult> {
-  if (inputs.tests.isEmpty()) {
-    /* No tests declared: trivially green (and no runner is needed). A declared
-     * test that yields no runnable output is NOT this case — it errors below. */
+  const jsTarget = parseJSTarget(inputs.target);
+  if (inputs.testRefs.length === 0) {
+    /* No `tests` at all: trivially green, and nothing is resolved for it — a
+     * target that declares no tests must not fetch its deps under `fabr test`.
+     * (A declared `tests` that *matches* no files still resolves, and greens
+     * below; one matching files but producing no runnable output errors.) */
     return Computable.resolve(EMPTY_FILESET);
   }
-  const jsTarget = parseJSTarget(inputs.target);
-  /* Compile srcs and tests together (tests are normally within srcs); the
-   * globals declarations come in via the synthetic @types mount, so a copy
-   * among the sources (the runner testing itself) is dropped */
-  const sources = FileSet.unionAll(inputs.sources, inputs.tests).remap(name =>
-    name === RUNNER_GLOBALS_TYPES ? undefined : name
-  );
-  /* The declared test sources' stems (path minus extension). Their compiled `.js`
-   * are picked out of the *actual* compiled tree by stem in planTestRun, so the
-   * source→output naming is never re-derived here — js_compile owns it. */
-  const testStems = new Set([...inputs.tests].map(([name]) => stripExtension(name)));
-  return Computable.forAll(
-    [
-      context.getGlobalRunnable("JS_TEST_RUNNER"),
-      context.collect({
-        deps: inputs.depSources,
-        testDeps: inputs.testDepSources,
-      }),
-    ],
-    (runner, { deps, testDeps }): Computable<RuleResult> => {
-      /* The test compile may import the package's deps, the test_deps, and the
-       * runner globals directly (all passed to compileJsSources). The runtime
-       * install splits them like RunJSScript: packages mount as node_modules,
-       * while a loose *resource* dep (.json, a template — tsc never emits it)
-       * stages at the install root next to the compiled tests, so a `./x.json`
-       * import resolves. Compilable loose deps (.ts/.js) are excluded here — their
-       * output already rides the compiled tree (and a raw .js would collide). */
-      const allDeps = [...deps, ...testDeps];
-      const packages = allDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
-      const runtimeModules = assembleNodeModules(packages);
-      const resources = resourceFiles(allDeps.filter(dep => !(dep instanceof PackageFileSet)));
-
-      const { compiled, copied } = compileJsSources(context, sources, [...deps, ...testDeps, runnerGlobalsTypes(runner)]);
-      if (!compiled) {
-        /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
-         * so there is nothing to run — a loud failure, not a silent green. */
-        throw new Error("Test target declares test files but none is a compilable source");
+  /* THE collection point, singular per evaluation: the sources, the tests, the
+   * deps and the test-only deps all materialize through one joint resolution. */
+  return context
+    .collect({
+      srcs: inputs.sourceRefs,
+      tests: inputs.testRefs,
+      deps: inputs.depSources,
+      testDeps: inputs.testDepSources,
+    })
+    .then(({ srcs, tests: testSets, deps, testDeps }): Computable<RuleResult> => {
+      const tests = FileSet.unionAll(...testSets);
+      if (tests.isEmpty()) {
+        /* No tests declared: trivially green (and no runner is needed). A declared
+         * test that yields no runnable output is NOT this case — it errors below. */
+        return Computable.resolve(EMPTY_FILESET);
       }
-      return planTestRun(compiled, copied, runtimeModules, resources, runner, testStems, jsTarget);
-    }
-  );
+      /* Compile srcs and tests together (tests are normally within srcs); the
+       * globals declarations come in via the synthetic @types mount, so a copy
+       * among the sources (the runner testing itself) is dropped */
+      const sources = FileSet.unionAll(...srcs, tests).remap(name => (name === RUNNER_GLOBALS_TYPES ? undefined : name));
+      /* The declared test sources' stems (path minus extension). Their compiled `.js`
+       * are picked out of the *actual* compiled tree by stem in planTestRun, so the
+       * source→output naming is never re-derived here — js_compile owns it. */
+      const testStems = new Set([...tests].map(([name]) => stripExtension(name)));
+      /* The runner is a *tool*, independent of what it tests, so it resolves
+       * apart as the JS_TEST_RUNNER runnable (the TSC precedent — its pins don't
+       * co-resolve with the tests' deps). */
+      return context.getGlobalRunnable("JS_TEST_RUNNER").then((runner): Computable<RuleResult> => {
+        /* The test compile may import the package's deps, the test_deps, and the
+         * runner globals directly (all passed to compileJsSources). The runtime
+         * install splits them like RunJSScript: packages mount as node_modules,
+         * while a loose *resource* dep (.json, a template — tsc never emits it)
+         * stages at the install root next to the compiled tests, so a `./x.json`
+         * import resolves. Compilable loose deps (.ts/.js) are excluded here — their
+         * output already rides the compiled tree (and a raw .js would collide). */
+        const allDeps = [...deps, ...testDeps];
+        const packages = allDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+        const runtimeModules = assembleNodeModules(packages);
+        const resources = resourceFiles(allDeps.filter(dep => !(dep instanceof PackageFileSet)));
+
+        const { compiled, copied } = compileJsSources(context, sources, [...deps, ...testDeps, runnerGlobalsTypes(runner)]);
+        if (!compiled) {
+          /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
+           * so there is nothing to run — a loud failure, not a silent green. */
+          throw new Error("Test target declares test files but none is a compilable source");
+        }
+        return planTestRun(compiled, copied, runtimeModules, resources, runner, testStems, jsTarget);
+      });
+    });
 }
 
 /** Strip a file's final extension: `a/foo.test.ts` → `a/foo.test`. Used to match
@@ -166,13 +179,14 @@ function stripExtension(name: string): string {
   return name.replace(/\.[^./]+$/, "");
 }
 
-/** The runnable test files: the `.js` entries of the *actual* compiled tree whose
+/** The runnable test files: the JS entries of the *actual* compiled tree whose
  * stem is one of the declared tests' stems, sorted for determinism. No
- * source→output name is predicted — js_compile named these; we only select. */
+ * source→output name is predicted — js_compile named these; we only select.
+ * `.mjs`/`.cjs` are the outputs of a `.mts`/`.cts` test. */
 export function selectCompiledTestFiles(compiled: FileSet, testStems: Set<string>): string[] {
   return [...compiled]
     .map(([name]) => name)
-    .filter(name => name.endsWith(".js") && testStems.has(stripExtension(name)))
+    .filter(name => /\.[cm]?js$/.test(name) && testStems.has(stripExtension(name)))
     .sort();
 }
 
@@ -237,7 +251,24 @@ function runTests(inputs: BuildActionInputs, { workDir }: IActionContext): Compu
   return writeFileSet(workDir, staged)
     .then(() => execute(findExecutable(argv[0]), argv.slice(1), workDir, {}))
     .catch(err => failedRun(workDir, err))
-    .then(() => getResultFileSet(workDir, TEST_REPORT_FILENAME));
+    .then(() => getResultFileSet(workDir, TEST_REPORT_FILENAME))
+    .then(results => requireReport(results, argv));
+}
+
+/**
+ * The report is the artifact a green run attests to, so a runner that exits 0
+ * without writing one has broken the contract — reported as the execution
+ * failure it is. Left unchecked it would cache as a passing target that ran no
+ * tests, and stay cached.
+ */
+function requireReport(results: FileSet, argv: string[]): FileSet {
+  /* The collection pattern IS the report name, so an empty set means it is absent. */
+  if (results.isEmpty()) {
+    throw new ExecutionError(
+      `$ ${argv.join(" ")}\nthe test runner exited successfully but wrote no ${TEST_REPORT_FILENAME}`
+    );
+  }
+  return results;
 }
 
 /**

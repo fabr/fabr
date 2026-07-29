@@ -653,6 +653,45 @@ describe("MVSResolver", () => {
     expect(result.violations.map(violation => violation.requiredBy)).to.deep.equal(["A@1.0.0"]);
   });
 
+  it("leaves a tolerable broken floor alone when an unrelated subtree needs repair", () => {
+    /* P's floor on F is unpublished but superseded by Q's higher one, so it is
+     * tolerable and F resolves to 1.5.0 with no repair at all. R's floor on G is
+     * NOT — nothing supersedes it, so the tree needs a repair. Repairing G must
+     * not also raise P's demand (which would drag F to 1.9.0): a package's
+     * version cannot depend on whether some other subtree happened to be broken. */
+    const data = {
+      P: { "1.0.0": { F: "^1.0.0" } },
+      Q: { "1.0.0": { F: "^1.5.0" } },
+      R: { "1.0.0": { G: "^2.0.0" } },
+      F: { "1.5.0": {}, "1.9.0": {} },
+      G: { "2.4.0": {} },
+    };
+    /* Without R, no repair is needed and F is 1.5.0. */
+    expect(selectionStrings(resolve({ P: "1.0.0", Q: "1.0.0" }, data, true))).to.deep.equal(["F@1.5.0", "P@1.0.0", "Q@1.0.0"]);
+    /* With R, G is raised — and F is still 1.5.0. */
+    const repaired = resolve({ P: "1.0.0", Q: "1.0.0", R: "1.0.0" }, data, true);
+    expect(selectionStrings(repaired)).to.deep.equal(["F@1.5.0", "G@2.4.0", "P@1.0.0", "Q@1.0.0", "R@1.0.0"]);
+    expect(repaired.raises.map(raise => `${raise.pkg}@${versionToString(raise.raised)}`)).to.deep.equal(["G@2.4.0"]);
+  });
+
+  it("repairs a floor that only a previous repair exposed", () => {
+    /* H@1.0.0 is unpublished and unsupersedable, so it is repaired to 1.4.0 —
+     * whose own floor on K is *also* unpublished. That second break is only
+     * reachable once the first is repaired, so the walk must rerun with both
+     * armed rather than stopping at the first round's converged set. */
+    const result = resolve(
+      { S: "1.0.0" },
+      {
+        S: { "1.0.0": { H: "^1.0.0" } },
+        H: { "1.4.0": { K: "^3.0.0" } },
+        K: { "3.7.0": {} },
+      },
+      true
+    );
+    expect(selectionStrings(result)).to.deep.equal(["H@1.4.0", "K@3.7.0", "S@1.0.0"]);
+    expect(result.raises.map(raise => `${raise.pkg}@${versionToString(raise.raised)}`)).to.deep.equal(["H@1.4.0", "K@3.7.0"]);
+  });
+
   it("fetches each demanded version's metadata exactly once", () => {
     /* Expanding the whole demanded closure costs one metadata document per
      * demanded version — and must cost no more, however many requirements

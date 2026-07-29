@@ -157,7 +157,10 @@ function fabrResolverPlugin(options: IBundleOptions): IPlugin {
   const external = new Set(options.external);
   const nativeKind = options.format === "cjs" ? "require-call" : "import-statement";
   const otherKind = nativeKind === "require-call" ? "import-statement" : "require-call";
-  /* One resolved answer per bare specifier, reused whatever the importer kind. */
+  /* One resolved answer per bare specifier *per importing directory*, reused
+   * whatever the importer kind. The kind is what the cache exists to collapse;
+   * the directory is not interchangeable — node resolution walks up from it, so
+   * two importers under nested installs legitimately reach different copies. */
   const variantCache = new Map<string, IOnResolveResult>();
 
   return {
@@ -207,14 +210,15 @@ function fabrResolverPlugin(options: IBundleOptions): IPlugin {
           return { path: args.path, external: true };
         }
 
-        const cached = variantCache.get(args.path);
+        const variantKey = `${args.resolveDir}\0${args.path}`;
+        const cached = variantCache.get(variantKey);
         if (cached) {
           return cached;
         }
 
         const resolved = await resolveSingleVariant(build, args, nativeKind, otherKind);
         if (resolved) {
-          variantCache.set(args.path, resolved);
+          variantCache.set(variantKey, resolved);
           return resolved;
         }
 

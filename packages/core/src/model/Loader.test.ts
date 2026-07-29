@@ -94,16 +94,13 @@ describe("Loader", () => {
     expect(propertyValue(model, "top")).to.equal("yes");
   });
 
-  it("blocks an include outside the project tree", async () => {
-    const project = files({ "PROJECT.fabr": "include ../outside.fabr;" });
-    const logger = new LogFormatter(LogLevel.Info, () => undefined);
-    let error: Error | undefined;
-    try {
-      await loadProject(exec(project, logger), "PROJECT.fabr", NO_BASE);
-    } catch (err) {
-      error = err as Error;
-    }
-    expect(error?.message).to.match(/outside the project tree/);
+  it("blocks an include outside the project tree, positioned at the include", async () => {
+    const { error, logged } = await loadErr(files({ "PROJECT.fabr": "include ../outside.fabr;" }));
+    /* A build-file error like any other — halting the load with a positioned
+     * diagnostic, not a bare unattributed Error escaping the loader. */
+    expect(error).to.be.an.instanceOf(BuildFilesInvalidError);
+    expect(logged.join("\n")).to.match(/outside the project tree/);
+    expect(logged.join("\n")).to.match(/PROJECT\.fabr:1:9/);
   });
 
   it("reports a missing include positioned at the include, then stops", async () => {

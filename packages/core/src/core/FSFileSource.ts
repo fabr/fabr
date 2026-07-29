@@ -554,17 +554,40 @@ function walkGlob(root: string, name: Name, prefix: string): Computable<{ names:
 
 function walk(root: string, dir: string, project: Projector): Computable<string[]> {
   const names: string[] = [];
+  /* Symlinked entries, resolved after the walk: a symlink is neither file nor
+   * directory to `readdir`, but every other path into the tree follows it (the
+   * literal `stat`, and `ingest` — hence a watch event on the same path), so
+   * excluding it here would make membership depend on history. A symlinked
+   * *directory* is still not descended into (walkTree's own isDirectory test),
+   * which is what keeps the walk finite. */
+  const links: string[] = [];
   return walkTree(
     dir,
     (entry, abs) => {
-      if (entry.isFile()) {
-        const rel = toPosix(path.relative(root, abs));
-        if (project(rel) !== undefined) {
-          names.push(rel);
-        }
+      if (!entry.isFile() && !entry.isSymbolicLink()) {
+        return;
       }
+      const rel = toPosix(path.relative(root, abs));
+      if (project(rel) === undefined) {
+        return;
+      }
+      (entry.isFile() ? names : links).push(rel);
     },
     /* Source scanning ignores dependency and VCS trees entirely. */
     entry => entry.name === "node_modules" || entry.name === ".git"
-  ).then(() => names);
+  ).then(() => (links.length === 0 ? names : resolveLinks(root, names, links)));
+}
+
+/** Keep the symlinks that resolve to regular files (a dangling link, or one to a
+ * directory, is not a file and drops out — exactly as `ingest` would judge it). */
+function resolveLinks(root: string, names: string[], links: string[]): Computable<string[]> {
+  return Computable.forAll(
+    links.map(rel =>
+      stat(path.resolve(root, rel)).then(
+        fileStat => (fileStat.isFile() ? rel : undefined),
+        () => undefined
+      )
+    ),
+    (...resolved: (string | undefined)[]) => [...names, ...resolved.filter((rel): rel is string => rel !== undefined)]
+  );
 }

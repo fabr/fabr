@@ -67,6 +67,14 @@ describe("tripleToNpm", () => {
     expect(tripleToNpm("riscv64-unknown-linux-gnu").cpu).to.equal("riscv64");
     expect(tripleToNpm("loongarch64-unknown-linux-gnu").cpu).to.equal("loong64");
   });
+
+  it("reads node's own arch spelling, as the fallback triple emits it", () => {
+    /* hostTriple falls back to `<process.arch>-<process.platform>` on a platform
+     * it has no triple for, so those spellings must map or the cpu gate is lost. */
+    expect(tripleToNpm("x64-freebsd").cpu).to.equal("x64");
+    expect(tripleToNpm("ia32-openbsd").cpu).to.equal("ia32");
+    expect(tripleToNpm("s390-zos").cpu).to.equal("s390");
+  });
 });
 
 describe("hostTriple", () => {

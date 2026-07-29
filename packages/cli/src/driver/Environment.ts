@@ -55,12 +55,15 @@ export async function getSourceRoot(): Promise<string> {
 
 
 /**
- * @return the root of our build cache (which may or may not exist at this point).
+ * @return the root of our build cache (which may or may not exist at this point),
+ * always absolute: a relative `FABR_CACHE_DIR` is anchored to the invocation cwd
+ * once, here, since the store's paths outlive the cwd (a launched program runs
+ * in its own directory).
  */
 export function getBuildCacheRoot(): string {
   const explicitDir = process.env[BUILD_CACHE_ENV];
   if (explicitDir) {
-    return explicitDir;
+    return path.resolve(explicitDir);
   } else {
     return path.resolve(getBaseCacheDir(), "fabr");
   }

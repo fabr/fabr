@@ -64,6 +64,17 @@ describe("Semver", () => {
     expect(minimumOf(">1.2.3")).to.equal("1.2.4");
     expect(minimumOf(">=1.2.3 <2.0.0")).to.equal("1.2.3");
     expect(minimumOf(">= 2.1.2 < 3.0.0")).to.equal("2.1.2");
+    /* Excluding a prerelease leaves the rest of that triple admissible, so the
+     * floor is its immediate successor, not the next patch. */
+    expect(minimumOf(">1.2.3-rc.1")).to.equal("1.2.3-rc.1.0");
+    expect(satisfies("1.2.3-rc.2", ">1.2.3-rc.1")).to.equal(true);
+  });
+
+  it("reads '~>' as the tilde range npm does", () => {
+    expect(minimumOf("~>1.2.3")).to.equal("1.2.3");
+    expect(minimumOf("~> 1.2.3")).to.equal("1.2.3");
+    expect(satisfies("1.2.9", "~>1.2.3")).to.equal(true);
+    expect(satisfies("1.3.0", "~>1.2.3")).to.equal(false);
   });
 
   it("checks constraint satisfaction", () => {

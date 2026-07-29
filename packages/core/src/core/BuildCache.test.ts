@@ -27,7 +27,7 @@ import { Readable } from "node:stream";
 import { BuildCache } from "./BuildCache";
 import { Computable } from "./Computable";
 import { readStream } from "./Fetch";
-import { FileSet } from "./FileSet";
+import { DEFAULT_FILE_MODE, FileSet } from "./FileSet";
 import { hashString } from "./FSWrapper";
 import { MemoryFile } from "./MemoryFS";
 import { SymlinkFile } from "./SymlinkFile";
@@ -100,6 +100,30 @@ describe("BuildCache", () => {
     );
     expect((await toPromise(files.get("bin/tool")))!.mode).to.equal(0o755);
     expect((await toPromise(files.get("lib/plain.js")))!.mode).to.equal(0o644);
+  });
+
+  it("treats a manifest with a corrupt mode field as a miss, not a NaN mode", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const build = (): Computable<FileSet> =>
+      cache.getOrCreate("bad mode", () => Computable.resolve(new FileSet(new Map([["x.txt", MemoryFile.from("x")]]))));
+    await toPromise(build());
+
+    /* Corrupt the stored mode. A bogus field must fail the parse (so the entry
+     * rebuilds), never parse to NaN and ride on the IFile as its permissions. */
+    const manifest = fs.readdirSync(root).find(name => name.endsWith(".manifest"))!;
+    const manifestPath = path.join(root, manifest);
+    fs.writeFileSync(manifestPath, fs.readFileSync(manifestPath, "utf8").replace(/^(\S+) \S+ /m, "$1 nonsense "));
+
+    const reopened = new BuildCache(root, NULL_LOG);
+    let rebuilt = false;
+    const files = await toPromise(
+      reopened.getOrCreate("bad mode", () => {
+        rebuilt = true;
+        return Computable.resolve(new FileSet(new Map([["x.txt", MemoryFile.from("x")]])));
+      })
+    );
+    expect(rebuilt).to.equal(true);
+    expect((await toPromise(files.get("x.txt")))!.mode).to.equal(DEFAULT_FILE_MODE);
   });
 
   it("round-trips a symlink through the manifest without materialising a blob", async () => {

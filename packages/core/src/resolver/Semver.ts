@@ -203,7 +203,10 @@ function tildeRange(p: IPartialVersion, lower: SemverVersion): IRange {
 }
 
 function parseComparator(token: string): IRange {
-  const m = /^(>=|<=|>|<|=|\^|~)?(.*)$/.exec(token)!;
+  /* `~>` (before `~`, or the `>` would fall into the version) is the rubygems
+   * spelling of the tilde range, accepted by node-semver and present in
+   * published metadata; it means exactly `~`. */
+  const m = /^(>=|<=|>|<|=|\^|~>|~)?(.*)$/.exec(token)!;
   const op = m[1] ?? "";
   const p = parsePartial(m[2]);
   const lower = lowerOf(p);
@@ -212,6 +215,7 @@ function parseComparator(token: string): IRange {
     case "^":
       return caretRange(p, lower);
     case "~":
+    case "~>":
       return tildeRange(p, lower);
     case ">=":
       return { min: lower, minInclusive: true, maxInclusive: false };
@@ -299,7 +303,7 @@ function parseRange(text: string): IRange {
    * metadata contains e.g. '>= 2.1.2 < 3.0.0' (iconv-lite) — so join each
    * operator to the version it governs before splitting on conjunctions. */
   const tokens = text
-    .replace(/(>=|<=|>|<|=|\^|~)\s+(?=[\dvxX*])/g, "$1")
+    .replace(/(>=|<=|>|<|=|\^|~>|~)\s+(?=[\dvxX*])/g, "$1")
     .trim()
     .split(/\s+/)
     .filter(token => token.length > 0);
@@ -375,8 +379,14 @@ function rangeMinimum(range: IRange): SemverVersion {
   if (range.minInclusive) {
     return range.min;
   }
-  /* Approximate the successor of an exclusive lower bound as the next patch version */
-  return { major: range.min.major, minor: range.min.minor, patch: range.min.patch + 1, prerelease: [] };
+  /* The successor of an exclusive lower bound (node-semver's minVersion rule).
+   * Off a prerelease it is exact — appending the lowest numeric identifier `0`
+   * names the immediately-greater version, so `>1.2.3-rc.1` floors at
+   * `1.2.3-rc.1.0` and still admits `1.2.3-rc.2`/`1.2.3`. Off a release there is
+   * no representable successor below the next patch. */
+  return range.min.prerelease.length > 0
+    ? { ...range.min, prerelease: [...range.min.prerelease, 0] }
+    : { major: range.min.major, minor: range.min.minor, patch: range.min.patch + 1, prerelease: [] };
 }
 
 export const SEMVER: VersionDomain<SemverVersion, SemverConstraint> = {

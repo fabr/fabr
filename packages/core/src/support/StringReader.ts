@@ -29,6 +29,15 @@ export interface IResolvedPosition {
 const CHAR_NEWLINE = 10;
 
 /**
+ * A UTF-8 byte-order mark, which `readString("utf8")` keeps as a leading U+FEFF.
+ * It is not whitespace and belongs to no token, so it is dropped on the way in
+ * (else the tokenizer reports an unexpected character at 1:1 of an
+ * ordinary-looking file). Offsets — and so diagnostic positions, which resolve
+ * through this same reader — are relative to the text without it.
+ */
+const BOM = "\uFEFF";
+
+/**
  * String buffer + tokenizer
  */
 export class StringReader {
@@ -52,7 +61,7 @@ export class StringReader {
   private lineTable: number[];
 
   constructor(input: string) {
-    this.data = input;
+    this.data = input.startsWith(BOM) ? input.substring(BOM.length) : input;
     this.offset = 0;
     this.currentChar = this.data.codePointAt(0);
     this.lineTable = [0];

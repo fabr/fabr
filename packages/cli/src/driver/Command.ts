@@ -247,9 +247,10 @@ export function parseCommandLine(args: string[]): Options {
       } else {
         usageError(`Unrecognized command-line option '${arg}'`);
       }
-    } else if (!commandGiven && options.targets.length === 0 && COMMANDS.has(arg)) {
-      /* The first positional argument may name the operation; a target with
-       * the same name can be reached with an explicit command first */
+    } else if (!noMoreOptions && !commandGiven && options.targets.length === 0 && COMMANDS.has(arg)) {
+      /* The first positional argument may name the operation; a target with the
+       * same name is reached with an explicit command first (`fabr build test`)
+       * or after `--`, which shields command words as it does `-`-leading names. */
       options.command = arg;
       commandGiven = true;
     } else {

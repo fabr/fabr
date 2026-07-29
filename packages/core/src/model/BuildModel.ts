@@ -160,7 +160,7 @@ export class BuildModel {
     for (const rule of this.targetRules.get(type) ?? []) {
       ops.add(rule.constraints[BUILD_OPERATION] ?? "*");
     }
-    return [...ops].sort((a, b) => a.localeCompare(b));
+    return [...ops].sort();
   }
 
   /**

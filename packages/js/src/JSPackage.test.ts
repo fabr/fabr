@@ -26,7 +26,9 @@ import {
   planMounts,
   PlannedMount,
   assembleScopedNodeModules,
+  binByConvention,
   binOf,
+  classifyJsSource,
   hasPackageExport,
   makeNpmRunnable,
   parseJSTarget,
@@ -515,5 +517,55 @@ describe("binOf", () => {
      * a repaired escape would silently re-point the bin inside the package. */
     expect(await rejectionMessage(binOf(pkgWithBin({ tool: "../../outside.js" })))).to.match(/invalid bin target/);
     expect(await rejectionMessage(binOf(pkgWithBin({ tool: "/etc/passwd" })))).to.match(/invalid bin target/);
+  });
+});
+
+describe("classifyJsSource", () => {
+  it("compiles the module-flavoured TypeScript spellings", () => {
+    /* Routed to js_compile, not shipped verbatim as a resource. */
+    expect(classifyJsSource("src/a.mts")).to.equal("ts");
+    expect(classifyJsSource("src/a.cts")).to.equal("ts");
+    expect(classifyJsSource("src/a.mjs")).to.equal("js");
+    expect(classifyJsSource("src/a.cjs")).to.equal("js");
+  });
+
+  it("treats their declaration forms as declarations", () => {
+    expect(classifyJsSource("src/a.d.mts")).to.equal("dts");
+    expect(classifyJsSource("src/a.d.cts")).to.equal("dts");
+  });
+
+  it("still copies anything tsc neither compiles nor emits", () => {
+    expect(classifyJsSource("src/data.json")).to.equal("copy");
+    expect(classifyJsSource("src/run.sh")).to.equal("copy");
+  });
+});
+
+describe("binByConvention", () => {
+  const contents = (...names: string[]): FileSet =>
+    new FileSet(new Map<string, IFile>(names.map(name => [name, MemoryFile.from(`// ${name}`)])));
+
+  it("names each bin after its file (extension stripped), ignoring anything outside bin/", () => {
+    expect([...binByConvention(contents("bin/fabr.js", "bin/tool.sh", "lib/x.js"))]).to.deep.equal([
+      ["fabr", "bin/fabr.js"],
+      ["tool", "bin/tool.sh"],
+    ]);
+  });
+
+  it("skips the emitted declaration and map siblings", () => {
+    expect([...binByConvention(contents("bin/fabr.js", "bin/fabr.d.ts", "bin/fabr.js.map"))]).to.deep.equal([
+      ["fabr", "bin/fabr.js"],
+    ]);
+  });
+
+  it("reports two bins claiming one command as a conflict, naming both files", () => {
+    let caught: ConflictError | undefined;
+    try {
+      binByConvention(contents("bin/x.js", "bin/x.sh"));
+    } catch (err) {
+      caught = err as ConflictError;
+    }
+    expect(caught).to.be.instanceOf(ConflictError);
+    expect(caught!.key).to.equal("x");
+    expect([caught!.left.detail, caught!.right.detail]).to.deep.equal(["bin/x.js", "bin/x.sh"]);
   });
 });

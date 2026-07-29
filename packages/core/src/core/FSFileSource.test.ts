@@ -251,3 +251,40 @@ describe("FSFileSource rename resolution", () => {
     expect(await resolved(dir)).to.deep.equal(["out/one.txt", "out/sub/two.txt"]);
   });
 });
+
+describe("FSFileSource symlink enumeration", () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-fs-link-"));
+    fs.mkdirSync(path.join(root, "tree"));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** The files a bare `tree` reference (i.e. `tree/**`) enumerates. */
+  const found = async (): Promise<string[]> => {
+    const set = await toPromise(new FSFileSource(root).find(Name.fromLiteral("tree")));
+    return [...set].map(([name]) => name).sort();
+  };
+
+  it("includes a symlink to a file, as every other path into the tree does", async () => {
+    /* `stat`, `ingest` and a watch event all follow the link; a walk that did
+     * not would make membership depend on whether anything had touched it. */
+    fs.writeFileSync(path.join(root, "tree", "real.txt"), "x");
+    fs.symlinkSync("real.txt", path.join(root, "tree", "link.txt"));
+    expect(await found()).to.deep.equal(["tree/link.txt", "tree/real.txt"]);
+  });
+
+  it("drops a dangling symlink, which resolves to no file", async () => {
+    fs.symlinkSync("nowhere.txt", path.join(root, "tree", "broken.txt"));
+    expect(await found()).to.deep.equal([]);
+  });
+
+  it("does not descend a symlinked directory (the walk stays finite)", async () => {
+    fs.mkdirSync(path.join(root, "tree", "real"));
+    fs.writeFileSync(path.join(root, "tree", "real", "a.txt"), "x");
+    fs.symlinkSync("real", path.join(root, "tree", "loop"));
+    expect(await found()).to.deep.equal(["tree/real/a.txt"]);
+  });
+});

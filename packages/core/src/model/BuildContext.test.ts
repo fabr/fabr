@@ -949,12 +949,13 @@ describe("BuildContext", () => {
     expect(lastMap).to.deep.equal([]);
   });
 
-  it("Rejects rename values that violate the wildcard rules", () => {
+  /* The wildcard rules are the parser's (they read only the written name — see
+   * Parser.test); what needs the REWRITE *type* is checked here. */
+  it("Rejects REWRITE values that violate the type's rules", () => {
     const cases: Array<[string, string]> = [
-      ["test_rw t { out = *.a -> *.b.*; }", "equal wildcard counts"],
-      ["test_rw t { out = a?.js -> a?.out; }", "must be '*' or '**'"],
       ["test_rw t { out = *.js; }", "must be a literal constant"],
-      ["test_rw t { out = a:b -> c; }", "cannot contain ':'"],
+      ["test_rw t { out = a:b -> c; }", "REWRITE selector cannot contain ':'"],
+      ["test_rw t { out = a<K=v> -> c; }", "REWRITE selector cannot carry constraints"],
     ];
     for (const [decl, fragment] of cases) {
       const errors: string[] = [];

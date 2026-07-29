@@ -322,10 +322,11 @@ export function executePipeline(
     let settled = false;
     let remaining = specs.length;
 
-    /* Pipefail teardown kills each running stage's whole GROUP (the stages are
-     * group leaders now), so a driver that doesn't forward signals to its own
-     * children no longer leaves them briefly orphaned; an already-exited stage
-     * was swept by its own exit handler (killProcessGroup no-ops on it). */
+    /* Pipefail teardown kills each stage's whole GROUP (the stages are group
+     * leaders now), so a driver that doesn't forward signals to its own children
+     * no longer leaves them briefly orphaned. An exited stage is signalled too:
+     * its own sweep may still be within its KILL grace, and a dissolved group is
+     * a swallowed ESRCH. */
     const killAll = (): void => procs.forEach(p => killProcessGroup(p, "SIGTERM"));
     const fail = (err: Error): void => {
       if (!settled) {
@@ -606,12 +607,18 @@ export function spawnInteractive(cmd: string, args: string[], cwd?: string): Chi
  * launched program that forked its own workers is torn down as a unit instead of
  * leaving orphans behind. Only meaningful for a group leader — a child spawned by
  * {@link spawnInteractive}, or a build-step/pipeline-stage process (all spawned
- * detached; see the group-ownership note above). A no-op if the child never got a pid
- * or has already exited (so a recycled pid is never signalled); ESRCH — the group
- * is already gone — is swallowed, since "not running" is precisely the goal.
+ * detached; see the group-ownership note above). ESRCH — the group is already
+ * gone — is swallowed, since "not running" is precisely the goal.
+ *
+ * The target is the **group**, which outlives its leader, so an already-exited
+ * child is signalled all the same: its surviving workers are exactly what a
+ * SIGKILL escalation is for. POSIX reserves the pgid while any member survives,
+ * so the signal is precise whenever there is anything to kill; an empty group
+ * has dissolved and yields ESRCH, with the same theoretical pid-reuse window
+ * {@link sweepGroup} accepts.
  */
 export function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) {
+  if (child.pid === undefined) {
     return;
   }
   try {

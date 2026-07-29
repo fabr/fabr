@@ -24,20 +24,20 @@
  * compiles as a sibling but is never run.
  */
 
-import { BUILD_OPERATION, BUILD_OVERRIDE, Computable, EMPTY_FILESET, FileSet, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
+import { BUILD_OPERATION, BUILD_OVERRIDE, Computable, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
 import { compileAndRunTests } from "../TestPipeline";
 
 function runJsTest(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
-      context.getFileSetProperties(["tests"], BUILD_OVERRIDE),
+      context.getFileProperty("tests", BUILD_OVERRIDE),
       context.getGlobalString("JS_TARGET", BUILD_OVERRIDE),
       context.getFileProperty("deps", BUILD_OVERRIDE),
     ],
-    ({ tests }, target, depSources) =>
+    (testRefs, target, depSources) =>
       compileAndRunTests(context, {
-        sources: EMPTY_FILESET,
-        tests: FileSet.unionAll(...tests),
+        sourceRefs: [],
+        testRefs,
         target,
         depSources,
         testDepSources: [],

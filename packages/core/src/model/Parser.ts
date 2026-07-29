@@ -294,6 +294,14 @@ function isSimpleName(text: string): boolean {
   return true;
 }
 
+/**
+ * How deep `{ ... }` blocks may nest — the block grammar being the parser's one
+ * unbounded recursion (a map value is a block, whose entries are values). Far
+ * above anything a real build file reaches: it only decides that a pathological
+ * file gets a positioned diagnostic rather than a stack-overflow RangeError.
+ */
+const MAX_BLOCK_DEPTH = 100;
+
 const DIAG_PARSE_ERROR = new Diagnostic<{ actual: string; expected: string; loc: ISourcePosition }>(
   LogLevel.Error,
   "Read {actual} but expected {expected}"
@@ -326,6 +334,33 @@ const DIAG_INVALID_PLUGIN = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
   "Plugin names must be plain target names (no glob patterns or variables)"
 );
+const DIAG_DUP_SCHEMA_KEY = new Diagnostic<{ key: string; loc: ISourcePosition }>(
+  LogLevel.Error,
+  "Duplicate property '{key}' in targetdef"
+);
+const DIAG_NESTING_TOO_DEEP = new Diagnostic<{ loc: ISourcePosition }>(
+  LogLevel.Error,
+  `Block nesting is too deep (limit ${MAX_BLOCK_DEPTH})`
+);
+
+/**
+ * Check that the number + kind of wildcards in a rename pattern match (ie we need
+ * the same number on both sides, and glob only).
+ * 
+ * @return error message on failure, otherwise undefined.
+ */
+function checkRenameWildcards(selector: Name, template: Name): string | undefined {
+  const selectorUnits = selector.getGlobUnits();
+  const templateUnits = template.getGlobUnits();
+  const bad = [...selectorUnits, ...templateUnits].find(unit => unit !== "*" && unit !== "**");
+  if (bad !== undefined) {
+    return `rename wildcards must be '*' or '**' (found '${bad}')`;
+  }
+  if (selectorUnits.length !== templateUnits.length) {
+    return `selector and template must have equal wildcard counts (${selectorUnits.length} vs ${templateUnits.length})`;
+  }
+  return undefined;
+}
 
 const PARSE_ERROR = "Parse Error";
 
@@ -350,6 +385,8 @@ export class BuildParser {
    * constraint: there a `>` closes the constraint, so a numeric value like
    * `<X=1>` must lex as value `1` + `>`, not the redirect `1>`. */
   private suppressRedirect = false;
+  /** Current `{ ... }` block nesting, bounded by {@link MAX_BLOCK_DEPTH}. */
+  private blockDepth = 0;
 
   private source: IBuildFile;
   private result: IBuildFileContents;
@@ -1063,9 +1100,32 @@ export class BuildParser {
     /* `Reference (ARROW Template)?` — the rename half. The arrow is spaced, so it
      * binds regardless of any preceding `<...>`/`:proj`. */
     if (this.token.type === TokenType.ARROW) {
-      name = name.withRenameTo(this.parseRenameTemplate());
+      name = this.withRename(name);
     }
     return name;
+  }
+
+  /**
+   * Attach a `-> template` rename to `name`, having checked the template can be
+   * replayed against it ({@link checkRenameWildcards}) and is a pattern rather than a
+   * reference (no `:`). Assumes the current token is the ARROW.
+   *
+   * Here rather than in Validate because these rules read only the written name,
+   * so this is the one place every rename passes through — including a CLI
+   * reference (`fabr cat 'x:*.a -> *.b.*'`), which has no schema and no Validate
+   * pass, and used to reach `find` and emit a literal `$2` into a result name.
+   */
+  private withRename(name: Name): Name {
+    const arrow = this.token.start;
+    const template = this.parseRenameTemplate();
+    if (template.hasLevelSeparator()) {
+      this.renameTemplateError("a rename template cannot contain ':'", arrow);
+    }
+    const invalid = checkRenameWildcards(name, template);
+    if (invalid) {
+      this.renameTemplateError(invalid, arrow);
+    }
+    return name.withRenameTo(template);
   }
 
   /** Attach a parsed constraint list to `name` (rejoining any hugging projection
@@ -1087,7 +1147,7 @@ export class BuildParser {
     }
     name = name.withConstraints(constraints);
     if (this.token.type === TokenType.ARROW) {
-      name = name.withRenameTo(this.parseRenameTemplate());
+      name = this.withRename(name);
     }
     return name;
   }
@@ -1098,8 +1158,8 @@ export class BuildParser {
    * Assumes the current token is the ARROW; consumes it and the single template
    * token. A template is a name pattern, never a reference: an abutting `<...>`
    * (constraints), a chained `-> ` (second arrow), or a missing template are
-   * errors here; the value-level content rules (no `:`, `*`/`**` slots only,
-   * matching wildcard counts) are enforced later in Validate.
+   * errors here. Its content rules are {@link withRename}'s, bar the ones that
+   * need the property's schema type (those stay in Validate).
    */
   private parseRenameTemplate(): Name {
     this.consumeToken(TokenType.ARROW);
@@ -1118,8 +1178,11 @@ export class BuildParser {
     return template;
   }
 
-  private renameTemplateError(detail: string): never {
-    this.log.log(DIAG_RENAME_TEMPLATE, { detail, loc: { ...this.source, offset: this.token.start } });
+  /** `at` defaults to the current token — the offending one for the structural
+   * errors; a content error is reported at the `-> ` the rename hangs off, the
+   * template itself having already been consumed. */
+  private renameTemplateError(detail: string, at: number = this.token.start): never {
+    this.log.log(DIAG_RENAME_TEMPLATE, { detail, loc: { ...this.source, offset: at } });
     throw new Error(PARSE_ERROR);
   }
 
@@ -1296,6 +1359,21 @@ export class BuildParser {
    * opening `{`.
    */
   private parseMapBlock(): IMapItemDecl[] {
+    if (this.blockDepth >= MAX_BLOCK_DEPTH) {
+      this.log.log(DIAG_NESTING_TOO_DEEP, { loc: { ...this.source, offset: this.token.start } });
+      throw new Error(PARSE_ERROR);
+    }
+    this.blockDepth++;
+    try {
+      return this.parseMapBlockBody();
+    } finally {
+      this.blockDepth--;
+    }
+  }
+
+  /** {@link parseMapBlock}'s body, split out so the depth accounting is a single
+   * enter/leave around it (including the recovery throw). */
+  private parseMapBlockBody(): IMapItemDecl[] {
     this.consumeToken(TokenType.LBRACE);
     const entries: IMapItemDecl[] = [];
     while (this.token.type !== TokenType.RBRACE && this.token.type !== TokenType.EOF) {
@@ -1522,6 +1600,10 @@ export class BuildParser {
       }
       if (type === undefined) {
         this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'MAP'");
+      } else if (result.has(key)) {
+        /* The first declaration stands; the load fails on the error anyway, so
+         * the surviving entry only shapes further diagnostics. */
+        this.log.log(DIAG_DUP_SCHEMA_KEY, { key, loc: { ...this.source, offset: token.start } });
       } else {
         result.set(key, { required, type, docComment });
       }
