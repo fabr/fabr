@@ -21,7 +21,7 @@ import { expect } from "chai";
 import * as crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { IntegrityError } from "@fabr-build/core";
-import { expectedTarballDigest, parseMetadataResponse, verifyTarballStream } from "./NPMProtocol";
+import { dependencyBlock, expectedTarballDigest, optionalPeers, parseMetadataResponse, verifyTarballStream } from "./NPMProtocol";
 
 describe("parseMetadataResponse", () => {
   function doc(overrides: Record<string, unknown>): Buffer {
@@ -41,8 +41,60 @@ describe("parseMetadataResponse", () => {
      * the cache — the validate-before-cache invariant. Dependency names are
      * deliberately NOT checked: a dep key either fails to resolve (ordinary
      * error) or resolves to a document validated by this same check. */
-    expect(() => parseMetadataResponse(doc({ name: "../evil" }), "pkg/1.0.0")).to.throw(/Invalid package name/);
+    expect(() => parseMetadataResponse(doc({ name: "../evil" }), "pkg/1.0.0")).to.throw(/package name .* is not usable/);
     expect(() => parseMetadataResponse(doc({ dependencies: { "../evil": "^1.0.0" } }), "pkg/1.0.0")).to.not.throw();
+  });
+
+  it("rejects a document whose promised digest is not a string", () => {
+    /* The digest fields are read as strings when a tarball is verified, so a
+     * present-but-unusable one is rejected here rather than crashing there. */
+    expect(() =>
+      parseMetadataResponse(doc({ dist: { tarball: "https://example.com/pkg-1.0.0.tgz", integrity: 12345 } }), "pkg/1.0.0")
+    ).to.throw(/Invalid response/);
+  });
+
+  it("accepts the legal-but-odd shapes npm itself normalizes away", () => {
+    /* A published manifest need only satisfy the registry: string-form gates
+     * and an empty-array dependency block are both real. */
+    const meta = parseMetadataResponse(doc({ os: "darwin", dependencies: [] }), "pkg/1.0.0");
+    expect(meta.os).to.equal("darwin");
+  });
+});
+
+describe("dependencyBlock", () => {
+  it("reads a well-formed block as a name→constraint map", () => {
+    expect([...dependencyBlock({ lodash: "^4.0.0", chai: "5.1.0" })]).to.deep.equal([
+      ["lodash", "^4.0.0"],
+      ["chai", "5.1.0"],
+    ]);
+  });
+
+  it("reads a block that is not an object as no dependencies", () => {
+    /* `"dependencies": []` is published and means "none"; reading it
+     * positionally would manufacture a requirement on a package named `0`. */
+    expect([...dependencyBlock([])]).to.deep.equal([]);
+    expect([...dependencyBlock(["lodash"])]).to.deep.equal([]);
+    expect([...dependencyBlock("lodash")]).to.deep.equal([]);
+    expect([...dependencyBlock(undefined)]).to.deep.equal([]);
+    expect([...dependencyBlock(null)]).to.deep.equal([]);
+  });
+
+  it("drops an entry whose constraint is not a string", () => {
+    expect([...dependencyBlock({ lodash: "^4.0.0", chai: { version: "5.1.0" }, mocha: 10 })]).to.deep.equal([
+      ["lodash", "^4.0.0"],
+    ]);
+  });
+});
+
+describe("optionalPeers", () => {
+  it("collects the peers flagged optional", () => {
+    expect([...optionalPeers({ react: { optional: true }, chai: { optional: false }, mocha: {} })]).to.deep.equal(["react"]);
+  });
+
+  it("reads a malformed block as no optional peers", () => {
+    expect([...optionalPeers({ react: "optional", chai: null })]).to.deep.equal([]);
+    expect([...optionalPeers(["react"])]).to.deep.equal([]);
+    expect([...optionalPeers(undefined)]).to.deep.equal([]);
   });
 });
 

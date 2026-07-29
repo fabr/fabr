@@ -201,6 +201,21 @@ describe("platformGateAdmits", () => {
     expect(platformGateAdmits(["linux"], undefined)).to.equal(false);
     expect(platformGateAdmits(undefined, undefined)).to.equal(true);
   });
+
+  it("reads a bare string as a one-entry gate", () => {
+    expect(platformGateAdmits("darwin", "darwin")).to.equal(true);
+    expect(platformGateAdmits("darwin", "linux")).to.equal(false);
+    expect(platformGateAdmits("!win32", "linux")).to.equal(true);
+    expect(platformGateAdmits("!win32", "win32")).to.equal(false);
+  });
+
+  it("treats a sole \"any\" as no constraint", () => {
+    expect(platformGateAdmits(["any"], "win32")).to.equal(true);
+    expect(platformGateAdmits("any", "win32")).to.equal(true);
+    expect(platformGateAdmits(["any"], undefined)).to.equal(true);
+    /* Only as a whole gate: alongside others it is just a platform name. */
+    expect(platformGateAdmits(["any", "darwin"], "linux")).to.equal(false);
+  });
 });
 
 describe("matchesTargetPlatform", () => {
@@ -224,6 +239,12 @@ describe("matchesTargetPlatform", () => {
     expect(matchesTargetPlatform({ os: ["darwin", "linux"], cpu: ["arm64", "x64"] }, target)).to.equal(true);
   });
 
+  it("reads string-form gates", () => {
+    expect(matchesTargetPlatform({ os: "darwin", cpu: "arm64" }, target)).to.equal(true);
+    expect(matchesTargetPlatform({ os: "linux", cpu: "arm64" }, target)).to.equal(false);
+    expect(matchesTargetPlatform({ os: "any", cpu: "any" }, target)).to.equal(true);
+  });
+
   it("gates on libc when the target declares one", () => {
     const linuxGnu = { os: "linux", cpu: "x64", libc: "glibc" };
     expect(matchesTargetPlatform({ os: ["linux"], cpu: ["x64"], libc: ["glibc"] }, linuxGnu)).to.equal(true);
@@ -243,6 +264,7 @@ describe("unsupportedPlatformReason", () => {
 
   it("explains an os mismatch", () => {
     expect(unsupportedPlatformReason({ os: ["darwin"] }, target)).to.equal("os 'linux' is not in [darwin]");
+    expect(unsupportedPlatformReason({ os: "darwin" }, target)).to.equal("os 'linux' is not in [darwin]");
   });
 
   it("explains a cpu mismatch", () => {
@@ -404,7 +426,9 @@ describe("parseMetadataResponse", () => {
   it("treats every non-version, non-packument body as an unusable response", () => {
     /* HTTP-level failures are handled upstream; a body reaching here that isn't a
      * version or packument — an error body, non-JSON, empty, or a non-object — is
-     * simply not installable, so they all collapse to one 'unusable' error. */
+     * simply not installable. All unusable, each attributed to the document it
+     * came from; the standard JSON reader additionally names the parse problem
+     * for a body that isn't JSON at all (a truncated or HTML page). */
     const unusable = [
       Buffer.from(JSON.stringify({ error: "Not Found" })), // error body
       Buffer.from(JSON.stringify({ code: "E500", message: "boom" })), // error body
@@ -414,7 +438,7 @@ describe("parseMetadataResponse", () => {
       Buffer.from("null"), // valid JSON, not an object
     ];
     for (const body of unusable) {
-      expect(() => parseMetadataResponse(body, "pkg/1")).to.throw(/Invalid response/i);
+      expect(() => parseMetadataResponse(body, "pkg/1")).to.throw(/Invalid (JSON in )?response from NPM repository/i);
     }
   });
 });
@@ -470,6 +494,41 @@ describe("NPMRepository metadata memo", () => {
       { pkg: "lodash", constraint: "^4.0.0" },
       { pkg: "eslint", constraint: "^9.0.0", soft: true },
     ]);
+  });
+
+  it("reads legal-but-odd dependency blocks the way npm does", async () => {
+    /* A published manifest satisfies the registry, not us: `"dependencies": []`
+       means none (reading it positionally would demand a package named `0`),
+       and a malformed peer-meta block flags nothing optional. */
+    const url = `${REG}/odd/1.0.0`;
+    const meta = new FileSet(
+      new Map([
+        [
+          METADATA_FILE,
+          MemoryFile.from(
+            JSON.stringify({
+              name: "odd",
+              version: "1.0.0",
+              dependencies: [],
+              peerDependencies: { eslint: "^9.0.0" },
+              peerDependenciesMeta: "nonsense",
+              dist: { tarball: `${REG}/tarball/1.0.0.tgz` },
+            })
+          ),
+        ],
+      ])
+    );
+    const globals: Record<string, string> = { [BUILD_OPERATION]: "build", [TARGET]: "arm64-apple-macosx15.0" };
+    const context = {
+      getGlobalString: (name: string) =>
+        name in globals ? Computable.resolve(globals[name]) : Computable.reject(new Error(`unexpected property: ${name}`)),
+      fetch: (u: string) => (u === url ? Computable.resolve(meta) : Computable.reject(new Error(`unexpected fetch: ${u}`))),
+      execution: fakeExecution(),
+    } as unknown as RepositoryContext;
+    const repo = new NPMRepository(REG, context);
+
+    const requirements = await toPromise(repo.getRequirements("odd", parseVersion("1.0.0")));
+    expect(requirements).to.deep.equal([{ pkg: "eslint", constraint: "^9.0.0", soft: true }]);
   });
 });
 

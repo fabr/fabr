@@ -31,6 +31,7 @@ import {
   IRequirementEdge,
   IResolutionOrigin,
   IFile,
+  isJsonObject,
   lowestSatisfying,
   MaterializeOptions,
   MemoryFile,
@@ -43,7 +44,9 @@ import {
   PackageFileSet,
   packToTarball,
   PackageRegistry,
+  parseJson,
   parseVersion,
+  readJsonFile,
   PublishableFileSet,
   RaisedFloor,
   RepositoryPublishRef,
@@ -72,6 +75,7 @@ import {
   SemverVersion,
   TARGET,
   toError,
+  toJsonObject,
   tripleToNpm,
   unpackStream,
   VersionNotFoundError,
@@ -81,12 +85,14 @@ import {
 } from "@fabr-build/core";
 import { buildMounts, EdgeMap, makeNpmRunnable, planMounts, PlannedMount } from "./JSPackage";
 import {
+  dependencyBlock,
   INPMPackageMetadata,
   isSemverConstraint,
   matchesTargetPlatform,
   memberDependencies,
   NpmPublishIdentity,
   npmPackageOfPath,
+  optionalPeers,
   parseMetadataResponse,
   publishToRegistry,
   rewriteManifest,
@@ -217,6 +223,16 @@ function uniqueAssignments(assignments: readonly NpmPublishIdentity[]): Map<stri
   return new Map(select([...byName], ([name, versions]) => (versions.size === 1 ? ([name, [...versions][0]] as const) : undefined)));
 }
 
+/** The version names a packument lists — the only thing fabr reads one for.
+ *  A document with no `versions` map is not a packument (an error body, or the
+ *  wrong URL), and says nothing about what is published. */
+function toPublishedVersions(json: unknown): string[] {
+  if (!isJsonObject(json) || !isJsonObject(json.versions)) {
+    throw new Error("no versions");
+  }
+  return Object.keys(json.versions);
+}
+
 export class NPMRepository implements Repository, RepositoryReader, RepositoryWriter, PackageRegistry<SemverVersion> {
   private readonly url: string;
   private readonly context: RepositoryContext;
@@ -332,8 +348,8 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
       if (!manifestFile) {
         throw new Error(`cannot publish ${identity.name}: the built package has no package.json`);
       }
-      return manifestFile.getBuffer().then(buffer => {
-        const manifest = rewriteManifest(JSON.parse(buffer.toString("utf8")), identity, memberVersions);
+      return readJsonFile(manifestFile, toJsonObject).then(built => {
+        const manifest = rewriteManifest(built, identity, memberVersions);
         const dangling = unresolvableDependencies(manifest);
         if (dangling.length > 0) {
           throw new Error(
@@ -814,18 +830,18 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
        * if the target doesn't match). @parcel/watcher lists its per-platform native
        * binaries in both — treating them as required would reject the ones for
        * other platforms as EBADPLATFORM. */
-      const optionalNames = new Set(Object.keys(meta.optionalDependencies ?? {}));
-      const peerMeta = meta.peerDependenciesMeta ?? {};
-      const peers = Object.entries(meta.peerDependencies ?? {})
-        .filter(([dep]) => !peerMeta[dep]?.optional && !optionalNames.has(dep))
+      const optionalDeps = dependencyBlock(meta.optionalDependencies);
+      const optionalPeerNames = optionalPeers(meta.peerDependenciesMeta);
+      const peers = [...dependencyBlock(meta.peerDependencies)]
+        .filter(([dep]) => !optionalPeerNames.has(dep) && !optionalDeps.has(dep))
         .map(([dep, constraint]) => ({ pkg: dep, constraint, soft: true }));
       const required = [
-        ...Object.entries(meta.dependencies ?? {})
-          .filter(([dep]) => !optionalNames.has(dep))
+        ...[...dependencyBlock(meta.dependencies)]
+          .filter(([dep]) => !optionalDeps.has(dep))
           .map(([dep, constraint]) => ({ pkg: dep, constraint })),
         ...peers,
       ];
-      const optional = Object.entries(meta.optionalDependencies ?? {}).map(([dep, constraint]) => ({ pkg: dep, constraint }));
+      const optional = [...optionalDeps].map(([dep, constraint]) => ({ pkg: dep, constraint }));
       if (optional.length === 0) {
         return Computable.resolve(required);
       }
@@ -883,12 +899,10 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
           "npm:packument:1",
           content =>
             readStream(content).then(data => {
-              const doc = JSON.parse(data.toString("utf8")) as { versions?: Record<string, unknown> };
-              if (doc.versions === undefined || typeof doc.versions !== "object") {
-                /* Never cache an invalid document */
-                throw new Error(`Invalid package document for ${pkg} from ${this.url} (no versions)`);
-              }
-              return new FileSet(new Map([[VERSIONS_FILE, MemoryFile.from(JSON.stringify(Object.keys(doc.versions)))]]));
+              /* The reader throws on anything unusable, so an invalid document
+               * is never cached. */
+              const versions = parseJson(data, `package document for ${pkg} from ${this.url}`, toPublishedVersions);
+              return new FileSet(new Map([[VERSIONS_FILE, MemoryFile.from(JSON.stringify(versions))]]));
             }),
           "version list",
           headers,
@@ -928,10 +942,13 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     } catch {
       return Computable.resolve(undefined);
     }
-    return this.getVersionMetadata(req.pkg, probeVersion).then(
-      meta => (matchesTargetPlatform(meta, target) ? req : undefined),
-      () => undefined
-    );
+    /* Catch rather than a rejection handler: a probe that cannot be evaluated
+     * (malformed gates in a fetched document) is as non-fatal as one that could
+     * not be fetched, and a handler passed to then() does not see the success
+     * callback's own throw. */
+    return this.getVersionMetadata(req.pkg, probeVersion)
+      .then(meta => (matchesTargetPlatform(meta, target) ? req : undefined))
+      .catch(() => undefined);
   }
 
   /**
@@ -1056,7 +1073,11 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
           )
         )
         .then(files => files.readFile(METADATA_FILE))
-        .then(data => JSON.parse(data) as INPMPackageMetadata)
+        /* Re-validated on the way out, not asserted: the cache entry is the
+         * document as fetched, so it is judged by the same reader whether it
+         * arrives from the registry or from disk — one place decides what a
+         * usable metadata document is. */
+        .then(data => parseMetadataResponse(data, key))
         .catch(err => {
           /* Translate the registry's HTTP 404 into the fact it means — typed,
            * so the resolver can distinguish an unpublished version (raisable)

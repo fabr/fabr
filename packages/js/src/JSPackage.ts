@@ -39,12 +39,16 @@ import {
   IFile,
   IProvenanceStep,
   isCanonicalFileName,
+  isJsonObject,
   MemoryFile,
   PackageFileSet,
+  parseJson,
   parseVersion,
+  readJsonFile,
   RunnableFileSet,
   SymlinkFile,
   TargetContext,
+  toJsonObject,
 } from "@fabr-build/core";
 
 export interface JSTarget {
@@ -99,16 +103,20 @@ export interface ICompiledSources {
   copied: FileSet;
 }
 
-/** True iff a `package.json` declares the given `subpath` in its `exports` map
- * (e.g. `./jsx-runtime`). The general "does this package expose subpath X" test
- * that subpath-shaped capability signals build on. Malformed JSON reads as no. */
-export function hasPackageExport(packageJson: string, subpath: string): boolean {
-  try {
-    const exports = (JSON.parse(packageJson) as { exports?: unknown }).exports;
-    return typeof exports === "object" && exports !== null && subpath in exports;
-  } catch {
-    return false;
-  }
+/** True iff a package's `package.json` declares the given `subpath` in its
+ * `exports` map (e.g. `./jsx-runtime`). The general "does this package expose
+ * subpath X" test that subpath-shaped capability signals build on. */
+export function hasPackageExport(manifest: IFile, subpath: string): Computable<boolean> {
+  return (
+    readJsonFile(manifest, toJsonObject)
+      /* Own keys, not `in`: a subpath must be declared by the package, not
+       * inherited from Object.prototype. (Object.hasOwn needs a newer lib than
+       * the JS_TARGET fabr builds itself under.) */
+      .then(json => isJsonObject(json.exports) && Object.keys(json.exports).includes(subpath))
+      /* An unreadable manifest exposes no subpath — this asks a question about a
+       * dependency, and answers "no"; whoever *builds* that dependency reports it. */
+      .catch(() => false)
+  );
 }
 
 /**
@@ -125,9 +133,7 @@ function providesJsxRuntime(pkg: PackageFileSet): Computable<boolean> {
   if (pkg.packageName.startsWith("@types/")) {
     return Computable.resolve(false);
   }
-  return pkg
-    .get("package.json")
-    .then(file => (file ? file.readString().then(json => hasPackageExport(json, "./jsx-runtime")) : false));
+  return pkg.get("package.json").then(file => (file ? hasPackageExport(file, "./jsx-runtime") : false));
 }
 
 /** The `jsxImportSource` for a TSX compile: the first direct dep (in written
@@ -643,12 +649,12 @@ function storeLink(packageName: string): SymlinkFile {
  * makeNpmRunnable, so a fabr-built package and an external npm one launch the
  * same way.
  */
-export function binByConvention(names: Set<string>): Record<string, string> {
-  const bin: Record<string, string> = {};
+export function binByConvention(names: Set<string>): Map<string, string> {
+  const bin = new Map<string, string>();
   for (const filename of names) {
     const match = /^bin\/([^/]+)$/.exec(filename);
     if (match && !/\.d\.[cm]?ts$|\.map$/.test(match[1])) {
-      bin[match[1].replace(/\.[^.]+$/, "")] = filename;
+      bin.set(match[1].replace(/\.[^.]+$/, ""), filename);
     }
   }
   return bin;
@@ -671,7 +677,7 @@ const NODE_SHEBANG = "#!/usr/bin/env node\n";
  */
 export function withBinShebangs(contents: FileSet): Computable<FileSet> {
   const files = new Map<string, IFile>(contents);
-  const binPaths = [...new Set(Object.values(binByConvention(new Set(files.keys()))))];
+  const binPaths = [...new Set(binByConvention(new Set(files.keys())).values())];
   if (binPaths.length === 0) {
     return Computable.resolve(contents);
   }
@@ -737,7 +743,7 @@ export function makeNpmRunnable(
      * surface entry for it) and, being earlier, wins a same-*path* dedup at launch.
      * So `fabr run pkg:tsc` is always the declared bin, never a stray file. */
     const surface = new Map<string, IFile>();
-    for (const [command, binPath] of Object.entries(bin)) {
+    for (const [command, binPath] of bin) {
       surface.set(command, new SymlinkFile(`${root}/${binPath}`));
     }
     for (const [name, file] of pkg) {
@@ -777,13 +783,16 @@ export function makeNpmRunnable(
  * enforces the same) since it becomes a symlink target within the mounted
  * closure.
  */
-function binEntry(packageName: string, command: string, target: string): [string, string] {
+function binEntry(packageName: string, command: string, target: unknown): [string, string] {
   const cleanCommand = posix.basename(command);
   if (!isCanonicalFileName(cleanCommand)) {
     throw new Error(`Package '${packageName}' declares an invalid bin name ${JSON.stringify(command)}`);
   }
-  const cleanTarget = posix.normalize(target);
-  if (!isCanonicalFileName(cleanTarget)) {
+  /* The target is whatever JSON the package published: a non-string one is as
+   * invalid as an out-of-package path and reports the same way, rather than as
+   * a TypeError out of the path normalizer. */
+  const cleanTarget = typeof target === "string" ? posix.normalize(target) : undefined;
+  if (cleanTarget === undefined || !isCanonicalFileName(cleanTarget)) {
     throw new Error(`Package '${packageName}' declares an invalid bin target ${JSON.stringify(target)} for '${cleanCommand}'`);
   }
   return [cleanCommand, cleanTarget];
@@ -792,27 +801,26 @@ function binEntry(packageName: string, command: string, target: string): [string
 /**
  * The package's `bin` as a command→path map, read from its package.json (npm
  * allows `bin` to be a bare string — the command is the package's unscoped
- * name — or an object); no package.json or no `bin` yields an empty map.
+ * name — or an object); no package.json, no `bin`, or a `bin` of any other
+ * shape (npm normalizes those away too) yields an empty map — not runnable.
  * Entries are normalized/validated via {@link binEntry}. Shared by
  * makeNpmRunnable (the bin surface) and js_script's package-mode entry (the
  * package's declared bin is the entry).
  */
-export function binOf(pkg: PackageFileSet): Computable<Record<string, string>> {
+export function binOf(pkg: PackageFileSet): Computable<Map<string, string>> {
   return pkg.get("package.json").then(file => {
     if (!file) {
-      return {};
+      return new Map<string, string>();
     }
     return file.readString().then(text => {
-      const bin = (JSON.parse(text) as { bin?: unknown }).bin;
+      const { bin } = parseJson(text, `package.json of ${pkg.packageName}`, toJsonObject);
       if (typeof bin === "string") {
-        return Object.fromEntries([binEntry(pkg.packageName, pkg.packageName.replace(/^@[^/]+\//, ""), bin)]);
+        return new Map([binEntry(pkg.packageName, pkg.packageName.replace(/^@[^/]+\//, ""), bin)]);
       }
-      if (bin && typeof bin === "object") {
-        return Object.fromEntries(
-          Object.entries(bin as Record<string, string>).map(([command, path]) => binEntry(pkg.packageName, command, path))
-        );
+      if (isJsonObject(bin)) {
+        return new Map(Object.entries(bin).map(([command, path]) => binEntry(pkg.packageName, command, path)));
       }
-      return {};
+      return new Map<string, string>();
     });
   });
 }

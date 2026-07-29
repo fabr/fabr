@@ -216,7 +216,7 @@ export class FileSet implements FileSource {
    */
   readFile(filepath: string, encoding?: BufferEncoding): Computable<string> {
     const file = this.content.get(filepath);
-    return file ? file.readString(encoding) : Computable.reject(new Error("File not found"));
+    return file ? file.readString(encoding) : Computable.reject(new Error(`File not found: ${filepath}`));
   }
 
   /**

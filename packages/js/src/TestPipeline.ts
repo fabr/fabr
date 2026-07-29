@@ -31,8 +31,6 @@
  * red exit status on failure, report written as CTRF.
  */
 
-import * as fs from "node:fs";
-import * as path from "node:path";
 import {
   BuildAction,
   Computable,
@@ -48,6 +46,7 @@ import {
   IBuildActionDefinition,
   ITestReport,
   PackageFileSet,
+  readJsonFile,
   RunnableFileSet,
   TargetContext,
   RuleResult,
@@ -55,6 +54,7 @@ import {
   stringListInput,
   TEST_REPORT_FILENAME,
   TestsFailedError,
+  toTestReport,
   writeFileSet,
 } from "@fabr-build/core";
 import { assembleNodeModules, compileJsSources, JSTarget, moduleTypeFile, parseJSTarget, resourceFiles, stripPackageJson } from "./JSPackage";
@@ -236,29 +236,29 @@ function runTests(inputs: BuildActionInputs, { workDir }: IActionContext): Compu
    * (the runner's interpreter) is PATH-resolved here, at run time. */
   return writeFileSet(workDir, staged)
     .then(() => execute(findExecutable(argv[0]), argv.slice(1), workDir, {}))
-    .then(
-      () => getResultFileSet(workDir, TEST_REPORT_FILENAME),
-      err => {
-        throw toTestFailure(workDir, err);
-      }
-    );
+    .catch(err => failedRun(workDir, err))
+    .then(() => getResultFileSet(workDir, TEST_REPORT_FILENAME));
 }
 
 /**
- * A failed runner invocation is a test failure if it produced a report saying
- * so (rendered as the failure summary); otherwise the run itself broke and
- * the original execution error stands.
+ * Reject with the error a failed runner invocation should report: a test
+ * failure when the run left a report saying so (rendered as the failure
+ * summary), else the original execution error — the run itself broke, and no
+ * report can improve on that. The report comes out of the action's results,
+ * the same way a green run delivers it.
  */
-function toTestFailure(targetDir: string, err: Error): Error {
-  try {
-    const content = fs.readFileSync(path.resolve(targetDir, TEST_REPORT_FILENAME), "utf8");
-    const report = JSON.parse(content) as ITestReport;
-    const summary = report.results?.summary;
-    if (summary && summary.failed > 0) {
-      return new TestsFailedError(formatTestFailures(report), summary.failed, summary.tests);
-    }
-  } catch {
-    /* No readable report: fall through to the original error */
-  }
-  return err;
+function failedRun(workDir: string, err: Error): Computable<never> {
+  return getResultFileSet(workDir, TEST_REPORT_FILENAME)
+    .then(results => results.get(TEST_REPORT_FILENAME))
+    .then(file => (file ? readJsonFile(file, toTestReport).then(report => toTestFailure(report, err)) : err))
+    /* Absent, or not a report we can read: the run's own error stands. */
+    .catch(() => err)
+    .then(failure => {
+      throw failure;
+    });
+}
+
+function toTestFailure(report: ITestReport, err: Error): Error {
+  const { summary } = report.results;
+  return summary.failed > 0 ? new TestsFailedError(formatTestFailures(report), summary.failed, summary.tests) : err;
 }

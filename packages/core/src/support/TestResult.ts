@@ -20,6 +20,7 @@
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import type { SourceRef } from "../core/Repository";
+import { isJsonObject, readJsonFile } from "./Json";
 
 /**
  * The structured test report: the contract between a test rule and its
@@ -115,6 +116,40 @@ function firstLine(text: string): string {
   return newline === -1 ? text : text.substring(0, newline);
 }
 
+/** The summary counters every reader of a report relies on being numbers. */
+const SUMMARY_COUNTERS = ["tests", "passed", "failed", "pending", "skipped", "other"];
+
+/**
+ * Convert a parsed document to a report. The runner that wrote it is swappable
+ * (`JS_TEST_RUNNER`), so this is third-party JSON, and this is the one place it
+ * becomes an {@link ITestReport} — every consumer downstream relies on the
+ * shape it was handed. Anything unrecognizable throws (attributed to the report
+ * file by `readJsonFile`): a corrupt report is a real problem, never a silently
+ * empty run.
+ */
+export function toTestReport(json: unknown): ITestReport {
+  if (!isCtrfReport(json)) {
+    throw new Error("not a recognizable CTRF report");
+  }
+  return json;
+}
+
+/** Whether a parsed document is a report fabr can read: a `results` block whose
+ * summary counters are numbers and whose `tests` are objects — what every
+ * formatter and status check here assumes it was given. */
+function isCtrfReport(document: unknown): document is ITestReport {
+  if (!isJsonObject(document) || !isJsonObject(document.results)) {
+    return false;
+  }
+  const { summary, tests } = document.results;
+  return (
+    isJsonObject(summary) &&
+    SUMMARY_COUNTERS.every(counter => typeof summary[counter] === "number") &&
+    Array.isArray(tests) &&
+    tests.every(isJsonObject)
+  );
+}
+
 /**
  * @return the parsed test report a test target delivered, or `undefined` if the
  * target produced no report artifact at all (rendered as "no tests"). A report
@@ -129,20 +164,7 @@ export function getTestReport(sources: SourceRef[]): Computable<ITestReport | un
     sets.map(set => set.get(TEST_REPORT_FILENAME)),
     (...files): Computable<ITestReport | undefined> | undefined => {
       const file = files.find(f => f !== undefined);
-      return file?.readString().then((content): ITestReport => {
-        let report: Partial<ITestReport>;
-        try {
-          report = JSON.parse(content) as Partial<ITestReport>;
-        } catch (err) {
-          throw new Error(
-            `Malformed test report (${TEST_REPORT_FILENAME}): ${err instanceof Error ? err.message : String(err)}`
-          );
-        }
-        if (!report.results?.summary || !Array.isArray(report.results.tests)) {
-          throw new Error(`Malformed test report (${TEST_REPORT_FILENAME}): not a recognizable CTRF report`);
-        }
-        return report as ITestReport;
-      });
+      return file && readJsonFile(file, toTestReport);
     }
   );
 }

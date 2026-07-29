@@ -332,16 +332,21 @@ async function rejectionMessage<T>(c: Computable<T>): Promise<string> {
 }
 
 describe("hasPackageExport", () => {
-  it("detects a declared subpath in the exports map", () => {
-    const json = JSON.stringify({ exports: { ".": "./index.js", "./jsx-runtime": "./jsx-runtime.js" } });
-    expect(hasPackageExport(json, "./jsx-runtime")).to.equal(true);
-    expect(hasPackageExport(json, "./missing")).to.equal(false);
+  const manifest = (content: string): IFile => MemoryFile.from(content);
+
+  it("detects a declared subpath in the exports map", async () => {
+    const json = manifest(JSON.stringify({ exports: { ".": "./index.js", "./jsx-runtime": "./jsx-runtime.js" } }));
+    expect(await settle(hasPackageExport(json, "./jsx-runtime"))).to.equal(true);
+    expect(await settle(hasPackageExport(json, "./missing"))).to.equal(false);
   });
 
-  it("returns false without an exports map, or on malformed json", () => {
-    expect(hasPackageExport(JSON.stringify({ main: "index.js" }), "./jsx-runtime")).to.equal(false);
-    expect(hasPackageExport(JSON.stringify({ exports: "./index.js" }), "./jsx-runtime")).to.equal(false);
-    expect(hasPackageExport("not json", "./jsx-runtime")).to.equal(false);
+  it("answers no without an exports map, or for an unreadable manifest", async () => {
+    /* A question *about a dependency*: a manifest fabr can't read exposes no
+       subpath — whoever builds that dependency is the one to report it. */
+    expect(await settle(hasPackageExport(manifest(JSON.stringify({ main: "index.js" })), "./jsx-runtime"))).to.equal(false);
+    expect(await settle(hasPackageExport(manifest(JSON.stringify({ exports: "./index.js" })), "./jsx-runtime"))).to.equal(false);
+    expect(await settle(hasPackageExport(manifest("not json"), "./jsx-runtime"))).to.equal(false);
+    expect(await settle(hasPackageExport(manifest("[]"), "./jsx-runtime"))).to.equal(false);
   });
 });
 
@@ -488,7 +493,17 @@ describe("binOf", () => {
 
   it("uses only the basename of a bin command key (npm's rule)", async () => {
     const bins = await settle(binOf(pkgWithBin({ "nested/dir/tool-cli": "lib/cli.js" })));
-    expect(bins).to.deep.equal({ "tool-cli": "lib/cli.js" });
+    expect([...bins]).to.deep.equal([["tool-cli", "lib/cli.js"]]);
+  });
+
+  it("reads a bin of any other shape as no bin (npm normalizes those away)", async () => {
+    expect([...(await settle(binOf(pkgWithBin(["lib/cli.js"]))))]).to.deep.equal([]);
+    expect([...(await settle(binOf(pkgWithBin(42))))]).to.deep.equal([]);
+    expect([...(await settle(binOf(pkgWithBin(undefined))))]).to.deep.equal([]);
+  });
+
+  it("rejects a bin target that is not a string", async () => {
+    expect(await rejectionMessage(binOf(pkgWithBin({ tool: { path: "lib/cli.js" } })))).to.match(/invalid bin target/);
   });
 
   it("rejects a bin command that reduces to no name", async () => {

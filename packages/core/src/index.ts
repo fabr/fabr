@@ -62,6 +62,7 @@ export * from "./resolver/Semver";
 export * from "./resolver/Types";
 export * from "./support/Execute";
 export * from "./support/Functional";
+export * from "./support/Json";
 export * from "./support/Log";
 export * from "./support/Platform";
 export * from "./support/TestResult";

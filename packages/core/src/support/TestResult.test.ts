@@ -20,7 +20,7 @@
 import { expect } from "chai";
 import { FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
-import { getTestReport, ITestReport, TEST_REPORT_FILENAME } from "./TestResult";
+import { getTestReport, ITestReport, TEST_REPORT_FILENAME, toTestReport } from "./TestResult";
 
 /** A single-file FileSet holding a report artifact with the given raw content. */
 function reportSet(content: string): FileSet {
@@ -70,12 +70,42 @@ describe("getTestReport", () => {
   it("rejects a present but malformed (unparseable) report rather than swallowing it", () => {
     const { value, error } = resolve(reportSet("{ this is not json"));
     expect(value).to.equal(undefined);
-    expect(error).to.match(/Malformed test report/);
+    expect(error).to.match(/Invalid JSON in/);
   });
 
   it("rejects a present report whose JSON isn't a recognizable CTRF document", () => {
     const { value, error } = resolve(reportSet(JSON.stringify({ some: "other json" })));
     expect(value).to.equal(undefined);
     expect(error).to.match(/not a recognizable CTRF report/);
+  });
+});
+
+describe("toTestReport", () => {
+  /** The parsed report, with one part of the results block replaced. */
+  function withResults(overrides: Record<string, unknown>): unknown {
+    const results = (JSON.parse(VALID) as ITestReport).results;
+    return { results: { ...results, ...overrides } };
+  }
+
+  it("reads a well-formed report", () => {
+    expect(toTestReport(JSON.parse(VALID)).results.summary.passed).to.equal(1);
+  });
+
+  /* The runner is swappable, so the document is third-party: every consumer
+   * downstream reads these fields without re-checking them. */
+  it("rejects a document that is not an object", () => {
+    expect(() => toTestReport(null)).to.throw(/not a recognizable CTRF report/);
+    expect(() => toTestReport([])).to.throw(/not a recognizable CTRF report/);
+  });
+
+  it("rejects summary counters that are not numbers", () => {
+    expect(() => toTestReport(withResults({ summary: { tests: "1", passed: "1", failed: "0" } }))).to.throw(
+      /not a recognizable CTRF report/
+    );
+  });
+
+  it("rejects a tests list that isn't a list of test objects", () => {
+    expect(() => toTestReport(withResults({ tests: {} }))).to.throw(/not a recognizable CTRF report/);
+    expect(() => toTestReport(withResults({ tests: [null] }))).to.throw(/not a recognizable CTRF report/);
   });
 });

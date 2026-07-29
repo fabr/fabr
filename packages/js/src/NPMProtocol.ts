@@ -32,7 +32,9 @@ import {
   IntegrityError,
   IProjection,
   isCanonicalFileName,
+  isJsonObject,
   Name,
+  parseJson,
   NpmPlatform,
   SEMVER,
   sendRequest,
@@ -45,15 +47,27 @@ export interface ISignature {
   sig: string;
 }
 
+/**
+ * A registry version document. Only the fields {@link parseMetadataResponse}
+ * validates are typed as what they are; **every other field is `unknown` by
+ * construction**, because a published manifest is third-party data that need
+ * only satisfy the registry, not our expectations — npm normalizes a good deal
+ * of legal-but-odd shape away (`"os": "darwin"` for a one-entry gate,
+ * `"dependencies": []` for none), and its own readers tolerate the rest. Read
+ * those fields through the normalizer that owns each one — {@link gateEntries},
+ * {@link dependencyBlock}, {@link optionalPeers} — never by asserting the shape
+ * npm merely usually produces: a wrong assumption is a TypeError thrown deep in
+ * an evaluation, which fails the whole resolution rather than the one package.
+ */
 export interface INPMPackageMetadata {
-  dependencies?: Record<string, string>;
+  dependencies?: unknown;
   /**
    * Deps npm installs when they can be installed but tolerates the absence of.
    * The dominant use is os/cpu-gated native binaries (esbuild's @esbuild/<plat>,
    * rollup, swc, …): every platform variant is listed here, each self-gated by
    * its own package's `os`/`cpu`, and only the host-matching one(s) are kept.
    */
-  optionalDependencies?: Record<string, string>;
+  optionalDependencies?: unknown;
   /**
    * Host-supplied singleton requirements (the plugin pattern: an eslint plugin
    * peers on eslint). Fabr treats them as ordinary requirements — see
@@ -61,10 +75,10 @@ export interface INPMPackageMetadata {
    * tolerance of duplicated regular deps, which fabr's strict single-version
    * closures don't have.
    */
-  peerDependencies?: Record<string, string>;
+  peerDependencies?: unknown;
   /** Per-peer flags; an `optional: true` peer is "if present, must match" —
    * never auto-installed (npm parity), so it contributes no requirement. */
-  peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+  peerDependenciesMeta?: unknown;
   /**
    * Installability gates declared by a package on itself, in Node's
    * process.platform / process.arch vocabulary (plus glibc/musl for `libc`); each
@@ -73,49 +87,101 @@ export interface INPMPackageMetadata {
    * rollup/swc/sharp native builds; it is irrelevant to esbuild, whose Go binary
    * is statically linked.
    */
-  os?: string[];
-  cpu?: string[];
-  libc?: string[];
+  os?: unknown;
+  cpu?: unknown;
+  libc?: unknown;
   dist: {
     fileCount?: number;
-    integrity: string;
+    /** Validated as a string when present, so the digest readers can rely on it. */
+    integrity?: string;
     "npm-signature"?: string;
-    shasum: string;
-    signatures: ISignature[];
+    shasum?: string;
+    signatures?: ISignature[];
     tarball: string;
     unpackedSize?: number;
   };
   name: string;
   version: string;
-  license: string;
-  typings?: string;
-  types?: string;
   /* and potentially lots of other stuff that we don't need */
 }
 
-export type PlatformGates = { os?: string[]; cpu?: string[]; libc?: string[] };
+/** The os/cpu/libc gates of a manifest, as written. */
+export type PlatformGates = { os?: unknown; cpu?: unknown; libc?: unknown };
+
+/**
+ * A gate in npm's list form, whichever way it was written: the list itself, or
+ * a bare string for a one-entry gate (`"os": "darwin"` — legal, and published).
+ * Anything else contributes no entry, so a gate is readable whatever the JSON.
+ */
+function gateEntries(gate: unknown): string[] {
+  if (typeof gate === "string") {
+    return [gate];
+  }
+  return Array.isArray(gate) ? gate.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+/**
+ * A manifest dependency block (`dependencies`, `optionalDependencies`, …) as a
+ * name→constraint map. npm normalizes away anything that isn't an object of
+ * strings — `"dependencies": []` is published and means "none" — and so do we:
+ * a block that isn't an object, and any entry whose constraint isn't a string,
+ * contributes nothing. (Reading them positionally instead would manufacture
+ * requirements on packages named `0`, `1`, … that no registry can resolve.)
+ */
+export function dependencyBlock(block: unknown): Map<string, string> {
+  const entries = new Map<string, string>();
+  if (isJsonObject(block)) {
+    for (const [name, constraint] of Object.entries(block)) {
+      if (typeof constraint === "string") {
+        entries.set(name, constraint);
+      }
+    }
+  }
+  return entries;
+}
+
+/** The peers a `peerDependenciesMeta` block marks `optional: true`. */
+export function optionalPeers(block: unknown): Set<string> {
+  const names = new Set<string>();
+  if (isJsonObject(block)) {
+    for (const [name, flags] of Object.entries(block)) {
+      if (isJsonObject(flags) && flags.optional === true) {
+        names.add(name);
+      }
+    }
+  }
+  return names;
+}
 
 /** The dependency-manifest fields whose entries can name a release co-member. */
 const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
 
 /**
- * npm's os/cpu gate semantics: the list is an allow-list of process.platform /
- * process.arch values, an entry prefixed `!` negating it. An empty/absent list
+ * npm's os/cpu gate semantics (npm-install-checks' checkList): the list is an
+ * allow-list of process.platform / process.arch values, an entry prefixed `!`
+ * negating it. An empty/absent list — or the explicit sole entry `"any"` —
  * imposes no constraint. A value is rejected if explicitly blocked (`!value`);
  * otherwise it must appear in the allow-list, unless the list is negations-only.
  * A gated package on a host whose fact is unknown cannot be confirmed to match.
+ * The gate is read as written, in any shape — see {@link gateEntries}.
  */
-export function platformGateAdmits(gate: string[] | undefined, value: string | undefined): boolean {
-  if (!gate || gate.length === 0) {
+export function platformGateAdmits(gate: unknown, value: string | undefined): boolean {
+  const entries = gateEntries(gate);
+  if (entries.length === 0) {
+    return true;
+  }
+  /* npm reads "any" only as a whole gate, never as one entry among several,
+   * where it is just a (never-matching) platform name. */
+  if (entries.length === 1 && entries[0] === "any") {
     return true;
   }
   if (value === undefined) {
     return false;
   }
-  if (gate.some(entry => entry.startsWith("!") && entry.slice(1) === value)) {
+  if (entries.some(entry => entry.startsWith("!") && entry.slice(1) === value)) {
     return false;
   }
-  const allowed = gate.filter(entry => !entry.startsWith("!"));
+  const allowed = entries.filter(entry => !entry.startsWith("!"));
   return allowed.length === 0 || allowed.includes(value);
 }
 
@@ -144,13 +210,13 @@ export function matchesTargetPlatform(meta: PlatformGates, target: NpmPlatform):
 export function unsupportedPlatformReason(meta: PlatformGates, target: NpmPlatform): string | undefined {
   const parts: string[] = [];
   if (!platformGateAdmits(meta.os, target.os)) {
-    parts.push(`os '${target.os ?? "(unknown)"}' is not in [${(meta.os ?? []).join(", ")}]`);
+    parts.push(`os '${target.os ?? "(unknown)"}' is not in [${gateEntries(meta.os).join(", ")}]`);
   }
   if (!platformGateAdmits(meta.cpu, target.cpu)) {
-    parts.push(`cpu '${target.cpu ?? "(unknown)"}' is not in [${(meta.cpu ?? []).join(", ")}]`);
+    parts.push(`cpu '${target.cpu ?? "(unknown)"}' is not in [${gateEntries(meta.cpu).join(", ")}]`);
   }
   if (!platformGateAdmits(meta.libc, target.libc)) {
-    parts.push(`libc '${target.libc ?? "(unknown)"}' is not in [${(meta.libc ?? []).join(", ")}]`);
+    parts.push(`libc '${target.libc ?? "(unknown)"}' is not in [${gateEntries(meta.libc).join(", ")}]`);
   }
   return parts.length === 0 ? undefined : parts.join("; ");
 }
@@ -259,10 +325,10 @@ export function rewriteManifest(
   }
   for (const field of DEPENDENCY_FIELDS) {
     const deps = result[field];
-    if (deps && typeof deps === "object") {
+    if (isJsonObject(deps)) {
       /* A peerDependency pins exact; the rest take a caret range (see
        * {@link rewriteCoMemberField}). */
-      result[field] = rewriteCoMemberField(deps as Record<string, string>, memberVersions, field === "peerDependencies");
+      result[field] = rewriteCoMemberField(deps, memberVersions, field === "peerDependencies");
     }
   }
   return result;
@@ -279,11 +345,13 @@ export function rewriteManifest(
  * is strictly stronger than API-compat.)
  */
 function rewriteCoMemberField(
-  deps: Record<string, string>,
+  deps: Record<string, unknown>,
   memberVersions: ReadonlyMap<string, string>,
   exact: boolean
-): Record<string, string> {
-  const rewritten: Record<string, string> = { ...deps };
+): Record<string, unknown> {
+  /* Entries fabr doesn't rewrite are passed through as published, whatever they
+   * are — this rewrites a manifest, it doesn't validate one. */
+  const rewritten: Record<string, unknown> = { ...deps };
   for (const dep of Object.keys(rewritten)) {
     const memberVersion = memberVersions.get(dep);
     if (memberVersion !== undefined) {
@@ -297,12 +365,9 @@ function rewriteCoMemberField(
 export function memberDependencies(manifest: Record<string, unknown>, memberNames: ReadonlySet<string>): string[] {
   const names = new Set<string>();
   for (const field of DEPENDENCY_FIELDS) {
-    const deps = manifest[field];
-    if (deps && typeof deps === "object") {
-      for (const dep of Object.keys(deps as Record<string, unknown>)) {
-        if (memberNames.has(dep)) {
-          names.add(dep);
-        }
+    for (const dep of dependencyBlock(manifest[field]).keys()) {
+      if (memberNames.has(dep)) {
+        names.add(dep);
       }
     }
   }
@@ -325,12 +390,9 @@ const INSTALLED_DEPENDENCY_FIELDS = ["dependencies", "optionalDependencies", "pe
 export function unresolvableDependencies(manifest: Record<string, unknown>): string[] {
   const names: string[] = [];
   for (const field of INSTALLED_DEPENDENCY_FIELDS) {
-    const deps = manifest[field];
-    if (deps && typeof deps === "object") {
-      for (const [dep, constraint] of Object.entries(deps as Record<string, string>)) {
-        if (constraint === "*") {
-          names.push(dep);
-        }
+    for (const [dep, constraint] of dependencyBlock(manifest[field])) {
+      if (constraint === "*") {
+        names.push(dep);
       }
     }
   }
@@ -400,16 +462,26 @@ export function publishToRegistry(
 
 /**
  * Interpret a registry response, before it gets anywhere near the cache (error
- * responses must never be cached). It's a three-way split — HTTP-level failures
+ * responses must never be cached) — and again when one is read back out of it,
+ * so a metadata document is judged by exactly one reader wherever it came from.
+ * It's a three-way split — HTTP-level failures
  * (404, 5xx) are already surfaced upstream, so no error-body taxonomy is needed:
  *  - a single-version metadata document (the documented shape: `name` + `version`
  *    + `dist.tarball`) — the thing we asked for; return it;
  *  - a full packument (`versions`) — we resolved the wrong URL, a bug;
  *  - anything else (an error body, non-JSON, a truncated/HTML page) — unusable.
  */
-export function parseMetadataResponse(data: Buffer, key: string): INPMPackageMetadata {
-  const response = parseJsonObject(data);
-  if (response && isVersionMetadata(response)) {
+export function parseMetadataResponse(data: string | Buffer, key: string): INPMPackageMetadata {
+  return parseJson(data, `response from NPM repository for '${key}'`, toVersionMetadata);
+}
+
+/** The converter behind {@link parseMetadataResponse}: the document as metadata,
+ * or the reason it is unusable (attributed to the response by the caller). */
+function toVersionMetadata(json: unknown): INPMPackageMetadata {
+  if (!isJsonObject(json)) {
+    throw new Error("expected a JSON object");
+  }
+  if (isVersionMetadata(json)) {
     /* The document's `name` is what fabr stamps as the delivered package's
      * identity (and so its mount path), so it must be usable as one — thrown
      * from the fetch's process callback, so an invalid document is never
@@ -418,29 +490,22 @@ export function parseMetadataResponse(data: Buffer, key: string): INPMPackageMet
      * component — it either fails to resolve (an ordinary attributed error) or
      * resolves to a document whose own `name` passes through this same check
      * before it can become an identity. */
-    if (!isCanonicalFileName(response.name)) {
-      throw new Error(`Invalid package name ${JSON.stringify(response.name)} in registry metadata for '${key}'`);
+    if (!isCanonicalFileName(json.name)) {
+      throw new Error(`package name ${JSON.stringify(json.name)} is not usable as an identity`);
     }
-    return response;
+    return json;
   }
-  if (response && "versions" in response) {
-    throw new Error(`NPM repository returned a package document, not a single version, for '${key}' (wrong URL?)`);
+  if ("versions" in json) {
+    throw new Error("a package document, not a single version (wrong URL?)");
   }
-  throw new Error(`Invalid response from NPM repository for '${key}'`);
-}
-
-/** Parse a body as a JSON object, or undefined if it is not JSON / not an object. */
-function parseJsonObject(data: Buffer): Record<string, unknown> | undefined {
-  try {
-    const parsed = JSON.parse(data.toString());
-    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : undefined;
-  } catch {
-    return undefined;
-  }
+  throw new Error("not a package version document");
 }
 
 /** Whether a body is a single-version metadata document — `name` + `version` +
- * a `dist.tarball` (a full packument has none of the latter two). */
+ * a `dist.tarball` (a full packument has none of the latter two). The digest
+ * fields beside the tarball are optional, but a present one must be a string:
+ * they are read as such when the tarball is verified, and this is the one place
+ * a document's shape is judged (before it can be cached). */
 function isVersionMetadata(response: Record<string, unknown>): response is INPMPackageMetadata & Record<string, unknown> {
   const meta = response as unknown as INPMPackageMetadata;
   return (
@@ -448,8 +513,16 @@ function isVersionMetadata(response: Record<string, unknown>): response is INPMP
     typeof meta.version === "string" &&
     typeof meta.dist === "object" &&
     meta.dist !== null &&
-    typeof meta.dist.tarball === "string"
+    typeof meta.dist.tarball === "string" &&
+    isOptionalString(meta.dist.integrity) &&
+    isOptionalString(meta.dist.shasum)
   );
+}
+
+/** Whether an optional document field is absent or a string — "if it's there,
+ * it must be usable". */
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
 }
 
 export function isSemverConstraint(text: string): boolean {

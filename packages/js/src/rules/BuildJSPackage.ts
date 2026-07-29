@@ -37,11 +37,13 @@ import {
   PackageFileSet,
   PropertyMap,
   PropertyMapValue,
+  readJsonFile,
   RepositoryRef,
   Requirement,
   RuleRegistration,
   RuleResult,
   TargetContext,
+  toJsonObject,
 } from "@fabr-build/core";
 import { binByConvention, compileJsSources, JSTarget, parseJSTarget, stripPackageJson, withBinShebangs } from "../JSPackage";
 
@@ -59,19 +61,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
       const sources = FileSet.unionAll(...srcSets);
       const tests = FileSet.unionAll(...testSets);
       /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
-      const seedJson = sources
-        .get("package.json")
-        .then(file => file?.readString())
-        .then(content => {
-          if (!content) {
-            return undefined;
-          }
-          try {
-            return JSON.parse(content) as Record<string, unknown>;
-          } catch (err) {
-            throw new Error(`Invalid JSON in input package.json: ${err instanceof Error ? err.message : err}`);
-          }
-        });
+      const seedJson = sources.get("package.json").then(file => file && readJsonFile(file, toJsonObject));
 
       const jsTarget = parseJSTarget(target);
       const compileSources = sources.minus(tests);
@@ -241,8 +231,8 @@ function createPackageJson(
   }
 
   const bin = binByConvention(names);
-  if (Object.keys(bin).length > 0) {
-    packageJson.bin = bin;
+  if (bin.size > 0) {
+    packageJson.bin = Object.fromEntries(bin);
   }
 
   const dependencies = packageDependencies(declared);
