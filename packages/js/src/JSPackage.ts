@@ -25,6 +25,7 @@
 
 import { posix } from "path";
 import {
+  attachHelp,
   BUILD_OVERRIDE,
   SubTargetInputs,
   CANONICAL,
@@ -36,6 +37,7 @@ import {
   FileSetRef,
   Flag,
   IFile,
+  IProvenanceStep,
   isCanonicalFileName,
   MemoryFile,
   PackageFileSet,
@@ -312,6 +314,150 @@ export function stripPackageJson(files: FileSet): FileSet {
  * delivery's listed overrides are precisely the non-winners, so they nest.
  * Hoisting is disk/path layout; the nesting carries the correctness.
  */
+/**
+ * Which node each node's dependencies bind to: node id → (dependency name →
+ * the id satisfying it). The resolution reduced to what layout needs, and all
+ * it needs — planning reads no files, so it settles before anything is
+ * fetched. Transient: never carried on delivered values.
+ */
+export type EdgeMap = Map<string, Map<string, string>>;
+
+/**
+ * A planned mount: which package instance sits at this position, and the
+ * private overrides nested beneath it. Ids only — a plan is a statement about
+ * the resolution, not about content.
+ */
+export interface PlannedMount {
+  id: string;
+  overrides: PlannedMount[];
+}
+
+/**
+ * Plan the node_modules tree for one delivered root: the flat-mount winners,
+ * plus each node's private version overrides — the edges that bind somewhere
+ * other than what is already visible at their position — recursively. The
+ * result is the tree encoding of a (possibly cyclic) resolved graph, with
+ * everything unlisted resolving to the flat winner implicitly.
+ *
+ * A position is described entirely by its **bindings**: the flat winners
+ * overridden by the divergences each enclosing mount introduced (kept
+ * canonical — an entry equal to the flat winner is dropped, since it resolves
+ * the same either way). Every binding is mounted at the level that introduced
+ * it, so two positions with equal bindings resolve every name identically and
+ * need the same subtree — which is why a subtree can be memoized on
+ * (id, bindings), and shared rather than replanned.
+ *
+ * The same fact makes a repeat of a position still being planned fatal rather
+ * than a stopping point. Each nesting is *forced*: a package can only see a
+ * version other than its position's by carrying it privately. So returning to
+ * a position already on the path means the forced sequence repeats without
+ * end, and the closure has **no** finite node_modules layout — a version cycle
+ * across generations (a@1 → b@1 → a@2 → b@2 → a@1) is the shape that does it.
+ * Note this is a limit of the *layout*, not of the resolution: such a closure
+ * resolves perfectly cleanly, one version per resolution key, no violations —
+ * there is simply no tree that satisfies every edge. So it is reported here,
+ * where the layout is decided, as {@link assembleNodeModules} reports an
+ * unrepresentable root collision, and not truncated into a tree that would
+ * silently resolve a dependency to a version its requirer forbade.
+ */
+export function planMounts(
+  rootId: string,
+  winners: Map<string, string>,
+  edges: EdgeMap,
+  members: ReadonlySet<string>
+): PlannedMount[] {
+  const signature = (id: string, bindings: Map<string, string>): string =>
+    [id, ...[...bindings].sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, to]) => `${name}=${to}`)].join("\n");
+  /** Completed subtrees, and the positions on the current planning path (in
+   * order, so a repeat can name the cycle it closes). */
+  const planned = new Map<string, PlannedMount>();
+  const path: Array<{ id: string; key: string }> = [];
+
+  const overridesOf = (id: string, bindings: Map<string, string>): PlannedMount[] => {
+    const divergent = new Map<string, string>();
+    for (const [name, toId] of edges.get(id) ?? []) {
+      if ((bindings.get(name) ?? winners.get(name)) !== toId && members.has(toId)) {
+        divergent.set(name, toId);
+      }
+    }
+    /* Canonical: a divergence landing back on the flat winner binds nothing
+     * new (it still mounts here — it has to, to shadow an intervening
+     * override — but resolves to what the fallback already gives). */
+    const nested = new Map(bindings);
+    for (const [name, toId] of divergent) {
+      if (winners.get(name) === toId) {
+        nested.delete(name);
+      } else {
+        nested.set(name, toId);
+      }
+    }
+    return [...divergent.values()].map(toId => mount(toId, nested));
+  };
+
+  const mount = (id: string, bindings: Map<string, string>): PlannedMount => {
+    const key = signature(id, bindings);
+    const done = planned.get(key);
+    if (done) {
+      return done;
+    }
+    const repeated = path.findIndex(entry => entry.key === key);
+    if (repeated >= 0) {
+      throw unrepresentableCycle([...path.slice(repeated).map(entry => entry.id), id]);
+    }
+    path.push({ id, key });
+    const result: PlannedMount = { id, overrides: overridesOf(id, bindings) };
+    path.pop();
+    planned.set(key, result);
+    return result;
+  };
+
+  /* The top of the tree binds nothing beyond the flat winners. */
+  const top = new Map<string, string>();
+  return [
+    ...[...winners.values()].filter(id => id !== rootId).map(id => mount(id, top)),
+    ...overridesOf(rootId, top),
+  ];
+}
+
+/** The diagnostic for a closure with no finite layout (see {@link planMounts}):
+ * name the cycle, and the pin that collapses it. */
+function unrepresentableCycle(cycle: string[]): Error {
+  const names = [...new Set(cycle.map(id => id.substring(0, id.lastIndexOf("@"))))];
+  return attachHelp(
+    new Error(
+      `Cannot lay out this dependency closure: ${cycle.join(" -> ")} requires a different version of each package at every ` +
+        "step, so no nesting satisfies them all — each package would have to be nested inside itself without end"
+    ),
+    `pin ${names.map(name => `'@npm:${name}:<version>'`).join(" or ")} so a single version of it is selected, ` +
+      "which removes the nesting the cycle needs"
+  );
+}
+
+/**
+ * Realise a plan against the fetched packages: each mount becomes a
+ * PackageFileSet carrying its overrides as its own dependencies, built
+ * depth-first so every instance is immutable-complete at construction. A
+ * subtree shared by the plan stays one instance here too.
+ */
+export function buildMounts(
+  plan: readonly PlannedMount[],
+  packages: Map<string, PackageFileSet>,
+  origin: IProvenanceStep
+): PackageFileSet[] {
+  const built = new Map<PlannedMount, PackageFileSet>();
+  const build = (node: PlannedMount): PackageFileSet => {
+    const done = built.get(node);
+    if (done) {
+      return done;
+    }
+    const files = packages.get(node.id)!;
+    const result = new PackageFileSet(files, files.packageName, files.version, node.overrides.map(build), origin);
+    built.set(node, result);
+    return result;
+  };
+  return plan.map(build);
+}
+
 export function assembleNodeModules(sets: FileSet[]): FileSet {
   /* Collect every package instance (the delivered override structure is a
    * finite tree; built-package structure is acyclic by construction). */

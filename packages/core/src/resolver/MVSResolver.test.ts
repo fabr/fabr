@@ -76,6 +76,73 @@ function resolve(
   return result!;
 }
 
+/**
+ * As mockRegistry, but every metadata answer is *deferred*: requests queue up
+ * and are delivered by the caller, so a test can drive the walk through any
+ * arrival order. `pick` chooses the index of the next pending request to
+ * answer (delivering one may enqueue more).
+ */
+function deferredRegistry(
+  data: Record<string, Record<string, Record<string, string>>>,
+  pick: (pending: string[]) => number,
+  raisable: boolean
+): { registry: PackageRegistry<SemverVersion>; drain: () => void } {
+  const base = mockRegistry(data, raisable);
+  const queue: Array<{ key: string; deliver: () => void }> = [];
+  const registry: PackageRegistry<SemverVersion> = {
+    getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
+      return Computable.from((resolve, reject) => {
+        const deliver = (): void => {
+          try {
+            base.getRequirements(pkg, version).then(resolve, reject);
+          } catch (err) {
+            reject(err as Error);
+          }
+        };
+        queue.push({ key: `${pkg}@${versionToString(version)}`, deliver });
+      });
+    },
+    lowestAvailable: base.lowestAvailable,
+  };
+  const drain = (): void => {
+    while (queue.length > 0) {
+      queue.splice(pick(queue.map(entry => entry.key)), 1)[0].deliver();
+    }
+  };
+  return { registry, drain };
+}
+
+/**
+ * Resolve under two opposite metadata-arrival orders (answer the oldest
+ * outstanding request first, versus the newest) and assert the results are
+ * identical — the property MVS owes its caller, since the result is persisted
+ * in the build cache and a cache flush must not be able to change a build.
+ */
+function resolveOrderIndependent(
+  roots: Record<string, string>,
+  data: Record<string, Record<string, Record<string, string>>>,
+  raisable = false
+): MVSResolution<SemverVersion> {
+  const under = (pick: (pending: string[]) => number): MVSResolution<SemverVersion> => {
+    const { registry, drain } = deferredRegistry(data, pick, raisable);
+    let result: MVSResolution<SemverVersion> | undefined;
+    resolveMVS(
+      Object.entries(roots).map(([pkg, constraint]) => ({ pkg, constraint })),
+      SEMVER,
+      registry
+    ).then(resolution => {
+      result = resolution;
+    });
+    drain();
+    expect(result).to.not.equal(undefined);
+    return result!;
+  };
+  const oldestFirst = under(() => 0);
+  const newestFirst = under(pending => pending.length - 1);
+  expect(JSON.stringify(newestFirst)).to.equal(JSON.stringify(oldestFirst));
+  return oldestFirst;
+}
+
 /** As resolve, but for inputs whose resolution walk must reject. */
 function resolveError(roots: Record<string, string>, data: Record<string, Record<string, Record<string, string>>>): Error {
   let error: Error | undefined;
@@ -502,6 +569,165 @@ describe("MVSResolver", () => {
     expect((err as MetadataFetchError).pkg).to.equal("B");
   });
 
+  it("expands a demanded version that loses its key, whatever the arrival order", () => {
+    /* P and Q demand different minors of B; the two B versions declare
+     * different C floors. Under Go's MVS the module graph holds every demanded
+     * version, so B@1.0.0's C floor counts even though B@1.2.0 supersedes it —
+     * C is 1.5.0 either way. (Expanding only *improving* versions made this a
+     * coin toss on which packument landed first, and the answer is persisted in
+     * the resolution memo, so a cache flush could change the build.) */
+    const result = resolveOrderIndependent(
+      { P: "1.0.0", Q: "1.0.0" },
+      {
+        P: { "1.0.0": { B: "^1.0.0" } },
+        Q: { "1.0.0": { B: "^1.2.0" } },
+        B: { "1.0.0": { C: "^1.5.0" }, "1.2.0": { C: "^1.0.0" } },
+        C: { "1.0.0": {}, "1.5.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["B@1.2.0", "C@1.5.0", "P@1.0.0", "Q@1.0.0"]);
+    expect(result.errors).to.deep.equal([]);
+  });
+
+  it("walks coexisting majors in a canonical order, whatever the arrival order", () => {
+    /* E's unconstrained edge leads to BOTH selections of D, so the order they
+     * are walked in decides which of their own (violated) requirements is
+     * recorded first — and `violations` and `reachedVia` are persisted. That
+     * order must come from the versions, not from `selected`'s insertion
+     * order, which follows which packument landed first. */
+    const result = resolveOrderIndependent(
+      { E: "1.0.0", B: "^1.0.0", C: "^1.0.0", G: "1.5.0", H: "1.5.0" },
+      {
+        E: { "1.0.0": { D: "*" } },
+        B: { "1.0.0": { D: "^1.0.0" } },
+        C: { "1.0.0": { D: "^2.0.0" } },
+        D: { "1.0.0": { G: "1.0.0" }, "2.0.0": { H: "1.0.0" } },
+        G: { "1.0.0": {}, "1.5.0": {} },
+        H: { "1.0.0": {}, "1.5.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["B@1.0.0", "C@1.0.0", "D@1.0.0", "D@2.0.0", "E@1.0.0", "G@1.5.0", "H@1.5.0"]);
+    /* Lower major first: D@1.0.0's exact pin on G is reported before D@2's on H. */
+    expect(result.violations.map(violation => `${violation.requiredBy} -> ${violation.pkg}`)).to.deep.equal([
+      "D@1.0.0 -> G",
+      "D@2.0.0 -> H",
+    ]);
+  });
+
+  it("attributes a tied floor to the same requirement whatever the arrival order", () => {
+    /* Two requirements demand the identical winning floor: the tie is broken
+     * canonically, not by whichever was recorded first (selectedBy is persisted
+     * and drives the 'why this version' diagnostic). */
+    const result = resolveOrderIndependent(
+      { X: "1.0.0", A: "1.0.0" },
+      {
+        X: { "1.0.0": { D: "^1.2.0" } },
+        A: { "1.0.0": { D: "^1.2.0" } },
+        D: { "1.2.0": {} },
+      }
+    );
+    expect(result.selections.find(sel => sel.pkg === "D")?.selectedBy).to.deep.equal({ requiredBy: "A@1.0.0", constraint: "^1.2.0" });
+  });
+
+  it("raises a floor demanded after the unpublished answer landed", () => {
+    /* C@2.0.5 is unpublished and A's ~2.0.5 can never be repaired (nothing in
+     * 2.0.x is published); Z's ^2.0.5 raises cleanly to 2.6.0. Whether Z's
+     * demand is recorded before or after the registry's 404 must not decide
+     * whether the repair happens — nor may A's unrepairable floor fail a tree
+     * that Z's raise makes resolvable. */
+    const result = resolveOrderIndependent(
+      { A: "1.0.0", Z: "1.0.0" },
+      {
+        A: { "1.0.0": { C: "~2.0.5" } },
+        Z: { "1.0.0": { C: "^2.0.5" } },
+        C: { "2.6.0": {} },
+      },
+      true
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@2.6.0", "Z@1.0.0"]);
+    expect(result.raises).to.have.lengthOf(1);
+    expect(result.raises[0].constraint).to.equal("^2.0.5");
+    expect(versionToString(result.raises[0].raised)).to.equal("2.6.0");
+    /* A's ~2.0.5 is unsatisfiable by anything published — reported as the
+     * ordinary upper-bound violation against what was delivered, not a failure */
+    expect(result.violations.map(violation => violation.requiredBy)).to.deep.equal(["A@1.0.0"]);
+  });
+
+  it("fetches each demanded version's metadata exactly once", () => {
+    /* Expanding the whole demanded closure costs one metadata document per
+     * demanded version — and must cost no more, however many requirements
+     * demand it. (The bound on the walk is the same fact: a finite node set,
+     * each visited once.) */
+    const data = {
+      A: { "1.0.0": { D: "^1.0.0" }, "1.2.0": { D: "^1.5.0" } },
+      B: { "1.0.0": { A: "^1.0.0", D: "^1.0.0" } },
+      C: { "1.0.0": { A: "^1.2.0", D: "^1.0.0" } },
+      D: { "1.0.0": {}, "1.5.0": {} },
+    };
+    const calls = new Map<string, number>();
+    const base = mockRegistry(data);
+    const registry: PackageRegistry<SemverVersion> = {
+      getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
+        const id = `${pkg}@${versionToString(version)}`;
+        calls.set(id, (calls.get(id) ?? 0) + 1);
+        return base.getRequirements(pkg, version);
+      },
+    };
+    let result: MVSResolution<SemverVersion> | undefined;
+    resolveMVS([{ pkg: "B", constraint: "1.0.0" }, { pkg: "C", constraint: "1.0.0" }], SEMVER, registry).then(resolution => {
+      result = resolution;
+    });
+    expect(result).to.not.equal(undefined);
+    /* Both A versions are expanded — A@1.0.0 loses its key but its D floor is
+     * in the graph — and D@1.0.0 too, demanded by three requirements. */
+    expect([...calls.entries()].sort(([a], [b]) => (a < b ? -1 : 1))).to.deep.equal([
+      ["A@1.0.0", 1],
+      ["A@1.2.0", 1],
+      ["B@1.0.0", 1],
+      ["C@1.0.0", 1],
+      ["D@1.0.0", 1],
+      ["D@1.5.0", 1],
+    ]);
+  });
+
+  it("terminates on a dependency cycle whose versions alternate", () => {
+    /* The graph cycles through four distinct nodes; each is demanded and so
+     * expanded, but only once, so the walk closes. */
+    const result = resolveOrderIndependent(
+      { A: "^1.0.0" },
+      {
+        A: { "1.0.0": { B: "^2.0.0" }, "2.0.0": { B: "^1.0.0" } },
+        B: { "1.0.0": { A: "^1.0.0" }, "2.0.0": { A: "^2.0.0" } },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "A@2.0.0", "B@1.0.0", "B@2.0.0"]);
+    expect(result.errors).to.deep.equal([]);
+  });
+
+  it("terminates when the raise hook offers a version the registry then rejects", () => {
+    /* A registry inconsistent with itself: the version list keeps offering
+     * 1.6.0, whose metadata 404s in turn. Repairing that offer re-demands it,
+     * and every demanded version is now expanded — so the walk must repair each
+     * (node, demand) once rather than trading the same offer back and forth
+     * forever. The outcome (the raise stands) is unchanged; termination is the
+     * property under test. */
+    const registry: PackageRegistry<SemverVersion> = {
+      getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
+        if (pkg === "A") {
+          return Computable.resolve([{ pkg: "B", constraint: "^1.0.0" }]);
+        }
+        throw new VersionNotFoundError(pkg, versionToString(version), `${pkg}@${versionToString(version)} not found`);
+      },
+      lowestAvailable: (): Computable<SemverVersion | undefined> => Computable.resolve(parseVersion("1.6.0")),
+    };
+    let result: MVSResolution<SemverVersion> | undefined;
+    resolveMVS([{ pkg: "A", constraint: "1.0.0" }], SEMVER, registry).then(resolution => {
+      result = resolution;
+    });
+    expect(result).to.not.equal(undefined);
+    expect(selectionStrings(result!)).to.deep.equal(["A@1.0.0", "B@1.6.0"]);
+  });
+
   it("keeps a version raised by a superseded requirement, and says so", () => {
     /* A@1.0.0 raises D to 1.5.0 before A itself is upgraded to 1.2.0, which only
      * needs D ^1.1.0; per MVS the raised version stands, and selectedBy records
@@ -574,7 +800,10 @@ describe("resolveWithRepairs", () => {
         R: { "1.0.0": { Q: "^1.2.0" } },
       }
     );
-    expect(result.splits.map(split => `${split.pkg}@${split.constraint}`).sort()).to.deep.equal(["P@1.0.0", "Q@1.0.0"]);
+    /* Canonically ordered, not in the order the subtrees happened to resolve:
+     * the list is persisted, and a consumer resolving dependency edges lets the
+     * first scope claiming a shared version win. */
+    expect(result.splits.map(split => `${split.pkg}@${split.constraint}`)).to.deep.equal(["P@1.0.0", "Q@1.0.0"]);
     const p = result.splits.find(split => split.pkg === "P")!;
     expect(selectionStrings(p.tree)).to.deep.equal(["P@1.0.0", "Q@1.2.0", "R@1.0.0"]);
     /* P's subtree still lists its own violation, mapped to the Q split */

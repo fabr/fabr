@@ -19,12 +19,37 @@
 
 import { Computable } from "../core/Computable";
 import { MetadataFetchError, VersionNotFoundError, toError } from "../core/Errors";
-import { IResolutionError, PackageRegistry, RaisedFloor, Requirement, MVSResolution, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
+import { edgeTargets, nodeId as idOf } from "./ResolutionGraph";
+import {
+  IRequirementEdge,
+  IResolutionError,
+  PackageRegistry,
+  RaisedFloor,
+  Requirement,
+  MVSResolution,
+  ROOT_REQUIRER,
+  Selected,
+  VersionDomain,
+  Violation,
+} from "./Types";
 
 /**
  * Minimal Version Selection resolver (after Go's MVS): every constraint is
  * interpreted as a lower bound, and each resolution key is resolved to the
  * maximum over all lower bounds declared in the reachable requirement graph.
+ *
+ * The **requirement graph is the whole demanded closure**: every version any
+ * reachable requirement demands is expanded, not merely the ones that improve
+ * the current selection (Go's module graph, likewise). This is what makes the
+ * result a pure function of the requirement set rather than of metadata
+ * arrival order — a demanded version that loses its key still contributes its
+ * own requirements' floors, whether it is reached before or after the winner.
+ * (Expanding only improving versions would make a superseded package's floors
+ * count or not count according to which fetch landed first — and the result is
+ * persisted, so a cache flush could then change a build.) Selection is
+ * consequently monotone: a max over a set, computed once the walk is quiet.
+ * Superseded versions are pruned from the *result* by the post-walk
+ * reachability pass, which follows the selected versions only.
  *
  * The result therefore depends only on what the packages in the graph declare,
  * never on what else the repository happens to contain, so it is deterministic
@@ -82,6 +107,24 @@ class RepairsRequired extends Error {
   }
 }
 
+/** Lexicographic order on strings, for the canonical orderings a persisted
+ * resolution needs (its lists must not carry the walk's arrival order). */
+function compareText(a: string, b: string): number {
+  if (a < b) {
+    return -1;
+  }
+  return a > b ? 1 : 0;
+}
+
+/** One requirement's demand for a node: the requirement itself, the resolution
+ * key it offered the node under, and who declared it — everything needed to
+ * re-offer the demand at a raised floor. */
+interface Demand {
+  key: string;
+  req: Requirement;
+  requiredBy: string;
+}
+
 function resolvePhase<V, C>(
   roots: Requirement[],
   domain: VersionDomain<V, C>,
@@ -98,9 +141,16 @@ function resolvePhase<V, C>(
     const nodeParents = new Map<string, string>();
     /* The requirement(s) whose minimum demanded each node — the floor(s) to
      * raise if the node turns out to be unpublished */
-    const nodeDemands = new Map<string, Array<{ key: string; req: Requirement; requiredBy: string }>>();
+    const nodeDemands = new Map<string, Demand[]>();
+    /* Nodes the registry reported unpublished, so that a demand arriving after
+     * that answer is repaired on the same terms as one that preceded it (the
+     * raise must not depend on whether the 404 beat the demand) */
+    const notPublished = new Map<string, VersionNotFoundError>();
     /* Raises applied during the walk; filtered to the winners at finish */
     const candidateRaises: RaisedFloor<V>[] = [];
+    /* (node, demand) pairs already floor-raised, so a repair is attempted once
+     * however often its demand is re-offered (see raiseFloors) */
+    const raisedDemands = new Set<string>();
     /* Nodes whose demanded version turned out unpublished, tolerated as
      * unexpandable pending selections outside repair mode: a transient winner
      * a higher declared floor later supersedes never mattered. Judged at
@@ -140,7 +190,7 @@ function resolvePhase<V, C>(
       }
     };
 
-    const nodeId = (pkg: string, version: V): string => `${pkg}@${domain.versionToString(version)}`;
+    const nodeId = (pkg: string, version: V): string => idOf(domain, pkg, version);
 
     const enqueue = (req: Requirement, requiredBy: string): void => {
       let constraint: C;
@@ -168,31 +218,62 @@ function resolvePhase<V, C>(
       attempt(domain.resolutionKey(req.pkg, constraint), req, domain.minimumOf(constraint), requiredBy);
     };
 
+    /** Canonical order on requirement edges, for breaking a tie between two
+     * requirements demanding the same winning floor: `selectedBy` must be a
+     * function of the requirement set, not of which fetch landed first. */
+    const edgeOrder = (edge: IRequirementEdge): string => `${edge.requiredBy}\n${edge.constraint}`;
+
     /** Offer `version` as a lower bound for `key` (a requirement's declared
-     * minimum, or its raised floor): selected and visited iff it beats the
-     * current selection. */
+     * minimum, or its raised floor): it is selected iff it beats the current
+     * selection, and expanded either way — a demanded version contributes its
+     * own requirements to the graph even when it loses its key (see the Go MVS
+     * note above; `visit` dedups, so each pkg@version is fetched once). */
     const attempt = (key: string, req: Requirement, version: V, requiredBy: string): void => {
       const current = selected.get(key);
-      if (!current || domain.compare(version, current.version) > 0) {
-        selected.set(key, { pkg: req.pkg, version, selectedBy: { requiredBy, constraint: req.constraint } });
-        visit(req.pkg, version, requiredBy, { key, req });
+      const edge: IRequirementEdge = { requiredBy, constraint: req.constraint };
+      const order = current === undefined ? 1 : domain.compare(version, current.version);
+      if (order > 0 || (order === 0 && current!.selectedBy !== undefined && edgeOrder(edge) < edgeOrder(current!.selectedBy))) {
+        selected.set(key, { pkg: req.pkg, version, selectedBy: edge });
       }
+      visit(req.pkg, version, requiredBy, { key, req });
     };
 
     /**
-     * The demanded version was never published: raise each demanding
-     * requirement's contribution to the lowest published version satisfying
-     * its constraint (re-offered through the normal max-of-minimums rule); a
-     * requirement nothing published satisfies is a genuine failure, as is the
-     * whole node when the registry offers no raise hook.
+     * The demanded version was never published: raise each of `demands`'
+     * contribution to the lowest published version satisfying its constraint
+     * (re-offered through the normal max-of-minimums rule). A requirement
+     * nothing published satisfies raises nothing, so the node keeps its
+     * unpublished declared version unless another demand lifts the key —
+     * tolerated here and judged at convergence exactly as in phase 1, since the
+     * walk expands superseded versions too and an unrepairable floor on one of
+     * those never mattered. A live one at convergence is the terminal failure.
+     *
+     * Takes the demands to repair rather than reading them off the node,
+     * because they arrive on both sides of the registry's answer: the demands
+     * known when it lands are repaired together, and each later one is repaired
+     * as it arrives. The caller holds a `pending` token for the duration.
      */
-    const raiseFloors = (id: string, pkg: string, version: V, err: VersionNotFoundError): void => {
-      const demands = nodeDemands.get(id) ?? [];
+    const raiseFloors = (pkg: string, version: V, err: VersionNotFoundError, demands: Demand[]): void => {
+      /* Each (node, demand) is raised once. Since the raise is a pure function
+       * of the two, re-raising could only repeat itself — and would not
+       * terminate if the hook offers a version the registry then rejects in
+       * turn (the offer is re-demanded, found already demanded, and repaired
+       * again). Termination is otherwise by the finite demand set. */
+      const id = nodeId(pkg, version);
+      const fresh = demands.filter(demand => {
+        const signature = `${id}\n${demand.requiredBy}\n${demand.req.constraint}`;
+        if (raisedDemands.has(signature)) {
+          return false;
+        }
+        raisedDemands.add(signature);
+        return true;
+      });
       Computable.forAll(
-        demands.map(demand =>
+        fresh.map(demand =>
           registry.lowestAvailable!(pkg, demand.req.constraint).then(raised => {
             if (raised === undefined) {
-              throw annotate(id, pkg, version, err);
+              unpublished.set(nodeId(pkg, version), { pkg, version, err });
+              return;
             }
             candidateRaises.push({ pkg, constraint: demand.req.constraint, declared: version, raised, requiredBy: demand.requiredBy });
             attempt(demand.key, demand.req, raised, demand.requiredBy);
@@ -204,6 +285,24 @@ function resolvePhase<V, C>(
           }
         }
       ).catch(raiseErr => fail(toError(raiseErr)));
+    };
+
+    /**
+     * The registry's verdict that pkg@version was never published, applied to
+     * the demands recorded so far: repaired by floor raises when the phase and
+     * registry allow it, else tolerated as an unexpandable pending selection.
+     * Consumes the `pending` token the caller holds for the node.
+     */
+    const nodeNotPublished = (id: string, pkg: string, version: V, err: VersionNotFoundError): void => {
+      notPublished.set(id, err);
+      if (repair && registry.lowestAvailable) {
+        raiseFloors(pkg, version, err, nodeDemands.get(id) ?? []);
+        return;
+      }
+      unpublished.set(id, { pkg, version, err });
+      if (--pending === 0) {
+        settle();
+      }
     };
 
     /**
@@ -225,57 +324,45 @@ function resolvePhase<V, C>(
 
     const visit = (pkg: string, version: V, requiredBy: string, demand: { key: string; req: Requirement }): void => {
       const id = nodeId(pkg, version);
+      const entry: Demand = { ...demand, requiredBy };
       const demands = nodeDemands.get(id);
       if (demands) {
-        /* Metadata already demanded (or resolved); just record the demand for
-         * raise attribution should the node turn out unpublished. */
-        demands.push({ ...demand, requiredBy });
+        /* Metadata already demanded (or resolved); record the demand for raise
+         * attribution should the node turn out unpublished — or repair it now
+         * if that answer is already in, so a demand is treated the same either
+         * side of it. */
+        demands.push(entry);
+        const known = notPublished.get(id);
+        if (known && repair && registry.lowestAvailable) {
+          pending++;
+          raiseFloors(pkg, version, known, [entry]);
+        }
         return;
       }
-      nodeDemands.set(id, [{ ...demand, requiredBy }]);
+      nodeDemands.set(id, [entry]);
       nodeRequirements.set(id, []);
       nodeParents.set(id, requiredBy);
       pending++;
-      try {
-        registry.getRequirements(pkg, version).then(
-          requirements => {
-            nodeRequirements.set(id, requirements);
-            for (const req of requirements) {
-              enqueue(req, id);
-            }
-            if (--pending === 0) {
-              settle();
-            }
-          },
-          err => {
-            if (err instanceof VersionNotFoundError) {
-              if (repair && registry.lowestAvailable) {
-                raiseFloors(id, pkg, version, err);
-              } else {
-                unpublished.set(id, { pkg, version, err });
-                if (--pending === 0) {
-                  settle();
-                }
-              }
-            } else {
-              fail(annotate(id, pkg, version, err));
-            }
-          }
-        );
-      } catch (err) {
-        /* A registry that throws instead of rejecting gets the same treatment */
+      const onMetadataError = (err: unknown): void => {
         if (err instanceof VersionNotFoundError) {
-          if (repair && registry.lowestAvailable) {
-            raiseFloors(id, pkg, version, err);
-          } else {
-            unpublished.set(id, { pkg, version, err });
-            if (--pending === 0) {
-              settle();
-            }
-          }
+          nodeNotPublished(id, pkg, version, err);
         } else {
           fail(annotate(id, pkg, version, err));
         }
+      };
+      try {
+        registry.getRequirements(pkg, version).then(requirements => {
+          nodeRequirements.set(id, requirements);
+          for (const req of requirements) {
+            enqueue(req, id);
+          }
+          if (--pending === 0) {
+            settle();
+          }
+        }, onMetadataError);
+      } catch (err) {
+        /* A registry that throws instead of rejecting gets the same treatment */
+        onMetadataError(err);
       }
     };
 
@@ -317,46 +404,25 @@ function resolvePhase<V, C>(
       if (failed) {
         return;
       }
+      /* The selections of each package, ordered by version — canonical, and
+       * NOT `selected`'s insertion order, which follows metadata arrival. The
+       * multi-selection cases below iterate this (an unconstrained edge leads
+       * to every selection of its package, a peer's to every candidate), so
+       * that order sets the reachability walk's queue order, and reaches the
+       * result as `reachedVia` attribution and the order of `violations`. It
+       * is the last read of `selected` that isn't by key or membership. */
       const selectionsByPkg = new Map<string, Selected<V>[]>();
       for (const selection of selected.values()) {
         selectionsByPkg.set(selection.pkg, [...(selectionsByPkg.get(selection.pkg) ?? []), selection]);
       }
+      for (const ofPkg of selectionsByPkg.values()) {
+        ofPkg.sort((a, b) => domain.compare(a.version, b.version));
+      }
 
-      /**
-       * The selections a requirement edge leads to: the (single) selection
-       * under its resolution key, or — for an unconstrained requirement —
-       * every selection of the package, since it is satisfied by any of them.
-       */
-      const targetsOf = (req: Requirement): Selected<V>[] => {
-        let constraint: C;
-        try {
-          constraint = domain.parseConstraint(req.constraint);
-        } catch {
-          return []; /* Already reported during the walk */
-        }
-        if (domain.isUnconstrained(constraint)) {
-          return selectionsByPkg.get(req.pkg) ?? [];
-        }
-        if (req.soft) {
-          /* Attach-first: any selection satisfying the range, whatever its key
-           * (a wide peer range spans majors). None satisfying → the highest
-           * candidate, so followEdge reports the violation against what is
-           * actually delivered (npm's ERESOLVE analogue) and reachability
-           * matches the runtime require(). No candidate at all cannot happen —
-           * settle() fired the demand. */
-          const candidates = selectionsByPkg.get(req.pkg) ?? [];
-          const satisfying = candidates.filter(sel => domain.satisfies(sel.version, constraint));
-          if (satisfying.length > 0) {
-            return satisfying;
-          }
-          const highest = candidates.reduce(
-            (a, b) => (domain.compare(a.version, b.version) >= 0 ? a : b),
-            candidates[0]
-          );
-          return highest ? [highest] : [];
-        }
-        return [selected.get(domain.resolutionKey(req.pkg, constraint))!];
-      };
+      /* Where each edge leads, by the shared rule (see edgeTargets) — the same
+       * one a consumer lays the result out by, over each package's selections
+       * in the canonical order established above. */
+      const targetsOf = (req: Requirement): Selected<V>[] => edgeTargets(domain, selectionsByPkg.get(req.pkg) ?? [], req);
 
       /* Reachable selections, each annotated (as a copy) with how it was
        * first reached; keyed by the underlying selection instance since an
@@ -442,21 +508,29 @@ function resolvePhase<V, C>(
        * live (reachable) winner means the tree is unresolvable without repair —
        * trigger the repair phase when the registry offers one, else fail with
        * the usual metadata attribution. Superseded/pruned entries never
-       * mattered and are dropped silently. */
-      const liveUnpublished = [...unpublished.entries()].filter(([id]) =>
-        selections.some(sel => nodeId(sel.pkg, sel.version) === id)
-      );
+       * mattered and are dropped silently. In the repair phase the raise hook
+       * has already had its turn (a live entry there is one nothing published
+       * satisfies), so the failure is terminal rather than a second signal.
+       * Ordered by node id so the reported failure doesn't depend on which
+       * metadata answer landed first. */
+      const liveUnpublished = [...unpublished.entries()]
+        .filter(([id]) => selections.some(sel => nodeId(sel.pkg, sel.version) === id))
+        .sort(([a], [b]) => compareText(a, b));
       if (liveUnpublished.length > 0) {
         const [id, info] = liveUnpublished[0];
-        fail(registry.lowestAvailable ? new RepairsRequired() : annotate(id, info.pkg, info.version, info.err));
+        fail(!repair && registry.lowestAvailable ? new RepairsRequired() : annotate(id, info.pkg, info.version, info.err));
         return;
       }
       /* Keep only the raises that shaped the result: the raised version must
        * have won its key AND be reachable (a raise superseded by a higher
        * floor, or pruned with a superseded subtree, never mattered) — then
-       * dedup identical (pkg, constraint) raises from parallel demands. */
+       * dedup identical (pkg, constraint) raises from parallel demands, in a
+       * canonical order (they are pushed as the registry answers). */
       const raiseKeys = new Set<string>();
-      const raises = candidateRaises.filter(raise => {
+      const ordered = [...candidateRaises].sort(
+        (a, b) => compareText(a.pkg, b.pkg) || compareText(a.constraint, b.constraint) || compareText(a.requiredBy, b.requiredBy)
+      );
+      const raises = ordered.filter(raise => {
         const winner = selections.some(sel => sel.pkg === raise.pkg && domain.compare(sel.version, raise.raised) === 0);
         const dedup = `${raise.pkg}\n${raise.constraint}`;
         if (!winner || raiseKeys.has(dedup)) {
@@ -538,6 +612,13 @@ export function resolveWithRepairs<V, C>(
     ).then(expand);
   };
   return resolveMVS(roots, domain, registry).then(tree =>
-    expand(tree.violations).then(() => ({ tree, splits: [...splits.values()] }))
+    /* Canonically ordered, not insertion-ordered: the splits are filled in as
+     * their subtrees resolve, and the order is both persisted and load-bearing
+     * (a consumer resolving edges takes the first scope that claims a shared
+     * version). */
+    expand(tree.violations).then(() => ({
+      tree,
+      splits: [...splits.values()].sort((a, b) => compareText(a.pkg, b.pkg) || compareText(a.constraint, b.constraint)),
+    }))
   );
 }

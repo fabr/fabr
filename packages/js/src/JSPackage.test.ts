@@ -21,6 +21,10 @@ import { expect } from "chai";
 import { Computable, ConflictError, FileSet, Flag, IFile, MemoryFile, PackageFileSet, SymlinkFile } from "@fabr-build/core";
 import {
   assembleNodeModules,
+  buildMounts,
+  EdgeMap,
+  planMounts,
+  PlannedMount,
   assembleScopedNodeModules,
   binOf,
   hasPackageExport,
@@ -89,6 +93,145 @@ describe("assembleScopedNodeModules", () => {
     const a = vpkg("a", "1.0.0", [vpkg("shared", "1.0.0")]);
     const b = vpkg("b", "1.0.0", [vpkg("shared", "2.0.0")]);
     expect(() => assembleScopedNodeModules([a, b])).to.throw(ConflictError, /Conflicting packages for shared/);
+  });
+});
+
+describe("planMounts", () => {
+  /** A closure member: `name@version`, its files distinguishable by content. */
+  function member(name: string, version: string): PackageFileSet {
+    return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}@${version}`)]]), name, version);
+  }
+
+  /** Everything planMounts reads, from a literal `id -> {name: id}` graph. */
+  function graph(edges: Record<string, Record<string, string>>): {
+    packages: Map<string, PackageFileSet>;
+    members: Set<string>;
+    edgeMap: EdgeMap;
+  } {
+    const packages = new Map<string, PackageFileSet>();
+    for (const id of Object.keys(edges)) {
+      const at = id.lastIndexOf("@");
+      packages.set(id, member(id.substring(0, at), id.substring(at + 1)));
+    }
+    const edgeMap: EdgeMap = new Map(Object.entries(edges).map(([id, deps]) => [id, new Map(Object.entries(deps))]));
+    return { packages, members: new Set(packages.keys()), edgeMap };
+  }
+
+  /** The planned tree as `id` paths, so nesting is inspectable. */
+  function tree(mounts: PlannedMount[]): string[] {
+    return mounts.flatMap(mount => [mount.id, ...tree(mount.overrides).map(path => `${mount.id}/${path}`)]);
+  }
+
+  it("nests each divergent edge target under its requirer", () => {
+    /* The mdn-data shape: csso needs css-tree@2 where the flat winner is @3,
+     * and that copy needs mdn-data@2.0.28 where the winner is @2.12.2. */
+    const { members, edgeMap } = graph({
+      "svgo@4.0.1": { csso: "csso@5.0.5", "css-tree": "css-tree@3.0.1", "mdn-data": "mdn-data@2.12.2" },
+      "csso@5.0.5": { "css-tree": "css-tree@2.2.0" },
+      "css-tree@2.2.0": { "mdn-data": "mdn-data@2.0.28" },
+      "css-tree@3.0.1": { "mdn-data": "mdn-data@2.12.2" },
+      "mdn-data@2.12.2": {},
+      "mdn-data@2.0.28": {},
+    });
+    const winners = new Map([
+      ["svgo", "svgo@4.0.1"],
+      ["csso", "csso@5.0.5"],
+      ["css-tree", "css-tree@3.0.1"],
+      ["mdn-data", "mdn-data@2.12.2"],
+    ]);
+    expect(tree(planMounts("svgo@4.0.1", winners, edgeMap, members))).to.deep.equal([
+      "csso@5.0.5",
+      "csso@5.0.5/css-tree@2.2.0",
+      "csso@5.0.5/css-tree@2.2.0/mdn-data@2.0.28",
+      "css-tree@3.0.1",
+      "mdn-data@2.12.2",
+    ]);
+  });
+
+  it("reports a cross-generation version cycle instead of nesting forever", () => {
+    /* a@1 → b@1 → a@2 → b@2 → a@1: every hop needs a version other than the
+     * one visible where it sits, and each nesting is forced, so the tree would
+     * grow without end (it used to, until the stack gave out). No finite
+     * node_modules layout satisfies all four, so it is reported as such. */
+    const { members, edgeMap } = graph({
+      "a@1.0.0": { b: "b@1.0.0" },
+      "b@1.0.0": { a: "a@2.0.0" },
+      "a@2.0.0": { b: "b@2.0.0" },
+      "b@2.0.0": { a: "a@1.0.0" },
+    });
+    /* The root holds its own name; b's flat winner is its highest version. */
+    const winners = new Map([
+      ["a", "a@1.0.0"],
+      ["b", "b@2.0.0"],
+    ]);
+    const err = (() => {
+      try {
+        planMounts("a@1.0.0", winners, edgeMap, members);
+        return undefined;
+      } catch (thrown) {
+        return thrown as Error & { help?: string };
+      }
+    })();
+    expect(err?.message).to.contain("b@1.0.0 -> a@2.0.0 -> b@2.0.0 -> a@1.0.0 -> b@1.0.0");
+    expect(err?.help).to.contain("@npm:b:<version>");
+  });
+
+  it("nests a cycle that resolves to one version per name", () => {
+    /* The ordinary cyclic dependency (a ↔ b, one version each) is not the
+     * problem — nothing diverges from the flat winners, so nothing nests. */
+    const { members, edgeMap } = graph({
+      "a@1.0.0": { b: "b@1.0.0" },
+      "b@1.0.0": { a: "a@1.0.0" },
+    });
+    const winners = new Map([
+      ["a", "a@1.0.0"],
+      ["b", "b@1.0.0"],
+    ]);
+    expect(tree(planMounts("a@1.0.0", winners, edgeMap, members))).to.deep.equal(["b@1.0.0"]);
+  });
+
+  it("reuses one subtree for a position reached twice with the same bindings", () => {
+    /* Two requirers diverging the same way share the instance: the subtree is
+     * a function of (node, bindings), so planning it twice is waste — and on a
+     * wide graph, exponential waste. */
+    const { members, edgeMap } = graph({
+      "root@1.0.0": { x: "x@1.0.0", y: "y@1.0.0", shared: "shared@2.0.0" },
+      "x@1.0.0": { shared: "shared@1.0.0" },
+      "y@1.0.0": { shared: "shared@1.0.0" },
+      "shared@1.0.0": {},
+      "shared@2.0.0": {},
+    });
+    const winners = new Map([
+      ["root", "root@1.0.0"],
+      ["x", "x@1.0.0"],
+      ["y", "y@1.0.0"],
+      ["shared", "shared@2.0.0"],
+    ]);
+    const mounts = planMounts("root@1.0.0", winners, edgeMap, members);
+    const x = mounts.find(mount => mount.id.startsWith("x@"))!;
+    const y = mounts.find(mount => mount.id.startsWith("y@"))!;
+    expect(x.overrides[0]).to.equal(y.overrides[0]);
+  });
+
+  it("realises a plan into the nested layout it describes", () => {
+    /* The seam: planning decides the shape from ids alone, building fills in
+     * the fetched content, and the layout comes out where the plan put it. */
+    const { packages, members, edgeMap } = graph({
+      "svgo@4.0.1": { csso: "csso@5.0.5", "css-tree": "css-tree@3.0.1" },
+      "csso@5.0.5": { "css-tree": "css-tree@2.2.0" },
+      "css-tree@2.2.0": {},
+      "css-tree@3.0.1": {},
+    });
+    const winners = new Map([
+      ["svgo", "svgo@4.0.1"],
+      ["csso", "csso@5.0.5"],
+      ["css-tree", "css-tree@3.0.1"],
+    ]);
+    const plan = planMounts("svgo@4.0.1", winners, edgeMap, members);
+    const root = new PackageFileSet(packages.get("svgo@4.0.1")!, "svgo", "4.0.1", buildMounts(plan, packages, { kind: "target" }));
+    const files = entries(assembleNodeModules([root]));
+    expect(files.has("css-tree/index.js")).to.equal(true);
+    expect(files.has("csso/node_modules/css-tree/index.js")).to.equal(true);
   });
 });
 

@@ -22,7 +22,9 @@ import {
   attributedTo,
   BUILD_OPERATION,
   Computable,
+  coexistingVersions,
   compareVersions,
+  edgeBinding,
   FILES_OPERATION,
   FileSet,
   HttpStatusError,
@@ -35,6 +37,7 @@ import {
   MetadataFetchError,
   MultiError,
   Name,
+  nodeId,
   NpmPlatform,
   PACKAGE_RESOLUTION_PROVENANCE,
   PackageFileSet,
@@ -48,6 +51,7 @@ import {
   RepositoryWriter,
   PublishMember,
   PublishStatus,
+  reachableSplits,
   readStream,
   RepairableResolution,
   Repository,
@@ -75,7 +79,7 @@ import {
   versionToString,
   Violation,
 } from "@fabr-build/core";
-import { makeNpmRunnable } from "./JSPackage";
+import { buildMounts, EdgeMap, makeNpmRunnable, planMounts, PlannedMount } from "./JSPackage";
 import {
   INPMPackageMetadata,
   isSemverConstraint,
@@ -136,7 +140,7 @@ interface ISplitEntry {
   raises: IRaiseEntry[];
 }
 
-/** Serialized form of a persisted joint resolution (memo tag npm:resolve:8) */
+/** Serialized form of a persisted joint resolution (memo tag npm:resolve:10) */
 interface IResolutionDoc {
   roots: Requirement[];
   selections: IResolutionEntry[];
@@ -152,69 +156,22 @@ function requirementKey(req: Requirement): string {
 /** A selection's `pkg@version` node id — the resolver's node-id form, also the
  * id space of the transient edge map a permissive delivery is planned from. */
 function selectionId(sel: Selected<SemverVersion>): string {
-  return `${sel.pkg}@${versionToString(sel.version)}`;
+  return nodeId(SEMVER, sel.pkg, sel.version);
 }
 
-/** Transient planning data for a permissive delivery: node id → (dependency
- * name → the id of the node satisfying it). Consumed by assembleClosure to
- * build the delivered override structure; never carried on delivered values. */
-type EdgeMap = Map<string, Map<string, string>>;
+/** One root's planned delivery: its own node, and the tree mounted under it. */
+interface PlannedClosure {
+  rootId: string;
+  mounts: PlannedMount[];
+}
 
-/** The scope's selection satisfying an (unviolated) requirement: the selection
- * under the requirement's resolution key — a selection's own key derives from
- * its version (the key of its exact-version constraint) — or, unconstrained,
- * the scope's highest selection of the package. Undefined (no edge: a gated
+/** The id of the scope's selection an (unviolated) requirement binds to, by
+ * the resolver's own edge rule; undefined when the edge leads nowhere (a gated
  * optional pruned from the walk, or an unparseable constraint already
- * reported) when nothing matches. */
+ * reported). */
 function edgeTargetIn(selections: Selected<SemverVersion>[], req: Requirement): string | undefined {
-  let parsed: SemverConstraint;
-  try {
-    parsed = SEMVER.parseConstraint(req.constraint);
-  } catch {
-    return undefined;
-  }
-  const candidates = selections.filter(sel => sel.pkg === req.pkg);
-  if (candidates.length === 0) {
-    return undefined;
-  }
-  if (SEMVER.isUnconstrained(parsed)) {
-    const highest = candidates.reduce((a, b) => (SEMVER.compare(a.version, b.version) >= 0 ? a : b), candidates[0]);
-    return selectionId(highest);
-  }
-  if (req.soft) {
-    /* Attach-first, mirroring the resolver's targetsOf: any satisfying
-     * selection whatever its key (a peer range may span majors); none
-     * satisfying → the highest candidate (the violated edge, which the split
-     * table then repairs — the --legacy-peer-deps posture). */
-    const satisfying = candidates.filter(sel => SEMVER.satisfies(sel.version, parsed));
-    const pool = satisfying.length > 0 ? satisfying : candidates;
-    const highest = pool.reduce((a, b) => (SEMVER.compare(a.version, b.version) >= 0 ? a : b), pool[0]);
-    return selectionId(highest);
-  }
-  const key = SEMVER.resolutionKey(req.pkg, parsed);
-  const match = candidates.find(sel => SEMVER.resolutionKey(sel.pkg, SEMVER.parseConstraint(versionToString(sel.version))) === key);
-  return match ? selectionId(match) : undefined;
-}
-
-/** The split subtrees repairing the given violations, plus those repairing the
- * splits' own violations, recursively (deduplicated by (pkg, constraint)). */
-function collectSplits(violations: Violation<SemverVersion>[], splits: NpmSplit[]): NpmSplit[] {
-  const byKey = new Map(splits.map(split => [`${split.pkg}:${split.constraint}`, split]));
-  const included = new Map<string, NpmSplit>();
-  let frontier = violations;
-  while (frontier.length > 0) {
-    const next: Violation<SemverVersion>[] = [];
-    for (const violation of frontier) {
-      const key = `${violation.pkg}:${violation.constraint}`;
-      const split = byKey.get(key);
-      if (split && !included.has(key)) {
-        included.set(key, split);
-        next.push(...split.violations);
-      }
-    }
-    frontier = next;
-  }
-  return [...included.values()];
+  const target = edgeBinding(SEMVER, selections, req);
+  return target && selectionId(target);
 }
 
 /** One deserialized split subtree (the runtime form of ISplitEntry). */
@@ -525,14 +482,14 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
       needed.some(sel => sel.pkg === raise.pkg && compareVersions(sel.version, raise.raised) === 0)
     );
     if (!permissive) {
-      const duplicates = duplicateVersions(needed);
+      const duplicates = coexistingVersions(needed);
       if (scopedViolations.length > 0 || scopedRaises.length > 0 || duplicates.length > 0) {
         throw strictRepairError([...requestedKeys].sort().join(", "), scopedViolations, scopedRaises, duplicates);
       }
     }
     /* Sealed: include the splits repairing the reachable violations, and the
      * splits repairing theirs, recursively. */
-    const includedSplits = permissive ? collectSplits(scopedViolations, splits) : [];
+    const includedSplits = permissive ? reachableSplits(scopedViolations, splits) : [];
     /* Fetch each distinct pkg@version once — main tree and splits share
      * instances (same version ⇒ same tarball ⇒ same content). */
     const toFetch = new Map<string, Selected<SemverVersion>>();
@@ -543,26 +500,34 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
       }
     }
     const fetchIds = [...toFetch.keys()];
-    return Computable.forAll(
-      fetchIds.map(id => this.fetch(toFetch.get(id)!.pkg, toFetch.get(id)!.version)),
-      (...fetched: PackageFileSet[]) => {
-        const packages = new Map<string, PackageFileSet>(fetchIds.map((id, k) => [id, fetched[k]]));
-        const edges = permissive
-          ? this.resolvedEdges(needed, selections, scopedViolations, includedSplits)
-          : Computable.resolve<EdgeMap | undefined>(undefined);
-        return edges.then(edgeMap => {
-          const assembled = requirements.map(req =>
-            this.assembleClosure(req, rootIndex.get(requirementKey(req))!, selections, packages, includedSplits, edgeMap)
-          );
-          return operation === "run"
-            ? Computable.forAll(
-                assembled.map(pkg => this.makeRunnable(pkg)),
-                (...delivered: FileSet[]) => delivered
-              )
-            : Computable.resolve(assembled);
-        });
-      }
-    ).catch(err => this.attributeResolutionFailure(err, references, requirements));
+    const fetching = new Set(fetchIds);
+    /* Plan the layout first: it is decided by the resolution alone, so a
+     * closure that cannot be laid out says so before anything is downloaded. */
+    const edges = permissive
+      ? this.resolvedEdges(needed, selections, scopedViolations, includedSplits)
+      : Computable.resolve<EdgeMap | undefined>(undefined);
+    return edges
+      .then(edgeMap =>
+        requirements.map(req =>
+          this.planClosure(req, rootIndex.get(requirementKey(req))!, selections, fetching, includedSplits, edgeMap)
+        )
+      )
+      .then(plans =>
+        Computable.forAll(
+          fetchIds.map(id => this.fetch(toFetch.get(id)!.pkg, toFetch.get(id)!.version)),
+          (...fetched: PackageFileSet[]) => {
+            const packages = new Map<string, PackageFileSet>(fetchIds.map((id, k) => [id, fetched[k]]));
+            const assembled = requirements.map((req, index) => this.buildClosure(req, plans[index], selections, packages));
+            return operation === "run"
+              ? Computable.forAll(
+                  assembled.map(pkg => this.makeRunnable(pkg)),
+                  (...delivered: FileSet[]) => delivered
+                )
+              : Computable.resolve(assembled);
+          }
+        )
+      )
+      .catch(err => this.attributeResolutionFailure(err, references, requirements));
   }
 
   /**
@@ -667,39 +632,27 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
   }
 
   /**
-   * Assemble the delivery for one root requirement, stamped with the
-   * resolution's provenance.
+   * Plan one root requirement's delivered tree — which node mounts where, as
+   * ids. A statement about the resolution only: it reads no content, so it
+   * settles before anything is fetched, and a closure with no valid layout is
+   * reported without downloading the closure it can't lay out.
    *
-   * **Strict** (no edge map): the root carries the reachable members of the
-   * joint closure as a flat list of empty-dep instances — enforcement has
-   * already guaranteed one version per name, so flat mounting needs no more.
+   * **Strict** (no edge map): the reachable members of the joint closure, flat
+   * — enforcement has already guaranteed one version per name, so flat
+   * mounting needs no more.
    *
-   * **Permissive**: the root carries the closure's flat-mount WINNERS (one
-   * per name — the root wins its own name, else the highest version), and
-   * each instance carries, as its own dependencies, only its private version
-   * OVERRIDES — the edge targets that diverge from the flat winner of their
-   * name, recursively (a divergence visible from an enclosing instance is not
-   * repeated, which is also what terminates cycles). The structure is the
-   * node_modules tree in-memory: an acyclic tree encoding of the (possibly
-   * cyclic) resolved graph, with everything unlisted resolving to the flat
-   * winner implicitly. See PackageFileSet's two-regimes note.
+   * **Permissive**: the closure's flat-mount WINNERS (one per name — the root
+   * wins its own name, else the highest version) plus the private version
+   * overrides {@link planMounts} nests under them.
    */
-  private assembleClosure(
+  private planClosure(
     req: Requirement,
     index: number,
     selections: Selected<SemverVersion>[],
-    packages: Map<string, PackageFileSet>,
+    fetching: ReadonlySet<string>,
     includedSplits: NpmSplit[],
     edges: EdgeMap | undefined
-  ): PackageFileSet {
-    const origin: IResolutionOrigin<SemverVersion> = {
-      kind: PACKAGE_RESOLUTION_PROVENANCE,
-      repository: this.url,
-      root: req,
-      selections,
-      versionToString,
-      packageOfPath: npmPackageOfPath,
-    };
+  ): PlannedClosure {
     const reachable = selections.filter(sel => sel.reachableFrom?.includes(index));
     const root = reachable.find(sel => sel.pkg === req.pkg);
     if (!root) {
@@ -707,21 +660,15 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
       throw new Error(`Resolution of ${requirementKey(req)} does not contain its own root package`);
     }
     const rootId = selectionId(root);
-    const rootFiles = packages.get(rootId)!;
     if (edges === undefined) {
-      /* Strict: the flat closure, one version per name by enforcement. */
-      const dependencies = reachable.flatMap(sel => {
-        const id = selectionId(sel);
-        return id !== rootId && packages.has(id) ? [packages.get(id)!.withOrigin(origin)] : [];
-      });
-      return new PackageFileSet(rootFiles, rootFiles.packageName, rootFiles.version, dependencies, origin);
+      const flat = reachable.map(selectionId).filter(id => id !== rootId && fetching.has(id));
+      return { rootId, mounts: flat.map(id => ({ id, overrides: [] })) };
     }
-    /* Permissive: closure members (main + split), their flat-mount winners,
-     * and the override structure planned from the edge map. */
+    /* Closure members (main tree + splits) and their flat-mount winners. */
     const members = new Map<string, Selected<SemverVersion>>();
     for (const sel of [...reachable, ...includedSplits.flatMap(split => split.selections)]) {
       const id = selectionId(sel);
-      if (packages.has(id) && !members.has(id)) {
+      if (fetching.has(id) && !members.has(id)) {
         members.set(id, sel);
       }
     }
@@ -738,28 +685,22 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
         }
       }
     }
-    /** The override instances of node `id` — its edge targets diverging from
-     * what is visible at its position — built depth-first (children first, so
-     * every instance is immutable-complete at construction). */
-    const overridesOf = (id: string, visible: (name: string) => string | undefined): PackageFileSet[] => {
-      const divergent = new Map<string, string>();
-      for (const [name, toId] of edges.get(id) ?? []) {
-        if (visible(name) !== toId && packages.has(toId)) {
-          divergent.set(name, toId);
-        }
-      }
-      const visibleHere = (name: string): string | undefined => divergent.get(name) ?? visible(name);
-      return [...divergent.values()].map(toId => instance(toId, visibleHere));
+    return { rootId, mounts: planMounts(rootId, winners, edges, new Set(members.keys())) };
+  }
+
+  /** Realise a planned closure against the fetched packages, stamped with the
+   * resolution's provenance. */
+  private buildClosure(req: Requirement, plan: PlannedClosure, selections: Selected<SemverVersion>[], packages: Map<string, PackageFileSet>): PackageFileSet {
+    const origin: IResolutionOrigin<SemverVersion> = {
+      kind: PACKAGE_RESOLUTION_PROVENANCE,
+      repository: this.url,
+      root: req,
+      selections,
+      versionToString,
+      packageOfPath: npmPackageOfPath,
     };
-    const instance = (id: string, visible: (name: string) => string | undefined): PackageFileSet => {
-      const files = packages.get(id)!;
-      return new PackageFileSet(files, files.packageName, files.version, overridesOf(id, visible), origin);
-    };
-    const topVisible = (name: string): string | undefined => winners.get(name);
-    const dependencies = [
-      ...[...winners.values()].filter(id => id !== rootId).map(id => instance(id, topVisible)),
-      ...overridesOf(rootId, topVisible),
-    ];
+    const rootFiles = packages.get(plan.rootId)!;
+    const dependencies = buildMounts(plan.mounts, packages, origin);
     return new PackageFileSet(rootFiles, rootFiles.packageName, rootFiles.version, dependencies, origin);
   }
 
@@ -1016,7 +957,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
          * hyphen range, `1.2.3 - 2.3.4`), so a space delimiter isn't obviously
          * injective — a newline can appear in neither a package name nor a
          * constraint, matching how file deps are already newline-separated. */
-        .memoize("npm:resolve:9", `${this.url} ${targetKey}\n${rootKeys.join("\n")}`, () => {
+        .memoize("npm:resolve:10", `${this.url} ${targetKey}\n${rootKeys.join("\n")}`, () => {
           /* A memo miss means real resolution work on behalf of the consumer */
           this.context.notifyProgress({ kind: "repository-resolve", repository: this.context.target, requirements: rootKeys });
           return resolveWithRepairs(roots, SEMVER, this).then(result => {
@@ -1232,13 +1173,6 @@ function deserializeResolutionDoc(doc: IResolutionDoc): ResolvedRepairs {
 
 /** pkg → its selected versions, for the packages selected at more than one
  * version — representable only by a nested (sealed) install. */
-function duplicateVersions(selections: Selected<SemverVersion>[]): Array<[string, SemverVersion[]]> {
-  const byPkg = new Map<string, SemverVersion[]>();
-  for (const sel of selections) {
-    byPkg.set(sel.pkg, [...(byPkg.get(sel.pkg) ?? []), sel.version]);
-  }
-  return [...byPkg].filter(([, versions]) => versions.length > 1);
-}
 
 /**
  * The strict (linked) delivery's judgment of a repaired closure: every repair

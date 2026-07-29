@@ -194,6 +194,12 @@ export interface VersionDomain<V, C> {
    * resolve to a single version, while different keys may coexist in a build.
    * e.g. npm allows one version per major ("pkg@1"), while Go and Maven
    * allow only one version per package name.
+   *
+   * Must read the constraint only through its {@link minimumOf} — which every
+   * coexistence rule above does. That is what makes a *selection's* own key
+   * recoverable from the version it selected (the key of its exact version),
+   * so a consumer holding selections but not the resolver's key table can
+   * still say which selection an edge leads to (see edgeTargets).
    */
   resolutionKey(pkg: string, constraint: C): string;
 
