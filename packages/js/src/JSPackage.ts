@@ -25,7 +25,7 @@
 
 import { posix } from "path";
 import {
-  BUILD_OPERATION,
+  BUILD_OVERRIDE,
   SubTargetInputs,
   CANONICAL,
   Computable,
@@ -279,7 +279,7 @@ export function compileJsSources(context: TargetContext, sources: FileSet, direc
     const inputs: SubTargetInputs = { srcs, deps: mountDeps };
     compiled = context.subTarget("js_compile", inputs, {
       label: "Compiling",
-      constraints: { [BUILD_OPERATION]: "build" },
+      constraints: BUILD_OVERRIDE,
     });
   }
 

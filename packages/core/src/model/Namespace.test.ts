@@ -29,7 +29,7 @@ function targetDecl(name: string): ITargetDecl {
 }
 
 describe("Namespace.getPrefixMatch", () => {
-  const ns = new Namespace({ pkg: targetDecl("pkg") }, {});
+  const ns = new Namespace(new Map([["pkg", targetDecl("pkg")]]), new Map());
 
   it("strips everything before ':' (glob immediately after the target)", () => {
     /* `pkg:*.js` — colon projection: result names retain nothing of the prefix. */

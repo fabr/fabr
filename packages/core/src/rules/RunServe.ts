@@ -30,7 +30,8 @@
  * change (tool/deps/args) restarts it. It does not itself execute.
  */
 
-import { BUILD_OPERATION, TargetContext } from "../model/BuildContext";
+import { TargetContext } from "../model/BuildContext";
+import { BUILD_OPERATION, BUILD_OVERRIDE } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { RuleRegistration, RuleResult } from "./Types";
@@ -43,8 +44,8 @@ function defineServeRunnable(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
       context.getRunnableProperty("tool"),
-      context.getFileProperty("deps", { [BUILD_OPERATION]: "build" }),
-      context.getFileProperty("files", { [BUILD_OPERATION]: "build" }),
+      context.getFileProperty("deps", BUILD_OVERRIDE),
+      context.getFileProperty("files", BUILD_OVERRIDE),
       context.getProperty("args"),
     ],
     (tool, depSources, fileSources, args) =>

@@ -129,7 +129,7 @@ function summarize(contents: IBuildFileContents): Record<string, unknown> {
   const targetdefs: Record<string, Record<string, string>> = {};
   for (const def of contents.targetdefs) {
     targetdefs[def.name] = Object.fromEntries(
-      Object.entries(def.properties).map(([name, schema]) => [
+      [...def.properties].map(([name, schema]) => [
         name,
         `${schema.required ? "REQUIRED " : ""}${propertyTypeName(schema.type)}`,
       ])
@@ -191,17 +191,14 @@ describe("Parser Tests", () => {
     );
   });
 
-  it("keeps Object.prototype names out of parsed property-schema records", () => {
-    /* Property names are user-controlled and later tested with `x in properties`
-     * (Validate), so the schema record must be null-prototype: a builtin name
-     * like `toString` must not read as a phantom member, and a property named
-     * `__proto__` must be a real own key, not the record's prototype. */
+  it("keeps Object.prototype names out of the parsed property-schema map", () => {
+    /* Property names are user-controlled, so the schema is a Map: a builtin name
+     * like `valueOf` is absent (not a phantom inherited member), and a property
+     * named `__proto__`/`toString` is a real entry. */
     const props = parseValid("targetdef t { __proto__ = STRING; toString = FILES; }").targetdefs[0].properties;
-    expect(Object.getPrototypeOf(props)).to.equal(null);
-    expect("valueOf" in props).to.equal(false);
-    expect(Object.hasOwn(props, "__proto__")).to.equal(true);
-    expect(props["__proto__"].type).to.equal(PropertyType.String);
-    expect(props["toString"].type).to.equal(PropertyType.FileSet);
+    expect(props.has("valueOf")).to.equal(false);
+    expect(props.get("__proto__")?.type).to.equal(PropertyType.String);
+    expect(props.get("toString")?.type).to.equal(PropertyType.FileSet);
   });
 
   it("rejects a 'default' with a non-identifier name (not a target of type 'default')", () => {
@@ -398,8 +395,8 @@ describe("Parser Tests", () => {
 
     it("attaches comments to individual properties", () => {
       const def = parseValid("targetdef js_test {\n  # The test files.\n  tests = FILES;\n  deps = FILES;\n}").targetdefs[0];
-      expect(def.properties.tests.docComment).to.equal("The test files.");
-      expect(def.properties.deps.docComment).to.be.undefined;
+      expect(def.properties.get("tests")?.docComment).to.equal("The test files.");
+      expect(def.properties.get("deps")?.docComment).to.be.undefined;
     });
 
     it("leaves docComment undefined when there is no comment", () => {

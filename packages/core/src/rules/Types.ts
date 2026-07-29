@@ -22,7 +22,7 @@ import { IActionContext } from "../core/BuildCache";
 import { FileSet, FileSource } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { Repository } from "../core/Repository";
-import { Constraints, RepositoryContext, TargetContext } from "../model/BuildContext";
+import { RepositoryContext, TargetContext } from "../model/BuildContext";
 
 export enum PropertyType {
   String,
@@ -130,7 +130,10 @@ export type RuleResult = FileSource | FileSource[] | BuildAction;
  * served from the caller-supplied inputs).
  */
 export interface IRuleDefinition {
-  constraints: Constraints;
+  /** The constraint *pattern* this rule matches: selected when every key here
+   * equals the ambient config's value (see BuildModel.selectMostSpecific). A plain
+   * record — a developer-authored match pattern, not a user-keyed build config. */
+  constraints: Record<string, string>;
   evaluate: (context: TargetContext) => Computable<RuleResult>;
 }
 
@@ -152,7 +155,8 @@ export type RepositoryProvider = (context: RepositoryContext) => Computable<Repo
 export interface RuleRegistration {
   /** Target type this rule builds; omitted → a default (all-types) rule. */
   type?: string;
-  constraints: Constraints;
+  /** The constraint match pattern (a plain record — see {@link IRuleDefinition}). */
+  constraints: Record<string, string>;
   evaluate: IRuleDefinition["evaluate"];
 }
 

@@ -35,6 +35,7 @@
 
 import {
   BUILD_OPERATION,
+  BUILD_OVERRIDE,
   Computable,
   EMPTY_FILESET,
   FileSet,
@@ -61,8 +62,8 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
    * operation this rule is selected by (constraints otherwise propagate). */
   return Computable.forAll(
     [
-      context.getFileProperty("deps", { [BUILD_OPERATION]: "build" }),
-      context.getFileProperty("entry", { [BUILD_OPERATION]: "build" }),
+      context.getFileProperty("deps", BUILD_OVERRIDE),
+      context.getFileProperty("entry", BUILD_OVERRIDE),
       context.getProperty("args"),
       context.getGlobalString("JS_TARGET"),
     ],

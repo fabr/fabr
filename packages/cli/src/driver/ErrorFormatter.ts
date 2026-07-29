@@ -226,7 +226,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   /** No rule matched the target's type: anchored at the declaration, the verb
    * from the operation in effect, only the override constraints shown. */
   private describeNoRule(cause: NoRuleFoundError): IDiagnostic {
-    const operation = cause.constraints[BUILD_OPERATION] ?? "build";
+    const operation = cause.constraints.get(BUILD_OPERATION) ?? "build";
     const verb = NO_RULE_VERBS[operation] ?? `perform '${operation}' on`;
     const overrides = Object.entries(cause.constraints)
       .filter(([key]) => !this.ambientConstraintKeys.has(key))

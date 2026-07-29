@@ -248,7 +248,10 @@ export function rewriteManifest(
 ): Record<string, unknown> {
   /* The assigned identity leads (a versionless built manifest has no `version`
    * to overwrite in place — appending it last would read oddly). */
-  const result: Record<string, unknown> = { name: coordinate.name, version: coordinate.version };
+  const result: Record<string, unknown> = Object.assign(Object.create(null), {
+    name: coordinate.name,
+    version: coordinate.version,
+  });
   for (const [key, value] of Object.entries(manifest)) {
     if (!(key in result)) {
       result[key] = value;

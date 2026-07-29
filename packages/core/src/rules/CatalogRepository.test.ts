@@ -29,6 +29,7 @@ import { MemoryFile } from "../core/MemoryFS";
 import { BuildCache } from "../core/BuildCache";
 import { Name } from "../core/Name";
 import { RepositoryContext, TargetContext } from "../model/BuildContext";
+import { Constraints, RUN_OVERRIDE } from "../model/Constraints";
 import { BuildModel } from "../model/BuildModel";
 import { ExecutionContext } from "../model/ExecutionContext";
 import { parseBuildString } from "../model/Parser";
@@ -144,7 +145,7 @@ describe("CatalogRepository (through the model)", () => {
     type: "test_run",
     constraints: {},
     evaluate: (context: TargetContext) =>
-      context.getFileSetProperties(["tool"], { BUILD_OPERATION: "run" }).then(({ tool }) => {
+      context.getFileSetProperties(["tool"], RUN_OVERRIDE).then(({ tool }) => {
         lastTool = FileSet.unionAll(...tool);
         return EMPTY_FILESET;
       }),
@@ -187,7 +188,7 @@ describe("CatalogRepository (through the model)", () => {
         "catalog @cat { deps = @backing:foo @backing:bar; }\n" +
         "test_deps a { deps = @cat:foo; }\n"
     );
-    await model.getConfig({}, execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
     const repo = backings.get("@backing")!;
     /* the consumer got foo's package... */
     expect(await lastDeps!.readFile("foo/data.txt")).to.equal("foo");
@@ -204,7 +205,7 @@ describe("CatalogRepository (through the model)", () => {
         "catalog @cat { deps = @backing:tool; }\n" +
         "test_run a { tool = @cat:tool; }\n"
     );
-    await model.getConfig({}, execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
     const repo = backings.get("@backing")!;
     expect(lastTool).to.be.instanceOf(RunnableFileSet);
     /* the pinned package was made runnable by its source — resolved once, fetched once */
@@ -220,7 +221,7 @@ describe("CatalogRepository (through the model)", () => {
         "test_deps a { deps = @cat:missing; }\n"
     );
     try {
-      await model.getConfig({}, execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
       expect.fail("expected @cat:missing to fail");
     } catch (err) {
       const failure = findCause(err, RequirementResolutionError);
@@ -241,7 +242,7 @@ describe("CatalogRepository (through the model)", () => {
         "test_deps a { deps = @outer:foo; }\n"
     );
     try {
-      await model.getConfig({}, execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
       expect.fail("expected the projected entry to be rejected");
     } catch (err) {
       let message = "";
@@ -263,7 +264,7 @@ describe("CatalogRepository (through the model)", () => {
         "test_deps a { deps = @cat:dup; }\n"
     );
     try {
-      await model.getConfig({}, execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
       expect.fail("expected a catalog conflict");
     } catch (err) {
       const conflict = findCause(err, ConflictError);

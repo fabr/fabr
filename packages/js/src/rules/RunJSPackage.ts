@@ -28,8 +28,8 @@
 
 import {
   BUILD_OPERATION,
+  BUILD_OVERRIDE,
   Computable,
-  Constraints,
   PackageFileSet,
   RuleRegistration,
   RuleResult,
@@ -37,11 +37,9 @@ import {
 } from "@fabr-build/core";
 import { makeNpmRunnable } from "../JSPackage";
 
-/* The package is built under build, since the ambient operation here is run. */
-const BUILD_OP: Constraints = { [BUILD_OPERATION]: "build" };
-
 function runJsPackage(context: TargetContext): Computable<RuleResult> {
-  return context.context.getTargetWithOverrides(context.name, BUILD_OP).then((buildResult): Computable<RuleResult> => {
+  /* The package is built under build, since the ambient operation here is run. */
+  return context.context.getTargetWithOverrides(context.name, BUILD_OVERRIDE).then((buildResult): Computable<RuleResult> => {
     const built = buildResult.find((s): s is PackageFileSet => s instanceof PackageFileSet);
     if (!built) {
       throw new Error("internal: js_package[build] did not yield a package");

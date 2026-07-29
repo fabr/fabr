@@ -216,7 +216,7 @@ function createPackageJson(
    * so it is placed before the seed and metadata are copied in; a key keeps
    * its first-placed position, while the computed assignments below still win
    * on value. */
-  const packageJson: Record<string, unknown> = { name };
+  const packageJson: Record<string, unknown> = Object.assign(Object.create(null), { name });
   if (version !== undefined) {
     packageJson.version = version;
   }

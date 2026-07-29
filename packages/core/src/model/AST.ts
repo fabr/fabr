@@ -87,7 +87,9 @@ export interface IPropertySchema {
 export interface ITargetDefDecl extends IBaseDecl {
   kind: DeclKind.TargetDef;
   name: string;
-  properties: Record<string, IPropertySchema>;
+  /** The declared property schema, keyed by property name (plus `*` for the
+   * wildcard) */
+  properties: Map<string, IPropertySchema>;
   /** The doc-comment prose written above this targetdef, marker-stripped, or
    * undefined if none. Runtime-only documentation metadata. */
   docComment?: string;

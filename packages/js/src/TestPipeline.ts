@@ -34,10 +34,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
-  BUILD_OPERATION,
   BuildAction,
   Computable,
-  Constraints,
   EMPTY_FILESET,
   BuildActionInputs,
   execute,
@@ -83,12 +81,6 @@ function runnerGlobalsTypes(runner: FileSet): FileSet {
   return found ? FileSet.layout({ [GLOBALS_TYPES_MOUNT]: found[1] }) : EMPTY_FILESET;
 }
 
-/**
- * Everything a test rule consumes is explicitly resolved under
- * BUILD_OPERATION=build: the test constraint exists to select the rule for the
- * target itself, and must not propagate into its dependencies.
- */
-export const BUILD_OP: Constraints = { [BUILD_OPERATION]: "build" };
 
 export interface ITestInputs {
   sources: FileSet;

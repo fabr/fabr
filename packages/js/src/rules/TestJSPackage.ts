@@ -23,17 +23,17 @@
  * resolve) and run against the package's deps.
  */
 
-import { BUILD_OPERATION, Computable, FileSet, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
-import { BUILD_OP, compileAndRunTests } from "../TestPipeline";
+import { BUILD_OPERATION, BUILD_OVERRIDE, Computable, FileSet, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
+import { compileAndRunTests } from "../TestPipeline";
 
 function testJsPackage(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
-      context.getFileSetProperties(["srcs", "tests"], BUILD_OP),
-      context.getGlobalString("JS_TARGET", BUILD_OP),
-      context.getFileProperty("deps", BUILD_OP),
-      context.getFileProperty("provided_deps", BUILD_OP),
-      context.getFileProperty("test_deps", BUILD_OP),
+      context.getFileSetProperties(["srcs", "tests"], BUILD_OVERRIDE),
+      context.getGlobalString("JS_TARGET", BUILD_OVERRIDE),
+      context.getFileProperty("deps", BUILD_OVERRIDE),
+      context.getFileProperty("provided_deps", BUILD_OVERRIDE),
+      context.getFileProperty("test_deps", BUILD_OVERRIDE),
     ],
     ({ srcs, tests }, target, depSources, providedSources, testDepSources) =>
       /* A test install is self-contained — there is no fabr host to supply the

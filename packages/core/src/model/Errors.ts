@@ -27,7 +27,7 @@
 import { INameValue, IPropertyDecl, ITargetDecl } from "./AST";
 import { Name } from "../core/Name";
 import { ISourceSpan } from "../support/Log";
-import type { Constraints } from "./BuildContext";
+import type { Constraints } from "./Constraints";
 
 /**
  * Failure of a target, as propagated to its dependants: carries the failed

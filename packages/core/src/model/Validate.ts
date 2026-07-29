@@ -82,10 +82,10 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
    * type may carry members not named in the schema (a `sync`'s reference-keyed
    * coordinates), each typed by the wildcard. Without it, an unrecognized key
    * (including a reference key) is an error. */
-  const wildcard = targetDef.properties["*"];
+  const wildcard = targetDef.properties.get("*");
 
   decl.properties.forEach(prop => {
-    if (!(prop.name in targetDef.properties) && !wildcard) {
+    if (!targetDef.properties.has(prop.name) && !wildcard) {
       isValid = false;
       log.log(DIAG_UNEXPECTED_PROPERTY, {
         loc: declPosn(prop),
@@ -105,7 +105,7 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
       seen.add(prop.name);
     }
   });
-  Object.entries(targetDef.properties).forEach(([key, value]) => {
+  targetDef.properties.forEach((value, key) => {
     if (key !== "*" && value.required && !seen.has(key)) {
       isValid = false;
       log.log(DIAG_MISSING_PROPERTY, {
@@ -121,7 +121,7 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
    * member is typed by the `*` entry): block<->MAP agreement, then either the MAP
    * entry rules or the `sel -> tmpl` rename primitive (REWRITE / templated FILES). */
   decl.properties.forEach(prop => {
-    const type = (targetDef.properties[prop.name] ?? wildcard)?.type;
+    const type = (targetDef.properties.get(prop.name) ?? wildcard)?.type;
     if (type === undefined) {
       return; /* already reported as unrecognized */
     }

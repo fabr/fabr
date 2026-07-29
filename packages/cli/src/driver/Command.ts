@@ -17,7 +17,6 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Constraints } from "@fabr-build/core";
 import { readFileSync } from "fs";
 import { dirname, join } from "path";
 
@@ -141,7 +140,8 @@ export interface Options {
   /** For `cp`: the destination directory (the final positional), a plain
    * filesystem path resolved against the invocation cwd — not a model name. */
   dest?: string;
-  properties: Constraints;
+  /** Raw `-D` overrides, normalized into a Constraints at the driver's getConfig funnel. */
+  properties: Map<string, string>;
 }
 
 /** Write the usage text to the given sink — stdout for an explicit `-h`/`--help`
@@ -192,7 +192,7 @@ export function parseCommandLine(args: string[]): Options {
     all: false,
     quiet: false,
     targets: [],
-    properties: {},
+    properties: new Map(),
   };
   const opts = args.slice(2);
 
@@ -243,7 +243,7 @@ export function parseCommandLine(args: string[]): Options {
         if (eq <= 0) {
           usageError(`Malformed option '${arg}' (expected -DKEY=VALUE)`);
         }
-        options.properties[def.slice(0, eq).trim()] = def.slice(eq + 1).trim();
+        options.properties.set(def.slice(0, eq).trim(), def.slice(eq + 1).trim());
       } else {
         usageError(`Unrecognized command-line option '${arg}'`);
       }

@@ -62,7 +62,7 @@ describe("Command", () => {
       all: false,
       quiet: false,
       targets: ["foo"],
-      properties: {},
+      properties: new Map(),
     });
   });
 
@@ -75,7 +75,7 @@ describe("Command", () => {
       all: false,
       quiet: false,
       targets: ["foo", "bar"],
-      properties: {},
+      properties: new Map(),
     });
   });
 
@@ -93,7 +93,7 @@ describe("Command", () => {
       all: false,
       quiet: false,
       targets: ["foo"],
-      properties: { x: "1" },
+      properties: new Map([["x", "1"]]),
     });
   });
 
@@ -106,7 +106,7 @@ describe("Command", () => {
       all: false,
       quiet: false,
       targets: ["foo", "bar"],
-      properties: {},
+      properties: new Map(),
     });
   });
 
@@ -136,15 +136,15 @@ describe("Command", () => {
 
   it("takes fabr options before the run target, program args after", () => {
     const options = parseCommandLine(["node", "fabr", "-Dx=1", "run", "mytool", "-Dy=2"]);
-    expect(options.properties).to.deep.equal({ x: "1" });
+    expect(options.properties).to.deep.equal(new Map([["x", "1"]]));
     expect(options.targets).to.deep.equal(["mytool"]);
     expect(options.runArgs).to.deep.equal(["-Dy=2"]);
   });
 
   it("splits -D at the first '=', so the value may itself contain '='/':'", () => {
-    expect(parseCommandLine(["node", "fabr", "-DTSC=@npm:typescript:5.4.5", "foo"]).properties).to.deep.equal({
-      TSC: "@npm:typescript:5.4.5",
-    });
+    expect(parseCommandLine(["node", "fabr", "-DTSC=@npm:typescript:5.4.5", "foo"]).properties).to.deep.equal(
+      new Map([["TSC", "@npm:typescript:5.4.5"]])
+    );
   });
 
   it("rejects a -D with no '=' — error + usage to stderr, exit 1, nothing on stdout", () => {

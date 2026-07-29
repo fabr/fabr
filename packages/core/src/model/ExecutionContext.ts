@@ -21,6 +21,7 @@ import { BuildCache } from "../core/BuildCache";
 import { FileSource } from "../core/FileSet";
 import { Log } from "../support/Log";
 import { ITargetDecl } from "./AST";
+import { Constraints } from "./Constraints";
 
 /**
  * A target actually starting to build (a build-cache miss, as opposed to being
@@ -39,7 +40,7 @@ export interface ITargetBuildEvent {
    * what to surface (it elides the ambient keys it injected — the host facts
    * and BUILD_OPERATION — leaving the explicit ones, e.g. a reference's
    * `<BUILD_TYPE=release>` delta or a `-D` override). */
-  constraints: Record<string, string>;
+  constraints: Constraints;
   /** The targets that required this one (nearest requester first; empty for a
    * target requested directly, and for a sub-target — the umbrella declared
    * event carries the chain). */

@@ -52,6 +52,7 @@ import {
   WatchController,
   FSFileSource,
   writeFileSet,
+  Constraints,
 } from "@fabr-build/core";
 import { DiagnosticErrorFormatter, ErrorFormatter } from "./ErrorFormatter";
 import { runInteractive, RunSupervisor } from "./RunHandler";
@@ -87,8 +88,8 @@ const AMBIENT_CONSTRAINT_KEYS = new Set([BUILD_OPERATION, ...Object.keys(getHost
  * building under (the ambient keys elided), or "" when there are none — so a
  * default build reads exactly as before.
  */
-function renderConstraints(constraints: Record<string, string>): string {
-  const shown = Object.entries(constraints).filter(([key]) => !AMBIENT_CONSTRAINT_KEYS.has(key));
+function renderConstraints(constraints: Constraints): string {
+  const shown = [...constraints].filter(([key]) => !AMBIENT_CONSTRAINT_KEYS.has(key));
   return shown.length > 0 ? ` [${shown.map(([key, value]) => key + "=" + value).join(", ")}]` : "";
 }
 
@@ -245,7 +246,7 @@ function runProgram(
   execution: ExecutionContext,
   watch: boolean
 ): Computable<void> {
-  const config = model.getConfig({ ...getHostProperties(), [BUILD_OPERATION]: "run", ...options.properties }, execution);
+  const config = model.getConfig(Constraints.of({ ...getHostProperties(), [BUILD_OPERATION]: "run", ...Object.fromEntries(options.properties) }), execution);
   const supervisor = watch ? new RunSupervisor(options.targets[0], options.runArgs ?? [], execution.log) : undefined;
   return config.resolveName(options.targets[0]).then(sources => {
     const runnable = sources.find((s): s is RunnableFileSet => s instanceof RunnableFileSet);
@@ -281,7 +282,7 @@ function runProgram(
  * real ones. Exits with the shell's own code.
  */
 function shellTarget(model: BuildModel, options: Options, execution: ExecutionContext): Computable<void> {
-  const config = model.getConfig({ ...getHostProperties(), [BUILD_OPERATION]: "build", ...options.properties }, execution);
+  const config = model.getConfig(Constraints.of({ ...getHostProperties(), [BUILD_OPERATION]: "build", ...Object.fromEntries(options.properties) }), execution);
   return config
     .resolveActionForShell(options.targets[0])
     .then(action => shellInto(options.targets[0], action, execution.log))
@@ -448,7 +449,7 @@ function runWatched(
 }
 
 function configFor(model: BuildModel, options: Options, execution: ExecutionContext, operation: string): BuildContext {
-  return model.getConfig({ ...getHostProperties(), [BUILD_OPERATION]: operation, ...options.properties }, execution);
+  return model.getConfig(Constraints.of({ ...getHostProperties(), [BUILD_OPERATION]: operation, ...Object.fromEntries(options.properties) }), execution);
 }
 
 /** Build each named target under the given operation (bare target names). */
@@ -779,7 +780,7 @@ function listTargetDefs(model: BuildModel, options: Options): Computable<void> {
     }
     const location = options.longListing ? "  " + formatDeclLocation(def) : "";
     console.log(renderTargetDefHeader(def, model.getOperations(def.name)) + location);
-    const props = Object.entries(def.properties);
+    const props = [...def.properties];
     const width = Math.max(0, ...props.map(([name]) => name.length));
     for (const [name, schema] of props) {
       const type = (schema.required ? "REQUIRED " : "") + propertyTypeName(schema);
@@ -849,7 +850,7 @@ function targetDefJson(model: BuildModel, def: ITargetDefDecl): Record<string, u
     operations: model.getOperations(def.name),
     location: formatDeclLocation(def),
     description: def.docComment ?? null,
-    properties: Object.entries(def.properties).map(([name, schema]) => ({
+    properties: [...def.properties].map(([name, schema]) => ({
       name,
       type: propertyTypeName(schema),
       required: schema.required === true,

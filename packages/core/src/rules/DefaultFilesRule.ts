@@ -17,7 +17,8 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { BUILD_OPERATION, FILES_OPERATION, TargetContext } from "../model/BuildContext";
+import { TargetContext } from "../model/BuildContext";
+import { BUILD_OPERATION, BUILD_OVERRIDE, FILES_OPERATION } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { RuleRegistration, RuleResult } from "./Types";
@@ -33,7 +34,7 @@ import { RuleRegistration, RuleResult } from "./Types";
  * own files with no dependency closure — when only the files are wanted.
  */
 function deliverFiles(context: TargetContext): Computable<RuleResult> {
-  return context.context.getTargetWithOverrides(context.name, { [BUILD_OPERATION]: "build" }).then(sources => {
+  return context.context.getTargetWithOverrides(context.name, BUILD_OVERRIDE).then(sources => {
     const files = sources.find((source): source is FileSet => source instanceof FileSet);
     if (!files) {
       throw new Error(`internal: building '${context.name}' under files did not yield file content`);

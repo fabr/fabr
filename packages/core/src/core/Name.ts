@@ -327,16 +327,14 @@ export class Name {
    * @returns
    */
   public substitute(varNames: string[], values: string[]): Name {
-    const substitutionMap = varNames.reduce<Record<string, string>>((result, key, index) => {
-      result[key] = values[index];
-      return result;
-    }, {});
+    const substitutionMap = new Map<string, string>(varNames.map((key, index) => [key, values[index]]));
 
     /* Note: internally we collapse strings down so that afterwards we can treat it as if
      * the subst vars were never there.
      */
     const parts = this.parts.reduce<NamePart[]>((rest, part) => {
-      const newPart = part.kind === NamePartKind.VarSubst ? { kind: NamePartKind.Literal, value: substitutionMap[part.value] } : part;
+      const newPart =
+        part.kind === NamePartKind.VarSubst ? { kind: NamePartKind.Literal, value: substitutionMap.get(part.value)! } : part;
       if (rest.length > 0 && rest[rest.length - 1].kind === newPart.kind) {
         rest[rest.length - 1] = { kind: newPart.kind, value: rest[rest.length - 1].value + newPart.value };
       } else {

@@ -38,14 +38,14 @@ export interface IPrefixMatch {
  *
  */
 export class Namespace {
-  private content: Record<string, ContentType>;
+  private content: Map<string, ContentType>;
 
-  private targetDefs: Record<string, ITargetDefDecl>;
+  private targetDefs: Map<string, ITargetDefDecl>;
 
   /* If it's an explicit namespace, keep it here; leave undefined for implicit ones */
   private decl?: INamespaceDecl;
 
-  constructor(content: Record<string, ContentType>, targetDefs: Record<string, ITargetDefDecl>, decl?: INamespaceDecl) {
+  constructor(content: Map<string, ContentType>, targetDefs: Map<string, ITargetDefDecl>, decl?: INamespaceDecl) {
     this.content = content;
     this.decl = decl;
     this.targetDefs = targetDefs;
@@ -76,13 +76,13 @@ export class Namespace {
   public getTargetDef(name: string): ITargetDefDecl | undefined {
     const parts = name.split(NAME_COMPONENT_SEPARATOR);
     const targetName = parts.pop()!; /* Array must contain at least 1 element */
-    return this.getNamespacePrefix(parts)?.targetDefs[targetName];
+    return this.getNamespacePrefix(parts)?.targetDefs.get(targetName);
   }
 
   /** @return this namespace's own targetdefs, in declaration order (does not
    * recurse into sub-namespaces — targetdefs are conventionally top-level). */
   public getTargetDefs(): ITargetDefDecl[] {
-    return Object.values(this.targetDefs);
+    return [...this.targetDefs.values()];
   }
 
   /** @return every target declared in this namespace and, recursively, its
@@ -92,7 +92,7 @@ export class Namespace {
    * targets filters by type. */
   public getTargets(prefix = ""): { name: string; decl: ITargetDecl }[] {
     const result: { name: string; decl: ITargetDecl }[] = [];
-    for (const [key, item] of Object.entries(this.content)) {
+    for (const [key, item] of this.content) {
       const qualified = prefix === "" ? key : prefix + NAME_COMPONENT_SEPARATOR + key;
       if (item instanceof Namespace) {
         result.push(...item.getTargets(qualified));
@@ -109,7 +109,7 @@ export class Namespace {
    * configuration surface (`BUILD_TYPE`, `JS_TARGET`, …). */
   public getProperties(prefix = ""): { name: string; decl: IPropertyDecl }[] {
     const result: { name: string; decl: IPropertyDecl }[] = [];
-    for (const [key, item] of Object.entries(this.content)) {
+    for (const [key, item] of this.content) {
       const qualified = prefix === "" ? key : prefix + NAME_COMPONENT_SEPARATOR + key;
       if (item instanceof Namespace) {
         result.push(...item.getProperties(qualified));
@@ -135,7 +135,7 @@ export class Namespace {
     let node: Namespace = this;
 
     for (let idx = 0; idx < parts.length; idx++) {
-      const next = node.content[parts[idx]];
+      const next = node.content.get(parts[idx]);
       if (next instanceof Namespace) {
         node = next;
       } else {
@@ -172,7 +172,7 @@ export class Namespace {
   public getDecl(name: string): ITargetDecl | IPropertyDecl | INamespaceDecl | undefined {
     const parts = name.split(NAME_COMPONENT_SEPARATOR);
     const targetName = parts.pop()!; /* Array must contain at least 1 element */
-    const item = this.getNamespacePrefix(parts)?.content[targetName];
+    const item = this.getNamespacePrefix(parts)?.content.get(targetName);
     if (item instanceof Namespace) {
       return item.decl;
     } else {
@@ -183,7 +183,7 @@ export class Namespace {
   private getNamespacePrefix(parts: string[]): Namespace | undefined {
     let ns: Namespace = this;
     for (let idx = 0; idx < parts.length; ++idx) {
-      const next = ns.content[parts[idx]];
+      const next = ns.content.get(parts[idx]);
       if (!(next instanceof Namespace)) {
         return undefined;
       }

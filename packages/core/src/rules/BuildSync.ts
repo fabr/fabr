@@ -17,7 +17,8 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { BUILD_OPERATION, TargetContext } from "../model/BuildContext";
+import { TargetContext } from "../model/BuildContext";
+import { BUILD_OPERATION, BUILD_OVERRIDE } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { RepositoryPublishRef, RepositoryWriter, SourceRef } from "../core/Repository";
@@ -109,9 +110,7 @@ function syncPackages(context: TargetContext): Computable<RuleResult> {
        * all coordinates are good. */
       const sources: Record<string, Computable<SourceRef[]>> = {};
       for (const member of members) {
-        sources[member.decl.name] = context.getFileProperty(member.decl.name, {
-          [BUILD_OPERATION]: "build",
-        });
+        sources[member.decl.name] = context.getFileProperty(member.decl.name, BUILD_OVERRIDE);
       }
       const release = members.map(member => member.assigned);
       return context.collect(sources).then(content => {
@@ -173,7 +172,7 @@ function validateMember(context: TargetContext, prop: { key: Name; decl: IProper
  * re-run), so the view is of exactly the dry-run artifacts.
  */
 function syncFiles(context: TargetContext): Computable<RuleResult> {
-  return context.context.getTargetWithOverrides(context.name, { [BUILD_OPERATION]: "build" }).then(sources => {
+  return context.context.getTargetWithOverrides(context.name, BUILD_OVERRIDE).then(sources => {
     const carriers = sources.filter((source): source is PublishableFileSet => source instanceof PublishableFileSet);
     return FileSet.unionAll(
       ...carriers.map(carrier => {

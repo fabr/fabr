@@ -35,7 +35,8 @@
  * captures — omit it for a pure-redirect genrule.
  */
 
-import { BUILD_OPERATION, ResolvedCommandPipeline, TargetContext } from "../model/BuildContext";
+import { ResolvedCommandPipeline, TargetContext } from "../model/BuildContext";
+import { BUILD_OPERATION } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";

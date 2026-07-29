@@ -1470,11 +1470,9 @@ export class BuildParser {
    * PropertySchema ::=  ( 'STRING'|'FILES'|'REQUIRED' )*
    *
    */
-  private parsePropertyTypeList(): Record<string, IPropertySchema> {
-    /* Null-prototype: keys are user property names, later tested with `x in
-     * properties` (Validate), so `toString`/`__proto__` must not resolve to an
-     * inherited member or corrupt the schema. */
-    const result: Record<string, IPropertySchema> = Object.create(null);
+  private parsePropertyTypeList(): Map<string, IPropertySchema> {
+    /* A Map, as the keys are user-controlled property names. */
+    const result = new Map<string, IPropertySchema>();
     while (this.token.type !== TokenType.RBRACE) {
       const token = this.token;
       const docComment = token.docComment;
@@ -1525,7 +1523,7 @@ export class BuildParser {
       if (type === undefined) {
         this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'MAP'");
       } else {
-        result[key] = { required, type, docComment };
+        result.set(key, { required, type, docComment });
       }
       if (next.type !== TokenType.RBRACE) {
         this.consumeToken(TokenType.SEMI);

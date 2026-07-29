@@ -34,6 +34,7 @@
 
 import {
   BUILD_OPERATION,
+  BUILD_OVERRIDE,
   Computable,
   createExecAction,
   EMPTY_FILESET,
@@ -127,7 +128,7 @@ function composeBundle(context: TargetContext, inputs: IBundleInputs): Computabl
       ? context.subTarget(
           "css_compile",
           { srcs: styled, deps: srcPackages },
-          { label: "Compiling styles", constraints: { [BUILD_OPERATION]: "build" } }
+          { label: "Compiling styles", constraints: BUILD_OVERRIDE }
         )
       : Computable.resolve(EMPTY_FILESET);
 
@@ -154,7 +155,7 @@ function buildJsBundle(context: TargetContext): Computable<RuleResult> {
       /* esbuild `define` takes code text per identifier; a map value is that
        * text verbatim (esbuild's own contract — no probing). Sub-maps have no
        * meaning as code text, so defines is flat by contract. */
-      const defines: Record<string, string> = {};
+      const defines: Record<string, string> = Object.create(null);
       for (const [key, value] of defineMap) {
         if (typeof value !== "string") {
           throw new TypeError(`defines value '${key}' must be a scalar string (a define is esbuild code text)`);

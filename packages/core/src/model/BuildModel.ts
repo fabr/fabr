@@ -19,7 +19,8 @@
 
 import { INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
 import { IPrefixMatch, Namespace } from "./Namespace";
-import { BuildContext, BUILD_OPERATION, Constraints } from "./BuildContext";
+import { BuildContext } from "./BuildContext";
+import { BUILD_OPERATION, Constraints } from "./Constraints";
 import { ExecutionContext } from "./ExecutionContext";
 import { Name } from "../core/Name";
 import { IRuleDefinition, PluginContribution, RepositoryProvider } from "../rules/Types";
@@ -36,7 +37,7 @@ function selectMostSpecific(
   ruleSet: string
 ): IRuleDefinition | undefined {
   const matching = candidates.filter(candidate =>
-    Object.entries(candidate.constraints).every(([key, value]) => constraints[key] === value)
+    Object.entries(candidate.constraints).every(([key, value]) => constraints.get(key) === value)
   );
   if (matching.length === 0) {
     return undefined;
@@ -79,9 +80,9 @@ export class BuildModel {
    * knowledge, on the same footing as targets/properties — and a future language
    * surface for defining rules would add to these same tables.
    */
-  private readonly targetRules: Record<string, IRuleDefinition[]> = {};
+  private readonly targetRules: Map<string, IRuleDefinition[]> = new Map();
   private readonly defaultRules: IRuleDefinition[] = [];
-  private readonly repositories: Record<string, RepositoryProvider> = {};
+  private readonly repositories: Map<string, RepositoryProvider> = new Map();
 
   constructor(root: Namespace, contributions: PluginContribution[]) {
     this.root = root;
@@ -91,17 +92,19 @@ export class BuildModel {
         if (rule.type === undefined) {
           this.defaultRules.push(definition);
         } else {
-          (this.targetRules[rule.type] ??= []).push(definition);
+          const rules = this.targetRules.get(rule.type) ?? [];
+          rules.push(definition);
+          this.targetRules.set(rule.type, rules);
         }
       }
       for (const repository of contribution.repositories ?? []) {
         /* A repository type names a resolution mechanism; two contributions
          * claiming the same type is a plugin conflict, not a silent last-wins
          * override — reject it. */
-        if (repository.type in this.repositories) {
+        if (this.repositories.has(repository.type)) {
           throw new Error(`Duplicate repository type '${repository.type}' registered by more than one plugin`);
         }
-        this.repositories[repository.type] = repository.provider;
+        this.repositories.set(repository.type, repository.provider);
       }
     }
   }
@@ -115,13 +118,13 @@ export class BuildModel {
    */
   public getTargetRule(type: string, constraints: Constraints): IRuleDefinition | undefined {
     return (
-      selectMostSpecific(this.targetRules[type] ?? [], constraints, `'${type}'`) ??
+      selectMostSpecific(this.targetRules.get(type) ?? [], constraints, `'${type}'`) ??
       selectMostSpecific(this.defaultRules, constraints, "default")
     );
   }
 
   public getRepositoryProvider(type: string): RepositoryProvider | undefined {
-    return this.repositories[type];
+    return this.repositories.get(type);
   }
 
   /** @return every declared targetdef (the build vocabulary), in declaration
@@ -136,7 +139,7 @@ export class BuildModel {
    * target-decl shape but are not buildable targets, so they are excluded (a
    * type is a repository iff it has a registered provider). */
   public getTargets(): { name: string; decl: ITargetDecl }[] {
-    return this.root.getTargets().filter(target => this.repositories[target.decl.type] === undefined);
+    return this.root.getTargets().filter(target => !this.repositories.has(target.decl.type));
   }
 
   /** @return every property declared in the project (effective set — a `default`
@@ -154,7 +157,7 @@ export class BuildModel {
    * particular type. */
   public getOperations(type: string): string[] {
     const ops = new Set<string>();
-    for (const rule of this.targetRules[type] ?? []) {
+    for (const rule of this.targetRules.get(type) ?? []) {
       ops.add(rule.constraints[BUILD_OPERATION] ?? "*");
     }
     return [...ops].sort((a, b) => a.localeCompare(b));

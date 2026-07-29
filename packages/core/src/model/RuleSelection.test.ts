@@ -21,6 +21,7 @@ import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { toBuildModel } from "./Sema";
+import { Constraints } from "./Constraints";
 import { expect } from "chai";
 
 const wildcardRule = (): Computable<FileSet> => Computable.resolve(EMPTY_FILESET);
@@ -52,32 +53,32 @@ const model = toBuildModel([], logger, [
 
 describe("BuildModel rule selection", () => {
   it("selects the most specific matching rule", () => {
-    expect(model.getTargetRule("reg_test", {})?.evaluate).to.equal(wildcardRule);
-    expect(model.getTargetRule("reg_test", { BUILD_OPERATION: "build" })?.evaluate).to.equal(wildcardRule);
-    expect(model.getTargetRule("reg_test", { BUILD_OPERATION: "test" })?.evaluate).to.equal(testRule);
+    expect(model.getTargetRule("reg_test", Constraints.of({}))?.evaluate).to.equal(wildcardRule);
+    expect(model.getTargetRule("reg_test", Constraints.of({ BUILD_OPERATION: "build" }))?.evaluate).to.equal(wildcardRule);
+    expect(model.getTargetRule("reg_test", Constraints.of({ BUILD_OPERATION: "test" }))?.evaluate).to.equal(testRule);
     /* Unrelated constraints don't disturb selection */
-    expect(model.getTargetRule("reg_test", { BUILD_OPERATION: "test", arch: "armv7" })?.evaluate).to.equal(testRule);
+    expect(model.getTargetRule("reg_test", Constraints.of({ BUILD_OPERATION: "test", arch: "armv7" }))?.evaluate).to.equal(testRule);
   });
 
   it("returns undefined when no rule matches", () => {
-    expect(model.getTargetRule("no_such_type", {})).to.equal(undefined);
+    expect(model.getTargetRule("no_such_type", Constraints.of({}))).to.equal(undefined);
   });
 
   it("falls back to a default rule for any type when no type-specific rule matches", () => {
     /* A type with no rules at all: the default rule applies */
-    expect(model.getTargetRule("some_other_type", { BUILD_OPERATION: "reg_default" })?.evaluate).to.equal(defaultRule);
+    expect(model.getTargetRule("some_other_type", Constraints.of({ BUILD_OPERATION: "reg_default" }))?.evaluate).to.equal(defaultRule);
     /* A type that HAS rules, but none matching this operation: still falls back */
-    expect(model.getTargetRule("reg_specific", { BUILD_OPERATION: "reg_default" })?.evaluate).to.equal(defaultRule);
+    expect(model.getTargetRule("reg_specific", Constraints.of({ BUILD_OPERATION: "reg_default" }))?.evaluate).to.equal(defaultRule);
   });
 
   it("lets a type's own {} wildcard shadow the default rule", () => {
     /* reg_test's {} rule is type-specific, so it matches every operation and the
      * default is never reached — the type dimension dominates. */
-    expect(model.getTargetRule("reg_test", { BUILD_OPERATION: "reg_default" })?.evaluate).to.equal(wildcardRule);
+    expect(model.getTargetRule("reg_test", Constraints.of({ BUILD_OPERATION: "reg_default" }))?.evaluate).to.equal(wildcardRule);
   });
 
   it("prefers a type-specific rule over a default rule matching the same operation", () => {
-    expect(model.getTargetRule("reg_override", { BUILD_OPERATION: "reg_default" })?.evaluate).to.equal(overrideRule);
+    expect(model.getTargetRule("reg_override", Constraints.of({ BUILD_OPERATION: "reg_default" }))?.evaluate).to.equal(overrideRule);
   });
 
   it("errors on an ambiguous (equally-specific) rule tie rather than picking first-registered", () => {
@@ -90,9 +91,9 @@ describe("BuildModel rule selection", () => {
       },
     ]);
     /* Both rules have one constraint and both match, so neither is more specific. */
-    expect(() => tied.getTargetRule("amb", { BUILD_OPERATION: "test", arch: "armv7" })).to.throw(/Ambiguous 'amb' rule selection/);
+    expect(() => tied.getTargetRule("amb", Constraints.of({ BUILD_OPERATION: "test", arch: "armv7" }))).to.throw(/Ambiguous 'amb' rule selection/);
     /* But a config satisfying only one of them selects cleanly. */
-    expect(tied.getTargetRule("amb", { BUILD_OPERATION: "test" })?.evaluate).to.equal(testRule);
+    expect(tied.getTargetRule("amb", Constraints.of({ BUILD_OPERATION: "test" }))?.evaluate).to.equal(testRule);
   });
 });
 

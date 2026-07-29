@@ -42,13 +42,13 @@ const DIAG_UNKNOWN_TARGET_TYPE = Diagnostic.Error<{ type: string; loc: ISourcePo
 
 interface NSBuilderNode {
   self?: INamedDecl;
-  targetDefs: Record<string, ITargetDefDecl>;
-  content: Record<string, NSBuilderNode | ITargetDecl | IPropertyDecl>;
-  defaultContent: Record<string, ITargetDecl | IPropertyDecl>;
+  targetDefs: Map<string, ITargetDefDecl>;
+  content: Map<string, NSBuilderNode | ITargetDecl | IPropertyDecl>;
+  defaultContent: Map<string, ITargetDecl | IPropertyDecl>;
 }
 
 function newBuilderNode(self?: INamedDecl): NSBuilderNode {
-  return { self, content: {}, defaultContent: {}, targetDefs: {} };
+  return { self, content: new Map(), defaultContent: new Map(), targetDefs: new Map() };
 }
 
 export class NamespaceBuilder {
@@ -66,8 +66,8 @@ export class NamespaceBuilder {
     const parent = this.getNodeFor(root, nameParts, decl);
     if (parent) {
       let node: NSBuilderNode;
-      if (simpleName in parent.content) {
-        const current = parent.content[simpleName];
+      const current = parent.content.get(simpleName);
+      if (current) {
         if ("kind" in current) {
           this.conflictError(current, decl);
           return false;
@@ -80,7 +80,7 @@ export class NamespaceBuilder {
         }
       } else {
         node = newBuilderNode(decl);
-        parent.content[simpleName] = node;
+        parent.content.set(simpleName, node);
       }
       decl.namespaces.forEach(ns => this.addNamespaceDecl(ns, node));
       decl.properties.forEach(prop => this.addDecl(prop, node));
@@ -96,12 +96,22 @@ export class NamespaceBuilder {
     const simpleName = nameParts.pop()!;
     const parent = this.getNodeFor(root, nameParts, decl);
     if (parent) {
-      const content = decl.kind === DeclKind.TargetDef ? parent.targetDefs : parent.content;
-      if (simpleName in content) {
-        this.conflictError(content[simpleName], decl);
+      if (decl.kind === DeclKind.TargetDef) {
+        const existing = parent.targetDefs.get(simpleName);
+        if (existing) {
+          this.conflictError(existing, decl);
+        } else {
+          parent.targetDefs.set(simpleName, decl);
+          return true;
+        }
       } else {
-        content[simpleName] = decl;
-        return true;
+        const existing = parent.content.get(simpleName);
+        if (existing) {
+          this.conflictError(existing, decl);
+        } else {
+          parent.content.set(simpleName, decl);
+          return true;
+        }
       }
     }
     return false;
@@ -112,10 +122,11 @@ export class NamespaceBuilder {
     const simpleName = nameParts.pop()!;
     const parent = this.getNodeFor(root, nameParts, decl);
     if (parent) {
-      if (simpleName in parent.defaultContent) {
-        this.conflictError(parent.defaultContent[simpleName], decl);
+      const existing = parent.defaultContent.get(simpleName);
+      if (existing) {
+        this.conflictError(existing, decl);
       } else {
-        parent.defaultContent[simpleName] = decl;
+        parent.defaultContent.set(simpleName, decl);
         return true;
       }
     }
@@ -129,18 +140,18 @@ export class NamespaceBuilder {
   private getNodeFor(root: NSBuilderNode, parts: string[], decl: INamedDecl): NSBuilderNode | undefined {
     let node = root;
     for (const part of parts) {
-      if (part in node.content) {
-        const next = node.content[part];
-        if ("kind" in next) {
+      const existing = node.content.get(part);
+      if (existing) {
+        if ("kind" in existing) {
           /* Is not a namespace but we needed one */
-          this.conflictError(next, decl);
+          this.conflictError(existing, decl);
           return undefined;
         } else {
-          node = next;
+          node = existing;
         }
       } else {
         const next = newBuilderNode(decl);
-        node.content[part] = next;
+        node.content.set(part, next);
         node = next;
       }
     }
@@ -148,11 +159,11 @@ export class NamespaceBuilder {
   }
 
   private resolveTargetDef(name: string): ITargetDefDecl | undefined {
-    return this.root.targetDefs[name];
+    return this.root.targetDefs.get(name);
   }
 
   public resolve(node: NSBuilderNode = this.root): void {
-    Object.values(node.content).forEach(child => {
+    node.content.forEach(child => {
       if ("kind" in child) {
         this.validateDecl(child);
       } else {
@@ -161,7 +172,7 @@ export class NamespaceBuilder {
     });
     /* Default properties/targets live apart from `content` but are validated the
      * same way (a `default X = …;` is a schema-less property like any global). */
-    Object.values(node.defaultContent).forEach(child => this.validateDecl(child));
+    node.defaultContent.forEach(child => this.validateDecl(child));
   }
 
   /** Validate one collated declaration: a target against its targetdef schema, a
@@ -181,16 +192,12 @@ export class NamespaceBuilder {
   }
 
   private buildNamespace(node: NSBuilderNode): Namespace {
-    const content: Record<string, Namespace | ITargetDecl | IPropertyDecl> = {};
-    Object.entries(node.defaultContent).forEach(([key, child]) => {
-      content[key] = child;
+    const content = new Map<string, Namespace | ITargetDecl | IPropertyDecl>();
+    node.defaultContent.forEach((child, key) => {
+      content.set(key, child);
     });
-    Object.entries(node.content).forEach(([key, child]) => {
-      if ("kind" in child) {
-        content[key] = child;
-      } else {
-        content[key] = this.buildNamespace(child);
-      }
+    node.content.forEach((child, key) => {
+      content.set(key, "kind" in child ? child : this.buildNamespace(child));
     });
     const decl = node.self?.kind === DeclKind.Namespace ? node.self : undefined;
     return new Namespace(content, node.targetDefs, decl);

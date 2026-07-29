@@ -29,7 +29,8 @@
  * generic `run` target's job).
  */
 
-import { BUILD_OPERATION, TargetContext } from "../model/BuildContext";
+import { TargetContext } from "../model/BuildContext";
+import { BUILD_OPERATION, BUILD_OVERRIDE } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
@@ -40,8 +41,8 @@ function defineScriptRunnable(context: TargetContext): Computable<RuleResult> {
    * run operation this rule is selected by (constraints otherwise propagate). */
   return Computable.forAll(
     [
-      context.getFileProperty("deps", { [BUILD_OPERATION]: "build" }),
-      context.getFileProperty("entry", { [BUILD_OPERATION]: "build" }),
+      context.getFileProperty("deps", BUILD_OVERRIDE),
+      context.getFileProperty("entry", BUILD_OVERRIDE),
       context.getProperty("args"),
     ],
     (depSources, entrySources, args) =>

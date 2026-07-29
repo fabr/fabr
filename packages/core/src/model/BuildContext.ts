@@ -44,6 +44,7 @@ import {
   registerProvenanceRenderer,
 } from "../core/Provenance";
 import { BuildAction, BuildActionInput, BuildActionInputs, IRuleDefinition, RepositoryProvider, SubTargetInputs } from "../rules/Types";
+import { BUILD_OPERATION, Constraints, HOST, RUN_OVERRIDE, TARGET } from "./Constraints";
 import { ExecutionContext, ProgressEvent } from "./ExecutionContext";
 import { ITargetOrigin, TARGET_PROVENANCE } from "./Target";
 import {
@@ -81,12 +82,6 @@ import { Name, RewriteFn, makeRewrite } from "../core/Name";
 import { parseName } from "./Parser";
 import { IPrefixMatch } from "./Namespace";
 import { Property } from "./Property";
-
-/**
- * A set of (scalar) property constraints defining a build configuration.
- * Values are plain strings by design, so that constraint sets compare by value.
- */
-export type Constraints = Record<string, string>;
 
 /**
  * The resolved value of a MAP property: an ordered key -> value map whose
@@ -139,45 +134,6 @@ function mergeMapInto(target: PropertyMap, source: PropertyMap, hop: IMapSpliceD
     }
   }
 }
-
-/**
- * The distinguished constraint carrying the requested operation ('build',
- * 'test', ...): `fabr test foo` is sugar for constraining BUILD_OPERATION=test.
- * Rule selection matches against it, so a target type provides an operation by
- * registering a rule constrained to it. Note that an operation-specific rule
- * is responsible for explicitly requesting BUILD_OPERATION=build for its
- * dependencies (the constraint otherwise propagates).
- */
-export const BUILD_OPERATION = "BUILD_OPERATION";
-
-/**
- * The platform triple (clang/LLVM form, e.g. `arm64-apple-macosx15.0`,
- * `x86_64-linux-gnu`) fabr is actually running on — a driver-injected fact, not
- * meant to be overridden. Native rules consume it verbatim; the npm gate reads a
- * lossy {os,cpu,libc} projection off it.
- */
-export const HOST = "HOST";
-
-/**
- * The platform triple we are *building for*. `default TARGET = ${HOST};` (STD.fabr),
- * overridable per build (`-D TARGET=…`) or per reference (`ref<TARGET=…>`) to
- * cross-compile. Repository/native selection gates on this, not HOST. Running a
- * target (`BUILD_OPERATION=run`) forces TARGET back to HOST — you can only execute
- * what was built for the machine you're on, and it makes build *tools* resolve
- * host-side automatically.
- */
-export const TARGET = "TARGET";
-
-/**
- * The `files` operation: "give me the output files, and do no more than that."
- * A weaker form of `build` — it has no type-specific rules of its own; a generic
- * default rule (see rules/DefaultFilesRule) delegates it to the target's `build`
- * result. Its value is that a consumer reading the operation off its context can
- * do strictly less work when only the files are wanted: notably an `@npm:`
- * repository delivers a package's own files without resolving its dependency
- * closure. The driver's `ls`/`cat` verbs resolve under it.
- */
-export const FILES_OPERATION = "files";
 
 interface IResolvedFileSource {
   sources: SourceRef[];
@@ -241,8 +197,8 @@ export function describeUseSite(property: IPropertyDecl, target: ITargetDecl | u
  */
 export function constraintText(step: IModelRefStep, context: IRenderContext): string | undefined {
   const deeper = findNextModelRef(step.parent);
-  const entries = Object.entries(step.constraints).filter(
-    ([key, value]) => !context.elideConstraintKeys?.has(key) && (deeper ? deeper.constraints[key] !== value : true)
+  const entries = [...step.constraints].filter(
+    ([key, value]) => !context.elideConstraintKeys?.has(key) && (deeper ? deeper.constraints.get(key) !== value : true)
   );
   if (entries.length === 0) {
     return undefined;
@@ -345,23 +301,23 @@ export class BuildContext {
   public readonly execution: ExecutionContext;
   protected readonly constraints: Constraints;
   private readonly model: IBuildModel;
-  private propCache: Record<string, Computable<Property>>;
-  private targetCache: Record<string, Computable<SourceRef[]>>;
+  private propCache: Map<string, Computable<Property>>;
+  private targetCache: Map<string, Computable<SourceRef[]>>;
 
   constructor(model: IBuildModel, constraints: Constraints, execution: ExecutionContext) {
     this.model = model;
     this.constraints = constraints;
     this.execution = execution;
-    this.propCache = {};
-    this.targetCache = {};
+    this.propCache = new Map();
+    this.targetCache = new Map();
     // Pre-force the constraints so we don't have to check this later.
-    Object.keys(constraints).forEach(key => (this.propCache[key] = Computable.resolve(new Property([constraints[key]]))));
+    for (const [key, value] of constraints) {
+      this.propCache.set(key, Computable.resolve(new Property([value])));
+    }
   }
 
   public hasConstraints(constraints: Constraints): boolean {
-    const k1 = Object.keys(this.constraints);
-    const k2 = Object.keys(constraints);
-    return k1.length === k2.length && k1.every(k => k in constraints && constraints[k] === this.constraints[k]);
+    return this.constraints.equals(constraints);
   }
 
   public getTargetWithOverrides(name: string, overrides: Constraints): Computable<SourceRef[]> {
@@ -393,8 +349,7 @@ export class BuildContext {
    * conditioning on it).
    */
   public getContextWithOverrides(overrides?: Constraints): BuildContext {
-    const combined = { ...this.constraints, ...overrides };
-    return this.model.getConfig(combined, this.execution);
+    return this.model.getConfig(this.constraints.with(overrides), this.execution);
   }
 
   /**
@@ -406,7 +361,7 @@ export class BuildContext {
    * (`HOST`) alike.
    */
   public getConstraint(name: string): string | undefined {
-    return this.constraints[name];
+    return this.constraints.get(name);
   }
 
   /** The full constraint set this context resolves under (read-only). */
@@ -435,7 +390,7 @@ export class BuildContext {
        * declared property it threads into the SAME value resolution rather than
        * folding into ambient (which a delta would beat); a constrained name has no
        * written delta to fight, so it keeps the ambient fold. Uncached, as there. */
-      if (!(name in this.constraints)) {
+      if (!this.constraints.has(name)) {
         const def = this.model.getDecl(name);
         if (def?.kind === DeclKind.Property) {
           return this.resolveStringProperty(def, undefined, stack, callerOverrides);
@@ -443,9 +398,10 @@ export class BuildContext {
       }
       return this.getContextWithOverrides(callerOverrides).getProperty(name, stack);
     }
-    if (name in this.propCache) {
+    const cached = this.propCache.get(name);
+    if (cached) {
       /* Already seen */
-      return this.propCache[name];
+      return cached;
     }
     const def = this.model.getDecl(name);
     if (!def || def.kind !== DeclKind.Property) {
@@ -456,7 +412,7 @@ export class BuildContext {
       throw this.unresolvedNameError(name, stack, reason, nearest ? [`did you mean '${nearest}'?`] : []);
     }
     const result = this.resolveStringProperty(def, undefined, stack);
-    this.propCache[name] = result;
+    this.propCache.set(name, result);
     return result;
   }
 
@@ -474,33 +430,34 @@ export class BuildContext {
        * uncached here: targetCache keys by bare name, and the referenced
        * targets' builds stay memoized in their own constraint contexts. */
       const def = this.model.getDecl(name);
-      if (!(name in this.constraints) && def?.kind === DeclKind.Property) {
+      if (!this.constraints.has(name) && def?.kind === DeclKind.Property) {
         return this.resolveFileProperty(def, undefined, stack, callerOverrides);
       }
       return this.getContextWithOverrides(callerOverrides).getTarget(name, stack);
     }
-    if (name in this.targetCache) {
+    const cached = this.targetCache.get(name);
+    if (cached) {
       /* Already seen */
-      return this.targetCache[name];
-    } else if (name in this.constraints) {
+      return cached;
+    } else if (this.constraints.has(name)) {
       /* A constraint overrides how the name resolves — to files as well as to a
        * string (`${name}`, via the pre-forced propCache): resolve the override
        * value as a reference in place of the declared property/target. Parsed as
        * a full reference (not a bare literal), so `-Dchai=@npm:chai:5.0.0` repins
        * a dependency written as a bare `chai`, and a `:`/`<k=v>` on the override
        * is honoured as it would be in a script. */
-      const result = this.resolveFileValue(parseName(this.constraints[name]), stack);
-      this.targetCache[name] = result;
+      const result = this.resolveFileValue(parseName(this.constraints.get(name)!), stack);
+      this.targetCache.set(name, result);
       return result;
     } else {
       const def = this.model.getDecl(name);
       if (def?.kind === DeclKind.Target) {
         const result = this.resolveTarget(def, stack);
-        this.targetCache[name] = result;
+        this.targetCache.set(name, result);
         return result;
       } else if (def?.kind === DeclKind.Property) {
         const result = this.resolveFileProperty(def, undefined, stack);
-        this.targetCache[name] = result;
+        this.targetCache.set(name, result);
         return result;
       } else {
         const hints: string[] = [];
@@ -904,12 +861,12 @@ export class BuildContext {
       if (!substituted.hasConstraints()) {
         return { context: this.getContextWithOverrides(callerOverrides), reference: substituted };
       }
-      const overrides: Constraints = {};
+      const delta: Record<string, string> = Object.create(null);
       for (const [key, value] of substituted.getConstraints()) {
-        overrides[key] = value.toString();
+        delta[key] = value.toString();
       }
       /* Caller override last, so it wins on a shared key. */
-      const merged = callerOverrides ? { ...overrides, ...callerOverrides } : overrides;
+      const merged = Constraints.of(delta).with(callerOverrides);
       return { context: this.getContextWithOverrides(merged), reference: substituted.withConstraints([]) };
     });
   }
@@ -1826,7 +1783,7 @@ export abstract class TargetContext {
    */
   public runOverrides(extra?: Constraints): Constraints {
     const host = this.context.getConstraint(HOST);
-    return { [BUILD_OPERATION]: "run", ...(host ? { [TARGET]: host } : {}), ...extra };
+    return RUN_OVERRIDE.with(host ? Constraints.of({ [TARGET]: host }) : undefined).with(extra);
   }
 
   /**
@@ -1877,7 +1834,7 @@ export abstract class TargetContext {
  */
 export class DeclaredTargetContext extends TargetContext {
   public readonly target: ITargetDecl;
-  private readonly props: Record<string, IPropertyDecl>;
+  private readonly props: Map<string, IPropertyDecl>;
   /** The build cycle in which this target last announced itself building, so a
    * watch rebuild (a new cycle) re-announces while a single cycle announces once
    * however many sub-actions miss the cache. */
@@ -1886,10 +1843,7 @@ export class DeclaredTargetContext extends TargetContext {
   constructor(target: ITargetDecl, context: BuildContext, stack?: IDependencyStack) {
     super(context, stack);
     this.target = target;
-    this.props = {};
-    target.properties.forEach(prop => {
-      this.props[prop.name] = prop;
-    });
+    this.props = new Map(target.properties.map(prop => [prop.name, prop]));
   }
 
   public get name(): string {
@@ -1902,7 +1856,7 @@ export class DeclaredTargetContext extends TargetContext {
    * layering, rather than pre-baking the override into ambient (where a delta
    * would beat it). */
   public getProperty(name: string, overrides?: Constraints): Computable<Property | undefined> {
-    const prop = this.props[name];
+    const prop = this.props.get(name);
     if (!prop) {
       return Computable.resolve(undefined);
     }
@@ -1910,7 +1864,7 @@ export class DeclaredTargetContext extends TargetContext {
   }
 
   public getFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]> {
-    const prop = this.props[name];
+    const prop = this.props.get(name);
     if (!prop) {
       return Computable.resolve([]);
     }
@@ -1918,7 +1872,7 @@ export class DeclaredTargetContext extends TargetContext {
   }
 
   public getRewrite(name: string, overrides?: Constraints): Computable<RewriteFn> {
-    const prop = this.props[name];
+    const prop = this.props.get(name);
     if (!prop) {
       return Computable.resolve(() => undefined);
     }
@@ -1926,7 +1880,7 @@ export class DeclaredTargetContext extends TargetContext {
   }
 
   public getProjection(name: string, overrides?: Constraints): Computable<Name | undefined> {
-    const prop = this.props[name];
+    const prop = this.props.get(name);
     if (!prop) {
       return Computable.resolve(undefined);
     }
@@ -1934,7 +1888,7 @@ export class DeclaredTargetContext extends TargetContext {
   }
 
   public getMap(name: string, overrides?: Constraints): Computable<PropertyMap> {
-    const prop = this.props[name];
+    const prop = this.props.get(name);
     if (!prop) {
       return Computable.resolve(new Map());
     }
@@ -1963,7 +1917,7 @@ export class DeclaredTargetContext extends TargetContext {
   }
 
   protected getCommandStages(name: string): Computable<IResolvedCommandStage[]> {
-    const prop = this.props[name];
+    const prop = this.props.get(name);
     if (!prop) {
       return Computable.resolve([]);
     }
@@ -2138,19 +2092,16 @@ function manifestEvalInput(value: BuildActionInput): string {
 export class RepositoryContext {
   public readonly target: ITargetDecl;
   private readonly context: BuildContext;
-  private readonly props: Record<string, IPropertyDecl>;
+  private readonly props: Map<string, IPropertyDecl>;
 
   constructor(target: ITargetDecl, context: BuildContext) {
     this.target = target;
     this.context = context;
-    this.props = {};
-    target.properties.forEach(prop => {
-      this.props[prop.name] = prop;
-    });
+    this.props = new Map(target.properties.map(prop => [prop.name, prop]));
   }
 
   public getRequiredString(name: string): Computable<string> {
-    const prop = this.props[name];
+    const prop = this.props.get(name);
     if (!prop) {
       throw new Error("Missing required property " + name);
     }
@@ -2166,7 +2117,7 @@ export class RepositoryContext {
    * members resolve as mountable packages). A missing property is the empty set.
    */
   public getFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]> {
-    const prop = this.props[name];
+    const prop = this.props.get(name);
     if (!prop) {
       return Computable.resolve([]);
     }

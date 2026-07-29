@@ -50,7 +50,8 @@ import {
 } from "../rules/Types";
 import { FSFileSource } from "../core/FSFileSource";
 import { scriptRunRule } from "../rules/RunScript";
-import { BUILD_OPERATION, Constraints, mapEntryOrigin, PropertyMap, PropertyMapValue } from "./BuildContext";
+import { mapEntryOrigin, PropertyMap, PropertyMapValue } from "./BuildContext";
+import { BUILD_OPERATION, Constraints } from "./Constraints";
 import { DependencyFailedError, NameResolutionError, NoRuleFoundError, ReferenceFailedError } from "./Errors";
 import { ExecutionContext } from "./ExecutionContext";
 import { parseBuildString } from "./Parser";
@@ -77,7 +78,7 @@ const execution = new ExecutionContext(new BuildCache(".", testLog), testLog, EM
  * below read unchanged. */
 const testRules: RuleRegistration[] = [];
 const testRepos: RepositoryRegistration[] = [];
-function registerRule(type: string, constraints: Constraints, evaluate: RuleRegistration["evaluate"]): void {
+function registerRule(type: string, constraints: Record<string, string>, evaluate: RuleRegistration["evaluate"]): void {
   testRules.push({ type, constraints, evaluate });
 }
 function registerRepositoryProvider(type: string, provider: RepositoryProvider): void {
@@ -96,7 +97,7 @@ registerRule("test_fail", {}, () => Computable.reject(new Error("reasons")));
 /* Resolves its dep under a caller-supplied constraint override, for testing
  * override precedence against a reference's own <k=v> delta. */
 registerRule("test_override", {}, context =>
-  context.getFileSetProperties(["dep"], { FLAVOR: "caller" }).then(({ dep }) => {
+  context.getFileSetProperties(["dep"], Constraints.of({ FLAVOR: "caller" })).then(({ dep }) => {
     lastDeps = FileSet.unionAll(...dep);
     return EMPTY_FILESET;
   })
@@ -105,7 +106,7 @@ registerRule("test_override", {}, context =>
  * precedence against a <k=v> delta written on the global's value (the
  * getGlobalFileProperty path — e.g. getGlobalRunnable forcing BUILD_OPERATION=run). */
 registerRule("test_globaltool", {}, context =>
-  context.collect({ tool: context.getGlobalFileProperty("GLOBALTOOL", { FLAVOR: "caller" }) }).then(({ tool }) => {
+  context.collect({ tool: context.getGlobalFileProperty("GLOBALTOOL", Constraints.of({ FLAVOR: "caller" })) }).then(({ tool }) => {
     lastDeps = FileSet.unionAll(...tool);
     return EMPTY_FILESET;
   })
@@ -115,7 +116,7 @@ registerRule("test_globaltool", {}, context =>
  * string path — the counterpart of test_globaltool). */
 let lastString: string | undefined;
 registerRule("test_globalstr", {}, context =>
-  context.getGlobalString("GLOBALSTR", { FLAVOR: "caller" }).then(value => {
+  context.getGlobalString("GLOBALSTR", Constraints.of({ FLAVOR: "caller" })).then(value => {
     lastString = value;
     return EMPTY_FILESET;
   })
@@ -315,7 +316,7 @@ registerRule("test_orphan_composer", {}, context =>
 
 const testContributions: PluginContribution[] = [{ rules: testRules, repositories: testRepos }];
 
-async function testGetProperty(input: string, prop: string, constraints?: Constraints): Promise<string[]> {
+async function testGetProperty(input: string, prop: string, constraints?: Record<string, string>): Promise<string[]> {
   const errors: string[] = [];
   const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
   const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
@@ -323,7 +324,7 @@ async function testGetProperty(input: string, prop: string, constraints?: Constr
     throw new Error("Parse error:\n" + errors.join("\n"));
   }
 
-  const context = model.getConfig(constraints ?? {}, execution);
+  const context = model.getConfig(Constraints.of(constraints ?? {}), execution);
   const result = await context.getProperty(prop);
   return result.getValues();
 }
@@ -341,7 +342,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig({}, execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
       expect.fail("expected target a to fail");
     } catch (err) {
       expect(err).to.be.instanceOf(DependencyFailedError);
@@ -374,7 +375,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig({ arch: "armv7" }, execution).getTarget("a");
+      await model.getConfig(Constraints.of({ arch: "armv7" }), execution).getTarget("a");
       expect.fail("expected target a to fail");
     } catch (err) {
       expect(err).to.be.instanceOf(DependencyFailedError);
@@ -426,7 +427,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig({}, execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
       expect.fail("expected target a to fail");
     } catch (err) {
       expect(err).to.be.instanceOf(DependencyFailedError);
@@ -455,7 +456,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig({}, execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
       expect.fail("expected target a to fail");
     } catch (err) {
       expect(err).to.be.instanceOf(DependencyFailedError);
@@ -470,8 +471,36 @@ describe("BuildContext", () => {
       expect(noRule.message).to.equal("No rule matches target 'n' of type 'test_constrained'");
       expect(noRule.target.name).to.equal("n");
       /* The full constraint set rides as data; presentation decides what shows */
-      expect(noRule.constraints).to.deep.equal({});
+      expect(noRule.constraints.isEmpty()).to.equal(true);
     }
+  });
+
+  it("rejects a prototype-polluting name instead of resolving an inherited member", async () => {
+    /* Names are user-controlled and looked up with `name in cache` / `cache[name]`.
+     * A name like `toString` or `__proto__` must resolve as an ordinary unknown
+     * name, not silently hit an Object.prototype member (which previously let
+     * `fabr build toString` succeed with exit 0 against no such target). */
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const model = toBuildModel(
+      [parseBuildString(EMPTY_FILESET, "TEST.fabr", "targetdef test_good { deps = FILES; }\n", logger)],
+      logger,
+      testContributions
+    );
+    expect(errors).to.deep.equal([]);
+
+    for (const name of ["toString", "valueOf", "__proto__", "constructor"]) {
+      let threw = false;
+      try {
+        await model.getConfig(Constraints.of({}), execution).getTarget(name);
+      } catch (err) {
+        threw = true;
+        expect((err as Error).message, name).to.match(/^Unresolved name '/);
+      }
+      expect(threw, `expected '${name}' to be unresolved`).to.equal(true);
+    }
+    /* The `${valueOf}` property path is guarded the same way. */
+    expect(() => model.getConfig(Constraints.of({}), execution).getProperty("valueOf")).to.throw(/Unresolved property name/);
   });
 
   it("Fails a literal name that names no target and matches no file", async () => {
@@ -482,7 +511,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig({}, execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
       expect.fail("expected target a to fail");
     } catch (err) {
       expect(err).to.be.instanceOf(DependencyFailedError);
@@ -517,11 +546,11 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     /* No override: the naked `tool` resolves the declared value t1. */
-    await model.getConfig({}, execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
     expect(await lastDeps!.readFile("f.txt")).to.equal("one");
 
     /* `-Dtool=t2` (a constraint) repins the same bare reference to t2. */
-    await model.getConfig({ tool: "t2" }, execution).getTarget("a");
+    await model.getConfig(Constraints.of({ tool: "t2" }), execution).getTarget("a");
     expect(await lastDeps!.readFile("f.txt")).to.equal("two");
   });
 
@@ -532,7 +561,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
     expect(lastDeps?.isEmpty()).to.equal(true);
   });
 
@@ -548,7 +577,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig({}, execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
       expect.fail("expected target a to fail");
     } catch (err) {
       expect(err).to.be.instanceOf(DependencyFailedError);
@@ -564,7 +593,7 @@ describe("BuildContext", () => {
     const input = "targetdef test_multi { }\n" + "test_multi m { }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
-    const config = model.getConfig({}, execution);
+    const config = model.getConfig(Constraints.of({}), execution);
 
     /* A name every member matches: one projected source per member — the
      * same-named files are NOT a conflict here (union, and its conflict
@@ -596,7 +625,7 @@ describe("BuildContext", () => {
       "sync release { pub:alpha:1.0.0 = c1; pub:beta:2.0.0 = c2; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
-    const config = model.getConfig({ [BUILD_OPERATION]: "files" }, execution);
+    const config = model.getConfig(Constraints.of({ [BUILD_OPERATION]: "files" }), execution);
 
     /* The whole release under `files`: ONE FileSet, each member's artifacts
      * under its coordinate as a directory (alias separators as path
@@ -634,7 +663,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig({}, execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
       expect.fail("expected target a to fail");
     } catch (err) {
       expect(err).to.be.instanceOf(DependencyFailedError);
@@ -655,7 +684,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
     /* `.expect` files renamed to `.out`, directory structure kept, `c.txt`
      * dropped (not selected); the root-level file gets no leading slash. */
     expect(lastDeps && [...lastDeps].map(([name]) => name).sort()).to.deep.equal(["a.out", "sub/b.out"]);
@@ -675,7 +704,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
     expect(lastDeps && [...lastDeps].map(([name]) => name).sort()).to.deep.equal(["b.out"]);
   });
 
@@ -690,7 +719,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
     /* `*` is segment-bounded, so only the root `a.expect` matches. */
     expect(lastDeps && [...lastDeps].map(([name]) => name).sort()).to.deep.equal(["a.out"]);
   });
@@ -704,7 +733,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).getTarget("t");
     /* Matched names replay into the template; an unmatched name maps to undefined. */
     expect(lastRewrite).to.deep.equal(["a.min.js", "b.min.js", undefined]);
   });
@@ -717,7 +746,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).getTarget("t");
     /* A bare constant maps every input to itself. */
     expect(lastRewrite).to.deep.equal(["bundle.js", "bundle.js", "bundle.js"]);
   });
@@ -733,7 +762,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).getTarget("t");
     expect(lastMap).to.deep.equal([
       ["process.env.NODE_ENV", "production"],
       ["DEBUG", "false"],
@@ -751,7 +780,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).getTarget("t");
     expect(lastMap).to.deep.equal([
       ["repository", new Map([["type", "git"], ["url", "example.com"]])],
       ["maintainers", [new Map([["name", "a"]]), new Map([["name", "b"]])]],
@@ -769,7 +798,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).getTarget("t");
     /* The splice lands at its written position; the later literal entry
      * overrides the spliced `description`. */
     expect(lastMap).to.deep.equal([
@@ -793,7 +822,7 @@ describe("BuildContext", () => {
     testMapObserver = resolved => {
       map = resolved;
     };
-    await model.getConfig({}, execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).getTarget("t");
     testMapObserver = undefined;
 
     /* license arrived via the SHARED splice: origin names the written entry in
@@ -819,7 +848,7 @@ describe("BuildContext", () => {
 
     let caught: Error | undefined;
     await model
-      .getConfig({}, execution)
+      .getConfig(Constraints.of({}), execution)
       .getTarget("t")
       .catch((err: Error) => {
         caught = err;
@@ -840,7 +869,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).getTarget("t");
     /* The shared block's `${WHO}` resolves under the consuming build's config. */
     expect(lastMap).to.deep.equal([
       ["license", "gpl3"],
@@ -857,7 +886,7 @@ describe("BuildContext", () => {
 
     let caught: Error | undefined;
     await model
-      .getConfig({}, execution)
+      .getConfig(Constraints.of({}), execution)
       .getTarget("t")
       .catch((err: Error) => {
         caught = err;
@@ -880,7 +909,7 @@ describe("BuildContext", () => {
 
     let caught: Error | undefined;
     await model
-      .getConfig({}, execution)
+      .getConfig(Constraints.of({}), execution)
       .getTarget("t")
       .catch((err: Error) => {
         caught = err;
@@ -900,7 +929,7 @@ describe("BuildContext", () => {
      * block-valued property decl in files context. */
     let caught: Error | undefined;
     await model
-      .getConfig({}, execution)
+      .getConfig(Constraints.of({}), execution)
       .getTarget("SHARED")
       .catch((err: Error) => {
         caught = err;
@@ -916,7 +945,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).getTarget("t");
     expect(lastMap).to.deep.equal([]);
   });
 
@@ -952,7 +981,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
     /* One joint batch, containing the reference reached through the property
      * expansion of 'x' as well as the direct one */
     expect(batchCalls).to.have.length(1);
@@ -975,7 +1004,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
     expect(batchCalls).to.have.length(1);
     expect(batchCalls[0].slice().sort()).to.deep.equal(["one", "two"]);
     expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "two/data.txt"]);
@@ -994,7 +1023,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
     /* Each repository resolves its own references, as separate batches */
     expect(batchCalls.map(batch => batch.slice().sort()).sort()).to.deep.equal([["one"], ["two"]]);
     expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "two/data.txt"]);
@@ -1013,7 +1042,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
     expect(batchCalls).to.deep.equal([["one"]]);
     /* The projection was applied to the resolved files */
     expect(lastDeps && [...lastDeps].map(([path]) => path)).to.deep.equal(["one/data.txt"]);
@@ -1030,7 +1059,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
     /* Slash-form keeps the written name; colon-form strips the prefix */
     expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["c1/f.txt", "f.txt"]);
   });
@@ -1048,7 +1077,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
     expect(batchCalls).to.deep.equal([["one"]]);
     expect(lastDeps && [...lastDeps].map(([path]) => path)).to.deep.equal(["x/one/data.txt"]);
   });
@@ -1073,7 +1102,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
     /* One batch for the whole evaluation — not one per property/global */
     expect(batchCalls).to.have.length(1);
     expect(batchCalls[0].slice().sort()).to.deep.equal(["one", "three", "two"]);
@@ -1097,7 +1126,7 @@ describe("BuildContext", () => {
         runExecution.onProgress(event => events.push(event.kind));
         const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
         expect(errors).to.deep.equal([]);
-        await model.getConfig({}, runExecution).getTarget("a");
+        await model.getConfig(Constraints.of({}), runExecution).getTarget("a");
         return events;
       };
 
@@ -1133,7 +1162,7 @@ describe("BuildContext", () => {
         const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
         expect(errors).to.deep.equal([]);
         const sources = await new Promise<SourceRef[]>((resolve, reject) =>
-          model.getConfig({}, runExecution).getTarget("a").then(resolve, reject)
+          model.getConfig(Constraints.of({}), runExecution).getTarget("a").then(resolve, reject)
         );
         return sources[0] as FileSet;
       };
@@ -1168,7 +1197,7 @@ describe("BuildContext", () => {
     let caught: Error | undefined;
     await new Promise<void>(resolve =>
       model
-        .getConfig({}, execution)
+        .getConfig(Constraints.of({}), execution)
         .getTarget("a")
         .then(
           () => resolve(),
@@ -1194,13 +1223,13 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", "a = b;", logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    expect(model.getConfig({ x: "1" }, execution)).to.equal(model.getConfig({ x: "1" }, execution));
-    expect(model.getConfig({ x: "2" }, execution)).to.not.equal(model.getConfig({ x: "1" }, execution));
+    expect(model.getConfig(Constraints.of({ x: "1" }), execution)).to.equal(model.getConfig(Constraints.of({ x: "1" }), execution));
+    expect(model.getConfig(Constraints.of({ x: "2" }), execution)).to.not.equal(model.getConfig(Constraints.of({ x: "1" }), execution));
 
     /* Configs are per execution context: a fresh run never shares evaluation
      * state with another */
     const other = new ExecutionContext(new BuildCache(".", testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
-    expect(model.getConfig({ x: "1" }, other)).to.not.equal(model.getConfig({ x: "1" }, execution));
+    expect(model.getConfig(Constraints.of({ x: "1" }), other)).to.not.equal(model.getConfig(Constraints.of({ x: "1" }), execution));
   });
 
   it("Applies a reference's <k=v> delta to the referenced target's build", async () => {
@@ -1218,7 +1247,7 @@ describe("BuildContext", () => {
       "test_good fancy_root { deps = leaf<FLAVOR=fancy>; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
-    const config = model.getConfig({}, execution);
+    const config = model.getConfig(Constraints.of({}), execution);
     const readLeaf = (): Computable<string | undefined> => lastDeps!.get("f.txt").then(file => file?.readString());
 
     await config.getTarget("plain_root");
@@ -1243,7 +1272,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("root");
+    await model.getConfig(Constraints.of({}), execution).getTarget("root");
     expect(await lastDeps!.get("f.txt").then(file => file?.readString())).to.equal("caller");
   });
 
@@ -1264,7 +1293,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig({}, execution).getTarget("root");
+    await model.getConfig(Constraints.of({}), execution).getTarget("root");
     expect(await lastDeps!.get("f.txt").then(file => file?.readString())).to.equal("caller");
   });
 
@@ -1284,7 +1313,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     lastString = undefined;
-    await model.getConfig({}, execution).getTarget("root");
+    await model.getConfig(Constraints.of({}), execution).getTarget("root");
     expect(lastString).to.equal("caller");
   });
 
@@ -1301,7 +1330,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    const sources = await model.getConfig({}, execution).getTargetRef("${WHICH}");
+    const sources = await model.getConfig(Constraints.of({}), execution).getTargetRef("${WHICH}");
     const files = FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet));
     expect(await files.get("f.txt").then(file => file?.readString())).to.equal("hi");
   });
@@ -1322,7 +1351,7 @@ describe("unresolved-name diagnostics", () => {
      * delivered via Computable rejection (as the file path always has), the
      * string path now resolving each value through the same context path. */
     const input = "FOO = x;\nBAR = ${FOOO};\n";
-    const context = modelOf(input).getConfig({}, execution);
+    const context = modelOf(input).getConfig(Constraints.of({}), execution);
     try {
       await context.getProperty("BAR");
       expect.fail("expected a rejection");
@@ -1337,13 +1366,13 @@ describe("unresolved-name diagnostics", () => {
 
   it("names the kind when a property reference hits a target", () => {
     const input = "targetdef test_file { content = STRING; }\ntest_file thing { content = x; }\n";
-    const context = modelOf(input).getConfig({}, execution);
+    const context = modelOf(input).getConfig(Constraints.of({}), execution);
     expect(() => context.getProperty("thing")).to.throw(/'thing' names a target, not a property/);
   });
 
   it("suggests a near target name and points at list-targets for a CLI name", () => {
     const input = "targetdef test_file { content = STRING; }\ntest_file mytarget { content = x; }\n";
-    const context = modelOf(input).getConfig({}, execution);
+    const context = modelOf(input).getConfig(Constraints.of({}), execution);
     try {
       context.getTarget("mytargt");
       expect.fail("expected a throw");
@@ -1357,7 +1386,7 @@ describe("unresolved-name diagnostics", () => {
 
   it("hints that build/test take whole targets when the name carries a projection", () => {
     const input = "targetdef test_file { content = STRING; }\ntest_file mytarget { content = x; }\n";
-    const context = modelOf(input).getConfig({}, execution);
+    const context = modelOf(input).getConfig(Constraints.of({}), execution);
     try {
       context.getTarget("mytarget:build/x.js");
       expect.fail("expected a throw");
@@ -1399,7 +1428,7 @@ describe("contributed-lib-relative FILES", () => {
         [{ rules: [scriptRunRule] }]
       );
       expect(errors).to.deep.equal([]);
-      const sources = await model.getConfig({ [BUILD_OPERATION]: "run" }, execution).getTarget("@plug/drv");
+      const sources = await model.getConfig(Constraints.of({ [BUILD_OPERATION]: "run" }), execution).getTarget("@plug/drv");
       const runnable = sources.find((source): source is RunnableFileSet => source instanceof RunnableFileSet);
       expect(runnable, "expected a RunnableFileSet").to.not.equal(undefined);
       const names = [...(runnable as RunnableFileSet)].map(([name]) => name).sort();
