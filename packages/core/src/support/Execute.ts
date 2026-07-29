@@ -19,6 +19,7 @@
 
 import { ChildProcess, spawn } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { Writable } from "stream";
 import { getSystemErrorMap } from "util";
@@ -454,12 +455,102 @@ function finalizeCaptures(captures: Capture[]): Computable<FileSet> {
   );
 }
 
+/** The interactive program currently running in fabr's own stdio (a one-shot
+ * `fabr run`, a `fabr shell`), if any. Tracked because fabr's death must not
+ * leave it behind: it is deliberately NOT detached (see
+ * {@link executeInteractive}), so a signal directed at fabr alone — a CI job or
+ * a supervisor stopping the run, the ordinary way to stop a running program —
+ * never reaches it on its own. */
+let interactiveChild: ChildProcess | undefined;
+/** Whether the live interactive child has already been offered a termination
+ * signal, so a second one escalates (fabr exits, the hook kills the child)
+ * instead of waiting again on a program that is ignoring signals. */
+let interactiveSignalled = false;
+let interactiveExitHookInstalled = false;
+
+/** Take ownership of the interactive child for the duration of its run. */
+function trackInteractive(child: ChildProcess): void {
+  if (!interactiveExitHookInstalled) {
+    interactiveExitHookInstalled = true;
+    /* Fabr is leaving: the program it launched goes with it. Hard (SIGKILL) and
+     * synchronous because an exit hook can neither wait nor escalate — the same
+     * rationale as the run supervisor's stop, and the reason the signal path
+     * below gives the program its graceful window *before* fabr exits. By pid,
+     * not by group: this child shares fabr's own process group (it must, to stay
+     * in the terminal's foreground and read stdin), so the group form would
+     * signal fabr itself; a program that forks its own workers is supervised by
+     * `fabr run -w`, which does spawn a group leader. */
+    process.on("exit", () => {
+      const child = interactiveChild;
+      if (child?.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+        try {
+          process.kill(child.pid, "SIGKILL");
+        } catch {
+          /* Already gone — the desired end state. */
+        }
+      }
+    });
+  }
+  interactiveChild = child;
+  interactiveSignalled = false;
+}
+
+/** Release it once it has ended, so nothing later signals a recycled pid. */
+function releaseInteractive(child: ChildProcess): void {
+  if (interactiveChild === child) {
+    interactiveChild = undefined;
+    interactiveSignalled = false;
+  }
+}
+
+/**
+ * Offer a termination signal to the running interactive program. `true` means it
+ * took it: the caller (the driver's signal handler) should then let the program
+ * end the run in its own time — its exit resolves {@link executeInteractive} with
+ * 128+signal, and the ordinary path releases the staged install and exits with
+ * that status. `false` — no interactive program, or it has already been given one
+ * — leaves the caller to exit immediately, the exit hooks killing what is left;
+ * so a second Ctrl-C (or TERM) always forces the issue.
+ *
+ * The signal is only *forwarded* when fabr has no terminal of its own. With one,
+ * fabr and the child share the foreground process group and the terminal already
+ * delivered the Ctrl-C to both, so forwarding would double-signal the program —
+ * and a second SIGINT means "quit now" to plenty of them (a REPL, a dev server).
+ * Without a terminal (CI, a supervisor) the signal was directed at fabr alone and
+ * the program would otherwise never hear it.
+ */
+export function signalInteractiveChild(signal: NodeJS.Signals): boolean {
+  const child = interactiveChild;
+  if (!child || interactiveSignalled || child.pid === undefined || child.exitCode !== null || child.signalCode !== null) {
+    return false;
+  }
+  interactiveSignalled = true;
+  if (!hasTerminal()) {
+    try {
+      process.kill(child.pid, signal);
+    } catch {
+      /* Already gone; its exit is on its way. */
+    }
+  }
+  return true;
+}
+
+/** Whether fabr is attached to a terminal on any of its own standard streams —
+ * i.e. whether a Ctrl-C at that terminal reached the foreground group as a
+ * whole, this process included. */
+function hasTerminal(): boolean {
+  return process.stdin.isTTY === true || process.stdout.isTTY === true || process.stderr.isTTY === true;
+}
+
 /**
  * Run a command interactively: the child inherits this process's stdio (tty,
- * pipes, stdin) and environment, and its exit code resolves as *data* — a
- * program may legitimately exit non-zero, unlike `execute`, which fails the
- * build on a non-zero exit. Rejects only when the process cannot be spawned or
- * is killed by a signal. This is the launch behind `fabr run`. `cwd` overrides
+ * pipes, stdin) and environment, and its outcome resolves as *data* — a program
+ * may legitimately exit non-zero, unlike `execute`, which fails the build on a
+ * non-zero exit. A program killed by a signal resolves as the shell's own
+ * 128+signal rather than failing: being stopped is a way to end a run, not a
+ * build error (and stopping fabr stops the program — see
+ * {@link signalInteractiveChild}). Rejects only when the process cannot be
+ * spawned at all. This is the launch behind `fabr run`. `cwd` overrides
  * the inherited working directory — an install-anchored runnable (`launchCwd
  * === "install"`) launches at its staged root rather than the caller's cwd.
  * `env` (when given) REPLACES the inherited environment — `fabr shell` passes the
@@ -477,13 +568,14 @@ export function executeInteractive(
   return Computable.once((resolve, reject) => {
     const line = commandLine(cmd, args);
     const proc = spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd, env });
-    proc.on("error", e => reject(new ExecutionError(`${line}\nunable to execute: ${systemErrorText(e)}`)));
+    trackInteractive(proc);
+    proc.on("error", e => {
+      releaseInteractive(proc);
+      reject(new ExecutionError(`${line}\nunable to execute: ${systemErrorText(e)}`));
+    });
     proc.on("close", (code, signal) => {
-      if (signal) {
-        reject(new ExecutionError(`${line}\nterminated by signal ${signal}`));
-      } else {
-        resolve(code ?? 0);
-      }
+      releaseInteractive(proc);
+      resolve(signal ? 128 + (os.constants.signals[signal] ?? 0) : code ?? 0);
     });
   });
 }

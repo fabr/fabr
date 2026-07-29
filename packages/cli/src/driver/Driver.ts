@@ -47,6 +47,7 @@ import {
   PropertyType,
   PublishableFileSet,
   RunnableFileSet,
+  signalInteractiveChild,
   SourceRef,
   toError,
   WatchController,
@@ -247,7 +248,7 @@ function runProgram(
   watch: boolean
 ): Computable<void> {
   const config = model.getConfig(Constraints.of({ ...getHostProperties(), [BUILD_OPERATION]: "run", ...Object.fromEntries(options.properties) }), execution);
-  const supervisor = watch ? new RunSupervisor(options.targets[0], options.runArgs ?? [], execution.log) : undefined;
+  const supervisor = watch ? new RunSupervisor(execution.buildCache, options.targets[0], options.runArgs ?? [], execution.log) : undefined;
   return config.resolveName(options.targets[0]).then(sources => {
     const runnable = sources.find((s): s is RunnableFileSet => s instanceof RunnableFileSet);
     if (!runnable) {
@@ -271,7 +272,7 @@ function runProgram(
       const built = execution.takeBuiltTargets();
       return supervisor.update(runnable).then(() => reportBuildStatus(execution.log, built));
     }
-    return runInteractive(runnable, options.runArgs ?? []).then(code => flushAndExit(code));
+    return runInteractive(execution.buildCache, runnable, options.runArgs ?? []).then(code => flushAndExit(code));
   });
 }
 
@@ -285,7 +286,7 @@ function shellTarget(model: BuildModel, options: Options, execution: ExecutionCo
   const config = model.getConfig(Constraints.of({ ...getHostProperties(), [BUILD_OPERATION]: "build", ...Object.fromEntries(options.properties) }), execution);
   return config
     .resolveActionForShell(options.targets[0])
-    .then(action => shellInto(options.targets[0], action, execution.log))
+    .then(action => shellInto(execution.buildCache, options.targets[0], action, execution.log))
     .then(code => flushAndExit(code));
 }
 
@@ -374,13 +375,24 @@ async function runWith(operation: Operation, watch = false, quiet = false): Prom
      * reaches them — the exit hooks (Execute's group sweep, the run
      * supervisor's cleanup) are what stop in-flight work, and a default-killed
      * process runs no hooks. Codes follow the 128+signal convention. (The watch
-     * path already routes its signals through process.exit in runWatched.) */
+     * path already routes its signals through process.exit in runWatched.)
+     *
+     * An interactive program (`fabr run`, `fabr shell`) is the exception: while
+     * one is running it, not fabr, owns the terminal, so the signal is offered
+     * to it first and fabr waits for it to end the run in its own time —
+     * exiting here would kill it mid-shutdown, or (a signal directed at fabr
+     * alone, as a supervisor or CI job sends) leave it orphaned with its staged
+     * install. A second signal is not offered, so it falls through and exits. */
     for (const [signal, code] of [
       ["SIGINT", 130],
       ["SIGTERM", 143],
       ["SIGHUP", 129],
     ] as const) {
-      process.on(signal, () => process.exit(code));
+      process.on(signal, () => {
+        if (!signalInteractiveChild(signal)) {
+          process.exit(code);
+        }
+      });
     }
 
     return loadProject(execution, PROJECT_FILENAME)

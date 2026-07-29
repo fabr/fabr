@@ -40,6 +40,56 @@ import { SymlinkFile } from "./SymlinkFile";
 import { describeSystemError } from "../support/Execute";
 import { globMatcher } from "../support/Glob";
 
+/** Temp trees in use, so the exit hook can remove whatever is still live when
+ * the process ends. */
+const liveTempTrees = new Set<string>();
+let tempExitHookInstalled = false;
+
+/**
+ * Register an already-created temp tree for removal when fabr exits, and return
+ * it. Callers release it on their normal path ({@link removeTempTree}); this is
+ * the backstop for the paths that never reach that call, and it is load-bearing
+ * rather than paranoia: fabr routes its own termination signals through
+ * `process.exit` (so the build-step group sweep and the run supervisor's child
+ * kill still run), and `process.exit` runs no Computable continuation — a
+ * `finally` that removes the tree is skipped entirely, which is how every
+ * interrupted `fabr run`/`fabr shell` used to leave a full staged install
+ * behind. WHERE the tree lives is the cache's business, not this module's (see
+ * {@link BuildCache.createWorkDir}); only its disposal is handled here.
+ */
+export function registerTempTree(dir: string): string {
+  if (!tempExitHookInstalled) {
+    tempExitHookInstalled = true;
+    process.on("exit", () => {
+      for (const tree of liveTempTrees) {
+        rmTempTree(tree);
+      }
+      liveTempTrees.clear();
+    });
+  }
+  liveTempTrees.add(dir);
+  return dir;
+}
+
+/** Release a temp tree: remove it and forget it. Idempotent (a tree already
+ * released, or already gone, is fine). */
+export function removeTempTree(dir: string): void {
+  liveTempTrees.delete(dir);
+  rmTempTree(dir);
+}
+
+/** Best-effort removal: cleanup never outranks the outcome of whatever was
+ * using the tree, and this also runs from the exit hook, where a throw would
+ * turn a tidy exit into a crash. */
+function rmTempTree(dir: string): void {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    /* The owning process's work tree is reaped on a later run; nothing else to
+     * do from here. */
+  }
+}
+
 /**
  * Materialize a FileSet into `targetDir` (additive — only the given files are
  * written; nothing else in the tree is touched). By default a cache-backed file

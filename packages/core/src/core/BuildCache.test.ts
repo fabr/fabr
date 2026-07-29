@@ -17,6 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { spawnSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -144,7 +145,9 @@ describe("BuildCache", () => {
     /* The manifest is present and the temp file was renamed into place, not left
      * behind (an atomic write, so no truncated manifest can ever be trusted). */
     expect(fs.existsSync(path.join(root, hashString("atomic") + ".manifest"))).to.equal(true);
-    expect(fs.readdirSync(root).filter(name => name.includes(".manifest.tmp-"))).to.deep.equal([]);
+    /* Nothing transient is left in the store: the temp behind that atomic write
+     * lives in the work tree, and only blobs and manifests belong up here. */
+    expect(fs.readdirSync(root).filter(name => !["blob", "work"].includes(name) && !name.endsWith(".manifest"))).to.deep.equal([]);
     /* A fresh cache reads the complete manifest back rather than rebuilding. */
     const files = await toPromise(
       cache.getOrCreate("atomic", () => {
@@ -154,33 +157,40 @@ describe("BuildCache", () => {
     expect(await toPromise(files.readFile("a.txt"))).to.equal("hi");
   });
 
-  it("pre-cleans debris and removes partial entries on failure", async () => {
+  it("gives each attempt a fresh work dir and leaves nothing of a failed one", async () => {
     const cache = new BuildCache(root, NULL_LOG);
-    const targetDir = path.join(root, hashString("failing manifest"));
-    /* Simulate a crashed earlier attempt: entry content but no manifest */
-    fs.mkdirSync(targetDir, { recursive: true });
-    fs.writeFileSync(path.join(targetDir, "leftover.txt"), "stale");
+    const dirs: string[] = [];
+    /* A failing attempt that gets as far as writing into its work dir — the
+     * crashed-mid-build shape, which a retry must not inherit. */
+    const failing = (dir: string): Computable<FileSet> => {
+      dirs.push(dir);
+      fs.writeFileSync(path.join(dir, "partial.txt"), "half a build");
+      return Computable.reject(new Error("boom"));
+    };
 
     let failure: Error | undefined;
     try {
-      await toPromise(cache.getOrCreate("failing manifest", () => Computable.reject(new Error("boom"))));
+      await toPromise(cache.getOrCreate("failing manifest", failing));
     } catch (err) {
       failure = err as Error;
     }
     expect(failure?.message).to.equal("boom");
-    /* The partial entry was removed on failure */
-    expect(fs.existsSync(targetDir)).to.equal(false);
+    expect(fs.existsSync(dirs[0]), "the failed attempt's work dir is gone").to.equal(false);
+    expect(fs.existsSync(path.join(root, hashString("failing manifest") + ".manifest")), "and it committed nothing").to.equal(false);
 
-    /* A retry over fresh debris pre-cleans and succeeds */
-    fs.mkdirSync(targetDir, { recursive: true });
-    fs.writeFileSync(path.join(targetDir, "leftover.txt"), "stale");
+    /* The retry gets its own dir rather than whatever the last attempt left —
+     * work dirs are named by owner, so there is no shared per-key dir to
+     * inherit debris through. */
     const files = await toPromise(
-      cache.getOrCreate("failing manifest", () =>
-        Computable.resolve(new FileSet(new Map([["meta.json", MemoryFile.from('{"ok":true}')]])))
-      )
+      cache.getOrCreate("failing manifest", dir => {
+        dirs.push(dir);
+        expect(fs.readdirSync(dir), "a fresh work dir").to.deep.equal([]);
+        return Computable.resolve(new FileSet(new Map([["meta.json", MemoryFile.from('{"ok":true}')]])));
+      })
     );
+    expect(dirs[1]).to.not.equal(dirs[0]);
     expect(await toPromise(files.readFile("meta.json"))).to.equal('{"ok":true}');
-    expect(fs.existsSync(path.join(targetDir, "leftover.txt"))).to.equal(false);
+    expect(fs.existsSync(dirs[1]), "and the successful attempt's dir is discarded too").to.equal(false);
   });
 
   it("joins concurrent demands for one key to a single creation", async () => {
@@ -568,5 +578,91 @@ describe("BuildCache non-immutable fetches", () => {
     clock += 1_000_000_000; /* far past any origin-declared lifetime */
     expect(await fetchDoc()).to.equal("one");
     expect(origin.requests).to.have.lengthOf(1);
+  });
+});
+
+/**
+ * The work tree: every transient the cache writes (build-step work dirs, the
+ * temps behind atomic writes, an interactive verb's staged install) lives under
+ * `work/<host>-<pid>/`, owned by the process that made it. Naming them by owner
+ * rather than by cache key is what makes them reclaimable — debris under a key
+ * nothing rebuilds is never cleaned — and what keeps two fabr processes sharing
+ * a cache out of each other's way.
+ */
+describe("BuildCache work tree", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-worktree-test-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** This host's owner prefix, read back from a cache rather than recomputed —
+   * the naming stays the implementation's business. Probed on a throwaway root:
+   * taking ownership of a tree happens once per process, so doing it here on the
+   * root under test would consume the very reclaim the test is watching for. */
+  function hostPrefix(): string {
+    const probe = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-worktree-probe-"));
+    try {
+      new BuildCache(probe, NULL_LOG);
+      const owner = fs.readdirSync(path.join(probe, "work"))[0];
+      return owner.slice(0, owner.lastIndexOf("-"));
+    } finally {
+      fs.rmSync(probe, { recursive: true, force: true });
+    }
+  }
+
+  /** A pid that certainly no longer exists: a process run to completion. */
+  function deadPid(): number {
+    const { pid } = spawnSync(process.execPath, ["-e", ""]);
+    expect(pid).to.be.a("number");
+    return pid!;
+  }
+
+  function seedOwner(owner: string): string {
+    const dir = path.join(root, "work", owner);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "debris"), "x");
+    return dir;
+  }
+
+  it("hands out work dirs inside this process's own tree", () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const dir = cache.createWorkDir("run-");
+    expect(path.dirname(dir)).to.equal(path.join(root, "work", `${hostPrefix()}-${process.pid}`));
+    expect(path.basename(dir).startsWith("run-")).to.equal(true);
+    expect(fs.existsSync(dir)).to.equal(true);
+    cache.releaseWorkDir(dir);
+    expect(fs.existsSync(dir)).to.equal(false);
+  });
+
+  it("reclaims a dead process's tree but leaves a live one alone", () => {
+    const host = hostPrefix();
+    const dead = seedOwner(`${host}-${deadPid()}`);
+    /* Our own parent: alive, and not us — so it must survive untouched. */
+    const live = seedOwner(`${host}-${process.ppid}`);
+    new BuildCache(root, NULL_LOG);
+    expect(fs.existsSync(dead), "a dead owner's tree is reaped").to.equal(false);
+    expect(fs.existsSync(live), "a live owner's tree is untouched").to.equal(true);
+  });
+
+  it("leaves another host's tree alone, whatever its pid says", () => {
+    /* Pids from elsewhere mean nothing here — that tree is its own owner's to
+     * reap (a cache on shared storage). */
+    const foreign = seedOwner(`otherhost-${deadPid()}`);
+    new BuildCache(root, NULL_LOG);
+    expect(fs.existsSync(foreign)).to.equal(true);
+  });
+
+  it("reclaims its own tree on startup, debris and all", () => {
+    /* The pid-reuse case: inheriting a dead fabr's pid means inheriting its
+     * debris, which is ours to clean. */
+    const own = seedOwner(`${hostPrefix()}-${process.pid}`);
+    new BuildCache(root, NULL_LOG);
+    expect(fs.existsSync(path.join(own, "debris"))).to.equal(false);
+    expect(fs.existsSync(own), "and the tree itself is ready to use").to.equal(true);
   });
 });

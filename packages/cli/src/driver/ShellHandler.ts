@@ -17,10 +17,17 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { BuildAction, Computable, Diagnostic, executeInteractive, FileSet, findExecutable, Log, writeFileSet } from "@fabr-build/core";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import {
+  BuildAction,
+  BuildCache,
+  Computable,
+  Diagnostic,
+  executeInteractive,
+  FileSet,
+  findExecutable,
+  Log,
+  writeFileSet,
+} from "@fabr-build/core";
 
 const DIAG_SHELL = Diagnostic.Info<{ name: string; dir: string; commands: string }>(
   "Sandbox for '{name}' staged at {dir}\nThe build step would run:\n{commands}\nOpening a shell there with the build's own (clean) environment — exit to clean up. Bare tools like `ls` won't resolve (no PATH); run the command above (absolute paths) or set PATH yourself."
@@ -32,20 +39,22 @@ const DIAG_NO_SANDBOX = Diagnostic.Error<{ name: string }>(
 /**
  * `fabr shell <target>`: stage the target's build-action sandbox — its resolved
  * inputs (`srcs`) and tool mounts, exactly as the build step would see them —
- * into a temp dir, print the command the step would run, and open an interactive
- * shell there so the environment can be reproduced and inspected by hand. The
- * dir is removed when the shell exits. Fabr's analogue of Bazel's --sandbox_debug.
+ * into a work dir — the real thing, from the cache's own work tree, so the
+ * sandbox sits exactly where the step's would — print the command the step would
+ * run, and open an interactive shell there so the environment can be reproduced
+ * and inspected by hand. The dir is removed when the shell exits. Fabr's
+ * analogue of Bazel's --sandbox_debug.
  *
  * The target's own action is withheld (the point is to run it by hand); its
  * dependencies are built as usual, since they are what fills the sandbox.
  */
-export function shellInto(name: string, action: BuildAction | undefined, log: Log): Computable<number> {
+export function shellInto(cache: BuildCache, name: string, action: BuildAction | undefined, log: Log): Computable<number> {
   const files = action?.inputs.files;
   if (!(files instanceof FileSet)) {
     log.log(DIAG_NO_SANDBOX, { name });
     return Computable.resolve(1);
   }
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-shell-"));
+  const dir = cache.createWorkDir("shell-");
   return writeFileSet(dir, files)
     .then(() => {
       log.log(DIAG_SHELL, { name, dir, commands: describeCommands(action!) });
@@ -55,7 +64,7 @@ export function shellInto(name: string, action: BuildAction | undefined, log: Lo
        * uses absolute paths so it stays runnable there). */
       return executeInteractive(process.env.SHELL || "/bin/sh", [], dir, {});
     })
-    .finally(() => fs.rmSync(dir, { recursive: true, force: true }));
+    .finally(() => cache.releaseWorkDir(dir));
 }
 
 /** The command(s) the staged step would run, as `$ …` lines for the user to

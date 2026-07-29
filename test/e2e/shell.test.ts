@@ -38,8 +38,9 @@ describe("e2e: fabr shell", () => {
   it("stages the target's sandbox and prints the command the step would run", () => {
     const result = runFabr(project, ["shell", "g"]);
     expect(result.status).to.equal(0);
-    /* The intro names the target, the staged dir, and the reproducible command. */
-    expect(result.stderr).to.match(/Sandbox for 'g' staged at .*fabr-shell-/);
+    /* The intro names the target, the staged dir — a work dir in the cache's own
+     * work tree, like the step's would be — and the reproducible command. */
+    expect(result.stderr).to.match(/Sandbox for 'g' staged at .*[/\\]work[/\\][^/\\]+[/\\]shell-/);
     expect(result.stderr).to.contain("node gen.js");
   });
 

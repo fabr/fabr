@@ -19,6 +19,7 @@
 
 import { createHash } from "crypto";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { Readable, Transform, Writable } from "stream";
 import { Computable } from "./Computable";
@@ -26,6 +27,7 @@ import { HttpStatusError } from "./Errors";
 import { ICacheControl, openUrlStream } from "./Fetch";
 import { CANONICAL, DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
 import { deleteFile, HASH_ALGORITHM, hashString, readFile, readFileBuffer, readOnlyPermissions, rename, writeFile } from "./FSWrapper";
+import { registerTempTree, removeTempTree } from "./Staging";
 import { SymlinkFile } from "./SymlinkFile";
 import { Diagnostic, Log } from "../support/Log";
 
@@ -166,6 +168,41 @@ function isFresh(entry: ICacheEntry, now: number): boolean {
   return entry.meta === undefined || entry.meta.expires > now;
 }
 
+/** Work trees this process has already taken ownership of, by path — see
+ * {@link BuildCache.reclaimWorkTree}. */
+const reclaimedRoots = new Set<string>();
+
+/** This machine's identity within a work-tree owner name (`<host>-<pid>`),
+ * reduced to one path segment with no `-` so the pid splits off unambiguously.
+ * Only ever compared against names this same function produced. */
+function hostTag(): string {
+  return os.hostname().replace(/[^\w.]/g, "_") || "host";
+}
+
+/** Whether a `work/` subdirectory belongs to a process of THIS host that is
+ * gone — the only foreign trees safe to remove. A name we can't read as one of
+ * our own is left alone, as is any tree owned by another host (whose pids mean
+ * nothing here). */
+function isReapable(owner: string): boolean {
+  const split = owner.lastIndexOf("-");
+  if (split < 0 || owner.slice(0, split) !== hostTag()) {
+    return false;
+  }
+  const pid = Number(owner.slice(split + 1));
+  return Number.isInteger(pid) && pid > 0 && !isProcessAlive(pid);
+}
+
+/** Signal 0 probes for existence without delivering anything: EPERM means the
+ * pid exists but belongs to another user (alive), ESRCH that it is gone. */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 const META_PREFIX = "!meta ";
 
 /* A symlink manifest line: `@link <encodeURI(target)> <encodeURI(name)>`. The
@@ -189,6 +226,12 @@ const LINK_PREFIX = "@link ";
 export class BuildCache {
   private readonly root: string;
   private readonly blobRoot: string;
+  /** Every process's work tree lives under here, one subtree each. */
+  private readonly workRoot: string;
+  /** This process's own subtree — where every transient the cache writes goes:
+   * build-step work dirs, the temp files behind atomic blob/manifest writes, and
+   * the installs the interactive verbs stage. See {@link reclaimWorkTree}. */
+  private readonly ownWorkRoot: string;
   /** Clock for freshness decisions (injectable for tests); cache policy only,
    * never a build input. */
   private readonly now: () => number;
@@ -196,9 +239,9 @@ export class BuildCache {
    * (serving a stale copy on a fetch failure). */
   private readonly log: Log;
 
-  /** Counter for unique temp names for blob/manifest writes (with the pid, unique
-   * across processes sharing the cache; the +rename is what makes each appear
-   * atomically). */
+  /** Counter for unique temp names within this process's work tree (which is
+   * what keeps them distinct from another process's; the +rename is what makes
+   * each appear in the store atomically). */
   private tempCounter = 0;
   /**
    * Entries currently being created, by hashed key: a second demand for the
@@ -206,19 +249,112 @@ export class BuildCache {
    * (removed once settled — later demands find the entry on disk). This is
    * both a redundant-work dedup (concurrent consumers sharing a package don't
    * re-download it — repository fetches are demanded per consuming collection
-   * point, not gated by the per-target cache) AND an in-process write lock on
-   * the entry: without it two concurrent misses would both rm+mkdir+write the
-   * same targetDir, a genuine race (one's manifest can reference files the
-   * other just deleted). Per-process only — two fabr processes sharing a cache
-   * directory can still race (that needs on-disk locking; out of scope).
+   * point, not gated by the per-target cache) AND a write lock on the entry
+   * within this process: without it two concurrent misses would both build the
+   * same key and one's manifest could reference the other's discarded work.
+   * Across processes there is no lock — two fabr runs sharing a cache duplicate
+   * the effort. They no longer collide over it, though: each builds in its own
+   * work tree (see {@link reclaimWorkTree}) and commits atomically, so the
+   * loser's manifest is byte-identical to the winner's for a deterministic
+   * build. (Locking to stop the duplication, rather than the corruption, would
+   * be a separate exercise.)
    */
   private readonly inflight = new Map<string, Computable<FileSet>>();
 
   constructor(cachePath: string, log: Log, now: () => number = Date.now) {
     this.root = cachePath;
     this.blobRoot = path.resolve(cachePath, "blob");
+    this.workRoot = path.resolve(cachePath, "work");
+    this.ownWorkRoot = path.resolve(this.workRoot, `${hostTag()}-${process.pid}`);
     this.log = log;
     this.now = now;
+    this.reclaimWorkTree();
+  }
+
+  /**
+   * Take ownership of this process's work subtree, and reap the subtrees of
+   * processes that are gone.
+   *
+   * Work dirs are named by *owner*, not by what they hold: a random child of
+   * `work/<host>-<pid>/` rather than the cache key it is building. That is what
+   * makes them reclaimable — a key-named work dir is only ever cleaned by a
+   * later build of that same key, so debris from a key nothing rebuilds stays
+   * forever — and it is also what makes two fabr processes sharing a cache
+   * safe rather than racy: each writes in its own tree and they can only
+   * duplicate effort, never scribble over each other (the commit paths are
+   * already atomic — see {@link renameIntoPool} and {@link storeManifest}).
+   *
+   * Liveness is `kill(pid, 0)`: EPERM means someone else's process holds the pid
+   * (alive), ESRCH means it is gone. A recycled pid can only make a dead tree
+   * look live — the reverse is impossible — and the recycler *is* fabr only if
+   * it is us, in which case the tree is ours to clean and we do so here. Other
+   * hosts' subtrees are never touched, since their pids mean nothing here; they
+   * are their own owners' to reap (a cache on shared storage).
+   *
+   * In line rather than deferred: a dead run's tree is bounded by what that run
+   * staged, and paying for it up front keeps the store's state at any moment a
+   * function of what is running, not of when a background sweep last got to it.
+   */
+  private reclaimWorkTree(): void {
+    /* Once per root per process: a second BuildCache over the same store shares
+     * this process's tree (same owner), so re-running the reclaim would delete
+     * the work of the instance already using it. */
+    if (reclaimedRoots.has(this.ownWorkRoot)) {
+      return;
+    }
+    reclaimedRoots.add(this.ownWorkRoot);
+    let owners: string[] = [];
+    try {
+      fs.mkdirSync(this.workRoot, { recursive: true });
+      owners = fs.readdirSync(this.workRoot);
+    } catch {
+      /* An unreadable work root is not fatal here — the mkdir below reports it
+       * against the build that actually needed a work dir. */
+    }
+    for (const owner of owners) {
+      if (path.resolve(this.workRoot, owner) !== this.ownWorkRoot && !isReapable(owner)) {
+        continue;
+      }
+      try {
+        fs.rmSync(path.resolve(this.workRoot, owner), { recursive: true, force: true });
+      } catch {
+        /* Someone else's debris resisting removal is no reason to fail a build. */
+      }
+    }
+    fs.mkdirSync(this.ownWorkRoot, { recursive: true });
+    /* One registration covers every transient below it: an orderly exit takes
+     * the whole subtree, so a later run's sweep only ever sees the trees of runs
+     * that died without one. */
+    registerTempTree(this.ownWorkRoot);
+  }
+
+  /**
+   * A fresh scratch directory in this process's work tree, for anything that is
+   * written to the filesystem but not (yet) content: a build step's work dir, a
+   * temp file staged for an atomic rename into the store, an interactive verb's
+   * staged install. Release it with {@link releaseWorkDir} when done — the exit
+   * hook and the sweep are the backstops for the ways that never happens.
+   *
+   * Being inside the store's own tree is load-bearing, not incidental: staged
+   * files are hardlinks to blobs, so a work dir on another filesystem cannot be
+   * populated at all (EXDEV). Everything fabr stages therefore inherits the one
+   * filesystem assumption the cache already makes.
+   */
+  public createWorkDir(prefix = "w-"): string {
+    fs.mkdirSync(this.ownWorkRoot, { recursive: true });
+    return fs.mkdtempSync(path.join(this.ownWorkRoot, prefix));
+  }
+
+  /** Drop a directory from {@link createWorkDir}. Idempotent, best-effort. */
+  public releaseWorkDir(dir: string): void {
+    removeTempTree(dir);
+  }
+
+  /** A temp path in this process's work tree for an atomic write: create it
+   * there, then rename it into the store (same filesystem by construction). */
+  private tempPath(what: string): string {
+    fs.mkdirSync(this.ownWorkRoot, { recursive: true });
+    return path.join(this.ownWorkRoot, `${what}-${this.tempCounter++}`);
   }
 
   public getOrCreate(cacheKey: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
@@ -360,7 +496,7 @@ export class BuildCache {
    */
   public ensureBlob(hash: string, bytes: Buffer, mode: number = DEFAULT_FILE_MODE): Computable<string> {
     return this.materializeBlob(hash, mode, blobPath => {
-      const tmp = `${blobPath}.tmp-${process.pid}-${this.tempCounter++}`;
+      const tmp = this.tempPath("blob");
       return writeFile(tmp, bytes).then(() => this.renameIntoPool(tmp, blobPath));
     });
   }
@@ -374,8 +510,7 @@ export class BuildCache {
    * and is hashed in a single pass. `discard` drops the temp file unplaced.
    */
   public getTemporaryWriteStream(): IOutputHandle {
-    fs.mkdirSync(this.blobRoot, { recursive: true });
-    const tmpPath = path.resolve(this.blobRoot, `.tmp-${process.pid}-${this.tempCounter++}`);
+    const tmpPath = this.tempPath("stream");
     const hash = createHash(HASH_ALGORITHM);
     const fileStream = fs.createWriteStream(tmpPath);
     /* Record (don't swallow) the first stream error, on either the sink or the
@@ -500,23 +635,23 @@ export class BuildCache {
    * is removed and any previous manifest stands untouched.
    */
   private createEntry(key: string, create: (targetDir: string) => Computable<FileSet>, meta?: ICacheControl): Computable<FileSet> {
-    const targetDir = path.resolve(this.root, key);
-    /* Any existing directory content is debris from a failed (or crashed)
-     * earlier attempt: start from a clean slate. */
-    fs.rmSync(targetDir, { recursive: true, force: true });
-    fs.mkdirSync(targetDir, { recursive: true });
+    /* A fresh dir in this process's work tree, not one named by the key: it is
+     * scratch, so nothing about it needs to be findable from the key, and an
+     * owner-named dir is one another process can neither collide with nor be
+     * confused by (see {@link reclaimWorkTree}). */
+    const targetDir = this.createWorkDir();
     return create(targetDir)
       .then(result => this.cachePut(key, result, meta))
       .then(result => {
         /* The work dir was only scratch for the step — its outputs now live
          * in the content pool and the manifest is written, so discard it.
-         * The `<key>.manifest` sibling file is untouched. */
-        fs.rmSync(targetDir, { recursive: true, force: true });
+         * The `<key>.manifest` file is untouched. */
+        this.releaseWorkDir(targetDir);
         return result;
       })
       .catch(err => {
-        /* Remove the partial entry so a retry starts fresh */
-        fs.rmSync(targetDir, { recursive: true, force: true });
+        /* Drop the partial work so a retry starts fresh */
+        this.releaseWorkDir(targetDir);
         throw err;
       });
   }
@@ -590,7 +725,7 @@ export class BuildCache {
      * The same rename atomically *replaces* an existing manifest on a mutable
      * entry's refresh — safe for concurrent readers, whose deserialised views
      * are blob-backed (blobs are never deleted). */
-    const tmp = `${manifestPath}.tmp-${process.pid}-${this.tempCounter++}`;
+    const tmp = this.tempPath("manifest");
     return writeFile(tmp, manifest)
       .then(() => rename(tmp, manifestPath))
       .then(() => new FileSet(backed, undefined, CANONICAL));
