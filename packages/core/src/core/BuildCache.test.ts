@@ -337,7 +337,72 @@ describe("BuildCache", () => {
     }
     expect(failure?.message).to.equal("disk full");
   });
+
+  /* Both failure routes into finalize must clear the spool. A `pipe` source error does
+   * not destroy the destination, so the stream keeps its fd — and its file — unless
+   * something tears it down, and finalize's failure path is the only place that can. The
+   * store's work tree is reclaimed on the assumption that a settled action is finished
+   * with it, so debris left here outlives the build. */
+  it("leaves no spool behind when the error is recorded before finalize", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const handle = cache.getTemporaryWriteStream();
+    handle.stream.write("partial");
+    handle.stream.destroy(new Error("disk full"));
+    /* `destroy(err)` emits 'error' on a *later* tick, so wait for it: only then is the
+     * failure recorded, and only then does finalize take its already-failed path. */
+    await new Promise(resolve => setImmediate(resolve));
+
+    let failure: Error | undefined;
+    await toPromise(handle.finalize("out.txt")).then(
+      () => expect.fail("finalize should have rejected"),
+      err => {
+        failure = err as Error;
+      }
+    );
+    expect(failure?.message).to.equal("disk full");
+    expect(spoolFiles(root)).to.deep.equal([]);
+
+    /* And it must not come *back*: createWriteStream opens asynchronously, so an unlink
+     * issued before that open lands is undone by the open itself. */
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(spoolFiles(root)).to.deep.equal([]);
+  });
+
+  it("leaves no spool behind when the error arrives after finalize", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const handle = cache.getTemporaryWriteStream();
+    handle.stream.write("partial");
+    handle.stream.destroy(new Error("disk full")); /* 'error' lands after finalize starts */
+    await toPromise(handle.finalize("out.txt")).then(
+      () => expect.fail("finalize should have rejected"),
+      () => undefined
+    );
+    expect(spoolFiles(root)).to.deep.equal([]);
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(spoolFiles(root)).to.deep.equal([]);
+  });
+
+  it("leaves no spool behind when the output is discarded", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const handle = cache.getTemporaryWriteStream();
+    handle.stream.write("partial");
+    handle.discard();
+    /* discard() is void — the callers are synchronous error paths — so the removal
+     * completes in the background, after the fd closes. */
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(spoolFiles(root)).to.deep.equal([]);
+  });
 });
+
+/** Every spool temp still present under the store root, at any depth (they live in the
+ * per-process work tree, whose name a test has no business knowing). */
+function spoolFiles(root: string): string[] {
+  const walk = (dir: string): string[] =>
+    fs
+      .readdirSync(dir, { withFileTypes: true })
+      .flatMap(entry => (entry.isDirectory() ? walk(path.join(dir, entry.name)) : [entry.name]));
+  return walk(root).filter(name => name.startsWith("stream-"));
+}
 
 type Responder = (req: http.IncomingMessage, res: http.ServerResponse) => void;
 

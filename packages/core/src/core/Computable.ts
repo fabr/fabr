@@ -70,7 +70,7 @@ type CatchHandler<U> = (err: Error) => U | Computable<U>;
  *
  * **Attachment.** A raw source is born {@link ComputableState.Detached} and attaches on
  * its first dependant; every other node enters the graph at birth — a derived node
- * attaches eagerly on creation (so fire-and-forget tails run), a `from`/`once` cell
+ * attaches eagerly on creation (so fire-and-forget tails run), a `from`/`fromOnce` cell
  * attaches in its factory (its executor runs eagerly there — it is producer-driven,
  * never demand-deferred), and `resolve`/`reject` are born already settled. On losing its
  * last dependant a node detaches — unregisters from its dependencies, cascading up,
@@ -148,6 +148,32 @@ export abstract class ComputableSource<T> {
         throw err;
       }
     );
+  }
+
+  /**
+   * Consume this node's result **exactly once**, without holding the receiver
+   * in the graph (typically for fire-and-forget situations where you don't want
+   * the chain to hang around (note if the receiver has no other dependents, 
+   * it will be detached)
+   */
+  public once(fn: (value: T) => void, onError?: (err: Error) => void): void {
+    let consumed = false;
+    let release = (): void => {};
+    const consume = (effect: () => void): void => {
+      if (!consumed) {
+        consumed = true;
+        release();
+        effect();
+      }
+    };
+    const tail = this.then(
+      value => consume(() => fn(value)),
+      err => consume(() => (onError ? onError(err) : reportUnobserved(err)))
+    );
+    release = () => this.removeDependant(tail);
+    if (consumed) {
+      release();
+    }
   }
 
   /** Register `dep` as depending on this source; reattaches this source if it had
@@ -281,14 +307,25 @@ export abstract class ComputableSource<T> {
 
   /**
    * Would this node's settled error go unobserved? True when it is settled Error
-   * and in the graph with no dependant to read it. {@link Computable} narrows it
+   * and in the graph with no dependant that would *read* it. {@link Computable} narrows it
    * to also exclude a binding node (which forwards to its `outer`). The
    * `dependants` check already excludes a detached node: a derived node that loses
    * its last dependant *detaches* (Detached, not Error), so only an eager,
    * still-live terminal tail reaches here.
    */
   protected isUnhandledError(): boolean {
-    return this.currentState === ComputableState.Error && this.dependants.length === 0;
+    return this.currentState === ComputableState.Error && !this.dependants.some(dep => dep.observesErrors());
+  }
+
+  /**
+   * Does depending on a node amount to observing its error? True for a derived node — it
+   * reads its inputs and propagates their failure onwards. False for a {@link Sink}, which
+   * holds a node attached without ever reading it: an edge that keeps a chain alive is not
+   * an edge that reports its failure, so a seated chain must still answer for its own
+   * errors (see {@link isUnhandledError}).
+   */
+  protected observesErrors(): boolean {
+    return true;
   }
 
   /**
@@ -399,18 +436,18 @@ export class Computable<T> extends ComputableSource<T> {
   }
 
   /**
-   * Once-and-once only version of Computable.from, typically for non-repeatable processes that need to avoid
-   * settling multiple times.
+   * Once-and-once only version of {@link from}, typically for non-repeatable processes
+   * that need to avoid settling multiple times.
    * @param fn
    * @returns
    */
-  public static once<T>(fn: (resolve: (value: T | Computable<T>) => void, reject: (err: Error) => void) => void): Computable<T> {
+  public static fromOnce<T>(fn: (resolve: (value: T | Computable<T>) => void, reject: (err: Error) => void) => void): Computable<T> {
     const result = new Computable<T>();
     result.attach(); // in the graph from birth — see from()
     let settled = false;
 
     /* As from(), a synchronous executor throw rejects — but only if nothing has
-     * settled yet, upholding once()'s settle-exactly-once contract. */
+     * settled yet, upholding the settle-exactly-once contract. */
     try {
       fn(
         value => {
@@ -662,3 +699,88 @@ export class Computable<T> extends ComputableSource<T> {
 /** A binding is a pure identity over its inner — shared, since it captures
  * nothing (its forwarding rides the `outer` link, not the fn). */
 const IDENTITY = (value: unknown): unknown => value;
+
+/**
+ * Report an error that reached a sink with no handler to read it. Seating a node gives
+ * it a dependant, so {@link ComputableSource.isUnhandledError} stops seeing it as
+ * stranded — the sink is the observer now, and an observer without a handler must
+ * surface the error rather than swallow it. Reported directly (not deferred like
+ * {@link ComputableSource.checkUnhandledError}): a sink's handlers are fixed when it is
+ * built, so there is no late-handler window for the deferral to allow for.
+ */
+function reportUnobserved(err: Error): void {
+  ComputableSource.onUnhandledError?.(err);
+}
+
+/**
+ * The registered dependant behind a {@link ComputableHandle}, and the reason the two are
+ * separate classes: the cascade a source drives over its dependants
+ * (`markMaybeInvalid`/`invalidate`/`maybeRecompute`) is protected, so a dependant has to
+ * *be* a ComputableSource — while a handle must not be one, or it could be depended on
+ * in turn. The sink is that bridge, and is never exported.
+ *
+ * A handle needs its own dependant (rather than the plain `then` tail
+ * {@link ComputableSource.once} withdraws) because it observes *many* results over one
+ * seating and has to tell a real settle from a revalidation, which a tail's `fn` cannot
+ * see.
+ *
+ * It is only ever the dependant half of an edge: nothing depends on it, so it is never
+ * attached and stays {@link ComputableState.Detached} for life — which is precisely what
+ * makes it inert, since all three cascade methods no-op in that state. Only the settle
+ * observation needs overriding.
+ */
+class Sink<T> extends ComputableSource<never> {
+  private seated: ComputableSource<T> | undefined;
+
+  /** Hold `source`: becoming its dependant is what keeps it (and everything below it)
+   * attached, and — for a raw source — what starts it. */
+  public seat(source: ComputableSource<T>): void {
+    this.clear();
+    this.seated = source;
+    this.attachTo([source]);
+  }
+
+  /** Withdraw demand: the source loses a dependant and, if it was the last, detaches and
+   * cascades — the whole point of a handle. */
+  public clear(): void {
+    const source = this.seated;
+    this.seated = undefined;
+    if (source) {
+      this.detachFrom([source]);
+    }
+  }
+
+  /** A sink holds without reading, so it cannot answer for a seated chain's error. */
+  protected override observesErrors(): boolean {
+    return false;
+  }
+}
+
+/**
+ * Holds a Computable in the graph on behalf of something outside it, and lets that hold be
+ * withdrawn or moved. A chain built for its effect has no dependants of its own, so nothing
+ * would ever detach it (see the Attachment note on {@link ComputableSource}); seating it
+ * gives it the dependant it lacks, and {@link release} — or seating something else — takes
+ * that edge away again, unwinding the chain through the ordinary last-dependant cascade.
+ *
+ * Reseating supersedes, which is the point: the chain it replaces is left *detached*, so a
+ * late settle from it is inert rather than merely unread.
+ *
+ * Deliberately not a {@link ComputableSource} — it terminates the graph on the dependant
+ * side, so nothing can depend on it in turn. For the same reason it exposes no value: put a
+ * `then` on the chain before seating it, so the graph delivers the result (and reports its
+ * failure — a sink reads nothing, so a seated chain still answers for its own errors).
+ */
+export class ComputableHandle<T> {
+  private readonly sink = new Sink<T>();
+
+  /** Hold `source`, releasing whatever was held before. */
+  public seat(source: ComputableSource<T>): void {
+    this.sink.seat(source);
+  }
+
+  /** Withdraw demand, unwinding the held chain. Idempotent. */
+  public release(): void {
+    this.sink.clear();
+  }
+}

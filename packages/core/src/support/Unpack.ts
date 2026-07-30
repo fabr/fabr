@@ -66,9 +66,9 @@ function normalizeEntryName(raw: string): string | undefined {
 export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): Computable<FileSet> {
   /* This is fed the live network response, so any hop can fail (a header
    * truncated below MIN_HEAD_LENGTH, a mid-stream connection drop, a write
-   * error) via several independent listeners: Computable.once keeps the first
+   * error) via several independent listeners: Computable.fromOnce keeps the first
    * outcome so a later terminal event can't re-settle. */
-  return Computable.once((resolve, reject) => {
+  return Computable.fromOnce((resolve, reject) => {
     let depth = 0;
     function handleHeader(data: Buffer): Writable | null {
       switch (getMagic(data)) {

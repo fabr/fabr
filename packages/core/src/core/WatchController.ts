@@ -150,6 +150,15 @@ export class WatchController {
      * re-marked dirty (retried on a later flush), settling nothing — its leaf
      * keeps its last-good value, consistent because the memo only advances in a
      * settle that never ran. */
+    /* Consumed with `once`, not read as a value: the batch is a unit of work with a
+     * definite end, and its chain must not outlive it. Two reasons, and the second is
+     * the load-bearing one. (a) A gathering node has no dependants, so nothing would
+     * ever detach it — every flush would strand its whole recompute chain, registered
+     * against each query's file cells for the rest of the session. (b) A second
+     * delivery would be *wrong*, not merely wasteful: it would clear `flushing` out
+     * from under a newer batch and re-apply this batch's captured updates, settling
+     * file sets that have since been superseded. `once` withdraws demand before the
+     * effect runs, so neither can happen. */
     Computable.forAll(
       batch.map(entry =>
         entry.recompute().then<EntryOutcome>(
@@ -157,7 +166,9 @@ export class WatchController {
           (error: Error) => ({ entry, error })
         )
       ),
-      (...outcomes) => {
+      (...outcomes) => outcomes
+    ).once(
+      outcomes => {
         this.flushing = false;
         if (this.closed) {
           return;

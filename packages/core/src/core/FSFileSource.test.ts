@@ -22,7 +22,8 @@ import * as os from "os";
 import * as path from "path";
 import { Computable, ComputableSource, ComputableState } from "./Computable";
 import { FSFileSource, TreeQuery } from "./FSFileSource";
-import { Name } from "./Name";
+import { FileSet } from "./FileSet";
+import { Name, NamePartKind } from "./Name";
 import { expect } from "chai";
 
 function toPromise<T>(computable: ComputableSource<T>): Promise<T> {
@@ -188,6 +189,90 @@ describe("FSFileSource enumeration window (TreeQuery)", () => {
     expect([...fileSet].map(([n]) => n)).to.deep.equal(["dir/new.ts"]);
   });
 
+  it("a stale enumeration cannot clobber a value a watch flush has already settled", async () => {
+    /* The enumeration's build and a flush's recompute both snapshot `files` when they
+     * start, and can finish in either order: here `big.ts` is deleted while its initial
+     * hash is still in flight, so the (shorter) recompute settles the correct set first
+     * and the enumeration's build lands afterwards holding the pre-delete snapshot.
+     * Without the delivery guard it settles that snapshot — resurrecting the deleted
+     * file AND advancing lastManifest to it, so the next recompute sees no change and
+     * the deletion is lost until something else touches the query. */
+    fs.mkdirSync(path.join(root, "dir"));
+    fs.writeFileSync(path.join(root, "dir", "big.ts"), "x");
+    fs.writeFileSync(path.join(root, "dir", "small.ts"), "x");
+    const { query, resolveEnum } = windowedQuery("dir");
+
+    const seen: string[][] = [];
+    query.then(fileSet => seen.push([...fileSet].map(([n]) => n)));
+    resolveEnum({ names: ["dir/big.ts", "dir/small.ts"], project: rel => rel });
+    /* Enumeration has landed but its build (ingest + hash of both files) is still in
+     * flight — nothing settled yet. */
+    expect(seen).to.deep.equal([]);
+
+    /* big.ts is deleted and a flush recomputes and applies, all before that build ends. */
+    fs.rmSync(path.join(root, "dir", "big.ts"));
+    expect(query.applyEvent("dir/big.ts", true)).to.equal(true);
+    const update = await toPromise(query.recompute());
+    update?.invalidate();
+    update?.settle();
+    expect(seen).to.deep.equal([["dir/small.ts"]]);
+
+    /* Now let the enumeration's build finish. It must deliver nothing. */
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(seen).to.deep.equal([["dir/small.ts"]]);
+    expect([...(query.value as FileSet)].map(([n]) => n)).to.deep.equal(["dir/small.ts"]);
+  });
+
+  it("does not settle a prepared update whose query has since reattached", async () => {
+    /* The controller prepares an update, then applies it after the whole batch has been
+     * built — so a detach/reattach can happen in between. The reattach leaves the node
+     * Unresolved (attached), so the base settle guard passes and only the delivery
+     * tokens can reject the previous generation's file set. */
+    fs.mkdirSync(path.join(root, "dir"));
+    fs.writeFileSync(path.join(root, "dir", "one.ts"), "x");
+    const { query, resolvers } = windowedQuery("dir");
+
+    const dep = query.then(() => undefined); /* attach #1 */
+    resolvers[0]({ names: ["dir/one.ts"], project: rel => rel });
+    await new Promise(resolve => setTimeout(resolve, 25));
+
+    /* A change, recomputed into a prepared update the controller has not applied yet. */
+    fs.writeFileSync(path.join(root, "dir", "two.ts"), "x");
+    expect(query.applyEvent("dir/two.ts", false)).to.equal(true);
+    const update = await toPromise(query.recompute());
+    expect(update).to.not.be.null;
+
+    /* Before it is applied, the query loses its dependant and regains one. */
+    unlink(query, dep);
+    const settled = toPromise(query); /* attach #2: enumeration #2 pending */
+    update?.invalidate();
+    update?.settle();
+    /* The stale set must not have landed — attach #2 is still awaiting its enumeration. */
+    expect(query.state).to.equal(ComputableState.Unresolved);
+
+    /* Enumeration #2 is what settles it, from the current tree. */
+    resolvers[1]({ names: ["dir/one.ts", "dir/two.ts"], project: rel => rel });
+    const fileSet = await settled;
+    expect([...fileSet].map(([n]) => n)).to.deep.equal(["dir/one.ts", "dir/two.ts"]);
+  });
+
+  it("reports no change while mid-enumeration (the file map is empty by construction)", async () => {
+    /* A query already dirty in the controller can detach and reattach before the flush
+     * fires. Recomputing during that window would build from the just-cleared map and
+     * settle an empty set — and, worse, bump the delivery token so the enumeration
+     * about to populate the map could no longer deliver. */
+    fs.mkdirSync(path.join(root, "dir"));
+    fs.writeFileSync(path.join(root, "dir", "one.ts"), "x");
+    const { query, resolvers } = windowedQuery("dir");
+
+    const settled = toPromise(query); /* attach: enumeration pending */
+    expect(await toPromise(query.recompute())).to.be.null;
+
+    resolvers[0]({ names: ["dir/one.ts"], project: rel => rel });
+    const fileSet = await settled;
+    expect([...fileSet].map(([n]) => n)).to.deep.equal(["dir/one.ts"]);
+  });
+
   it("a reattach supersedes an in-flight enumeration (no interleave on shared state)", async () => {
     /* detach → immediate reattach starts enumeration #2 while #1 is still in
      * flight. When #1 lands the node is attached (not Detached), so only the
@@ -211,6 +296,123 @@ describe("FSFileSource enumeration window (TreeQuery)", () => {
     resolvers[1]({ names: ["dir/second.ts"], project: rel => rel });
     const fileSet = await settled;
     expect([...fileSet].map(([n]) => n)).to.deep.equal(["dir/second.ts"]);
+  });
+});
+
+/* Directory-level events. macOS reports a rename as one delete of the old path and one
+ * create of the new, with NO per-child events, so a query must drop the old subtree and
+ * walk the new one — neither of which the projection can judge, being a file-membership
+ * predicate that a directory path simply fails. */
+describe("FSFileSource directory events (TreeQuery)", () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-fs-dir-"));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const names = (set: FileSet): string[] => [...set].map(([name]) => name).sort();
+
+  /** Stand in for the controller: keep applying what the query reports until it reaches a
+   * steady state. A rename settles in two steps — the synchronous subtree drop, then the
+   * async rescan's own notify — exactly as it does in production, one flush each. */
+  const settleFully = async (query: TreeQuery): Promise<string[]> => {
+    for (let quiet = 0; quiet < 3; ) {
+      const update = await toPromise(query.recompute());
+      if (update) {
+        update.invalidate();
+        update.settle();
+        quiet = 0;
+      } else {
+        quiet++;
+      }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    return names(query.value as FileSet);
+  };
+
+  /** The two events, and only the two events, that `mv <from> <to>` actually delivers. */
+  const renameEvents = (query: TreeQuery, from: string, to: string): void => {
+    fs.renameSync(path.join(root, from), path.join(root, to));
+    query.applyEvent(from, true);
+    query.applyEvent(to, false);
+  };
+
+  function tree(): void {
+    fs.mkdirSync(path.join(root, "src", "a", "nested"), { recursive: true });
+    fs.writeFileSync(path.join(root, "src", "a", "one.ts"), "1");
+    fs.writeFileSync(path.join(root, "src", "a", "nested", "two.ts"), "2");
+  }
+
+  it("follows a directory rename under a glob reference", async () => {
+    tree();
+    const glob = new Name([
+      { kind: NamePartKind.Literal, value: "src/" },
+      { kind: NamePartKind.Glob, value: "**" },
+    ]);
+    const query = new FSFileSource(root).find(glob) as TreeQuery;
+    expect(names(await toPromise(query))).to.deep.equal(["src/a/nested/two.ts", "src/a/one.ts"]);
+
+    renameEvents(query, "src/a", "src/b");
+    expect(await settleFully(query)).to.deep.equal(["src/b/nested/two.ts", "src/b/one.ts"]);
+  });
+
+  it("follows a directory rename under a bare directory reference", async () => {
+    /* The both-arms case: `src/b` matches the reference's own literal arm, so it ingests
+     * to `undefined` (a directory is no file) and only the rescan finds its contents. */
+    tree();
+    const query = new FSFileSource(root).find(Name.fromLiteral("src")) as TreeQuery;
+    expect(names(await toPromise(query))).to.deep.equal(["src/a/nested/two.ts", "src/a/one.ts"]);
+
+    renameEvents(query, "src/a", "src/b");
+    expect(await settleFully(query)).to.deep.equal(["src/b/nested/two.ts", "src/b/one.ts"]);
+  });
+
+  it("drops a whole subtree on a directory delete", async () => {
+    tree();
+    fs.writeFileSync(path.join(root, "src", "keep.ts"), "k");
+    const query = new FSFileSource(root).find(Name.fromLiteral("src")) as TreeQuery;
+    expect(names(await toPromise(query))).to.deep.equal(["src/a/nested/two.ts", "src/a/one.ts", "src/keep.ts"]);
+
+    fs.rmSync(path.join(root, "src", "a"), { recursive: true, force: true });
+    /* One event for the directory, claimed because we hold files beneath it. */
+    expect(query.applyEvent("src/a", true)).to.equal(true);
+    expect(await settleFully(query)).to.deep.equal(["src/keep.ts"]);
+  });
+
+  it("still applies an ordinary single-file delete", async () => {
+    tree();
+    const query = new FSFileSource(root).find(Name.fromLiteral("src")) as TreeQuery;
+    await toPromise(query);
+    fs.rmSync(path.join(root, "src", "a", "one.ts"));
+    expect(query.applyEvent("src/a/one.ts", true)).to.equal(true);
+    expect(await settleFully(query)).to.deep.equal(["src/a/nested/two.ts"]);
+  });
+
+  it("discards a rescan that lands under a newer attach", async () => {
+    /* The probe mutates shared file state, so it carries the attach generation like the
+     * enumeration does: landing after a detach/reattach it must inject nothing into the
+     * new attach's map. */
+    fs.mkdirSync(path.join(root, "dir", "sub"), { recursive: true });
+    fs.writeFileSync(path.join(root, "dir", "sub", "stale.ts"), "s");
+    fs.writeFileSync(path.join(root, "dir", "fresh.ts"), "f");
+    const resolvers: ((v: EnumResult) => void)[] = [];
+    const query = new TreeQuery(new FSFileSource(root), root, Name.fromLiteral("dir"), "", () =>
+      Computable.from<EnumResult>(resolve => resolvers.push(resolve))
+    );
+
+    const dep = query.then(() => undefined); /* attach #1 */
+    resolvers[0]({ names: [], project: rel => rel });
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    query.applyEvent("dir/sub", false); /* probe starts, walking dir/sub */
+    unlink(query, dep); /* superseded before it lands */
+    const settled = toPromise(query); /* attach #2, enumeration #2 pending */
+    await new Promise(resolve => setTimeout(resolve, 50)); /* the stale probe lands here */
+
+    resolvers[1]({ names: ["dir/fresh.ts"], project: rel => rel });
+    expect(names(await settled)).to.deep.equal(["dir/fresh.ts"]);
   });
 });
 

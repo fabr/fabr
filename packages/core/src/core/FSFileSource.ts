@@ -116,6 +116,22 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
    * that lands after the query has detached (last dependant left) or reattached
    * (a newer enumeration is now authoritative) is discarded — see attach. */
   private attachGeneration = 0;
+  /* Bumped whenever a new delivery starts — an attach's enumeration, or a watch
+   * recompute. Both build asynchronously from a snapshot of `files` taken when the
+   * build began, and the two can overlap (an event during the enumeration's own
+   * build), so they can finish in either order: only the latest may settle, or an
+   * earlier one landing afterwards would undo the newer result. Deliberately NOT
+   * folded into attachGeneration, which answers a different question — whose
+   * *mutations* of files/project are still wanted. A recompute bumping that would
+   * make the enumeration about to populate the map discard its own work. */
+  private delivery = 0;
+  /* The subtree this query walks — the static leading path of its name. An event
+   * outside it can bring in nothing we want, which is what prunes the directory
+   * probe in applyDelta to the paths where it could pay off. */
+  private readonly base: string;
+  /* Paths with a directory rescan in flight, so a burst of events over the same new
+   * directory walks it once (see startRescan). */
+  private readonly rescanning = new Set<string>();
 
   constructor(
     private readonly owner: FSFileSource,
@@ -128,6 +144,9 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     private readonly enumerator?: () => Computable<{ names: string[]; project: Projector }>
   ) {
     super();
+    /* staticPath preserves a trailing slash when the name's literal prefix ends in one
+     * (`src/**` → `src/`); shed it, since withinBase appends its own separator. */
+    this.base = staticPath(name).replace(/\/+$/, "");
   }
 
   protected override attach(): void {
@@ -145,8 +164,15 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     const generation = ++this.attachGeneration;
     this.owner.registerQuery(this);
     this.files.clear();
+    /* Detaching left us serving no value, so the memo of what we last delivered is
+     * void too: this attach must deliver afresh, and a recompute meanwhile must not
+     * mistake the current tree for "already delivered". */
+    this.lastManifest = undefined;
     this.enumerating = true;
     this.pendingEvents.length = 0;
+    /* A fresh enumeration supersedes any probe in flight; the generation check makes
+     * one that lands anyway inert, this just stops it blocking a re-probe. */
+    this.rescanning.clear();
     const enumerator = this.enumerator ?? (() => enumerate(this.root, this.name, this.prefix));
     enumerator().then(({ names, project }) => {
       if (!this.isCurrent(generation)) {
@@ -187,6 +213,12 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     return generation === this.attachGeneration && this.state !== ComputableState.Detached;
   }
 
+  /** Whether the delivery that captured these tokens may still settle: its attach must
+   * still be live, and no later build may have started since (see {@link delivery}). */
+  private isCurrentDelivery(generation: number, delivery: number): boolean {
+    return this.isCurrent(generation) && delivery === this.delivery;
+  }
+
   /** Apply a filesystem change: if `rel` is one of ours, update the file map and return
    * true (so the source schedules our re-settle); otherwise ignore it and return false. */
   public applyEvent(rel: string, removed: boolean): boolean {
@@ -201,17 +233,89 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     return this.applyDelta(rel, removed);
   }
 
-  /** Apply a change against the (known) projection: true iff it was one of ours. */
+  /**
+   * Apply a change against the (known) projection: true iff it changed our files *now*.
+   *
+   * An event may name a directory rather than a file — macOS reports a directory rename
+   * as one delete of the old path and one create of the new, with no per-child events at
+   * all — so neither half can be judged by the projection alone (a file-membership
+   * predicate, which a directory path fails). A removal instead consults what we HOLD,
+   * and a create additionally probes for a subtree to walk.
+   */
   private applyDelta(rel: string, removed: boolean): boolean {
-    if (this.project(rel) === undefined) {
-      return false;
-    }
     if (removed) {
-      this.files.delete(rel);
-    } else {
+      return this.dropSubtree(rel);
+    }
+    /* Both arms fire, deliberately. A bare-directory reference matches its own path, so
+     * `mv elsewhere src` takes the literal arm — which ingests to `undefined`, a
+     * directory being no file — and the subtree it just gained is found only by the
+     * rescan. Taking one arm or the other would miss one of the two cases. */
+    const matched = this.project(rel) !== undefined;
+    if (matched) {
       this.files.set(rel, this.owner.ingest(rel));
     }
-    return true;
+    if (this.withinBase(rel)) {
+      this.startRescan(rel);
+    }
+    return matched;
+  }
+
+  /** Drop `rel` and everything held beneath it, returning whether anything went. A
+   * directory names no file, so membership here is what we hold rather than what the
+   * projection admits — which is also what lets one event cover a whole subtree (a
+   * rename's outgoing half, or an `rm -rf`). */
+  private dropSubtree(rel: string): boolean {
+    let dropped = this.files.delete(rel);
+    const prefix = rel + "/";
+    for (const name of this.files.keys()) {
+      if (name.startsWith(prefix)) {
+        this.files.delete(name);
+        dropped = true;
+      }
+    }
+    return dropped;
+  }
+
+  /** Whether `rel` lies within the subtree this query walks, and so could hold files it
+   * wants. An empty base (a name with no static prefix) spans the whole tree. */
+  private withinBase(rel: string): boolean {
+    return this.base === "" || rel === this.base || rel.startsWith(this.base + "/");
+  }
+
+  /**
+   * Probe a created path for a subtree and walk it — the only way to discover the files
+   * a renamed-in directory now holds, since no per-child events are coming. Reports the
+   * way every other change does: mutate `files`, then ask the controller to re-settle,
+   * so the result still lands through one debounced, batched flush rather than a second
+   * settling path of its own (the enumeration self-delivers only because at attach time
+   * there is no value yet, and no batch to join).
+   *
+   * Guarded by the attach generation, like the enumeration: it mutates shared state, so
+   * a result landing under a newer attach must be discarded (see isCurrent).
+   */
+  private startRescan(rel: string): void {
+    if (this.rescanning.has(rel)) {
+      return;
+    }
+    this.rescanning.add(rel);
+    const generation = this.attachGeneration;
+    const abs = path.resolve(this.root, rel);
+    stat(abs)
+      .then(entry => (entry.isDirectory() ? walk(this.root, abs, this.project) : []))
+      .once(
+        names => {
+          this.rescanning.delete(rel);
+          if (names.length === 0 || !this.isCurrent(generation)) {
+            return;
+          }
+          names.forEach(name => this.files.set(name, this.owner.ingest(name)));
+          this.owner.notifyQueryChanged(this);
+        },
+        () => {
+          /* Vanished again, or unreadable: nothing to add, and a later event re-probes. */
+          this.rescanning.delete(rel);
+        }
+      );
   }
 
   private build(): Computable<FileSet> {
@@ -219,16 +323,18 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   }
 
   private deliver(generation: number): void {
+    const delivery = ++this.delivery;
     this.build().then(fileSet => {
       /* build() is a further async hop, so re-check: a detach/reattach between
-       * enumeration and here must not settle this (stale) result. */
-      if (!this.isCurrent(generation)) {
+       * enumeration and here must not settle this (stale) result, and neither may an
+       * enumeration whose build a later recompute has already overtaken. */
+      if (!this.isCurrentDelivery(generation, delivery)) {
         return;
       }
       this.lastManifest = fileSet.toManifest();
       this.settle(ComputableState.Valid, fileSet);
     }, err => {
-      if (this.isCurrent(generation)) {
+      if (this.isCurrentDelivery(generation, delivery)) {
         this.settle(ComputableState.Error, toError(err));
       }
     });
@@ -237,7 +343,19 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   /** WatchController entry: rebuild from the (dispatcher-updated) files and, unless the
    * content is unchanged (a touch), prepare the batched re-settle. */
   public recompute(): Computable<PreparedUpdate | null> {
+    /* Mid-enumeration `files` is empty by construction (attach cleared it) and the
+     * projection is unknown, so a build here would report the tree as empty. Nothing to
+     * do: the enumeration's own delivery settles the current set, replaying any events
+     * buffered meanwhile — which is also why applyEvent claims nothing in this window. */
+    if (this.enumerating) {
+      return Computable.resolve(null);
+    }
+    const generation = this.attachGeneration;
+    const delivery = ++this.delivery;
     return this.build().then(fileSet => {
+      if (!this.isCurrentDelivery(generation, delivery)) {
+        return null;
+      }
       const manifest = fileSet.toManifest();
       if (manifest === this.lastManifest) {
         return null;
@@ -247,8 +365,19 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
        * failed) leaves lastManifest matching the still-settled value, and the
        * next recompute sees the change rather than skipping it as unchanged. */
       return {
-        invalidate: () => this.invalidate(),
+        invalidate: () => {
+          if (this.isCurrentDelivery(generation, delivery)) {
+            this.invalidate();
+          }
+        },
+        /* Re-checked because the controller applies this *later*, once the whole batch
+         * has been prepared: a detach/reattach or a newer build since means this set is
+         * stale. The memo must not advance either, or the change it describes would look
+         * already-delivered and the next recompute would skip it. */
         settle: () => {
+          if (!this.isCurrentDelivery(generation, delivery)) {
+            return;
+          }
           this.lastManifest = manifest;
           this.settle(ComputableState.Valid, fileSet);
         },
@@ -309,6 +438,14 @@ export class FSFileSource implements FileSource {
   /** Remove a live query from the dispatch set (on its detach). */
   public unregisterQuery(query: TreeQuery): void {
     this.registrations.delete(query);
+  }
+
+  /** Report that a query changed itself, outside the dispatch of a filesystem event —
+   * a directory rescan finding files no event will ever mention (see
+   * {@link TreeQuery.applyEvent}). The controller lives here, not on the query, so this
+   * is how a query reaches it; a no-op when not watching. */
+  public notifyQueryChanged(query: TreeQuery): void {
+    this.watchController?.notifyChanged(query);
   }
 
   /**

@@ -536,15 +536,46 @@ export class BuildCache {
     });
     sink.on("error", recordError);
     sink.pipe(fileStream);
+    /* Abandon the spool: destroy both streams, then drop the temp file — but only once
+     * the spool stream has actually closed. Waiting is the point: `createWriteStream`
+     * opens asynchronously, so unlinking while an open is still in flight lets that open
+     * recreate the file *after* the removal, leaving debris in a work tree whose owner
+     * believes it is done with it (and racing whoever reclaims that tree). A `pipe`
+     * source error does not destroy the destination either, so without this the spool
+     * keeps its fd — and its file — for the life of the process. Removal is best-effort;
+     * a cleanup failure must never outrank the outcome being reported. */
+    const teardown = (done: () => void): void => {
+      const remove = (): void => {
+        try {
+          fs.rmSync(tmpPath, { force: true });
+        } catch {
+          /* Best-effort: the caller's own outcome is what matters. */
+        }
+        done();
+      };
+      /* Already closed ⇒ no `close` is coming; removing inline is what keeps a
+       * second teardown (or a discard after a failed finalize) from hanging. */
+      if (fileStream.closed) {
+        remove();
+        return;
+      }
+      fileStream.once("close", remove);
+      sink.destroy();
+      fileStream.destroy();
+    };
     return {
       stream: sink,
       finalize: (name: string, mode: number = DEFAULT_FILE_MODE): Computable<IFile> =>
-        Computable.once<IFile>((resolve, reject) => {
+        Computable.fromOnce<IFile>((resolve, reject) => {
+          /* Report a failure only once the spool is torn down, so a rejection carries the
+           * guarantee that nothing of this output is left behind — no temp file, no fd
+           * still closing — rather than leaving the caller to race it. */
+          const fail = (err: Error): void => teardown(() => reject(err));
           if (firstError) {
-            reject(firstError);
+            fail(firstError);
             return;
           }
-          pendingReject = reject;
+          pendingReject = fail;
           fileStream.once("finish", () => {
             pendingReject = undefined;
             const digest = hash.digest("hex");
@@ -552,15 +583,18 @@ export class BuildCache {
              * unpacked entry passes its real tar mode so an executable survives. */
             this.materializeBlob(digest, mode, blobPath => this.renameIntoPool(tmpPath, blobPath)).then(
               () => resolve(new BuildFile(this.blobRoot, digest, name, mode)),
-              reject
+              /* A placement failure leaves the spool where it is (the rename either
+               * happened or did not), so tear it down here too. */
+              fail
             );
           });
           sink.end();
         }),
       discard: (): void => {
-        sink.destroy();
-        fileStream.destroy();
-        fs.rmSync(tmpPath, { force: true });
+        /* Fire-and-forget: every caller is a synchronous error path that rejects at once
+         * (see IOutputHandle.discard), so the removal lands in the background once the
+         * fd is closed rather than being skipped for want of somewhere to await it. */
+        teardown(() => undefined);
       },
     };
   }

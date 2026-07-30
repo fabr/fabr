@@ -14,7 +14,7 @@
  * details.
  */
 
-import { Computable } from "./Computable";
+import { Computable, ComputableSource, ComputableState } from "./Computable";
 import { PreparedUpdate, WatchController, WatchEntry, WatchTimer } from "./WatchController";
 import { expect } from "chai";
 
@@ -62,6 +62,25 @@ function controllable(): {
     },
   };
   return { entry, resolvers };
+}
+
+/** A source with observable attach/detach counts, standing in for whatever a recompute
+ * reads: it is attached exactly while some chain holds it, so the counters show whether
+ * a flush's chain was released or is still hanging around. */
+class AttachProbe extends ComputableSource<number> {
+  public attaches = 0;
+  public detaches = 0;
+
+  protected override attach(): void {
+    super.attach();
+    this.attaches++;
+    this.settle(ComputableState.Valid, this.attaches);
+  }
+
+  protected override detach(): void {
+    super.detach();
+    this.detaches++;
+  }
 }
 
 /** A PreparedUpdate that records its settle under `tag`. */
@@ -218,5 +237,26 @@ describe("WatchController", () => {
     controller.close();
     controller.notifyChanged({ recompute: () => Computable.resolve(null) });
     expect(timer.hasPending).to.equal(false);
+  });
+
+  it("releases each batch's chain, so repeated flushes accumulate nothing", () => {
+    /* A flush gathers its entries' recompute chains into a node nothing depends on, so
+     * nothing would ever detach it — every flush would leave one attached to whatever
+     * the recomputes read (in production: every file cell of every dirty query, for the
+     * rest of the session). The probe stands in for that: it is attached for exactly as
+     * long as a chain holds it, so detaches lagging flushes means chains are piling up. */
+    const controller = new WatchController(50, timer);
+    const probe = new AttachProbe();
+    const settled: string[] = [];
+    const entry: WatchEntry = {
+      recompute: () => probe.then(() => taggedUpdate(settled, "x")),
+    };
+    for (let flushes = 1; flushes <= 3; flushes++) {
+      controller.notifyChanged(entry);
+      timer.fire();
+      expect(settled).to.have.length(flushes);
+      expect(probe.attaches).to.equal(flushes);
+      expect(probe.detaches).to.equal(flushes);
+    }
   });
 });

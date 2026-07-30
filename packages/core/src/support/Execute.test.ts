@@ -42,7 +42,7 @@ function memoryOutput(): IOutputHandle {
   return {
     stream,
     finalize: (): Computable<IFile> =>
-      Computable.once<IFile>(resolve => {
+      Computable.fromOnce<IFile>(resolve => {
         stream.on("end", () => resolve(new MemoryFile(Buffer.concat(chunks))));
         stream.end();
       }),

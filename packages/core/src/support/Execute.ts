@@ -134,6 +134,10 @@ const GROUPS_SUPPORTED = process.platform !== "win32";
  * for a straggler to tear down its own children, short enough not to dawdle. */
 const SWEEP_KILL_GRACE_MS = 5000;
 
+/** How often a sweep re-checks whether the TERM'd group has drained, so a straggler
+ * that honours TERM costs one interval rather than the whole grace. */
+const SWEEP_POLL_MS = 25;
+
 /** Group leaders of in-flight steps (and of sweeps still in their KILL grace),
  * so the exit hook can sweep whatever is live when fabr itself dies. */
 const liveGroups = new Set<number>();
@@ -161,30 +165,69 @@ function trackGroup(pid: number | undefined): void {
   liveGroups.add(pid);
 }
 
-/** The step's own process exited — sweep its group for stragglers. */
-function sweepGroup(pid: number | undefined): void {
+/** Whether any member of `pid`'s group is still alive — signal 0 probes without
+ * delivering, so ESRCH means the group has dissolved. */
+function groupAlive(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The step's own process exited — sweep its group for stragglers, resolving once the
+ * group is gone.
+ *
+ * The result is awaited before the step settles, so a straggler cannot still be writing
+ * into the work dir when it is reclaimed. That matters only for a straggler which does
+ * NOT hold the step's stdio: one that does keeps `close` from firing (see execute), so
+ * the settle already waits for it, whereas one that redirected its output lets `close`
+ * fire at once — and the reclaim would then race its writes, leaving debris below a tree
+ * the exit hook has already forgotten.
+ *
+ * The happy case costs nothing: an empty group gives ESRCH on the first signal and the
+ * result is already settled, so the caller consumes it in line.
+ */
+function sweepGroup(pid: number | undefined): Computable<void> {
   if (!GROUPS_SUPPORTED || pid === undefined) {
-    return;
+    return Computable.resolve<void>(undefined);
   }
   try {
     process.kill(-pid, "SIGTERM");
   } catch {
     /* ESRCH: the group dissolved with the leader — the common, clean case. */
     liveGroups.delete(pid);
-    return;
+    return Computable.resolve<void>(undefined);
   }
-  /* Something survived the step. TERM was just delivered; escalate to KILL
-   * after the grace (a natively-wedged process handles no signal but KILL).
-   * The group stays registered until then so a concurrent fabr exit still
-   * KILLs it via the exit hook. */
-  setTimeout(() => {
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      /* gone during the grace */
-    }
-    liveGroups.delete(pid);
-  }, SWEEP_KILL_GRACE_MS).unref();
+  /* Something survived the step. TERM was just delivered; poll until the group drains,
+   * escalating to KILL at the grace (a natively-wedged process handles no signal but
+   * KILL). The timers are deliberately NOT unref'd — the step's outcome now waits on
+   * this, so it must hold the loop open. The group stays registered throughout, so a
+   * concurrent fabr exit still KILLs it via the exit hook. */
+  return Computable.fromOnce<void>(resolve => {
+    const deadline = Date.now() + SWEEP_KILL_GRACE_MS;
+    const done = (): void => {
+      liveGroups.delete(pid);
+      resolve(undefined);
+    };
+    const poll = (): void => {
+      if (!groupAlive(pid)) {
+        done();
+      } else if (Date.now() >= deadline) {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          /* gone during the grace */
+        }
+        done();
+      } else {
+        setTimeout(poll, SWEEP_POLL_MS);
+      }
+    };
+    setTimeout(poll, SWEEP_POLL_MS);
+  });
 }
 
 /** Spawn options putting a step in its own group where supported. */
@@ -207,9 +250,9 @@ function commandLine(cmd: string, args: string[]): string {
 }
 
 export function execute(cmd: string, args: string[], cwd: string, env: Record<string, string>, quiet = true): Computable<void> {
-  /* A failed spawn emits 'error' then a spurious 'close' (code -2): Computable.once
+  /* A failed spawn emits 'error' then a spurious 'close' (code -2): Computable.fromOnce
    * keeps the first (informative ENOENT) rejection and drops the useless "-2". */
-  return Computable.once((resolve, reject) => {
+  return Computable.fromOnce((resolve, reject) => {
     const line = commandLine(cmd, args);
     /* stdin from /dev/null ("ignore"), not the default open pipe: a build step is
      * non-interactive, so a tool that reads stdin must get EOF at once rather than
@@ -227,8 +270,13 @@ export function execute(cmd: string, args: string[], cwd: string, env: Record<st
     trackGroup(proc.pid);
     /* Sweep on 'exit', not 'close': a straggler holding the step's output pipes
      * open is exactly what keeps 'close' from ever firing — the sweep is what
-     * unblocks it (killed stragglers drop the pipes, 'close' follows, settle). */
-    proc.on("exit", () => sweepGroup(proc.pid));
+     * unblocks it (killed stragglers drop the pipes, 'close' follows, settle).
+     * Held so 'close' can wait for it (already settled in the common case — see
+     * sweepGroup); starts settled for a step that never reaches 'exit' at all. */
+    let swept: Computable<void> = Computable.resolve<void>(undefined);
+    proc.on("exit", () => {
+      swept = sweepGroup(proc.pid);
+    });
     if (quiet) {
       proc.stdout?.on("data", data => output.push(data));
       proc.stderr?.on("data", data => output.push(data));
@@ -242,11 +290,18 @@ export function execute(cmd: string, args: string[], cwd: string, env: Record<st
      * then how it ended; inherited output already reached the terminal live. */
     proc.on("close", (code, signal) => {
       const how = signal ? `terminated by signal ${signal}` : code !== 0 ? `exited with error code ${code}` : undefined;
-      if (how === undefined) {
-        resolve();
-      } else {
-        reject(new ExecutionError(quiet ? withOutput(line, output, how) : `${line}\n${how}`));
-      }
+      const deliver = (): void => {
+        if (how === undefined) {
+          resolve();
+        } else {
+          reject(new ExecutionError(quiet ? withOutput(line, output, how) : `${line}\n${how}`));
+        }
+      };
+      /* Report only once the group is gone, so whoever reclaims the work dir on this
+       * outcome cannot race a straggler still writing into it (see sweepGroup). Both
+       * arms deliver the step's own outcome: a sweep cannot fail, and if one somehow
+       * did, that is no reason to lose the result. */
+      swept.once(deliver, deliver);
     });
   });
 }
@@ -302,7 +357,7 @@ export function executePipeline(
   quiet = true
 ): Computable<FileSet> {
   const captures: Capture[] = [];
-  return Computable.once<void>((resolve, reject) => {
+  return Computable.fromOnce<void>((resolve, reject) => {
     /* Resolve every command to an executable up front, so a bad one rejects
      * before any process is spawned (rather than leaving a half-built pipeline).
      * The failure is framed like a spawn 'error' below ("unable to execute"). */
@@ -328,12 +383,20 @@ export function executePipeline(
      * its own sweep may still be within its KILL grace, and a dissolved group is
      * a swallowed ESRCH. */
     const killAll = (): void => procs.forEach(p => killProcessGroup(p, "SIGTERM"));
+    /* The sweeps of stages that have exited. Deliberately only the *started* ones: a
+     * stage still running is TERM'd by killAll and left to the exit hook exactly as
+     * before, since waiting on a process that may never exit would trade debris for a
+     * hang. Empty or already-settled ⇒ the outcome is delivered in line. */
+    const sweeps: Computable<void>[] = [];
+    const afterSweeps = (deliver: () => void): void => {
+      Computable.forAll(sweeps.slice(), () => undefined).once(deliver, deliver);
+    };
     const fail = (err: Error): void => {
       if (!settled) {
         settled = true;
         killAll();
         captures.forEach(c => c.handle.discard());
-        reject(err);
+        afterSweeps(() => reject(err));
       }
     };
     /* Open a capture handle for `name` and register it for finalize/discard. */
@@ -369,7 +432,7 @@ export function executePipeline(
           ...DETACHED,
         });
         trackGroup(proc.pid);
-        proc.on("exit", () => sweepGroup(proc.pid));
+        proc.on("exit", () => sweeps.push(sweepGroup(proc.pid)));
         procs.push(proc);
         /* Swallow stream errors on the stdio fabr wires up: when a downstream
          * stage exits before draining its input (the SIGPIPE case, `… | head`),
@@ -439,7 +502,7 @@ export function executePipeline(
         }
       }
       settled = true;
-      resolve();
+      afterSweeps(() => resolve());
     };
   }).then(() => finalizeCaptures(captures));
 }
@@ -564,9 +627,9 @@ export function executeInteractive(
   cwd?: string,
   env?: Record<string, string>
 ): Computable<number> {
-  /* A failed spawn emits 'error' then 'close': Computable.once keeps the informative
+  /* A failed spawn emits 'error' then 'close': Computable.fromOnce keeps the informative
    * rejection and stops 'close' flipping a settled failure into a success. */
-  return Computable.once((resolve, reject) => {
+  return Computable.fromOnce((resolve, reject) => {
     const line = commandLine(cmd, args);
     const proc = spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd, env });
     trackInteractive(proc);

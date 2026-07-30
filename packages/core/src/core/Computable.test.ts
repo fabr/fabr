@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Computable, ComputableSource, ComputableState } from "./Computable";
+import { Computable, ComputableHandle, ComputableSource, ComputableState } from "./Computable";
 import { MultiError } from "./Errors";
 import { expect } from "chai";
 
@@ -140,7 +140,7 @@ describe("Computable", () => {
 
   it("once settles on the first outcome, dropping later resolves", () => {
     const values: string[] = [];
-    Computable.once<number>((resolve, reject) => {
+    Computable.fromOnce<number>((resolve, reject) => {
       resolve(1);
       resolve(2);
       reject(new Error("late"));
@@ -156,7 +156,7 @@ describe("Computable", () => {
   it("once keeps a rejection even when a trailing resolve arrives", () => {
     /* The spawn-failure shape: 'error' rejects, then 'close' would resolve. */
     const values: string[] = [];
-    Computable.once<number>((resolve, reject) => {
+    Computable.fromOnce<number>((resolve, reject) => {
       reject(new Error("ENOENT"));
       resolve(-2);
     })
@@ -252,7 +252,7 @@ describe("Computable", () => {
 
   it("rejects when a once() executor throws synchronously", () => {
     const errors: Error[] = [];
-    Computable.once<number>(() => {
+    Computable.fromOnce<number>(() => {
       throw new Error("once setup failed");
     }).catch(err => errors.push(err));
     expect(errors).to.have.length(1);
@@ -262,7 +262,7 @@ describe("Computable", () => {
   it("keeps a once() resolve that precedes a later executor throw", () => {
     const values: number[] = [];
     const errors: Error[] = [];
-    Computable.once<number>(res => {
+    Computable.fromOnce<number>(res => {
       res(3);
       throw new Error("too late");
     }).then(v => values.push(v), err => errors.push(err));
@@ -923,12 +923,12 @@ describe("Computable attach/detach", () => {
     expect(values).to.deep.equal([10, 20]);
   });
 
-  it("from/once cells are in the graph from birth (pending, not Detached)", () => {
+  it("from/fromOnce cells are in the graph from birth (pending, not Detached)", () => {
     /* Their executor is eager (runs in the factory) — they are producer-driven,
      * never demand-deferred — so they must not sit Detached while pending: the
      * settle guard would drop their own resolve. */
     expect(Computable.from<number>(() => undefined).state).to.equal(ComputableState.Unresolved);
-    expect(Computable.once<number>(() => undefined).state).to.equal(ComputableState.Unresolved);
+    expect(Computable.fromOnce<number>(() => undefined).state).to.equal(ComputableState.Unresolved);
     /* And a resolve arriving with zero dependants still lands (fire-and-forget). */
     let resolve!: (v: number) => void;
     const cell = Computable.from<number>(res => {
@@ -940,9 +940,211 @@ describe("Computable attach/detach", () => {
   });
 });
 
+/** Drain the microtask queue so the deferred terminal-error check runs. */
+const drain = (): Promise<void> => new Promise<void>(resolve => setImmediate(resolve));
+
+describe("ComputableHandle", () => {
+  let reported: Error[];
+  beforeEach(() => {
+    reported = [];
+    ComputableSource.onUnhandledError = err => reported.push(err);
+  });
+  afterEach(() => {
+    ComputableSource.onUnhandledError = undefined;
+  });
+
+  it("holds a seated chain attached, and unwinds it on release", () => {
+    const leaf = new TestSource<number>();
+    leaf.set(1);
+    const seen: number[] = [];
+    const mid = leaf.then(v => v + 1);
+    const handle = new ComputableHandle<void>();
+    handle.seat(
+      mid.then(v => {
+        seen.push(v);
+      })
+    );
+    expect(seen).to.deep.equal([2]);
+    expect(leaf.detaches).to.equal(0);
+    /* The handle is the ONLY hold on the chain, so withdrawing it unwinds the whole
+     * thing — the mid node detaches, and with it the leaf it was holding. */
+    handle.release();
+    expect(mid.state).to.equal(ComputableState.Detached);
+    expect(leaf.detaches).to.equal(1);
+  });
+
+  it("supersedes on reseat: the previously held chain is released", () => {
+    const a = new TestSource<number>();
+    const b = new TestSource<number>();
+    a.set(1);
+    b.set(2);
+    const seen: number[] = [];
+    const record = (source: TestSource<number>): Computable<void> =>
+      source.then(v => {
+        seen.push(v);
+      });
+    const handle = new ComputableHandle<void>();
+    handle.seat(record(a));
+    expect(a.attaches).to.equal(1);
+    expect(seen).to.deep.equal([1]);
+    handle.seat(record(b));
+    expect(a.detaches).to.equal(1);
+    expect(b.attaches).to.equal(1);
+    expect(seen).to.deep.equal([1, 2]);
+  });
+
+  it("releases idempotently", () => {
+    const leaf = new TestSource<number>();
+    leaf.set(1);
+    const handle = new ComputableHandle<number>();
+    handle.seat(leaf);
+    handle.release();
+    handle.release();
+    expect(leaf.detaches).to.equal(1);
+  });
+
+  it("does not re-run a seated effect when a re-settle changed nothing", () => {
+    const leaf = new TestSource<number>();
+    leaf.set(1);
+    const seen: boolean[] = [];
+    const mapped = leaf.then(v => v > 0);
+    new ComputableHandle<void>().seat(
+      mapped.then(v => {
+        seen.push(v);
+      })
+    );
+    expect(seen).to.deep.equal([true]);
+    /* Nothing special to the handle: a maybe-invalid wave resolving back to the same value
+     * revalidates the chain rather than re-running it, and a re-settle whose value is
+     * unchanged notifies without invalidating. Both leave the effect alone. */
+    leaf.invalidate();
+    leaf.set(1);
+    expect(seen).to.deep.equal([true]);
+    leaf.invalidate();
+    leaf.set(5);
+    expect(seen).to.deep.equal([true]);
+  });
+
+  it("a superseded chain delivers nothing further", () => {
+    const leaf = new TestSource<number>();
+    const seen: number[] = [];
+    const handle = new ComputableHandle<void>();
+    handle.seat(
+      leaf.then(v => {
+        seen.push(v);
+      })
+    );
+    handle.seat(Computable.resolve(undefined));
+    /* Out of the graph, not merely unread: the orphaned chain's leaf cannot settle at all
+     * now (settle is inert while detached), so a late arrival is discarded. */
+    leaf.set(1);
+    expect(seen).to.deep.equal([]);
+    expect(leaf.detaches).to.equal(1);
+  });
+
+  it("does not mask a seated chain's unhandled error", async () => {
+    /* Seating gives the chain a dependant, but a sink reads nothing — so the error is
+     * still going nowhere and must still be reported. */
+    new ComputableHandle<number>().seat(Computable.reject<number>(new Error("boom")).then(v => v + 1));
+    await drain();
+    expect(reported.map(err => err.message)).to.deep.equal(["boom"]);
+  });
+
+  it("stays quiet when the seated chain handles its own error", async () => {
+    new ComputableHandle<number>().seat(Computable.reject<number>(new Error("boom")).catch(() => 0));
+    await drain();
+    expect(reported).to.deep.equal([]);
+  });
+
+  it("reports a throw from a seated effect without corrupting the node that settled", async () => {
+    const leaf = new TestSource<number>();
+    new ComputableHandle<void>().seat(
+      leaf.then(() => {
+        throw new Error("effect blew up");
+      })
+    );
+    leaf.set(1);
+    /* The throw became the tail's own rejection, so it never reached the leaf's settle. */
+    expect(leaf.state).to.equal(ComputableState.Valid);
+    expect(leaf.value).to.equal(1);
+    await drain();
+    expect(reported.map(err => err.message)).to.deep.equal(["effect blew up"]);
+  });
+});
+
+describe("Computable.once", () => {
+  let reported: Error[];
+  beforeEach(() => {
+    reported = [];
+    ComputableSource.onUnhandledError = err => reported.push(err);
+  });
+  afterEach(() => {
+    ComputableSource.onUnhandledError = undefined;
+  });
+
+  it("consumes an already-settled chain and unwinds it", () => {
+    const leaf = new TestSource<number>();
+    leaf.set(1);
+    const mid = leaf.then(v => v + 1);
+    const seen: number[] = [];
+    mid.once(v => seen.push(v));
+    expect(seen).to.deep.equal([2]);
+    expect(mid.state).to.equal(ComputableState.Detached);
+    expect(leaf.detaches).to.equal(1);
+  });
+
+  it("consumes a chain that settles later, and unwinds it then", () => {
+    const leaf = new TestSource<number>();
+    const mid = leaf.then(v => v + 1);
+    const seen: number[] = [];
+    mid.once(v => seen.push(v));
+    expect(seen).to.deep.equal([]);
+    expect(leaf.detaches).to.equal(0);
+    leaf.set(1);
+    expect(seen).to.deep.equal([2]);
+    expect(mid.state).to.equal(ComputableState.Detached);
+    expect(leaf.detaches).to.equal(1);
+  });
+
+  it("delivers exactly once even when the effect re-settles the source", () => {
+    const leaf = new TestSource<number>();
+    leaf.set(1);
+    const seen: number[] = [];
+    /* The already-settled path consumes during the tail's construction, before there is
+     * an edge to withdraw — so a re-entrant settle here can still reach an attached
+     * tail, and only the consumed flag stops it delivering twice. */
+    leaf.once(v => {
+      seen.push(v);
+      leaf.set(2);
+    });
+    expect(seen).to.deep.equal([1]);
+    leaf.set(3);
+    expect(seen).to.deep.equal([1]);
+  });
+
+  it("routes an error to its handler and unwinds", async () => {
+    const errors: string[] = [];
+    const mid = Computable.reject<number>(new Error("boom")).then(v => v + 1);
+    mid.once(
+      () => errors.push("value"),
+      err => errors.push(err.message)
+    );
+    expect(errors).to.deep.equal(["boom"]);
+    expect(mid.state).to.equal(ComputableState.Detached);
+    await drain();
+    expect(reported).to.deep.equal([]); /* handled, so never reported as stranded */
+  });
+
+  it("surfaces an error with no handler, exactly once", async () => {
+    const mid = Computable.reject<number>(new Error("boom")).then(v => v + 1);
+    mid.once(() => undefined);
+    await drain();
+    expect(reported.map(err => err.message)).to.deep.equal(["boom"]);
+  });
+});
+
 describe("Computable unhandled-error surface", () => {
-  /** Drain the microtask queue so the deferred terminal-error check runs. */
-  const flush = (): Promise<void> => new Promise<void>(resolve => setImmediate(resolve));
+  const flush = drain;
 
   let reported: Error[];
   beforeEach(() => {
