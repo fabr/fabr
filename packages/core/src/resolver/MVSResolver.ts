@@ -18,7 +18,7 @@
  */
 
 import { Computable } from "../core/Computable";
-import { MetadataFetchError, VersionNotFoundError, toError } from "../core/Errors";
+import { MetadataFetchError, toError, VersionNotFoundError } from "../core/Errors";
 import { edgeTargets, nodeId as idOf } from "./ResolutionGraph";
 import {
   IRequirementEdge,
@@ -287,6 +287,11 @@ function resolvePhase<V, C>(
         raisedDemands.add(signature);
         return true;
       });
+      /* A repair that cannot be evaluated at all (the hook itself failed — an
+       * unreachable registry, say) is attributed like the metadata failure that
+       * provoked it: it belongs to the same node, so it must reach the consumer
+       * pointing at the requirement chain that demanded it, not bare against
+       * the target being built. */
       Computable.forAll(
         fresh.map(demand =>
           registry.lowestAvailable!(pkg, demand.req.constraint).then(raised => {
@@ -303,7 +308,7 @@ function resolvePhase<V, C>(
             settle();
           }
         }
-      ).catch(raiseErr => fail(toError(raiseErr)));
+      ).catch(raiseErr => fail(annotate(id, pkg, version, raiseErr)));
     };
 
     /**
@@ -337,8 +342,7 @@ function resolvePhase<V, C>(
       }
       const rootId = path.at(-1) ?? id;
       const rootPkg = rootId.substring(0, rootId.lastIndexOf("@"));
-      const cause = err instanceof Error ? err : new Error(String(err));
-      return new MetadataFetchError(pkg, domain.versionToString(version), path, rootPkg, cause);
+      return new MetadataFetchError(pkg, domain.versionToString(version), path, rootPkg, toError(err));
     };
 
     const visit = (pkg: string, version: V, requiredBy: string, demand: { key: string; req: Requirement }): void => {
@@ -458,7 +462,7 @@ function resolvePhase<V, C>(
           /* An unparseable constraint on an edge that is actually in effect
            * (reachable through selected versions): report it here, where
            * pruning has already dropped superseded/unreachable requirements. */
-          const message = `${err instanceof Error ? err.message : err} in requirement '${req.pkg}: ${req.constraint}' (required by ${from})`;
+          const message = `${toError(err).message} in requirement '${req.pkg}: ${req.constraint}' (required by ${from})`;
           errors.set(message, { message, rootPkg: rootPkgOf(from, req.pkg) });
           return;
         }

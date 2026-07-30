@@ -28,6 +28,7 @@ import {
   explainResolutionPath,
   FILES_OPERATION,
   FileSet,
+  HttpStatusError,
   IFile,
   IRequirementEdge,
   IResolutionOrigin,
@@ -320,10 +321,11 @@ function fakeExecution(npmrc?: string): ExecutionContext {
 /**
  * A minimal RepositoryContext that serves a fixed set of URLs and records every
  * fetch, so a test can assert which documents were (and were not) requested.
- * Any unexpected fetch rejects — so a test that expected the dependency closure
+ * A served Error is delivered as that URL's failure (a registry status), and
+ * any unexpected fetch rejects — so a test that expected the dependency closure
  * to be skipped fails loudly if it isn't.
  */
-function fakeContext(operation: string, served: Record<string, FileSet>, fetched: string[]): RepositoryContext {
+function fakeContext(operation: string, served: Record<string, FileSet | Error>, fetched: string[]): RepositoryContext {
   /* Properties the repository reads: the operation, and a fixed TARGET triple —
    * test packages carry no os/cpu/libc gates, so it never filters anything; it
    * only has to resolve (getJointResolution reads it for the memo key). */
@@ -333,7 +335,11 @@ function fakeContext(operation: string, served: Record<string, FileSet>, fetched
       name in globals ? Computable.resolve(globals[name]) : Computable.reject(new Error(`unexpected property: ${name}`)),
     fetch: (url: string) => {
       fetched.push(url);
-      return url in served ? Computable.resolve(served[url]) : Computable.reject(new Error(`unexpected fetch: ${url}`));
+      if (!(url in served)) {
+        return Computable.reject(new Error(`unexpected fetch: ${url}`));
+      }
+      const response = served[url];
+      return response instanceof Error ? Computable.reject(response) : Computable.resolve(response);
     },
     execution: fakeExecution(),
   } as unknown as RepositoryContext;
@@ -440,6 +446,61 @@ describe("parseMetadataResponse", () => {
     for (const body of unusable) {
       expect(() => parseMetadataResponse(body, "pkg/1")).to.throw(/Invalid (JSON in )?response from NPM repository/i);
     }
+  });
+});
+
+describe("NPMRepository lowestAvailable", () => {
+  /** The packument as the repository caches it (the extracted version list). */
+  function packument(versions: string[]): FileSet {
+    return new FileSet(new Map([["versions.json", MemoryFile.from(JSON.stringify(versions))]]));
+  }
+
+  it("raises to the lowest published version satisfying the constraint", async () => {
+    const fetched: string[] = [];
+    const served = { [`${REG}/left-pad`]: packument(["1.0.0", "1.6.0", "2.0.0"]) };
+    const repo = new NPMRepository(REG, fakeContext("build", served, fetched));
+
+    const raised = await toPromise(repo.lowestAvailable("left-pad", "^1.2.0"));
+
+    expect(raised && versionToString(raised)).to.equal("1.6.0");
+  });
+
+  it("reports no raise for a package the registry has never heard of", async () => {
+    /* A typo'd name: the packument 404s. That is the package-level counterpart
+     * of an unpublished version — no raise exists — and must not escape as a
+     * raw transport error (which would report unattributed, against whatever
+     * target was being built, instead of the written requirement). */
+    const fetched: string[] = [];
+    const url = `${REG}/no-such-package-xyzzy`;
+    const repo = new NPMRepository(REG, fakeContext("build", { [url]: new HttpStatusError(404, url) }, fetched));
+
+    const raised = await toPromise(repo.lowestAvailable("no-such-package-xyzzy", "^1.0.0"));
+
+    expect(raised).to.equal(undefined);
+    /* A definite answer, so the stale-list revalidation doesn't re-ask. */
+    expect(fetched).to.deep.equal([url]);
+  });
+
+  it("revalidates once when a published list satisfies nothing", async () => {
+    /* Distinct from the 404: the package exists, so the list may merely be a
+     * stale copy of a registry that has since appended the version. */
+    const fetched: string[] = [];
+    const served = { [`${REG}/left-pad`]: packument(["1.0.0"]) };
+    const repo = new NPMRepository(REG, fakeContext("build", served, fetched));
+
+    expect(await toPromise(repo.lowestAvailable("left-pad", "^2.0.0"))).to.equal(undefined);
+    expect(fetched).to.deep.equal([`${REG}/left-pad`, `${REG}/left-pad`]);
+  });
+
+  it("propagates a transport failure of the packument", async () => {
+    /* "I could not find out" is not "there is nothing" — a 5xx must fail the
+     * repair rather than silently report no raise. */
+    const fetched: string[] = [];
+    const url = `${REG}/left-pad`;
+    const repo = new NPMRepository(REG, fakeContext("build", { [url]: new HttpStatusError(503, url) }, fetched));
+
+    const err = await rejection(() => toPromise(repo.lowestAvailable("left-pad", "^1.0.0")));
+    expect(err.message).to.equal(`503 Service Unavailable: ${url}`);
   });
 });
 

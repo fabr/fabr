@@ -16,8 +16,9 @@ The ideas it's built on:
 - **Target, rule, and configuration are kept strictly apart.** A target says *what* you want and what
   it needs; a rule knows *how*; configuration (build type, target platform, …) is separate. The same
   target builds, tests, or runs depending only on the operation you ask for.
-- **Each build step runs sandboxed** in an isolated view of just its declared inputs, so a step can't
-  depend on anything it didn't ask for.
+- **Each build step runs in an isolated view of just its declared inputs** — staged into its own work
+  directory with a clean environment, so a step sees only what it asked for. (Host tools are still
+  found on `PATH` rather than declared: see [Known limitations](https://fabr.build/known-limitations/).)
 
 ## Status
 

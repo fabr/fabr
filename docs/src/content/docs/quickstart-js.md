@@ -33,7 +33,7 @@ Create a `PROJECT.fabr` at your project root:
 plugin @fabr-build/js;
 
 # Optional: which TypeScript compiler to use, and the output target.
-TSC = @npm:typescript:5.4.5;
+TSC = @npm:typescript:5.4.5:tsc;
 JS_TARGET = es2021-commonjs;
 
 js_package mylib {

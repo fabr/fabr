@@ -228,7 +228,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   private describeNoRule(cause: NoRuleFoundError): IDiagnostic {
     const operation = cause.constraints.get(BUILD_OPERATION) ?? "build";
     const verb = NO_RULE_VERBS[operation] ?? `perform '${operation}' on`;
-    const overrides = Object.entries(cause.constraints)
+    const overrides = [...cause.constraints]
       .filter(([key]) => !this.ambientConstraintKeys.has(key))
       .map(([key, value]) => `${key}=${value}`);
     const suffix = overrides.length > 0 ? ` (${overrides.join(", ")})` : "";

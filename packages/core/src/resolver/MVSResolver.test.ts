@@ -557,6 +557,27 @@ describe("MVSResolver", () => {
     expect((error as MetadataFetchError).pkg).to.equal("B");
   });
 
+  it("attributes a failure of the raise hook itself to the node that provoked it", () => {
+    /* The hook is only consulted for an unpublished floor, so its own failure
+     * (an unreachable registry, a package the registry has never heard of)
+     * belongs to the same requirement chain as the 404 that provoked it — not
+     * bare against whatever target was being built. */
+    const registry = mockRegistry({ A: { "1.0.0": { B: "^2.0.0" } }, B: { "1.6.0": {} } }, true);
+    registry.lowestAvailable = (): Computable<SemverVersion | undefined> => Computable.reject(new Error("registry unreachable"));
+    let error: Error | undefined;
+    resolveMVS([{ pkg: "A", constraint: "1.0.0" }], SEMVER, registry).then(
+      () => undefined,
+      err => {
+        error = err as Error;
+      }
+    );
+    expect(error).to.be.instanceOf(MetadataFetchError);
+    const failure = error as MetadataFetchError;
+    expect(failure.pkg).to.equal("B");
+    expect(failure.rootPkg).to.equal("A");
+    expect(failure.message).to.equal("registry unreachable (required by A@1.0.0)");
+  });
+
   it("without the raise hook an unpublished floor stays a hard failure", () => {
     const err = resolveError(
       { A: "1.0.0" },

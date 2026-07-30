@@ -173,7 +173,7 @@ export function openUrlStream(
         resolve({ cacheControl: parseCacheControl(resHeaders, now()) });
       } else {
         void response.body.dump();
-        reject(new HttpStatusError(response.statusCode, "", urlstring));
+        reject(new HttpStatusError(response.statusCode, urlstring));
       }
     }, reject);
   });

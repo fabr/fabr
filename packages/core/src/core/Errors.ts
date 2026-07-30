@@ -24,6 +24,8 @@
  * presentation is exclusively the driver's job.
  */
 
+import { STATUS_CODES } from "node:http";
+
 import { describeProvenance, IProvenanceStep } from "./Provenance";
 import { RepositoryRef } from "./Repository";
 
@@ -84,14 +86,17 @@ export class MultiError extends Error {
 /**
  * A non-200 HTTP response, with the status carried as data so a caller can
  * translate specific statuses (e.g. a registry 404) into domain messages.
+ *
+ * The rendered reason phrase is the standard one for the code, not the
+ * response's own: HTTP/2 has no reason phrase and the client doesn't surface
+ * one over HTTP/1 either, so the alternative is the bare number.
  */
 export class HttpStatusError extends Error {
   constructor(
     public readonly statusCode: number,
-    statusMessage: string,
     public readonly url: string
   ) {
-    super(`${statusCode} ${statusMessage}: ${url}`);
+    super(`${statusCode}${STATUS_CODES[statusCode] ? " " + STATUS_CODES[statusCode] : ""}: ${url}`);
   }
 }
 

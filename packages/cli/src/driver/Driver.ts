@@ -855,10 +855,10 @@ function listProperties(model: BuildModel, options: Options): Computable<void> {
     console.log(JSON.stringify({ properties, flags }, undefined, 2));
     return Computable.resolve(undefined);
   }
-  const width = Math.max(0, ...properties.map(prop => (prop.name as string).length));
+  const width = Math.max(0, ...properties.map(prop => prop.name.length));
   properties.forEach(prop => {
     const location = options.longListing ? "  " + prop.location : "";
-    console.log(`${(prop.name as string).padEnd(width)} = ${prop.value}${location}`);
+    console.log(`${prop.name.padEnd(width)} = ${prop.value}${location}`);
   });
   if (flags.length > 0) {
     console.log("\nFlags:");
@@ -908,10 +908,20 @@ function targetDefJson(model: BuildModel, def: ITargetDefDecl): Record<string, u
   };
 }
 
+/** One entry of the config listing (a documented global property, or a flag
+ * target — which has no value of its own). Typed rather than a bare JSON
+ * record because the same entries are also printed as text: an untyped field
+ * interpolates whatever it happens to hold. */
+interface IConfigEntry {
+  name: string;
+  location: string;
+  description: string | null;
+}
+
 /** @return the documented global configuration properties (`BUILD_TYPE`,
  * `JS_TARGET`, `TSC`, …) — only those carrying a doc comment, each with its
  * default value, source location, and description — for docs generation. */
-function configPropertiesJson(model: BuildModel): Record<string, unknown>[] {
+function configPropertiesJson(model: BuildModel): Array<IConfigEntry & { value: string }> {
   return model
     .getProperties()
     .filter(({ decl }) => decl.docComment !== undefined)
@@ -926,7 +936,7 @@ function configPropertiesJson(model: BuildModel): Record<string, unknown>[] {
 
 /** @return the `flag` targets (source-mode switches like `ts/nostrict`) with
  * their descriptions — the flags a user lists in a target's `deps`. */
-function flagTargetsJson(model: BuildModel): Record<string, unknown>[] {
+function flagTargetsJson(model: BuildModel): IConfigEntry[] {
   return model
     .getTargets()
     .filter(({ decl }) => decl.type === "flag")

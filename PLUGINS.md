@@ -15,7 +15,8 @@ plugin @fabr-build/js;
   plugin's own `.fabr` library files** — no separate `include` needed (declaring `@fabr-build/js` brings in
   its `JS.fabr`). Each plugin is activated once per build, in declaration order.
 - **STD.fabr is always present** — core's library is included in every build without being named, so
-  the generic `flag`/`script`/`generate` targetdefs are always available.
+  the generic `flag`, `script`, `generate`, `serve`, `catalog`, and `sync` targetdefs are always
+  available.
 - Plugins are resolved by **module resolution only**: the package must be installed alongside the
   fabr host (for `@fabr-build/*` packages, they ship with the fabr installation). There is currently no
   option to build a plugin from source as part of the build that uses it. A plugin that cannot be
@@ -40,7 +41,7 @@ export function activate(): PluginContribution {
       { type: "my_thing", constraints: { BUILD_OPERATION: "build" }, evaluate: buildMyThing },
     ],
     repositories: [{ type: "my_repository", provider: createMyRepository }],
-    includes: [packageLibFile("@my/plugin", "MYLIB.fabr")],
+    includes: [packageLibFile("@my/plugin", "MYTHING.fabr")],
   };
 }
 ```
@@ -70,11 +71,11 @@ export function activate(): PluginContribution {
   through the `context` — then return a **`RuleResult`**. It never executes external tools and has
   no work directory: it either returns final content directly (a `FileSource`) or a
   **`BuildAction`** the framework caches and runs. The same rule serves declared and anonymous
-  (sub-)targets identically — `context.getFileSet("srcs")` reads a declared property or a
+  (sub-)targets identically — `context.getFileProperty("srcs")` reads a declared property or a
   sub-target's supplied input transparently.
 
   - **To run a tool**, return a `BuildAction` — `new BuildAction(step, inputs, label?)`, or the
-    `createExecAction(files, argv, outputs?)` helper. Its `step` (`{ id, version, run(inputs,
+    `createExecAction(files, argv, outputs?, label?)` helper. Its `step` (`{ id, version, run(inputs,
     workDir) }`) is the unit of build caching, keyed by `id:version` + a manifest of its concrete
     inputs (materialized FileSets and strings only); bump `version` when its behavior changes.
     Prefer `createExecAction`; write a bespoke step only where semantics demand it (e.g.
@@ -121,8 +122,7 @@ my-plugin/
 Projects then write:
 
 ```
-plugin @my/plugin;
-include MYTHING.fabr;
+plugin @my/plugin;      # MYTHING.fabr comes with it — no include needed
 
 my_thing hello {
   srcs = src:**;

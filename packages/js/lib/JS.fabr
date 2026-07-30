@@ -21,7 +21,7 @@ default JS_TARGET = es6-esm;
 # 'latest' are not supported as they make the build non-deterministic.)
 #
 
-default TSC = @npm:typescript:5.4.5;
+default TSC = @npm:typescript:5.4.5:tsc;
 
 #
 # The esbuild library the bundle driver requires for JS bundling.

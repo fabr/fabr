@@ -877,6 +877,11 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    * cached list satisfies nothing, that is evidence it may be stale, so it is
    * force-revalidated once before giving up. Deterministic modulo registry
    * append — the one sanctioned relaxation, confined to this repair path.
+   *
+   * A package the registry has never heard of (a typo'd name) has no published
+   * versions at all, which is a definite answer rather than a stale one: it
+   * skips the revalidation and reports no raise, leaving the caller's original
+   * "not found" the failure the resolver reports.
    */
   public lowestAvailable(pkg: string, constraint: string): Computable<SemverVersion | undefined> {
     let parsed: SemverConstraint;
@@ -887,20 +892,24 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     }
     /* npm-consistent candidates: no prerelease unless the constraint opts in
      * (lowestSatisfying) — the raise must never silently pin an -rc. */
-    const pick = (versions: SemverVersion[]): SemverVersion | undefined => lowestSatisfying(versions, parsed);
+    const pick = (versions: SemverVersion[] | undefined): SemverVersion | undefined =>
+      versions && lowestSatisfying(versions, parsed);
     return this.publishedVersions(pkg, false).then(versions => {
       const found = pick(versions);
-      if (found) {
+      if (found || versions === undefined) {
         return Computable.resolve<SemverVersion | undefined>(found);
       }
-      return this.publishedVersions(pkg, true).then(fresh => pick(fresh));
+      return this.publishedVersions(pkg, true).then(pick);
     });
   }
 
   /** The package's published version list, from its packument (a mutable
-   * pointer document — fetched with a freshness lifetime, not frozen).
-   * Unparseable version strings are skipped. */
-  private publishedVersions(pkg: string, forceRevalidate: boolean): Computable<SemverVersion[]> {
+   * pointer document — fetched with a freshness lifetime, not frozen), or
+   * undefined if the registry has no such package (its 404 for the packument —
+   * the package-level counterpart of getVersionMetadata's VersionNotFoundError,
+   * and no more an error here than an empty list would be). Unparseable version
+   * strings are skipped. */
+  private publishedVersions(pkg: string, forceRevalidate: boolean): Computable<SemverVersion[] | undefined> {
     const url = `${this.url}/${packagePath(pkg)}`;
     return this.authHeadersFor(url)
       .then(headers =>
@@ -920,14 +929,21 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
         )
       )
       .then(files => files.readFile(VERSIONS_FILE))
-      .then(data =>
-        (JSON.parse(data) as string[]).flatMap(text => {
-          try {
-            return [parseVersion(text)];
-          } catch {
-            return [];
+      .then(
+        data =>
+          (JSON.parse(data) as string[]).flatMap(text => {
+            try {
+              return [parseVersion(text)];
+            } catch {
+              return [];
+            }
+          }),
+        err => {
+          if (err instanceof HttpStatusError && err.statusCode === 404) {
+            return undefined;
           }
-        })
+          throw err;
+        }
       );
   }
 
