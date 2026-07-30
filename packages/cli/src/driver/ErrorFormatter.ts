@@ -21,6 +21,7 @@ import {
   BUILD_OPERATION,
   BuildFilesInvalidError,
   chainSteps,
+  CircularDependencyError,
   constraintText,
   declPosn,
   DependencyFailedError,
@@ -106,7 +107,10 @@ class PendingReport {
       /* Trails accumulate outermost-first during descent; the report reads
        * outward from the failure, so each renders nearest dependant first */
       const trailNotes = [...shortestByRoot.values()].flatMap(trail => [...trail].reverse());
-      const notes = [...(diagnostic.notes ?? []), ...trailNotes];
+      /* A trail hop can restate a note the cause already made (a cycle's own
+       * "required by" hops are also the trail that reached it) — say it once. */
+      const seen = new Set((diagnostic.notes ?? []).map(noteKey));
+      const notes = [...(diagnostic.notes ?? []), ...trailNotes.filter(note => !seen.has(noteKey(note)))];
       log.log(DIAG_FAILURE, { ...diagnostic, notes: notes.length > 0 ? notes : undefined });
     }
   }
@@ -185,6 +189,9 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
     if (cause instanceof RequirementResolutionError) {
       return this.describeRequirement(cause, owner);
     }
+    if (cause instanceof CircularDependencyError) {
+      return this.describeCircular(cause);
+    }
     if (cause instanceof NameResolutionError) {
       const site = cause.useSite ? ` - required by ${describeUseSite(cause.useSite.property, cause.useSite.target)}` : "";
       return { message: cause.message + site, loc: cause.position, help: helpOf(cause) };
@@ -221,6 +228,38 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       return { message: `Failed to build ${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target), help: helpOf(cause) };
     }
     return { message: cause.message, help: helpOf(cause) };
+  }
+
+  /**
+   * A name that resolves to itself: anchored at the reference that closed the
+   * cycle — the mistake — with the rest of the loop following as the usual
+   * "required by" notes. A self-reference has no such hop, so it instead points
+   * at the declaration the name reached: the evidence that it resolved to a
+   * target, which the like-named path it reads as would not be (and which need
+   * not be anywhere near the reference). A projection makes that name shadowing
+   * (`js_package base { srcs = base:*.ts; }`), so it also gets the `./` spelling
+   * that reaches the path as help.
+   */
+  private describeCircular(cause: CircularDependencyError): IDiagnostic {
+    const [closing, ...rest] = cause.cycle;
+    if (!closing) {
+      return { message: cause.message };
+    }
+    const written = closing.value.value.toString();
+    const shadowed = written !== cause.name;
+    const reached = cause.cycle[cause.cycle.length - 1].target;
+    const notes =
+      rest.length > 0
+        ? rest.map(site => ({ message: `required by ${describeUseSite(site.property, site.target)}`, loc: declPosn(site.value) }))
+        : reached
+          ? [{ message: `'${cause.name}' is declared here`, loc: declPosn(reached) }]
+          : [];
+    return {
+      message: cause.message,
+      loc: declPosn(closing.value),
+      notes,
+      help: shadowed && rest.length === 0 ? [`'${cause.name}' names this target, not the path '${cause.name}' — write './${written}' for the path`] : undefined,
+    };
   }
 
   /** No rule matched the target's type: anchored at the declaration, the verb

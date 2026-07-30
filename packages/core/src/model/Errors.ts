@@ -79,6 +79,24 @@ export interface IUseSite {
 }
 
 /**
+ * A name that resolves (directly or through other names) to itself. The cycle
+ * is carried as its use sites, closing reference first — the value that named
+ * an already-resolving target/property — back to the use site that entered it;
+ * a self-reference (`js_package base { srcs = base:*.ts; }`, where `base` names
+ * the target being declared rather than the directory beside it) is the
+ * single-element case. The written reference, not the declaration it re-enters,
+ * is what the user got wrong, so the report anchors there.
+ */
+export class CircularDependencyError extends Error {
+  constructor(
+    public readonly name: string,
+    public readonly cycle: ReadonlyArray<IUseSite>
+  ) {
+    super(`Circular dependency: '${name}' depends on itself`);
+  }
+}
+
+/**
  * A written name that failed to resolve, positioned at the name itself (its own
  * source span) so the report underlines it, not just the enclosing target. The
  * default case is a literal (wildcard-free) name in a FILES property that named

@@ -70,6 +70,7 @@ import {
 import { IDiagnosticNote } from "../support/Log";
 import type { StageStreams } from "../support/Execute";
 import {
+  CircularDependencyError,
   DependencyFailedError,
   IUseSite,
   NameResolutionError,
@@ -382,6 +383,26 @@ export class BuildContext {
     return hints.length > 0 ? attachHelp(err, hints.join("; ")) : err;
   }
 
+  /**
+   * The help for a name nothing declares, wherever it was written: the nearest
+   * declared name — targets and config properties alike, since a bare name may
+   * resolve to either — matched against the head of a `:` projection, that
+   * being the name got wrong. A name written on the command line also gets the
+   * pointer to the verb that lists them; one written in a build file does not
+   * (it is not a shell away from checking).
+   */
+  private unknownNameHints(written: string, onCommandLine: boolean): string[] {
+    const nearest = closestMatch(written.split(":")[0], [
+      ...this.model.getTargets().map(target => target.name),
+      ...this.model.getProperties().map(prop => prop.name),
+    ]);
+    const listing = "'fabr list-targets' shows the available targets";
+    if (nearest) {
+      return [onCommandLine ? `did you mean '${nearest}'? (${listing})` : `did you mean '${nearest}'?`];
+    }
+    return onCommandLine ? [listing] : [];
+  }
+
   public getProperty(name: string, stack?: IDependencyStack, callerOverrides?: Constraints): Computable<Property> {
     this.assertNonCircularProperty(name, stack);
     if (callerOverrides) {
@@ -407,7 +428,7 @@ export class BuildContext {
     if (!def || def.kind !== DeclKind.Property) {
       const reason = def
         ? `'${name}' names a ${def.kind === DeclKind.Target ? "target" : "namespace"}, not a property`
-        : `Unresolved property name '${name}'`;
+        : `Unknown property '${name}'`;
       const nearest = def ? undefined : closestMatch(name, this.model.getProperties().map(prop => prop.name));
       throw this.unresolvedNameError(name, stack, reason, nearest ? [`did you mean '${nearest}'?`] : []);
     }
@@ -461,22 +482,14 @@ export class BuildContext {
         return result;
       } else {
         const hints: string[] = [];
-        const nearest = closestMatch(name, [
-          ...this.model.getTargets().map(target => target.name),
-          ...this.model.getProperties().map(prop => prop.name),
-        ]);
         if (name.includes(":")) {
           /* getTarget resolves whole declared names only (the build/test CLI
            * path) — a ':' here is a file projection, which those verbs don't
            * take. */
           hints.push("'build' and 'test' take whole target names; a ':' projection into a target's files applies to ls, cat, and run");
         }
-        if (nearest) {
-          hints.push(!stack ? `did you mean '${nearest}'? ('fabr list-targets' shows the available targets)` : `did you mean '${nearest}'?`);
-        } else if (!stack) {
-          hints.push("'fabr list-targets' shows the available targets");
-        }
-        throw this.unresolvedNameError(name, stack, `Unresolved name '${name}'`, hints);
+        hints.push(...this.unknownNameHints(name, !stack));
+        throw this.unresolvedNameError(name, stack, `Unknown name '${name}'`, hints);
       }
     }
   }
@@ -1037,18 +1050,11 @@ export class BuildContext {
             return { sources: [data] };
           });
         } else {
-          /* A command-line name that names no known target (no decl to resolve
-           * a bare path against). Suggest against the literal head of the
-           * written name — the part before any ':' projection — since that is
-           * the target the user was naming. */
+          /* A command-line name that names nothing declared (no decl to resolve
+           * a bare path against) — the same mistake getTarget reports for the
+           * build/test verbs, so it reads the same and suggests the same way. */
           const written = name.toString();
-          const nearest = closestMatch(written.split(":")[0], this.model.getTargets().map(target => target.name));
-          throw attachHelp(
-            new Error(`Unknown target '${written}'`),
-            nearest
-              ? `did you mean '${nearest}'? ('fabr list-targets' shows the available targets)`
-              : "'fabr list-targets' shows the available targets"
-          );
+          throw this.unresolvedNameError(written, undefined, `Unknown name '${written}'`, this.unknownNameHints(written, true));
         }
       }
     });
@@ -1332,46 +1338,34 @@ export class BuildContext {
   private assertNonCircularProperty(property: string, stack?: IDependencyStack): void {
     const entry = this.findPropertyInStack(property, stack);
     if (entry) {
-      throw new Error("Circular dependency resolving " + property + "\n" + stringifyDependencyStack(stack, entry));
+      throw new CircularDependencyError(property, cycleFrom(stack, entry));
     }
   }
 
   private assertNonCircularTarget(target: string, stack?: IDependencyStack): void {
     const entry = this.findTargetInStack(target, stack);
     if (entry) {
-      throw new Error("Circular dependency resolving " + target + "\n" + stringifyDependencyStack(stack, entry));
+      throw new CircularDependencyError(target, cycleFrom(stack, entry));
     }
   }
 }
 
 /**
- * Construct a human readable dump of the stack.
- * @param stack start of the start to show.
- * @param end If supplied, the last entry of the stack to show.
+ * The cycle's use sites, closing reference (the head of the stack, which named
+ * an already-resolving name) first through to the entry that re-entered it. A
+ * self-reference closes on the stack head itself, giving one site.
  */
-function stringifyDependencyStack(stack?: IDependencyStack, end?: IDependencyStack): string {
-  let result = "";
+function cycleFrom(stack: IDependencyStack | undefined, entry: IDependencyStack): IUseSite[] {
+  const sites: IUseSite[] = [];
   let node = stack;
-  while (node && node !== end) {
-    result += "    " + stringifyDependencyStackEntry(node) + "\n";
+  while (node) {
+    sites.push({ value: node.value, property: node.property, target: node.target });
+    if (node === entry) {
+      break;
+    }
     node = node.next;
   }
-  return result;
-}
-
-function stringifyDependencyStackEntry(entry: IDependencyStack): string {
-  let name;
-  if (entry.target) {
-    name = entry.target.name + "." + entry.property.name;
-  } else {
-    name = entry.property.name;
-  }
-  return `at ${name} (${stringifyLoc(entry.value)})`;
-}
-
-function stringifyLoc(decl: IDecl): string {
-  const loc = decl.source.reader.resolvePosition(decl.offset);
-  return `${decl.source.file}:${loc?.line}:${loc?.column}`;
+  return sites;
 }
 
 /**

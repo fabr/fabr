@@ -20,6 +20,7 @@
 import { expect } from "chai";
 import {
   BUILD_OPERATION,
+  CircularDependencyError,
   ConflictError,
   Constraints,
   DependencyFailedError,
@@ -28,7 +29,7 @@ import {
   IDiagnosticNote,
   Log,
   MultiError,
-  Name,
+  parseName,
   NoRuleFoundError,
   ReferenceFailedError,
   registerProvenanceRenderer,
@@ -52,19 +53,55 @@ function targetDecl(name: string, type = "js_package"): TargetDecl {
 function propertyDecl(name: string): PropertyDecl {
   return { name, values: [], offset: 0, endOffset: 0, source: {} } as unknown as PropertyDecl;
 }
-function value(): ValueDecl {
-  return { value: Name.fromLiteral("x"), offset: 0, endOffset: 0, source: {} } as unknown as ValueDecl;
+function value(written = "x"): ValueDecl {
+  return { value: parseName(written), offset: 0, endOffset: 0, source: {} } as unknown as ValueDecl;
 }
 
-/** Capture the diagnostics the formatter emits, keeping message + notes. */
-function capture(err: Error, ambient: ReadonlySet<string> = new Set()): Array<{ message: string; notes?: IDiagnosticNote[] }> {
-  const out: Array<{ message: string; notes?: IDiagnosticNote[] }> = [];
-  const log: Log = { log: (_diag, params) => out.push(params as unknown as { message: string; notes?: IDiagnosticNote[] }) };
+/** One captured diagnostic: the parts these tests assert on. */
+type Captured = { message: string; notes?: IDiagnosticNote[]; help?: string[] };
+
+/** Capture the diagnostics the formatter emits, keeping message, notes and help. */
+function capture(err: Error, ambient: ReadonlySet<string> = new Set()): Captured[] {
+  const out: Captured[] = [];
+  const log: Log = { log: (_diag, params) => out.push(params as unknown as Captured) };
   new DiagnosticErrorFormatter(ambient).report(log, err);
   return out;
 }
 
 describe("DiagnosticErrorFormatter", () => {
+  it("anchors a self-reference at the written name, pointing at the declaration it reached", () => {
+    /* `js_package base { srcs = base:*.ts; }`: the name resolves to the target
+     * being declared, not the directory beside it. The report belongs on the
+     * reference; the declaration it reached (which may be in another file) is
+     * the evidence, and the remedy is the './' spelling that reaches the path. */
+    const base = targetDecl("base");
+    const circular = new CircularDependencyError("base", [{ value: value("base:*.ts"), property: propertyDecl("srcs"), target: base }]);
+    const [diag] = capture(new DependencyFailedError(base, circular));
+
+    expect(diag.message).to.equal("Circular dependency: 'base' depends on itself");
+    expect((diag.notes ?? []).map(note => note.message)).to.deep.equal(["'base' is declared here"]);
+    expect(diag.help?.[0]).to.contain("write './base:*.ts' for the path");
+  });
+
+  it("renders a cycle's own hops once, not again as the trail that reached it", () => {
+    /* one -> two -> one: the hop that required `two` is both part of the cycle
+     * and the trail the failure propagated along. */
+    const one = targetDecl("one");
+    const two = targetDecl("two");
+    const deps = propertyDecl("deps");
+    const circular = new CircularDependencyError("one", [
+      { value: value("one"), property: deps, target: two },
+      { value: value("two"), property: deps, target: one },
+    ]);
+    const twoFailure = new DependencyFailedError(two, circular);
+    const oneFailure = new DependencyFailedError(one, new ReferenceFailedError(value("two"), deps, one, twoFailure));
+
+    const [diag] = capture(oneFailure);
+    expect(diag.message).to.equal("Circular dependency: 'one' depends on itself");
+    expect((diag.notes ?? []).map(note => note.message)).to.deep.equal(["required by one deps"]);
+    expect(diag.help ?? []).to.deep.equal([]);
+  });
+
   it("shows one 'required by' trail per requesting root, not every path to it", () => {
     /* Diamond: fabr depends on core directly and via js (which depends on core);
      * core fails to compile. Both paths reach the same requested root (fabr), so

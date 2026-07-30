@@ -52,7 +52,7 @@ import { FSFileSource } from "../core/FSFileSource";
 import { scriptRunRule } from "../rules/RunScript";
 import { mapEntryOrigin, PropertyMap, PropertyMapValue } from "./BuildContext";
 import { BUILD_OPERATION, Constraints } from "./Constraints";
-import { DependencyFailedError, NameResolutionError, NoRuleFoundError, ReferenceFailedError } from "./Errors";
+import { CircularDependencyError, DependencyFailedError, NameResolutionError, NoRuleFoundError, ReferenceFailedError } from "./Errors";
 import { ExecutionContext } from "./ExecutionContext";
 import { parseBuildString } from "./Parser";
 import { toBuildModel } from "./Sema";
@@ -362,6 +362,58 @@ describe("BuildContext", () => {
     }
   });
 
+  it("Reports a name that resolves to itself as a cycle at the reference that closed it", async () => {
+    /* Name shadowing: 'base:*.ts' reads as a directory but a target of that
+     * name takes precedence, so the target's srcs are its own output. The
+     * cycle is one use site — the written reference, which is the mistake. */
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "targetdef test_good { deps = FILES; }\ntest_good base { deps = base:*.ts; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    try {
+      await model.getConfig(Constraints.of({}), execution).getTarget("base");
+      expect.fail("expected target base to fail");
+    } catch (err) {
+      const cause = (err as DependencyFailedError).cause;
+      expect(cause).to.be.instanceOf(CircularDependencyError);
+      const circular = cause as CircularDependencyError;
+      expect(circular.name).to.equal("base");
+      expect(circular.message).to.equal("Circular dependency: 'base' depends on itself");
+      expect(circular.cycle.map(site => site.value.value.toString())).to.deep.equal(["base:*.ts"]);
+      expect(circular.cycle[0].property.name).to.equal("deps");
+      expect(circular.cycle[0].target?.name).to.equal("base");
+    }
+  });
+
+  it("Reports a cycle through several targets as the whole loop", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "targetdef test_good { deps = FILES; }\ntest_good one { deps = two; }\ntest_good two { deps = one; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    try {
+      await model.getConfig(Constraints.of({}), execution).getTarget("one");
+      expect.fail("expected target one to fail");
+    } catch (err) {
+      let cause: Error = err as Error;
+      while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
+        cause = cause.cause;
+      }
+      expect(cause).to.be.instanceOf(CircularDependencyError);
+      const circular = cause as CircularDependencyError;
+      expect(circular.name).to.equal("one");
+      /* Closing reference first ('one', written in two's deps), back to the use
+       * site that entered the cycle ('two', written in one's deps). */
+      expect(circular.cycle.map(site => `${site.target?.name} ${site.property.name} = ${site.value.value.toString()}`)).to.deep.equal([
+        "two deps = one",
+        "one deps = two",
+      ]);
+    }
+  });
+
   it("Attributes file conflicts to the dependencies that introduced them", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
@@ -495,12 +547,12 @@ describe("BuildContext", () => {
         await model.getConfig(Constraints.of({}), execution).getTarget(name);
       } catch (err) {
         threw = true;
-        expect((err as Error).message, name).to.match(/^Unresolved name '/);
+        expect((err as Error).message, name).to.match(/^Unknown name '/);
       }
       expect(threw, `expected '${name}' to be unresolved`).to.equal(true);
     }
     /* The `${valueOf}` property path is guarded the same way. */
-    expect(() => model.getConfig(Constraints.of({}), execution).getProperty("valueOf")).to.throw(/Unresolved property name/);
+    expect(() => model.getConfig(Constraints.of({}), execution).getProperty("valueOf")).to.throw(/Unknown property/);
   });
 
   it("Fails a literal name that names no target and matches no file", async () => {
@@ -1358,7 +1410,7 @@ describe("unresolved-name diagnostics", () => {
       expect.fail("expected a rejection");
     } catch (e) {
       const err = e as NameResolutionError & { help?: string };
-      expect(err.message).to.contain("Unresolved property name 'FOOO'");
+      expect(err.message).to.contain("Unknown property 'FOOO'");
       expect(err.help).to.contain("did you mean 'FOO'?");
       expect(err).to.be.instanceOf(NameResolutionError);
       expect(err.position.offset).to.be.greaterThan(0);
@@ -1379,9 +1431,37 @@ describe("unresolved-name diagnostics", () => {
       expect.fail("expected a throw");
     } catch (e) {
       const err = e as Error & { help?: string };
-      expect(err.message).to.contain("Unresolved name 'mytargt'");
+      expect(err.message).to.contain("Unknown name 'mytargt'");
       expect(err.help).to.contain("did you mean 'mytarget'?");
       expect(err.help).to.contain("fabr list-targets");
+    }
+  });
+
+  it("reports a name nothing declares the same way for every verb", async () => {
+    /* build/test resolve a whole name through getTarget; ls/cat/run resolve a
+     * possibly-projected one through resolveName. One mistake, so one wording
+     * and one suggestion — they used to differ ('Unresolved name' with a
+     * suggestion versus 'Unknown target' without the property candidates). */
+    const input = "targetdef test_file { content = STRING; }\ntest_file mytarget { content = x; }\n";
+    const context = modelOf(input).getConfig(Constraints.of({}), execution);
+    const failures: Array<Error & { help?: string }> = [];
+    try {
+      context.getTarget("mytargt");
+      expect.fail("expected a throw");
+    } catch (e) {
+      failures.push(e as Error & { help?: string });
+    }
+    try {
+      /* The projection is what routes this one down the resolveName path. */
+      await context.resolveName("mytargt:build/x.js");
+      expect.fail("expected a rejection");
+    } catch (e) {
+      failures.push(e as Error & { help?: string });
+    }
+
+    expect(failures.map(err => err.message)).to.deep.equal(["Unknown name 'mytargt'", "Unknown name 'mytargt:build/x.js'"]);
+    for (const err of failures) {
+      expect(err.help).to.contain("did you mean 'mytarget'?");
     }
   });
 
