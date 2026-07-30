@@ -37,7 +37,10 @@ export default defineConfig({
         { label: "Quick start (JS/TS)", link: "/quickstart-js/" },
         {
           label: "Guides",
-          items: [{ label: "Watch mode & dev servers", link: "/guides/watch/" }],
+          items: [
+            { label: "Conceptual model", link: "/guides/concepts" },
+            { label: "Watch mode & dev servers", link: "/guides/watch/" }
+          ],
         },
         {
           label: "Reference",
