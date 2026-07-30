@@ -34,6 +34,7 @@ import {
   getSourceFileSource,
   getTestReport,
   loadProject,
+  Name,
   parseName,
   Log,
   LogFormatter,
@@ -592,18 +593,15 @@ function writeStdout(bytes: Uint8Array): Computable<void> {
  * directory as part of a `sync` release — is parked.)
  */
 function copyTarget(options: Options, execution: ExecutionContext, results: SourceRef[][]): Computable<void> {
-  const sets: FileSet[] = [];
-  results.forEach((sources, i) => {
+  const sets: FileSet[] = results.flatMap( (sources,i) => {
     const name = options.targets[i];
     const fileSets = sources.filter((source): source is FileSet => source instanceof FileSet);
     if (fileSets.every(set => set.isEmpty())) {
       throw matchedNoFiles(name);
     }
-    const prefix = copyPrefix(name, fileSets);
-    for (const set of fileSets) {
-      sets.push(prefix ? set.rename(fileName => `${prefix}${fileName}`) : set);
-    }
-  });
+    const rename = remapCopyTargetName(name, fileSets);
+    return fileSets.map(set => set.rename(rename));
+});
   const merged = FileSet.unionAll(...sets);
   const dest = path.resolve(options.dest!);
   return writeFileSet(dest, merged, { copy: true }).then(() =>
@@ -612,15 +610,24 @@ function copyTarget(options: Options, execution: ExecutionContext, results: Sour
 }
 
 /**
- * `cp`'s file-vs-directory rule applied to one source: returns the subdirectory
- * its files nest under (`"core/"`), or `""` for a flat copy. `cp` is a pure file
- * operation — exactly `cp -R`, never package-aware — so the name is always the
- * source **reference as written**, never the resolved package's own identity
+ * `cp`'s file-vs-directory rule applied to one source: how each of its resolved files is
+ * named under `dest`, or `undefined` to keep the resolved name as-is. `cp` is a pure file
+ * operation — exactly `cp -R`, never package-aware — so this follows the source
+ * **reference as written**, never the resolved package's own identity
  * (`cp -R node_modules/@scope/package out` yields `out/package`, and by the same
  * rule `@npm:esbuild:0.28.1` yields `out/0.28.1` — the reference's final component
  * whatever it happens to be):
- * - a **trailing `/`** or a **final glob** (`pkg:build/*.js`) → flat (contents /
- *   the matched files land directly under dest — `cp dir/ out`, `cp *.js out`);
+ * - a **trailing `/`** or a **final glob** (`pkg:build/*.js`) → flat: the contents / the
+ *   matched files land directly under dest (`cp dir/ out`, `cp build/*.js out`). The
+ *   selector's own literal directories are the path cp copies *from*, so they come off the
+ *   names — the shell would have expanded the glob and handed cp each file individually,
+ *   and cp names a file source by its basename. What the wildcards matched is kept, so a
+ *   recursive glob preserves structure below the base (`cp -R build/. out`).
+ *
+ * Whether the path was written with a `:` or a `/` makes no difference to any of this: the
+ * separator decides what the resolved files are *named* (`:` strips what precedes it), but
+ * cp copies from the path as written either way, so both land the same files in the same
+ * places.
  * - a source that **directly names a single file** → flat (the file keeps its
  *   name — `cp file out` → `out/file`);
  * - otherwise it **names a directory/container** → nested under its final path
@@ -631,17 +638,47 @@ function copyTarget(options: Options, execution: ExecutionContext, results: Sour
  * name). "Directly names a file" wraps unless the source is a **lone delivered
  * file whose basename is that leaf** (`files:a.txt` → `a.txt`, flat).
  */
-function copyPrefix(name: string, sets: FileSet[]): string {
-  /* Parse then drop the facets, so the selector we inspect for flatness and leaf
-   * is the resolvable text alone. */
-  const selector = parseName(name).withConstraints([]).withRenameTo(undefined).toString();
-  const leaf = selector.replace(/\/+$/, "").split(/[/:]/).filter(Boolean).pop() ?? "";
-  if (selector.endsWith("/") || /[*?[\]]/.test(leaf)) {
-    return "";
+function remapCopyTargetName(name: string, sets: FileSet[]): ((fileName: string) => string) {
+  /* Parse then drop the constraint facet, so what we inspect is the resolvable name alone. */
+  const parsed = parseName(name).withConstraints([]);
+  /* An explicit `-> tmpl` IS the naming: the resolved files already carry the names it
+   * produced, so cp adds no default of its own. Without this a rename that keeps — or
+   * reintroduces — the selector's literal prefix would have it stripped straight back off
+   * below, quietly overriding what was asked for. */
+  if (parsed.getRenameTo() !== undefined) {
+    return fileName => fileName;
   }
+  const selector = parsed.toString();
+  const leaf = selector.replace(/\/+$/, "").split(/[/:]/).filter(Boolean).pop() ?? "";
   const fileNames = sets.flatMap(set => [...set].map(([fileName]) => fileName));
+  if (parsed.hasGlob() || selector.endsWith("/")) {
+    const base = selectorBase(parsed, fileNames);
+    return base === "" ? filename => filename : fileName => fileName.slice(base.length);
+  }
   const isLoneFile = fileNames.length === 1 && fileNames[0].split("/").pop() === leaf;
-  return isLoneFile ? "" : `${leaf}/`;
+  /* A named file lands under its basename, as cp names any file source — so the directories
+   * it was reached through come off whether they were written with `:` or `/`. */
+  return isLoneFile ? () => leaf : fileName => `${leaf}/${fileName}`;
+}
+
+/**
+ * The directory prefix a flat source's resolved files carry from the selector, and which
+ * `cp` therefore strips — the name's own literal leading path
+ * ({@link Name.getLiteralPathPrefix}, which ends at the last separator before the first
+ * wildcard and treats `:` and `/` alike).
+ *
+ * How much of that prefix the *names* carry depends on how the reference was spelled —
+ * `pkg:build/*.js` resolves to `build/a.js`, `pkg/build/*.js` to `pkg/build/a.js` — so
+ * take the longest trailing run of its segments the names really start with. Both then
+ * strip to `a.js`, which is what makes the two spellings copy identically. A wildcard
+ * with nothing literal before it leaves no prefix, so such a source keeps its whole
+ * matched structure.
+ */
+function selectorBase(selector: Name, names: string[]): string {
+  const dirs = selector.getLiteralPathPrefix().split(/[/:]/).filter(Boolean);
+  /* Trailing runs, longest first — a repeated segment (`a/a/**`) must not match short. */
+  const candidates = dirs.map((_, from) => `${dirs.slice(from).join("/")}/`);
+  return candidates.find(base => names.every(name => name.startsWith(base))) ?? "";
 }
 
 /**

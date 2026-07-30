@@ -157,6 +157,105 @@ describe("e2e: driver CLI", () => {
     expect(result.files?.["out/files/a.txt"]).to.be.undefined;
   });
 
+  it("cp of a glob under a subdirectory drops the walked directories, keeping structure below", () => {
+    /* The bug this covers: `copyPrefix` correctly declined to add a wrapper for a final
+     * glob, but the resolved names still carried the directories the selector walked
+     * through (a projection strips only what precedes its `:`), so the matches landed under
+     * `out/nested/` instead of in `out/`. Real `cp` names a file source by its basename —
+     * the shell expands `nested/*.txt` and hands cp each file — so the literal part of the
+     * selector is the path copied *from* and comes off. What a wildcard matched is still
+     * structure, and is kept: `**` below the base preserves its subdirectories, exactly as
+     * `cp -R nested/. out` does. */
+    const nested = {
+      "PROJECT.fabr": "files = src:**/*;\n",
+      "src/nested/a.txt": "AAA\n",
+      "src/nested/deep/c.txt": "CCC\n",
+    };
+    const flat = runFabr(nested, ["cp", "files:nested/*.txt", "out"], ["out/a.txt", "out/nested/a.txt"]);
+    expect(flat.status).to.equal(0);
+    expect(flat.files?.["out/a.txt"]).to.equal("AAA\n");
+    expect(flat.files?.["out/nested/a.txt"]).to.be.undefined;
+
+    const recursive = runFabr(nested, ["cp", "files:nested/**", "out"], ["out/a.txt", "out/deep/c.txt", "out/nested/a.txt"]);
+    expect(recursive.status).to.equal(0);
+    expect(recursive.files?.["out/a.txt"]).to.equal("AAA\n");
+    expect(recursive.files?.["out/deep/c.txt"]).to.equal("CCC\n");
+    expect(recursive.files?.["out/nested/a.txt"]).to.be.undefined;
+  });
+
+  it("cp leaves an explicit rename alone rather than stripping its prefix back off", () => {
+    /* The rename asks for the files under `core/`, and the selector's literal prefix is also
+     * `core/` — so cp's default strip would take straight back off what the rename just put
+     * on, silently overriding it. An explicit `-> tmpl` is the naming; cp adds nothing. */
+    const nested = {
+      "PROJECT.fabr": "files = src:**/*;\n",
+      "src/core/a.ts": "AAA\n",
+      "src/core/sub/b.ts": "BBB\n",
+    };
+    const result = runFabr(
+      nested,
+      ["cp", "files:core/**/*.ts -> core/**/*.js", "out"],
+      ["out/core/a.js", "out/core/sub/b.js", "out/a.js", "out/sub/b.js"]
+    );
+    expect(result.status).to.equal(0);
+    expect(result.files?.["out/core/a.js"]).to.equal("AAA\n");
+    expect(result.files?.["out/core/sub/b.js"]).to.equal("BBB\n");
+    /* NOT stripped back to the flat form the default would have produced. */
+    expect(result.files?.["out/a.js"]).to.be.undefined;
+    expect(result.files?.["out/sub/b.js"]).to.be.undefined;
+  });
+
+  it("cp of a glob outside the final segment keeps what the wildcard matched", () => {
+    /* The wildcard is not in the last segment, so the leaf is a literal *file* name. Judging
+     * flatness by that leaf used to send this down the container path and nest everything
+     * under a directory named for a file (`out/t.ts/x1/t.ts`); the name's own `hasGlob` is
+     * what makes it a file selection. Nothing literal precedes the wildcard, so nothing is
+     * stripped and each match keeps the directory it was found in. */
+    const dirs = {
+      "PROJECT.fabr": "files = src:**/*;\n",
+      "src/x1/t.ts": "T1\n",
+      "src/x2/t.ts": "T2\n",
+    };
+    const result = runFabr(dirs, ["cp", "files:*/t.ts", "out"], ["out/x1/t.ts", "out/x2/t.ts", "out/t.ts/x1/t.ts"]);
+    expect(result.status).to.equal(0);
+    expect(result.files?.["out/x1/t.ts"]).to.equal("T1\n");
+    expect(result.files?.["out/x2/t.ts"]).to.equal("T2\n");
+    expect(result.files?.["out/t.ts/x1/t.ts"]).to.be.undefined;
+  });
+
+  it("cp copies identically whether the path was written with ':' or '/'", () => {
+    /* The separator decides what the resolved files are *named* — `:` strips what precedes
+     * it, `/` keeps the whole written path — but cp copies from the path as written either
+     * way, so both forms must land the same files in the same places. */
+    const nested = {
+      "PROJECT.fabr": "files = src:**/*;\n",
+      "src/nested/a.txt": "AAA\n",
+    };
+    for (const separator of [":", "/"]) {
+      const glob = runFabr(nested, ["cp", `files${separator}nested/*.txt`, "out"], ["out/a.txt", "out/nested/a.txt"]);
+      expect(glob.status, separator).to.equal(0);
+      expect(glob.files?.["out/a.txt"], separator).to.equal("AAA\n");
+      expect(glob.files?.["out/nested/a.txt"], separator).to.be.undefined;
+
+      const single = runFabr(nested, ["cp", `files${separator}nested/a.txt`, "out"], ["out/a.txt", "out/nested/a.txt"]);
+      expect(single.status, separator).to.equal(0);
+      expect(single.files?.["out/a.txt"], separator).to.equal("AAA\n");
+      expect(single.files?.["out/nested/a.txt"], separator).to.be.undefined;
+    }
+  });
+
+  it("cp of a leading-wildcard glob keeps the whole matched structure", () => {
+    /* Nothing literal precedes the wildcard, so there is no path to copy *from* and
+     * nothing comes off — the matches keep their full names under dest. */
+    const nested = {
+      "PROJECT.fabr": "files = src:**/*;\n",
+      "src/nested/a.txt": "AAA\n",
+    };
+    const result = runFabr(nested, ["cp", "files:**/*.txt", "out"], ["out/nested/a.txt"]);
+    expect(result.status).to.equal(0);
+    expect(result.files?.["out/nested/a.txt"]).to.equal("AAA\n");
+  });
+
   it("cp of several containers yields one directory per source", () => {
     /* `cp @scope/core @scope/cli out` → `out/core`, `out/cli`: each container
      * source becomes its own subdirectory, named for the reference's final

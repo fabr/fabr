@@ -59,10 +59,16 @@ result without digging through the cache:
 ```sh
 fabr ls mylib            # list the built files
 fabr cat mylib/index.js  # print a built file — path into a target as if it were a directory
-fabr cp mylib ./out      # copy the mylib package into the ./out directory
+fabr cp mylib ./out      # copy the package out -> ./out/mylib/ (cp -R rules)
 ```
 
 Everything you build can be inspected in this way as if the targets were plain directories.
+
+:::note
+`mylib/index.js` and `mylib:index.js` reach the same file but *name* it differently: a `/` keeps the
+whole written path, while a `:` strips everything before it. It makes no difference to `cat`, but it
+decides the names that `ls` prints.
+:::
 
 ## Dependencies and catalogs
 

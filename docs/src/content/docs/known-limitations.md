@@ -79,19 +79,27 @@ range at install time", so the results can differ:
 [`catalog`](/reference/js-rules/) to pin one consistent set of versions across a project. A genuine
 need for two coexisting majors of a *linked* dependency is a current limitation.
 
-## Concurrent fabr processes can race on the cache
+## Concurrent fabr processes duplicate work rather than sharing it
 
 Fabr deduplicates in-flight work and effectively write-locks cache entries **within a single
 process**, so all of one build's internal parallelism is safe. There is, however, **no cross-process
-lock** on the build cache: two fabr processes running at the same time that both miss the same cache
-entry can write it simultaneously and corrupt it.
+lock** on the build cache: two fabr processes running at the same time that both miss the same entry
+will each build it.
 
-**Workaround:** don't run two fabr builds against the same cache concurrently. If you need to, give
-each one its own cache directory via `FABR_CACHE_DIR`.
+That costs time, not correctness. Everything transient lives in a per-process work tree
+(`work/<host>-<pid>/`) and every commit into the store is atomic — a rename into the content pool,
+temp-plus-rename for a manifest — so the two runs cannot interleave into a corrupt entry, and for a
+deterministic build the loser's result is byte-identical to the winner's.
+
+**Workaround:** none is needed for correctness. To avoid the duplicated work, don't run two fabr
+builds against the same cache concurrently, or give each its own `FABR_CACHE_DIR`. Note also that
+deleting the cache from under a *running* `fabr run`/`serve` removes the live staged install with
+it.
 
 ## Watch mode can leave a program running if fabr is force-killed
 
-`fabr run -w` and `serve -w` supervise the program they launch and tear down its whole process group
+`fabr run -w` (including on a `serve` target — there is no separate `serve` verb) supervises the
+program it launches and tears down its whole process group
 — including any workers it forked — on every restart and on every orderly exit (Ctrl-C, `SIGTERM`,
 `SIGHUP`, or an uncaught error). But if fabr **itself** is force-killed — `SIGKILL`, an
 out-of-memory kill, or a crash — nothing can run to clean up, and the launched program is orphaned,

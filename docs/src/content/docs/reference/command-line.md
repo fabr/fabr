@@ -81,9 +81,24 @@ Build the given names and copy their files into a destination directory (the fin
 filesystem path relative to your working directory). Additive, and a copy rather than a hard-link, so
 it never writes through a cache blob.
 
+`cp` follows **`cp -R`'s rules exactly** and is never package-aware: whether the files land flat or
+under a subdirectory is decided by the reference *as written*, exactly as a shell path would decide
+it.
+
 ```sh
-fabr cp mylib build/          # copy mylib's files into build/
+fabr cp mylib build/             # names a container -> build/mylib/…
+fabr cp 'mylib:index.js' out     # names one file    -> out/index.js
+fabr cp 'mylib:build/*.js' out   # a glob -> the matched files land directly in out/
+fabr cp 'mylib:build/**' out     # a subtree -> out/…, the structure below build/ kept
 ```
+
+If the reference carries a [rename](/reference/syntax/#projection-and-renaming) (`-> tmpl`), that is
+the naming: the files are copied under the names it produced and none of the above applies.
+
+Whether you write the path with a `:` or a `/` makes no difference here. The separator decides what
+the resolved files are *named* — a `:` strips what precedes it, a `/` keeps the whole written path,
+which is what `ls` shows you — but `cp` copies *from* the path as written either way, so both forms
+land the same files in the same places.
 
 ### `sync`
 
@@ -97,8 +112,9 @@ fabr sync release
 
 ### `list-targets`
 
-List the targets declared in the project. `-l` adds each target's source location; `--json` emits
-structured data.
+List the targets declared in the project. `-l` adds each target's source location; `--all` includes
+the internal targets normally hidden (those declared by core and plugin libraries); `--json` emits
+structured data. An optional list of names filters the listing.
 
 ### `list-targetdefs`
 
@@ -128,8 +144,10 @@ Emit the whole build vocabulary — types, properties, and flags — as one JSON
 | `-q`, `--quiet` | Suppress the live subcommand output otherwise streamed as steps run; a *failed* step still shows its captured output. |
 | `-l` | Long listing: hash + size per file (`ls`), or source location (`list-*`). |
 | `--json` | Emit JSON (the `list-*` verbs). |
+| `--all` | Include internal targets in `list-targets`. |
 | `-v`, `--version` | Print the fabr version and exit. |
-| `-h` | Print usage and exit. |
+| `-h`, `--help` | Print usage and exit. |
+| `--` | End option parsing — everything after is a positional, so a target may begin with `-` or be spelled like a command. |
 
 ## Naming targets and files
 

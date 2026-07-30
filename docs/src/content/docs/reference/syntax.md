@@ -60,8 +60,8 @@ is still inside the overall project, however (if not otherwise removed already) 
 from the resulting names. For example:
 
 ```
-js_script myscript { 
-  entry = ../scripts/script.ts   # Yields scripts/script.ts 
+js_script myscript {
+  entry = ../scripts/script.ts;  # Yields scripts/script.ts
 }
 ```
 :::
@@ -71,14 +71,14 @@ js_script myscript {
 Standard shell globbing is supported, plus the recursive '**':
 
 ```
-srcs = src/*.tsx               # All files ending in .tsx immediately inside src (not a subdir)  
-srcs = src/**/*.ts             # All files ending in .ts anywhere inside src/
-deps = lib/*.[jt]s             # Match both *.js and *.ts using a character class.
+srcs = src/*.tsx;              # All files ending in .tsx immediately inside src (not a subdir)
+srcs = src/**/*.ts;            # All files ending in .ts anywhere inside src/
+deps = lib/*.[jt]s;            # Match both *.js and *.ts using a character class.
 ```
 
-A name that names a directory is treated as impliclty ending in /**:
+A name that names a directory is treated as implicitly ending in `/**`:
 ```
-srcs = src                     # where src is a directory, matches all files in src recursively.
+srcs = src;                    # where src is a directory, matches all files in src recursively.
 ```
 
 ### Quoting
@@ -104,15 +104,17 @@ version = ${FABR_VERSION};
 A reference can be constrained under one or more properties:
 
 ```
-deps = @package/core<TARGET=arm64-apple-darwin24.6.0>    # Depend on @package/core for the given target 
+deps = @package/core<TARGET=arm64-apple-darwin24.6.0>;   # Depend on @package/core for the given target
 ```
 
 Constraints are transitive, ie the above example will also require @package/core's dependencies
 to be recursively built under the specified target as well, unless further overridden.
 
-### Renaming
+### Projection and renaming
 
-The ':' operator is used in place of '/' to strip the part of the name before the ':':
+The ':' operator (a *projection*) is used in place of '/' to strip the part of the name before the
+':' — the same reference with a `/` instead resolves to the same files, but keeps the whole written
+path as their names:
 
 ```
 srcs = src:lib/index.ts;       # maps src/lib/index.ts to lib/index.ts
@@ -131,7 +133,8 @@ present must be the last part of the reference.
 
 ## Properties
 
-A property assigns one or more values to a name, terminated by `;`. Global property
+A property assigns one or more values to a name, terminated by `;` (optional after a `{ … }`
+block). Global property
 declarations are either strings, maps, or commands and are declared as bare key/value pairs:
 
 ```
@@ -245,7 +248,7 @@ targetdef sync {
 | `FILES` | One or more references/globs, resolved to a set of files. |
 | `MAP` | A block of `key = value;` entries (see [Map properties](#map-properties)). |
 | `COMMAND` | A shell-like command pipeline (see [Command property](#command-property)). |
-| `REWRITE` | Name-rewriting rules (`selector -> template`); see [Renaming](#renaming). |
+| `REWRITE` | Name-rewriting rules (`selector -> template`); see [Projection and renaming](#projection-and-renaming). |
 | `REQUIRED` | A modifier marking a property as mandatory. |
 
 `MAP`, `COMMAND`, and `REWRITE` are enforced — they constrain the *shape* the value may take (a block,
