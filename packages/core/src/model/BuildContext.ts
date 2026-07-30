@@ -1028,7 +1028,7 @@ export class BuildContext {
            * out of its dir (`../scripts/gendoc.ts`, a tool a level up) flattens
            * to its tail (`scripts/gendoc.ts`): a flat sandbox has no "above", so
            * the leading `../` strips under FileSet name canonicalization
-           * (RATIONALE.md) — which also makes two files flattening to one name a
+           * — which also makes two files flattening to one name a
            * checked conflict, not a silent drop. */
           return relativeTo.source.fs.find(substName.relativeTo(relativeTo.source.file)).then(data => {
             if (data.isEmpty() && !substName.hasGlob()) {

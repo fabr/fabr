@@ -84,8 +84,8 @@ export function activate(): PluginContribution {
     you wire into a later action's inputs or reshape into final content. Actions never nest;
     composition is always via sub-targets.
 
-  The evaluation/caching model these hang off is described in `CLAUDE.md` and
-  `RATIONALE.md`; this document covers only the registration surface.
+  This document covers only the registration surface, not the evaluation/caching model
+  these hang off.
 - `repositories` — each `{ type, provider }` contributes a repository type. Repositories resolve
   requirements and are not rule-built targets: the provider is constructed lazily per build
   configuration against a narrow `RepositoryContext` (declared config properties,

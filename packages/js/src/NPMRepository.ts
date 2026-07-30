@@ -821,7 +821,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    * `optionalDependencies` that are installable on the target. The dominant use
    * of the latter is os/cpu-gated native binaries (esbuild's @esbuild/<platform>
    * engine): all variants are listed, and only the target-matching one(s) are
-   * kept. Peers are **soft** (attach-first) requirements (see RATIONALE.md):
+   * kept. Peers are **soft** (attach-first) requirements:
    * satisfied by any selection in range whatever its resolution key — a wide
    * multi-major peer range must not spawn its floor as a coexisting major —
    * demanding their minimum only when the converged tree selects nothing for

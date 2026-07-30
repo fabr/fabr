@@ -434,8 +434,8 @@ export function startFabrWatch(files: Record<string, string>, args: string[], en
           fs.rmSync(cacheDir, { recursive: true, force: true });
           resolve(code ?? -1);
         };
-        /* A wedged fabr (e.g. the @parcel/watcher native deadlock — see
-         * KNOWN-ISSUES) can't run ANY signal handler, so waiting on 'exit' alone
+        /* A wedged fabr (e.g. the @parcel/watcher native deadlock that pinning
+         * >=2.5.0 avoids) can't run ANY signal handler, so waiting on 'exit' alone
          * can hang forever — and the child's open pipes then pin the runner's
          * event loop, so even the exit-hook reaper never fires (jest force-exits
          * the worker, skipping the reaper and orphaning the child; `fabr test`

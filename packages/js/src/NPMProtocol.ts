@@ -337,7 +337,7 @@ export function rewriteManifest(
 /**
  * Rewrite one dependency block's co-member entries to the members' assigned
  * versions. A `peerDependencies` entry pins **exact**: a peer is singleton-by-
- * identity (a `provided_deps` peer — see RATIONALE.md), so the consumer must
+ * identity (a `provided_deps` peer), so the consumer must
  * supply the EXACT co-member instance the package was built against, not merely
  * a semver-compatible one — a range can't express "the same loaded module".
  * Every other field takes a caret range. (A stable inter-package ABI might later

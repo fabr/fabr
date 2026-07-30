@@ -29,7 +29,7 @@ const JUNK_CHARACTER = /[\\\u0000-\u001f\u007f]/;
  * leading `/` or run of `../` is **stripped** — the namespace is a flat sandbox
  * with no "above", so a name climbing out of its frame flattens to its tail
  * (`../scripts/x` names `scripts/x`; the rule behind file-relative references
- * that climb out of their build file's directory — see RATIONALE.md). Names
+ * that climb out of their build file's directory). Names
  * that aren't path structure at all — `\`, control characters, or nothing left
  * after flattening — are errors, never repaired.
  */

@@ -63,8 +63,8 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
        * provided_deps materialize through one joint resolution (a package needing
        * Node APIs lists `@types/node` among them), so this target's pins
        * participate across the lot. `provided_deps` are host-provided,
-       * singleton-by-identity peers (the plugin↔core relationship — see
-       * `provided_deps` in RATIONALE.md): they take part in resolution, the
+       * singleton-by-identity peers (the plugin↔core relationship): they
+       * take part in resolution, the
        * compile, AND the carried closure exactly like `deps` (flatten +
        * per-name uniqueness already yields the one shared instance the peer
        * wants). They differ only in the generated manifest — `peerDependencies`,

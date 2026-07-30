@@ -454,8 +454,8 @@ export class FSFileSource implements FileSource {
    * re-settle for each that claims it. @parcel/watcher's FSEvents backend delivers
    * reliably under heavy load where chokidar silently dropped events (the reason for the
    * switch). Pinned exact at >=2.5.0: 2.4.1 can deadlock natively when the kqueue
-   * fallback races a failing FSEvents start (upstream #187, fixed by #189 in 2.5.0 —
-   * see KNOWN-ISSUES.md; the wedged process ignores every signal but SIGKILL).
+   * fallback races a failing FSEvents start (upstream #187, fixed by #189 in 2.5.0;
+   * the wedged process ignores every signal but SIGKILL).
    */
   private ensureSubscription(controller: WatchController): void {
     if (this.subscription) {
