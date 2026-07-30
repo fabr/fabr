@@ -126,11 +126,16 @@ export class NameResolutionError extends Error {
  * carried here: like a failed build, this error is wrapped per written
  * reference it crosses (ReferenceFailedError), which attributes each actual
  * demand path rather than the first demander's.
+ *
+ * `operations` are the ones the type *does* have a rule for: what was asked of
+ * the target isn't among them, so they are the remedy (a `serve` target asked
+ * to build supports `run`). Empty for a type with no type-specific rule at all.
  */
 export class NoRuleFoundError extends Error {
   constructor(
     public readonly target: ITargetDecl,
-    public readonly constraints: Constraints
+    public readonly constraints: Constraints,
+    public readonly operations: string[] = []
   ) {
     super(`No rule matches target '${target.name}' of type '${target.type}'`);
   }

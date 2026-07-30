@@ -9,9 +9,15 @@ Fabr is driven by a single `fabr` command:
 fabr [command] [options] <targets…>
 ```
 
-The command defaults to `build`, so `fabr mylib` is `fabr build mylib`. Diagnostics and progress go to
-**stderr**; a command's *data* output — a `cat`'s file bytes, an `ls` listing — goes to **stdout**, so
-the data can be piped cleanly away from the noise.
+With no command, each target takes the operation its type supports — `build` if it has one, else
+`test`, else `run` — so `fabr mylib` builds a `js_package`, `fabr mytests` runs a `js_test`'s tests,
+and `fabr myserver` runs a `serve` target. A target that can only *run* ends the command line:
+everything after it is passed to the program, so `fabr myserver --port 3000` gives `--port 3000` to
+the server rather than to fabr. Write the command out to be explicit, or to pass arguments to
+anything else (`fabr run mylib -- --flag`).
+
+Diagnostics and progress go to **stderr**; a command's *data* output — a `cat`'s file bytes, an `ls`
+listing — goes to **stdout**, so the data can be piped cleanly away from the noise.
 
 All fabr commands run inside the context of the current project, that is, the nearest PROJECT.fabr file
 found to the current working directory. 
@@ -20,12 +26,12 @@ found to the current working directory.
 
 ### `build`
 
-Build the given targets (the default). Each target's result is produced into the cache; nothing is
-written to your working tree.
+Build the given targets. Each target's result is produced into the cache; nothing is written to your
+working tree.
 
 ```sh
 fabr build mylib
-fabr mylib            # build is the default
+fabr mylib            # a js_package supports build, so this builds it
 ```
 
 ### `test`

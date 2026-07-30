@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
+import { DeclKind, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
 import { IPrefixMatch, Namespace } from "./Namespace";
 import { BuildContext } from "./BuildContext";
 import { BUILD_OPERATION, Constraints } from "./Constraints";
@@ -183,6 +183,14 @@ export class BuildModel {
 
   public getDecl(name: string): IPropertyDecl | ITargetDecl | INamespaceDecl | undefined {
     return this.root.getDecl(name);
+  }
+
+  /** @return the target this name declares, or undefined if it names something
+   * else (a property, a namespace) or nothing at all — for a caller that needs
+   * a target's *type* (and so what can be done with it) before asking for it. */
+  public getTargetDecl(name: string): ITargetDecl | undefined {
+    const decl = this.root.getDecl(name);
+    return decl?.kind === DeclKind.Target ? decl : undefined;
   }
 
   public getTargetDef(name: string): ITargetDefDecl | undefined {

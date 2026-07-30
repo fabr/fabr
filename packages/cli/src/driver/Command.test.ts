@@ -18,14 +18,16 @@
  */
 
 import { expect } from "chai";
-import { Mode, parseCommandLine } from "./Command";
+import { completeCommandLine, Mode, parseCommandLine } from "./Command";
 
 /** Thrown by the stubbed process.exit to unwind parseCommandLine. */
 class ExitSignal extends Error {}
 
 /** Run parseCommandLine capturing an exit code and the stdout/stderr writes, so
- * the error/usage paths (which call process.exit) are testable in-process. */
-function capture(args: string[]): { exit?: number; out: string[]; err: string[] } {
+ * the error/usage paths (which call process.exit) are testable in-process.
+ * `operationsOf` additionally finishes a command-less line ({@link
+ * completeCommandLine}), whose own usage errors exit the same way. */
+function capture(args: string[], operationsOf?: (target: string) => string[]): { exit?: number; out: string[]; err: string[] } {
   const out: string[] = [];
   const err: string[] = [];
   const origExit = process.exit;
@@ -39,7 +41,10 @@ function capture(args: string[]): { exit?: number; out: string[]; err: string[] 
   console.log = (message?: unknown) => out.push(String(message));
   console.error = (message?: unknown) => err.push(String(message));
   try {
-    parseCommandLine(["node", "fabr", ...args]);
+    const options = parseCommandLine(["node", "fabr", ...args]);
+    if (operationsOf) {
+      completeCommandLine(options, operationsOf);
+    }
   } catch (e) {
     if (!(e instanceof ExitSignal)) {
       throw e;
@@ -53,7 +58,9 @@ function capture(args: string[]): { exit?: number; out: string[]; err: string[] 
 }
 
 describe("Command", () => {
-  it("defaults to the build command", () => {
+  it("defers the targets when no command is given", () => {
+    /* What each names can only be decided against the model, so parsing stops
+     * at the first positional and the rest is kept verbatim. */
     expect(parseCommandLine(["node", "fabr", "foo"])).to.deep.equal({
       command: "build",
       mode: Mode.Normal,
@@ -61,7 +68,8 @@ describe("Command", () => {
       json: false,
       all: false,
       quiet: false,
-      targets: ["foo"],
+      targets: [],
+      deferred: ["foo"],
       properties: new Map(),
     });
   });
@@ -198,8 +206,13 @@ describe("Command", () => {
   });
 
   it("shields a command word after --, so a target named like a command builds", () => {
+    /* The deferred tail carries the `--` along, so the second pass reads the
+     * shielded name as the positional it already was. */
     const options = parseCommandLine(["node", "fabr", "--", "test"]);
     expect(options.command).to.equal("build");
+    expect(options.deferred).to.deep.equal(["--", "test"]);
+    const plan = completeCommandLine(options, () => ["build"]);
+    expect(plan.build).to.deep.equal(["test"]);
     expect(options.targets).to.deep.equal(["test"]);
   });
 
@@ -234,6 +247,76 @@ describe("Command", () => {
   it("accepts a valid command flag given before the command (-w test)", () => {
     const options = parseCommandLine(["node", "fabr", "-w", "test", "foo"]);
     expect(options.mode).to.equal(Mode.Watch);
+  });
+
+  describe("inferred commands", () => {
+    /* What each target type supports, as the model would report it. */
+    const OPERATIONS = new Map([
+      ["lib", ["build", "run", "test"]],
+      ["suite", ["test"]],
+      ["server", ["run"]],
+      ["anything", ["*"]],
+    ]);
+    const operationsOf = (name: string): string[] => OPERATIONS.get(name) ?? [];
+
+    /** Parse without a command and finish against the fake model. */
+    function plan(...args: string[]): ReturnType<typeof completeCommandLine> {
+      return completeCommandLine(parseCommandLine(["node", "fabr", ...args]), operationsOf);
+    }
+
+    it("builds a target that supports building, even when it also runs and tests", () => {
+      expect(plan("lib")).to.deep.equal({ build: ["lib"], test: [] });
+    });
+
+    it("tests a target whose type only tests", () => {
+      expect(plan("suite")).to.deep.equal({ build: [], test: ["suite"] });
+    });
+
+    it("runs a target whose type only runs, and hands it the rest of the line", () => {
+      expect(plan("server", "--port", "3000")).to.deep.equal({
+        build: [],
+        test: [],
+        run: { target: "server", args: ["--port", "3000"] },
+      });
+    });
+
+    it("takes a wildcard rule as building (it applies to any operation)", () => {
+      expect(plan("anything")).to.deep.equal({ build: ["anything"], test: [] });
+    });
+
+    it("falls back to build for a name the model knows nothing about", () => {
+      /* Which then fails as the ordinary unresolved-name/no-rule report. */
+      expect(plan("nosuch")).to.deep.equal({ build: ["nosuch"], test: [] });
+    });
+
+    it("groups several targets by what each supports, running last", () => {
+      expect(plan("lib", "suite", "server", "arg")).to.deep.equal({
+        build: ["lib"],
+        test: ["suite"],
+        run: { target: "server", args: ["arg"] },
+      });
+    });
+
+    it("applies fabr options found before the run target, not after it", () => {
+      const options = parseCommandLine(["node", "fabr", "lib", "-q", "server", "-w"]);
+      const result = completeCommandLine(options, operationsOf);
+      expect(options.quiet).to.equal(true);
+      expect(options.mode).to.equal(Mode.Normal);
+      expect(result.run).to.deep.equal({ target: "server", args: ["-w"] });
+    });
+
+    it("rejects an option no inferable command accepts", () => {
+      const { exit, err } = capture(["lib", "-l"], operationsOf);
+      expect(exit).to.equal(1);
+      expect(err[0]).to.match(/Option '-l' is not valid without a command/);
+    });
+
+    it("watches a run alongside other targets (they are independent chains)", () => {
+      const options = parseCommandLine(["node", "fabr", "-w", "lib", "server"]);
+      const result = completeCommandLine(options, operationsOf);
+      expect(options.mode).to.equal(Mode.Watch);
+      expect(result).to.deep.equal({ build: ["lib"], test: [], run: { target: "server", args: [] } });
+    });
   });
 
   for (const flag of ["-h", "--help"]) {

@@ -113,6 +113,30 @@ const COMMAND_SPECS: CommandSpec[] = [
 const COMMANDS = new Set(COMMAND_SPECS.map((c) => c.name));
 const COMMAND_BY_NAME = new Map(COMMAND_SPECS.map((c) => [c.name, c]));
 
+/**
+ * The build verbs in the order fabr picks between them for a target whose
+ * command was left out: what a target that supports several is most likely
+ * wanted for, with the interactive `run` the last resort. A `serve` or
+ * `js_script` target supports only `run`, so it is the only reading of naming
+ * one. Shared by that inference and by the "no rule" report's suggestion, so
+ * what fabr suggests is what fabr would have done.
+ */
+const OPERATION_PREFERENCE = ["build", "test", "run"];
+
+/**
+ * @return the operation to perform on a target whose type supports
+ * `operations` (as {@link BuildModel.getOperations} reports them, `"*"` being
+ * a rule that constrains no operation and so supports all), or undefined if it
+ * supports none of the build verbs — the caller then asks for what it wanted
+ * and gets the ordinary "no rule matches" report.
+ */
+export function preferredOperation(operations: string[]): string | undefined {
+  if (operations.includes("*")) {
+    return OPERATION_PREFERENCE[0];
+  }
+  return OPERATION_PREFERENCE.find((operation) => operations.includes(operation));
+}
+
 /** Model-query verbs: they inspect the loaded model rather than building targets,
  * so a bare invocation (no targets) is a valid "list everything" request. */
 const QUERY_COMMANDS = new Set(["list-targets", "list-targetdefs", "list-properties", "list-all"]);
@@ -142,6 +166,26 @@ export interface Options {
   dest?: string;
   /** Raw `-D` overrides, normalized into a Constraints at the driver's getConfig funnel. */
   properties: Map<string, string>;
+  /**
+   * No command word was given: the arguments from the first positional onward,
+   * verbatim and unparsed. Which verb each names depends on what its target's
+   * type supports, and a target that only *runs* takes everything after it as
+   * the program's own argv — neither of which is knowable until the model is
+   * loaded, so the split is finished by {@link completeCommandLine}.
+   */
+  deferred?: string[];
+}
+
+/**
+ * What a command-less invocation resolves to once the model can say what each
+ * named target supports: the targets to build and to test (in the order
+ * written), and at most one to run — being interactive, it is necessarily last
+ * and takes the rest of the command line as its argv.
+ */
+export interface CommandPlan {
+  build: string[];
+  test: string[];
+  run?: { target: string; args: string[] };
 }
 
 /** Write the usage text to the given sink — stdout for an explicit `-h`/`--help`
@@ -158,8 +202,9 @@ function printUsage(write: (message: string) => void = console.log): void {
   ).join("\n");
   write(
     "Usage: fabr [command] [options] <targets>\n" +
-      "The command defaults to 'build'; a target named like a command is reached by\n" +
-      "giving the command explicitly first.\n\n" +
+      "With no command, each target takes the operation its type supports — build, else\n" +
+      "test, else run — and a target that only runs takes the rest of the line as its own\n" +
+      "arguments. A target named like a command is reached by giving the command first.\n\n" +
       "Commands:\n" +
       commandLines +
       "\n\nOptions:\n" +
@@ -183,6 +228,52 @@ function usageError(message: string): never {
   process.exit(1);
 }
 
+/** One option flag as written, with the canonical form it is validated as. */
+type SeenFlag = { raw: string; flag: string };
+
+/**
+ * Apply one `-`-leading argument to the options being built, recording the
+ * flags that are only meaningful to some commands for validation against the
+ * command once it is known. Shared by the two parsing passes: the whole line
+ * when a command was given, and (via {@link completeCommandLine}) the tail
+ * deferred when one was not.
+ */
+function applyOption(arg: string, options: Options, seenFlags: SeenFlag[]): void {
+  if (arg === "-w") {
+    options.mode = Mode.Watch;
+    seenFlags.push({ raw: arg, flag: "-w" });
+  } else if (arg === "-l") {
+    options.longListing = true;
+    seenFlags.push({ raw: arg, flag: "-l" });
+  } else if (arg === "--json") {
+    options.json = true;
+    seenFlags.push({ raw: arg, flag: "--json" });
+  } else if (arg === "--all") {
+    options.all = true;
+    seenFlags.push({ raw: arg, flag: "--all" });
+  } else if (arg === "-q" || arg === "--quiet") {
+    options.quiet = true;
+    seenFlags.push({ raw: arg, flag: "-q" });
+  } else if (arg === "-h" || arg === "--help") {
+    printUsage();
+    process.exit(0);
+  } else if (arg === "--version" || arg === "-v") {
+    console.log(`fabr ${getVersion()}`);
+    process.exit(0);
+  } else if (arg.startsWith("-D")) {
+    /* -DKEY=VALUE: split at the *first* `=` so the value may contain more
+     * (e.g. -DTSC=@npm:x:1); no `=` (or an empty key) is malformed. */
+    const def = arg.substring(2);
+    const eq = def.indexOf("=");
+    if (eq <= 0) {
+      usageError(`Malformed option '${arg}' (expected -DKEY=VALUE)`);
+    }
+    options.properties.set(def.slice(0, eq).trim(), def.slice(eq + 1).trim());
+  } else {
+    usageError(`Unrecognized command-line option '${arg}'`);
+  }
+}
+
 export function parseCommandLine(args: string[]): Options {
   const options: Options = {
     command: "build",
@@ -199,11 +290,11 @@ export function parseCommandLine(args: string[]): Options {
   /* Command-specific flags seen, paired with their canonical form, validated
    * against the resolved command once the whole line is parsed — an option may
    * precede its command (`fabr -w test x`), so the command isn't yet known here. */
-  const seenFlags: { raw: string; flag: string }[] = [];
+  const seenFlags: SeenFlag[] = [];
 
   let commandGiven = false;
   let noMoreOptions = false;
-  for (const arg of opts) {
+  for (const [index, arg] of opts.entries()) {
     /* For `run`, once the target is captured everything else — flags included —
      * is passed verbatim to the program (fabr's own options go before it). */
     if (options.runArgs) {
@@ -214,45 +305,21 @@ export function parseCommandLine(args: string[]): Options {
        * Only the first `--` is special — a later one is an ordinary positional. */
       noMoreOptions = true;
     } else if (!noMoreOptions && arg[0] === "-") {
-      if (arg === "-w") {
-        options.mode = Mode.Watch;
-        seenFlags.push({ raw: arg, flag: "-w" });
-      } else if (arg === "-l") {
-        options.longListing = true;
-        seenFlags.push({ raw: arg, flag: "-l" });
-      } else if (arg === "--json") {
-        options.json = true;
-        seenFlags.push({ raw: arg, flag: "--json" });
-      } else if (arg === "--all") {
-        options.all = true;
-        seenFlags.push({ raw: arg, flag: "--all" });
-      } else if (arg === "-q" || arg === "--quiet") {
-        options.quiet = true;
-        seenFlags.push({ raw: arg, flag: "-q" });
-      } else if (arg === "-h" || arg === "--help") {
-        printUsage();
-        process.exit(0);
-      } else if (arg === "--version" || arg === "-v") {
-        console.log(`fabr ${getVersion()}`);
-        process.exit(0);
-      } else if (arg.startsWith("-D")) {
-        /* -DKEY=VALUE: split at the *first* `=` so the value may contain more
-         * (e.g. -DTSC=@npm:x:1); no `=` (or an empty key) is malformed. */
-        const def = arg.substring(2);
-        const eq = def.indexOf("=");
-        if (eq <= 0) {
-          usageError(`Malformed option '${arg}' (expected -DKEY=VALUE)`);
-        }
-        options.properties.set(def.slice(0, eq).trim(), def.slice(eq + 1).trim());
-      } else {
-        usageError(`Unrecognized command-line option '${arg}'`);
-      }
+      applyOption(arg, options, seenFlags);
     } else if (!noMoreOptions && !commandGiven && options.targets.length === 0 && COMMANDS.has(arg)) {
       /* The first positional argument may name the operation; a target with the
        * same name is reached with an explicit command first (`fabr build test`)
        * or after `--`, which shields command words as it does `-`-leading names. */
       options.command = arg;
       commandGiven = true;
+    } else if (!commandGiven) {
+      /* No command word: this positional's verb depends on what its target
+       * supports, and a run-only one takes everything after it as the program's
+       * argv — so the rest of the line waits for the model (completeCommandLine).
+       * A `--` already seen rides along at the head, since the deferred pass
+       * re-reads the remainder under the same rules. */
+      options.deferred = noMoreOptions ? ["--", ...opts.slice(index)] : opts.slice(index);
+      break;
     } else {
       options.targets.push(arg);
       if (options.command === "run") {
@@ -284,9 +351,52 @@ export function parseCommandLine(args: string[]): Options {
     }
     options.dest = options.targets.pop();
   }
-  if (options.targets.length === 0 && !QUERY_COMMANDS.has(options.command)) {
+  if (options.targets.length === 0 && !options.deferred && !QUERY_COMMANDS.has(options.command)) {
     printUsage();
     process.exit(0);
   }
   return options;
+}
+
+/**
+ * Finish parsing a command-less invocation, now that the model can say what
+ * each named target's type supports: each positional takes the operation it
+ * supports (build, else test, else run — see {@link OPERATION_PREFERENCE}),
+ * defaulting to `build` for a name that supports none, which then reports as
+ * the ordinary "no rule matches" failure. A target that *runs* ends the line:
+ * everything after it is the program's own argv, so an inferred run cannot be
+ * followed by more fabr arguments. Options found in the tail apply as they
+ * would anywhere else; only those every inferable command accepts are allowed.
+ *
+ * Mutates `options` (it is the same parse, resumed) and returns the plan.
+ */
+export function completeCommandLine(options: Options, operationsOf: (target: string) => string[]): CommandPlan {
+  const deferred = options.deferred ?? [];
+  const plan: CommandPlan = { build: [], test: [] };
+  const seenFlags: SeenFlag[] = [];
+  let noMoreOptions = false;
+  for (const [index, arg] of deferred.entries()) {
+    if (!noMoreOptions && arg === "--") {
+      noMoreOptions = true;
+    } else if (!noMoreOptions && arg[0] === "-") {
+      applyOption(arg, options, seenFlags);
+    } else {
+      const operation = preferredOperation(operationsOf(arg)) ?? "build";
+      if (operation === "run") {
+        plan.run = { target: arg, args: deferred.slice(index + 1) };
+        break;
+      }
+      (operation === "test" ? plan.test : plan.build).push(arg);
+    }
+  }
+  /* The inferable commands are build/test/run, which accept -w and -q; a flag
+   * meaningful only to some other command needs that command written out. */
+  for (const { raw, flag } of seenFlags) {
+    if (flag !== "-w" && flag !== "-q") {
+      usageError(`Option '${raw}' is not valid without a command`);
+    }
+  }
+  options.targets = [...plan.build, ...plan.test, ...(plan.run ? [plan.run.target] : [])];
+  options.runArgs = plan.run?.args;
+  return plan;
 }

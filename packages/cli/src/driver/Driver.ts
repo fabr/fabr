@@ -60,7 +60,7 @@ import { DiagnosticErrorFormatter, ErrorFormatter } from "./ErrorFormatter";
 import { runInteractive, RunSupervisor } from "./RunHandler";
 import { shellInto } from "./ShellHandler";
 import { publishSync } from "./SyncHandler";
-import { Mode, Options } from "./Command";
+import { completeCommandLine, Mode, Options } from "./Command";
 import { getSourceRoot, getBuildCacheRoot, getHostProperties, PROJECT_FILENAME } from "./Environment";
 import * as path from "node:path";
 
@@ -200,16 +200,7 @@ export function runFabr(options: Options): Promise<void> {
         options.quiet
       );
     case "test":
-      return runWith((model, execution) => {
-        const targets = buildTargets(model, options, execution, "test");
-        /* Reporting lives in the forAll callback (not a trailing .then) so it
-         * re-runs on every watch cycle: the callback is re-invoked whenever a
-         * target re-settles to a new value, whereas a `.then` on the void result
-         * would be short-circuited by the value-equality cutoff. */
-        return Computable.forAll(targets, (...results) =>
-          reportTestResults(execution.log, options, results).then(() => buildStatus(execution))
-        );
-      }, watch, options.quiet);
+      return runWith((model, execution) => testOperation(model, options, execution, options.targets), watch, options.quiet);
     case "run":
       return runWith((model, execution) => runProgram(model, options, execution, watch), watch, options.quiet);
     case "shell":
@@ -224,14 +215,67 @@ export function runFabr(options: Options): Promise<void> {
       return runWith(model => listProperties(model, options));
     case "list-all":
       return runWith(model => listAll(model));
-    default: /* build */
-      return runWith((model, execution) => {
-        const targets = buildTargets(model, options, execution, "build");
-        /* Report inside the callback (see the test case) so a watch rebuild
-         * re-prints its status rather than being cut off at the void result. */
-        return Computable.forAll(targets, () => buildStatus(execution));
-      }, watch, options.quiet);
+    default: /* build, or no command at all */
+      return options.deferred
+        ? runWith((model, execution) => runInferred(model, options, execution, options.mode === Mode.Watch), watch, options.quiet)
+        : runWith((model, execution) => buildOperation(model, options, execution, options.targets), watch, options.quiet);
   }
+}
+
+/** `fabr build <targets>`: build each target and print the status marker. */
+function buildOperation(model: BuildModel, options: Options, execution: ExecutionContext, names: string[]): Computable<void> {
+  const targets = buildTargets(model, options, execution, "build", names);
+  /* Report inside the callback (see the test case) so a watch rebuild
+   * re-prints its status rather than being cut off at the void result. */
+  return Computable.forAll(targets, () => buildStatus(execution));
+}
+
+/** `fabr test <targets>`: build each target's tests, run them, and report. */
+function testOperation(model: BuildModel, options: Options, execution: ExecutionContext, names: string[]): Computable<void> {
+  const targets = buildTargets(model, options, execution, "test", names);
+  /* Reporting lives in the forAll callback (not a trailing .then) so it
+   * re-runs on every watch cycle: the callback is re-invoked whenever a
+   * target re-settles to a new value, whereas a `.then` on the void result
+   * would be short-circuited by the value-equality cutoff. */
+  return Computable.forAll(targets, (...results) =>
+    reportTestResults(execution.log, names, results).then(() => buildStatus(execution))
+  );
+}
+
+/**
+ * A command-less invocation (`fabr docs_serve`): each named target takes the
+ * operation its type supports, which needs the loaded model — so the command
+ * line is finished here ({@link completeCommandLine}) rather than at parse
+ * time. Each group then does exactly what the explicit verb would, and they
+ * are *siblings*, not a chain: under watch they must stay independently
+ * reactive (a rebuild re-settles its own group; hanging the run downstream of
+ * a build would re-enter its factory, and so its supervisor, per cycle). Only
+ * a one-shot run sequences after the rest, because it takes over the process
+ * and exits with the program's status — nothing after it would run.
+ */
+function runInferred(model: BuildModel, options: Options, execution: ExecutionContext, watch: boolean): Computable<void> {
+  const plan = completeCommandLine(options, name => operationsOf(model, name));
+  const groups: Computable<void>[] = [];
+  if (plan.build.length > 0) {
+    groups.push(buildOperation(model, options, execution, plan.build));
+  }
+  if (plan.test.length > 0) {
+    groups.push(testOperation(model, options, execution, plan.test));
+  }
+  const run = plan.run;
+  if (!run) {
+    return Computable.forAll(groups, () => undefined);
+  }
+  const program = (): Computable<void> => runProgram(model, options, execution, watch, run.target, run.args);
+  return watch ? Computable.forAll([...groups, program()], () => undefined) : Computable.forAll(groups, () => undefined).then(program);
+}
+
+/** @return the operations the named target's type supports, or none at all if
+ * the name doesn't name a declared target (an unknown name, or a property):
+ * the caller then asks for a build and gets the ordinary resolution failure. */
+function operationsOf(model: BuildModel, name: string): string[] {
+  const decl = model.getTargetDecl(name);
+  return decl ? model.getOperations(decl.type) : [];
 }
 
 /**
@@ -246,11 +290,13 @@ function runProgram(
   model: BuildModel,
   options: Options,
   execution: ExecutionContext,
-  watch: boolean
+  watch: boolean,
+  target: string = options.targets[0],
+  args: string[] = options.runArgs ?? []
 ): Computable<void> {
   const config = model.getConfig(Constraints.of({ ...getHostProperties(), [BUILD_OPERATION]: "run", ...Object.fromEntries(options.properties) }), execution);
-  const supervisor = watch ? new RunSupervisor(execution.buildCache, options.targets[0], options.runArgs ?? [], execution.log) : undefined;
-  return config.resolveName(options.targets[0]).then(sources => {
+  const supervisor = watch ? new RunSupervisor(execution.buildCache, target, args, execution.log) : undefined;
+  return config.resolveName(target).then(sources => {
     const runnable = sources.find((s): s is RunnableFileSet => s instanceof RunnableFileSet);
     if (!runnable) {
       /* No runnable: a projection that matched nothing (empty) is the shared
@@ -258,8 +304,8 @@ function runProgram(
        * isn't runnable is the distinct case. */
       const files = FileSet.unionAll(...sources.filter((s): s is FileSet => s instanceof FileSet));
       throw files.isEmpty()
-        ? matchedNoFiles(options.targets[0])
-        : new Error(`'${options.targets[0]}' is not runnable (it has no BUILD_OPERATION=run result)`);
+        ? matchedNoFiles(target)
+        : new Error(`'${target}' is not runnable (it has no BUILD_OPERATION=run result)`);
     }
     if (supervisor) {
       /* The per-cycle completion marker ("Built X" / "Already up to date"), as
@@ -269,11 +315,12 @@ function runProgram(
        * cycle's build delta is captured NOW, at settle: an overlapping next
        * cycle must not have its builds scooped into this cycle's late marker.
        * One-shot run stays unmarked (status noise ahead of the program's own
-       * output). */
+       * output). The cycle is captured with the delta, for the same reason. */
       const built = execution.takeBuiltTargets();
-      return supervisor.update(runnable).then(() => reportBuildStatus(execution.log, built));
+      const cycle = execution.buildGeneration;
+      return supervisor.update(runnable).then(() => reportBuildStatus(execution.log, built, cycle));
     }
-    return runInteractive(execution.buildCache, runnable, options.runArgs ?? []).then(code => flushAndExit(code));
+    return runInteractive(execution.buildCache, runnable, args).then(code => flushAndExit(code));
   });
 }
 
@@ -470,10 +517,11 @@ function buildTargets(
   model: BuildModel,
   options: Options,
   execution: ExecutionContext,
-  operation: string
+  operation: string,
+  names: string[] = options.targets
 ): Computable<SourceRef[]>[] {
   const config = configFor(model, options, execution, operation);
-  return options.targets.map(name => config.getTargetRef(name));
+  return names.map(name => config.getTargetRef(name));
 }
 
 /** Resolve each whole name (target + projection) under the `files` operation:
@@ -492,18 +540,34 @@ function buildStatus(execution: ExecutionContext): void {
    * "Building X" lines already scrolled past during the build; this is the
    * completion marker — useful especially in watch mode). Nothing built ⇒ the
    * run was a no-op. */
-  reportBuildStatus(execution.log, execution.takeBuiltTargets());
+  reportBuildStatus(execution.log, execution.takeBuiltTargets(), execution.buildGeneration);
 }
 
-/** The marker's rendering half, over an already-captured delta — for a caller
+/** The build cycle a completion marker was last printed for; see {@link reportBuildStatus}. */
+let markedCycle = -1;
+
+/**
+ * The marker's rendering half, over an already-captured delta — for a caller
  * that must take the delta at one time and print at another (run -w defers the
- * marker past the supervisor's reaction). */
-function reportBuildStatus(log: Log, built: string[]): void {
+ * marker past the supervisor's reaction).
+ *
+ * The marker summarises a *cycle*, not a chain, and a cycle can have several
+ * independent chains reporting it (an inferred invocation's build and test
+ * groups, plus a supervised program). The delta is consumed, so the first to
+ * report already carries the whole cycle's work: a later one in the same cycle
+ * speaks only if it has work of its own to add, rather than repeating the
+ * summary as a vacuous "already up to date".
+ */
+function reportBuildStatus(log: Log, built: string[], cycle: number): void {
   if (built.length === 0) {
+    if (markedCycle === cycle) {
+      return;
+    }
     log.log(DIAG_UP_TO_DATE, {});
   } else {
     log.log(DIAG_BUILD_COMPLETE, { targets: built.join(", ") });
   }
+  markedCycle = cycle;
 }
 
 /**
@@ -985,12 +1049,12 @@ function renderListing(files: FileSet, longListing: boolean): Computable<string[
  * each target's result summary from its test report artifact (whether freshly
  * run or cached-green).
  */
-function reportTestResults(log: Log, options: Options, results: SourceRef[][]): Computable<void> {
+function reportTestResults(log: Log, names: string[], results: SourceRef[][]): Computable<void> {
   return Computable.forAll(
     results.map(sources => getTestReport(sources)),
     (...reports) => {
       reports.forEach((report, i) => {
-        log.log(DIAG_TEST_RESULT, { name: options.targets[i], summary: report ? formatTestSummary(report) : "no tests" });
+        log.log(DIAG_TEST_RESULT, { name: names[i], summary: report ? formatTestSummary(report) : "no tests" });
       });
     }
   );

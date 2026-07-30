@@ -227,6 +227,9 @@ interface IBuildModel {
   /** The model's registry: rule selection and repository providers ride the
    * model (built per load from core + active plugins), not a global. */
   getTargetRule(type: string, constraints: Constraints): IRuleDefinition | undefined;
+  /** The operations a type has a rule for — what a target of it can be asked
+   * to do, which is what makes an unsupported request explainable. */
+  getOperations(type: string): string[];
   getRepositoryProvider(type: string): RepositoryProvider | undefined;
 }
 
@@ -1194,7 +1197,7 @@ export class BuildContext {
     }
     const rule = this.model.getTargetRule(target.type, this.constraints);
     if (!rule) {
-      throw new NoRuleFoundError(target, this.constraints);
+      throw new NoRuleFoundError(target, this.constraints, this.model.getOperations(target.type));
     }
     return this.evaluateTarget(new DeclaredTargetContext(target, this, stack), rule);
   }
@@ -1221,7 +1224,7 @@ export class BuildContext {
     }
     const rule = this.model.getTargetRule(def.type, this.constraints);
     if (!rule) {
-      throw new NoRuleFoundError(def, this.constraints);
+      throw new NoRuleFoundError(def, this.constraints, this.model.getOperations(def.type));
     }
     const context = new DeclaredTargetContext(def, this, stack);
     return rule

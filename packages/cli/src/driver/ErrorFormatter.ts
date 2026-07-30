@@ -45,6 +45,7 @@ import {
   RequirementResolutionError,
   TestsFailedError,
 } from "@fabr-build/core";
+import { preferredOperation } from "./Command";
 
 /** All failures render through one template: describe() produces the final
  * message, and the structured detail (span, label, notes, help) rides along. */
@@ -263,7 +264,8 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   }
 
   /** No rule matched the target's type: anchored at the declaration, the verb
-   * from the operation in effect, only the override constraints shown. */
+   * from the operation in effect, only the override constraints shown. What the
+   * type *does* support is the remedy, named as the command that would do it. */
   private describeNoRule(cause: NoRuleFoundError): IDiagnostic {
     const operation = cause.constraints.get(BUILD_OPERATION) ?? "build";
     const verb = NO_RULE_VERBS[operation] ?? `perform '${operation}' on`;
@@ -274,6 +276,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
     return {
       message: `Cannot ${verb} '${cause.target.name}': no rule matches target type '${cause.target.type}'${suffix}`,
       loc: declPosn(cause.target),
+      help: supportedOperationsHelp(cause),
     };
   }
 
@@ -328,6 +331,21 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   private refNotes(refs: ReadonlyArray<RepositoryRef>): IDiagnosticNote[] {
     return refs.flatMap(ref => this.chainNotes(chainSteps(ref.steps, undefined), ref.name.toString()));
   }
+}
+
+/**
+ * The remedy for a target asked to do something its type has no rule for: the
+ * operations it does support, and the command that performs the one fabr would
+ * itself pick (`fabr docs_serve` infers the same verb, so the two agree). No
+ * help for a type with no rules at all — there is nothing to redirect to.
+ */
+function supportedOperationsHelp(cause: NoRuleFoundError): string[] | undefined {
+  const preferred = preferredOperation(cause.operations);
+  if (!preferred) {
+    return undefined;
+  }
+  const supported = cause.operations.map(operation => `'${operation}'`).join(", ");
+  return [`'${cause.target.type}' targets support ${supported} — try 'fabr ${preferred} ${cause.target.name}'`];
 }
 
 function helpOf(err: Error): string[] | undefined {
