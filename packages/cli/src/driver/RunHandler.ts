@@ -143,8 +143,16 @@ export class RunSupervisor {
    * it to bail out when a newer reaction has superseded it. */
   private generation = 0;
   /** Serializes content syncs: each chains behind the previous, so overlapping
-   * re-settles can't interleave their per-file writes out of order. */
+   * re-settles can't interleave their per-file writes out of order. It is a
+   * *gate*, not a history — once the newest sync has landed there is nothing left
+   * to queue behind, so {@link updateContent} collapses it back to a settled node.
+   * Left to accumulate it would hold one chain node per sync for the life of the
+   * run, each retaining the RunnableFileSet its callback closed over. */
   private lastSync: Computable<void> = Computable.resolve(undefined);
+  /** The most recently queued content sync. Only that one may collapse the gate:
+   * an earlier sync finishing behind a newer one must leave it in place, or the
+   * newer one's writes would stop being serialized against it. */
+  private syncSeq = 0;
 
   constructor(
     private readonly cache: BuildCache,
@@ -301,10 +309,21 @@ export class RunSupervisor {
    * (or proved unnecessary). */
   private updateContent(runnable: RunnableFileSet): Computable<void> {
     const generation = this.generation;
+    const seq = ++this.syncSeq;
+    /* Release the gate on every terminal path (including the nothing-to-do ones),
+     * so a run that syncs indefinitely holds one settled node rather than a chain. */
+    let collapsed = false;
+    const finish = (): undefined => {
+      if (seq === this.syncSeq) {
+        this.lastSync = Computable.resolve(undefined);
+        collapsed = true;
+      }
+      return undefined;
+    };
     const sync = this.lastSync.then(() => {
       const target = this.target;
       if (generation !== this.generation || !target || target.served.toManifest() === runnable.served.toManifest()) {
-        return undefined;
+        return finish();
       }
       return syncFileSet(target.dir, target.served, runnable.served).then(
         ({ written, removed }) => {
@@ -312,15 +331,22 @@ export class RunSupervisor {
             target.served = runnable.served;
             this.log.log(DIAG_UPDATE, { name: this.name, count: written + removed });
           }
+          finish();
         },
         err => {
           if (generation === this.generation) {
             this.log.log(DIAG_RUN_ERROR, { name: this.name, message: err instanceof Error ? err.message : String(err) });
           }
+          finish();
         }
       );
     });
-    this.lastSync = sync;
+    /* A sync with nothing to do settles while `then` is still constructing, so the
+     * gate is already released by here — taking `sync` as the gate would reinstate
+     * the chain it just dropped. */
+    if (!collapsed) {
+      this.lastSync = sync;
+    }
     return sync;
   }
 
