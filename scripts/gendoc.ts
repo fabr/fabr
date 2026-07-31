@@ -64,11 +64,22 @@ interface FlagDef {
   description?: string | null;
 }
 
+/** A ready-made declared target a library provides (a repository like `@npm`,
+ * a driver tool), with its written properties for reconstructing the decl. */
+interface ProvidedTarget {
+  name: string;
+  type: string;
+  properties: { name: string; value: string }[];
+  location?: string;
+  description?: string | null;
+}
+
 /** `list-all --json`: the whole vocabulary in one document. */
 interface Doc {
   targetdefs: TargetDef[];
   properties: ConfigProp[];
   flags: FlagDef[];
+  targets: ProvidedTarget[];
 }
 
 /** A rendered page: its output filename, which contributions it covers (by source
@@ -135,6 +146,18 @@ function schemaBlock(def: TargetDef): string {
   return "```\n" + lines.join("\n") + "\n```";
 }
 
+/** Reconstruct a provided target's declaration from its written properties,
+ * for the same never-drifts reason as {@link schemaBlock}. */
+function declBlock(target: ProvidedTarget): string {
+  const width = Math.max(0, ...target.properties.map(prop => prop.name.length));
+  const lines = [`${target.type} ${target.name} {`];
+  for (const prop of target.properties) {
+    lines.push(`  ${prop.name.padEnd(width)} = ${prop.value};`);
+  }
+  lines.push("}");
+  return "```\n" + lines.join("\n") + "\n```";
+}
+
 function render(group: Group, doc: Doc): string {
   const out: string[] = ["---", `title: ${group.title}`, `description: ${group.description}`, "---", "", ...group.intro, ""];
 
@@ -181,6 +204,18 @@ function render(group: Group, doc: Doc): string {
           out.push(`| \`${prop.name}\` | ${propType(prop)} | ${prop.required ? "yes" : ""} | ${cell(prop.description)} |`);
         }
         out.push("");
+      }
+    }
+  }
+
+  const provided = (doc.targets ?? []).filter(target => group.isMember(target.location));
+  if (provided.length > 0) {
+    out.push("## Provided targets", "", "Ready-made targets declared by these libraries, usable by name in any project.", "");
+    for (const target of provided) {
+      out.push(`### \`${target.name}\``, "");
+      out.push(declBlock(target), "");
+      if (target.description) {
+        out.push(target.description, "");
       }
     }
   }

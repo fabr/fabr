@@ -39,42 +39,6 @@ default ESBUILD = @npm:esbuild:0.28.1;
 default SASS = @npm:sass-embedded:1.100.0;
 default LIGHTNINGCSS = @npm:lightningcss:1.30.2;
 
-##################### Driver tools ########################
-
-#
-# Fabr's own driver scripts, declared as ordinary runnable targets over the
-# compiled entries shipped in this @fabr-build/js installation (entry paths are
-# relative to this file). The `js_bundle` / `css_compile` rules resolve them
-# through the JS_BUNDLER / CSS_COMPILER globals, so an alternative driver
-# honoring the same options-manifest contract can be swapped in by overriding
-# the global. (Named under `@fabr-build/js-tools` — our npm scope, but NOT the
-# plugin's own package name: `@fabr-build/js` is a declared target in any
-# project that builds the plugin itself, and a name cannot be both a target
-# and a namespace.)
-#
-
-js_script @fabr-build/js-tools/bundle-driver {
-    entry = ../bundleDriver/bundle-driver.js;
-    deps = ${ESBUILD};
-}
-
-js_script @fabr-build/js-tools/css-driver {
-    entry = ../cssDriver/css-driver.js;
-    deps = ${SASS} ${LIGHTNINGCSS};
-}
-
-# Fabr's own test runner ('fabr test' / js_test / js_package tests): wraps
-# node:test, preloads the describe/it globals, and writes the CTRF report. Its
-# test-globals.d.ts rides in the install — the test rules mount it into the
-# test compile as ambient types, so a swapped runner carries its own globals
-# typings. A replacement must honor the runner contract: invoked in the staged
-# test install as `<runner> --report=<file> <test files...>`, exit status red
-# on failure, report written as CTRF.
-js_script @fabr-build/js-tools/test-runner {
-    entry = ../testRunner/runner.js;
-    deps = ../testRunner/Report.js ../testRunner/globals.js ../testRunner/test-globals.d.ts;
-}
-
 #
 # The bundler `js_bundle` runs (fabr's esbuild driver: reads the rule's
 # options manifest, maps it onto esbuild).
@@ -214,11 +178,7 @@ targetdef js_script {
 # npmjs.org compatible repository, specified by URL. `access` is the access
 # level packages published here request on their first publish: `public`, or
 # `private` (npmjs's paid private packages; npm's wire term `restricted` is
-# accepted as a synonym). It is a property of the repository, not the package:
-# conceptually public npm and private npm are two different repositories that
-# happen to share a URL, so a release mixing both declares one repository per
-# access level and splits its members between them. Left unset, the registry
-# applies its own default (npmjs: private for scoped packages).
+# accepted as a synonym).
 #
 
 targetdef npm_repository {
@@ -264,14 +224,57 @@ targetdef css_compile {
 ####################### Repository ##########################
 
 #
-# Convenience provider for the public npmjs.org repository. Publishing here
-# publishes publicly — this is *the public registry*, and a fabr publish is
-# always an explicitly declared sync member, so npmjs's restricted-by-default
-# guard against accidental publishes has nothing to guard. Restricted
-# publishing is its own repository declaration with `access = restricted;`.
+# Convenience provider for the public npmjs.com repository. Publishing here
+# publishes publicly — this is *the public registry*, To publish restricted-
+# access/private packages, declare a separate repository instance
+# with `access = private;`.
 #
 
 npm_repository @npm {
     url = ${NPM_REPOSITORY_URL};
     access = public;
+}
+
+##################### Driver tools ########################
+
+#
+# Fabr's own driver scripts, declared as ordinary runnable targets over the
+# compiled entries shipped in this @fabr-build/js installation (entry paths are
+# relative to this file). The `js_bundle` / `css_compile` rules resolve them
+# through the JS_BUNDLER / CSS_COMPILER globals, so an alternative driver
+# honoring the same options-manifest contract can be swapped in by overriding
+# the global. (Named under `@fabr-build/js-tools` — our npm scope, but NOT the
+# plugin's own package name: `@fabr-build/js` is a declared target in any
+# project that builds the plugin itself, and a name cannot be both a target
+# and a namespace.)
+#
+
+# The bundler driver `js_bundle` runs (the default `JS_BUNDLER`): reads the
+# rule's options manifest and maps it onto esbuild. Like all the driver tools
+# here, an ordinary runnable target over compiled entries shipped in this
+# installation — a replacement honoring the same manifest contract can be
+# swapped in by overriding the global.
+js_script @fabr-build/js-tools/bundle-driver {
+    entry = ../bundleDriver/bundle-driver.js;
+    deps = ${ESBUILD};
+}
+
+# The CSS compiler `css_compile` runs (the default `CSS_COMPILER`): Sass
+# lowering plus lightningcss css-modules scoping and prefixing, driven by the
+# rule's options manifest.
+js_script @fabr-build/js-tools/css-driver {
+    entry = ../cssDriver/css-driver.js;
+    deps = ${SASS} ${LIGHTNINGCSS};
+}
+
+# Fabr's own test runner ('fabr test' / js_test / js_package tests): wraps
+# node:test, preloads the describe/it globals, and writes the CTRF report. Its
+# test-globals.d.ts rides in the install — the test rules mount it into the
+# test compile as ambient types, so a swapped runner carries its own globals
+# typings. A replacement must honor the runner contract: invoked in the staged
+# test install as `<runner> --report=<file> <test files...>`, exit status red
+# on failure, report written as CTRF.
+js_script @fabr-build/js-tools/test-runner {
+    entry = ../testRunner/runner.js;
+    deps = ../testRunner/Report.js ../testRunner/globals.js ../testRunner/test-globals.d.ts;
 }

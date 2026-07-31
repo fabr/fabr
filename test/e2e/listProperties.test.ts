@@ -64,13 +64,19 @@ describe("e2e: list-properties", () => {
 /* `fabr list-all`: the union of list-targetdefs + list-properties in one JSON
  * document, for a single tooling consumer (docs generation). */
 describe("e2e: list-all", () => {
-  it("emits the whole vocabulary — targetdefs, properties, and flags — as one document", () => {
+  it("emits the whole vocabulary — targetdefs, properties, flags, and provided targets — as one document", () => {
     const result = runFabr({ "PROJECT.fabr": "plugin @fabr-build/js;\n" }, ["list-all"]);
     expect(result.status).to.equal(0);
     const parsed = JSON.parse(result.stdout);
-    expect(Object.keys(parsed).sort()).to.deep.equal(["flags", "properties", "targetdefs"]);
+    expect(Object.keys(parsed).sort()).to.deep.equal(["flags", "properties", "targetdefs", "targets"]);
     expect(parsed.targetdefs.map((t: { name: string }) => t.name)).to.include.members(["script", "js_package"]);
     expect(parsed.properties.map((p: { name: string }) => p.name)).to.include("JS_TARGET");
     expect(parsed.flags.map((f: { name: string }) => f.name)).to.include("ts/nostrict");
+    /* Provided targets include declared repository instances (not buildable,
+     * so absent from list-targets) with the decl's written properties. */
+    const npm = parsed.targets.find((t: { name: string }) => t.name === "@npm");
+    expect(npm.type).to.equal("npm_repository");
+    expect(npm.description).to.match(/public/);
+    expect(npm.properties).to.deep.include({ name: "access", value: "public" });
   });
 });

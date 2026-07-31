@@ -25,9 +25,11 @@
 import Default from "@astrojs/starlight/components/SocialIcons.astro";
 
 // Each section points at its first page: only /introduction/ and /quickstart-js/
-// are pages in their own right.
+// are pages in their own right. An entry without `match` is external (never the
+// current page).
 const SECTIONS = [
   { label: "Introduction", href: "/introduction/", match: "/introduction/" },
+  { label: "News", href: "https://blog.fabr.build/" },
   { label: "Quickstart", href: "/quickstart-js/", match: "/quickstart-js/" },
   { label: "Guides", href: "/guides/concepts/", match: "/guides/" },
   { label: "Reference", href: "/reference/command-line/", match: "/reference/" },
@@ -39,7 +41,7 @@ const path = Astro.url.pathname;
 <nav class="fabr-nav" aria-label="Sections">
   {
     SECTIONS.map((s) => (
-      <a href={s.href} aria-current={path.startsWith(s.match) ? "page" : undefined}>
+      <a href={s.href} aria-current={s.match && path.startsWith(s.match) ? "page" : undefined}>
         {s.label}
       </a>
     ))

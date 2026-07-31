@@ -973,12 +973,33 @@ function listAll(model: BuildModel): Computable<void> {
         targetdefs: defs.map(def => targetDefJson(model, def)),
         properties: configPropertiesJson(model),
         flags: flagTargetsJson(model),
+        targets: providedTargetsJson(model),
       },
       undefined,
       2
     )
   );
   return Computable.resolve(undefined);
+}
+
+/** @return the ready-made *declared* targets the loaded libraries provide — a
+ * repository (`@npm`), a driver tool — with each decl's written properties, so
+ * docs can reconstruct the declaration verbatim. Declaration order (like
+ * targetdefs — the file's own narrative order is the documentation order).
+ * Only documented ones (a doc comment is what makes a lib target part of the
+ * public vocabulary rather than plumbing); `flag` targets have their own
+ * section. */
+function providedTargetsJson(model: BuildModel): Record<string, unknown>[] {
+  return model
+    .getDeclaredTargets()
+    .filter(({ decl }) => decl.type !== "flag" && decl.docComment !== undefined)
+    .map(({ name, decl }) => ({
+      name,
+      type: decl.type,
+      properties: decl.properties.map(prop => ({ name: prop.name, value: renderPropertyValue(prop) })),
+      location: formatDeclLocation(decl),
+      description: decl.docComment ?? null,
+    }));
 }
 
 /** @return the full structured form of a targetdef for `--json` — its

@@ -142,6 +142,14 @@ export class BuildModel {
     return this.root.getTargets().filter(target => !this.repositories.has(target.decl.type));
   }
 
+  /** @return every declared target — repository instances (`npm_repository
+   * @npm`, `catalog @dep`) included — in declaration order. The docs listing
+   * (`fabr list-all`), which documents repositories alongside ordinary lib
+   * targets; {@link getTargets} excludes them as not buildable. */
+  public getDeclaredTargets(): { name: string; decl: ITargetDecl }[] {
+    return this.root.getTargets();
+  }
+
   /** @return every property declared in the project (effective set — a `default`
    * counts unless overridden), for documenting the configuration surface
    * (`fabr list-targetdefs --json` emits the documented ones). */
