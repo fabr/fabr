@@ -289,10 +289,16 @@ describe("e2e: fabr run — selecting an entry (multi-bin)", () => {
     expect(result.stderr).to.contain("two.js");
   });
 
-  it("reports a missing entry via the shared 'matched no files' path", () => {
-    const result = runFabr(project, ["-DJS_TARGET=es2020", "run", "multi:nope"]);
-    expect(result.status).to.not.equal(0);
-    expect(result.stderr).to.contain("matched no files");
+  it("reports a missing entry through the shared name-resolution path", () => {
+    /* A literal selecting nothing is an unresolvable reference wherever it is
+     * written — the same report as `cat pkg:missing`, not a runnable-specific
+     * error. A glob is lenient, as everywhere, and reports as an empty result. */
+    const literal = runFabr(project, ["-DJS_TARGET=es2020", "run", "multi:nope"]);
+    expect(literal.status).to.not.equal(0);
+    expect(literal.stderr).to.contain("Unable to resolve 'multi:nope'");
+    const glob = runFabr(project, ["-DJS_TARGET=es2020", "run", "multi:bin/*.mjs"]);
+    expect(glob.status).to.not.equal(0);
+    expect(glob.stderr).to.contain("matched no files");
   });
 });
 

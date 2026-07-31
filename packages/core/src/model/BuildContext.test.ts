@@ -54,7 +54,9 @@ import { mapEntryOrigin, PropertyMap, PropertyMapValue } from "./BuildContext";
 import { BUILD_OPERATION, Constraints } from "./Constraints";
 import { CircularDependencyError, DependencyFailedError, NameResolutionError, NoRuleFoundError, ReferenceFailedError } from "./Errors";
 import { ExecutionContext } from "./ExecutionContext";
-import { parseBuildString } from "./Parser";
+import { INameValue, syntheticValue } from "./AST";
+import { StringReader } from "../support/StringReader";
+import { parseBuildString, parseName } from "./Parser";
 import { toBuildModel } from "./Sema";
 import * as chai from "chai";
 import { expect } from "chai";
@@ -70,6 +72,15 @@ const testLog = new LogFormatter(LogLevel.Info, console.error);
 /* The runtime surroundings for evaluation: none of these tests reach the
  * cache, so a single throwaway instance serves them all */
 const execution = new ExecutionContext(new BuildCache(".", testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
+
+/** A name as the driver hands one over: every caller of {@link
+ * BuildContext.resolveName} supplies the decl its reference was written in
+ * (the CLI's is synthesized over the command line — see CommandLineSource),
+ * there being no such thing as a reference written nowhere. */
+function writtenOnCommandLine(name: string): INameValue {
+  const source = { fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(name) };
+  return syntheticValue(parseName(name), source, 0, name.length);
+}
 
 /* These tests exercise the evaluation engine with throwaway rules. Rules now
  * ride the model's registry (not a global), so collect them into a contribution
@@ -650,7 +661,7 @@ describe("BuildContext", () => {
     /* A name every member matches: one projected source per member — the
      * same-named files are NOT a conflict here (union, and its conflict
      * detection, is the consumer's act). */
-    const both = await config.resolveName("m:package.json");
+    const both = await config.resolveName(writtenOnCommandLine("m:package.json"));
     expect(both).to.have.length(2);
     const contents = await Promise.all(
       both.map(source => (source as FileSet).get("package.json").then(file => file!.readString()))
@@ -659,7 +670,7 @@ describe("BuildContext", () => {
 
     /* A name only one member matches: the missed members are dropped, not
      * kept as empty sources. */
-    const one = await config.resolveName("m:one.tgz");
+    const one = await config.resolveName(writtenOnCommandLine("m:one.tgz"));
     expect(one).to.have.length(1);
     expect([...(one[0] as FileSet)].map(([name]) => name)).to.deep.equal(["one.tgz"]);
   });
@@ -682,7 +693,7 @@ describe("BuildContext", () => {
     /* The whole release under `files`: ONE FileSet, each member's artifacts
      * under its coordinate as a directory (alias separators as path
      * separators). */
-    const all = await config.resolveName("release");
+    const all = await config.resolveName(writtenOnCommandLine("release"));
     expect(all).to.have.length(1);
     expect([...(all[0] as FileSet)].map(([name]) => name).sort()).to.deep.equal([
       "pub/alpha/1.0.0/f.txt",
@@ -694,7 +705,7 @@ describe("BuildContext", () => {
     /* So the ordinary written-name rule addresses one member's file — no
      * bespoke namespace: the coordinate matches as alias segments and is
      * stripped colon-form. */
-    const one = await config.resolveName("release:pub:alpha:1.0.0:manifest.txt");
+    const one = await config.resolveName(writtenOnCommandLine("release:pub:alpha:1.0.0:manifest.txt"));
     expect(one).to.have.length(1);
     expect([...(one[0] as FileSet)].map(([name]) => name)).to.deep.equal(["manifest.txt"]);
     /* The vended ref's display form is the full written coordinate — the
@@ -1453,7 +1464,7 @@ describe("unresolved-name diagnostics", () => {
     }
     try {
       /* The projection is what routes this one down the resolveName path. */
-      await context.resolveName("mytargt:build/x.js");
+      await context.resolveName(writtenOnCommandLine("mytargt:build/x.js"));
       expect.fail("expected a rejection");
     } catch (e) {
       failures.push(e as Error & { help?: string });

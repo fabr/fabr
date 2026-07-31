@@ -44,7 +44,13 @@ describe("e2e: driver CLI", () => {
     const result = runFabr(project, ["cat", "files:a.txt", "files:zzz.txt"]);
     expect(result.status).to.equal(1);
     expect(result.stdout).to.equal("");
-    expect(result.stderr).to.match(/matched no files/);
+    expect(result.stderr).to.contain("Unable to resolve 'files:zzz.txt'");
+    /* Same atomicity for the lenient (glob) form, which resolves to an empty
+     * result rather than failing resolution, and reports as such. */
+    const globbed = runFabr(project, ["cat", "files:a.txt", "files:*.zzz"]);
+    expect(globbed.status).to.equal(1);
+    expect(globbed.stdout).to.equal("");
+    expect(globbed.stderr).to.contain("matched no files");
   });
 
   it("cats each source of a multi-source name in turn, never unioning them", () => {
@@ -62,6 +68,55 @@ describe("e2e: driver CLI", () => {
     const result = runFabr(twoSources, ["cat", "both"]);
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal("FROM A\nFROM B\n");
+  });
+
+  it("resolves a bare path on the command line, as a build file's reference would", () => {
+    /* A name given to a verb is a written reference like any other, so a path
+     * that names no target resolves against the filesystem — `./src` naming the
+     * directory's contents, exactly as `./src` written in a root build file
+     * does. Names carry the written prefix (the slash-form rule). */
+    const result = runFabr(project, ["ls", "./src"]);
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("src/a.txt\nsrc/b.txt\n");
+    /* And with no `./`, and through a glob and cat. */
+    expect(runFabr(project, ["ls", "src/*.txt"]).stdout).to.equal("src/a.txt\nsrc/b.txt\n");
+    expect(runFabr(project, ["cat", "src/a.txt"]).stdout).to.equal("AAA\n");
+  });
+
+  it("roots a command-line bare path at the invocation directory, not the project root", () => {
+    /* The cwd is to a command-line name what the containing build file's
+     * directory is to a written one — fabr still finds the project by walking
+     * up, but `a.txt` means the one *here*. */
+    const result = runFabr(project, ["cat", "a.txt"], undefined, "src");
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("AAA\n");
+    /* Named from the cwd, so the listing is too (the containing dir is the
+     * locating alias, stripped from result names). */
+    expect(runFabr(project, ["ls", "*.txt"], undefined, "src").stdout).to.equal("a.txt\nb.txt\n");
+  });
+
+  it("prefers a declared name over a same-named directory", () => {
+    /* Same precedence as anywhere else: the target/property prefix is matched
+     * first, and only a name that declares nothing reaches the filesystem. */
+    const shadowed = { ...project, "PROJECT.fabr": "src = ./src/b.txt;\n" };
+    const result = runFabr(shadowed, ["ls", "src"]);
+    expect(result.status).to.equal(0);
+    /* The property's single file, not the directory's two. */
+    expect(result.stdout).to.equal("src/b.txt\n");
+  });
+
+  it("reports a name that is neither declared nor a file against the command line", () => {
+    /* One wording for one mistake, whichever verb was used — and, since the name
+     * resolves as a value written in a synthesized decl over the invocation, it
+     * reports like any other written reference: the command excerpted, the
+     * offending argument underlined where it sits in it. */
+    const result = runFabr(project, ["cat", "files:a.txt", "srcc"]);
+    expect(result.status).to.equal(1);
+    expect(result.stderr).to.contain("Unknown name 'srcc'");
+    expect(result.stderr).to.contain("<command-line>:1:22");
+    expect(result.stderr).to.contain("fabr cat files:a.txt srcc");
+    expect(result.stderr).to.contain(`${" ".repeat(21)}^^^^`);
+    expect(result.stderr).to.contain("fabr list-targets");
   });
 
   it("renders both sides of a naming conflict raised by a target's own union", () => {
@@ -303,7 +358,7 @@ describe("e2e: driver CLI", () => {
     const result = runFabr(project, ["cp", "files:zzz.txt", "out"], ["out/zzz.txt"]);
     expect(result.status).to.equal(1);
     expect(result.files?.["out/zzz.txt"]).to.be.undefined;
-    expect(result.stderr).to.match(/matched no files/);
+    expect(result.stderr).to.contain("Unable to resolve 'files:zzz.txt'");
   });
 
   it("cp requires a destination as well as a source", () => {

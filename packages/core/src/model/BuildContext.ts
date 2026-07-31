@@ -142,6 +142,11 @@ interface IResolvedFileSource {
   decl?: ITargetDecl | IPropertyDecl;
 }
 
+/** Attach a name's remedies to its error as the `help:` line, if there are any. */
+function withHints<T extends Error>(err: T, hints: string[]): T {
+  return hints.length > 0 ? attachHelp(err, hints.join("; ")) : err;
+}
+
 export const MODEL_REF_PROVENANCE = "model-ref";
 
 /**
@@ -383,7 +388,7 @@ export class BuildContext {
     const err = stack
       ? new NameResolutionError(Name.fromLiteral(name), declPosn(stack.value), useSiteOf(stack), reason)
       : new Error(reason);
-    return hints.length > 0 ? attachHelp(err, hints.join("; ")) : err;
+    return withHints(err, hints);
   }
 
   /**
@@ -932,9 +937,16 @@ export class BuildContext {
    * (`materializeShallow`): a verb wants the named entity's own content, not the
    * dependency closure a delivered package carries — that closure is discarded by
    * ls/cat and would re-resolve under the wrong operation (see materializeShallow).
+   *
+   * `ref` is the parsed name *as the value decl it was written in* — for a CLI
+   * name, one the driver synthesizes over the command line ({@link
+   * syntheticValue}), sited at the invocation directory. The decl is the whole
+   * input: its `value` is the reference and its siting is what makes a bare
+   * path resolve — the same arm that resolves `./packages` written in a build
+   * file, rooting at the file's own directory.
    */
-  public resolveName(name: string, stack?: IDependencyStack): Computable<SourceRef[]> {
-    return this.resolveFileValue(parseName(name), stack).then(materializeShallow);
+  public resolveName(ref: INameValue, stack?: IDependencyStack): Computable<SourceRef[]> {
+    return this.resolveFileValue(ref.value, stack, { relativeTo: ref }).then(materializeShallow);
   }
 
   /**
@@ -1048,14 +1060,26 @@ export class BuildContext {
            * checked conflict, not a silent drop. */
           return relativeTo.source.fs.find(substName.relativeTo(relativeTo.source.file)).then(data => {
             if (data.isEmpty() && !substName.hasGlob()) {
-              throw new NameResolutionError(substName, declPosn(stack?.value ?? relativeTo), useSiteOf(stack));
+              /* A literal naming neither a declaration nor a file. Written in a
+               * build file that is a failed value resolution; typed on the
+               * command line (no stack) it is the very mistake getTarget
+               * reports for the build/test verbs, so it reads the same and
+               * suggests the same way — one wording for one mistake, whichever
+               * verb was used. */
+              const written = substName.toString();
+              const reason = stack ? undefined : `Unknown name '${written}'`;
+              throw withHints(
+                new NameResolutionError(substName, declPosn(stack?.value ?? relativeTo), useSiteOf(stack), reason),
+                this.unknownNameHints(written, !stack)
+              );
             }
             return { sources: [data] };
           });
         } else {
-          /* A command-line name that names nothing declared (no decl to resolve
-           * a bare path against) — the same mistake getTarget reports for the
-           * build/test verbs, so it reads the same and suggests the same way. */
+          /* The one reference with no decl to root a bare path at: a constraint
+           * override's value (see getTarget), whether it came from `-D` or a
+           * `<k=v>` delta — a constraint set carries the value, never where it
+           * was written. Only a declared name can answer here. */
           const written = name.toString();
           throw this.unresolvedNameError(written, undefined, `Unknown name '${written}'`, this.unknownNameHints(written, true));
         }

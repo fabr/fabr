@@ -18,7 +18,16 @@
  */
 
 import { expect } from "chai";
-import { completeCommandLine, Mode, parseCommandLine } from "./Command";
+import { completeCommandLine, Mode, Options, parseCommandLine } from "./Command";
+
+/** The parse result minus the invocation's source text: that is the command
+ * line carried along for the driver to report names against, not an outcome of
+ * parsing it — so the exhaustive comparisons below stay about the outcome. */
+function parsed(args: string[]): Omit<Options, "commandLine"> {
+  const { commandLine, ...outcome } = parseCommandLine(args);
+  void commandLine;
+  return outcome;
+}
 
 /** Thrown by the stubbed process.exit to unwind parseCommandLine. */
 class ExitSignal extends Error {}
@@ -61,7 +70,7 @@ describe("Command", () => {
   it("defers the targets when no command is given", () => {
     /* What each names can only be decided against the model, so parsing stops
      * at the first positional and the rest is kept verbatim. */
-    expect(parseCommandLine(["node", "fabr", "foo"])).to.deep.equal({
+    expect(parsed(["node", "fabr", "foo"])).to.deep.equal({
       command: "build",
       mode: Mode.Normal,
       longListing: false,
@@ -75,7 +84,7 @@ describe("Command", () => {
   });
 
   it("parses an explicit command", () => {
-    expect(parseCommandLine(["node", "fabr", "test", "foo", "bar"])).to.deep.equal({
+    expect(parsed(["node", "fabr", "test", "foo", "bar"])).to.deep.equal({
       command: "test",
       mode: Mode.Normal,
       longListing: false,
@@ -93,7 +102,7 @@ describe("Command", () => {
 
   it("parses flags and defines alongside a command", () => {
     /* Not `run`: for `run`, options after the target pass through to the program */
-    expect(parseCommandLine(["node", "fabr", "-w", "test", "foo", "-Dx=1"])).to.deep.equal({
+    expect(parsed(["node", "fabr", "-w", "test", "foo", "-Dx=1"])).to.deep.equal({
       command: "test",
       mode: Mode.Watch,
       longListing: false,
@@ -106,7 +115,7 @@ describe("Command", () => {
   });
 
   it("parses the ls command with the long-listing flag", () => {
-    expect(parseCommandLine(["node", "fabr", "ls", "-l", "foo", "bar"])).to.deep.equal({
+    expect(parsed(["node", "fabr", "ls", "-l", "foo", "bar"])).to.deep.equal({
       command: "ls",
       mode: Mode.Normal,
       longListing: true,

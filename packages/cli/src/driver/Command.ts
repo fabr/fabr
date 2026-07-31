@@ -18,6 +18,7 @@
  */
 
 import { readFileSync } from "fs";
+import { CommandLineSource } from "./CommandLineSource";
 import { dirname, join } from "path";
 
 /** The fabr version, read from the CLI package's own package.json at runtime.
@@ -166,6 +167,9 @@ export interface Options {
   dest?: string;
   /** Raw `-D` overrides, normalized into a Constraints at the driver's getConfig funnel. */
   properties: Map<string, string>;
+  /** The invocation as source text — what a name given here is *written in*, so
+   * that resolving one reports against the command that gave it. */
+  commandLine: CommandLineSource;
   /**
    * No command word was given: the arguments from the first positional onward,
    * verbatim and unparsed. Which verb each names depends on what its target's
@@ -284,6 +288,7 @@ export function parseCommandLine(args: string[]): Options {
     quiet: false,
     targets: [],
     properties: new Map(),
+    commandLine: new CommandLineSource(args.slice(2)),
   };
   const opts = args.slice(2);
 

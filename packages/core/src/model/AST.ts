@@ -229,6 +229,22 @@ export interface IBuildFile {
   reader: StringReader;
 }
 
+/**
+ * A value decl for a reference that no parser produced — one given by the
+ * invoker (a name on fabr's own command line), so that it resolves as the
+ * written reference it is rather than through a path of its own.
+ *
+ * `source` is the virtual file it counts as written in, and carries the two
+ * things a real one would: bare paths within the reference root at the file's
+ * directory (see `Name.relativeTo`), so the caller names it for where those
+ * paths should resolve from; and diagnostics name it and excerpt its reader at
+ * `offset`, so the caller may give the whole text the reference was read from
+ * (a command line) and span the part that is this value.
+ */
+export function syntheticValue(value: Name, source: IBuildFile, offset: number, endOffset: number): INameValue {
+  return { kind: DeclKind.NameValue, value, source, offset, endOffset };
+}
+
 export interface IBuildFileContents {
   namespaces: INamespaceDecl[];
   targets: ITargetDecl[];

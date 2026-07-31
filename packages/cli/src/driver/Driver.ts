@@ -62,6 +62,7 @@ import { shellInto } from "./ShellHandler";
 import { publishSync } from "./SyncHandler";
 import { completeCommandLine, Mode, Options } from "./Command";
 import { getSourceRoot, getBuildCacheRoot, getHostProperties, PROJECT_FILENAME } from "./Environment";
+import { IInvocationSite } from "./CommandLineSource";
 import * as path from "node:path";
 
 const DIAG_BUILD_COMPLETE = Diagnostic.Info<{ targets: string }>("Built {targets}");
@@ -158,8 +159,11 @@ function flushAndExit(code: number): void {
 
 /** What to do with the loaded model — the per-command work, run inside the
  * harness's lifecycle. The run's surroundings (log, cache, progress) ride on
- * `execution`; the command (and so `options`) is closed over by the caller. */
-export type Operation = (model: BuildModel, execution: ExecutionContext) => Computable<void>;
+ * `execution`; the command (and so `options`) is closed over by the caller. The
+ * `site` is where the invocation was run — known only once the project has been
+ * located, so the harness supplies it rather than the parse: it is what a name
+ * given on the command line is written in (see {@link CommandLineSource}). */
+export type Operation = (model: BuildModel, execution: ExecutionContext, site: IInvocationSite) => Computable<void>;
 
 /**
  * The CLI entry: dispatch the command to a tiny operation (each closing over
@@ -179,46 +183,37 @@ export function runFabr(options: Options): Promise<void> {
     (options.command === "build" || options.command === "test" || options.command === "run");
   switch (options.command) {
     case "ls":
-      return runWith(
-        (model, execution) =>
-          Computable.forAll(resolveNames(model, options, execution), (...results) => listTargets(options, results)),
-        false,
-        options.quiet
+      return runWith(options, (model, execution, site) =>
+        Computable.forAll(resolveNames(model, options, execution, site), (...results) => listTargets(options, results))
       );
     case "cat":
-      return runWith(
-        (model, execution) =>
-          Computable.forAll(resolveNames(model, options, execution), (...results) => catTarget(options, results)),
-        false,
-        options.quiet
+      return runWith(options, (model, execution, site) =>
+        Computable.forAll(resolveNames(model, options, execution, site), (...results) => catTarget(options, results))
       );
     case "cp":
-      return runWith(
-        (model, execution) =>
-          Computable.forAll(resolveNames(model, options, execution), (...results) => copyTarget(options, execution, results)),
-        false,
-        options.quiet
+      return runWith(options, (model, execution, site) =>
+        Computable.forAll(resolveNames(model, options, execution, site), (...results) => copyTarget(options, execution, results))
       );
     case "test":
-      return runWith((model, execution) => testOperation(model, options, execution, options.targets), watch, options.quiet);
+      return runWith(options, (model, execution) => testOperation(model, options, execution, options.targets), watch);
     case "run":
-      return runWith((model, execution) => runProgram(model, options, execution, watch), watch, options.quiet);
+      return runWith(options, (model, execution, site) => runProgram(model, options, execution, site, watch), watch);
     case "shell":
-      return runWith((model, execution) => shellTarget(model, options, execution), false, options.quiet);
+      return runWith(options, (model, execution) => shellTarget(model, options, execution));
     case "sync":
-      return runWith((model, execution) => syncTargets(model, options, execution), false, options.quiet);
+      return runWith(options, (model, execution) => syncTargets(model, options, execution));
     case "list-targets":
-      return runWith((model, execution) => listDeclaredTargets(model, options, execution));
+      return runWith(options, (model, execution) => listDeclaredTargets(model, options, execution));
     case "list-targetdefs":
-      return runWith(model => listTargetDefs(model, options));
+      return runWith(options, model => listTargetDefs(model, options));
     case "list-properties":
-      return runWith(model => listProperties(model, options));
+      return runWith(options, model => listProperties(model, options));
     case "list-all":
-      return runWith(model => listAll(model));
+      return runWith(options, model => listAll(model));
     default: /* build, or no command at all */
       return options.deferred
-        ? runWith((model, execution) => runInferred(model, options, execution, options.mode === Mode.Watch), watch, options.quiet)
-        : runWith((model, execution) => buildOperation(model, options, execution, options.targets), watch, options.quiet);
+        ? runWith(options, (model, execution, site) => runInferred(model, options, execution, site, options.mode === Mode.Watch), watch)
+        : runWith(options, (model, execution) => buildOperation(model, options, execution, options.targets), watch);
   }
 }
 
@@ -253,7 +248,13 @@ function testOperation(model: BuildModel, options: Options, execution: Execution
  * a one-shot run sequences after the rest, because it takes over the process
  * and exits with the program's status — nothing after it would run.
  */
-function runInferred(model: BuildModel, options: Options, execution: ExecutionContext, watch: boolean): Computable<void> {
+function runInferred(
+  model: BuildModel,
+  options: Options,
+  execution: ExecutionContext,
+  site: IInvocationSite,
+  watch: boolean
+): Computable<void> {
   const plan = completeCommandLine(options, name => operationsOf(model, name));
   const groups: Computable<void>[] = [];
   if (plan.build.length > 0) {
@@ -266,7 +267,7 @@ function runInferred(model: BuildModel, options: Options, execution: ExecutionCo
   if (!run) {
     return Computable.forAll(groups, () => undefined);
   }
-  const program = (): Computable<void> => runProgram(model, options, execution, watch, run.target, run.args);
+  const program = (): Computable<void> => runProgram(model, options, execution, site, watch, run.target, run.args);
   return watch ? Computable.forAll([...groups, program()], () => undefined) : Computable.forAll(groups, () => undefined).then(program);
 }
 
@@ -290,13 +291,14 @@ function runProgram(
   model: BuildModel,
   options: Options,
   execution: ExecutionContext,
+  site: IInvocationSite,
   watch: boolean,
   target: string = options.targets[0],
   args: string[] = options.runArgs ?? []
 ): Computable<void> {
-  const config = model.getConfig(Constraints.of({ ...getHostProperties(), [BUILD_OPERATION]: "run", ...Object.fromEntries(options.properties) }), execution);
+  const config = configFor(model, options, execution, "run");
   const supervisor = watch ? new RunSupervisor(execution.buildCache, target, args, execution.log) : undefined;
-  return config.resolveName(target).then(sources => {
+  return config.resolveName(options.commandLine.refFor(target, site)).then(sources => {
     const runnable = sources.find((s): s is RunnableFileSet => s instanceof RunnableFileSet);
     if (!runnable) {
       /* No runnable: a projection that matched nothing (empty) is the shared
@@ -331,7 +333,7 @@ function runProgram(
  * real ones. Exits with the shell's own code.
  */
 function shellTarget(model: BuildModel, options: Options, execution: ExecutionContext): Computable<void> {
-  const config = model.getConfig(Constraints.of({ ...getHostProperties(), [BUILD_OPERATION]: "build", ...Object.fromEntries(options.properties) }), execution);
+  const config = configFor(model, options, execution, "build");
   return config
     .resolveActionForShell(options.targets[0])
     .then(action => shellInto(execution.buildCache, options.targets[0], action, execution.log))
@@ -367,7 +369,7 @@ function syncTargets(model: BuildModel, options: Options, execution: ExecutionCo
  * failure tree (exit 1) on error. Reaching a drained event loop without an
  * explicit exit is a stall bug, reported loudly (exit 2).
  */
-async function runWith(operation: Operation, watch = false, quiet = false): Promise<void> {
+async function runWith(options: Options, operation: Operation, watch = false): Promise<void> {
   /* Diagnostics and progress go to stderr; command data (ls listings, cat
    * file contents) goes to stdout, so a build can be filtered from its output.
    * Color is a render-time decision only (NO_COLOR is any non-empty value):
@@ -408,13 +410,21 @@ async function runWith(operation: Operation, watch = false, quiet = false): Prom
     const sourceFileSource = getSourceFileSource(sourceRoot, buildCache, controller);
     const absFileSource = new FSFileSource("/");
     const execution = new ExecutionContext(buildCache, log, sourceFileSource, absFileSource, cycle);
+    /* Where the user typed the command, in the source tree's own namespace: a
+     * name given on the command line resolves its bare paths from here, as a
+     * name written in a build file resolves them from that file's directory. */
+    const site: IInvocationSite = {
+      sourceFileSource,
+      absFileSource,
+      invocationDir: path.relative(sourceRoot, process.cwd()).split(path.sep).join("/"),
+    };
     execution.onProgress(progressListener(log));
     /* Under -q a subcommand's output is captured and shown only on failure;
      * otherwise the step inherits fabr's stderr and streams live as it runs. */
-    execution.quiet = quiet;
+    execution.quiet = options.quiet;
 
     if (controller) {
-      return runWatched(operation, execution, log, controller);
+      return runWatched(operation, execution, site, log, controller);
     }
 
     /* One-shot runs must route termination signals through process.exit rather
@@ -444,7 +454,7 @@ async function runWith(operation: Operation, watch = false, quiet = false): Prom
     }
 
     return loadProject(execution, PROJECT_FILENAME)
-      .then(model => operation(model, execution))
+      .then(model => operation(model, execution, site))
       .then(() => flushAndExit(0))
       .catch(err => {
         reportFailure(log, err);
@@ -474,6 +484,7 @@ async function runWith(operation: Operation, watch = false, quiet = false): Prom
 function runWatched(
   operation: Operation,
   execution: ExecutionContext,
+  site: IInvocationSite,
   log: Log,
   controller: WatchController
 ): Promise<void> {
@@ -496,7 +507,7 @@ function runWatched(
   /* This observer re-fires every time the operation's Computable re-settles (the
    * revalidation cascade after a change), so status/failure render per cycle. */
   loadProject(execution, PROJECT_FILENAME)
-    .then(model => operation(model, execution))
+    .then(model => operation(model, execution, site))
     .then(
       () => log.log(DIAG_WATCHING, {}),
       err => {
@@ -527,10 +538,18 @@ function buildTargets(
 /** Resolve each whole name (target + projection) under the `files` operation:
  * ls/cat only ever want the resolved files, so this lets the leaves do less —
  * an `@npm:` reference delivers a package's own files with no dependency
- * closure — while a declared target still builds (files falls back to build). */
-function resolveNames(model: BuildModel, options: Options, execution: ExecutionContext): Computable<SourceRef[]>[] {
+ * closure — while a declared target still builds (files falls back to build).
+ * Each name resolves as the reference it is, written on the command line
+ * ({@link CommandLineSource}) — so a bare path names files just as it would in
+ * a build file. */
+function resolveNames(
+  model: BuildModel,
+  options: Options,
+  execution: ExecutionContext,
+  site: IInvocationSite
+): Computable<SourceRef[]>[] {
   const config = configFor(model, options, execution, FILES_OPERATION);
-  return options.targets.map(name => config.resolveName(name));
+  return options.targets.map(name => config.resolveName(options.commandLine.refFor(name, site)));
 }
 
 /** Print the terminal build-status line: nothing built (this cycle), or a count.
