@@ -662,7 +662,7 @@ describe("NPMRepository publish", () => {
     const server = await captureServer(201, "{}");
     try {
       /* The credential comes from a project `.npmrc` keyed by the registry
-       * (env substitution + per-registry keys are covered in NPMConfig.test). */
+       * (env substitution + per-registry keys are covered in NPMAuth.test). */
       const repo = new NPMRepository(
         `http://127.0.0.1:${server.port}`,
         npmrcContext(`//127.0.0.1:${server.port}/:_authToken=tok123`)

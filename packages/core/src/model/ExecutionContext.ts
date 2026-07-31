@@ -18,10 +18,33 @@
  */
 
 import { BuildCache } from "../core/BuildCache";
+import { Computable } from "../core/Computable";
 import { FileSource } from "../core/FileSet";
 import { Log } from "../support/Log";
 import { ITargetDecl } from "./AST";
 import { Constraints } from "./Constraints";
+
+/**
+ * The driver's terminal, for the rare interaction a protocol genuinely requires
+ * mid-run (an npm publish demanding a second factor). Present on the
+ * ExecutionContext only when fabr is attached to an interactive terminal;
+ * absent under redirection/CI, which a caller treats as "non-interactive" and
+ * turns into a typed error naming the unattended alternatives. Model and rule
+ * code never reads or renders the terminal itself — it asks through this
+ * surface, and the driver owns how the asking looks.
+ */
+export interface UserInteraction {
+  /** Ask a one-line question on the terminal; resolves to the line entered. */
+  prompt(question: string): Computable<string>;
+  /**
+   * Send the user's browser to `url` for a ceremony performed there,
+   * announced with `purpose`. The URL itself is always displayed, so a failed
+   * launch — or a remote session with no local browser — still leaves it
+   * actionable. Resolves once the browser has been dispatched; the ceremony's
+   * completion is observed by the caller (e.g. by polling), not here.
+   */
+  openUrl(url: string, purpose: string): Computable<void>;
+}
 
 /**
  * A target actually starting to build (a build-cache miss, as opposed to being
@@ -160,6 +183,10 @@ export class ExecutionContext {
    * Read by {@link BuildContext.runAction} into each action's context; set by the
    * driver, and defaults to inherit-live. */
   public quiet = false;
+  /** The interactive terminal, when there is one — see {@link UserInteraction}.
+   * Set by the driver only when attached to a tty; its absence is the
+   * "non-interactive run" signal. */
+  public interaction?: UserInteraction;
   /** Per-run state a plugin keeps here, keyed by its {@link PluginKey}. Lazily
    *  populated on first access (see {@link getOrCreatePluginContext}). */
   private readonly pluginContexts = new Map<PluginKey<unknown>, unknown>();

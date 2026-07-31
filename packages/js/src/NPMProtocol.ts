@@ -29,6 +29,7 @@
 import {
   Computable,
   FileSet,
+  HttpResponse,
   IntegrityError,
   IProjection,
   isCanonicalFileName,
@@ -39,6 +40,7 @@ import {
   SEMVER,
   sendRequest,
 } from "@fabr-build/core";
+import { otpChallengeOf, OtpProvider } from "./NPMAuth";
 import * as crypto from "node:crypto";
 import { Transform } from "node:stream";
 
@@ -407,14 +409,18 @@ export function unresolvableDependencies(manifest: Record<string, unknown>): str
  * name with the given credential. Returns whether the upload happened or the
  * version was already present (a 409 — sync is declarative, so already-there is
  * success, reported distinctly); any other non-2xx surfaces the registry's error
- * body.
+ * body. A second-factor challenge (a 2FA account) is answered through `otp`,
+ * and the PUT retried with the produced one-time password — twice at most,
+ * so a stale cached token gets one fresh re-acquisition and a genuinely
+ * refused one fails rather than looping.
  */
 export function publishToRegistry(
   registryUrl: string,
   coordinate: NpmPublishIdentity,
   tarball: Buffer,
   manifest: Record<string, unknown>,
-  authHeaders: Record<string, string>
+  authHeaders: Record<string, string>,
+  otp?: OtpProvider
 ): Computable<"published" | "already-synced"> {
   const { name, version } = coordinate;
   const tarballName = tarballBasename(name, version);
@@ -444,20 +450,48 @@ export function publishToRegistry(
     },
   };
   const escapedName = name.replace(/\//g, "%2f");
-  const headers = { "content-type": "application/json", ...authHeaders };
-  return sendRequest(`${registryUrl}/${escapedName}`, { method: "PUT", headers, body: JSON.stringify(envelope) }).then(
-    response => {
-      if (response.statusCode === 409) {
-        return "already-synced" as const; /* version already present */
-      }
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw new Error(
-          `publishing ${name}@${version} to ${registryUrl} failed (${response.statusCode}): ${response.body.toString("utf8")}`
-        );
-      }
-      return "published" as const;
+  /* The registry only offers the browser (passkey) ceremony — authUrl/doneUrl
+   * in the challenge body — to a client advertising it via BOTH npm-auth-type
+   * and npm-command; without them a passkey account gets only the inert
+   * "upgrade your client" error. The user-agent is not consulted. */
+  const headers = {
+    "content-type": "application/json",
+    "npm-auth-type": "web",
+    "npm-command": "publish",
+    ...authHeaders,
+  };
+  const body = JSON.stringify(envelope);
+  const attempt = (password?: string): Computable<HttpResponse> =>
+    sendRequest(`${registryUrl}/${escapedName}`, {
+      method: "PUT",
+      headers: password === undefined ? headers : { ...headers, "npm-otp": password },
+      body,
+    });
+  const settle = (response: HttpResponse): "published" | "already-synced" => {
+    if (response.statusCode === 409) {
+      return "already-synced"; /* version already present */
     }
-  );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw new Error(
+        `publishing ${name}@${version} to ${registryUrl} failed (${response.statusCode}): ${response.body.toString("utf8")}`
+      );
+    }
+    return "published";
+  };
+  const answerChallenge = (
+    response: HttpResponse,
+    rejected: string | undefined,
+    attemptsLeft: number
+  ): Computable<"published" | "already-synced"> | "published" | "already-synced" => {
+    const challenge = otpChallengeOf(response);
+    if (!challenge || !otp || attemptsLeft <= 0) {
+      return settle(response);
+    }
+    return otp(challenge, rejected).then(password =>
+      attempt(password).then(retried => answerChallenge(retried, password, attemptsLeft - 1))
+    );
+  };
+  return attempt().then(response => answerChallenge(response, undefined, 2));
 }
 
 /**

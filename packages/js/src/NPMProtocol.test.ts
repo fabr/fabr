@@ -19,9 +19,12 @@
 
 import { expect } from "chai";
 import * as crypto from "node:crypto";
+import * as http from "node:http";
+import { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
-import { IntegrityError } from "@fabr-build/core";
-import { dependencyBlock, expectedTarballDigest, optionalPeers, parseMetadataResponse, verifyTarballStream } from "./NPMProtocol";
+import { Computable, IntegrityError } from "@fabr-build/core";
+import { dependencyBlock, expectedTarballDigest, optionalPeers, parseMetadataResponse, publishToRegistry, verifyTarballStream } from "./NPMProtocol";
+import { OtpChallenge } from "./NPMAuth";
 
 describe("parseMetadataResponse", () => {
   function doc(overrides: Record<string, unknown>): Buffer {
@@ -159,5 +162,151 @@ describe("verifyTarballStream", () => {
     await check({ integrity: `sha512-${wrong}` }).catch(err => (thrown = err));
     expect(thrown).to.be.instanceOf(IntegrityError);
     expect((thrown as IntegrityError).algorithm).to.equal("sha512");
+  });
+});
+
+/** What one scripted-server request looked like, as the handler saw it. */
+interface SeenRequest {
+  method?: string;
+  headers: http.IncomingHttpHeaders;
+  body: string;
+}
+
+/**
+ * A local server whose `script` maps (request, index-so-far) to the reply —
+ * lets a test express "401-challenge first, 201 once the otp arrives".
+ * (NPMAuth.test.ts keeps its own copy for the doneUrl poll tests.)
+ */
+function scriptedServer(
+  script: (request: SeenRequest, index: number) => { status: number; headers?: Record<string, string>; body: string }
+): Promise<{ url: string; seen: SeenRequest[]; close(): void }> {
+  return new Promise(resolve => {
+    const seen: SeenRequest[] = [];
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", chunk => chunks.push(chunk));
+      req.on("end", () => {
+        const request = { method: req.method, headers: req.headers, body: Buffer.concat(chunks).toString() };
+        const reply = script(request, seen.length);
+        seen.push(request);
+        res.writeHead(reply.status, { "content-type": "application/json", ...reply.headers });
+        res.end(reply.body);
+      });
+    });
+    server.listen(0, "127.0.0.1", () =>
+      resolve({
+        url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+        seen,
+        close: () => server.close(),
+      })
+    );
+  });
+}
+
+const EOTP_BODY = `{"error":"You must provide a one-time pass."}`;
+const EOTP_REPLY = { status: 401, headers: { "www-authenticate": "OTP" }, body: EOTP_BODY };
+
+describe("publishToRegistry second factor", () => {
+  const IDENTITY = { name: "demo", version: "1.0.0" };
+  const TARBALL = Buffer.from("tgz-bytes");
+  const AUTH = { authorization: "Bearer tok" };
+
+  it("advertises web-auth capability on the publish request", async () => {
+    const server = await scriptedServer(() => ({ status: 201, body: "{}" }));
+    try {
+      expect(await publishToRegistry(server.url, IDENTITY, TARBALL, {}, AUTH)).to.equal("published");
+      /* The registry only offers the passkey ceremony to a client sending both. */
+      expect(server.seen[0].headers["npm-auth-type"]).to.equal("web");
+      expect(server.seen[0].headers["npm-command"]).to.equal("publish");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("answers a challenge with the provided otp and retries", async () => {
+    const server = await scriptedServer(request =>
+      request.headers["npm-otp"] === "123456" ? { status: 201, body: "{}" } : EOTP_REPLY
+    );
+    const asked: Array<{ challenge: OtpChallenge; rejected?: string }> = [];
+    try {
+      const status = await publishToRegistry(server.url, IDENTITY, TARBALL, {}, AUTH, (challenge, rejected) => {
+        asked.push({ challenge, rejected });
+        return Computable.resolve("123456");
+      });
+      expect(status).to.equal("published");
+      expect(asked).to.deep.equal([{ challenge: {}, rejected: undefined }]);
+      expect(server.seen.length).to.equal(2);
+      expect(server.seen[1].headers["npm-otp"]).to.equal("123456");
+      expect(server.seen[1].headers.authorization).to.equal("Bearer tok");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("hands the provider the web-auth ceremony URLs when the registry offers them", async () => {
+    const webChallenge = {
+      status: 401,
+      headers: { "www-authenticate": "OTP" },
+      body: `{"authUrl":"https://www.npmjs.com/auth/cli/x","doneUrl":"https://registry.npmjs.org/-/v1/done?authId=x"}`,
+    };
+    const server = await scriptedServer(request =>
+      request.headers["npm-otp"] === "ceremony-tok" ? { status: 201, body: "{}" } : webChallenge
+    );
+    try {
+      const status = await publishToRegistry(server.url, IDENTITY, TARBALL, {}, AUTH, challenge => {
+        expect(challenge.authUrl).to.equal("https://www.npmjs.com/auth/cli/x");
+        expect(challenge.doneUrl).to.equal("https://registry.npmjs.org/-/v1/done?authId=x");
+        return Computable.resolve("ceremony-tok");
+      });
+      expect(status).to.equal("published");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("re-acquires once when the first otp is refused (a stale cached token)", async () => {
+    const server = await scriptedServer(request =>
+      request.headers["npm-otp"] === "fresh" ? { status: 201, body: "{}" } : EOTP_REPLY
+    );
+    const asked: Array<string | undefined> = [];
+    try {
+      const status = await publishToRegistry(server.url, IDENTITY, TARBALL, {}, AUTH, (challenge, rejected) => {
+        asked.push(rejected);
+        return Computable.resolve(rejected === undefined ? "stale" : "fresh");
+      });
+      expect(status).to.equal("published");
+      expect(asked).to.deep.equal([undefined, "stale"]);
+      expect(server.seen.length).to.equal(3);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("fails rather than looping when the registry refuses every otp", async () => {
+    const server = await scriptedServer(() => EOTP_REPLY);
+    const asked: Array<string | undefined> = [];
+    try {
+      let thrown: unknown;
+      await publishToRegistry(server.url, IDENTITY, TARBALL, {}, AUTH, (challenge, rejected) => {
+        asked.push(rejected);
+        return Computable.resolve("refused");
+      }).catch(err => (thrown = err));
+      expect((thrown as Error).message).to.match(/failed \(401\)/);
+      expect(asked.length).to.equal(2);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("surfaces the raw challenge without a provider (non-2FA-capable caller)", async () => {
+    const server = await scriptedServer(() => EOTP_REPLY);
+    try {
+      let thrown: unknown;
+      await publishToRegistry(server.url, IDENTITY, TARBALL, {}, AUTH).catch(err => (thrown = err));
+      expect((thrown as Error).message).to.match(/one-time pass/);
+      expect(server.seen.length).to.equal(1);
+    } finally {
+      server.close();
+    }
   });
 });

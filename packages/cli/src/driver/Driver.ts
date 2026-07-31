@@ -63,6 +63,7 @@ import { publishSync } from "./SyncHandler";
 import { completeCommandLine, Mode, Options } from "./Command";
 import { getSourceRoot, getBuildCacheRoot, getHostProperties, PROJECT_FILENAME } from "./Environment";
 import { IInvocationSite } from "./CommandLineSource";
+import { TerminalInteraction } from "./Interaction";
 import * as path from "node:path";
 
 const DIAG_BUILD_COMPLETE = Diagnostic.Info<{ targets: string }>("Built {targets}");
@@ -422,6 +423,13 @@ async function runWith(options: Options, operation: Operation, watch = false): P
     /* Under -q a subcommand's output is captured and shown only on failure;
      * otherwise the step inherits fabr's stderr and streams live as it runs. */
     execution.quiet = options.quiet;
+    /* A terminal to ask on (an npm publish's second-factor ceremony) — only
+     * when both the answer channel (stdin) and the question channel (stderr,
+     * the diagnostic stream) are ttys; its absence is the "non-interactive
+     * run" signal callers turn into a typed error. */
+    if (process.stdin.isTTY === true && process.stderr.isTTY === true) {
+      execution.interaction = new TerminalInteraction(log);
+    }
 
     if (controller) {
       return runWatched(operation, execution, site, log, controller);
