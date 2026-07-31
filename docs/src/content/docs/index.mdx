@@ -2,43 +2,10 @@
 title: Fabr
 description: A declarative, deterministic build orchestration tool.
 template: splash
-hero:
-  tagline: Build your world.
-  actions:
-    - text: Get started
-      link: /quickstart-js/
-      icon: right-arrow
-    - text: View on GitHub
-      link: https://github.com/fabr/fabr
-      icon: external
-      variant: minimal
+tableOfContents: false
+editUrl: false
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import Home from '../../components/Home.astro';
 
-Fabr is a declarative, deterministic build orchestration tool. It aims at fast, accurate, and — above all —
-**reliable** builds, while making the most complex build scenarios: multiple languages, cross-compilation, 
-and multi-stage builds trivial to specify.
-
-<CardGrid>
-  <Card title="Every step is a pure transform" icon="puzzle">
-    Every build step — a compile, a bundle, even an arbitrary [`generate`](/reference/standard-rules/#generate)
-    command — is a pure function from its declared inputs to its outputs. So every step lands in the
-    same dependency graph, cached by its inputs, with nothing running blind on the side.
-  </Card>
-  <Card title="Reproducible, no lockfiles" icon="approve-check">
-    A build is a pure function of its inputs, so it runs the same on your laptop and in CI. And unlike
-    every JS package manager, there's no lockfile — versions resolve
-    [deterministically](/introduction/#determinism-and-no-lockfiles) from what you actually require,
-    with nothing to drift or merge-conflict.
-  </Card>
-  <Card title="A live dev loop" icon="rocket">
-    Add `-w` and fabr rebuilds, retests, or relaunches the moment a source changes — and a
-    [`serve`](/guides/watch/) target hot-syncs a dev server's content without a restart.
-  </Card>
-  <Card title="One tool, not five" icon="seti:typescript">
-    Compile, bundle, test, and run TS/JS with a single tool in place of your package manager, compiler,
-    bundler, and test runner — and no config files. Just a [`PROJECT.fabr`](/quickstart-js/) and your
-    sources.
-  </Card>
-</CardGrid>
+<Home />

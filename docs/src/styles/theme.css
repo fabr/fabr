@@ -1,67 +1,57 @@
 /*
- * Fabr docs theme — a distinct violet accent (with a cyan companion for splash
- * flourishes) over lightly violet-tinted grays, layered on Starlight's defaults.
- * Only colour custom properties are overridden, so contrast/readability stay
- * within Starlight's tested ranges. Dark theme is `:root`; light is
- * `:root[data-theme='light']`.
+ * Fabr docs theme — the "blueprint" palette: a teal accent over navy-tinted
+ * grays, layered on Starlight's defaults. Only colour custom properties and the
+ * two font stacks are overridden, so contrast/readability stay within
+ * Starlight's tested ranges. Dark theme is `:root`; light is
+ * `:root[data-theme='light']` and keeps a white page background.
  */
 
 :root {
-  /* Accent — vivid violet. accent-high is the light-on-dark shade (links, hover). */
-  --sl-color-accent-low: #271658;
-  --sl-color-accent: #6d4aff;
-  --sl-color-accent-high: #cbbcff;
+  --sl-font: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  --sl-font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+}
 
-  /* Grays carry a faint violet tint so surfaces read as part of the palette,
-     not a separate neutral. gray-1 = brightest (text) … gray-7 = deep bg. */
-  --sl-color-gray-1: #eceaf6;
-  --sl-color-gray-2: #c1bfd2;
-  --sl-color-gray-3: #8a889c;
-  --sl-color-gray-4: #56546a;
-  --sl-color-gray-5: #363548;
-  --sl-color-gray-6: #24232f;
-  --sl-color-gray-7: #17161f;
+/* Dark palette. The second selector pins the landing page to it whatever the
+   theme toggle says: the blueprint design is dark by construction, and a light
+   header above a navy page would read as two pages. Selector-list specificity
+   is per-selector, so this beats the light block below on that page only. */
+:root,
+:root[data-theme='light']:has(.fabr-home) {
+  /* Accent — the blueprint teal. accent-high is the light-on-dark shade
+     (links, hover); accent is the solid-fill shade (buttons). */
+  --sl-color-accent-low: #123243;
+  --sl-color-accent: #1f7ea3;
+  --sl-color-accent-high: #7fd4e8;
 
-  /* A companion cyan, used only for the splash hero gradient. */
-  --fabr-cyan: #38e0d6;
+  /* Grays carry the navy tint of the plan sheet, so surfaces read as part of
+     the palette. gray-1 = brightest (text) … gray-7 = deep bg. */
+  --sl-color-gray-1: #dbeef6;
+  --sl-color-gray-2: #b6d3e0;
+  --sl-color-gray-3: #8ba8b8;
+  --sl-color-gray-4: #5b7a8b;
+  --sl-color-gray-5: #2f4d61;
+  --sl-color-gray-6: #1a3143;
+  --sl-color-gray-7: #102331;
+
+  /* `black` is the page background and `white` the heading colour (Starlight
+     swaps the pair between themes). */
+  --sl-color-black: #0b1a26;
+  --sl-color-white: #eaf6fb;
 }
 
 :root[data-theme='light'] {
-  --sl-color-accent-low: #e7ddff;
-  --sl-color-accent: #5b34d6;
-  --sl-color-accent-high: #271656;
+  --sl-color-accent-low: #d7eef7;
+  --sl-color-accent: #0e6f8f;
+  --sl-color-accent-high: #0a3a4d;
 
-  --sl-color-gray-1: #26243a;
-  --sl-color-gray-2: #46445d;
-  --sl-color-gray-3: #767488;
-  --sl-color-gray-4: #9896ab;
-  --sl-color-gray-5: #c7c5d6;
-  --sl-color-gray-6: #e6e4f0;
-  --sl-color-gray-7: #f5f4fb;
+  --sl-color-gray-1: #0d2331;
+  --sl-color-gray-2: #2e4d5e;
+  --sl-color-gray-3: #5c7b8c;
+  --sl-color-gray-4: #8aa5b3;
+  --sl-color-gray-5: #c3d6de;
+  --sl-color-gray-6: #e4eef3;
+  --sl-color-gray-7: #f4f9fb;
 
-  --fabr-cyan: #0d9b91;
-}
-
-/* Splash hero: give the big title a violet→cyan gradient for landing impact.
-   Large decorative text, so the gradient reads clearly without affecting body
-   readability. Falls back to the accent colour where background-clip is
-   unsupported. */
-.hero h1 {
-  background: linear-gradient(120deg, var(--sl-color-accent-high), var(--fabr-cyan));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: var(--sl-color-accent-high);
-  -webkit-text-fill-color: transparent;
-}
-
-:root[data-theme='light'] .hero h1 {
-  background: linear-gradient(120deg, var(--sl-color-accent), var(--fabr-cyan));
-  -webkit-background-clip: text;
-  background-clip: text;
-}
-
-/* A soft accent glow behind the splash hero, so the landing page feels less
-   flat than the stock template without touching text contrast. */
-.hero {
-  background: radial-gradient(60% 60% at 50% 0%, color-mix(in oklab, var(--sl-color-accent) 18%, transparent), transparent 70%);
+  --sl-color-black: #ffffff;
+  --sl-color-white: #08202c;
 }

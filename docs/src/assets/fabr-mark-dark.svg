@@ -1,0 +1,11 @@
+<!--
+  Fabr mark 01 — "convergence": two inputs and a dependency edge resolving into
+  one derived output. Dark-theme variant; the input nodes are punched out with
+  the page background so the stem reads through them.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#7fd4e8" stroke-width="1.6">
+  <path d="M5.5 6 L18 12 M5.5 18 L18 12 M5.5 6 V18"/>
+  <circle cx="5.5" cy="6" r="2.2" fill="#0b1a26"/>
+  <circle cx="5.5" cy="18" r="2.2" fill="#0b1a26"/>
+  <circle cx="18" cy="12" r="3" fill="#7fd4e8"/>
+</svg>

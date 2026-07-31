@@ -1,0 +1,640 @@
+---
+/*
+ * Copyright (c) 2026 Nathan Keynes <nkeynes@deadcoderemoval.net>
+ *
+ * This file is part of Fabr.
+ *
+ * Fabr is free software: you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * Fabr is distributed in the hope that it will be useful, but WITHOUT ANY
+ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * Fabr. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+import { Icon } from "@astrojs/starlight/components";
+
+// The landing page body ("blueprint"). Rendered from index.mdx inside
+// Starlight's splash template, which supplies the header; this component owns
+// everything below it. The page is dark in both themes — theme.css switches the
+// whole document to the blueprint palette wherever `.fabr-home` is present.
+---
+
+<div class="fabr-home not-content">
+  <section class="fh-hero">
+    <div class="fh-hero-copy">
+      <p class="fh-eyebrow">Declarative build orchestration</p>
+      <h1>Declare the inputs.<br />Derive everything else.</h1>
+      <p class="fh-lede">
+        Targets carry only their sources and dependencies. Every step — compile, bundle, test,
+        generate — is a pure transform in one graph, cached by its inputs. No lockfiles, no config
+        files, nothing running blind on the side.
+      </p>
+      <div class="fh-actions">
+        <a class="fh-btn" href="/quickstart-js/">Quickstart (JS/TS) →</a>
+        <a class="fh-btn fh-btn-ghost" href="https://blog.fabr.build/">Latest news ↗</a>
+        <a
+          class="fh-btn fh-btn-ghost fh-btn-icon"
+          href="https://github.com/fabr/fabr"
+          aria-label="Fabr on GitHub"
+        >
+          <Icon name="github" size="1.5rem" />
+        </a>
+      </div>
+    </div>
+
+    <div class="fh-plate">
+      <span class="fh-plate-tag fh-plate-tag-start">Plan — derivation</span>
+      <span class="fh-plate-tag fh-plate-tag-end">Sheet 1/1</span>
+      <svg
+        viewBox="0 0 520 300"
+        fill="none"
+        font-family="'IBM Plex Mono', monospace"
+        font-size="11"
+        role="img"
+        aria-label="Three file sets — a source glob, an npm requirement and a schema directory — feeding one js_package target, which is built under two different constraints."
+      >
+        <g stroke="#2a5570" stroke-width="1">
+          <path d="M20 30 h480"></path><path d="M20 30 v8"></path><path d="M500 30 v8"></path>
+        </g>
+        <text x="230" y="24" fill="#4d90ad" font-size="10" letter-spacing="1">FILE SETS</text>
+        <g stroke="#4d90ad" stroke-width="1.25">
+          <rect x="20" y="60" width="130" height="34" fill="rgba(127,212,232,.05)" stroke="#7fd4e8"></rect>
+          <rect x="20" y="112" width="130" height="34" fill="rgba(127,212,232,.05)"></rect>
+          <rect x="20" y="164" width="130" height="34" fill="rgba(127,212,232,.05)"></rect>
+        </g>
+        <g fill="#dbeef6">
+          <text x="32" y="82">./src:*.ts</text>
+          <text x="32" y="134">@npm:react:18.3.1</text>
+          <text x="32" y="186">./schema</text>
+        </g>
+        <g stroke="#4d90ad" stroke-width="1.25">
+          <path d="M150 77 H200 V129 H240"></path>
+          <path d="M150 129 H240"></path>
+          <path d="M150 181 H200 V129 H240"></path>
+          <rect x="240" y="106" width="110" height="46" fill="#07131c" stroke="#7fd4e8"></rect>
+        </g>
+        <text x="252" y="127" fill="#7fd4e8" font-size="12">js_package</text>
+        <text x="252" y="144" fill="#8fb0c2" font-size="12">app</text>
+        <g class="fh-flow" stroke="#7fd4e8" stroke-width="1.25" stroke-dasharray="5 5">
+          <path d="M350 129 H390 V88 H430"></path>
+          <path d="M350 129 H390 V170 H430"></path>
+        </g>
+        <g stroke="#7fd4e8" stroke-width="1.25">
+          <rect x="430" y="70" width="72" height="36" fill="rgba(127,212,232,.1)"></rect>
+          <rect x="430" y="152" width="72" height="36" fill="rgba(127,212,232,.1)"></rect>
+        </g>
+        <g fill="#dbeef6" font-size="10.5">
+          <text x="438" y="86">es2021-</text><text x="438" y="99">commonjs</text>
+          <text x="438" y="168">es6-esm</text><text x="438" y="181">(cached)</text>
+        </g>
+        <g stroke="#2a5570" stroke-width="1">
+          <path d="M430 214 h72"></path><path d="M430 210 v8"></path><path d="M502 210 v8"></path>
+        </g>
+        <text x="502" y="236" text-anchor="end" fill="#4d90ad" font-size="10" letter-spacing="1">TWO CONSTRAINTS</text>
+        <g stroke="#2a5570" stroke-width="1"><path d="M20 264 h480"></path></g>
+        <text x="20" y="284" fill="#4d90ad" font-size="10" letter-spacing="1">EVERY EDGE DECLARED · EVERY NODE CACHED BY CONTENT</text>
+      </svg>
+    </div>
+  </section>
+
+  <section class="fh-band fh-band-alt">
+    <div class="fh-split">
+      <div class="fh-prose">
+        <p class="fh-rule">01 — The model</p>
+        <h2>Everything is files or properties.</h2>
+        <p>
+          File sets are what you build and manipulate; properties are the parameters they build
+          under. A target is just a derived file set, and you address it like a
+          directory — <code>app/package.json</code> works whether <code>app</code> is a folder,
+          a build output, or a package pulled from npm.
+        </p>
+        <p>Properties are assigned once and resolved lazily. That's the whole language.</p>
+      </div>
+
+      <div class="fh-panel">
+        <div class="fh-panel-head">PROJECT.fabr</div>
+        <pre class="fh-code"><code>plugin <span class="k">@fabr-build/js</span>;
+JS_TARGET = <span class="v">es2021-commonjs</span>;
+
+<span class="k">js_package</span> app &#123;
+    srcs = ./src:*.ts;
+    deps = <span class="v">@npm:react:18.3.1</span> base;
+&#125;
+
+<span class="k">js_package</span> base &#123;
+    srcs = ./base:*.ts;
+&#125;</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="fh-band">
+    <div class="fh-split fh-split-flip">
+      <div class="fh-panel">
+        <div class="fh-panel-head">$ fabr build third</div>
+        <pre class="fh-code fh-code-dim"><code>info:Building base (required by third)
+info:Compiling base
+info:Building base <span class="c">[JS_TARGET=es6-esm]</span> (required by second &lt; third)
+info:Compiling base <span class="c">[JS_TARGET=es6-esm]</span>
+info:Building second <span class="c">[JS_TARGET=es6-esm]</span> (required by third)
+info:Compiling second <span class="c">[JS_TARGET=es6-esm]</span>
+info:Building third
+info:Compiling third
+<span class="ok">info:Built third</span></code></pre>
+      </div>
+
+      <div class="fh-prose">
+        <p class="fh-rule">02 — Constraints</p>
+        <h2>Two builds of the same library. Zero extra config.</h2>
+        <p>
+          Request a dependency in the form you need
+          it — <code>base&lt;JS_TARGET=es6-esm&gt;</code> — and fabr builds an additional version
+          of that subgraph alongside the original. Not a replacement. Not a second checkout.
+        </p>
+        <p>
+          Cross-compilation works the same
+          way: <code>&lt;TARGET=x86_64-linux-gnu&gt;</code>. <a href="/guides/concepts/">How the
+          model fits together →</a>
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="fh-band fh-band-alt">
+    <div class="fh-band-head">
+      <h2>And the ordinary things, done properly</h2>
+      <p class="fh-rule">03 — Specifications</p>
+    </div>
+    <div class="fh-specs">
+      <div class="fh-spec">
+        <h3>Every step is a pure transform</h3>
+        <p>
+          Compiles, bundles, even arbitrary <code>generate</code> commands land in the same graph,
+          keyed by their inputs.
+        </p>
+      </div>
+      <div class="fh-spec">
+        <h3>Deterministic, no lockfile</h3>
+        <p>
+          Versions resolve from what you require — per target by MVS, or pinned project-wide with
+          a <code>catalog</code>. Nothing to drift or merge-conflict.
+        </p>
+      </div>
+      <div class="fh-spec">
+        <h3>A live dev loop</h3>
+        <p>
+          Add <code>-w</code> and fabr rebuilds, retests or relaunches on change;
+          a <code>serve</code> target hot-syncs without a restart.
+        </p>
+      </div>
+      <div class="fh-spec">
+        <h3>One tool to run them all</h3>
+        <p>
+          Packaging, compiling, bundling, testing — it all works out of the box, with no per-tool
+          configuration needed.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="fh-cta">
+    <h2>One file, two minutes</h2>
+    <pre class="fh-cta-cmd"><code><span class="p">$</span> npm i -g @fabr-build/cli @fabr-build/js
+<span class="p">$</span> cat &gt; PROJECT.fabr &lt;&lt;'EOF'
+plugin <span class="k">@fabr-build/js</span>;
+<span class="k">js_package</span> mylib &#123; srcs = src:**/*.ts; &#125;
+EOF
+<span class="p">$</span> fabr build mylib</code></pre>
+    <a class="fh-btn" href="/quickstart-js/">Quickstart for JS/TS →</a>
+  </section>
+</div>
+
+<style is:global>
+  /* Starlight's splash template centres content in a padded panel; the landing
+     page is full-bleed and lays out its own gutters. */
+  body:has(.fabr-home) .content-panel {
+    padding: 0;
+    border: none;
+  }
+  body:has(.fabr-home) .sl-container {
+    max-width: none;
+    margin: 0;
+  }
+  /* Starlight draws the nav from gray-6 in dark but gray-7 in light, so swapping
+     the palette alone would leave this always-dark page a header shade that still
+     tracks the visitor's theme. Pin it (and its hairline) to the dark pairing. */
+  body:has(.fabr-home) {
+    --sl-color-bg-nav: #102331;
+    --sl-color-hairline-shade: #1a3143;
+  }
+  /* The landing page is dark whatever the theme, so a theme control on it would
+     do nothing visible — hide it here (header and mobile menu both). */
+  body:has(.fabr-home) starlight-theme-select {
+    display: none;
+  }
+  /* …along with the rule that divides the nav from it. */
+  body:has(.fabr-home) .social-icons::after {
+    display: none;
+  }
+  /* Splash also renders the frontmatter title as an h1 above the content. The
+     hero carries its own heading, so this one is only visually hidden — the
+     "skip to content" link targets it. */
+  body:has(.fabr-home) h1#_top {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+</style>
+
+<style>
+  /* Blueprint palette. Fixed values rather than Starlight's theme variables:
+     this page is dark under either theme (theme.css switches the surrounding
+     chrome to match). */
+  .fabr-home {
+    --bp-bg: #0b1a26;
+    --bp-deep: #07131c;
+    --bp-grid: #12293a;
+    --bp-line: #1d3547;
+    --bp-line-strong: #2a5570;
+    --bp-accent: #7fd4e8;
+    --bp-label: #4d90ad;
+    --bp-muted: #8fb0c2;
+    --bp-body: #9fc0d1;
+    --bp-text: #dbeef6;
+    --bp-value: #c8b26b;
+
+    --bp-pad: clamp(20px, 4vw, 40px);
+    --bp-max: 1240px;
+
+    color: var(--bp-text);
+    background: var(--bp-bg);
+    background-image: linear-gradient(var(--bp-grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--bp-grid) 1px, transparent 1px);
+    background-size: 32px 32px;
+    font-family: var(--sl-font), system-ui, sans-serif;
+    overflow-x: hidden;
+  }
+
+  .fabr-home :is(h1, h2, h3) {
+    margin: 0;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--bp-text);
+  }
+  .fabr-home p {
+    margin: 0;
+    text-wrap: pretty;
+  }
+  .fabr-home a {
+    color: var(--bp-accent);
+    text-decoration: none;
+  }
+  .fabr-home a:hover {
+    text-decoration: underline;
+  }
+  .fabr-home code {
+    font-family: var(--sl-font-mono), monospace;
+    font-size: 0.92em;
+    color: var(--bp-text);
+    background: none;
+    border: none;
+    padding: 0;
+  }
+
+  /* A monospace section marker: "01 — The model", "Plan — derivation". */
+  .fh-rule,
+  .fh-eyebrow,
+  .fh-plate-tag,
+  .fh-panel-head {
+    font-family: var(--sl-font-mono), monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: 12px;
+    color: var(--bp-accent);
+  }
+  .fh-eyebrow {
+    letter-spacing: 0.18em;
+  }
+
+  /* Hero ------------------------------------------------------------------ */
+
+  .fh-hero {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 52px;
+    align-items: center;
+    max-width: var(--bp-max);
+    margin: 0 auto;
+    padding: clamp(48px, 7vw, 76px) var(--bp-pad) clamp(44px, 6vw, 70px);
+  }
+  .fh-hero-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+  .fh-hero h1 {
+    font-size: clamp(38px, 4.4vw, 56px);
+    line-height: 1.05;
+    letter-spacing: -0.025em;
+  }
+  .fh-lede {
+    font-size: clamp(17px, 1.5vw, 18.5px);
+    line-height: 1.55;
+    color: var(--bp-body);
+    max-width: 38ch;
+  }
+  .fh-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    align-items: center;
+    padding-top: 6px;
+  }
+  /* Qualified with `.fabr-home` so these outrank the page's own link colour. */
+  .fabr-home a.fh-btn {
+    font-family: var(--sl-font-mono), monospace;
+    font-size: 14px;
+    font-weight: 600;
+    background: var(--bp-accent);
+    color: var(--bp-deep);
+    padding: 14px 22px;
+  }
+  .fabr-home a.fh-btn:hover {
+    background: #a4e3f2;
+    text-decoration: none;
+  }
+  .fabr-home a.fh-btn-ghost {
+    display: inline-flex;
+    align-items: center;
+    font-weight: 400;
+    /* Opaque, like the code/terminal panels — the grid doesn't read through. */
+    background: var(--bp-deep);
+    color: var(--bp-body);
+    border: 1px solid var(--bp-line);
+    padding: 13px 20px;
+  }
+  /* Icon-only: square it off; the glyph centres against the text buttons. */
+  .fabr-home a.fh-btn-icon {
+    padding: 13px 18px;
+  }
+  .fabr-home a.fh-btn-ghost:hover {
+    background: var(--bp-grid);
+    color: var(--bp-text);
+  }
+
+  /* The derivation drawing, framed as a plan sheet. */
+  .fh-plate {
+    position: relative;
+    border: 1px solid var(--bp-line-strong);
+    background: rgba(7, 19, 28, 0.72);
+    padding: 36px 30px 30px;
+  }
+  .fh-plate svg {
+    width: 100%;
+    height: auto;
+  }
+  .fh-plate-tag {
+    position: absolute;
+    top: -9px;
+    background: var(--bp-bg);
+    padding: 0 8px;
+    font-size: 11px;
+  }
+  .fh-plate-tag-start {
+    left: 22px;
+  }
+  .fh-plate-tag-end {
+    right: 22px;
+    color: var(--bp-label);
+  }
+  /* Dependency edges animate along the constraint fan-out. */
+  .fh-flow {
+    animation: fh-dash 2.2s linear infinite;
+  }
+  @keyframes fh-dash {
+    to {
+      stroke-dashoffset: -24;
+    }
+  }
+
+  /* Bands ----------------------------------------------------------------- */
+
+  .fh-band {
+    border-top: 1px solid var(--bp-line);
+    padding: clamp(40px, 5vw, 56px) 0;
+  }
+  .fh-band-alt {
+    background: rgba(7, 19, 28, 0.6);
+  }
+  .fh-split,
+  .fh-band-head,
+  .fh-specs {
+    max-width: var(--bp-max);
+    margin: 0 auto;
+    padding-inline: var(--bp-pad);
+  }
+  .fh-split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 48px;
+    align-items: start;
+  }
+  .fh-prose {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .fh-prose h2 {
+    font-size: clamp(25px, 2.6vw, 30px);
+    line-height: 1.12;
+  }
+  .fh-prose p:not(.fh-rule) {
+    color: var(--bp-body);
+    font-size: 17px;
+    line-height: 1.6;
+    max-width: 38ch;
+  }
+  .fh-prose code {
+    color: var(--bp-text);
+  }
+
+  /* Code and terminal panels. */
+  .fh-panel {
+    border: 1px solid var(--bp-line);
+    background: var(--bp-deep);
+    min-width: 0;
+  }
+  .fh-panel-head {
+    padding: 9px 16px;
+    border-bottom: 1px solid var(--bp-line);
+    color: #6f97ab;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: none;
+  }
+  /* Syntax accents, shared by the code panel and the CTA's terminal session. */
+  .fabr-home .k {
+    color: var(--bp-accent);
+  }
+  .fabr-home .v {
+    color: var(--bp-value);
+  }
+  .fh-code {
+    margin: 0;
+    padding: 20px 22px;
+    font-family: var(--sl-font-mono), monospace;
+    font-size: 13.5px;
+    line-height: 1.9;
+    color: var(--bp-text);
+    overflow-x: auto;
+  }
+  .fh-code code {
+    font-size: inherit;
+  }
+  .fh-code-dim {
+    font-size: 13px;
+    line-height: 1.95;
+    color: var(--bp-muted);
+  }
+  .fh-code-dim code {
+    color: inherit;
+  }
+  .fh-code-dim .c {
+    color: var(--bp-accent);
+  }
+  .fh-code-dim .ok {
+    color: var(--bp-text);
+  }
+
+  /* Specifications grid --------------------------------------------------- */
+
+  .fh-band-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 24px;
+    margin-bottom: 26px;
+  }
+  .fh-band-head h2 {
+    font-size: clamp(25px, 2.6vw, 30px);
+  }
+  .fh-specs {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--bp-line);
+    border: 1px solid var(--bp-line);
+    /* The 1px gaps are the grid's own hairlines, so the band gutter has to be
+       margin rather than the shared padding-inline. */
+    padding-inline: 0;
+    max-width: calc(var(--bp-max) - 2 * var(--bp-pad));
+    margin-inline: var(--bp-pad);
+  }
+  @media (min-width: 1240px) {
+    .fh-specs {
+      margin-inline: auto;
+    }
+  }
+  .fh-spec {
+    background: var(--bp-bg);
+    padding: 26px 22px 30px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .fh-spec h3 {
+    font-family: var(--sl-font-mono), monospace;
+    font-size: 12.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--bp-accent);
+    line-height: 1.4;
+  }
+  .fh-spec p {
+    color: var(--bp-muted);
+    font-size: 15px;
+    line-height: 1.55;
+  }
+  .fh-spec code {
+    color: var(--bp-body);
+  }
+
+  /* Closing call to action ------------------------------------------------ */
+
+  .fh-cta {
+    border-top: 1px solid var(--bp-line);
+    padding: clamp(48px, 6vw, 64px) var(--bp-pad) clamp(56px, 7vw, 72px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 22px;
+    text-align: center;
+  }
+  .fh-cta h2 {
+    font-size: clamp(26px, 3vw, 34px);
+  }
+  .fh-cta-cmd {
+    margin: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    font-family: var(--sl-font-mono), monospace;
+    font-size: 15px;
+    line-height: 1.8;
+    text-align: left;
+    border: 1px solid var(--bp-line-strong);
+    background: var(--bp-deep);
+    padding: 14px 24px;
+    color: var(--bp-text);
+  }
+  .fh-cta-cmd .p {
+    color: var(--bp-label);
+  }
+
+  /* Responsive ------------------------------------------------------------ */
+
+  @media (max-width: 1000px) {
+    .fh-specs {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+  @media (max-width: 860px) {
+    .fh-hero,
+    .fh-split {
+      grid-template-columns: 1fr;
+      gap: 36px;
+    }
+    /* Keep the prose above its panel when the two columns stack. */
+    .fh-split-flip .fh-panel {
+      order: 2;
+    }
+    .fh-band-head {
+      flex-direction: column-reverse;
+      align-items: flex-start;
+      gap: 10px;
+    }
+  }
+  @media (max-width: 560px) {
+    .fh-specs {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .fh-flow {
+      animation: none;
+    }
+  }
+</style>

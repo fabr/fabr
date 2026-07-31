@@ -21,7 +21,8 @@ generate reference_docs {
 }
 
 generate docs_site {
-  srcs = ./src/** ./astro.config.mjs reference_docs:*.md -> src/content/docs/reference/*.md;
+  srcs = ./src/** ./public/** ./astro.config.mjs
+         reference_docs:*.md -> src/content/docs/reference/*.md;
   run = astro build;
   output = dist:**;
 }

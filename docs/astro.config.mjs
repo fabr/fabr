@@ -31,7 +31,30 @@ export default defineConfig({
       title: "Fabr",
       description: "A dataflow-based build tool for fast, accurate, deterministic builds.",
       customCss: ["./src/styles/theme.css"],
+      logo: {
+        light: "./src/assets/fabr-mark-light.svg",
+        dark: "./src/assets/fabr-mark-dark.svg",
+      },
+      // IBM Plex Sans/Mono are the design's typefaces, wired in as the site's
+      // --sl-font / --sl-font-mono by theme.css.
+      head: [
+        { tag: "link", attrs: { rel: "preconnect", href: "https://fonts.googleapis.com" } },
+        {
+          tag: "link",
+          attrs: { rel: "preconnect", href: "https://fonts.gstatic.com", crossorigin: true },
+        },
+        {
+          tag: "link",
+          attrs: {
+            rel: "stylesheet",
+            href: "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap",
+          },
+        },
+      ],
       social: [{ icon: "github", label: "GitHub", href: "https://github.com/fabr/fabr" }],
+      // The header's right-hand slot carries the section nav ahead of the social
+      // icons — see src/components/HeaderNav.astro.
+      components: { SocialIcons: "./src/components/HeaderNav.astro" },
       sidebar: [
         { label: "Introduction", link: "/introduction/" },
         { label: "Quick start (JS/TS)", link: "/quickstart-js/" },

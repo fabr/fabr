@@ -1,0 +1,84 @@
+---
+/*
+ * Copyright (c) 2026 Nathan Keynes <nkeynes@deadcoderemoval.net>
+ *
+ * This file is part of Fabr.
+ *
+ * Fabr is free software: you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * Fabr is distributed in the hope that it will be useful, but WITHOUT ANY
+ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * Fabr. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+// The header's top-level nav, as an override of Starlight's `SocialIcons` — the
+// slot that sits at the right of the header bar, and again in the mobile menu
+// footer. The section links go ahead of the stock social icons, which render
+// after them from `social:` config.
+import Default from "@astrojs/starlight/components/SocialIcons.astro";
+
+// Each section points at its first page: only /introduction/ and /quickstart-js/
+// are pages in their own right.
+const SECTIONS = [
+  { label: "Introduction", href: "/introduction/", match: "/introduction/" },
+  { label: "Quickstart", href: "/quickstart-js/", match: "/quickstart-js/" },
+  { label: "Guides", href: "/guides/concepts/", match: "/guides/" },
+  { label: "Reference", href: "/reference/command-line/", match: "/reference/" },
+];
+
+const path = Astro.url.pathname;
+---
+
+<nav class="fabr-nav" aria-label="Sections">
+  {
+    SECTIONS.map((s) => (
+      <a href={s.href} aria-current={path.startsWith(s.match) ? "page" : undefined}>
+        {s.label}
+      </a>
+    ))
+  }
+</nav>
+<Default {...Astro.props}><slot /></Default>
+
+<style>
+  .fabr-nav {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    font-family: var(--sl-font-mono), monospace;
+    font-size: var(--sl-text-sm);
+  }
+  .fabr-nav a {
+    color: var(--sl-color-gray-3);
+    text-decoration: none;
+  }
+  .fabr-nav a:hover,
+  .fabr-nav a[aria-current='page'] {
+    color: var(--sl-color-white);
+  }
+  /* Tighten up where the links share the bar with the search box. Below 50rem
+     Starlight hides the whole right-hand group and the mobile menu takes over —
+     its footer (`.mobile-preferences`) is outside `.header`, so it keeps these. */
+  @media (max-width: 64rem) {
+    :global(.header) .fabr-nav {
+      gap: 1rem;
+      font-size: var(--sl-text-xs);
+    }
+    /* Everywhere but the landing page the theme control shares the bar too, and
+       that no longer fits — those pages have the sidebar to navigate by. */
+    :global(body:not(:has(.fabr-home)) .header) .fabr-nav {
+      display: none;
+    }
+  }
+  :global(.mobile-preferences) .fabr-nav {
+    flex-wrap: wrap;
+    gap: 1rem;
+  }
+</style>
