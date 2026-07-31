@@ -557,6 +557,55 @@ describe("MVSResolver", () => {
     expect((error as MetadataFetchError).pkg).to.equal("B");
   });
 
+  it("refuses a floor raise that would cross the resolution key, failing instead of dropping the dep", () => {
+    /* A requires B '>=1.2.3'; 1.2.3 was never published and the only published
+     * satisfier is 2.0.0 — a different coexistence key (major 2 vs the floor's
+     * major 1). Re-offered under the original key the raised selection would
+     * satisfy no edge (edgeTargets keys a selection by its exact version), so
+     * B would silently vanish from the delivered closure. Crossing a
+     * coexistence boundary is not a repair fabr may make on its own: the sound
+     * outcome is the terminal nothing-published-satisfies failure, whose
+     * remedy is an explicit root requirement. */
+    let error: Error | undefined;
+    resolveMVS(
+      [{ pkg: "A", constraint: "1.0.0" }],
+      SEMVER,
+      mockRegistry({ A: { "1.0.0": { B: ">=1.2.3" } }, B: { "2.0.0": {} } }, true)
+    ).then(
+      () => undefined,
+      err => {
+        error = err as Error;
+      }
+    );
+    expect(error).to.be.instanceOf(MetadataFetchError);
+    expect((error as MetadataFetchError).pkg).to.equal("B");
+    expect((error as MetadataFetchError).rootPkg).to.equal("A");
+  });
+
+  it("refuses a 0.x per-minor cross-key raise, while an in-key raise still repairs", () => {
+    /* C's floor 0.5.0 is unpublished; the lowest published satisfier within
+     * '>=0.5.0' is 0.6.0 — a different 0.x key (per-minor coexistence), so the
+     * raise is refused. An ordinary in-key raise (D: 1.0.0 -> 1.0.1) must be
+     * untouched by the new refusal. */
+    let error: Error | undefined;
+    resolveMVS(
+      [{ pkg: "A", constraint: "1.0.0" }],
+      SEMVER,
+      mockRegistry({ A: { "1.0.0": { C: ">=0.5.0" } }, C: { "0.6.0": {} } }, true)
+    ).then(
+      () => undefined,
+      err => {
+        error = err as Error;
+      }
+    );
+    expect(error).to.be.instanceOf(MetadataFetchError);
+    expect((error as MetadataFetchError).pkg).to.equal("C");
+
+    const result = resolve({ A: "1.0.0" }, { A: { "1.0.0": { D: "^1.0.0" } }, D: { "1.0.1": {} } }, true);
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "D@1.0.1"]);
+    expect(result.raises).to.have.lengthOf(1);
+  });
+
   it("attributes a failure of the raise hook itself to the node that provoked it", () => {
     /* The hook is only consulted for an unpublished floor, so its own failure
      * (an unreachable registry, a package the registry has never heard of)

@@ -146,7 +146,7 @@ interface ISplitEntry {
   raises: IRaiseEntry[];
 }
 
-/** Serialized form of a persisted joint resolution (memo tag npm:resolve:10) */
+/** Serialized form of a persisted joint resolution (memo tag npm:resolve:11) */
 interface IResolutionDoc {
   roots: Requirement[];
   selections: IResolutionEntry[];
@@ -1000,7 +1000,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
          * hyphen range, `1.2.3 - 2.3.4`), so a space delimiter isn't obviously
          * injective — a newline can appear in neither a package name nor a
          * constraint, matching how file deps are already newline-separated. */
-        .memoize("npm:resolve:10", `${this.url} ${targetKey}\n${rootKeys.join("\n")}`, () => {
+        .memoize("npm:resolve:11", `${this.url} ${targetKey}\n${rootKeys.join("\n")}`, () => {
           /* A memo miss means real resolution work on behalf of the consumer */
           this.context.notifyProgress({ kind: "repository-resolve", repository: this.context.target, requirements: rootKeys });
           return resolveWithRepairs(roots, SEMVER, this).then(result => {

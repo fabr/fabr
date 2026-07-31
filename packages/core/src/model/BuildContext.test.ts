@@ -425,6 +425,69 @@ describe("BuildContext", () => {
     }
   });
 
+  it("Reports a cycle between global FILES properties instead of overflowing", async () => {
+    /* Global-property stack nodes carry no target, so only the property-decl
+     * cycle check can catch this — unguarded it recurses to a RangeError. */
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "A = B;\nB = A;\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    try {
+      await model.getConfig(Constraints.of({}), execution).getTarget("A");
+      expect.fail("expected property A to fail");
+    } catch (err) {
+      let cause: Error = err as Error;
+      while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
+        cause = cause.cause;
+      }
+      expect(cause).to.be.instanceOf(CircularDependencyError);
+      const circular = cause as CircularDependencyError;
+      expect(circular.name).to.equal("A");
+      expect(circular.cycle.map(site => `${site.property.name} = ${site.value.value.toString()}`)).to.deep.equal([
+        "B = A",
+        "A = B",
+      ]);
+    }
+  });
+
+  it("Reports a self-referential global FILES property as a one-site cycle", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "DEPS = DEPS;\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    try {
+      await model.getConfig(Constraints.of({}), execution).getTarget("DEPS");
+      expect.fail("expected property DEPS to fail");
+    } catch (err) {
+      let cause: Error = err as Error;
+      while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
+        cause = cause.cause;
+      }
+      expect(cause).to.be.instanceOf(CircularDependencyError);
+      expect((cause as CircularDependencyError).name).to.equal("DEPS");
+      expect((cause as CircularDependencyError).cycle.map(site => site.value.value.toString())).to.deep.equal(["DEPS"]);
+    }
+  });
+
+  it("Lets a target property reference a same-named global (not a cycle)", async () => {
+    /* Target properties are not in the `${}` namespace, so `${deps}` inside the
+     * target's own `deps` binds to the global — and, not being referenceable, a
+     * target property can never close a cycle: the cycle check must skip its
+     * stack node, or this legitimate reference reports a false cycle. */
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "targetdef test_good { deps = FILES; }\ndeps = sub;\ntest_good t { deps = ${deps}/*.txt; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig(Constraints.of({}), execution).getTarget("t");
+    expect(lastDeps?.isEmpty()).to.equal(true);
+  });
+
   it("Attributes file conflicts to the dependencies that introduced them", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));

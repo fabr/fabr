@@ -540,9 +540,11 @@ export class Computable<T> extends ComputableSource<T> {
      * forwarding the settle rather than recomputing us is what stops a
      * fresh-per-call factory (`x.then(v => build(v))`) from thrashing. Superseding
      * on re-run is handled in run(); a stray re-resolve (from() may fire more than
-     * once) is superseded here via unbind. */
+     * once) is superseded here — on BOTH branches: a plain-value re-resolve must
+     * also detach a prior still-pending binding, or its inner would later forward
+     * and clobber this value with the superseded result. */
+    this.unbind();
     if (value instanceof ComputableSource) {
-      this.unbind();
       const binding = new Computable<T>();
       /* Wire the outer before entering the graph: an already-settled inner
        * settles the binding during setDerivation's attach, which must forward. */
@@ -580,6 +582,11 @@ export class Computable<T> extends ComputableSource<T> {
   }
 
   private rejectWith(err: Error): void {
+    /* An outside rejection supersedes a pending fn-result link just as a
+     * re-resolve does (a from() executor may resolve with a Computable and then
+     * reject) — without this, the orphaned inner's eventual settle would forward
+     * through the stale binding and clobber the error. */
+    this.unbind();
     this.settle(ComputableState.Error, err);
   }
 

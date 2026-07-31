@@ -460,6 +460,7 @@ export class BuildContext {
        * targets' builds stay memoized in their own constraint contexts. */
       const def = this.model.getDecl(name);
       if (!this.constraints.has(name) && def?.kind === DeclKind.Property) {
+        this.assertNonCircularProperty(name, stack);
         return this.resolveFileProperty(def, undefined, stack, callerOverrides);
       }
       return this.getContextWithOverrides(callerOverrides).getTarget(name, stack);
@@ -485,6 +486,11 @@ export class BuildContext {
         this.targetCache.set(name, result);
         return result;
       } else if (def?.kind === DeclKind.Property) {
+        /* A global FILES property resolved as a target: its stack nodes carry no
+         * `target`, so the target-cycle check above never fires — the property
+         * check is what turns `A = B; B = A;` into a positioned cycle error
+         * instead of unbounded recursion. */
+        this.assertNonCircularProperty(name, stack);
         const result = this.resolveFileProperty(def, undefined, stack);
         this.targetCache.set(name, result);
         return result;
@@ -1352,10 +1358,13 @@ export class BuildContext {
     }
   }
 
+  /** Only global-property nodes (no `target`) participate: a target property is
+   * not in the `${}`/reference namespace, so it can never close a cycle — and it
+   * may legitimately reference a same-named global. */
   private findPropertyInStack(property: string, stack?: IDependencyStack): IDependencyStack | undefined {
     let node = stack;
     while (node) {
-      if (node.property.name === property && node.context === this) {
+      if (node.property.name === property && node.target === undefined && node.context === this) {
         return node;
       }
       node = node.next;
@@ -1701,7 +1710,13 @@ export abstract class TargetContext {
    * properties and globals it spans — is partitioned into one batch per
    * repository and resolved together, with the consumer's own pins
    * participating across the lot. Results come back per name, filtered to
-   * materialized FileSets (flags and other non-content sources drop out).
+   * materialized FileSets (a Flag extends FileSet and rides through as a
+   * fileless set — read it via getFlags; only non-FileSet sources drop out).
+   *
+   * `parts` may be a plain record (the usual fixed developer-written part
+   * names) or a Map, which returns a Map — required when the part names are
+   * user-supplied (a sync's written coordinates), per the user-keyed
+   * dictionaries rule.
    *
    * `options.resolutionMode = "permissive"` declares this collection point's
    * deliveries sealed program installs (a runnable-definer's assembly) —
@@ -1720,22 +1735,31 @@ export abstract class TargetContext {
     options?: MaterializeOptions
   ): Computable<Record<string, FileSet[]>>;
   public collect(
-    parts: Record<string, SourceRef[] | Computable<SourceRef[]>>,
+    parts: Map<string, SourceRef[] | Computable<SourceRef[]>>,
+    options: CollectionOptions & { keepProjected: true }
+  ): Computable<Map<string, (FileSet | FileSetRef)[]>>;
+  public collect(
+    parts: Map<string, SourceRef[] | Computable<SourceRef[]>>,
+    options?: MaterializeOptions
+  ): Computable<Map<string, FileSet[]>>;
+  public collect(
+    parts: Record<string, SourceRef[] | Computable<SourceRef[]>> | Map<string, SourceRef[] | Computable<SourceRef[]>>,
     options?: CollectionOptions
-  ): Computable<Record<string, (FileSet | FileSetRef)[]>> {
-    const names = Object.keys(parts);
+  ): Computable<Record<string, (FileSet | FileSetRef)[]> | Map<string, (FileSet | FileSetRef)[]>> {
+    const entries = parts instanceof Map ? [...parts] : Object.entries(parts);
     return Computable.forAll(
-      names.map(name => {
-        const value = parts[name];
-        return value instanceof Computable ? value : Computable.resolve(value);
-      }),
+      entries.map(([, value]) => (value instanceof Computable ? value : Computable.resolve(value))),
       (...lists: SourceRef[][]) =>
         materializeLists(lists, options).then(partitions => {
+          const filtered = partitions.map(partition =>
+            partition.filter((source): source is FileSet | FileSetRef => source instanceof FileSet || source instanceof FileSetRef)
+          );
+          if (parts instanceof Map) {
+            return new Map(entries.map(([name], i) => [name, filtered[i]]));
+          }
           const result: Record<string, (FileSet | FileSetRef)[]> = {};
-          names.forEach((name, i) => {
-            result[name] = partitions[i].filter(
-              (source): source is FileSet | FileSetRef => source instanceof FileSet || source instanceof FileSetRef
-            );
+          entries.forEach(([name], i) => {
+            result[name] = filtered[i];
           });
           return result;
         })

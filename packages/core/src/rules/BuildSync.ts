@@ -105,12 +105,12 @@ function syncPackages(context: TargetContext): Computable<RuleResult> {
       (...members: Member[]) => members
     ).then(members => {
       /* Phase 2 — gather every member's content through ONE collection point
-       * (keyed by the member's decl name — the written coordinate — so members
-       * sharing a package name stay distinct). Content builds here, only once
-       * all coordinates are good. */
-      const sources: Record<string, Computable<SourceRef[]>> = {};
+       * (keyed by the member's decl name — the written coordinate, a
+       * user-supplied key, hence a Map — so members sharing a package name stay
+       * distinct). Content builds here, only once all coordinates are good. */
+      const sources = new Map<string, Computable<SourceRef[]>>();
       for (const member of members) {
-        sources[member.decl.name] = context.getFileProperty(member.decl.name, BUILD_OVERRIDE);
+        sources.set(member.decl.name, context.getFileProperty(member.decl.name, BUILD_OVERRIDE));
       }
       const release = members.map(member => member.assigned);
       return context.collect(sources).then(content => {
@@ -128,7 +128,8 @@ function syncPackages(context: TargetContext): Computable<RuleResult> {
               .package(
                 batch.map(({ member }) => ({
                   destination: member.assigned,
-                  content: FileSet.unionAll(...content[member.decl.name]),
+                  /* Every member's key was set above, so the lookup can't miss. */
+                  content: FileSet.unionAll(...(content.get(member.decl.name) ?? [])),
                 })),
                 release
               )

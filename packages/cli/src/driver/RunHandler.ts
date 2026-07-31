@@ -194,7 +194,12 @@ export class RunSupervisor {
     this.target = install;
     const argv = launchArgv(runnable, this.callerArgs, install.dir);
     const staged = writeFileSet(install.dir, runnable);
-    /* Syncs queue behind the staging write — the dir does not exist until it lands. */
+    /* Syncs queue behind the staging write — the dir does not exist until it
+     * lands. Bump syncSeq too: it declares every already-queued sync superseded,
+     * so a stale sync's finish() cannot collapse this gate back to settled while
+     * the staging write is still in flight (letting a later sync's writes
+     * interleave with the restage). */
+    this.syncSeq++;
     this.lastSync = staged.then(
       () => undefined,
       () => undefined

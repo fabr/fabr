@@ -152,17 +152,35 @@ function trackGroup(pid: number | undefined): void {
     exitSweepInstalled = true;
     /* Fabr is dying: no grace — guaranteeing no orphans outranks giving a
      * straggler a graceful window (same rationale as the run supervisor). */
-    process.on("exit", () => {
-      for (const gid of liveGroups) {
-        try {
-          process.kill(-gid, "SIGKILL");
-        } catch {
-          /* already gone */
-        }
-      }
-    });
+    process.on("exit", killLiveChildren);
   }
   liveGroups.add(pid);
+}
+
+/**
+ * Synchronously SIGKILL everything fabr spawned that is still alive — the
+ * detached step groups and the interactive child. Exit-hook duty only: the
+ * hooks installed here use it as the last-resort sweep, and Staging's temp-tree
+ * hook calls it BEFORE removing the trees those processes run in (exit hooks
+ * run in registration order, and the temp-tree hook registers first) — so a
+ * child is never left running over a deleted install. Idempotent; never throws.
+ */
+export function killLiveChildren(): void {
+  for (const gid of liveGroups) {
+    try {
+      process.kill(-gid, "SIGKILL");
+    } catch {
+      /* already gone */
+    }
+  }
+  const child = interactiveChild;
+  if (child?.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+    try {
+      process.kill(child.pid, "SIGKILL");
+    } catch {
+      /* Already gone — the desired end state. */
+    }
+  }
 }
 
 /** Whether any member of `pid`'s group is still alive — signal 0 probes without

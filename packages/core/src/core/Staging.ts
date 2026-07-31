@@ -37,7 +37,7 @@ import { FSFile } from "./FSFileSource";
 import { copyFile, deleteFile, hardlink, hashFile, readOnlyPermissions, rename, symlink, walkTree, writeFile } from "./FSWrapper";
 import { Name } from "./Name";
 import { SymlinkFile } from "./SymlinkFile";
-import { describeSystemError } from "../support/Execute";
+import { describeSystemError, killLiveChildren } from "../support/Execute";
 import { globMatcher } from "../support/Glob";
 
 /** Temp trees in use, so the exit hook can remove whatever is still live when
@@ -61,6 +61,11 @@ export function registerTempTree(dir: string): string {
   if (!tempExitHookInstalled) {
     tempExitHookInstalled = true;
     process.on("exit", () => {
+      /* This hook registers before Execute's kill hooks (the cache's work tree
+       * is registered at construction, before anything spawns), so exit-order
+       * alone would remove these trees out from under still-running children.
+       * Kill them first — a child must never outlive the install it runs in. */
+      killLiveChildren();
       for (const tree of liveTempTrees) {
         rmTempTree(tree);
       }

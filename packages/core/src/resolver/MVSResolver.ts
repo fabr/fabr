@@ -295,7 +295,19 @@ function resolvePhase<V, C>(
       Computable.forAll(
         fresh.map(demand =>
           registry.lowestAvailable!(pkg, demand.req.constraint).then(raised => {
-            if (raised === undefined) {
+            /* A raise landing outside the demand's resolution key (npm: the
+             * lowest published satisfier is in another major) is refused, not
+             * re-offered: an edge leads to the selection whose exact-version
+             * key matches the DECLARED constraint's (edgeTargets), so a
+             * cross-key selection would satisfy no edge and the dependency
+             * would silently vanish from the delivered closure. Crossing a
+             * coexistence boundary is not a repair fabr may make on its own —
+             * treated as nothing-published-satisfies (terminal at
+             * convergence), whose remedy is an explicit root requirement. */
+            if (
+              raised === undefined ||
+              domain.resolutionKey(pkg, domain.parseConstraint(domain.versionToString(raised))) !== demand.key
+            ) {
               unpublished.set(nodeId(pkg, version), { pkg, version, err });
               return;
             }
@@ -471,6 +483,16 @@ function resolvePhase<V, C>(
           const message =
             `'${req.pkg}' is required by ${from} without a version constraint ('${req.constraint}'),` +
             ` and no versioned requirement for it exists — add one explicitly`;
+          errors.set(message, { message, rootPkg: rootPkgOf(from, req.pkg) });
+          return;
+        }
+        if (targets.length === 0) {
+          /* Cannot happen: every constrained demand leaves a selection under
+           * its key (a raise stays in-key — see raiseFloors — and a soft edge
+           * falls back to the highest candidate, its settle-fired demand having
+           * selected one). Report rather than drop the edge: a resolution that
+           * lost a dependency must never look complete. */
+          const message = `internal error: requirement '${req.pkg}: ${req.constraint}' (required by ${from}) matches no selection`;
           errors.set(message, { message, rootPkg: rootPkgOf(from, req.pkg) });
           return;
         }

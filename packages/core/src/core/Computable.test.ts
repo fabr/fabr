@@ -387,6 +387,56 @@ describe("Computable", () => {
     expect(pairs).to.deep.equal(["2,1", "6,5"]);
   });
 
+  it("supersedes a pending binding when a from() cell re-resolves with a plain value", () => {
+    /* The executor resolves first with a pending inner, then with a plain value —
+     * legal for from() (it may fire more than once). The plain-value settle must
+     * detach the stale binding; otherwise the inner's later settle forwards
+     * through it and clobbers the current value with the superseded result. */
+    let innerResolve: (value: number) => void = () => {};
+    const inner = Computable.from<number>(res => {
+      innerResolve = res;
+    });
+    let resolve: (value: number | Computable<number>) => void = () => {};
+    const cell = Computable.from<number>(res => {
+      resolve = res;
+    });
+    const seen: number[] = [];
+    cell.then(v => seen.push(v));
+    resolve(inner);
+    resolve(42);
+    expect(seen).to.deep.equal([42]);
+    innerResolve(100);
+    expect(seen).to.deep.equal([42]);
+    expect(cell.value).to.equal(42);
+  });
+
+  it("supersedes a pending binding when a from() cell rejects", () => {
+    /* Same supersede rule on the reject arm: an executor that resolves with a
+     * pending inner and then rejects must not have the inner's later settle
+     * overwrite the error. */
+    let innerResolve: (value: number) => void = () => {};
+    const inner = Computable.from<number>(res => {
+      innerResolve = res;
+    });
+    let resolve: (value: number | Computable<number>) => void = () => {};
+    let reject: (err: Error) => void = () => {};
+    const cell = Computable.from<number>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    const outcomes: string[] = [];
+    cell.then(
+      v => outcomes.push(`value:${v}`),
+      err => outcomes.push(`error:${err.message}`)
+    );
+    resolve(inner);
+    reject(new Error("boom"));
+    expect(outcomes).to.deep.equal(["error:boom"]);
+    innerResolve(100);
+    expect(outcomes).to.deep.equal(["error:boom"]);
+    expect(cell.state).to.equal(ComputableState.Error);
+  });
+
   it("revalidates through a binding without recomputation when the inner is unchanged", () => {
     let resolve: (value: number) => void = () => {};
     const src = Computable.from<number>(res => {
