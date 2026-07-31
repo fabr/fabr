@@ -218,17 +218,18 @@ export class NPMAuth {
   }
 
   /**
-   * Ask the human for one second-factor token: a passkey/security-key account
+   * Ask the human for one second-factor answer: a passkey/security-key account
    * gets the browser ceremony (open the challenge's authUrl, poll its doneUrl
-   * for the outcome token), an authenticator-code account a terminal prompt.
-   * Without a terminal there is nobody to ask — a typed error names the
-   * unattended alternatives instead.
+   * for the outcome token — single-use), an authenticator-code account a
+   * terminal prompt (reusable within the code's window). Without a terminal
+   * there is nobody to ask — a typed error names the unattended alternatives
+   * instead.
    */
   private acquireSecondFactor(
     challenge: OtpChallenge,
     registryUrl: string,
     interaction: UserInteraction | undefined
-  ): Computable<string> {
+  ): Computable<AcquiredOtp> {
     if (!interaction) {
       throw attachHelp(
         new Error(`publishing to ${registryUrl} requires a second factor (2FA), and this run has no terminal to authenticate on`),
@@ -240,9 +241,12 @@ export class NPMAuth {
       const doneUrl = replaceDoneUrlOrigin(challenge.doneUrl, registryUrl);
       return interaction
         .openUrl(challenge.authUrl, `Authenticate to ${registryUrl} in your browser`)
-        .then(() => pollWebAuthToken(doneUrl, this.getHeadersFor(registryUrl)));
+        .then(() => pollWebAuthToken(doneUrl, this.getHeadersFor(registryUrl)))
+        .then(password => ({ password, reusable: false }));
     }
-    return interaction.prompt(`Publishing to ${registryUrl} requires a one-time password.\nEnter OTP: `).then(otp => otp.trim());
+    return interaction
+      .prompt(`Publishing to ${registryUrl} requires a one-time password.\nEnter OTP: `)
+      .then(otp => ({ password: otp.trim(), reusable: true }));
   }
 }
 
@@ -393,25 +397,38 @@ export function pollWebAuthToken(
 }
 
 /**
- * A registry's second-factor tokens for the run: one publish's answered 2FA
- * challenge (a completed browser ceremony or a typed OTP) is reused for the
- * run's other publishes to the same registry, so syncing several packages asks
- * the human once — unless the registry refuses the reuse (a single-use or
- * expired token), which re-acquires exactly one fresh answer. Concurrent
- * publishes hitting the challenge together join one in-flight acquisition
- * rather than each opening a browser tab.
+ * One acquired second-factor answer, with its lifetime: a typed authenticator
+ * code is `reusable` (the registry accepts it for the rest of its ~30s window,
+ * so a multi-package sync types it once — npm CLI parity), while a web
+ * ceremony's token is single-use (npmjs refuses its second use) and must be
+ * acquired per challenged write.
+ */
+export interface AcquiredOtp {
+  password: string;
+  reusable: boolean;
+}
+
+/**
+ * A registry's second-factor answers for the run. A reusable answer (a typed
+ * OTP) is cached for the run's other publishes to the same registry; a
+ * single-use one (a browser ceremony token) is never cached — each challenged
+ * write runs its own ceremony against its own challenge's fresh URLs (caching
+ * one would burn the retry on a dead token and leave only the refusal's bare
+ * challenge to re-acquire from). Concurrent publishes hitting the challenge
+ * together still join one in-flight acquisition rather than each opening a
+ * browser tab.
  */
 export class OtpSession {
   private cached?: string;
   private pending?: Computable<string>;
 
   /**
-   * The session's current token, acquiring one via `acquire` when there is
-   * none. `rejected` is a token the registry just refused: if it is the cached
-   * one, it is discarded and a fresh acquisition started (a *freshly* acquired
-   * refusal is not retried here — the caller bounds its attempts).
+   * The session's current answer, acquiring one via `acquire` when there is
+   * none. `rejected` is a password the registry just refused: if it is the
+   * cached one, it is discarded and a fresh acquisition started (a *freshly*
+   * acquired refusal is not retried here — the caller bounds its attempts).
    */
-  public obtain(acquire: () => Computable<string>, rejected?: string): Computable<string> {
+  public obtain(acquire: () => Computable<AcquiredOtp>, rejected?: string): Computable<string> {
     if (rejected !== undefined && this.cached === rejected) {
       this.cached = undefined;
       this.pending = undefined;
@@ -419,16 +436,19 @@ export class OtpSession {
     if (this.cached !== undefined) {
       return Computable.resolve(this.cached);
     }
-    /* A settled chain here can only be a failed acquisition (a successful one
-     * fills `cached`, which short-circuits above) — drop it so this caller
-     * retries instead of joining a past failure. */
+    /* A settled chain here is spent: a failed acquisition, or a single-use
+     * success already consumed by whoever joined it (a reusable success fills
+     * `cached`, which short-circuits above) — drop it so this caller acquires
+     * afresh instead of joining the past. */
     if (this.pending?.isSettled()) {
       this.pending = undefined;
     }
     if (!this.pending) {
-      this.pending = acquire().then(token => {
-        this.cached = token;
-        return token;
+      this.pending = acquire().then(acquired => {
+        if (acquired.reusable) {
+          this.cached = acquired.password;
+        }
+        return acquired.password;
       });
     }
     return this.pending;

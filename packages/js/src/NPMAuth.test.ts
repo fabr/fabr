@@ -18,7 +18,7 @@ import { expect } from "chai";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { Computable, HttpResponse } from "@fabr-build/core";
-import { NPMAuth, otpChallengeOf, OtpSession, parseNpmrc, pollWebAuthToken, replaceDoneUrlOrigin } from "./NPMAuth";
+import { AcquiredOtp, NPMAuth, otpChallengeOf, OtpSession, parseNpmrc, pollWebAuthToken, replaceDoneUrlOrigin } from "./NPMAuth";
 
 /** Base64, for building `_auth`/`_password` fixtures. */
 function b64(s: string): string {
@@ -251,35 +251,46 @@ describe("pollWebAuthToken", () => {
 });
 
 describe("OtpSession", () => {
-  it("caches the acquired token for the run's later obtains", async () => {
+  it("caches a reusable answer (a typed OTP) for the run's later obtains", async () => {
     const session = new OtpSession();
     let calls = 0;
-    const acquire = (): Computable<string> => Computable.resolve(`tok${++calls}`);
+    const acquire = (): Computable<AcquiredOtp> => Computable.resolve({ password: `tok${++calls}`, reusable: true });
     expect(await session.obtain(acquire)).to.equal("tok1");
     expect(await session.obtain(acquire)).to.equal("tok1");
     expect(calls).to.equal(1);
+  });
+
+  it("never caches a single-use answer (a web ceremony token)", async () => {
+    /* npmjs refuses a ceremony token's second use — a cached one would burn a
+     * retry and leave only the refusal's bare challenge to re-acquire from. */
+    const session = new OtpSession();
+    let calls = 0;
+    const acquire = (): Computable<AcquiredOtp> => Computable.resolve({ password: `tok${++calls}`, reusable: false });
+    expect(await session.obtain(acquire)).to.equal("tok1");
+    expect(await session.obtain(acquire)).to.equal("tok2");
+    expect(calls).to.equal(2);
   });
 
   it("joins concurrent obtains to a single acquisition", async () => {
     const session = new OtpSession();
     let calls = 0;
-    let deliver!: (token: string) => void;
-    const acquire = (): Computable<string> => {
+    let deliver!: (acquired: AcquiredOtp) => void;
+    const acquire = (): Computable<AcquiredOtp> => {
       calls++;
-      return Computable.from<string>(resolve => (deliver = resolve));
+      return Computable.from<AcquiredOtp>(resolve => (deliver = resolve));
     };
     const first = session.obtain(acquire);
     const second = session.obtain(acquire);
-    deliver("tok");
+    deliver({ password: "tok", reusable: false });
     expect(await first).to.equal("tok");
     expect(await second).to.equal("tok");
     expect(calls).to.equal(1);
   });
 
-  it("discards a refused cached token and acquires afresh", async () => {
+  it("discards a refused cached answer and acquires afresh", async () => {
     const session = new OtpSession();
     let calls = 0;
-    const acquire = (): Computable<string> => Computable.resolve(`tok${++calls}`);
+    const acquire = (): Computable<AcquiredOtp> => Computable.resolve({ password: `tok${++calls}`, reusable: true });
     expect(await session.obtain(acquire)).to.equal("tok1");
     expect(await session.obtain(acquire, "tok1")).to.equal("tok2");
     /* The refusal named tok1; the now-cached tok2 is untouched by it. */
@@ -287,10 +298,10 @@ describe("OtpSession", () => {
     expect(calls).to.equal(2);
   });
 
-  it("ignores a refusal of a token it did not serve", async () => {
+  it("ignores a refusal of an answer it did not serve", async () => {
     const session = new OtpSession();
     let calls = 0;
-    const acquire = (): Computable<string> => Computable.resolve(`tok${++calls}`);
+    const acquire = (): Computable<AcquiredOtp> => Computable.resolve({ password: `tok${++calls}`, reusable: true });
     expect(await session.obtain(acquire)).to.equal("tok1");
     expect(await session.obtain(acquire, "other")).to.equal("tok1");
     expect(calls).to.equal(1);
@@ -301,6 +312,6 @@ describe("OtpSession", () => {
     let thrown: unknown;
     await session.obtain(() => Computable.reject(new Error("ceremony abandoned"))).catch(err => (thrown = err));
     expect((thrown as Error).message).to.equal("ceremony abandoned");
-    expect(await session.obtain(() => Computable.resolve("tok"))).to.equal("tok");
+    expect(await session.obtain(() => Computable.resolve({ password: "tok", reusable: true }))).to.equal("tok");
   });
 });
