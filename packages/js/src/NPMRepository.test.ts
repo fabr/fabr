@@ -757,6 +757,24 @@ describe("NPMRepository publish", () => {
     }
   });
 
+  it("treats npmjs's 403 over-publish refusal as already-synced too", async () => {
+    /* The real npmjs shape for an existing version — a 403, not a 409. Other
+     * 403s (permissions, restricted access) stay errors. */
+    const server = await captureServer(
+      403,
+      '{"success":false,"error":"You cannot publish over the previously published versions: 1.0.0."}'
+    );
+    try {
+      const repo = new NPMRepository(`http://127.0.0.1:${server.port}`, npmrcContext());
+      const src = publishFileSet({ "package.json": JSON.stringify({ name: "demo", version: "0" }) });
+      const destination = coord(repo, "demo:1.0.0");
+      const [carrier] = await repo.package([{ destination, content: src }], [destination]);
+      expect(await repo.publish(carrier)).to.equal("already-synced");
+    } finally {
+      server.close();
+    }
+  });
+
   it("rejects a member whose dependency has no version — built here but not in the sync", async () => {
     const repo = new NPMRepository(REG, npmrcContext());
     const src = publishFileSet({

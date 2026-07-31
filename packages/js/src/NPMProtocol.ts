@@ -493,8 +493,14 @@ export function publishToRegistry(
       body,
     });
   const settle = (response: HttpResponse): "published" | "already-synced" => {
-    if (response.statusCode === 409) {
-      return "already-synced"; /* version already present */
+    /* Version already present — success for a declarative sync. Registries
+     * disagree on the shape: a 409 conflict, or npmjs's 403 "You cannot
+     * publish over the previously published versions". */
+    if (
+      response.statusCode === 409 ||
+      (response.statusCode === 403 && response.body.toString("utf8").includes("cannot publish over"))
+    ) {
+      return "already-synced";
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       const detail = response.body.toString("utf8");
