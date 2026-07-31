@@ -75,6 +75,7 @@ export default defineConfig({
           ],
         },
         { label: "Known limitations", link: "/known-limitations/" },
+        { label: "Release notes", link: "/release-notes/" },
         { label: "Getting involved", link: "/contributing/" },
       ],
     }),

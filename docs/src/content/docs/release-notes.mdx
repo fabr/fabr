@@ -1,0 +1,14 @@
+---
+title: Release notes
+description: What changed in each release of fabr, newest first.
+# Starlight collects headings from the page itself, and the notes arrive as an
+# imported component — so the table of contents would list nothing but "Overview".
+tableOfContents: false
+---
+
+{/* The notes themselves are the repository's CHANGELOG.md, staged into the site
+    tree by the `docs_site` target (see docs/BUILD.fabr) — one source, rendered
+    both here and on GitHub. */}
+import { Content as Changelog } from '../../changelog.md';
+
+<Changelog />

@@ -19,6 +19,9 @@
  */
 
 import { Icon } from "@astrojs/starlight/components";
+// The version quoted under the install line is the CLI package's own, staged
+// into the site tree by the `docs_site` target — never a second copy to bump.
+import fabrPackage from "../fabr-version.json";
 
 // The landing page body ("blueprint"). Rendered from index.mdx inside
 // Starlight's splash template, which supplies the header; this component owns
@@ -36,6 +39,11 @@ import { Icon } from "@astrojs/starlight/components";
         generate — is a pure transform in one graph, cached by its inputs. No lockfiles, no config
         files, nothing running blind on the side.
       </p>
+      <p class="fh-release">
+        <span class="fh-release-ver">v{fabrPackage.version}</span>
+        <a href="/release-notes/">Latest release — release notes</a>
+      </p>
+
       <div class="fh-actions">
         <a class="fh-btn" href="/quickstart-js/">Quickstart (JS/TS) →</a>
         <a class="fh-btn fh-btn-ghost" href="https://blog.fabr.build/">Latest news ↗</a>
@@ -355,6 +363,26 @@ EOF
     line-height: 1.55;
     color: var(--bp-body);
     max-width: 38ch;
+  }
+  /* The current version, sat between the lede and the buttons — the negative
+     margins pull it in tighter than the hero column's own 24px rhythm, so it
+     reads as a label on the actions rather than a third paragraph. */
+  .fh-release {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: -4px 0 -12px;
+    font-family: var(--sl-font-mono), monospace;
+    font-size: 13px;
+    letter-spacing: 0.04em;
+    color: var(--bp-label);
+  }
+  .fh-release-ver {
+    background: var(--bp-deep);
+    border: 1px solid var(--bp-line-strong);
+    color: var(--bp-text);
+    font-weight: 600;
+    padding: 3px 9px;
   }
   .fh-actions {
     display: flex;

@@ -20,8 +20,13 @@ generate reference_docs {
   output = *.md;
 }
 
+# The changelog and the version shown on the landing page are read from their
+# real homes at the repo root rather than copied into the site: the release notes
+# page renders ../CHANGELOG.md, and Home.astro imports the CLI's package version.
 generate docs_site {
   srcs = ./src/** ./public/** ./astro.config.mjs
+         ../CHANGELOG.md -> src/changelog.md
+         ../packages/cli/package.json -> src/fabr-version.json
          reference_docs:*.md -> src/content/docs/reference/*.md;
   run = astro build;
   output = dist:**;
