@@ -2153,6 +2153,15 @@ export class RepositoryContext {
     return this.context.resolveStringProperty(prop, this.target).then(prop => prop.toString());
   }
 
+  /** An optional STRING property of the declaration; undefined when not written. */
+  public getString(name: string): Computable<string | undefined> {
+    const prop = this.props.get(name);
+    if (!prop) {
+      return Computable.resolve(undefined);
+    }
+    return this.context.resolveStringProperty(prop, this.target).then(prop => prop.toString());
+  }
+
   /**
    * Resolve a FILES property of this repository's declaration to its deferred
    * sources — external references (as inert RepositoryRefs, not yet resolved or

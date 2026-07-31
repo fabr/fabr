@@ -94,7 +94,9 @@ import {
   npmPackageOfPath,
   optionalPeers,
   parseMetadataResponse,
+  PublishAccess,
   publishToRegistry,
+  toPublishAccess,
   rewriteManifest,
   splitNameVersion,
   splitNpmReference,
@@ -104,7 +106,7 @@ import {
   unsupportedPlatformReason,
   verifyTarballStream,
 } from "./NPMProtocol";
-import { NPMConfig } from "./NPMConfig";
+import { NPMAuth } from "./NPMAuth";
 import { jsPluginContext } from "./JSPluginContext";
 
 const METADATA_FILE = "metadata.json";
@@ -246,21 +248,25 @@ function packagePath(pkg: string): string {
 export class NPMRepository implements Repository, RepositoryReader, RepositoryWriter, PackageRegistry<SemverVersion> {
   private readonly url: string;
   private readonly context: RepositoryContext;
+  /** The access level this repository's publishes request (see {@link PublishAccess}). */
+  private readonly access: PublishAccess;
   /* In-process memo over the persistent metadata cache, keyed by "pkg/version" */
   private readonly metadataCache: Map<string, Computable<INPMPackageMetadata>>;
 
-  constructor(url: string, context: RepositoryContext) {
+  constructor(url: string, context: RepositoryContext, access: PublishAccess = null) {
     this.url = url.replace(/\/+$/, "");
     this.context = context;
+    this.access = access;
     this.metadataCache = new Map();
   }
 
-  /* The combined project + user `.npmrc`, loaded once per run and shared across
-   * every NPMRepository instance (held on the ExecutionContext via the js plugin
-   * context, not per instance); the project part is read through the source FS,
-   * so it re-settles if it changes in watch mode. */
-  private npmConfig(): Computable<NPMConfig> {
-    return jsPluginContext(this.context.execution).npmConfig();
+  /* The run's registry-auth authority (the combined project + user `.npmrc`,
+   * plus the per-registry second-factor sessions), loaded once per run and
+   * shared across every NPMRepository instance (held on the ExecutionContext
+   * via the js plugin context, not per instance); the project `.npmrc` is read
+   * through the source FS, so it re-settles if it changes in watch mode. */
+  private npmAuth(): Computable<NPMAuth> {
+    return jsPluginContext(this.context.execution).npmAuth();
   }
 
   /**
@@ -272,7 +278,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    * credential off-registry.
    */
   private authHeadersFor(url: string): Computable<Record<string, string>> {
-    return this.npmConfig().then(config => config.getHeadersFor(url));
+    return this.npmAuth().then(auth => auth.getHeadersFor(url));
   }
 
   public getRepositoryRef(name: Name): RepositoryRef {
@@ -403,13 +409,21 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     const { name, version } = identity;
     const tgzFile = artifact.get(tarballBasename(name, version));
     const manifestFile = artifact.get("package.json");
-    return Computable.forAll([tgzFile, manifestFile, this.npmConfig()], (tgz, manifest, config) => {
+    return Computable.forAll([tgzFile, manifestFile, this.npmAuth()], (tgz, manifest, auth) => {
       if (!tgz || !manifest) {
         throw new Error(`internal error: publish artifact for ${name}@${version} is missing its tarball or manifest`);
       }
-      return Computable.forAll([tgz.getBuffer(), manifest.readString()], (data, manifestJson) => ({ data, manifestJson, config }));
-    }).then(({ data, manifestJson, config }) =>
-      publishToRegistry(this.url, identity, data, JSON.parse(manifestJson), config.getHeadersFor(this.url))
+      return Computable.forAll([tgz.getBuffer(), manifest.readString()], (data, manifestJson) => ({ data, manifestJson, auth }));
+    }).then(({ data, manifestJson, auth }) =>
+      publishToRegistry(
+        this.url,
+        identity,
+        data,
+        JSON.parse(manifestJson),
+        auth.getHeadersFor(this.url),
+        this.access,
+        auth.otpProvider(this.url, this.context.execution.interaction)
+      )
     );
   }
 
@@ -1266,7 +1280,10 @@ export function strictRepairError(
 }
 
 function createRepository(context: RepositoryContext): Computable<NPMRepository> {
-  return context.getRequiredString("url").then(url => new NPMRepository(url, context));
+  return Computable.forAll(
+    [context.getRequiredString("url"), context.getString("access")],
+    (url, access) => new NPMRepository(url, context, toPublishAccess(access))
+  );
 }
 
 export const npmRepositoryRegistration: RepositoryRegistration = { type: "npm_repository", provider: createRepository };

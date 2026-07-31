@@ -27,6 +27,7 @@
  */
 
 import {
+  attachHelp,
   Computable,
   FileSet,
   HttpResponse,
@@ -402,6 +403,29 @@ export function unresolvableDependencies(manifest: Record<string, unknown>): str
 }
 
 /**
+ * The access level a repository's publishes request on a package's FIRST
+ * publish (thereafter access is managed registry-side and the field is inert).
+ * A property of the publish destination, not the package — public npm and
+ * private npm are conceptually two repositories sharing a URL. `null` leaves
+ * it to the registry's default (npmjs: restricted for scoped packages, paid).
+ */
+export type PublishAccess = "public" | "restricted" | null;
+
+/** Convert a declared `access` property value; absent → null (registry default).
+ * `private` is accepted as a synonym for npm's wire term `restricted` (npmjs
+ * itself calls the feature "private packages"). */
+export function toPublishAccess(value: string | undefined): PublishAccess {
+  if (value === undefined) {
+    return null;
+  } else if (value === "private" || value === "restricted") {
+    return "restricted";
+  } else if (value === "public") {
+    return value;
+  }
+  throw new Error(`invalid access value ${JSON.stringify(value)} (expected "public" or "private"/"restricted")`);
+}
+
+/**
  * Upload a packaged tarball + manifest to an npm registry (the publish side effect).
  * Builds the `libnpmpublish` packument envelope — the manifest completed with `_id`
  * and `dist` (sha512 SRI integrity, sha1 shasum, the registry tarball URL), wrapped
@@ -420,6 +444,7 @@ export function publishToRegistry(
   tarball: Buffer,
   manifest: Record<string, unknown>,
   authHeaders: Record<string, string>,
+  access: PublishAccess = null,
   otp?: OtpProvider
 ): Computable<"published" | "already-synced"> {
   const { name, version } = coordinate;
@@ -440,7 +465,7 @@ export function publishToRegistry(
     description: manifest.description,
     "dist-tags": { latest: version },
     versions: { [version]: versionManifest },
-    access: null,
+    access,
     _attachments: {
       [tarballName]: {
         content_type: "application/octet-stream",
@@ -472,9 +497,20 @@ export function publishToRegistry(
       return "already-synced"; /* version already present */
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw new Error(
-        `publishing ${name}@${version} to ${registryUrl} failed (${response.statusCode}): ${response.body.toString("utf8")}`
-      );
+      const detail = response.body.toString("utf8");
+      const error = new Error(`publishing ${name}@${version} to ${registryUrl} failed (${response.statusCode}): ${detail}`);
+      /* npmjs's refusal of a restricted scoped publish ("You must sign up for
+       * private packages") — restricted is paid, and reaches here only from a
+       * repository declared (or defaulted by the registry) that way; the usual
+       * remedy is publishing to a public-access repository, not a paid plan. */
+      if (detail.includes("private packages")) {
+        attachHelp(
+          error,
+          `restricted (private) packages are a paid npmjs feature; to publish publicly instead, use an ` +
+            `npm_repository declared with 'access = public;' (the default @npm)`
+        );
+      }
+      throw error;
     }
     return "published";
   };

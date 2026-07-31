@@ -728,6 +728,22 @@ describe("NPMRepository publish", () => {
     }
   });
 
+  it("requests the repository's declared access level in the envelope", async () => {
+    const server = await captureServer(201, "{}");
+    try {
+      /* Access is a property of the publish destination (the repository decl),
+       * never of the package — the default (no access) leaves it to the registry. */
+      const repo = new NPMRepository(`http://127.0.0.1:${server.port}`, npmrcContext(), "public");
+      const src = publishFileSet({ "package.json": JSON.stringify({ name: "@fabr/core", version: "0" }) });
+      const destination = coord(repo, "@fabr/core:0.1.0");
+      const [carrier] = await repo.package([{ destination, content: src }], [destination]);
+      await repo.publish(carrier);
+      expect(JSON.parse(server.captured()!.body).access).to.equal("public");
+    } finally {
+      server.close();
+    }
+  });
+
   it("treats a 409 (version already present) as the already-synced outcome, not an error", async () => {
     const server = await captureServer(409, '{"error":"cannot modify pre-existing version"}');
     try {

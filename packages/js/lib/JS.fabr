@@ -211,11 +211,19 @@ targetdef js_script {
 }
 
 #
-# npmjs.org compatible repository, specified by URL.
+# npmjs.org compatible repository, specified by URL. `access` is the access
+# level packages published here request on their first publish: `public`, or
+# `private` (npmjs's paid private packages; npm's wire term `restricted` is
+# accepted as a synonym). It is a property of the repository, not the package:
+# conceptually public npm and private npm are two different repositories that
+# happen to share a URL, so a release mixing both declares one repository per
+# access level and splits its members between them. Left unset, the registry
+# applies its own default (npmjs: private for scoped packages).
 #
 
 targetdef npm_repository {
     url = REQUIRED STRING;
+    access = STRING;
 }
 
 #
@@ -256,9 +264,14 @@ targetdef css_compile {
 ####################### Repository ##########################
 
 #
-# Convenience provider for the public npmjs.org repository.
+# Convenience provider for the public npmjs.org repository. Publishing here
+# publishes publicly — this is *the public registry*, and a fabr publish is
+# always an explicitly declared sync member, so npmjs's restricted-by-default
+# guard against accidental publishes has nothing to guard. Restricted
+# publishing is its own repository declaration with `access = restricted;`.
 #
 
 npm_repository @npm {
     url = ${NPM_REPOSITORY_URL};
+    access = public;
 }
