@@ -161,7 +161,9 @@ export function resolveJsxImportSource(directDeps: FileSet[]): Computable<string
  * source-mode `flag` in its `deps` (shipped in JS.fabr; see the vocabulary
  * there). The compile is strict by default — matching fabr's own code and
  * modern TS — so these flags name *deviations* from that baseline: relaxations
- * of the strict family. A flag is recognized by its qualified target name
+ * of the strict family, and `ts/no_esmodule_interop` for code written for
+ * classic CJS interop (`import * as x` of a callable module, `export =`
+ * consumers). A flag is recognized by its qualified target name
  * ({@link Flag.name}) and maps to a `compilerOptions` fragment merged after the
  * defaults (so `strict: false` overrides the default `strict: true`). A flag's
  * `provides` closure is walked too, so a composite flag expands to its members;
@@ -172,6 +174,7 @@ const SOURCE_MODE_OPTIONS: Record<string, Record<string, unknown>> = {
   "ts/allow_implicit_any": { noImplicitAny: false },
   "ts/allow_implicit_null": { strictNullChecks: false },
   "ts/allow_uninitialized_props": { strictPropertyInitialization: false },
+  "ts/no_esmodule_interop": { esModuleInterop: false },
 };
 
 /**

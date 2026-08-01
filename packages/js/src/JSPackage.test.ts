@@ -486,6 +486,7 @@ describe("resolveSourceMode", () => {
   it("maps a recognized flag to its compilerOptions fragment", () => {
     expect(resolveSourceMode([new Flag("ts/nostrict", [])])).to.deep.equal({ strict: false });
     expect(resolveSourceMode([new Flag("ts/allow_implicit_any", [])])).to.deep.equal({ noImplicitAny: false });
+    expect(resolveSourceMode([new Flag("ts/no_esmodule_interop", [])])).to.deep.equal({ esModuleInterop: false });
   });
 
   it("merges several flags into one overlay", () => {

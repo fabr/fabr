@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import * as assert from "assert";
+import assert from "assert";
 
 export interface IResolvedPosition {
   offset: number;

@@ -66,7 +66,8 @@ default JS_TEST_RUNNER = @fabr-build/js-tools/test-runner;
 # by default (matching modern TS); list one of these in a target's `deps` to
 # relax how tsc interprets that target's sources — a per-target escape hatch.
 # `ts/nostrict` turns strict off wholesale; the others relax a single member of
-# the strict family while the rest stay on.
+# the strict family while the rest stay on, or (`ts/no_esmodule_interop`)
+# restore classic CJS import semantics.
 #
 
 # Turn TypeScript strict mode off wholesale for this target's sources.
@@ -78,6 +79,9 @@ flag ts/allow_implicit_null { }
 # Allow class properties with no definite assignment (relax
 # `strictPropertyInitialization`) for this target's sources.
 flag ts/allow_uninitialized_props { }
+# Compile with classic CJS interop (relax `esModuleInterop`): for sources written
+# with `import * as x` of callable CJS modules rather than default imports.
+flag ts/no_esmodule_interop { }
 
 ################### JS-specific targets ####################
 

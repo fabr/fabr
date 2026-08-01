@@ -81,12 +81,14 @@ export function makeTsConfig(
       strict: true,
       /* Ecosystem-baseline options every real tsconfig sets: skip typechecking
        * dependency .d.ts (a broken third-party type can't fail the build, and
-       * it's faster) and allow `import data from "./x.json"`. Both additive —
-       * code that didn't need them is unaffected. (esModuleInterop is a stronger
-       * candidate still, but it changes `import * as` callable semantics, so it
-       * is deferred rather than defaulted here.) */
+       * it's faster), allow `import data from "./x.json"`, and interop default
+       * imports of CJS modules (`import express from "express"` — matching Node's
+       * actual ESM/CJS runtime semantics and what esbuild always does). A target
+       * written for classic interop (`import * as x` of a callable module) opts
+       * out via the `ts/no_esmodule_interop` source-mode flag. */
       skipLibCheck: true,
       resolveJsonModule: true,
+      esModuleInterop: true,
       /* Accept .js/.jsx as compile inputs (downleveled to `target`, and
        * importable from .ts), but never typecheck them. */
       allowJs: true,

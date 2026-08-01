@@ -59,6 +59,7 @@ interface TsConfig {
     noImplicitAny?: boolean;
     skipLibCheck?: boolean;
     resolveJsonModule?: boolean;
+    esModuleInterop?: boolean;
     sourceMap?: boolean;
     inlineSources?: boolean;
     declaration?: boolean;
@@ -132,6 +133,14 @@ describe("makeTsConfig", () => {
     const cfg = makeTsConfig(parseJSTarget("es2018-commonjs")) as unknown as TsConfig;
     expect(cfg.compilerOptions.skipLibCheck).to.equal(true);
     expect(cfg.compilerOptions.resolveJsonModule).to.equal(true);
+    expect(cfg.compilerOptions.esModuleInterop).to.equal(true);
+  });
+
+  it("lets ts/no_esmodule_interop restore classic CJS interop via the overlay", () => {
+    const cfg = makeTsConfig(parseJSTarget("es2018-commonjs"), undefined, {
+      esModuleInterop: false,
+    }) as unknown as TsConfig;
+    expect(cfg.compilerOptions.esModuleInterop).to.equal(false);
   });
 
   it("emits self-contained JS source maps for debug and relwithdebinfo, not release", () => {

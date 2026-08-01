@@ -58,9 +58,8 @@ import { INameValue, syntheticValue } from "./AST";
 import { StringReader } from "../support/StringReader";
 import { parseBuildString, parseName } from "./Parser";
 import { toBuildModel } from "./Sema";
-import * as chai from "chai";
-import { expect } from "chai";
-import * as chaiAsPromised from "chai-as-promised";
+import chai, { expect } from "chai";
+import chaiAsPromised from "chai-as-promised";
 import { BuildCache } from "../core/BuildCache";
 
 chai.use(chaiAsPromised);

@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import * as picomatch from "picomatch";
+import picomatch from "picomatch";
 
 /** A compiled glob: true iff the given (forward-slash) path matches. */
 export type GlobMatcher = (path: string) => boolean;
