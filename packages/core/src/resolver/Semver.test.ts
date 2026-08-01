@@ -180,15 +180,22 @@ describe("Semver", () => {
     expect(pick(["1.0.1", "1.2.0"], "^1.0.0")).to.equal("1.0.1");
   });
 
-  it("classifies unconstrained requirements", () => {
-    const unconstrained = (text: string): boolean => SEMVER.isUnconstrained(SEMVER.parseConstraint(text));
-    expect(unconstrained("*")).to.equal(true);
-    expect(unconstrained("x")).to.equal(true);
-    expect(unconstrained(">=0.0.0")).to.equal(true);
-    expect(unconstrained("* || ^1.0.0")).to.equal(true);
-    expect(unconstrained("^1.0.0")).to.equal(false);
-    expect(unconstrained(">=1.0.0")).to.equal(false);
-    expect(unconstrained("1.x")).to.equal(false);
-    expect(unconstrained("0.0.0")).to.equal(false);
+  it("classifies floorless requirements", () => {
+    const floorless = (text: string): boolean => SEMVER.isFloorless(SEMVER.parseConstraint(text));
+    expect(floorless("*")).to.equal(true);
+    expect(floorless("x")).to.equal(true);
+    expect(floorless(">=0.0.0")).to.equal(true);
+    expect(floorless("* || ^1.0.0")).to.equal(true);
+    /* An upper-bound-only range floors at a fabricated 0.0.0 — it expresses no
+     * lower bound, so it must contribute no demand (the zero floor is a version
+     * nothing asked for — see @google-cloud/storage's '<4.1.0'). */
+    expect(floorless("<4.1.0")).to.equal(true);
+    expect(floorless("<=2")).to.equal(true);
+    expect(floorless("<4.1.0 || >=5.0.0")).to.equal(true);
+    expect(floorless("^1.0.0")).to.equal(false);
+    expect(floorless(">=1.0.0")).to.equal(false);
+    expect(floorless("1.x")).to.equal(false);
+    /* An exact zero names that very version — a real floored demand. */
+    expect(floorless("0.0.0")).to.equal(false);
   });
 });

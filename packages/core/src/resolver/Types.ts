@@ -162,6 +162,12 @@ export interface IResolutionError {
   /** The root requirement whose subtree reached the error; the erring
    * requirement's own package when it is itself a root. */
   rootPkg: string;
+  /** For a required-only-floorless error: the package that lacks any versioned
+   * requirement. This is the key {@link resolveWithRepairs} defers a split
+   * tree's judgment by — a floorless requirement is satisfied by any version,
+   * so one the main tree selects satisfies the split's edge too (bound
+   * cross-scope at layout), and the split-local error is dropped. */
+  pkg?: string;
 }
 
 /**
@@ -191,16 +197,21 @@ export interface VersionDomain<V, C> {
   minimumOf(constraint: C): V;
 
   /**
-   * @return true if the constraint admits every version (e.g. npm's '*',
-   * ubiquitous among DefinitelyTyped inter-package deps). An unconstrained
-   * requirement expresses no version preference at all: it contributes no
-   * selection of its own, and is satisfied by whichever version(s) of the
-   * package the constrained requirements select. A package required ONLY
-   * without constraints cannot be selected deterministically (the resolver
-   * never consults the registry's version list) and is reported as an error
-   * whose remedy is an explicit requirement.
+   * @return true if the constraint expresses no lower bound (its minimum is
+   * the zero version): npm's '*' (ubiquitous among DefinitelyTyped
+   * inter-package deps), and equally an upper-bound-only range ('<4.1.0'),
+   * whose zero floor is fabricated by parsing rather than requested. Under
+   * minimal version selection a requirement's contribution IS its declared
+   * minimum, and a floorless requirement declares none — so it contributes no
+   * selection of its own (demanding the fabricated floor would select, and try
+   * to fetch, a version nothing asked for) and is satisfied by whichever
+   * version(s) of the package the floored requirements select; {@link
+   * satisfies} still enforces any upper bound, reported as an ordinary
+   * violation. A package required ONLY floorless cannot be selected
+   * deterministically (the resolver never consults the registry's version
+   * list) and is reported as an error whose remedy is an explicit requirement.
    */
-  isUnconstrained(constraint: C): boolean;
+  isFloorless(constraint: C): boolean;
 
   /**
    * @return true if the version fully satisfies the constraint (including any

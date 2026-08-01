@@ -23,9 +23,9 @@ import {
   BUILD_OPERATION,
   Computable,
   coexistingVersions,
-  compareVersions,
   ConflictError,
   edgeBinding,
+  edgeTargets,
   FILES_OPERATION,
   FileSet,
   HttpStatusError,
@@ -161,7 +161,7 @@ interface ISplitEntry {
   requirements: IRequirementsEntry[];
 }
 
-/** Serialized form of a persisted joint resolution (memo tag npm:resolve:12) */
+/** Serialized form of a persisted joint resolution (memo tag npm:resolve:13) */
 interface IResolutionDoc {
   roots: Requirement[];
   selections: IResolutionEntry[];
@@ -253,6 +253,54 @@ function aliasCollision(name: string, held: Selected<SemverVersion>, claimed: Se
 function edgeTargetIn(selections: Selected<SemverVersion>[], req: Requirement): string | undefined {
   const target = edgeBinding(SEMVER, selections, req);
   return target && selectionId(target);
+}
+
+/**
+ * The main-tree selections that split-scope edges bind **cross-scope** — each
+ * edge no selection of the split's own tree answers (the deferred floorless
+ * case: '@types/node: *' inside a split subtree, answered by the delivery's
+ * root pin, which the standalone split resolution never saw) — together with
+ * those selections' own main-tree dependency closures. They may be unreachable
+ * from the delivery's requested roots within the main tree, so a delivery
+ * including splits adds them to its fetch and plan set explicitly; `already`
+ * holds the ids the delivery reaches anyway (whose closures it therefore also
+ * reaches — reachability is transitive), pruned from the walk. Violated split
+ * edges are excluded: they bind their own sub-split's root.
+ */
+function crossScopeClosure(
+  includedSplits: NpmSplit[],
+  main: ResolvedRepairs,
+  already: ReadonlySet<string>
+): Selected<SemverVersion>[] {
+  const queue: Selected<SemverVersion>[] = [];
+  for (const split of includedSplits) {
+    for (const [fromId, reqs] of split.requirements) {
+      for (const req of reqs) {
+        const violated = split.violations.some(
+          violation => violation.requiredBy === fromId && violation.pkg === req.pkg && violation.constraint === req.constraint
+        );
+        if (!violated && edgeTargetIn(split.selections, req) === undefined) {
+          const bound = edgeBinding(SEMVER, main.selections, req);
+          if (bound) {
+            queue.push(bound);
+          }
+        }
+      }
+    }
+  }
+  const closure = new Map<string, Selected<SemverVersion>>();
+  while (queue.length > 0) {
+    const sel = queue.shift()!;
+    const id = selectionId(sel);
+    if (already.has(id) || closure.has(id)) {
+      continue;
+    }
+    closure.set(id, sel);
+    for (const req of main.requirements.get(id) ?? []) {
+      queue.push(...edgeTargets(SEMVER, main.selections, req));
+    }
+  }
+  return [...closure.values()];
 }
 
 /** One deserialized split subtree (the runtime form of ISplitEntry). */
@@ -578,7 +626,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
         (...delivered: FileSet[]) => delivered
       );
     }
-    const { selections, rootIndex, operation, violations, raises, splits } = resolved;
+    const { selections, rootIndex, operation, violations, splits } = resolved;
     const permissive = options?.resolutionMode === "permissive" || operation === "run";
     const requirements = references.map(reference => this.parseRequirement(reference.name));
     const requestedRoots = new Set(requirements.map(req => rootIndex.get(requirementKey(req))!));
@@ -588,28 +636,35 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     const reachableIds = new Set(needed.map(selectionId));
     /* A violation is a property of an *edge*: in scope iff its requirer is in
      * the delivered closure (a root-requirement violation: iff that root is
-     * among the requested). A raise is a property of a *selection* — its
-     * demander may be a superseded node kept for attribution — so it is in
-     * scope iff the raised version itself is being delivered. */
+     * among the requested). Raises are NOT judged here in any mode: a raised
+     * floor is the constraint's plain meaning when its literal minimum was
+     * never published — the request was for the range, and the first published
+     * version meeting it answers the request. (They remain recorded in the
+     * resolution as data.) */
     const edgeInScope = (requiredBy: string, pkg: string, constraint: string): boolean =>
       requiredBy === ROOT_REQUIRER ? requestedKeys.has(`${pkg}:${constraint}`) : reachableIds.has(requiredBy);
     const scopedViolations = violations.filter(violation => edgeInScope(violation.requiredBy, violation.pkg, violation.constraint));
-    const scopedRaises = raises.filter(raise =>
-      needed.some(sel => sel.pkg === raise.pkg && compareVersions(sel.version, raise.raised) === 0)
-    );
     if (!permissive) {
       const duplicates = coexistingVersions(needed);
-      if (scopedViolations.length > 0 || scopedRaises.length > 0 || duplicates.length > 0) {
-        throw strictRepairError([...requestedKeys].sort().join(", "), scopedViolations, scopedRaises, duplicates);
+      if (scopedViolations.length > 0 || duplicates.length > 0) {
+        throw strictRepairError([...requestedKeys].sort().join(", "), scopedViolations, duplicates);
       }
     }
     /* Sealed: include the splits repairing the reachable violations, and the
      * splits repairing theirs, recursively. */
     const includedSplits = permissive ? reachableSplits(scopedViolations, splits) : [];
+    /* A split-scope edge nothing in its own tree answers binds cross-scope to
+     * the main tree's selection (see resolvedEdges) — typically a floorless
+     * requirement answered by a root pin the standalone split resolution never
+     * saw. Those targets, and their own main-tree closures, may be unreachable
+     * from the requested roots within the main tree, so they join the
+     * fetch/plan set explicitly. */
+    const crossScope = includedSplits.length > 0 ? crossScopeClosure(includedSplits, resolved, reachableIds) : [];
+    const delivered = [...needed, ...crossScope];
     /* Fetch each distinct pkg@version once — main tree and splits share
      * instances (same version ⇒ same tarball ⇒ same content). */
     const toFetch = new Map<string, Selected<SemverVersion>>();
-    for (const sel of [...needed, ...includedSplits.flatMap(split => split.selections)]) {
+    for (const sel of [...delivered, ...includedSplits.flatMap(split => split.selections)]) {
       const id = selectionId(sel);
       if (!toFetch.has(id)) {
         toFetch.set(id, sel);
@@ -624,9 +679,9 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
      * delivery's rejection, attributed like any other. */
     return Computable.resolve(undefined)
       .then(() => {
-        const edges = this.resolvedEdges(needed, resolved, scopedViolations, includedSplits);
+        const edges = this.resolvedEdges(delivered, resolved, scopedViolations, includedSplits);
         return requirements.map(req =>
-          this.planClosure(req, rootIndex.get(requirementKey(req))!, selections, fetching, includedSplits, edges)
+          this.planClosure(req, rootIndex.get(requirementKey(req))!, selections, crossScope, fetching, includedSplits, edges)
         );
       })
       .then(plans =>
@@ -652,13 +707,17 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    * never carried on the delivered values: for every fetched node (main tree
    * and splits), each declared requirement resolved to the id satisfying it —
    * a violated edge to its split's root, an ordinary edge to its scope's
-   * selection under the requirement's resolution key, an unconstrained edge to
-   * the scope's highest selection. Keyed by the name the *requirer* uses, so
+   * selection under the requirement's resolution key, a floorless edge to the
+   * scope's highest selection. Keyed by the name the *requirer* uses, so
    * an aliased dependency is an edge to the aliased package under the alias.
    * The main scope is computed first and wins a shared version's entries (a
    * version shared between scopes keeps the main tree's choices — either
    * choice satisfies the declared range, since surviving edges are never
-   * violations).
+   * violations). A split-scope edge its own tree answers nothing for falls
+   * back to the **main** scope's binding — the split is a partition of this
+   * one delivery, and a floorless requirement is satisfied by whatever the
+   * delivery provides (a root pin the standalone split resolution never saw);
+   * {@link crossScopeClosure} has already added such targets to the fetch set.
    *
    * The requirements come from the resolution itself (the walk collected them
    * to compute reachability, and they are persisted with it), so the layout of
@@ -666,7 +725,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    * followed, not a second reading of them.
    */
   private resolvedEdges(
-    needed: Selected<SemverVersion>[],
+    delivered: Selected<SemverVersion>[],
     main: ResolvedRepairs,
     mainViolations: Violation<SemverVersion>[],
     includedSplits: NpmSplit[]
@@ -679,12 +738,13 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
       }
     }
     const scopes = [
-      { nodes: needed, selections: main.selections, violations: mainViolations, requirements: main.requirements },
+      { nodes: delivered, selections: main.selections, violations: mainViolations, requirements: main.requirements, fallback: undefined },
       ...includedSplits.map(split => ({
         nodes: split.selections,
         selections: split.selections,
         violations: split.violations,
         requirements: split.requirements,
+        fallback: main.selections as Selected<SemverVersion>[] | undefined,
       })),
     ];
     const edges: EdgeMap = new Map();
@@ -706,7 +766,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
           );
           const toId = violated
             ? splitRootId.get(`${req.pkg}:${req.constraint}`)
-            : edgeTargetIn(scope.selections, req);
+            : (edgeTargetIn(scope.selections, req) ?? (scope.fallback ? edgeTargetIn(scope.fallback, req) : undefined));
           if (toId) {
             from.set(name, toId);
           }
@@ -778,6 +838,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     req: Requirement,
     index: number,
     selections: Selected<SemverVersion>[],
+    crossScope: Selected<SemverVersion>[],
     fetching: ReadonlySet<string>,
     includedSplits: NpmSplit[],
     edges: EdgeMap
@@ -789,9 +850,11 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
       throw new Error(`Resolution of ${requirementKey(req)} does not contain its own root package`);
     }
     const rootId = selectionId(root);
-    /* Closure members (main tree + splits) and their flat-mount winners. */
+    /* Closure members (main tree + the cross-scope targets split edges bind +
+     * splits) and their flat-mount winners; the mount walk from rootId only
+     * follows edges, so a member no edge reaches is inert here. */
     const members = new Map<string, Selected<SemverVersion>>();
-    for (const sel of [...reachable, ...includedSplits.flatMap(split => split.selections)]) {
+    for (const sel of [...reachable, ...crossScope, ...includedSplits.flatMap(split => split.selections)]) {
       const id = selectionId(sel);
       if (fetching.has(id) && !members.has(id)) {
         members.set(id, sel);
@@ -829,9 +892,9 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
   private resolveBarePackage(reference: RepositoryRef): Computable<FileSet> {
     const req = this.parseRequirement(reference.name);
     const constraint = SEMVER.parseConstraint(req.constraint);
-    if (SEMVER.isUnconstrained(constraint)) {
+    if (SEMVER.isFloorless(constraint)) {
       throw new Error(
-        `Cannot resolve the files of '${req.pkg}' from an unconstrained version ('${req.constraint}'): ` +
+        `Cannot resolve the files of '${req.pkg}' without a version lower bound ('${req.constraint}'): ` +
           "pin a version or range to project into a package"
       );
     }
@@ -1048,7 +1111,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     let probeVersion: string;
     try {
       const constraint = SEMVER.parseConstraint(req.constraint);
-      if (SEMVER.isUnconstrained(constraint)) {
+      if (SEMVER.isFloorless(constraint)) {
         return Computable.resolve(undefined);
       }
       probeVersion = versionToString(SEMVER.minimumOf(constraint));
@@ -1087,7 +1150,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
          * hyphen range, `1.2.3 - 2.3.4`), so a space delimiter isn't obviously
          * injective — a newline can appear in neither a package name nor a
          * constraint, matching how file deps are already newline-separated. */
-        .memoize("npm:resolve:12", `${this.url} ${targetKey}\n${rootKeys.join("\n")}`, () => {
+        .memoize("npm:resolve:13", `${this.url} ${targetKey}\n${rootKeys.join("\n")}`, () => {
           /* A memo miss means real resolution work on behalf of the consumer */
           this.context.notifyProgress({ kind: "repository-resolve", repository: this.context.target, requirements: rootKeys });
           return resolveWithRepairs(roots, SEMVER, this).then(result => {
@@ -1323,24 +1386,18 @@ function deserializeResolutionDoc(doc: IResolutionDoc): ResolvedRepairs {
 
 /**
  * The strict (linked) delivery's judgment of a repaired closure: every repair
- * reachable from the requested roots, reported together — floor raises with
- * their pin remedy, violations and coexisting versions as the structural facts
- * they are — rather than one build-fail-pin iteration each.
+ * reachable from the requested roots, reported together — violations and
+ * coexisting versions as the structural facts they are — rather than one
+ * build-fail-pin iteration each. (Floor raises are deliberately NOT judged: a
+ * raised floor is the constraint's plain meaning when its literal minimum was
+ * never published, acceptable in every delivery mode.)
  */
 export function strictRepairError(
   root: string,
   violations: Violation<SemverVersion>[],
-  raises: RaisedFloor<SemverVersion>[],
   duplicates: Array<[string, SemverVersion[]]>
 ): Error {
   const lines: string[] = [];
-  for (const raise of raises) {
-    lines.push(
-      `${raise.pkg}@${versionToString(raise.declared)} (the floor of '${raise.constraint}', required by ${raise.requiredBy}) ` +
-        `was never published; the lowest published satisfying version is ${versionToString(raise.raised)} — ` +
-        `pin '@npm:${raise.pkg}:${versionToString(raise.raised)}' to accept it`
-    );
-  }
   for (const violation of violations) {
     lines.push(
       `${violation.pkg}@${versionToString(violation.selected)} does not satisfy '${violation.constraint}' ` +
@@ -1353,15 +1410,7 @@ export function strictRepairError(
         `which the flat package layout cannot represent`
     );
   }
-  /* The complete-fix pin set, when one exists: raises are the only repair a
-   * pin can fix (pins are floors — they cannot bring a selection back under a
-   * violated upper bound, nor unify coexisting majors), so the set is offered
-   * as the fix exactly when raises are the only repairs present. */
-  const pins = raises.map(raise => `@npm:${raise.pkg}:${versionToString(raise.raised)}`).join(" ");
-  const help =
-    raises.length > 0 && violations.length === 0 && duplicates.length === 0
-      ? `pinning ${pins} alongside the existing requirements makes this resolution repair-free`
-      : "a sealed tool install (js_script deps, fabr run) accepts these by nesting; linked deps need the pins above";
+  const help = "a sealed tool install (js_script deps, fabr run) accepts these by nesting; a linked delivery cannot";
   return attachHelp(new Error(`Unable to resolve ${root}:\n  ${lines.join("\n  ")}`), help);
 }
 

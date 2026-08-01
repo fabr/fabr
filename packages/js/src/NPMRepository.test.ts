@@ -398,12 +398,12 @@ describe("NPMRepository resolveAll under files", () => {
     expect((delivered as PackageFileSet).version).to.equal("1.2.0");
   });
 
-  it("rejects projecting into an unconstrained version", async () => {
+  it("rejects projecting into a floorless version", async () => {
     const repo = new NPMRepository(REG, fakeContext(FILES_OPERATION, {}, []));
     const ref = new RepositoryRef(repo, Name.fromLiteral("left-pad:*"));
 
     const err = await rejection(() => resolveAndMaterialize(repo, [ref]));
-    expect(err.message).to.match(/unconstrained/);
+    expect(err.message).to.match(/without a version lower bound/);
   });
 });
 
@@ -1057,27 +1057,16 @@ describe("NPMRepository read authentication", () => {
 });
 
 describe("strictRepairError", () => {
-  const raise = {
-    pkg: "B",
-    constraint: "^1.0.0",
-    declared: parseVersion("1.0.0"),
-    raised: parseVersion("1.6.0"),
-    requiredBy: "A@1.0.0",
-  };
-
-  it("offers the complete pin set when raises are the only repairs", () => {
-    const err = strictRepairError("A:^1.0.0", [], [raise], []) as Error & { help?: string };
-    expect(err.message).to.contain("pin '@npm:B:1.6.0'");
-    expect(err.help).to.contain("pinning @npm:B:1.6.0");
-    expect(err.help).to.contain("repair-free");
-  });
-
-  it("does not claim a complete fix when violations or duplicates remain", () => {
-    /* Pins are floors: they cannot bring a selection back under a violated
-     * upper bound, so the pin set is only 'the fix' when raises stand alone. */
+  /* Floor raises are deliberately absent here: a raised floor is the
+   * constraint's plain meaning when its literal minimum was never published,
+   * accepted in every delivery mode rather than judged by the strict gate. */
+  it("reports violations and coexisting versions as structural facts", () => {
     const violation = { pkg: "C", constraint: "^2.0.0", requiredBy: "A@1.0.0", selected: parseVersion("3.0.0") };
-    const err = strictRepairError("A:^1.0.0", [violation], [raise], []) as Error & { help?: string };
-    expect(err.help).to.not.contain("repair-free");
+    const err = strictRepairError("A:^1.0.0", [violation], [["D", [parseVersion("1.0.0"), parseVersion("2.0.0")]]]) as Error & {
+      help?: string;
+    };
+    expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0'");
+    expect(err.message).to.contain("multiple versions of D (1.0.0, 2.0.0)");
     expect(err.help).to.contain("sealed tool install");
   });
 });

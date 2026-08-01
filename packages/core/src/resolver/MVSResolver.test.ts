@@ -238,7 +238,7 @@ describe("MVSResolver", () => {
     expect(result.selections.find(sel => sel.pkg === "A")?.reachableFrom).to.deep.equal([0, 1]);
   });
 
-  it("reports unconstrained requirements that nothing selects", () => {
+  it("reports floorless requirements that nothing selects", () => {
     const result = resolve(
       { A: "1.0.0" },
       {
@@ -249,10 +249,49 @@ describe("MVSResolver", () => {
     expect(result.errors).to.deep.equal([
       {
         message:
-          "'B' is required by A@1.0.0 without a version constraint ('*'), and no versioned requirement for it exists — add one explicitly",
+          "'B' is required by A@1.0.0 without a version lower bound ('*'), and no versioned requirement for it exists — add one explicitly",
         rootPkg: "A",
+        pkg: "B",
       },
     ]);
+  });
+
+  it("an upper-bound-only requirement contributes no demand and is answered by a pin", () => {
+    /* @google-cloud/storage requires promisify '<4.1.0': the 0.0.0 floor is a
+     * fabrication of the grammar, so it must neither be demanded (the
+     * unpublished 0.0.0 would 404) nor seed a phantom 0.0 coexistence slot
+     * that a root pin can never dislodge — the pin answers the request. */
+    const result = resolve(
+      { A: "1.0.0", B: "4.0.0" },
+      {
+        A: { "1.0.0": { B: "<4.1.0" } },
+        B: { "4.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@4.0.0"]);
+    expect(result.errors).to.deep.equal([]);
+    expect(result.violations).to.deep.equal([]);
+  });
+
+  it("an upper-bound-only requirement's cap is still violation-checked", () => {
+    const result = resolve(
+      { A: "1.0.0", B: "5.0.0" },
+      {
+        A: { "1.0.0": { B: "<4.1.0" } },
+        B: { "5.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@5.0.0"]);
+    expect(result.violations).to.have.lengthOf(1);
+    expect(result.violations[0].pkg).to.equal("B");
+    expect(result.violations[0].constraint).to.equal("<4.1.0");
+  });
+
+  it("an upper-bound-only requirement nothing selects is the ordinary add-a-pin error", () => {
+    const result = resolve({ A: "1.0.0" }, { A: { "1.0.0": { B: "<4.1.0" } } });
+    expect(result.errors).to.have.lengthOf(1);
+    expect(result.errors[0].pkg).to.equal("B");
+    expect(result.errors[0].message).to.contain("without a version lower bound ('<4.1.0')");
   });
 
   it("terminates on dependency cycles", () => {
@@ -557,53 +596,53 @@ describe("MVSResolver", () => {
     expect((error as MetadataFetchError).pkg).to.equal("B");
   });
 
-  it("refuses a floor raise that would cross the resolution key, failing instead of dropping the dep", () => {
+  it("raises an unpublished floor across the resolution key to the first published satisfier", () => {
     /* A requires B '>=1.2.3'; 1.2.3 was never published and the only published
-     * satisfier is 2.0.0 — a different coexistence key (major 2 vs the floor's
-     * major 1). Re-offered under the original key the raised selection would
-     * satisfy no edge (edgeTargets keys a selection by its exact version), so
-     * B would silently vanish from the delivered closure. Crossing a
-     * coexistence boundary is not a repair fabr may make on its own: the sound
-     * outcome is the terminal nothing-published-satisfies failure, whose
-     * remedy is an explicit root requirement. */
-    let error: Error | undefined;
-    resolveMVS(
-      [{ pkg: "A", constraint: "1.0.0" }],
-      SEMVER,
-      mockRegistry({ A: { "1.0.0": { B: ">=1.2.3" } }, B: { "2.0.0": {} } }, true)
-    ).then(
-      () => undefined,
-      err => {
-        error = err as Error;
-      }
-    );
-    expect(error).to.be.instanceOf(MetadataFetchError);
-    expect((error as MetadataFetchError).pkg).to.equal("B");
-    expect((error as MetadataFetchError).rootPkg).to.equal("A");
+     * satisfier is 2.0.0 — another coexistence key (major 2 vs the floor's
+     * major 1). The request was for '>=1.2.3', and the first published version
+     * meeting it is an acceptable answer: the raise is offered under the
+     * raised version's own key, the phantom 1.x slot serves no edge, and the
+     * edge recovers by satisfaction — B does not vanish from the closure. */
+    const result = resolve({ A: "1.0.0" }, { A: { "1.0.0": { B: ">=1.2.3" } }, B: { "2.0.0": {} } }, true);
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@2.0.0"]);
+    expect(result.errors).to.deep.equal([]);
+    expect(result.violations).to.deep.equal([]);
+    expect(result.raises).to.have.lengthOf(1);
+    expect(result.raises[0].pkg).to.equal("B");
+    expect(versionToString(result.raises[0].declared)).to.equal("1.2.3");
+    expect(versionToString(result.raises[0].raised)).to.equal("2.0.0");
   });
 
-  it("refuses a 0.x per-minor cross-key raise, while an in-key raise still repairs", () => {
+  it("a 0.x per-minor cross-key raise lands too, and an in-key raise is unchanged", () => {
     /* C's floor 0.5.0 is unpublished; the lowest published satisfier within
-     * '>=0.5.0' is 0.6.0 — a different 0.x key (per-minor coexistence), so the
-     * raise is refused. An ordinary in-key raise (D: 1.0.0 -> 1.0.1) must be
-     * untouched by the new refusal. */
-    let error: Error | undefined;
-    resolveMVS(
-      [{ pkg: "A", constraint: "1.0.0" }],
-      SEMVER,
-      mockRegistry({ A: { "1.0.0": { C: ">=0.5.0" } }, C: { "0.6.0": {} } }, true)
-    ).then(
-      () => undefined,
-      err => {
-        error = err as Error;
-      }
-    );
-    expect(error).to.be.instanceOf(MetadataFetchError);
-    expect((error as MetadataFetchError).pkg).to.equal("C");
+     * '>=0.5.0' is 0.6.0 — a different 0.x key (per-minor coexistence),
+     * crossed on the same terms as a major. */
+    const crossed = resolve({ A: "1.0.0" }, { A: { "1.0.0": { C: ">=0.5.0" } }, C: { "0.6.0": {} } }, true);
+    expect(selectionStrings(crossed)).to.deep.equal(["A@1.0.0", "C@0.6.0"]);
+    expect(crossed.raises).to.have.lengthOf(1);
 
     const result = resolve({ A: "1.0.0" }, { A: { "1.0.0": { D: "^1.0.0" } }, D: { "1.0.1": {} } }, true);
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "D@1.0.1"]);
     expect(result.raises).to.have.lengthOf(1);
+  });
+
+  it("an existing satisfying selection answers an unpublished floor without any raise", () => {
+    /* nise requires fake-timers '>=5' whose 5.x line was never published, and
+     * the tree already pins fake-timers 11.2.2 — which satisfies '>=5'. The
+     * pin answers the request outright: no repair phase, no registry
+     * version-list read (the registry here has no raise hook at all), fully
+     * deterministic. */
+    const result = resolve(
+      { A: "1.0.0", B: "11.2.2" },
+      {
+        A: { "1.0.0": { B: ">=5" } },
+        B: { "11.2.2": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@11.2.2"]);
+    expect(result.errors).to.deep.equal([]);
+    expect(result.violations).to.deep.equal([]);
+    expect(result.raises).to.deep.equal([]);
   });
 
   it("attributes a failure of the raise hook itself to the node that provoked it", () => {
@@ -818,8 +857,10 @@ describe("MVSResolver", () => {
      * 1.6.0, whose metadata 404s in turn. Repairing that offer re-demands it,
      * and every demanded version is now expanded — so the walk must repair each
      * (node, demand) once rather than trading the same offer back and forth
-     * forever. The outcome (the raise stands) is unchanged; termination is the
-     * property under test. */
+     * forever. Termination is the property under test; the outcome is the
+     * terminal not-found for the offered version (nothing the registry will
+     * actually serve satisfies the requirement — an unfetchable selection must
+     * never look resolved). */
     const registry: PackageRegistry<SemverVersion> = {
       getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
         if (pkg === "A") {
@@ -829,12 +870,15 @@ describe("MVSResolver", () => {
       },
       lowestAvailable: (): Computable<SemverVersion | undefined> => Computable.resolve(parseVersion("1.6.0")),
     };
-    let result: MVSResolution<SemverVersion> | undefined;
-    resolveMVS([{ pkg: "A", constraint: "1.0.0" }], SEMVER, registry).then(resolution => {
-      result = resolution;
-    });
-    expect(result).to.not.equal(undefined);
-    expect(selectionStrings(result!)).to.deep.equal(["A@1.0.0", "B@1.6.0"]);
+    let error: Error | undefined;
+    resolveMVS([{ pkg: "A", constraint: "1.0.0" }], SEMVER, registry).then(
+      () => undefined,
+      err => {
+        error = err as Error;
+      }
+    );
+    expect(error).to.be.instanceOf(MetadataFetchError);
+    expect((error as MetadataFetchError).pkg).to.equal("B");
   });
 
   it("keeps a version raised by a superseded requirement, and says so", () => {
@@ -931,5 +975,42 @@ describe("resolveWithRepairs", () => {
     );
     expect(result.splits).to.deep.equal([]);
     expect(result.tree.violations).to.deep.equal([]);
+  });
+
+  it("defers a split tree's floorless-only judgment to the main tree", () => {
+    /* The jest-30 shape: X exact-pins M@2.0.28 (violated by Y's higher floor,
+     * so M@2.0.28 gets a standalone split), and inside the split M requires
+     * T '*'. The standalone resolution cannot see the batch's T pin — but the
+     * split is a partition of this one delivery, and the main tree selects T,
+     * which satisfies the floorless edge (bound cross-scope at layout). The
+     * split-local error must be dropped, or the pin remedy can never work. */
+    const result = repair(
+      { X: "1.0.0", Y: "1.0.0", T: "20.0.0" },
+      {
+        X: { "1.0.0": { M: "2.0.28" } },
+        Y: { "1.0.0": { M: "^2.12.2" } },
+        M: { "2.0.28": { T: "*" }, "2.12.2": {} },
+        T: { "20.0.0": {} },
+      }
+    );
+    expect(result.splits).to.have.lengthOf(1);
+    expect(result.splits[0].tree.errors).to.deep.equal([]);
+    /* The split tree deliberately does not select T — the edge binds the main
+     * tree's selection at layout. */
+    expect(selectionStrings(result.splits[0].tree)).to.deep.equal(["M@2.0.28"]);
+  });
+
+  it("keeps a split tree's floorless-only error when no scope provides the package", () => {
+    const result = repair(
+      { X: "1.0.0", Y: "1.0.0" },
+      {
+        X: { "1.0.0": { M: "2.0.28" } },
+        Y: { "1.0.0": { M: "^2.12.2" } },
+        M: { "2.0.28": { T: "*" }, "2.12.2": {} },
+      }
+    );
+    expect(result.splits).to.have.lengthOf(1);
+    expect(result.splits[0].tree.errors).to.have.lengthOf(1);
+    expect(result.splits[0].tree.errors[0].pkg).to.equal("T");
   });
 });

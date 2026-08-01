@@ -58,13 +58,19 @@ function highestOf<V, C>(domain: VersionDomain<V, C>, selections: readonly Selec
 /**
  * **The** rule for what a requirement edge leads to, within `selections` (a
  * whole resolution, or one private split's tree): the selection under the
- * requirement's resolution key; every selection of the package for an
- * unconstrained requirement, since any of them satisfies it; or — for a soft
- * (peer) requirement — those satisfying its range whatever their key
- * (attach-first: a peer range may span majors), falling back to the highest
- * candidate so the edge lands on what is actually delivered. Empty when the
- * constraint is unparseable (reported by the walk) or nothing of the package
- * is selected (a gated optional pruned from it).
+ * requirement's resolution key; every selection of the package for a
+ * floorless requirement, since any of them satisfies its (absent) floor; or —
+ * for a soft (peer) requirement — those satisfying its range whatever their
+ * key (attach-first: a peer range may span majors), falling back to the
+ * highest candidate so the edge lands on what is actually delivered. A floored
+ * edge whose declared key holds no selection follows *satisfaction* instead:
+ * its floor was never published (the only way a demanded slot converges
+ * empty), and the request is answered by whatever meets it — the raised
+ * floor's selection, or an existing selection (a root pin) in range — else by
+ * the highest candidate, so a jointly-unsatisfiable edge still binds what is
+ * delivered and reports as a violation, exactly as an in-key mismatch does.
+ * Empty when the constraint is unparseable (reported by the walk) or nothing
+ * of the package is selected (a gated optional pruned from it).
  *
  * A layout whose answer here disagreed with the walk's would be one the
  * resolution never sanctioned — hence one rule, two callers. A selection's own
@@ -83,7 +89,7 @@ export function edgeTargets<V, C>(
     return [];
   }
   const candidates = selections.filter(sel => sel.pkg === req.pkg);
-  if (domain.isUnconstrained(constraint)) {
+  if (domain.isFloorless(constraint)) {
     return candidates;
   }
   if (req.soft) {
@@ -96,7 +102,18 @@ export function edgeTargets<V, C>(
   }
   const key = domain.resolutionKey(req.pkg, constraint);
   const match = candidates.find(sel => domain.resolutionKey(sel.pkg, domain.parseConstraint(domain.versionToString(sel.version))) === key);
-  return match ? [match] : [];
+  if (match) {
+    return [match];
+  }
+  const satisfied = highestOf(
+    domain,
+    candidates.filter(sel => domain.satisfies(sel.version, constraint))
+  );
+  if (satisfied) {
+    return [satisfied];
+  }
+  const highest = highestOf(domain, candidates);
+  return highest ? [highest] : [];
 }
 
 /**

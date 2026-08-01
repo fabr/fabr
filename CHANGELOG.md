@@ -10,6 +10,7 @@ version number.
 @fabr/js:
 - Generated package.json now strips build-only fields (devDependencies, scripts, …) from an imported manifest, and emits array metadata (keywords, os, cpu) as JSON arrays.
 - Add support for package alises in external dependencies.
+- Handle package resolution edge cases with missing specified versions.
 
 @fabr/cli:
 

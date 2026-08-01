@@ -397,10 +397,18 @@ export const SEMVER: VersionDomain<SemverVersion, SemverConstraint> = {
     return constraint.ranges.map(rangeMinimum).reduce((a, b) => (compareVersions(a, b) <= 0 ? a : b));
   },
 
-  isUnconstrained(constraint: SemverConstraint): boolean {
-    /* A disjunction admits everything if any arm does ('*', 'x', '>=0.0.0') */
+  isFloorless(constraint: SemverConstraint): boolean {
+    /* A disjunction expresses no lower bound if any arm floors at the zero
+     * version — '*', 'x', '>=0.0.0', and equally an upper-bound-only '<4.1.0',
+     * whose 0.0.0 floor is fabricated by the grammar rather than requested
+     * (nobody who writes '<4.1.0' is asking for the unpublished 0.0.0). The
+     * exception is the point range: an exact '0.0.0' names that very version,
+     * and remains an ordinary floored demand for it. */
     return constraint.ranges.some(
-      range => range.max === undefined && range.minInclusive && compareVersions(range.min, ZERO_VERSION) === 0
+      range =>
+        range.minInclusive &&
+        compareVersions(range.min, ZERO_VERSION) === 0 &&
+        !(range.max !== undefined && compareVersions(range.max, ZERO_VERSION) === 0)
     );
   },
 
