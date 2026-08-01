@@ -209,7 +209,11 @@ export function hasMapValue(prop: IPropertyDecl): boolean {
 
 export interface IIncludeDecl extends IBaseDecl {
   kind: DeclKind.Include;
-  filename: string;
+  /**
+   * The included path, relative to the including file, either an simple filename
+   * or a glob expression (No variables or constraints)
+   */
+  name: Name;
 }
 
 /**

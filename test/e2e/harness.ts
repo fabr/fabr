@@ -343,6 +343,8 @@ export interface WatchSession {
   readonly stderr: string;
   /** Write/overwrite a fixture file (relative to the project dir). */
   write(rel: string, content: string): void;
+  /** Delete a fixture file (relative to the project dir). */
+  remove(rel: string): void;
   /** Resolve once `pattern` has appeared at least `count` times on stderr (or reject on timeout). */
   waitFor(pattern: string | RegExp, opts?: { count?: number; timeoutMs?: number }): Promise<void>;
   /** Signal the process (SIGINT by default) and resolve with its exit code,
@@ -411,6 +413,9 @@ export function startFabrWatch(files: Record<string, string>, args: string[], en
       return stderr;
     },
     write,
+    remove(rel): void {
+      fs.rmSync(path.join(dir, rel), { force: true });
+    },
     waitFor(pattern, opts = {}): Promise<void> {
       const { count = 1, timeoutMs = 20000 } = opts;
       const regExp = toGlobalRegExp(pattern);

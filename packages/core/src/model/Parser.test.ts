@@ -136,7 +136,7 @@ function summarize(contents: IBuildFileContents): Record<string, unknown> {
     );
   }
   return {
-    includes: contents.includes.map(include => include.filename),
+    includes: contents.includes.map(include => include.name.toString()),
     plugins: contents.plugins.map(plugin => plugin.name),
     properties: propertyValues(contents.properties),
     defaults: propertyValues(contents.defaults),
@@ -152,6 +152,31 @@ function summary(overrides: Record<string, unknown>): Record<string, unknown> {
 describe("Parser Tests", () => {
   it("Include Decl", () => {
     expect(summarize(parseValid("include src/BUILD.FABR;"))).to.deep.equal(summary({ includes: ["src/BUILD.FABR"] }));
+  });
+
+  it("Include Decl with a glob", () => {
+    const contents = parseValid("include lib/**/*.fabr;");
+    expect(summarize(contents)).to.deep.equal(summary({ includes: ["lib/**/*.fabr"] }));
+    /* The two cases are told apart by the name alone: a plain include is a simple
+     * name (the one file it names), a globbing one is not. */
+    expect(contents.includes[0].name.getSimpleName()).to.equal(undefined);
+    expect(parseValid("include src/BUILD.FABR;").includes[0].name.getSimpleName()).to.equal("src/BUILD.FABR");
+  });
+
+  it("rejects a variable in an include name", () => {
+    /* Which files make up the model must be readable from the build files
+     * themselves — never from a value that can vary by configuration. */
+    expect(parseInvalid("include ${DIR}/BUILD.fabr;")).to.deep.equal([
+      diagnosticBlock(1, 9, "Invalid include name: variables are not permitted", "include ${DIR}/BUILD.fabr;"),
+    ]);
+  });
+
+  it("rejects reference syntax in an include name", () => {
+    /* `lib:*.fabr` would name files *relative to* lib rather than under it — an
+     * include names a path, and the projection rules are not its business. */
+    expect(parseInvalid("include lib:*.fabr;")).to.deep.equal([
+      diagnosticBlock(1, 9, "Invalid include name: an include names a path, not a reference", "include lib:*.fabr;"),
+    ]);
   });
 
   it("rejects an absolute include path", () => {

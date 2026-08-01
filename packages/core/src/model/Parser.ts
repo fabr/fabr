@@ -322,9 +322,9 @@ const DIAG_INVALID_COMMAND = new Diagnostic<{ detail: string; loc: ISourcePositi
   LogLevel.Error,
   "Invalid command: {detail}"
 );
-const DIAG_INVALID_INCLUDE = new Diagnostic<{ loc: ISourcePosition }>(
+const DIAG_INVALID_INCLUDE = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
   LogLevel.Error,
-  "Include names cannot currently contain glob patterns or variables"
+  "Invalid include name: {detail}"
 );
 const DIAG_ABSOLUTE_INCLUDE = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
@@ -781,26 +781,47 @@ export class BuildParser {
 
   /**
    * IncludeDecl ::= 'include' NAME ';'
+   *
+   * The name is a path relative to the including file, which may **glob**
+   * (`include rules/*.fabr;`) — naming every file that matches, none being no
+   * error. Variables are not: which files make up the model must be readable
+   * from the build files themselves, never from a value that varies by config.
    */
   private parseIncludeDecl(): IIncludeDecl {
     const token = this.token;
     if (token.type === TokenType.IDENTIFIER || token.type === TokenType.SIMPLE_NAME || token.type === TokenType.NAME) {
-      const simpleName = typeof token.text === "string" ? token.text : token.text.getSimpleName();
-      if (!simpleName) {
-        this.invalidIncludeName();
-        /* Lexically, either platform's absolute form — a .fabr file must parse the
-         * same everywhere, so this doesn't ride the host's path.isAbsolute. */
-      } else if (simpleName.startsWith("/") || /^[A-Za-z]:[\\/]/.test(simpleName)) {
+      const name = typeof token.text === "string" ? Name.fromLiteral(token.text) : token.text;
+      /* Lexically, either platform's absolute form — a .fabr file must parse the
+       * same everywhere, so this doesn't ride the host's path.isAbsolute. Ahead of
+       * the reference-syntax check below, so a Windows path is reported as the
+       * absolute path it is rather than for its drive-letter colon. */
+      const head = name.getLiteralPrefix();
+      if (head.startsWith("/") || /^[A-Za-z]:[\\/]/.test(head)) {
         this.absoluteIncludeName();
+      } else if (name.hasVarSubst()) {
+        this.invalidIncludeName("variables are not permitted");
+      } else if (name.hasLevelSeparator()) {
+        /* A bare name token carries no `<...>`/`-> ` facet (only parseReference
+         * layers those on), so `:` is the whole of reference syntax reachable here. */
+        this.invalidIncludeName("an include names a path, not a reference");
+      } else if (!name.hasGlob() && name.getSimpleName() === undefined) {
+        /* The decl's own invariant: a name that does not glob is a single literal,
+         * so the loader reads "plain path or pattern?" off `getSimpleName()` alone.
+         * Only an escaped metacharacter can split a glob-free name into parts. */
+        this.invalidIncludeName("not a path");
       } else {
+        const offset = token.start;
         this.nextToken();
+        /* The reader now sits just past the name, which is its extent — a glob
+         * has no single literal whose length would give it. */
+        const endOffset = this.prevTokenEnd;
         this.consumeIfToken(TokenType.SEMI);
         return {
           kind: DeclKind.Include,
           source: this.source,
-          offset: token.start,
-          endOffset: token.start + simpleName.length,
-          filename: simpleName,
+          offset,
+          endOffset,
+          name,
         };
       }
     } else {
@@ -1638,8 +1659,8 @@ export class BuildParser {
     throw new Error(PARSE_ERROR);
   }
 
-  private invalidIncludeName(): never {
-    this.log.log(DIAG_INVALID_INCLUDE, { loc: { ...this.source, offset: this.token.start } });
+  private invalidIncludeName(detail: string): never {
+    this.log.log(DIAG_INVALID_INCLUDE, { detail, loc: { ...this.source, offset: this.token.start } });
     throw new Error(PARSE_ERROR);
   }
 

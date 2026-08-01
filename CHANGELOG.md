@@ -4,6 +4,7 @@ version number.
 
 ## Fabr 0.1.1
 @fabr/core:
+- `include` paths may now glob (`include rules/*.fabr;`).
 
 @fabr/js:
 - Generated package.json now strips build-only fields (devDependencies, scripts, …) from an imported manifest, and emits array metadata (keywords, os, cpu) as JSON arrays.

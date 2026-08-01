@@ -29,11 +29,21 @@ plugin @fabr-build/js;
 ```
 
 `include ./<path>.fabr;` includes another script **relative to the including file**. There is no
-system include search path; the path must be relative and contain no globs or variables:
+system include search path; the path must be relative and must not contain variables:
 
 ```
 include ./targets/frontend.fabr;
 ```
+
+The path may **glob**, in which case it includes every file that matches.
+
+```
+include ./targets/*.fabr;
+include ./packages/**/BUILD.fabr;
+```
+
+An include must name **at least one file** either way: a pattern matching nothing is an error, as a
+plain path that isn't there is. 
 
 Core's standard library (`STD.fabr`) is always present, and each declared plugin's own `.fabr` files
 are included automatically — so `plugin @fabr-build/js;` is all you need to get the `js_*` targets

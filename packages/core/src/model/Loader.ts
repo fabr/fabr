@@ -19,7 +19,9 @@
 
 import * as path from "node:path";
 
-import { Computable } from "../core/Computable";
+import { Computable, ComputableSource } from "../core/Computable";
+import { FileSource } from "../core/FileSet";
+import { Name } from "../core/Name";
 import { Diagnostic, ErrorTrackingLog, IDiagnosticNote, ISourceSpan, LogLevel } from "../support/Log";
 import { BuildFilesInvalidError } from "./Errors";
 import { StringReader } from "../support/StringReader";
@@ -46,6 +48,13 @@ import { select } from "../support/Functional";
 const DIAG_INCLUDE_NOT_FOUND = new Diagnostic<{ filename: string; loc: ISourceSpan }>(
   LogLevel.Error,
   "Included file not found: {filename}"
+);
+
+/** The pattern form of the same rule: an `include` must name at least one file,
+ * so a pattern that currently matches none is an error against its decl. */
+const DIAG_INCLUDE_NO_MATCH = new Diagnostic<{ filename: string; loc: ISourceSpan }>(
+  LogLevel.Error,
+  "Included files not found: {filename} matched nothing"
 );
 
 /** An `include` resolving outside the project tree, positioned at the offending
@@ -98,19 +107,51 @@ export function packageLibFile(packageName: string, file: string): string {
  * source's root (the entry file is, and file-relative include resolution keeps it
  * that way), while plugin/core lib files are absolute ({@link packageLibFile}). */
 
-/** Resolve an include relative to its including file — join, not resolve, so a
- * relative (project) file's includes stay relative, anchored at the source root
- * rather than the process cwd. Absolute include paths are rejected at parse; a
- * project file's include is additionally confined to the project tree (a lib
- * file's includes resolve within its installed package, which activation
- * already vouches for) — `undefined` for one that climbs out, reported by the
- * caller against the decl. */
-function resolveInclude(file: string, include: IIncludeDecl): string | undefined {
-  const target = path.join(path.dirname(file), include.filename);
-  if (!path.isAbsolute(file) && (target === ".." || target.startsWith(".." + path.sep))) {
+/** Whether a path an include resolved to has climbed out of the project tree —
+ * the confinement a project file's includes are held to (a lib file's are not:
+ * they resolve within their installed package, which activation vouches for). */
+function escapesTree(file: string, target: string): boolean {
+  return !path.isAbsolute(file) && (target === ".." || target.startsWith(".." + path.sep));
+}
+
+/** An include's name resolved for matching against the source. */
+interface ResolvedIncludeName {
+  /** The pattern to match, re-rooted at the including file's directory. */
+  pattern: Name;
+  /** The one path a plain include names, if it is one. `find` also expands a
+   * non-glob name that turns out to be a *directory* into everything beneath it
+   * — files an include must not swallow (it would parse them all as build
+   * scripts), so a plain include keeps only its exact path and reports the
+   * directory as the missing file it is. */
+  exact?: string;
+}
+
+/**
+ * Resolve an include's name relative to its including file — join, not resolve,
+ * so a relative (project) file's includes stay relative, anchored at the source
+ * root rather than the process cwd. A plain path joins whole; a pattern joins its
+ * literal head and carries its glob tail along, which is what puts the *base* the
+ * walk starts from under the same containment check the plain path faces.
+ *
+ * Absolute include paths are rejected at parse; a project file's include is
+ * additionally confined to the project tree (a lib file's includes resolve within
+ * its installed package, which activation already vouches for) — `undefined` for
+ * one that climbs out, reported by the caller against the decl.
+ */
+function resolveIncludeName(file: string, include: IIncludeDecl): ResolvedIncludeName | undefined {
+  const dir = path.dirname(file);
+  const plain = include.name.getSimpleName();
+  if (plain !== undefined) {
+    const target = path.join(dir, plain);
+    return escapesTree(file, target) ? undefined : { pattern: Name.fromLiteral(target), exact: target };
+  }
+  const head = include.name.getLiteralPathPrefix();
+  const base = path.join(dir, head);
+  if (escapesTree(file, base)) {
     return undefined;
   }
-  return target;
+  const tail = include.name.substring(head.length);
+  return { pattern: base === "." ? tail : tail.withPrefix(base.endsWith("/") ? base : base + "/") };
 }
 
 /** The trail of `include`s that reached the file `site` lives in — one `note:`
@@ -128,6 +169,80 @@ function includeChain(sites: ReadonlyMap<string, IIncludeDecl>, site: IIncludeDe
     parent = sites.get(parent.source.file);
   }
   return notes;
+}
+
+/** The files one `include` decl names, and the errors reporting it produced. */
+interface IncludedFiles {
+  files: string[];
+  errors: number;
+}
+
+/**
+ * Resolve one `include` decl to the build files it names — the one place an
+ * include's files are decided, plain path and pattern alike, since both are just
+ * a match against the source.
+ *
+ * **An include must name at least one file**: a plain path that is not there and a
+ * pattern that matches nothing are the same error, reported here (against the
+ * decl, which is where the name was written) rather than at the read. So a file
+ * that vanishes *between* this match and its read is nobody's error — the match is
+ * already re-resolving, and reports again if it now names nothing.
+ *
+ * The match set is a **live query** over the source tree, so under watch a file
+ * appearing or disappearing beneath a pattern re-resolves the including file's
+ * step, and the work-list picks the file up (or drops it) exactly as if the
+ * include had been edited to name it. Matches are returned in canonical order — a
+ * build's meaning must not depend on the order a directory walk handed them back.
+ */
+function resolveIncludeFiles(
+  execution: ExecutionContext,
+  fs: FileSource,
+  file: string,
+  include: IIncludeDecl,
+  includeSites: Map<string, IIncludeDecl>
+): ComputableSource<IncludedFiles> {
+  /* First writer wins — one positioned diagnostic per file is enough. */
+  const remember = (target: string): string => {
+    if (!includeSites.has(target)) {
+      includeSites.set(target, include);
+    }
+    return target;
+  };
+  /* An include climbing out of the project tree is dropped and reported against
+   * its decl, like a missing one. */
+  const outsideTree = (): IncludedFiles => {
+    execution.log.log(DIAG_INCLUDE_OUTSIDE, {
+      filename: include.name.toString(),
+      loc: declPosn(include),
+      notes: includeChain(includeSites, include),
+    });
+    return { files: [], errors: 1 };
+  };
+  const noFiles = (): IncludedFiles => {
+    execution.log.log(resolved?.exact === undefined ? DIAG_INCLUDE_NO_MATCH : DIAG_INCLUDE_NOT_FOUND, {
+      filename: include.name.toString(),
+      loc: declPosn(include),
+      notes: includeChain(includeSites, include),
+    });
+    return { files: [], errors: 1 };
+  };
+  const resolved = resolveIncludeName(file, include);
+  if (resolved === undefined) {
+    return Computable.resolve(outsideTree());
+  }
+  /* Matches come back named in the source's own namespace, which is the work-list's
+   * key form for a project file. A lib file's key is its absolute path, and no
+   * FileSet name can be absolute (they are canonicalized relative), so restore the
+   * separator the "/"-rooted absolute source names its results without. */
+  const absolute = path.isAbsolute(file);
+  return fs.find(resolved.pattern).then(matched => {
+    const files = [...matched]
+      .map(([name]) => (absolute ? path.sep + name : name))
+      .filter(name => resolved.exact === undefined || name === resolved.exact)
+      .sort()
+      .map(remember);
+    return files.length === 0 ? noFiles() : { files, errors: 0 };
+  });
 }
 
 /** One loaded build file: its parsed decls, the contribution of each plugin it
@@ -190,21 +305,16 @@ export function loadProject(
     const fs = path.isAbsolute(file) ? execution.absFileSource : execution.sourceFileSource;
     return fs.get(file).then(f => {
       if (!f) {
-        /* An include naming a missing file is a build-file error like any parse
-         * failure: report it positioned at the include and count it (so the load
-         * halts via BuildFilesInvalidError below), rather than a bare unattributed
-         * path. A missing seed/plugin-lib file has no include site — that stays a
-         * hard error (no project, or a broken installed plugin). */
-        const site = includeSites.get(file);
-        if (!site) {
+        /* Every included file got here by matching its include, which reports the
+         * match naming nothing; a file gone by the time we read it is therefore a
+         * race (deleted since), not a missing include — contribute nothing and stay
+         * silent, leaving that include's own re-resolution to report if it now
+         * names nothing at all. A seed/plugin-lib file has no include site — that
+         * stays a hard error (no project, or a broken installed plugin). */
+        if (!includeSites.has(file)) {
           throw new Error("File not found: " + file);
         }
-        execution.log.log(DIAG_INCLUDE_NOT_FOUND, {
-          filename: site.filename,
-          loc: declPosn(site),
-          notes: includeChain(includeSites, site),
-        });
-        return { value: { decls: NO_DECLS, plugins: [], parseErrors: 1 }, next: [] };
+        return { value: { decls: NO_DECLS, plugins: [], parseErrors: 0 }, next: [] };
       }
       return f.readString().then(content => {
         /* Parsing logs each error and recovers rather than throwing, so count
@@ -228,29 +338,21 @@ export function loadProject(
             return undefined;
           }
         });
-        /* An include climbing out of the project tree is dropped and reported
-         * against its decl, like a missing one. */
-        let includeErrors = 0;
-        const includes = select(decls.includes, include => {
-          const target = resolveInclude(file, include);
-          if (target === undefined) {
-            execution.log.log(DIAG_INCLUDE_OUTSIDE, {
-              filename: include.filename,
-              loc: declPosn(include),
-              notes: includeChain(includeSites, include),
-            });
-            includeErrors++;
-            return undefined;
-          }
-          if (!includeSites.has(target)) {
-            includeSites.set(target, include);
-          }
-          return target;
-        });
-        return {
-          value: { decls, plugins, parseErrors: parseLog.errorCount + pluginErrors + includeErrors },
-          next: [...includes, ...plugins.flatMap(libFiles)],
-        };
+        /* Each include resolves to the files it names — one path for a plain
+         * include, however many currently match for a pattern (a live query, so
+         * this file's step re-resolves when the set changes). */
+        const included = decls.includes.map(include =>
+          resolveIncludeFiles(execution, fs, file, include, includeSites)
+        );
+        return Computable.forAll(included, (...resolved) => ({
+          value: {
+            decls,
+            plugins,
+            parseErrors:
+              parseLog.errorCount + pluginErrors + resolved.reduce((total, one) => total + one.errors, 0),
+          },
+          next: [...resolved.flatMap(one => one.files), ...plugins.flatMap(libFiles)],
+        }));
       });
     });
   }).then(loaded => {
