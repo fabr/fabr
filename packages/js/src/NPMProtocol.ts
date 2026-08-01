@@ -57,8 +57,8 @@ export interface ISignature {
  * only satisfy the registry, not our expectations — npm normalizes a good deal
  * of legal-but-odd shape away (`"os": "darwin"` for a one-entry gate,
  * `"dependencies": []` for none), and its own readers tolerate the rest. Read
- * those fields through the normalizer that owns each one — {@link gateEntries},
- * {@link dependencyBlock}, {@link optionalPeers} — never by asserting the shape
+ * those fields through the normalizer that owns each one — {@link gateEntries}
+ * here, `dependencyBlock`/`optionalPeers` in PackageJson.ts — never by asserting the shape
  * npm merely usually produces: a wrong assumption is a TypeError thrown deep in
  * an evaluation, which fails the whole resolution rather than the one package.
  */
@@ -122,42 +122,6 @@ function gateEntries(gate: unknown): string[] {
   }
   return Array.isArray(gate) ? gate.filter((entry): entry is string => typeof entry === "string") : [];
 }
-
-/**
- * A manifest dependency block (`dependencies`, `optionalDependencies`, …) as a
- * name→constraint map. npm normalizes away anything that isn't an object of
- * strings — `"dependencies": []` is published and means "none" — and so do we:
- * a block that isn't an object, and any entry whose constraint isn't a string,
- * contributes nothing. (Reading them positionally instead would manufacture
- * requirements on packages named `0`, `1`, … that no registry can resolve.)
- */
-export function dependencyBlock(block: unknown): Map<string, string> {
-  const entries = new Map<string, string>();
-  if (isJsonObject(block)) {
-    for (const [name, constraint] of Object.entries(block)) {
-      if (typeof constraint === "string") {
-        entries.set(name, constraint);
-      }
-    }
-  }
-  return entries;
-}
-
-/** The peers a `peerDependenciesMeta` block marks `optional: true`. */
-export function optionalPeers(block: unknown): Set<string> {
-  const names = new Set<string>();
-  if (isJsonObject(block)) {
-    for (const [name, flags] of Object.entries(block)) {
-      if (isJsonObject(flags) && flags.optional === true) {
-        names.add(name);
-      }
-    }
-  }
-  return names;
-}
-
-/** The dependency-manifest fields whose entries can name a release co-member. */
-const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
 
 /**
  * npm's os/cpu gate semantics (npm-install-checks' checkList): the list is an
@@ -303,103 +267,6 @@ export function verifyTarballStream(
     }
   };
   return { hashing, verify };
-}
-
-/**
- * Rewrite the built manifest for publication: assign the coordinate's name/version,
- * and rewrite any dependency that names a release co-member to that member's
- * assigned version. Returns a fresh object (never mutates the input).
- */
-export function rewriteManifest(
-  manifest: Record<string, unknown>,
-  coordinate: NpmPublishIdentity,
-  memberVersions: ReadonlyMap<string, string>
-): Record<string, unknown> {
-  /* The assigned identity leads (a versionless built manifest has no `version`
-   * to overwrite in place — appending it last would read oddly). */
-  const result: Record<string, unknown> = Object.assign(Object.create(null), {
-    name: coordinate.name,
-    version: coordinate.version,
-  });
-  for (const [key, value] of Object.entries(manifest)) {
-    if (!(key in result)) {
-      result[key] = value;
-    }
-  }
-  for (const field of DEPENDENCY_FIELDS) {
-    const deps = result[field];
-    if (isJsonObject(deps)) {
-      /* A peerDependency pins exact; the rest take a caret range (see
-       * {@link rewriteCoMemberField}). */
-      result[field] = rewriteCoMemberField(deps, memberVersions, field === "peerDependencies");
-    }
-  }
-  return result;
-}
-
-/**
- * Rewrite one dependency block's co-member entries to the members' assigned
- * versions. A `peerDependencies` entry pins **exact**: a peer is singleton-by-
- * identity (a `provided_deps` peer), so the consumer must
- * supply the EXACT co-member instance the package was built against, not merely
- * a semver-compatible one — a range can't express "the same loaded module".
- * Every other field takes a caret range. (A stable inter-package ABI might later
- * widen the others too; the peer stays exact regardless, since identity-compat
- * is strictly stronger than API-compat.)
- */
-function rewriteCoMemberField(
-  deps: Record<string, unknown>,
-  memberVersions: ReadonlyMap<string, string>,
-  exact: boolean
-): Record<string, unknown> {
-  /* Entries fabr doesn't rewrite are passed through as published, whatever they
-   * are — this rewrites a manifest, it doesn't validate one. */
-  const rewritten: Record<string, unknown> = { ...deps };
-  for (const dep of Object.keys(rewritten)) {
-    const memberVersion = memberVersions.get(dep);
-    if (memberVersion !== undefined) {
-      rewritten[dep] = exact ? memberVersion : `^${memberVersion}`;
-    }
-  }
-  return rewritten;
-}
-
-/** The release members this manifest depends on (for deps-first upload ordering). */
-export function memberDependencies(manifest: Record<string, unknown>, memberNames: ReadonlySet<string>): string[] {
-  const names = new Set<string>();
-  for (const field of DEPENDENCY_FIELDS) {
-    for (const dep of dependencyBlock(manifest[field]).keys()) {
-      if (memberNames.has(dep)) {
-        names.add(dep);
-      }
-    }
-  }
-  return [...names];
-}
-
-/* The manifest fields whose entries the consumer's install actually resolves —
- * where an unresolvable version is fatal. devDependencies deliberately excluded
- * (never installed from a published package). */
-const INSTALLED_DEPENDENCY_FIELDS = ["dependencies", "optionalDependencies", "peerDependencies"];
-
-/**
- * The install-relevant dependencies of a rewritten manifest that remain
- * unresolvable — a `*` constraint after co-member rewriting. A built-but-versionless
- * dep declares `*` (its version exists only at publish); if the sync doesn't
- * publish it (or publishes it at several versions, so no single rewrite exists),
- * the `*` survives to here — and a published package with an unconstrained
- * dependency is broken for every consumer, so the caller must reject it.
- */
-export function unresolvableDependencies(manifest: Record<string, unknown>): string[] {
-  const names: string[] = [];
-  for (const field of INSTALLED_DEPENDENCY_FIELDS) {
-    for (const [dep, constraint] of dependencyBlock(manifest[field])) {
-      if (constraint === "*") {
-        names.push(dep);
-      }
-    }
-  }
-  return names;
 }
 
 /**

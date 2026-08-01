@@ -26,26 +26,19 @@
 import {
   BUILD_OPERATION,
   Computable,
-  declPosn,
   EMPTY_FILESET,
   FileSet,
   FileSource,
-  mapEntryOrigin,
-  MemoryFile,
-  Name,
-  NameResolutionError,
   PackageFileSet,
-  PropertyMap,
-  PropertyMapValue,
   readJsonFile,
   RepositoryRef,
-  Requirement,
   RuleRegistration,
   RuleResult,
   TargetContext,
   toJsonObject,
 } from "@fabr-build/core";
-import { binByConvention, compileJsSources, JSTarget, parseJSTarget, stripPackageJson, withBinShebangs } from "../JSPackage";
+import { compileJsSources, parseJSTarget, stripPackageJson, withBinShebangs } from "../JSPackage";
+import { createPackageJson } from "../PackageJson";
 
 function buildJsPackage(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
@@ -147,150 +140,6 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
       });
     }
   );
-}
-
-/** package.json fields fabr computes from the target itself — a `metadata` key
- * naming one of these would be silently overridden, so it is rejected instead. */
-const COMPUTED_PACKAGE_FIELDS = new Set([
-  "name",
-  "version",
-  "type",
-  "main",
-  "types",
-  "bin",
-  "dependencies",
-  "devDependencies",
-  "peerDependencies",
-]);
-
-/** The error for a metadata key fabr computes itself: attributed through the
- * map's ghost origin to the written entry — even one that arrived through a
- * shared map — with any splice/reference hops named in the message. */
-function rejectedMetadataKey(key: string, metadata: PropertyMap): Error {
-  const reason = `metadata key '${key}' is set by fabr and cannot be overridden`;
-  const origin = mapEntryOrigin(metadata, key);
-  if (!origin) {
-    return new Error(reason);
-  }
-  const via = origin.via.map(hop => ` (via '${("ref" in hop ? hop.ref : hop.value).toString()}')`).join("");
-  return new NameResolutionError(Name.fromLiteral(key), declPosn(origin.entry), undefined, reason + via);
-}
-
-/** Encode a resolved metadata value as its package.json JSON shape: a string
- * stays a string, a sub-map becomes an object (`repository`), a list of
- * sub-maps an array of objects (`maintainers`). */
-function encodeMetadataValue(value: PropertyMapValue): unknown {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.map(encodeMetadataValue);
-  }
-  return Object.fromEntries([...value].map(([key, sub]) => [key, encodeMetadataValue(sub)]));
-}
-
-/**
- * Generate the package.json for the built package: initialized from the source
- * package.json where one exists, overlaid with the declared `metadata` (the
- * descriptive fields — description, license, author, repository, ...), then
- * with what the target computes — its name, version, module type, entry
- * points, the direct package requirements from its `deps` (`dependencies`), and
- * from its `provided_deps` (`peerDependencies`) (these always win, so metadata
- * may not name one of them).
- */
-function createPackageJson(
-  files: FileSet,
-  seed: Record<string, unknown> | undefined,
-  name: string,
-  version: string | undefined,
-  declared: (Requirement | undefined)[],
-  providedDeclared: (Requirement | undefined)[],
-  jsTarget: JSTarget,
-  metadata: PropertyMap
-): MemoryFile {
-  /* The identity leads (the conventional reading order — name, then version),
-   * so it is placed before the seed and metadata are copied in; a key keeps
-   * its first-placed position, while the computed assignments below still win
-   * on value. */
-  const packageJson: Record<string, unknown> = Object.assign(Object.create(null), { name });
-  if (version !== undefined) {
-    packageJson.version = version;
-  }
-  for (const [key, value] of Object.entries(seed ?? {})) {
-    if (!(key in packageJson)) {
-      packageJson[key] = value;
-    }
-  }
-  for (const [key, value] of metadata) {
-    if (COMPUTED_PACKAGE_FIELDS.has(key)) {
-      throw rejectedMetadataKey(key, metadata);
-    }
-    packageJson[key] = encodeMetadataValue(value);
-  }
-  packageJson.type = jsTarget.module === "esm" ? "module" : "commonjs";
-  const names = new Set([...files].map(([filename]) => filename));
-  if (names.has("index.js")) {
-    packageJson.main = "index.js";
-  }
-  if (names.has("index.d.ts")) {
-    packageJson.types = "index.d.ts";
-  }
-
-  const bin = binByConvention(files);
-  if (bin.size > 0) {
-    packageJson.bin = Object.fromEntries(bin);
-  }
-
-  const dependencies = packageDependencies(declared);
-  if (Object.keys(dependencies).length > 0) {
-    packageJson.dependencies = dependencies;
-  }
-  /* provided_deps → peerDependencies: the host supplies the one shared copy. */
-  const peerDependencies = peerDependenciesOf(providedDeclared);
-  if (Object.keys(peerDependencies).length > 0) {
-    packageJson.peerDependencies = peerDependencies;
-  }
-
-  return MemoryFile.from(JSON.stringify(packageJson, undefined, 2) + "\n");
-}
-
-/**
- * The direct `dependencies` for the generated package.json — every declared
- * requirement, including `@types/*`. A `@types/*` dep can leak into the shipped
- * `.d.ts` (a node type in an exported signature emits `/// <reference
- * types="node" />`), making it part of the package's public type surface, so a
- * consumer type-checking against us needs it — DefinitelyTyped's own convention
- * (`@types/express` lists `@types/node` under `dependencies`). We don't yet scan
- * the emitted declarations to tell a leaked type dep from a compile-only one, so
- * the safe default is a plain `dependency` (harmless if unused: the consumer
- * dedupes it, and `@types/node` is near-ubiquitous). The version each states is
- * the declaration, not what fabr's joint resolution selected: a published
- * manifest says what the package *requires*, and the consumer resolves it.
- */
-function packageDependencies(declared: (Requirement | undefined)[]): Record<string, string> {
-  const dependencies: Record<string, string> = {};
-  for (const req of declared) {
-    if (req) {
-      dependencies[req.pkg] = req.constraint;
-    }
-  }
-  return dependencies;
-}
-
-/**
- * The `peerDependencies` for the generated package.json — the declared
- * requirements of `provided_deps`. Like `dependencies`, the version stated is the
- * declaration (what the package requires of its host), not what resolution pinned;
- * unlike `dependencies` there is no `@types/*` split — a peer is a runtime peer.
- */
-function peerDependenciesOf(providedDeclared: (Requirement | undefined)[]): Record<string, string> {
-  const peerDependencies: Record<string, string> = {};
-  for (const req of providedDeclared) {
-    if (req) {
-      peerDependencies[req.pkg] = req.constraint;
-    }
-  }
-  return peerDependencies;
 }
 
 export const buildJsPackageRule: RuleRegistration = {

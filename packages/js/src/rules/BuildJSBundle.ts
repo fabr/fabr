@@ -157,10 +157,12 @@ function buildJsBundle(context: TargetContext): Computable<RuleResult> {
        * meaning as code text, so defines is flat by contract. */
       const defines: Record<string, string> = Object.create(null);
       for (const [key, value] of defineMap) {
-        if (typeof value !== "string") {
+        /* A map scalar is a string list; a sub-map / list of sub-maps is not code text.
+         * `every` with a type-predicate narrows `value` to string[] for the join below. */
+        if (!Array.isArray(value) || !value.every((entry): entry is string => typeof entry === "string")) {
           throw new TypeError(`defines value '${key}' must be a scalar string (a define is esbuild code text)`);
         }
-        defines[key] = value;
+        defines[key] = value.join(" ");
       }
       /* THE collection point for the bundle's contents: srcs, entry and deps
        * resolve jointly. The bundler resolved above is a build tool, independent

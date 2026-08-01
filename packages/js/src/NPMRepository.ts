@@ -85,27 +85,29 @@ import {
 } from "@fabr-build/core";
 import { buildMounts, EdgeMap, makeNpmRunnable, planMounts, PlannedMount } from "./JSPackage";
 import {
-  dependencyBlock,
   INPMPackageMetadata,
   isSemverConstraint,
   matchesTargetPlatform,
-  memberDependencies,
   NpmPublishIdentity,
   npmPackageOfPath,
-  optionalPeers,
   parseMetadataResponse,
   PublishAccess,
   publishToRegistry,
   toPublishAccess,
-  rewriteManifest,
   splitNameVersion,
   splitNpmReference,
   stripArchiveRoot,
   tarballBasename,
-  unresolvableDependencies,
   unsupportedPlatformReason,
   verifyTarballStream,
 } from "./NPMProtocol";
+import {
+  dependencyBlock,
+  memberDependencies,
+  optionalPeers,
+  rewriteManifest,
+  unresolvableDependencies,
+} from "./PackageJson";
 import { NPMAuth } from "./NPMAuth";
 import { jsPluginContext } from "./JSPluginContext";
 

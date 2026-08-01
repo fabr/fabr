@@ -877,7 +877,7 @@ describe("BuildContext", () => {
     expect(lastRewrite).to.deep.equal(["bundle.js", "bundle.js", "bundle.js"]);
   });
 
-  it("Resolves a MAP property to an ordered, substituted key -> string map", async () => {
+  it("Resolves a MAP property to an ordered, substituted key -> string-list map", async () => {
     lastMap = undefined;
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
@@ -890,8 +890,8 @@ describe("BuildContext", () => {
 
     await model.getConfig(Constraints.of({}), execution).getTarget("t");
     expect(lastMap).to.deep.equal([
-      ["process.env.NODE_ENV", "production"],
-      ["DEBUG", "false"],
+      ["process.env.NODE_ENV", ["production"]],
+      ["DEBUG", ["false"]],
     ]);
   });
 
@@ -908,8 +908,8 @@ describe("BuildContext", () => {
 
     await model.getConfig(Constraints.of({}), execution).getTarget("t");
     expect(lastMap).to.deep.equal([
-      ["repository", new Map([["type", "git"], ["url", "example.com"]])],
-      ["maintainers", [new Map([["name", "a"]]), new Map([["name", "b"]])]],
+      ["repository", new Map([["type", ["git"]], ["url", ["example.com"]]])],
+      ["maintainers", [new Map([["name", ["a"]]]), new Map([["name", ["b"]]])]],
     ]);
   });
 
@@ -928,9 +928,9 @@ describe("BuildContext", () => {
     /* The splice lands at its written position; the later literal entry
      * overrides the spliced `description`. */
     expect(lastMap).to.deep.equal([
-      ["before", "x"],
-      ["license", "gpl3"],
-      ["description", "specific"],
+      ["before", ["x"]],
+      ["license", ["gpl3"]],
+      ["description", ["specific"]],
     ]);
   });
 
@@ -998,8 +998,8 @@ describe("BuildContext", () => {
     await model.getConfig(Constraints.of({}), execution).getTarget("t");
     /* The shared block's `${WHO}` resolves under the consuming build's config. */
     expect(lastMap).to.deep.equal([
-      ["license", "gpl3"],
-      ["owner", "nathan"],
+      ["license", ["gpl3"]],
+      ["owner", ["nathan"]],
     ]);
   });
 

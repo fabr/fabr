@@ -86,12 +86,14 @@ import { Property } from "./Property";
 
 /**
  * The resolved value of a MAP property: an ordered key -> value map whose
- * values are each one string (a string-valued entry's values, space-joined), a
- * sub-map (one nested block), or a list of sub-maps (several blocks — an array
- * of objects, `maintainers`-style). Never a mix within one entry. The map is
- * ecosystem-neutral; the consuming rule interprets/encodes the values.
+ * values are each a **list of strings** (a string-valued entry's values, kept as
+ * written — like any other property value, not space-joined), a sub-map (one
+ * nested block), or a list of sub-maps (several blocks — an array of objects,
+ * `maintainers`-style). Never a mix within one entry. The map is ecosystem-neutral;
+ * the consuming rule interprets/encodes the values (a scalar field joins the list,
+ * an array field keeps it — that shape choice is the consumer's, not the model's).
  */
-export type PropertyMapValue = string | PropertyMap | PropertyMap[];
+export type PropertyMapValue = string[] | PropertyMap | PropertyMap[];
 export type PropertyMap = Map<string, PropertyMapValue>;
 
 /**
@@ -728,7 +730,9 @@ export class BuildContext {
         }
         const blocks = item.values.filter(isMapValue);
         if (blocks.length === 0) {
-          return this.resolveStringProperty(item, target, stack, callerOverrides).then(prop => prop.toString());
+          /* A scalar entry keeps its value list (like any property), so a consumer
+           * can serialize it as an array or join it per its own schema. */
+          return this.resolveStringProperty(item, target, stack, callerOverrides).then(prop => prop.getValues());
         }
         if (blocks.length < item.values.length) {
           return Computable.reject(new Error(`map value '${item.name}' is either strings or maps, not a mix`));

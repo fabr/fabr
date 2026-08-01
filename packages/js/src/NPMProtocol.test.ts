@@ -24,9 +24,7 @@ import { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
 import { Computable, IntegrityError } from "@fabr-build/core";
 import {
-  dependencyBlock,
   expectedTarballDigest,
-  optionalPeers,
   parseMetadataResponse,
   publishToRegistry,
   toPublishAccess,
@@ -72,42 +70,6 @@ describe("parseMetadataResponse", () => {
   });
 });
 
-describe("dependencyBlock", () => {
-  it("reads a well-formed block as a name→constraint map", () => {
-    expect([...dependencyBlock({ lodash: "^4.0.0", chai: "5.1.0" })]).to.deep.equal([
-      ["lodash", "^4.0.0"],
-      ["chai", "5.1.0"],
-    ]);
-  });
-
-  it("reads a block that is not an object as no dependencies", () => {
-    /* `"dependencies": []` is published and means "none"; reading it
-     * positionally would manufacture a requirement on a package named `0`. */
-    expect([...dependencyBlock([])]).to.deep.equal([]);
-    expect([...dependencyBlock(["lodash"])]).to.deep.equal([]);
-    expect([...dependencyBlock("lodash")]).to.deep.equal([]);
-    expect([...dependencyBlock(undefined)]).to.deep.equal([]);
-    expect([...dependencyBlock(null)]).to.deep.equal([]);
-  });
-
-  it("drops an entry whose constraint is not a string", () => {
-    expect([...dependencyBlock({ lodash: "^4.0.0", chai: { version: "5.1.0" }, mocha: 10 })]).to.deep.equal([
-      ["lodash", "^4.0.0"],
-    ]);
-  });
-});
-
-describe("optionalPeers", () => {
-  it("collects the peers flagged optional", () => {
-    expect([...optionalPeers({ react: { optional: true }, chai: { optional: false }, mocha: {} })]).to.deep.equal(["react"]);
-  });
-
-  it("reads a malformed block as no optional peers", () => {
-    expect([...optionalPeers({ react: "optional", chai: null })]).to.deep.equal([]);
-    expect([...optionalPeers(["react"])]).to.deep.equal([]);
-    expect([...optionalPeers(undefined)]).to.deep.equal([]);
-  });
-});
 
 describe("expectedTarballDigest", () => {
   it("prefers the strongest SRI algorithm over a weaker one and the legacy shasum", () => {
