@@ -95,6 +95,40 @@ export function dependencyBlock(block: unknown): Map<string, string> {
   return entries;
 }
 
+/**
+ * The requirement one dependency-block entry declares. Ordinarily the entry's
+ * name IS the package and its value the constraint, but npm's **alias** form —
+ * `"wrap-ansi-cjs": "npm:wrap-ansi@^7.0.0"` — names a different package, which
+ * the requirer's own code then imports under the entry name (`@isaacs/cliui`
+ * literally `require`s `'wrap-ansi-cjs'`). The alias rides on the requirement
+ * as the local name; the constraint applies to the real package, so resolution
+ * and version selection treat it as an ordinary requirement on `wrap-ansi`.
+ *
+ * An alias with no version (`npm:wrap-ansi`) is unconstrained, exactly as a
+ * bare `*` would be — the resolver reports it as such if nothing else pins the
+ * package. Spec forms fabr doesn't understand (`file:`, `git+`, `workspace:`)
+ * are left alone, to be rejected as the unparseable constraints they are.
+ */
+export function dependencyRequirement(name: string, spec: string): Requirement {
+  if (!spec.startsWith(ALIAS_PREFIX)) {
+    return { pkg: name, constraint: spec };
+  }
+  const target = spec.substring(ALIAS_PREFIX.length);
+  /* Scoped names start with their own `@`, so the version separator is the
+   * last one — and only counts if something follows it. */
+  const separator = target.lastIndexOf("@");
+  const pkg = separator > 0 ? target.substring(0, separator) : target;
+  const constraint = separator > 0 ? target.substring(separator + 1) : "";
+  return {
+    pkg,
+    constraint: constraint === "" ? "*" : constraint,
+    /* An alias to the package's own name renames nothing */
+    ...(pkg === name ? {} : { alias: name }),
+  };
+}
+
+const ALIAS_PREFIX = "npm:";
+
 /** The peers a `peerDependenciesMeta` block marks `optional: true`. */
 export function optionalPeers(block: unknown): Set<string> {
   const names = new Set<string>();

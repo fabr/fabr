@@ -813,8 +813,8 @@ export class BuildContext {
    * Resolve one file reference to its sources — the single choke point every
    * file resolution flows through: a property value ({@link resolveFileProperty}),
    * a `-D` constraint override ({@link getTarget}), a CLI `ls`/`cat`/`run` name
-   * ({@link resolveName}), a command stage's `< stdin` redirect ({@link
-   * resolveRedirectSource}). The reference's `<k=v>` delta (and any caller
+   * ({@link resolveName}), a command stage's tool or its `< stdin` redirect. The
+   * reference's `<k=v>` delta (and any caller
    * override) re-roots the resolving context (see {@link resolvingContextFor}),
    * under which it resolves to sources — target-prefix + `:`/glob projection etc.
    * ({@link resolveFileSource}), `relativeTo` rooting a bare path at the build
@@ -824,7 +824,7 @@ export class BuildContext {
    * property-less callers carry no written value, so they stamp none (CLI/
    * override provenance origins are future work).
    */
-  private resolveFileValue(
+  public resolveFileValue(
     name: Name,
     stack: IDependencyStack | undefined,
     options?: {
@@ -957,17 +957,6 @@ export class BuildContext {
    */
   public resolveName(ref: INameValue, stack?: IDependencyStack): Computable<SourceRef[]> {
     return this.resolveFileValue(ref.value, stack, { relativeTo: ref }).then(materializeShallow);
-  }
-
-  /**
-   * Resolve an already-substituted file reference (a command stage's `< stdin`
-   * redirect) to its sources through the same file core a FILES value uses —
-   * target-prefix + `:`/glob projection and, crucially, a bare path rooted at
-   * the build file it was written in (`writtenAt`). This is what lets
-   * `< src/input.txt` name a plain file, not only a declared target/property.
-   */
-  public resolveRedirectSource(name: Name, writtenAt: INameValue, stack?: IDependencyStack): Computable<SourceRef[]> {
-    return this.resolveFileValue(name, stack, { relativeTo: writtenAt });
   }
 
   private resolveFileSource(
@@ -1583,7 +1572,7 @@ export abstract class TargetContext {
    * `srcs`, `< source` → single file, redirect targets → content names. */
   private resolveStage(stage: IResolvedCommandStage, srcs: FileSet): Computable<ResolvedCommandStage> {
     return Computable.forAll(
-      [this.getGlobalRunnable(stage.command.name.toString()), this.resolveStdin(stage.stdin), this.expandArgs(stage.args, srcs)],
+      [this.resolveCommandRunnable(stage.command), this.resolveStdin(stage.stdin), this.expandArgs(stage.args, srcs)],
       (runnable: RunnableFileSet, stdin: FileSet | undefined, args: string[]): ResolvedCommandStage => ({
         runnable,
         args,
@@ -1616,15 +1605,30 @@ export abstract class TargetContext {
     );
   }
 
+  /** Resolve a stage's command to the runnable it names, under runOverrides (the
+   * tool executes on this machine — see getRunnableProperty). The command is a
+   * written reference, resolved through the ordinary file core (not a
+   * declared-name lookup like {@link getGlobalRunnable}'s), so it may be a target
+   * or global (`gendoc`, `TSC`), an external requirement (`@npm:typia:9.7.1`), a
+   * projection into either (`@pkg:typescript:tsc`), or a path rooted at the build
+   * file it was written in. */
+  private resolveCommandRunnable(command: IPositionedName): Computable<RunnableFileSet> {
+    return this.context
+      .resolveFileValue(command.name, this.stack, { relativeTo: command.ref, callerOverrides: this.runOverrides() })
+      .then(sources => materializeLists([sources]))
+      .then(([resolved]) => asRunnable(resolved, command.name.toString()));
+  }
+
   /** Resolve a stage's `< source` to a single-file set (streamed to stdin), or
    * undefined if the stage takes no stdin. Resolved through the file core (like a
-   * FILES value), so a `< src/input.txt` path works, not only a declared name. */
+   * FILES value), so a `< src/input.txt` path — rooted at the build file it was
+   * written in — works, not only a declared name. */
   private resolveStdin(stdin: IPositionedName | undefined): Computable<FileSet | undefined> {
     if (!stdin) {
       return Computable.resolve(undefined);
     }
     return this.context
-      .resolveRedirectSource(stdin.name, stdin.ref, this.stack)
+      .resolveFileValue(stdin.name, this.stack, { relativeTo: stdin.ref })
       .then(sources => materializeLists([sources]))
       .then(([resolved]) => {
         const set = FileSet.unionAll(...resolved.filter((source): source is FileSet => source instanceof FileSet));

@@ -24,6 +24,7 @@ import {
   BUILD_OPERATION,
   BuildCache,
   Computable,
+  ConflictError,
   ExecutionContext,
   explainResolutionPath,
   FILES_OPERATION,
@@ -48,7 +49,8 @@ import {
   TARGET,
   versionToString,
 } from "@fabr-build/core";
-import { NPMRepository, strictRepairError } from "./NPMRepository";
+import { flatWinners, NPMRepository, strictRepairError } from "./NPMRepository";
+import { EdgeMap } from "./JSPackage";
 import {
   matchesTargetPlatform,
   npmPackageOfPath,
@@ -590,6 +592,132 @@ describe("NPMRepository metadata memo", () => {
 
     const requirements = await toPromise(repo.getRequirements("odd", parseVersion("1.0.0")));
     expect(requirements).to.deep.equal([{ pkg: "eslint", constraint: "^9.0.0", soft: true }]);
+  });
+
+  it("reads an npm: alias dependency as a requirement on the aliased package", async () => {
+    /* @isaacs/cliui's shape, reached from anything modern via glob@10: the
+       constraint is wrap-ansi's, so it joins the joint pin as an ordinary
+       requirement on wrap-ansi — the entry name survives as the alias, being
+       the name cliui's own code requires. */
+    const url = `${REG}/@isaacs%2fcliui/8.0.2`;
+    const meta = metadataFor("@isaacs/cliui", "8.0.2", {
+      "string-width": "^5.1.2",
+      "wrap-ansi-cjs": "npm:wrap-ansi@^7.0.0",
+    });
+    const repo = new NPMRepository(REG, fakeContext("build", { [url]: meta }, []));
+
+    const requirements = await toPromise(repo.getRequirements("@isaacs/cliui", parseVersion("8.0.2")));
+
+    expect(requirements).to.deep.equal([
+      { pkg: "string-width", constraint: "^5.1.2" },
+      { pkg: "wrap-ansi", constraint: "^7.0.0", alias: "wrap-ansi-cjs" },
+    ]);
+  });
+});
+
+describe("flatWinners", () => {
+  /** A closure member, keyed as the id the edges refer to it by. */
+  function members(...ids: string[]): Map<string, Selected<SemverVersion>> {
+    return new Map(
+      ids.map(id => {
+        const at = id.lastIndexOf("@");
+        return [id, { pkg: id.substring(0, at), version: parseVersion(id.substring(at + 1)) }];
+      })
+    );
+  }
+
+  function edges(graph: Record<string, Record<string, string>>): EdgeMap {
+    return new Map(Object.entries(graph).map(([id, deps]) => [id, new Map(Object.entries(deps))]));
+  }
+
+  it("mounts each name the closure's edges ask for", () => {
+    const winners = flatWinners(
+      "cli@1.0.0",
+      "cli",
+      members("cli@1.0.0", "left-pad@1.2.0"),
+      edges({ "cli@1.0.0": { "left-pad": "left-pad@1.2.0" } })
+    );
+    expect([...winners]).to.deep.equal([
+      ["cli", "cli@1.0.0"],
+      ["left-pad", "left-pad@1.2.0"],
+    ]);
+  });
+
+  it("mounts an aliased package under the alias only", () => {
+    /* Nothing asks for wrap-ansi@7 by its own name — that name belongs to the
+       tree's own wrap-ansi@8 — so the aliased copy exists only as the name its
+       requirer imports. */
+    const winners = flatWinners(
+      "cli@1.0.0",
+      "cli",
+      members("cli@1.0.0", "@isaacs/cliui@8.0.2", "wrap-ansi@8.1.0", "wrap-ansi@7.0.0"),
+      edges({
+        "cli@1.0.0": { "@isaacs/cliui": "@isaacs/cliui@8.0.2", "wrap-ansi": "wrap-ansi@8.1.0" },
+        "@isaacs/cliui@8.0.2": { "wrap-ansi-cjs": "wrap-ansi@7.0.0" },
+      })
+    );
+    expect([...winners]).to.deep.equal([
+      ["cli", "cli@1.0.0"],
+      ["@isaacs/cliui", "@isaacs/cliui@8.0.2"],
+      ["wrap-ansi", "wrap-ansi@8.1.0"],
+      ["wrap-ansi-cjs", "wrap-ansi@7.0.0"],
+    ]);
+  });
+
+  it("does not mount a member nothing requires under any name", () => {
+    const winners = flatWinners("cli@1.0.0", "cli", members("cli@1.0.0", "orphan@1.0.0"), edges({ "cli@1.0.0": {} }));
+    expect([...winners]).to.deep.equal([["cli", "cli@1.0.0"]]);
+  });
+
+  it("keeps the root's own name for the root", () => {
+    /* A dependency selecting another version of the root package cannot take
+       its name: the delivered package must resolve at its own path. */
+    const winners = flatWinners(
+      "cli@1.0.0",
+      "cli",
+      members("cli@1.0.0", "cli@2.0.0", "dep@1.0.0"),
+      edges({ "cli@1.0.0": { dep: "dep@1.0.0" }, "dep@1.0.0": { cli: "cli@2.0.0" } })
+    );
+    expect(winners.get("cli")).to.equal("cli@1.0.0");
+  });
+
+  it("takes the highest version when one name is claimed twice", () => {
+    const winners = flatWinners(
+      "cli@1.0.0",
+      "cli",
+      members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "dep@1.0.0", "dep@2.0.0"),
+      edges({
+        "cli@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
+        "a@1.0.0": { dep: "dep@1.0.0" },
+        "b@1.0.0": { dep: "dep@2.0.0" },
+      })
+    );
+    expect(winners.get("dep")).to.equal("dep@2.0.0");
+  });
+
+  it("rejects two different packages claiming one install name", () => {
+    /* Only an alias can reach this — an ordinary edge names its own package —
+       and hoisting either would silently break the other's imports. */
+    const err = (() => {
+      try {
+        flatWinners(
+          "cli@1.0.0",
+          "cli",
+          members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "left-pad@1.0.0", "right-pad@1.0.0"),
+          edges({
+            "cli@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
+            "a@1.0.0": { pad: "left-pad@1.0.0" },
+            "b@1.0.0": { pad: "right-pad@1.0.0" },
+          })
+        );
+        return undefined;
+      } catch (thrown) {
+        return thrown as Error & { help?: string };
+      }
+    })();
+    expect(err).to.be.instanceOf(ConflictError);
+    expect(err?.message).to.contain("Conflicting packages for pad");
+    expect(err?.help).to.contain("alias");
   });
 });
 

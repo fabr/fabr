@@ -27,6 +27,16 @@ export interface Requirement {
   pkg: string;
   constraint: string;
   /**
+   * The name the requirer knows this dependency by, when that differs from the
+   * package's own name (npm's `"wrap-ansi-cjs": "npm:wrap-ansi@^7.0.0"`,
+   * Cargo's `package =` rename). Purely local: resolution is by `pkg`, so an
+   * aliased requirement participates in the joint selection exactly as an
+   * ordinary one — the alias survives only as the name the requirer's own
+   * imports use, hence as the name a consumer must lay the result out under
+   * (the requirer's code literally `require`s it).
+   */
+  alias?: string;
+  /**
    * Attach-first (peer) semantics: primarily a constraint on whatever the tree
    * selects for `pkg` — satisfied by any selection in range, whatever its
    * resolution key — demanding its own minimum only when the converged tree
@@ -129,6 +139,16 @@ export interface MVSResolution<V> {
   errors: IResolutionError[];
   violations: Violation<V>[];
   raises: RaisedFloor<V>[];
+  /**
+   * The declared requirements of each selected node ({@link nodeId} → its
+   * requirements), i.e. the resolution's edges as the packages declared them.
+   * The walk collects these to compute reachability; handing them back is what
+   * lets a consumer lay the result out — where each edge leads is a pure
+   * function of these plus {@link MVSResolution.selections} (see edgeTargets),
+   * so a layout needs no second read of package metadata. Pruned nodes are not
+   * listed: only what the resolution selected.
+   */
+  requirements: Map<string, Requirement[]>;
 }
 
 /**

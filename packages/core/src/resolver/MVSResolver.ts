@@ -588,7 +588,17 @@ function resolvePhase<V, C>(
         raiseKeys.add(dedup);
         return true;
       });
-      resolve({ selections, errors: [...errors.values()], violations, raises });
+      /* The edges of the *selected* graph, for a consumer laying the result
+       * out: the requirements of every surviving node, in the selections'
+       * canonical order (superseded/pruned nodes are dropped with their
+       * subtrees, exactly as the reachability walk above dropped them). */
+      const requirements = new Map<string, Requirement[]>(
+        selections.map(sel => {
+          const id = nodeId(sel.pkg, sel.version);
+          return [id, nodeRequirements.get(id) ?? []];
+        })
+      );
+      resolve({ selections, errors: [...errors.values()], violations, raises, requirements });
     };
 
     for (const root of roots) {

@@ -19,7 +19,7 @@
 
 import { expect } from "chai";
 import { FileSet, PropertyMap, Requirement } from "@fabr-build/core";
-import { createPackageJson, dependencyBlock, optionalPeers } from "./PackageJson";
+import { createPackageJson, dependencyBlock, dependencyRequirement, optionalPeers } from "./PackageJson";
 import { JSTarget } from "./JSPackage";
 
 const JS_TARGET: JSTarget = { version: "esnext", module: "commonjs", environment: "node" };
@@ -124,6 +124,50 @@ describe("dependencyBlock", () => {
     expect([...dependencyBlock({ lodash: "^4.0.0", chai: { version: "5.1.0" }, mocha: 10 })]).to.deep.equal([
       ["lodash", "^4.0.0"],
     ]);
+  });
+});
+
+describe("dependencyRequirement", () => {
+  it("reads an ordinary entry as a requirement on the entry's own name", () => {
+    expect(dependencyRequirement("lodash", "^4.0.0")).to.deep.equal({ pkg: "lodash", constraint: "^4.0.0" });
+  });
+
+  it("reads an npm: alias as a requirement on the aliased package", () => {
+    /* @isaacs/cliui's shape: the constraint applies to wrap-ansi, and the
+     * entry name is what cliui's own code requires. */
+    expect(dependencyRequirement("wrap-ansi-cjs", "npm:wrap-ansi@^7.0.0")).to.deep.equal({
+      pkg: "wrap-ansi",
+      constraint: "^7.0.0",
+      alias: "wrap-ansi-cjs",
+    });
+  });
+
+  it("reads an alias to a scoped package (the scope's @ is not the separator)", () => {
+    expect(dependencyRequirement("types", "npm:@types/node@^20.1.0")).to.deep.equal({
+      pkg: "@types/node",
+      constraint: "^20.1.0",
+      alias: "types",
+    });
+    expect(dependencyRequirement("types", "npm:@types/node")).to.deep.equal({
+      pkg: "@types/node",
+      constraint: "*",
+      alias: "types",
+    });
+  });
+
+  it("reads a versionless alias as unconstrained", () => {
+    expect(dependencyRequirement("wa", "npm:wrap-ansi")).to.deep.equal({ pkg: "wrap-ansi", constraint: "*", alias: "wa" });
+    expect(dependencyRequirement("wa", "npm:wrap-ansi@")).to.deep.equal({ pkg: "wrap-ansi", constraint: "*", alias: "wa" });
+  });
+
+  it("carries no alias when it renames nothing", () => {
+    expect(dependencyRequirement("wrap-ansi", "npm:wrap-ansi@^7.0.0")).to.deep.equal({ pkg: "wrap-ansi", constraint: "^7.0.0" });
+  });
+
+  it("leaves a spec form it doesn't understand alone", () => {
+    /* Rejected downstream as the unparseable constraint it is, rather than
+     * mistaken for something fabr can resolve. */
+    expect(dependencyRequirement("local", "file:../local")).to.deep.equal({ pkg: "local", constraint: "file:../local" });
   });
 });
 

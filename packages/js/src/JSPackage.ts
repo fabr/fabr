@@ -331,16 +331,26 @@ export function stripPackageJson(files: FileSet): FileSet {
  * the id satisfying it). The resolution reduced to what layout needs, and all
  * it needs — planning reads no files, so it settles before anything is
  * fetched. Transient: never carried on delivered values.
+ *
+ * The dependency name is the name the *requirer* uses — which under an alias
+ * (`"wrap-ansi-cjs": "npm:wrap-ansi@^7.0.0"`) is not the name of the package
+ * the edge leads to. Layout follows the edge, so an aliased package is mounted
+ * where its requirer's imports look for it, and only there.
  */
 export type EdgeMap = Map<string, Map<string, string>>;
 
 /**
- * A planned mount: which package instance sits at this position, and the
- * private overrides nested beneath it. Ids only — a plan is a statement about
- * the resolution, not about content.
+ * A planned mount: which package instance sits at this position, the name it
+ * is mounted under, and the private overrides nested beneath it. Ids and names
+ * only — a plan is a statement about the resolution, not about content.
+ *
+ * `as` is the package's own name for every ordinary mount, and the alias for
+ * an aliased one; two positions differing only in `as` are different mounts,
+ * so it is part of a position's identity.
  */
 export interface PlannedMount {
   id: string;
+  as: string;
   overrides: PlannedMount[];
 }
 
@@ -374,12 +384,13 @@ export interface PlannedMount {
  */
 export function planMounts(
   rootId: string,
+  rootName: string,
   winners: Map<string, string>,
   edges: EdgeMap,
   members: ReadonlySet<string>
 ): PlannedMount[] {
-  const signature = (id: string, bindings: Map<string, string>): string =>
-    [id, ...[...bindings].sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, to]) => `${name}=${to}`)].join("\n");
+  const signature = (id: string, as: string, bindings: Map<string, string>): string =>
+    [id, as, ...[...bindings].sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, to]) => `${name}=${to}`)].join("\n");
   /** Completed subtrees, and the positions on the current planning path (in
    * order, so a repeat can name the cycle it closes). */
   const planned = new Map<string, PlannedMount>();
@@ -403,11 +414,11 @@ export function planMounts(
         nested.set(name, toId);
       }
     }
-    return [...divergent.values()].map(toId => mount(toId, nested));
+    return [...divergent].map(([name, toId]) => mount(toId, name, nested));
   };
 
-  const mount = (id: string, bindings: Map<string, string>): PlannedMount => {
-    const key = signature(id, bindings);
+  const mount = (id: string, as: string, bindings: Map<string, string>): PlannedMount => {
+    const key = signature(id, as, bindings);
     const done = planned.get(key);
     if (done) {
       return done;
@@ -417,16 +428,18 @@ export function planMounts(
       throw unrepresentableCycle([...path.slice(repeated).map(entry => entry.id), id]);
     }
     path.push({ id, key });
-    const result: PlannedMount = { id, overrides: overridesOf(id, bindings) };
+    const result: PlannedMount = { id, as, overrides: overridesOf(id, bindings) };
     path.pop();
     planned.set(key, result);
     return result;
   };
 
-  /* The top of the tree binds nothing beyond the flat winners. */
+  /* The top of the tree binds nothing beyond the flat winners. The root's own
+   * name is the consumer's to mount (it IS the delivered package); any other
+   * name winning the root — an alias of it — still needs its own mount. */
   const top = new Map<string, string>();
   return [
-    ...[...winners.values()].filter(id => id !== rootId).map(id => mount(id, top)),
+    ...[...winners].filter(([name]) => name !== rootName).map(([name, id]) => mount(id, name, top)),
     ...overridesOf(rootId, top),
   ];
 }
@@ -450,6 +463,14 @@ function unrepresentableCycle(cycle: string[]): Error {
  * PackageFileSet carrying its overrides as its own dependencies, built
  * depth-first so every instance is immutable-complete at construction. A
  * subtree shared by the plan stays one instance here too.
+ *
+ * A mount is stamped with the name it is mounted *as*, which for an aliased
+ * dependency is not the fetched package's own name: `wrap-ansi` delivered as
+ * `wrap-ansi-cjs` is a package of that name as far as the install is concerned
+ * — the same thing npm's on-disk `node_modules/wrap-ansi-cjs` (whose
+ * package.json still says `wrap-ansi`) means. The content is shared with any
+ * other mount of that version; only the identity this instance carries — and
+ * hence where {@link assembleNodeModules} puts it — differs.
  */
 export function buildMounts(
   plan: readonly PlannedMount[],
@@ -463,7 +484,7 @@ export function buildMounts(
       return done;
     }
     const files = packages.get(node.id)!;
-    const result = new PackageFileSet(files, files.packageName, files.version, node.overrides.map(build), origin);
+    const result = new PackageFileSet(files, node.as, files.version, node.overrides.map(build), origin);
     built.set(node, result);
     return result;
   };

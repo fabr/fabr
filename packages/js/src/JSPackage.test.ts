@@ -141,7 +141,7 @@ describe("planMounts", () => {
       ["css-tree", "css-tree@3.0.1"],
       ["mdn-data", "mdn-data@2.12.2"],
     ]);
-    expect(tree(planMounts("svgo@4.0.1", winners, edgeMap, members))).to.deep.equal([
+    expect(tree(planMounts("svgo@4.0.1", "svgo", winners, edgeMap, members))).to.deep.equal([
       "csso@5.0.5",
       "csso@5.0.5/css-tree@2.2.0",
       "csso@5.0.5/css-tree@2.2.0/mdn-data@2.0.28",
@@ -168,7 +168,7 @@ describe("planMounts", () => {
     ]);
     const err = (() => {
       try {
-        planMounts("a@1.0.0", winners, edgeMap, members);
+        planMounts("a@1.0.0", "a", winners, edgeMap, members);
         return undefined;
       } catch (thrown) {
         return thrown as Error & { help?: string };
@@ -189,7 +189,7 @@ describe("planMounts", () => {
       ["a", "a@1.0.0"],
       ["b", "b@1.0.0"],
     ]);
-    expect(tree(planMounts("a@1.0.0", winners, edgeMap, members))).to.deep.equal(["b@1.0.0"]);
+    expect(tree(planMounts("a@1.0.0", "a", winners, edgeMap, members))).to.deep.equal(["b@1.0.0"]);
   });
 
   it("reuses one subtree for a position reached twice with the same bindings", () => {
@@ -209,10 +209,84 @@ describe("planMounts", () => {
       ["y", "y@1.0.0"],
       ["shared", "shared@2.0.0"],
     ]);
-    const mounts = planMounts("root@1.0.0", winners, edgeMap, members);
+    const mounts = planMounts("root@1.0.0", "root", winners, edgeMap, members);
     const x = mounts.find(mount => mount.id.startsWith("x@"))!;
     const y = mounts.find(mount => mount.id.startsWith("y@"))!;
     expect(x.overrides[0]).to.equal(y.overrides[0]);
+  });
+
+  it("mounts an aliased dependency under the alias, and only there", () => {
+    /* The @isaacs/cliui shape: cliui requires wrap-ansi@7 as `wrap-ansi-cjs`
+     * (and its code requires that name), while the tree's own wrap-ansi is @8.
+     * Nothing asks for wrap-ansi@7 by its own name, so it is mounted only
+     * where cliui looks for it. */
+    const { packages, members, edgeMap } = graph({
+      "cli@1.0.0": { "@isaacs/cliui": "@isaacs/cliui@8.0.2", "wrap-ansi": "wrap-ansi@8.1.0" },
+      "@isaacs/cliui@8.0.2": { "wrap-ansi-cjs": "wrap-ansi@7.0.0" },
+      "wrap-ansi@8.1.0": {},
+      "wrap-ansi@7.0.0": {},
+    });
+    const winners = new Map([
+      ["cli", "cli@1.0.0"],
+      ["@isaacs/cliui", "@isaacs/cliui@8.0.2"],
+      ["wrap-ansi", "wrap-ansi@8.1.0"],
+      ["wrap-ansi-cjs", "wrap-ansi@7.0.0"],
+    ]);
+    const plan = planMounts("cli@1.0.0", "cli", winners, edgeMap, members);
+    expect(plan.map(mount => `${mount.as}=${mount.id}`)).to.deep.equal([
+      "@isaacs/cliui=@isaacs/cliui@8.0.2",
+      "wrap-ansi=wrap-ansi@8.1.0",
+      "wrap-ansi-cjs=wrap-ansi@7.0.0",
+    ]);
+    const root = new PackageFileSet(packages.get("cli@1.0.0")!, "cli", "1.0.0", buildMounts(plan, packages, { kind: "target" }));
+    const files = entries(assembleNodeModules([root]));
+    expect([...files.keys()].filter(name => name.includes("wrap-ansi"))).to.deep.equal([
+      "wrap-ansi/index.js",
+      "wrap-ansi-cjs/index.js",
+    ]);
+  });
+
+  it("restamps an alias mount with the name it is mounted under", async () => {
+    /* The delivered instance IS a package of that name as far as the install
+     * is concerned (npm's node_modules/wrap-ansi-cjs, whose package.json still
+     * says wrap-ansi) — the content is the aliased package's. */
+    const { packages, members, edgeMap } = graph({
+      "cli@1.0.0": { "wrap-ansi-cjs": "wrap-ansi@7.0.0" },
+      "wrap-ansi@7.0.0": {},
+    });
+    const winners = new Map([
+      ["cli", "cli@1.0.0"],
+      ["wrap-ansi-cjs", "wrap-ansi@7.0.0"],
+    ]);
+    const [mounted] = buildMounts(planMounts("cli@1.0.0", "cli", winners, edgeMap, members), packages, { kind: "target" });
+    expect(mounted.packageName).to.equal("wrap-ansi-cjs");
+    expect(mounted.version).to.equal("7.0.0");
+    expect(await settle(entries(mounted).get("index.js")!.readString())).to.equal("// wrap-ansi@7.0.0");
+  });
+
+  it("nests an alias mount privately when its name is won by another version", () => {
+    /* Two requirers aliasing one name to different versions: the alias behaves
+     * exactly like a package name — one wins the flat mount, the other nests
+     * under the requirer that diverges. */
+    const { members, edgeMap } = graph({
+      "root@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
+      "a@1.0.0": { "wa-cjs": "wrap-ansi@7.0.0" },
+      "b@1.0.0": { "wa-cjs": "wrap-ansi@6.0.0" },
+      "wrap-ansi@7.0.0": {},
+      "wrap-ansi@6.0.0": {},
+    });
+    const winners = new Map([
+      ["root", "root@1.0.0"],
+      ["a", "a@1.0.0"],
+      ["b", "b@1.0.0"],
+      ["wa-cjs", "wrap-ansi@7.0.0"],
+    ]);
+    expect(tree(planMounts("root@1.0.0", "root", winners, edgeMap, members))).to.deep.equal([
+      "a@1.0.0",
+      "b@1.0.0",
+      "b@1.0.0/wrap-ansi@6.0.0",
+      "wrap-ansi@7.0.0",
+    ]);
   });
 
   it("realises a plan into the nested layout it describes", () => {
@@ -229,7 +303,7 @@ describe("planMounts", () => {
       ["csso", "csso@5.0.5"],
       ["css-tree", "css-tree@3.0.1"],
     ]);
-    const plan = planMounts("svgo@4.0.1", winners, edgeMap, members);
+    const plan = planMounts("svgo@4.0.1", "svgo", winners, edgeMap, members);
     const root = new PackageFileSet(packages.get("svgo@4.0.1")!, "svgo", "4.0.1", buildMounts(plan, packages, { kind: "target" }));
     const files = entries(assembleNodeModules([root]));
     expect(files.has("css-tree/index.js")).to.equal(true);

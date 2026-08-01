@@ -102,6 +102,26 @@ describe("e2e: generate command pipelines", () => {
     expect(result.stdout).to.equal("hello\n");
   });
 
+  it("resolves a command written as a projection, not only a whole declared name", () => {
+    /* A command is an ordinary written reference resolved through the file core,
+     * so a projection into a runnable (and equally an external requirement like
+     * `@npm:typia:9.7.1`, or a path) names the tool — previously only an exact
+     * declared target/global name resolved. */
+    const result = runFabr(
+      { "PROJECT.fabr": TOOLS + "generate g { run = emit:emit.js > out.txt; }\n", ...TOOL_FILES },
+      ["cat", "g:out.txt"]
+    );
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("hello\n");
+  });
+
+  it("positions an unresolvable command name at the command word", () => {
+    const result = runFabr({ "PROJECT.fabr": TOOLS + "generate g { run = nosuchtool > out.txt; }\n", ...TOOL_FILES }, ["build", "g"]);
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.match(/Unknown name 'nosuchtool'/);
+    expect(result.stderr).to.contain("^^^^^^^^^^");
+  });
+
   it("reads stdin from a file path ('< path'), not only a declared name", () => {
     /* stdin resolves through the same file core as a FILES value, so a bare
      * `< src/input.txt` names a file relative to the build file — previously

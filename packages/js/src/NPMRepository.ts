@@ -24,6 +24,7 @@ import {
   Computable,
   coexistingVersions,
   compareVersions,
+  ConflictError,
   edgeBinding,
   FILES_OPERATION,
   FileSet,
@@ -103,6 +104,7 @@ import {
 } from "./NPMProtocol";
 import {
   dependencyBlock,
+  dependencyRequirement,
   memberDependencies,
   optionalPeers,
   rewriteManifest,
@@ -141,6 +143,14 @@ interface IRaiseEntry {
   requiredBy: string;
 }
 
+/** Serialized declared requirements of one selected node — the resolution's
+ * edges as their packages declared them, which is all a layout needs (see
+ * {@link MVSResolution.requirements}) */
+interface IRequirementsEntry {
+  node: string;
+  requires: Requirement[];
+}
+
 /** Serialized private split subtree repairing one violated requirement */
 interface ISplitEntry {
   pkg: string;
@@ -148,15 +158,17 @@ interface ISplitEntry {
   selections: IResolutionEntry[];
   violations: IViolationEntry[];
   raises: IRaiseEntry[];
+  requirements: IRequirementsEntry[];
 }
 
-/** Serialized form of a persisted joint resolution (memo tag npm:resolve:11) */
+/** Serialized form of a persisted joint resolution (memo tag npm:resolve:12) */
 interface IResolutionDoc {
   roots: Requirement[];
   selections: IResolutionEntry[];
   violations: IViolationEntry[];
   raises: IRaiseEntry[];
   splits: ISplitEntry[];
+  requirements: IRequirementsEntry[];
 }
 
 function requirementKey(req: Requirement): string {
@@ -175,6 +187,65 @@ interface PlannedClosure {
   mounts: PlannedMount[];
 }
 
+/**
+ * The flat (hoisted) mount per name the closure asks for: every name an edge
+ * between members uses — a package's own name, or the alias its requirer knows
+ * it by — bound to the member that wins it. The root wins its own name (its
+ * entry path must resolve there); otherwise the highest version, with the rest
+ * nested privately by {@link planMounts}.
+ *
+ * Two *different packages* claiming one name cannot both be hoisted, and one
+ * of them would silently lose its imports, so that is a conflict rather than a
+ * pick. It takes an alias to reach: ordinary edges name their own package.
+ */
+export function flatWinners(
+  rootId: string,
+  rootName: string,
+  members: Map<string, Selected<SemverVersion>>,
+  edges: EdgeMap
+): Map<string, string> {
+  const winners = new Map<string, string>([[rootName, rootId]]);
+  for (const [fromId, deps] of edges) {
+    if (!members.has(fromId)) {
+      continue;
+    }
+    for (const [name, toId] of deps) {
+      const selection = members.get(toId);
+      const current = winners.get(name);
+      if (!selection || current === toId || name === rootName) {
+        continue;
+      }
+      if (current === undefined) {
+        winners.set(name, toId);
+        continue;
+      }
+      const held = members.get(current)!;
+      if (held.pkg !== selection.pkg) {
+        throw aliasCollision(name, held, selection);
+      }
+      if (SEMVER.compare(selection.version, held.version) > 0) {
+        winners.set(name, toId);
+      }
+    }
+  }
+  return winners;
+}
+
+/** The diagnostic for two packages claiming one install name (see
+ * {@link flatWinners}) — always an alias, since nothing else renames. */
+function aliasCollision(name: string, held: Selected<SemverVersion>, claimed: Selected<SemverVersion>): Error {
+  return attachHelp(
+    new ConflictError(
+      "packages",
+      name,
+      { detail: nodeId(SEMVER, held.pkg, held.version) },
+      { detail: nodeId(SEMVER, claimed.pkg, claimed.version) }
+    ),
+    `'${name}' is a dependency alias (npm:…) for two different packages in one closure, which cannot both be installed ` +
+      "under that name — pin one of the requirers to a version that does not alias it"
+  );
+}
+
 /** The id of the scope's selection an (unviolated) requirement binds to, by
  * the resolver's own edge rule; undefined when the edge leads nowhere (a gated
  * optional pruned from the walk, or an unparseable constraint already
@@ -191,6 +262,7 @@ interface NpmSplit {
   readonly selections: Selected<SemverVersion>[];
   readonly violations: Violation<SemverVersion>[];
   readonly raises: RaisedFloor<SemverVersion>[];
+  readonly requirements: Map<string, Requirement[]>;
 }
 
 /** The main tree + repairs of a deserialized resolution document. */
@@ -199,6 +271,7 @@ interface ResolvedRepairs {
   readonly violations: Violation<SemverVersion>[];
   readonly raises: RaisedFloor<SemverVersion>[];
   readonly splits: NpmSplit[];
+  readonly requirements: Map<string, Requirement[]>;
 }
 
 /**
@@ -467,6 +540,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
           violations: [],
           raises: [],
           splits: [],
+          requirements: new Map(),
         });
       }
       /* Canonicalize the roots so the resolution (and its memo key, and the
@@ -543,17 +617,18 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     }
     const fetchIds = [...toFetch.keys()];
     const fetching = new Set(fetchIds);
-    /* Plan the layout first: it is decided by the resolution alone, so a
-     * closure that cannot be laid out says so before anything is downloaded. */
-    const edges = permissive
-      ? this.resolvedEdges(needed, selections, scopedViolations, includedSplits)
-      : Computable.resolve<EdgeMap | undefined>(undefined);
-    return edges
-      .then(edgeMap =>
-        requirements.map(req =>
-          this.planClosure(req, rootIndex.get(requirementKey(req))!, selections, fetching, includedSplits, edgeMap)
-        )
-      )
+    /* Plan the layout first: it is decided by the resolution alone (no content,
+     * and — since the resolution carries its own edges — no metadata), so a
+     * closure that cannot be laid out says so before anything is downloaded.
+     * Planning inside the chain, not before it: a layout failure is this
+     * delivery's rejection, attributed like any other. */
+    return Computable.resolve(undefined)
+      .then(() => {
+        const edges = this.resolvedEdges(needed, resolved, scopedViolations, includedSplits);
+        return requirements.map(req =>
+          this.planClosure(req, rootIndex.get(requirementKey(req))!, selections, fetching, includedSplits, edges)
+        );
+      })
       .then(plans =>
         Computable.forAll(
           fetchIds.map(id => this.fetch(toFetch.get(id)!.pkg, toFetch.get(id)!.version)),
@@ -573,24 +648,29 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
   }
 
   /**
-   * The resolved dependency edges of a permissive delivery — transient
-   * planning data, never carried on the delivered values: for every fetched
-   * node (main tree and splits), each declared requirement resolved to the id
-   * satisfying it — a violated edge to its split's root, an ordinary edge to
-   * its scope's selection under the requirement's resolution key, an
-   * unconstrained edge to the scope's highest selection. Requirements come
-   * from the (cached) per-version metadata, gated exactly as during the walk.
+   * The resolved dependency edges of the delivery — transient planning data,
+   * never carried on the delivered values: for every fetched node (main tree
+   * and splits), each declared requirement resolved to the id satisfying it —
+   * a violated edge to its split's root, an ordinary edge to its scope's
+   * selection under the requirement's resolution key, an unconstrained edge to
+   * the scope's highest selection. Keyed by the name the *requirer* uses, so
+   * an aliased dependency is an edge to the aliased package under the alias.
    * The main scope is computed first and wins a shared version's entries (a
    * version shared between scopes keeps the main tree's choices — either
    * choice satisfies the declared range, since surviving edges are never
    * violations).
+   *
+   * The requirements come from the resolution itself (the walk collected them
+   * to compute reachability, and they are persisted with it), so the layout of
+   * a cached resolution needs no metadata at all — the same edges the walk
+   * followed, not a second reading of them.
    */
   private resolvedEdges(
     needed: Selected<SemverVersion>[],
-    mainSelections: Selected<SemverVersion>[],
+    main: ResolvedRepairs,
     mainViolations: Violation<SemverVersion>[],
     includedSplits: NpmSplit[]
-  ): Computable<EdgeMap> {
+  ): EdgeMap {
     const splitRootId = new Map<string, string>();
     for (const split of includedSplits) {
       const root = split.selections.find(sel => sel.pkg === split.pkg);
@@ -599,23 +679,26 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
       }
     }
     const scopes = [
-      { nodes: needed, selections: mainSelections, violations: mainViolations },
-      ...includedSplits.map(split => ({ nodes: split.selections, selections: split.selections, violations: split.violations })),
+      { nodes: needed, selections: main.selections, violations: mainViolations, requirements: main.requirements },
+      ...includedSplits.map(split => ({
+        nodes: split.selections,
+        selections: split.selections,
+        violations: split.violations,
+        requirements: split.requirements,
+      })),
     ];
-    const jobs = scopes.flatMap(scope =>
-      scope.nodes.map(node => this.getRequirements(node.pkg, node.version).then(reqs => ({ scope, node, reqs })))
-    );
-    return Computable.forAll(jobs, (...entries) => {
-      const edges: EdgeMap = new Map();
-      for (const { scope, node, reqs } of entries) {
+    const edges: EdgeMap = new Map();
+    for (const scope of scopes) {
+      for (const node of scope.nodes) {
         const fromId = selectionId(node);
         let from = edges.get(fromId);
         if (!from) {
           from = new Map();
           edges.set(fromId, from);
         }
-        for (const req of reqs) {
-          if (from.has(req.pkg)) {
+        for (const req of scope.requirements.get(fromId) ?? []) {
+          const name = req.alias ?? req.pkg;
+          if (from.has(name)) {
             continue; /* main scope came first and wins */
           }
           const violated = scope.violations.some(
@@ -625,12 +708,12 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
             ? splitRootId.get(`${req.pkg}:${req.constraint}`)
             : edgeTargetIn(scope.selections, req);
           if (toId) {
-            from.set(req.pkg, toId);
+            from.set(name, toId);
           }
         }
       }
-      return edges;
-    });
+    }
+    return edges;
   }
 
   /**
@@ -674,18 +757,22 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
   }
 
   /**
-   * Plan one root requirement's delivered tree — which node mounts where, as
-   * ids. A statement about the resolution only: it reads no content, so it
-   * settles before anything is fetched, and a closure with no valid layout is
-   * reported without downloading the closure it can't lay out.
+   * Plan one root requirement's delivered tree — which node mounts where,
+   * under which name, as ids. A statement about the resolution only: it reads
+   * no content, so it settles before anything is fetched, and a closure with
+   * no valid layout is reported without downloading the closure it can't lay
+   * out.
    *
-   * **Strict** (no edge map): the reachable members of the joint closure, flat
-   * — enforcement has already guaranteed one version per name, so flat
-   * mounting needs no more.
-   *
-   * **Permissive**: the closure's flat-mount WINNERS (one per name — the root
-   * wins its own name, else the highest version) plus the private version
-   * overrides {@link planMounts} nests under them.
+   * Layout follows the closure's **edges**, not its selections: a package is
+   * mounted under each name something in the closure asks for it by, which is
+   * its own name for an ordinary requirement and the alias for an aliased one
+   * — so an aliased package appears only where its requirer's imports look for
+   * it, and a package nothing requires under its own name is not mounted under
+   * it. Per name the flat-mount winner (the root wins its own name, else the
+   * highest version), plus the private version overrides {@link planMounts}
+   * nests under them. A strict delivery has already been checked for
+   * coexisting versions, so its winners are its whole closure and nothing
+   * nests; the two regimes need no separate planner.
    */
   private planClosure(
     req: Requirement,
@@ -693,7 +780,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     selections: Selected<SemverVersion>[],
     fetching: ReadonlySet<string>,
     includedSplits: NpmSplit[],
-    edges: EdgeMap | undefined
+    edges: EdgeMap
   ): PlannedClosure {
     const reachable = selections.filter(sel => sel.reachableFrom?.includes(index));
     const root = reachable.find(sel => sel.pkg === req.pkg);
@@ -702,10 +789,6 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
       throw new Error(`Resolution of ${requirementKey(req)} does not contain its own root package`);
     }
     const rootId = selectionId(root);
-    if (edges === undefined) {
-      const flat = reachable.map(selectionId).filter(id => id !== rootId && fetching.has(id));
-      return { rootId, mounts: flat.map(id => ({ id, overrides: [] })) };
-    }
     /* Closure members (main tree + splits) and their flat-mount winners. */
     const members = new Map<string, Selected<SemverVersion>>();
     for (const sel of [...reachable, ...includedSplits.flatMap(split => split.selections)]) {
@@ -714,20 +797,8 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
         members.set(id, sel);
       }
     }
-    const winners = new Map<string, string>();
-    winners.set(root.pkg, rootId);
-    for (const [id, sel] of members) {
-      const current = winners.get(sel.pkg);
-      if (current === undefined) {
-        winners.set(sel.pkg, id);
-      } else if (current !== rootId && current !== id) {
-        const currentSel = members.get(current);
-        if (currentSel && SEMVER.compare(sel.version, currentSel.version) > 0) {
-          winners.set(sel.pkg, id);
-        }
-      }
-    }
-    return { rootId, mounts: planMounts(rootId, winners, edges, new Set(members.keys())) };
+    const winners = flatWinners(rootId, root.pkg, members, edges);
+    return { rootId, mounts: planMounts(rootId, root.pkg, winners, edges, new Set(members.keys())) };
   }
 
   /** Realise a planned closure against the fetched packages, stamped with the
@@ -860,14 +931,14 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
       const optionalPeerNames = optionalPeers(meta.peerDependenciesMeta);
       const peers = [...dependencyBlock(meta.peerDependencies)]
         .filter(([dep]) => !optionalPeerNames.has(dep) && !optionalDeps.has(dep))
-        .map(([dep, constraint]) => ({ pkg: dep, constraint, soft: true }));
+        .map(([dep, spec]) => ({ ...dependencyRequirement(dep, spec), soft: true }));
       const required = [
         ...[...dependencyBlock(meta.dependencies)]
           .filter(([dep]) => !optionalDeps.has(dep))
-          .map(([dep, constraint]) => ({ pkg: dep, constraint })),
+          .map(([dep, spec]) => dependencyRequirement(dep, spec)),
         ...peers,
       ];
-      const optional = [...optionalDeps].map(([dep, constraint]) => ({ pkg: dep, constraint }));
+      const optional = [...optionalDeps].map(([dep, spec]) => dependencyRequirement(dep, spec));
       if (optional.length === 0) {
         return Computable.resolve(required);
       }
@@ -1016,7 +1087,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
          * hyphen range, `1.2.3 - 2.3.4`), so a space delimiter isn't obviously
          * injective — a newline can appear in neither a package name nor a
          * constraint, matching how file deps are already newline-separated. */
-        .memoize("npm:resolve:11", `${this.url} ${targetKey}\n${rootKeys.join("\n")}`, () => {
+        .memoize("npm:resolve:12", `${this.url} ${targetKey}\n${rootKeys.join("\n")}`, () => {
           /* A memo miss means real resolution work on behalf of the consumer */
           this.context.notifyProgress({ kind: "repository-resolve", repository: this.context.target, requirements: rootKeys });
           return resolveWithRepairs(roots, SEMVER, this).then(result => {
@@ -1071,12 +1142,14 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
           selections: result.tree.selections.map(serializeSelection),
           violations: result.tree.violations.map(serializeViolation),
           raises: result.tree.raises.map(serializeRaise),
+          requirements: serializeRequirements(result.tree.requirements),
           splits: result.splits.map(split => ({
             pkg: split.pkg,
             constraint: split.constraint,
             selections: split.tree.selections.map(serializeSelection),
             violations: split.tree.violations.map(serializeViolation),
             raises: split.tree.raises.map(serializeRaise),
+            requirements: serializeRequirements(split.tree.requirements),
           })),
         };
         return new FileSet(new Map([[RESOLUTION_FILE, MemoryFile.from(JSON.stringify(doc, undefined, 2))]]));
@@ -1195,6 +1268,15 @@ function serializeRaise(raise: RaisedFloor<SemverVersion>): IRaiseEntry {
   };
 }
 
+function serializeRequirements(requirements: Map<string, Requirement[]>): IRequirementsEntry[] {
+  /* Already canonical: the resolver builds the map in its selections' order. */
+  return [...requirements].map(([node, requires]) => ({ node, requires }));
+}
+
+function deserializeRequirements(entries: IRequirementsEntry[] | undefined): Map<string, Requirement[]> {
+  return new Map((entries ?? []).map(entry => [entry.node, entry.requires]));
+}
+
 function deserializeSelection(entry: IResolutionEntry): Selected<SemverVersion> {
   return {
     pkg: entry.pkg,
@@ -1224,12 +1306,14 @@ function deserializeResolutionDoc(doc: IResolutionDoc): ResolvedRepairs {
     selections: doc.selections.map(deserializeSelection),
     violations: (doc.violations ?? []).map(deserializeViolation),
     raises: (doc.raises ?? []).map(deserializeRaise),
+    requirements: deserializeRequirements(doc.requirements),
     splits: (doc.splits ?? []).map(entry => ({
       pkg: entry.pkg,
       constraint: entry.constraint,
       selections: entry.selections.map(deserializeSelection),
       violations: entry.violations.map(deserializeViolation),
       raises: entry.raises.map(deserializeRaise),
+      requirements: deserializeRequirements(entry.requirements),
     })),
   };
 }
