@@ -17,10 +17,12 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { availableParallelism } from "os";
 import { BuildCache } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { FileSource } from "../core/FileSet";
 import { Log } from "../support/Log";
+import { Semaphore } from "../support/Semaphore";
 import { ITargetDecl } from "./AST";
 import { Constraints } from "./Constraints";
 
@@ -187,6 +189,21 @@ export class ExecutionContext {
    * Set by the driver only when attached to a tty; its absence is the
    * "non-interactive run" signal. */
   public interaction?: UserInteraction;
+  /**
+   * Bounds how many build actions run at once — the run-wide execution budget,
+   * held here because it is a property of the run's surroundings (the machine),
+   * shared by every BuildContext of the run, and no concern of the cache.
+   * Without it a cold build of a wide graph spawns a process per cache miss
+   * simultaneously; the machine's parallelism is what that work can actually
+   * use.
+   *
+   * The unit admitted is the *action*, not the process: a command pipeline's
+   * stages are pipe-wired and must co-run, so admitting them individually could
+   * wedge a pipeline half-started. One action holds one slot however many
+   * processes it runs. Applied at {@link BuildContext.runAction}'s miss path, so
+   * cache hits and the resolution memos sharing that cache queue for nothing.
+   */
+  public readonly actionLimit = new Semaphore(availableParallelism());
   /** Per-run state a plugin keeps here, keyed by its {@link PluginKey}. Lazily
    *  populated on first access (see {@link getOrCreatePluginContext}). */
   private readonly pluginContexts = new Map<PluginKey<unknown>, unknown>();

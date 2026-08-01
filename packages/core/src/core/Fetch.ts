@@ -41,6 +41,22 @@ const HEADERS_TIMEOUT_MS = 30_000;
 const BODY_TIMEOUT_MS = 120_000;
 
 /**
+ * Sockets held open per origin; requests beyond it queue in the dispatcher's
+ * pool and dispatch as sockets free. A wide resolution demands metadata for
+ * every reachable requirement at once and then tarballs for every selection, so
+ * without a cap fabr opens a socket per in-flight demand — hundreds against one
+ * registry. Matched to npm's own default (15) so fabr puts no more pressure on
+ * a registry than the client it replaces. Per *origin* is the useful
+ * granularity here: a registry that redirects tarballs to blob storage gets an
+ * independent pool for each, so bulk downloads can't starve metadata reads.
+ *
+ * This bounds sockets only. The timeouts above are socket-level idle timeouts
+ * that start once a request has a connection, so a queued request does not
+ * spend its budget waiting.
+ */
+const MAX_CONNECTIONS_PER_ORIGIN = 15;
+
+/**
  * The one dispatcher every fabr HTTP(S) request rides. It combines two things
  * node's raw `http`/`https` don't do:
  *  - **Proxy** from the standard environment (`http_proxy`/`https_proxy`/
@@ -48,12 +64,15 @@ const BODY_TIMEOUT_MS = 120_000;
  *    once at construction and CONNECT-tunnels or routes accordingly.
  *  - **Redirects**, bounded to {@link MAX_REDIRECTS}; undici's redirect
  *    interceptor drops credential-bearing headers on cross-origin hops.
- * A single pooling instance for the process (agents reuse keep-alive sockets).
+ * A single pooling instance for the process (agents reuse keep-alive sockets),
+ * which is also what makes {@link MAX_CONNECTIONS_PER_ORIGIN} a whole-run bound
+ * rather than a per-caller one.
  */
 const dispatcher = new EnvHttpProxyAgent({
   connectTimeout: CONNECT_TIMEOUT_MS,
   headersTimeout: HEADERS_TIMEOUT_MS,
   bodyTimeout: BODY_TIMEOUT_MS,
+  connections: MAX_CONNECTIONS_PER_ORIGIN,
 }).compose(interceptors.redirect({ maxRedirections: MAX_REDIRECTS }));
 
 /** Reject a non-HTTP(S) URL with a clear message rather than a transport-layer

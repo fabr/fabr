@@ -1321,24 +1321,30 @@ export class BuildContext {
    * Run a build action through the cache: the key is the step's identity plus
    * the canonical manifest of its (already-resolved) inputs — sound by
    * construction, since the step consumes nothing else. A miss is the moment
-   * real work happens: the evaluation announces its (declared) target as
-   * building.
+   * real work happens: it waits for an execution slot
+   * ({@link ExecutionContext.actionLimit}) and then announces its (declared)
+   * target as building — so the announcement marks work starting, not work
+   * queued. Steps never run actions of their own (composition is via
+   * sub-targets, whose actions complete before their output becomes another
+   * action's inputs), so a held slot never waits on a slot.
    */
   public runAction(action: BuildAction, context: TargetContext): Computable<FileSet> {
     const key = `rule:${action.step.id}:${action.step.version}\n${manifestEvalInputs(action.inputs)}`;
     const cache = this.execution.buildCache;
-    return this.getCachedOrBuild(key, targetDir => {
-      context.announceBuilding();
-      /* The cache owns the scratch dir and the content store, so the action's
-       * context — work dir + streaming-output factory — is assembled here, at the
-       * bridge between the cache's create callback and the step. */
-      const actionContext: IActionContext = {
-        workDir: targetDir,
-        createOutput: () => cache.getTemporaryWriteStream(),
-        quiet: this.execution.quiet,
-      };
-      return action.step.run(action.inputs, actionContext);
-    });
+    return this.getCachedOrBuild(key, targetDir =>
+      this.execution.actionLimit.run(() => {
+        context.announceBuilding();
+        /* The cache owns the scratch dir and the content store, so the action's
+         * context — work dir + streaming-output factory — is assembled here, at the
+         * bridge between the cache's create callback and the step. */
+        const actionContext: IActionContext = {
+          workDir: targetDir,
+          createOutput: () => cache.getTemporaryWriteStream(),
+          quiet: this.execution.quiet,
+        };
+        return action.step.run(action.inputs, actionContext);
+      })
+    );
   }
 
   private findTargetInStack(target: string, stack?: IDependencyStack): IDependencyStack | undefined {
