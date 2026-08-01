@@ -23,7 +23,7 @@ plugin @fabr-build/js;
   resolved is an error.
 - The only explicit `include` is a **path-relative** one — `include ./shared.fabr;`, resolved
   relative to the including file — for project-local shared `.fabr` files. There is no system include
-  search path.
+  search path. The path may glob (`include ./rules/*.fabr;`), naming every file that matches.
 
 ## The plugin contract
 

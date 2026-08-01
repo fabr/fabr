@@ -13,16 +13,23 @@ just your `PROJECT.fabr` and your source files.
 ## Install
 
 Fabr ships as two npm packages: **`@fabr-build/cli`** (the `fabr` command) and **`@fabr-build/js`**
-(the JavaScript/TypeScript rules, loaded from your build script). Install them together — globally.
+(the JavaScript/TypeScript rules, loaded from your build script). Install the CLI globally — it
+depends on the rules package, so both arrive together.
 
 ```sh
-npm install -g @fabr-build/cli @fabr-build/js
+npm install -g @fabr-build/cli
 ```
 
 :::note
 Fabr resolves a plugin by ordinary module resolution, so the plugin package must sit next to the
-host `fabr` — installing them together, as above, satisfies that. Declaring `plugin @fabr-build/js;`
-then loads its rules and configuration.
+host `fabr` — installing the CLI, as above, satisfies that. Declaring `plugin @fabr-build/js;` then
+loads its rules and configuration.
+:::
+
+:::caution
+Don't add `@fabr-build/js` to that command. Naming it makes npm install it as a global package in
+its own right, with its own nested copy of `@fabr-build/core` — and a plugin must share the host's
+core, not load a second one. Fabr detects this and says so, but the fix is to install the CLI alone.
 :::
 
 ## A minimal project

@@ -17,8 +17,14 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import * as fs from "fs";
+import * as path from "path";
+
 import { IPluginDecl } from "./AST";
 import { PluginContribution } from "../rules/Types";
+
+/** The package a plugin must share with its host, never load a second copy of. */
+const CORE_PACKAGE = "@fabr-build/core";
 
 /**
  * The shape a plugin package's entry point must export: `activate` is a pure
@@ -30,6 +36,58 @@ import { PluginContribution } from "../rules/Types";
  */
 interface IFabrPluginModule {
   activate?: () => PluginContribution | undefined;
+}
+
+/**
+ * @return the copy of `pkg` that code in directory `from` would load, as a
+ * realpath — so the workspace symlinks of a devchain install, and the two names
+ * of a hoisted package, all read as the one copy they are. Undefined if `from`
+ * resolves none.
+ */
+export function resolvePackageFrom(pkg: string, from: string): string | undefined {
+  try {
+    return fs.realpathSync(require.resolve(pkg, { paths: [from] }));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * @return the error for a plugin whose core is not the host's, or undefined if
+ * the two agree. A side that resolved NOTHING is not a conflict — a plugin need
+ * not use core at all, and a host that can't find its own copy (its tests run
+ * it unpackaged) has no claim to compare against.
+ */
+export function duplicateCoreError(name: string, hostCore?: string, pluginCore?: string): Error | undefined {
+  if (hostCore === undefined || pluginCore === undefined || hostCore === pluginCore) {
+    return undefined;
+  }
+  return new Error(
+    `Plugin '${name}' would load its own copy of ${CORE_PACKAGE} (${pluginCore}) instead of ` +
+      `the host's (${hostCore}); a plugin must share the host's core. Install the plugin as a ` +
+      `dependency of the fabr CLI rather than as a package in its own right (globally, that is ` +
+      `\`npm install -g @fabr-build/cli\` alone).`
+  );
+}
+
+/**
+ * Fail unless the plugin at `entry` would load the SAME core as the host. A
+ * second copy satisfies every type but shares no state, so the plugin's rules
+ * and the host's disagree about the values passing between them — which
+ * surfaces far from the cause, as an unpositioned undefined-property error.
+ * Checked here because it is only ever an installation fault, never a build
+ * one: npm hoists one shared copy when the plugin is a dependency of the host,
+ * and nests a private one when it is a top-level install in its own right.
+ */
+function checkSharesHostCore(name: string, entry: string): void {
+  const err = duplicateCoreError(
+    name,
+    resolvePackageFrom(CORE_PACKAGE, __dirname),
+    resolvePackageFrom(CORE_PACKAGE, path.dirname(entry))
+  );
+  if (err !== undefined) {
+    throw err;
+  }
 }
 
 /**
@@ -47,6 +105,7 @@ export function activatePlugin(decl: IPluginDecl): PluginContribution {
   } catch {
     throw new Error(`Plugin '${decl.name}' is not installed (plugins are resolved from the fabr installation)`);
   }
+  checkSharesHostCore(decl.name, entry);
   /* eslint-disable-next-line @typescript-eslint/no-var-requires */
   const plugin = require(entry) as IFabrPluginModule;
   if (typeof plugin.activate !== "function") {
