@@ -31,15 +31,17 @@ import {
   Computable,
   FileSet,
   HttpResponse,
-  IntegrityError,
+  ExpectedDigest,
   IProjection,
   isCanonicalFileName,
   isJsonObject,
   Name,
+  parseIntegrity,
   parseJson,
   NpmPlatform,
   SEMVER,
   sendRequest,
+  verifyingStream,
 } from "@fabr-build/core";
 import { otpChallengeOf, OtpProvider } from "./NPMAuth";
 import * as crypto from "node:crypto";
@@ -212,7 +214,7 @@ export function tarballBasename(name: string, version: string): string {
 
 /** SRI algorithms fabr will verify against, strongest first — sha1 is accepted
  * only via the legacy `dist.shasum`, never as an SRI entry. */
-const SRI_ALGORITHMS = ["sha512", "sha384", "sha256"] as const;
+
 
 /** The digest a registry's `dist` metadata promises for a tarball: the strongest
  * SRI in `dist.integrity` (base64), else the legacy sha1 `dist.shasum` (hex).
@@ -220,16 +222,13 @@ const SRI_ALGORITHMS = ["sha512", "sha384", "sha256"] as const;
 export function expectedTarballDigest(dist: {
   integrity?: string;
   shasum?: string;
-}): { algorithm: string; encoding: "base64" | "hex"; value: string } | undefined {
-  if (dist.integrity) {
-    const entries = dist.integrity.trim().split(/\s+/);
-    for (const algorithm of SRI_ALGORITHMS) {
-      const match = entries.find(entry => entry.startsWith(`${algorithm}-`));
-      if (match) {
-        return { algorithm, encoding: "base64", value: match.slice(algorithm.length + 1) };
-      }
-    }
+}): ExpectedDigest | undefined {
+  const sri = dist.integrity ? parseIntegrity(dist.integrity) : undefined;
+  if (sri) {
+    return sri;
   }
+  /* npm-specific, and deliberately not something a written declaration may use:
+   * plenty of long-published versions carry only this. */
   if (dist.shasum) {
     return { algorithm: "sha1", encoding: "hex", value: dist.shasum.toLowerCase() };
   }
@@ -249,24 +248,7 @@ export function verifyTarballStream(
   dist: { integrity?: string; shasum?: string },
   url: string
 ): { hashing: Transform; verify: () => void } {
-  const expected = expectedTarballDigest(dist);
-  const hash = expected ? crypto.createHash(expected.algorithm) : undefined;
-  const hashing = new Transform({
-    transform(chunk, _encoding, callback): void {
-      hash?.update(chunk);
-      callback(undefined, chunk);
-    },
-  });
-  const verify = (): void => {
-    if (!expected || !hash) {
-      return;
-    }
-    const actual = hash.digest(expected.encoding);
-    if (actual !== expected.value) {
-      throw new IntegrityError(url, expected.algorithm, expected.value, actual);
-    }
-  };
-  return { hashing, verify };
+  return verifyingStream(expectedTarballDigest(dist), url);
 }
 
 /**

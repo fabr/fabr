@@ -39,6 +39,7 @@ import { serveRunRule } from "../rules/RunServe";
 import { generateRule } from "../rules/BuildGenerate";
 import { syncFilesRule, syncRule } from "../rules/BuildSync";
 import { catalogRepositoryRegistration } from "../rules/CatalogRepository";
+import { fetchRepositoryRegistration } from "../rules/FetchRepository";
 import { computableWorkList } from "../core/WorkList";
 import { select } from "../support/Functional";
 
@@ -80,7 +81,7 @@ const DIAG_PLUGIN_ACTIVATION = new Diagnostic<{ detail: string; loc: ISourceSpan
 export function coreContribution(): PluginContribution {
   return {
     rules: [flagRule, defaultFilesRule, scriptRunRule, serveRunRule, generateRule, syncRule, syncFilesRule],
-    repositories: [catalogRepositoryRegistration],
+    repositories: [catalogRepositoryRegistration, fetchRepositoryRegistration],
     includes: [packageLibFile("@fabr-build/core", "STD.fabr")],
   };
 }

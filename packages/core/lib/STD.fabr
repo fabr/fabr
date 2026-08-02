@@ -107,6 +107,24 @@ targetdef sync {
 }
 
 #
+# A `fetch` repository is a declared table of downloads: each member names a URL
+# and the integrity digest its content must match (`<algorithm>-<base64>`, told
+# apart from the URL by shape, so the two may be written in either order).
+#
+#     fetch @dl { package.tgz = "https://…/<sha>" "sha256-…"; }
+#
+# The digest is required: a URL promises nothing about staying the same, so the
+# declaration is where immutability is claimed and it is checked on every fetch,
+# before anything is cached. A member is downloaded only when something names it.
+# `@dl` denotes the whole set and each member is a file in it, so `@dl:name` is
+# the downloaded file and `@dl:name:…` projects into it — including into an
+# archive — exactly as a local file of that name would.
+#
+targetdef fetch {
+    * = STRING;
+}
+
+#
 # A `flag` yields file content directly, with no build step. Its main use is as
 # a named switch that a target lists in its `deps` to opt into some behaviour
 # (the `ts/*` source-mode flags are instances of this type); `provides` may also

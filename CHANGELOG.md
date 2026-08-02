@@ -7,6 +7,7 @@ version number.
 - `include` paths may now glob (`include lib/**/*.fabr;`).
 - Fix: generate command names resolved incorrectly.
 - Cap maximum concurrent connections + executing processes.
+- New 'fetch' repository source for arbitrary http/https fetching.
 
 @fabr/js:
 - Generated package.json now strips build-only fields (devDependencies, scripts, …) from an imported manifest, and emits array metadata (keywords, os, cpu) as JSON arrays.
