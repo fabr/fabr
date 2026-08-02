@@ -478,7 +478,17 @@ function unrepresentableCycle(cycle: string[]): Error {
 export function buildMounts(
   plan: readonly PlannedMount[],
   packages: Map<string, PackageFileSet>,
-  origin: IProvenanceStep
+  origin: IProvenanceStep,
+  /**
+   * The node ids of the resolution's **fork** selections (`Selected.fork` —
+   * the sanctioned second versions). A fork instance is flagged as a nested
+   * override wherever it mounts — including as a per-root plan's own flat
+   * winner, since a root whose subtree contains only the fork still must not
+   * claim a merged store's flat slot (see
+   * {@link PackageFileSet.isNestedOverride}). Position in the plan cannot
+   * decide this; the resolution's fork identity can.
+   */
+  forkIds: ReadonlySet<string> = new Set()
 ): PackageFileSet[] {
   const built = new Map<PlannedMount, PackageFileSet>();
   const build = (node: PlannedMount): PackageFileSet => {
@@ -487,16 +497,26 @@ export function buildMounts(
       return done;
     }
     const files = packages.get(node.id)!;
-    const result = new PackageFileSet(files, node.as, files.version, node.overrides.map(build), origin);
+    const result = new PackageFileSet(files, node.as, files.version, node.overrides.map(build), origin, forkIds.has(node.id));
     built.set(node, result);
     return result;
   };
   return plan.map(build);
 }
 
-export function assembleNodeModules(sets: FileSet[]): FileSet {
-  /* Collect every package instance (the delivered override structure is a
-   * finite tree; built-package structure is acyclic by construction). */
+/** The package instances of a delivery, collected once: the direct roots,
+ * every reachable instance (the delivered override structure is a finite
+ * tree; built-package structure is acyclic by construction), one
+ * representative per packageId, and the loose (non-package) sets passed
+ * through. */
+interface CollectedPackages {
+  roots: PackageFileSet[];
+  all: PackageFileSet[];
+  byId: Map<string, PackageFileSet>;
+  loose: FileSet[];
+}
+
+function collectPackages(sets: FileSet[]): CollectedPackages {
   const byId = new Map<string, PackageFileSet>();
   const loose: FileSet[] = [];
   const roots: PackageFileSet[] = [];
@@ -525,12 +545,26 @@ export function assembleNodeModules(sets: FileSet[]): FileSet {
       loose.push(set);
     }
   }
+  return { roots, all, byId, loose };
+}
 
-  /* The flat (hoisted) winner per name: a root always holds its own name;
-   * otherwise the highest version. Two *different* roots sharing a name is a
-   * conflict, not a pick: every root was directly listed, so each must hold its
-   * own top-level mount, and two can't — the layout is unrepresentable (roots
-   * cannot nest under each other the way a transitive non-winner can). */
+/**
+ * The flat (hoisted) winner per name: a root always holds its own name;
+ * otherwise the highest version. Two *different* roots sharing a name is a
+ * conflict, not a pick: every root was directly listed, so each must hold its
+ * own top-level mount, and two can't — the layout is unrepresentable (roots
+ * cannot nest under each other the way a transitive non-winner can).
+ *
+ * Under `strict`, delivered **override** instances (a `?` sanction's nested
+ * fork — {@link PackageFileSet.isNestedOverride}) never take a flat slot, and
+ * two *non*-override instances disagreeing on a name are a conflict rather
+ * than a version pick: that shape is two deliveries resolved apart (a local
+ * package's closure vs this collection's), where hoisting one would silently
+ * hand the other's requirers a version their resolution never chose. The
+ * sealed assembler keeps the permissive highest-wins pick (a tool install is
+ * opaque; the store-layout notes track its known looseness).
+ */
+function hoistWinners({ roots, all, byId }: CollectedPackages, strict: boolean): Map<string, string> {
   const top = new Map<string, string>();
   for (const root of roots) {
     const existing = top.get(root.packageName);
@@ -545,16 +579,40 @@ export function assembleNodeModules(sets: FileSet[]): FileSet {
     top.set(root.packageName, root.packageId);
   }
   for (const pkg of all) {
+    if (strict && pkg.isNestedOverride) {
+      continue;
+    }
     const current = top.get(pkg.packageName);
     if (current === undefined) {
       top.set(pkg.packageName, pkg.packageId);
     } else if (current !== pkg.packageId && !roots.some(root => root.packageId === current)) {
+      if (strict) {
+        throw new ConflictError(
+          "packages",
+          pkg.packageName,
+          { provenance: byId.get(current)!.origin, detail: current },
+          { provenance: pkg.origin, detail: pkg.packageId }
+        );
+      }
       if (compareVersionText(pkg.version, byId.get(current)!.version) > 0) {
         top.set(pkg.packageName, pkg.packageId);
       }
     }
   }
+  return top;
+}
 
+/**
+ * Mount every winner at `pathOf(name)`, nesting each mounted package's listed
+ * non-winner dependencies (its private overrides) under it, recursively — the
+ * one tree encoding of a delivered closure both assemblers share; only the
+ * namespace the winners land in differs.
+ */
+function mountWinners(
+  top: Map<string, string>,
+  byId: Map<string, PackageFileSet>,
+  pathOf: (name: string) => string
+): FileSet[] {
   const mounts: FileSet[] = [];
   const mounted = new Set<string>();
   /** Mount a package at `atPath`, nesting its listed non-winner deps under it. */
@@ -572,9 +630,16 @@ export function assembleNodeModules(sets: FileSet[]): FileSet {
     }
   };
   for (const [name, id] of top) {
-    mountAt(byId.get(id)!, name);
+    mountAt(byId.get(id)!, pathOf(name));
   }
-  return FileSet.unionAll(...mounts, ...loose);
+  return mounts;
+}
+
+export function assembleNodeModules(sets: FileSet[]): FileSet {
+  const collected = collectPackages(sets);
+  const top = hoistWinners(collected, false);
+  const mounts = mountWinners(top, collected.byId, name => name);
+  return FileSet.unionAll(...mounts, ...collected.loose);
 }
 
 /** Compare two package version strings, semver where parseable (a locally
@@ -606,51 +671,33 @@ const SCOPED_STORE = ".pkgs/node_modules";
 /**
  * Lay out the given DIRECT sources as node_modules, but scoped so the consuming
  * sources see only the direct deps — not the transitive closure. The full
- * closure's real files go into a hidden store (`.pkgs/node_modules/<name>`,
- * flat, so deps resolve each other as siblings); each *direct* package is then
+ * closure's real files go into a hidden store (`.pkgs/node_modules/<name>`
+ * per hoist winner, so store packages resolve each other as siblings); each
+ * *direct* package is then
  * exposed at the top of node_modules as a symlink into the store. Node/tsc
  * resolve the symlink to its real store path (`preserveSymlinks: false`), so a
  * direct dep resolves *its* imports from the store (the whole closure), while a
  * source importing an undeclared transitive dep finds nothing at the top level
- * and fails. Non-package sources (loose files) pass through at the top level, as
+ * and fails. A delivery carrying a sanctioned second version of a package (a
+ * `?` alternate's fork) nests it under its requirers within the store
+ * (`<STORE>/<requirer>/node_modules/<name>`), exactly as the delivered
+ * override structure encodes — node resolution finds the nested copy from the
+ * requirer and the flat winner from everywhere else. Non-package sources
+ * (loose files) pass through at the top level, as
  * a source may reference them directly. Requires the sources to be materialized.
  */
 export function assembleScopedNodeModules(directSets: FileSet[]): FileSet {
-  const store: FileSet[] = [];
-  const seen = new Set<PackageFileSet>();
-  const storedByName = new Map<string, PackageFileSet>();
-  const toStore = (pkg: PackageFileSet): void => {
-    if (!seen.has(pkg)) {
-      seen.add(pkg);
-      /* The store is flat (one slot per name — that's what lets siblings resolve
-       * each other), so a closure carrying two *different* packages under one
-       * name is unrepresentable: report the packages, not the raw file collision
-       * the union would eventually trip over. Two instances with the same
-       * identity are fine (deliveries wrap their own instances; the union dedups
-       * their identical files). */
-      const existing = storedByName.get(pkg.packageName);
-      if (existing && existing.packageId !== pkg.packageId) {
-        throw new ConflictError(
-          "packages",
-          pkg.packageName,
-          { provenance: existing.origin, detail: existing.packageId },
-          { provenance: pkg.origin, detail: pkg.packageId }
-        );
-      }
-      storedByName.set(pkg.packageName, pkg);
-      store.push(pkg.remap(path => `${SCOPED_STORE}/${pkg.packageName}/${path}`));
-      for (const dep of pkg.dependencies) {
-        if (dep instanceof PackageFileSet) {
-          toStore(dep);
-        }
-      }
-    }
-  };
+  const collected = collectPackages(directSets);
+  /* Strict: override instances nest and never take a flat slot; two
+   * non-override instances disagreeing on a name conflict in hoistWinners
+   * (every collected instance is otherwise mounted — winners flat, overrides
+   * under the parents that list them). */
+  const top = hoistWinners(collected, true);
+  const mounts = mountWinners(top, collected.byId, name => `${SCOPED_STORE}/${name}`);
   const topLevel: FileSet[] = [];
   const linked = new Set<string>();
   for (const set of directSets) {
     if (set instanceof PackageFileSet) {
-      toStore(set);
       if (!linked.has(set.packageName)) {
         linked.add(set.packageName);
         topLevel.push(new FileSet(new Map([[set.packageName, storeLink(set.packageName)]])));
@@ -659,7 +706,7 @@ export function assembleScopedNodeModules(directSets: FileSet[]): FileSet {
       topLevel.push(set);
     }
   }
-  return FileSet.unionAll(...store, ...topLevel);
+  return FileSet.unionAll(...mounts, ...topLevel);
 }
 
 /** A relative symlink from `node_modules/<name>` to the package's store copy.

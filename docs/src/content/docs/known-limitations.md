@@ -65,10 +65,12 @@ range at install time", so the results can differ:
 - **One version per package for anything you compile or link against.** Each package resolves to
   one version; requirements no single version can satisfy jointly (incompatible majors of a shared
   transitive, an exact pin against a higher floor) are a conflict, reported with the requirement
-  chains on both sides, that you resolve by pinning. (Sealed *tool* closures — a
-  `js_script`/`script` and its `run` delivery — relax this and nest the conflicting versions
-  npm-style; the one-version rule still holds for everything a target compiles or links into its
-  output.)
+  chains on both sides and the override lines that would resolve it: a pin where a single
+  satisfying version exists, a `?` alternate (`@npm:pkg:1.4.2?`) to sanction nesting the second
+  version exactly where it is needed, or a `!` force (`@npm:pkg:2.0.0!`) to override an incorrect
+  constraint. (Sealed *tool* closures — a `js_script`/`script` and its `run` delivery — nest
+  conflicting versions npm-style without needing a sanction; the one-version rule holds for
+  everything a target compiles or links into its output unless you sanction otherwise.)
 - **Install-time behaviours don't happen.** Fabr fetches and assembles package contents; it does not
   run `postinstall` scripts or auto-install peer dependencies the way an npm client would. A package
   that depends on such behaviour may not work out of the box.

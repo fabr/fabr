@@ -152,6 +152,36 @@ declaring a single bin needs no projection: that bin is the default entry. One d
 default, so the reference must name one — typescript declares both tsc and tsserver, and leaving
 the projection off will report an error.
 
+### Version override markers
+
+When a dependency closure's requirements are jointly unsatisfiable — two parts of the build need
+incompatible versions of one package — the conflict is resolved with a one-character marker on an
+**exact** version, written wherever the dependency is:
+
+```
+deps = @npm:aws-param-store-sdkv3:4.0.0,
+       @npm:tslib:2.6.2?, @npm:tslib:1.14.1?,   # both versions may ship: 1.14.1 nests where required
+       @npm:tight-peer:2.0.0!;                  # forced: everyone gets this version
+```
+
+- `?` **permits a version to ship**. The markers name the *complete* set of versions you allow to
+  coexist: the canonical (which stays the flat, shared copy) and each alternate (installed
+  *nested* under the specific dependencies whose declared ranges need it, npm-style). A `?` entry
+  is not a dependency — it demands nothing and delivers nothing directly — and it matches exactly:
+  if either side of the conflict moves to a different version, the build errors again and tells
+  you which marker to update. In a `catalog`, an ordinary exact pin of the canonical counts as its
+  half of the sanction (`deps = @npm:tslib:2.6.2, @npm:tslib:1.14.1?;`). A `?` also **supplies**
+  the version for a package that is required only with unbounded ranges (`@types/node: "*"` and
+  friends), where no version is otherwise selectable — again without becoming a dependency.
+- `!` **forces a version**: every requirement on the package, from any dependency, is replaced by
+  exactly this version (npm's `overrides` semantics) — the tool for a dependency's over-tight
+  constraint you judge wrong. Ranges the forced version does not satisfy are overridden silently,
+  so prefer `?` (which honors every declared range) unless the constraint itself is the problem.
+
+A failed resolution computes the **complete** repair in one pass — the unbounded packages'
+versions plus every conflict sanction the completed resolution needs — and prints it as pasteable
+`help:` lines: copy them into the failing `deps` or a shared `catalog` and rebuild.
+
 ## Properties
 
 A property assigns one or more values to a name, terminated by `;` (optional after a `{ … }`

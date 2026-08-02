@@ -496,7 +496,11 @@ export function npmPackageOfPath(path: string): string {
  * ignored. Shared by requirement parsing (read) and coordinate parsing (publish).
  */
 export function splitNameVersion(name: Name): { identifier: string; version: string } | undefined {
-  const prefix = name.getLiteralPathPrefix();
+  /* A sole trailing glob is folded back into the written text: past the last
+   * ':' of a requirement a pattern has no meaning, so the lexer's glob reading
+   * of `pkg:1.4.2?` (the override marker) or `pkg:1.14.*` (an x-range) is
+   * reversed here — the one place that knows the tail is a version. */
+  const prefix = name.getLiteralWithGlobTail() ?? name.getLiteralPathPrefix();
   const idx = prefix.lastIndexOf(":");
   if (idx <= 0) {
     return undefined;

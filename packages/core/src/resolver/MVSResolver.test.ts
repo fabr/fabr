@@ -58,17 +58,28 @@ function mockRegistry(data: Record<string, Record<string, Record<string, string>
   return registry;
 }
 
+/** Root requirements from the test's shorthand: a trailing '!' marks a force
+ * override, a trailing '?' an alternate (the resolver's override inputs;
+ * parsing markers off written references is the repository's job). */
+function rootRequirements(roots: Record<string, string>): Requirement[] {
+  return Object.entries(roots).map(([pkg, constraint]) => {
+    if (constraint.endsWith("!")) {
+      return { pkg, constraint: constraint.slice(0, -1), override: "force" as const };
+    }
+    if (constraint.endsWith("?")) {
+      return { pkg, constraint: constraint.slice(0, -1), override: "alternate" as const };
+    }
+    return { pkg, constraint };
+  });
+}
+
 function resolve(
   roots: Record<string, string>,
   data: Record<string, Record<string, Record<string, string>>>,
   raisable = false
 ): MVSResolution<SemverVersion> {
   let result: MVSResolution<SemverVersion> | undefined;
-  resolveMVS(
-    Object.entries(roots).map(([pkg, constraint]) => ({ pkg, constraint })),
-    SEMVER,
-    mockRegistry(data, raisable)
-  ).then(resolution => {
+  resolveMVS(rootRequirements(roots), SEMVER, mockRegistry(data, raisable)).then(resolution => {
     result = resolution;
   });
   /* The mock registry is synchronous, so resolution completes before we get here */
@@ -126,11 +137,7 @@ function resolveOrderIndependent(
   const under = (pick: (pending: string[]) => number): MVSResolution<SemverVersion> => {
     const { registry, drain } = deferredRegistry(data, pick, raisable);
     let result: MVSResolution<SemverVersion> | undefined;
-    resolveMVS(
-      Object.entries(roots).map(([pkg, constraint]) => ({ pkg, constraint })),
-      SEMVER,
-      registry
-    ).then(resolution => {
+    resolveMVS(rootRequirements(roots), SEMVER, registry).then(resolution => {
       result = resolution;
     });
     drain();
@@ -144,13 +151,13 @@ function resolveOrderIndependent(
 }
 
 /** As resolve, but for inputs whose resolution walk must reject. */
-function resolveError(roots: Record<string, string>, data: Record<string, Record<string, Record<string, string>>>): Error {
+function resolveError(
+  roots: Record<string, string>,
+  data: Record<string, Record<string, Record<string, string>>>,
+  raisable = false
+): Error {
   let error: Error | undefined;
-  resolveMVS(
-    Object.entries(roots).map(([pkg, constraint]) => ({ pkg, constraint })),
-    SEMVER,
-    mockRegistry(data)
-  ).then(
+  resolveMVS(rootRequirements(roots), SEMVER, mockRegistry(data, raisable)).then(
     () => undefined,
     err => {
       error = err as Error;
@@ -252,6 +259,7 @@ describe("MVSResolver", () => {
           "'B' is required by A@1.0.0 without a version lower bound ('*'), and no versioned requirement for it exists — add one explicitly",
         rootPkg: "A",
         pkg: "B",
+        requiredBy: "A@1.0.0",
       },
     ]);
   });
@@ -1077,5 +1085,127 @@ describe("fork packing", () => {
     /* Attributed through the first-reacher chain to the root whose subtree
      * demanded the erring node (X exact-pinned the fork) */
     expect(result.errors[0].rootPkg).to.equal("X");
+  });
+});
+
+describe("force overrides", () => {
+  it("substitutes every requirement on the forced package — force can go DOWN", () => {
+    /* npm-overrides semantics: A demands C ^3.0.0, but the force pins 2.0.0 —
+     * the higher floor does not out-vote it; the coerced range is recorded as
+     * data, no violation, no fork, and C@3.0.0 is never even expanded. */
+    const result = resolve(
+      { A: "1.0.0", C: "2.0.0!" },
+      {
+        A: { "1.0.0": { C: "^3.0.0" } },
+        C: { "2.0.0": {}, "3.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@2.0.0"]);
+    expect(result.violations).to.deep.equal([]);
+    expect(result.selections.every(sel => sel.fork === undefined)).to.equal(true);
+    expect(result.coerced).to.have.lengthOf(1);
+    expect(result.coerced[0]).to.deep.include({ pkg: "C", constraint: "^3.0.0", requiredBy: "A@1.0.0" });
+    expect(versionToString(result.coerced[0].selected)).to.equal("2.0.0");
+  });
+
+  it("coerces a lower exact pin up onto the forced version without forking", () => {
+    const result = resolve(
+      { A: "1.0.0", C: "2.0.0!" },
+      {
+        A: { "1.0.0": { C: "1.4.0" } },
+        C: { "1.4.0": {}, "2.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@2.0.0"]);
+    expect(result.violations).to.deep.equal([]);
+    expect(result.coerced.map(edge => `${edge.requiredBy} -> ${edge.pkg}:${edge.constraint}`)).to.deep.equal(["A@1.0.0 -> C:1.4.0"]);
+  });
+
+  it("a satisfied requirement on a forced package is not coerced", () => {
+    const result = resolve(
+      { A: "1.0.0", C: "2.0.0!" },
+      {
+        A: { "1.0.0": { C: "^2.0.0" } },
+        C: { "2.0.0": {} },
+      }
+    );
+    expect(result.coerced).to.deep.equal([]);
+    expect(result.violations).to.deep.equal([]);
+  });
+
+  it("the forced version's own dependencies resolve normally", () => {
+    const result = resolve(
+      { A: "1.0.0", C: "2.0.0!" },
+      {
+        A: { "1.0.0": { C: "^3.0.0" } },
+        C: { "2.0.0": { D: "^1.1.0" }, "3.0.0": {} },
+        D: { "1.1.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@2.0.0", "D@1.1.0"]);
+  });
+
+  it("a forced version that was never published is a terminal failure, not a raise", () => {
+    /* The user pinned it; the raise hook must not move an explicit force. */
+    const err = resolveError(
+      { A: "1.0.0", C: "2.0.0!" },
+      {
+        A: { "1.0.0": { C: "^1.0.0" } },
+        C: { "1.0.0": {}, "2.1.0": {} },
+      },
+      true
+    );
+    expect(err).to.be.instanceOf(MetadataFetchError);
+    expect((err as MetadataFetchError).pkg).to.equal("C");
+  });
+
+  it("an alternate supplies the version for a floorless-only requirement (attach-last)", () => {
+    /* A requires T '*' and nothing selects T: the written alternate answers,
+     * instead of the add-a-pin error — and reads as a root selection. */
+    const result = resolve(
+      { A: "1.0.0", T: "26.0.0?" },
+      {
+        A: { "1.0.0": { T: "*" } },
+        T: { "26.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "T@26.0.0"]);
+    expect(result.errors).to.deep.equal([]);
+    expect(result.selections.find(sel => sel.pkg === "T")?.selectedBy).to.deep.equal({ requiredBy: "(root)", constraint: "26.0.0" });
+  });
+
+  it("an alternate stays inert when a floored requirement selects the package", () => {
+    const result = resolve(
+      { A: "1.0.0", T: "26.0.0?" },
+      {
+        A: { "1.0.0": { T: "^25.0.0" } },
+        T: { "25.0.0": {}, "26.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "T@25.0.0"]);
+  });
+
+  it("an alternate stays inert when nothing requires the package at all", () => {
+    const result = resolve(
+      { A: "1.0.0", T: "26.0.0?" },
+      {
+        A: { "1.0.0": {} },
+        T: { "26.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0"]);
+  });
+
+  it("force is deterministic under any metadata arrival order", () => {
+    const result = resolveOrderIndependent(
+      { A: "1.0.0", B: "1.0.0", C: "2.0.0!" },
+      {
+        A: { "1.0.0": { C: "^3.0.0" } },
+        B: { "1.0.0": { C: "1.4.0" } },
+        C: { "1.4.0": {}, "2.0.0": {}, "3.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@1.0.0", "C@2.0.0"]);
+    expect(result.coerced.map(edge => edge.requiredBy).sort()).to.deep.equal(["A@1.0.0", "B@1.0.0"]);
   });
 });

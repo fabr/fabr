@@ -377,7 +377,7 @@ export class RepositoryRef {
  */
 function restampPackage(pkg: PackageFileSet, steps: ReadonlyArray<IProvenanceStep>): PackageFileSet {
   const dependencies = pkg.dependencies.map(dep => (dep instanceof PackageFileSet ? restampPackage(dep, steps) : dep));
-  return new PackageFileSet(pkg, pkg.packageName, pkg.version, dependencies, chainSteps(steps, pkg.origin));
+  return new PackageFileSet(pkg, pkg.packageName, pkg.version, dependencies, chainSteps(steps, pkg.origin), pkg.isNestedOverride);
 }
 
 
@@ -591,7 +591,8 @@ function rebuildPackage(
             pkg.packageName,
             pkg.version,
             deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet),
-            pkg.origin
+            pkg.origin,
+            pkg.isNestedOverride
           )
       );
     }

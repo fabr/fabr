@@ -37,11 +37,13 @@ export function toError(err: unknown): Error {
 }
 
 /**
- * Attach remedy text to an error, to be rendered as a `help:` line when the
+ * Attach remedy text to an error, to be rendered as `help:` line(s) when the
  * error is reported (the message states the problem; the help suggests the
- * fix). Carried as a plain optional property so any typed error can bear one.
+ * fix — a list renders one `help:` line per entry, for a multi-line remedy
+ * like a pasteable override set). Carried as a plain optional property so any
+ * typed error can bear one.
  */
-export function attachHelp<T extends Error>(err: T, help: string): T {
+export function attachHelp<T extends Error>(err: T, help: string | string[]): T {
   return Object.assign(err, { help });
 }
 
@@ -224,7 +226,9 @@ export class MetadataFetchError extends Error {
  * that root (the walk-errors analogue of MetadataFetchError's rootPkg).
  */
 export class ResolutionWalkError extends Error {
-  constructor(public readonly failures: ReadonlyArray<{ message: string; rootPkg: string }>) {
+  constructor(
+    public readonly failures: ReadonlyArray<{ message: string; rootPkg: string; pkg?: string; requiredBy?: string; help?: string[] }>
+  ) {
     super(failures.map(failure => failure.message).join("\n"));
   }
 }

@@ -37,20 +37,22 @@ import {
   LogLevel,
   MemoryFile,
   Name,
+  parseName,
   PackageFileSet,
   parseVersion,
   RepositoryPublishRef,
   RepositoryContext,
   RepositoryRef,
   resolveAndMaterialize,
+  conflictError,
   ROOT_REQUIRER,
   Selected,
   SemverVersion,
   TARGET,
   versionToString,
 } from "@fabr-build/core";
-import { flatWinners, NPMRepository, strictRepairError } from "./NPMRepository";
-import { EdgeMap } from "./JSPackage";
+import { flatWinners, NPMRepository } from "./NPMRepository";
+import { assembleScopedNodeModules, EdgeMap } from "./JSPackage";
 import {
   matchesTargetPlatform,
   npmPackageOfPath,
@@ -343,12 +345,22 @@ function fakeContext(operation: string, served: Record<string, FileSet | Error>,
       const response = served[url];
       return response instanceof Error ? Computable.reject(response) : Computable.resolve(response);
     },
+    /* In-memory passthrough: the full resolve+materialize path exercises the
+     * real resolution against the served metadata, uncached. */
+    memoize: (_tag: string, _key: string, fn: () => Computable<FileSet>) => fn(),
+    notifyProgress: () => undefined,
     execution: fakeExecution(),
   } as unknown as RepositoryContext;
 }
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.then(resolve, reject));
+}
+
+/** The error's help lines joined — remedies now ride `help`, not the message. */
+function helpText(err: Error): string {
+  const help = (err as { help?: string | string[] }).help;
+  return Array.isArray(help) ? help.join("\n") : (help ?? "");
 }
 
 async function rejection(fn: () => unknown): Promise<Error> {
@@ -1056,7 +1068,202 @@ describe("NPMRepository read authentication", () => {
   });
 });
 
-describe("strictRepairError", () => {
+describe("override markers", () => {
+  /* A conflict fixture: A wants C ~1.5.0 (capped below 2), B wants C ^2.5.0 —
+   * jointly unsatisfiable, principal C@2.5.0, repairing fork C@1.5.0. */
+  const served: Record<string, FileSet | Error> = {
+    [`${REG}/A/1.1.0`]: metadataFor("A", "1.1.0", { C: "~1.5.0" }, { dist: tarballDist("a") }),
+    [`${REG}/B/1.2.0`]: metadataFor("B", "1.2.0", { C: "^2.5.0" }, { dist: tarballDist("b") }),
+    [`${REG}/C/1.5.0`]: metadataFor("C", "1.5.0", {}, { dist: tarballDist("c1") }),
+    [`${REG}/C/2.5.0`]: metadataFor("C", "2.5.0", {}, { dist: tarballDist("c2") }),
+    [`${REG}/tarball/a.tgz`]: packageTarball(),
+    [`${REG}/tarball/b.tgz`]: packageTarball(),
+    [`${REG}/tarball/c1.tgz`]: packageTarball(),
+    [`${REG}/tarball/c2.tgz`]: packageTarball(),
+  };
+  function tarballDist(stem: string): Record<string, unknown> {
+    return { tarball: `${REG}/tarball/${stem}.tgz`, integrity: "", shasum: "", signatures: [] };
+  }
+  /* Parsed, not fromLiteral: a written `?` marker arrives as a trailing GLOB
+   * part (the lexer's reading), which the version split folds back — the
+   * fidelity this harness must exercise. */
+  const refsFor = (repo: NPMRepository, names: string[]): RepositoryRef[] =>
+    names.map(name => new RepositoryRef(repo, parseName(name)));
+
+  it("a '?' pair — principal and fork — sanctions the coexistence in a strict delivery", async () => {
+    const repo = new NPMRepository(REG, fakeContext("build", served, []));
+    const delivered = await toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:2.5.0?", "C:1.5.0?"])));
+    expect(delivered).to.have.lengthOf(4);
+    /* The alternates themselves deliver nothing — the fork arrives nested
+     * inside the canonical closure (under A, whose edge needs it). */
+    expect([...delivered[2]].length).to.equal(0);
+    expect([...delivered[3]].length).to.equal(0);
+    const a = delivered[0] as PackageFileSet;
+    const nested = a.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+    expect(nested.map(dep => `${dep.packageName}@${dep.version}`)).to.contain("C@1.5.0");
+    /* And the linked (scoped) layout can represent it: the winner takes the
+     * flat store slot, the sanctioned fork nests under its requirer. */
+    const assembled = assembleScopedNodeModules(delivered.filter(set => [...set].length > 0));
+    const names = new Set([...assembled].map(([name]) => name));
+    expect(names.has(".pkgs/node_modules/C/package.json")).to.equal(true);
+    expect(names.has(".pkgs/node_modules/A/node_modules/C/package.json")).to.equal(true);
+  });
+
+  it("an exact unmarked pin of the principal completes the sanction too (the catalog form)", async () => {
+    const repo = new NPMRepository(REG, fakeContext("build", served, []));
+    const delivered = await toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:2.5.0", "C:1.5.0?"])));
+    expect(delivered).to.have.lengthOf(4);
+  });
+
+  it("a lone '?' is an incomplete sanction — every shipping version must be written", async () => {
+    /* One '?' alone would implicitly bless coexistence with whatever the rest
+     * of the tree resolves to; the whole coexisting set must be named, so
+     * drift on any side re-errors, phrased as the set mismatch it is. */
+    const repo = new NPMRepository(REG, fakeContext("build", served, []));
+    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:1.5.0?"]))));
+    expect(err.message).to.contain("required C versions: 1.5.0, 2.5.0 — allowed: 1.5.0");
+    expect(err.message).to.contain("add @npm:C:2.5.0?");
+    /* The suggestion completes the written set — it does not re-suggest the
+     * '?' that is already there. */
+    expect(helpText(err)).to.contain("@npm:C:2.5.0?");
+    expect(helpText(err)).to.not.contain("@npm:C:1.5.0?");
+  });
+
+  it("an unsanctioned conflict fails strict with pasteable suggestions", async () => {
+    const repo = new NPMRepository(REG, fakeContext("build", served, []));
+    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0"]))));
+    expect(err.message).to.contain("does not satisfy '~1.5.0'");
+    /* Resolution-pure, and rendered as the help (the remedy line): the whole
+     * coexisting set as '?' sanctions — no unmarked pin, which would be a
+     * real direct dependency in a js_package's deps. */
+    expect(helpText(err)).to.contain("@npm:C:2.5.0? @npm:C:1.5.0?");
+  });
+
+  it("a stale alternate reports the version now required instead", async () => {
+    const repo = new NPMRepository(REG, fakeContext("build", served, []));
+    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:2.5.0?", "C:1.4.0?"]))));
+    expect(err.message).to.contain("required C versions: 1.5.0, 2.5.0 — allowed: 2.5.0, 1.4.0");
+    expect(err.message).to.contain("add @npm:C:1.5.0?");
+  });
+
+  it("a '!' force substitutes every requirement and coerces the rest", async () => {
+    const fetched: string[] = [];
+    const repo = new NPMRepository(REG, fakeContext("build", served, fetched));
+    const delivered = await toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:2.5.0!"])));
+    expect(delivered).to.have.lengthOf(3);
+    /* A's ~1.5.0 was coerced onto 2.5.0: the losing version is neither
+     * resolved nor fetched. */
+    expect(fetched.some(url => url.includes("/C/1.5.0"))).to.equal(false);
+    const a = delivered[0] as PackageFileSet;
+    const nested = a.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+    expect(nested.map(dep => `${dep.packageName}@${dep.version}`)).to.deep.equal(["C@2.5.0"]);
+  });
+
+  it("forcing and permitting the same package is contradictory", async () => {
+    const repo = new NPMRepository(REG, fakeContext("build", served, []));
+    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "C:2.5.0!", "C:1.5.0?"]))));
+    expect(err.message).to.contain("both forced ('!') and permitted as an alternate ('?')");
+  });
+
+  it("two forces at different versions are contradictory too", async () => {
+    const repo = new NPMRepository(REG, fakeContext("build", served, []));
+    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "C:2.5.0!", "C:1.5.0!"]))));
+    expect(err.message).to.contain("forced ('!') at two different versions");
+  });
+
+  it("a marker demands an exact version, not a range", async () => {
+    const repo = new NPMRepository(REG, fakeContext("build", served, []));
+    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["C:^1.0.0?"]))));
+    expect(err.message).to.contain("needs an exact version");
+  });
+
+  const floorlessServed: Record<string, FileSet | Error> = {
+    [`${REG}/P/1.0.0`]: metadataFor("P", "1.0.0", { Q: "1.2.0", R: "1.3.0" }, { dist: tarballDist("p") }),
+    [`${REG}/Q/1.2.0`]: metadataFor("Q", "1.2.0", { T: "*" }, { dist: tarballDist("q") }),
+    [`${REG}/R/1.3.0`]: metadataFor("R", "1.3.0", { T: "*", U: "*" }, { dist: tarballDist("r") }),
+    [`${REG}/T`]: new FileSet(new Map([["versions.json", MemoryFile.from(JSON.stringify(["20.0.0", "24.2.0", "25.0.0-rc.1"]))]])),
+    [`${REG}/U`]: new FileSet(new Map([["versions.json", MemoryFile.from(JSON.stringify(["3.1.0"]))]])),
+    [`${REG}/T/24.2.0`]: metadataFor("T", "24.2.0", {}, { dist: tarballDist("t") }),
+    [`${REG}/U/3.1.0`]: metadataFor("U", "3.1.0", {}, { dist: tarballDist("u") }),
+    [`${REG}/tarball/p.tgz`]: packageTarball(),
+    [`${REG}/tarball/q.tgz`]: packageTarball(),
+    [`${REG}/tarball/r.tgz`]: packageTarball(),
+    [`${REG}/tarball/t.tgz`]: packageTarball(),
+    [`${REG}/tarball/u.tgz`]: packageTarball(),
+  };
+
+  it("a repairable resolution failure is ONE error: floorless packages combined, one '?' fix list", async () => {
+    /* The jest-30 shape: members require `T: '*'` / `U: '*'`. The whole
+     * repairable failure is one fact with one pasteable fix — per-package
+     * detail lines inside it, latest-stable `?` suggestions as the help. */
+    const repo = new NPMRepository(REG, fakeContext("build", floorlessServed, []));
+    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["P:1.0.0"]))));
+    expect(err.message.match(/required only without a version lower bound/g)).to.have.lengthOf(1);
+    expect(err.message).to.contain("'T' — required by Q@1.2.0, R@1.3.0");
+    expect(err.message).to.contain("'U' — required by R@1.3.0");
+    /* The '?' suggestions: latest STABLE (T's rc is skipped), resolution-pure */
+    expect(helpText(err)).to.contain("@npm:T:24.2.0?");
+    expect(helpText(err)).to.contain("@npm:U:3.1.0?");
+    expect(helpText(err)).to.contain("none is a direct dependency");
+  });
+
+  it("the one-pass repair set folds in the divergences the completed resolution hits", async () => {
+    /* Supplying W's floorless version transitively conflicts on V (P wants
+     * ^2, W wants ~1.5): the FIRST error's list must already sanction it —
+     * no second round of errors after pasting. */
+    const cascade: Record<string, FileSet | Error> = {
+      [`${REG}/P/1.0.0`]: metadataFor("P", "1.0.0", { W: "*", V: "^2.5.0" }, { dist: tarballDist("p") }),
+      [`${REG}/W`]: new FileSet(new Map([["versions.json", MemoryFile.from(JSON.stringify(["2.0.0"]))]])),
+      [`${REG}/W/2.0.0`]: metadataFor("W", "2.0.0", { V: "~1.5.0" }, { dist: tarballDist("w") }),
+      [`${REG}/V/1.5.0`]: metadataFor("V", "1.5.0", {}, { dist: tarballDist("v1") }),
+      [`${REG}/V/2.5.0`]: metadataFor("V", "2.5.0", {}, { dist: tarballDist("v2") }),
+    };
+    const repo = new NPMRepository(REG, fakeContext("build", cascade, []));
+    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["P:1.0.0"]))));
+    expect(err.message).to.contain("'W' — required by P@1.0.0");
+    expect(err.message).to.contain("1 version conflict(s)");
+    expect(helpText(err)).to.contain("@npm:W:2.0.0?");
+    expect(helpText(err)).to.contain("@npm:V:1.5.0? @npm:V:2.5.0?");
+  });
+
+  it("the suggested '?' alternates supply the floorless-only versions (attach-last)", async () => {
+    const repo = new NPMRepository(REG, fakeContext("build", floorlessServed, []));
+    const delivered = await toPromise(resolveAndMaterialize(repo, refsFor(repo, ["P:1.0.0", "T:24.2.0?", "U:3.1.0?"])));
+    expect(delivered).to.have.lengthOf(3);
+    /* The alternates deliver nothing of their own; T and U ride inside P's
+     * closure as ordinary members — transitive, not direct deps. */
+    expect([...delivered[1]].length).to.equal(0);
+    expect([...delivered[2]].length).to.equal(0);
+    const assembled = assembleScopedNodeModules(delivered.filter(set => [...set].length > 0));
+    const names = new Set([...assembled].map(([name]) => name));
+    expect(names.has(".pkgs/node_modules/T/package.json")).to.equal(true);
+    /* Not linked at the top level — it is not a direct dependency */
+    expect(names.has("T")).to.equal(false);
+  });
+
+  it("suggests a verified single-version pin where a disjunctive range admits one", async () => {
+    /* D requires C '1.x || 3.x'; the root floor >=2.0.0 selects C@2.0.0, which
+     * sits in the union's gap — but C@3.0.0 satisfies every requirement, so the
+     * suggester verifies and offers the pin rather than a divergence sanction. */
+    const disjoint: Record<string, FileSet | Error> = {
+      [`${REG}/D/1.0.0`]: metadataFor("D", "1.0.0", { C: "1.x || 3.x" }, { dist: tarballDist("d") }),
+      /* The union's literal floor 1.0.0 was never published (whole-closure
+       * expansion demands it) — the fork raises to 1.5.0 */
+      [`${REG}/C/1.0.0`]: new HttpStatusError(404, `${REG}/C/1.0.0`),
+      [`${REG}/C/1.5.0`]: metadataFor("C", "1.5.0", {}, { dist: tarballDist("c1") }),
+      [`${REG}/C/2.0.0`]: metadataFor("C", "2.0.0", {}, { dist: tarballDist("c2") }),
+      [`${REG}/C/3.0.0`]: metadataFor("C", "3.0.0", {}, { dist: tarballDist("c3") }),
+      [`${REG}/C`]: new FileSet(new Map([["versions.json", MemoryFile.from(JSON.stringify(["1.5.0", "2.0.0", "3.0.0"]))]])),
+    };
+    const repo = new NPMRepository(REG, fakeContext("build", disjoint, []));
+    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["D:1.0.0", 'C:">=2.0.0"']))));
+    expect(helpText(err)).to.contain("@npm:C:3.0.0 (satisfies every requirement on C)");
+  });
+});
+
+const npmRefText = (pkg: string, version: string, marker?: "?" | "!"): string => `@npm:${pkg}:${version}${marker ?? ""}`;
+
+describe("conflictError (the strict repair report)", () => {
   /* Floor raises are deliberately absent here: a raised floor is the
    * constraint's plain meaning when its literal minimum was never published,
    * accepted in every delivery mode rather than judged by the strict gate. */
@@ -1080,12 +1287,12 @@ describe("strictRepairError", () => {
   ];
 
   it("reports violations and coexisting versions as structural facts", () => {
-    const err = strictRepairError("A:^1.0.0", [violation], duplicates, selections) as Error & {
+    const err = conflictError("A:^1.0.0", [violation], duplicates, selections, versionToString, npmRefText) as Error & {
       help?: string;
     };
     expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0'");
     expect(err.message).to.contain("multiple versions of D (1.0.0, 2.0.0)");
-    expect(err.help).to.contain("sealed tool install");
+    expect(helpText(err)).to.contain("pin a single version satisfying every requirement");
   });
 
   it("collapses same-conflict violations to one entry naming the other requirers", () => {
@@ -1094,25 +1301,25 @@ describe("strictRepairError", () => {
      * remedy are the same — one full stanza, the rest summarised by name. */
     const requirers = ["A@1.0.0", "B@1.0.0", "E@1.0.0", "F@1.0.0", "G@1.0.0", "H@1.0.0", "I@1.0.0"];
     const violationsFrom = requirers.map(requiredBy => ({ ...violation, requiredBy }));
-    const err = strictRepairError("A:^1.0.0", violationsFrom, [], selections);
+    const err = conflictError("A:^1.0.0", violationsFrom, [], selections, versionToString, npmRefText);
     expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0' required by A@1.0.0 (and 6 more)");
     expect(err.message).to.contain("'^2.0.0' also required by: B@1.0.0, E@1.0.0, F@1.0.0, G@1.0.0 (+2 more)");
     /* One stanza, not seven: the violation line appears exactly once */
     expect(err.message.match(/does not satisfy/g)).to.have.lengthOf(1);
     /* A distinct conflict (different selected version) keeps its own entry */
     const other = { pkg: "C", constraint: "^2.0.0", requiredBy: "B@1.0.0", selected: parseVersion("3.5.0") };
-    const two = strictRepairError("A:^1.0.0", [violation, other], [], selections);
+    const two = conflictError("A:^1.0.0", [violation, other], [], selections, versionToString, npmRefText);
     expect(two.message.match(/does not satisfy/g)).to.have.lengthOf(2);
   });
 
   it("attributes both sides of a violation to their requirement paths", () => {
-    const err = strictRepairError("A:^1.0.0", [violation], [], selections);
+    const err = conflictError("A:^1.0.0", [violation], [], selections, versionToString, npmRefText);
     expect(err.message).to.contain("3.0.0 selected by: B@1.0.0 -> C@3.0.0 (^3.0.0)");
     expect(err.message).to.contain("'^2.0.0' required via: A@1.0.0");
   });
 
   it("attributes each coexisting version to its requirement path", () => {
-    const err = strictRepairError("A:^1.0.0", [], duplicates, selections);
+    const err = conflictError("A:^1.0.0", [], duplicates, selections, versionToString, npmRefText);
     expect(err.message).to.contain("1.0.0 required via: A@1.0.0 -> D@1.0.0 (^1.0.0)");
     expect(err.message).to.contain("2.0.0 required directly ('^2.0.0')");
   });
@@ -1121,7 +1328,7 @@ describe("strictRepairError", () => {
     /* A fork exists exactly because an edge violated, so the multiplicity is
      * the violation restated — one stanza, not two. */
     const cDuplicates: Array<[string, SemverVersion[]]> = [["C", [parseVersion("2.5.0"), parseVersion("3.0.0")]]];
-    const err = strictRepairError("A:^1.0.0", [violation], cDuplicates, selections);
+    const err = conflictError("A:^1.0.0", [violation], cDuplicates, selections, versionToString, npmRefText);
     expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0'");
     expect(err.message).to.not.contain("requires multiple versions of C");
   });
@@ -1129,7 +1336,7 @@ describe("strictRepairError", () => {
   /* Provenance edges are optional (resolutions persisted before they existed),
    * so the bare statement of each repair has to stand on its own. */
   it("states the repairs alone when the resolution carries no provenance", () => {
-    const err = strictRepairError("A:^1.0.0", [violation], duplicates, [{ pkg: "C", version: parseVersion("3.0.0") }]);
+    const err = conflictError("A:^1.0.0", [violation], duplicates, [{ pkg: "C", version: parseVersion("3.0.0") }], versionToString, npmRefText);
     expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0' required by A@1.0.0");
     expect(err.message).to.not.contain("selected by:");
     expect(err.message).to.not.contain("required via:");

@@ -89,12 +89,48 @@ describe("assembleScopedNodeModules", () => {
   });
 
   it("reports two different packages under one name in the closure as a package conflict", () => {
-    /* The flat store has one slot per name; a two-version closure is
-     * unrepresentable, and the error must name the packages — not the raw
-     * store-file collision the union would otherwise trip over. */
+    /* Two NON-override instances disagreeing is two deliveries resolved apart
+     * (a local package's closure vs this collection's): hoisting one would
+     * silently hand the other's requirers a version their resolution never
+     * chose, so the error must name the packages — not the raw store-file
+     * collision the union would otherwise trip over. */
     const a = vpkg("a", "1.0.0", [vpkg("shared", "1.0.0")]);
     const b = vpkg("b", "1.0.0", [vpkg("shared", "2.0.0")]);
     expect(() => assembleScopedNodeModules([a, b])).to.throw(ConflictError, /Conflicting packages for shared/);
+  });
+
+  it("nests a delivered override instance under its requirer instead of conflicting", () => {
+    /* The sanctioned-divergence shape (a '?' alternate's fork): the winner
+     * holds the flat store slot; the override — flagged by buildMounts — nests
+     * under the requirer that lists it, where node resolution finds it first. */
+    const fork = new PackageFileSet(
+      new Map<string, IFile>([["index.js", MemoryFile.from("// shared@1")]]),
+      "shared",
+      "1.0.0",
+      [],
+      undefined,
+      true
+    );
+    const requirer = vpkg("legacy", "1.0.0", [fork]);
+    const root = vpkg("app", "1.0.0", [vpkg("shared", "2.0.0"), requirer]);
+    const files = entries(assembleScopedNodeModules([root]));
+    expect(files.has(".pkgs/node_modules/shared/index.js")).to.equal(true);
+    expect(files.has(".pkgs/node_modules/legacy/node_modules/shared/index.js")).to.equal(true);
+  });
+
+  it("an override never takes the flat slot, even as the only instance of its name", () => {
+    const fork = new PackageFileSet(
+      new Map<string, IFile>([["index.js", MemoryFile.from("// only@1")]]),
+      "only",
+      "1.0.0",
+      [],
+      undefined,
+      true
+    );
+    const requirer = vpkg("legacy", "1.0.0", [fork]);
+    const files = entries(assembleScopedNodeModules([vpkg("app", "1.0.0", [requirer])]));
+    expect(files.has(".pkgs/node_modules/only/index.js")).to.equal(false);
+    expect(files.has(".pkgs/node_modules/legacy/node_modules/only/index.js")).to.equal(true);
   });
 });
 

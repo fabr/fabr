@@ -56,7 +56,17 @@ export class PackageFileSet extends FileSet {
     public readonly packageName: string,
     public readonly version?: string,
     public readonly dependencies: ReadonlyArray<PackageFileSet | RepositoryRef> = [],
-    origin?: IProvenanceStep
+    origin?: IProvenanceStep,
+    /**
+     * True for an instance delivered as a **private override** — a second
+     * version of its package the resolution sanctioned, valid only nested
+     * under the requirers that list it, never as a flat mount. Runtime-only
+     * layout knowledge (like provenance, reconstructed every evaluation —
+     * never serialized): an assembler nests a flagged instance and would
+     * conflict on an unflagged same-name duplicate, which is two deliveries
+     * disagreeing rather than one delivery's sanctioned divergence.
+     */
+    public readonly isNestedOverride: boolean = false
   ) {
     super(new Map(files), origin ?? (files instanceof FileSet ? files.origin : undefined));
   }
@@ -69,6 +79,6 @@ export class PackageFileSet extends FileSet {
   }
 
   public withOrigin(origin: IProvenanceStep): PackageFileSet {
-    return new PackageFileSet(this, this.packageName, this.version, this.dependencies, origin);
+    return new PackageFileSet(this, this.packageName, this.version, this.dependencies, origin, this.isNestedOverride);
   }
 }

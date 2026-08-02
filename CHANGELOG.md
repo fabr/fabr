@@ -14,6 +14,7 @@ version number.
 - Handle package resolution edge cases with missing specified versions.
 - Make esModuleInterop: true by default; ts/no_esmodule_interop to disable.
 - Revise MVS resolution to drop the 'independent major versions' concept we accidentally imported from Go.
+- Generate resolution repair lists on resolution failures.
 
 @fabr/cli:
 

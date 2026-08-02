@@ -45,6 +45,23 @@ export interface Requirement {
    * range's floor beside an already-satisfying selection.
    */
   soft?: boolean;
+  /**
+   * A user-written override marker on the requirement's exact version
+   * (`@npm:pkg:1.4.2?` / `@npm:pkg:2.0.0!`; the constraint carries the bare
+   * version, the marker rides here):
+   *
+   * - `"force"` (`!`) — full substitution, npm-`overrides` semantics: every
+   *   requirement on the package, from any requirer, is replaced by exactly
+   *   this version at resolve time. Ranges the forced version does not
+   *   satisfy are recorded as {@link MVSResolution.coerced} — data, never
+   *   violations. Participates in resolution (and its memo identity).
+   * - `"alternate"` (`?`) — a judgment-time sanction, never a demand: it
+   *   contributes no floor and is excluded from the resolver's roots
+   *   entirely (the consumer applies it when judging violations at
+   *   delivery). Listed here for the parse's completeness; the resolver
+   *   never sees one.
+   */
+  override?: "alternate" | "force";
 }
 
 /**
@@ -151,6 +168,14 @@ export interface MVSResolution<V> {
   selections: Selected<V>[];
   errors: IResolutionError[];
   violations: Violation<V>[];
+  /**
+   * Requirement edges a `force` override coerced: `requiredBy` declared
+   * `constraint` on `pkg`, and the forced version (`selected`) does not
+   * satisfy it. The force suppresses the conflict by design — these are
+   * recorded so the coercion is explainable, never judged as violations (no
+   * fork is packed for them and no delivery refuses them).
+   */
+  coerced: Violation<V>[];
   raises: RaisedFloor<V>[];
   /**
    * The declared requirements of each selected node ({@link nodeId} → its
@@ -176,8 +201,15 @@ export interface IResolutionError {
    * requirement's own package when it is itself a root. */
   rootPkg: string;
   /** For a required-only-floorless error: the package that lacks any versioned
-   * requirement (the remedy — an explicit requirement — names it). */
+   * requirement (the remedy — an explicit requirement — names it). A consumer
+   * groups the per-edge errors by this key: one missing pin is one fact,
+   * however many requirers hit it. */
   pkg?: string;
+  /** The node that declared the erring requirement (for the grouped render). */
+  requiredBy?: string;
+  /** Remedy line(s) a consumer attached (a concrete pin suggestion), rendered
+   * as the diagnostic's `help`. */
+  help?: string[];
 }
 
 /**
@@ -234,6 +266,22 @@ export interface VersionDomain<V, C> {
    * Canonical string form of a version (for cache keys and diagnostics).
    */
   versionToString(version: V): string;
+
+  /**
+   * The exact version `text` names, when it is a single concrete version
+   * rather than a range — undefined otherwise. What override markers demand
+   * of their version (`pkg:1.4.2?`), and what lets an unmarked pin count as a
+   * written version in sanction judgment. Optional: a domain without it
+   * treats no constraint as exact.
+   */
+  exactVersion?(text: string): V | undefined;
+
+  /**
+   * Whether the version is suggestion-eligible (not a prerelease): the repair
+   * suggester proposes only stable versions. Optional: a domain without it
+   * treats every version as stable.
+   */
+  isStable?(version: V): boolean;
 }
 
 /**

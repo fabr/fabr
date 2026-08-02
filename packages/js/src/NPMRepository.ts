@@ -24,7 +24,12 @@ import {
   Computable,
   coexistingVersions,
   ConflictError,
+  allSanctioned,
+  canonicalRequirements,
+  completeRepairSet,
+  conflictError,
   edgeBinding,
+  EMPTY_FILESET,
   FILES_OPERATION,
   FileSet,
   HttpStatusError,
@@ -61,14 +66,20 @@ import {
   RepositoryRef,
   RepositoryRegistration,
   Requirement,
+  requirementKey,
   RequirementResolutionError,
   Resolution,
-  ResolutionExplainer,
-  resolutionExplainer,
   ResolutionWalkError,
   ResolvedRoot,
   resolveMVS,
   ROOT_REQUIRER,
+  satisfiedByAnySelection,
+  splitOverrideMarker,
+  SuggestSources,
+  suggestSanctions,
+  unrepairableError,
+  writtenVersions,
+  RefRenderer,
   RunnableFileSet,
   Selected,
   SEMVER,
@@ -153,26 +164,29 @@ interface IRequirementsEntry {
   requires: Requirement[];
 }
 
-/** Serialized form of a persisted joint resolution (memo tag npm:resolve:14 —
- * per-name principals with fork selections; the split subtrees of earlier
- * versions are gone, repairs being selections of the one tree) */
+/** Serialized form of a persisted joint resolution (memo tag npm:resolve:16 —
+ * per-name principals with fork selections and `!`-coerced edges; the split
+ * subtrees of earlier versions are gone, repairs being selections of the one
+ * tree) */
 interface IResolutionDoc {
   roots: Requirement[];
   selections: IResolutionEntry[];
   violations: IViolationEntry[];
+  /** Edges a `!` force override coerced (data — never judged) */
+  coerced?: IViolationEntry[];
   raises: IRaiseEntry[];
   requirements: IRequirementsEntry[];
 }
 
-function requirementKey(req: Requirement): string {
-  return `${req.pkg}:${req.constraint}`;
-}
 
 /** A selection's `pkg@version` node id — the resolver's node-id form, also the
  * id space of the transient edge map a permissive delivery is planned from. */
 function selectionId(sel: Selected<SemverVersion>): string {
   return nodeId(SEMVER, sel.pkg, sel.version);
 }
+
+/** The written form of an npm reference, for pasteable suggestions. */
+const npmRef: RefRenderer = (pkg, versionText, marker) => `@npm:${pkg}:${versionText}${marker ?? ""}`;
 
 /** One root's planned delivery: its own node, and the tree mounted under it. */
 interface PlannedClosure {
@@ -252,6 +266,8 @@ function edgeTargetIn(selections: Selected<SemverVersion>[], req: Requirement): 
 interface ResolvedRepairs {
   readonly selections: Selected<SemverVersion>[];
   readonly violations: Violation<SemverVersion>[];
+  /** Edges a `!` force override coerced (see resolver MVSResolution.coerced) */
+  readonly coerced: Violation<SemverVersion>[];
   readonly raises: RaisedFloor<SemverVersion>[];
   readonly requirements: Map<string, Requirement[]>;
 }
@@ -270,6 +286,13 @@ interface NpmResolution extends Resolution, ResolvedRepairs {
   readonly operation: string;
   /** requirementKey → index into the resolution's roots (the space `reachableFrom` indexes). */
   readonly rootIndex: Map<string, number>;
+  /**
+   * The `?` sanctions written in this collection's references: pkg → the exact
+   * versions whose forks a strict delivery may accept (nested). Judgment-time
+   * data carried OUTSIDE the persisted doc (the resolution outcome does not
+   * depend on it, so neither does the memo key).
+   */
+  readonly alternates: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /** name → version for the names `assignments` assign exactly one distinct
@@ -512,7 +535,46 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
           throw new RequirementResolutionError([reference], toError(err));
         }
       });
-      const roots: ResolvedRoot[] = references.map((reference, index) => ({ reference, name: requirements[index].pkg }));
+      /* Alternates (`?`) are judgment-time sanctions, not demands: they join
+       * neither the roots (a catalog's member table must not see them) nor the
+       * resolution memo (the outcome is unchanged by them) — they ride the
+       * in-memory resolution to the strict gate. A package both forced and
+       * alternated is contradictory. */
+      const alternates = new Map<string, Set<string>>();
+      for (const req of requirements) {
+        if (req.override === "alternate") {
+          const versions = alternates.get(req.pkg) ?? new Set();
+          alternates.set(req.pkg, versions.add(req.constraint));
+        }
+      }
+      const contradicted = requirements.find(req => req.override === "force" && alternates.has(req.pkg));
+      if (contradicted) {
+        const culpable = references.filter((_, index) => requirements[index].pkg === contradicted.pkg);
+        throw new RequirementResolutionError(
+          culpable,
+          new Error(`'${contradicted.pkg}' is both forced ('!') and permitted as an alternate ('?') — pick one`)
+        );
+      }
+      /* Two forces at different versions are equally contradictory — the
+       * resolver would have to pick one silently. */
+      const forcedAt = new Map<string, string>();
+      for (const req of requirements) {
+        if (req.override !== "force") {
+          continue;
+        }
+        const existing = forcedAt.get(req.pkg);
+        if (existing !== undefined && existing !== req.constraint) {
+          const culpable = references.filter((_, index) => requirements[index].pkg === req.pkg);
+          throw new RequirementResolutionError(
+            culpable,
+            new Error(`'${req.pkg}' is forced ('!') at two different versions (${existing}, ${req.constraint}) — pick one`)
+          );
+        }
+        forcedAt.set(req.pkg, req.constraint);
+      }
+      const roots: ResolvedRoot[] = references.flatMap((reference, index) =>
+        requirements[index].override === "alternate" ? [] : [{ reference, name: requirements[index].pkg }]
+      );
       if (operation === FILES_OPERATION) {
         return Computable.resolve<NpmResolution>({
           roots,
@@ -520,18 +582,23 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
           selections: [],
           rootIndex: new Map(),
           violations: [],
+          coerced: [],
           raises: [],
           requirements: new Map(),
+          alternates,
         });
       }
       /* Canonicalize the roots so the resolution (and its memo key, and the
-       * reachableFrom indices) are independent of reference order */
-      const byKey = new Map(requirements.map(req => [requirementKey(req), req]));
-      const rootKeys = [...byKey.keys()].sort();
-      const rootReqs = rootKeys.map(key => byKey.get(key)!);
-      const rootIndex = new Map(rootKeys.map((key, index) => [key, index]));
+       * reachableFrom indices) are independent of reference order. Alternates
+       * ARE included: attach-last means a `?` can supply a floorless-only
+       * package's version, so it is part of the resolution's identity (its
+       * key carries the marker). It still joins neither `roots` above (a
+       * catalog's member table must not see it) nor a delivery (it mounts
+       * nothing of its own). */
+      const { roots: rootReqs, keys: rootKeys } = canonicalRequirements(requirements);
+      const rootIndex = new Map<string, number>(rootKeys.map((key, index) => [key, index]));
       return this.getJointResolution(rootReqs, rootKeys)
-        .then(repairs => ({ roots, operation, rootIndex, ...repairs }) satisfies NpmResolution)
+        .then(repairs => ({ roots, operation, rootIndex, alternates, ...repairs }) satisfies NpmResolution)
         .catch(err => this.attributeResolutionFailure(err, references, requirements));
     });
   }
@@ -560,11 +627,14 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
         (...delivered: FileSet[]) => delivered
       );
     }
-    const { selections, rootIndex, operation, violations } = resolved;
+    const { selections, rootIndex, operation, violations, alternates } = resolved;
     const permissive = options?.resolutionMode === "permissive" || operation === "run";
     const requirements = references.map(reference => this.parseRequirement(reference.name));
-    const requestedRoots = new Set(requirements.map(req => rootIndex.get(requirementKey(req))!));
-    const requestedKeys = new Set(requirements.map(requirementKey));
+    /* An alternate (`?`) reference demands nothing and delivers nothing of its
+     * own — the sanctioned fork arrives nested inside the canonical closure. */
+    const demanded = requirements.filter(req => req.override !== "alternate");
+    const requestedRoots = new Set(demanded.map(req => rootIndex.get(requirementKey(req))!));
+    const requestedKeys = new Set(demanded.map(requirementKey));
     /* The selections reachable from the requested roots — the fetch set.
      * Forks are reachable exactly through the violated edges bound to them,
      * so a strict subset whose closure has no violations carries no forks. */
@@ -575,64 +645,77 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
      * among the requested). Raises are NOT judged here in any mode: a raised
      * floor is the constraint's plain meaning when its literal minimum was
      * never published — the request was for the range, and the first published
-     * version meeting it answers the request. (They remain recorded in the
-     * resolution as data.) */
+     * version meeting it answers the request. Coerced edges are not judged
+     * either — suppressing them is what their `!` said to do. */
     const edgeInScope = (requiredBy: string, pkg: string, constraint: string): boolean =>
       requiredBy === ROOT_REQUIRER ? requestedKeys.has(`${pkg}:${constraint}`) : reachableIds.has(requiredBy);
     const scopedViolations = violations.filter(violation => edgeInScope(violation.requiredBy, violation.pkg, violation.constraint));
     const root = [...requestedKeys].sort().join(", ");
-    /* A violated edge with NO repairing fork — nothing published satisfies it
-     * — cannot be accepted in ANY mode, so it is judged first: the strict
-     * error's nesting remedy would be false advice for it. */
-    const unrepaired = scopedViolations.filter(violation => !satisfiedByAnySelection(selections, violation));
-    if (unrepaired.length > 0) {
-      throw unrepairableViolationError(root, unrepaired, selections);
-    }
-    if (!permissive) {
-      const duplicates = coexistingVersions(needed);
-      if (scopedViolations.length > 0 || duplicates.length > 0) {
-        throw strictRepairError(root, scopedViolations, duplicates, needed);
-      }
-    }
-    /* Sealed: the forks repairing the reachable violations are already in
-     * `needed`, nested by the layout plan. */
-    const delivered = needed;
-    /* Fetch each distinct pkg@version once (an alias may bind two edges to one
-     * version — same version ⇒ same tarball ⇒ same content). */
-    const toFetch = new Map<string, Selected<SemverVersion>>();
-    for (const sel of delivered) {
-      const id = selectionId(sel);
-      if (!toFetch.has(id)) {
-        toFetch.set(id, sel);
-      }
-    }
-    const fetchIds = [...toFetch.keys()];
-    const fetching = new Set(fetchIds);
+    /* The sanction rule is a set comparison: every version of a package this
+     * delivery ships must be explicitly written — as a `?`, or as an exact
+     * unmarked pin (the catalog form). See resolver/Overrides. */
+    const written = writtenVersions(SEMVER, alternates, demanded);
     /* Plan the layout first: it is decided by the resolution alone (no content,
      * and — since the resolution carries its own edges — no metadata), so a
      * closure that cannot be laid out says so before anything is downloaded.
-     * Planning inside the chain, not before it: a layout failure is this
-     * delivery's rejection, attributed like any other. */
+     * The judgment lives inside the chain too: a failing delivery computes its
+     * fix suggestions (registry reads) before rejecting. */
     return Computable.resolve(undefined)
       .then(() => {
-        const edges = this.resolvedEdges(delivered, resolved);
-        return requirements.map(req => this.planClosure(req, rootIndex.get(requirementKey(req))!, selections, fetching, edges));
+        /* A violated edge with NO repairing fork — nothing published
+         * satisfies it — cannot be accepted in ANY mode, so it is judged
+         * first: the strict error's remedies would be false advice for it. */
+        const unrepaired = scopedViolations.filter(violation => !satisfiedByAnySelection(SEMVER, selections, violation));
+        if (unrepaired.length > 0) {
+          throw unrepairableError(root, unrepaired, selections, versionToString, npmRef);
+        }
+        if (!permissive) {
+          const outstanding = scopedViolations.filter(violation => !allSanctioned(SEMVER, needed, written, violation.pkg));
+          const duplicates = coexistingVersions(needed).filter(([pkg]) => !allSanctioned(SEMVER, needed, written, pkg));
+          if (outstanding.length > 0 || duplicates.length > 0) {
+            return suggestSanctions(outstanding, resolved, needed, requirements, this.suggestSources()).then(suggestion => {
+              throw conflictError(root, outstanding, duplicates, needed, versionToString, npmRef, written, suggestion);
+            });
+          }
+        }
+        return Computable.resolve(undefined);
       })
-      .then(plans =>
-        Computable.forAll(
+      .then(() => {
+        /* Sealed (or fully sanctioned): the forks repairing the reachable
+         * violations are already in `needed`, nested by the layout plan.
+         * Fetch each distinct pkg@version once (an alias may bind two edges
+         * to one version — same version ⇒ same tarball ⇒ same content). */
+        const delivered = needed;
+        const toFetch = new Map<string, Selected<SemverVersion>>();
+        for (const sel of delivered) {
+          const id = selectionId(sel);
+          if (!toFetch.has(id)) {
+            toFetch.set(id, sel);
+          }
+        }
+        const fetchIds = [...toFetch.keys()];
+        const fetching = new Set(fetchIds);
+        const edges = this.resolvedEdges(delivered, resolved);
+        const plans = requirements.map(req =>
+          req.override === "alternate" ? undefined : this.planClosure(req, rootIndex.get(requirementKey(req))!, selections, fetching, edges)
+        );
+        return Computable.forAll(
           fetchIds.map(id => this.fetch(toFetch.get(id)!.pkg, toFetch.get(id)!.version)),
           (...fetched: PackageFileSet[]) => {
             const packages = new Map<string, PackageFileSet>(fetchIds.map((id, k) => [id, fetched[k]]));
-            const assembled = requirements.map((req, index) => this.buildClosure(req, plans[index], selections, packages));
+            const assembled = requirements.map((req, index) => {
+              const plan = plans[index];
+              return plan === undefined ? undefined : this.buildClosure(req, plan, selections, packages);
+            });
             return operation === "run"
               ? Computable.forAll(
-                  assembled.map(pkg => this.makeRunnable(pkg)),
-                  (...delivered: FileSet[]) => delivered
+                  assembled.map(pkg => (pkg === undefined ? Computable.resolve<FileSet>(EMPTY_FILESET) : this.makeRunnable(pkg))),
+                  (...launched: FileSet[]) => launched
                 )
-              : Computable.resolve(assembled);
+              : Computable.resolve(assembled.map(pkg => pkg ?? EMPTY_FILESET));
           }
-        )
-      )
+        );
+      })
       .catch(err => this.attributeResolutionFailure(err, references, requirements));
   }
 
@@ -692,12 +775,14 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     if (err instanceof ResolutionWalkError) {
       /* Each walk failure attributes independently (they may sit under
        * different roots); one without a matching written reference reports
-       * plain. MultiError unwraps a sole failure. */
+       * plain. A failure's remedy (a pin suggestion) rides as its help.
+       * MultiError unwraps a sole failure. */
       throw MultiError.of(
         err.failures.map(failure => {
           const culpable = culpableFor(failure.rootPkg);
           const cause = new Error(failure.message);
-          return culpable.length > 0 ? new RequirementResolutionError(culpable, cause) : cause;
+          const wrapped = culpable.length > 0 ? new RequirementResolutionError(culpable, cause) : cause;
+          return failure.help ? attachHelp(wrapped, failure.help) : wrapped;
         })
       );
     }
@@ -774,7 +859,8 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
       packageOfPath: npmPackageOfPath,
     };
     const rootFiles = packages.get(plan.rootId)!;
-    const dependencies = buildMounts(plan.mounts, packages, origin);
+    const forkIds = new Set(selections.filter(sel => sel.fork !== undefined).map(selectionId));
+    const dependencies = buildMounts(plan.mounts, packages, origin, forkIds);
     return new PackageFileSet(rootFiles, rootFiles.packageName, rootFiles.version, dependencies, origin);
   }
 
@@ -842,7 +928,20 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
         `Missing version in package reference '${name.getLiteralPathPrefix()}' (expected '<name>:<version-or-range>')`
       );
     }
-    const { identifier: pkg, version: constraint } = split;
+    const { identifier: pkg, version: written } = split;
+    /* Override markers ride the version slot: a trailing '?' (permitted
+     * alternate) or '!' (forced version). Exact versions only — a ranged
+     * override would reintroduce registry-time nondeterminism. */
+    const { text: constraint, override } = splitOverrideMarker(written);
+    if (override !== undefined) {
+      if (SEMVER.exactVersion?.(constraint) === undefined) {
+        throw attachHelp(
+          new Error(`'${written}' is not a valid override for '${pkg}': the '${written.at(-1)}' marker needs an exact version`),
+          "markers sanction one concrete version: '@npm:pkg:1.4.2?' permits a nested alternate, '@npm:pkg:2.0.0!' forces the version"
+        );
+      }
+      return { pkg, constraint, override };
+    }
     if (!isSemverConstraint(constraint)) {
       throw attachHelp(
         new Error(`'${constraint}' is not a valid version constraint for '${pkg}'`),
@@ -914,6 +1013,27 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
         )
       );
     });
+  }
+
+
+
+  /**
+   * What the generic repair suggester needs from this repository (see
+   * resolver/ResolutionReport): the written reference form, the registry's
+   * version list, and a memoized enrichment-free re-resolve.
+   */
+  private suggestSources(): SuggestSources<SemverVersion, SemverConstraint> {
+    return {
+      domain: SEMVER,
+      refText: npmRef,
+      availableVersions: pkg => this.publishedVersions(pkg, false),
+      resolve: roots =>
+        this.getJointResolution(
+          roots,
+          roots.map(req => requirementKey(req)),
+          false
+        ),
+    };
   }
 
   /**
@@ -1037,7 +1157,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    * the cache. Repairs (violations, raises, forks) are recorded in the doc as
    * data — enforcement is per delivery, at materialize.
    */
-  private getJointResolution(roots: Requirement[], rootKeys: string[]): Computable<ResolvedRepairs> {
+  private getJointResolution(roots: Requirement[], rootKeys: string[], enrich = true): Computable<ResolvedRepairs> {
     /* The resolution depends on the target platform (it filters os/cpu/libc-gated
      * optional deps), so the memo key must carry it — otherwise a resolution
      * computed for one target would be served for another. */
@@ -1048,17 +1168,23 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
          * hyphen range, `1.2.3 - 2.3.4`), so a space delimiter isn't obviously
          * injective — a newline can appear in neither a package name nor a
          * constraint, matching how file deps are already newline-separated. */
-        .memoize("npm:resolve:14", `${this.url} ${targetKey}\n${rootKeys.join("\n")}`, () => {
+        .memoize("npm:resolve:16", `${this.url} ${targetKey}\n${rootKeys.join("\n")}`, () => {
           /* A memo miss means real resolution work on behalf of the consumer */
           this.context.notifyProgress({ kind: "repository-resolve", repository: this.context.target, requirements: rootKeys });
           return resolveMVS(roots, SEMVER, this).then(result => {
             /* Hard errors (unparseable constraints, unconstrained-only
-             * requirements) are not repairable in any mode. */
+             * requirements) are not repairable in any mode. Grouped and
+             * enriched with pin suggestions before throwing — typed + per-error
+             * root attribution, so the resolve() catch can map each failure to
+             * the written reference(s) that pulled its subtree in, instead of
+             * blaming the whole collection point. */
             if (result.errors.length > 0) {
-              /* Typed + per-error root attribution, so the resolve() catch can
-               * map each failure to the written reference(s) that pulled its
-               * subtree in, instead of blaming the whole collection point. */
-              throw new ResolutionWalkError(result.errors);
+              if (!enrich) {
+                throw new ResolutionWalkError(result.errors);
+              }
+              return completeRepairSet(result.errors, roots, this.suggestSources()).then(failures => {
+                throw new ResolutionWalkError(failures);
+              });
             }
             return this.verifiedResolutionDoc(roots, result, target);
           });
@@ -1097,6 +1223,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
           roots,
           selections: result.selections.map(serializeSelection),
           violations: result.violations.map(serializeViolation),
+          coerced: result.coerced.map(serializeViolation),
           raises: result.raises.map(serializeRaise),
           requirements: serializeRequirements(result.requirements),
         };
@@ -1255,192 +1382,20 @@ function deserializeResolutionDoc(doc: IResolutionDoc): ResolvedRepairs {
   return {
     selections: doc.selections.map(deserializeSelection),
     violations: (doc.violations ?? []).map(deserializeViolation),
+    coerced: (doc.coerced ?? []).map(deserializeViolation),
     raises: (doc.raises ?? []).map(deserializeRaise),
     requirements: deserializeRequirements(doc.requirements),
   };
 }
 
-/** The node id of a resolved package version, as the explainer keys them. */
-function versionId(pkg: string, version: SemverVersion): string {
-  return nodeId(SEMVER, pkg, version);
-}
 
-/**
- * The two questions a violation raises beyond the fact of it: which
- * requirement pushed the package to the version that violates the bound (and
- * where *that* requirer came from), and where the losing requirement itself
- * came from. Rendered as detail lines under the violation, indented one level;
- * empty for a resolution carrying no provenance edges (persisted before they
- * existed) or a requirer since superseded out of the selections.
- */
-function explainViolation(violation: Violation<SemverVersion>, explainer: ResolutionExplainer<SemverVersion>): string[] {
-  const { find, pathTo } = explainer;
-  const selection = find(versionId(violation.pkg, violation.selected));
-  const selected = versionToString(violation.selected);
-  const lines = selection?.selectedBy ? [`  ${selected} selected by: ${winnerOf(selection, selection.selectedBy, explainer)}`] : [];
-  /* Only where there is a path to add: the requirer is already named on the
-   * violation line, so repeating it alone would say nothing. */
-  const requirer = violation.requiredBy === ROOT_REQUIRER ? undefined : find(violation.requiredBy);
-  if (requirer !== undefined) {
-    lines.push(`  '${violation.constraint}' required via: ${pathTo(requirer).join(" -> ")}`);
-  }
-  return lines;
-}
 
-/** The requirement whose floor won `selection` its version, as the path from a
- * root down to it. */
-function winnerOf(
-  selection: Selected<SemverVersion>,
-  winner: IRequirementEdge,
-  explainer: ResolutionExplainer<SemverVersion>
-): string {
-  if (winner.requiredBy === ROOT_REQUIRER) {
-    return `the requested '${winner.constraint}'`;
-  }
-  const winnerNode = explainer.find(winner.requiredBy);
-  if (!winnerNode) {
-    /* The winning requirement was declared by a version itself since superseded */
-    return `${winner.requiredBy} requiring '${winner.constraint}' (since superseded)`;
-  }
-  const chosen = `${explainer.id(selection)} (${winner.constraint})`;
-  return [...explainer.pathTo(winnerNode), chosen].join(" -> ");
-}
 
-/** Where each coexisting version of a package was required from — the same
- * question a violation raises, asked of every version rather than one. */
-function explainDuplicate(
-  pkg: string,
-  versions: SemverVersion[],
-  explainer: ResolutionExplainer<SemverVersion>
-): string[] {
-  return versions.flatMap(version => {
-    const selection = explainer.find(versionId(pkg, version));
-    const via = selection?.reachedVia;
-    if (selection === undefined || via === undefined) {
-      return [];
-    }
-    return via.requiredBy === ROOT_REQUIRER
-      ? [`  ${versionToString(version)} required directly ('${via.constraint}')`]
-      : [`  ${versionToString(version)} required via: ${explainer.pathTo(selection).join(" -> ")}`];
-  });
-}
 
-/**
- * Violations collapsed to one entry per *conflict* — the (pkg, constraint,
- * selected) triple: a widely-declared requirement (tslib '^1.11.1' across a
- * dozen @aws-* siblings) violates once per requirer, but the conflict, its
- * "selected by" side, and its remedy are identical for all of them — a dozen
- * near-identical stanzas bury the second distinct conflict. The first
- * requirer (walk order — canonical) keeps the full detail; the rest are
- * summarised by name on one line.
- */
-function groupViolations(
-  violations: readonly Violation<SemverVersion>[]
-): Array<{ first: Violation<SemverVersion>; others: string[] }> {
-  const groups = new Map<string, { first: Violation<SemverVersion>; others: string[] }>();
-  for (const violation of violations) {
-    const key = `${violation.pkg}\n${violation.constraint}\n${versionToString(violation.selected)}`;
-    const group = groups.get(key);
-    if (group) {
-      group.others.push(violation.requiredBy);
-    } else {
-      groups.set(key, { first: violation, others: [] });
-    }
-  }
-  return [...groups.values()];
-}
 
-/** The one-line summary of a conflict's further requirers: the first few by
- * name, the rest by count. */
-function alsoRequiredBy(constraint: string, others: readonly string[]): string[] {
-  if (others.length === 0) {
-    return [];
-  }
-  const shown = others.slice(0, 4);
-  const more = others.length - shown.length;
-  return [`  '${constraint}' also required by: ${shown.join(", ")}${more > 0 ? ` (+${more} more)` : ""}`];
-}
 
-/** Whether any selection of the violated package — principal or fork —
- * satisfies the violated constraint: the test for whether the resolver could
- * repair the edge at all. Nothing published satisfies an unrepaired one. */
-function satisfiedByAnySelection(selections: readonly Selected<SemverVersion>[], violation: Violation<SemverVersion>): boolean {
-  let constraint: SemverConstraint;
-  try {
-    constraint = SEMVER.parseConstraint(violation.constraint);
-  } catch {
-    /* Unparseable constraints are hard errors at resolve; a violation's
-     * constraint always parsed there. */
-    return false;
-  }
-  return selections.some(sel => sel.pkg === violation.pkg && SEMVER.satisfies(sel.version, constraint));
-}
 
-/**
- * The every-mode failure for violated edges the resolver could not repair: no
- * published version of the package satisfies the constraint, so no delivery —
- * flat or nested — can honor it. Reported with the same provenance detail as
- * the strict judgment.
- */
-export function unrepairableViolationError(
-  root: string,
-  violations: Violation<SemverVersion>[],
-  selections: readonly Selected<SemverVersion>[]
-): Error {
-  const explainer = resolutionExplainer(selections, versionToString);
-  const lines = groupViolations(violations).flatMap(({ first, others }) => [
-    `no published version of ${first.pkg} satisfies '${first.constraint}' required by ${first.requiredBy}`,
-    ...explainViolation(first, explainer),
-    ...alsoRequiredBy(first.constraint, others),
-  ]);
-  const help = "the requirement cannot be met by any published version — correct it, or pin its requirer to a version whose requirement is satisfiable";
-  return attachHelp(new Error(`Unable to resolve ${root}:\n  ${lines.join("\n  ")}`), help);
-}
 
-/**
- * The strict (linked) delivery's judgment of a repaired closure: every repair
- * reachable from the requested roots, reported together — violations and
- * coexisting versions as the structural facts they are — rather than one
- * build-fail-pin iteration each. (Floor raises are deliberately NOT judged: a
- * raised floor is the constraint's plain meaning when its literal minimum was
- * never published, acceptable in every delivery mode.)
- *
- * `selections` is the delivered closure, read for the provenance edges that
- * explain each repair — a bare statement of a repair leaves the user to guess
- * which of the requirements on a package it is in conflict with.
- */
-export function strictRepairError(
-  root: string,
-  violations: Violation<SemverVersion>[],
-  duplicates: Array<[string, SemverVersion[]]>,
-  selections: readonly Selected<SemverVersion>[]
-): Error {
-  const explainer = resolutionExplainer(selections, versionToString);
-  const lines: string[] = [];
-  const violatedPkgs = new Set(violations.map(violation => violation.pkg));
-  for (const { first, others } of groupViolations(violations)) {
-    const moreRequirers = others.length > 0 ? ` (and ${others.length} more)` : "";
-    lines.push(
-      `${versionId(first.pkg, first.selected)} does not satisfy '${first.constraint}' ` +
-        `required by ${first.requiredBy}${moreRequirers}`,
-      ...explainViolation(first, explainer),
-      ...alsoRequiredBy(first.constraint, others)
-    );
-  }
-  /* A coexisting-versions entry restates a violation on the same package (a
-   * fork exists exactly because an edge violated), so only packages with no
-   * violation entry report here — a safety net for a multiplicity nothing
-   * above explained, not the normal path. */
-  for (const [pkg, versions] of duplicates.filter(([pkg]) => !violatedPkgs.has(pkg))) {
-    lines.push(
-      `requires multiple versions of ${pkg} (${versions.map(versionToString).join(", ")}), ` +
-        `which the flat package layout cannot represent`,
-      ...explainDuplicate(pkg, versions, explainer)
-    );
-  }
-  const help = "a sealed tool install (js_script deps, fabr run) accepts these by nesting; a linked delivery cannot";
-  return attachHelp(new Error(`Unable to resolve ${root}:\n  ${lines.join("\n  ")}`), help);
-}
 
 function createRepository(context: RepositoryContext): Computable<NPMRepository> {
   return Computable.forAll(

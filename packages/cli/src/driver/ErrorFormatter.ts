@@ -349,8 +349,11 @@ function supportedOperationsHelp(cause: NoRuleFoundError): string[] | undefined 
 }
 
 function helpOf(err: Error): string[] | undefined {
-  const help = (err as { help?: string }).help;
-  return help ? [help] : undefined;
+  const help = (err as { help?: string | string[] }).help;
+  if (help === undefined || help.length === 0) {
+    return undefined;
+  }
+  return Array.isArray(help) ? help : [help];
 }
 
 function spanKey(loc: ISourceSpan | undefined): string {

@@ -417,4 +417,16 @@ export const SEMVER: VersionDomain<SemverVersion, SemverConstraint> = {
   },
 
   versionToString,
+
+  exactVersion(text: string): SemverVersion | undefined {
+    try {
+      return parseVersion(text);
+    } catch {
+      return undefined;
+    }
+  },
+
+  isStable(version: SemverVersion): boolean {
+    return version.prerelease.length === 0;
+  },
 };

@@ -360,6 +360,25 @@ export class Name {
   }
 
   /**
+   * The whole name as verbatim text, when it is a literal followed by nothing
+   * but one final glob part — undefined for any other shape (a real pattern
+   * like `src/*.ts?` has interior glob parts and stays one). This is how a
+   * repository's version slot reads a written `pkg:1.4.2?` or `pkg:1.14.*`:
+   * lexically those tails are globs, but a version cannot meaningfully glob,
+   * so the repository folds the text back into the version — the `?` override
+   * marker, or a `*` x-range — instead of losing it to the literal-prefix
+   * split. (A glob anywhere else stays a real pattern; only the position past
+   * the last `:` of a requirement has no pattern meaning to preserve.)
+   */
+  public getLiteralWithGlobTail(): string | undefined {
+    if (this.parts.length !== 2) {
+      return undefined;
+    }
+    const [head, tail] = this.parts;
+    return head.kind === NamePartKind.Literal && tail.kind === NamePartKind.Glob ? head.value + tail.value : undefined;
+  }
+
+  /**
    * @return a new name with the initial literal prefix matching the given value removed,
    * including any trailing '/' character.
    *  e.g. given the Name ("mylib/lib/*") and value "mylib", will yield the Name "lib/*"

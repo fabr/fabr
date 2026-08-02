@@ -175,9 +175,27 @@ function resolvePhase<V, C>(
   repairable: ReadonlySet<string>
 ): Computable<MVSResolution<V>> {
   return Computable.from((resolve, reject) => {
+    /* Forced packages (a `!` root override): every requirement on the package
+     * is substituted with exactly this version — npm-`overrides` semantics.
+     * The caller validates at most one force per package (a generic defensive
+     * first-in-canonical-order would mask the error); the resolver takes the
+     * first. */
+    const forced = new Map<string, V>();
+    for (const root of roots) {
+      if (root.override === "force" && !forced.has(root.pkg)) {
+        try {
+          forced.set(root.pkg, domain.minimumOf(domain.parseConstraint(root.constraint)));
+        } catch {
+          /* Unparseable force constraint: reported by followEdge as usual */
+        }
+      }
+    }
     /** Whether this walk may raise the floors demanding `id`: the registry must
-     * offer the hook, and the node must be one a converged tree proved blocking. */
-    const canRepair = (id: string): boolean => registry.lowestAvailable !== undefined && repairable.has(id);
+     * offer the hook, and the node must be one a converged tree proved blocking
+     * — and never a forced package's (the user pinned it; a raise would move a
+     * version that was explicitly forced). */
+    const canRepair = (id: string): boolean =>
+      registry.lowestAvailable !== undefined && repairable.has(id) && !forced.has(id.substring(0, id.lastIndexOf("@")));
     /* Highest minimum seen so far, per package name — the principal winner */
     const selected = new Map<string, Selected<V>>();
     /* Fork selections per package, in creation order (each round's packing is
@@ -217,6 +235,12 @@ function resolvePhase<V, C>(
      * last resort). */
     const softReqs: Array<{ req: Requirement; requiredBy: string }> = [];
     const softFired = new Set<{ req: Requirement; requiredBy: string }>();
+    /* Written `?` alternates (attach-last: supply a version to a package the
+     * tree requires only floorlessly), and the packages seen floorlessly
+     * required — the trigger condition, judged at quiescence. */
+    const alternateAnswers = new Map<string, V>();
+    const alternateFired = new Set<string>();
+    const floorlessRequired = new Set<string>();
 
     /** The root package whose subtree contains `requirer` (for attributing an
      * error on one of its requirements): walk the first-reacher parents to the
@@ -258,12 +282,43 @@ function resolvePhase<V, C>(
          * edges that are in effect, so reporting there is both truthful and free. */
         return;
       }
+      if (req.override === "alternate") {
+        /* Attach-LAST (the mirror of a peer's attach-first): an alternate
+         * demands nothing and shapes nothing — unless the converged tree
+         * requires the package ONLY floorlessly, where no version is
+         * selectable deterministically; then the written alternate supplies
+         * one (fired at quiescence, like the other convergence repairs).
+         * Recorded here; never an ordinary demand. */
+        const version = domain.minimumOf(constraint);
+        const current = alternateAnswers.get(req.pkg);
+        if (current === undefined || domain.compare(version, current) > 0) {
+          alternateAnswers.set(req.pkg, version);
+        }
+        return;
+      }
+      const forcedVersion = forced.get(req.pkg);
+      if (forcedVersion !== undefined) {
+        /* Substitution: whatever this requirement asked for, the forced
+         * version is what it gets — its own floor is never offered (nor its
+         * version's metadata fetched). The original constraint is judged at
+         * convergence: unsatisfied means coerced, recorded as data. The force
+         * root's own edge is the one demand offered to the pool, so the
+         * principal is the forced version by construction. */
+        if (req.override === "force") {
+          attempt(req, forcedVersion, requiredBy);
+        } else {
+          visit(req.pkg, forcedVersion, requiredBy, req);
+        }
+        return;
+      }
       if (domain.isFloorless(constraint)) {
         /* No lower bound ('*', or an upper-bound-only range): contributes no
          * selection of its own, and is satisfied by whatever the floored
          * requirements select (resolved during the convergence rounds, where
          * any upper bound is still violation-checked; a floorless-only package
-         * is an error there) */
+         * is an error there — unless a written alternate supplies the version,
+         * for which the package is remembered here). */
+        floorlessRequired.add(req.pkg);
         return;
       }
       if (req.soft) {
@@ -450,7 +505,13 @@ function resolvePhase<V, C>(
       }
       const selectedPkgs = new Set([...selected.values()].map(sel => sel.pkg));
       const firing = softReqs.filter(entry => !softFired.has(entry) && !selectedPkgs.has(entry.req.pkg));
-      if (firing.length === 0) {
+      /* Attach-last alternates: a package the converged tree requires only
+       * floorlessly (nothing selects it) takes its written `?` version — the
+       * deterministic answer the requirements alone cannot give. */
+      const supplying = [...alternateAnswers].filter(
+        ([pkg]) => !alternateFired.has(pkg) && floorlessRequired.has(pkg) && !selectedPkgs.has(pkg)
+      );
+      if (firing.length === 0 && supplying.length === 0) {
         finish();
         return;
       }
@@ -458,6 +519,10 @@ function resolvePhase<V, C>(
       for (const entry of firing) {
         softFired.add(entry);
         enqueue({ pkg: entry.req.pkg, constraint: entry.req.constraint }, entry.requiredBy);
+      }
+      for (const [pkg, version] of supplying) {
+        alternateFired.add(pkg);
+        attempt({ pkg, constraint: domain.versionToString(version) }, version, ROOT_REQUIRER);
       }
       if (--pending === 0) {
         settle();
@@ -479,6 +544,7 @@ function resolvePhase<V, C>(
       selectionsByPkg: Map<string, Selected<V>[]>;
       reachable: Map<Selected<V>, Selected<V>>;
       violations: Violation<V>[];
+      coerced: Violation<V>[];
       unsatisfied: PackEdge[];
       errors: Map<string, IResolutionError>;
     }
@@ -519,12 +585,16 @@ function resolvePhase<V, C>(
 
       const errors = new Map<string, IResolutionError>();
       const violations: Violation<V>[] = [];
+      const coerced: Violation<V>[] = [];
       const unsatisfied: PackEdge[] = [];
       /* Reachable selections, each annotated (as a copy) with how it was
        * first reached; keyed by the underlying selection instance */
       const reachable = new Map<Selected<V>, Selected<V>>();
       const visited = new Set<string>();
-      const queue: Array<{ from: string; requirements: Requirement[] }> = [{ from: ROOT_REQUIRER, requirements: roots }];
+      /* Alternate roots are not demands: an unfired one has (by design) no
+       * selection to lead to, so it is no reachability edge either. */
+      const demandRoots = roots.filter(root => root.override !== "alternate");
+      const queue: Array<{ from: string; requirements: Requirement[] }> = [{ from: ROOT_REQUIRER, requirements: demandRoots }];
       /* Phantoms an in-effect edge still needs — an edge for which no published
        * selection exists at all, whose slot winner the registry never
        * published. The proof the tree is unresolvable without repair: unarmed
@@ -548,7 +618,7 @@ function resolvePhase<V, C>(
           const message =
             `'${req.pkg}' is required by ${from} without a version lower bound ('${req.constraint}'),` +
             ` and no versioned requirement for it exists — add one explicitly`;
-          errors.set(message, { message, rootPkg: rootPkgOf(from, req.pkg), pkg: req.pkg });
+          errors.set(message, { message, rootPkg: rootPkgOf(from, req.pkg), pkg: req.pkg, requiredBy: from });
           return;
         }
         if (candidates.length === 0) {
@@ -572,14 +642,23 @@ function resolvePhase<V, C>(
         }
         /* A violation is judged against the PRINCIPAL — what a flat delivery
          * ships — whether or not a fork repairs the edge (the fork is the
-         * repair record; strict mode reports the violation). The packing input
-         * is stricter: an edge no current selection satisfies at all. */
+         * repair record; strict mode reports the violation). A FORCED
+         * package's unsatisfied edges are instead COERCED — the force
+         * suppresses the conflict by design, so they are recorded as data and
+         * never packed into forks. The packing input is stricter than the
+         * violation judgment: an edge no current selection satisfies at all. */
+        const forcedPkg = forced.has(req.pkg);
         const principal = candidates.find(sel => !sel.fork);
-        if (principal && !domain.satisfies(principal.version, constraint)) {
-          violations.push({ pkg: req.pkg, constraint: req.constraint, requiredBy: from, selected: principal.version });
-        }
         const bound = edgeBinding(domain, candidates, req)!;
-        if (!domain.satisfies(bound.version, constraint)) {
+        /* Judged against the flat winner when there is one; a package whose
+         * principal went phantom (candidates are forks alone) is judged
+         * against what actually ships — an edge satisfied by neither must
+         * still record, or an unsatisfiable delivery would look clean. */
+        const judged = principal ?? bound;
+        if (!domain.satisfies(judged.version, constraint)) {
+          (forcedPkg ? coerced : violations).push({ pkg: req.pkg, constraint: req.constraint, requiredBy: from, selected: judged.version });
+        }
+        if (!forcedPkg && !domain.satisfies(bound.version, constraint)) {
           unsatisfied.push({ req, requiredBy: from, constraint });
         }
         if (!reachable.has(bound)) {
@@ -611,7 +690,9 @@ function resolvePhase<V, C>(
        * doesn't depend on which metadata answer landed first. */
       if (neededPhantoms.size > 0) {
         const needed = [...neededPhantoms.entries()].sort(([a], [b]) => compareText(a, b));
-        const unarmed = needed.filter(([id]) => !repairable.has(id)).map(([id]) => id);
+        /* A forced package's phantom is terminal outright — the user pinned
+         * the version, so arming a raise for it would be a pointless rerun. */
+        const unarmed = needed.filter(([id, info]) => !repairable.has(id) && !forced.has(info.pkg)).map(([id]) => id);
         const [id, info] = needed[0];
         fail(
           registry.lowestAvailable && unarmed.length > 0
@@ -620,7 +701,7 @@ function resolvePhase<V, C>(
         );
         return undefined;
       }
-      return { selectionsByPkg, reachable, violations, unsatisfied, errors };
+      return { selectionsByPkg, reachable, violations, coerced, unsatisfied, errors };
     };
 
     /** What one packing pass did: demanded new metadata / requested raises
@@ -820,6 +901,11 @@ function resolvePhase<V, C>(
       const targetsOf = (req: Requirement): Selected<V> | undefined =>
         edgeBinding(domain, round.selectionsByPkg.get(req.pkg) ?? [], req);
       roots.forEach((root, rootIndex) => {
+        if (root.override === "alternate") {
+          /* Never requested as a delivery of its own; the supplied selection
+           * is reached (and marked) through the floorless edges that need it. */
+          return;
+        }
         const visitedNodes = new Set<string>();
         const mark = (requirements: Requirement[]): void => {
           for (const req of requirements) {
@@ -847,6 +933,42 @@ function resolvePhase<V, C>(
           return a.pkg < b.pkg ? -1 : 1;
         }
         return domain.compare(a.version, b.version);
+      });
+      /* A package whose ONLY reachable version is a fork has no divergence at
+       * all: its principal was a phantom of the whole-closure pool (a
+       * superseded node's floor that no in-effect edge ever bound — pruned
+       * above), so the single shipping version IS the selection. Promote it,
+       * and drop the violations judged against the pruned phantom — with one
+       * version delivered and every in-effect edge bound to it, there is
+       * nothing to sanction. (A package with several surviving forks keeps
+       * them: that is a real divergence.) */
+      const perPkg = new Map<string, Selected<V>[]>();
+      for (const selection of selections) {
+        perPkg.set(selection.pkg, [...(perPkg.get(selection.pkg) ?? []), selection]);
+      }
+      const promoted = new Map<string, V>();
+      for (const [pkg, group] of perPkg) {
+        if (group.length === 1 && group[0].fork !== undefined) {
+          group[0].fork = undefined;
+          promoted.set(pkg, group[0].version);
+        }
+      }
+      /* Dropped only where moot: an edge the PROMOTED version satisfies was
+       * never really in conflict. One it does not satisfy (an unrepairable
+       * range beside the repaired ones) remains a violation — re-pointed at
+       * the version actually shipping, not the pruned phantom. */
+      const violations = round.violations.flatMap(violation => {
+        const promotedVersion = promoted.get(violation.pkg);
+        if (promotedVersion === undefined) {
+          return [violation];
+        }
+        try {
+          return domain.satisfies(promotedVersion, domain.parseConstraint(violation.constraint))
+            ? []
+            : [{ ...violation, selected: promotedVersion }];
+        } catch {
+          return [];
+        }
       });
       /* Canonical fork indices: per package, ascending version order among the
        * reachable forks — the walk's creation order got them into the graph,
@@ -888,7 +1010,7 @@ function resolvePhase<V, C>(
           return [id, nodeRequirements.get(id) ?? []];
         })
       );
-      resolve({ selections, errors: [...round.errors.values()], violations: round.violations, raises, requirements });
+      resolve({ selections, errors: [...round.errors.values()], violations, coerced: round.coerced, raises, requirements });
     };
 
     /**

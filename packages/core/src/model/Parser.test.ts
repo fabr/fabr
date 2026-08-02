@@ -615,6 +615,36 @@ describe("Parser Tests", () => {
     });
   });
 
+  describe("trailing glob (version marker fold)", () => {
+    it("a trailing '?' lexes as a glob and folds back via getLiteralWithGlobTail", () => {
+      /* The permitted-alternate marker `pkg:1.4.2?` is lexically a glob —
+       * repositories fold it back into the version text, where a pattern has
+       * no meaning (Name.getLiteralWithGlobTail). */
+      const name = parseName("@npm:tslib:1.14.1?");
+      expect(name.getSimpleName()).to.equal(undefined);
+      expect(name.getLiteralWithGlobTail()).to.equal("@npm:tslib:1.14.1?");
+    });
+
+    it("only a pure literal-then-glob name folds", () => {
+      /* A real pattern — a projection like `src/*.ts?` — has interior glob
+       * parts and is never folded; trailing-`?` globs keep their wildcard
+       * meaning everywhere a pattern is a pattern. */
+      expect(parseName("test?.js").getLiteralWithGlobTail()).to.equal(undefined);
+      expect(parseName("src/*.ts?").getLiteralWithGlobTail()).to.equal(undefined);
+      expect(parseName("esbuild:1.14.*").getLiteralWithGlobTail()).to.equal("esbuild:1.14.*");
+    });
+
+    it("a trailing '?' composes with a constraint facet", () => {
+      const name = parseName("@npm:tslib:1.14.1?<BUILD_TYPE=release>");
+      expect(name.getLiteralWithGlobTail()).to.equal("@npm:tslib:1.14.1?");
+      expect(name.getConstraints().map(([key]) => key)).to.deep.equal(["BUILD_TYPE"]);
+    });
+
+    it("a trailing '!' is no glob and stays literal", () => {
+      expect(parseName("@npm:foo:2.0.0!").getSimpleName()).to.equal("@npm:foo:2.0.0!");
+    });
+  });
+
   describe("rename templates", () => {
     function firstValue(text: string): Name {
       return nameOf(parseValid(text).properties[0].values[0]);
