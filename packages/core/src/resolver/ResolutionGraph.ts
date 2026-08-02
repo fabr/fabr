@@ -29,7 +29,7 @@
  * obliged to agree is how they stop agreeing.
  */
 
-import { Requirement, Selected, VersionDomain, Violation } from "./Types";
+import { Requirement, ROOT_REQUIRER, Selected, VersionDomain } from "./Types";
 
 /**
  * The identity of one concrete package version — `pkg@version` — as it appears
@@ -56,78 +56,111 @@ function highestOf<V, C>(domain: VersionDomain<V, C>, selections: readonly Selec
 }
 
 /**
- * **The** rule for what a requirement edge leads to, within `selections` (a
- * whole resolution, or one private split's tree): the selection under the
- * requirement's resolution key; every selection of the package for a
- * floorless requirement, since any of them satisfies its (absent) floor; or —
- * for a soft (peer) requirement — those satisfying its range whatever their
- * key (attach-first: a peer range may span majors), falling back to the
- * highest candidate so the edge lands on what is actually delivered. A floored
- * edge whose declared key holds no selection follows *satisfaction* instead:
- * its floor was never published (the only way a demanded slot converges
- * empty), and the request is answered by whatever meets it — the raised
- * floor's selection, or an existing selection (a root pin) in range — else by
- * the highest candidate, so a jointly-unsatisfiable edge still binds what is
- * delivered and reports as a violation, exactly as an in-key mismatch does.
- * Empty when the constraint is unparseable (reported by the walk) or nothing
- * of the package is selected (a gated optional pruned from it).
+ * **The** rule for the single selection a requirement edge *binds* to, within
+ * `selections` (a resolution's, principal and fork selections together), by
+ * **satisfaction**: the principal selection of the package when it satisfies
+ * the constraint (the flat winner serves every edge it can — nesting is never
+ * gratuitous), else the highest satisfying fork (the fork packing repaired
+ * this edge into), else the principal, else the highest candidate — so a
+ * jointly-unsatisfiable edge nothing repairs still binds what is actually
+ * delivered, and reports as a violation. A floorless constraint has no floor
+ * to fail and any cap it has is what `satisfies` checks, and a soft (peer)
+ * edge is satisfied by whatever the tree provides in range — the same rule
+ * answers both, with no case of their own. Undefined when the constraint is
+ * unparseable (reported by the walk) or nothing of the package is selected (a
+ * gated optional pruned from it).
  *
  * A layout whose answer here disagreed with the walk's would be one the
- * resolution never sanctioned — hence one rule, two callers. A selection's own
- * key comes from its exact version, per {@link VersionDomain.resolutionKey}'s
- * contract.
- */
-export function edgeTargets<V, C>(
-  domain: VersionDomain<V, C>,
-  selections: readonly Selected<V>[],
-  req: Requirement
-): Selected<V>[] {
-  let constraint: C;
-  try {
-    constraint = domain.parseConstraint(req.constraint);
-  } catch {
-    return [];
-  }
-  const candidates = selections.filter(sel => sel.pkg === req.pkg);
-  if (domain.isFloorless(constraint)) {
-    return candidates;
-  }
-  if (req.soft) {
-    const satisfying = candidates.filter(sel => domain.satisfies(sel.version, constraint));
-    if (satisfying.length > 0) {
-      return satisfying;
-    }
-    const highest = highestOf(domain, candidates);
-    return highest ? [highest] : [];
-  }
-  const key = domain.resolutionKey(req.pkg, constraint);
-  const match = candidates.find(sel => domain.resolutionKey(sel.pkg, domain.parseConstraint(domain.versionToString(sel.version))) === key);
-  if (match) {
-    return [match];
-  }
-  const satisfied = highestOf(
-    domain,
-    candidates.filter(sel => domain.satisfies(sel.version, constraint))
-  );
-  if (satisfied) {
-    return [satisfied];
-  }
-  const highest = highestOf(domain, candidates);
-  return highest ? [highest] : [];
-}
-
-/**
- * The single selection an edge *binds* to, where the consumer must pick one —
- * a layout slot names one package, while reachability follows every target.
- * The two differ only for an unconstrained or unsatisfied-soft edge, where the
- * highest is the binding.
+ * resolution never sanctioned — hence one rule, two callers.
  */
 export function edgeBinding<V, C>(
   domain: VersionDomain<V, C>,
   selections: readonly Selected<V>[],
   req: Requirement
 ): Selected<V> | undefined {
-  return highestOf(domain, edgeTargets(domain, selections, req));
+  let constraint: C;
+  try {
+    constraint = domain.parseConstraint(req.constraint);
+  } catch {
+    return undefined;
+  }
+  const candidates = selections.filter(sel => sel.pkg === req.pkg);
+  const principal = candidates.find(sel => !sel.fork);
+  if (principal && domain.satisfies(principal.version, constraint)) {
+    return principal;
+  }
+  const satisfying = highestOf(
+    domain,
+    candidates.filter(sel => domain.satisfies(sel.version, constraint))
+  );
+  return satisfying ?? principal ?? highestOf(domain, candidates);
+}
+
+/**
+ * {@link edgeBinding} as a (0- or 1-element) list, for callers that iterate a
+ * requirement's targets — reachability follows exactly what layout mounts, so
+ * the two cannot disagree about what a delivery contains.
+ */
+export function edgeTargets<V, C>(
+  domain: VersionDomain<V, C>,
+  selections: readonly Selected<V>[],
+  req: Requirement
+): Selected<V>[] {
+  const bound = edgeBinding(domain, selections, req);
+  return bound ? [bound] : [];
+}
+
+/**
+ * Reader over a resolution's provenance edges: node identity, lookup by it,
+ * and the requirement path back to a root. Every "why is this here / why this
+ * version" answer is one of these, so provenance rendering and a delivery's
+ * own diagnostics reach identical explanations of the same resolution.
+ *
+ * Takes a `versionToString` rather than a whole {@link VersionDomain}: a
+ * persisted resolution is explainable on its own, without the ecosystem's
+ * comparison and constraint machinery. The ids it produces are {@link nodeId}'s
+ * form — that is what `requiredBy` holds.
+ */
+export interface ResolutionExplainer<V> {
+  /** {@link nodeId} of a selection. */
+  id(selection: Selected<V>): string;
+  /** The selection with that id, if the resolution holds one. A requirement
+   * edge may name a node that was itself later superseded, so a `requiredBy`
+   * lookup can legitimately miss. */
+  find(id: string): Selected<V> | undefined;
+  /**
+   * The chain of selected versions from a root requirement down to `node`,
+   * following each node's reachability edge, each annotated with the
+   * constraint its predecessor declared (the root-most carries none). Returned
+   * as segments, for a caller that appends its own before joining with " -> ".
+   */
+  pathTo(node: Selected<V>): string[];
+}
+
+/** {@link ResolutionExplainer} over `selections`. */
+export function resolutionExplainer<V>(
+  selections: readonly Selected<V>[],
+  versionToString: (version: V) => string
+): ResolutionExplainer<V> {
+  const id = (selection: Selected<V>): string => `${selection.pkg}@${versionToString(selection.version)}`;
+  const byId = new Map(selections.map(selection => [id(selection), selection]));
+  const pathTo = (node: Selected<V>): string[] => {
+    const chain: string[] = [];
+    const seen = new Set<Selected<V>>();
+    let current: Selected<V> | undefined = node;
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      const via = current.reachedVia;
+      if (!via || via.requiredBy === ROOT_REQUIRER) {
+        chain.unshift(id(current));
+        break;
+      }
+      chain.unshift(`${id(current)} (${via.constraint})`);
+      current = byId.get(via.requiredBy);
+    }
+    return chain;
+  };
+  return { id, find: key => byId.get(key), pathTo };
 }
 
 /**
@@ -142,31 +175,3 @@ export function coexistingVersions<V>(selections: readonly Selected<V>[]): Array
   return [...byPkg].filter(([, versions]) => versions.length > 1);
 }
 
-/**
- * The splits repairing `violations`, plus those repairing the splits' own
- * violations, transitively — the repair set a delivery of those violated edges
- * has to carry. Generic over the split representation (a resolved tree, or a
- * deserialized one), which need only carry its (pkg, constraint) identity and
- * its own violations.
- */
-export function reachableSplits<V, S extends { pkg: string; constraint: string; violations: Violation<V>[] }>(
-  violations: readonly Violation<V>[],
-  splits: readonly S[]
-): S[] {
-  const byKey = new Map(splits.map(split => [`${split.pkg}\n${split.constraint}`, split]));
-  const included = new Map<string, S>();
-  let frontier: readonly Violation<V>[] = violations;
-  while (frontier.length > 0) {
-    const next: Violation<V>[] = [];
-    for (const violation of frontier) {
-      const key = `${violation.pkg}\n${violation.constraint}`;
-      const split = byKey.get(key);
-      if (split && !included.has(key)) {
-        included.set(key, split);
-        next.push(...split.violations);
-      }
-    }
-    frontier = next;
-  }
-  return [...included.values()];
-}

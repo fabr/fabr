@@ -38,13 +38,11 @@ export interface Requirement {
   alias?: string;
   /**
    * Attach-first (peer) semantics: primarily a constraint on whatever the tree
-   * selects for `pkg` — satisfied by any selection in range, whatever its
-   * resolution key — demanding its own minimum only when the converged tree
-   * selects nothing for the package at all (npm's peer auto-install as a last
-   * resort). This is what keeps a wide multi-major peer range (chai
-   * '>= 2.1.2 < 5') from spawning a coexisting second major beside an
-   * already-satisfying selection: keying such a demand by its minimum's major
-   * would select the range's floor alongside the real one.
+   * selects for `pkg` — satisfied by any selection in range — demanding its
+   * own minimum only when the converged tree selects nothing for the package
+   * at all (npm's peer auto-install as a last resort). This is what keeps a
+   * wide multi-major peer range (chai '>= 2.1.2 < 5') from demanding the
+   * range's floor beside an already-satisfying selection.
    */
   soft?: boolean;
 }
@@ -91,15 +89,30 @@ export interface Selected<V> {
    * a joint resolution into per-root subsets.
    */
   reachableFrom?: number[];
+  /**
+   * Absent (or 0) for the **principal** selection — the one version per
+   * package name the flat delivery ships. A positive index marks a **fork**: a
+   * further selection of the same package repairing the violated requirement
+   * edges the principal cannot satisfy (jointly-unsatisfiable constraints),
+   * deliverable only by nesting it privately under its requirers. A strict
+   * (linked) delivery refuses reachable forks; a sealed one nests them.
+   * Indices are canonical per package (ascending version order), carrying no
+   * meaning beyond distinctness.
+   */
+  fork?: number;
 }
 
 /**
  * An upper-bound violation found after selection: `requiredBy` declared
- * `constraint` on `pkg`, and the version selected under that resolution key
- * does not satisfy it (jointly-unsatisfiable constraints — an exact transitive
- * pin against a higher floor). Reported as data: the consumer decides whether
- * it is an error (a linked delivery) or is repaired by a private split (a
- * sealed tool delivery).
+ * `constraint` on `pkg`, and the principal selection of the package does not
+ * satisfy it (jointly-unsatisfiable constraints — an exact transitive pin
+ * against a higher floor, or ranges confined to different majors). Reported as
+ * data: the consumer decides whether it is an error (a linked delivery) or is
+ * repaired by the fork selection the resolver packed its edge into (a sealed
+ * tool delivery, which nests the fork privately). A violation no fork repairs
+ * — nothing published satisfies its constraint — is undeliverable in every
+ * mode; a consumer detects that by checking the selections (no selection of
+ * `pkg` satisfies `constraint`).
  */
 export interface Violation<V> {
   pkg: string;
@@ -111,9 +124,9 @@ export interface Violation<V> {
 /**
  * A floor-raise repair: `constraint`'s declared minimum was never published, so
  * the lowest *published* satisfying version was selected in its place (via the
- * registry's {@link PackageRegistry.lowestAvailable} hook). Only raises that
- * won their resolution key are reported — a raise superseded by a higher
- * requirement's floor never shaped the result.
+ * registry's {@link PackageRegistry.lowestAvailable} hook). Only raises whose
+ * raised version made the result are reported — a raise superseded by a higher
+ * requirement's floor never shaped it.
  */
 export interface RaisedFloor<V> {
   pkg: string;
@@ -163,10 +176,7 @@ export interface IResolutionError {
    * requirement's own package when it is itself a root. */
   rootPkg: string;
   /** For a required-only-floorless error: the package that lacks any versioned
-   * requirement. This is the key {@link resolveWithRepairs} defers a split
-   * tree's judgment by — a floorless requirement is satisfied by any version,
-   * so one the main tree selects satisfies the split's edge too (bound
-   * cross-scope at layout), and the split-local error is dropped. */
+   * requirement (the remedy — an explicit requirement — names it). */
   pkg?: string;
 }
 
@@ -219,20 +229,6 @@ export interface VersionDomain<V, C> {
    * selection.
    */
   satisfies(version: V, constraint: C): boolean;
-
-  /**
-   * The unit of coexistence: requirements with the same resolution key must
-   * resolve to a single version, while different keys may coexist in a build.
-   * e.g. npm allows one version per major ("pkg@1"), while Go and Maven
-   * allow only one version per package name.
-   *
-   * Must read the constraint only through its {@link minimumOf} — which every
-   * coexistence rule above does. That is what makes a *selection's* own key
-   * recoverable from the version it selected (the key of its exact version),
-   * so a consumer holding selections but not the resolver's key table can
-   * still say which selection an edge leads to (see edgeTargets).
-   */
-  resolutionKey(pkg: string, constraint: C): string;
 
   /**
    * Canonical string form of a version (for cache keys and diagnostics).

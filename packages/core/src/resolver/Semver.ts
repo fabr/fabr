@@ -416,14 +416,5 @@ export const SEMVER: VersionDomain<SemverVersion, SemverConstraint> = {
     return constraint.ranges.some(range => versionInRange(version, range));
   },
 
-  /**
-   * npm permits distinct major versions of a package to coexist; within the
-   * 0.x series each minor is its own compatibility unit (per caret semantics).
-   */
-  resolutionKey(pkg: string, constraint: SemverConstraint): string {
-    const min = this.minimumOf(constraint);
-    return min.major > 0 ? `${pkg}@${min.major}` : `${pkg}@0.${min.minor}`;
-  },
-
   versionToString,
 };

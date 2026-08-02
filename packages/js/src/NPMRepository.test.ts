@@ -1060,13 +1060,78 @@ describe("strictRepairError", () => {
   /* Floor raises are deliberately absent here: a raised floor is the
    * constraint's plain meaning when its literal minimum was never published,
    * accepted in every delivery mode rather than judged by the strict gate. */
+  const violation = { pkg: "C", constraint: "^2.0.0", requiredBy: "A@1.0.0", selected: parseVersion("3.0.0") };
+  const duplicates: Array<[string, SemverVersion[]]> = [["D", [parseVersion("1.0.0"), parseVersion("2.0.0")]]];
+  const rootEdge = (constraint: string): IRequirementEdge => ({ requiredBy: ROOT_REQUIRER, constraint });
+  const selection = (
+    pkg: string,
+    version: string,
+    reachedVia: IRequirementEdge,
+    selectedBy?: IRequirementEdge
+  ): Selected<SemverVersion> => ({ pkg, version: parseVersion(version), reachedVia, selectedBy: selectedBy ?? reachedVia });
+  /* A@1.0.0 and B@1.0.0 both require C; B's floor won, so A's upper bound is
+   * the one violated. D coexists: required by A at 1.0.0 and directly at 2. */
+  const selections = [
+    selection("A", "1.0.0", rootEdge("^1.0.0")),
+    selection("B", "1.0.0", rootEdge("^1.0.0")),
+    selection("C", "3.0.0", { requiredBy: "A@1.0.0", constraint: "^2.0.0" }, { requiredBy: "B@1.0.0", constraint: "^3.0.0" }),
+    selection("D", "1.0.0", { requiredBy: "A@1.0.0", constraint: "^1.0.0" }),
+    selection("D", "2.0.0", rootEdge("^2.0.0")),
+  ];
+
   it("reports violations and coexisting versions as structural facts", () => {
-    const violation = { pkg: "C", constraint: "^2.0.0", requiredBy: "A@1.0.0", selected: parseVersion("3.0.0") };
-    const err = strictRepairError("A:^1.0.0", [violation], [["D", [parseVersion("1.0.0"), parseVersion("2.0.0")]]]) as Error & {
+    const err = strictRepairError("A:^1.0.0", [violation], duplicates, selections) as Error & {
       help?: string;
     };
     expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0'");
     expect(err.message).to.contain("multiple versions of D (1.0.0, 2.0.0)");
     expect(err.help).to.contain("sealed tool install");
+  });
+
+  it("collapses same-conflict violations to one entry naming the other requirers", () => {
+    /* The aws-sdk shape: one widely-declared requirement ('^2.0.0' on C from
+     * many siblings) violates once per requirer, but the conflict and its
+     * remedy are the same — one full stanza, the rest summarised by name. */
+    const requirers = ["A@1.0.0", "B@1.0.0", "E@1.0.0", "F@1.0.0", "G@1.0.0", "H@1.0.0", "I@1.0.0"];
+    const violationsFrom = requirers.map(requiredBy => ({ ...violation, requiredBy }));
+    const err = strictRepairError("A:^1.0.0", violationsFrom, [], selections);
+    expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0' required by A@1.0.0 (and 6 more)");
+    expect(err.message).to.contain("'^2.0.0' also required by: B@1.0.0, E@1.0.0, F@1.0.0, G@1.0.0 (+2 more)");
+    /* One stanza, not seven: the violation line appears exactly once */
+    expect(err.message.match(/does not satisfy/g)).to.have.lengthOf(1);
+    /* A distinct conflict (different selected version) keeps its own entry */
+    const other = { pkg: "C", constraint: "^2.0.0", requiredBy: "B@1.0.0", selected: parseVersion("3.5.0") };
+    const two = strictRepairError("A:^1.0.0", [violation, other], [], selections);
+    expect(two.message.match(/does not satisfy/g)).to.have.lengthOf(2);
+  });
+
+  it("attributes both sides of a violation to their requirement paths", () => {
+    const err = strictRepairError("A:^1.0.0", [violation], [], selections);
+    expect(err.message).to.contain("3.0.0 selected by: B@1.0.0 -> C@3.0.0 (^3.0.0)");
+    expect(err.message).to.contain("'^2.0.0' required via: A@1.0.0");
+  });
+
+  it("attributes each coexisting version to its requirement path", () => {
+    const err = strictRepairError("A:^1.0.0", [], duplicates, selections);
+    expect(err.message).to.contain("1.0.0 required via: A@1.0.0 -> D@1.0.0 (^1.0.0)");
+    expect(err.message).to.contain("2.0.0 required directly ('^2.0.0')");
+  });
+
+  it("suppresses a coexisting-versions entry already explained by a violation", () => {
+    /* A fork exists exactly because an edge violated, so the multiplicity is
+     * the violation restated — one stanza, not two. */
+    const cDuplicates: Array<[string, SemverVersion[]]> = [["C", [parseVersion("2.5.0"), parseVersion("3.0.0")]]];
+    const err = strictRepairError("A:^1.0.0", [violation], cDuplicates, selections);
+    expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0'");
+    expect(err.message).to.not.contain("requires multiple versions of C");
+  });
+
+  /* Provenance edges are optional (resolutions persisted before they existed),
+   * so the bare statement of each repair has to stand on its own. */
+  it("states the repairs alone when the resolution carries no provenance", () => {
+    const err = strictRepairError("A:^1.0.0", [violation], duplicates, [{ pkg: "C", version: parseVersion("3.0.0") }]);
+    expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0' required by A@1.0.0");
+    expect(err.message).to.not.contain("selected by:");
+    expect(err.message).to.not.contain("required via:");
   });
 });

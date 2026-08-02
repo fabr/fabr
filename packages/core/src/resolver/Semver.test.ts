@@ -28,10 +28,6 @@ function satisfies(version: string, constraint: string): boolean {
   return SEMVER.satisfies(parseVersion(version), SEMVER.parseConstraint(constraint));
 }
 
-function resolutionKey(pkg: string, constraint: string): string {
-  return SEMVER.resolutionKey(pkg, SEMVER.parseConstraint(constraint));
-}
-
 describe("Semver", () => {
   it("parses versions", () => {
     expect(parseVersion("1.2.3")).to.deep.equal({ major: 1, minor: 2, patch: 3, prerelease: [] });
@@ -124,13 +120,6 @@ describe("Semver", () => {
     expect(satisfies("3.0.0", ">= 2.1.2 < 3.0.0")).to.equal(false);
     expect(satisfies("1.2.9", "~ 1.2.3")).to.equal(true);
     expect(satisfies("1.9.9", "^ 1.2.3")).to.equal(true);
-  });
-
-  it("assigns resolution keys per compatibility unit", () => {
-    expect(resolutionKey("foo", "^1.2.3")).to.equal("foo@1");
-    expect(resolutionKey("foo", "2.0.0")).to.equal("foo@2");
-    expect(resolutionKey("foo", "^0.2.3")).to.equal("foo@0.2");
-    expect(resolutionKey("@scope/foo", "~3.1.0")).to.equal("@scope/foo@3");
   });
 
   it("parses hyphen ranges per npm ('A - B', partials widening the right bound)", () => {

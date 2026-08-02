@@ -18,6 +18,7 @@
  */
 
 import { IProvenanceStep, registerProvenanceRenderer } from "../core/Provenance";
+import { resolutionExplainer } from "./ResolutionGraph";
 import { Requirement, ROOT_REQUIRER, Selected } from "./Types";
 
 export const PACKAGE_RESOLUTION_PROVENANCE = "package-resolution";
@@ -56,40 +57,21 @@ export function explainResolutionPath<V>(origin: IResolutionOrigin<V>, path: str
   if (!selection) {
     return [`${pkg} is not present in the resolution of ${origin.root.pkg}:${origin.root.constraint}`];
   }
-  const selId = (sel: Selected<V>): string => `${sel.pkg}@${origin.versionToString(sel.version)}`;
-  const byId = new Map(origin.selections.map(sel => [selId(sel), sel]));
-
-  /* Walk a node's reachability edges back to a root requirement */
-  const chainTo = (node: Selected<V>): string[] => {
-    const chain: string[] = [];
-    const seen = new Set<Selected<V>>();
-    let current: Selected<V> | undefined = node;
-    while (current && !seen.has(current)) {
-      seen.add(current);
-      const via = current.reachedVia;
-      if (!via || via.requiredBy === ROOT_REQUIRER) {
-        chain.unshift(selId(current));
-        break;
-      }
-      chain.unshift(`${selId(current)} (${via.constraint})`);
-      current = byId.get(via.requiredBy);
-    }
-    return chain;
-  };
+  const { id, find, pathTo } = resolutionExplainer(origin.selections, origin.versionToString);
 
   const winner = selection.selectedBy;
   if (!winner || winner.requiredBy === ROOT_REQUIRER) {
     /* Directly required by the root requirement */
-    return [`${selId(selection)} (${winner?.constraint ?? origin.root.constraint})`];
+    return [`${id(selection)} (${winner?.constraint ?? origin.root.constraint})`];
   }
-  const winnerNode = byId.get(winner.requiredBy);
+  const winnerNode = find(winner.requiredBy);
   if (winnerNode) {
-    return [[...chainTo(winnerNode), `${selId(selection)} (${winner.constraint})`].join(" -> ")];
+    return [[...pathTo(winnerNode), `${id(selection)} (${winner.constraint})`].join(" -> ")];
   }
   /* The winning requirement was declared by a version that was itself
    * superseded; fall back to the reachability path and note the raise. */
   return [
-    chainTo(selection).join(" -> "),
+    pathTo(selection).join(" -> "),
     `version ${origin.versionToString(selection.version)} raised by ${winner.requiredBy} requiring ${winner.constraint} (since superseded)`,
   ];
 }

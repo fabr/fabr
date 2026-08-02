@@ -29,11 +29,14 @@ edges; see [Known limitations](https://fabr.build/known-limitations/) for the on
 
 ## Install
 
-Fabr ships as two npm packages — the CLI and the JavaScript/TypeScript rules — installed together:
+Install the CLI globally; it brings the JavaScript/TypeScript rules (`@fabr-build/js`) with it:
 
 ```sh
-npm install -g @fabr-build/cli @fabr-build/js
+npm install -g @fabr-build/cli
 ```
+
+Don't install `@fabr-build/js` as a global package of its own — npm then gives it a second copy of
+`@fabr-build/core`, and fabr can only work with one.
 
 ## A minimal example
 

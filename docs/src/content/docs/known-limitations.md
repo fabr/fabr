@@ -62,11 +62,13 @@ range at install time", so the results can differ:
   correctly with a version newer than anything your build actually requires, raise the floor with an
   explicit requirement (e.g. `@npm:some-pkg:1.4.2`) — MVS will never silently pick a newer version
   for you.
-- **One version per major (per minor for 0.x) for anything you compile or link against.** If two
-  parts of your build require incompatible majors of the same transitive dependency, that is a
-  conflict you must resolve by pinning. (Sealed *tool* closures — a `js_script`/`script` and its
-  `run` delivery — relax this and nest duplicate versions npm-style; the one-version rule still holds
-  for everything a target compiles or links into its output.)
+- **One version per package for anything you compile or link against.** Each package resolves to
+  one version; requirements no single version can satisfy jointly (incompatible majors of a shared
+  transitive, an exact pin against a higher floor) are a conflict, reported with the requirement
+  chains on both sides, that you resolve by pinning. (Sealed *tool* closures — a
+  `js_script`/`script` and its `run` delivery — relax this and nest the conflicting versions
+  npm-style; the one-version rule still holds for everything a target compiles or links into its
+  output.)
 - **Install-time behaviours don't happen.** Fabr fetches and assembles package contents; it does not
   run `postinstall` scripts or auto-install peer dependencies the way an npm client would. A package
   that depends on such behaviour may not work out of the box.

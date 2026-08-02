@@ -379,7 +379,7 @@ export interface PlannedMount {
  * end, and the closure has **no** finite node_modules layout — a version cycle
  * across generations (a@1 → b@1 → a@2 → b@2 → a@1) is the shape that does it.
  * Note this is a limit of the *layout*, not of the resolution: such a closure
- * resolves perfectly cleanly, one version per resolution key, no violations —
+ * resolves perfectly cleanly, each fork repairing its violated edges —
  * there is simply no tree that satisfies every edge. So it is reported here,
  * where the layout is decided, as {@link assembleNodeModules} reports an
  * unrepresentable root collision, and not truncated into a tree that would

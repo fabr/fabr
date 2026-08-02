@@ -18,7 +18,7 @@
  */
 
 import { Computable } from "../core/Computable";
-import { RepairableResolution, resolveMVS, resolveWithRepairs } from "./MVSResolver";
+import { resolveMVS } from "./MVSResolver";
 import { parseVersion, SEMVER, SemverVersion, versionToString } from "./Semver";
 import { MetadataFetchError, VersionNotFoundError } from "../core/Errors";
 import { PackageRegistry, Requirement, MVSResolution, Selected } from "./Types";
@@ -306,7 +306,10 @@ describe("MVSResolver", () => {
     expect(result.errors).to.deep.equal([]);
   });
 
-  it("allows distinct major versions to coexist", () => {
+  it("forks a package whose demanded majors are jointly unsatisfiable", () => {
+    /* One selection per name: D@2.0.0 is the principal (max of floors), and
+     * B's ^1.0.0 — which no version satisfying ^2.0.0 can satisfy — is a
+     * violation, repaired by a D@1.0.0 fork a sealed delivery nests. */
     const result = resolve(
       { B: "^1.0.0", C: "^1.0.0" },
       {
@@ -316,6 +319,12 @@ describe("MVSResolver", () => {
       }
     );
     expect(selectionStrings(result)).to.deep.equal(["B@1.0.0", "C@1.0.0", "D@1.0.0", "D@2.0.0"]);
+    const [d1, d2] = result.selections.filter(sel => sel.pkg === "D");
+    expect(d1.fork).to.equal(1);
+    expect(d2.fork).to.be.undefined;
+    expect(result.violations).to.have.lengthOf(1);
+    expect(result.violations[0].requiredBy).to.equal("B@1.0.0");
+    expect(versionToString(result.violations[0].selected)).to.equal("2.0.0");
     expect(result.errors).to.deep.equal([]);
   });
 
@@ -327,7 +336,11 @@ describe("MVSResolver", () => {
         E: { "1.0.0": { D: "^1.3.0" } },
       }
     );
-    expect(selectionStrings(result)).to.deep.equal(["D@1.3.0", "E@1.0.0"]);
+    /* The violated root edge is repaired by the D@1.1.0 fork; the violation
+     * itself — judged against the principal, what a flat delivery ships —
+     * remains the recorded fact a strict consumer errors on. */
+    expect(selectionStrings(result)).to.deep.equal(["D@1.1.0", "D@1.3.0", "E@1.0.0"]);
+    expect(result.selections[0].fork).to.equal(1);
     expect(result.errors).to.deep.equal([]);
     expect(result.violations).to.have.lengthOf(1);
     expect(result.violations[0].pkg).to.equal("D");
@@ -564,11 +577,13 @@ describe("MVSResolver", () => {
     expect(result.violations[0].requiredBy).to.equal("plugin@1.0.0");
   });
 
-  it("repairs only when the converged tree needs it (a transient floor never fires)", () => {
+  it("repairs the principal only when the converged tree needs it", () => {
     /* D's floor genuinely needs a raise (nothing supersedes it) — that alone
-     * triggers the repair phase. A's transient ~2.0.5 floor, superseded by the
-     * root's ^2.6.0, contributes nothing to the result even though the repair
-     * phase probes eagerly (its candidate is dropped at finish: 2.6.0 won). */
+     * triggers the principal repair phase, and it must not move C's principal
+     * (the root's ^2.6.0 wins; A's superseded ~2.0.5 floor contributes
+     * nothing to it). A's violated edge is separately repaired by a fork,
+     * whose own unpublished floor raises to the lowest published satisfier —
+     * fork repairs need no arming, the converged violation is their proof. */
     const result = resolve(
       { A: "1.0.0", C: "^2.6.0", D: "^1.0.0" },
       {
@@ -578,10 +593,11 @@ describe("MVSResolver", () => {
       },
       true
     );
-    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@2.6.0", "D@1.0.1"]);
-    expect(result.raises).to.have.lengthOf(1);
-    expect(result.raises[0].pkg).to.equal("D");
-    expect(versionToString(result.raises[0].raised)).to.equal("1.0.1");
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@2.0.9", "C@2.6.0", "D@1.0.1"]);
+    const cs = result.selections.filter(sel => sel.pkg === "C");
+    expect(cs[0].fork).to.equal(1);
+    expect(cs[1].fork).to.be.undefined;
+    expect(result.raises.map(raise => `${raise.pkg}@${versionToString(raise.raised)}`)).to.deep.equal(["C@2.0.9", "D@1.0.1"]);
   });
 
   it("fails when nothing published satisfies an unpublished floor", () => {
@@ -596,13 +612,13 @@ describe("MVSResolver", () => {
     expect((error as MetadataFetchError).pkg).to.equal("B");
   });
 
-  it("raises an unpublished floor across the resolution key to the first published satisfier", () => {
+  it("raises an unpublished floor across majors to the first published satisfier", () => {
     /* A requires B '>=1.2.3'; 1.2.3 was never published and the only published
-     * satisfier is 2.0.0 — another coexistence key (major 2 vs the floor's
-     * major 1). The request was for '>=1.2.3', and the first published version
-     * meeting it is an acceptable answer: the raise is offered under the
-     * raised version's own key, the phantom 1.x slot serves no edge, and the
-     * edge recovers by satisfaction — B does not vanish from the closure. */
+     * satisfier is 2.0.0 — a different major from the floor's. The request was
+     * for '>=1.2.3', and the first published version meeting it is an
+     * acceptable answer: the raise re-offers it through the normal max rule,
+     * the phantom serves no edge, and the edge binds by satisfaction — B does
+     * not vanish from the closure. */
     const result = resolve({ A: "1.0.0" }, { A: { "1.0.0": { B: ">=1.2.3" } }, B: { "2.0.0": {} } }, true);
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@2.0.0"]);
     expect(result.errors).to.deep.equal([]);
@@ -613,10 +629,10 @@ describe("MVSResolver", () => {
     expect(versionToString(result.raises[0].raised)).to.equal("2.0.0");
   });
 
-  it("a 0.x per-minor cross-key raise lands too, and an in-key raise is unchanged", () => {
+  it("a 0.x cross-minor raise lands too, and a same-range raise is unchanged", () => {
     /* C's floor 0.5.0 is unpublished; the lowest published satisfier within
-     * '>=0.5.0' is 0.6.0 — a different 0.x key (per-minor coexistence),
-     * crossed on the same terms as a major. */
+     * '>=0.5.0' is 0.6.0 — a different 0.x minor (a different caret
+     * compatibility unit), crossed on the same terms as a major. */
     const crossed = resolve({ A: "1.0.0" }, { A: { "1.0.0": { C: ">=0.5.0" } }, C: { "0.6.0": {} } }, true);
     expect(selectionStrings(crossed)).to.deep.equal(["A@1.0.0", "C@0.6.0"]);
     expect(crossed.raises).to.have.lengthOf(1);
@@ -678,7 +694,7 @@ describe("MVSResolver", () => {
     expect((err as MetadataFetchError).pkg).to.equal("B");
   });
 
-  it("expands a demanded version that loses its key, whatever the arrival order", () => {
+  it("expands a demanded version that loses its slot, whatever the arrival order", () => {
     /* P and Q demand different minors of B; the two B versions declare
      * different C floors. Under Go's MVS the module graph holds every demanded
      * version, so B@1.0.0's C floor counts even though B@1.2.0 supersedes it —
@@ -698,12 +714,12 @@ describe("MVSResolver", () => {
     expect(result.errors).to.deep.equal([]);
   });
 
-  it("walks coexisting majors in a canonical order, whatever the arrival order", () => {
-    /* E's unconstrained edge leads to BOTH selections of D, so the order they
-     * are walked in decides which of their own (violated) requirements is
-     * recorded first — and `violations` and `reachedVia` are persisted. That
-     * order must come from the versions, not from `selected`'s insertion
-     * order, which follows which packument landed first. */
+  it("forks and re-judges in a canonical order, whatever the arrival order", () => {
+    /* B's violated edge forks D@1.0.0, whose own exact pin on G then violates
+     * and forks in turn — a fork's subtree is judged in the same graph, and
+     * `violations`, fork indices and `reachedVia` are all persisted, so every
+     * round's order must come from the converged tree, not from which
+     * packument landed first. E's floorless edge binds the principal only. */
     const result = resolveOrderIndependent(
       { E: "1.0.0", B: "^1.0.0", C: "^1.0.0", G: "1.5.0", H: "1.5.0" },
       {
@@ -715,11 +731,26 @@ describe("MVSResolver", () => {
         H: { "1.0.0": {}, "1.5.0": {} },
       }
     );
-    expect(selectionStrings(result)).to.deep.equal(["B@1.0.0", "C@1.0.0", "D@1.0.0", "D@2.0.0", "E@1.0.0", "G@1.5.0", "H@1.5.0"]);
-    /* Lower major first: D@1.0.0's exact pin on G is reported before D@2's on H. */
+    expect(selectionStrings(result)).to.deep.equal([
+      "B@1.0.0",
+      "C@1.0.0",
+      "D@1.0.0",
+      "D@2.0.0",
+      "E@1.0.0",
+      "G@1.0.0",
+      "G@1.5.0",
+      "H@1.0.0",
+      "H@1.5.0",
+    ]);
+    const forks = result.selections.filter(sel => sel.fork !== undefined);
+    expect(forks.map(sel => `${sel.pkg}@${versionToString(sel.version)}`)).to.deep.equal(["D@1.0.0", "G@1.0.0", "H@1.0.0"]);
+    /* Violations in reachability order: the root-violated edge first, then the
+     * principal D@2's pin, then the fork D@1's — each judged against the
+     * principal of its target. */
     expect(result.violations.map(violation => `${violation.requiredBy} -> ${violation.pkg}`)).to.deep.equal([
-      "D@1.0.0 -> G",
+      "B@1.0.0 -> D",
       "D@2.0.0 -> H",
+      "D@1.0.0 -> G",
     ]);
   });
 
@@ -902,28 +933,12 @@ describe("MVSResolver", () => {
   });
 });
 
-describe("resolveWithRepairs", () => {
-  function repair(
-    roots: Record<string, string>,
-    data: Record<string, Record<string, Record<string, string>>>
-  ): RepairableResolution<SemverVersion> {
-    let result: RepairableResolution<SemverVersion> | undefined;
-    resolveWithRepairs(
-      Object.entries(roots).map(([pkg, constraint]) => ({ pkg, constraint })),
-      SEMVER,
-      mockRegistry(data, true)
-    ).then(resolution => {
-      result = resolution;
-    });
-    expect(result).to.not.equal(undefined);
-    return result!;
-  }
-
-  it("gives a violated exact pin a private split subtree", () => {
+describe("fork packing", () => {
+  it("gives a violated exact pin a fork selection", () => {
     /* The mdn-data shape: X exact-pins M@2.0.28, Y floors it at 2.12.2 — same
-     * major, jointly unsatisfiable. The violated edge gets its own standalone
-     * subtree pinned at exactly 2.0.28. */
-    const result = repair(
+     * major, jointly unsatisfiable. The violated edge is repaired by a fork of
+     * M at exactly 2.0.28, which a sealed delivery nests privately. */
+    const result = resolve(
       { X: "1.0.0", Y: "1.0.0" },
       {
         X: { "1.0.0": { M: "2.0.28" } },
@@ -931,18 +946,24 @@ describe("resolveWithRepairs", () => {
         M: { "2.0.28": {}, "2.12.2": {} },
       }
     );
-    expect(selectionStrings(result.tree)).to.deep.equal(["M@2.12.2", "X@1.0.0", "Y@1.0.0"]);
-    expect(result.tree.violations).to.have.lengthOf(1);
-    expect(result.splits).to.have.lengthOf(1);
-    expect(result.splits[0].pkg).to.equal("M");
-    expect(result.splits[0].constraint).to.equal("2.0.28");
-    expect(selectionStrings(result.splits[0].tree)).to.deep.equal(["M@2.0.28"]);
+    expect(selectionStrings(result)).to.deep.equal(["M@2.0.28", "M@2.12.2", "X@1.0.0", "Y@1.0.0"]);
+    const [fork, principal] = result.selections.filter(sel => sel.pkg === "M");
+    expect(fork.fork).to.equal(1);
+    expect(principal.fork).to.be.undefined;
+    expect(result.violations).to.have.lengthOf(1);
+    expect(result.violations[0].constraint).to.equal("2.0.28");
+    /* The fork records the requirement whose floor selected it */
+    expect(fork.selectedBy).to.deep.equal({ requiredBy: "X@1.0.0", constraint: "2.0.28" });
+    expect(fork.reachedVia).to.deep.equal({ requiredBy: "X@1.0.0", constraint: "2.0.28" });
   });
 
-  it("deduplicates identical violated edges and splits recursively", () => {
-    /* A and B pin the same (P, 1.0.0) — one split; inside that split P@1.0.0's
-     * own tree violates (Q, 1.0.0) — a second, nested split. */
-    const result = repair(
+  it("shares a fork between identical violated edges and forks recursively", () => {
+    /* A and B pin the same (P, 1.0.0) — one fork serves both edges; the fork's
+     * own subtree violates (Q, 1.0.0) against the jointly-selected Q@1.2.0 —
+     * a second fork, packed by the same rule in the same graph. R is shared
+     * with the main tree (its edges are satisfied by the principals), not
+     * duplicated into a private world. */
+    const result = resolve(
       { A: "1.0.0", B: "1.0.0", C: "1.0.0" },
       {
         A: { "1.0.0": { P: "1.0.0" } },
@@ -953,38 +974,83 @@ describe("resolveWithRepairs", () => {
         R: { "1.0.0": { Q: "^1.2.0" } },
       }
     );
-    /* Canonically ordered, not in the order the subtrees happened to resolve:
-     * the list is persisted, and a consumer resolving dependency edges lets the
-     * first scope claiming a shared version win. */
-    expect(result.splits.map(split => `${split.pkg}@${split.constraint}`)).to.deep.equal(["P@1.0.0", "Q@1.0.0"]);
-    const p = result.splits.find(split => split.pkg === "P")!;
-    expect(selectionStrings(p.tree)).to.deep.equal(["P@1.0.0", "Q@1.2.0", "R@1.0.0"]);
-    /* P's subtree still lists its own violation, mapped to the Q split */
-    expect(p.tree.violations).to.have.lengthOf(1);
-    const q = result.splits.find(split => split.pkg === "Q")!;
-    expect(selectionStrings(q.tree)).to.deep.equal(["Q@1.0.0"]);
+    expect(selectionStrings(result)).to.deep.equal([
+      "A@1.0.0",
+      "B@1.0.0",
+      "C@1.0.0",
+      "P@1.0.0",
+      "P@1.5.0",
+      "Q@1.0.0",
+      "Q@1.2.0",
+      "R@1.0.0",
+    ]);
+    const forks = result.selections.filter(sel => sel.fork !== undefined);
+    expect(forks.map(sel => `${sel.pkg}@${versionToString(sel.version)}`)).to.deep.equal(["P@1.0.0", "Q@1.0.0"]);
+    expect(result.violations.map(violation => `${violation.requiredBy} -> ${violation.pkg}`)).to.deep.equal([
+      "A@1.0.0 -> P",
+      "B@1.0.0 -> P",
+      "P@1.0.0 -> Q",
+    ]);
   });
 
-  it("returns no splits for a violation-free tree", () => {
-    const result = repair(
+  it("creates no forks for a violation-free tree", () => {
+    const result = resolve(
       { A: "1.0.0" },
       {
         A: { "1.0.0": { B: "^1.2.0" } },
         B: { "1.2.0": {} },
       }
     );
-    expect(result.splits).to.deep.equal([]);
-    expect(result.tree.violations).to.deep.equal([]);
+    expect(result.selections.every(sel => sel.fork === undefined)).to.equal(true);
+    expect(result.violations).to.deep.equal([]);
   });
 
-  it("defers a split tree's floorless-only judgment to the main tree", () => {
+  it("raises a fork's unpublished floor to the lowest published satisfier", () => {
+    /* The violated edge's floor ~1.8.0 → 1.8.0 was never published; the fork
+     * lands at the lowest published version satisfying the constraint, and the
+     * raise is recorded. No arming round is needed — the converged violation is
+     * itself the proof the fork (hence the raise) is required. */
+    const result = resolve(
+      { A: "1.0.0", B: "^2.6.2" },
+      {
+        A: { "1.0.0": { B: "~1.8.0" } },
+        B: { "1.8.3": {}, "2.6.2": {} },
+      },
+      true
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@1.8.3", "B@2.6.2"]);
+    const fork = result.selections.find(sel => sel.fork !== undefined)!;
+    expect(versionToString(fork.version)).to.equal("1.8.3");
+    expect(result.raises).to.have.lengthOf(1);
+    expect(versionToString(result.raises[0].declared)).to.equal("1.8.0");
+    expect(versionToString(result.raises[0].raised)).to.equal("1.8.3");
+    expect(result.raises[0].requiredBy).to.equal("A@1.0.0");
+  });
+
+  it("leaves a violation nothing published satisfies bare — no fork", () => {
+    /* A's exact pin has no published satisfier at all: the violation stands
+     * with no repairing fork (a consumer sees no selection satisfies it), and
+     * the rest of the tree still resolves — the unsatisfiable edge is judged
+     * where it is in scope, not turned into a whole-resolution failure. */
+    const result = resolve(
+      { A: "1.0.0", B: "^2.6.2" },
+      {
+        A: { "1.0.0": { B: "1.9.9" } },
+        B: { "2.6.2": {} },
+      },
+      true
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@2.6.2"]);
+    expect(result.violations).to.have.lengthOf(1);
+    expect(result.violations[0].constraint).to.equal("1.9.9");
+  });
+
+  it("a floorless edge in a fork's subtree is answered by the delivery's pin", () => {
     /* The jest-30 shape: X exact-pins M@2.0.28 (violated by Y's higher floor,
-     * so M@2.0.28 gets a standalone split), and inside the split M requires
-     * T '*'. The standalone resolution cannot see the batch's T pin — but the
-     * split is a partition of this one delivery, and the main tree selects T,
-     * which satisfies the floorless edge (bound cross-scope at layout). The
-     * split-local error must be dropped, or the pin remedy can never work. */
-    const result = repair(
+     * so M@2.0.28 forks), and the fork requires T '*'. Forks resolve in the
+     * ONE graph, so the batch's T pin answers the floorless edge directly —
+     * no error, and no private world that couldn't see the pin. */
+    const result = resolve(
       { X: "1.0.0", Y: "1.0.0", T: "20.0.0" },
       {
         X: { "1.0.0": { M: "2.0.28" } },
@@ -993,15 +1059,12 @@ describe("resolveWithRepairs", () => {
         T: { "20.0.0": {} },
       }
     );
-    expect(result.splits).to.have.lengthOf(1);
-    expect(result.splits[0].tree.errors).to.deep.equal([]);
-    /* The split tree deliberately does not select T — the edge binds the main
-     * tree's selection at layout. */
-    expect(selectionStrings(result.splits[0].tree)).to.deep.equal(["M@2.0.28"]);
+    expect(result.errors).to.deep.equal([]);
+    expect(selectionStrings(result)).to.deep.equal(["M@2.0.28", "M@2.12.2", "T@20.0.0", "X@1.0.0", "Y@1.0.0"]);
   });
 
-  it("keeps a split tree's floorless-only error when no scope provides the package", () => {
-    const result = repair(
+  it("keeps the floorless-only error when nothing provides the package", () => {
+    const result = resolve(
       { X: "1.0.0", Y: "1.0.0" },
       {
         X: { "1.0.0": { M: "2.0.28" } },
@@ -1009,8 +1072,10 @@ describe("resolveWithRepairs", () => {
         M: { "2.0.28": { T: "*" }, "2.12.2": {} },
       }
     );
-    expect(result.splits).to.have.lengthOf(1);
-    expect(result.splits[0].tree.errors).to.have.lengthOf(1);
-    expect(result.splits[0].tree.errors[0].pkg).to.equal("T");
+    expect(result.errors).to.have.lengthOf(1);
+    expect(result.errors[0].pkg).to.equal("T");
+    /* Attributed through the first-reacher chain to the root whose subtree
+     * demanded the erring node (X exact-pinned the fork) */
+    expect(result.errors[0].rootPkg).to.equal("X");
   });
 });

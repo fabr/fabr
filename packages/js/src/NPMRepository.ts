@@ -25,7 +25,6 @@ import {
   coexistingVersions,
   ConflictError,
   edgeBinding,
-  edgeTargets,
   FILES_OPERATION,
   FileSet,
   HttpStatusError,
@@ -38,6 +37,7 @@ import {
   MemoryFile,
   MetadataFetchError,
   MultiError,
+  MVSResolution,
   Name,
   nodeId,
   NpmPlatform,
@@ -55,9 +55,7 @@ import {
   RepositoryWriter,
   PublishMember,
   PublishStatus,
-  reachableSplits,
   readStream,
-  RepairableResolution,
   Repository,
   RepositoryContext,
   RepositoryRef,
@@ -65,9 +63,11 @@ import {
   Requirement,
   RequirementResolutionError,
   Resolution,
+  ResolutionExplainer,
+  resolutionExplainer,
   ResolutionWalkError,
   ResolvedRoot,
-  resolveWithRepairs,
+  resolveMVS,
   ROOT_REQUIRER,
   RunnableFileSet,
   Selected,
@@ -124,6 +124,8 @@ interface IResolutionEntry {
   selectedBy?: IRequirementEdge;
   reachedVia?: IRequirementEdge;
   reachableFrom?: number[];
+  /** Fork index (see resolver Selected.fork); absent for the principal */
+  fork?: number;
 }
 
 /** Serialized upper-bound violation (see resolver Violation) */
@@ -151,23 +153,14 @@ interface IRequirementsEntry {
   requires: Requirement[];
 }
 
-/** Serialized private split subtree repairing one violated requirement */
-interface ISplitEntry {
-  pkg: string;
-  constraint: string;
-  selections: IResolutionEntry[];
-  violations: IViolationEntry[];
-  raises: IRaiseEntry[];
-  requirements: IRequirementsEntry[];
-}
-
-/** Serialized form of a persisted joint resolution (memo tag npm:resolve:13) */
+/** Serialized form of a persisted joint resolution (memo tag npm:resolve:14 —
+ * per-name principals with fork selections; the split subtrees of earlier
+ * versions are gone, repairs being selections of the one tree) */
 interface IResolutionDoc {
   roots: Requirement[];
   selections: IResolutionEntry[];
   violations: IViolationEntry[];
   raises: IRaiseEntry[];
-  splits: ISplitEntry[];
   requirements: IRequirementsEntry[];
 }
 
@@ -246,86 +239,27 @@ function aliasCollision(name: string, held: Selected<SemverVersion>, claimed: Se
   );
 }
 
-/** The id of the scope's selection an (unviolated) requirement binds to, by
- * the resolver's own edge rule; undefined when the edge leads nowhere (a gated
- * optional pruned from the walk, or an unparseable constraint already
- * reported). */
+/** The id of the selection a requirement binds to, by the resolver's own edge
+ * rule (the principal when it satisfies, else the repairing fork); undefined
+ * when the edge leads nowhere (a gated optional pruned from the walk, or an
+ * unparseable constraint already reported). */
 function edgeTargetIn(selections: Selected<SemverVersion>[], req: Requirement): string | undefined {
   const target = edgeBinding(SEMVER, selections, req);
   return target && selectionId(target);
 }
 
-/**
- * The main-tree selections that split-scope edges bind **cross-scope** — each
- * edge no selection of the split's own tree answers (the deferred floorless
- * case: '@types/node: *' inside a split subtree, answered by the delivery's
- * root pin, which the standalone split resolution never saw) — together with
- * those selections' own main-tree dependency closures. They may be unreachable
- * from the delivery's requested roots within the main tree, so a delivery
- * including splits adds them to its fetch and plan set explicitly; `already`
- * holds the ids the delivery reaches anyway (whose closures it therefore also
- * reaches — reachability is transitive), pruned from the walk. Violated split
- * edges are excluded: they bind their own sub-split's root.
- */
-function crossScopeClosure(
-  includedSplits: NpmSplit[],
-  main: ResolvedRepairs,
-  already: ReadonlySet<string>
-): Selected<SemverVersion>[] {
-  const queue: Selected<SemverVersion>[] = [];
-  for (const split of includedSplits) {
-    for (const [fromId, reqs] of split.requirements) {
-      for (const req of reqs) {
-        const violated = split.violations.some(
-          violation => violation.requiredBy === fromId && violation.pkg === req.pkg && violation.constraint === req.constraint
-        );
-        if (!violated && edgeTargetIn(split.selections, req) === undefined) {
-          const bound = edgeBinding(SEMVER, main.selections, req);
-          if (bound) {
-            queue.push(bound);
-          }
-        }
-      }
-    }
-  }
-  const closure = new Map<string, Selected<SemverVersion>>();
-  while (queue.length > 0) {
-    const sel = queue.shift()!;
-    const id = selectionId(sel);
-    if (already.has(id) || closure.has(id)) {
-      continue;
-    }
-    closure.set(id, sel);
-    for (const req of main.requirements.get(id) ?? []) {
-      queue.push(...edgeTargets(SEMVER, main.selections, req));
-    }
-  }
-  return [...closure.values()];
-}
-
-/** One deserialized split subtree (the runtime form of ISplitEntry). */
-interface NpmSplit {
-  readonly pkg: string;
-  readonly constraint: string;
-  readonly selections: Selected<SemverVersion>[];
-  readonly violations: Violation<SemverVersion>[];
-  readonly raises: RaisedFloor<SemverVersion>[];
-  readonly requirements: Map<string, Requirement[]>;
-}
-
-/** The main tree + repairs of a deserialized resolution document. */
+/** The tree + repairs of a deserialized resolution document. */
 interface ResolvedRepairs {
   readonly selections: Selected<SemverVersion>[];
   readonly violations: Violation<SemverVersion>[];
   readonly raises: RaisedFloor<SemverVersion>[];
-  readonly splits: NpmSplit[];
   readonly requirements: Map<string, Requirement[]>;
 }
 
 /**
  * npm's private {@link Resolution}: the joint version selection + reachable
  * tree, the repairs recorded while resolving it (violations, raises, and the
- * private split subtrees repairing the violations — judged per delivery at
+ * fork selections repairing the violations — judged per delivery at
  * materialize), plus the operation it was resolved under (so materialize
  * delivers the same package-vs-runnable shape without a second context read).
  * `selections`/`rootIndex` are empty under the `files` operation, where
@@ -587,7 +521,6 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
           rootIndex: new Map(),
           violations: [],
           raises: [],
-          splits: [],
           requirements: new Map(),
         });
       }
@@ -612,11 +545,12 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    *
    * Enforcement of resolution repairs happens here, per delivery: a
    * **permissive** delivery (`options.resolutionMode`, or run — a runnable is
-   * a sealed install by invariant) accepts the repaired closure, additionally
-   * fetching the split subtrees repairing the reachable violations and
-   * computing the dependency-edge table the nested assembly needs; a strict
+   * a sealed install by invariant) accepts the repaired closure, whose fork
+   * selections the layout nests privately under their requirers; a strict
    * (linked) delivery with any repair in its reachable closure fails with the
-   * repairs and their remedies.
+   * repairs and their remedies. A violation nothing in the resolution
+   * satisfies has no repairing fork and fails in EVERY mode — no delivery can
+   * honor the constraint.
    */
   public materialize(references: RepositoryRef[], resolution: Resolution, options?: MaterializeOptions): Computable<FileSet[]> {
     const resolved = resolution as NpmResolution;
@@ -626,12 +560,14 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
         (...delivered: FileSet[]) => delivered
       );
     }
-    const { selections, rootIndex, operation, violations, splits } = resolved;
+    const { selections, rootIndex, operation, violations } = resolved;
     const permissive = options?.resolutionMode === "permissive" || operation === "run";
     const requirements = references.map(reference => this.parseRequirement(reference.name));
     const requestedRoots = new Set(requirements.map(req => rootIndex.get(requirementKey(req))!));
     const requestedKeys = new Set(requirements.map(requirementKey));
-    /* The selections reachable from the requested roots — the fetch set. */
+    /* The selections reachable from the requested roots — the fetch set.
+     * Forks are reachable exactly through the violated edges bound to them,
+     * so a strict subset whose closure has no violations carries no forks. */
     const needed = selections.filter(sel => sel.reachableFrom?.some(root => requestedRoots.has(root)));
     const reachableIds = new Set(needed.map(selectionId));
     /* A violation is a property of an *edge*: in scope iff its requirer is in
@@ -644,27 +580,27 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     const edgeInScope = (requiredBy: string, pkg: string, constraint: string): boolean =>
       requiredBy === ROOT_REQUIRER ? requestedKeys.has(`${pkg}:${constraint}`) : reachableIds.has(requiredBy);
     const scopedViolations = violations.filter(violation => edgeInScope(violation.requiredBy, violation.pkg, violation.constraint));
+    const root = [...requestedKeys].sort().join(", ");
+    /* A violated edge with NO repairing fork — nothing published satisfies it
+     * — cannot be accepted in ANY mode, so it is judged first: the strict
+     * error's nesting remedy would be false advice for it. */
+    const unrepaired = scopedViolations.filter(violation => !satisfiedByAnySelection(selections, violation));
+    if (unrepaired.length > 0) {
+      throw unrepairableViolationError(root, unrepaired, selections);
+    }
     if (!permissive) {
       const duplicates = coexistingVersions(needed);
       if (scopedViolations.length > 0 || duplicates.length > 0) {
-        throw strictRepairError([...requestedKeys].sort().join(", "), scopedViolations, duplicates);
+        throw strictRepairError(root, scopedViolations, duplicates, needed);
       }
     }
-    /* Sealed: include the splits repairing the reachable violations, and the
-     * splits repairing theirs, recursively. */
-    const includedSplits = permissive ? reachableSplits(scopedViolations, splits) : [];
-    /* A split-scope edge nothing in its own tree answers binds cross-scope to
-     * the main tree's selection (see resolvedEdges) — typically a floorless
-     * requirement answered by a root pin the standalone split resolution never
-     * saw. Those targets, and their own main-tree closures, may be unreachable
-     * from the requested roots within the main tree, so they join the
-     * fetch/plan set explicitly. */
-    const crossScope = includedSplits.length > 0 ? crossScopeClosure(includedSplits, resolved, reachableIds) : [];
-    const delivered = [...needed, ...crossScope];
-    /* Fetch each distinct pkg@version once — main tree and splits share
-     * instances (same version ⇒ same tarball ⇒ same content). */
+    /* Sealed: the forks repairing the reachable violations are already in
+     * `needed`, nested by the layout plan. */
+    const delivered = needed;
+    /* Fetch each distinct pkg@version once (an alias may bind two edges to one
+     * version — same version ⇒ same tarball ⇒ same content). */
     const toFetch = new Map<string, Selected<SemverVersion>>();
-    for (const sel of [...delivered, ...includedSplits.flatMap(split => split.selections)]) {
+    for (const sel of delivered) {
       const id = selectionId(sel);
       if (!toFetch.has(id)) {
         toFetch.set(id, sel);
@@ -679,10 +615,8 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
      * delivery's rejection, attributed like any other. */
     return Computable.resolve(undefined)
       .then(() => {
-        const edges = this.resolvedEdges(delivered, resolved, scopedViolations, includedSplits);
-        return requirements.map(req =>
-          this.planClosure(req, rootIndex.get(requirementKey(req))!, selections, crossScope, fetching, includedSplits, edges)
-        );
+        const edges = this.resolvedEdges(delivered, resolved);
+        return requirements.map(req => this.planClosure(req, rootIndex.get(requirementKey(req))!, selections, fetching, edges));
       })
       .then(plans =>
         Computable.forAll(
@@ -704,72 +638,36 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
 
   /**
    * The resolved dependency edges of the delivery — transient planning data,
-   * never carried on the delivered values: for every fetched node (main tree
-   * and splits), each declared requirement resolved to the id satisfying it —
-   * a violated edge to its split's root, an ordinary edge to its scope's
-   * selection under the requirement's resolution key, a floorless edge to the
-   * scope's highest selection. Keyed by the name the *requirer* uses, so
-   * an aliased dependency is an edge to the aliased package under the alias.
-   * The main scope is computed first and wins a shared version's entries (a
-   * version shared between scopes keeps the main tree's choices — either
-   * choice satisfies the declared range, since surviving edges are never
-   * violations). A split-scope edge its own tree answers nothing for falls
-   * back to the **main** scope's binding — the split is a partition of this
-   * one delivery, and a floorless requirement is satisfied by whatever the
-   * delivery provides (a root pin the standalone split resolution never saw);
-   * {@link crossScopeClosure} has already added such targets to the fetch set.
+   * never carried on the delivered values: for every fetched node, each
+   * declared requirement resolved to the id of the selection it binds — the
+   * principal when it satisfies the range, else the repairing fork (the
+   * resolver's own edge rule, {@link edgeBinding}, so a layout cannot disagree
+   * with the resolution it came from). Keyed by the name the *requirer* uses,
+   * so an aliased dependency is an edge to the aliased package under the
+   * alias.
    *
    * The requirements come from the resolution itself (the walk collected them
    * to compute reachability, and they are persisted with it), so the layout of
    * a cached resolution needs no metadata at all — the same edges the walk
    * followed, not a second reading of them.
    */
-  private resolvedEdges(
-    delivered: Selected<SemverVersion>[],
-    main: ResolvedRepairs,
-    mainViolations: Violation<SemverVersion>[],
-    includedSplits: NpmSplit[]
-  ): EdgeMap {
-    const splitRootId = new Map<string, string>();
-    for (const split of includedSplits) {
-      const root = split.selections.find(sel => sel.pkg === split.pkg);
-      if (root) {
-        splitRootId.set(`${split.pkg}:${split.constraint}`, selectionId(root));
-      }
-    }
-    const scopes = [
-      { nodes: delivered, selections: main.selections, violations: mainViolations, requirements: main.requirements, fallback: undefined },
-      ...includedSplits.map(split => ({
-        nodes: split.selections,
-        selections: split.selections,
-        violations: split.violations,
-        requirements: split.requirements,
-        fallback: main.selections as Selected<SemverVersion>[] | undefined,
-      })),
-    ];
+  private resolvedEdges(delivered: Selected<SemverVersion>[], resolved: ResolvedRepairs): EdgeMap {
     const edges: EdgeMap = new Map();
-    for (const scope of scopes) {
-      for (const node of scope.nodes) {
-        const fromId = selectionId(node);
-        let from = edges.get(fromId);
-        if (!from) {
-          from = new Map();
-          edges.set(fromId, from);
+    for (const node of delivered) {
+      const fromId = selectionId(node);
+      let from = edges.get(fromId);
+      if (!from) {
+        from = new Map();
+        edges.set(fromId, from);
+      }
+      for (const req of resolved.requirements.get(fromId) ?? []) {
+        const name = req.alias ?? req.pkg;
+        if (from.has(name)) {
+          continue;
         }
-        for (const req of scope.requirements.get(fromId) ?? []) {
-          const name = req.alias ?? req.pkg;
-          if (from.has(name)) {
-            continue; /* main scope came first and wins */
-          }
-          const violated = scope.violations.some(
-            violation => violation.requiredBy === fromId && violation.pkg === req.pkg && violation.constraint === req.constraint
-          );
-          const toId = violated
-            ? splitRootId.get(`${req.pkg}:${req.constraint}`)
-            : (edgeTargetIn(scope.selections, req) ?? (scope.fallback ? edgeTargetIn(scope.fallback, req) : undefined));
-          if (toId) {
-            from.set(name, toId);
-          }
+        const toId = edgeTargetIn(resolved.selections, req);
+        if (toId) {
+          from.set(name, toId);
         }
       }
     }
@@ -829,32 +727,32 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    * — so an aliased package appears only where its requirer's imports look for
    * it, and a package nothing requires under its own name is not mounted under
    * it. Per name the flat-mount winner (the root wins its own name, else the
-   * highest version), plus the private version overrides {@link planMounts}
-   * nests under them. A strict delivery has already been checked for
-   * coexisting versions, so its winners are its whole closure and nothing
-   * nests; the two regimes need no separate planner.
+   * highest version — the principal, forks always sitting below it), plus the
+   * private version overrides {@link planMounts} nests under them. A strict
+   * delivery has already been checked for violations and coexisting versions,
+   * so its winners are its whole closure and nothing nests; the two regimes
+   * need no separate planner.
    */
   private planClosure(
     req: Requirement,
     index: number,
     selections: Selected<SemverVersion>[],
-    crossScope: Selected<SemverVersion>[],
     fetching: ReadonlySet<string>,
-    includedSplits: NpmSplit[],
     edges: EdgeMap
   ): PlannedClosure {
     const reachable = selections.filter(sel => sel.reachableFrom?.includes(index));
-    const root = reachable.find(sel => sel.pkg === req.pkg);
+    /* The delivered root is what the root requirement BINDS to — normally the
+     * principal, but a violated root requirement is answered by its fork. */
+    const root = edgeBinding(SEMVER, reachable, req);
     if (!root) {
       /* Can't happen: a root requirement is always reachable from itself */
       throw new Error(`Resolution of ${requirementKey(req)} does not contain its own root package`);
     }
     const rootId = selectionId(root);
-    /* Closure members (main tree + the cross-scope targets split edges bind +
-     * splits) and their flat-mount winners; the mount walk from rootId only
-     * follows edges, so a member no edge reaches is inert here. */
+    /* Closure members and their flat-mount winners; the mount walk from rootId
+     * only follows edges, so a member no edge reaches is inert here. */
     const members = new Map<string, Selected<SemverVersion>>();
-    for (const sel of [...reachable, ...crossScope, ...includedSplits.flatMap(split => split.selections)]) {
+    for (const sel of reachable) {
       const id = selectionId(sel);
       if (fetching.has(id) && !members.has(id)) {
         members.set(id, sel);
@@ -979,7 +877,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    * closure (one version per name, flat mount) — the peer/regular distinction
    * only exists to work around duplicate-tolerant regular deps, which fabr
    * doesn't have. A violated peer surfaces as an ordinary violation (strict error, or
-   * a sealed-tool split — npm's --legacy-peer-deps posture). An
+   * a sealed-tool fork — npm's --legacy-peer-deps posture). An
    * `optional: true` peer ("if present, must match") is never auto-installed,
    * npm parity; devDependencies stay ignored.
    */
@@ -1136,7 +1034,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    * the mutable version list — deterministic modulo registry append, and only on
    * the repair path.) Failed resolutions are not cached (the error propagates
    * before anything is written), so transient repository problems don't poison
-   * the cache. Repairs (violations, raises, splits) are recorded in the doc as
+   * the cache. Repairs (violations, raises, forks) are recorded in the doc as
    * data — enforcement is per delivery, at materialize.
    */
   private getJointResolution(roots: Requirement[], rootKeys: string[]): Computable<ResolvedRepairs> {
@@ -1150,18 +1048,17 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
          * hyphen range, `1.2.3 - 2.3.4`), so a space delimiter isn't obviously
          * injective — a newline can appear in neither a package name nor a
          * constraint, matching how file deps are already newline-separated. */
-        .memoize("npm:resolve:13", `${this.url} ${targetKey}\n${rootKeys.join("\n")}`, () => {
+        .memoize("npm:resolve:14", `${this.url} ${targetKey}\n${rootKeys.join("\n")}`, () => {
           /* A memo miss means real resolution work on behalf of the consumer */
           this.context.notifyProgress({ kind: "repository-resolve", repository: this.context.target, requirements: rootKeys });
-          return resolveWithRepairs(roots, SEMVER, this).then(result => {
+          return resolveMVS(roots, SEMVER, this).then(result => {
             /* Hard errors (unparseable constraints, unconstrained-only
-             * requirements) on any tree are not repairable in any mode. */
-            const errors = [...result.tree.errors, ...result.splits.flatMap(split => split.tree.errors)];
-            if (errors.length > 0) {
+             * requirements) are not repairable in any mode. */
+            if (result.errors.length > 0) {
               /* Typed + per-error root attribution, so the resolve() catch can
                * map each failure to the written reference(s) that pulled its
                * subtree in, instead of blaming the whole collection point. */
-              throw new ResolutionWalkError(errors);
+              throw new ResolutionWalkError(result.errors);
             }
             return this.verifiedResolutionDoc(roots, result, target);
           });
@@ -1180,16 +1077,12 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    * resolution walk, so these are cache hits. (Override TARGET with -D to resolve
    * for a different platform.)
    */
-  private verifiedResolutionDoc(
-    roots: Requirement[],
-    result: RepairableResolution<SemverVersion>,
-    target: NpmPlatform
-  ): Computable<FileSet> {
+  private verifiedResolutionDoc(roots: Requirement[], result: MVSResolution<SemverVersion>, target: NpmPlatform): Computable<FileSet> {
     /* The platform gate stays hard in every mode — a package for another
-     * platform can't run, sealed or not — and covers split subtrees too. */
-    const allSelections = [...result.tree.selections, ...result.splits.flatMap(split => split.tree.selections)];
+     * platform can't run, sealed or not — and covers fork selections too
+     * (they are ordinary selections of the one tree). */
     return Computable.forAll(
-      allSelections.map(sel => this.getVersionMetadata(sel.pkg, versionToString(sel.version)).then(meta => ({ sel, meta }))),
+      result.selections.map(sel => this.getVersionMetadata(sel.pkg, versionToString(sel.version)).then(meta => ({ sel, meta }))),
       (...entries) => {
         for (const { sel, meta } of entries) {
           const reason = unsupportedPlatformReason(meta, target);
@@ -1202,18 +1095,10 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
         }
         const doc: IResolutionDoc = {
           roots,
-          selections: result.tree.selections.map(serializeSelection),
-          violations: result.tree.violations.map(serializeViolation),
-          raises: result.tree.raises.map(serializeRaise),
-          requirements: serializeRequirements(result.tree.requirements),
-          splits: result.splits.map(split => ({
-            pkg: split.pkg,
-            constraint: split.constraint,
-            selections: split.tree.selections.map(serializeSelection),
-            violations: split.tree.violations.map(serializeViolation),
-            raises: split.tree.raises.map(serializeRaise),
-            requirements: serializeRequirements(split.tree.requirements),
-          })),
+          selections: result.selections.map(serializeSelection),
+          violations: result.violations.map(serializeViolation),
+          raises: result.raises.map(serializeRaise),
+          requirements: serializeRequirements(result.requirements),
         };
         return new FileSet(new Map([[RESOLUTION_FILE, MemoryFile.from(JSON.stringify(doc, undefined, 2))]]));
       }
@@ -1314,6 +1199,7 @@ function serializeSelection(sel: Selected<SemverVersion>): IResolutionEntry {
     selectedBy: sel.selectedBy,
     reachedVia: sel.reachedVia,
     reachableFrom: sel.reachableFrom,
+    fork: sel.fork,
   };
 }
 
@@ -1347,6 +1233,7 @@ function deserializeSelection(entry: IResolutionEntry): Selected<SemverVersion> 
     selectedBy: entry.selectedBy,
     reachedVia: entry.reachedVia,
     reachableFrom: entry.reachableFrom,
+    fork: entry.fork,
   };
 }
 
@@ -1370,19 +1257,145 @@ function deserializeResolutionDoc(doc: IResolutionDoc): ResolvedRepairs {
     violations: (doc.violations ?? []).map(deserializeViolation),
     raises: (doc.raises ?? []).map(deserializeRaise),
     requirements: deserializeRequirements(doc.requirements),
-    splits: (doc.splits ?? []).map(entry => ({
-      pkg: entry.pkg,
-      constraint: entry.constraint,
-      selections: entry.selections.map(deserializeSelection),
-      violations: entry.violations.map(deserializeViolation),
-      raises: entry.raises.map(deserializeRaise),
-      requirements: deserializeRequirements(entry.requirements),
-    })),
   };
 }
 
-/** pkg → its selected versions, for the packages selected at more than one
- * version — representable only by a nested (sealed) install. */
+/** The node id of a resolved package version, as the explainer keys them. */
+function versionId(pkg: string, version: SemverVersion): string {
+  return nodeId(SEMVER, pkg, version);
+}
+
+/**
+ * The two questions a violation raises beyond the fact of it: which
+ * requirement pushed the package to the version that violates the bound (and
+ * where *that* requirer came from), and where the losing requirement itself
+ * came from. Rendered as detail lines under the violation, indented one level;
+ * empty for a resolution carrying no provenance edges (persisted before they
+ * existed) or a requirer since superseded out of the selections.
+ */
+function explainViolation(violation: Violation<SemverVersion>, explainer: ResolutionExplainer<SemverVersion>): string[] {
+  const { find, pathTo } = explainer;
+  const selection = find(versionId(violation.pkg, violation.selected));
+  const selected = versionToString(violation.selected);
+  const lines = selection?.selectedBy ? [`  ${selected} selected by: ${winnerOf(selection, selection.selectedBy, explainer)}`] : [];
+  /* Only where there is a path to add: the requirer is already named on the
+   * violation line, so repeating it alone would say nothing. */
+  const requirer = violation.requiredBy === ROOT_REQUIRER ? undefined : find(violation.requiredBy);
+  if (requirer !== undefined) {
+    lines.push(`  '${violation.constraint}' required via: ${pathTo(requirer).join(" -> ")}`);
+  }
+  return lines;
+}
+
+/** The requirement whose floor won `selection` its version, as the path from a
+ * root down to it. */
+function winnerOf(
+  selection: Selected<SemverVersion>,
+  winner: IRequirementEdge,
+  explainer: ResolutionExplainer<SemverVersion>
+): string {
+  if (winner.requiredBy === ROOT_REQUIRER) {
+    return `the requested '${winner.constraint}'`;
+  }
+  const winnerNode = explainer.find(winner.requiredBy);
+  if (!winnerNode) {
+    /* The winning requirement was declared by a version itself since superseded */
+    return `${winner.requiredBy} requiring '${winner.constraint}' (since superseded)`;
+  }
+  const chosen = `${explainer.id(selection)} (${winner.constraint})`;
+  return [...explainer.pathTo(winnerNode), chosen].join(" -> ");
+}
+
+/** Where each coexisting version of a package was required from — the same
+ * question a violation raises, asked of every version rather than one. */
+function explainDuplicate(
+  pkg: string,
+  versions: SemverVersion[],
+  explainer: ResolutionExplainer<SemverVersion>
+): string[] {
+  return versions.flatMap(version => {
+    const selection = explainer.find(versionId(pkg, version));
+    const via = selection?.reachedVia;
+    if (selection === undefined || via === undefined) {
+      return [];
+    }
+    return via.requiredBy === ROOT_REQUIRER
+      ? [`  ${versionToString(version)} required directly ('${via.constraint}')`]
+      : [`  ${versionToString(version)} required via: ${explainer.pathTo(selection).join(" -> ")}`];
+  });
+}
+
+/**
+ * Violations collapsed to one entry per *conflict* — the (pkg, constraint,
+ * selected) triple: a widely-declared requirement (tslib '^1.11.1' across a
+ * dozen @aws-* siblings) violates once per requirer, but the conflict, its
+ * "selected by" side, and its remedy are identical for all of them — a dozen
+ * near-identical stanzas bury the second distinct conflict. The first
+ * requirer (walk order — canonical) keeps the full detail; the rest are
+ * summarised by name on one line.
+ */
+function groupViolations(
+  violations: readonly Violation<SemverVersion>[]
+): Array<{ first: Violation<SemverVersion>; others: string[] }> {
+  const groups = new Map<string, { first: Violation<SemverVersion>; others: string[] }>();
+  for (const violation of violations) {
+    const key = `${violation.pkg}\n${violation.constraint}\n${versionToString(violation.selected)}`;
+    const group = groups.get(key);
+    if (group) {
+      group.others.push(violation.requiredBy);
+    } else {
+      groups.set(key, { first: violation, others: [] });
+    }
+  }
+  return [...groups.values()];
+}
+
+/** The one-line summary of a conflict's further requirers: the first few by
+ * name, the rest by count. */
+function alsoRequiredBy(constraint: string, others: readonly string[]): string[] {
+  if (others.length === 0) {
+    return [];
+  }
+  const shown = others.slice(0, 4);
+  const more = others.length - shown.length;
+  return [`  '${constraint}' also required by: ${shown.join(", ")}${more > 0 ? ` (+${more} more)` : ""}`];
+}
+
+/** Whether any selection of the violated package — principal or fork —
+ * satisfies the violated constraint: the test for whether the resolver could
+ * repair the edge at all. Nothing published satisfies an unrepaired one. */
+function satisfiedByAnySelection(selections: readonly Selected<SemverVersion>[], violation: Violation<SemverVersion>): boolean {
+  let constraint: SemverConstraint;
+  try {
+    constraint = SEMVER.parseConstraint(violation.constraint);
+  } catch {
+    /* Unparseable constraints are hard errors at resolve; a violation's
+     * constraint always parsed there. */
+    return false;
+  }
+  return selections.some(sel => sel.pkg === violation.pkg && SEMVER.satisfies(sel.version, constraint));
+}
+
+/**
+ * The every-mode failure for violated edges the resolver could not repair: no
+ * published version of the package satisfies the constraint, so no delivery —
+ * flat or nested — can honor it. Reported with the same provenance detail as
+ * the strict judgment.
+ */
+export function unrepairableViolationError(
+  root: string,
+  violations: Violation<SemverVersion>[],
+  selections: readonly Selected<SemverVersion>[]
+): Error {
+  const explainer = resolutionExplainer(selections, versionToString);
+  const lines = groupViolations(violations).flatMap(({ first, others }) => [
+    `no published version of ${first.pkg} satisfies '${first.constraint}' required by ${first.requiredBy}`,
+    ...explainViolation(first, explainer),
+    ...alsoRequiredBy(first.constraint, others),
+  ]);
+  const help = "the requirement cannot be met by any published version — correct it, or pin its requirer to a version whose requirement is satisfiable";
+  return attachHelp(new Error(`Unable to resolve ${root}:\n  ${lines.join("\n  ")}`), help);
+}
 
 /**
  * The strict (linked) delivery's judgment of a repaired closure: every repair
@@ -1391,23 +1404,38 @@ function deserializeResolutionDoc(doc: IResolutionDoc): ResolvedRepairs {
  * build-fail-pin iteration each. (Floor raises are deliberately NOT judged: a
  * raised floor is the constraint's plain meaning when its literal minimum was
  * never published, acceptable in every delivery mode.)
+ *
+ * `selections` is the delivered closure, read for the provenance edges that
+ * explain each repair — a bare statement of a repair leaves the user to guess
+ * which of the requirements on a package it is in conflict with.
  */
 export function strictRepairError(
   root: string,
   violations: Violation<SemverVersion>[],
-  duplicates: Array<[string, SemverVersion[]]>
+  duplicates: Array<[string, SemverVersion[]]>,
+  selections: readonly Selected<SemverVersion>[]
 ): Error {
+  const explainer = resolutionExplainer(selections, versionToString);
   const lines: string[] = [];
-  for (const violation of violations) {
+  const violatedPkgs = new Set(violations.map(violation => violation.pkg));
+  for (const { first, others } of groupViolations(violations)) {
+    const moreRequirers = others.length > 0 ? ` (and ${others.length} more)` : "";
     lines.push(
-      `${violation.pkg}@${versionToString(violation.selected)} does not satisfy '${violation.constraint}' ` +
-        `required by ${violation.requiredBy} — jointly unsatisfiable with the other requirements on ${violation.pkg}`
+      `${versionId(first.pkg, first.selected)} does not satisfy '${first.constraint}' ` +
+        `required by ${first.requiredBy}${moreRequirers}`,
+      ...explainViolation(first, explainer),
+      ...alsoRequiredBy(first.constraint, others)
     );
   }
-  for (const [pkg, versions] of duplicates) {
+  /* A coexisting-versions entry restates a violation on the same package (a
+   * fork exists exactly because an edge violated), so only packages with no
+   * violation entry report here — a safety net for a multiplicity nothing
+   * above explained, not the normal path. */
+  for (const [pkg, versions] of duplicates.filter(([pkg]) => !violatedPkgs.has(pkg))) {
     lines.push(
       `requires multiple versions of ${pkg} (${versions.map(versionToString).join(", ")}), ` +
-        `which the flat package layout cannot represent`
+        `which the flat package layout cannot represent`,
+      ...explainDuplicate(pkg, versions, explainer)
     );
   }
   const help = "a sealed tool install (js_script deps, fabr run) accepts these by nesting; a linked delivery cannot";
