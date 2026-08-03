@@ -348,12 +348,12 @@ export function getResultFileSet(targetDir: string, output: Name | string): Comp
     const name = entry.isFile() ? project(rel) : undefined;
     if (name !== undefined) {
       ops.push(
-        hashFile(abspath).then(hash => {
+        hashFile(abspath).then(({ hash, mime }) => {
           /* A work-dir output is path-backed (content at its on-disk rel, not at
            * a blob hash), so it can't be a BuildFile — storeContent then ingests
            * it into the pool by rename. The FileSet key is the *projected* name;
            * the file itself stays anchored at its real location. */
-          const file = new FSFile(targetDir, rel, fs.statSync(abspath), hash);
+          const file = new FSFile(targetDir, rel, fs.statSync(abspath), hash, mime);
           const existing = result.get(name);
           if (existing && !existing.isSameFile(file)) {
             throw new ConflictError(

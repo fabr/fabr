@@ -52,7 +52,7 @@ export enum ComputableState {
   Error = "error",
 }
 
-type CatchHandler<U> = (err: Error) => U | Computable<U>;
+type CatchHandler<U> = (err: Error) => U | ComputableSource<U>;
 
 /**
  * The "depend on me" half of the reactive graph: a value other nodes can depend
@@ -125,7 +125,7 @@ export abstract class ComputableSource<T> {
    * settled input, computes in-line). Do not rely on a `then` callback deferring
    * to a later tick; if you need that, defer explicitly.
    */
-  public then<U>(fn: (value: T) => U | Computable<U>, onError?: CatchHandler<U>): Computable<U> {
+  public then<U>(fn: (value: T) => U | ComputableSource<U>, onError?: CatchHandler<U>): Computable<U> {
     return Computable.deriving([this], (value: T) => fn(value), onError);
   }
 
@@ -371,7 +371,7 @@ export class Computable<T> extends ComputableSource<T> {
   /** Core derivation: a node computing `fn` over `deps` (or `errfn` on failure). */
   public static deriving<U>(
     deps: ComputableSource<any>[],
-    fn: (...args: any[]) => U | Computable<U>,
+    fn: (...args: any[]) => U | ComputableSource<U>,
     errfn?: CatchHandler<U>
   ): Computable<U> {
     const result = new Computable<U>();
@@ -390,10 +390,10 @@ export class Computable<T> extends ComputableSource<T> {
 
   public static forAll<U, D extends readonly ComputableSource<unknown>[] | []>(
     deps: D,
-    fn: (...deps: { -readonly [P in keyof D]: Awaited<D[P]> }) => U | Computable<U>,
+    fn: (...deps: { -readonly [P in keyof D]: Awaited<D[P]> }) => U | ComputableSource<U>,
     onError?: CatchHandler<U>
   ): Computable<U> {
-    return Computable.deriving(deps as unknown as ComputableSource<any>[], fn as (...args: any[]) => U | Computable<U>, onError);
+    return Computable.deriving(deps as unknown as ComputableSource<any>[], fn as (...args: any[]) => U | ComputableSource<U>, onError);
   }
 
   public static resolve<T>(value: T): Computable<T> {
@@ -531,7 +531,7 @@ export class Computable<T> extends ComputableSource<T> {
     }
   }
 
-  private resolveTo(value: T | Computable<T>): void {
+  private resolveTo(value: T | ComputableSource<T>): void {
     /* Resolving to another source: link to it through a binding — an identity node
      * that sits on the inner as its sole dependant and mirrors the inner's cascade
      * (maybe-invalid, revalidate, settle) into us, its `outer` (the overrides

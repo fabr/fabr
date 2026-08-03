@@ -44,6 +44,7 @@ function diskFile(abspath: string): IFile {
   const file: IFile = {
     hash: abspath,
     mode: fs.statSync(abspath).mode & 0o7777,
+    mime: "application/octet-stream",
     readString: encoding => Computable.resolve(fs.readFileSync(abspath, encoding ?? "utf8")),
     getDisplayName: () => abspath,
     isSameFile: other => other === file,

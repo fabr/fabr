@@ -272,6 +272,20 @@ describe("Name", () => {
       expect(project("other/b.expect")).to.equal(undefined);
     });
 
+    it("excludes the alias path itself from a rename (x:** names only what is under x)", () => {
+      /* `a/**` admits `a`, so without the guard a rename projection into an
+       * archive would emit the archive file itself under the template's
+       * collapsed (empty-capture) name. */
+      const rename = new NameBuilder()
+        .appendLiteralString("x.tgz:")
+        .appendGlobMetachars("**")
+        .name()
+        .withRenameTo(new NameBuilder().appendLiteralString("out/").appendGlobMetachars("**").name());
+      const project = rename.makeProjector();
+      expect(project("x.tgz")).to.equal(undefined);
+      expect(project("x.tgz/lib/a.js")).to.equal("out/lib/a.js");
+    });
+
     it("converts every colon and strips up to the last (multi-colon)", () => {
       /* `a:b:*.ts` — all colons are path separators; the alias `a:b` is stripped
        * wholesale (up to the last colon). */
@@ -387,6 +401,46 @@ describe("Name", () => {
       expect(dir.appendGlobstar().toString()).to.equal("src:**");
       const project = dir.appendGlobstar().makeProjector();
       expect(project("src/a/b.ts")).to.equal("a/b.ts");
+    });
+  });
+
+  describe("components", () => {
+    const componentsOf = (name: Name): string[] => name.components().map(component => component.toString());
+
+    it("splits at slash and colon separators alike", () => {
+      expect(componentsOf(Name.fromLiteral("dir:x.tgz/foo"))).to.deep.equal(["dir", "x.tgz", "foo"]);
+      expect(componentsOf(Name.fromLiteral("a.tgz"))).to.deep.equal(["a.tgz"]);
+    });
+
+    it("preserves glob and substitution parts within their components", () => {
+      const name = new NameBuilder()
+        .appendLiteralString("a.tgz:")
+        .appendGlobMetachars("*")
+        .appendLiteralString(":")
+        .appendGlobMetachars("**")
+        .name();
+      expect(componentsOf(name)).to.deep.equal(["a.tgz", "*", "**"]);
+      const subst = new NameBuilder().appendSubstVar("A").appendLiteralString("/x").name();
+      const [head, tail] = subst.components();
+      expect(head.hasVarSubst()).to.equal(true);
+      expect(tail.toString()).to.equal("x");
+    });
+
+    it("carries no facets onto the components", () => {
+      const name = Name.fromLiteral("x.tgz/foo")
+        .withConstraints([["K", Name.fromLiteral("v")]])
+        .withRenameTo(Name.fromLiteral("bar"));
+      const [component] = name.components();
+      expect(component.hasConstraints()).to.equal(false);
+      expect(component.getRenameTo()).to.equal(undefined);
+    });
+
+    it("componentPrefixes are the cumulative slash-joined leading paths", () => {
+      expect(
+        Name.fromLiteral("dir:x.tgz/foo")
+          .componentPrefixes()
+          .map(prefix => prefix.toString())
+      ).to.deep.equal(["dir", "dir/x.tgz", "dir/x.tgz/foo"]);
     });
   });
 

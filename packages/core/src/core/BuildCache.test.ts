@@ -102,6 +102,49 @@ describe("BuildCache", () => {
     expect((await toPromise(files.get("lib/plain.js")))!.mode).to.equal(0o644);
   });
 
+  it("persists the sniffed mime through the manifest", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const gzip = new MemoryFile(Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00]));
+    const store = (create: () => Computable<FileSet>): Computable<FileSet> => cache.getOrCreate("with mime", create);
+    await toPromise(
+      store(() => Computable.resolve(new FileSet(new Map([["a.tgz", gzip], ["notes.txt", MemoryFile.from("text")]]))))
+    );
+
+    /* A fresh cache serves the classification straight from the manifest —
+     * no content read, and no rebuild. */
+    const reopened = new BuildCache(root, NULL_LOG);
+    const files = await toPromise(
+      reopened.getOrCreate("with mime", () => {
+        throw new Error("cache entry should not be rebuilt");
+      })
+    );
+    expect((await toPromise(files.get("a.tgz")))!.mime).to.equal("application/gzip");
+    expect((await toPromise(files.get("notes.txt")))!.mime).to.equal("application/octet-stream");
+  });
+
+  it("treats a mime-less (pre-mime) manifest line as a miss", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const build = (): Computable<FileSet> =>
+      cache.getOrCreate("legacy line", () => Computable.resolve(new FileSet(new Map([["x.txt", MemoryFile.from("x")]]))));
+    await toPromise(build());
+
+    /* Strip the trailing mime field, leaving the old three-field form. The
+     * entry must rebuild — the format-change equivalent of a tag bump. */
+    const manifest = fs.readdirSync(root).find(name => name.endsWith(".manifest"))!;
+    const manifestPath = path.join(root, manifest);
+    fs.writeFileSync(manifestPath, fs.readFileSync(manifestPath, "utf8").replace(/^(\S+ \S+ \S+) \S+$/m, "$1"));
+
+    const reopened = new BuildCache(root, NULL_LOG);
+    let rebuilt = false;
+    await toPromise(
+      reopened.getOrCreate("legacy line", () => {
+        rebuilt = true;
+        return Computable.resolve(new FileSet(new Map([["x.txt", MemoryFile.from("x")]])));
+      })
+    );
+    expect(rebuilt).to.equal(true);
+  });
+
   it("treats a manifest with a corrupt mode field as a miss, not a NaN mode", async () => {
     const cache = new BuildCache(root, NULL_LOG);
     const build = (): Computable<FileSet> =>
@@ -307,6 +350,19 @@ describe("BuildCache", () => {
     );
     const content = await toPromise(files.readFile("meta.json"));
     expect(content).to.equal('{"name":"test"}');
+  });
+
+  it("classifies streamed content whose magic spans chunk boundaries", async () => {
+    /* The head capture accumulates across writes, so a magic split over many
+     * small chunks still classifies (gzip's is 3 bytes; write 1 at a time). */
+    const cache = new BuildCache(root, NULL_LOG);
+    const handle = cache.getTemporaryWriteStream();
+    const content = Buffer.concat([Buffer.from([0x1f, 0x8b, 0x08]), Buffer.alloc(400)]);
+    for (const byte of content) {
+      handle.stream.write(Buffer.from([byte]));
+    }
+    const file = await toPromise(handle.finalize("spanned.gz"));
+    expect(file.mime).to.equal("application/gzip");
   });
 
   it("streams a write into a content-addressed blob via getTemporaryWriteStream", async () => {

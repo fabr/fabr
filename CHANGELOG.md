@@ -8,6 +8,7 @@ version number.
 - Fix: generate command names resolved incorrectly.
 - Cap maximum concurrent connections + executing processes.
 - New 'fetch' repository source for arbitrary http/https fetching.
+- Enable automatic extraction and traversal of archive files.
 
 @fabr/js:
 - Generated package.json now strips build-only fields (devDependencies, scripts, …) from an imported manifest, and emits array metadata (keywords, os, cpu) as JSON arrays.

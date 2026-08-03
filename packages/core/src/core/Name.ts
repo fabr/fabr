@@ -42,6 +42,10 @@ export const NAME_LEVEL_SEPARATOR = ":";
  * segment, silently changing what it names). */
 const GLOB_METACHAR = /[*?[]/;
 
+/** Either separator, for splitting into path components: `/` and the `:` alias
+ * boundary are both path separators on disk (see makeProjector). */
+const SEPARATOR = /[/:]/;
+
 /**
  * Normalize the literal head of a slash-form selector (resolve `.`/`..`,
  * collapse separator runs) without touching anything at or after the first
@@ -189,14 +193,26 @@ export class Name {
      * never carried into them. (A no-op for a colon-free selector — every
      * REWRITE / single-`:` ref; it bites only a multi-`:` reference like
      * `d:sub:*.x -> *.y`.) */
-    const re = globCaptureRegex(normalizeHead(this.renderParts().replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR)));
+    const selector = this.renderParts();
+    const re = globCaptureRegex(normalizeHead(selector.replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR)));
     const replacement = renameTo.toReplacement();
+    /* The literal alias path itself is excluded, mirroring makeProjector's
+     * plain arm: `x:** -> tmpl` renames the files *under* x, never x — a
+     * globstar admits its own base, which would otherwise emit the base file
+     * under the template's collapsed (empty-capture) name. */
+    const alias = selector.lastIndexOf(NAME_LEVEL_SEPARATOR);
+    const aliasPath = alias === -1 ? undefined : selector.substring(0, alias).replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR);
+    const excluded = aliasPath !== undefined && !GLOB_METACHAR.test(aliasPath) ? aliasPath : undefined;
     /* An unmatched globstar group substitutes as "" (native to `replace`), which
      * can leave a doubled or edge slash (a root-level recursive prefix); fabr
      * names are relative paths, so collapse runs of `/` and trim the ends — this
      * makes a recursive rename structure-preserving at every depth, root too. */
-    return (path: string) =>
-      re.test(path) ? path.replace(re, replacement).replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "") : undefined;
+    return (input: string) => {
+      if (!re.test(input) || (excluded !== undefined && path.posix.relative(excluded, input) === "")) {
+        return undefined;
+      }
+      return input.replace(re, replacement).replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "");
+    };
   }
 
   /**
@@ -230,8 +246,18 @@ export class Name {
        * normalizes its operands itself). A remainder that climbs out of the
        * alias (`lib:../tools/*.js`) names as its climbed path (`../tools/y.js`),
        * which FileSet name canonicalization then flattens to its tail — the
-       * familiar prefix-strip is the non-climbing degenerate case of this rule. */
-      return input => (matcher(input) ? prefix + path.posix.relative(aliasPath, input) : undefined);
+       * familiar prefix-strip is the non-climbing degenerate case of this rule.
+       * The alias path ITSELF is excluded (its relative name would be the empty
+       * string): a globstar remainder matches its own base (`a/**` admits `a`),
+       * but `x:**` means the files *under* x, never x — which is what keeps a
+       * projection into an archive from also emitting the archive file. */
+      return input => {
+        if (!matcher(input)) {
+          return undefined;
+        }
+        const rel = path.posix.relative(aliasPath, input);
+        return rel === "" ? undefined : prefix + rel;
+      };
     }
     /* Glob alias (`pkg*:lib/*`): no concrete dir to name relative to, so strip
      * the matched alias textually. A remainder climbing under a glob alias has
@@ -252,6 +278,54 @@ export class Name {
     const sep = last === NAME_COMPONENT_SEPARATOR || last === NAME_LEVEL_SEPARATOR ? "" : NAME_COMPONENT_SEPARATOR;
     const tail: NamePart[] = sep ? [{ kind: NamePartKind.Literal, value: sep }, { kind: NamePartKind.Glob, value: "**" }] : [{ kind: NamePartKind.Glob, value: "**" }];
     return this.concat(new Name(tail));
+  }
+
+  /**
+   * The selector's path components: this name split at every separator (`/`
+   * and the `:` alias boundary alike — a `:` is a path separator on disk),
+   * each component a Name of its own parts (globs and unsubstituted `${var}`s
+   * preserved). Pure tokenization — no facets ride the components, and a
+   * consumer joins/interprets them on its own terms (archive descent folds
+   * them back into boundary probes; see Expand's descentPrefixes).
+   */
+  public components(): Name[] {
+    const result: Name[] = [];
+    let current: NamePart[] = [];
+    for (const part of this.parts) {
+      if (part.kind !== NamePartKind.Literal) {
+        current.push({ ...part });
+        continue;
+      }
+      /* Each separator inside a literal ends the component in progress; the
+       * pieces between them are the literal text of their components. */
+      part.value.split(SEPARATOR).forEach((text, index) => {
+        if (index > 0) {
+          result.push(new Name(current));
+          current = [];
+        }
+        if (text !== "") {
+          current.push({ kind: NamePartKind.Literal, value: text });
+        }
+      });
+    }
+    result.push(new Name(current));
+    return result;
+  }
+
+  /**
+   * The cumulative slash-joined prefixes of {@link components}: `prefixes[i]`
+   * is components 0…i rejoined with `/` — the reference's leading path at each
+   * depth, ready to match against in-namespace names (the boundary probes of
+   * archive descent; a fetch repository's member selection). Facet-free, like
+   * the components ({@link concat} carries none).
+   */
+  public componentPrefixes(): Name[] {
+    const prefixes: Name[] = [];
+    for (const component of this.components()) {
+      const prior = prefixes.at(-1);
+      prefixes.push(prior ? prior.concat(SLASH).concat(component) : component);
+    }
+    return prefixes;
   }
 
   /**
@@ -550,6 +624,11 @@ export class Name {
     return result;
   }
 }
+
+/** A literal `/`, for rejoining components into slash-form prefixes
+ * ({@link Name.componentPrefixes}). Lives below the class: its initializer
+ * constructs a Name at module load. */
+const SLASH = Name.fromLiteral(NAME_COMPONENT_SEPARATOR);
 
 /** A resolved REWRITE property: a path to its renamed form, or undefined if no
  * value in the property matched (rule policy decides what that means). */

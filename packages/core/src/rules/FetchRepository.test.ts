@@ -22,7 +22,7 @@ import { Readable, Writable } from "stream";
 import { expect } from "chai";
 import { Computable } from "../core/Computable";
 import { FileSet, IFile } from "../core/FileSet";
-import { Name } from "../core/Name";
+import { Name, NameBuilder } from "../core/Name";
 import { Repository, RepositoryReader } from "../core/Repository";
 import { RepositoryContext } from "../model/BuildContext";
 import { fetchRepositoryRegistration } from "./FetchRepository";
@@ -99,6 +99,52 @@ describe("fetch repository", () => {
     expect(log.finalized).to.deep.equal(["amperize.tgz"]);
   });
 
+  it("selects a member named by a projection prefix, packing the whole name as the projection", async () => {
+    /* `@dl:amperize.tgz:*:**` — the member is named by a *prefix* of the
+     * reference (the same boundary rule archive descent uses), and the whole
+     * written name rides as the ref's projection, delivered pending for the
+     * driving context to apply over the `amperize.tgz` file (descending there). */
+    const log = newLog();
+    const repository = await repositoryFor(TABLE, log);
+    const name = new NameBuilder()
+      .appendLiteralString("amperize.tgz:")
+      .appendGlobMetachars("*")
+      .appendLiteralString(":")
+      .appendGlobMetachars("**")
+      .name();
+    const ref = repository.getRepositoryRef(name);
+    const files = await (repository as unknown as RepositoryReader).materialize([ref], { roots: [] }).then(([f]: FileSet[]) => f);
+    expect([...files].map(([n]) => n)).to.deep.equal(["amperize.tgz"]);
+    expect(log.urls).to.deep.equal(["https://host/a/sha"]);
+    expect(ref.projections.map(projection => projection.pattern.toString())).to.deep.equal(["amperize.tgz:*:**"]);
+  });
+
+  it("prefix-matches a path-shaped member name at its own depth", async () => {
+    /* Member selection is an ordinary declared-name prefix match — a member
+     * key may be a path, claimed by the reference's leading components. */
+    const log = newLog();
+    const repository = await repositoryFor({ "vendor/amperize.tgz": `https://host/v/sha ${sri()}` }, log);
+    const name = new NameBuilder()
+      .appendLiteralString("vendor/amperize.tgz:")
+      .appendGlobMetachars("**")
+      .name();
+    const ref = repository.getRepositoryRef(name);
+    const files = await (repository as unknown as RepositoryReader).materialize([ref], { roots: [] }).then(([f]: FileSet[]) => f);
+    expect([...files].map(([n]) => n)).to.deep.equal(["vendor/amperize.tgz"]);
+    expect(log.urls).to.deep.equal(["https://host/v/sha"]);
+  });
+
+  it("selects a path-shaped member spanned by a bare **", async () => {
+    /* The whole-reference matcher is what lets `**` span into deeper member
+     * names; the depth-prefix matcher alone cannot reach them. */
+    const log = newLog();
+    const repository = await repositoryFor({ "vendor/amperize.tgz": `https://host/v/sha ${sri()}` }, log);
+    const ref = repository.getRepositoryRef(new NameBuilder().appendGlobMetachars("**").name());
+    const files = await (repository as unknown as RepositoryReader).materialize([ref], { roots: [] }).then(([f]: FileSet[]) => f);
+    expect([...files].map(([n]) => n)).to.deep.equal(["vendor/amperize.tgz"]);
+    expect(log.urls).to.deep.equal(["https://host/v/sha"]);
+  });
+
   it("fetches only the member that was named", async () => {
     const log = newLog();
     const repository = await repositoryFor(TABLE, log);
@@ -154,6 +200,16 @@ describe("fetch repository", () => {
     it("requires exactly one URL", async () => {
       await rejects(sri(), "no URL");
       await rejects(`https://host/a https://host/b ${sri()}`, "2 URLs");
+    });
+
+    it("rejects a member that is a path prefix of another", async () => {
+      /* With both declared, a reference to the deeper name would be ambiguous
+       * with a projection into the shorter one — impossible by construction. */
+      const err = await repositoryFor({ a: `https://host/a ${sri()}`, "a/b.tgz": `https://host/b ${sri()}` }, newLog()).then(
+        () => undefined,
+        (e: Error) => e
+      );
+      expect(err?.message ?? "").to.contain("path prefix of another member");
     });
   });
 });

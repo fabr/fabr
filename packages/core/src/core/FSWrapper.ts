@@ -23,6 +23,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import { Computable } from "./Computable";
+import { sniffMime } from "../support/Mime";
 
 export const HASH_ALGORITHM = "sha256";
 
@@ -206,13 +207,21 @@ export function copyFile(target: string, filepath: string): Computable<void> {
     });
   });
 }
-export function hashFile(filepath: string): Computable<string> {
-  return Computable.from<string>((resolve, reject) => {
+/** A file's content identity and classification, from one read: the hash, and
+ * the mime sniffed from the same bytes (see IFile.mime — classification rides
+ * every read the identity already requires, so it is never a read of its own). */
+export interface HashedContent {
+  readonly hash: string;
+  readonly mime: string;
+}
+
+export function hashFile(filepath: string): Computable<HashedContent> {
+  return Computable.from<HashedContent>((resolve, reject) => {
     fs.readFile(filepath, (err, data) => {
       if (err) {
         reject(err);
       } else {
-        resolve(hashString(data));
+        resolve({ hash: hashString(data), mime: sniffMime(data) });
       }
     });
   });

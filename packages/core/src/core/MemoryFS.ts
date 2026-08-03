@@ -20,16 +20,19 @@
 import { Computable } from "./Computable";
 import { hashString } from "./FSWrapper";
 import { DEFAULT_FILE_MODE, IFile } from "./FileSet";
+import { sniffMime } from "../support/Mime";
 
 export class MemoryFile implements IFile {
   private content: Buffer;
   public hash: string;
+  public readonly mime: string;
 
   /** An in-memory file is a non-executable regular file unless a producer asks
    * otherwise (e.g. a rule stamping a generated script executable). */
   constructor(buffer: Buffer, public mode: number = DEFAULT_FILE_MODE) {
     this.content = buffer;
     this.hash = hashString(buffer);
+    this.mime = sniffMime(buffer);
   }
 
   public static from(content: string, encoding: BufferEncoding = "utf8"): MemoryFile {

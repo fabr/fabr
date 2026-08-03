@@ -30,7 +30,6 @@ import {
   RepositoryReader,
   RepositoryRef,
   Resolution,
-  SourceRef,
 } from "../core/Repository";
 import { FileSetRef } from "../core/FileSetRef";
 import { Requirement } from "../resolver/Types";
@@ -147,10 +146,11 @@ export class CatalogRepository implements Repository, RepositoryReader {
     if (member.kind === "local") {
       return Computable.resolve(member.pkg);
     }
+    /* Stamping only: a catalog entry never carries projections (rejected at
+     * resolveDeps), so there is no pending remainder to finish here. */
     return member.source
       .materialize([member.reference], member.resolution, options)
-      .then(([base]) => member.reference.finishMaterialize(base))
-      .then(files => files as PackageFileSet);
+      .then(([base]) => member.reference.stampProvenance(base) as PackageFileSet);
   }
 
   private toRunnable(alias: string, member: CatalogMember, pkg: PackageFileSet): Computable<RunnableFileSet> {
@@ -246,35 +246,35 @@ interface ResolvedPackageSet {
  * during resolution and comes back as an eager `local` entry.
  */
 function resolveDeps(context: RepositoryContext): Computable<ResolvedPackageSet> {
-  return context.getFileProperty("deps", BUILD_OVERRIDE).then(rawSources =>
-    /* A projection-pending local entry manifests here (to plain files), so it
-     * reaches the not-a-package diagnostic below instead of vanishing. */
-    Computable.forAll(
-      rawSources.map(source => (source instanceof FileSetRef ? source.manifest() : Computable.resolve(source))),
-      (...sources: SourceRef[]) => {
-        const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
-        /* A catalog pins whole packages: an entry projecting *into* one
-         * (`@npm:pkg:1.0.0:lib/*`) would materialize to plain files, not a
-         * PackageFileSet — reject it here rather than let the projected
-         * delivery reach a consumer expecting package identity. (The local
-         * analogue manifests above and hits the not-a-package diagnostic.) */
-        const projected = references.find(reference => reference.projections.length > 0);
-        if (projected) {
-          throw attachHelp(
-            new Error(`Catalog entry '${projected.name.toString()}' projects into a package`),
-            "a catalog pins whole packages — project at the point of use instead (`@catalog:pkg:path`)"
-          );
-        }
-        const local = sources.filter((source): source is FileSource => source instanceof FileSet);
-        return Computable.forAll(
-          [...groupByRepository(references).entries()].map(([source, refs]) =>
-            source.resolve(refs).then(resolution => ({ source, resolution }))
-          ),
-          (...resolutions: { source: RepositoryReader; resolution: Resolution }[]) => ({ resolutions, local })
-        );
-      }
-    )
-  );
+  return context.getFileProperty("deps", BUILD_OVERRIDE).then(sources => {
+    const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
+    /* A catalog pins whole packages: an entry projecting *into* one would
+     * resolve to plain files, not a PackageFileSet — reject it outright (its
+     * projected content is never computed just to fail), whether it is an
+     * external requirement (`@npm:pkg:1.0.0:lib/*`, a projected reference) or
+     * a built target (`mylib:build/*`, a projection-pending local entry). */
+    const projectsInto = (what: string): Error =>
+      attachHelp(
+        new Error(`Catalog entry ${what} projects into a package`),
+        "a catalog pins whole packages — project at the point of use instead (`@catalog:pkg:path`)"
+      );
+    const projected = references.find(reference => reference.projections.length > 0);
+    if (projected) {
+      throw projectsInto(`'${projected.name.toString()}'`);
+    }
+    const pendingLocal = sources.find((source): source is FileSetRef => source instanceof FileSetRef);
+    if (pendingLocal) {
+      const base = pendingLocal.source;
+      throw projectsInto(base instanceof PackageFileSet ? `'${base.packageName}'` : "of a local target");
+    }
+    const local = sources.filter((source): source is FileSource => source instanceof FileSet);
+    return Computable.forAll(
+      [...groupByRepository(references).entries()].map(([source, refs]) =>
+        source.resolve(refs).then(resolution => ({ source, resolution }))
+      ),
+      (...resolutions: { source: RepositoryReader; resolution: Resolution }[]) => ({ resolutions, local })
+    );
+  });
 }
 
 /**

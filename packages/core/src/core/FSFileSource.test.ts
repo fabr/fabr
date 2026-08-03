@@ -80,6 +80,29 @@ describe("FSFileSource.ingest", () => {
  * registers, but enumeration is async — events landing in that gap must be
  * buffered and replayed, not dropped. Driven deterministically with an injected
  * enumeration the test resolves by hand (no real watcher / timing). */
+describe("FSFileSource.get", () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-fs-get-test-"));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("returns a file only at exactly that path — a directory is not a file", async () => {
+    /* The contract ("a single direct file by exact name") and the walker's
+     * boundary probes both need this: a directory holding exactly one file
+     * must NOT answer with that file (wrong identity), nor walk its subtree
+     * just to answer an existence probe. */
+    fs.mkdirSync(path.join(root, "sub"));
+    fs.writeFileSync(path.join(root, "sub", "only.txt"), "x");
+    const src = new FSFileSource(root);
+    expect(await toPromise(src.get("sub"))).to.equal(undefined);
+    expect(await toPromise(src.get("sub/only.txt"))).to.not.equal(undefined);
+    expect(await toPromise(src.get("absent.txt"))).to.equal(undefined);
+  });
+});
+
 describe("FSFileSource enumeration window (TreeQuery)", () => {
   let root: string;
   beforeEach(() => {

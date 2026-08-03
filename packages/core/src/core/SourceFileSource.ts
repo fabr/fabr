@@ -25,6 +25,7 @@ import { FSFile, FSFileSource, staticPath } from "./FSFileSource";
 import { FileSet, IFile } from "./FileSet";
 import { Name } from "./Name";
 import { WatchController } from "./WatchController";
+import { sniffMime } from "../support/Mime";
 
 /**
  * FileSource for the local (mutable) source tree. Every source file it hands
@@ -85,7 +86,10 @@ export class SourceFileSource extends FSFileSource {
           const hash = hashString(bytes);
           return this.cache
             .ensureBlob(hash, bytes, fileStat.mode)
-            .then(blobPath => new FSFile(this.root, filename, { size: fileStat.size, mtime: fileStat.mtime, mode: fileStat.mode }, hash, blobPath));
+            .then(
+              blobPath =>
+                new FSFile(this.root, filename, { size: fileStat.size, mtime: fileStat.mtime, mode: fileStat.mode }, hash, sniffMime(bytes), blobPath)
+            );
         })
       )
       .catch(err => {

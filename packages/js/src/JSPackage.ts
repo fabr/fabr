@@ -816,9 +816,9 @@ export function withBinShebangs(contents: FileSet): Computable<FileSet> {
  *
  * The entry may be a projection-pending {@link FileSetRef} over a package
  * (`entry = @npm:typescript:5.4.5:tsc`): the pending projections select the
- * RUNNABLE's entry — replayed on its surface via the one application
- * mechanism, `FileSetRef.manifest` — bin by command or file by path, the
- * written form's `fabr run` meaning.
+ * RUNNABLE's entry — a REINTERPRETATION, replayed as a raw `find` fold over
+ * the runnable's surface (bin by command or file by path, the written form's
+ * `fabr run` meaning), deliberately not the resolver's namespace walk.
  */
 export function makeNpmRunnable(
   entry: PackageFileSet | FileSetRef,
@@ -848,14 +848,22 @@ export function makeNpmRunnable(
       }
     }
     const runnable = new RunnableFileSet(install, args, "node", root, new FileSet(surface));
-    if (!(entry instanceof FileSetRef) || entry.projections.length === 0) {
+    if (!(entry instanceof FileSetRef)) {
       return Computable.resolve(runnable);
     }
-    return new FileSetRef(runnable, entry.projections).manifest().then(selected => {
-      if (!(selected instanceof RunnableFileSet)) {
+    /* Replay the pending projections as bin selection — the REINTERPRETATION
+     * the pending ref exists for, not the namespace walk: each step is the
+     * runnable's own polymorphic `find` (which re-points the launch entry),
+     * never archive descent. */
+    let selected: Computable<FileSet> = Computable.resolve(runnable);
+    for (const projection of entry.projections) {
+      selected = selected.then(files => files.find(projection.pattern, projection.prefix));
+    }
+    return selected.then(files => {
+      if (!(files instanceof RunnableFileSet)) {
         throw new Error(`entry projection matched no bin or file of ${pkg.packageId} — nothing to launch`);
       }
-      return selected;
+      return files;
     });
   });
 }

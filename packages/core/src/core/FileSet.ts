@@ -45,6 +45,19 @@ export interface IFile {
    */
   mode: number;
 
+  /**
+   * The file's sniffed content type (see Mime's `sniffMime`):
+   * `application/octet-stream` for anything unrecognized. Total and synchronous
+   * on every implementation — classified from the leading bytes wherever the
+   * content is first read (hashing, streaming into the store), and persisted
+   * through the cache manifest, so consulting it costs no I/O anywhere. A pure
+   * function of the content (same hash ⇒ same mime); like the hash it
+   * identifies, it never participates in cache keys. Identification only — the
+   * consumer that acts on it (archive descent) still parses the content on its
+   * own terms.
+   */
+  mime: string;
+
   readString(encoding?: BufferEncoding): Computable<string>;
 
   /**
@@ -192,20 +205,6 @@ export class FileSet implements FileSource {
      * a user rename's name collisions surface — a plain glob projection can't
      * collide (distinct paths stay distinct under a constant prefix). */
     return Computable.resolve(this.rename(name.makeProjector(prefix)));
-  }
-
-  /**
-   * Project every source by `name` (result names under `prefix`), each source
-   * on its own terms (see FileSource.find) and each yielding its OWN FileSet —
-   * never merged: a same-named file in two sources is not a conflict here;
-   * union (and its conflict detection) is the act of a consumer that actually
-   * merges content.
-   */
-  public static findAll(sources: FileSource[], name: Name, prefix?: string): Computable<FileSet[]> {
-    return Computable.forAll(
-      sources.map(fs => fs.find(name, prefix)),
-      (...sets: FileSet[]) => sets
-    );
   }
 
   /**

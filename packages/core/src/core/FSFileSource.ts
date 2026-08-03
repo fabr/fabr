@@ -51,7 +51,7 @@ export class FSFile implements IFile {
    */
   private readonly contentPath: string;
 
-  constructor(root: string, name: string, stat: FSFileStats, hash: string, contentPath?: string) {
+  constructor(root: string, name: string, stat: FSFileStats, hash: string, public readonly mime: string, contentPath?: string) {
     this.root = root;
     this.name = name;
     this.stat = stat;
@@ -138,9 +138,10 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     private readonly root: string,
     private readonly name: Name,
     private readonly prefix: string,
-    /* Injectable only so tests can drive the async enumeration window
-     * deterministically; production leaves it undefined and uses the real tree
-     * enumeration (see attach). */
+    /* The enumeration to (re)run per attach: undefined means the standard tree
+     * enumeration (see attach); `get` passes {@link enumerateFile} for its
+     * exact-file semantics, and tests inject one to drive the async enumeration
+     * window deterministically. */
     private readonly enumerator?: () => Computable<{ names: string[]; project: Projector }>
   ) {
     super();
@@ -390,7 +391,11 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
  * FileSet implementation that loads the directory tree from the real FS on demand
  */
 export class FSFileSource implements FileSource {
-  protected root: string;
+  /** The tree this source serves, as an absolute path. Public because a name's
+   * namespace is root-relative (find/get normalize against it), so a caller
+   * aligning a pattern with this source's namespace rebases against it (see
+   * Name.rebase and the resolver's filesystem arm). */
+  public readonly root: string;
   /**
    * When present, `find` results are *live*: a single {@link parcelWatcher}
    * subscription over the source tree re-settles them as files change (batched
@@ -506,7 +511,7 @@ export class FSFileSource implements FileSource {
   public ingest(filename: string): Computable<FSFile | undefined> {
     const filepath = path.resolve(this.root, filename);
     return hashFile(filepath)
-      .then(hash => stat(filepath).then(stats => new FSFile(this.root, filename, stats, hash)))
+      .then(({ hash, mime }) => stat(filepath).then(stats => new FSFile(this.root, filename, stats, hash, mime)))
       .catch(err => {
         /* Gone since the event fired (the save-rename dance), or the path is a
          * directory (a not-yet-existing reference whose entry itself surfaced as
@@ -521,13 +526,20 @@ export class FSFileSource implements FileSource {
   }
 
   public get(name: string): ComputableSource<IFile | undefined> {
-    /* A single-file get is a query over the literal path (enumerateGlob's non-glob branch
-     * stats one file), projected to that file — undefined when absent, per the FileSource
-     * contract. When watching, a `.fabr` edit thus cascades (through the loader's memoized
-     * parse) into a model reload. The name is normalised to a root-relative path, since
-     * callers pass it either relative (the project entry) or absolute (a resolved include). */
+    /* A single-file get is a query over the literal path with **exact-file**
+     * enumeration ({@link enumerateFile}): the path as a file, or nothing — a
+     * directory at the path is NOT expanded to its contents (the contract says
+     * "a single direct file by exact name", and a subtree walk would also make a
+     * mere existence probe hash a whole tree). Still a live TreeQuery: when
+     * watching, a `.fabr` edit thus cascades (through the loader's memoized
+     * parse) into a model reload, and a file created at the path later fills the
+     * query. The name is normalised to a root-relative path, since callers pass
+     * it either relative (the project entry) or absolute (a resolved include). */
     const target = toPosix(path.relative(this.root, path.resolve(this.root, name)));
-    return new TreeQuery(this, this.root, Name.fromLiteral(target), "").then(fileSet => fileSet.getSingleFile());
+    const literal = Name.fromLiteral(target);
+    return new TreeQuery(this, this.root, literal, "", () => enumerateFile(this.root, literal)).then(fileSet =>
+      fileSet.getSingleFile()
+    );
   }
 }
 
@@ -678,6 +690,24 @@ function enumerate(root: string, name: Name, prefix: string): Computable<{ names
       fileStat.isFile()
         ? { names: [toPosix(file)], project }
         : walk(root, abs, project).then(names => ({ names, project })),
+    /* Nothing there yet — an empty set a later create-event fills. */
+    () => ({ names: [], project })
+  );
+}
+
+/**
+ * Exact-file enumeration for {@link FSFileSource.get}: the literal path when it
+ * is a regular file, else nothing — no directory expansion, no walk. The
+ * projection admits only the path itself, so under watch the query stays exactly
+ * a probe of that one path: a file created there later fills it, a directory
+ * appearing there ingests to `undefined` (a directory is no file) and stays out.
+ */
+function enumerateFile(root: string, name: Name): Computable<{ names: string[]; project: Projector }> {
+  const file = staticPath(name);
+  const abs = path.resolve(root, file);
+  const project = name.makeProjector();
+  return stat(abs).then(
+    fileStat => ({ names: fileStat.isFile() ? [toPosix(file)] : [], project }),
     /* Nothing there yet — an empty set a later create-event fills. */
     () => ({ names: [], project })
   );

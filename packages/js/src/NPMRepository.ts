@@ -870,8 +870,9 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    * selection is simply its constraint's lower bound (nothing else constrains
    * it), so this is exactly the version the joint path would give the root, but
    * reached without walking — or fetching — the dependency closure. The result
-   * is a bare PackageFileSet (no carried dependencies); any projection is
-   * applied afterwards by the collection point (RepositoryRef.finishMaterialize).
+   * is a bare PackageFileSet (no carried dependencies); any projection stays
+   * pending on the delivered ref (RepositoryRef.deliveredAs), finished by the
+   * driving context.
    */
   private resolveBarePackage(reference: RepositoryRef): Computable<FileSet> {
     const req = this.parseRequirement(reference.name);

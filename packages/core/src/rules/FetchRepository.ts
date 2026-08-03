@@ -107,18 +107,23 @@ class FetchRepository implements Repository, RepositoryReader {
   }
 
   /**
-   * The members a reference names. Ordinarily its literal prefix IS a member
-   * name (`@dl:amperize.tgz:…`); a reference that starts with a wildcard instead
-   * selects by matching member names, so `@dl:*.tgz` takes every archive.
+   * The members a reference names: an ordinary declared-name **prefix match**,
+   * the same move as target prefix matching or npm's identity claim — each
+   * member name is matched against the reference's leading components at the
+   * member's own depth, literally (`@dl:amperize.tgz:…`) or by glob
+   * (`@dl:*.tgz`, fetch's documented extension), or by the whole reference
+   * (which is how a `**` spans into a path-shaped member name); everything
+   * past the member projects into the downloaded file, applied by the
+   * consumer's ordinary descent.
    */
   private select(name: Name): [string, FetchMember][] {
-    const literal = name.getLiteralPrefix();
-    const exact = this.members.get(literal);
-    if (exact) {
-      return [[literal, exact]];
-    }
-    const matches = name.makeProjector();
-    return [...this.members].filter(([memberName]) => matches(memberName) !== undefined);
+    const prefixes = name.componentPrefixes();
+    const whole = name.makeProjector();
+    return [...this.members].filter(([memberName]) => {
+      const memberPath = memberName.replaceAll(":", "/");
+      const prefix = prefixes[memberPath.split("/").length - 1];
+      return whole(memberPath) !== undefined || prefix?.makeProjector()(memberPath) !== undefined;
+    });
   }
 
   /**
@@ -164,12 +169,16 @@ class FetchRepository implements Repository, RepositoryReader {
   /**
    * The whole name is the projection: `@dl` is what gets addressed, and the
    * member name stays in the path so projecting into a member reads exactly as
-   * projecting into a local file of that name. (A catalog splits its alias off
-   * instead — its members are packages, addressed by name and delivering their
-   * contents; a download is a file sitting in a set.)
+   * projecting into a local file of that name — the delivery is the selected
+   * member files under their member names, and the written name applies over
+   * them as an ordinary projection when the resolver finishes the delivery —
+   * which is where a `:*:**` tail descends into an archive member. (A catalog
+   * splits its alias off instead — its members are packages, addressed by
+   * name and delivering their contents; a download is a file sitting in a
+   * set.)
    */
   public getRepositoryRef(name: Name): RepositoryRef {
-    return new RepositoryRef(this, name);
+    return new RepositoryRef(this, name, [{ pattern: name, prefix: "" }]);
   }
 
   /** Downloads are read-only: a URL is not a place content goes. */
@@ -213,9 +222,32 @@ function readMembers(context: RepositoryContext): Computable<Map<string, FetchMe
       for (const [name, value] of entries) {
         members.set(name, readMember(context.target.name, name, value));
       }
+      rejectShadowedMembers(context.target.name, [...members.keys()]);
       return members;
     }
   );
+}
+
+/**
+ * A member name may not be a path prefix of another member — the same rule
+ * that keeps a target name from conflicting with an implicit namespace: with
+ * both `a` and `a/b.tgz` declared, a reference `@dl:a/b.tgz` would be
+ * ambiguous between the deeper member and a projection *into* member `a`.
+ * Rejected at declaration so the ambiguity is impossible by construction.
+ */
+function rejectShadowedMembers(repositoryName: string, names: string[]): void {
+  const paths = new Map(names.map(name => [name.replaceAll(":", "/"), name]));
+  const sorted = [...paths.keys()].sort();
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].startsWith(sorted[i - 1] + "/")) {
+      throw attachHelp(
+        new Error(
+          `download '${paths.get(sorted[i - 1])}' in ${repositoryName} conflicts with '${paths.get(sorted[i])}': a member may not be a path prefix of another member`
+        ),
+        "a reference to the deeper name would be ambiguous with a projection into the shorter one — rename one of them"
+      );
+    }
+  }
 }
 
 function readMember(repositoryName: string, memberName: string, value: string): FetchMember {

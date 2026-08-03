@@ -25,16 +25,7 @@ import type { IOutputHandle } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { FileSet, IFile } from "../core/FileSet";
 import { SymlinkFile } from "../core/SymlinkFile";
-
-export enum ArchiveType {
-  AUTO,
-  GZIP,
-  ZIP,
-  TAR,
-  NONE,
-}
-
-const MIN_HEAD_LENGTH = 262; /* For TAR */
+import { MIME_GZIP, MIME_TAR, MIME_ZIP, SNIFF_LENGTH, sniffMime } from "./Mime";
 
 /* Cap on nested compression layers: a real package is a single gzip layer over
  * a tar (`.tgz`), so anything beyond a small bound is a malformed or hostile
@@ -65,23 +56,23 @@ function normalizeEntryName(raw: string): string | undefined {
  */
 export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): Computable<FileSet> {
   /* This is fed the live network response, so any hop can fail (a header
-   * truncated below MIN_HEAD_LENGTH, a mid-stream connection drop, a write
+   * truncated below SNIFF_LENGTH, a mid-stream connection drop, a write
    * error) via several independent listeners: Computable.fromOnce keeps the first
    * outcome so a later terminal event can't re-settle. */
   return Computable.fromOnce((resolve, reject) => {
     let depth = 0;
     function handleHeader(data: Buffer): Writable | null {
-      switch (getMagic(data)) {
-        case ArchiveType.GZIP: {
+      switch (sniffMime(data)) {
+        case MIME_GZIP: {
           if (++depth > MAX_COMPRESSION_LAYERS) {
             reject(new Error(`Archive nests more than ${MAX_COMPRESSION_LAYERS} compression layers`));
             return null;
           }
           const zip = createUnzip();
-          magicByteStream(zip, MIN_HEAD_LENGTH, handleHeader, reject);
+          magicByteStream(zip, SNIFF_LENGTH, handleHeader, reject);
           return zip;
         }
-        case ArchiveType.TAR: {
+        case MIME_TAR: {
           const extract = tar.extract();
           const files: Computable<[string, IFile]>[] = [];
           /* Every emitted entry, keyed by its (normalized) in-archive name, so a
@@ -157,7 +148,7 @@ export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): 
           });
           return extract;
         }
-        case ArchiveType.ZIP:
+        case MIME_ZIP:
           reject(new Error("ZIP archives are not supported (expected a gzip-compressed tarball)"));
           return null;
         default:
@@ -166,20 +157,8 @@ export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): 
       }
     }
 
-    magicByteStream(ins, MIN_HEAD_LENGTH, handleHeader, reject);
+    magicByteStream(ins, SNIFF_LENGTH, handleHeader, reject);
   });
-}
-
-export function getMagic(buf: Buffer): ArchiveType {
-  if (buf[0] === 0x1f && buf[1] === 0x8b && buf[2] === 0x08) {
-    return ArchiveType.GZIP;
-  } else if (buf[257] === 0x75 && buf[258] === 0x73 && buf[259] === 0x74 && buf[260] === 0x61 && buf[261] === 0x72) {
-    return ArchiveType.TAR;
-  } else if (buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04) {
-    return ArchiveType.ZIP;
-  } else {
-    return ArchiveType.NONE;
-  }
 }
 
 function magicByteStream(

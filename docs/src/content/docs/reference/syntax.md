@@ -152,6 +152,30 @@ declaring a single bin needs no projection: that bin is the default entry. One d
 default, so the reference must name one — typescript declares both tsc and tsserver, and leaving
 the projection off will report an error.
 
+### Archives
+
+An archive file can be referenced as if it were a directory: continue the path through it to select
+files inside. A reference that stops at the archive is just the file itself.
+
+```
+srcs = ./vendor.tgz:*:**;      # everything inside the archive (the * skips the tarball's top-level directory)
+data = ./vendor.tgz;           # no path inside it: the tarball itself, as a file
+```
+
+Whether a file can be opened this way is decided by its contents, not its name: naming a text file
+`notes.tgz` doesn't make it an archive, and a real archive is recognized whatever it's called.
+Archives inside archives work the same way (`outer.tgz:inner.tgz:**`).
+
+The one thing that never looks inside an archive is `**`. A recursive glob matches the archive as an
+ordinary file, so `./**/*.ts` won't pick up `.ts` files packed inside archives it passed along the
+way. To search inside archives, the reference needs a path component that matches the archive file
+itself — everything after that component then matches its contents:
+
+```
+srcs = ./**/*.ts;              # .ts files in the tree; archives are just files here
+srcs = ./**/*.tgz/**/*.ts;     # for every .tgz in the tree, the .ts files inside it
+```
+
 ### Version override markers
 
 When a dependency closure's requirements are jointly unsatisfiable — two parts of the build need
@@ -178,9 +202,7 @@ deps = @npm:aws-param-store-sdkv3:4.0.0,
   constraint you judge wrong. Ranges the forced version does not satisfy are overridden silently,
   so prefer `?` (which honors every declared range) unless the constraint itself is the problem.
 
-A failed resolution computes the **complete** repair in one pass — the unbounded packages'
-versions plus every conflict sanction the completed resolution needs — and prints it as pasteable
-`help:` lines: copy them into the failing `deps` or a shared `catalog` and rebuild.
+
 
 ## Properties
 

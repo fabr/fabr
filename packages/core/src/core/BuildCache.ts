@@ -30,6 +30,7 @@ import { deleteFile, HASH_ALGORITHM, hashString, readFile, readFileBuffer, readO
 import { registerTempTree, removeTempTree } from "./Staging";
 import { SymlinkFile } from "./SymlinkFile";
 import { Diagnostic, Log } from "../support/Log";
+import { SNIFF_LENGTH, sniffMime } from "../support/Mime";
 
 /**
  * A streaming output sink a build step writes to instead of buffering: the bytes
@@ -105,8 +106,10 @@ class BuildFile implements IFile {
 
   /** The file's original permission bits, read back from the manifest — NOT the
    * mode of the backing blob (which is read-only 0o444/0o555). Reapplied when the
-   * file is exported to user space (`fabr cp`) or packed. */
-  constructor(root: string, hash: string, name: string, public mode: number = DEFAULT_FILE_MODE) {
+   * file is exported to user space (`fabr cp`) or packed. The mime likewise rides
+   * the manifest (sniffed when the content was first read on the way in), so a
+   * cache-served file answers classification with no read. */
+  constructor(root: string, hash: string, name: string, public mode: number, public readonly mime: string) {
     this.root = root;
     this.hash = hash;
     this.name = name;
@@ -528,9 +531,15 @@ export class BuildCache {
       pendingReject?.(err);
     };
     fileStream.on("error", recordError);
+    /* The leading bytes, captured as they stream past, so finalize can classify
+     * the content (IFile.mime) from the same pass that hashes it. */
+    let head = Buffer.alloc(0);
     const sink = new Transform({
-      transform(chunk, _enc, cb) {
+      transform(chunk: Buffer, _enc, cb) {
         hash.update(chunk);
+        if (head.length < SNIFF_LENGTH) {
+          head = Buffer.concat([head, chunk]).subarray(0, SNIFF_LENGTH);
+        }
         cb(null, chunk);
       },
     });
@@ -582,7 +591,7 @@ export class BuildCache {
             /* `mode` defaults non-executable (a captured genrule stdout); an
              * unpacked entry passes its real tar mode so an executable survives. */
             this.materializeBlob(digest, mode, blobPath => this.renameIntoPool(tmpPath, blobPath)).then(
-              () => resolve(new BuildFile(this.blobRoot, digest, name, mode)),
+              () => resolve(new BuildFile(this.blobRoot, digest, name, mode, sniffMime(head))),
               /* A placement failure leaves the spool where it is (the rename either
                * happened or did not), so tear it down here too. */
               fail
@@ -750,8 +759,12 @@ export class BuildCache {
         backed.set(name, file);
         continue;
       }
-      manifest += `${file.hash} ${file.mode.toString(8)} ${encodeURI(name)}\n`;
-      backed.set(name, new BuildFile(this.blobRoot, file.hash, name, file.mode));
+      /* The mime rides after the name (names are encodeURI'd, so the name can
+       * never eat it) — appending keeps the line forward-readable: a parser
+       * destructuring the first three fields still reads old-format entries'
+       * shape, and vice versa an older fabr ignores the trailing field. */
+      manifest += `${file.hash} ${file.mode.toString(8)} ${encodeURI(name)} ${file.mime}\n`;
+      backed.set(name, new BuildFile(this.blobRoot, file.hash, name, file.mode, file.mime));
     }
     /* Write atomically (temp + rename), like blobs: a crash mid-write must not
      * leave a truncated manifest that `lookup`'s bare `existsSync` would trust,
@@ -787,7 +800,7 @@ export class BuildCache {
       if (file instanceof BuildFile && file.getAbsPath() === path.resolve(this.blobRoot, file.hash)) {
         /* Already one of our blobs (a re-put entry, or content shared with
          * another entry): nothing to ingest, not even an existence probe. */
-        map.set(name, file.name === name ? file : new BuildFile(this.blobRoot, file.hash, name, file.mode));
+        map.set(name, file.name === name ? file : new BuildFile(this.blobRoot, file.hash, name, file.mode, file.mime));
         continue;
       }
       const abspath = file.getAbsPath();
@@ -796,7 +809,10 @@ export class BuildCache {
           ? file.getBuffer().then(buffer => this.ensureBlob(file.hash, buffer, file.mode))
           : this.ingestFile(file.hash, abspath, file.mode);
       ops.push(stored.then(() => undefined));
-      map.set(name, new BuildFile(this.blobRoot, file.hash, name, file.mode));
+      /* The mime carries over from the incoming file — classified wherever its
+       * bytes were first read (hashing, streaming) — so the rename-ingest arm
+       * stays a rename: the store never re-reads content to classify it. */
+      map.set(name, new BuildFile(this.blobRoot, file.hash, name, file.mode, file.mime));
     }
     return ops.length === 0
       ? Computable.resolve(new FileSet(map, undefined, CANONICAL))
@@ -805,13 +821,16 @@ export class BuildCache {
 
   /**
    * Parse a manifest: an optional `!meta` header line, then one line per file
-   * — `hash octalmode name` for a regular file, `@link target name` for a
+   * — `hash octalmode name mime` for a regular file, `@link target name` for a
    * symlink. Only the FIRST line is ever considered as the header — matching
    * the writer, which only puts it there — so a file line can never be mistaken
    * for it, whatever the file is named. (It couldn't anyway: a file line begins
    * with the content hash, whose hex alphabet excludes `!`, and the name field
    * percent-encodes spaces — but the structural rule makes that safety
-   * independent of the hash alphabet.)
+   * independent of the hash alphabet.) The mime is required: a mime-less line
+   * (a pre-mime entry) is malformed like any other missing field, so the entry
+   * rebuilds on demand — the format-change equivalent of a tag bump, never a
+   * manual flush.
    */
   private parseManifest(data: string): ICacheEntry {
     const result = new Map();
@@ -829,8 +848,8 @@ export class BuildCache {
         }
         result.set(decodeURI(name), new SymlinkFile(decodeURI(target)));
       } else if (line) {
-        const [hash, mode, name] = line.split(" ");
-        if (hash === undefined || mode === undefined || name === undefined) {
+        const [hash, mode, name, mime] = line.split(" ");
+        if (hash === undefined || mode === undefined || name === undefined || mime === undefined) {
           throw new Error(`Malformed cache manifest line: '${line}'`);
         }
         /* Validated, not merely parsed: `parseInt` yields NaN for a corrupt
@@ -840,7 +859,7 @@ export class BuildCache {
         if (!/^[0-7]+$/.test(mode) || !Number.isInteger(bits)) {
           throw new Error(`Malformed cache manifest line: '${line}'`);
         }
-        result.set(decodeURI(name), new BuildFile(this.blobRoot, hash, decodeURI(name), bits));
+        result.set(decodeURI(name), new BuildFile(this.blobRoot, hash, decodeURI(name), bits, mime));
       }
     }
     /* A manifest is fabr's own memo of a canonical FileSet — its names were

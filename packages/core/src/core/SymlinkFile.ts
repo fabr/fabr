@@ -40,6 +40,10 @@ export class SymlinkFile implements IFile {
    * most systems (the target's mode governs); carried only to satisfy IFile —
    * a symlink stages as a link, never through the read-only blob path. */
   public readonly mode = 0o777;
+  /** The freedesktop name for "this entry IS a symlink" — a constant of the
+   * class, never sniffed (link text is a path, not content), and not written to
+   * the manifest (a link line's form already says what it is). */
+  public readonly mime = "inode/symlink";
 
   constructor(public readonly target: string) {
     this.hash = hashString(Buffer.from("symlink\0" + target));

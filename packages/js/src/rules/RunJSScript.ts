@@ -40,7 +40,6 @@ import {
   EMPTY_FILESET,
   FileSet,
   FileSetRef,
-  manifestAll,
   PackageFileSet,
   RuleRegistration,
   RuleResult,
@@ -84,12 +83,12 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
            * its declared bin (or the pending projection's pick) the entry —
            * with the deps bundled into its install. */
           if (sole instanceof PackageFileSet || (sole instanceof FileSetRef && sole.source instanceof PackageFileSet)) {
-            return manifestAll(deps).then(depSets => makeNpmRunnable(sole, depSets, argv));
+            return context.manifestAll(deps).then(depSets => makeNpmRunnable(sole, depSets, argv));
           }
           /* File-mode: the entry IS the script file. A plain-JS entry is
            * contributed to the install verbatim and launched under node; a
            * TypeScript entry is compiled first (see below). */
-          return Computable.forAll([manifestAll(deps), manifestAll(entry)], (depSets, entrySets) => {
+          return Computable.forAll([context.manifestAll(deps), context.manifestAll(entry)], (depSets, entrySets) => {
             if (entrySets.some(set => set instanceof PackageFileSet)) {
               throw new Error("js_script 'entry' must be a single file or a single package — further packages belong in 'deps'");
             }
