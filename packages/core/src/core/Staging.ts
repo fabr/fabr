@@ -34,7 +34,7 @@ import { Computable } from "./Computable";
 import { ConflictError, ExecutionError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
 import { FSFile } from "./FSFileSource";
-import { copyFile, deleteFile, hardlink, hashFile, readOnlyPermissions, rename, symlink, walkTree, writeFile } from "./FSWrapper";
+import { copyFile, deleteFile, hardlink, hashFile, mkdir, readOnlyPermissions, rename, symlink, walkTree, writeFile } from "./FSWrapper";
 import { Name } from "./Name";
 import { SymlinkFile } from "./SymlinkFile";
 import { describeSystemError, killLiveChildren } from "../support/Execute";
@@ -104,7 +104,6 @@ function rmTempTree(dir: string): void {
  * the shared cache blob.
  */
 export function writeFileSet(targetDir: string, files: FileSet, options?: { copy?: boolean }): Computable<void> {
-  const operations = [];
   const root = path.resolve(targetDir);
   let realRoot: string | undefined;
   /* Staging is fail-on-clobber: a hardlink/symlink already refuses to overwrite,
@@ -140,52 +139,81 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
       }
       throw new ExecutionError(describeSystemError(err));
     });
-  for (const [name, file] of files) {
-    const targetName = path.resolve(root, name);
-    assertContained(root, targetName, name);
-    const dirname = path.dirname(targetName);
-    fs.mkdirSync(dirname, { recursive: true });
-    const filepath = file.getAbsPath();
-    if (file instanceof SymlinkFile) {
-      /* Security: a symlink whose target escapes the staged tree (via `..`, an
-       * absolute path, or a symlinked parent component) could point at — or,
-       * written-through, clobber — files outside it. Resolve the target against
-       * the *real* parent directory (path.resolve is purely lexical and would not
-       * follow symlinks in the path), and only stage it if it stays within the
-       * real root. */
-      realRoot ??= fs.realpathSync(path.resolve(targetDir));
-      const resolved = path.resolve(fs.realpathSync(dirname), file.target);
-      if (resolved === realRoot || resolved.startsWith(realRoot + path.sep)) {
-        operations.push(stage(symlink(file.target, targetName), name));
+  /* Resolve every name first, so the directories can be created as ONE
+   * concurrent batch of distinct paths ahead of the writes. Creating them
+   * per-file instead is both quadratic-ish in calls (a node_modules install is
+   * ~6 files per directory, so most calls create nothing) and synchronous —
+   * which matters far more than the wasted calls, because this event loop is
+   * also the build's scheduler: while a tree stages, no other target can be
+   * evaluated and no other action can start. Measured on a two-target dylan
+   * build: 30,716 `mkdirSync` calls over 5,085 distinct directories, ~0.9s of
+   * blocked loop. The writes below need every parent to exist (the symlink arm
+   * additionally reads the real path of one), hence a barrier and not a
+   * per-file dependency. */
+  const staged = [...files].map(([name, file]) => contained(root, name, file));
+  return Computable.forAll(
+    [...new Set(staged.map(entry => entry.dirname))].map(dir => mkdir(dir)),
+    () => undefined
+  ).then(() => writeStaged(staged));
+
+  /* Deferred until the directories exist: an operation below STARTS when it is
+   * constructed, so building them in the loop above would race the mkdirs. */
+  function writeStaged(entries: typeof staged): Computable<void> {
+    const operations: Computable<void>[] = [];
+    for (const { name, file, targetName, dirname } of entries) {
+      const filepath = file.getAbsPath();
+      if (file instanceof SymlinkFile) {
+        /* Security: a symlink whose target escapes the staged tree (via `..`, an
+         * absolute path, or a symlinked parent component) could point at — or,
+         * written-through, clobber — files outside it. Resolve the target against
+         * the *real* parent directory (path.resolve is purely lexical and would not
+         * follow symlinks in the path), and only stage it if it stays within the
+         * real root. */
+        realRoot ??= fs.realpathSync(path.resolve(targetDir));
+        const resolved = path.resolve(fs.realpathSync(dirname), file.target);
+        if (resolved === realRoot || resolved.startsWith(realRoot + path.sep)) {
+          operations.push(stage(symlink(file.target, targetName), name));
+        }
+      } else if (filepath) {
+        /* A hardlink shares the read-only cache blob's mode (0o444/0o555). A copy
+         * (`fabr cp`) is durable user space, so reapply the file's real mode —
+         * restoring writability and the exact original bits the blob dropped. */
+        operations.push(
+          stage(
+            options?.copy
+              ? copyFile(filepath, targetName).then(() => fs.chmodSync(targetName, file.mode & 0o7777))
+              : hardlink(filepath, targetName),
+            name
+          )
+        );
+      } else {
+        /* An in-memory file mirrors what a blob-backed file gets in the same
+         * context: a copy (`fabr cp`) exports at its real mode (writable, durable
+         * user space), while a staged file matches the read-only 0o444/0o555 of the
+         * hardlinked blobs beside it (exec-if-executable, so a generated tool runs). */
+        const mode = options?.copy ? file.mode & 0o7777 : readOnlyPermissions(file.mode);
+        operations.push(
+          stage(
+            file
+              .getBuffer()
+              .then(buffer => writeFile(targetName, buffer, { exclusive: !options?.copy }))
+              .then(() => fs.chmodSync(targetName, mode)),
+            name
+          )
+        );
       }
-    } else if (filepath) {
-      /* A hardlink shares the read-only cache blob's mode (0o444/0o555). A copy
-       * (`fabr cp`) is durable user space, so reapply the file's real mode —
-       * restoring writability and the exact original bits the blob dropped. */
-      operations.push(
-        stage(
-          options?.copy ? copyFile(filepath, targetName).then(() => fs.chmodSync(targetName, file.mode & 0o7777)) : hardlink(filepath, targetName),
-          name
-        )
-      );
-    } else {
-      /* An in-memory file mirrors what a blob-backed file gets in the same
-       * context: a copy (`fabr cp`) exports at its real mode (writable, durable
-       * user space), while a staged file matches the read-only 0o444/0o555 of the
-       * hardlinked blobs beside it (exec-if-executable, so a generated tool runs). */
-      const mode = options?.copy ? file.mode & 0o7777 : readOnlyPermissions(file.mode);
-      operations.push(
-        stage(
-          file
-            .getBuffer()
-            .then(buffer => writeFile(targetName, buffer, { exclusive: !options?.copy }))
-            .then(() => fs.chmodSync(targetName, mode)),
-          name
-        )
-      );
     }
+    return Computable.forAll(operations, () => {});
   }
-  return Computable.forAll(operations, () => {});
+}
+
+/** A staged entry with its resolved destination and that destination's parent,
+ * containment asserted. Resolving up front is what lets the distinct parents be
+ * created as one batch before any write starts. */
+function contained(root: string, name: string, file: IFile): { name: string; file: IFile; targetName: string; dirname: string } {
+  const targetName = path.resolve(root, name);
+  assertContained(root, targetName, name);
+  return { name, file, targetName, dirname: path.dirname(targetName) };
 }
 
 /** Belt-and-braces backstop for the FileSet canonical-name invariant: names are
@@ -224,53 +252,70 @@ let tempCounter = 0;
  */
 export function syncFileSet(targetDir: string, before: FileSet, after: FileSet): Computable<{ written: number; removed: number }> {
   const root = path.resolve(targetDir);
-  const writes = [];
   let realRoot: string | undefined;
-  for (const [name, file] of after) {
-    if (before.getFile(name)?.hash === file.hash) {
-      continue;
-    }
-    const targetName = path.resolve(root, name);
-    assertContained(root, targetName, name);
-    const dirname = path.dirname(targetName);
-    fs.mkdirSync(dirname, { recursive: true });
-    const temp = `${targetName}.fabr-sync-${process.pid}-${tempCounter++}`;
-    const filepath = file.getAbsPath();
-    if (file instanceof SymlinkFile) {
-      /* Same containment guard as writeFileSet: a target escaping the staged
-       * tree is silently not staged. */
-      realRoot ??= fs.realpathSync(root);
-      const resolved = path.resolve(fs.realpathSync(dirname), file.target);
-      if (resolved !== realRoot && !resolved.startsWith(realRoot + path.sep)) {
-        continue;
+  /* Resolve and containment-check every name up front — before anything touches
+   * the filesystem, which is the point of a backstop guard — and take the
+   * distinct parents from the same pass. */
+  const changed = [...after]
+    .filter(([name, file]) => before.getFile(name)?.hash !== file.hash)
+    .map(([name, file]) => contained(root, name, file));
+  const gone = [...before].filter(([name]) => after.getFile(name) === undefined).map(([name, file]) => contained(root, name, file));
+  /* The parents of everything about to be written, created as one concurrent
+   * batch ahead of the writes — same reasoning as writeFileSet, on a smaller
+   * scale (only the changed files are written here). */
+  return Computable.forAll(
+    [...new Set(changed.map(entry => entry.dirname))].map(dir => mkdir(dir)),
+    () => undefined
+  ).then(() => applySync());
+
+  /* Deferred until the directories exist, since a write starts as it is
+   * constructed and the symlink arm reads its parent's real path. */
+  function applySync(): Computable<{ written: number; removed: number }> {
+    const writes = [];
+    for (const { file, targetName, dirname } of changed) {
+      const temp = `${targetName}.fabr-sync-${process.pid}-${tempCounter++}`;
+      const filepath = file.getAbsPath();
+      if (file instanceof SymlinkFile) {
+        /* Same containment guard as writeFileSet: a target escaping the staged
+         * tree is silently not staged. */
+        realRoot ??= fs.realpathSync(root);
+        const resolved = path.resolve(fs.realpathSync(dirname), file.target);
+        if (resolved !== realRoot && !resolved.startsWith(realRoot + path.sep)) {
+          continue;
+        }
+        writes.push(stageWrite(temp, targetName, symlink(file.target, temp)));
+      } else if (filepath) {
+        writes.push(stageWrite(temp, targetName, hardlink(filepath, temp)));
+      } else {
+        /* A served install is nominally hardlink output, so an in-memory file
+         * matches the read-only 0o444/0o555 of the blobs beside it; chmod the temp
+         * before the atomic rename so it never appears at the wrong mode. */
+        writes.push(
+          stageWrite(
+            temp,
+            targetName,
+            file
+              .getBuffer()
+              .then(buffer => writeFile(temp, buffer))
+              .then(() => fs.chmodSync(temp, readOnlyPermissions(file.mode)))
+          )
+        );
       }
-      writes.push(stageWrite(temp, targetName, symlink(file.target, temp)));
-    } else if (filepath) {
-      writes.push(stageWrite(temp, targetName, hardlink(filepath, temp)));
-    } else {
-      /* A served install is nominally hardlink output, so an in-memory file
-       * matches the read-only 0o444/0o555 of the blobs beside it; chmod the temp
-       * before the atomic rename so it never appears at the wrong mode. */
-      writes.push(stageWrite(temp, targetName, file.getBuffer().then(buffer => writeFile(temp, buffer)).then(() => fs.chmodSync(temp, readOnlyPermissions(file.mode)))));
     }
-  }
-  /* Unlink the gone files (concurrent with the writes — disjoint names), and note
-   * their parent directories as prune candidates for after everything settles. */
-  const removals = [];
-  const prunable = new Set<string>();
-  for (const [name] of before) {
-    if (after.getFile(name) === undefined) {
-      const targetName = path.resolve(root, name);
-      assertContained(root, targetName, name);
+    /* Unlink the gone files (concurrent with the writes — disjoint names), and note
+     * their parent directories as prune candidates for after everything settles. */
+    const removals = [];
+    const prunable = new Set<string>();
+    for (const { targetName, dirname } of gone) {
       removals.push(asExecutionError(deleteFile(targetName)));
-      prunable.add(path.dirname(targetName));
+      prunable.add(dirname);
     }
+    const written = writes.length;
+    const removed = removals.length;
+    return Computable.forAll([...writes, ...removals], () => {})
+      .then(() => pruneEmptyDirs(root, prunable))
+      .then(() => ({ written, removed }));
   }
-  const written = writes.length;
-  const removed = removals.length;
-  return Computable.forAll([...writes, ...removals], () => {})
-    .then(() => pruneEmptyDirs(root, prunable))
-    .then(() => ({ written, removed }));
 }
 
 /** Finish one staged write: `create` has produced the temp sibling; rename it

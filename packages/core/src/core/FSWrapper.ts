@@ -157,6 +157,27 @@ export function walkTree(
   );
 }
 
+/**
+ * Create a directory and any missing parents (`mkdir -p`), succeeding if it
+ * already exists.
+ *
+ * Async deliberately, even though a one-off `mkdirSync` reads more simply:
+ * staging a tree creates thousands of these, and a synchronous one blocks the
+ * event loop — which here is also the scheduler, so nothing else in the build
+ * can start while a tree is being staged.
+ */
+export function mkdir(dirpath: string): Computable<void> {
+  return Computable.from<void>((resolve, reject) => {
+    fs.mkdir(dirpath, { recursive: true }, err => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
 export function symlink(target: string, filepath: string): Computable<void> {
   return Computable.from<void>((resolve, reject) => {
     fs.symlink(target, filepath, err => {

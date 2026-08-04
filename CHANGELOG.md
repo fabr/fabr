@@ -5,10 +5,11 @@ version number.
 ## Fabr 0.1.1
 @fabr/core:
 - `include` paths may now glob (`include lib/**/*.fabr;`).
-- Fix: generate command names resolved incorrectly.
 - Cap maximum concurrent connections + executing processes.
 - New 'fetch' repository source for arbitrary http/https fetching.
 - Enable automatic extraction and traversal of archive files.
+- Fix: generate command names resolved incorrectly.
+- Fix: remove excessive synchronous mkdirs
 
 @fabr/js:
 - Generated package.json now strips build-only fields (devDependencies, scripts, …) from an imported manifest, and emits array metadata (keywords, os, cpu) as JSON arrays.
