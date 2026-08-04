@@ -35,7 +35,7 @@ export function toBuildModel(files: IBuildFileContents[], log: Log, contribution
   files.forEach(file => {
     file.namespaces.forEach(ns => builder.addNamespaceDecl(ns));
     file.properties.forEach(prop => builder.addDecl(prop));
-    file.defaults.forEach(prop => builder.addDefaultDecl(prop));
+    file.defaults.forEach(decl => builder.addDefaultDecl(decl));
     file.targetdefs.forEach(def => builder.addDecl(def));
     file.targets.forEach(target => builder.addDecl(target));
   });

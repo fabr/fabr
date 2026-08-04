@@ -23,6 +23,7 @@ import {
   DeclKind,
   IBuildFile,
   IBuildFileContents,
+  IDefaultableDecl,
   IIncludeDecl,
   IMapItemDecl,
   IPluginDecl,
@@ -1617,6 +1618,37 @@ export class BuildParser {
   }
 
   /**
+   * DefaultDecl ::= 'default' ( PropertyDecl | TargetDecl )
+   *                            ^
+   *
+   * `default` prefixes either form of named declaration, so the word here is a
+   * property name or a target type and must be an identifier — a `/`-bearing
+   * SIMPLE_NAME (or anything else) is a positioned error, NOT a target of type
+   * `default`. Which form follows is decided by the token after it, exactly as
+   * for an undefaulted declaration.
+   */
+  private parseDefaultDecl(docComment: string | undefined): IDefaultableDecl {
+    const name = this.token;
+    if (name.type !== TokenType.IDENTIFIER) {
+      this.unexpectedTokenError("a property name or target type after 'default'");
+    }
+    const next = this.nextToken();
+    if (next.type === TokenType.EQUALS) {
+      return this.parsePropertyDecl(name.text, name.start, undefined, docComment);
+    } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.SIMPLE_NAME) {
+      /* Only properties and targets have a default slot: a targetdef is not
+       * defaultable, so `default targetdef x { … }` is an error reported at the
+       * keyword, rather than a target whose type is `targetdef`. */
+      if (name.text === "targetdef") {
+        this.unexpectedTokenError("a property name or target type after 'default'", name.start);
+      }
+      return this.parseTargetDecl(name.text, name.start, docComment);
+    } else {
+      this.unexpectedTokenError("'=' or a target name");
+    }
+  }
+
+  /**
    * TargetDefDecl ::= 'targetdef' NAME '{' PropertyTypeList '}'
    *                     ^
    * @param name
@@ -1724,11 +1756,14 @@ export class BuildParser {
    * and throw (caught by recovery). Note that the current token is _NOT_
    * consumed.
    * @param expected
+   * @param at offset to report at, defaulting to the current token — an earlier
+   * one where the token that is wrong is only known to be so from a later one
+   * (`default targetdef`, whose lookahead has already advanced past it).
    */
-  private unexpectedTokenError(expected: string): never {
+  private unexpectedTokenError(expected: string, at: number = this.token.start): never {
     /* Report an error */
     this.log.log(DIAG_PARSE_ERROR, {
-      loc: { ...this.source, offset: this.token.start },
+      loc: { ...this.source, offset: at },
       actual: TOKEN_NAME_MAP[this.token.type],
       expected,
     });
@@ -1761,14 +1796,14 @@ export class BuildParser {
   /**
    * Parse a statement.
    *
-   * Statement ::= PropertyDecl | TargetDecl | IncludeDecl | PluginDecl | TargetDefDecl | DefaultPropertyDecl
+   * Statement ::= PropertyDecl | TargetDecl | IncludeDecl | PluginDecl | TargetDefDecl | DefaultDecl
    *               ^
    * PropertyDecl ::= NAME '=' expr ';'
    * TargetDecl ::= NAME NAME '{' PropertyList '}'
    * IncludeDecl ::= 'include' NAME ';'
    * PluginDecl ::= 'plugin' NAME ';'
    * TargetDefDecl ::= 'targetdef' NAME '{' PropertyTypeList '}'
-   * DefaultPropertyDecl ::= 'default' PropertyDecl
+   * DefaultDecl ::= 'default' ( PropertyDecl | TargetDecl )
    */
 
   public parseStatement(): void {
@@ -1783,14 +1818,7 @@ export class BuildParser {
       } else if (token.text === "plugin") {
         this.result.plugins.push(this.parsePluginDecl());
       } else if (token.text === "default") {
-        /* `default` is a keyword — `default <prop> = <value>;`. The name must be
-         * an identifier property name; a `/`-bearing SIMPLE_NAME (or anything
-         * else) is a positioned error, NOT a target of type `default`. */
-        if (next.type !== TokenType.IDENTIFIER) {
-          this.unexpectedTokenError("a property name after 'default'");
-        }
-        this.nextToken();
-        this.result.defaults.push(this.parsePropertyDecl(next.text, next.start, undefined, doc));
+        this.result.defaults.push(this.parseDefaultDecl(doc));
       } else if (next.type === TokenType.EQUALS) {
         this.result.properties.push(this.parsePropertyDecl(token.text, token.start, undefined, doc));
       } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.SIMPLE_NAME) {

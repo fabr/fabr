@@ -234,7 +234,7 @@ targetdef css_compile {
 # with `access = private;`.
 #
 
-npm_repository @npm {
+default npm_repository @npm {
     url = ${NPM_REPOSITORY_URL};
     access = public;
 }

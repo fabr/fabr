@@ -245,8 +245,9 @@ Default properties are specified with the `default` keyword:
 default TSC = @npm:typescript:5.4.5:tsc;
 ```
 
-Default properties are used if and only if there is no non-default property with the same name.
-(typically used by system defaults).
+A default property is used if and only if there is no non-default property with the same name
+(typically used by system defaults). The keyword applies to
+[target declarations](#target-declarations) in the same way.
 
 Properties can be overridden on the command-line or (locally) through a constraint expression.
 
@@ -311,6 +312,17 @@ js_package mylib {
 
 The `<type>` must be a targetdef provided by core or a loaded plugin. The `<name>` is how the target
 is referenced elsewhere and on the command line.
+
+A declaration may be prefixed with `default`, exactly as a [property](#properties) may:
+
+```
+default js_script test-runner { entry = ...; }
+```
+
+A default target is used if and only if there is no non-default declaration of that name — so a
+build script can replace one a plugin or standard library ships simply by declaring its own. Two
+default declarations of the same name still conflict, and a default declaration is validated
+against its targetdef whether or not it ends up being used.
 
 ## Targetdef declarations
 

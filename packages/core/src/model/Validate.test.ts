@@ -182,3 +182,36 @@ describe("validateProperty (global / schema-less properties)", () => {
     expect(validationErrors("shared = a | b;")).to.deep.equal([]);
   });
 });
+
+describe("default targets", () => {
+  it("validates a default target against its targetdef", () => {
+    /* A default declaration is collated apart from the ordinary content but
+     * validated the same way, so a default target's properties are checked
+     * against its schema exactly as a plain one's are. */
+    const errors = validationErrors("targetdef t { srcs = FILES; }\n" + "default t x { bogus = a; }\n");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/bogus/);
+  });
+
+  it("validates a default target even when a plain declaration shadows it", () => {
+    /* Shadowing decides which declaration is *used*; it does not excuse the
+     * unused one from being well-formed (as for a shadowed default property). */
+    const errors = validationErrors("targetdef t { srcs = FILES; }\n" + "default t x { bogus = a; }\n" + "t x { srcs = a; }\n");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/bogus/);
+  });
+
+  it("reports a duplicate declaration of the same default target", () => {
+    const errors = validationErrors(
+      "targetdef t { srcs = FILES; }\n" + "default t x { srcs = a; }\n" + "default t x { srcs = b; }\n"
+    );
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/Duplicate declaration of target 'x'/);
+  });
+
+  it("accepts a default target shadowed by a plain one (no conflict)", () => {
+    expect(validationErrors("targetdef t { srcs = FILES; }\n" + "default t x { srcs = a; }\n" + "t x { srcs = b; }\n")).to.deep.equal(
+      []
+    );
+  });
+});

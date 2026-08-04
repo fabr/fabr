@@ -19,7 +19,17 @@
 
 import { validateProperty, validateTarget } from "./Validate";
 import { Diagnostic, ISourcePosition, Log } from "../support/Log";
-import { DeclKind, declPosn, getDeclKindName, INamedDecl, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
+import {
+  DeclKind,
+  declPosn,
+  getDeclKindName,
+  IDefaultableDecl,
+  INamedDecl,
+  INamespaceDecl,
+  IPropertyDecl,
+  ITargetDecl,
+  ITargetDefDecl,
+} from "./AST";
 import { NAME_COMPONENT_SEPARATOR } from "../core/Name";
 import { Namespace } from "./Namespace";
 
@@ -44,7 +54,7 @@ interface NSBuilderNode {
   self?: INamedDecl;
   targetDefs: Map<string, ITargetDefDecl>;
   content: Map<string, NSBuilderNode | ITargetDecl | IPropertyDecl>;
-  defaultContent: Map<string, ITargetDecl | IPropertyDecl>;
+  defaultContent: Map<string, IDefaultableDecl>;
 }
 
 function newBuilderNode(self?: INamedDecl): NSBuilderNode {
@@ -85,7 +95,7 @@ export class NamespaceBuilder {
       decl.namespaces.forEach(ns => this.addNamespaceDecl(ns, node));
       decl.properties.forEach(prop => this.addDecl(prop, node));
       decl.targets.forEach(target => this.addDecl(target, node));
-      decl.defaults.forEach(prop => this.addDefaultDecl(prop, node));
+      decl.defaults.forEach(child => this.addDefaultDecl(child, node));
       return true;
     }
     return false;
@@ -117,7 +127,7 @@ export class NamespaceBuilder {
     return false;
   }
 
-  public addDefaultDecl(decl: ITargetDecl | IPropertyDecl, root: NSBuilderNode = this.root): boolean {
+  public addDefaultDecl(decl: IDefaultableDecl, root: NSBuilderNode = this.root): boolean {
     const nameParts = decl.name.split(NAME_COMPONENT_SEPARATOR);
     const simpleName = nameParts.pop()!;
     const parent = this.getNodeFor(root, nameParts, decl);

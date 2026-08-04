@@ -50,7 +50,7 @@ export interface INamespaceDecl extends IBaseDecl {
   namespaces: INamespaceDecl[];
   targets: ITargetDecl[];
   properties: IPropertyDecl[];
-  defaults: IPropertyDecl[];
+  defaults: IDefaultableDecl[];
 }
 
 export interface ITargetDecl extends IBaseDecl {
@@ -254,12 +254,16 @@ export interface IBuildFileContents {
   targets: ITargetDecl[];
   targetdefs: ITargetDefDecl[];
   properties: IPropertyDecl[];
-  defaults: IPropertyDecl[];
+  defaults: IDefaultableDecl[];
   includes: IIncludeDecl[];
   plugins: IPluginDecl[];
 }
 
 export type IDecl = ITargetDecl | IPropertyDecl | INamespaceDecl | IIncludeDecl | IPluginDecl | IValue;
+
+/** A declaration that may be written `default` — used if and only if there is no
+ * non-default declaration of the same name. */
+export type IDefaultableDecl = IPropertyDecl | ITargetDecl;
 
 export type INamedDecl = ITargetDecl | IPropertyDecl | INamespaceDecl | ITargetDefDecl;
 

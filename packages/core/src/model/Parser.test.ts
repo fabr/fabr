@@ -24,8 +24,10 @@ import {
   DeclKind,
   IBuildFileContents,
   ICommandStage,
+  IDefaultableDecl,
   IMapItemDecl,
   IPropertyDecl,
+  ITargetDecl,
   isCommandValue,
   isMapValue,
   isNameValue,
@@ -120,11 +122,26 @@ function propertyValues(properties: IPropertyDecl[]): Record<string, string[]> {
   return result;
 }
 
+function targetSummary(target: ITargetDecl): Record<string, unknown> {
+  return { type: target.type, properties: propertyValues(target.properties) };
+}
+
+/** Defaults hold either kind of declaration, each summarized as its own kind is
+ * elsewhere: a property by its values, a target by its type and properties. */
+function defaultValues(decls: IDefaultableDecl[]): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const decl of decls) {
+    result[decl.name] =
+      decl.kind === DeclKind.Target ? targetSummary(decl) : decl.values.map(value => nameText(nameOf(value)));
+  }
+  return result;
+}
+
 /** Reduce the parse result to its semantic content, for whole-value assertions */
 function summarize(contents: IBuildFileContents): Record<string, unknown> {
   const targets: Record<string, unknown> = {};
   for (const target of contents.targets) {
-    targets[target.name] = { type: target.type, properties: propertyValues(target.properties) };
+    targets[target.name] = targetSummary(target);
   }
   const targetdefs: Record<string, Record<string, string>> = {};
   for (const def of contents.targetdefs) {
@@ -139,7 +156,7 @@ function summarize(contents: IBuildFileContents): Record<string, unknown> {
     includes: contents.includes.map(include => include.name.toString()),
     plugins: contents.plugins.map(plugin => plugin.name),
     properties: propertyValues(contents.properties),
-    defaults: propertyValues(contents.defaults),
+    defaults: defaultValues(contents.defaults),
     targets,
     targetdefs,
   };
@@ -230,12 +247,45 @@ describe("Parser Tests", () => {
     /* `default` is a keyword; a `/`-bearing name must error positioned at the
      * name, rather than silently parsing as a target of type `default`. */
     expect(parseInvalid("default foo/bar = x;")).to.deep.equal([
-      diagnosticBlock(1, 9, "Read Name but expected a property name after 'default'", "default foo/bar = x;"),
+      diagnosticBlock(
+        1,
+        9,
+        "Read Name but expected a property name or target type after 'default'",
+        "default foo/bar = x;"
+      ),
     ]);
   });
 
   it("parses a well-formed default property", () => {
     expect(summarize(parseValid("default FLAVOR = plain;"))).to.deep.equal(summary({ defaults: { FLAVOR: ["plain"] } }));
+  });
+
+  it("parses a default target", () => {
+    /* `default` prefixes either form of declaration; which one follows from the
+     * token after the identifier, exactly as for an undefaulted statement. */
+    expect(summarize(parseValid("default js_library tool { srcs = a.ts; }"))).to.deep.equal(
+      summary({ defaults: { tool: { type: "js_library", properties: { srcs: ["a.ts"] } } } })
+    );
+  });
+
+  it("parses a default target with a path name", () => {
+    /* The target *name* may be a path, unlike a default property's name. */
+    expect(summarize(parseValid("default js_library tools/tsc { srcs = a.ts; }"))).to.deep.equal(
+      summary({ defaults: { "tools/tsc": { type: "js_library", properties: { srcs: ["a.ts"] } } } })
+    );
+  });
+
+  it("rejects a default targetdef", () => {
+    /* Only properties and targets have a default slot: this is an error at the
+     * keyword, not a target whose type is `targetdef`. */
+    expect(parseInvalid("default targetdef t { srcs = FILES; }")).to.deep.equal([
+      diagnosticBlock(
+        1,
+        9,
+        "Read Identifier but expected a property name or target type after 'default'",
+        "default targetdef t { srcs = FILES; }"
+      ),
+    ]);
   });
 
   it("Property with Subst var", () => {

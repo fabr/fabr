@@ -1462,6 +1462,34 @@ describe("BuildContext", () => {
   });
 });
 
+describe("default target declarations", () => {
+  /** Build `input`, resolve target `leaf` and read the content its rule wrote —
+   * which of the collated declarations won is exactly what that content says. */
+  async function leafContent(input: string): Promise<string | undefined> {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    const sources = await model.getConfig(Constraints.of({}), execution).getTargetRef("leaf");
+    const files = FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet));
+    return files.get("f.txt").then(file => file?.readString());
+  }
+
+  const targetdef = "targetdef test_file { content = STRING; }\n";
+
+  it("builds a default target when nothing shadows it", async () => {
+    expect(await leafContent(targetdef + "default test_file leaf { content = fallback; }\n")).to.equal("fallback");
+  });
+
+  it("lets a plain declaration shadow a default target", async () => {
+    /* Same rule as a default property: the default is used if and only if there
+     * is no non-default declaration of that name, whichever order they appear. */
+    expect(
+      await leafContent(targetdef + "test_file leaf { content = declared; }\n" + "default test_file leaf { content = fallback; }\n")
+    ).to.equal("declared");
+  });
+});
+
 describe("unresolved-name diagnostics", () => {
   function modelOf(input: string): ReturnType<typeof toBuildModel> {
     const errors: string[] = [];
