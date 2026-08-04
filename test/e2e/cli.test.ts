@@ -190,6 +190,22 @@ describe("e2e: driver CLI", () => {
     expect(result.stderr).to.match(/Copied 1 file/);
   });
 
+  it("cp of a quoted metacharacter filename names it as itself", () => {
+    /* A quoted selector is a literal, so `hasGlob()` is false and cp takes its
+     * single-named-file path — which derives the expected basename from the
+     * selector. Rendering that selector as a PATTERN put the escape in the
+     * basename, so it no longer equalled the real file name: the copy nested
+     * under a directory literally called `lit\*.txt`, which the FileSet name
+     * check then rejected ("'\' and control characters are not allowed"). */
+    const metachar = {
+      "PROJECT.fabr": "files = src:**/*;\n",
+      "src/lit*.txt": "STAR\n",
+    };
+    const result = runFabr(metachar, ["cp", "files:'lit*.txt'", "out"], ["out/lit*.txt"]);
+    expect(result.status).to.equal(0);
+    expect(result.files?.["out/lit*.txt"]).to.equal("STAR\n");
+  });
+
   it("cp of a container name nests its files under a dir named for the reference", () => {
     /* `files` names a container (a multi-file target), so — like `cp -r dir out/`
      * → `out/dir/` — its contents nest under `out/files/`, the dir named for the

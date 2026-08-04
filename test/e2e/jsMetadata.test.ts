@@ -49,6 +49,20 @@ describe("e2e: js_package metadata", () => {
     expect(pkg.name).to.equal("thing");
   });
 
+  it("carries glob metacharacters into the payload as themselves, unescaped", () => {
+    /* The regression this guards: a MAP value reached the payload through the
+     * name's PATTERN rendering, so any metacharacter in ordinary prose arrived
+     * backslash-escaped ("a \\(b\\)"). A value is text — only a matcher wants
+     * the escaped form. */
+    const result = runFabr(projectWith('description = "Fast (and small)! a|b * [x]";'), [
+      "-DJS_TARGET=es2020",
+      "cat",
+      "thing:package.json",
+    ]);
+    expect(result.status).to.equal(0);
+    expect(JSON.parse(result.stdout).description).to.equal("Fast (and small)! a|b * [x]");
+  });
+
   it("rejects a metadata key fabr computes itself", () => {
     const result = runFabr(projectWith("name = evil;"), ["-DJS_TARGET=es2020", "cat", "thing:package.json"]);
     expect(result.status).to.not.equal(0);

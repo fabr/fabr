@@ -24,6 +24,7 @@ import { Computable, ComputableSource, ComputableState } from "./Computable";
 import { FSFileSource, TreeQuery } from "./FSFileSource";
 import { FileSet } from "./FileSet";
 import { Name, NamePartKind } from "./Name";
+import { parseName } from "../model/Parser";
 import { expect } from "chai";
 
 function toPromise<T>(computable: ComputableSource<T>): Promise<T> {
@@ -474,6 +475,64 @@ describe("FSFileSource rename resolution", () => {
      * under the new root, at every depth. */
     const dir = Name.fromLiteral("stuff").withRenameTo(Name.fromLiteral("out"));
     expect(await resolved(dir)).to.deep.equal(["out/one.txt", "out/sub/two.txt"]);
+  });
+});
+
+/* The regression: a pure-literal extglob (`!(Validation)/**`) matched nothing,
+ * because the group's characters were literal to the name model while picomatch
+ * read them as an extglob — so the walk based at a directory named
+ * `!(Validation)`, which does not exist. A group with an interior wildcard
+ * (`!(V*)`) accidentally worked, its glob part cutting the base back to "".
+ * These enumerate for real, so the walk base and the match must agree. */
+describe("FSFileSource extglob enumeration", () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-fs-ext-"));
+    for (const dir of ["Validation", "V3", "api", "web"]) {
+      fs.mkdirSync(path.join(root, dir), { recursive: true });
+      fs.writeFileSync(path.join(root, dir, "f.ts"), "x");
+    }
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const found = async (name: string): Promise<string[]> => {
+    const set = await toPromise(new FSFileSource(root).find(parseName(name)));
+    return [...set].map(([n]) => n).sort();
+  };
+
+  it("excludes a literal-only alternative", async () => {
+    expect(await found("!(Validation)/**")).to.deep.equal(["V3/f.ts", "api/f.ts", "web/f.ts"]);
+  });
+
+  it("excludes several literal-only alternatives", async () => {
+    /* A pattern list is one or more patterns — one alternative (above) and three
+     * are as valid as the two that `|` makes look mandatory. */
+    expect(await found("!(Validation|V3)/**/*.ts")).to.deep.equal(["api/f.ts", "web/f.ts"]);
+    expect(await found("!(Validation|V3|api)/**/*.ts")).to.deep.equal(["web/f.ts"]);
+  });
+
+  it("agrees with the wildcard-bearing form that used to be the workaround", async () => {
+    expect(await found("!(Valid*n|V3)/**")).to.deep.equal(await found("!(Validation|V3)/**"));
+  });
+
+  it("selects with the other leaders, and nested", async () => {
+    expect(await found("@(api|web)/*.ts")).to.deep.equal(["api/f.ts", "web/f.ts"]);
+    expect(await found("!(Validation|@(V3|api))/**")).to.deep.equal(["web/f.ts"]);
+  });
+
+  it("still bases the walk on a literal prefix before the group", async () => {
+    /* Only the group itself is cut from the base: `api/` is still walked
+     * directly rather than the whole tree being scanned and filtered. */
+    expect(parseName("api/!(x)/**").getLiteralPathPrefix()).to.equal("api/");
+    expect(await found("api/!(x).ts")).to.deep.equal(["api/f.ts"]);
+  });
+
+  it("treats the group's characters literally when quoted", async () => {
+    fs.mkdirSync(path.join(root, "!(lit)"));
+    fs.writeFileSync(path.join(root, "!(lit)", "g.ts"), "y");
+    expect(await found("'!(lit)'/**")).to.deep.equal(["!(lit)/g.ts"]);
   });
 });
 

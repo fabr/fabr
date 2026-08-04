@@ -393,6 +393,14 @@ describe("Parser Tests", () => {
     );
   });
 
+  it("rejects a quoted '*' as the wildcard member — it is the literal character", () => {
+    /* The wildcard is matched by part structure, not by rendered text: quoted,
+     * `'*'` is data. Comparing text would admit it, since the text rendering of
+     * a literal `*` and of the wildcard are both "*". */
+    expect(parseInvalid("targetdef sync {\n  '*' = FILES;\n}")).to.have.lengthOf(1);
+    expect(parseInvalid("targetdef sync {\n  '*' = FILES;\n}")[0]).to.match(/expected Identifier, '\*', or '}'/);
+  });
+
   describe("doc comments", () => {
     it("attaches a comment block directly above a targetdef", () => {
       const def = parseValid("# A runnable thing.\ntargetdef script {\n  entry = FILES;\n}").targetdefs[0];
@@ -807,9 +815,83 @@ describe("Parser Tests", () => {
 
     it("rejects an unterminated char class", () => {
       /* The class runs to EOF with no ']'; rejected like any unterminated
-       * construct (a build-file parse emits a positioned "expected ']'"
-       * diagnostic — the CLI parseName path surfaces the generic parse error). */
-      expect(() => parseName("[abc")).to.throw();
+       * construct. The diagnostic survives the CLI parseName path, which lexes
+       * the whole name in the parser's constructor. */
+      expect(() => parseName("[abc")).to.throw(/Invalid name '\[abc'.*expected \]/);
+    });
+  });
+
+  /* Bash's extended globs. The leader, each '|' and the closing ')' are their own
+   * glob runs with the interior scanned as ordinary name text, which is what
+   * keeps a literal-only group (`!(Validation)`) out of the literal path prefix
+   * the FS walk bases on — the whole point, since a pure-literal extglob used to
+   * be walked as a directory of that name and match nothing. */
+  describe("extended globs", () => {
+    it("reads each leader as a glob run around a literal interior", () => {
+      for (const leader of ["?", "*", "+", "@", "!"]) {
+        expect(nameText(parseName(`${leader}(abc)`))).to.equal(`glob(${leader}()+abc+glob())`);
+      }
+    });
+
+    it("keeps the literal path prefix short of the group", () => {
+      /* parts[0] must stop at the leader: getLiteralPathPrefix reads only that,
+       * so an extglob can never be swallowed into the walk base. */
+      expect(parseName("!(Validation)/**").getLiteralPathPrefix()).to.equal("");
+      expect(parseName("src/!(Validation)/**").getLiteralPathPrefix()).to.equal("src/");
+      expect(parseName("!(Validation)").hasGlob()).to.equal(true);
+    });
+
+    it("separates alternatives on '|' inside a group", () => {
+      expect(nameText(parseName("!(a|b)"))).to.equal("glob(!()+a+glob(|)+b+glob())");
+    });
+
+    it("scans the interior as ordinary name text — wildcards, classes, variables", () => {
+      /* A group's structural runs merge with an adjacent interior glob (the
+       * builder collapses same-kind neighbours), so '!(' + '[ab]' reads as one
+       * run — the rendered pattern is the same either way. */
+      expect(nameText(parseName("!(V*)"))).to.equal("glob(!()+V+glob(*))");
+      expect(nameText(parseName("!([ab])"))).to.equal("glob(!([ab]))");
+      expect(nameText(parseName("!(${X})"))).to.equal("glob(!()+var(X)+glob())");
+    });
+
+    it("nests groups", () => {
+      expect(nameText(parseName("!(a|@(b|c))"))).to.equal("glob(!()+a+glob(|@()+b+glob(|)+c+glob()))");
+      /* What matters downstream is that it renders back to the written glob. */
+      expect(parseName("!(a|@(b|c))").toString()).to.equal("!(a|@(b|c))");
+    });
+
+    it("reads '**(' as a wildcard then a leader, as bash does", () => {
+      expect(nameText(parseName("**(a)"))).to.equal("glob(**()+a+glob())");
+    });
+
+    it("leaves the leader characters literal when no '(' abuts", () => {
+      /* Otherwise ordinary name text: a repository reference, a build-metadata
+       * version, and — as in bash — a bare '!', which is NOT a negation. */
+      expect(nameText(parseName("@npm:pkg"))).to.equal("@npm:pkg");
+      expect(nameText(parseName("1.0.0+build"))).to.equal("1.0.0+build");
+      expect(nameText(parseName("!literal"))).to.equal("!literal");
+      expect(parseName("!literal").hasGlob()).to.equal(false);
+    });
+
+    it("leaves ')' and '|' literal outside a group", () => {
+      expect(nameText(parseName("foo(1).txt"))).to.equal("foo(1).txt");
+      expect(nameText(parseName("a|b"))).to.equal("a|b");
+      expect(parseName("a|b").hasGlob()).to.equal(false);
+    });
+
+    it("rejects an unterminated group, positioned at its leader", () => {
+      /* Bash degrades this to literal text; a build script says what it means,
+       * and the parallel '[' construct already errors. Quoting still names such
+       * a file. The caret sits on the outermost unclosed leader. */
+      expect(parseInvalid("srcs = src:!(Validation/**;")).to.deep.equal([
+        diagnosticBlock(
+          1,
+          12,
+          "Unterminated extglob group '!(', expected ')' (quote it to match literally)",
+          "srcs = src:!(Validation/**;"
+        ),
+      ]);
+      expect(() => parseName("!(abc")).to.throw(/Unterminated extglob group '!\('/);
     });
   });
 

@@ -69,6 +69,22 @@ describe("e2e: generate command pipelines", () => {
     expect(result.stdout).to.contain("noise");
   });
 
+  it("passes a quoted argument's metacharacters through verbatim", () => {
+    /* A literal arg is TEXT, so it reaches the program as written. It used to be
+     * rendered through the name's pattern form, which escapes metacharacters —
+     * so a program received `a \* b` where the build script said "a * b". */
+    const result = runFabr(
+      {
+        "PROJECT.fabr":
+          'plugin @fabr-build/js;\njs_script args { entry = src:args.js; }\ngenerate g { run = args "Fast (and small)!" "a|b" "a * b" "[x]" > out.txt; }\n',
+        "src/args.js": "process.stdout.write(process.argv.slice(2).join('\\n'));\n",
+      },
+      ["cat", "g:out.txt"]
+    );
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("Fast (and small)!\na|b\na * b\n[x]");
+  });
+
   it("fails the build when any stage exits non-zero (pipefail)", () => {
     const result = runFabr(
       {

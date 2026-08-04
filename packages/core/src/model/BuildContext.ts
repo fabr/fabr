@@ -2257,9 +2257,12 @@ function manifestEvalInput(value: BuildActionInput): string {
     return "[" + value.map(element => manifestEvalInput(element)).join(",") + "]";
   }
   /* A Name (a projection input) manifests by its canonical text — selector plus
-   * any `<constraints>` / `-> tmpl` facet all round-trip through toString. */
+   * any `<constraints>` / `-> tmpl` facet all round-trip through toGlobString.
+   * It is the canonical form specifically because it is lossless: `toString`
+   * renders a quoted `'*'` and a wildcard `*` alike, which would collide two
+   * different projections onto one cache key. */
   if (value instanceof Name) {
-    return JSON.stringify(value.toString());
+    return JSON.stringify(value.toGlobString());
   }
   return "{\n" + value.toManifest() + "\n}";
 }

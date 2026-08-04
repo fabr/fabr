@@ -10,6 +10,7 @@ version number.
 - Enable automatic extraction and traversal of archive files.
 - Fix: generate command names resolved incorrectly.
 - Fix: remove excessive synchronous mkdirs
+- Add support for bash extended globs (eg !(expr) )
 
 @fabr/js:
 - Generated package.json now strips build-only fields (devDependencies, scripts, …) from an imported manifest, and emits array metadata (keywords, os, cpu) as JSON arrays.

@@ -388,7 +388,60 @@ describe("Name", () => {
     });
   });
 
+  /* Two renderings, and which one a caller wants. `toString` is the name's TEXT
+   * (what it denotes as a value, and what to show a user); `toGlobString` is the
+   * pattern a matcher compiles, and — being lossless — the name's identity. The
+   * bug this split fixes: a value site rendering through the pattern form put
+   * backslashes into a package.json payload. */
+  describe("toString vs toGlobString", () => {
+    /* A literal built the way a quoted value is: metacharacters as data. */
+    const literal = (text: string): Name => new NameBuilder().appendLiteralString(text).name();
+
+    it("renders a literal's metacharacters verbatim as text, escaped as a pattern", () => {
+      const name = literal("Hello (world)! a|b star * [bracket]");
+      expect(name.toString()).to.equal("Hello (world)! a|b star * [bracket]");
+      expect(name.toGlobString()).to.equal("Hello \\(world\\)\\! a\\|b star \\* \\[bracket\\]");
+    });
+
+    it("renders glob parts verbatim in both", () => {
+      const name = new NameBuilder().appendLiteralString("src/").appendGlobMetachars("**").name();
+      expect(name.toString()).to.equal("src/**");
+      expect(name.toGlobString()).to.equal("src/**");
+    });
+
+    it("keeps a quoted metacharacter matching itself, not acting as syntax", () => {
+      /* The point of the escaping: as a PATTERN a quoted '*' is the character. */
+      expect(literal("*").makeProjector()("*")).to.equal("*");
+      expect(literal("*").makeProjector()("anything")).to.equal(undefined);
+    });
+
+    it("renders facets in the same mode as the selector they hang off", () => {
+      const name = Name.fromLiteral("lib")
+        .withConstraints([["MSG", literal("a (b)")]])
+        .withRenameTo(literal("out (1)"));
+      expect(name.toString()).to.equal("lib<MSG=a (b)> -> out (1)");
+      expect(name.toGlobString()).to.equal("lib<MSG=a \\(b\\)> -> out \\(1\\)");
+    });
+
+    it("distinguishes a quoted metacharacter from live syntax — why identity uses the pattern form", () => {
+      /* These two are different names; only toGlobString tells them apart, which
+       * is what keeps them off one cache key (see manifestEvalInput). */
+      const quoted = literal("*");
+      const wildcard = new NameBuilder().appendGlobMetachars("*").name();
+      expect(quoted.toString()).to.equal(wildcard.toString());
+      expect(quoted.toGlobString()).to.not.equal(wildcard.toGlobString());
+    });
+  });
+
   describe("appendGlobstar", () => {
+    it("decides the separator from the selector, not from a rename template", () => {
+      /* enumerate() appends the globstar while the name still carries `-> tmpl`,
+       * so a facet-bearing rendering would test the TEMPLATE's last character —
+       * here a '/', which would suppress the separator and yield `stuff**`. */
+      const renamed = Name.fromLiteral("stuff").withRenameTo(Name.fromLiteral("out/"));
+      expect(renamed.appendGlobstar().withRenameTo(undefined).toString()).to.equal("stuff/**");
+    });
+
     it("appends /** to a slash-form directory (retained)", () => {
       const dir = Name.fromLiteral("src");
       expect(dir.appendGlobstar().toString()).to.equal("src/**");

@@ -193,7 +193,7 @@ export class Name {
      * never carried into them. (A no-op for a colon-free selector — every
      * REWRITE / single-`:` ref; it bites only a multi-`:` reference like
      * `d:sub:*.x -> *.y`.) */
-    const selector = this.renderParts();
+    const selector = this.renderParts(true);
     const re = globCaptureRegex(normalizeHead(selector.replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR)));
     const replacement = renameTo.toReplacement();
     /* The literal alias path itself is excluded, mirroring makeProjector's
@@ -234,7 +234,7 @@ export class Name {
     if (this.renameTo) {
       return this.makeRenamer(this.renameTo);
     }
-    const selector = this.toString();
+    const selector = this.toGlobString();
     const matcher = globMatcher(normalizeHead(selector.replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR)));
     const alias = selector.lastIndexOf(NAME_LEVEL_SEPARATOR);
     if (alias === -1) {
@@ -273,7 +273,12 @@ export class Name {
    * `src:` → `src:**` — so the same {@link makeProjector} rules then apply.
    */
   public appendGlobstar(): Name {
-    const written = this.toString();
+    /* The SELECTOR's last character decides — the facets must not reach this.
+     * `enumerate` appends the globstar while the name still carries its `-> tmpl`
+     * (it re-attaches an expanded target afterwards), so reading a facet-bearing
+     * rendering would test the template's tail: `stuff -> out/` would see the
+     * template's `/` and append `**` with no separator. */
+    const written = this.renderParts(false);
     const last = written.charAt(written.length - 1);
     const sep = last === NAME_COMPONENT_SEPARATOR || last === NAME_LEVEL_SEPARATOR ? "" : NAME_COMPONENT_SEPARATOR;
     const tail: NamePart[] = sep ? [{ kind: NamePartKind.Literal, value: sep }, { kind: NamePartKind.Glob, value: "**" }] : [{ kind: NamePartKind.Glob, value: "**" }];
@@ -588,15 +593,17 @@ export class Name {
   }
 
   /**
-   * Render just the resolvable selector (`parts`), with literal metacharacters
-   * escaped — the glob string a matcher compiles. Excludes the `<...>` / `-> `
-   * facets, which {@link toString} appends.
+   * Render just the resolvable selector (`parts`). `escape` controls what happens
+   * to a *literal* part: escaped (the glob string a matcher compiles — see
+   * {@link toGlobString}) or verbatim (the text the name denotes — see
+   * {@link toString}). Glob parts render verbatim either way. Excludes the
+   * `<...>` / `-> ` facets, which the two public renderings append.
    */
-  private renderParts(): string {
+  private renderParts(escape: boolean): string {
     return this.parts.reduce((result, part) => {
       switch (part.kind) {
         case NamePartKind.Literal:
-          return result + escapeGlob(part.value);
+          return result + (escape ? escapeGlob(part.value) : part.value);
         case NamePartKind.Glob:
           return result + part.value;
         case NamePartKind.VarSubst:
@@ -605,23 +612,52 @@ export class Name {
     }, "");
   }
 
-  /**
-   * @return a string suitable for use with a globbing implementation (ie with literal metacharacters escaped).
-   */
-  public toString(): string {
-    let result = this.renderParts();
+  /** Append the `<k=v>` / `-> tmpl` facets to an already-rendered selector, each
+   * facet rendered in the same mode as the selector it hangs off. */
+  private withFacets(selector: string, render: (name: Name) => string): string {
+    let result = selector;
     if (this.constraints.length > 0) {
       /* Re-render the delta so a value used as a plain string reproduces its
        * original text (`foo<a=b, c=d>`). */
-      const delta = this.constraints.map(([key, value]) => `${key}=${value.toString()}`).join(", ");
+      const delta = this.constraints.map(([key, value]) => `${key}=${render(value)}`).join(", ");
       result = `${result}<${delta}>`;
     }
     if (this.renameTo !== undefined) {
       /* Canonical spaced arrow, mirroring the constraint round-trip (a STRING
        * consumer sees `sel -> tmpl`; byte-exact input is recovered by quoting). */
-      result = `${result} -> ${this.renameTo.toString()}`;
+      result = `${result} -> ${render(this.renameTo)}`;
     }
     return result;
+  }
+
+  /**
+   * @return this name **as written**: literal parts verbatim, glob metacharacters
+   * live, facets appended. This is the name's *text* — what it denotes as a
+   * value (a STRING property, a command argument, a constraint value, a
+   * destination coordinate) and what to show a user in a diagnostic.
+   *
+   * It is deliberately the default rendering, because implicit conversion
+   * (`${name}`, string coercion) reaches for it: the failure mode of forgetting
+   * to ask for the other one is visible text where a pattern was wanted, rather
+   * than escape characters silently entering a payload — which is the bug this
+   * split fixes. Anything compiling a matcher wants {@link toGlobString}.
+   *
+   * Note this does NOT round-trip through the parser: a literal that contains
+   * metacharacters (a quoted `'!(a)'`) renders as the syntax it isn't. Identity —
+   * a cache key — must therefore use {@link toGlobString}.
+   */
+  public toString(): string {
+    return this.withFacets(this.renderParts(false), name => name.toString());
+  }
+
+  /**
+   * @return a string suitable for use with a globbing implementation: literal
+   * metacharacters escaped so they match themselves, glob parts live. Also the
+   * name's canonical (lossless, re-parseable) form, hence its identity — so a
+   * manifest/cache key renders with this and never with {@link toString}.
+   */
+  public toGlobString(): string {
+    return this.withFacets(this.renderParts(true), name => name.toGlobString());
   }
 }
 
@@ -704,7 +740,10 @@ export class NameBuilder {
    * Add the characters from an unquoted string - glob metachars are live and
    * backslash sequences are interpreted as for double-quoted strings
    * (which - note is intentionally different from shell escaping)
-   * Currently recognized metachars are '*', '?', and '[]'
+   * Recognized metachars are '*', '?', '[]', and the extglob groups
+   * '?()', '*()', '+()', '@()' and '!()' — whose leader, '|' separators and
+   * closing ')' are each their own glob run, the interior scanned as ordinary
+   * name text so wildcards and substitutions work inside a group.
    * @param str
    */
   public appendGlobMetachars(str: string): this {
@@ -763,6 +802,19 @@ function unescapeDoubleQuotedString(str: string): string {
   });
 }
 
+/**
+ * Escape every character a matcher would otherwise read as syntax, so a literal
+ * part matches itself — quoted text, and a `${VAR}` value (which substitutes to
+ * a literal, never a glob).
+ *
+ * The extglob punctuation is escaped even though `(`/`)`/`|` are inert to
+ * picomatch outside a group: a quoted `'!(a)'` must name that file, and escaping
+ * the `!` alone leaves `(a)` a group. `!` matters on its own account — leading,
+ * picomatch reads it as whole-pattern negation, where bash (and fabr) treat a
+ * bare `!` as an ordinary character. The extglob *leaders* need no escape here:
+ * `?`/`*` are covered as wildcards, and `+`/`@` are only ever special before a
+ * `(` that this escapes.
+ */
 function escapeGlob(str: string): string {
-  return str.replaceAll(/([\][\\*?])/g, "\\$1");
+  return str.replaceAll(/([\][\\*?()!|])/g, "\\$1");
 }

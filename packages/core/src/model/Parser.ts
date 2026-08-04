@@ -111,6 +111,10 @@ const CHAR_DASH = "-".codePointAt(0);
 const CHAR_DOT = ".".codePointAt(0);
 const CHAR_COLON = ":".codePointAt(0);
 const CHAR_PIPE = "|".codePointAt(0);
+const CHAR_LPAREN = "(".codePointAt(0);
+const CHAR_RPAREN = ")".codePointAt(0);
+const CHAR_BANG = "!".codePointAt(0);
+const CHAR_PLUS = "+".codePointAt(0);
 
 interface TokenBase {
   start: number;
@@ -342,11 +346,22 @@ const DIAG_NESTING_TOO_DEEP = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
   `Block nesting is too deep (limit ${MAX_BLOCK_DEPTH})`
 );
+const DIAG_UNTERMINATED_EXTGLOB = new Diagnostic<{ leader: string; loc: ISourcePosition }>(
+  LogLevel.Error,
+  "Unterminated extglob group '{leader}', expected ')' (quote it to match literally)"
+);
+
+/** Whether a name IS the bare `*` wildcard — one glob unit of `*` and no literal
+ * text — as opposed to a quoted `'*'`, which is that literal character. */
+function isWildcardKey(name: Name): boolean {
+  const units = name.getGlobUnits();
+  return units.length === 1 && units[0] === "*" && name.toString() === "*";
+}
 
 /**
  * Check that the number + kind of wildcards in a rename pattern match (ie we need
  * the same number on both sides, and glob only).
- * 
+ *
  * @return error message on failure, otherwise undefined.
  */
 function checkRenameWildcards(selector: Name, template: Name): string | undefined {
@@ -550,10 +565,29 @@ export class BuildParser {
     const start = this.reader.currentOffset();
     const nameBuilder = new NameBuilder();
     let maybeIdent = true;
+    /* Open extglob groups (`!(`, `@(` …): their depth, and the offset of the
+     * outermost one, for the unterminated diagnostic. Only inside a group are
+     * `)` and `|` structural — at depth 0 both are ordinary name characters. */
+    let extglobDepth = 0;
+    let extglobStart = 0;
     /* Expect current character is not whitespace or a special character.
      * Quoted strings, substitutions and character classes consume themselves
      * whole (the scan only advances past characters they leave in place). */
     let posn = this.reader.currentOffset();
+    /* Emit an extglob leader — the two characters `X(` as one glob run — and
+     * enter the group. The interior is scanned normally, so wildcards, quoted
+     * strings and `${...}` substitutions all work inside one, as in bash. */
+    const openExtglob = (leader: number): void => {
+      maybeIdent = false;
+      nameBuilder.appendEscapedString(this.reader.substring(posn));
+      if (extglobDepth++ === 0) {
+        extglobStart = this.reader.currentOffset();
+      }
+      nameBuilder.appendGlobMetachars(String.fromCodePoint(leader) + "(");
+      this.reader.next(); /* the leader */
+      this.reader.next(); /* the '(' */
+      posn = this.reader.currentOffset();
+    };
     this.reader.scanUntil(ch => {
       if (isWhitespace(ch)) {
         return true;
@@ -583,16 +617,45 @@ export class BuildParser {
           posn = this.reader.currentOffset();
           break;
         case CHAR_STAR:
+        case CHAR_QUESTION:
+          /* `*` and `?` are wildcards on their own, extglob leaders before a `(`
+           * (`*(a|b)`, `?(a|b)`) — the `**(` case reads as `*` then `*(`, as in
+           * bash. */
+          if (this.reader.peekAt(1) === CHAR_LPAREN) {
+            openExtglob(ch);
+            break;
+          }
           maybeIdent = false;
           nameBuilder.appendEscapedString(this.reader.substring(posn));
-          nameBuilder.appendGlobMetachars("*");
+          nameBuilder.appendGlobMetachars(String.fromCodePoint(ch));
           posn = this.reader.currentOffset() + 1;
           break;
-        case CHAR_QUESTION:
+        case CHAR_BANG:
+        case CHAR_PLUS:
+        case CHAR_AT:
+          /* Extglob leaders only when a `(` abuts. Everywhere else all three are
+           * ordinary name characters (`@npm:pkg`, a `1.0.0+build` version) — a
+           * bare `!` in particular is literal, as in bash, NOT the whole-pattern
+           * negation picomatch would otherwise read it as (see escapeGlob). */
+          if (this.reader.peekAt(1) === CHAR_LPAREN) {
+            openExtglob(ch);
+          }
+          break;
+        case CHAR_RPAREN:
+        case CHAR_PIPE:
+          /* Structural only inside an extglob group: `)` closes it and `|`
+           * separates its alternatives. At depth 0 both are literal name
+           * characters, so an unparenthesized `a|b` still names that file. */
+          if (extglobDepth === 0) {
+            break;
+          }
           maybeIdent = false;
           nameBuilder.appendEscapedString(this.reader.substring(posn));
-          nameBuilder.appendGlobMetachars("?");
+          nameBuilder.appendGlobMetachars(String.fromCodePoint(ch));
           posn = this.reader.currentOffset() + 1;
+          if (ch === CHAR_RPAREN) {
+            extglobDepth--;
+          }
           break;
         case CHAR_LSQUARE:
           maybeIdent = false;
@@ -612,6 +675,14 @@ export class BuildParser {
       }
       return false;
     });
+
+    /* A group left open at the end of the name is a typo, not a literal: bash
+     * would silently degrade `!(a` to plain text, but a build script says what
+     * it means, and the `[...]` class — the parallel construct — already errors
+     * unterminated. Quoting remains the way to name such a file. */
+    if (extglobDepth > 0) {
+      this.unterminatedExtglobError(extglobStart);
+    }
 
     const rest = this.reader.substring(posn);
     if (maybeIdent) {
@@ -1207,6 +1278,16 @@ export class BuildParser {
     throw new Error(PARSE_ERROR);
   }
 
+  /** Reported at the outermost unclosed extglob leader (`at` is its offset), so
+   * the underline points at the `!(` rather than at the end of the name. */
+  private unterminatedExtglobError(at: number): never {
+    this.log.log(DIAG_UNTERMINATED_EXTGLOB, {
+      leader: this.reader.substring(at, at + 2),
+      loc: { ...this.source, offset: at },
+    });
+    throw new Error(PARSE_ERROR);
+  }
+
   /**
    * Constraints ::= '<' Constraint ( ',' Constraint )* ','? '>'
    * Constraint  ::= IDENTIFIER '=' ( IDENTIFIER | SIMPLE_NAME | NAME )
@@ -1579,11 +1660,14 @@ export class BuildParser {
       let type: PropertyType | undefined;
       /* The key is a property name (`srcs`), or `*` — the wildcard, typing any
        * further keys a target of this type may carry (a `sync`'s reference-keyed
-       * members). `*` lexes as a glob NAME, so match it by its canonical form. */
+       * members). `*` lexes as a glob NAME, so match it by its part *structure*:
+       * the wildcard is the one whose sole part is the `*` glob. Comparing
+       * rendered text instead would also admit a quoted `'*'`, which is the
+       * literal character and not the wildcard. */
       let key: string;
       if (token.type === TokenType.IDENTIFIER) {
         key = token.text;
-      } else if (token.type === TokenType.NAME && this.tokenToName(token).toString() === "*") {
+      } else if (token.type === TokenType.NAME && isWildcardKey(this.tokenToName(token))) {
         key = "*";
       } else {
         this.unexpectedTokenError("Identifier, '*', or '}'");
@@ -1770,8 +1854,15 @@ export function parseBuildString(fs: FileSource, file: string, contents: string,
 export function parseName(contents: string): Name {
   const messages: string[] = [];
   const captureLog: Log = { log: (diagnostic, params) => messages.push(diagnostic.message(params)) };
-  const parser = new BuildParser({ fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(contents) }, captureLog);
   try {
+    /* The constructor primes the first token, so it lexes — and a name is very
+     * nearly all one token, which is where the lexical errors (an unterminated
+     * quote, character class or extglob group) are raised. It must be inside the
+     * try, or those escape as a bare PARSE_ERROR with the diagnostic discarded. */
+    const parser = new BuildParser(
+      { fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(contents) },
+      captureLog
+    );
     const name = parser.parseName();
     if (messages.length === 0) {
       return name;

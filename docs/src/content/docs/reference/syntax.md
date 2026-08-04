@@ -91,10 +91,35 @@ A name that names a directory is treated as implicitly ending in `/**`:
 srcs = src;                    # where src is a directory, matches all files in src recursively.
 ```
 
+Bash's **extended globs** are supported too — one of five leaders followed by a parenthesised
+*pattern list*, matching within a single path component. A pattern list is **one or more** patterns
+separated by `|`, so `!(node_modules)`, `!(dist|build)` and `!(dist|build|coverage)` are all valid:
+
+| Pattern | Matches |
+| --- | --- |
+| `?(…)` | zero or one occurrence of any listed pattern |
+| `*(…)` | zero or more occurrences |
+| `+(…)` | one or more occurrences |
+| `@(…)` | exactly one occurrence |
+| `!(…)` | anything *except* the listed patterns |
+
+```
+srcs = src/!(Validation)/**;        # every file under src/, excluding the Validation subtree
+srcs = src/!(dist|build|gen)/**;    # ...excluding three of them
+srcs = src/@(api|web)/*.ts;         # only the api and web subtrees
+srcs = !(*.test).ts;                # .ts files, excluding .test.ts
+```
+
+Each listed pattern is itself a pattern, so wildcards, character classes, nested groups and
+`${...}` substitutions all work inside one. A group must be closed — an unterminated `!(` is an
+error, not literal text (quote it to name a file that really contains those characters).
+
 ### Quoting
 
-Unquoted values may contain letters, digits, `_`, and `/ - . @ :` (plus glob characters `* ? [ ]`) —
-enough for paths, references, globs, and versions. Use quotes when you need spaces or exact bytes:
+Unquoted values may contain letters, digits, `_`, and `/ - . @ :` (plus glob characters
+`* ? [ ]` and the extglob `?*+@!( | )`) — enough for paths, references, globs, and versions.
+Note that outside an extglob group `( ) | !` are ordinary characters, so a bare leading `!` is a
+literal `!` and not a negation. Use quotes when you need spaces or exact bytes:
 
 - **Single quotes** `'…'` are literal (no substitution).
 - **Double quotes** `"…"` allow variable substitution and escapes.
