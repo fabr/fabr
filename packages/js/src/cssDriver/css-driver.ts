@@ -52,9 +52,12 @@ import type { ICssOptions } from "../CSSCompile";
 interface ISassResult {
   css: string;
   loadedUrls: Array<{ pathname?: string; href?: string }>;
+  /** Present when compiled with sourceMap; used to report a downstream
+   * css-modules failure against the scss the user wrote. */
+  sourceMap?: ISourceMap;
 }
 interface ISassCompiler {
-  compileAsync(path: string, options?: { loadPaths?: string[] }): Promise<ISassResult>;
+  compileAsync(path: string, options?: { loadPaths?: string[]; sourceMap?: boolean }): Promise<ISassResult>;
   dispose(): Promise<void>;
 }
 interface ISass {
@@ -143,6 +146,81 @@ function writeOut(outdir: string, rel: string, contents: string | Uint8Array): v
 }
 
 /**
+ * Attribute a tool failure to the file being lowered. The driver processes
+ * every styled source in one run, and neither sass nor lightningcss names the
+ * input in the error it throws — so an unattributed failure leaves the reader
+ * bisecting by hand (and reading whichever file the last *warning* happened to
+ * mention, which is worse than nothing). Where the tool reported a position
+ * inside the file, keep it.
+ */
+interface ISourceMap {
+  mappings: string;
+  sources: string[];
+}
+
+const VLQ_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/**
+ * The original position for a generated one, from a source map's `mappings`.
+ * Decoding is a few lines of base64-VLQ, which beats taking a dependency into
+ * the driver's staged install for one lookup. Segments are
+ * `[genCol, sourceIndex, origLine, origCol]` (deltas), grouped by generated
+ * line with `;` and by segment with `,`; the nearest segment at or before the
+ * generated column wins. Returns undefined when the line has no mapping.
+ */
+function originalPosition(map: ISourceMap, line: number, column: number): { source: string; line: number; column: number } | undefined {
+  const state = { source: 0, origLine: 0, origCol: 0 };
+  const lines = map.mappings.split(";");
+  let found: { source: string; line: number; column: number } | undefined;
+  for (let generated = 0; generated < lines.length && generated < line; generated++) {
+    let genCol = 0;
+    for (const segment of lines[generated].split(",").filter(Boolean)) {
+      const fields: number[] = [];
+      let value = 0;
+      let shift = 0;
+      for (const ch of segment) {
+        const digit = VLQ_CHARS.indexOf(ch);
+        value += (digit & 31) << shift;
+        if (digit & 32) {
+          shift += 5;
+          continue;
+        }
+        fields.push(value & 1 ? -(value >> 1) : value >> 1);
+        value = 0;
+        shift = 0;
+      }
+      genCol += fields[0] ?? 0;
+      if (fields.length >= 4) {
+        state.source += fields[1];
+        state.origLine += fields[2];
+        state.origCol += fields[3];
+        /* Generated lines are 0-based here, the reported one 1-based. */
+        if (generated === line - 1 && genCol <= column) {
+          found = { source: map.sources[state.source] ?? "", line: state.origLine + 1, column: state.origCol + 1 };
+        }
+      }
+    }
+  }
+  return found;
+}
+
+function stageFailure(rel: string, stage: string, err: unknown, sourceMap?: ISourceMap): Error {
+  const reported = err as { message?: string; loc?: { line?: number; column?: number } };
+  const line = reported?.loc?.line;
+  /* lightningcss reports against the CSS it was handed, which for a scss input
+   * is sass's output — so map back before showing a position the reader could
+   * otherwise not find in their file. */
+  const original = line !== undefined && sourceMap ? originalPosition(sourceMap, line, reported.loc?.column ?? 0) : undefined;
+  const at =
+    original !== undefined
+      ? `${rel}:${original.line}:${original.column}`
+      : line === undefined
+        ? rel
+        : `${rel}:${line}:${reported.loc?.column ?? 0} (in the generated CSS)`;
+  return new Error(`${at}: ${stage}: ${reported?.message ?? String(err)}`);
+}
+
+/**
  * Lower one styled source to its output(s), co-located at the source's relative
  * path under `outdir`. Sass leads (lightningcss can't read scss); a module is
  * then scoped and gets its proxy; a plain .css passes through.
@@ -158,9 +236,17 @@ async function lowerFile(
   // Stage 1 — sass (or read a plain .css verbatim). loadedUrls is available on
   // `result` for future discovered-deps; intentionally unused for now.
   let css: Uint8Array;
+  /* Kept so a css-modules failure can be reported against the SCSS the user
+   * wrote rather than the CSS sass produced from it. */
+  let sourceMap: ISourceMap | undefined;
   if (isSass(rel)) {
-    const result = await compiler.compileAsync(inputPath, { loadPaths: options.loadPaths });
-    css = Buffer.from(result.css, "utf8");
+    try {
+      const result = await compiler.compileAsync(inputPath, { loadPaths: options.loadPaths, sourceMap: true });
+      css = Buffer.from(result.css, "utf8");
+      sourceMap = result.sourceMap;
+    } catch (err) {
+      throw stageFailure(rel, "sass", err);
+    }
   } else {
     css = fs.readFileSync(inputPath);
   }
@@ -174,7 +260,12 @@ async function lowerFile(
   // Stage 2 — css-modules scope. One lightningcss call yields scoped CSS + the
   // exports map (they agree by construction). The proxy carries both the scoped
   // CSS (side-effect) and the value map (default export).
-  const scoped = lightningcss.transform({ filename: rel, code: css, cssModules: true });
+  let scoped: ILightningResult;
+  try {
+    scoped = lightningcss.transform({ filename: rel, code: css, cssModules: true });
+  } catch (err) {
+    throw stageFailure(rel, "css-modules", err, sourceMap);
+  }
   const cssRel = moduleCssName(rel);
   writeOut(options.outdir, cssRel, scoped.code);
   const valueMap = adaptExports(scoped.exports);

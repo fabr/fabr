@@ -24,6 +24,7 @@ version number.
 - Generate resolution repair lists on resolution failures.
 - Readd es* flags as source version dependency flags.
 - Fix TS source importing local references using full package path.
+- Fix css error reporting.
 
 @fabr/cli:
 
