@@ -46,6 +46,7 @@ function testJsPackage(context: TargetContext): Computable<RuleResult> {
         target,
         depSources: [...depSources, ...providedSources],
         testDepSources,
+        packageName: context.name,
       })
   );
 }

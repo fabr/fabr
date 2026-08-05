@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { BuildAction, Computable, FileSet, Flag, MemoryFile, RunnableFileSet, TargetContext } from "@fabr-build/core";
+import { BuildAction, Computable, FileSet, Flag, MemoryFile, Property, RunnableFileSet, TargetContext } from "@fabr-build/core";
 import { jsCompileRule, jsxModeFor, makeTsConfig } from "./BuildJSCompile";
 import { parseJSTarget } from "../JSPackage";
 
@@ -29,7 +29,7 @@ function toPromise<T>(computable: Computable<T>): Promise<T> {
 /** A minimal TargetContext serving just what js_compile's evaluate reads, so the
  * rule can be driven to the tsconfig it generates. `deps` carries the source-mode
  * flags (read via getFlags) exactly as it does in a real build. */
-function stubContext(flags: Flag[]): TargetContext {
+function stubContext(flags: Flag[], packageName?: string): TargetContext {
   const tsc = { toCommandLine: () => ["node", "tsc"] } as unknown as RunnableFileSet;
   return {
     getFileSetProperties: () =>
@@ -37,12 +37,13 @@ function stubContext(flags: Flag[]): TargetContext {
     getGlobalString: (name: string) => Computable.resolve(name === "JS_TARGET" ? "es2021-commonjs" : "debug"),
     getGlobalRunnable: () => Computable.resolve(tsc),
     getFlags: () => Computable.resolve(flags),
+    getProperty: () => Computable.resolve(packageName === undefined ? undefined : new Property([packageName])),
   } as unknown as TargetContext;
 }
 
 /** Drive the rule and read back the tsconfig.json it stages into the action. */
-async function generatedTsConfig(flags: Flag[]): Promise<TsConfig> {
-  const result = await toPromise(jsCompileRule.evaluate(stubContext(flags)));
+async function generatedTsConfig(flags: Flag[], packageName?: string): Promise<TsConfig> {
+  const result = await toPromise(jsCompileRule.evaluate(stubContext(flags, packageName)));
   expect(result).to.be.instanceOf(BuildAction);
   const files = (result as BuildAction).inputs.files as FileSet;
   const file = await toPromise(files.get("tsconfig.json"));
@@ -58,6 +59,8 @@ interface TsConfig {
     strict?: boolean;
     noImplicitAny?: boolean;
     skipLibCheck?: boolean;
+    baseUrl?: string;
+    paths?: Record<string, string[]>;
     resolveJsonModule?: boolean;
     esModuleInterop?: boolean;
     sourceMap?: boolean;
@@ -171,6 +174,28 @@ describe("jsxModeFor", () => {
     expect(jsxModeFor("debug")).to.equal("react-jsxdev");
     expect(jsxModeFor("release")).to.equal("react-jsx");
     expect(jsxModeFor(undefined)).to.equal("react-jsx");
+  });
+});
+
+describe("js_compile package self-reference", () => {
+  it("maps the package's own name onto its sources when package_name is given", async () => {
+    /* A source importing '@scope/pkg/sub' is importing THIS tree — which node
+     * gives an installed package for free, but a tree being compiled has to be
+     * told. Both the bare name and the subpath form map. */
+    const cfg = await generatedTsConfig([], "@scope/pkg");
+    expect(cfg.compilerOptions.paths).to.deep.equal({ "@scope/pkg": ["./src/index"], "@scope/pkg/*": ["./src/*"] });
+  });
+
+  it("sets no baseUrl, so bare root-relative imports stay unresolvable", async () => {
+    /* baseUrl would additionally make `from "lib/thing"` resolve against the
+     * source root — imports that work in the compile and fail at runtime. */
+    const cfg = await generatedTsConfig([], "@scope/pkg");
+    expect(cfg.compilerOptions.baseUrl).to.equal(undefined);
+  });
+
+  it("emits no paths at all for a target with no package identity", async () => {
+    const cfg = await generatedTsConfig([]);
+    expect(cfg.compilerOptions.paths).to.equal(undefined);
   });
 });
 

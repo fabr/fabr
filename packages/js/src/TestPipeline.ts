@@ -35,6 +35,7 @@ import {
   BuildAction,
   Computable,
   EMPTY_FILESET,
+  SymlinkFile,
   BuildActionInputs,
   execute,
   ExecutionError,
@@ -97,6 +98,9 @@ export interface ITestInputs {
   /** Test-only packages (assertion libraries and their @types), available to
    * both the test compile and the test run but never to the package build */
   testDepSources: SourceRef[];
+  /** The package name a js_package[test]'s sources may import themselves by; a
+   * standalone js_test has no package identity and leaves it unset. */
+  packageName?: string;
 }
 
 /**
@@ -162,15 +166,38 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
         const runtimeModules = assembleNodeModules(packages);
         const resources = resourceFiles(allDeps.filter(dep => !(dep instanceof PackageFileSet)));
 
-        const { compiled, copied } = compileJsSources(context, sources, [...deps, ...testDeps, runnerGlobalsTypes(runner)]);
+        const { compiled, copied } = compileJsSources(context, sources, [...deps, ...testDeps, runnerGlobalsTypes(runner)], inputs.packageName);
         if (!compiled) {
           /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
            * so there is nothing to run — a loud failure, not a silent green. */
           throw new Error("Test target declares test files but none is a compilable source");
         }
-        return planTestRun(compiled, copied, runtimeModules, resources, runner, testStems, jsTarget);
+        return planTestRun(compiled, copied, runtimeModules, resources, runner, testStems, jsTarget, inputs.packageName);
       });
     });
+}
+
+/**
+ * The install's self-mount: `node_modules/<packageName>` as a SYMLINK back to
+ * the install root, so the compiled tree's self-referential requires
+ * (`@scope/pkg/sub`, which `paths` resolved at compile time but which survive
+ * verbatim into the emitted JS) resolve when the tests run.
+ *
+ * A symlink rather than a second copy of the tree: node resolves a module to
+ * its realpath, so `require("@scope/pkg/sub")` and a relative `require("./sub")`
+ * reach the SAME file and therefore the same module instance. Copying would
+ * give each edge its own instance — separate module state, failing `instanceof`,
+ * duplicated singletons. This is the same device pnpm and yarn workspaces use.
+ */
+function selfMount(packageName: string | undefined): FileSet {
+  if (packageName === undefined) {
+    return EMPTY_FILESET;
+  }
+  /* Relative to the link's own DIRECTORY, which sits N levels below the install
+   * root for an N-segment name: node_modules for the last segment, plus one per
+   * scope segment above it (node_modules/@scope/pkg -> ../..). */
+  const up = "../".repeat(packageName.split("/").length);
+  return FileSet.layout({ [packageName]: new SymlinkFile(up.slice(0, -1)) });
 }
 
 /** Strip a file's final extension: `a/foo.test.ts` → `a/foo.test`. Used to match
@@ -207,7 +234,8 @@ function planTestRun(
   resources: FileSet,
   runner: RunnableFileSet,
   testStems: Set<string>,
-  jsTarget: JSTarget
+  jsTarget: JSTarget,
+  packageName?: string
 ): Computable<RuleResult> {
   return compiled.then(compiledTree => {
     /* Pick the runnable test files out of the real compiled tree (js_compile named
@@ -219,7 +247,11 @@ function planTestRun(
     }
     const packageJson = moduleTypeFile(jsTarget.module, { name: "fabr-test", private: true });
     const staged = FileSet.unionAll(
-      FileSet.layout({ node_modules: [nodeModules], [RUNNER_STAGE_DIR]: [runner], "package.json": packageJson }),
+      FileSet.layout({
+        node_modules: [nodeModules, selfMount(packageName)],
+        [RUNNER_STAGE_DIR]: [runner],
+        "package.json": packageJson,
+      }),
       stripPackageJson(copied),
       resources,
       compiledTree

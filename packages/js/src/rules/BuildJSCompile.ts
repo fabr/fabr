@@ -61,11 +61,29 @@ function emitsSourceMap(buildType: string | undefined): boolean {
   return buildType === "debug" || buildType === "relwithdebinfo";
 }
 
+/**
+ * The `paths` entries that let a package's sources import their own package
+ * name (`@scope/pkg/sub` -> `src/sub`). Node resolves an installed package's
+ * own name through node_modules; these sources are not installed anywhere yet,
+ * so the mapping stands in for that until they are.
+ *
+ * Deliberately NOT `baseUrl`: that would additionally make every bare specifier
+ * try the source root, quietly admitting root-relative imports (`from
+ * "lib/thing"`) that resolve nowhere at runtime. `paths` alone is resolved
+ * against the tsconfig's own directory (TS 4.1+), which is the scope wanted.
+ * Targets are relative (TS requires that without a baseUrl) and extensionless,
+ * so tsc applies its usual extension search.
+ */
+function selfReferencePaths(packageName: string): Record<string, string[]> {
+  return { [packageName]: ["./src/index"], [`${packageName}/*`]: ["./src/*"] };
+}
+
 export function makeTsConfig(
   jsTarget: JSTarget,
   jsx?: { mode: string; importSource: string },
   modeOverlay: Record<string, unknown> = {},
-  buildType?: string
+  buildType?: string,
+  packageName?: string
 ): Record<string, unknown> {
   return {
     compilerOptions: {
@@ -97,6 +115,7 @@ export function makeTsConfig(
       lib: jsTarget.environment === "browser" ? [jsTarget.version, "dom"] : [jsTarget.version],
       module: jsTarget.module === "esm" ? "esnext" : "commonjs",
       moduleResolution: "node",
+      ...(packageName ? { paths: selfReferencePaths(packageName) } : {}),
       /* JS source maps for debuggable builds; `release` omits them. `inlineSources`
        * embeds the original TS into each `.js.map`, so the maps are self-contained
        * and debuggable at runtime without shipping a `src/` tree. tsc always writes
@@ -135,8 +154,10 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       context.getGlobalRunnable("TSC"),
       context.getGlobalString("BUILD_TYPE"),
       context.getFlags("deps"),
+      context.getProperty("package_name"),
     ],
-    ({ srcs: srcSets, deps }, target, tsc, buildType, depFlags) => {
+    ({ srcs: srcSets, deps }, target, tsc, buildType, depFlags, packageNameProp) => {
+      const packageName = packageNameProp?.toString();
       const srcs = FileSet.unionAll(...srcSets);
       /* Source-mode flags (strictness relaxations) ride among `deps` like any
        * other dep — read here with getFlags and recognized into a compilerOptions
@@ -154,7 +175,7 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       });
       const build = (jsxImportSource: string): RuleResult => {
         const jsx = jsxImportSource ? { mode: jsxModeFor(buildType), importSource: jsxImportSource } : undefined;
-        const tsconfig = makeTsConfig(parseJSTarget(target), jsx, modeOverlay, buildType);
+        const tsconfig = makeTsConfig(parseJSTarget(target), jsx, modeOverlay, buildType, packageName);
         const workingDir = FileSet.layout({
           node_modules: assembleScopedNodeModules(deps),
           src: srcs,

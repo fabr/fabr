@@ -262,7 +262,15 @@ export function resourceFiles(sets: FileSet[]): FileSet {
  * test target). Plain .js/.jsx sources go through the same compile (tsc allowJs),
  * so they are downleveled to JS_TARGET and a .ts may import a local .js.
  */
-export function compileJsSources(context: TargetContext, sources: FileSet, directDeps: FileSet[]): ICompiledSources {
+export function compileJsSources(
+  context: TargetContext,
+  sources: FileSet,
+  directDeps: FileSet[],
+  /** The package name the sources may import themselves by — see js_compile's
+   * `package_name`. A js_package passes its own name; a standalone compile or a
+   * js_test has no package identity and passes nothing. */
+  packageName?: string
+): ICompiledSources {
   const sourceGroups = sources.partition(classifyJsSource);
 
   const declarations = sourceGroups.dts ?? EMPTY_FILESET;
@@ -293,7 +301,7 @@ export function compileJsSources(context: TargetContext, sources: FileSet, direc
       declarations,
       ...sourceDeps
     );
-    const inputs: SubTargetInputs = { srcs, deps: mountDeps };
+    const inputs: SubTargetInputs = { srcs, deps: mountDeps, ...(packageName ? { package_name: packageName } : {}) };
     compiled = context.subTarget("js_compile", inputs, {
       label: "Compiling",
       constraints: BUILD_OVERRIDE,

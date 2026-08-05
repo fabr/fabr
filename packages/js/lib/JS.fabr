@@ -207,6 +207,9 @@ targetdef npm_repository {
 targetdef js_compile {
     srcs = FILES;
     deps = FILES;
+    # The package name these sources are importable as, which enables
+    # source that imports its own package by name to work correctly.
+    package_name = STRING;
 }
 
 #

@@ -90,7 +90,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
            * direct deps, while the transitive closure is reachable only by the
            * deps themselves (assembleScopedNodeModules). Provided deps are on the
            * compile path too (js codes against core's types), just not delivered. */
-          const { compiled, copied } = compileJsSources(context, compileSources, [...deps, ...provided]);
+          const { compiled, copied } = compileJsSources(context, compileSources, [...deps, ...provided], context.name);
 
           /* The package's DIRECT deps as written (built packages as packages,
            * external requirements as inert references, resolved fresh at each
