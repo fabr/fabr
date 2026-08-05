@@ -83,6 +83,36 @@ flag ts/allow_uninitialized_props { }
 # with `import * as x` of callable CJS modules rather than default imports.
 flag ts/no_esmodule_interop { }
 
+################## Source version flags ###################
+
+#
+# The ECMAScript level a target's SOURCES are written against — what APIs the
+# code may use — as opposed to `JS_TARGET`'s level, which is what gets emitted
+# and which runtime the output must run on. List one among a target's `deps`:
+#
+#     js_package mylib { srcs = src:**/*.ts; deps = es2023; }
+#
+# It sets the compile's `lib` (so using an API above the declared level is an
+# error, not a silent success), and — because `useDefineForClassFields` turns
+# on at emit target ES2022 and changes what class fields DO — sources declared
+# below es2022 keep assignment semantics even when emitted for a later target.
+# Declaring none leaves the level following JS_TARGET, as before.
+#
+# A package built from es2023 sources genuinely requires an es2023 runtime, so
+# the flag rides its dependency list outward like any other runtime dependency.
+#
+flag es5 { }
+flag es2015 { }
+flag es2016 { }
+flag es2017 { }
+flag es2018 { }
+flag es2019 { }
+flag es2020 { }
+flag es2021 { }
+flag es2022 { }
+flag es2023 { }
+flag esnext { }
+
 ################### JS-specific targets ####################
 
 #

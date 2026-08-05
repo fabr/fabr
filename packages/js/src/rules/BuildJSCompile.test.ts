@@ -61,6 +61,7 @@ interface TsConfig {
     skipLibCheck?: boolean;
     baseUrl?: string;
     paths?: Record<string, string[]>;
+    useDefineForClassFields?: boolean;
     resolveJsonModule?: boolean;
     esModuleInterop?: boolean;
     sourceMap?: boolean;
@@ -174,6 +175,27 @@ describe("jsxModeFor", () => {
     expect(jsxModeFor("debug")).to.equal("react-jsxdev");
     expect(jsxModeFor("release")).to.equal("react-jsx");
     expect(jsxModeFor(undefined)).to.equal("react-jsx");
+  });
+});
+
+describe("js_compile source ES level (es<level> flag)", () => {
+  it("uses the declared source level as lib, independent of the emit target", async () => {
+    /* lib is what the SOURCE may use; target is what is emitted. A target
+     * declaring es2023 sources gets es2023 typings while still emitting es2021. */
+    const cfg = await generatedTsConfig([new Flag("es2023", [])]);
+    expect(cfg.compilerOptions.lib).to.deep.equal(["es2023"]);
+    expect(cfg.compilerOptions.target).to.equal("es2021");
+  });
+
+  it("takes the highest level when several are declared", async () => {
+    const cfg = await generatedTsConfig([new Flag("es2018", []), new Flag("es2022", [])]);
+    expect(cfg.compilerOptions.lib).to.deep.equal(["es2022"]);
+  });
+
+  it("follows the emit target when no level is declared", async () => {
+    const cfg = await generatedTsConfig([]);
+    expect(cfg.compilerOptions.lib).to.deep.equal(["es2021"]);
+    expect(cfg.compilerOptions.useDefineForClassFields).to.equal(undefined);
   });
 });
 

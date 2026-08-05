@@ -177,6 +177,40 @@ const SOURCE_MODE_OPTIONS: Record<string, Record<string, unknown>> = {
   "ts/no_esmodule_interop": { esModuleInterop: false },
 };
 
+/** Ordering over ES level names — es5 < es2015 < … < esnext. Unparseable
+ * names order lowest, so they can never win a max. */
+export function esLevelOrder(version: string): number {
+  const parsed = /^es(next|\d+)$/.exec(version);
+  if (!parsed) {
+    return 0;
+  }
+  return parsed[1] === "next" ? Number.MAX_SAFE_INTEGER : Number(parsed[1]);
+}
+
+/**
+ * The ES level a target's sources are written against, from its `es<level>`
+ * deps flags (`es2021`, `esnext`, etc). Determines the lib version and
+ * other flags as appropriate.
+ * 
+ * If a target carries multiple source version flags, we use the highest.
+ */
+export function resolveSourceVersion(flags: Flag[]): string | undefined {
+  let highest: string | undefined;
+  const seen = new Set<Flag>();
+  const walk = (flag: Flag): void => {
+    if (seen.has(flag)) {
+      return;
+    }
+    seen.add(flag);
+    if (ES_VERSION.test(flag.name) && (highest === undefined || esLevelOrder(flag.name) > esLevelOrder(highest))) {
+      highest = flag.name;
+    }
+    flag.provides.forEach(walk);
+  };
+  flags.forEach(walk);
+  return highest;
+}
+
 /**
  * Fold a set of source-mode flags (with their `provides` closures) into the
  * `compilerOptions` overlay they request. Later flags win on a shared key; an

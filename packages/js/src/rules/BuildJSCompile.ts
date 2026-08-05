@@ -33,7 +33,15 @@
 
 
 import { Computable, createExecAction, FileSet, MemoryFile, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
-import { assembleScopedNodeModules, JSTarget, parseJSTarget, resolveJsxImportSource, resolveSourceMode } from "../JSPackage";
+import {
+  assembleScopedNodeModules,
+  esLevelOrder,
+  JSTarget,
+  parseJSTarget,
+  resolveJsxImportSource,
+  resolveSourceMode,
+  resolveSourceVersion,
+} from "../JSPackage";
 
 /** Where the toolchain is mounted in the working dir — disjoint from src/node_modules/build. */
 const TOOL_DIR = ".tools/tsc";
@@ -78,12 +86,40 @@ function selfReferencePaths(packageName: string): Record<string, string[]> {
   return { [packageName]: ["./src/index"], [`${packageName}/*`]: ["./src/*"] };
 }
 
+/** The `lib` list: the source level, plus the DOM when emitting for a browser. */
+function libFor(level: string, environment: string): string[] {
+  return environment === "browser" ? [level, "dom"] : [level];
+}
+
+/**
+ * `useDefineForClassFields` defaults to true from target ES2022, which changes
+ * what is EMITTED: an uninitialized field declaration becomes a real class
+ * field, defined (as `undefined`) after `super()` returns. Sources written
+ * before that semantic — anything populating fields from a base constructor,
+ * `Object.assign(this, data)` being the common shape — have those values
+ * silently overwritten, and TypeScript only warns (TS2612) for the subset that
+ * shadow a base property.
+ *
+ * So when the source predates define semantics and the emit target does not,
+ * keep assignment semantics: the source's own declared level says which
+ * semantic it was written for. Nothing is forced when no level is declared —
+ * the target's tsc default stands.
+ */
+function defineClassFieldsOverride(sourceVersion: string | undefined, target: string): Record<string, unknown> {
+  if (sourceVersion === undefined) {
+    return {};
+  }
+  const definesFields = (level: string): boolean => esLevelOrder(level) >= 2022;
+  return !definesFields(sourceVersion) && definesFields(target) ? { useDefineForClassFields: false } : {};
+}
+
 export function makeTsConfig(
   jsTarget: JSTarget,
   jsx?: { mode: string; importSource: string },
   modeOverlay: Record<string, unknown> = {},
   buildType?: string,
-  packageName?: string
+  packageName?: string,
+  sourceVersion?: string
 ): Record<string, unknown> {
   return {
     compilerOptions: {
@@ -112,7 +148,11 @@ export function makeTsConfig(
       allowJs: true,
       checkJs: false,
       target: jsTarget.version,
-      lib: jsTarget.environment === "browser" ? [jsTarget.version, "dom"] : [jsTarget.version],
+      /* `lib` is what the SOURCE may use, `target` what is EMITTED: different
+       * questions, so a target that declares its source level gets that,
+       * falling back to the emit level when it declares none. */
+      lib: libFor(sourceVersion ?? jsTarget.version, jsTarget.environment),
+      ...defineClassFieldsOverride(sourceVersion, jsTarget.version),
       module: jsTarget.module === "esm" ? "esnext" : "commonjs",
       moduleResolution: "node",
       ...(packageName ? { paths: selfReferencePaths(packageName) } : {}),
@@ -165,6 +205,9 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
        * (the default) leaves the strict tsconfig unchanged. The materialized
        * `deps` above carries the packages; a flag materializes to nothing. */
       const modeOverlay = resolveSourceMode(depFlags);
+      /* The ES level these sources are written against (an `es<level>` flag
+       * among deps), which drives `lib` and the class-field semantics. */
+      const sourceVersion = resolveSourceVersion(depFlags);
       /* js_compile owns its node_modules layout (only it needs it) and its JSX
        * runtime: both read the ordered direct deps directly. A .tsx/.jsx source
        * needs a jsxImportSource (auto-detected from the deps); a JSX-free compile
@@ -175,7 +218,7 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       });
       const build = (jsxImportSource: string): RuleResult => {
         const jsx = jsxImportSource ? { mode: jsxModeFor(buildType), importSource: jsxImportSource } : undefined;
-        const tsconfig = makeTsConfig(parseJSTarget(target), jsx, modeOverlay, buildType, packageName);
+        const tsconfig = makeTsConfig(parseJSTarget(target), jsx, modeOverlay, buildType, packageName, sourceVersion);
         const workingDir = FileSet.layout({
           node_modules: assembleScopedNodeModules(deps),
           src: srcs,

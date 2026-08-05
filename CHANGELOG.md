@@ -21,6 +21,7 @@ version number.
 - Make esModuleInterop: true by default; ts/no_esmodule_interop to disable.
 - Revise MVS resolution to drop the 'independent major versions' concept we accidentally imported from Go.
 - Generate resolution repair lists on resolution failures.
+- Readd es* flags as source version dependency flags.
 - Fix TS source importing local references using full package path.
 
 @fabr/cli:
