@@ -131,6 +131,10 @@ targetdef js_package {
     # they are emitted as peerDependencies (not dependencies) in the generated
     # package.json rather than bundled. Used by a plugin for @fabr-build/core.
     provided_deps = FILES;
+    # Files that ship as package content WITHOUT being compiled, including 
+    # already-built JavaScript (note there are definitionally no checks on
+    # the included files.)
+    resources = FILES;
     tests = FILES;
     # Extra packages for compiling and running the tests only (assertion
     # libraries and their @types); never part of the package's own

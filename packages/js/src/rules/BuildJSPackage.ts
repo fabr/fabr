@@ -66,6 +66,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
        * independent of what it compiles. */
       const gathered = context.collect({
         srcs: context.getFileProperty("srcs"),
+        resources: context.getFileProperty("resources"),
         tests: context.getFileProperty("tests"),
         deps: depSources,
         provided: providedSources,
@@ -78,7 +79,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
       const declaredDeps = context.collectDeclaredRequirements(depSources);
       const declaredProvided = context.collectDeclaredRequirements(providedSources);
 
-      return gathered.then(({ srcs: srcSets, tests: testSets, deps, provided }) => {
+      return gathered.then(({ srcs: srcSets, resources: resourceSets, tests: testSets, deps, provided }) => {
         const sources = FileSet.unionAll(...srcSets);
         const tests = FileSet.unionAll(...testSets);
         /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
@@ -112,7 +113,10 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
            * (whether the compile sub-target hit or missed), reconstructing the
            * runtime-only identity each time. */
           const deliver = (built: FileSet): Computable<FileSource> => {
-            const contents = FileSet.unionAll(built, stripPackageJson(copied));
+            /* `resources` ship exactly as given — never compiled, so a prebuilt
+             * .js keeps its own level and a hand-written .d.ts is the only
+             * declaration for it (no generated one to collide with). */
+            const contents = FileSet.unionAll(built, stripPackageJson(copied), ...resourceSets);
             /* Guarantee every declared bin opens with an interpreter line so the
              * installed npm command is launchable — derived from the bin convention,
              * not a hand-written source shebang (see withBinShebangs). */

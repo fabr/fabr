@@ -16,7 +16,8 @@ version number.
 
 @fabr/js:
 - Generated package.json now strips build-only fields (devDependencies, scripts, …) from an imported manifest, and emits array metadata (keywords, os, cpu) as JSON arrays.
-- Add support for package alises in external dependencies.
+- Add support for package aliases in external dependencies.
+- Add resources (copied as-is) inputs to js_package.
 - Handle package resolution edge cases with missing specified versions.
 - Make esModuleInterop: true by default; ts/no_esmodule_interop to disable.
 - Revise MVS resolution to drop the 'independent major versions' concept we accidentally imported from Go.
