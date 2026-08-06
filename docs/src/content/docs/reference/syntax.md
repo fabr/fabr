@@ -365,3 +365,31 @@ targetdef sync {
 a pipeline, a rename template), and `REQUIRED` is checked for presence. `STRING` versus `FILES`,
 however, is currently only a **hint**: it documents whether a property is meant to carry scalar text or
 file references, but is not enforced — the rule that consumes the property decides how to interpret it.
+
+### Property defaults
+
+A kind may be followed by `default` and a value, supplying the property for every target of the type
+that doesn't write one of its own:
+
+```
+targetdef script {
+  entry   = REQUIRED FILES;
+  args    = STRING default --quiet;
+  outputs = FILES default *.js;
+}
+```
+
+A default takes the full value syntax — references, globs, `${...}` substitution, and `{ ... }` blocks
+for a `MAP` — and is resolved lazily, only where the property is actually read. Relative paths in a
+default are rooted at the file that declares the targetdef, not at the one using it, so a plugin can
+ship defaults that point at its own files. `${...}` substitution, by contrast, reads globals as
+resolved for the *using* target, so a default can pick up build settings like `${BUILD_TYPE}`.
+
+`REQUIRED` and `default` are mutually exclusive: a default supplies the property whenever it is
+unwritten, leaving nothing for `REQUIRED` to demand, so declaring both is an error. The `*` wildcard
+cannot carry a default either — it types only the keys a target actually writes, so there is no
+unwritten property for a default to supply.
+
+Defaults also apply where a rule builds an internal sub-target of the type without supplying that
+property — so a defaulted property behaves the same however the target came about. A rule that means
+to suppress a default passes an explicit empty value rather than omitting the property.

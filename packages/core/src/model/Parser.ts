@@ -343,6 +343,14 @@ const DIAG_DUP_SCHEMA_KEY = new Diagnostic<{ key: string; loc: ISourcePosition }
   LogLevel.Error,
   "Duplicate property '{key}' in targetdef"
 );
+const DIAG_REQUIRED_DEFAULT = new Diagnostic<{ key: string; loc: ISourcePosition }>(
+  LogLevel.Error,
+  "Property '{key}' cannot be both REQUIRED and have a default"
+);
+const DIAG_WILDCARD_DEFAULT = new Diagnostic<{ loc: ISourcePosition }>(
+  LogLevel.Error,
+  "The '*' wildcard cannot have a default (it types only keys that are written)"
+);
 const DIAG_NESTING_TOO_DEEP = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
   `Block nesting is too deep (limit ${MAX_BLOCK_DEPTH})`
@@ -1368,6 +1376,16 @@ export class BuildParser {
   private parsePropertyDecl(name: string, nameOffset: number, keyRef?: Name, docComment?: string): IPropertyDecl {
     this.consumeToken(TokenType.EQUALS);
     const base = { kind: DeclKind.Property as const, source: this.source, name, offset: nameOffset, keyRef, docComment };
+    return this.parsePropertyValues(base);
+  }
+
+  /**
+   * The right-hand side of a property: its value list up to (and including) the
+   * terminating ';'. Shared by an ordinary `name = values;` declaration and a
+   * targetdef's `default values;` clause, so the two admit exactly the same value
+   * grammar. Assumes the current token starts the first value.
+   */
+  private parsePropertyValues(base: Omit<IPropertyDecl, "values">): IPropertyDecl {
     const values: IValue[] = [];
     /* The value loop admits `{...}` blocks as values (parseValue), so a value
      * list may hold names, blocks, or (per Validate, only homogeneously) several
@@ -1678,8 +1696,9 @@ export class BuildParser {
 
   /**
    * PropertyTypeList ::= PropertyType*
-   * PropertyType ::= NAME '=' PropertySchema ';'
+   * PropertyType ::= NAME '=' PropertySchema DefaultClause? ';'
    * PropertySchema ::=  ( 'STRING'|'FILES'|'REQUIRED' )*
+   * DefaultClause ::= 'default' Value*
    *
    */
   private parsePropertyTypeList(): Map<string, IPropertySchema> {
@@ -1690,6 +1709,7 @@ export class BuildParser {
       const docComment = token.docComment;
       let required = false;
       let type: PropertyType | undefined;
+      let defaultDecl: IPropertyDecl | undefined;
       /* The key is a property name (`srcs`), or `*` — the wildcard, typing any
        * further keys a target of this type may carry (a `sync`'s reference-keyed
        * members). `*` lexes as a glob NAME, so match it by its part *structure*:
@@ -1710,6 +1730,21 @@ export class BuildParser {
         this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'MAP' or 'REQUIRED'");
       } else {
         while (next.type === TokenType.IDENTIFIER) {
+          /* `default` ends the keyword run and hands the rest of the line to the
+           * ordinary value parser (which consumes the terminating ';'), so a
+           * default admits every value form a written property does. The decl it
+           * builds is positioned at the schema key, that being what a resolution
+           * error against the default should underline. */
+          if (next.text === "default") {
+            this.nextToken();
+            defaultDecl = this.parsePropertyValues({
+              kind: DeclKind.Property,
+              source: this.source,
+              name: key,
+              offset: token.start,
+            });
+            break;
+          }
           switch (next.text) {
             case "REQUIRED":
               required = true;
@@ -1737,14 +1772,26 @@ export class BuildParser {
       }
       if (type === undefined) {
         this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'MAP'");
+      } else if (required && defaultDecl) {
+        /* A default supplies the property whenever it is unwritten, so nothing is
+         * left for REQUIRED to demand — the pair says both "must be written" and
+         * "need not be". */
+        this.log.log(DIAG_REQUIRED_DEFAULT, { key, loc: { ...this.source, offset: token.start } });
+      } else if (key === "*" && defaultDecl) {
+        /* The wildcard types keys the schema never named; a default applies to a
+         * named property that went unwritten, and there is no such thing here —
+         * an unwritten wildcard member simply does not exist. Rejected rather
+         * than accepted-and-ignored. */
+        this.log.log(DIAG_WILDCARD_DEFAULT, { loc: { ...this.source, offset: token.start } });
       } else if (result.has(key)) {
         /* The first declaration stands; the load fails on the error anyway, so
          * the surviving entry only shapes further diagnostics. */
         this.log.log(DIAG_DUP_SCHEMA_KEY, { key, loc: { ...this.source, offset: token.start } });
       } else {
-        result.set(key, { required, type, docComment });
+        result.set(key, { required, type, default: defaultDecl, docComment });
       }
-      if (next.type !== TokenType.RBRACE) {
+      /* A default clause has already consumed its own terminating ';'. */
+      if (!defaultDecl && next.type !== TokenType.RBRACE) {
         this.consumeToken(TokenType.SEMI);
       }
     }

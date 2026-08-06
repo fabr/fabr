@@ -1360,7 +1360,7 @@ export class BuildContext {
     if (!rule) {
       throw new NoRuleFoundError(target, this.constraints, this.model.getOperations(target.type));
     }
-    return this.evaluateTarget(new DeclaredTargetContext(target, this, stack), rule);
+    return this.evaluateTarget(new DeclaredTargetContext(target, targetDef, this, stack), rule);
   }
 
   /**
@@ -1383,11 +1383,15 @@ export class BuildContext {
     if (def?.kind !== DeclKind.Target) {
       throw new Error(`'${name}' is not a target that runs a command`);
     }
+    const targetDef = this.model.getTargetDef(def.type);
+    if (!targetDef) {
+      throw new Error("Targetdef '" + def.type + "' not found"); /* Can't happen due to earlier checks */
+    }
     const rule = this.model.getTargetRule(def.type, this.constraints);
     if (!rule) {
       throw new NoRuleFoundError(def, this.constraints, this.model.getOperations(def.type));
     }
-    const context = new DeclaredTargetContext(def, this, stack);
+    const context = new DeclaredTargetContext(def, targetDef, this, stack);
     return rule
       .evaluate(context)
       .then(result => (result instanceof BuildAction ? result : undefined))
@@ -1444,14 +1448,22 @@ export class BuildContext {
      * the type), never a user error — so a plain Error, not a diagnostic. Unlike
      * a declared target, a sub-target doesn't route through resolveTarget (it has
      * no decl), so the rule is checked here too rather than downstream. */
-    if (!this.model.getTargetDef(type)) {
+    const targetDef = this.model.getTargetDef(type);
+    if (!targetDef) {
       throw new Error(`Internal error: sub-target type '${type}' has no registered targetdef`);
     }
     const rule = this.model.getTargetRule(type, buildContext.constraints);
     if (!rule) {
       throw new Error(`No rule found for anonymous target type '${type}'`);
     }
-    const context = new AnonymousTargetContext(buildContext, inputs, owner.getDeclaredContext(), options?.label ?? type, owner.stack);
+    const context = new AnonymousTargetContext(
+      buildContext,
+      targetDef,
+      inputs,
+      owner.getDeclaredContext(),
+      options?.label ?? type,
+      owner.stack
+    );
     return buildContext.evaluateTarget(context, rule);
   }
 
@@ -1630,10 +1642,28 @@ function declaredRequirementOf(source: SourceRef): Computable<Requirement | unde
 export abstract class TargetContext {
   public readonly context: BuildContext;
   public readonly stack?: IDependencyStack;
+  /** The schema of the type being built — carried by every target, declared or
+   * anonymous, so that a property's declared default is available wherever the
+   * target supplies no value of its own. */
+  protected readonly targetDef: ITargetDefDecl;
 
-  constructor(context: BuildContext, stack?: IDependencyStack) {
+  constructor(context: BuildContext, targetDef: ITargetDefDecl, stack?: IDependencyStack) {
     this.context = context;
+    this.targetDef = targetDef;
     this.stack = stack;
+  }
+
+  /**
+   * The declared default for `name` as a property decl, or undefined if the
+   * schema declares none. Every accessor consults this on the path where the
+   * target supplies no value — an unwritten property on a declared target, an
+   * absent key in a sub-target's input bag — so a default reaches both. A
+   * sub-target therefore *omits* a key to take the default and passes an explicit
+   * empty value to suppress it. The `*` wildcard entry carries no default: it
+   * types keys the schema never named, so there is no property to default.
+   */
+  protected declaredDefault(name: string): IPropertyDecl | undefined {
+    return this.targetDef.properties.get(name)?.default;
   }
 
   /** The name of the (declared) target being built — what a rule refers to
@@ -2088,10 +2118,17 @@ export class DeclaredTargetContext extends TargetContext {
    * however many sub-actions miss the cache. */
   private announcedGeneration = -1;
 
-  constructor(target: ITargetDecl, context: BuildContext, stack?: IDependencyStack) {
-    super(context, stack);
+  constructor(target: ITargetDecl, targetDef: ITargetDefDecl, context: BuildContext, stack?: IDependencyStack) {
+    super(context, targetDef, stack);
     this.target = target;
     this.props = new Map(target.properties.map(prop => [prop.name, prop]));
+  }
+
+  /** The decl supplying `name`: the one written in this target's body, else the
+   * schema's declared default. Undefined when neither exists — the property is
+   * simply absent, and each accessor yields its own empty. */
+  private declFor(name: string): IPropertyDecl | undefined {
+    return this.props.get(name) ?? this.declaredDefault(name);
   }
 
   public get name(): string {
@@ -2104,7 +2141,7 @@ export class DeclaredTargetContext extends TargetContext {
    * layering, rather than pre-baking the override into ambient (where a delta
    * would beat it). */
   public getProperty(name: string, overrides?: Constraints): Computable<Property | undefined> {
-    const prop = this.props.get(name);
+    const prop = this.declFor(name);
     if (!prop) {
       return Computable.resolve(undefined);
     }
@@ -2112,7 +2149,7 @@ export class DeclaredTargetContext extends TargetContext {
   }
 
   public getFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]> {
-    const prop = this.props.get(name);
+    const prop = this.declFor(name);
     if (!prop) {
       return Computable.resolve([]);
     }
@@ -2120,7 +2157,7 @@ export class DeclaredTargetContext extends TargetContext {
   }
 
   public getRewrite(name: string, overrides?: Constraints): Computable<RewriteFn> {
-    const prop = this.props.get(name);
+    const prop = this.declFor(name);
     if (!prop) {
       return Computable.resolve(() => undefined);
     }
@@ -2128,7 +2165,7 @@ export class DeclaredTargetContext extends TargetContext {
   }
 
   public getProjection(name: string, overrides?: Constraints): Computable<Name | undefined> {
-    const prop = this.props.get(name);
+    const prop = this.declFor(name);
     if (!prop) {
       return Computable.resolve(undefined);
     }
@@ -2136,7 +2173,7 @@ export class DeclaredTargetContext extends TargetContext {
   }
 
   public getMap(name: string, overrides?: Constraints): Computable<PropertyMap> {
-    const prop = this.props.get(name);
+    const prop = this.declFor(name);
     if (!prop) {
       return Computable.resolve(new Map());
     }
@@ -2165,7 +2202,7 @@ export class DeclaredTargetContext extends TargetContext {
   }
 
   protected getCommandStages(name: string): Computable<IResolvedCommandStage[]> {
-    const prop = this.props.get(name);
+    const prop = this.declFor(name);
     if (!prop) {
       return Computable.resolve([]);
     }
@@ -2213,12 +2250,13 @@ export class AnonymousTargetContext extends TargetContext {
 
   constructor(
     context: BuildContext,
+    targetDef: ITargetDefDecl,
     inputs: SubTargetInputs,
     declared: DeclaredTargetContext,
     label: string,
     stack?: IDependencyStack
   ) {
-    super(context, stack);
+    super(context, targetDef, stack);
     this.inputs = inputs;
     this.declared = declared;
     this.label = label;
@@ -2233,44 +2271,67 @@ export class AnonymousTargetContext extends TargetContext {
     return Computable.resolve([]);
   }
 
-  /** An anonymous sub-target has no declaration body, so no command. */
-  protected getCommandStages(): Computable<IResolvedCommandStage[]> {
-    return Computable.resolve([]);
+  /* Every accessor takes the caller's bag entry when present and falls back to
+   * the type's declared default when absent — so a sub-target of a type whose
+   * schema declares defaults gets them exactly as a written target of that type
+   * would, rather than silently seeing an empty property. A default resolves
+   * against no target decl: it was written in the targetdef, and `${...}` in a
+   * property value substitutes from globals in any case, so the decl only ever
+   * served to position errors — which for a sub-target belong to its declared
+   * owner (see `failure`). */
+
+  /** A sub-target has no declaration body of its own, so a command can only come
+   * from the type's declared default. */
+  protected getCommandStages(name: string): Computable<IResolvedCommandStage[]> {
+    const decl = this.declaredDefault(name);
+    return decl ? this.context.resolveCommand(decl, undefined, this.stack) : Computable.resolve([]);
   }
 
-  public getProperty(name: string): Computable<Property | undefined> {
+  public getProperty(name: string, overrides?: Constraints): Computable<Property | undefined> {
     const value = this.inputs[name];
     if (value === undefined) {
-      return Computable.resolve(undefined);
+      const decl = this.declaredDefault(name);
+      return decl
+        ? this.context.resolveStringProperty(decl, undefined, this.stack, overrides)
+        : Computable.resolve(undefined);
     }
     return Computable.resolve(new Property((Array.isArray(value) ? value : [value]) as string[]));
   }
 
-  public getFileProperty(name: string): Computable<SourceRef[]> {
+  public getFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]> {
     const value = this.inputs[name];
     if (value === undefined) {
-      return Computable.resolve([]);
+      const decl = this.declaredDefault(name);
+      return decl ? this.context.resolveFileProperty(decl, undefined, this.stack, overrides) : Computable.resolve([]);
     }
     return Computable.resolve((Array.isArray(value) ? value : [value]) as SourceRef[]);
   }
 
-  /** Sub-targets take concrete inputs, not REWRITE property declarations, so the
-   * rewrite is always empty here. */
-  public getRewrite(): Computable<RewriteFn> {
-    return Computable.resolve(() => undefined);
+  /** Sub-targets take concrete inputs, not REWRITE property declarations, so a
+   * rewrite can only come from the type's declared default. */
+  public getRewrite(name: string, overrides?: Constraints): Computable<RewriteFn> {
+    const decl = this.declaredDefault(name);
+    return decl ? this.context.resolveRewrite(decl, undefined, this.stack, overrides) : Computable.resolve(() => undefined);
   }
 
   /** A sub-target's projection input, if the caller supplied a Name in the bag
-   * (a bare selector or a `-> tmpl` rename); anything else declares none. */
-  public getProjection(name: string): Computable<Name | undefined> {
+   * (a bare selector or a `-> tmpl` rename), else the type's declared default.
+   * A bag entry that is not a Name declares none — and takes no default, having
+   * been supplied. */
+  public getProjection(name: string, overrides?: Constraints): Computable<Name | undefined> {
     const value = this.inputs[name];
+    if (value === undefined) {
+      const decl = this.declaredDefault(name);
+      return decl ? this.context.resolveProjection(decl, undefined, this.stack, overrides) : Computable.resolve(undefined);
+    }
     return Computable.resolve(value instanceof Name ? value : undefined);
   }
 
-  /** Sub-targets take concrete inputs, not MAP property declarations, so the
-   * map is always empty here. */
-  public getMap(): Computable<PropertyMap> {
-    return Computable.resolve(new Map());
+  /** Sub-targets take concrete inputs, not MAP property declarations, so a map
+   * can only come from the type's declared default. */
+  public getMap(name: string, overrides?: Constraints): Computable<PropertyMap> {
+    const decl = this.declaredDefault(name);
+    return decl ? this.context.resolveMap(decl, undefined, this.stack, overrides) : Computable.resolve(new Map());
   }
 
   public getDeclaredContext(): DeclaredTargetContext {

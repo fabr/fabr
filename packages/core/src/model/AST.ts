@@ -79,6 +79,15 @@ export enum PropertyType {
 export interface IPropertySchema {
   required?: boolean;
   type: PropertyType;
+  /**
+   * The value written after `default` in the targetdef, held as a property decl
+   * of the same name so it resolves through the ordinary property machinery —
+   * with the full value grammar (references, globs, `${...}`, MAP blocks) and
+   * relative paths rooted at the file declaring the targetdef, not the file
+   * using it. Supplies the property wherever the target — or a sub-target of
+   * this type — writes none of its own; mutually exclusive with `required`.
+   */
+  default?: IPropertyDecl;
   /** The doc-comment prose written above this property in the targetdef, marker-
    * stripped, or undefined if none. Runtime-only documentation metadata. */
   docComment?: string;

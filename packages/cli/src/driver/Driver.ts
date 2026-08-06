@@ -926,7 +926,8 @@ function listTargetDefs(model: BuildModel, options: Options): Computable<void> {
     const width = Math.max(0, ...props.map(([name]) => name.length));
     for (const [name, schema] of props) {
       const type = (schema.required ? "REQUIRED " : "") + propertyTypeName(schema);
-      console.log(`  ${name.padEnd(width)}  ${type}`);
+      const fallback = schema.default ? ` default ${renderPropertyValue(schema.default)}` : "";
+      console.log(`  ${name.padEnd(width)}  ${type}${fallback}`);
     }
   });
   return Computable.resolve(undefined);
@@ -1016,7 +1017,8 @@ function targetDefJson(model: BuildModel, def: ITargetDefDecl): Record<string, u
     properties: [...def.properties].map(([name, schema]) => ({
       name,
       type: propertyTypeName(schema),
-      required: schema.required === true,
+      required: schema.required === true, 
+      default: schema.default ? renderPropertyValue(schema.default) : null,
       description: schema.docComment ?? null,
     })),
   };

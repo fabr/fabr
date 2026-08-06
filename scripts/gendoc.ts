@@ -37,6 +37,9 @@ interface PropertyDef {
   name: string;
   type: string;
   required: boolean;
+  /** The value written after `default` in the targetdef — what a target of this
+   * type gets by omission — or null/absent when the property has none. */
+  default?: string | null;
   description?: string | null;
 }
 
@@ -134,16 +137,43 @@ function propType(prop: PropertyDef): string {
   return (prop.required ? "REQUIRED " : "") + prop.type;
 }
 
+/** The property's `default …` clause as written, or "" when it has none. */
+function propDefault(prop: PropertyDef): string {
+  return prop.default ? ` default ${prop.default}` : "";
+}
+
 /** Reconstruct the targetdef's schema block from its properties, so the prose
  * comment need not restate it (and it can never drift). */
 function schemaBlock(def: TargetDef): string {
   const width = Math.max(0, ...def.properties.map(prop => prop.name.length));
   const lines = [`targetdef ${def.name} {`];
   for (const prop of def.properties) {
-    lines.push(`  ${prop.name.padEnd(width)} = ${propType(prop)};`);
+    lines.push(`  ${prop.name.padEnd(width)} = ${propType(prop)}${propDefault(prop)};`);
   }
   lines.push("}");
   return "```\n" + lines.join("\n") + "\n```";
+}
+
+/** The per-property reference table for a target type: the schema restated with
+ * each property's own description. The Default column appears only for a type
+ * that declares one, so the common case isn't a column of blanks. */
+function propertyTable(def: TargetDef): string[] {
+  const defaults = def.properties.some(prop => prop.default);
+  const head = ["Property", "Type", "Required", ...(defaults ? ["Default"] : []), "Description"];
+  const row = (cells: string[]): string => `| ${cells.join(" | ")} |`;
+  return [
+    row(head),
+    row(head.map(() => "---")),
+    ...def.properties.map(prop =>
+      row([
+        `\`${prop.name}\``,
+        propType(prop),
+        prop.required ? "yes" : "",
+        ...(defaults ? [prop.default ? `\`${cell(prop.default)}\`` : ""] : []),
+        cell(prop.description),
+      ])
+    ),
+  ];
 }
 
 /** Reconstruct a provided target's declaration from its written properties,
@@ -199,11 +229,7 @@ function render(group: Group, doc: Doc): string {
       /* A property table only earns its place when a property carries its own
        * description; otherwise it just restates the schema block above. */
       if (def.properties.some(prop => prop.description)) {
-        out.push("| Property | Type | Required | Description |", "| --- | --- | --- | --- |");
-        for (const prop of def.properties) {
-          out.push(`| \`${prop.name}\` | ${propType(prop)} | ${prop.required ? "yes" : ""} | ${cell(prop.description)} |`);
-        }
-        out.push("");
+        out.push(...propertyTable(def), "");
       }
     }
   }

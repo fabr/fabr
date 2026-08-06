@@ -148,7 +148,9 @@ function summarize(contents: IBuildFileContents): Record<string, unknown> {
     targetdefs[def.name] = Object.fromEntries(
       [...def.properties].map(([name, schema]) => [
         name,
-        `${schema.required ? "REQUIRED " : ""}${propertyTypeName(schema.type)}`,
+        `${schema.required ? "REQUIRED " : ""}${propertyTypeName(schema.type)}${
+          schema.default ? ` default ${schema.default.values.map(value => nameText(nameOf(value))).join(" ")}` : ""
+        }`,
       ])
     );
   }
@@ -440,6 +442,64 @@ describe("Parser Tests", () => {
   it("Targetdef with a wildcard member (* = FILES)", () => {
     expect(summarize(parseValid("targetdef sync {\n  * = FILES;\n}"))).to.deep.equal(
       summary({ targetdefs: { sync: { "*": "FILES" } } })
+    );
+  });
+
+  it("Targetdef with declared defaults", () => {
+    expect(
+      summarize(
+        parseValid("targetdef js_package {\n  value = STRING default some default value;\n  srcs = FILES default *.ts;\n}")
+      )
+    ).to.deep.equal(
+      summary({
+        targetdefs: {
+          js_package: { value: "STRING default some default value", srcs: "FILES default glob(*)+.ts" },
+        },
+      })
+    );
+  });
+
+  it("names a default's decl for its property, so an error against it reads as that property", () => {
+    const schema = parseValid("targetdef t { srcs = FILES default *.ts; }").targetdefs[0].properties.get("srcs");
+    expect(schema?.default?.name).to.equal("srcs");
+  });
+
+  it("Targetdef default taking a map block", () => {
+    const schema = parseValid("targetdef t { defines = MAP default { a = 1; b = 2; } }").targetdefs[0].properties.get(
+      "defines"
+    );
+    const entries = entriesOf(schema?.default?.values[0]) ?? [];
+    expect(entries.filter((item): item is IPropertyDecl => item.kind === DeclKind.Property).map(entry => entry.name)).to.deep.equal([
+      "a",
+      "b",
+    ]);
+  });
+
+  it("Targetdef default following the type keywords, terminated by '}' without a ';'", () => {
+    expect(summarize(parseValid("targetdef t {\n  version = STRING default 1.0.0\n}"))).to.deep.equal(
+      summary({ targetdefs: { t: { version: "STRING default 1.0.0" } } })
+    );
+  });
+
+  it("rejects a property that is both REQUIRED and defaulted", () => {
+    /* A default supplies the property whenever unwritten, so REQUIRED has nothing
+     * left to demand — the pair is a contradiction, not a redundancy. */
+    const errors = parseInvalid("targetdef t { srcs = FILES REQUIRED default *.ts; }");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/cannot be both REQUIRED and have a default/);
+  });
+
+  it("rejects a default on the '*' wildcard", () => {
+    /* The wildcard types only keys that ARE written, so there is no unwritten
+     * property for a default to supply — rejected, not silently ignored. */
+    const errors = parseInvalid("targetdef sync { * = FILES default x; }");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/wildcard cannot have a default/);
+  });
+
+  it("treats 'default' as an ordinary property name in key position", () => {
+    expect(summarize(parseValid("targetdef t { default = STRING; }"))).to.deep.equal(
+      summary({ targetdefs: { t: { default: "STRING" } } })
     );
   });
 

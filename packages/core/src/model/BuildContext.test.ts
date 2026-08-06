@@ -315,6 +315,10 @@ registerRule("test_composer", {}, context =>
   )
 );
 
+/* A composer that supplies an EMPTY input bag, so every property the sub-target
+ * reads must come from its type's declared defaults. */
+registerRule("test_default_composer", {}, context => context.subTarget("test_sub", {}, { label: "sub" }));
+
 /* A composer that builds a sub-target whose type has a rule but NO targetdef —
  * used to assert subTarget rejects a type missing from the build vocabulary. */
 registerRule("test_orphan_sub", {}, context =>
@@ -874,6 +878,106 @@ describe("BuildContext", () => {
     await model.getConfig(Constraints.of({}), execution).getTarget("t");
     /* A bare constant maps every input to itself. */
     expect(lastRewrite).to.deep.equal(["bundle.js", "bundle.js", "bundle.js"]);
+  });
+
+  describe("declared property defaults", () => {
+    /* Own cache root: the sub-target cases run a real BuildAction, and the shared
+     * `execution` caches into the cwd (which would litter the source tree). */
+    let root: string;
+    let runExecution: ExecutionContext;
+    beforeEach(() => {
+      root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-defaults-test-"));
+      runExecution = new ExecutionContext(new BuildCache(root, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
+    });
+    afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+    /** Build target `t` from a source declaring the targetdefs and the target,
+     * yielding its content (for the rules that turn a property into a file). */
+    async function build(input: string): Promise<FileSet> {
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      const sources = await model.getConfig(Constraints.of({}), runExecution).getTarget("t");
+      return sources[0] as FileSet;
+    }
+
+    it("Supplies an unwritten STRING property from the targetdef's default", async () => {
+      const files = await build("targetdef test_file { content = STRING default from the schema; }\n" + "test_file t { }\n");
+      expect(await files.readFile("f.txt")).to.equal("from the schema");
+    });
+
+    it("Prefers a written value over the default", async () => {
+      const files = await build(
+        "targetdef test_file { content = STRING default from the schema; }\n" + "test_file t { content = written; }\n"
+      );
+      expect(await files.readFile("f.txt")).to.equal("written");
+    });
+
+    it("Substitutes globals in a default under the using target's context", async () => {
+      const files = await build(
+        "targetdef test_file { content = STRING default v${VERSION}; }\n" + "VERSION = 2.1;\n" + "test_file t { }\n"
+      );
+      expect(await files.readFile("f.txt")).to.equal("v2.1");
+    });
+
+    it("Supplies an unwritten FILES property from the default, resolving its references", async () => {
+      lastDeps = undefined;
+      await build(
+        "targetdef test_file { content = STRING; }\n" +
+          "targetdef test_good { deps = FILES default fallback; }\n" +
+          "test_file fallback { content = defaulted; }\n" +
+          "test_good t { }\n"
+      );
+      expect(await lastDeps!.readFile("f.txt")).to.equal("defaulted");
+    });
+
+    it("Supplies an unwritten MAP property from the default", async () => {
+      lastMap = undefined;
+      await build("targetdef test_map { defines = MAP default { DEBUG = false; } }\n" + "test_map t { }\n");
+      expect(lastMap).to.deep.equal([["DEBUG", ["false"]]]);
+    });
+
+    it("Supplies an unwritten REWRITE property from the default", async () => {
+      lastRewrite = undefined;
+      await build("targetdef test_rw { out = REWRITE default *.entry.js -> *.min.js; }\n" + "test_rw t { }\n");
+      expect(lastRewrite).to.deep.equal(["a.min.js", "b.min.js", undefined]);
+    });
+
+    it("Supplies a sub-target's absent input from its type's default", async () => {
+      /* The footgun this closes: a sub-target reads through the same accessors as
+       * a declared target, so a type whose schema declares a default must get it
+       * whether the rule composing the bag supplied the key or not. */
+      const files = await build(
+        "targetdef test_sub { data = STRING default from the schema; }\n" +
+          "targetdef test_default_composer { }\n" +
+          "test_default_composer t { }\n"
+      );
+      expect(await files.readFile("out.txt")).to.equal("from the schema");
+    });
+
+    it("Reports a default that resolves back to its own target as a cycle", async () => {
+      /* A default is resolved against the using target, so a self-reference in one
+       * closes a cycle exactly as a written value would — it must be diagnosed,
+       * not recursed into. */
+      try {
+        await build("targetdef test_good { deps = FILES default t; }\n" + "test_good t { }\n");
+        expect.fail("expected target t to fail");
+      } catch (err) {
+        const cause = (err as DependencyFailedError).cause;
+        expect(cause).to.be.instanceOf(CircularDependencyError);
+        expect((cause as CircularDependencyError).name).to.equal("t");
+      }
+    });
+
+    it("Prefers a sub-target's supplied input over its type's default", async () => {
+      const files = await build(
+        "targetdef test_sub { data = STRING default from the schema; }\n" +
+          "targetdef test_composer { content = STRING; }\n" +
+          "test_composer t { content = supplied; }\n"
+      );
+      expect(await files.readFile("out.txt")).to.equal("supplied");
+    });
   });
 
   it("Resolves a MAP property to an ordered, substituted key -> string-list map", async () => {
