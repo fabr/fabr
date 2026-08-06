@@ -848,7 +848,13 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
   }
 
   /** Realise a planned closure against the fetched packages, stamped with the
-   * resolution's provenance. */
+   * resolution's provenance. The delivered root carries the fork flag on the
+   * same terms as any mount below it: a requirement answered by a fork (an
+   * exact pin of a sanctioned second version — the catalog form) delivers a
+   * package that must not claim a flat slot wherever it is merged with the
+   * principal, and only the resolution can say so (see
+   * {@link PackageFileSet.isNestedOverride}). A root remains flat where it is
+   * *directly* named — the assembler's roots always hold their own name. */
   private buildClosure(req: Requirement, plan: PlannedClosure, selections: Selected<SemverVersion>[], packages: Map<string, PackageFileSet>): PackageFileSet {
     const origin: IResolutionOrigin<SemverVersion> = {
       kind: PACKAGE_RESOLUTION_PROVENANCE,
@@ -861,7 +867,14 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     const rootFiles = packages.get(plan.rootId)!;
     const forkIds = new Set(selections.filter(sel => sel.fork !== undefined).map(selectionId));
     const dependencies = buildMounts(plan.mounts, packages, origin, forkIds);
-    return new PackageFileSet(rootFiles, rootFiles.packageName, rootFiles.version, dependencies, origin);
+    return new PackageFileSet(
+      rootFiles,
+      rootFiles.packageName,
+      rootFiles.version,
+      dependencies,
+      origin,
+      forkIds.has(plan.rootId)
+    );
   }
 
   /**

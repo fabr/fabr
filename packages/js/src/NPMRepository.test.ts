@@ -303,13 +303,17 @@ function metadataFor(pkg: string, version: string, deps: Record<string, string>,
   return new FileSet(new Map([[METADATA_FILE, MemoryFile.from(JSON.stringify(meta))]]));
 }
 
-function packageTarball(): FileSet {
-  return new FileSet(
-    new Map([
-      ["package.json", MemoryFile.from("{}")],
-      ["index.js", MemoryFile.from("module.exports = {};")],
-    ])
-  );
+/** `marker`, when given, names an extra empty file — a way for a test to tell
+ * two otherwise identical tarballs apart by path alone. */
+function packageTarball(marker?: string): FileSet {
+  const files = new Map<string, IFile>([
+    ["package.json", MemoryFile.from("{}")],
+    ["index.js", MemoryFile.from("module.exports = {};")],
+  ]);
+  if (marker !== undefined) {
+    files.set(marker, MemoryFile.from(""));
+  }
+  return new FileSet(files);
 }
 
 /** A real ExecutionContext backing the fake contexts: `getOrCreatePluginContext`
@@ -1078,8 +1082,8 @@ describe("override markers", () => {
     [`${REG}/C/2.5.0`]: metadataFor("C", "2.5.0", {}, { dist: tarballDist("c2") }),
     [`${REG}/tarball/a.tgz`]: packageTarball(),
     [`${REG}/tarball/b.tgz`]: packageTarball(),
-    [`${REG}/tarball/c1.tgz`]: packageTarball(),
-    [`${REG}/tarball/c2.tgz`]: packageTarball(),
+    [`${REG}/tarball/c1.tgz`]: packageTarball("v1.5.0.marker"),
+    [`${REG}/tarball/c2.tgz`]: packageTarball("v2.5.0.marker"),
   };
   function tarballDist(stem: string): Record<string, unknown> {
     return { tarball: `${REG}/tarball/${stem}.tgz`, integrity: "", shasum: "", signatures: [] };
@@ -1113,6 +1117,33 @@ describe("override markers", () => {
     const repo = new NPMRepository(REG, fakeContext("build", served, []));
     const delivered = await toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:2.5.0", "C:1.5.0?"])));
     expect(delivered).to.have.lengthOf(4);
+  });
+
+  it("an exact pin OF THE FORK delivers a nested override, so a carried closure still lays out", async () => {
+    const repo = new NPMRepository(REG, fakeContext("build", served, []));
+    /* The catalog form again, but the unmarked pin names the *fork*: the
+     * requirement is answered by C@1.5.0 while the principal stays 2.5.0. */
+    const delivered = await toPromise(
+      resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:1.5.0", "C:2.5.0?"]))
+    );
+    const packages = delivered.filter(
+      (set): set is PackageFileSet => set instanceof PackageFileSet && [...set].length > 0
+    );
+    const fork = packages.find(pkg => pkg.packageId === "C@1.5.0");
+    expect(fork?.isNestedOverride).to.equal(true);
+    /* Reached only through a built package's carried deps — nothing here is a
+     * root of the assembly, so nothing gets a flat slot by being named. The
+     * fork must nest under its carrier and the principal take the flat slot;
+     * unflagged, the two read as two deliveries disagreeing and conflict. */
+    const carrier = new PackageFileSet(
+      new FileSet(new Map([["package.json", MemoryFile.from("{}")]])),
+      "P",
+      "1.0.0",
+      packages
+    );
+    const names = new Set([...assembleScopedNodeModules([carrier])].map(([name]) => name));
+    expect(names.has(".pkgs/node_modules/C/v2.5.0.marker")).to.equal(true);
+    expect(names.has(".pkgs/node_modules/P/node_modules/C/v1.5.0.marker")).to.equal(true);
   });
 
   it("a lone '?' is an incomplete sanction — every shipping version must be written", async () => {
