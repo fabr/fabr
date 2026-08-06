@@ -37,7 +37,6 @@ import {
   BUILD_OPERATION,
   BUILD_OVERRIDE,
   Computable,
-  EMPTY_FILESET,
   FileSet,
   FileSetRef,
   PackageFileSet,
@@ -48,7 +47,7 @@ import {
 } from "@fabr-build/core";
 import {
   assembleNodeModules,
-  compileJsSources,
+  compileContents,
   makeNpmRunnable,
   moduleTypeFile,
   parseJSTarget,
@@ -111,7 +110,6 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
              * runs the emitted code (ESM by default) in the right mode. */
             if (/\.tsx?$/i.test(entryName)) {
               const jsTarget = parseJSTarget(target);
-              const { compiled, copied } = compileJsSources(context, entrySet, depSets);
               const launchName = entryName.replace(/\.tsx?$/i, ".js");
               /* Loose-dep runtime resources (.json, templates, assets): tsc
                * neither compiles nor emits them, so they never ride compiledTree
@@ -120,11 +118,11 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
                * resolves. Compilable loose deps are excluded (their output is
                * already in compiledTree — and a raw .js would collide by name). */
               const resources = resourceFiles(depSets.filter(d => !(d instanceof PackageFileSet)));
-              return (compiled ?? Computable.resolve(EMPTY_FILESET)).then(compiledTree => {
+              return compileContents(context, entrySet, depSets).then(built => {
                 const install = FileSet.unionAll(
                   FileSet.layout({ node_modules: assembleNodeModules(packages) }),
-                  stripPackageJson(copied),
-                  compiledTree,
+                  stripPackageJson(built.passthrough),
+                  built.compiled,
                   resources,
                   new FileSet(new Map([["package.json", moduleTypeFile(jsTarget.module)]]))
                 );

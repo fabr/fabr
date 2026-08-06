@@ -67,9 +67,9 @@ describe("computeExternalNames", () => {
 });
 
 describe("computeBundleEntries", () => {
-  it("defaults each output to the entry with .ts/.tsx swapped for .js", () => {
+  it("names both sides by the COMPILED entry — the rule compiles before esbuild links", () => {
     expect(computeBundleEntries(["src/index.ts", "vendor/lib.js"], noRewrite)).to.deep.equal([
-      { in: "src/index.ts", out: "src/index" },
+      { in: "src/index.js", out: "src/index" },
       { in: "vendor/lib.js", out: "vendor/lib" },
     ]);
   });
@@ -77,7 +77,7 @@ describe("computeBundleEntries", () => {
   it("applies the output rewrite to the default name", () => {
     const rewrite: RewriteFn = name => (name.endsWith(".entry.js") ? name.replace(/\.entry\.js$/, ".min.js") : undefined);
     expect(computeBundleEntries(["src/app.entry.ts"], rewrite)).to.deep.equal([
-      { in: "src/app.entry.ts", out: "src/app.min" },
+      { in: "src/app.entry.js", out: "src/app.min" },
     ]);
   });
 

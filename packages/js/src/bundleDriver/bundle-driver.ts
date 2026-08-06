@@ -131,22 +131,15 @@ export function isBareSpecifier(specifier: string): boolean {
 }
 
 /**
- * The css_compile resolve convention (option B): a styled-source import maps to
- * that source's driver output — a Sass css-module (`.module.scss`/`.sass`) to
- * its proxy `.js` (the locals map + a side-effect import of the scoped CSS), a
- * plain Sass file to its compiled `.css`. Plain `.css` (including the scoped
- * output the proxy itself imports) is returned unchanged and left to esbuild —
- * so this stays a naming rule, not a CSS transform. Returns the specifier
- * unchanged when no rule applies.
+ * The css_compile resolve convention: a styled-source import maps to that
+ * source's driver output, which is the same name with the Sass extension
+ * lowered to `.css`. A css-module needs no case of its own — `x.module.scss`
+ * lands on `x.module.css` by that one rule, which is exactly the name esbuild's
+ * local-css loader scopes. Plain `.css` is returned unchanged and left to
+ * esbuild, so this stays a naming rule, not a CSS transform.
  */
 export function rewriteStyledImport(specifier: string): string {
-  if (/\.module\.(scss|sass)$/i.test(specifier)) {
-    return specifier.replace(/\.module\.(scss|sass)$/i, ".module.js");
-  }
-  if (/\.(scss|sass)$/i.test(specifier)) {
-    return specifier.replace(/\.(scss|sass)$/i, ".css");
-  }
-  return specifier;
+  return specifier.replace(/\.(scss|sass)$/i, ".css");
 }
 
 /**
@@ -186,8 +179,8 @@ function fabrResolverPlugin(options: IBundleOptions): IPlugin {
         }
 
         /* Relative/absolute imports are within-variant. A styled-source import
-         * (.scss/.sass) is redirected to its css_compile output (proxy .js /
-         * compiled .css) — the only CSS knowledge the driver has, a naming rule.
+         * (.scss/.sass) is redirected to its css_compile output (the compiled
+         * .css) — the only CSS knowledge the driver has, a naming rule.
          * Everything else esbuild resolves (a genuine miss there is a real error). */
         if (!isBareSpecifier(args.path)) {
           const rewritten = rewriteStyledImport(args.path);
@@ -210,13 +203,17 @@ function fabrResolverPlugin(options: IBundleOptions): IPlugin {
           return { path: args.path, external: true };
         }
 
-        const variantKey = `${args.resolveDir}\0${args.path}`;
+        /* A styled import is redirected to its lowered output whether it is
+         * written relatively or as a package subpath — CSS resolves by the same
+         * rules as JS, so where the specifier came from cannot change it. */
+        const specifier = rewriteStyledImport(args.path);
+        const variantKey = `${args.resolveDir}\0${specifier}`;
         const cached = variantCache.get(variantKey);
         if (cached) {
           return cached;
         }
 
-        const resolved = await resolveSingleVariant(build, args, nativeKind, otherKind);
+        const resolved = await resolveSingleVariant(build, { ...args, path: specifier }, nativeKind, otherKind);
         if (resolved) {
           variantCache.set(variantKey, resolved);
           return resolved;
@@ -286,6 +283,9 @@ function toEsbuildOptions(options: IBundleOptions): Record<string, unknown> {
     sourcemap: options.sourcemap,
     logLevel: "silent",
     plugins: [fabrResolverPlugin(options)],
+    /* css-modules: `.module.css` scopes its identifiers and exports the map to
+     * the importing JS; every other stylesheet keeps global names. */
+    loader: { ".module.css": "local-css", ".css": "global-css" },
     ...(options.define ? { define: options.define } : {}),
   };
 }

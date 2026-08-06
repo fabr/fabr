@@ -34,10 +34,8 @@
 
 import {
   BUILD_OPERATION,
-  BUILD_OVERRIDE,
   Computable,
   createExecAction,
-  EMPTY_FILESET,
   FileSet,
   MemoryFile,
   PackageFileSet,
@@ -47,9 +45,8 @@ import {
   RunnableFileSet,
   TargetContext,
 } from "@fabr-build/core";
-import { assembleNodeModules, JSTarget, parseJSTarget } from "../JSPackage";
+import { assembleNodeModules, compileContents, JSTarget, parseJSTarget } from "../JSPackage";
 import { buildBundleOptions, BUNDLE_OUTDIR, computeBundleEntries, computeExternalNames } from "../JSBundle";
-import { isStyledSource } from "../CSSCompile";
 
 /** Where the esbuild toolchain + driver mount — disjoint from the workspace's
  * own node_modules so the tool's deps neither collide with nor are visible to
@@ -72,15 +69,13 @@ interface IBundleInputs {
   bundler: RunnableFileSet;
 }
 
-/** Stage the working dir and yield the bundle action, given the resolved inputs
- * and the compiled CSS. `plainTree` is the root tree with styled sources already
- * removed; `css` is the css_compile output (plain CSS + proxy .js) that replaces
- * them — both enter esbuild through the JS import graph, so esbuild keeps
- * ownership of CSS concat/order/split. */
+/** Stage the working dir and yield the bundle action. `code` and `css` are the
+ * built sources — esbuild reaches both through the JS import graph, so it keeps
+ * ownership of CSS concat/order/split and of css-modules scoping. */
 function stageBundle(
   inputs: IBundleInputs,
   srcPackages: PackageFileSet[],
-  plainTree: FileSet,
+  code: FileSet,
   css: FileSet
 ): RuleResult {
   const { jsTarget, buildType, rewrite, defines, entrySet, srcs, deps, bundler } = inputs;
@@ -93,7 +88,7 @@ function stageBundle(
   const options = buildBundleOptions(jsTarget, buildType, entries, external, defines);
 
   const staged = FileSet.unionAll(
-    plainTree,
+    code,
     css,
     FileSet.layout({
       node_modules: assembleNodeModules(srcPackages),
@@ -107,32 +102,27 @@ function stageBundle(
   return createExecAction(staged, argv, `${BUNDLE_OUTDIR}:**`, "bundle");
 }
 
-/** Partition srcs, lower styled sources via a css_compile sub-target, and stage
- * the bundle. srcs partition: packages mount at node_modules (inlined by
- * esbuild); loose files land at the working root, where entries live (an entry
- * need not be separately listed in `srcs` — union dedups; a same path resolving
- * to *different* files across `entry`/`srcs` is a real conflict `unionAll`
- * asserts). Styled sources (.scss/.sass) are replaced by the css_compile output
- * (plain CSS + per-module proxy .js); the driver's resolve convention maps the
- * original imports onto it. Plain .css passes straight to esbuild. scss `@use`
- * of shared partials resolves against the src packages (the css loadPaths). */
+/** Build the loose sources and stage the bundle. Packages among `srcs` are
+ * already built: they mount at node_modules and esbuild inlines them. The loose
+ * files are compiled first (`compileContents`) and esbuild links the output, so
+ * a bundled source is type-checked and gets the target's source-mode flags and
+ * JSX runtime like any other. `transpileJs` is off: esbuild downlevels plain
+ * JavaScript itself.
+ *
+ * An entry need not also be listed in `srcs` — union dedups; a same path
+ * resolving to *different* files across `entry`/`srcs` is a real conflict
+ * `unionAll` asserts. scss `@use` of shared partials resolves against the src
+ * packages (the css loadPaths). */
 function composeBundle(context: TargetContext, inputs: IBundleInputs): Computable<RuleResult> {
   const srcPackages = inputs.srcs.filter((set): set is PackageFileSet => set instanceof PackageFileSet);
   const looseSrcs = inputs.srcs.filter(set => !(set instanceof PackageFileSet));
   const rootTree = FileSet.unionAll(...looseSrcs, inputs.entrySet);
 
-  const styled = rootTree.remap(name => (isStyledSource(name) ? name : undefined));
-  const plainTree = rootTree.remap(name => (isStyledSource(name) ? undefined : name));
-  const cssOut =
-    [...styled].length > 0
-      ? context.subTarget(
-          "css_compile",
-          { srcs: styled, deps: srcPackages },
-          { label: "Compiling styles", constraints: BUILD_OVERRIDE }
-        )
-      : Computable.resolve(EMPTY_FILESET);
-
-  return cssOut.then(css => stageBundle(inputs, srcPackages, plainTree, css));
+  /* Both halves of what the sources may import: `srcs` packages are bundled in,
+   * `deps` are externalized at link time — but the compile needs both. */
+  return compileContents(context, rootTree, [...srcPackages, ...inputs.deps], { transpileJs: false }).then(built =>
+    stageBundle(inputs, srcPackages, FileSet.unionAll(built.compiled, built.passthrough), built.css)
+  );
 }
 
 function buildJsBundle(context: TargetContext): Computable<RuleResult> {

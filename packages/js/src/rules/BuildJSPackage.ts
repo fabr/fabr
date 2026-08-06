@@ -26,7 +26,6 @@
 import {
   BUILD_OPERATION,
   Computable,
-  EMPTY_FILESET,
   FileSet,
   FileSource,
   PackageFileSet,
@@ -37,7 +36,7 @@ import {
   TargetContext,
   toJsonObject,
 } from "@fabr-build/core";
-import { compileJsSources, parseJSTarget, stripPackageJson, withBinShebangs } from "../JSPackage";
+import { compileContents, ICompiledContents, parseJSTarget, stripPackageJson, withBinShebangs } from "../JSPackage";
 import { createPackageJson } from "../PackageJson";
 
 function buildJsPackage(context: TargetContext): Computable<RuleResult> {
@@ -91,7 +90,11 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
            * direct deps, while the transitive closure is reachable only by the
            * deps themselves (assembleScopedNodeModules). Provided deps are on the
            * compile path too (js codes against core's types), just not delivered. */
-          const { compiled, copied } = compileJsSources(context, compileSources, [...deps, ...provided], context.name);
+          /* Stylesheets in `srcs` are built like any other source, so the
+           * package exports CSS rather than Sass (a `.module.css` still unscoped
+           * — scoping is the bundler's). One meant to be `@use`d BY other
+           * packages belongs in `resources`, which ships it verbatim. */
+          const contents = compileContents(context, compileSources, [...deps, ...provided], { packageName: context.name });
 
           /* The package's DIRECT deps as written (built packages as packages,
            * external requirements as inert references, resolved fresh at each
@@ -112,15 +115,15 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
            * identity + carried deps. This runs in resolution on every evaluation
            * (whether the compile sub-target hit or missed), reconstructing the
            * runtime-only identity each time. */
-          const deliver = (built: FileSet): Computable<FileSource> => {
+          const deliver = ({ compiled, css, passthrough }: ICompiledContents): Computable<FileSource> => {
             /* `resources` ship exactly as given — never compiled, so a prebuilt
              * .js keeps its own level and a hand-written .d.ts is the only
              * declaration for it (no generated one to collide with). */
-            const contents = FileSet.unionAll(built, stripPackageJson(copied), ...resourceSets);
+            const delivered = FileSet.unionAll(compiled, stripPackageJson(passthrough), css, ...resourceSets);
             /* Guarantee every declared bin opens with an interpreter line so the
              * installed npm command is launchable — derived from the bin convention,
              * not a hand-written source shebang (see withBinShebangs). */
-            return withBinShebangs(contents).then(shebanged => {
+            return withBinShebangs(delivered).then(shebanged => {
               const packageJson = createPackageJson(
                 shebanged,
                 seed,
@@ -136,10 +139,10 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
             });
           };
 
-          /* With TS sources the compile is a sub-target (its output wrapped
-           * here); without, there is nothing to build — the package is the
-           * copied files + package.json, assembled in memory. */
-          return compiled ? compiled.then(deliver) : deliver(EMPTY_FILESET);
+          /* The compiled/lowered parts are sub-target output; a target with
+           * nothing to build yields empty ones and the package is just its
+           * passthrough files + package.json, assembled in memory. */
+          return contents.then(deliver);
         });
       });
     }

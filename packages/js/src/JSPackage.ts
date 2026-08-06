@@ -50,6 +50,7 @@ import {
   TargetContext,
   toJsonObject,
 } from "@fabr-build/core";
+import { compileCssSources } from "./CSSCompile";
 
 export interface JSTarget {
   version: string;
@@ -93,14 +94,6 @@ export function parseJSTarget(target: string): JSTarget {
  */
 export function moduleTypeFile(module: JSTarget["module"], extra: Record<string, unknown> = {}): MemoryFile {
   return MemoryFile.from(JSON.stringify({ ...extra, type: module === "esm" ? "module" : "commonjs" }));
-}
-
-export interface ICompiledSources {
-  /** The compiled tree's output (from the js_compile sub-target); undefined
-   * when there are no TypeScript sources to compile */
-  compiled?: Computable<FileSet>;
-  /** Non-compiled sources, passed through unchanged */
-  copied: FileSet;
 }
 
 /** True iff a package's `package.json` declares the given `subpath` in its
@@ -231,14 +224,25 @@ export function resolveSourceMode(flags: Flag[]): Record<string, unknown> {
   return overlay;
 }
 
+/** The build step a source belongs to — see {@link classifySourceByExt}. */
+export type JsSourceKind = "ts" | "dts" | "js" | "jsx" | "css" | "copy";
+
 /**
- * Classify a source file by what js_compile does with it: `"ts"`/`"js"` are
- * compiled (tsc emits `.js`/`.d.ts`), `"dts"` is a hand-written declaration
- * (a compile input that emits nothing), and `"copy"` is everything tsc neither
- * compiles nor emits — a runtime resource (`.json`, templates, `.sh`, assets).
- * The single source of truth for the extension → role mapping.
+ * Classify a source file by which build step consumes it: `"ts"`/`"js"`/`"jsx"`
+ * are compiled by js_compile (tsc emits `.js`/`.d.ts`), `"dts"` is a
+ * hand-written declaration (a compile input that emits nothing), `"css"` is a
+ * Sass source lowered by css_compile, and `"copy"` is everything no step
+ * consumes — a runtime resource (`.json`, templates, `.sh`, assets).
+ *
+ * A kind names the step rather than the extension, so it covers that step's
+ * spellings: `ts` has `.tsx`/`.mts`, `js` has `.mjs`/`.cjs`. Two to watch: `css`
+ * does NOT hold `.css` (a plain stylesheet needs no lowering, so it is a `copy`
+ * resource), and `jsx` is split from `js` because only `ts` and `jsx` *require*
+ * the compile ({@link requiresCompile}).
+ *
+ * The one place an extension maps to a role — don't test one elsewhere.
  */
-export function classifyJsSource(path: string): "ts" | "dts" | "js" | "copy" {
+export function classifySourceByExt(path: string): JsSourceKind {
   const lower = path.toLowerCase();
   const extidx = lower.lastIndexOf(".");
   if (extidx !== -1) {
@@ -262,28 +266,183 @@ export function classifyJsSource(path: string): "ts" | "dts" | "js" | "copy" {
       case "js":
       case "mjs":
       case "cjs":
-      case "jsx":
         return "js";
+      case "jsx":
+        return "jsx";
+      case "scss":
+      case "sass":
+        return "css";
     }
   }
   return "copy";
 }
 
 /**
- * The runtime *resources* among `sets` — the files tsc never emits (`.json`,
- * templates, assets), which a compiled tree therefore drops. A runnable install
- * must carry them alongside the compiled entry; a package/test build does not
- * (see compileJsSources: source deps are compiled-against, not shipped).
+ * A source tree bucketed by {@link classifySourceByExt}: one classification
+ * pass, so each step is handed the bucket it consumes.
+ */
+export interface IJsSources {
+  ts: FileSet;
+  js: FileSet;
+  dts: FileSet;
+  jsx: FileSet;
+  css: FileSet;
+  copy: FileSet;
+}
+
+/** Bucket a source tree by role — the single classification pass. */
+export function classifySources(sources: FileSet): IJsSources {
+  const groups = sources.partition(classifySourceByExt);
+  return {
+    ts: groups.ts ?? EMPTY_FILESET,
+    js: groups.js ?? EMPTY_FILESET,
+    dts: groups.dts ?? EMPTY_FILESET,
+    jsx: groups.jsx ?? EMPTY_FILESET,
+    css: groups.css ?? EMPTY_FILESET,
+    copy: groups.copy ?? EMPTY_FILESET,
+  };
+}
+
+/**
+ * What js_compile takes: the compilable sources plus the hand-written
+ * declarations, which are ambient inputs tsc must see (e.g. a local shim).
+ */
+export function compileInputs(sources: IJsSources): FileSet {
+  return FileSet.unionAll(sources.ts, sources.js, sources.jsx, sources.dts);
+}
+
+/**
+ * Whether a tree *requires* the compile: TypeScript to check, or JSX to
+ * transform. Plain JavaScript requires neither — a consumer with its own
+ * downlevelling linker can take it as-is (see {@link ICompileOptions}).
+ */
+export function requiresCompile(sources: IJsSources): boolean {
+  return !sources.ts.isEmpty() || !sources.jsx.isEmpty();
+}
+
+/**
+ * What passes through a build untouched: the resources, plus the hand-written
+ * declarations — a `.d.ts` is both a compile *input* (above) and a shipped
+ * *resource* (e.g. the test runner's globals .d.ts, read back from the
+ * installed package), so it is the one source in two buckets' worth of roles.
+ */
+export function passthroughFiles(sources: IJsSources): FileSet {
+  return FileSet.unionAll(sources.copy, sources.dts);
+}
+
+/**
+ * The runtime *resources* among the given DEP sets — the files no build step
+ * emits (`.json`, templates, assets), which a compiled tree therefore drops. A
+ * runnable install must carry them alongside the compiled entry; a package/test
+ * build does not (see compileJsSources: source deps are compiled-against, not
+ * shipped). Stylesheets count as resources here and are staged verbatim: these
+ * are a *dependency's* files, not the target's own sources, so lowering them is
+ * that dependency's business, not this target's.
  */
 export function resourceFiles(sets: FileSet[]): FileSet {
-  return FileSet.unionAll(...sets.map(set => set.partition(classifyJsSource).copy ?? EMPTY_FILESET));
+  return FileSet.unionAll(
+    ...sets.map(set => {
+      const classified = classifySources(set);
+      return FileSet.unionAll(classified.copy, classified.css);
+    })
+  );
+}
+
+export interface ICompiledContents {
+  /** The classification the parts came from, for what a part cannot answer on
+   * its own — notably whether there were any compilable sources at all, which an
+   * empty `compiled` does not distinguish from a compile that emitted nothing. */
+  sources: IJsSources;
+  /** The js_compile output; empty when there was nothing to compile. */
+  compiled: FileSet;
+  /** The css_compile output (lowered plain CSS); empty when there were no
+   * stylesheets. */
+  css: FileSet;
+  /** The sources no step consumed, for the caller to place. */
+  passthrough: FileSet;
+}
+
+/**
+ * Drop the compiler's own copies of the plain-JavaScript inputs — the emitted
+ * `x.js` and its `x.js.map` — leaving everything it genuinely produced. A `.jsx`
+ * input is untouched by this: it emits under a *different* name (`.js`) and the
+ * transform is the whole reason it was compiled.
+ */
+function withoutTranspiledJs(compiled: FileSet, js: FileSet): FileSet {
+  const emitted = new Set([...js].map(([name]) => name));
+  return compiled.remap(name => {
+    const source = name.endsWith(".map") ? name.slice(0, -".map".length) : name;
+    return emitted.has(source) ? undefined : name;
+  });
+}
+
+export interface ICompileOptions {
+  /** The package name the sources may import themselves by (see js_compile's
+   * `package_name`); a target with no package identity passes nothing. */
+  packageName?: string;
+  /**
+   * Whether plain JavaScript is run through the compile. Default true, for a
+   * consumer that DELIVERS an emitted tree (a package, a test install) and needs
+   * its JavaScript downlevelled to JS_TARGET with everything else. js_bundle
+   * sets false: esbuild downlevels JavaScript itself, and compiling it first
+   * buys no checking (tsc does not check JavaScript) and rewrites the module
+   * form of vendored code.
+   *
+   * It decides only whether JavaScript ALONE earns a compile. A tree holding
+   * TypeScript or JSX compiles regardless ({@link requiresCompile}), its
+   * JavaScript included — the compiler must see the `./util.js` a `.ts` imports
+   * — but the compiler's copy is dropped again, so what ships is the file as
+   * written.
+   */
+  transpileJs?: boolean;
+}
+
+/**
+ * Build a source tree: classify it, run the steps its contents call for —
+ * `js_compile` for the code, `css_compile` for the stylesheets — and return the
+ * parts. `deps` serve both: the packages among them mount as the compile's
+ * node_modules and double as the Sass loadPaths. The parts stay separate because
+ * callers place them differently — a test install mounts the compiled tree and
+ * the sources at different roots, a package unions the lot.
+ */
+export function compileContents(
+  context: TargetContext,
+  sources: FileSet,
+  deps: FileSet[],
+  options: ICompileOptions = {}
+): Computable<ICompiledContents> {
+  const classified = classifySources(sources);
+  /* The compile still runs for TypeScript/JSX; only the fate of the plain
+   * JavaScript changes — it goes in as an input and comes back out untouched. */
+  const keepSourceJs = options.transpileJs === false;
+  const compiled =
+    keepSourceJs && !requiresCompile(classified)
+      ? undefined
+      : compileJsSources(context, classified, deps, options.packageName);
+  const css = compileCssSources(
+    context,
+    classified.css,
+    deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)
+  );
+  return Computable.forAll([compiled ?? Computable.resolve(EMPTY_FILESET), css], (built, lowered) => ({
+    sources: classified,
+    compiled: keepSourceJs ? withoutTranspiledJs(built, classified.js) : built,
+    css: lowered,
+    /* The JavaScript the compiler didn't deliver is delivered here instead, so
+     * the caller receives what it put in either way. */
+    passthrough: keepSourceJs
+      ? FileSet.unionAll(passthroughFiles(classified), classified.js)
+      : passthroughFiles(classified),
+  }));
 }
 
 /**
  * Compile a JS/TS source tree by building the `js_compile` sub-target — the
- * single TS compile path shared by the package build and the test run.
- * TypeScript sources yield `compiled` (the sub-target's cached output);
- * anything not compiled is returned in `copied`. `directDeps` are the deps the
+ * single TS compile path shared by the package build and the test run. Takes
+ * the already-classified sources and consumes only the buckets it compiles
+ * ({@link compileInputs}); what it does not compile is the caller's to place
+ * (see {@link passthroughFiles}). Returns the sub-target's cached output, or
+ * undefined when there is nothing to compile. `directDeps` are the deps the
  * sources may import directly (the package's own deps — `@types/node` among them
  * where the sources use Node APIs — plus test_deps / runner globals for a test
  * compile), resolved jointly by the caller's collection point. They are laid out
@@ -298,17 +457,13 @@ export function resourceFiles(sets: FileSet[]): FileSet {
  */
 export function compileJsSources(
   context: TargetContext,
-  sources: FileSet,
+  sources: IJsSources,
   directDeps: FileSet[],
   /** The package name the sources may import themselves by — see js_compile's
    * `package_name`. A js_package passes its own name; a standalone compile or a
    * js_test has no package identity and passes nothing. */
   packageName?: string
-): ICompiledSources {
-  const sourceGroups = sources.partition(classifyJsSource);
-
-  const declarations = sourceGroups.dts ?? EMPTY_FILESET;
-
+): Computable<FileSet> | undefined {
   /* Deps split by kind. A built package mounts as node_modules, and a source-mode
    * `Flag` rides alongside it — both are `deps` to js_compile (a Flag is an empty
    * FileSet, so it mounts nothing; js_compile reads it back with getFlags("deps")
@@ -322,27 +477,23 @@ export function compileJsSources(
   const mountDeps = directDeps.filter(dep => dep instanceof PackageFileSet || dep instanceof Flag);
   const sourceDeps = directDeps.filter(dep => !(dep instanceof PackageFileSet) && !(dep instanceof Flag));
 
-  let compiled: Computable<FileSet> | undefined;
-  if ("ts" in sourceGroups || "js" in sourceGroups || sourceDeps.length > 0) {
-    /* Both .ts(x) and .js(x) go through js_compile: with allowJs, tsc downlevels
-     * the JS to JS_TARGET and lets a .ts import a local .js. .d.ts joins as an
-     * ambient input (it is also copied through as a resource, below). js_compile
-     * owns the node_modules layout (assembleScopedNodeModules) and JSX-runtime
-     * detection; TSC is added by js_compile itself. */
-    const srcs = FileSet.unionAll(
-      sourceGroups.ts ?? EMPTY_FILESET,
-      sourceGroups.js ?? EMPTY_FILESET,
-      declarations,
-      ...sourceDeps
-    );
-    const inputs: SubTargetInputs = { srcs, deps: mountDeps, ...(packageName ? { package_name: packageName } : {}) };
-    compiled = context.subTarget("js_compile", inputs, {
-      label: "Compiling",
-      constraints: BUILD_OVERRIDE,
-    });
+  /* Nothing compilable and no source dep to compile against — no compile. A tree
+   * of declarations alone emits nothing, so it does not earn a sub-target. */
+  if (sources.ts.isEmpty() && sources.js.isEmpty() && sources.jsx.isEmpty() && sourceDeps.length === 0) {
+    return undefined;
   }
 
-  return { compiled, copied: FileSet.unionAll(sourceGroups.copy ?? EMPTY_FILESET, declarations) };
+  /* Both .ts(x) and .js(x) go through js_compile: with allowJs, tsc downlevels
+   * the JS to JS_TARGET and lets a .ts import a local .js. .d.ts joins as an
+   * ambient input (the caller also passes it through as a resource). js_compile
+   * owns the node_modules layout (assembleScopedNodeModules) and JSX-runtime
+   * detection; TSC is added by js_compile itself. */
+  const srcs = FileSet.unionAll(compileInputs(sources), ...sourceDeps);
+  const inputs: SubTargetInputs = { srcs, deps: mountDeps, ...(packageName ? { package_name: packageName } : {}) };
+  return context.subTarget("js_compile", inputs, {
+    label: "Compiling",
+    constraints: BUILD_OVERRIDE,
+  });
 }
 
 /** @return the files without any root package.json (consumed, not copied through) */

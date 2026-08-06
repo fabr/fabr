@@ -30,14 +30,10 @@ default TSC = @npm:typescript:5.4.5:tsc;
 default ESBUILD = @npm:esbuild:0.28.1;
 
 #
-# The CSS toolchain the css driver requires: the Sass compiler and the
-# lightningcss library (css-modules scoping + prefixing/minify). Pinned like any
-# tool; lightningcss is native and rides the same os/cpu platform-gating as
-# esbuild, so its per-platform binary resolves automatically.
+# The Sass compiler the css driver requires. sass-embedded by default.
 #
 
 default SASS = @npm:sass-embedded:1.100.0;
-default LIGHTNINGCSS = @npm:lightningcss:1.30.2;
 
 #
 # The bundler `js_bundle` runs (fabr's esbuild driver: reads the rule's
@@ -47,8 +43,8 @@ default LIGHTNINGCSS = @npm:lightningcss:1.30.2;
 default JS_BUNDLER = @fabr-build/js-tools/bundle-driver;
 
 #
-# The CSS compiler `css_compile` runs (fabr's driver: Sass lowering +
-# lightningcss css-modules scoping, driven by the rule's manifest).
+# The CSS compiler `css_compile` runs (fabr's driver: Sass lowering, driven by
+# the rule's manifest).
 #
 
 default CSS_COMPILER = @fabr-build/js-tools/css-driver;
@@ -250,10 +246,11 @@ targetdef js_compile {
 # Lower a styled source tree to plain CSS. `srcs` are the styled sources
 # (`.scss`/`.sass`, css-modules `.module.{scss,css}`, plain `.css`); `deps` are
 # scss packages mounted for Sass `@use`/`@import` resolution (the Sass loadPaths
-# analogue of `node_modules`). Each plain source becomes a `.css`; each `.module.*`
-# becomes a scoped `.css` plus a proxy `.js` (the class-name value map + a
-# side-effect import of the scoped CSS). Composed automatically by `js_bundle` for
-# any styled sources; also declarable directly. Uses `SASS` + `LIGHTNINGCSS`.
+# analogue of `node_modules`). Lowering is all it does: each source becomes the
+# same name with a `.css` extension, css-modules included (`x.module.scss` →
+# `x.module.css`, left for the bundler to scope). Sass partials (`_foo.scss`) are
+# skipped, per Sass's own directory-compile convention. Composed automatically by
+# `js_bundle` for any styled sources; also declarable directly. Uses `SASS`.
 #
 
 targetdef css_compile {
@@ -301,11 +298,10 @@ js_script @fabr-build/js-tools/bundle-driver {
 }
 
 # The CSS compiler `css_compile` runs (the default `CSS_COMPILER`): Sass
-# lowering plus lightningcss css-modules scoping and prefixing, driven by the
-# rule's options manifest.
+# lowering, driven by the rule's options manifest.
 js_script @fabr-build/js-tools/css-driver {
     entry = ../cssDriver/css-driver.js;
-    deps = ${SASS} ${LIGHTNINGCSS};
+    deps = ${SASS};
 }
 
 # Fabr's own test runner ('fabr test' / js_test / js_package tests): wraps

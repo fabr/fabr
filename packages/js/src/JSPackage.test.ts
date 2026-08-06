@@ -28,7 +28,7 @@ import {
   assembleScopedNodeModules,
   binByConvention,
   binOf,
-  classifyJsSource,
+  classifySourceByExt,
   hasPackageExport,
   makeNpmRunnable,
   parseJSTarget,
@@ -631,23 +631,23 @@ describe("binOf", () => {
   });
 });
 
-describe("classifyJsSource", () => {
+describe("classifySourceByExt", () => {
   it("compiles the module-flavoured TypeScript spellings", () => {
     /* Routed to js_compile, not shipped verbatim as a resource. */
-    expect(classifyJsSource("src/a.mts")).to.equal("ts");
-    expect(classifyJsSource("src/a.cts")).to.equal("ts");
-    expect(classifyJsSource("src/a.mjs")).to.equal("js");
-    expect(classifyJsSource("src/a.cjs")).to.equal("js");
+    expect(classifySourceByExt("src/a.mts")).to.equal("ts");
+    expect(classifySourceByExt("src/a.cts")).to.equal("ts");
+    expect(classifySourceByExt("src/a.mjs")).to.equal("js");
+    expect(classifySourceByExt("src/a.cjs")).to.equal("js");
   });
 
   it("treats their declaration forms as declarations", () => {
-    expect(classifyJsSource("src/a.d.mts")).to.equal("dts");
-    expect(classifyJsSource("src/a.d.cts")).to.equal("dts");
+    expect(classifySourceByExt("src/a.d.mts")).to.equal("dts");
+    expect(classifySourceByExt("src/a.d.cts")).to.equal("dts");
   });
 
   it("still copies anything tsc neither compiles nor emits", () => {
-    expect(classifyJsSource("src/data.json")).to.equal("copy");
-    expect(classifyJsSource("src/run.sh")).to.equal("copy");
+    expect(classifySourceByExt("src/data.json")).to.equal("copy");
+    expect(classifySourceByExt("src/run.sh")).to.equal("copy");
   });
 });
 

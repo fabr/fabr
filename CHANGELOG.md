@@ -2,7 +2,7 @@ Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
 (`@fabr-build/core`) and the JavaScript plugin (`@fabr-build/js`) are released together and share a
 version number.
 
-## Fabr 0.1.1
+## Fabr 0.2.0
 @fabr/core:
 - `include` paths may now glob (`include lib/**/*.fabr;`).
 - Cap maximum concurrent connections + executing processes.
@@ -23,8 +23,9 @@ version number.
 - Revise MVS resolution to drop the 'independent major versions' concept we accidentally imported from Go.
 - Generate resolution repair lists on resolution failures.
 - Readd es* flags as source version dependency flags.
+- Drop lightningcss; esbuild now handles css modules directly.
 - Fix TS source importing local references using full package path.
-- Fix css error reporting.
+- Remove lightningcss and rely on esbuild's native css support.
 
 @fabr/cli:
 

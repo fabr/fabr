@@ -45,7 +45,15 @@ import { npmRepositoryRegistration } from "./NPMRepository";
 
 /* The compile pipeline helpers, for other js rules to build on (in-tree only:
  * cross-plugin extension isn't supported yet — see PLUGINS.md) */
-export { assembleNodeModules, compileJsSources, ICompiledSources, JSTarget, parseJSTarget } from "./JSPackage";
+export {
+  assembleNodeModules,
+  classifySources,
+  compileJsSources,
+  IJsSources,
+  JSTarget,
+  parseJSTarget,
+  passthroughFiles,
+} from "./JSPackage";
 
 /**
  * Plugin entry point: return this package's contribution — the js rules

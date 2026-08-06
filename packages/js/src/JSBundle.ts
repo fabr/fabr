@@ -156,22 +156,24 @@ function refPackageName(ref: RepositoryRef): string {
 }
 
 /**
- * Map each entry name to its bundle entry: the default output name is the entry
- * with a `.ts`/`.tsx` extension rewritten to `.js` (identity otherwise), then
- * the `output` REWRITE renames it (first matching value; unmatched → unchanged).
- * The final name must end in `.js` — the driver hands esbuild the extensionless
- * stem, which it re-appends. Entry files are staged into the bundle tree by the
- * rule (union of srcs + entry), so an entry need not also be matched by `srcs`.
+ * Map each entry name to its bundle entry. The entry is named as the SOURCE
+ * names it, but the rule compiles the sources before esbuild links them, so both
+ * sides of the pair take the compiled name: `.ts`/`.tsx` becomes `.js` (identity
+ * otherwise), and the `output` REWRITE then renames the output (first matching
+ * value; unmatched → unchanged). The final name must end in `.js` — the driver
+ * hands esbuild the extensionless stem, which it re-appends. Entry files are
+ * staged into the bundle tree by the rule (union of srcs + entry), so an entry
+ * need not also be matched by `srcs`.
  * @throws if an output name doesn't end in `.js`.
  */
 export function computeBundleEntries(entryNames: string[], rewrite: RewriteFn): IBundleEntry[] {
   return entryNames.map(name => {
-    const defaulted = name.replace(/\.tsx?$/i, ".js");
-    const output = rewrite(defaulted) ?? defaulted;
+    const compiled = name.replace(/\.tsx?$/i, ".js");
+    const output = rewrite(compiled) ?? compiled;
     if (!output.endsWith(".js")) {
       throw new Error(`js_bundle output '${output}' (from entry '${name}') must end in '.js'`);
     }
-    return { in: name, out: output.slice(0, -".js".length) };
+    return { in: compiled, out: output.slice(0, -".js".length) };
   });
 }
 

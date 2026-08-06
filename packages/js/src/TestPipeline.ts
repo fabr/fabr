@@ -59,7 +59,15 @@ import {
   toTestReport,
   writeFileSet,
 } from "@fabr-build/core";
-import { assembleNodeModules, compileJsSources, JSTarget, moduleTypeFile, parseJSTarget, resourceFiles, stripPackageJson } from "./JSPackage";
+import {
+  assembleNodeModules,
+  compileContents,
+  JSTarget,
+  moduleTypeFile,
+  parseJSTarget,
+  resourceFiles,
+  stripPackageJson,
+} from "./JSPackage";
 
 /** The runner's ambient types for its preloaded globals, anywhere in its install */
 const GLOBALS_TYPES_FILE = "test-globals.d.ts";
@@ -166,13 +174,30 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
         const runtimeModules = assembleNodeModules(packages);
         const resources = resourceFiles(allDeps.filter(dep => !(dep instanceof PackageFileSet)));
 
-        const { compiled, copied } = compileJsSources(context, sources, [...deps, ...testDeps, runnerGlobalsTypes(runner)], inputs.packageName);
-        if (!compiled) {
-          /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
-           * so there is nothing to run — a loud failure, not a silent green. */
-          throw new Error("Test target declares test files but none is a compilable source");
-        }
-        return planTestRun(compiled, copied, runtimeModules, resources, runner, testStems, jsTarget, inputs.packageName);
+        /* Built as the package would build it, stylesheets included — a test
+         * importing one gets the CSS the package ships, not raw Sass. */
+        return compileContents(
+          context,
+          sources,
+          [...deps, ...testDeps, runnerGlobalsTypes(runner)],
+          { packageName: inputs.packageName }
+        ).then(built => {
+          if (built.sources.ts.isEmpty() && built.sources.js.isEmpty() && built.sources.jsx.isEmpty()) {
+            /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
+             * so there is nothing to run — a loud failure, not a silent green. */
+            throw new Error("Test target declares test files but none is a compilable source");
+          }
+          return planTestRun(
+            Computable.resolve(built.compiled),
+            FileSet.unionAll(built.passthrough, built.css),
+            runtimeModules,
+            resources,
+            runner,
+            testStems,
+            jsTarget,
+            inputs.packageName
+          );
+        });
       });
     });
 }

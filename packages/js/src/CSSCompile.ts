@@ -21,11 +21,20 @@
  * Host-side (tool-independent) helpers behind the css_compile rule: the options
  * document handed to the standalone CSS driver (see cssDriver/css-driver.ts —
  * resolved as the CSS_COMPILER runnable declared in JS.fabr). Everything here
- * runs in the host during evaluation; the sass/lightningcss invocation itself
- * is the driver's job. Kept apart from the driver so it can import
+ * runs in the host during evaluation; the Sass invocation itself is the
+ * driver's job. Kept apart from the driver so it can import
  * @fabr-build/core and be unit-tested under jest (the driver runs standalone in
  * the css build step and must not depend on core at runtime).
  */
+
+import {
+  BUILD_OVERRIDE,
+  Computable,
+  EMPTY_FILESET,
+  FileSet,
+  PackageFileSet,
+  TargetContext,
+} from "@fabr-build/core";
 
 /** Where the driver writes, and the rule collects, the compiled CSS from. */
 export const CSS_OUTDIR = "out";
@@ -56,15 +65,26 @@ export interface ICssOptions {
 }
 
 /**
- * Whether a bundle source needs the css_compile pre-pass: a Sass source
- * (`.scss`/`.sass`, including `.module.scss`). Plain `.css` and `.module.css`
- * are left for esbuild — it ingests plain CSS natively, and css-modules from
- * *plain* CSS (no Sass) is not yet routed (dylan has none). So the two rewrite
- * cases the bundle driver needs are exactly `.module.{scss,sass}` → proxy `.js`
- * and plain `.{scss,sass}` → `.css`.
+ * Lower the classified stylesheet bucket by building the `css_compile`
+ * sub-target. `deps` are the packages mounted for `@use`/`@import` resolution
+ * (the Sass loadPaths analogue of node_modules). Builds under
+ * BUILD_OPERATION=build — lowering is a build even for a test target. An empty
+ * bucket skips the sub-target entirely, so a project with no Sass never resolves
+ * the CSS toolchain.
  */
-export function isStyledSource(name: string): boolean {
-  return /\.(scss|sass)$/i.test(name);
+export function compileCssSources(
+  context: TargetContext,
+  css: FileSet,
+  deps: PackageFileSet[]
+): Computable<FileSet> {
+  if (css.isEmpty()) {
+    return Computable.resolve(EMPTY_FILESET);
+  }
+  return context.subTarget(
+    "css_compile",
+    { srcs: css, deps },
+    { label: "Compiling styles", constraints: BUILD_OVERRIDE }
+  );
 }
 
 /**

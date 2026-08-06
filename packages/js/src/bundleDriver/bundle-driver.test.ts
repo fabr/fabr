@@ -49,9 +49,12 @@ describe("isBareSpecifier", () => {
 });
 
 describe("rewriteStyledImport", () => {
-  it("maps a Sass css-module import to its proxy .js", () => {
-    assert.equal(rewriteStyledImport("./Foo.module.scss"), "./Foo.module.js");
-    assert.equal(rewriteStyledImport("../a/Foo.module.sass"), "../a/Foo.module.js");
+  it("maps a Sass css-module import to its lowered .module.css", () => {
+    /* The stylesheet itself, not a proxy: esbuild's local-css loader scopes it
+     * and hands the importing JS the class-name map, so nothing needs to be
+     * synthesized in between. */
+    assert.equal(rewriteStyledImport("./Foo.module.scss"), "./Foo.module.css");
+    assert.equal(rewriteStyledImport("../a/Foo.module.sass"), "../a/Foo.module.css");
   });
 
   it("maps a plain Sass import to its compiled .css", () => {
@@ -59,7 +62,7 @@ describe("rewriteStyledImport", () => {
     assert.equal(rewriteStyledImport("./styles.sass"), "./styles.css");
   });
 
-  it("leaves plain .css (incl. the scoped .module.css the proxy imports) unchanged", () => {
+  it("leaves plain .css (incl. an already-lowered .module.css) unchanged", () => {
     assert.equal(rewriteStyledImport("./Foo.module.css"), "./Foo.module.css");
     assert.equal(rewriteStyledImport("./app.css"), "./app.css");
   });
