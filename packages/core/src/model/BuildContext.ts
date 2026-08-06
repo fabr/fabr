@@ -33,8 +33,8 @@ import {
   RepositoryRef,
   SourceRef,
 } from "../core/Repository";
-import { FileSetRef } from "../core/FileSetRef";
-import { RunnableFileSet } from "../core/RunnableFileSet";
+import { FileSetRef, FileSourceRef } from "../core/FileSetRef";
+import { RunnableFileSet, toRunnable } from "../core/RunnableFileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { Requirement } from "../resolver/Types";
 import { Flag } from "../core/Flag";
@@ -304,16 +304,37 @@ export interface ResolvedCommandStage extends StageStreams {
 export type ResolvedCommandPipeline = ResolvedCommandStage[];
 
 /**
- * Options for a context-driven collection ({@link TargetContext.collect}): the
- * repository-facing {@link MaterializeOptions} plus `keepProjected` — deliver
- * projection-pending FileSetRefs unfinished, for a consumer that reinterprets
- * them (js_script's package entry replays them as bin selection). Collection
- * policy is the DRIVER's, so this lives in the model: the delivery machinery
- * (materializeAll) knows only MaterializeOptions and never applies projections.
+ * A property's sources, marked as wanted CONTAINED: `collect` delivers them with
+ * their projections still pending, for a consumer that will place the container
+ * and locate within it ({@link FileSet.locate}) rather than extract the files.
+ *
+ * The mark rides on the property's *list* rather than each ref, because the ref
+ * a projection ends up on is not known at property-read time: a local target's
+ * projection is already a FileSetRef, while an external one is still a
+ * RepositoryRef and only becomes a FileSetRef once materialized. The list is the
+ * thing the reading rule actually has an opinion about.
+ *
+ * Collection policy is the DRIVER's, so it lives here in the model: the delivery
+ * machinery (materializeAll) knows only MaterializeOptions and never applies
+ * projections.
  */
-export interface CollectionOptions extends MaterializeOptions {
-  keepProjected?: boolean;
+export class ContainedSources {
+  constructor(public readonly sources: SourceRef[]) {}
 }
+
+/**
+ * What a collected part settles to: a part marked {@link ContainedSources} keeps
+ * its projections pending and so may hold refs, everything else is finished to
+ * plain content. Per key, so a rule that contains one property does not have to
+ * re-narrow the others.
+ */
+export type Collected<P> = {
+  [K in keyof P]: P[K] extends ContainedSources | Computable<ContainedSources> ? (FileSet | FileSetRef)[] : FileSet[];
+};
+
+/** A collect part: a plain source list (extracted, the default) or one marked
+ * contained. */
+export type CollectPart = SourceRef[] | ContainedSources | Computable<SourceRef[] | ContainedSources>;
 
 /**
  * A BuildContext is (effectively) the BuildModel instantiated with an explicit set of additional
@@ -373,17 +394,28 @@ export class BuildContext {
    * crosses one — and enforce the ref's literal-must-resolve `miss`. The ref
    * itself is pure data; applying it is the resolver's job.
    */
-  public manifest(ref: FileSetRef): ComputableSource<FileSet> {
-    /* The constructor guarantees at least one projection, so the fold's seed
-     * is always the walk over the base. */
-    const [first, ...narrowing] = ref.projections;
-    let result: ComputableSource<FileSet> = this.findWithDescent(ref.source, first.pattern, first.prefix);
-    for (const projection of narrowing) {
-      result = result.then(files => this.findWithDescent(files, projection.pattern, projection.prefix));
+  public manifest(ref: FileSourceRef): ComputableSource<FileSet> {
+    let result: ComputableSource<FileSet>;
+    if (ref instanceof FileSetRef && ref.source instanceof RunnableFileSet) {
+      /* A runnable's projection selects an entry rather than files, so the walk
+       * does not apply to it: collapse instead. An empty result then meets the
+       * same literal-must-resolve judgment as any other projection below. */
+      result = Computable.resolve(toRunnable(ref) ?? EMPTY_FILESET);
+    } else {
+      /* The constructor guarantees at least one projection, so the fold's seed
+       * is always the walk over the base. */
+      const [first, ...narrowing] = ref.projections;
+      result = this.findWithDescent(ref.source, first.pattern, first.prefix);
+      for (const projection of narrowing) {
+        result = result.then(files => this.findWithDescent(files, projection.pattern, projection.prefix));
+      }
     }
     if (ref.miss) {
+      /* `miss` present already means "empty is an error here" — the glob
+       * judgment was made once, over the whole written name, where the ref was
+       * built (see resolveFileSource). */
       result = result.then(files => {
-        if (files.isEmpty() && !ref.projections.some(projection => projection.pattern.hasGlob())) {
+        if (files.isEmpty()) {
           throw ref.miss!();
         }
         return files;
@@ -396,7 +428,7 @@ export class BuildContext {
    * Resume the walk over a delivery's results: finish each pending ref and pass
    * everything else through — the model-side counterpart of materializeAll,
    * which delivers entities and never projects. Generic so a caller keeps its
-   * own element type (a keepProjected consumer's `FileSet | FileSetRef` settles
+   * own element type (a contained consumer's `FileSet | FileSetRef` settles
    * to plain FileSets; a collection's `Materialized` to content + repositories).
    */
   public finishDelivered<S extends FileSource | Repository>(resolved: ReadonlyArray<S | FileSetRef>): Computable<(S | FileSet)[]> {
@@ -1070,9 +1102,13 @@ export class BuildContext {
               const containers: FileSource[] = [];
               /* The literal-must-resolve error, when it applies here: only in a
                * property context (a CLI name reports through the driver's
-               * "matched no files") and only for a literal projection. */
+               * "matched no files") and only when the WHOLE written name is
+               * literal. Judged over `substName`, not over the projection: a
+               * glob anywhere earlier (the part that chose the container) means
+               * this step is applied to whatever that matched, so its finding
+               * nothing is no more an error than the glob matching nothing. */
               const miss =
-                relativeTo && !rest.hasGlob()
+                relativeTo && !substName.hasGlob()
                   ? (): Error => new NameResolutionError(substName, declPosn(stack?.value ?? relativeTo), useSiteOf(stack))
                   : undefined;
               for (const source of t) {
@@ -1088,19 +1124,22 @@ export class BuildContext {
                    * projection). The written-name rule applies to the
                    * projection, not to the requirement itself. */
                   references.push(source.getRepositoryRef(rest));
-                } else if (source instanceof PackageFileSet) {
-                  /* A projection into a package DEFERS (a FileSetRef): applied
-                   * eagerly it would erase the package identity conversion
-                   * needs (a package entry's projection selects the bin of the
-                   * runnable it becomes). Ordinary consumers see the projected
-                   * files when the ref manifests at their collection point,
-                   * carrying this site's miss error for a literal that matches
-                   * nothing. */
+                } else if (source instanceof PackageFileSet || source instanceof RunnableFileSet) {
+                  /* A projection into a package or a runnable DEFERS (a
+                   * FileSetRef): applied eagerly it would erase what the
+                   * consumer's reading needs — a package's identity (a package
+                   * entry's projection selects the bin of the runnable it
+                   * becomes), a runnable's launch machinery (its projection
+                   * names an ENTRY, not files). The ref stays inert either way;
+                   * the base's class decides how it collapses, at the point
+                   * something is demanded of it. Ordinary consumers see the
+                   * projected files when the ref manifests at their collection
+                   * point, carrying this site's miss error for a literal that
+                   * matches nothing. */
                   references.push(new FileSetRef(source, [{ pattern: rest, prefix: retainedPrefix }], miss));
                 } else {
                   /* A container projects on its own terms (FileSource.find): a
-                   * fileset filters + prefixes (or renames, per the facet); a
-                   * runnable re-points its entry. */
+                   * fileset filters + prefixes (or renames, per the facet). */
                   containers.push(source);
                 }
               }
@@ -1120,7 +1159,7 @@ export class BuildContext {
                * empty outcome still reaches the driver's "matched no files"
                * report. */
               return Computable.forAll(
-                containers.map(container => this.manifest(new FileSetRef(container, [{ pattern: rest, prefix: retainedPrefix }]))),
+                containers.map(container => this.manifest(new FileSourceRef(container, [{ pattern: rest, prefix: retainedPrefix }]))),
                 (...projected: FileSet[]) => projected
               ).then(projected => {
                 const matched = projected.filter(set => !set.isEmpty());
@@ -1152,14 +1191,16 @@ export class BuildContext {
            * very mistake getTarget reports for the build/test verbs, so it
            * reads the same and suggests the same way — one wording for one
            * mistake, whichever verb was used. */
-          const miss = (): Error => {
-            const written = substName.toString();
-            const reason = stack ? undefined : `Unknown name '${written}'`;
-            return withHints(
-              new NameResolutionError(substName, declPosn(stack?.value ?? relativeTo), useSiteOf(stack), reason),
-              this.unknownNameHints(written, !stack)
-            );
-          };
+          const miss = substName.hasGlob()
+            ? undefined
+            : (): Error => {
+                const written = substName.toString();
+                const reason = stack ? undefined : `Unknown name '${written}'`;
+                return withHints(
+                  new NameResolutionError(substName, declPosn(stack?.value ?? relativeTo), useSiteOf(stack), reason),
+                  this.unknownNameHints(written, !stack)
+                );
+              };
           /* Express the pattern in the source's own root-relative namespace up
            * front — `find` would rebase internally anyway, but the walker's
            * boundary probes and mounts must live in the same space, or a
@@ -1170,7 +1211,7 @@ export class BuildContext {
           if (fs instanceof FSFileSource) {
             pattern = pattern.rebase(fs.root);
           }
-          return this.manifest(new FileSetRef(fs, [{ pattern, prefix: "" }], miss)).then(data => ({ sources: [data] }));
+          return this.manifest(new FileSourceRef(fs, [{ pattern, prefix: "" }], miss)).then(data => ({ sources: [data] }));
         } else {
           /* The one reference with no decl to root a bare path at: a constraint
            * override's value (see getTarget), whether it came from `-D` or a
@@ -1530,12 +1571,17 @@ function requestingTargets(target: ITargetDecl, stack?: IDependencyStack): ITarg
 /** Pick the RunnableFileSet out of a resolved source list, or throw naming the
  * property/global that was expected to yield one. Shared by getGlobalRunnable
  * (a global) and getRunnableProperty (a FILES property). */
-function asRunnable(sources: readonly unknown[], name: string): RunnableFileSet {
-  const runnable = sources.find((source): source is RunnableFileSet => source instanceof RunnableFileSet);
-  if (!runnable) {
-    throw new Error(`'${name}' must name a runnable (its BUILD_OPERATION=run result)`);
+function asRunnable(sources: ReadonlyArray<FileSource | Repository | FileSetRef>, name: string): RunnableFileSet {
+  for (const source of sources) {
+    /* A projected runnable arrives pending; demanding a launcher is exactly the
+     * point it collapses (a projection that matched nothing yields no runnable,
+     * so it reports as "not a runnable" like any other non-runnable value). */
+    const runnable = toRunnable(source);
+    if (runnable) {
+      return runnable;
+    }
   }
-  return runnable;
+  throw new Error(`'${name}' must name a runnable (its BUILD_OPERATION=run result)`);
 }
 
 /**
@@ -1605,6 +1651,21 @@ export abstract class TargetContext {
 
   /** Resolve a REWRITE property to its name-mapping function (see
    * resolveRewrite); the empty rewrite (no such property) maps nothing. */
+  /**
+   * A FILES property read as CONTAINED: the same sources, marked so a `collect`
+   * leaves their projections pending instead of extracting the files. Use it
+   * where the rule will place the container and locate within it
+   * ({@link FileSet.locate}) — an entry that must keep working among its
+   * siblings — and the plain {@link getFileProperty} everywhere else.
+   *
+   * Per property rather than per collect, because a rule commonly wants one
+   * property contained and the rest extracted, and both must go through the one
+   * collection point to resolve jointly.
+   */
+  public getContainedFileProperty(name: string, overrides?: Constraints): Computable<ContainedSources> {
+    return this.getFileProperty(name, overrides).then(sources => new ContainedSources(sources));
+  }
+
   public abstract getRewrite(name: string, overrides?: Constraints): Computable<RewriteFn>;
 
   /** Resolve a single-valued projection property (a selector + optional `-> tmpl`
@@ -1834,45 +1895,50 @@ export abstract class TargetContext {
    * `options.resolutionMode = "permissive"` declares this collection point's
    * deliveries sealed program installs (a runnable-definer's assembly) —
    * resolution repairs are accepted rather than errors; see MaterializeOptions.
-   * `options.keepProjected` delivers projection-pending FileSetRefs
-   * unmanifested, for a consumer that reinterprets them (see FileSetRef); by
-   * default they manifest to their plain projected files. Rule code only: the
-   * judgments are structural, never user configuration.
+   * A part read through {@link getContainedFileProperty} keeps its projections
+   * pending, for a consumer that reinterprets them (see FileSetRef); every other
+   * part manifests to its plain projected files. Rule code only: the judgments
+   * are structural, never user configuration.
    */
-  public collect(
-    parts: Record<string, SourceRef[] | Computable<SourceRef[]>>,
-    options: CollectionOptions & { keepProjected: true }
-  ): Computable<Record<string, (FileSet | FileSetRef)[]>>;
-  public collect(
-    parts: Record<string, SourceRef[] | Computable<SourceRef[]>>,
+  public collect<P extends Record<string, CollectPart>>(
+    parts: P,
     options?: MaterializeOptions
-  ): Computable<Record<string, FileSet[]>>;
-  public collect(
-    parts: Map<string, SourceRef[] | Computable<SourceRef[]>>,
-    options: CollectionOptions & { keepProjected: true }
-  ): Computable<Map<string, (FileSet | FileSetRef)[]>>;
+  ): Computable<Collected<P>>;
+  /* A Map's keys are user-supplied, so there is nothing static to map over: a
+   * plain Map settles to content, and one holding a contained part types as the
+   * union throughout, for the caller to narrow. */
   public collect(
     parts: Map<string, SourceRef[] | Computable<SourceRef[]>>,
     options?: MaterializeOptions
   ): Computable<Map<string, FileSet[]>>;
   public collect(
-    parts: Record<string, SourceRef[] | Computable<SourceRef[]>> | Map<string, SourceRef[] | Computable<SourceRef[]>>,
-    options?: CollectionOptions
+    parts: Map<string, CollectPart>,
+    options?: MaterializeOptions
+  ): Computable<Map<string, (FileSet | FileSetRef)[]>>;
+  public collect(
+    parts: Record<string, CollectPart> | Map<string, CollectPart>,
+    options?: MaterializeOptions
   ): Computable<Record<string, (FileSet | FileSetRef)[]> | Map<string, (FileSet | FileSetRef)[]>> {
     const entries = parts instanceof Map ? [...parts] : Object.entries(parts);
     return Computable.forAll(
       entries.map(([, value]) => (value instanceof Computable ? value : Computable.resolve(value))),
-      (...lists: SourceRef[][]) =>
-        materializeLists(lists, options).then(partitions => {
+      (...values: Array<SourceRef[] | ContainedSources>) => {
+        /* Which parts asked to stay in their containers — per property, since a
+         * rule commonly wants one contained (`entry`) and the rest extracted. */
+        const contained = values.map(value => value instanceof ContainedSources);
+        const lists = values.map(value => (value instanceof ContainedSources ? value.sources : value));
+        return materializeLists(lists, options).then(partitions => {
           /* The delivery machinery returns entities with their projections
-           * pending; the context — the driver — finishes the walk here,
-           * unless the consumer reinterprets the pending refs (keepProjected). */
-          const settled = options?.keepProjected
-            ? Computable.resolve(partitions)
-            : Computable.forAll(
-                partitions.map(partition => this.context.finishDelivered(partition)),
-                (...finished: Materialized[][]) => finished
-              );
+           * pending; the context — the driver — finishes the walk here, except
+           * for the parts whose consumer reinterprets the pending refs. */
+          const settled = Computable.forAll(
+            partitions.map((partition, index) =>
+              contained[index]
+                ? Computable.resolve(partition)
+                : this.context.finishDelivered(partition)
+            ),
+            (...finished: Materialized[][]) => finished
+          );
           return settled.then(all => {
             const filtered = all.map(partition =>
               partition.filter((source): source is FileSet | FileSetRef => source instanceof FileSet || source instanceof FileSetRef)
@@ -1886,13 +1952,14 @@ export abstract class TargetContext {
             });
             return result;
           });
-        })
+        });
+      }
     );
   }
 
   /**
    * Manifest any pending refs among `sources` — the settling step of a
-   * consumer that collected with `keepProjected` but wants plain content for a
+   * consumer that collected a contained part but wants plain content for a
    * particular part after all: the walk resumed by the context, cached
    * expansion and all (see BuildContext.finishDelivered).
    */

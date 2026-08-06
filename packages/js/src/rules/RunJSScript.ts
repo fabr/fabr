@@ -61,7 +61,7 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
       context.getFileProperty("deps", BUILD_OVERRIDE),
-      context.getFileProperty("entry", BUILD_OVERRIDE),
+      context.getContainedFileProperty("entry", BUILD_OVERRIDE),
       context.getProperty("args"),
       context.getGlobalString("JS_TARGET"),
     ],
@@ -70,11 +70,11 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
        * package resolves with the deps' own pins (one environment). The
        * install is a sealed program (executed, never linked against), so
        * resolution repairs are accepted and the assembly nests npm-style.
-       * keepProjected delivers a projected package entry as a pending
-       * FileSetRef, which makeNpmRunnable consumes directly — the projection
+       * `entry` is read CONTAINED, so a projected package arrives as a pending
+       * FileSetRef that makeNpmRunnable consumes directly — the projection
        * selects the RUNNABLE's entry, the written form's `fabr run` meaning. */
       context
-        .collect({ deps: depSources, entry: entrySources }, { resolutionMode: "permissive", keepProjected: true })
+        .collect({ deps: depSources, entry: entrySources }, { resolutionMode: "permissive" })
         .then(({ deps, entry }) => {
           const argv = args ? args.getValues() : [];
           const sole = entry.length === 1 ? entry[0] : undefined;
@@ -82,12 +82,12 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
            * its declared bin (or the pending projection's pick) the entry —
            * with the deps bundled into its install. */
           if (sole instanceof PackageFileSet || (sole instanceof FileSetRef && sole.source instanceof PackageFileSet)) {
-            return context.manifestAll(deps).then(depSets => makeNpmRunnable(sole, depSets, argv));
+            return makeNpmRunnable(sole, deps, argv);
           }
           /* File-mode: the entry IS the script file. A plain-JS entry is
            * contributed to the install verbatim and launched under node; a
            * TypeScript entry is compiled first (see below). */
-          return Computable.forAll([context.manifestAll(deps), context.manifestAll(entry)], (depSets, entrySets) => {
+          return context.manifestAll(entry).then(entrySets => {
             if (entrySets.some(set => set instanceof PackageFileSet)) {
               throw new Error("js_script 'entry' must be a single file or a single package — further packages belong in 'deps'");
             }
@@ -101,7 +101,7 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
               );
             }
             const entryName = names[0];
-            const packages = depSets.filter((d): d is PackageFileSet => d instanceof PackageFileSet);
+            const packages = deps.filter((d): d is PackageFileSet => d instanceof PackageFileSet);
 
             /* TypeScript entry: compile the entry + any source deps through the
              * shared js_compile path (the package deps become the compile's
@@ -117,8 +117,8 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
                * package root, next to the compiled entry, so a `./x.json` import
                * resolves. Compilable loose deps are excluded (their output is
                * already in compiledTree — and a raw .js would collide by name). */
-              const resources = resourceFiles(depSets.filter(d => !(d instanceof PackageFileSet)));
-              return compileContents(context, entrySet, depSets).then(built => {
+              const resources = resourceFiles(deps.filter(d => !(d instanceof PackageFileSet)));
+              return compileContents(context, entrySet, deps).then(built => {
                 const install = FileSet.unionAll(
                   FileSet.layout({ node_modules: assembleNodeModules(packages) }),
                   stripPackageJson(built.passthrough),
@@ -132,7 +132,7 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
 
             /* Plain-JS entry: contributed verbatim, deps placed as-is (packages
              * under node_modules, loose files at their own paths). */
-            const loose = depSets.filter(d => !(d instanceof PackageFileSet));
+            const loose = deps.filter(d => !(d instanceof PackageFileSet));
             const install = FileSet.unionAll(FileSet.layout({ node_modules: assembleNodeModules(packages) }), ...loose, entrySet);
             return RunnableFileSet.forEntry(install, entryName, argv, "node");
           });

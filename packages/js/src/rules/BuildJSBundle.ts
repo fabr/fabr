@@ -37,6 +37,7 @@ import {
   Computable,
   createExecAction,
   FileSet,
+  FileSetRef,
   MemoryFile,
   PackageFileSet,
   RewriteFn,
@@ -46,7 +47,13 @@ import {
   TargetContext,
 } from "@fabr-build/core";
 import { assembleNodeModules, compileContents, JSTarget, parseJSTarget } from "../JSPackage";
-import { buildBundleOptions, BUNDLE_OUTDIR, computeBundleEntries, computeExternalNames } from "../JSBundle";
+import {
+  buildBundleOptions,
+  BUNDLE_OUTDIR,
+  computeBundleEntries,
+  computeExternalNames,
+  IBundleEntrySource,
+} from "../JSBundle";
 
 /** Where the esbuild toolchain + driver mount — disjoint from the workspace's
  * own node_modules so the tool's deps neither collide with nor are visible to
@@ -63,7 +70,10 @@ interface IBundleInputs {
    * esbuild `define` code text, verbatim as written (a string constant is
    * shell-quoted in source, `'"production"'`, exactly as esbuild's own CLI). */
   defines: Record<string, string>;
-  entrySet: FileSet;
+  /** The entry as delivered: a plain fileset is staged at the bundle root, while
+   * a projection over a package stays pending — the package mounts and the entry
+   * is located inside it (see composeBundle). */
+  entry: Array<FileSet | FileSetRef>;
   srcs: FileSet[];
   deps: FileSet[];
   bundler: RunnableFileSet;
@@ -76,14 +86,14 @@ function stageBundle(
   inputs: IBundleInputs,
   srcPackages: PackageFileSet[],
   code: FileSet,
-  css: FileSet
+  css: FileSet,
+  entrySources: IBundleEntrySource[]
 ): RuleResult {
-  const { jsTarget, buildType, rewrite, defines, entrySet, srcs, deps, bundler } = inputs;
-  const entryNames = [...entrySet].map(([name]) => name);
-  if (entryNames.length === 0) {
+  const { jsTarget, buildType, rewrite, defines, srcs, deps, bundler } = inputs;
+  if (entrySources.length === 0) {
     throw new Error("js_bundle 'entry' resolved to no files — name at least one source to bundle");
   }
-  const entries = computeBundleEntries(entryNames, rewrite);
+  const entries = computeBundleEntries(entrySources, rewrite);
   const external = computeExternalNames(srcs, deps);
   const options = buildBundleOptions(jsTarget, buildType, entries, external, defines);
 
@@ -102,6 +112,48 @@ function stageBundle(
   return createExecAction(staged, argv, `${BUNDLE_OUTDIR}:**`, "bundle");
 }
 
+/** Where a bundled package mounts — assembleNodeModules' layout, which the
+ * entry paths must agree with. */
+function mountOf(pkg: PackageFileSet): string {
+  return `node_modules/${pkg.packageName}`;
+}
+
+/** An entry that is a projection over a package is CONTAINED: the package mounts
+ * like any other bundled input and the entry is located inside it, so its
+ * relative imports resolve among its siblings and its self-references are
+ * ordinary bare specifiers. */
+function isContainedEntry(source: FileSet | FileSetRef): source is FileSetRef & { source: PackageFileSet } {
+  return source instanceof FileSetRef && source.source instanceof PackageFileSet;
+}
+
+/** A name minus its extension — the identity a source and its compiled output
+ * share. */
+function stemOf(name: string): string {
+  return name.replace(/\.[^./]+$/, "");
+}
+
+/**
+ * Where a loose entry ended up in the staged tree. js_compile names its own
+ * output (`.ts`→`.js`, but also `.mts`→`.mjs`/`.cts`→`.cjs`), and an
+ * untranspiled `.js` passes through under its own name — so the entry is found
+ * by stem in what was actually staged, never re-derived from the source name.
+ */
+function stagedEntry(staged: FileSet, name: string): string {
+  const stem = stemOf(name);
+  const match = [...staged].find(([staged]) => stemOf(staged) === stem && /\.[cm]?js$/i.test(staged));
+  if (match === undefined) {
+    throw new Error(`js_bundle entry '${name}' produced no JavaScript to bundle`);
+  }
+  return match[0];
+}
+
+/** One package per name, in order of first appearance. Which copy survives is
+ * immaterial: a package named twice came twice from the one collection point,
+ * so it is the same instance. */
+function uniqueByName(packages: PackageFileSet[]): PackageFileSet[] {
+  return [...new Map(packages.map(pkg => [pkg.packageName, pkg] as const)).values()];
+}
+
 /** Build the loose sources and stage the bundle. Packages among `srcs` are
  * already built: they mount at node_modules and esbuild inlines them. The loose
  * files are compiled first (`compileContents`) and esbuild links the output, so
@@ -114,15 +166,47 @@ function stageBundle(
  * `unionAll` asserts. scss `@use` of shared partials resolves against the src
  * packages (the css loadPaths). */
 function composeBundle(context: TargetContext, inputs: IBundleInputs): Computable<RuleResult> {
-  const srcPackages = inputs.srcs.filter((set): set is PackageFileSet => set instanceof PackageFileSet);
-  const looseSrcs = inputs.srcs.filter(set => !(set instanceof PackageFileSet));
-  const rootTree = FileSet.unionAll(...looseSrcs, inputs.entrySet);
+  const containedEntries = inputs.entry.filter(isContainedEntry);
+  /* Everything else is a loose entry, staged at the bundle root and built with
+   * the rest of the sources. `entry` was read contained, so a projection over a
+   * NON-package (a plain delivered fileset) also arrives pending — it has no
+   * container to be kept in, so manifestAll extracts it, exactly as collect
+   * would have. A plain fileset passes through untouched. */
+  const looseSources = inputs.entry.filter(set => !isContainedEntry(set));
 
-  /* Both halves of what the sources may import: `srcs` packages are bundled in,
-   * `deps` are externalized at link time — but the compile needs both. */
-  return compileContents(context, rootTree, [...srcPackages, ...inputs.deps], { transpileJs: false }).then(built =>
-    stageBundle(inputs, srcPackages, FileSet.unionAll(built.compiled, built.passthrough), built.css)
+  /* Naming a package as `entry` mounts it — a bundle entry that isn't bundled
+   * would be meaningless — so the entry containers join the srcs packages. Both
+   * came from the one collection point, so a package named twice is the same
+   * instance and dedups by name. */
+  const srcPackages = uniqueByName([
+    ...inputs.srcs.filter((set): set is PackageFileSet => set instanceof PackageFileSet),
+    ...containedEntries.map(ref => ref.source),
+  ]);
+
+  /* A contained entry keeps its place inside its mount; a loose one is wherever
+   * the build put it, so it is looked up rather than guessed — hence after. */
+  const containedSources = containedEntries.flatMap(ref =>
+    /* ref.locate (not source.locate) so a literal entry naming nothing in the
+     * package is the written-reference error, not a silently-missing entry. */
+    [...ref.locate()].map(([path, name]) => ({ path: `${mountOf(ref.source)}/${path}`, name }))
   );
+
+  return context.manifestAll(looseSources).then(looseEntries => {
+    const rootTree = FileSet.unionAll(
+      ...inputs.srcs.filter(set => !(set instanceof PackageFileSet)),
+      ...looseEntries
+    );
+    /* Both halves of what the sources may import: `srcs` packages are bundled in,
+     * `deps` are externalized at link time — but the compile needs both. */
+    return compileContents(context, rootTree, [...srcPackages, ...inputs.deps], { transpileJs: false }).then(built => {
+      const code = FileSet.unionAll(built.compiled, built.passthrough);
+      const entrySources: IBundleEntrySource[] = [
+        ...looseEntries.flatMap(set => [...set].map(([name]) => ({ path: stagedEntry(code, name), name }))),
+        ...containedSources,
+      ];
+      return stageBundle(inputs, srcPackages, code, built.css, entrySources);
+    });
+  });
 }
 
 function buildJsBundle(context: TargetContext): Computable<RuleResult> {
@@ -133,7 +217,7 @@ function buildJsBundle(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
       context.getFileProperty("srcs"),
-      context.getFileProperty("entry"),
+      context.getContainedFileProperty("entry"),
       context.getFileProperty("deps"),
       config,
       context.getGlobalRunnable("JS_BUNDLER"),
@@ -157,6 +241,9 @@ function buildJsBundle(context: TargetContext): Computable<RuleResult> {
       /* THE collection point for the bundle's contents: srcs, entry and deps
        * resolve jointly. The bundler resolved above is a build tool, independent
        * of what it compiles — its pins don't co-resolve with the sources'. */
+      /* `entry` was read contained, so its projections arrive pending for
+       * composeBundle to place; srcs and deps extract as usual. One collection
+       * point, per-property treatment. */
       const contents = context.collect({ srcs: srcSources, entry: entrySources, deps: depSources });
 
       return contents.then(({ srcs, entry, deps }) =>
@@ -165,7 +252,7 @@ function buildJsBundle(context: TargetContext): Computable<RuleResult> {
           buildType,
           rewrite,
           defines,
-          entrySet: FileSet.unionAll(...entry),
+          entry,
           srcs,
           deps,
           bundler,

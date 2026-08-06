@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { FileSource } from "./FileSet";
+import type { FileSet, FileSource } from "./FileSet";
 import { Name } from "./Name";
 
 /**
@@ -32,7 +32,7 @@ export interface IProjection {
 }
 
 /**
- * A resolved fileset with pending projections — **pure data**: the suspended
+ * A resolved source with pending projections — **pure data**: the suspended
  * remainder of a resolution walk, holding no behavior beyond accumulating
  * further narrowing. Deliberately NOT a FileSource (like RepositoryRef): it
  * cannot honestly promise files until the projections are applied, and how
@@ -48,20 +48,29 @@ export interface IProjection {
  * delivery machinery as the pending form of every projected repository
  * delivery (stampProvenance + projections — see RepositoryRef.deliveredAs).
  * Ordinary consumers never see one: the model layer finishes pending refs as
- * its collections come back; `collect`'s `keepProjected` instead hands the
+ * its collections come back; a CONTAINED property instead hands the
  * pending ref to a reinterpreting consumer.
  */
-export class FileSetRef {
+export class FileSourceRef {
   constructor(
-    /** The base the projections apply over. Any FileSource: a delivered set,
-     * a built package, or — for an eagerly-applied suspension (the resolver's
-     * container/filesystem arms, which construct the ref and manifest it in
-     * the same breath) — a live source such as a filesystem query. */
+    /** The base the projections apply over: any FileSource, including a live
+     * one (a filesystem query) whose contents are not yet known. {@link
+     * FileSetRef} is the narrower case where they are. */
     public readonly source: FileSource,
     public readonly projections: ReadonlyArray<IProjection>,
-    /** When set, a projection that manifests to nothing is an error thrown
-     * with this context (the property-value literal-must-resolve rule, whose
-     * position is only known where the reference was written). */
+    /**
+     * When set, applying this ref to nothing is an error, thrown with this
+     * context. Its presence IS the judgment, made once where the reference was
+     * written (which is also the only place its position is known): **a name
+     * containing a glob anywhere may match nothing; a wholly literal one may
+     * not.** Deciding it there rather than per-application is what keeps the
+     * rule about the *written name* — a projection step is literal far more
+     * often than the name it belongs to, so re-deriving it from the projections
+     * in hand would call a glob's empty result an error.
+     *
+     * A rule requiring a property to have a value is a separate judgment, made
+     * by the rule: this one only says whether the reference itself resolved.
+     */
     public readonly miss?: () => Error
   ) {
     /* A ref exists to suspend projections; every construction site supplies at
@@ -73,7 +82,53 @@ export class FileSetRef {
   }
 
   /** Narrowing a pending projection accumulates, RepositoryRef-style. */
+  public find(pattern: Name, prefix = ""): FileSourceRef {
+    return new FileSourceRef(this.source, [...this.projections, { pattern, prefix }], this.miss);
+  }
+}
+
+/**
+ * A pending ref whose base is already materialized — a delivered fileset or a
+ * built package. 
+ */
+export class FileSetRef extends FileSourceRef {
+  public declare readonly source: FileSet;
+
+  constructor(source: FileSet, projections: ReadonlyArray<IProjection>, miss?: () => Error) {
+    super(source, projections, miss);
+  }
+
   public find(pattern: Name, prefix = ""): FileSetRef {
     return new FileSetRef(this.source, [...this.projections, { pattern, prefix }], this.miss);
+  }
+
+  /**
+   * The projected files under their projected names — the *extract* reading of
+   * this ref (see {@link FileSet.select}).
+   */
+  public select(): FileSet {
+    const files = this.source.select(this.projections);
+    this.checkMatched(!files.isEmpty());
+    return files;
+  }
+
+  /**
+   * Where the projected members sit **within the base**, container-relative path
+   * → projected name — the *contained* reading of this ref (see
+   * {@link FileSet.locate}).
+   */
+  public locate(): Map<string, string> {
+    const located = this.source.locate(this.projections);
+    this.checkMatched(located.size > 0);
+    return located;
+  }
+
+  /** The literal-must-resolve rule, once for every way of applying a ref.
+   * Carrying a `miss` IS the judgment — made once, over the whole written name,
+   * by whoever built the ref — so there is nothing to re-decide here. */
+  private checkMatched(matched: boolean): void {
+    if (!matched && this.miss) {
+      throw this.miss();
+    }
   }
 }

@@ -47,7 +47,7 @@ import {
   ProgressListener,
   PropertyType,
   PublishableFileSet,
-  RunnableFileSet,
+  toRunnable,
   signalInteractiveChild,
   SourceRef,
   toError,
@@ -300,7 +300,9 @@ function runProgram(
   const config = configFor(model, options, execution, "run");
   const supervisor = watch ? new RunSupervisor(execution.buildCache, target, args, execution.log) : undefined;
   return config.resolveName(options.commandLine.refFor(target, site)).then(sources => {
-    const runnable = sources.find((s): s is RunnableFileSet => s instanceof RunnableFileSet);
+    /* A projected runnable (`fabr run pkg:tsc`) arrives pending — this is the
+     * point a launcher is demanded, so it collapses here. */
+    const runnable = sources.map(toRunnable).find(Boolean);
     if (!runnable) {
       /* No runnable: a projection that matched nothing (empty) is the shared
        * "matched no files" error — same as cat/ls; genuine content that just

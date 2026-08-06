@@ -1044,20 +1044,15 @@ export function makeNpmRunnable(
     if (!(entry instanceof FileSetRef)) {
       return Computable.resolve(runnable);
     }
-    /* Replay the pending projections as bin selection — the REINTERPRETATION
-     * the pending ref exists for, not the namespace walk: each step is the
-     * runnable's own polymorphic `find` (which re-points the launch entry),
-     * never archive descent. */
-    let selected: Computable<FileSet> = Computable.resolve(runnable);
-    for (const projection of entry.projections) {
-      selected = selected.then(files => files.find(projection.pattern, projection.prefix));
+    /* Apply the pending projections as bin selection — the REINTERPRETATION the
+     * pending ref exists for, not the namespace walk. Resolved here rather than
+     * re-deferred over the runnable because this is a rule RESULT: it must be a
+     * FileSet, which a ref is deliberately not. */
+    const selected = runnable.selectEntry(entry.projections);
+    if (!selected) {
+      throw new Error(`entry projection matched no bin or file of ${pkg.packageId} — nothing to launch`);
     }
-    return selected.then(files => {
-      if (!(files instanceof RunnableFileSet)) {
-        throw new Error(`entry projection matched no bin or file of ${pkg.packageId} — nothing to launch`);
-      }
-      return files;
-    });
+    return Computable.resolve(selected);
   });
 }
 

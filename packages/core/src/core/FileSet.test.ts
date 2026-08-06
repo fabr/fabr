@@ -23,6 +23,8 @@ import { canonicalFileName } from "../support/Paths";
 import { MemoryFile } from "./MemoryFS";
 import { ConflictError } from "./Errors";
 import { registerProvenanceRenderer, renderProvenance } from "./Provenance";
+import { parseName } from "../model/Parser";
+import type { IProjection } from "./FileSetRef";
 
 function set(entries: Record<string, string>): FileSet {
   return new FileSet(new Map(Object.entries(entries).map(([name, content]) => [name, MemoryFile.from(content)])));
@@ -143,5 +145,39 @@ describe("FileSet merge provenance (lazy)", () => {
 
   it("carries no origin when no contributor has one (nothing to attribute)", () => {
     expect(FileSet.unionAll(set({ "a.txt": "1" }), set({ "b.txt": "2" })).origin).to.equal(undefined);
+  });
+});
+
+describe("FileSet.locate", () => {
+  const project = (selector: string, prefix = ""): IProjection => ({ pattern: parseName(selector), prefix });
+
+  it("maps a member's own name to the name the projection gives it", () => {
+    const located = set({ "index.js": "a", "other.js": "b" }).locate([project("index.js")]);
+    expect([...located]).to.deep.equal([["index.js", "index.js"]]);
+  });
+
+  it("keys by the container-relative path when the selector strips a prefix", () => {
+    /* `pkg/src/blah:index.ts` — called `index.ts`, but it lives at src/blah/. */
+    const located = set({ "src/blah/index.ts": "a", "src/other.ts": "b" }).locate([project("src/blah:index.ts")]);
+    expect([...located]).to.deep.equal([["src/blah/index.ts", "index.ts"]]);
+  });
+
+  it("gives the renamed name as the value, leaving the file where it is", () => {
+    const located = set({ "index.ts": "a" }).locate([project("*.ts -> *.js")]);
+    expect([...located]).to.deep.equal([["index.ts", "index.js"]]);
+  });
+
+  it("matches several members, and drops those the projection excludes", () => {
+    const located = set({ "bin/one.js": "a", "bin/two.js": "b", "lib/x.js": "c" }).locate([project("bin/*.js")]);
+    expect([...located.keys()]).to.deep.equal(["bin/one.js", "bin/two.js"]);
+  });
+
+  it("narrows successively — a later projection applies to the earlier's names", () => {
+    const located = set({ "bin/one.js": "a", "bin/two.js": "b" }).locate([project("bin:*.js"), project("two.js")]);
+    expect([...located]).to.deep.equal([["bin/two.js", "two.js"]]);
+  });
+
+  it("is empty when nothing matches", () => {
+    expect(set({ "a.js": "x" }).locate([project("b.js")]).size).to.equal(0);
   });
 });

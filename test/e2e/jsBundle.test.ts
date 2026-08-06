@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { runFabr } from "./harness";
+import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
 
 /* `js_bundle` resolves its bundler through the `JS_BUNDLER` global as a
  * runnable (fabr's own esbuild driver by default, declared in JS.fabr), so
@@ -108,6 +108,65 @@ for (const entry of opts.entries) {
     const result = runFabr(mixed, ["cat", "app:main.js"]);
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal('console.log("util");\n');
+  });
+
+  /* A projection over a PACKAGE is contained: the package mounts like any other
+   * bundled input and the entry is located inside it, so its relative imports
+   * resolve among its siblings and its self-references are ordinary bare
+   * specifiers. The bundler is handed the mounted path, while the artifact keeps
+   * the name the reference gave it. */
+  const echoEntry = `const fs = require("fs"), path = require("path");
+const opts = JSON.parse(fs.readFileSync(process.argv.find(a => a.startsWith("--options=")).slice(10), "utf8"));
+for (const entry of opts.entries) {
+  const out = path.join(opts.outdir, entry.out + ".js");
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  fs.writeFileSync(out, "ENTRY=" + entry.in + "\\n" + fs.readFileSync(entry.in, "utf8"));
+}
+`;
+
+  it("locates a package entry inside its mount, keeping the projected name for the output", () => {
+    const project = {
+      ...STUB_TSC,
+      "PROJECT.fabr": [
+        "plugin @fabr-build/js;",
+        STUB_TSC_CONFIG,
+        "js_script my_bundler { entry = ./echo-entry.js; }",
+        "JS_BUNDLER = my_bundler;",
+        "js_package @scope/thing { version = 1.0.0; srcs = pkg/src:**; }",
+        "js_bundle app { entry = @scope/thing:index.js; }",
+        "",
+      ].join("\n"),
+      "echo-entry.js": echoEntry,
+      "pkg/src/index.ts": 'const hello = "world";\n',
+    };
+    const result = runFabr(project, ["cat", "app:index.js"]);
+    expect(result.status).to.equal(0);
+    /* `in` is the path under the mount — not a copy restaged at the bundle root. */
+    expect(result.stdout).to.contain("ENTRY=node_modules/@scope/thing/index.js");
+    expect(result.stdout).to.contain('const hello = "world";');
+  });
+
+  it("fails on a literal package entry that names nothing, even alongside a good one", () => {
+    /* The miss judgment belongs to the ref (which holds the written reference's
+     * error), not to each locate caller: judged per-entry, a typo'd entry among
+     * several used to be silently dropped and the bundle built without it. */
+    const project = {
+      ...STUB_TSC,
+      "PROJECT.fabr": [
+        "plugin @fabr-build/js;",
+        STUB_TSC_CONFIG,
+        "js_script my_bundler { entry = ./echo-entry.js; }",
+        "JS_BUNDLER = my_bundler;",
+        "js_package @scope/thing { version = 1.0.0; srcs = pkg/src:**; }",
+        "js_bundle app { entry = @scope/thing:index.js @scope/thing:nope.js; }",
+        "",
+      ].join("\n"),
+      "echo-entry.js": echoEntry,
+      "pkg/src/index.ts": 'const hello = "world";\n',
+    };
+    const result = runFabr(project, ["cat", "app:index.js"]);
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.contain("Unable to resolve '@scope/thing:nope.js'");
   });
 
   it("runs the JS_BUNDLER runnable over the staged options manifest", () => {

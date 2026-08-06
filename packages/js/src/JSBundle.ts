@@ -35,8 +35,17 @@ import { JSTarget } from "./JSPackage";
 /** Where esbuild writes and the rule collects the bundle output from. */
 export const BUNDLE_OUTDIR = "out";
 
-/** One entry point and its output name (relative to {@link BUNDLE_OUTDIR}); the
- * `out` is extensionless — the driver hands it to esbuild, which appends `.js`. */
+/** A source's name after the compile that precedes the link: `.ts`/`.tsx` become
+ * `.js`, anything else is already what it will be called. */
+export function compiledName(name: string): string {
+  return name.replace(/\.tsx?$/i, ".js");
+}
+
+export interface IBundleEntrySource {
+  path: string;
+  name: string;
+}
+
 export interface IBundleEntry {
   in: string;
   out: string;
@@ -156,24 +165,23 @@ function refPackageName(ref: RepositoryRef): string {
 }
 
 /**
- * Map each entry name to its bundle entry. The entry is named as the SOURCE
- * names it, but the rule compiles the sources before esbuild links them, so both
- * sides of the pair take the compiled name: `.ts`/`.tsx` becomes `.js` (identity
- * otherwise), and the `output` REWRITE then renames the output (first matching
- * value; unmatched → unchanged). The final name must end in `.js` — the driver
- * hands esbuild the extensionless stem, which it re-appends. Entry files are
- * staged into the bundle tree by the rule (union of srcs + entry), so an entry
- * need not also be matched by `srcs`.
+ * Map each entry to its bundle entry pair. `path` is where the file is staged —
+ * for a loose source its compiled name at the bundle root, for one located
+ * inside a mounted container the path under that mount. `name` is what the
+ * reference CALLS it, and the output is derived from that: `.ts`/`.tsx` becomes
+ * `.js` (identity otherwise), then the `output` REWRITE renames it (first
+ * matching value; unmatched → unchanged). The final name must end in `.js` — the
+ * driver hands esbuild the extensionless stem, which it re-appends.
  * @throws if an output name doesn't end in `.js`.
  */
-export function computeBundleEntries(entryNames: string[], rewrite: RewriteFn): IBundleEntry[] {
-  return entryNames.map(name => {
-    const compiled = name.replace(/\.tsx?$/i, ".js");
+export function computeBundleEntries(entries: IBundleEntrySource[], rewrite: RewriteFn): IBundleEntry[] {
+  return entries.map(({ path, name }) => {
+    const compiled = compiledName(name);
     const output = rewrite(compiled) ?? compiled;
     if (!output.endsWith(".js")) {
       throw new Error(`js_bundle output '${output}' (from entry '${name}') must end in '.js'`);
     }
-    return { in: compiled, out: output.slice(0, -".js".length) };
+    return { in: path, out: output.slice(0, -".js".length) };
   });
 }
 

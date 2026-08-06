@@ -394,7 +394,7 @@ export type SourceRef = FileSource | Repository | RepositoryRef | FileSetRef;
  * the walk. The machinery only delivers entities; the DRIVER (the model layer
  * that asked, holding the run context) resumes the walk — applying the pending
  * projections (BuildContext.finishDelivered), or handing the ref to a consumer
- * that reinterprets it (see TargetContext.collect's `keepProjected`). */
+ * that reinterprets it (see TargetContext.getContainedFileProperty). */
 export type Materialized = FileSource | Repository | FileSetRef;
 
 /**
@@ -454,15 +454,15 @@ export function materializeAll(sources: SourceRef[], options?: MaterializeOption
         return Computable.resolve(finished.get(source)!);
       } else if (source instanceof PackageFileSet) {
         return rebuildPackage(source, finished, rebuilt);
-      } else if (source instanceof FileSetRef) {
-        /* The pending base participates in the collection point like any
-         * package (its carried refs were gathered); the projections stay
-         * pending over the rebuilt base. */
-        const base =
-          source.source instanceof PackageFileSet
-            ? rebuildPackage(source.source, finished, rebuilt)
-            : Computable.resolve(source.source);
-        return base.then<Materialized>(rebuiltBase => new FileSetRef(rebuiltBase, source.projections, source.miss));
+      } else if (source instanceof FileSetRef && source.source instanceof PackageFileSet) {
+        /* A pending projection over a PACKAGE participates in the collection
+         * point like any other package (its carried refs were gathered), so the
+         * base re-delivers and the projections stay pending over it. Only a
+         * package base has anything to rebuild — every other ref passes through
+         * untouched below. */
+        return rebuildPackage(source.source, finished, rebuilt).then<Materialized>(
+          base => new FileSetRef(base, source.projections, source.miss)
+        );
       } else {
         return Computable.resolve(source);
       }

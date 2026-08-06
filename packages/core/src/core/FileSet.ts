@@ -19,6 +19,8 @@
 
 import * as path from "path";
 import { Name } from "./Name";
+import { FileSetRef } from "./FileSetRef";
+import type { IProjection } from "./FileSetRef";
 import { Computable, ComputableSource } from "./Computable";
 import { IDiagnosticNote } from "../support/Log";
 import { IProvenanceStep, registerProvenanceRenderer, renderProvenance } from "./Provenance";
@@ -199,6 +201,52 @@ export class FileSet implements FileSource {
     return this.withOrigin({ ...step, parent: this.origin });
   }
 
+  /**
+   * Resolve projections to positions *within this set* rather than extracting
+   * the files: a map from each matched member's own name to the name the
+   * projection gives it. 
+   * 
+   * The two names differ whenever the projection's naming facets do work — a path
+   * segment before the `:` (`pkg/src/blah:index.ts` → `src/blah/index.ts` keyed,
+   * called `index.ts`) or a rename (`pkg:*.ts -> *.js`). A rename never moves
+   * anything: only the name the caller uses changes.
+   */
+  public locate(projections: ReadonlyArray<IProjection>): Map<string, string> {
+    const projectors = projections.map(projection => projection.pattern.makeProjector(projection.prefix));
+    const located = new Map<string, string>();
+    for (const name of this.content.keys()) {
+      let projected: string | undefined = name;
+      for (const projector of projectors) {
+        projected = projector(projected);
+        if (projected === undefined) {
+          break;
+        }
+      }
+      if (projected !== undefined) {
+        located.set(name, projected);
+      }
+    }
+    return located;
+  }
+
+  /**
+   * Apply projections as *content*: the matched files under their projected
+   * names, the container gone. The extract half of the pair {@link locate}
+   * completes — same projections, same matches, the other reading.
+   *
+   * Through the checked `rename`, so a many-to-one rename is the ordinary
+   * ConflictError rather than a silently lost file. Overridden where a container
+   * is addressed by something other than its own file names (a runnable's launch
+   * surface), which is exactly why applying projections belongs to the container
+   * rather than to whoever holds a pending reference to it.
+   */
+  public select(projections: ReadonlyArray<IProjection>): FileSet {
+    return projections.reduce(
+      (set: FileSet, projection) => set.rename(projection.pattern.makeProjector(projection.prefix)),
+      this
+    );
+  }
+
   public find(name: Name, prefix = ""): Computable<FileSet> {
     /* The name owns what a projection means (glob-select under `prefix`, or a
      * `sel -> tmpl` rename); find just applies it. Through the checked rename so
@@ -353,7 +401,11 @@ export class FileSet implements FileSource {
    * Union the given sets; two different files at the same path is a conflict,
    * reported with both sides attributed via their sets' provenance.
    */
-  public static unionAll(...sets: FileSet[]): FileSet {
+  public static unionAll(...refs: Array<FileSet | FileSetRef>): FileSet {
+    /* A materialized ref stands in for the content it projects — flattening is
+     * the pure rename fold, so nothing here becomes async. A caller that needs
+     * the CONTAINER to survive must not come through here (see FileSet.locate). */
+    const sets = refs.map(ref => (ref instanceof FileSetRef ? ref.select() : ref));
     if (sets.length === 0) {
       return EMPTY_FILESET;
     }

@@ -19,7 +19,7 @@
 
 import { expect } from "chai";
 import { IFile, MemoryFile, PackageFileSet, RewriteFn } from "@fabr-build/core";
-import { buildBundleOptions, computeBundleEntries, computeExternalNames } from "./JSBundle";
+import { buildBundleOptions, computeBundleEntries, computeExternalNames, IBundleEntrySource } from "./JSBundle";
 import { parseJSTarget } from "./JSPackage";
 
 /** A package with a single index.js and the given (already-built) deps. */
@@ -67,8 +67,12 @@ describe("computeExternalNames", () => {
 });
 
 describe("computeBundleEntries", () => {
+  /* A loose entry: staged at the root under its compiled name, so path and name
+   * agree modulo the .ts→.js swap. */
+  const source = (name: string): IBundleEntrySource => ({ path: name.replace(/\.tsx?$/i, ".js"), name });
+
   it("names both sides by the COMPILED entry — the rule compiles before esbuild links", () => {
-    expect(computeBundleEntries(["src/index.ts", "vendor/lib.js"], noRewrite)).to.deep.equal([
+    expect(computeBundleEntries([source("src/index.ts"), source("vendor/lib.js")], noRewrite)).to.deep.equal([
       { in: "src/index.js", out: "src/index" },
       { in: "vendor/lib.js", out: "vendor/lib" },
     ]);
@@ -76,14 +80,14 @@ describe("computeBundleEntries", () => {
 
   it("applies the output rewrite to the default name", () => {
     const rewrite: RewriteFn = name => (name.endsWith(".entry.js") ? name.replace(/\.entry\.js$/, ".min.js") : undefined);
-    expect(computeBundleEntries(["src/app.entry.ts"], rewrite)).to.deep.equal([
+    expect(computeBundleEntries([source("src/app.entry.ts")], rewrite)).to.deep.equal([
       { in: "src/app.entry.js", out: "src/app.min" },
     ]);
   });
 
   it("rejects an output that does not end in .js", () => {
     const toCss: RewriteFn = () => "out.css";
-    expect(() => computeBundleEntries(["src/index.ts"], toCss)).to.throw(/must end in '.js'/);
+    expect(() => computeBundleEntries([source("src/index.ts")], toCss)).to.throw(/must end in '.js'/);
   });
 });
 
