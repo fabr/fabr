@@ -131,11 +131,15 @@ describe("CatalogRepository (through the model)", () => {
   }
 
   let lastDeps: FileSet | undefined;
+  /* The delivered sets before the union, for a test that cares about the
+   * identity a delivery carries rather than its content. */
+  let lastDepSets: FileSet[] = [];
   const depsRule: RuleRegistration = {
     type: "test_deps",
     constraints: {},
     evaluate: (context: TargetContext) =>
       context.getFileSetProperties(["deps"]).then(({ deps }) => {
+        lastDepSets = deps;
         lastDeps = FileSet.unionAll(...deps);
         return EMPTY_FILESET;
       }),
@@ -174,6 +178,7 @@ describe("CatalogRepository (through the model)", () => {
   function build(source: string): BuildModel {
     backings.clear();
     lastDeps = undefined;
+    lastDepSets = [];
     lastTool = undefined;
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
@@ -196,6 +201,26 @@ describe("CatalogRepository (through the model)", () => {
     expect(repo.resolved).to.have.length(1);
     expect([...repo.resolved[0]].sort()).to.deep.equal(["bar", "foo"]);
     /* ...but ONLY foo was ever fetched — bar, pinned yet unreferenced, is not. */
+    expect(repo.materialized).to.deep.equal(["foo"]);
+  });
+
+  it("delivers a member under a written rename, without changing what is pinned or fetched", async () => {
+    /* `@cat:foo -> renamed` — the package rename, which the catalog needs no
+     * knowledge of: it is applied where every delivery is finished. */
+    const model = build(
+      "package_repo @backing { }\n" +
+        "catalog @cat { deps = @backing:foo; }\n" +
+        "test_deps a { deps = @cat:foo -> renamed; }\n"
+    );
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    const delivered = lastDepSets[0] as PackageFileSet;
+    expect(delivered).to.be.instanceOf(PackageFileSet);
+    expect(delivered.packageName).to.equal("renamed");
+    /* Only the identity is the rename's: the content is the pinned member's,
+     * and the member was resolved and fetched under its own name. */
+    expect(await delivered.readFile("foo/data.txt")).to.equal("foo");
+    const repo = backings.get("@backing")!;
+    expect(repo.resolved).to.deep.equal([["foo"]]);
     expect(repo.materialized).to.deep.equal(["foo"]);
   });
 

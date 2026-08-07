@@ -170,6 +170,15 @@ These can be applied anywhere, for example `@npm:esbuild:0.2.1:package.json` ref
 file directly from the esbuild 0.2.1 package. These results are treated as simple files (ie not as the
 package they came from).
 
+`->` renames what the reference delivers, so on a package — with no projection following it — it
+renames the package itself: the name it is delivered and mounted under, leaving its content,
+version and dependencies alone.
+
+```
+deps = @npm:stream-browserify:3.0.0 -> stream;   # sources importing 'stream' get the shim
+deps = mylib -> renamedlib;                      # a built package, mounted under another name
+```
+
 A projection against a package being run — under fabr run, or via a property that takes a runnable
 such as TSC or a serve target's tool — searches the program names the package declares in its
 bin as well as its files, so `@npm:typescript:5.4.5:tsc` selects the tsc compiler to run. A package

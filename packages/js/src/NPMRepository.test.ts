@@ -44,6 +44,7 @@ import {
   RepositoryContext,
   RepositoryRef,
   resolveAndMaterialize,
+  materializeAll,
   conflictError,
   ROOT_REQUIRER,
   Selected,
@@ -179,6 +180,18 @@ describe("splitNpmReference", () => {
       requirement: "@types/node:20.12.7",
       projection: { pattern: "index.d.ts", prefix: "" },
     });
+  });
+
+  it("gives a rename facet to exactly one half — the projection when there is one", () => {
+    /* Which half holds the facet is what decides whether `-> ` means a package
+     * rename or a file rename, so the split must never hand it to both. */
+    const projected = splitNpmReference(parseName("stream-browserify:3.0.0:lib/*.js -> *.mjs"));
+    expect(projected.requirement.getRenameTo()).to.equal(undefined);
+    expect(projected.projection?.pattern.getRenameTo()?.toString()).to.equal("*.mjs");
+
+    const identity = splitNpmReference(parseName("stream-browserify:3.0.0 -> stream"));
+    expect(identity.projection).to.equal(undefined);
+    expect(identity.requirement.getRenameTo()?.toString()).to.equal("stream");
   });
 });
 
@@ -1289,6 +1302,47 @@ describe("override markers", () => {
     const repo = new NPMRepository(REG, fakeContext("build", disjoint, []));
     const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["D:1.0.0", 'C:">=2.0.0"']))));
     expect(helpText(err)).to.contain("@npm:C:3.0.0 (satisfies every requirement on C)");
+  });
+});
+
+describe("package rename", () => {
+  /* A polyfill shim mounted under the node builtin name it stands in for —
+   * the case the rename exists for. */
+  const served: Record<string, FileSet | Error> = {
+    [`${REG}/stream-browserify/3.0.0`]: metadataFor("stream-browserify", "3.0.0", { "readable-stream": "^2.0.0" }),
+    [`${REG}/readable-stream/2.0.0`]: metadataFor("readable-stream", "2.0.0", {}),
+    [`${REG}/tarball/3.0.0.tgz`]: packageTarball(),
+    [`${REG}/tarball/2.0.0.tgz`]: packageTarball(),
+  };
+  const refsFor = (repo: NPMRepository, names: string[]): RepositoryRef[] =>
+    names.map(name => repo.getRepositoryRef(parseName(name)));
+
+  it("delivers the package under the written name, and mounts it there", async () => {
+    const repo = new NPMRepository(REG, fakeContext("build", served, []));
+    /* materializeAll, not resolveAndMaterialize: the rename is applied where
+     * every delivery is finished (RepositoryRef.deliveredAs), which is the
+     * collection point's job, not the repository's. */
+    const [delivered] = await toPromise(materializeAll(refsFor(repo, ["stream-browserify:3.0.0 -> stream"])));
+    expect((delivered as PackageFileSet).packageName).to.equal("stream");
+    /* The mount follows the delivered identity, so a source importing 'stream'
+     * resolves the shim — while its own closure keeps its real names. */
+    const names = new Set([...assembleScopedNodeModules([delivered as FileSet])].map(([name]) => name));
+    expect(names.has(".pkgs/node_modules/stream/package.json")).to.equal(true);
+    expect(names.has(".pkgs/node_modules/readable-stream/package.json")).to.equal(true);
+    expect(names.has(".pkgs/node_modules/stream-browserify/package.json")).to.equal(false);
+  });
+
+  it("is a stamp, not a second requirement: one resolution, one fetch", async () => {
+    /* Resolution is by package, so naming the same package twice — once renamed
+     * — pins and fetches it once and differs only in what the two deliveries are
+     * called. */
+    const fetched: string[] = [];
+    const repo = new NPMRepository(REG, fakeContext("build", served, fetched));
+    const delivered = await toPromise(
+      materializeAll(refsFor(repo, ["stream-browserify:3.0.0", "stream-browserify:3.0.0 -> stream"]))
+    );
+    expect(delivered.map(set => (set as PackageFileSet).packageName)).to.deep.equal(["stream-browserify", "stream"]);
+    expect(fetched.filter(url => url.endsWith("/tarball/3.0.0.tgz"))).to.have.lengthOf(1);
   });
 });
 

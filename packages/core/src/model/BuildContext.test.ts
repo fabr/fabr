@@ -33,6 +33,7 @@ import {
   Resolution,
   SourceRef,
 } from "../core/Repository";
+import { PackageFileSet } from "../core/PackageFileSet";
 import { PublishableFileSet } from "../core/PublishableFileSet";
 import { syncFilesRule, syncRule } from "../rules/BuildSync";
 import { RunnableFileSet } from "../core/RunnableFileSet";
@@ -97,11 +98,20 @@ function registerRepositoryProvider(type: string, provider: RepositoryProvider):
 
 /* Trivial rules for exercising target-to-target dependency behaviour */
 let lastDeps: FileSet | undefined;
+/* The delivered sets before the union, for a test that cares about the identity
+ * a delivery carries rather than its content. */
+let lastDepSets: FileSet[] = [];
 registerRule("test_good", {}, context =>
   context.getFileSetProperties(["deps"]).then(({ deps }) => {
+    lastDepSets = deps;
     lastDeps = FileSet.unionAll(...deps);
     return EMPTY_FILESET;
   })
+);
+/* Yields a package under its own target name, so a reference to it delivers one
+ * — the subject of a `-> name` package rename. */
+registerRule("test_package", {}, context =>
+  Computable.resolve(new PackageFileSet(new Map([["index.js", MemoryFile.from("")]]), context.name, "1.0.0"))
 );
 registerRule("test_fail", {}, () => Computable.reject(new Error("reasons")));
 /* Resolves its dep under a caller-supplied constraint override, for testing
@@ -344,6 +354,54 @@ async function testGetProperty(input: string, prop: string, constraints?: Record
 }
 
 describe("BuildContext", () => {
+  it("Renames a built package a reference delivers ('mylib -> other')", async () => {
+    /* The same `-> ` rule an external delivery goes through, applied where a
+     * built package is referenced: nothing to project, so the rename is the
+     * package's own identity — what a consumer mounts it as. */
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_package { }\n" +
+      "test_package mylib { }\n" +
+      "test_good a { deps = mylib -> renamedlib; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    const delivered = lastDepSets[0] as PackageFileSet;
+    expect(delivered).to.be.instanceOf(PackageFileSet);
+    expect(delivered.packageName).to.equal("renamedlib");
+    /* Only the identity is the rename's — the content is the target's own, and
+     * the target is still built and referred to under its declared name. */
+    expect([...delivered].map(([name]) => name)).to.deep.equal(["index.js"]);
+  });
+
+  it("Rejects renaming a target that does not deliver a package", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_file { content = STRING; }\n" +
+      "test_file plain { content = hello; }\n" +
+      "test_good a { deps = plain -> renamed; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    try {
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      expect.fail("expected target a to fail");
+    } catch (err) {
+      /* Never a silent no-op: a dropped rename is a mount under the wrong name,
+       * which shows up far from the mistake. */
+      expect(err).to.be.instanceOf(DependencyFailedError);
+      const cause = (err as DependencyFailedError).cause;
+      /* Intrinsic to a's own resolution (the referenced target built fine), so
+       * it arrives unwrapped, naming the reference the rename was written on. */
+      expect(cause.message).to.contain("'plain -> renamed' does not deliver a package");
+    }
+  });
+
   it("Wraps dependent target failures with their target chain", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));

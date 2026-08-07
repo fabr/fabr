@@ -18,7 +18,7 @@
  */
 
 import { Computable } from "./Computable";
-import { RequirementResolutionError, toError } from "./Errors";
+import { attachHelp, RequirementResolutionError, toError } from "./Errors";
 import { FileSetRef, IProjection } from "./FileSetRef";
 import { FileSet, FileSource } from "./FileSet";
 import { PackageFileSet } from "./PackageFileSet";
@@ -366,9 +366,44 @@ export class RepositoryRef {
    * itself.
    */
   public deliveredAs(base: FileSet): FileSet | FileSetRef {
+    const renameTo = this.name.getRenameTo();
     const stamped = this.stampProvenance(base);
-    return this.projections.length > 0 ? new FileSetRef(stamped, this.projections) : stamped;
+    /* A rename written on the reference's IDENTITY half is the package rename,
+     * applied here because this is where an external package first exists; at a
+     * projection the facet rides the projection instead (see find) and renames
+     * the files it selects. The two never meet — a repository splits its
+     * reference at the projection boundary, so the facet reaches exactly one. */
+    const named = renameTo === undefined ? stamped : renamedDelivery(stamped, renameTo, this.name.toString());
+    return this.projections.length > 0 ? new FileSetRef(named, this.projections) : named;
   }
+}
+
+/**
+ * Deliver `source` under the name a written `-> name` gave it — the package
+ * rename, in one place because only the *moment* differs between the kinds of
+ * package: an external one does not exist until its collection point (so the
+ * facet rides its reference here, to {@link RepositoryRef.deliveredAs}), while
+ * a built one is already in hand where it is referenced
+ * (BuildContext.resolveFileSource). A still-deferred reference is renamed by
+ * carrying the facet onward — its delivery reaches this same rule later.
+ *
+ * Only a package has an identity to rename. Anything else — a runnable, a plain
+ * fileset — has no name a rename could be about, so it is an error rather than
+ * a silent no-op. `written` names the reference the rename was written on.
+ */
+export function renamedDelivery(source: FileSet, renameTo: Name, written: string): FileSet;
+export function renamedDelivery(source: SourceRef, renameTo: Name, written: string): SourceRef;
+export function renamedDelivery(source: SourceRef, renameTo: Name, written: string): SourceRef {
+  if (source instanceof PackageFileSet) {
+    return source.withPackageName(renameTo.toString());
+  }
+  if (source instanceof RepositoryRef && source.projections.length === 0) {
+    return new RepositoryRef(source.source, source.name.withRenameTo(renameTo), source.projections, source.steps);
+  }
+  throw attachHelp(
+    new Error(`'${written}' does not deliver a package, so there is no name for '-> ' to rename`),
+    "a rename on a reference that delivers files must name what it selects ('ref:pattern -> template')"
+  );
 }
 
 /**

@@ -29,6 +29,7 @@ import {
   RepositoryPublishRef,
   materializeLists,
   materializeShallow,
+  renamedDelivery,
   Repository,
   RepositoryRef,
   SourceRef,
@@ -1085,7 +1086,17 @@ export class BuildContext {
         if (targetDep) {
           const { target, rest, decl, retainedPrefix } = targetDep;
           if (rest.isEmpty()) {
-            return target.then(sources => ({ sources, decl }));
+            /* Nothing to project, so a `-> name` here renames what the whole
+             * reference delivers: the package rename, the same rule a delivered
+             * external one goes through — applied now rather than at a
+             * collection point, a built package being in hand already. */
+            const renameTo = substName.getRenameTo();
+            return target.then(sources => ({
+              sources: renameTo
+                ? sources.map(source => renamedDelivery(source, renameTo, substName.toString()))
+                : sources,
+              decl,
+            }));
           } else {
             /* `rest` is the projection after the target; a `sel -> tmpl` rename
              * (final naming) rides on it as a facet (getPrefixMatch/getRepositoryRef

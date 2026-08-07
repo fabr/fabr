@@ -81,4 +81,16 @@ export class PackageFileSet extends FileSet {
   public withOrigin(origin: IProvenanceStep): PackageFileSet {
     return new PackageFileSet(this, this.packageName, this.version, this.dependencies, origin, this.isNestedOverride);
   }
+
+  /**
+   * @return a copy delivered under `packageName` instead of its own — the
+   * identity a consumer lays it out under, and all that a rename changes. The
+   * content, version and closure are shared: the package still resolves its own
+   * dependencies among themselves under their real names, exactly as an npm
+   * dependency alias (`"stream": "npm:stream-browserify@^3"`) leaves everything
+   * but the mount point alone.
+   */
+  public withPackageName(packageName: string): PackageFileSet {
+    return new PackageFileSet(this, packageName, this.version, this.dependencies, this.origin, this.isNestedOverride);
+  }
 }
