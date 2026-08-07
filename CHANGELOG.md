@@ -27,7 +27,7 @@ version number.
 - Readd es* flags as source version dependency flags.
 - Drop lightningcss; esbuild now handles css modules directly.
 - Fix TS source importing local references using full package path.
-- Remove lightningcss and rely on esbuild's native css support.
+- Fix esbuild resolver erroring on survivable misses.
 
 @fabr/cli:
 

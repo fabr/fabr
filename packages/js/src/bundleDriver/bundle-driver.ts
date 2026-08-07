@@ -145,8 +145,11 @@ export function rewriteStyledImport(specifier: string): string {
 /**
  * The fabr resolver plugin — membership + single-variant (see file header). The
  * bundle's native kind is the resolution kind bare specifiers are normalized to.
+ * `unresolved` collects the bare specifiers this plugin could not answer, for
+ * the guidance {@link unresolvedHelp} adds to whichever of them esbuild goes on
+ * to report.
  */
-function fabrResolverPlugin(options: IBundleOptions): IPlugin {
+function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): IPlugin {
   const external = new Set(options.external);
   const nativeKind = options.format === "cjs" ? "require-call" : "import-statement";
   const otherKind = nativeKind === "require-call" ? "import-statement" : "require-call";
@@ -219,14 +222,19 @@ function fabrResolverPlugin(options: IBundleOptions): IPlugin {
           return resolved;
         }
 
-        /* A bare code import that is neither bundled nor a declared dep. */
-        return {
-          errors: [
-            {
-              text: `Cannot resolve import '${args.path}': it is neither bundled (add it, or its package, to 'srcs') nor a declared dependency (add it to 'deps')`,
-            },
-          ],
-        };
+        /* A bare code import that is neither bundled nor a declared dep.
+         * DECLINE rather than report an error: whether an unresolvable import is
+         * fatal is esbuild's judgment, not ours. A `require` inside a try/catch
+         * is the ecosystem's optional-dependency idiom (framer-motion probing
+         * for @emotion/is-prop-valid, an optional peer nothing installs), and
+         * esbuild answers it by leaving the call to fail at runtime, where the
+         * catch is waiting — but onResolve args do not say whether the call site
+         * is one, so a plugin cannot make that call. A returned error is
+         * unconditional and would pre-empt it, failing builds esbuild completes.
+         * Noted instead, so a failure that DOES survive still carries the
+         * srcs/deps guidance esbuild has no way to give. */
+        unresolved.add(args.path);
+        return null;
       });
 
       /* Representation, not membership: a file membership already pulled in is
@@ -270,7 +278,7 @@ async function resolveSingleVariant(
 }
 
 /** Translate the fabr options document into esbuild's BuildOptions. */
-function toEsbuildOptions(options: IBundleOptions): Record<string, unknown> {
+function toEsbuildOptions(options: IBundleOptions, unresolved: Set<string>): Record<string, unknown> {
   return {
     entryPoints: options.entries,
     outdir: options.outdir,
@@ -282,12 +290,33 @@ function toEsbuildOptions(options: IBundleOptions): Record<string, unknown> {
     minify: options.minify,
     sourcemap: options.sourcemap,
     logLevel: "silent",
-    plugins: [fabrResolverPlugin(options)],
+    plugins: [fabrResolverPlugin(options, unresolved)],
     /* css-modules: `.module.css` scopes its identifiers and exports the map to
      * the importing JS; every other stylesheet keeps global names. */
     loader: { ".module.css": "local-css", ".css": "global-css" },
     ...(options.define ? { define: options.define } : {}),
   };
+}
+
+/**
+ * Add fabr's srcs/deps guidance to an esbuild failure, for each specifier the
+ * resolver plugin declined AND esbuild went on to name — the ones it tolerated
+ * (a probe inside a try/catch) are deliberately absent from its report, so they
+ * get no advice either. esbuild reports the specifier quoted, which is what a
+ * named one is matched by; the message is returned unchanged when none are.
+ */
+export function unresolvedHelp(message: string, unresolved: Iterable<string>): string {
+  const named = [...unresolved].filter(specifier => message.includes(`"${specifier}"`));
+  if (named.length === 0) {
+    return message;
+  }
+  return [
+    message,
+    ...named.map(
+      specifier =>
+        `fabr: '${specifier}' is neither bundled (add it, or its package, to 'srcs') nor a declared dependency (add it to 'deps')`
+    ),
+  ].join("\n");
 }
 
 function parseOptionsPath(argv: string[]): string {
@@ -305,10 +334,18 @@ export async function main(argv: string[]): Promise<void> {
   const esbuild = require("esbuild") as IEsbuild;
 
   const options = JSON.parse(fs.readFileSync(parseOptionsPath(argv), "utf8")) as IBundleOptions;
-  const result = await esbuild.build(toEsbuildOptions(options));
+  /* What the resolver plugin declined; esbuild decides which of them are fatal
+   * (see the plugin's fallback), and only those get fabr's guidance. */
+  const unresolved = new Set<string>();
+  let result: IBuildResult;
+  try {
+    result = await esbuild.build(toEsbuildOptions(options, unresolved));
+  } catch (err) {
+    throw new Error(unresolvedHelp(err instanceof Error ? err.message : String(err), unresolved));
+  }
   if (result.errors.length) {
     for (const error of result.errors) {
-      process.stderr.write(`${error.text}\n`);
+      process.stderr.write(`${unresolvedHelp(error.text, unresolved)}\n`);
     }
     process.exitCode = 1;
   }

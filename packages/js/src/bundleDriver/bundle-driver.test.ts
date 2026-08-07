@@ -21,7 +21,7 @@
 
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import { isBareSpecifier, packageOf, rewriteStyledImport } from "./bundle-driver";
+import { isBareSpecifier, packageOf, rewriteStyledImport, unresolvedHelp } from "./bundle-driver";
 
 describe("packageOf", () => {
   it("takes the first segment of an unscoped specifier", () => {
@@ -70,5 +70,27 @@ describe("rewriteStyledImport", () => {
   it("leaves non-styled specifiers unchanged", () => {
     assert.equal(rewriteStyledImport("./util.js"), "./util.js");
     assert.equal(rewriteStyledImport("react"), "react");
+  });
+});
+
+describe("unresolvedHelp", () => {
+  it("adds the srcs/deps guidance for a specifier esbuild reported", () => {
+    const message = 'Could not resolve "left-pad"';
+    const helped = unresolvedHelp(message, ["left-pad"]);
+    assert.ok(helped.startsWith(message));
+    assert.ok(helped.includes("fabr: 'left-pad' is neither bundled"));
+  });
+
+  it("says nothing about one esbuild tolerated", () => {
+    /* An optional require inside a try/catch is declined by the plugin and then
+     * allowed by esbuild, so it never reaches the report — and must not be
+     * advised about, or every such probe would read as a missing dependency. */
+    const helped = unresolvedHelp('Could not resolve "left-pad"', ["left-pad", "@emotion/is-prop-valid"]);
+    assert.ok(!helped.includes("is-prop-valid"));
+  });
+
+  it("leaves a failure of its own unchanged", () => {
+    const message = 'Could not resolve "./missing.css"';
+    assert.equal(unresolvedHelp(message, ["left-pad"]), message);
   });
 });
