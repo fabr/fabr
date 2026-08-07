@@ -89,6 +89,8 @@ describe("CatalogRepository (through the model)", () => {
   class BackingRepo implements Repository {
     public readonly resolved: string[][] = [];
     public readonly materialized: string[] = [];
+    /** One entry per materialize CALL, naming the batch it was given. */
+    public readonly materializeCalls: string[][] = [];
     public readonly ran: string[] = [];
 
     public getRepositoryRef(name: Name): RepositoryRef {
@@ -107,6 +109,7 @@ describe("CatalogRepository (through the model)", () => {
 
     /* Fetch — deferred; records exactly which members were fetched. */
     public materialize(references: RepositoryRef[]): Computable<FileSet[]> {
+      this.materializeCalls.push(references.map(reference => reference.name.toString()));
       return Computable.resolve(
         references.map(reference => {
           const name = reference.name.toString();
@@ -202,6 +205,22 @@ describe("CatalogRepository (through the model)", () => {
     expect([...repo.resolved[0]].sort()).to.deep.equal(["bar", "foo"]);
     /* ...but ONLY foo was ever fetched — bar, pinned yet unreferenced, is not. */
     expect(repo.materialized).to.deep.equal(["foo"]);
+  });
+
+  it("materializes the named members in ONE call per source, not one per member", async () => {
+    /* A repository lays each delivery out against the batch it is asked for, so
+     * that the deliveries a consumer merges into one node_modules agree on what
+     * must nest privately. Materializing members one at a time would make every
+     * batch a batch of one, and a member whose own delivery never saw a higher
+     * version of what it requires would record nothing and silently inherit it. */
+    const model = build(
+      "package_repo @backing { }\n" +
+        "catalog @cat { deps = @backing:foo @backing:bar; }\n" +
+        "test_deps a { deps = @cat:foo @cat:bar; }\n"
+    );
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    const repo = backings.get("@backing")!;
+    expect(repo.materializeCalls).to.deep.equal([["foo", "bar"]]);
   });
 
   it("delivers a member under a written rename, without changing what is pinned or fetched", async () => {

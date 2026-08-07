@@ -28,6 +28,7 @@ version number.
 - Drop lightningcss; esbuild now handles css modules directly.
 - Fix TS source importing local references using full package path.
 - Fix esbuild resolver erroring on survivable misses.
+- Fix assorted depepdency resolution issues.
 
 @fabr/cli:
 

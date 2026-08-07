@@ -186,6 +186,37 @@ describe("planMounts", () => {
     ]);
   });
 
+  it("records a private copy an edge needs in the MERGED layout, not just its own", () => {
+    /* The parse5/entities shape. This delivery's root reaches only entities@4.5.0,
+     * so locally it is the flat winner and parse5's edge looks non-divergent —
+     * but a sibling delivery in the same batch carries entities@6.0.0, so the
+     * consumer's merged node_modules will hoist that instead. Judged against the
+     * merged winners, parse5's edge diverges and its copy is recorded, which is
+     * what lets it survive the merge. */
+    const { members, edgeMap } = graph({
+      "jsdom@26.1.0": { parse5: "parse5@7.2.1" },
+      "parse5@7.2.1": { entities: "entities@4.5.0" },
+      "entities@4.5.0": {},
+    });
+    const winners = new Map([
+      ["jsdom", "jsdom@26.1.0"],
+      ["parse5", "parse5@7.2.1"],
+      ["entities", "entities@4.5.0"],
+    ]);
+    const merged = new Map([...winners, ["entities", "entities@6.0.0"]]);
+    expect(tree(planMounts("jsdom@26.1.0", "jsdom", winners, edgeMap, members, merged))).to.deep.equal([
+      "parse5@7.2.1",
+      "parse5@7.2.1/entities@4.5.0",
+      "entities@4.5.0",
+    ]);
+    /* Without the batch's answer it plans as it always did: nothing to nest, and
+     * the requirement is lost the moment this delivery meets the other. */
+    expect(tree(planMounts("jsdom@26.1.0", "jsdom", winners, edgeMap, members))).to.deep.equal([
+      "parse5@7.2.1",
+      "entities@4.5.0",
+    ]);
+  });
+
   it("reports a cross-generation version cycle instead of nesting forever", () => {
     /* a@1 → b@1 → a@2 → b@2 → a@1: every hop needs a version other than the
      * one visible where it sits, and each nesting is forced, so the tree would

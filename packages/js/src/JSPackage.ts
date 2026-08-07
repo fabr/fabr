@@ -583,7 +583,16 @@ export function planMounts(
   rootName: string,
   winners: Map<string, string>,
   edges: EdgeMap,
-  members: ReadonlySet<string>
+  members: ReadonlySet<string>,
+  /**
+   * The winners of the whole materialize BATCH, which is what the consumer
+   * merges these deliveries into — the reference point for "does this edge need
+   * a private copy". Defaults to this delivery's own winners, for a plan with no
+   * wider batch to answer to. It is deliberately NOT the mount list: a delivery
+   * mounts only what its own root reaches, and may not even have fetched what
+   * won a name elsewhere in the batch.
+   */
+  merged: Map<string, string> = winners
 ): PlannedMount[] {
   const signature = (id: string, as: string, bindings: Map<string, string>): string =>
     [id, as, ...[...bindings].sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, to]) => `${name}=${to}`)].join("\n");
@@ -595,7 +604,14 @@ export function planMounts(
   const overridesOf = (id: string, bindings: Map<string, string>): PlannedMount[] => {
     const divergent = new Map<string, string>();
     for (const [name, toId] of edges.get(id) ?? []) {
-      if ((bindings.get(name) ?? winners.get(name)) !== toId && members.has(toId)) {
+      /* Divergent against EITHER layout this instance may end up in: its own
+       * delivery's (so the delivery stands alone) or the merged batch's (so the
+       * record survives the consumer's merge — a member whose delivery never saw
+       * the higher version would otherwise silently inherit it). Only what this
+       * delivery fetched can be mounted, whichever answer differs. */
+      const local = bindings.get(name) ?? winners.get(name);
+      const wider = bindings.get(name) ?? merged.get(name) ?? local;
+      if ((local !== toId || wider !== toId) && members.has(toId)) {
         divergent.set(name, toId);
       }
     }

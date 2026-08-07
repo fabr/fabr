@@ -53,7 +53,7 @@ import {
   versionToString,
 } from "@fabr-build/core";
 import { flatWinners, NPMRepository } from "./NPMRepository";
-import { assembleScopedNodeModules, EdgeMap } from "./JSPackage";
+import { assembleNodeModules, assembleScopedNodeModules, EdgeMap } from "./JSPackage";
 import {
   matchesTargetPlatform,
   npmPackageOfPath,
@@ -660,10 +660,7 @@ describe("flatWinners", () => {
   }
 
   it("mounts each name the closure's edges ask for", () => {
-    const winners = flatWinners(
-      "cli@1.0.0",
-      "cli",
-      members("cli@1.0.0", "left-pad@1.2.0"),
+    const winners = flatWinners({ id: "cli@1.0.0", name: "cli" }, members("cli@1.0.0", "left-pad@1.2.0"),
       edges({ "cli@1.0.0": { "left-pad": "left-pad@1.2.0" } })
     );
     expect([...winners]).to.deep.equal([
@@ -676,10 +673,7 @@ describe("flatWinners", () => {
     /* Nothing asks for wrap-ansi@7 by its own name — that name belongs to the
        tree's own wrap-ansi@8 — so the aliased copy exists only as the name its
        requirer imports. */
-    const winners = flatWinners(
-      "cli@1.0.0",
-      "cli",
-      members("cli@1.0.0", "@isaacs/cliui@8.0.2", "wrap-ansi@8.1.0", "wrap-ansi@7.0.0"),
+    const winners = flatWinners({ id: "cli@1.0.0", name: "cli" }, members("cli@1.0.0", "@isaacs/cliui@8.0.2", "wrap-ansi@8.1.0", "wrap-ansi@7.0.0"),
       edges({
         "cli@1.0.0": { "@isaacs/cliui": "@isaacs/cliui@8.0.2", "wrap-ansi": "wrap-ansi@8.1.0" },
         "@isaacs/cliui@8.0.2": { "wrap-ansi-cjs": "wrap-ansi@7.0.0" },
@@ -694,27 +688,21 @@ describe("flatWinners", () => {
   });
 
   it("does not mount a member nothing requires under any name", () => {
-    const winners = flatWinners("cli@1.0.0", "cli", members("cli@1.0.0", "orphan@1.0.0"), edges({ "cli@1.0.0": {} }));
+    const winners = flatWinners({ id: "cli@1.0.0", name: "cli" }, members("cli@1.0.0", "orphan@1.0.0"), edges({ "cli@1.0.0": {} }));
     expect([...winners]).to.deep.equal([["cli", "cli@1.0.0"]]);
   });
 
   it("keeps the root's own name for the root", () => {
     /* A dependency selecting another version of the root package cannot take
        its name: the delivered package must resolve at its own path. */
-    const winners = flatWinners(
-      "cli@1.0.0",
-      "cli",
-      members("cli@1.0.0", "cli@2.0.0", "dep@1.0.0"),
+    const winners = flatWinners({ id: "cli@1.0.0", name: "cli" }, members("cli@1.0.0", "cli@2.0.0", "dep@1.0.0"),
       edges({ "cli@1.0.0": { dep: "dep@1.0.0" }, "dep@1.0.0": { cli: "cli@2.0.0" } })
     );
     expect(winners.get("cli")).to.equal("cli@1.0.0");
   });
 
   it("takes the highest version when one name is claimed twice", () => {
-    const winners = flatWinners(
-      "cli@1.0.0",
-      "cli",
-      members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "dep@1.0.0", "dep@2.0.0"),
+    const winners = flatWinners({ id: "cli@1.0.0", name: "cli" }, members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "dep@1.0.0", "dep@2.0.0"),
       edges({
         "cli@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
         "a@1.0.0": { dep: "dep@1.0.0" },
@@ -729,10 +717,7 @@ describe("flatWinners", () => {
        and hoisting either would silently break the other's imports. */
     const err = (() => {
       try {
-        flatWinners(
-          "cli@1.0.0",
-          "cli",
-          members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "left-pad@1.0.0", "right-pad@1.0.0"),
+        flatWinners({ id: "cli@1.0.0", name: "cli" }, members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "left-pad@1.0.0", "right-pad@1.0.0"),
           edges({
             "cli@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
             "a@1.0.0": { pad: "left-pad@1.0.0" },
@@ -1302,6 +1287,49 @@ describe("override markers", () => {
     const repo = new NPMRepository(REG, fakeContext("build", disjoint, []));
     const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["D:1.0.0", 'C:">=2.0.0"']))));
     expect(helpText(err)).to.contain("@npm:C:3.0.0 (satisfies every requirement on C)");
+  });
+});
+
+describe("merged layout across a batch", () => {
+  /* Two roots resolved and delivered together. Only `md` reaches entities@6.0.0,
+   * so inside jsdom's delivery entities@4.0.0 is unopposed — the shape that used
+   * to lose parse5's requirement (dylan's app_bundle). */
+  const dist = (stem: string): Record<string, unknown> => ({
+    dist: { tarball: `${REG}/tarball/${stem}.tgz`, integrity: "", shasum: "", signatures: [] },
+  });
+  const served: Record<string, FileSet | Error> = {
+    [`${REG}/jsdom/1.0.0`]: metadataFor("jsdom", "1.0.0", { parse5: "^1.0.0" }, dist("jsdom")),
+    [`${REG}/parse5/1.0.0`]: metadataFor("parse5", "1.0.0", { entities: "^4.0.0" }, dist("parse5")),
+    [`${REG}/md/1.0.0`]: metadataFor("md", "1.0.0", { entities: "^6.0.0" }, dist("md")),
+    [`${REG}/entities/4.0.0`]: metadataFor("entities", "4.0.0", {}, dist("entities4")),
+    [`${REG}/entities/6.0.0`]: metadataFor("entities", "6.0.0", {}, dist("entities6")),
+    [`${REG}/tarball/jsdom.tgz`]: packageTarball(),
+    [`${REG}/tarball/parse5.tgz`]: packageTarball(),
+    [`${REG}/tarball/md.tgz`]: packageTarball(),
+    [`${REG}/tarball/entities4.tgz`]: packageTarball("v4.marker"),
+    [`${REG}/tarball/entities6.tgz`]: packageTarball("v6.marker"),
+  };
+  const refsFor = (repo: NPMRepository, names: string[]): RepositoryRef[] =>
+    names.map(name => new RepositoryRef(repo, parseName(name)));
+
+  it("nests a member's private copy the merged layout needs, not only its own delivery's", async () => {
+    const repo = new NPMRepository(REG, fakeContext("build", served, []));
+    const delivered = await toPromise(
+      resolveAndMaterialize(repo, refsFor(repo, ["jsdom:1.0.0", "md:1.0.0", "entities:4.0.0?", "entities:6.0.0?"]))
+    );
+    const packages = delivered.filter(set => [...set].length > 0);
+    /* parse5 carries the copy its edge binds, even though its own delivery
+     * hoisted that very version — the batch is what it must survive. */
+    const jsdom = packages[0] as PackageFileSet;
+    const parse5 = jsdom.dependencies.find(
+      (dep): dep is PackageFileSet => dep instanceof PackageFileSet && dep.packageName === "parse5"
+    );
+    expect(parse5?.dependencies.map(dep => (dep as PackageFileSet).packageId)).to.deep.equal(["entities@4.0.0"]);
+    /* And the consumer's one node_modules puts each requirer on the version it
+     * asked for: the batch winner flat, the other nested under parse5. */
+    const names = new Set([...assembleNodeModules(packages)].map(([name]) => name));
+    expect(names.has("entities/v6.marker")).to.equal(true);
+    expect(names.has("parse5/node_modules/entities/v4.marker")).to.equal(true);
   });
 });
 

@@ -22,7 +22,6 @@ import { FileSet, FileSource } from "../core/FileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import {
-  attributedTo,
   groupByRepository,
   MaterializeOptions,
   Repository,
@@ -34,7 +33,7 @@ import {
 import { FileSetRef } from "../core/FileSetRef";
 import { Requirement } from "../resolver/Types";
 import { chainSteps } from "../core/Provenance";
-import { attachHelp, ConflictError, IConflictSource } from "../core/Errors";
+import { attachHelp, ConflictError, IConflictSource, RequirementResolutionError, toError } from "../core/Errors";
 import { Name } from "../core/Name";
 import { RepositoryContext } from "../model/BuildContext";
 import { BUILD_OPERATION, BUILD_OVERRIDE } from "../model/Constraints";
@@ -107,50 +106,98 @@ export class CatalogRepository implements Repository, RepositoryReader {
    */
   public materialize(references: RepositoryRef[], _resolution: Resolution, options?: MaterializeOptions): Computable<FileSet[]> {
     return this.operation.then(operation =>
-      this.pinned.then(table =>
-        Computable.forAll(
-          references.map(reference =>
-            attributedTo(reference, () => this.deliver(reference.name.getLiteralPrefix(), table, operation, options))
-          ),
-          (...delivered: FileSet[]) => delivered
-        )
-      )
+      this.pinned.then(table => {
+        const members = references.map(reference => this.memberOf(reference, table));
+        /* Run delivery is permissive by the sealed-runnable invariant; otherwise
+         * the consumer's judgment. */
+        const mode = operation === "run" ? ({ resolutionMode: "permissive" } as MaterializeOptions) : options;
+        return this.materializeMembers(references, members, mode).then(packages =>
+          operation === "run"
+            ? Computable.forAll(
+                packages.map((pkg, index) => this.toRunnable(references[index].name.getLiteralPrefix(), members[index], pkg)),
+                (...launched: FileSet[]) => launched
+              )
+            : Computable.resolve<FileSet[]>(packages)
+        );
+      })
     );
   }
 
-
-  private deliver(alias: string, table: Map<string, CatalogMember>, operation: string, options?: MaterializeOptions): Computable<FileSet> {
+  /** The pinned member a reference names. An unknown one is just a resolution
+   *  failure — like any repository not having a requirement — attributed to the
+   *  reference that wrote it. */
+  private memberOf(reference: RepositoryRef, table: Map<string, CatalogMember>): CatalogMember {
+    const alias = reference.name.getLiteralPrefix();
     const member = table.get(alias);
     if (!member) {
-      /* Just a resolution failure — like any repository not having a requirement;
-       * attributedTo wraps it in a RequirementResolutionError for the driver. */
-      throw attachHelp(
-        new Error(`Catalog ${this.catalogName} has no member '${alias}'`),
-        table.size > 0 ? `it pins: ${[...table.keys()].sort().join(", ")}` : "the catalog pins nothing"
+      throw new RequirementResolutionError(
+        [reference],
+        attachHelp(
+          new Error(`Catalog ${this.catalogName} has no member '${alias}'`),
+          table.size > 0 ? `it pins: ${[...table.keys()].sort().join(", ")}` : "the catalog pins nothing"
+        )
       );
     }
-    /* Run delivery is permissive by the sealed-runnable invariant; otherwise
-     * the consumer's judgment. */
-    const mode = operation === "run" ? ({ resolutionMode: "permissive" } as MaterializeOptions) : options;
-    const pkg = this.materializePackage(member, mode);
-    return operation === "run" ? pkg.then(p => this.toRunnable(alias, member, p)) : pkg;
+    return member;
   }
 
   /**
-   * Fetch + assemble a member's package on demand: for a repository entry, from
-   * its pinned resolution (keeping the joint closure), with the *underlying*
-   * reference's provenance stamped (`@npm:pkg` as written in the catalog's deps);
-   * for a local entry, the already-built package.
+   * Fetch + assemble the named members, **one materialize per source repository**
+   * rather than one per member: a repository lays each delivery out against the
+   * batch it is asked for (so the deliveries a consumer merges agree on what must
+   * nest privately), and materializing members one at a time would make every
+   * batch a batch of one — the catalog's whole point being that its members are
+   * pinned, and delivered, together. Members of one source share its pinned
+   * resolution, so the grouping is by that. A local entry is already built.
+   *
+   * The *underlying* reference's provenance is stamped (`@npm:pkg` as written in
+   * the catalog's deps); stamping only, since a catalog entry never carries
+   * projections (rejected at resolveDeps), so there is no pending remainder.
    */
-  private materializePackage(member: CatalogMember, options?: MaterializeOptions): Computable<PackageFileSet> {
-    if (member.kind === "local") {
-      return Computable.resolve(member.pkg);
-    }
-    /* Stamping only: a catalog entry never carries projections (rejected at
-     * resolveDeps), so there is no pending remainder to finish here. */
-    return member.source
-      .materialize([member.reference], member.resolution, options)
-      .then(([base]) => member.reference.stampProvenance(base) as PackageFileSet);
+  private materializeMembers(
+    references: RepositoryRef[],
+    members: CatalogMember[],
+    options?: MaterializeOptions
+  ): Computable<PackageFileSet[]> {
+    const batches = new Map<Resolution, Array<{ index: number; source: RepositoryReader; reference: RepositoryRef }>>();
+    members.forEach((member, index) => {
+      if (member.kind === "repository") {
+        const batch = batches.get(member.resolution) ?? [];
+        batch.push({ index, source: member.source, reference: member.reference });
+        batches.set(member.resolution, batch);
+      }
+    });
+    const fetched = [...batches].map(([resolution, batch]) =>
+      batch[0].source
+        .materialize(
+          batch.map(entry => entry.reference),
+          resolution,
+          options
+        )
+        .then(bases =>
+          bases.map((base, position) => ({
+            index: batch[position].index,
+            pkg: batch[position].reference.stampProvenance(base) as PackageFileSet,
+          }))
+        )
+        .catch(err => {
+          /* Attributed to every catalog reference that asked for this batch: it
+           * was delivered as one, so none of them is the culpable one. */
+          throw new RequirementResolutionError(
+            batch.map(entry => references[entry.index]),
+            toError(err)
+          );
+        })
+    );
+    return Computable.forAll(fetched, (...groups: Array<Array<{ index: number; pkg: PackageFileSet }>>) => {
+      const delivered = new Map<number, PackageFileSet>();
+      for (const group of groups) {
+        for (const { index, pkg } of group) {
+          delivered.set(index, pkg);
+        }
+      }
+      return members.map((member, index) => (member.kind === "local" ? member.pkg : delivered.get(index)!));
+    });
   }
 
   private toRunnable(alias: string, member: CatalogMember, pkg: PackageFileSet): Computable<RunnableFileSet> {

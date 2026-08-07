@@ -206,12 +206,16 @@ interface PlannedClosure {
  * pick. It takes an alias to reach: ordinary edges name their own package.
  */
 export function flatWinners(
-  rootId: string,
-  rootName: string,
+  /** The delivery this is the layout of, whose own name it holds. Absent for a
+   * whole materialize BATCH, which has no single root — see the merged winners
+   * in materialize: the reference point for judging what must nest privately,
+   * since the consumer merges the batch's deliveries into one node_modules. */
+  root: { id: string; name: string } | undefined,
   members: Map<string, Selected<SemverVersion>>,
   edges: EdgeMap
 ): Map<string, string> {
-  const winners = new Map<string, string>([[rootName, rootId]]);
+  const rootName = root?.name;
+  const winners = new Map<string, string>(root ? [[root.name, root.id]] : []);
   for (const [fromId, deps] of edges) {
     if (!members.has(fromId)) {
       continue;
@@ -236,6 +240,17 @@ export function flatWinners(
     }
   }
   return winners;
+}
+
+/**
+ * The flat winners over a whole materialize batch — one layout question asked
+ * once, because the consumer's collection point merges every delivery of the
+ * batch into ONE node_modules. It is the reference point a delivery judges its
+ * members' private copies against ({@link planMounts}), never the mount list of
+ * any one delivery: a delivery mounts only what its own root reaches.
+ */
+export function mergedWinners(members: Map<string, Selected<SemverVersion>>, edges: EdgeMap): Map<string, string> {
+  return flatWinners(undefined, members, edges);
 }
 
 /** The diagnostic for two packages claiming one install name (see
@@ -696,8 +711,18 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
         const fetchIds = [...toFetch.keys()];
         const fetching = new Set(fetchIds);
         const edges = this.resolvedEdges(delivered, resolved);
+        /* The winners over the WHOLE batch, computed once: a delivery is planned
+         * against its own root's reach (it must stand alone), but whether one of
+         * its members needs a private copy is a question about the layout the
+         * CONSUMER ends up with — it merges these deliveries into one
+         * node_modules. Judged per delivery, a member whose root cannot see a
+         * higher version of what it requires looks non-divergent and records
+         * nothing, and the merge then silently hands it the higher one. */
+        const merged = mergedWinners(toFetch, edges);
         const plans = requirements.map(req =>
-          req.override === "alternate" ? undefined : this.planClosure(req, rootIndex.get(requirementKey(req))!, selections, fetching, edges)
+          req.override === "alternate"
+            ? undefined
+            : this.planClosure(req, rootIndex.get(requirementKey(req))!, selections, fetching, edges, merged)
         );
         return Computable.forAll(
           fetchIds.map(id => this.fetch(toFetch.get(id)!.pkg, toFetch.get(id)!.version)),
@@ -823,7 +848,9 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     index: number,
     selections: Selected<SemverVersion>[],
     fetching: ReadonlySet<string>,
-    edges: EdgeMap
+    edges: EdgeMap,
+    /** The whole batch's winners — see {@link mergedWinners}. */
+    merged: Map<string, string>
   ): PlannedClosure {
     const reachable = selections.filter(sel => sel.reachableFrom?.includes(index));
     /* The delivered root is what the root requirement BINDS to — normally the
@@ -843,8 +870,8 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
         members.set(id, sel);
       }
     }
-    const winners = flatWinners(rootId, root.pkg, members, edges);
-    return { rootId, mounts: planMounts(rootId, root.pkg, winners, edges, new Set(members.keys())) };
+    const winners = flatWinners({ id: rootId, name: root.pkg }, members, edges);
+    return { rootId, mounts: planMounts(rootId, root.pkg, winners, edges, new Set(members.keys()), merged) };
   }
 
   /** Realise a planned closure against the fetched packages, stamped with the
