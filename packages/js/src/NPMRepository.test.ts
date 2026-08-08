@@ -49,10 +49,16 @@ import {
   ROOT_REQUIRER,
   Selected,
   SemverVersion,
+  assertNoAliasCollisions,
+  EdgeMap,
+  parseRouteKey,
+  RepositoryGroup,
+  SEMVER,
+  SemverConstraint,
   TARGET,
   versionToString,
 } from "@fabr-build/core";
-import { assertNoAliasCollisions, EdgeMap, NPMRepository } from "./NPMRepository";
+import { NPMRepository } from "./NPMRepository";
 import { assembleNodeModules, assembleScopedNodeModules } from "./JSPackage";
 import {
   matchesTargetPlatform,
@@ -78,7 +84,6 @@ function origin(
 ): IResolutionOrigin<SemverVersion> {
   return {
     kind: "package-resolution",
-    repository: "https://registry.example.org",
     root,
     selections,
     versionToString,
@@ -352,6 +357,9 @@ function fakeContext(operation: string, served: Record<string, FileSet | Error>,
    * only has to resolve (getJointResolution reads it for the memo key). */
   const globals: Record<string, string> = { [BUILD_OPERATION]: operation, [TARGET]: "arm64-apple-macosx15.0" };
   return {
+    /* The declared name of the repository, as the domain renders references
+     * (suggestions read `@npm:pkg:ver`, matching what a user would write). */
+    target: { name: "@npm" },
     getGlobalString: (name: string) =>
       name in globals ? Computable.resolve(globals[name]) : Computable.reject(new Error(`unexpected property: ${name}`)),
     fetch: (url: string) => {
@@ -702,6 +710,7 @@ describe("assertNoAliasCollisions", () => {
   it("accepts one name bound to several versions of one package", () => {
     /* Version divergence is layout's business (nesting), not a collision. */
     assertNoAliasCollisions(
+      SEMVER,
       members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "dep@1.0.0", "dep@2.0.0"),
       edges({
         "cli@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
@@ -713,6 +722,7 @@ describe("assertNoAliasCollisions", () => {
 
   it("accepts an alias sharing the batch with the package's own name", () => {
     assertNoAliasCollisions(
+      SEMVER,
       members("cli@1.0.0", "@isaacs/cliui@8.0.2", "wrap-ansi@8.1.0", "wrap-ansi@7.0.0"),
       edges({
         "cli@1.0.0": { "@isaacs/cliui": "@isaacs/cliui@8.0.2", "wrap-ansi": "wrap-ansi@8.1.0" },
@@ -727,6 +737,7 @@ describe("assertNoAliasCollisions", () => {
     const err = (() => {
       try {
         assertNoAliasCollisions(
+          SEMVER,
           members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "left-pad@1.0.0", "right-pad@1.0.0"),
           edges({
             "cli@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
@@ -749,6 +760,7 @@ describe("assertNoAliasCollisions", () => {
  *  through the execution's source FileSource; package()/publish() otherwise don't touch it. */
 function npmrcContext(npmrc?: string): RepositoryContext {
   return {
+    target: { name: "@npm" },
     execution: fakeExecution(npmrc),
   } as unknown as RepositoryContext;
 }
@@ -1463,5 +1475,117 @@ describe("conflictError (the strict repair report)", () => {
     expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0' required by A@1.0.0");
     expect(err.message).to.not.contain("selected by:");
     expect(err.message).to.not.contain("required via:");
+  });
+});
+
+describe("multi-route domains (repository groups)", () => {
+  const PRIV = "https://private.example.org";
+  const dist = (host: string, stem: string): Record<string, unknown> => ({
+    dist: { tarball: `${host}/tarball/${stem}.tgz`, integrity: "", shasum: "", signatures: [] },
+  });
+
+  /** The repository a `repository_group` declares — a registry of registries,
+   *  each route key parsed exactly as the rule parses a declared route. */
+  function groupDomain(context: RepositoryContext, routes: Array<[string, string]>): RepositoryGroup<SemverVersion, SemverConstraint> {
+    const table = routes.map(([text, url]) => {
+      const parsed = parseRouteKey(text);
+      if ("error" in parsed) {
+        throw new Error(parsed.error);
+      }
+      return { key: parsed, member: new NPMRepository(url, context) };
+    });
+    return new RepositoryGroup(context, table);
+  }
+
+  const served: Record<string, FileSet | Error> = {
+    /* app lives on the public registry and requires a scoped package that only
+     * the private registry serves: a transitive requirement discovered inside
+     * public metadata must still route to the private member — any misrouted
+     * fetch hits an unserved URL and fails loudly. */
+    [`${REG}/app/1.0.0`]: metadataFor("app", "1.0.0", { "@scope/icons": "^1.2.0" }, dist(REG, "app")),
+    [`${PRIV}/@scope%2ficons/1.2.0`]: metadataFor("@scope/icons", "1.2.0", {}, dist(PRIV, "icons")),
+    [`${REG}/tarball/app.tgz`]: packageTarball(),
+    [`${PRIV}/tarball/icons.tgz`]: packageTarball(),
+  };
+
+  it("dispatches transitive metadata and fetches to the routed member", async () => {
+    const fetched: string[] = [];
+    const repo = groupDomain(fakeContext("build", served, fetched), [["@scope/*", PRIV], ["*", REG]]);
+    const ref = new RepositoryRef(repo, Name.fromLiteral("app:1.0.0"));
+
+    const [delivered] = await toPromise(resolveAndMaterialize(repo, [ref]));
+    const app = delivered as PackageFileSet;
+    expect(app.packageName).to.equal("app");
+    expect((app.dependencies[0] as PackageFileSet).packageName).to.equal("@scope/icons");
+    /* The scoped package's documents came from the private registry. */
+    expect(fetched).to.contain(`${PRIV}/@scope%2ficons/1.2.0`);
+    expect(fetched).to.contain(`${PRIV}/tarball/icons.tgz`);
+  });
+
+  it("keys the resolution memo by the whole route table", async () => {
+    const context = fakeContext("build", served, []);
+    const memoKeys: string[] = [];
+    const memoize = context.memoize.bind(context);
+    context.memoize = (tag, key, fn) => {
+      memoKeys.push(`${tag} ${key}`);
+      return memoize(tag, key, fn);
+    };
+    const repo = groupDomain(context, [["@scope/*", PRIV], ["*", REG]]);
+    await toPromise(resolveAndMaterialize(repo, [new RepositoryRef(repo, Name.fromLiteral("app:1.0.0"))]));
+    expect(memoKeys).to.have.lengthOf(1);
+    expect(memoKeys[0]).to.contain("npm:resolve:17");
+    expect(memoKeys[0]).to.contain(`@scope/*=${PRIV}`);
+    expect(memoKeys[0]).to.contain(`*=${REG}`);
+  });
+
+  it("a name no route serves fails through the ordinary path, attributed to the reference", async () => {
+    /* A closed domain (no catch-all): not an error class of its own — the
+     * domain simply does not serve the package. */
+    const repo = groupDomain(fakeContext("build", served, []), [["@scope/*", PRIV]]);
+    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, [new RepositoryRef(repo, Name.fromLiteral("left-pad:1.0.0"))])));
+    expect(err.message).to.contain("has no route serving 'left-pad'");
+    expect(err.message).to.contain("@scope/*");
+  });
+
+  it("runs each registry's platform policy over its routed slice of the resolution", async () => {
+    /* app (public) hard-depends on a private-scope package gated to another
+     * os: the EBADPLATFORM judgment must reach the private registry's slice
+     * through the group — a mis-partitioned validate would miss it. */
+    const gated: Record<string, FileSet | Error> = {
+      [`${REG}/app/1.0.0`]: metadataFor("app", "1.0.0", { "@scope/native": "^1.0.0" }, dist(REG, "app")),
+      [`${PRIV}/@scope%2fnative/1.0.0`]: metadataFor("@scope/native", "1.0.0", {}, {
+        ...dist(PRIV, "native"),
+        os: ["linux"],
+      }),
+    };
+    const repo = groupDomain(fakeContext("build", gated, []), [["@scope/*", PRIV], ["*", REG]]);
+    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, [new RepositoryRef(repo, Name.fromLiteral("app:1.0.0"))])));
+    expect(err.message).to.contain("@scope/native@1.0.0 is not supported for the target platform");
+  });
+
+  it("partitions a publish batch by route and reassembles carriers in member order", async () => {
+    const context = npmrcContext();
+    const repo = groupDomain(context, [["@scope/*", PRIV], ["*", REG]]);
+    /* Interleaved destinations, so a partition that loses the original order
+     * would visibly mis-assign carriers. */
+    const coordinates = ["@scope/x:1.0.0", "demo:1.2.3", "@scope/y:2.0.0"];
+    const members = coordinates.map(text => {
+      const destination = repo.getRepositoryPublishRef(Name.fromLiteral(text));
+      const name = text.substring(0, text.lastIndexOf(":"));
+      const content = publishFileSet({ "package.json": JSON.stringify({ name, version: "0.0.0-dev" }) });
+      return { destination, content };
+    });
+    const carriers = await toPromise(repo.package(members, members.map(member => member.destination)));
+    expect(carriers.map(carrier => carrier.destination)).to.deep.equal(members.map(member => member.destination));
+    expect(carriers.map(carrier => carrier.provides)).to.deep.equal(["@scope/x", "demo", "@scope/y"]);
+  });
+
+  it("routes publish coordinates, refusing one no route serves", () => {
+    const context = npmrcContext();
+    const repo = groupDomain(context, [["@scope/*", PRIV], ["*", REG]]);
+    expect(repo.getRepositoryPublishRef(Name.fromLiteral("@scope/x:1.0.0")).toString()).to.equal("@scope/x:1.0.0");
+
+    const closed = groupDomain(context, [["@scope/*", PRIV]]);
+    expect(() => closed.getRepositoryPublishRef(Name.fromLiteral("left-pad:1.0.0"))).to.throw(/no route serving publish coordinate/);
   });
 });

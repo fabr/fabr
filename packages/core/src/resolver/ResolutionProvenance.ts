@@ -36,8 +36,6 @@ export const PACKAGE_RESOLUTION_PROVENANCE = "package-resolution";
  */
 export interface IResolutionOrigin<V> extends IProvenanceStep {
   kind: typeof PACKAGE_RESOLUTION_PROVENANCE;
-  /** Identification of the repository the requirement was resolved against */
-  repository: string;
   root: Requirement;
   selections: Selected<V>[];
   versionToString(version: V): string;

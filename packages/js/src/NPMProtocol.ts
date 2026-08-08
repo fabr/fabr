@@ -22,8 +22,8 @@
  * writes to a registry — metadata documents, platform gates, publish envelopes,
  * reference/version syntax, tarball layout, and registry auth — as pure functions.
  * NPMRepository.ts is the fabr {@link Repository} *over* this protocol: it owns
- * resolution (MVS), materialization, and caching, and delegates every format
- * concern here.
+ * the transport and caching, and delegates every format concern here (and
+ * resolution orchestration to core's package resolver).
  */
 
 import {
@@ -36,11 +36,17 @@ import {
   isCanonicalFileName,
   isJsonObject,
   Name,
+  NpmPlatform,
+  PackageLanguage,
   parseIntegrity,
   parseJson,
-  NpmPlatform,
+  parseVersion,
+  Requirement,
   SEMVER,
+  SemverConstraint,
+  SemverVersion,
   sendRequest,
+  splitOverrideMarker,
   verifyingStream,
 } from "@fabr-build/core";
 import { otpChallengeOf, OtpProvider } from "./NPMAuth";
@@ -513,6 +519,56 @@ export function splitNpmReference(name: Name): { requirement: Name; projection?:
   const prefix = lit[boundary] === "/" ? lit.substring(0, boundary) + "/" : "";
   return { requirement: Name.fromLiteral(lit.substring(0, boundary)), projection: { pattern: name.substring(boundary + 1), prefix } };
 }
+
+/**
+ * The requirement an npm reference identity declares, read off its own
+ * `name:version` — the version slot may carry an override marker (a trailing
+ * `?` permits a nested alternate, `!` forces the version), exact versions only
+ * (a ranged override would reintroduce registry-time nondeterminism).
+ */
+export function parseNpmRequirement(name: Name): Requirement {
+  const split = splitNameVersion(name);
+  if (!split) {
+    throw new Error(
+      `Missing version in package reference '${name.getLiteralPathPrefix()}' (expected '<name>:<version-or-range>')`
+    );
+  }
+  const { identifier: pkg, version: written } = split;
+  const { text: constraint, override } = splitOverrideMarker(written);
+  if (override !== undefined) {
+    if (SEMVER.exactVersion?.(constraint) === undefined) {
+      throw attachHelp(
+        new Error(`'${written}' is not a valid override for '${pkg}': the '${written.at(-1)}' marker needs an exact version`),
+        "markers sanction one concrete version: '@npm:pkg:1.4.2?' permits a nested alternate, '@npm:pkg:2.0.0!' forces the version"
+      );
+    }
+    return { pkg, constraint, override };
+  }
+  if (!isSemverConstraint(constraint)) {
+    throw attachHelp(
+      new Error(`'${constraint}' is not a valid version constraint for '${pkg}'`),
+      "dist-tags such as 'latest' are not supported: pin a version or range instead"
+    );
+  }
+  return { pkg, constraint };
+}
+
+/**
+ * The npm ecosystem's {@link PackageLanguage} — ONE shared instance: every npm
+ * registry holds this object, and sharing it is what admits registries to one
+ * `repository_group` (the homogeneity check is object identity). The
+ * resolution tag names the persisted-resolution memo shape; bump it when the
+ * resolution computation or the document changes behavior.
+ */
+export const NPM_LANGUAGE: PackageLanguage<SemverVersion, SemverConstraint> = {
+  versionDomain: SEMVER,
+  resolutionTag: "npm:resolve:17",
+  parseVersion,
+  splitReference: splitNpmReference,
+  splitIdentity: splitNameVersion,
+  parseRequirement: parseNpmRequirement,
+  packageOfPath: npmPackageOfPath,
+};
 
 /**
  * npm tarballs wrap the package contents in a single root directory

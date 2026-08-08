@@ -125,6 +125,32 @@ targetdef fetch {
 }
 
 #
+# A `repository_group` serves one package namespace from several registries:
+# every member is a route — a literal package-name prefix mapped to a declared
+# registry — and references written against the group resolve together, in one
+# joint version selection, with each package fetched from the registry its name
+# routes to. This is how a private registry serving one scope coexists with a
+# public registry serving everything else:
+#
+#     repository_group @deps {
+#         @fortawesome/* = @fa;
+#         *              = @npm;
+#     }
+#
+# A key is a literal name (`lodash`), a literal with one trailing `*`
+# (`@fortawesome/*`, `acme-*`), or the bare `*` — the empty prefix, which is
+# not a special entry: the longest matching key always wins (an exact name
+# beating its own `name*` twin), so exceptions are written as longer prefixes
+# and declaration order carries no meaning. A name matching no route is simply
+# not served (there is deliberately no scan or fall-through across registries —
+# what resolves must never depend on what a registry happens to be missing).
+# All routed registries must speak the same package ecosystem.
+#
+targetdef repository_group {
+    * = FILES;
+}
+
+#
 # A `flag` yields file content directly, with no build step. Its main use is as
 # a named switch that a target lists in its `deps` to opt into some behaviour
 # (the `ts/*` source-mode flags are instances of this type); `provides` may also
