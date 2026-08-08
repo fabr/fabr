@@ -18,11 +18,13 @@
  */
 
 import { expect } from "chai";
-import { FileSet } from "./FileSet";
+import { Computable } from "./Computable";
+import { FileSet, IFile } from "./FileSet";
 import { FileSetRef } from "./FileSetRef";
 import { MemoryFile } from "./MemoryFS";
-import { PackageFileSet } from "./PackageFileSet";
-import { renamedDelivery, RepositoryReader, RepositoryRef } from "./Repository";
+import { Name } from "./Name";
+import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
+import { materializeAll, renamedDelivery, Repository, RepositoryReader, RepositoryRef, Resolution } from "./Repository";
 import { parseName } from "../model/Parser";
 
 /** deliveredAs reads only the reference itself, never its source. */
@@ -97,5 +99,95 @@ describe("renamedDelivery", () => {
      * both apply to one reference. */
     const projected = ref("pkg:1.0.0").find(parseName("lib/*.js -> *.mjs"));
     expect(() => renamedDelivery(projected, to("other"), "written")).to.throw(/does not deliver a package/);
+  });
+});
+
+/** A repository that answers every reference with a one-file package. */
+class StubRepository implements Repository {
+  public getRepositoryRef(name: Name): RepositoryRef {
+    return new RepositoryRef(this, name);
+  }
+
+  public getRepositoryPublishRef(name: Name): never {
+    throw new Error(`not a publish destination ('${name.toString()}')`);
+  }
+
+  public resolve(references: RepositoryRef[]): Computable<Resolution> {
+    return Computable.resolve({ roots: references.map(reference => ({ reference, name: reference.name.toString() })) });
+  }
+
+  public materialize(references: RepositoryRef[]): Computable<FileSet[]> {
+    return Computable.resolve(
+      references.map(reference => {
+        const name = reference.name.toString();
+        return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}`)]]), name, "1.0.0");
+      })
+    );
+  }
+
+  public makeRunnable(): never {
+    throw new Error("not runnable");
+  }
+
+  public declaredRequirement(): Computable<undefined> {
+    return Computable.resolve(undefined);
+  }
+}
+
+function toPromise<T>(computable: Computable<T>): Promise<T> {
+  return new Promise((resolve, reject) => computable.then(resolve, reject));
+}
+
+function graphFiles(tag: string): Map<string, IFile> {
+  return new Map([["index.js", MemoryFile.from(`// ${tag}`)]]);
+}
+
+describe("materializeAll over cyclic package graphs", () => {
+  it("passes a ref-free cyclic delivered graph through untouched", async () => {
+    const builder = new PackageGraphBuilder();
+    const a = builder.node(graphFiles("a"), "a", "1.0.0");
+    const b = builder.node(graphFiles("b"), "b", "1.0.0");
+    builder.wire(a, [b]);
+    builder.wire(b, [a]);
+    builder.seal();
+
+    const [delivered] = await toPromise(materializeAll([a]));
+    /* Nothing to resolve beneath it, so the very same value comes back — no
+     * copy, no infinite walk. */
+    expect(delivered).to.equal(a);
+  });
+
+  it("rebuilds a ref-carrying cycle, resolving the ref and preserving the cycle", async () => {
+    /* app ↔ buddy, with app also carrying an unresolved external requirement:
+     * the shape the ref-carrier cache must judge honestly — a "no refs"
+     * memoized for buddy while app is still mid-walk would deliver buddy with
+     * the raw ref still inside it, forever. */
+    const repo = new StubRepository();
+    const external = repo.getRepositoryRef(Name.fromLiteral("dep"));
+    const builder = new PackageGraphBuilder();
+    const app = builder.node(graphFiles("app"), "app", "1.0.0");
+    const buddy = builder.node(graphFiles("buddy"), "buddy", "1.0.0");
+    builder.wire(app, [buddy, external]);
+    builder.wire(buddy, [app]);
+    builder.seal();
+
+    const [delivered] = await toPromise(materializeAll([app]));
+    const rebuiltApp = delivered as PackageFileSet;
+    expect(rebuiltApp).to.be.instanceOf(PackageFileSet);
+    expect(rebuiltApp).to.not.equal(app);
+    const names = rebuiltApp.dependencies.map(dep => (dep as PackageFileSet).packageName);
+    expect(names).to.deep.equal(["buddy", "dep"]);
+    /* The cycle survives the rebuild, closed over the REBUILT instances. */
+    const rebuiltBuddy = rebuiltApp.dependencies[0] as PackageFileSet;
+    expect(rebuiltBuddy.dependencies).to.deep.equal([rebuiltApp]);
+
+    /* Entering at the other node of the cycle judges the same way: buddy
+     * reaches the ref through the cycle, so it too must rebuild. */
+    const [second] = await toPromise(materializeAll([buddy]));
+    const secondBuddy = second as PackageFileSet;
+    expect(secondBuddy).to.not.equal(buddy);
+    const secondApp = secondBuddy.dependencies[0] as PackageFileSet;
+    expect(secondApp.dependencies.map(dep => (dep as PackageFileSet).packageName)).to.deep.equal(["buddy", "dep"]);
+    expect(secondApp.dependencies[0]).to.equal(secondBuddy);
   });
 });

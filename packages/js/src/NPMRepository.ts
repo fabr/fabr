@@ -48,6 +48,7 @@ import {
   NpmPlatform,
   PACKAGE_RESOLUTION_PROVENANCE,
   PackageFileSet,
+  PackageGraphBuilder,
   packToTarball,
   PackageRegistry,
   parseJson,
@@ -95,7 +96,7 @@ import {
   versionToString,
   Violation,
 } from "@fabr-build/core";
-import { buildMounts, EdgeMap, makeNpmRunnable, planMounts, PlannedMount } from "./JSPackage";
+import { makeNpmRunnable } from "./JSPackage";
 import {
   INPMPackageMetadata,
   isSemverConstraint,
@@ -188,73 +189,44 @@ function selectionId(sel: Selected<SemverVersion>): string {
 /** The written form of an npm reference, for pasteable suggestions. */
 const npmRef: RefRenderer = (pkg, versionText, marker) => `@npm:${pkg}:${versionText}${marker ?? ""}`;
 
-/** One root's planned delivery: its own node, and the tree mounted under it. */
-interface PlannedClosure {
-  rootId: string;
-  mounts: PlannedMount[];
-}
+/**
+ * The resolved dependency edges of a delivery batch: node id → (dependency
+ * name → the id of the selection that edge binds to). The name is the one the
+ * *requirer* uses — an alias for an aliased dependency.
+ */
+export type EdgeMap = Map<string, Map<string, string>>;
 
 /**
- * The flat (hoisted) mount per name the closure asks for: every name an edge
- * between members uses — a package's own name, or the alias its requirer knows
- * it by — bound to the member that wins it. The root wins its own name (its
- * entry path must resolve there); otherwise the highest version, with the rest
- * nested privately by {@link planMounts}.
- *
- * Two *different packages* claiming one name cannot both be hoisted, and one
- * of them would silently lose its imports, so that is a conflict rather than a
- * pick. It takes an alias to reach: ordinary edges name their own package.
+ * An alias binding one dependency name to two *different packages* cannot
+ * install both under that name anywhere the two co-mount, and one of them
+ * would silently lose its imports — a conflict, never a pick. Judged over the
+ * whole batch's edges, since the consumer's collection point merges the
+ * batch's deliveries into one layout. It takes an alias to reach: ordinary
+ * edges name their own package.
  */
-export function flatWinners(
-  /** The delivery this is the layout of, whose own name it holds. Absent for a
-   * whole materialize BATCH, which has no single root — see the merged winners
-   * in materialize: the reference point for judging what must nest privately,
-   * since the consumer merges the batch's deliveries into one node_modules. */
-  root: { id: string; name: string } | undefined,
-  members: Map<string, Selected<SemverVersion>>,
-  edges: EdgeMap
-): Map<string, string> {
-  const rootName = root?.name;
-  const winners = new Map<string, string>(root ? [[root.name, root.id]] : []);
+export function assertNoAliasCollisions(members: Map<string, Selected<SemverVersion>>, edges: EdgeMap): void {
+  const held = new Map<string, Selected<SemverVersion>>();
   for (const [fromId, deps] of edges) {
     if (!members.has(fromId)) {
       continue;
     }
     for (const [name, toId] of deps) {
       const selection = members.get(toId);
-      const current = winners.get(name);
-      if (!selection || current === toId || name === rootName) {
+      if (!selection) {
         continue;
       }
+      const current = held.get(name);
       if (current === undefined) {
-        winners.set(name, toId);
-        continue;
-      }
-      const held = members.get(current)!;
-      if (held.pkg !== selection.pkg) {
-        throw aliasCollision(name, held, selection);
-      }
-      if (SEMVER.compare(selection.version, held.version) > 0) {
-        winners.set(name, toId);
+        held.set(name, selection);
+      } else if (current.pkg !== selection.pkg) {
+        throw aliasCollision(name, current, selection);
       }
     }
   }
-  return winners;
-}
-
-/**
- * The flat winners over a whole materialize batch — one layout question asked
- * once, because the consumer's collection point merges every delivery of the
- * batch into ONE node_modules. It is the reference point a delivery judges its
- * members' private copies against ({@link planMounts}), never the mount list of
- * any one delivery: a delivery mounts only what its own root reaches.
- */
-export function mergedWinners(members: Map<string, Selected<SemverVersion>>, edges: EdgeMap): Map<string, string> {
-  return flatWinners(undefined, members, edges);
 }
 
 /** The diagnostic for two packages claiming one install name (see
- * {@link flatWinners}) — always an alias, since nothing else renames. */
+ * {@link assertNoAliasCollisions}) — always an alias, since nothing else renames. */
 function aliasCollision(name: string, held: Selected<SemverVersion>, claimed: Selected<SemverVersion>): Error {
   return attachHelp(
     new ConflictError(
@@ -711,27 +683,18 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
         const fetchIds = [...toFetch.keys()];
         const fetching = new Set(fetchIds);
         const edges = this.resolvedEdges(delivered, resolved);
-        /* The winners over the WHOLE batch, computed once: a delivery is planned
-         * against its own root's reach (it must stand alone), but whether one of
-         * its members needs a private copy is a question about the layout the
-         * CONSUMER ends up with — it merges these deliveries into one
-         * node_modules. Judged per delivery, a member whose root cannot see a
-         * higher version of what it requires looks non-divergent and records
-         * nothing, and the merge then silently hands it the higher one. */
-        const merged = mergedWinners(toFetch, edges);
-        const plans = requirements.map(req =>
-          req.override === "alternate"
-            ? undefined
-            : this.planClosure(req, rootIndex.get(requirementKey(req))!, selections, fetching, edges, merged)
-        );
+        /* Judged over the whole batch, since the consumer merges its
+         * deliveries into one layout. */
+        assertNoAliasCollisions(toFetch, edges);
         return Computable.forAll(
           fetchIds.map(id => this.fetch(toFetch.get(id)!.pkg, toFetch.get(id)!.version)),
           (...fetched: PackageFileSet[]) => {
             const packages = new Map<string, PackageFileSet>(fetchIds.map((id, k) => [id, fetched[k]]));
-            const assembled = requirements.map((req, index) => {
-              const plan = plans[index];
-              return plan === undefined ? undefined : this.buildClosure(req, plan, selections, packages);
-            });
+            const assembled = requirements.map(req =>
+              req.override === "alternate"
+                ? undefined
+                : this.buildClosure(req, rootIndex.get(requirementKey(req))!, selections, fetching, edges, packages)
+            );
             return operation === "run"
               ? Computable.forAll(
                   assembled.map(pkg => (pkg === undefined ? Computable.resolve<FileSet>(EMPTY_FILESET) : this.makeRunnable(pkg))),
@@ -825,33 +788,35 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
   }
 
   /**
-   * Plan one root requirement's delivered tree — which node mounts where,
-   * under which name, as ids. A statement about the resolution only: it reads
-   * no content, so it settles before anything is fetched, and a closure with
-   * no valid layout is reported without downloading the closure it can't lay
-   * out.
+   * Deliver one root requirement's package: the graph of every reachable,
+   * fetched selection, each node carrying **all** of its dependency edges
+   * bound to the instance the resolution chose — the resolver's own edge rule
+   * ({@link edgeBinding} via the precomputed edge map), a fact identical in
+   * every delivery. NO layout is decided here: hoisting and private nesting
+   * are the consuming assembler's business (assembleNodeModules), computed
+   * from these complete facts at the merge that needs them — which is what
+   * lets one delivery's member survive a merge with a sibling delivery
+   * unharmed (see DESIGN-package-placement.md).
    *
-   * Layout follows the closure's **edges**, not its selections: a package is
-   * mounted under each name something in the closure asks for it by, which is
-   * its own name for an ordinary requirement and the alias for an aliased one
-   * — so an aliased package appears only where its requirer's imports look for
-   * it, and a package nothing requires under its own name is not mounted under
-   * it. Per name the flat-mount winner (the root wins its own name, else the
-   * highest version — the principal, forks always sitting below it), plus the
-   * private version overrides {@link planMounts} nests under them. A strict
-   * delivery has already been checked for violations and coexisting versions,
-   * so its winners are its whole closure and nothing nests; the two regimes
-   * need no separate planner.
+   * The graph may be cyclic (mutual same-version deps are ordinary npm), so
+   * it is constructed through a {@link PackageGraphBuilder}, each instance
+   * memoized before its edges wire. An instance exists per (name, selection):
+   * an aliased edge binds a restamped instance carrying the requirer's name
+   * for the package — `wrap-ansi` delivered as `wrap-ansi-cjs` IS a package
+   * of that name as far as any install is concerned, content shared. A fork
+   * selection's instances are flagged {@link PackageFileSet.isNestedOverride}
+   * wherever they appear — including as a delivered root, since a root
+   * answered by a fork must not claim a flat slot in a merged store (only the
+   * resolution can say so; position cannot).
    */
-  private planClosure(
+  private buildClosure(
     req: Requirement,
     index: number,
     selections: Selected<SemverVersion>[],
     fetching: ReadonlySet<string>,
     edges: EdgeMap,
-    /** The whole batch's winners — see {@link mergedWinners}. */
-    merged: Map<string, string>
-  ): PlannedClosure {
+    packages: Map<string, PackageFileSet>
+  ): PackageFileSet {
     const reachable = selections.filter(sel => sel.reachableFrom?.includes(index));
     /* The delivered root is what the root requirement BINDS to — normally the
      * principal, but a violated root requirement is answered by its fork. */
@@ -861,28 +826,6 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
       throw new Error(`Resolution of ${requirementKey(req)} does not contain its own root package`);
     }
     const rootId = selectionId(root);
-    /* Closure members and their flat-mount winners; the mount walk from rootId
-     * only follows edges, so a member no edge reaches is inert here. */
-    const members = new Map<string, Selected<SemverVersion>>();
-    for (const sel of reachable) {
-      const id = selectionId(sel);
-      if (fetching.has(id) && !members.has(id)) {
-        members.set(id, sel);
-      }
-    }
-    const winners = flatWinners({ id: rootId, name: root.pkg }, members, edges);
-    return { rootId, mounts: planMounts(rootId, root.pkg, winners, edges, new Set(members.keys()), merged) };
-  }
-
-  /** Realise a planned closure against the fetched packages, stamped with the
-   * resolution's provenance. The delivered root carries the fork flag on the
-   * same terms as any mount below it: a requirement answered by a fork (an
-   * exact pin of a sanctioned second version — the catalog form) delivers a
-   * package that must not claim a flat slot wherever it is merged with the
-   * principal, and only the resolution can say so (see
-   * {@link PackageFileSet.isNestedOverride}). A root remains flat where it is
-   * *directly* named — the assembler's roots always hold their own name. */
-  private buildClosure(req: Requirement, plan: PlannedClosure, selections: Selected<SemverVersion>[], packages: Map<string, PackageFileSet>): PackageFileSet {
     const origin: IResolutionOrigin<SemverVersion> = {
       kind: PACKAGE_RESOLUTION_PROVENANCE,
       repository: this.url,
@@ -891,17 +834,38 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
       versionToString,
       packageOfPath: npmPackageOfPath,
     };
-    const rootFiles = packages.get(plan.rootId)!;
     const forkIds = new Set(selections.filter(sel => sel.fork !== undefined).map(selectionId));
-    const dependencies = buildMounts(plan.mounts, packages, origin, forkIds);
-    return new PackageFileSet(
-      rootFiles,
-      rootFiles.packageName,
-      rootFiles.version,
-      dependencies,
-      origin,
-      forkIds.has(plan.rootId)
-    );
+    /* Delivery members: the root's reachable slice of the fetched batch — an
+     * edge leading outside it (a gated optional pruned from the walk) is
+     * simply not carried. */
+    const members = new Set<string>();
+    for (const sel of reachable) {
+      const id = selectionId(sel);
+      if (fetching.has(id)) {
+        members.add(id);
+      }
+    }
+    const builder = new PackageGraphBuilder();
+    const instances = new Map<string, PackageFileSet>();
+    const instance = (name: string, id: string): PackageFileSet => {
+      const key = `${name}\n${id}`;
+      let node = instances.get(key);
+      if (!node) {
+        const files = packages.get(id)!;
+        node = builder.node(files, name, files.version, origin, forkIds.has(id));
+        /* Memoized BEFORE wiring, so a cycle lands on the instance under
+         * construction instead of recursing forever. */
+        instances.set(key, node);
+        builder.wire(
+          node,
+          [...(edges.get(id) ?? [])].filter(([, toId]) => members.has(toId)).map(([depName, toId]) => instance(depName, toId))
+        );
+      }
+      return node;
+    };
+    const delivered = instance(root.pkg, rootId);
+    builder.seal();
+    return delivered;
   }
 
   /**

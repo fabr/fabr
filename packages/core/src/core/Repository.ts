@@ -21,7 +21,7 @@ import { Computable } from "./Computable";
 import { attachHelp, RequirementResolutionError, toError } from "./Errors";
 import { FileSetRef, IProjection } from "./FileSetRef";
 import { FileSet, FileSource } from "./FileSet";
-import { PackageFileSet } from "./PackageFileSet";
+import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
 import { RunnableFileSet } from "./RunnableFileSet";
 import { chainSteps, IProvenanceStep } from "./Provenance";
 import { Name } from "./Name";
@@ -408,12 +408,29 @@ export function renamedDelivery(source: SourceRef, renameTo: Name, written: stri
 
 /**
  * Chain the reference's provenance steps onto a delivered package and its
- * carried package deps, recursively (the tree of members and their version
- * overrides is finite and acyclic; carried RepositoryRefs pass through).
+ * carried package deps, recursively. The delivered graph may be **cyclic**
+ * (complete edge bindings — see PackageFileSet), so each package is memoized
+ * *before* its dependencies are restamped and the copies are wired through a
+ * {@link PackageGraphBuilder}; carried RepositoryRefs pass through.
  */
 function restampPackage(pkg: PackageFileSet, steps: ReadonlyArray<IProvenanceStep>): PackageFileSet {
-  const dependencies = pkg.dependencies.map(dep => (dep instanceof PackageFileSet ? restampPackage(dep, steps) : dep));
-  return new PackageFileSet(pkg, pkg.packageName, pkg.version, dependencies, chainSteps(steps, pkg.origin), pkg.isNestedOverride);
+  const builder = new PackageGraphBuilder();
+  const restamped = new Map<PackageFileSet, PackageFileSet>();
+  const restamp = (source: PackageFileSet): PackageFileSet => {
+    let copy = restamped.get(source);
+    if (!copy) {
+      copy = builder.node(source, source.packageName, source.version, chainSteps(steps, source.origin), source.isNestedOverride);
+      restamped.set(source, copy);
+      builder.wire(
+        copy,
+        source.dependencies.map(dep => (dep instanceof PackageFileSet ? restamp(dep) : dep))
+      );
+    }
+    return copy;
+  };
+  const root = restamp(pkg);
+  builder.seal();
+  return root;
 }
 
 
@@ -482,31 +499,31 @@ export function materializeShallow(sources: SourceRef[]): Computable<Materialize
  */
 export function materializeAll(sources: SourceRef[], options?: MaterializeOptions): Computable<Materialized[]> {
   const references = gatherReferences(sources);
-  const finish = (finished: Map<RepositoryRef, FileSet | FileSetRef>): Computable<Materialized[]> => {
-    const rebuilt = new Map<PackageFileSet, Computable<PackageFileSet>>();
-    const resolvedSources = sources.map((source): Computable<Materialized> => {
+  const finish = (finished: Map<RepositoryRef, FileSet | FileSetRef>): Materialized[] => {
+    const rebuilt = new Map<PackageFileSet, PackageFileSet>();
+    const builder = new PackageGraphBuilder();
+    const resolved = sources.map((source): Materialized => {
       if (source instanceof RepositoryRef) {
-        return Computable.resolve(finished.get(source)!);
+        return finished.get(source)!;
       } else if (source instanceof PackageFileSet) {
-        return rebuildPackage(source, finished, rebuilt);
+        return rebuildPackage(source, finished, rebuilt, builder);
       } else if (source instanceof FileSetRef && source.source instanceof PackageFileSet) {
         /* A pending projection over a PACKAGE participates in the collection
          * point like any other package (its carried refs were gathered), so the
          * base re-delivers and the projections stay pending over it. Only a
          * package base has anything to rebuild — every other ref passes through
          * untouched below. */
-        return rebuildPackage(source.source, finished, rebuilt).then<Materialized>(
-          base => new FileSetRef(base, source.projections, source.miss)
-        );
+        return new FileSetRef(rebuildPackage(source.source, finished, rebuilt, builder), source.projections, source.miss);
       } else {
-        return Computable.resolve(source);
+        return source;
       }
     });
-    return Computable.forAll(resolvedSources, (...resolved: Materialized[]) => resolved);
+    builder.seal();
+    return resolved;
   };
   if (references.length === 0) {
     /* No references present, so nothing to resolve */
-    return finish(new Map());
+    return Computable.resolve(finish(new Map()));
   }
   const batches = [...groupByRepository(references).entries()];
   return Computable.forAll(
@@ -579,38 +596,90 @@ export function groupByRepository(references: RepositoryRef[]): Map<RepositoryRe
 }
 
 /**
+ * Whether any inert RepositoryRef rides anywhere beneath `pkg`. Only such a
+ * package needs rebuilding at a collection point; a ref-free subgraph — in
+ * particular any *delivered external* closure, which may be cyclic — is
+ * returned as-is by {@link rebuildPackage}.
+ *
+ * Cached globally (a published PackageFileSet's dependencies never change) —
+ * but only where the answer is COMPLETE. On a cyclic graph, a node judged
+ * while an ancestor is still on the walk stack has not seen every path out of
+ * its strongly-connected component, so a "no" computed below an open
+ * back-edge is provisional: caching it would poison the cache for a graph
+ * that carries a ref into a cycle. A frame's answer is cached iff it found a
+ * ref (a "yes" is complete the moment it is found) or no open back-edge below
+ * it reaches *above* it (the SCC-root rule — track the shallowest back-edge
+ * target, Tarjan's lowlink); a provisional "no" is simply recomputed by a
+ * later caller, by which time its cycle's entry node is cached. No graph
+ * shape yields a wrong answer, only at worst an uncached one.
+ */
+const CARRIES_REFS = new WeakMap<PackageFileSet, boolean>();
+function carriesReferences(pkg: PackageFileSet): boolean {
+  const depth = new Map<PackageFileSet, number>();
+  /** The answer, plus the shallowest stack depth any open back-edge reached. */
+  const walk = (node: PackageFileSet, at: number): { carries: boolean; low: number } => {
+    const known = CARRIES_REFS.get(node);
+    if (known !== undefined) {
+      return { carries: known, low: Infinity };
+    }
+    const open = depth.get(node);
+    if (open !== undefined) {
+      return { carries: false, low: open };
+    }
+    depth.set(node, at);
+    let carries = false;
+    let low = Infinity;
+    for (const dep of node.dependencies) {
+      if (dep instanceof RepositoryRef) {
+        carries = true;
+        break;
+      }
+      const result = walk(dep, at + 1);
+      if (result.carries) {
+        carries = true;
+        break;
+      }
+      low = Math.min(low, result.low);
+    }
+    depth.delete(node);
+    if (carries || low >= at) {
+      CARRIES_REFS.set(node, carries);
+    }
+    return { carries, low };
+  };
+  return walk(pkg, 0).carries;
+}
+
+/**
  * Re-deliver a package with its carried references replaced by their
- * resolutions (recursively through built-package deps); a reference that
- * carries projections resolves to files, not a package — it cannot be mounted,
- * so it drops out of the dependency list *unapplied* (its projected content is
- * never computed just to be discarded).
+ * resolutions (recursively); a reference that carries projections resolves to
+ * files, not a package — it cannot be mounted, so it drops out of the
+ * dependency list *unapplied* (its projected content is never computed just
+ * to be discarded). A ref-free package — every delivered external subgraph,
+ * which may be cyclic — passes through untouched; what does get rebuilt is
+ * copied through the caller's {@link PackageGraphBuilder}, memoized *before*
+ * its dependencies wire, so even a ref-carrying cycle rebuilds rather than
+ * recursing forever.
  */
 function rebuildPackage(
   pkg: PackageFileSet,
   finished: Map<RepositoryRef, FileSet | FileSetRef>,
-  rebuilt: Map<PackageFileSet, Computable<PackageFileSet>>
-): Computable<PackageFileSet> {
+  rebuilt: Map<PackageFileSet, PackageFileSet>,
+  builder: PackageGraphBuilder
+): PackageFileSet {
+  if (!carriesReferences(pkg)) {
+    return pkg;
+  }
   let result = rebuilt.get(pkg);
   if (!result) {
-    if (pkg.dependencies.length === 0) {
-      result = Computable.resolve(pkg);
-    } else {
-      result = Computable.forAll(
-        pkg.dependencies.map(dep =>
-          dep instanceof RepositoryRef ? Computable.resolve(finished.get(dep)!) : rebuildPackage(dep, finished, rebuilt)
-        ),
-        (...deps) =>
-          new PackageFileSet(
-            pkg,
-            pkg.packageName,
-            pkg.version,
-            deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet),
-            pkg.origin,
-            pkg.isNestedOverride
-          )
-      );
-    }
+    result = builder.node(pkg, pkg.packageName, pkg.version, pkg.origin, pkg.isNestedOverride);
     rebuilt.set(pkg, result);
+    builder.wire(
+      result,
+      pkg.dependencies
+        .map(dep => (dep instanceof RepositoryRef ? finished.get(dep)! : rebuildPackage(dep, finished, rebuilt, builder)))
+        .filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)
+    );
   }
   return result;
 }

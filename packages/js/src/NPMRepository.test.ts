@@ -52,8 +52,8 @@ import {
   TARGET,
   versionToString,
 } from "@fabr-build/core";
-import { flatWinners, NPMRepository } from "./NPMRepository";
-import { assembleNodeModules, assembleScopedNodeModules, EdgeMap } from "./JSPackage";
+import { assertNoAliasCollisions, EdgeMap, NPMRepository } from "./NPMRepository";
+import { assembleNodeModules, assembleScopedNodeModules } from "./JSPackage";
 import {
   matchesTargetPlatform,
   npmPackageOfPath,
@@ -389,6 +389,46 @@ async function rejection(fn: () => unknown): Promise<Error> {
   throw new Error("expected a rejection, but none occurred");
 }
 
+describe("cyclic dependency closures through resolve + materialize", () => {
+  it("delivers a mutual-dependency pair as one shared cyclic graph, and it lays out flat", async () => {
+    /* Ordinary npm: two packages requiring each other at one version. The
+     * delivered graph carries the cycle explicitly (complete edge bindings),
+     * closed over the SAME instances — the production path of everything the
+     * assembler suites drive via hand-built graphs. */
+    const served = {
+      [`${REG}/ping/1.0.0`]: metadataFor("ping", "1.0.0", { pong: "^1.0.0" }, {
+        dist: { tarball: `${REG}/tarball/ping.tgz`, integrity: "", shasum: "", signatures: [] },
+      }),
+      [`${REG}/pong/1.0.0`]: metadataFor("pong", "1.0.0", { ping: "^1.0.0" }, {
+        dist: { tarball: `${REG}/tarball/pong.tgz`, integrity: "", shasum: "", signatures: [] },
+      }),
+      [`${REG}/tarball/ping.tgz`]: packageTarball("ping.marker"),
+      [`${REG}/tarball/pong.tgz`]: packageTarball("pong.marker"),
+    };
+    const repo = new NPMRepository(REG, fakeContext("build", served, []));
+    const ref = new RepositoryRef(repo, Name.fromLiteral("ping:1.0.0"));
+
+    const [delivered] = await toPromise(resolveAndMaterialize(repo, [ref]));
+    const ping = delivered as PackageFileSet;
+    expect(ping.packageName).to.equal("ping");
+    const pong = ping.dependencies[0] as PackageFileSet;
+    expect(pong.packageName).to.equal("pong");
+    /* The edge back closes on the same instance — a real cycle, not a copy. */
+    expect(pong.dependencies[0]).to.equal(ping);
+
+    /* Exactly the reachable members and nothing else, laid out flat. */
+    const files = new Map(assembleNodeModules([ping]));
+    expect([...files.keys()].sort()).to.deep.equal([
+      "ping/index.js",
+      "ping/package.json",
+      "ping/ping.marker",
+      "pong/index.js",
+      "pong/package.json",
+      "pong/pong.marker",
+    ]);
+  });
+});
+
 describe("NPMRepository resolveAll under files", () => {
   it("delivers a package's own files without resolving its dependency closure", async () => {
     const fetched: string[] = [];
@@ -644,7 +684,7 @@ describe("NPMRepository metadata memo", () => {
   });
 });
 
-describe("flatWinners", () => {
+describe("assertNoAliasCollisions", () => {
   /** A closure member, keyed as the id the edges refer to it by. */
   function members(...ids: string[]): Map<string, Selected<SemverVersion>> {
     return new Map(
@@ -659,57 +699,26 @@ describe("flatWinners", () => {
     return new Map(Object.entries(graph).map(([id, deps]) => [id, new Map(Object.entries(deps))]));
   }
 
-  it("mounts each name the closure's edges ask for", () => {
-    const winners = flatWinners({ id: "cli@1.0.0", name: "cli" }, members("cli@1.0.0", "left-pad@1.2.0"),
-      edges({ "cli@1.0.0": { "left-pad": "left-pad@1.2.0" } })
-    );
-    expect([...winners]).to.deep.equal([
-      ["cli", "cli@1.0.0"],
-      ["left-pad", "left-pad@1.2.0"],
-    ]);
-  });
-
-  it("mounts an aliased package under the alias only", () => {
-    /* Nothing asks for wrap-ansi@7 by its own name — that name belongs to the
-       tree's own wrap-ansi@8 — so the aliased copy exists only as the name its
-       requirer imports. */
-    const winners = flatWinners({ id: "cli@1.0.0", name: "cli" }, members("cli@1.0.0", "@isaacs/cliui@8.0.2", "wrap-ansi@8.1.0", "wrap-ansi@7.0.0"),
-      edges({
-        "cli@1.0.0": { "@isaacs/cliui": "@isaacs/cliui@8.0.2", "wrap-ansi": "wrap-ansi@8.1.0" },
-        "@isaacs/cliui@8.0.2": { "wrap-ansi-cjs": "wrap-ansi@7.0.0" },
-      })
-    );
-    expect([...winners]).to.deep.equal([
-      ["cli", "cli@1.0.0"],
-      ["@isaacs/cliui", "@isaacs/cliui@8.0.2"],
-      ["wrap-ansi", "wrap-ansi@8.1.0"],
-      ["wrap-ansi-cjs", "wrap-ansi@7.0.0"],
-    ]);
-  });
-
-  it("does not mount a member nothing requires under any name", () => {
-    const winners = flatWinners({ id: "cli@1.0.0", name: "cli" }, members("cli@1.0.0", "orphan@1.0.0"), edges({ "cli@1.0.0": {} }));
-    expect([...winners]).to.deep.equal([["cli", "cli@1.0.0"]]);
-  });
-
-  it("keeps the root's own name for the root", () => {
-    /* A dependency selecting another version of the root package cannot take
-       its name: the delivered package must resolve at its own path. */
-    const winners = flatWinners({ id: "cli@1.0.0", name: "cli" }, members("cli@1.0.0", "cli@2.0.0", "dep@1.0.0"),
-      edges({ "cli@1.0.0": { dep: "dep@1.0.0" }, "dep@1.0.0": { cli: "cli@2.0.0" } })
-    );
-    expect(winners.get("cli")).to.equal("cli@1.0.0");
-  });
-
-  it("takes the highest version when one name is claimed twice", () => {
-    const winners = flatWinners({ id: "cli@1.0.0", name: "cli" }, members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "dep@1.0.0", "dep@2.0.0"),
+  it("accepts one name bound to several versions of one package", () => {
+    /* Version divergence is layout's business (nesting), not a collision. */
+    assertNoAliasCollisions(
+      members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "dep@1.0.0", "dep@2.0.0"),
       edges({
         "cli@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
         "a@1.0.0": { dep: "dep@1.0.0" },
         "b@1.0.0": { dep: "dep@2.0.0" },
       })
     );
-    expect(winners.get("dep")).to.equal("dep@2.0.0");
+  });
+
+  it("accepts an alias sharing the batch with the package's own name", () => {
+    assertNoAliasCollisions(
+      members("cli@1.0.0", "@isaacs/cliui@8.0.2", "wrap-ansi@8.1.0", "wrap-ansi@7.0.0"),
+      edges({
+        "cli@1.0.0": { "@isaacs/cliui": "@isaacs/cliui@8.0.2", "wrap-ansi": "wrap-ansi@8.1.0" },
+        "@isaacs/cliui@8.0.2": { "wrap-ansi-cjs": "wrap-ansi@7.0.0" },
+      })
+    );
   });
 
   it("rejects two different packages claiming one install name", () => {
@@ -717,7 +726,8 @@ describe("flatWinners", () => {
        and hoisting either would silently break the other's imports. */
     const err = (() => {
       try {
-        flatWinners({ id: "cli@1.0.0", name: "cli" }, members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "left-pad@1.0.0", "right-pad@1.0.0"),
+        assertNoAliasCollisions(
+          members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "left-pad@1.0.0", "right-pad@1.0.0"),
           edges({
             "cli@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
             "a@1.0.0": { pad: "left-pad@1.0.0" },

@@ -37,7 +37,6 @@ import {
   FileSetRef,
   Flag,
   IFile,
-  IProvenanceStep,
   isCanonicalFileName,
   isJsonObject,
   MemoryFile,
@@ -501,162 +500,8 @@ export function stripPackageJson(files: FileSet): FileSet {
   return files.remap(name => (name === "package.json" ? undefined : name));
 }
 
-/**
- * Lay out the given (materialized) sources as node_modules contents: each
- * package — and, recursively, every package among its dependencies — is
- * mounted at its real package name (which may differ from the alias it was
- * written as); anything that isn't a package passes through unchanged. The
- * sources must have been materialized (any carried references resolved) by
- * the collection point before they get here.
- *
- * One uniform rule covers both dependency regimes (see PackageFileSet): per
- * name a deterministic **hoist winner** — a top-level set's package always
- * wins its own name (its entry path must resolve there); otherwise the
- * highest version — mounts flat at `node_modules/<name>`, and a listed
- * sub-dependency that is NOT the flat winner of its name is a private version
- * override, mounted under its lister (`<mount>/node_modules/<name>`),
- * recursively — exactly where node's walk-up resolution finds it: the private
- * copy from its requirer, the flat winner from everyone else. A built
- * package's direct deps and a strict delivery's flat closure are all winners
- * (one version per name), so everything mounts flat, as always; a permissive
- * delivery's listed overrides are precisely the non-winners, so they nest.
- * Hoisting is disk/path layout; the nesting carries the correctness.
- */
-/**
- * Which node each node's dependencies bind to: node id → (dependency name →
- * the id satisfying it). The resolution reduced to what layout needs, and all
- * it needs — planning reads no files, so it settles before anything is
- * fetched. Transient: never carried on delivered values.
- *
- * The dependency name is the name the *requirer* uses — which under an alias
- * (`"wrap-ansi-cjs": "npm:wrap-ansi@^7.0.0"`) is not the name of the package
- * the edge leads to. Layout follows the edge, so an aliased package is mounted
- * where its requirer's imports look for it, and only there.
- */
-export type EdgeMap = Map<string, Map<string, string>>;
 
-/**
- * A planned mount: which package instance sits at this position, the name it
- * is mounted under, and the private overrides nested beneath it. Ids and names
- * only — a plan is a statement about the resolution, not about content.
- *
- * `as` is the package's own name for every ordinary mount, and the alias for
- * an aliased one; two positions differing only in `as` are different mounts,
- * so it is part of a position's identity.
- */
-export interface PlannedMount {
-  id: string;
-  as: string;
-  overrides: PlannedMount[];
-}
-
-/**
- * Plan the node_modules tree for one delivered root: the flat-mount winners,
- * plus each node's private version overrides — the edges that bind somewhere
- * other than what is already visible at their position — recursively. The
- * result is the tree encoding of a (possibly cyclic) resolved graph, with
- * everything unlisted resolving to the flat winner implicitly.
- *
- * A position is described entirely by its **bindings**: the flat winners
- * overridden by the divergences each enclosing mount introduced (kept
- * canonical — an entry equal to the flat winner is dropped, since it resolves
- * the same either way). Every binding is mounted at the level that introduced
- * it, so two positions with equal bindings resolve every name identically and
- * need the same subtree — which is why a subtree can be memoized on
- * (id, bindings), and shared rather than replanned.
- *
- * The same fact makes a repeat of a position still being planned fatal rather
- * than a stopping point. Each nesting is *forced*: a package can only see a
- * version other than its position's by carrying it privately. So returning to
- * a position already on the path means the forced sequence repeats without
- * end, and the closure has **no** finite node_modules layout — a version cycle
- * across generations (a@1 → b@1 → a@2 → b@2 → a@1) is the shape that does it.
- * Note this is a limit of the *layout*, not of the resolution: such a closure
- * resolves perfectly cleanly, each fork repairing its violated edges —
- * there is simply no tree that satisfies every edge. So it is reported here,
- * where the layout is decided, as {@link assembleNodeModules} reports an
- * unrepresentable root collision, and not truncated into a tree that would
- * silently resolve a dependency to a version its requirer forbade.
- */
-export function planMounts(
-  rootId: string,
-  rootName: string,
-  winners: Map<string, string>,
-  edges: EdgeMap,
-  members: ReadonlySet<string>,
-  /**
-   * The winners of the whole materialize BATCH, which is what the consumer
-   * merges these deliveries into — the reference point for "does this edge need
-   * a private copy". Defaults to this delivery's own winners, for a plan with no
-   * wider batch to answer to. It is deliberately NOT the mount list: a delivery
-   * mounts only what its own root reaches, and may not even have fetched what
-   * won a name elsewhere in the batch.
-   */
-  merged: Map<string, string> = winners
-): PlannedMount[] {
-  const signature = (id: string, as: string, bindings: Map<string, string>): string =>
-    [id, as, ...[...bindings].sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, to]) => `${name}=${to}`)].join("\n");
-  /** Completed subtrees, and the positions on the current planning path (in
-   * order, so a repeat can name the cycle it closes). */
-  const planned = new Map<string, PlannedMount>();
-  const path: Array<{ id: string; key: string }> = [];
-
-  const overridesOf = (id: string, bindings: Map<string, string>): PlannedMount[] => {
-    const divergent = new Map<string, string>();
-    for (const [name, toId] of edges.get(id) ?? []) {
-      /* Divergent against EITHER layout this instance may end up in: its own
-       * delivery's (so the delivery stands alone) or the merged batch's (so the
-       * record survives the consumer's merge — a member whose delivery never saw
-       * the higher version would otherwise silently inherit it). Only what this
-       * delivery fetched can be mounted, whichever answer differs. */
-      const local = bindings.get(name) ?? winners.get(name);
-      const wider = bindings.get(name) ?? merged.get(name) ?? local;
-      if ((local !== toId || wider !== toId) && members.has(toId)) {
-        divergent.set(name, toId);
-      }
-    }
-    /* Canonical: a divergence landing back on the flat winner binds nothing
-     * new (it still mounts here — it has to, to shadow an intervening
-     * override — but resolves to what the fallback already gives). */
-    const nested = new Map(bindings);
-    for (const [name, toId] of divergent) {
-      if (winners.get(name) === toId) {
-        nested.delete(name);
-      } else {
-        nested.set(name, toId);
-      }
-    }
-    return [...divergent].map(([name, toId]) => mount(toId, name, nested));
-  };
-
-  const mount = (id: string, as: string, bindings: Map<string, string>): PlannedMount => {
-    const key = signature(id, as, bindings);
-    const done = planned.get(key);
-    if (done) {
-      return done;
-    }
-    const repeated = path.findIndex(entry => entry.key === key);
-    if (repeated >= 0) {
-      throw unrepresentableCycle([...path.slice(repeated).map(entry => entry.id), id]);
-    }
-    path.push({ id, key });
-    const result: PlannedMount = { id, as, overrides: overridesOf(id, bindings) };
-    path.pop();
-    planned.set(key, result);
-    return result;
-  };
-
-  /* The top of the tree binds nothing beyond the flat winners. The root's own
-   * name is the consumer's to mount (it IS the delivered package); any other
-   * name winning the root — an alias of it — still needs its own mount. */
-  const top = new Map<string, string>();
-  return [
-    ...[...winners].filter(([name]) => name !== rootName).map(([name, id]) => mount(id, name, top)),
-    ...overridesOf(rootId, top),
-  ];
-}
-
-/** The diagnostic for a closure with no finite layout (see {@link planMounts}):
+/** The diagnostic for a closure with no finite layout (see {@link mountWinners}):
  * name the cycle, and the pin that collapses it. */
 function unrepresentableCycle(cycle: string[]): Error {
   const names = [...new Set(cycle.map(id => id.substring(0, id.lastIndexOf("@"))))];
@@ -670,54 +515,11 @@ function unrepresentableCycle(cycle: string[]): Error {
   );
 }
 
-/**
- * Realise a plan against the fetched packages: each mount becomes a
- * PackageFileSet carrying its overrides as its own dependencies, built
- * depth-first so every instance is immutable-complete at construction. A
- * subtree shared by the plan stays one instance here too.
- *
- * A mount is stamped with the name it is mounted *as*, which for an aliased
- * dependency is not the fetched package's own name: `wrap-ansi` delivered as
- * `wrap-ansi-cjs` is a package of that name as far as the install is concerned
- * — the same thing npm's on-disk `node_modules/wrap-ansi-cjs` (whose
- * package.json still says `wrap-ansi`) means. The content is shared with any
- * other mount of that version; only the identity this instance carries — and
- * hence where {@link assembleNodeModules} puts it — differs.
- */
-export function buildMounts(
-  plan: readonly PlannedMount[],
-  packages: Map<string, PackageFileSet>,
-  origin: IProvenanceStep,
-  /**
-   * The node ids of the resolution's **fork** selections (`Selected.fork` —
-   * the sanctioned second versions). A fork instance is flagged as a nested
-   * override wherever it mounts — including as a per-root plan's own flat
-   * winner, since a root whose subtree contains only the fork still must not
-   * claim a merged store's flat slot (see
-   * {@link PackageFileSet.isNestedOverride}). Position in the plan cannot
-   * decide this; the resolution's fork identity can.
-   */
-  forkIds: ReadonlySet<string> = new Set()
-): PackageFileSet[] {
-  const built = new Map<PlannedMount, PackageFileSet>();
-  const build = (node: PlannedMount): PackageFileSet => {
-    const done = built.get(node);
-    if (done) {
-      return done;
-    }
-    const files = packages.get(node.id)!;
-    const result = new PackageFileSet(files, node.as, files.version, node.overrides.map(build), origin, forkIds.has(node.id));
-    built.set(node, result);
-    return result;
-  };
-  return plan.map(build);
-}
 
 /** The package instances of a delivery, collected once: the direct roots,
- * every reachable instance (the delivered override structure is a finite
- * tree; built-package structure is acyclic by construction), one
- * representative per packageId, and the loose (non-package) sets passed
- * through. */
+ * every reachable instance (cycle-safe — a delivered graph carries complete,
+ * possibly cyclic edge bindings), one representative per packageId, and the
+ * loose (non-package) sets passed through. */
 interface CollectedPackages {
   roots: PackageFileSet[];
   all: PackageFileSet[];
@@ -811,39 +613,122 @@ function hoistWinners({ roots, all, byId }: CollectedPackages, strict: boolean):
   return top;
 }
 
+/** One planned position: the instance mounted there, and the private
+ * overrides nested beneath it, keyed by the name they mount under. A shared
+ * value — two positions with equal bindings share one plan. */
+interface PlannedNest {
+  pkg: PackageFileSet;
+  overrides: Map<string, PlannedNest>;
+}
+
 /**
- * Mount every winner at `pathOf(name)`, nesting each mounted package's listed
- * non-winner dependencies (its private overrides) under it, recursively — the
- * one tree encoding of a delivered closure both assemblers share; only the
- * namespace the winners land in differs.
+ * Mount every winner at `pathOf(name)`, nesting under each mounted instance
+ * every dependency edge that binds somewhere other than what is *visible* at
+ * its position — recursively: the tree encoding of the delivered (possibly
+ * cyclic) graph, decided HERE, from the complete edge bindings the deliveries
+ * carry, against the winners of everything this consumer is merging. The one
+ * planner both assemblers share; only the namespace the winners land in
+ * differs.
+ *
+ * A position is described entirely by its **bindings**: the flat winners
+ * overridden by the divergences each enclosing mount introduced (kept
+ * canonical — an entry equal to the flat winner is dropped, since it resolves
+ * the same either way). Every divergence is mounted at the level that
+ * introduced it — exactly where node's walk-up resolution finds it: the
+ * private copy from its requirer, the flat winner from everyone else. Two
+ * positions with equal bindings resolve every name identically and need the
+ * same subtree, which is why a subtree is memoized on (packageId, bindings)
+ * and shared rather than replanned — and why an ordinary dependency cycle
+ * terminates: a cycle member's edge back to an already-bound name is not a
+ * divergence.
+ *
+ * The same fact makes a repeat of a position still being planned fatal rather
+ * than a stopping point. Each nesting is *forced*: a package can only see a
+ * version other than its position's by carrying it privately. So returning to
+ * a position already on the planning path means the forced sequence repeats
+ * without end, and the closure has **no** finite node_modules layout — a
+ * version cycle across generations (a@1 → b@1 → a@2 → b@2 → a@1) is the shape
+ * that does it. A limit of the *layout*, not of the resolution (such a
+ * closure resolves cleanly); judged here, at the merge that actually needs a
+ * tree, so a cycle that only exists once deliveries are merged is caught, and
+ * one that never mounts is not misreported.
  */
 function mountWinners(
   top: Map<string, string>,
   byId: Map<string, PackageFileSet>,
   pathOf: (name: string) => string
 ): FileSet[] {
-  const mounts: FileSet[] = [];
-  const mounted = new Set<string>();
-  /** Mount a package at `atPath`, nesting its listed non-winner deps under it. */
-  const mountAt = (pkg: PackageFileSet, atPath: string): void => {
-    const mountKey = `${pkg.packageId}\n${atPath}`;
-    if (mounted.has(mountKey)) {
-      return;
+  const signature = (id: string, bindings: Map<string, string>): string =>
+    [id, ...[...bindings].sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, to]) => `${name}=${to}`)].join("\n");
+  /** Completed subtrees, and the positions on the current planning path (in
+   * order, so a repeat can name the cycle it closes). */
+  const planned = new Map<string, PlannedNest>();
+  const path: Array<{ id: string; key: string }> = [];
+
+  const plan = (pkg: PackageFileSet, bindings: Map<string, string>): PlannedNest => {
+    const key = signature(pkg.packageId, bindings);
+    const done = planned.get(key);
+    if (done) {
+      return done;
     }
-    mounted.add(mountKey);
-    mounts.push(pkg.remap(path => `${atPath}/${path}`));
+    const repeated = path.findIndex(entry => entry.key === key);
+    if (repeated >= 0) {
+      throw unrepresentableCycle([...path.slice(repeated).map(entry => entry.id), pkg.packageId]);
+    }
+    path.push({ id: pkg.packageId, key });
+    const divergent = new Map<string, PackageFileSet>();
     for (const dep of pkg.dependencies) {
-      if (dep instanceof PackageFileSet && top.get(dep.packageName) !== dep.packageId) {
-        mountAt(dep, `${atPath}/node_modules/${dep.packageName}`);
+      if (dep instanceof PackageFileSet && (bindings.get(dep.packageName) ?? top.get(dep.packageName)) !== dep.packageId) {
+        divergent.set(dep.packageName, dep);
       }
+    }
+    /* Canonical: a divergence landing back on the flat winner binds nothing
+     * new (it still mounts here — it has to, to shadow an intervening
+     * override — but resolves to what the fallback already gives). */
+    const nested = new Map(bindings);
+    for (const [name, dep] of divergent) {
+      if (top.get(name) === dep.packageId) {
+        nested.delete(name);
+      } else {
+        nested.set(name, dep.packageId);
+      }
+    }
+    const overrides = new Map<string, PlannedNest>();
+    for (const [name, dep] of divergent) {
+      overrides.set(name, plan(dep, nested));
+    }
+    path.pop();
+    const result: PlannedNest = { pkg, overrides };
+    planned.set(key, result);
+    return result;
+  };
+
+  const mounts: FileSet[] = [];
+  const emit = (node: PlannedNest, atPath: string): void => {
+    mounts.push(node.pkg.remap(filePath => `${atPath}/${filePath}`));
+    for (const [name, override] of node.overrides) {
+      emit(override, `${atPath}/node_modules/${name}`);
     }
   };
   for (const [name, id] of top) {
-    mountAt(byId.get(id)!, pathOf(name));
+    emit(plan(byId.get(id)!, new Map()), pathOf(name));
   }
   return mounts;
 }
 
+/**
+ * Lay out the given (materialized) sources as node_modules contents: each
+ * package — and, recursively, every package its edges reach — is mounted at
+ * its delivered package name (which for an alias is the requirer's name for
+ * it); anything that isn't a package passes through unchanged. Per name a
+ * deterministic **hoist winner** (a top-level set's package always wins its
+ * own name; otherwise the highest version) mounts flat at
+ * `node_modules/<name>`, and every dependency edge binding elsewhere nests
+ * privately under its requirer — {@link mountWinners}, deciding the layout
+ * here, at the merge, from the complete edge bindings the deliveries carry.
+ * The sources must have been materialized by the collection point before they
+ * get here.
+ */
 export function assembleNodeModules(sets: FileSet[]): FileSet {
   const collected = collectPackages(sets);
   const top = hoistWinners(collected, false);
@@ -889,10 +774,11 @@ const SCOPED_STORE = ".pkgs/node_modules";
  * source importing an undeclared transitive dep finds nothing at the top level
  * and fails. A delivery carrying a sanctioned second version of a package (a
  * `?` alternate's fork) nests it under its requirers within the store
- * (`<STORE>/<requirer>/node_modules/<name>`), exactly as the delivered
- * override structure encodes — node resolution finds the nested copy from the
- * requirer and the flat winner from everywhere else. Non-package sources
- * (loose files) pass through at the top level, as
+ * (`<STORE>/<requirer>/node_modules/<name>`) — decided by the shared
+ * {@link mountWinners} planner from the delivered edge bindings, exactly as
+ * the flat layout decides its nests — so node resolution finds the nested
+ * copy from the requirer and the flat winner from everywhere else.
+ * Non-package sources (loose files) pass through at the top level, as
  * a source may reference them directly. Requires the sources to be materialized.
  */
 export function assembleScopedNodeModules(directSets: FileSet[]): FileSet {

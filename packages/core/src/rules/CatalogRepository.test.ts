@@ -223,6 +223,30 @@ describe("CatalogRepository (through the model)", () => {
     expect(repo.materializeCalls).to.deep.equal([["foo", "bar"]]);
   });
 
+  it("shares a collection point with direct (non-catalog) references, each source its own batch", async () => {
+    /* `deps = @cat:foo @direct:bar` — a catalog member and an ordinary
+     * repository reference in ONE property. They group by repository instance:
+     * the catalog answers foo from its pinned resolution, @direct resolves bar
+     * in a batch of its own, and the two deliveries merge at the consumer —
+     * two domains sharing a collection point, never one joint resolution. */
+    const model = build(
+      "package_repo @backing { }\n" +
+        "package_repo @direct { }\n" +
+        "catalog @cat { deps = @backing:foo; }\n" +
+        "test_deps a { deps = @cat:foo @direct:bar; }\n"
+    );
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    /* Both deliveries arrived at the one collection point. */
+    expect(await lastDeps!.readFile("foo/data.txt")).to.equal("foo");
+    expect(await lastDeps!.readFile("bar/data.txt")).to.equal("bar");
+    /* Each source resolved exactly its own batch: the catalog's pin for foo
+     * (resolved at catalog construction), the direct repository for bar. */
+    expect(backings.get("@backing")!.resolved).to.deep.equal([["foo"]]);
+    expect(backings.get("@backing")!.materializeCalls).to.deep.equal([["foo"]]);
+    expect(backings.get("@direct")!.resolved).to.deep.equal([["bar"]]);
+    expect(backings.get("@direct")!.materializeCalls).to.deep.equal([["bar"]]);
+  });
+
   it("delivers a member under a written rename, without changing what is pinned or fetched", async () => {
     /* `@cat:foo -> renamed` — the package rename, which the catalog needs no
      * knowledge of: it is applied where every delivery is finished. */

@@ -18,13 +18,9 @@
  */
 
 import { expect } from "chai";
-import { Computable, ConflictError, FileSet, Flag, IFile, MemoryFile, PackageFileSet, SymlinkFile } from "@fabr-build/core";
+import { Computable, ConflictError, FileSet, Flag, IFile, MemoryFile, PackageFileSet, PackageGraphBuilder, SymlinkFile } from "@fabr-build/core";
 import {
   assembleNodeModules,
-  buildMounts,
-  EdgeMap,
-  planMounts,
-  PlannedMount,
   assembleScopedNodeModules,
   binByConvention,
   binOf,
@@ -101,8 +97,9 @@ describe("assembleScopedNodeModules", () => {
 
   it("nests a delivered override instance under its requirer instead of conflicting", () => {
     /* The sanctioned-divergence shape (a '?' alternate's fork): the winner
-     * holds the flat store slot; the override — flagged by buildMounts — nests
-     * under the requirer that lists it, where node resolution finds it first. */
+     * holds the flat store slot; the override — flagged by the delivery — nests
+     * under the requirer whose edge binds it, where node resolution finds it
+     * first. */
     const fork = new PackageFileSet(
       new Map<string, IFile>([["index.js", MemoryFile.from("// shared@1")]]),
       "shared",
@@ -134,249 +131,336 @@ describe("assembleScopedNodeModules", () => {
   });
 });
 
-describe("planMounts", () => {
-  /** A closure member: `name@version`, its files distinguishable by content. */
-  function member(name: string, version: string): PackageFileSet {
-    return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}@${version}`)]]), name, version);
+describe("assembling delivered edge-binding graphs", () => {
+  /** A delivered closure from a literal `id -> {name: id}` graph — complete
+   * edge bindings, cycles allowed — built the way NPMRepository.buildClosure
+   * builds one: an instance per (name, selection) wired through the graph
+   * builder, an aliased edge restamped with the requirer's name for it. */
+  function delivered(edges: Record<string, Record<string, string>>, rootId: string, forks: string[] = []): PackageFileSet {
+    const builder = new PackageGraphBuilder();
+    const instances = new Map<string, PackageFileSet>();
+    const instance = (name: string, id: string): PackageFileSet => {
+      const key = `${name}\n${id}`;
+      let node = instances.get(key);
+      if (!node) {
+        node = builder.node(
+          new Map<string, IFile>([["index.js", MemoryFile.from(`// ${id}`)]]),
+          name,
+          id.substring(id.lastIndexOf("@") + 1),
+          undefined,
+          forks.includes(id)
+        );
+        instances.set(key, node);
+        builder.wire(
+          node,
+          Object.entries(edges[id] ?? {}).map(([depName, toId]) => instance(depName, toId))
+        );
+      }
+      return node;
+    };
+    const root = instance(rootId.substring(0, rootId.lastIndexOf("@")), rootId);
+    builder.seal();
+    return root;
   }
 
-  /** Everything planMounts reads, from a literal `id -> {name: id}` graph. */
-  function graph(edges: Record<string, Record<string, string>>): {
-    packages: Map<string, PackageFileSet>;
-    members: Set<string>;
-    edgeMap: EdgeMap;
-  } {
-    const packages = new Map<string, PackageFileSet>();
-    for (const id of Object.keys(edges)) {
-      const at = id.lastIndexOf("@");
-      packages.set(id, member(id.substring(0, at), id.substring(at + 1)));
-    }
-    const edgeMap: EdgeMap = new Map(Object.entries(edges).map(([id, deps]) => [id, new Map(Object.entries(deps))]));
-    return { packages, members: new Set(packages.keys()), edgeMap };
+  async function contentAt(files: Map<string, IFile>, path: string): Promise<string> {
+    const file = files.get(path);
+    expect(file, path).to.not.equal(undefined);
+    return settle(file!.readString());
   }
 
-  /** The planned tree as `id` paths, so nesting is inspectable. */
-  function tree(mounts: PlannedMount[]): string[] {
-    return mounts.flatMap(mount => [mount.id, ...tree(mount.overrides).map(path => `${mount.id}/${path}`)]);
-  }
+  it("nests each divergent edge under its requirer (the mdn-data shape)", async () => {
+    /* csso needs css-tree@2 where the flat winner is @3, and that copy needs
+     * mdn-data@2.0.28 where the winner is @2.12.2. */
+    const root = delivered(
+      {
+        "svgo@4.0.1": { csso: "csso@5.0.5", "css-tree": "css-tree@3.0.1", "mdn-data": "mdn-data@2.12.2" },
+        "csso@5.0.5": { "css-tree": "css-tree@2.2.0" },
+        "css-tree@2.2.0": { "mdn-data": "mdn-data@2.0.28" },
+        "css-tree@3.0.1": { "mdn-data": "mdn-data@2.12.2" },
+        "mdn-data@2.12.2": {},
+        "mdn-data@2.0.28": {},
+      },
+      "svgo@4.0.1"
+    );
+    const files = entries(assembleNodeModules([root]));
+    expect(await contentAt(files, "css-tree/index.js")).to.equal("// css-tree@3.0.1");
+    expect(await contentAt(files, "csso/node_modules/css-tree/index.js")).to.equal("// css-tree@2.2.0");
+    expect(await contentAt(files, "csso/node_modules/css-tree/node_modules/mdn-data/index.js")).to.equal("// mdn-data@2.0.28");
+    expect(await contentAt(files, "mdn-data/index.js")).to.equal("// mdn-data@2.12.2");
+  });
 
-  it("nests each divergent edge target under its requirer", () => {
-    /* The mdn-data shape: csso needs css-tree@2 where the flat winner is @3,
-     * and that copy needs mdn-data@2.0.28 where the winner is @2.12.2. */
-    const { members, edgeMap } = graph({
+  it("keeps a member's requirement across a merge with a sibling delivery (the parse5/entities shape)", async () => {
+    /* jsdom's delivery alone hoists entities@4.5.0 flat; merged with a sibling
+     * carrying entities@6.0.0 the batch winner changes — and parse5's edge
+     * still binds 4.5.0, so the layout decided HERE nests its copy privately.
+     * (The pruned encoding decided this per delivery, and lost it.) */
+    const jsdom = delivered(
+      {
+        "jsdom@26.1.0": { parse5: "parse5@7.2.1" },
+        "parse5@7.2.1": { entities: "entities@4.5.0" },
+        "entities@4.5.0": {},
+      },
+      "jsdom@26.1.0"
+    );
+    const other = delivered({ "webby@1.0.0": { entities: "entities@6.0.0" }, "entities@6.0.0": {} }, "webby@1.0.0");
+    const files = entries(assembleNodeModules([jsdom, other]));
+    expect(await contentAt(files, "entities/index.js")).to.equal("// entities@6.0.0");
+    expect(await contentAt(files, "parse5/node_modules/entities/index.js")).to.equal("// entities@4.5.0");
+    /* And standing alone, the very same delivery needs no nest at all. */
+    const alone = entries(assembleNodeModules([delivered(
+      {
+        "jsdom@26.1.0": { parse5: "parse5@7.2.1" },
+        "parse5@7.2.1": { entities: "entities@4.5.0" },
+        "entities@4.5.0": {},
+      },
+      "jsdom@26.1.0"
+    )]));
+    expect(await contentAt(alone, "entities/index.js")).to.equal("// entities@4.5.0");
+    expect(alone.has("parse5/node_modules/entities/index.js")).to.equal(false);
+  });
+
+  it("mounts a root's own divergent edge under the root (the two-mounts shape)", async () => {
+    /* DESIGN-package-placement.md bug 2: the root requires uuid@^8 while its
+     * closure's flat winner is uuid@9 — the pruned encoding emitted both a
+     * winner mount and a root override under one name and conflicted; from
+     * complete bindings it is an ordinary private nest. */
+    const root = delivered(
+      {
+        "root@1.0.0": { uuid: "uuid@8.3.2", other: "other@1.0.0" },
+        "other@1.0.0": { uuid: "uuid@9.0.0" },
+        "uuid@8.3.2": {},
+        "uuid@9.0.0": {},
+      },
+      "root@1.0.0"
+    );
+    const files = entries(assembleNodeModules([root]));
+    expect(await contentAt(files, "uuid/index.js")).to.equal("// uuid@9.0.0");
+    expect(await contentAt(files, "root/node_modules/uuid/index.js")).to.equal("// uuid@8.3.2");
+  });
+
+  it("lays out an ordinary dependency cycle flat", () => {
+    /* a ↔ b at one version each: complete bindings make the cycle explicit in
+     * the delivered graph; nothing diverges, so nothing nests. */
+    const root = delivered({ "a@1.0.0": { b: "b@1.0.0" }, "b@1.0.0": { a: "a@1.0.0" } }, "a@1.0.0");
+    const files = entries(assembleNodeModules([root]));
+    expect(files.has("a/index.js")).to.equal(true);
+    expect(files.has("b/index.js")).to.equal(true);
+  });
+
+  it("nests a cyclic pair of private copies without recursing forever", async () => {
+    /* Two fork copies requiring each other: each nests once under the
+     * requirer that diverges, and the bindings they introduce terminate the
+     * recursion (a member's edge back to an already-bound name is not a
+     * divergence). */
+    const root = delivered(
+      {
+        "app@1.0.0": { legacy: "legacy@1.0.0", a: "a@2.0.0", b: "b@2.0.0" },
+        "legacy@1.0.0": { a: "a@1.0.0" },
+        "a@1.0.0": { b: "b@1.0.0" },
+        "b@1.0.0": { a: "a@1.0.0" },
+        "a@2.0.0": {},
+        "b@2.0.0": {},
+      },
+      "app@1.0.0"
+    );
+    const files = entries(assembleNodeModules([root]));
+    expect(await contentAt(files, "a/index.js")).to.equal("// a@2.0.0");
+    expect(await contentAt(files, "legacy/node_modules/a/index.js")).to.equal("// a@1.0.0");
+    expect(await contentAt(files, "legacy/node_modules/a/node_modules/b/index.js")).to.equal("// b@1.0.0");
+  });
+
+  it("reports a cross-generation version cycle instead of nesting forever", () => {
+    /* a@1 → b@1 → a@2 → b@2 → a@1: each hop needs a version other than the one
+     * visible where it sits and each nesting is forced, so no finite tree
+     * satisfies every edge — judged here, at the merge that needs a tree. */
+    const root = delivered(
+      {
+        "a@1.0.0": { b: "b@1.0.0" },
+        "b@1.0.0": { a: "a@2.0.0" },
+        "a@2.0.0": { b: "b@2.0.0" },
+        "b@2.0.0": { a: "a@1.0.0" },
+      },
+      "a@1.0.0"
+    );
+    const err = (() => {
+      try {
+        assembleNodeModules([root]);
+        return undefined;
+      } catch (thrown) {
+        return thrown as Error & { help?: string };
+      }
+    })();
+    expect(err?.message).to.contain("Cannot lay out this dependency closure");
+    /* The full named chain, so a mis-sliced cycle path can't pass. */
+    expect(err?.message).to.contain("a@1.0.0 -> b@1.0.0 -> a@2.0.0 -> b@2.0.0 -> a@1.0.0");
+    expect(err?.help).to.contain("'@npm:a:<version>' or '@npm:b:<version>'");
+  });
+
+  it("mounts an aliased dependency under the alias, and only there", async () => {
+    /* The @isaacs/cliui shape: the aliased edge binds a restamped instance —
+     * the alias IS its packageName — so it competes for (and here wins) the
+     * alias name, never the package's own. */
+    const root = delivered(
+      {
+        "cli@1.0.0": { "@isaacs/cliui": "@isaacs/cliui@8.0.2", "wrap-ansi": "wrap-ansi@8.1.0" },
+        "@isaacs/cliui@8.0.2": { "wrap-ansi-cjs": "wrap-ansi@7.0.0" },
+        "wrap-ansi@8.1.0": {},
+        "wrap-ansi@7.0.0": {},
+      },
+      "cli@1.0.0"
+    );
+    const files = entries(assembleNodeModules([root]));
+    expect([...files.keys()].filter(name => name.includes("wrap-ansi")).sort()).to.deep.equal([
+      "wrap-ansi-cjs/index.js",
+      "wrap-ansi/index.js",
+    ]);
+    expect(await contentAt(files, "wrap-ansi/index.js")).to.equal("// wrap-ansi@8.1.0");
+    expect(await contentAt(files, "wrap-ansi-cjs/index.js")).to.equal("// wrap-ansi@7.0.0");
+  });
+
+  it("nests an alias mount privately when its name is won by another version", async () => {
+    /* Two requirers aliasing one name to different versions: the alias behaves
+     * exactly like a package name — one wins the flat mount, the other nests
+     * under the requirer that diverges. */
+    const root = delivered(
+      {
+        "root@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
+        "a@1.0.0": { "wa-cjs": "wrap-ansi@7.0.0" },
+        "b@1.0.0": { "wa-cjs": "wrap-ansi@6.0.0" },
+        "wrap-ansi@7.0.0": {},
+        "wrap-ansi@6.0.0": {},
+      },
+      "root@1.0.0"
+    );
+    const files = entries(assembleNodeModules([root]));
+    expect(await contentAt(files, "wa-cjs/index.js")).to.equal("// wrap-ansi@7.0.0");
+    expect(await contentAt(files, "b/node_modules/wa-cjs/index.js")).to.equal("// wrap-ansi@6.0.0");
+  });
+
+  it("restamps an alias instance with the name it is delivered under", () => {
+    /* The delivered instance IS a package of that name as far as the install
+     * is concerned (npm's node_modules/wrap-ansi-cjs, whose package.json still
+     * says wrap-ansi) — the content is the aliased package's. */
+    const root = delivered({ "cli@1.0.0": { "wrap-ansi-cjs": "wrap-ansi@7.0.0" }, "wrap-ansi@7.0.0": {} }, "cli@1.0.0");
+    const [mounted] = root.dependencies;
+    expect(mounted).to.be.instanceOf(PackageFileSet);
+    expect((mounted as PackageFileSet).packageName).to.equal("wrap-ansi-cjs");
+    expect((mounted as PackageFileSet).version).to.equal("7.0.0");
+  });
+
+  it("lays out the same deliveries identically regardless of arrival order", () => {
+    /* Canonical determinism is a hard requirement — the assembled tree is an
+     * action input, so the same graphs must yield a byte-identical layout
+     * however the collection point happened to order them: deliveries
+     * reversed, and a node's edges declared in a different order. Compared as
+     * manifests (hash + mode + sorted names) — the actual cache-key surface. */
+    const jsdomGraph = {
+      "jsdom@26.1.0": { parse5: "parse5@7.2.1" },
+      "parse5@7.2.1": { entities: "entities@4.5.0" },
+      "entities@4.5.0": {},
+    };
+    const webbyGraph = { "webby@1.0.0": { entities: "entities@6.0.0" }, "entities@6.0.0": {} };
+    const forward = assembleNodeModules([delivered(jsdomGraph, "jsdom@26.1.0"), delivered(webbyGraph, "webby@1.0.0")]);
+    const backward = assembleNodeModules([delivered(webbyGraph, "webby@1.0.0"), delivered(jsdomGraph, "jsdom@26.1.0")]);
+    expect(backward.toManifest()).to.equal(forward.toManifest());
+
+    const svgoGraph = {
       "svgo@4.0.1": { csso: "csso@5.0.5", "css-tree": "css-tree@3.0.1", "mdn-data": "mdn-data@2.12.2" },
       "csso@5.0.5": { "css-tree": "css-tree@2.2.0" },
       "css-tree@2.2.0": { "mdn-data": "mdn-data@2.0.28" },
       "css-tree@3.0.1": { "mdn-data": "mdn-data@2.12.2" },
       "mdn-data@2.12.2": {},
       "mdn-data@2.0.28": {},
-    });
-    const winners = new Map([
-      ["svgo", "svgo@4.0.1"],
-      ["csso", "csso@5.0.5"],
-      ["css-tree", "css-tree@3.0.1"],
-      ["mdn-data", "mdn-data@2.12.2"],
-    ]);
-    expect(tree(planMounts("svgo@4.0.1", "svgo", winners, edgeMap, members))).to.deep.equal([
-      "csso@5.0.5",
-      "csso@5.0.5/css-tree@2.2.0",
-      "csso@5.0.5/css-tree@2.2.0/mdn-data@2.0.28",
-      "css-tree@3.0.1",
-      "mdn-data@2.12.2",
-    ]);
-  });
-
-  it("records a private copy an edge needs in the MERGED layout, not just its own", () => {
-    /* The parse5/entities shape. This delivery's root reaches only entities@4.5.0,
-     * so locally it is the flat winner and parse5's edge looks non-divergent —
-     * but a sibling delivery in the same batch carries entities@6.0.0, so the
-     * consumer's merged node_modules will hoist that instead. Judged against the
-     * merged winners, parse5's edge diverges and its copy is recorded, which is
-     * what lets it survive the merge. */
-    const { members, edgeMap } = graph({
-      "jsdom@26.1.0": { parse5: "parse5@7.2.1" },
-      "parse5@7.2.1": { entities: "entities@4.5.0" },
-      "entities@4.5.0": {},
-    });
-    const winners = new Map([
-      ["jsdom", "jsdom@26.1.0"],
-      ["parse5", "parse5@7.2.1"],
-      ["entities", "entities@4.5.0"],
-    ]);
-    const merged = new Map([...winners, ["entities", "entities@6.0.0"]]);
-    expect(tree(planMounts("jsdom@26.1.0", "jsdom", winners, edgeMap, members, merged))).to.deep.equal([
-      "parse5@7.2.1",
-      "parse5@7.2.1/entities@4.5.0",
-      "entities@4.5.0",
-    ]);
-    /* Without the batch's answer it plans as it always did: nothing to nest, and
-     * the requirement is lost the moment this delivery meets the other. */
-    expect(tree(planMounts("jsdom@26.1.0", "jsdom", winners, edgeMap, members))).to.deep.equal([
-      "parse5@7.2.1",
-      "entities@4.5.0",
-    ]);
-  });
-
-  it("reports a cross-generation version cycle instead of nesting forever", () => {
-    /* a@1 → b@1 → a@2 → b@2 → a@1: every hop needs a version other than the
-     * one visible where it sits, and each nesting is forced, so the tree would
-     * grow without end (it used to, until the stack gave out). No finite
-     * node_modules layout satisfies all four, so it is reported as such. */
-    const { members, edgeMap } = graph({
-      "a@1.0.0": { b: "b@1.0.0" },
-      "b@1.0.0": { a: "a@2.0.0" },
-      "a@2.0.0": { b: "b@2.0.0" },
-      "b@2.0.0": { a: "a@1.0.0" },
-    });
-    /* The root holds its own name; b's flat winner is its highest version. */
-    const winners = new Map([
-      ["a", "a@1.0.0"],
-      ["b", "b@2.0.0"],
-    ]);
-    const err = (() => {
-      try {
-        planMounts("a@1.0.0", "a", winners, edgeMap, members);
-        return undefined;
-      } catch (thrown) {
-        return thrown as Error & { help?: string };
-      }
-    })();
-    expect(err?.message).to.contain("b@1.0.0 -> a@2.0.0 -> b@2.0.0 -> a@1.0.0 -> b@1.0.0");
-    expect(err?.help).to.contain("@npm:b:<version>");
-  });
-
-  it("nests a cycle that resolves to one version per name", () => {
-    /* The ordinary cyclic dependency (a ↔ b, one version each) is not the
-     * problem — nothing diverges from the flat winners, so nothing nests. */
-    const { members, edgeMap } = graph({
-      "a@1.0.0": { b: "b@1.0.0" },
-      "b@1.0.0": { a: "a@1.0.0" },
-    });
-    const winners = new Map([
-      ["a", "a@1.0.0"],
-      ["b", "b@1.0.0"],
-    ]);
-    expect(tree(planMounts("a@1.0.0", "a", winners, edgeMap, members))).to.deep.equal(["b@1.0.0"]);
-  });
-
-  it("reuses one subtree for a position reached twice with the same bindings", () => {
-    /* Two requirers diverging the same way share the instance: the subtree is
-     * a function of (node, bindings), so planning it twice is waste — and on a
-     * wide graph, exponential waste. */
-    const { members, edgeMap } = graph({
-      "root@1.0.0": { x: "x@1.0.0", y: "y@1.0.0", shared: "shared@2.0.0" },
-      "x@1.0.0": { shared: "shared@1.0.0" },
-      "y@1.0.0": { shared: "shared@1.0.0" },
-      "shared@1.0.0": {},
-      "shared@2.0.0": {},
-    });
-    const winners = new Map([
-      ["root", "root@1.0.0"],
-      ["x", "x@1.0.0"],
-      ["y", "y@1.0.0"],
-      ["shared", "shared@2.0.0"],
-    ]);
-    const mounts = planMounts("root@1.0.0", "root", winners, edgeMap, members);
-    const x = mounts.find(mount => mount.id.startsWith("x@"))!;
-    const y = mounts.find(mount => mount.id.startsWith("y@"))!;
-    expect(x.overrides[0]).to.equal(y.overrides[0]);
-  });
-
-  it("mounts an aliased dependency under the alias, and only there", () => {
-    /* The @isaacs/cliui shape: cliui requires wrap-ansi@7 as `wrap-ansi-cjs`
-     * (and its code requires that name), while the tree's own wrap-ansi is @8.
-     * Nothing asks for wrap-ansi@7 by its own name, so it is mounted only
-     * where cliui looks for it. */
-    const { packages, members, edgeMap } = graph({
-      "cli@1.0.0": { "@isaacs/cliui": "@isaacs/cliui@8.0.2", "wrap-ansi": "wrap-ansi@8.1.0" },
-      "@isaacs/cliui@8.0.2": { "wrap-ansi-cjs": "wrap-ansi@7.0.0" },
-      "wrap-ansi@8.1.0": {},
-      "wrap-ansi@7.0.0": {},
-    });
-    const winners = new Map([
-      ["cli", "cli@1.0.0"],
-      ["@isaacs/cliui", "@isaacs/cliui@8.0.2"],
-      ["wrap-ansi", "wrap-ansi@8.1.0"],
-      ["wrap-ansi-cjs", "wrap-ansi@7.0.0"],
-    ]);
-    const plan = planMounts("cli@1.0.0", "cli", winners, edgeMap, members);
-    expect(plan.map(mount => `${mount.as}=${mount.id}`)).to.deep.equal([
-      "@isaacs/cliui=@isaacs/cliui@8.0.2",
-      "wrap-ansi=wrap-ansi@8.1.0",
-      "wrap-ansi-cjs=wrap-ansi@7.0.0",
-    ]);
-    const root = new PackageFileSet(packages.get("cli@1.0.0")!, "cli", "1.0.0", buildMounts(plan, packages, { kind: "target" }));
-    const files = entries(assembleNodeModules([root]));
-    expect([...files.keys()].filter(name => name.includes("wrap-ansi"))).to.deep.equal([
-      "wrap-ansi/index.js",
-      "wrap-ansi-cjs/index.js",
-    ]);
-  });
-
-  it("restamps an alias mount with the name it is mounted under", async () => {
-    /* The delivered instance IS a package of that name as far as the install
-     * is concerned (npm's node_modules/wrap-ansi-cjs, whose package.json still
-     * says wrap-ansi) — the content is the aliased package's. */
-    const { packages, members, edgeMap } = graph({
-      "cli@1.0.0": { "wrap-ansi-cjs": "wrap-ansi@7.0.0" },
-      "wrap-ansi@7.0.0": {},
-    });
-    const winners = new Map([
-      ["cli", "cli@1.0.0"],
-      ["wrap-ansi-cjs", "wrap-ansi@7.0.0"],
-    ]);
-    const [mounted] = buildMounts(planMounts("cli@1.0.0", "cli", winners, edgeMap, members), packages, { kind: "target" });
-    expect(mounted.packageName).to.equal("wrap-ansi-cjs");
-    expect(mounted.version).to.equal("7.0.0");
-    expect(await settle(entries(mounted).get("index.js")!.readString())).to.equal("// wrap-ansi@7.0.0");
-  });
-
-  it("nests an alias mount privately when its name is won by another version", () => {
-    /* Two requirers aliasing one name to different versions: the alias behaves
-     * exactly like a package name — one wins the flat mount, the other nests
-     * under the requirer that diverges. */
-    const { members, edgeMap } = graph({
-      "root@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
-      "a@1.0.0": { "wa-cjs": "wrap-ansi@7.0.0" },
-      "b@1.0.0": { "wa-cjs": "wrap-ansi@6.0.0" },
-      "wrap-ansi@7.0.0": {},
-      "wrap-ansi@6.0.0": {},
-    });
-    const winners = new Map([
-      ["root", "root@1.0.0"],
-      ["a", "a@1.0.0"],
-      ["b", "b@1.0.0"],
-      ["wa-cjs", "wrap-ansi@7.0.0"],
-    ]);
-    expect(tree(planMounts("root@1.0.0", "root", winners, edgeMap, members))).to.deep.equal([
-      "a@1.0.0",
-      "b@1.0.0",
-      "b@1.0.0/wrap-ansi@6.0.0",
-      "wrap-ansi@7.0.0",
-    ]);
-  });
-
-  it("realises a plan into the nested layout it describes", () => {
-    /* The seam: planning decides the shape from ids alone, building fills in
-     * the fetched content, and the layout comes out where the plan put it. */
-    const { packages, members, edgeMap } = graph({
-      "svgo@4.0.1": { csso: "csso@5.0.5", "css-tree": "css-tree@3.0.1" },
+    };
+    const svgoReversed = {
+      "mdn-data@2.0.28": {},
+      "mdn-data@2.12.2": {},
+      "css-tree@3.0.1": { "mdn-data": "mdn-data@2.12.2" },
+      "css-tree@2.2.0": { "mdn-data": "mdn-data@2.0.28" },
       "csso@5.0.5": { "css-tree": "css-tree@2.2.0" },
-      "css-tree@2.2.0": {},
-      "css-tree@3.0.1": {},
-    });
-    const winners = new Map([
-      ["svgo", "svgo@4.0.1"],
-      ["csso", "csso@5.0.5"],
-      ["css-tree", "css-tree@3.0.1"],
-    ]);
-    const plan = planMounts("svgo@4.0.1", "svgo", winners, edgeMap, members);
-    const root = new PackageFileSet(packages.get("svgo@4.0.1")!, "svgo", "4.0.1", buildMounts(plan, packages, { kind: "target" }));
+      "svgo@4.0.1": { "mdn-data": "mdn-data@2.12.2", "css-tree": "css-tree@3.0.1", csso: "csso@5.0.5" },
+    };
+    const declared = assembleNodeModules([delivered(svgoGraph, "svgo@4.0.1")]);
+    const permuted = assembleNodeModules([delivered(svgoReversed, "svgo@4.0.1")]);
+    expect(permuted.toManifest()).to.equal(declared.toManifest());
+  });
+
+  it("re-mounts the flat winner beneath an override that would otherwise shadow it", async () => {
+    /* m carries private copies of x AND leaf; its leaf@1 in turn needs x@2 —
+     * the flat winner — but from leaf@1's position the override x@1 shadows
+     * it, so x@2 must mount again under leaf@1, and (binding nothing new)
+     * drops back out of the child bindings: the canonicalization rule. */
+    const root = delivered(
+      {
+        "root@1.0.0": { m: "m@1.0.0", x: "x@2.0.0", leaf: "leaf@2.0.0" },
+        "m@1.0.0": { x: "x@1.0.0", leaf: "leaf@1.0.0" },
+        "leaf@1.0.0": { x: "x@2.0.0" },
+        "x@1.0.0": {},
+        "x@2.0.0": {},
+        "leaf@2.0.0": {},
+      },
+      "root@1.0.0"
+    );
     const files = entries(assembleNodeModules([root]));
-    expect(files.has("css-tree/index.js")).to.equal(true);
-    expect(files.has("csso/node_modules/css-tree/index.js")).to.equal(true);
+    expect(await contentAt(files, "x/index.js")).to.equal("// x@2.0.0");
+    expect(await contentAt(files, "m/node_modules/x/index.js")).to.equal("// x@1.0.0");
+    expect(await contentAt(files, "m/node_modules/leaf/index.js")).to.equal("// leaf@1.0.0");
+    expect(await contentAt(files, "m/node_modules/leaf/node_modules/x/index.js")).to.equal("// x@2.0.0");
+  });
+
+  it("resolves two batches disagreeing about one packageId by first collection, deterministically", async () => {
+    /* Two independently-resolved batches may deliver the same name@version
+     * with DIFFERENT edges (one batch cannot — its edges are a function of
+     * the joint resolution). Doctrine, pinned deliberately: the first
+     * collected instance represents the id, its edges decide the flat
+     * mount's nesting, and the later instance's edges are never consulted —
+     * a deterministic pick, never a conflict. */
+    const batchA = delivered(
+      { "rootA@1.0.0": { p: "p@1.0.0" }, "p@1.0.0": { x: "x@1.0.0" }, "x@1.0.0": {} },
+      "rootA@1.0.0"
+    );
+    const batchB = delivered(
+      { "rootB@1.0.0": { p: "p@1.0.0" }, "p@1.0.0": { x: "x@2.0.0" }, "x@2.0.0": {} },
+      "rootB@1.0.0"
+    );
+    const files = entries(assembleNodeModules([batchA, batchB]));
+    /* x@2 wins the flat slot (highest); the representative p (batch A's) nests
+     * its own x@1 privately; batch B's p instance is never mounted. */
+    expect(await contentAt(files, "x/index.js")).to.equal("// x@2.0.0");
+    expect(await contentAt(files, "p/node_modules/x/index.js")).to.equal("// x@1.0.0");
+  });
+
+  it("makes a delivered graph runnable with its nested override in the install", async () => {
+    /* The standalone sealed-runnable case: under the old encoding a runnable
+     * leaned on the delivery's baked hoist; now the same assembler decides
+     * its layout from the edge bindings — including a back-edge into the
+     * root (a cycle) and a root edge diverging from the install's winner. */
+    const builder = new PackageGraphBuilder();
+    const tool = builder.node(
+      new Map<string, IFile>([
+        ["package.json", MemoryFile.from(JSON.stringify({ name: "tool", version: "1.0.0", bin: { tool: "bin/tool.js" } }))],
+        ["bin/tool.js", MemoryFile.from("#!/usr/bin/env node\n")],
+      ]),
+      "tool",
+      "1.0.0"
+    );
+    const helper1 = builder.node(new Map<string, IFile>([["index.js", MemoryFile.from("// helper@1.0.0")]]), "helper", "1.0.0");
+    const helper2 = builder.node(new Map<string, IFile>([["index.js", MemoryFile.from("// helper@2.0.0")]]), "helper", "2.0.0");
+    const other = builder.node(new Map<string, IFile>([["index.js", MemoryFile.from("// other@1.0.0")]]), "other", "1.0.0");
+    builder.wire(tool, [helper1, other]);
+    builder.wire(other, [helper2, tool]);
+    builder.seal();
+
+    const runnable = await settle(makeNpmRunnable(tool));
+    const install = entries(runnable);
+    expect(install.has("node_modules/tool/bin/tool.js")).to.equal(true);
+    expect(await contentAt(install, "node_modules/helper/index.js")).to.equal("// helper@2.0.0");
+    expect(await contentAt(install, "node_modules/tool/node_modules/helper/index.js")).to.equal("// helper@1.0.0");
+    expect(await contentAt(install, "node_modules/other/index.js")).to.equal("// other@1.0.0");
   });
 });
+
 
 describe("assembleNodeModules", () => {
   it("mounts a single-version closure flat, as always", () => {
