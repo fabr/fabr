@@ -31,7 +31,7 @@ describe("e2e: list-properties", () => {
     expect(result.stdout).to.match(/BUILD_TYPE\s+= debug/);
     expect(result.stdout).to.match(/JS_TARGET\s+=/);
     expect(result.stdout).to.match(/Flags:/);
-    expect(result.stdout).to.contain("ts/nostrict");
+    expect(result.stdout).to.contain("ts/no_strict");
   });
 
   it("--json emits properties (value, location, description) and flags, by source", () => {
@@ -47,9 +47,9 @@ describe("e2e: list-properties", () => {
     const jsTarget = parsed.properties.find((p: { name: string }) => p.name === "JS_TARGET");
     expect(jsTarget.location).to.match(/JS\.fabr/); /* plugin */
 
-    const nostrict = parsed.flags.find((f: { name: string }) => f.name === "ts/nostrict");
-    expect(nostrict.description).to.match(/strict mode off/);
-    expect(nostrict.location).to.match(/JS\.fabr/);
+    const noStrict = parsed.flags.find((f: { name: string }) => f.name === "ts/no_strict");
+    expect(noStrict.description).to.match(/strict mode off/);
+    expect(noStrict.location).to.match(/JS\.fabr/);
   });
 
   it("without a plugin, lists only the core config", () => {
@@ -71,7 +71,7 @@ describe("e2e: list-all", () => {
     expect(Object.keys(parsed).sort()).to.deep.equal(["flags", "properties", "targetdefs", "targets"]);
     expect(parsed.targetdefs.map((t: { name: string }) => t.name)).to.include.members(["script", "js_package"]);
     expect(parsed.properties.map((p: { name: string }) => p.name)).to.include("JS_TARGET");
-    expect(parsed.flags.map((f: { name: string }) => f.name)).to.include("ts/nostrict");
+    expect(parsed.flags.map((f: { name: string }) => f.name)).to.include("ts/no_strict");
     /* Provided targets include declared repository instances (not buildable,
      * so absent from list-targets) with the decl's written properties. */
     const npm = parsed.targets.find((t: { name: string }) => t.name === "@npm");

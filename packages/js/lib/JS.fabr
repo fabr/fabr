@@ -59,25 +59,56 @@ default JS_TEST_RUNNER = @fabr-build/js-tools/test-runner;
 
 #
 # Source-interpretation flags for TypeScript compilation. The compile is strict
-# by default (matching modern TS); list one of these in a target's `deps` to
-# relax how tsc interprets that target's sources — a per-target escape hatch.
-# `ts/nostrict` turns strict off wholesale; the others relax a single member of
-# the strict family while the rest stay on, or (`ts/no_esmodule_interop`)
-# restore classic CJS import semantics.
+# by default (matching modern TS); list one of these in a target's `deps` to say
+# how tsc should read that target's sources — a per-target escape hatch.
+#
+# Each is named for the tsconfig option it sets, snake_cased: `no_` switches an
+# option off, a bare name switches one on, and tsc's own negatively-named
+# options read `allow_` rather than double-negate (`noImplicitAny: false` is
+# `ts/allow_implicit_any`).
+#
+# Two kinds sit here. The strict-family relaxations are checking only — nothing
+# about the output changes, and a converting codebase deletes them as it cleans
+# up. The rest declare a dialect the sources are written in (classic CJS
+# interop, pre-5.0 decorators) and DO change what is emitted. Several relaxations
+# at once are best given a name of their own: a `flag` of your own listing them
+# in `provides` reads better in forty targets than the list does.
 #
 
 # Turn TypeScript strict mode off wholesale for this target's sources.
-flag ts/nostrict { }
-# Allow implicit `any` (relax `noImplicitAny`) for this target's sources.
+flag ts/no_strict { }
+# Allow implicit `any` (`noImplicitAny: false`) for this target's sources.
 flag ts/allow_implicit_any { }
-# Allow implicitly-nullable values (relax `strictNullChecks`) for this target's sources.
-flag ts/allow_implicit_null { }
-# Allow class properties with no definite assignment (relax
-# `strictPropertyInitialization`) for this target's sources.
-flag ts/allow_uninitialized_props { }
-# Compile with classic CJS interop (relax `esModuleInterop`): for sources written
+# Allow an implicitly-`any` `this` (`noImplicitThis: false`): for sources using
+# dynamic-`this` callbacks.
+flag ts/allow_implicit_this { }
+# Treat null and undefined as members of every type (`strictNullChecks: false`),
+# as TypeScript did before 2.0.
+flag ts/no_strict_null_checks { }
+# Allow class properties with no definite assignment
+# (`strictPropertyInitialization: false`).
+flag ts/no_strict_property_initialization { }
+# Compare function parameter types bivariantly (`strictFunctionTypes: false`),
+# as TypeScript did before 2.6.
+flag ts/no_strict_function_types { }
+# Leave `bind`/`call`/`apply` argument types unchecked
+# (`strictBindCallApply: false`), as TypeScript did before 3.2.
+flag ts/no_strict_bind_call_apply { }
+# Type a caught error as `any` rather than `unknown`
+# (`useUnknownInCatchVariables: false`): for sources written before TypeScript 4.4.
+flag ts/no_use_unknown_in_catch_variables { }
+# Compile with classic CJS interop (`esModuleInterop: false`): for sources written
 # with `import * as x` of callable CJS modules rather than default imports.
-flag ts/no_esmodule_interop { }
+flag ts/no_es_module_interop { }
+# Compile decorators with the legacy semantics TypeScript used before 5.0
+# (`experimentalDecorators: true`). Class fields keep assignment semantics with
+# it: a real field would shadow the prototype accessor a property decorator
+# installs.
+flag ts/experimental_decorators { }
+# Additionally emit design-time type metadata for those decorators — the shape a
+# reflect-metadata DI container reads. Note it retains type-only imports as
+# runtime ones. Implies ts/experimental_decorators, which TypeScript requires.
+flag ts/emit_decorator_metadata { provides = ts/experimental_decorators; }
 
 ################## Source version flags ###################
 
@@ -98,6 +129,7 @@ flag ts/no_esmodule_interop { }
 # the flag rides its dependency list outward like any other runtime dependency.
 #
 flag es5 { }
+flag es6 { }     # Alias for es2015
 flag es2015 { }
 flag es2016 { }
 flag es2017 { }

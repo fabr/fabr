@@ -60,7 +60,7 @@ interface ConfigProp {
   description?: string | null;
 }
 
-/** A `flag` target (a source-mode switch like `ts/nostrict`). */
+/** A `flag` target (a source-mode switch like `ts/no_strict`). */
 interface FlagDef {
   name: string;
   location?: string;

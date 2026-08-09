@@ -14,14 +14,17 @@ version number.
 - Add support for bash extended globs (eg !(expr) ).
 - Add support for default targets and default target properties.
 - Add support for package renaming using -> rename syntax.
+- New `repository_group` target for adding multiple scoped repositories.
 
 @fabr/js:
 - Generated package.json now strips build-only fields (devDependencies, scripts, …) from an imported manifest, and emits array metadata (keywords, os, cpu) as JSON arrays.
 - Add support for package aliases in external dependencies.
 - Add resources (copied as-is) inputs to js_package.
 - Add ability to use package members as bundle entry points (like scripts)
+- Add ts/experimental_decorators + ts/emit_decorator_metadata flags and cover the rest of the strict flags.
+- Emitting below es2015 now also automatically enables downlevelIteration
 - Handle package resolution edge cases with missing specified versions.
-- Make esModuleInterop: true by default; ts/no_esmodule_interop to disable.
+- Make esModuleInterop: true by default; ts/no_es_module_interop to disable.
 - Revise MVS resolution to drop the 'independent major versions' concept we accidentally imported from Go.
 - Generate resolution repair lists on resolution failures.
 - Readd es* flags as source version dependency flags.
@@ -29,8 +32,6 @@ version number.
 - Fix TS source importing local references using full package path.
 - Fix esbuild resolver erroring on survivable misses.
 - Fix assorted depepdency resolution issues.
-
-@fabr/cli:
 
 ## Fabr 0.1.0
 

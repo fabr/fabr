@@ -31,9 +31,9 @@ function toPromise<T>(computable: Computable<T>): Promise<T> {
 describe("Flag", () => {
   it("is an empty FileSet that carries its name and provides", async () => {
     const child = new Flag("ts/allow_implicit_any", []);
-    const flag = new Flag("ts/nostrict", [child]);
+    const flag = new Flag("ts/no_strict", [child]);
     expect(flag).to.be.instanceOf(FileSet);
-    expect(flag.name).to.equal("ts/nostrict");
+    expect(flag.name).to.equal("ts/no_strict");
     expect(flag.provides).to.deep.equal([child]);
     /* An empty file-set: it contributes no content wherever a FileSet is mounted. */
     const found = await toPromise(flag.find(Name.fromLiteral("**")));
@@ -44,17 +44,17 @@ describe("Flag", () => {
     /* The point of Flag being a FileSet: it rides `deps` through the collection
      * point untouched (materializeAll's identity branch), keeping its Flag
      * identity, rather than collapsing to an anonymous empty set. */
-    const flag = new Flag("ts/nostrict", []);
+    const flag = new Flag("ts/no_strict", []);
     const [materialized] = await toPromise(materializeAll([flag]));
     expect(materialized).to.equal(flag);
     expect(materialized).to.be.instanceOf(Flag);
   });
 
   it("keeps its identity through provenance stamping (withOrigin)", () => {
-    const flag = new Flag("ts/nostrict", []);
+    const flag = new Flag("ts/no_strict", []);
     const stamped = flag.withOrigin({ kind: "target" } as never);
     expect(stamped).to.be.instanceOf(Flag);
-    expect(stamped.name).to.equal("ts/nostrict");
+    expect(stamped.name).to.equal("ts/no_strict");
     expect(stamped.origin).to.deep.equal({ kind: "target" });
   });
 });

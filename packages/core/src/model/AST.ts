@@ -61,7 +61,7 @@ export interface ITargetDecl extends IBaseDecl {
   properties: IPropertyDecl[];
   /** The doc-comment prose written above this target, marker-stripped, or
    * undefined if none. Runtime-only documentation metadata (read for docs of
-   * config targets like the `flag` instances `ts/nostrict`). */
+   * config targets like the `flag` instances `ts/no_strict`). */
   docComment?: string;
 }
 

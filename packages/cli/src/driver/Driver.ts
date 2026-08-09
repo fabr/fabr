@@ -936,7 +936,7 @@ function listTargetDefs(model: BuildModel, options: Options): Computable<void> {
 /**
  * `fabr list-properties`: print the global configuration surface — the documented
  * config properties (`BUILD_TYPE`, `JS_TARGET`, …) with their defaults, and the
- * `flag` switches (`ts/nostrict`, …). These are what you *configure*, as opposed
+ * `flag` switches (`ts/no_strict`, …). These are what you *configure*, as opposed
  * to the target *types* (`list-targetdefs`) and target *instances* (`list-targets`);
  * flags happen to be `flag` targets, but they read as configuration, so they are
  * listed here. A model query — it builds nothing. `--json` emits the structured
@@ -1050,7 +1050,7 @@ function configPropertiesJson(model: BuildModel): Array<IConfigEntry & { value: 
     }));
 }
 
-/** @return the `flag` targets (source-mode switches like `ts/nostrict`) with
+/** @return the `flag` targets (source-mode switches like `ts/no_strict`) with
  * their descriptions — the flags a user lists in a target's `deps`. */
 function flagTargetsJson(model: BuildModel): IConfigEntry[] {
   return model

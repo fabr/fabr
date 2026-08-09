@@ -70,6 +70,9 @@ interface TsConfig {
     declarationMap?: boolean;
     target?: string;
     lib?: string[];
+    downlevelIteration?: boolean;
+    experimentalDecorators?: boolean;
+    emitDecoratorMetadata?: boolean;
   };
   include: string[];
 }
@@ -119,6 +122,21 @@ describe("makeTsConfig", () => {
     expect(cfg.compilerOptions.lib).to.deep.equal(["es2020", "dom"]);
   });
 
+  it("emits the real iteration protocol below es2015", () => {
+    /* tsc's default there is an index loop, which only works for arrays: a
+     * Map/Set/generator is a compile error and a string is mis-iterated by
+     * UTF-16 code unit. Derived from the target — no source wants that emit. */
+    expect((makeTsConfig(parseJSTarget("es5-commonjs")) as unknown as TsConfig).compilerOptions.downlevelIteration).to.equal(true);
+  });
+
+  it("leaves downlevelIteration alone from es2015 up, es6 included", () => {
+    /* es6 IS es2015 to tsc — the option would be inert there, and its presence
+     * would say the emit is a downlevel one when it isn't. */
+    for (const target of ["es6-commonjs", "es2015-commonjs", "es2021-esm"]) {
+      expect((makeTsConfig(parseJSTarget(target)) as unknown as TsConfig).compilerOptions.downlevelIteration).to.equal(undefined);
+    }
+  });
+
   it("is strict by default", () => {
     const cfg = makeTsConfig(parseJSTarget("es2018-commonjs")) as unknown as TsConfig;
     expect(cfg.compilerOptions.strict).to.equal(true);
@@ -140,7 +158,7 @@ describe("makeTsConfig", () => {
     expect(cfg.compilerOptions.esModuleInterop).to.equal(true);
   });
 
-  it("lets ts/no_esmodule_interop restore classic CJS interop via the overlay", () => {
+  it("lets ts/no_es_module_interop restore classic CJS interop via the overlay", () => {
     const cfg = makeTsConfig(parseJSTarget("es2018-commonjs"), undefined, {
       esModuleInterop: false,
     }) as unknown as TsConfig;
@@ -222,11 +240,11 @@ describe("js_compile package self-reference", () => {
 });
 
 describe("js_compile source-mode flags (through deps)", () => {
-  it("recognizes a ts/nostrict flag carried in deps and relaxes the tsconfig", async () => {
+  it("recognizes a ts/no_strict flag carried in deps and relaxes the tsconfig", async () => {
     /* End-to-end wiring: the flag rides `deps`, js_compile reads it with
      * getFlags("deps") and folds the recognized overlay into the tsconfig it
      * stages — the path that replaced the old caller-resolved `mode` JSON. */
-    const cfg = await generatedTsConfig([new Flag("ts/nostrict", [])]);
+    const cfg = await generatedTsConfig([new Flag("ts/no_strict", [])]);
     expect(cfg.compilerOptions.strict).to.equal(false);
   });
 

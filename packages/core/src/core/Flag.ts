@@ -22,7 +22,7 @@ import { IProvenanceStep } from "./Provenance";
 
 /**
  * A Flag is a named marker carried among a target's `deps` — it selects a
- * build-mode option (e.g. `ts/nostrict`) rather than contributing files. It **is
+ * build-mode option (e.g. `ts/no_strict`) rather than contributing files. It **is
  * an (empty) FileSet**, so it rides the ordinary source / materialization paths
  * like any other dep: it survives materialization as itself (a rule reads it back
  * with `getFlags`) and mounts to nothing wherever a FileSet's content is consumed

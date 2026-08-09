@@ -113,6 +113,19 @@ function defineClassFieldsOverride(sourceVersion: string | undefined, target: st
   return !definesFields(sourceVersion) && definesFields(target) ? { useDefineForClassFields: false } : {};
 }
 
+/**
+ * Below es2015 there is no native iteration protocol, and tsc's default emit
+ * for `for..of` and spread is an index loop: correct for an array, wrong for
+ * every other iterable — a Map/Set/generator is rejected outright (TS2802) and
+ * a string is silently mis-iterated over UTF-16 code units. `downlevelIteration`
+ * emits the real protocol instead, and has no effect from es2015 up, so it is
+ * derived from the emit target rather than offered as a flag: no source wants
+ * the index loop.
+ */
+function needsDownlevelIteration(target: string): boolean {
+  return esLevelOrder(target) < 2015;
+}
+
 export function makeTsConfig(
   jsTarget: JSTarget,
   jsx?: { mode: string; importSource: string },
@@ -139,7 +152,7 @@ export function makeTsConfig(
        * imports of CJS modules (`import express from "express"` — matching Node's
        * actual ESM/CJS runtime semantics and what esbuild always does). A target
        * written for classic interop (`import * as x` of a callable module) opts
-       * out via the `ts/no_esmodule_interop` source-mode flag. */
+       * out via the `ts/no_es_module_interop` source-mode flag. */
       skipLibCheck: true,
       resolveJsonModule: true,
       esModuleInterop: true,
@@ -148,6 +161,7 @@ export function makeTsConfig(
       allowJs: true,
       checkJs: false,
       target: jsTarget.version,
+      ...(needsDownlevelIteration(jsTarget.version) ? { downlevelIteration: true } : {}),
       /* `lib` is what the SOURCE may use, `target` what is EMITTED: different
        * questions, so a target that declares its source level gets that,
        * falling back to the emit level when it declares none. */

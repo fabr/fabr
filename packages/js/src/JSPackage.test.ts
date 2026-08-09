@@ -24,12 +24,15 @@ import {
   assembleScopedNodeModules,
   binByConvention,
   binOf,
+  canonicalEsLevel,
   classifySourceByExt,
+  esLevelOrder,
   hasPackageExport,
   makeNpmRunnable,
   parseJSTarget,
   resolveJsxImportSource,
   resolveSourceMode,
+  resolveSourceVersion,
   withBinShebangs,
 } from "./JSPackage";
 
@@ -635,21 +638,83 @@ describe("resolveSourceMode", () => {
   });
 
   it("maps a recognized flag to its compilerOptions fragment", () => {
-    expect(resolveSourceMode([new Flag("ts/nostrict", [])])).to.deep.equal({ strict: false });
+    expect(resolveSourceMode([new Flag("ts/no_strict", [])])).to.deep.equal({ strict: false });
     expect(resolveSourceMode([new Flag("ts/allow_implicit_any", [])])).to.deep.equal({ noImplicitAny: false });
-    expect(resolveSourceMode([new Flag("ts/no_esmodule_interop", [])])).to.deep.equal({ esModuleInterop: false });
+    expect(resolveSourceMode([new Flag("ts/no_es_module_interop", [])])).to.deep.equal({ esModuleInterop: false });
   });
 
   it("merges several flags into one overlay", () => {
-    expect(resolveSourceMode([new Flag("ts/allow_implicit_any", []), new Flag("ts/allow_implicit_null", [])])).to.deep.equal({
+    expect(resolveSourceMode([new Flag("ts/allow_implicit_any", []), new Flag("ts/no_strict_null_checks", [])])).to.deep.equal({
       noImplicitAny: false,
       strictNullChecks: false,
     });
   });
 
   it("walks a composite flag's provides closure", () => {
-    const composite = new Flag("my/relaxed", [new Flag("ts/nostrict", []), new Flag("ts/allow_implicit_any", [])]);
+    const composite = new Flag("my/relaxed", [new Flag("ts/no_strict", []), new Flag("ts/allow_implicit_any", [])]);
     expect(resolveSourceMode([composite])).to.deep.equal({ strict: false, noImplicitAny: false });
+  });
+
+  it("relaxes one member of the strict family per flag", () => {
+    expect(resolveSourceMode([new Flag("ts/allow_implicit_this", [])])).to.deep.equal({ noImplicitThis: false });
+    expect(resolveSourceMode([new Flag("ts/no_use_unknown_in_catch_variables", [])])).to.deep.equal({ useUnknownInCatchVariables: false });
+    expect(resolveSourceMode([new Flag("ts/no_strict_function_types", [])])).to.deep.equal({ strictFunctionTypes: false });
+    expect(resolveSourceMode([new Flag("ts/no_strict_bind_call_apply", [])])).to.deep.equal({ strictBindCallApply: false });
+  });
+
+  it("keeps class fields on assignment semantics for legacy decorators", () => {
+    /* A property decorator installs a prototype accessor, which the instance
+     * field emitted at es2022+ shadows — so the decorator silently does nothing
+     * unless the two travel together. */
+    expect(resolveSourceMode([new Flag("ts/experimental_decorators", [])])).to.deep.equal({
+      experimentalDecorators: true,
+      useDefineForClassFields: false,
+    });
+  });
+
+  it("expands ts/emit_decorator_metadata through its provides (tsc rejects it on its own)", () => {
+    const metadata = new Flag("ts/emit_decorator_metadata", [new Flag("ts/experimental_decorators", [])]);
+    expect(resolveSourceMode([metadata])).to.deep.equal({
+      emitDecoratorMetadata: true,
+      experimentalDecorators: true,
+      useDefineForClassFields: false,
+    });
+  });
+});
+
+describe("esLevelOrder", () => {
+  it("orders ES levels, with esnext highest", () => {
+    expect(esLevelOrder("es5")).to.be.lessThan(esLevelOrder("es2015"));
+    expect(esLevelOrder("es2021")).to.be.lessThan(esLevelOrder("es2022"));
+    expect(esLevelOrder("es2023")).to.be.lessThan(esLevelOrder("esnext"));
+  });
+
+  it("orders es6 as es2015, tsc's alias for it", () => {
+    /* Numerically es6 is 6, i.e. just above es5 — which would put the default
+     * JS_TARGET below every version rule keyed on a year. */
+    expect(esLevelOrder("es6")).to.equal(esLevelOrder("es2015"));
+  });
+});
+
+describe("canonicalEsLevel", () => {
+  it("normalizes es6 to es2015 and leaves every other level alone", () => {
+    expect(canonicalEsLevel("es6")).to.equal("es2015");
+    for (const level of ["es5", "es2015", "es2022", "esnext"]) {
+      expect(canonicalEsLevel(level)).to.equal(level);
+    }
+  });
+
+  it("canonicalizes a parsed target, so es6 and es2015 builds share one tsconfig", () => {
+    expect(parseJSTarget("es6-esm-browser").version).to.equal("es2015");
+    expect(parseJSTarget("es2015-esm-browser").version).to.equal("es2015");
+  });
+
+  it("canonicalizes a declared source level too", () => {
+    expect(resolveSourceVersion([new Flag("es6", [])])).to.equal("es2015");
+  });
+
+  it("orders an unparseable name lowest, so it can never win a max", () => {
+    expect(esLevelOrder("nonsense")).to.be.lessThan(esLevelOrder("es5"));
   });
 });
 

@@ -62,6 +62,17 @@ export interface JSTarget {
 const ES_VERSION = /^es(next|\d+)$/;
 
 /**
+ * The canonical spelling of an ES level. `es6` is tsc's alias for `es2015` (the
+ * only edition-numbered one it still accepts) and is what fabr's own default
+ * JS_TARGET is written as, so both spellings arrive in practice. Normalizing
+ * where a written level enters the build keeps ONE of them in the tsconfig —
+ * hence one cache entry and one compile — whichever was written.
+ */
+export function canonicalEsLevel(version: string): string {
+  return version === "es6" ? "es2015" : version;
+}
+
+/**
  * Parse a JS target triple `<esversion>[-commonjs|-esm][-node|-browser]`
  * (e.g. `es2018-esm`, `es6-esm-browser`). Malformed triples — an unknown module
  * or environment component, extra components, a non-ES version — are rejected
@@ -81,7 +92,7 @@ export function parseJSTarget(target: string): JSTarget {
   if (environment !== "node" && environment !== "browser") {
     throw new Error(`Malformed JS target '${target}': environment must be 'node' or 'browser', not '${environment}'`);
   }
-  return { version, module, environment };
+  return { version: canonicalEsLevel(version), module, environment };
 }
 
 /**
@@ -153,26 +164,46 @@ export function resolveJsxImportSource(directDeps: FileSet[]): Computable<string
  * source-mode `flag` in its `deps` (shipped in JS.fabr; see the vocabulary
  * there). The compile is strict by default — matching fabr's own code and
  * modern TS — so these flags name *deviations* from that baseline: relaxations
- * of the strict family, and `ts/no_esmodule_interop` for code written for
- * classic CJS interop (`import * as x` of a callable module, `export =`
- * consumers). A flag is recognized by its qualified target name
+ * of the strict family, plus the source-dialect facts a target may be written
+ * in — classic CJS interop (`import * as x` of a callable module, `export =`
+ * consumers) and pre-TC39 decorators.
+ *
+ * A flag is named for the tsconfig option it sets, snake_cased: `no_` switches
+ * one off, a bare name switches one on, and tsc's own negative options
+ * (`noImplicitAny`, `noImplicitThis`) read `allow_` rather than double-negate.
+ * It is recognized by its qualified target name
  * ({@link Flag.name}) and maps to a `compilerOptions` fragment merged after the
  * defaults (so `strict: false` overrides the default `strict: true`). A flag's
  * `provides` closure is walked too, so a composite flag expands to its members;
  * an unrecognized flag is ignored here (it may address a different rule).
  */
 const SOURCE_MODE_OPTIONS: Record<string, Record<string, unknown>> = {
-  "ts/nostrict": { strict: false },
+  "ts/no_strict": { strict: false },
   "ts/allow_implicit_any": { noImplicitAny: false },
-  "ts/allow_implicit_null": { strictNullChecks: false },
-  "ts/allow_uninitialized_props": { strictPropertyInitialization: false },
-  "ts/no_esmodule_interop": { esModuleInterop: false },
+  "ts/allow_implicit_this": { noImplicitThis: false },
+  "ts/no_strict_null_checks": { strictNullChecks: false },
+  "ts/no_strict_property_initialization": { strictPropertyInitialization: false },
+  "ts/no_strict_function_types": { strictFunctionTypes: false },
+  "ts/no_strict_bind_call_apply": { strictBindCallApply: false },
+  "ts/no_use_unknown_in_catch_variables": { useUnknownInCatchVariables: false },
+  "ts/no_es_module_interop": { esModuleInterop: false },
+  /* Class fields ride along with the legacy decorators tsc still calls
+   * experimental: a property decorator installs its accessor on the prototype,
+   * and a real class field on the instance (what emit target es2022+ gives)
+   * shadows it — so the decorator silently does nothing. Assignment semantics
+   * keep it working. */
+  "ts/experimental_decorators": { experimentalDecorators: true, useDefineForClassFields: false },
+  /* tsc rejects this without experimentalDecorators, which the flag's own
+   * `provides` supplies (JS.fabr). */
+  "ts/emit_decorator_metadata": { emitDecoratorMetadata: true },
 };
 
-/** Ordering over ES level names — es5 < es2015 < … < esnext. Unparseable
- * names order lowest, so they can never win a max. */
+/** Ordering over ES level names — es5 < es2015 < … < esnext. Reads the level
+ * as written, `es6` and `es2015` alike ({@link canonicalEsLevel}); an
+ * unparseable name orders lowest, so it can never win a max. */
 export function esLevelOrder(version: string): number {
-  const parsed = /^es(next|\d+)$/.exec(version);
+  const level = canonicalEsLevel(version);
+  const parsed = ES_VERSION.exec(level);
   if (!parsed) {
     return 0;
   }
@@ -183,8 +214,10 @@ export function esLevelOrder(version: string): number {
  * The ES level a target's sources are written against, from its `es<level>`
  * deps flags (`es2021`, `esnext`, etc). Determines the lib version and
  * other flags as appropriate.
- * 
- * If a target carries multiple source version flags, we use the highest.
+ *
+ * If a target carries multiple source version flags, we use the highest. The
+ * level comes back canonically spelled ({@link canonicalEsLevel}), so `es6` and
+ * `es2015` yield the same tsconfig.
  */
 export function resolveSourceVersion(flags: Flag[]): string | undefined {
   let highest: string | undefined;
@@ -200,7 +233,7 @@ export function resolveSourceVersion(flags: Flag[]): string | undefined {
     flag.provides.forEach(walk);
   };
   flags.forEach(walk);
-  return highest;
+  return highest === undefined ? undefined : canonicalEsLevel(highest);
 }
 
 /**
