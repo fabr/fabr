@@ -1,3 +1,4 @@
 #!/bin/sh
 
-node bootstrap/node_modules/@fabr-build/cli/bin/fabr.js "$@"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+node "$SCRIPT_DIR/bootstrap/node_modules/@fabr-build/cli/bin/fabr.js" "$@"
