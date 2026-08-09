@@ -10,7 +10,6 @@ version number.
 - Enable automatic extraction and traversal of archive files.
 - Fix: generate command names resolved incorrectly.
 - Fix: remove excessive synchronous mkdirs
-- Add support for bash extended globs (eg !(expr) )
 - Add support for bash extended globs (eg !(expr) ).
 - Add support for default targets and default target properties.
 - Add support for package renaming using -> rename syntax.
