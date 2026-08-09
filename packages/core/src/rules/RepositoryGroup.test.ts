@@ -30,17 +30,14 @@ import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { PublishableFileSet } from "../core/PublishableFileSet";
 import {
-  MaterializeOptions,
   PublishMember,
   PublishStatus,
   Repository,
   RepositoryPublishRef,
-  RepositoryReader,
   RepositoryRef,
-  Resolution,
-} from "../core/Repository";
+  } from "../core/Repository";
 import { VersionNotFoundError } from "../core/Errors";
-import { RepositoryContext, TargetContext } from "../model/BuildContext";
+import { TargetContext } from "../model/BuildContext";
 import { BuildModel } from "../model/BuildModel";
 import { Constraints } from "../model/Constraints";
 import { ExecutionContext } from "../model/ExecutionContext";
@@ -49,12 +46,10 @@ import { toBuildModel } from "../model/Sema";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { parseVersion, SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
 import { Requirement, Selected } from "../resolver/Types";
+import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
 import {
   declaredRequirementOf,
-  materializePackages,
-  PackageLanguage,
-  RegistryAdapter,
-  resolvePackages,
+  PackageRegistry,
   vendPackageRef,
 } from "../resolver/PackageResolver";
 import { bestRoute, parseRouteKey, repositoryGroupRegistration, RouteKey, routeKeyText } from "./RepositoryGroup";
@@ -101,10 +96,6 @@ describe("parseRouteKey", () => {
     for (const bad of ["lo?ash", "a[bc]d", "!(scope)/*", "@acme/@(a|b)", "a*b", "**", "*.tgz"]) {
       expect(parseRouteKey(bad), bad).to.have.property("error");
     }
-  });
-
-  it("rejects a variable substitution in a key", () => {
-    expect(parseRouteKey("${SCOPE}/*")).to.have.property("error").that.contains("variable substitution");
   });
 
   it("rejects an empty interior component", () => {
@@ -179,34 +170,51 @@ describe("bestRoute", () => {
   });
 });
 
-/** A minimal ecosystem language for tests: `name:version` identities over
- * semver, no projections, no override markers. One shared instance — sharing
- * it is what admits two registries to one group. */
-function makeLanguage(tag: string): PackageLanguage<SemverVersion, SemverConstraint> {
+/** A minimal ecosystem format for tests: `name:version` identities over
+ * semver, no projections, no override markers; content packages read from a
+ * `pkg.json` at the content root
+ * (`{"version": "1.5.0", "deps": {"left-pad": "^1.0.0"}}`) — the same
+ * contract the npm format implements from a package.json. One shared instance
+ * — sharing it is what admits two registries to one group. */
+function makeFormat(tag: string): PackageFormat<SemverVersion, SemverConstraint> {
   const splitIdentity = (name: Name): { identifier: string; version: string } | undefined => {
     const lit = name.toString();
     const idx = lit.lastIndexOf(":");
     return idx > 0 ? { identifier: lit.substring(0, idx), version: lit.substring(idx + 1) } : undefined;
   };
   return {
-    versionDomain: SEMVER,
+    ...SEMVER,
     resolutionTag: tag,
-    parseVersion,
-    splitReference: name => ({ requirement: name }),
-    splitIdentity,
-    parseRequirement: name => {
+    splitReference: (name: Name) => ({ requirement: name }),
+    parseRequirement: (name: Name): Requirement => {
       const split = splitIdentity(name);
       if (!split) {
         throw new Error(`missing version in '${name.toString()}'`);
       }
       return { pkg: split.identifier, constraint: split.version };
     },
-    packageOfPath: path => path.split("/")[0],
+    parsePublishCoordinate: (name: Name) => {
+      const split = splitIdentity(name);
+      if (!split) {
+        throw new Error(`publish coordinate '${name.toString()}' must name a version`);
+      }
+      return { name: split.identifier, version: split.version };
+    },
+    readContentPackage: (files: FileSet): Computable<IContentPackage<SemverVersion>> =>
+      files.readFile("pkg.json").then(text => {
+        const meta = JSON.parse(text) as { name?: string; version: string; deps?: Record<string, string> };
+        return {
+          name: meta.name,
+          version: parseVersion(meta.version),
+          requirements: Object.entries(meta.deps ?? {}).map(([pkg, constraint]) => ({ pkg, constraint })),
+        };
+      }),
+    makeRunnable: (pkg: PackageFileSet) => Computable.reject<RunnableFileSet>(new Error(`cannot run '${pkg.packageName}'`)),
   };
 }
-const TEST_LANGUAGE = makeLanguage("test:resolve:1");
-/** A structurally identical but DISTINCT language object — another ecosystem. */
-const ALIEN_LANGUAGE = makeLanguage("alien:resolve:1");
+const TEST_FORMAT = makeFormat("test:resolve:1");
+/** A structurally identical but DISTINCT format object — another ecosystem. */
+const ALIEN_FORMAT = makeFormat("alien:resolve:1");
 
 /** One version's table entry: its declared dependencies. */
 type RegistryTable = Record<string, Record<string, string>>;
@@ -215,35 +223,27 @@ type RegistryTable = Record<string, Record<string, string>>;
  * which registry served which package — standing alone as a repository, its
  * reader face driven by the package-domain functions exactly as
  * npm_repository's is. */
-class FakeRegistry implements Repository, RepositoryReader, RegistryAdapter<SemverVersion, SemverConstraint> {
+class FakeRegistry implements Repository, PackageRegistry<SemverVersion, SemverConstraint> {
   public readonly requested: string[] = [];
   public readonly fetched: string[] = [];
 
   constructor(
     public readonly identity: string,
-    public readonly language: PackageLanguage<SemverVersion, SemverConstraint>,
+    public readonly format: PackageFormat<SemverVersion, SemverConstraint>,
     private readonly table: RegistryTable,
-    private readonly context: RepositoryContext
+    private readonly context: TargetContext
   ) {}
 
   public getRepositoryRef(name: Name): RepositoryRef {
-    return vendPackageRef(this, this.language, name);
+    return vendPackageRef(this, this.format, name);
   }
 
   public getRepositoryPublishRef(name: Name): never {
     throw new Error(`test_registry is not a publish destination ('${name.toString()}')`);
   }
 
-  public resolve(references: RepositoryRef[]): Computable<Resolution> {
-    return resolvePackages(this.context, this, references);
-  }
-
-  public materialize(references: RepositoryRef[], resolution: Resolution, options?: MaterializeOptions): Computable<FileSet[]> {
-    return materializePackages(this.context, this, references, resolution, options);
-  }
-
   public declaredRequirement(ref: RepositoryRef): Computable<Requirement | undefined> {
-    return declaredRequirementOf(this.language, ref);
+    return declaredRequirementOf(this.format, ref);
   }
 
   public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
@@ -299,13 +299,13 @@ describe("repository_group (through the model)", () => {
   const registries = new Map<string, FakeRegistry>();
   const tables = new Map<string, RegistryTable>();
   function backingRegistry(
-    context: RepositoryContext,
-    language: PackageLanguage<SemverVersion, SemverConstraint>
+    context: TargetContext,
+    format: PackageFormat<SemverVersion, SemverConstraint>
   ): FakeRegistry {
-    const name = context.target.name;
+    const name = context.name;
     let registry = registries.get(name);
     if (!registry) {
-      registry = new FakeRegistry(`test:${name}`, language, tables.get(name) ?? {}, context);
+      registry = new FakeRegistry(`test:${name}`, format, tables.get(name) ?? {}, context);
       registries.set(name, registry);
     }
     return registry;
@@ -327,11 +327,11 @@ describe("repository_group (through the model)", () => {
       repositories: [
         {
           type: "test_registry",
-          provider: (context: RepositoryContext) => Computable.resolve(backingRegistry(context, TEST_LANGUAGE)),
+          provider: (context: TargetContext) => Computable.resolve(backingRegistry(context, TEST_FORMAT)),
         },
         {
           type: "alien_registry",
-          provider: (context: RepositoryContext) => Computable.resolve(backingRegistry(context, ALIEN_LANGUAGE)),
+          provider: (context: TargetContext) => Computable.resolve(backingRegistry(context, ALIEN_FORMAT)),
         },
         repositoryGroupRegistration,
       ],
@@ -352,13 +352,13 @@ describe("repository_group (through the model)", () => {
     "targetdef alien_registry { }\n" +
     "targetdef test_deps { deps = FILES; }\n";
 
-  function build(source: string, expectErrors = false): { model: BuildModel; errors: string[] } {
+  function build(source: string, expectErrors = false, sourceFs: FileSet = EMPTY_FILESET): { model: BuildModel; errors: string[] } {
     registries.clear();
     tables.clear();
     lastDepSets = [];
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", preamble + source, logger)], logger, contributions);
+    const model = toBuildModel([parseBuildString(sourceFs, "TEST.fabr", preamble + source, logger)], logger, contributions);
     if (!expectErrors) {
       expect(errors).to.deep.equal([]);
     }
@@ -444,6 +444,20 @@ describe("repository_group (through the model)", () => {
     expect(message).to.contain("@scope/*");
   });
 
+  it("substitutes variables in route keys like any other name", async () => {
+    /* Route keys read through the wildcard-property surface, so a `${...}` in
+     * a key resolves under the build config before the shape check judges it. */
+    const { model } = build(
+      REGISTRIES +
+        'default SCOPE = "@scope";\n' +
+        "repository_group @deps { ${SCOPE}/* = @a; * = @b; }\n" +
+        "test_deps t { deps = @deps:@scope/lib:1.0.0; }\n"
+    );
+    seed("@a", { "@scope/lib@1.0.0": {} });
+    await getTarget(model, "t");
+    expect(registries.get("@a")!.fetched).to.deep.equal(["@scope/lib@1.0.0"]);
+  });
+
   it("rejects a non-prefix pattern key at the route", async () => {
     const { model } = build(REGISTRIES + "repository_group @deps { \"!(scope)/*\" = @a; * = @b; }\ntest_deps t { deps = @deps:x:1.0.0; }\n");
     const message = await failure(model, "t");
@@ -451,7 +465,9 @@ describe("repository_group (through the model)", () => {
     expect(message).to.contain("not a literal name prefix");
   });
 
-  it("rejects a route whose value is not a registry", async () => {
+  it("rejects a non-registry value under a prefix key — content serves one literal name", async () => {
+    /* A value that names no repository is a content route, and a content route
+     * serves exactly the one package its key names — a prefix key cannot. */
     const { model } = build(
       "test_registry @b { }\n" +
         "test_deps plain { }\n" +
@@ -459,7 +475,7 @@ describe("repository_group (through the model)", () => {
         "test_deps t { deps = @deps:x:1.0.0; }\n"
     );
     const message = await failure(model, "t");
-    expect(message).to.contain("route '@scope/*' in @deps must name exactly one repository");
+    expect(message).to.contain("route '@scope/*' in @deps maps a name prefix to package content");
   });
 
   it("rejects two routes that parse to one canonical key", async () => {
@@ -504,11 +520,88 @@ describe("repository_group (through the model)", () => {
         "test_deps t { deps = @deps:x:1.0.0; }\n"
     );
     const message = await failure(model, "t");
-    expect(message).to.contain("route '*' in @deps names a repository speaking a different package language");
+    expect(message).to.contain("route '*' in @deps names a repository speaking a different package format");
   });
 
   it("two identical route keys are a duplicate-property error at validation", () => {
     const { errors } = build(REGISTRIES + "repository_group @deps { * = @a; * = @b; }\n", true);
     expect(errors.join("\n")).to.match(/[Dd]uplicate/);
+  });
+
+  /** A source tree holding one content-served package (manifest at the
+   * package root once the route's `:**` projection strips the written path). */
+  function vendorTree(manifest: Record<string, unknown>): FileSet {
+    return new FileSet(
+      new Map([
+        ["vendor/mylib/pkg.json", MemoryFile.from(JSON.stringify(manifest))],
+        ["vendor/mylib/lib/index.js", MemoryFile.from("42")],
+      ])
+    );
+  }
+
+  it("serves a content route as a package resolved from its manifest, deps routed through the group", async () => {
+    /* The vendored-git-dependency shape: a range requirement on the name
+     * (discovered in another registry's metadata) raises to the declared
+     * content's version, and the content's own requirements route through the
+     * group like any registry-served package's. */
+    const { model } = build(
+      "test_registry @b { }\n" +
+        "repository_group @deps { mylib = ./vendor/mylib:**; * = @b; }\n" +
+        "test_deps t { deps = @deps:top:1.0.0; }\n",
+      false,
+      vendorTree({ version: "1.5.0", deps: { "left-pad": "^1.0.0" } })
+    );
+    seed("@b", { "top@1.0.0": { mylib: "^1.0.0" }, "left-pad@1.0.0": {} });
+    await getTarget(model, "t");
+
+    const top = lastDepSets[0] as PackageFileSet;
+    expect(top.packageName).to.equal("top");
+    const lib = top.dependencies[0] as PackageFileSet;
+    expect(lib.packageName).to.equal("mylib");
+    expect(lib.version).to.equal("1.5.0");
+    expect(await lib.readFile("lib/index.js")).to.equal("42");
+    /* The content's requirement was answered by the registry its name routes
+     * to — the composition a standalone content member cannot do. */
+    const pad = lib.dependencies[0] as PackageFileSet;
+    expect(pad.packageName).to.equal("left-pad");
+    expect(await pad.readFile("from.txt")).to.equal("test:@b");
+    expect(registries.get("@b")!.fetched).to.have.members(["top@1.0.0", "left-pad@1.0.0"]);
+  });
+
+  it("a directly referenced content package resolves at its declared version", async () => {
+    const { model } = build(
+      "test_registry @b { }\n" +
+        "repository_group @deps { mylib = ./vendor/mylib:**; * = @b; }\n" +
+        "test_deps t { deps = @deps:mylib:1.5.0; }\n",
+      false,
+      vendorTree({ version: "1.5.0" })
+    );
+    await getTarget(model, "t");
+    const lib = lastDepSets[0] as PackageFileSet;
+    expect(lib.packageName).to.equal("mylib");
+    expect(lib.version).to.equal("1.5.0");
+  });
+
+  it("rejects a group of only content routes — the ecosystem must come from a registry", async () => {
+    const { model } = build(
+      "repository_group @deps { mylib = ./vendor/mylib:**; }\ntest_deps t { deps = @deps:mylib:1.5.0; }\n",
+      false,
+      vendorTree({ version: "1.5.0" })
+    );
+    const message = await failure(model, "t");
+    expect(message).to.contain("@deps has no registry route");
+  });
+
+  it("rejects a content route whose value is more than one source", async () => {
+    const { model } = build(
+      "test_registry @b { }\n" +
+        "test_deps plain { }\n" +
+        "test_deps extra { }\n" +
+        "repository_group @deps { mylib = plain extra; * = @b; }\n" +
+        "test_deps t { deps = @deps:x:1.0.0; }\n"
+    );
+    const message = await failure(model, "t");
+    expect(message).to.contain("route 'mylib' in @deps must name a registry or one package's content");
+    expect(message).to.contain("resolves to 2 sources");
   });
 });

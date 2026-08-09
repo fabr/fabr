@@ -30,7 +30,7 @@ import {
   RepositoryPublishRef,
   RepositoryRef,
   RepositoryWriter,
-  Resolution,
+  RepositoryReader,
   SourceRef,
 } from "../core/Repository";
 import { PackageFileSet } from "../core/PackageFileSet";
@@ -202,9 +202,16 @@ registerRule("test_map", {}, context =>
 
 /* Repository double: resolves each reference to a single file, and records
  * the batches it was asked to resolve */
-const batchCalls: string[][] = [];
-class TestRepo implements Repository {
+/* One entry per DELIVERED reference (label = the delivering repository's
+ * declared name): per-reference by design — joint batching is the package
+ * registries' property now, pinned at the resolver layer (RepositoryGroup
+ * tests); what the collection point owes a plain repository is that every
+ * gathered reference is delivered, by the repository it names. */
+const batchCalls: { repo: string; name: string }[] = [];
+class TestRepo implements Repository, RepositoryReader {
   private readonly cache = new Map<string, FileSet>();
+
+  constructor(private readonly label: string = "repo") {}
 
   /* No sub-package grammar: the whole name is the requirement, nothing projects. */
   public getRepositoryRef(name: Name): RepositoryRef {
@@ -215,22 +222,9 @@ class TestRepo implements Repository {
     throw new Error(`test_repo is not a publish destination ('${name.toString()}')`);
   }
 
-  /* The joint batch is the resolve phase — that's where batchCalls records. */
-  public resolve(references: RepositoryRef[]): Computable<Resolution> {
-    batchCalls.push(references.map(reference => reference.name.toString()));
-    return Computable.resolve({ roots: references.map(reference => ({ reference, name: reference.name.toString() })) });
-  }
-
-  public materialize(references: RepositoryRef[]): Computable<FileSet[]> {
-    return Computable.resolve(references.map(reference => this.filesFor(reference.name.toString())));
-  }
-
-  public makeRunnable(): Computable<RunnableFileSet> {
-    throw new Error("test_repo does not produce runnables");
-  }
-
-  public declaredRequirement(): Computable<undefined> {
-    return Computable.resolve(undefined);
+  public deliver(reference: RepositoryRef): Computable<FileSet> {
+    batchCalls.push({ repo: this.label, name: reference.name.toString() });
+    return Computable.resolve(this.filesFor(reference.name.toString()));
   }
 
   private filesFor(name: string): FileSet {
@@ -242,7 +236,7 @@ class TestRepo implements Repository {
     return files;
   }
 }
-registerRepositoryProvider("test_repo", () => Computable.resolve(new TestRepo()));
+registerRepositoryProvider("test_repo", context => Computable.resolve(new TestRepo(context.name)));
 
 /* Publish-capable repository double: vends publish refs, and packages each
  * member's content verbatim plus a `manifest.txt` naming its address — for
@@ -1270,10 +1264,9 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     await model.getConfig(Constraints.of({}), execution).getTarget("a");
-    /* One joint batch, containing the reference reached through the property
+    /* Both references delivered — the one reached through the property
      * expansion of 'x' as well as the direct one */
-    expect(batchCalls).to.have.length(1);
-    expect(batchCalls[0].slice().sort()).to.deep.equal(["one", "two"]);
+    expect(batchCalls.map(call => call.name).sort()).to.deep.equal(["one", "two"]);
     expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "two/data.txt"]);
   });
 
@@ -1293,8 +1286,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     await model.getConfig(Constraints.of({}), execution).getTarget("a");
-    expect(batchCalls).to.have.length(1);
-    expect(batchCalls[0].slice().sort()).to.deep.equal(["one", "two"]);
+    expect(batchCalls.map(call => call.name).sort()).to.deep.equal(["one", "two"]);
     expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "two/data.txt"]);
   });
 
@@ -1312,8 +1304,8 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     await model.getConfig(Constraints.of({}), execution).getTarget("a");
-    /* Each repository resolves its own references, as separate batches */
-    expect(batchCalls.map(batch => batch.slice().sort()).sort()).to.deep.equal([["one"], ["two"]]);
+    /* Each repository delivers its own references */
+    expect(batchCalls.map(call => `${call.repo}:${call.name}`).sort()).to.deep.equal(["repoA:one", "repoB:two"]);
     expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "two/data.txt"]);
   });
 
@@ -1331,7 +1323,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     await model.getConfig(Constraints.of({}), execution).getTarget("a");
-    expect(batchCalls).to.deep.equal([["one"]]);
+    expect(batchCalls.map(call => call.name)).to.deep.equal(["one"]);
     /* The projection was applied to the resolved files */
     expect(lastDeps && [...lastDeps].map(([path]) => path)).to.deep.equal(["one/data.txt"]);
   });
@@ -1366,7 +1358,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     await model.getConfig(Constraints.of({}), execution).getTarget("a");
-    expect(batchCalls).to.deep.equal([["one"]]);
+    expect(batchCalls.map(call => call.name)).to.deep.equal(["one"]);
     expect(lastDeps && [...lastDeps].map(([path]) => path)).to.deep.equal(["x/one/data.txt"]);
   });
 
@@ -1392,8 +1384,7 @@ describe("BuildContext", () => {
 
     await model.getConfig(Constraints.of({}), execution).getTarget("a");
     /* One batch for the whole evaluation — not one per property/global */
-    expect(batchCalls).to.have.length(1);
-    expect(batchCalls[0].slice().sort()).to.deep.equal(["one", "three", "two"]);
+    expect(batchCalls.map(call => call.name).sort()).to.deep.equal(["one", "three", "two"]);
     expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal([
       "one/data.txt",
       "three/data.txt",

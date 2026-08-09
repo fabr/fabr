@@ -29,14 +29,16 @@ import {
   RepositoryReader,
   RepositoryRef,
   Resolution,
+  ResolutionContext,
 } from "../core/Repository";
 import { FileSetRef } from "../core/FileSetRef";
 import { Requirement } from "../resolver/Types";
 import { chainSteps } from "../core/Provenance";
 import { attachHelp, ConflictError, IConflictSource, RequirementResolutionError, toError } from "../core/Errors";
 import { Name } from "../core/Name";
-import { RepositoryContext } from "../model/BuildContext";
+import { TargetContext } from "../model/BuildContext";
 import { BUILD_OPERATION, BUILD_OVERRIDE } from "../model/Constraints";
+import { declaredRequirementFrom, isPackageRegistry, materializePackages, PackageRegistry, resolvePackages, runnableFrom } from "../resolver/PackageResolver";
 import { RepositoryRegistration } from "./Types";
 
 /**
@@ -66,58 +68,58 @@ import { RepositoryRegistration } from "./Types";
  * resolution, so eager).
  */
 type CatalogMember =
-  | { readonly kind: "repository"; readonly source: RepositoryReader; readonly reference: RepositoryRef; readonly resolution: Resolution }
+  | { readonly kind: "repository"; readonly source: PackageRegistry<unknown, unknown>; readonly reference: RepositoryRef; readonly resolution: Resolution }
   | { readonly kind: "local"; readonly pkg: PackageFileSet };
+
+/** The catalog's driver-facing view of a context: the pin (and every member
+ * delivery from it) is BUILD-shaped regardless of how the catalog is consumed
+ * — members are mountable packages; run-wrapping is the catalog's own final
+ * step. The consumer's real operation is read separately (deliver). */
+function buildForced(context: ResolutionContext): ResolutionContext {
+  return {
+    getGlobalString: name => (name === BUILD_OPERATION ? Computable.resolve("build") : context.getGlobalString(name)),
+    memoize: (tag, key, create) => context.memoize(tag, key, create),
+    notifyProgress: event => context.notifyProgress(event),
+  };
+}
 
 export class CatalogRepository implements Repository, RepositoryReader {
   constructor(
     private readonly catalogName: string,
-    /* The operation (BUILD_OPERATION) this instance is consumed under: the
-     * catalog is interned per BuildContext like any repository, so its operation
-     * is fixed and settled once — it decides package-vs-runnable delivery. */
-    private readonly operation: Computable<string>,
+    /* The narrow consuming-side surface of the context this instance was
+     * declared under (interned per BuildContext like any repository): the
+     * operation it is consumed under — which decides package-vs-runnable
+     * delivery — and what the resolution layer needs when a member's pinned
+     * closure is materialized through it. */
+    private readonly context: ResolutionContext,
     /* name -> its pinned member; the version pin is resolved once (a single
      * memoized Computable) and shared, but a member's package is fetched only
-     * when materialize names it. */
+     * when a delivery names it. */
     private readonly pinned: Computable<Map<string, CatalogMember>>
   ) {}
 
   /**
-   * Phase 1 — the members are already version-resolved (at construction), so
-   * this just names each requested reference; the fetch is deferred to
-   * materialize.
-   */
-  public resolve(references: RepositoryRef[]): Computable<Resolution> {
-    return Computable.resolve({ roots: references.map(reference => ({ reference, name: reference.name.getLiteralPrefix() })) });
-  }
-
-  /**
-   * Phase 2 — deliver the named members, fetching each on demand from its pinned
-   * resolution (a member never named is never fetched). Under `run` the member
-   * is made runnable, delegated to its source repository so the catalog's joint
-   * closure is kept — never a fresh resolution.
+   * Deliver the ONE named member, fetched on demand from its pinned resolution
+   * (a member never named is never fetched): the driver materializes the
+   * member's reference against the STORED resolution — the subset keeps the
+   * joint pin, never a fresh selection. Under `run` the member is made
+   * runnable via its source's format, keeping that same closure.
    *
    * The catalog resolves once (forced build) but is judged per delivery: the
    * consumer's `options.resolutionMode` — and run delivery, permissive by the
-   * sealed-runnable invariant — is forwarded to the member's source
-   * materialize, so one pinned tree can serve a permissive tool member
-   * (repairs nested) and a strict linked member (repairs erroring) side by
-   * side.
+   * sealed-runnable invariant — is forwarded to the member materialization,
+   * so one pinned tree can serve a permissive tool member (repairs nested)
+   * and a strict linked member (repairs erroring) side by side.
    */
-  public materialize(references: RepositoryRef[], _resolution: Resolution, options?: MaterializeOptions): Computable<FileSet[]> {
-    return this.operation.then(operation =>
+  public deliver(reference: RepositoryRef, options?: MaterializeOptions): Computable<FileSet> {
+    return this.context.getGlobalString(BUILD_OPERATION).then(operation =>
       this.pinned.then(table => {
-        const members = references.map(reference => this.memberOf(reference, table));
+        const member = this.memberOf(reference, table);
         /* Run delivery is permissive by the sealed-runnable invariant; otherwise
          * the consumer's judgment. */
         const mode = operation === "run" ? ({ resolutionMode: "permissive" } as MaterializeOptions) : options;
-        return this.materializeMembers(references, members, mode).then(packages =>
-          operation === "run"
-            ? Computable.forAll(
-                packages.map((pkg, index) => this.toRunnable(references[index].name.getLiteralPrefix(), members[index], pkg)),
-                (...launched: FileSet[]) => launched
-              )
-            : Computable.resolve<FileSet[]>(packages)
+        return this.materializeMember(reference, member, mode).then(pkg =>
+          operation === "run" ? this.toRunnable(reference.name.getLiteralPrefix(), member, pkg) : Computable.resolve<FileSet>(pkg)
         );
       })
     );
@@ -142,62 +144,21 @@ export class CatalogRepository implements Repository, RepositoryReader {
   }
 
   /**
-   * Fetch + assemble the named members, **one materialize per source repository**
-   * rather than one per member: a repository lays each delivery out against the
-   * batch it is asked for (so the deliveries a consumer merges agree on what must
-   * nest privately), and materializing members one at a time would make every
-   * batch a batch of one — the catalog's whole point being that its members are
-   * pinned, and delivered, together. Members of one source share its pinned
-   * resolution, so the grouping is by that. A local entry is already built.
-   *
-   * The *underlying* reference's provenance is stamped (`@npm:pkg` as written in
-   * the catalog's deps); stamping only, since a catalog entry never carries
-   * projections (rejected at resolveDeps), so there is no pending remainder.
+   * Fetch + assemble one named member from its pinned resolution, via the
+   * resolution layer's driver — a SUBSET materialization against the stored
+   * Resolution, so the delivery keeps the catalog's joint pin (the resolution
+   * carries its own edges; what must nest privately is decided by the
+   * consumer's merge, not by batch shape). A local entry is already built.
    */
-  private materializeMembers(
-    references: RepositoryRef[],
-    members: CatalogMember[],
-    options?: MaterializeOptions
-  ): Computable<PackageFileSet[]> {
-    const batches = new Map<Resolution, Array<{ index: number; source: RepositoryReader; reference: RepositoryRef }>>();
-    members.forEach((member, index) => {
-      if (member.kind === "repository") {
-        const batch = batches.get(member.resolution) ?? [];
-        batch.push({ index, source: member.source, reference: member.reference });
-        batches.set(member.resolution, batch);
-      }
-    });
-    const fetched = [...batches].map(([resolution, batch]) =>
-      batch[0].source
-        .materialize(
-          batch.map(entry => entry.reference),
-          resolution,
-          options
-        )
-        .then(bases =>
-          bases.map((base, position) => ({
-            index: batch[position].index,
-            pkg: batch[position].reference.stampProvenance(base) as PackageFileSet,
-          }))
-        )
-        .catch(err => {
-          /* Attributed to every catalog reference that asked for this batch: it
-           * was delivered as one, so none of them is the culpable one. */
-          throw new RequirementResolutionError(
-            batch.map(entry => references[entry.index]),
-            toError(err)
-          );
-        })
-    );
-    return Computable.forAll(fetched, (...groups: Array<Array<{ index: number; pkg: PackageFileSet }>>) => {
-      const delivered = new Map<number, PackageFileSet>();
-      for (const group of groups) {
-        for (const { index, pkg } of group) {
-          delivered.set(index, pkg);
-        }
-      }
-      return members.map((member, index) => (member.kind === "local" ? member.pkg : delivered.get(index)!));
-    });
+  private materializeMember(reference: RepositoryRef, member: CatalogMember, options?: MaterializeOptions): Computable<PackageFileSet> {
+    if (member.kind === "local") {
+      return Computable.resolve(member.pkg);
+    }
+    return materializePackages(buildForced(this.context), member.source, [member.reference], member.resolution, options)
+      .then(([base]) => member.reference.stampProvenance(base) as PackageFileSet)
+      .catch(err => {
+        throw new RequirementResolutionError([reference], toError(err));
+      });
   }
 
   private toRunnable(alias: string, member: CatalogMember, pkg: PackageFileSet): Computable<RunnableFileSet> {
@@ -207,7 +168,7 @@ export class CatalogRepository implements Repository, RepositoryReader {
         "run the target directly rather than through the catalog"
       );
     }
-    return member.source.makeRunnable(pkg);
+    return runnableFrom(member.source, pkg);
   }
 
   /**
@@ -243,7 +204,7 @@ export class CatalogRepository implements Repository, RepositoryReader {
       }
       return member.kind === "local"
         ? Computable.resolve<Requirement | undefined>({ pkg: name, constraint: member.pkg.version ?? "*" })
-        : member.reference.source.declaredRequirement(member.reference);
+        : declaredRequirementFrom(member.reference.source, member.reference);
     });
   }
 
@@ -281,7 +242,7 @@ function conflictSide(member: CatalogMember): IConflictSource {
  * repository the entries came from (members materialize on demand from these),
  * plus any already-built local entries. */
 interface ResolvedPackageSet {
-  readonly resolutions: ReadonlyArray<{ source: RepositoryReader; resolution: Resolution }>;
+  readonly resolutions: ReadonlyArray<{ source: PackageRegistry<unknown, unknown>; resolution: Resolution }>;
   readonly local: ReadonlyArray<FileSource>;
 }
 
@@ -292,7 +253,7 @@ interface ResolvedPackageSet {
  * versions fixed, nothing fetched; a local target reference is evaluated (built)
  * during resolution and comes back as an eager `local` entry.
  */
-function resolveDeps(context: RepositoryContext): Computable<ResolvedPackageSet> {
+function resolveDeps(context: TargetContext): Computable<ResolvedPackageSet> {
   return context.getFileProperty("deps", BUILD_OVERRIDE).then(sources => {
     const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
     /* A catalog pins whole packages: an entry projecting *into* one would
@@ -316,10 +277,22 @@ function resolveDeps(context: RepositoryContext): Computable<ResolvedPackageSet>
     }
     const local = sources.filter((source): source is FileSource => source instanceof FileSet);
     return Computable.forAll(
-      [...groupByRepository(references).entries()].map(([source, refs]) =>
-        source.resolve(refs).then(resolution => ({ source, resolution }))
-      ),
-      (...resolutions: { source: RepositoryReader; resolution: Resolution }[]) => ({ resolutions, local })
+      [...groupByRepository(references).entries()].map(([source, refs]) => {
+        /* A catalog pins package VERSIONS, so its entries must come from a
+         * repository that resolves them — a fetch repository's members (URL +
+         * digest pins) have no version to pin. */
+        if (!isPackageRegistry(source)) {
+          throw new RequirementResolutionError(
+            refs,
+            attachHelp(
+              new Error(`Catalog entry '${refs[0].name.toString()}' comes from a repository that does not resolve package versions`),
+              "a catalog pins versions of registry packages; reference the repository's content directly instead"
+            )
+          );
+        }
+        return resolvePackages(buildForced(context), source, refs).then(resolution => ({ source, resolution }));
+      }),
+      (...resolutions: { source: PackageRegistry<unknown, unknown>; resolution: Resolution }[]) => ({ resolutions, local })
     );
   });
 }
@@ -356,10 +329,10 @@ function buildCatalog(catalogName: string, set: ResolvedPackageSet): Map<string,
   return table;
 }
 
-function createCatalog(context: RepositoryContext): Computable<Repository> {
-  const name = context.target.name;
+function createCatalog(context: TargetContext): Computable<Repository> {
+  const name = context.name;
   const pinned = resolveDeps(context).then(set => buildCatalog(name, set));
-  return Computable.resolve(new CatalogRepository(name, context.getGlobalString(BUILD_OPERATION), pinned));
+  return Computable.resolve(new CatalogRepository(name, context, pinned));
 }
 
 export const catalogRepositoryRegistration: RepositoryRegistration = { type: "catalog", provider: createCatalog };

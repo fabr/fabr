@@ -22,13 +22,13 @@ import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { CatalogRepository, catalogRepositoryRegistration } from "./CatalogRepository";
-import { Repository, RepositoryRef, Resolution } from "../core/Repository";
+import { Repository, RepositoryRef } from "../core/Repository";
 import { Requirement } from "../resolver/Types";
 import { ConflictError, RequirementResolutionError } from "../core/Errors";
 import { MemoryFile } from "../core/MemoryFS";
 import { BuildCache } from "../core/BuildCache";
 import { Name } from "../core/Name";
-import { RepositoryContext, TargetContext } from "../model/BuildContext";
+import { TargetContext } from "../model/BuildContext";
 import { Constraints, RUN_OVERRIDE } from "../model/Constraints";
 import { BuildModel } from "../model/BuildModel";
 import { ExecutionContext } from "../model/ExecutionContext";
@@ -36,10 +36,22 @@ import { parseBuildString } from "../model/Parser";
 import { toBuildModel } from "../model/Sema";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { PluginContribution, RuleRegistration } from "./Types";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
+import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
+import { PackageRegistry } from "../resolver/PackageResolver";
+import { ResolutionContext } from "../core/Repository";
 import { expect } from "chai";
 
 /* getRepositoryRef vending is pure — an empty catalog suffices. */
-const emptyCatalog = new CatalogRepository("@cat", Computable.resolve("build"), Computable.resolve(new Map()));
+const TEST_RESOLUTION_CONTEXT: ResolutionContext = {
+  getGlobalString: () => Computable.resolve("build"),
+  memoize: (_tag, _key, create) => create("unused"),
+  notifyProgress: () => undefined,
+};
+const emptyCatalog = new CatalogRepository("@cat", TEST_RESOLUTION_CONTEXT, Computable.resolve(new Map()));
 
 describe("CatalogRepository.getRepositoryRef", () => {
   it("claims a plain alias, no projection", () => {
@@ -69,29 +81,59 @@ describe("CatalogRepository.getRepositoryRef", () => {
 
 /**
  * The catalog through the model — the real path (provider + resolvePackageSet +
- * resolve/materialize). A backing repository records its resolve and materialize
- * calls separately, so a test can prove versions resolve jointly up front while
- * package contents are fetched only when a member is actually named.
+ * the resolution layer's driver over the backing registries). A backing
+ * registry records requirement reads and fetches separately, so a test can
+ * prove versions resolve for the whole catalog up front while package contents
+ * are fetched only when a member is actually named.
  */
 describe("CatalogRepository (through the model)", () => {
-  /* One backing repository per declared `package_repo` target, resolvable by name
+  /* The runnable record is format-level (launching is format convention). */
+  const ran: string[] = [];
+  /** The test ecosystem: a versionless grammar (a whole written name IS the
+   * package, implicitly at 1.0.0) over semver — the catalog's own aliasing is
+   * what these tests exercise, not version syntax. */
+  const CAT_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
+    ...SEMVER,
+    resolutionTag: "cattest:resolve:1",
+    splitReference: (name: Name) => ({ requirement: name }),
+    parseRequirement: (name: Name) => ({ pkg: name.toString(), constraint: "1.0.0" }),
+    parsePublishCoordinate: () => {
+      throw new Error("not used");
+    },
+    readContentPackage: (): Computable<IContentPackage<SemverVersion>> => {
+      throw new Error("not used");
+    },
+    makeRunnable: (pkg: PackageFileSet) => {
+      ran.push(pkg.packageName);
+      return Computable.resolve(RunnableFileSet.forEntry(pkg, `${pkg.packageName}/data.txt`, [], "node"));
+    },
+  };
+
+  /* One backing registry per declared `package_repo` target, resolvable by name
    * so a test can inspect the exact instance the catalog used. */
   const backings = new Map<string, BackingRepo>();
+  let instances = 0;
   function backing(name: string): BackingRepo {
     let repo = backings.get(name);
     if (!repo) {
-      repo = new BackingRepo();
+      /* Unique identity per INSTANCE: the resolution layer memoizes by
+       * registry identity through the real cache, and each test seeds a fresh
+       * fake table under the same declared name. */
+      repo = new BackingRepo(`${name}#${++instances}`);
       backings.set(name, repo);
     }
     return repo;
   }
 
-  class BackingRepo implements Repository {
-    public readonly resolved: string[][] = [];
+  class BackingRepo implements Repository, PackageRegistry<SemverVersion, SemverConstraint> {
+    public readonly format = CAT_FORMAT;
+    /** Every requirement read — how a test proves the WHOLE catalog was
+     * version-resolved (pinning reads every member) while only named members
+     * were fetched. */
+    public readonly requested: string[] = [];
     public readonly materialized: string[] = [];
-    /** One entry per materialize CALL, naming the batch it was given. */
-    public readonly materializeCalls: string[][] = [];
-    public readonly ran: string[] = [];
+
+    constructor(public readonly identity: string) {}
 
     public getRepositoryRef(name: Name): RepositoryRef {
       return new RepositoryRef(this, name);
@@ -101,35 +143,18 @@ describe("CatalogRepository (through the model)", () => {
       throw new Error(`package_repo is not a publish destination ('${name.toString()}')`);
     }
 
-    /* Version resolution — cheap, up front; records the joint batch. */
-    public resolve(references: RepositoryRef[]): Computable<Resolution> {
-      this.resolved.push(references.map(reference => reference.name.toString()));
-      return Computable.resolve({ roots: references.map(reference => ({ reference, name: reference.name.toString() })) });
+    public environmentKey(): Computable<string> {
+      return Computable.resolve("cattest-env");
     }
 
-    /* Fetch — deferred; records exactly which members were fetched. */
-    public materialize(references: RepositoryRef[]): Computable<FileSet[]> {
-      this.materializeCalls.push(references.map(reference => reference.name.toString()));
-      return Computable.resolve(
-        references.map(reference => {
-          const name = reference.name.toString();
-          this.materialized.push(name);
-          return new PackageFileSet(new Map([[`${name}/data.txt`, MemoryFile.from(name)]]), name, "1.0.0");
-        })
-      );
+    public getRequirements(pkg: string, _version: SemverVersion): Computable<Requirement[]> {
+      this.requested.push(pkg);
+      return Computable.resolve([]);
     }
 
-    public makeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet> {
-      this.ran.push(pkg.packageName);
-      return Computable.resolve(RunnableFileSet.forEntry(pkg, `${pkg.packageName}/data.txt`, [], "node"));
-    }
-
-    /* The member's own source reads its declared version off `name:version`
-     * (a catalog delegates here for a consumer's manifest). */
-    public declaredRequirement(ref: RepositoryRef): Computable<Requirement | undefined> {
-      const name = ref.name.toString();
-      const idx = name.lastIndexOf(":");
-      return Computable.resolve(idx > 0 ? { pkg: name.substring(0, idx), constraint: name.substring(idx + 1) } : undefined);
+    public fetch(pkg: string, version: SemverVersion): Computable<PackageFileSet> {
+      this.materialized.push(pkg);
+      return Computable.resolve(new PackageFileSet(new Map([[`${pkg}/data.txt`, MemoryFile.from(pkg)]]), pkg, versionToString(version)));
     }
   }
 
@@ -161,13 +186,18 @@ describe("CatalogRepository (through the model)", () => {
     {
       rules: [depsRule, runRule],
       repositories: [
-        { type: "package_repo", provider: (context: RepositoryContext) => Computable.resolve(backing(context.target.name)) },
+        { type: "package_repo", provider: (context: TargetContext) => Computable.resolve(backing(context.name)) },
         catalogRepositoryRegistration,
       ],
     },
   ];
   const testLog = new LogFormatter(LogLevel.Info, () => undefined);
-  const execution = new ExecutionContext(new BuildCache(".", testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
+  /* A throwaway cache root: the resolution layer PERSISTS memos through the
+   * build cache, so a cache in the working directory would leak entries into
+   * the repo and serve stale resolutions across test runs. */
+  const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-catalog-test-"));
+  afterAll(() => fs.rmSync(cacheRoot, { recursive: true, force: true }));
+  const execution = new ExecutionContext(new BuildCache(cacheRoot, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
 
   /* STD isn't loaded for a raw-string model; the catalog reads the operation,
    * which the real build always has via STD's default. */
@@ -180,6 +210,7 @@ describe("CatalogRepository (through the model)", () => {
 
   function build(source: string): BuildModel {
     backings.clear();
+    ran.length = 0;
     lastDeps = undefined;
     lastDepSets = [];
     lastTool = undefined;
@@ -200,19 +231,17 @@ describe("CatalogRepository (through the model)", () => {
     const repo = backings.get("@backing")!;
     /* the consumer got foo's package... */
     expect(await lastDeps!.readFile("foo/data.txt")).to.equal("foo");
-    /* ...versions were resolved for the WHOLE catalog in one joint call... */
-    expect(repo.resolved).to.have.length(1);
-    expect([...repo.resolved[0]].sort()).to.deep.equal(["bar", "foo"]);
+    /* ...versions were resolved for the WHOLE catalog (pinning read both)... */
+    expect([...repo.requested].sort()).to.deep.equal(["bar", "foo"]);
     /* ...but ONLY foo was ever fetched — bar, pinned yet unreferenced, is not. */
     expect(repo.materialized).to.deep.equal(["foo"]);
   });
 
-  it("materializes the named members in ONE call per source, not one per member", async () => {
-    /* A repository lays each delivery out against the batch it is asked for, so
-     * that the deliveries a consumer merges into one node_modules agree on what
-     * must nest privately. Materializing members one at a time would make every
-     * batch a batch of one, and a member whose own delivery never saw a higher
-     * version of what it requires would record nothing and silently inherit it. */
+  it("delivers each named member once, every delivery a subset of the ONE pinned resolution", async () => {
+    /* Each delivery materializes against the catalog's stored resolution (the
+     * resolution carries its own edges, so subset deliveries agree by
+     * construction — what must nest privately is the consuming assembler's
+     * judgment over complete facts, not a property of batch shape). */
     const model = build(
       "package_repo @backing { }\n" +
         "catalog @cat { deps = @backing:foo @backing:bar; }\n" +
@@ -220,7 +249,7 @@ describe("CatalogRepository (through the model)", () => {
     );
     await model.getConfig(Constraints.of({}), execution).getTarget("a");
     const repo = backings.get("@backing")!;
-    expect(repo.materializeCalls).to.deep.equal([["foo", "bar"]]);
+    expect([...repo.materialized].sort()).to.deep.equal(["bar", "foo"]);
   });
 
   it("shares a collection point with direct (non-catalog) references, each source its own batch", async () => {
@@ -239,12 +268,12 @@ describe("CatalogRepository (through the model)", () => {
     /* Both deliveries arrived at the one collection point. */
     expect(await lastDeps!.readFile("foo/data.txt")).to.equal("foo");
     expect(await lastDeps!.readFile("bar/data.txt")).to.equal("bar");
-    /* Each source resolved exactly its own batch: the catalog's pin for foo
+    /* Each source resolved exactly its own names: the catalog's pin for foo
      * (resolved at catalog construction), the direct repository for bar. */
-    expect(backings.get("@backing")!.resolved).to.deep.equal([["foo"]]);
-    expect(backings.get("@backing")!.materializeCalls).to.deep.equal([["foo"]]);
-    expect(backings.get("@direct")!.resolved).to.deep.equal([["bar"]]);
-    expect(backings.get("@direct")!.materializeCalls).to.deep.equal([["bar"]]);
+    expect(backings.get("@backing")!.requested).to.deep.equal(["foo"]);
+    expect(backings.get("@backing")!.materialized).to.deep.equal(["foo"]);
+    expect(backings.get("@direct")!.requested).to.deep.equal(["bar"]);
+    expect(backings.get("@direct")!.materialized).to.deep.equal(["bar"]);
   });
 
   it("delivers a member under a written rename, without changing what is pinned or fetched", async () => {
@@ -263,7 +292,7 @@ describe("CatalogRepository (through the model)", () => {
      * and the member was resolved and fetched under its own name. */
     expect(await delivered.readFile("foo/data.txt")).to.equal("foo");
     const repo = backings.get("@backing")!;
-    expect(repo.resolved).to.deep.equal([["foo"]]);
+    expect(repo.requested).to.deep.equal(["foo"]);
     expect(repo.materialized).to.deep.equal(["foo"]);
   });
 
@@ -276,10 +305,11 @@ describe("CatalogRepository (through the model)", () => {
     await model.getConfig(Constraints.of({}), execution).getTarget("a");
     const repo = backings.get("@backing")!;
     expect(lastTool).to.be.instanceOf(RunnableFileSet);
-    /* the pinned package was made runnable by its source — resolved once, fetched once */
-    expect(repo.resolved).to.have.length(1);
+    /* the pinned package was made runnable via its source's format — resolved
+     * once, fetched once, closure kept */
+    expect(repo.requested).to.deep.equal(["tool"]);
     expect(repo.materialized).to.deep.equal(["tool"]);
-    expect(repo.ran).to.deep.equal(["tool"]);
+    expect(ran).to.deep.equal(["tool"]);
   });
 
   it("attributes an unpinned member to the written reference (a plain resolution failure)", async () => {

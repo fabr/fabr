@@ -83,8 +83,9 @@ export interface ITargetBuildEvent {
  */
 export interface IRepositoryResolveEvent {
   kind: "repository-resolve";
-  /** The repository target the requirements are resolved against */
-  repository: ITargetDecl;
+  /** The repository the requirements are resolved against, as the references
+   *  wrote it (the declared alias) — the resolution layer holds no decl. */
+  repository: string;
   /** The requirement keys of the joint batch */
   requirements: string[];
 }

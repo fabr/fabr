@@ -142,6 +142,43 @@ export function optionalPeers(block: unknown): Set<string> {
   return names;
 }
 
+/** The dependency-declaring fields of an npm manifest — the same shape in a
+ * registry version-metadata document and a package.json. */
+export interface IDependencyDecls {
+  readonly dependencies?: unknown;
+  readonly optionalDependencies?: unknown;
+  readonly peerDependencies?: unknown;
+  readonly peerDependenciesMeta?: unknown;
+}
+
+/**
+ * The requirements a manifest declares, npm's reading: `required` is the
+ * declared `dependencies` plus the non-optional `peerDependencies` (soft —
+ * attach-first requirements, see NPMRepository.getRequirements for the peer
+ * doctrine); `optional` is the `optionalDependencies` — which the caller
+ * decides how to gate (their os/cpu conditions live in the *dependency's* own
+ * metadata, so this fold cannot judge them). npm's rule: an entry in
+ * optionalDependencies overrides the same name in dependencies, so a dep
+ * listed in both is optional (os/cpu-gated, dropped if the target doesn't
+ * match) — @parcel/watcher lists its per-platform native binaries in both. An
+ * `optional: true` peer ("if present, must match") is never auto-installed,
+ * npm parity; devDependencies stay ignored.
+ */
+export function declaredDependencies(manifest: IDependencyDecls): { required: Requirement[]; optional: Requirement[] } {
+  const optionalDeps = dependencyBlock(manifest.optionalDependencies);
+  const optionalPeerNames = optionalPeers(manifest.peerDependenciesMeta);
+  const peers = [...dependencyBlock(manifest.peerDependencies)]
+    .filter(([dep]) => !optionalPeerNames.has(dep) && !optionalDeps.has(dep))
+    .map(([dep, spec]) => ({ ...dependencyRequirement(dep, spec), soft: true }));
+  const required = [
+    ...[...dependencyBlock(manifest.dependencies)]
+      .filter(([dep]) => !optionalDeps.has(dep))
+      .map(([dep, spec]) => dependencyRequirement(dep, spec)),
+    ...peers,
+  ];
+  return { required, optional: [...optionalDeps].map(([dep, spec]) => dependencyRequirement(dep, spec)) };
+}
+
 /** The error for a metadata key fabr reserves: attributed through the map's ghost
  *  origin to the written entry — even one that arrived through a shared map — with
  *  any splice/reference hops named in the message. */

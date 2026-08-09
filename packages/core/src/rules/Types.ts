@@ -22,7 +22,7 @@ import { IActionContext } from "../core/BuildCache";
 import { FileSet, FileSource } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { Repository } from "../core/Repository";
-import { RepositoryContext, TargetContext } from "../model/BuildContext";
+import { TargetContext } from "../model/BuildContext";
 
 export enum PropertyType {
   String,
@@ -142,7 +142,7 @@ export interface IRuleDefinition {
  * Repository instance for a declaration, per BuildContext (its configuration
  * resolves under that context's constraints).
  */
-export type RepositoryProvider = (context: RepositoryContext) => Computable<Repository>;
+export type RepositoryProvider = (context: TargetContext) => Computable<Repository>;
 
 /**
  * A rule contributed to a build (by core or a plugin): the knowledge of how to

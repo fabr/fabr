@@ -714,7 +714,7 @@ function progressListener(log: Log): ProgressListener {
         break;
       }
       case "repository-resolve":
-        log.log(DIAG_RESOLVING, { requirements: event.requirements.join(", "), name: event.repository.name });
+        log.log(DIAG_RESOLVING, { requirements: event.requirements.join(", "), name: event.repository });
         break;
       case "fetch":
         log.log(DIAG_FETCHING, { resource: event.resource ? `${event.resource} ` : "", url: event.url });

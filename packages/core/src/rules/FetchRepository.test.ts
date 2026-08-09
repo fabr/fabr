@@ -24,7 +24,7 @@ import { Computable } from "../core/Computable";
 import { FileSet, IFile } from "../core/FileSet";
 import { Name, NameBuilder } from "../core/Name";
 import { Repository, RepositoryReader } from "../core/Repository";
-import { RepositoryContext } from "../model/BuildContext";
+import { TargetContext } from "../model/BuildContext";
 import { fetchRepositoryRegistration } from "./FetchRepository";
 
 const BODY = "tarball bytes";
@@ -39,16 +39,15 @@ interface FetchLog {
 }
 
 /**
- * A RepositoryContext whose `fetch` really runs the caller's `process` callback
+ * A TargetContext whose `fetch` really runs the caller's `process` callback
  * over `body`, against a stub output handle — so a test exercises the digest
  * gate and the commit/discard decision, not just the wiring around them.
  */
-function fakeContext(members: Record<string, string>, log: FetchLog, body = BODY): RepositoryContext {
+function fakeContext(members: Record<string, string>, log: FetchLog, body = BODY): TargetContext {
   return {
-    target: {
-      name: "@dl",
-      properties: Object.keys(members).map(name => ({ name })),
-    },
+    name: "@dl",
+    getWildcardProperties: () =>
+      Computable.resolve(Object.keys(members).map(name => ({ key: Name.fromLiteral(name), decl: { name } }))),
     getString: (name: string) => Computable.resolve(members[name]),
     fetch: (
       url: string,
@@ -68,7 +67,7 @@ function fakeContext(members: Record<string, string>, log: FetchLog, body = BODY
       };
       return process(Readable.from([body]), { createOutput: () => output });
     },
-  } as unknown as RepositoryContext;
+  } as unknown as TargetContext;
 }
 
 function newLog(): FetchLog {
@@ -79,10 +78,10 @@ function repositoryFor(members: Record<string, string>, log: FetchLog, body?: st
   return fetchRepositoryRegistration.provider(fakeContext(members, log, body));
 }
 
-/** Materialize one member by name, as a consumer's reference would. */
+/** Deliver one member by name, as a consumer's reference would. */
 function materialize(repository: Repository, member: string): Computable<FileSet> {
   const ref = repository.getRepositoryRef(Name.fromLiteral(member));
-  return (repository as unknown as RepositoryReader).materialize([ref], { roots: [] }).then(([files]: FileSet[]) => files);
+  return (repository as unknown as RepositoryReader).deliver(ref);
 }
 
 describe("fetch repository", () => {
@@ -113,7 +112,7 @@ describe("fetch repository", () => {
       .appendGlobMetachars("**")
       .name();
     const ref = repository.getRepositoryRef(name);
-    const files = await (repository as unknown as RepositoryReader).materialize([ref], { roots: [] }).then(([f]: FileSet[]) => f);
+    const files = await (repository as unknown as RepositoryReader).deliver(ref);
     expect([...files].map(([n]) => n)).to.deep.equal(["amperize.tgz"]);
     expect(log.urls).to.deep.equal(["https://host/a/sha"]);
     expect(ref.projections.map(projection => projection.pattern.toString())).to.deep.equal(["amperize.tgz:*:**"]);
@@ -129,7 +128,7 @@ describe("fetch repository", () => {
       .appendGlobMetachars("**")
       .name();
     const ref = repository.getRepositoryRef(name);
-    const files = await (repository as unknown as RepositoryReader).materialize([ref], { roots: [] }).then(([f]: FileSet[]) => f);
+    const files = await (repository as unknown as RepositoryReader).deliver(ref);
     expect([...files].map(([n]) => n)).to.deep.equal(["vendor/amperize.tgz"]);
     expect(log.urls).to.deep.equal(["https://host/v/sha"]);
   });
@@ -140,7 +139,7 @@ describe("fetch repository", () => {
     const log = newLog();
     const repository = await repositoryFor({ "vendor/amperize.tgz": `https://host/v/sha ${sri()}` }, log);
     const ref = repository.getRepositoryRef(new NameBuilder().appendGlobMetachars("**").name());
-    const files = await (repository as unknown as RepositoryReader).materialize([ref], { roots: [] }).then(([f]: FileSet[]) => f);
+    const files = await (repository as unknown as RepositoryReader).deliver(ref);
     expect([...files].map(([n]) => n)).to.deep.equal(["vendor/amperize.tgz"]);
     expect(log.urls).to.deep.equal(["https://host/v/sha"]);
   });

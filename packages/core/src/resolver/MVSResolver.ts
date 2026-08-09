@@ -23,7 +23,7 @@ import { edgeBinding, nodeId as idOf } from "./ResolutionGraph";
 import {
   IRequirementEdge,
   IResolutionError,
-  PackageRegistry,
+  RequirementSource,
   RaisedFloor,
   Requirement,
   MVSResolution,
@@ -126,7 +126,7 @@ import {
 export function resolveMVS<V, C>(
   roots: Requirement[],
   domain: VersionDomain<V, C>,
-  registry: PackageRegistry<V>
+  registry: RequirementSource<V>
 ): Computable<MVSResolution<V>> {
   const attempt = (repairable: ReadonlySet<string>): Computable<MVSResolution<V>> =>
     resolvePhase(roots, domain, registry, repairable).catch(err => {
@@ -168,7 +168,7 @@ interface Demand {
 function resolvePhase<V, C>(
   roots: Requirement[],
   domain: VersionDomain<V, C>,
-  registry: PackageRegistry<V>,
+  registry: RequirementSource<V>,
   /** Node ids ({@link nodeId}) whose floors this walk may raise — the ones a
    * previous walk converged on as unpublished *winners*. Empty on the first
    * walk, so it is repair-free. */

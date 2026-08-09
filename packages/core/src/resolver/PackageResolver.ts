@@ -29,25 +29,21 @@ import {
   VersionNotFoundError,
 } from "../core/Errors";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
-import { IProjection } from "../core/FileSetRef";
 import { MemoryFile } from "../core/MemoryFS";
 import { Name } from "../core/Name";
 import { PackageFileSet, PackageGraphBuilder } from "../core/PackageFileSet";
-import { PublishableFileSet } from "../core/PublishableFileSet";
 import {
   attributedTo,
   MaterializeOptions,
-  PublishMember,
-  PublishStatus,
-  RepositoryPublishRef,
-  RepositoryReader,
+  RefSource,
+  ResolutionContext,
   RepositoryRef,
   Resolution,
   ResolvedRoot,
 } from "../core/Repository";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { BUILD_OPERATION, FILES_OPERATION } from "../model/Constraints";
-import { RepositoryContext } from "../model/BuildContext";
+import { PackageFormat } from "./PackageFormat";
 import { resolveMVS } from "./MVSResolver";
 import { allSanctioned, canonicalRequirements, requirementKey, satisfiedByAnySelection, writtenVersions } from "./Overrides";
 import { deserializeResolutionDoc, IResolutionDoc, ResolvedRepairs, serializeResolutionDoc } from "./ResolutionDoc";
@@ -57,8 +53,8 @@ import { completeRepairSet, conflictError, RefRenderer, suggestSanctions, Sugges
 import {
   IRequirementEdge,
   MVSResolution,
-  PackageRegistry,
   Requirement,
+  RequirementSource,
   ROOT_REQUIRER,
   Selected,
   VersionDomain,
@@ -67,129 +63,126 @@ import {
 const RESOLUTION_FILE = "resolution.json";
 
 /**
- * The written language of one package ecosystem — how names, versions and
- * references read and print. One shared, stateless instance per ecosystem (all
- * npm registries hold the same object): a domain borrows its language from the
- * registry serving it, and *sharing the instance* is what admits two
- * registries to one `repository_group` — the homogeneity check is object
- * identity, so a per-ecosystem language must be a shared singleton, never
- * constructed per registry.
- */
-export interface PackageLanguage<V, C> {
-  /** How versions and constraints behave (semver for npm). */
-  readonly versionDomain: VersionDomain<V, C>;
-  /**
-   * The memo tag persisted joint resolutions are keyed under (e.g.
-   * `npm:resolve:17`) — bumped when the resolution computation or the document
-   * shape changes behavior.
-   */
-  readonly resolutionTag: string;
-  /** Parse the canonical form produced by the domain's versionToString. */
-  parseVersion(text: string): V;
-  /**
-   * Split a written reference into its identity (`name:version`, the part the
-   * domain resolves) and whatever remains as a projection *into* the resolved
-   * content — the split behind {@link vendPackageRef}.
-   */
-  splitReference(name: Name): { requirement: Name; projection?: IProjection };
-  /**
-   * Split a `name:version` identity (a read requirement or a publish
-   * coordinate) into its parts, undefined when there is no version — the
-   * caller reports that in its own terms.
-   */
-  splitIdentity(name: Name): { identifier: string; version: string } | undefined;
-  /** The requirement a reference identity declares (constraint syntax
-   * validated); throws with help attached on a malformed one. */
-  parseRequirement(name: Name): Requirement;
-  /** The package owning a path within a mounted closure (provenance's
-   * path→package question; npm: the node_modules naming convention). */
-  packageOfPath(path: string): string;
-}
-
-/**
  * A package registry as this module drives one: a transport for one ecosystem
  * — everything that needs the url, the credentials, or the wire formats, and
  * nothing that orchestrates. `npm_repository` implements this directly; a
  * `repository_group` implements it by routing every call to the member the
- * name routes to. The driver functions ({@link resolvePackages} /
+ * name routes to; a content route's member derives every answer from its
+ * manifest. The driver functions ({@link resolvePackages} /
  * {@link materializePackages}) only ever ask per-name questions of the one
  * registry they are given — which is why a group's whole closure, transitive
  * requirements included, flows through the group and gets routed there.
+ *
+ * Reading only: a registry that is also a publish destination additionally
+ * carries the repository write face ({@link RepositoryWriter}) — whether a
+ * coordinate CAN publish is that surface's presence, judged where the
+ * coordinate routes; the coordinate's *shape* is written-form knowledge,
+ * parsed by {@link PackageFormat.parsePublishCoordinate}.
  */
-export interface RegistryAdapter<V, C> extends PackageRegistry<V> {
-  /** The shared per-ecosystem language (see {@link PackageLanguage}): object
+export interface PackageRegistry<V, C> extends RequirementSource<V> {
+  /** The shared per-ecosystem format (see {@link PackageFormat}): object
    * identity across registries is what admits them to one domain. */
-  readonly language: PackageLanguage<V, C>;
+  readonly format: PackageFormat<V, C>;
   /** Stable identity for the resolution memo key, and nothing else (npm: the
    * registry url; a group: its serialized route table). */
   readonly identity: string;
   /**
    * An opaque discriminator of what a resolution is computed *for* — anything
    * beyond the roots that shapes the graph (npm: the target platform, which
-   * gates optional deps). Folded into the resolution memo key.
+   * gates optional deps; a content member: its manifest's claims). Folded into
+   * the resolution memo key.
    */
   environmentKey(): Computable<string>;
+  /** Fetch one exact package version's content. */
+  fetch(pkg: string, version: V): Computable<PackageFileSet>;
   /** The published-version list for repair suggestions; undefined when the
-   * registry has no such package. Reads a mutable document — failure-path only. */
-  availableVersions(pkg: string): Computable<V[] | undefined>;
+   * registry has no such package. Reads a mutable document — failure-path
+   * only, and optional: absence means no suggestions. */
+  availableVersions?(pkg: string): Computable<V[] | undefined>;
   /**
    * Post-resolution policy over the final selections (npm: EBADPLATFORM — a
    * non-optional dependency on a package for another platform), rejected to
    * fail the whole resolution. Called once per resolution, after the graph
-   * converges, before it is persisted.
+   * converges, before it is persisted. Optional: most registries have no
+   * policy.
    */
-  validateSelections(selections: Selected<V>[]): Computable<void>;
-  /** Fetch one exact package version's content. */
-  fetch(pkg: string, version: V): Computable<PackageFileSet>;
-  /** Repackage an already-resolved package as a runnable (see
-   * {@link RepositoryReader.makeRunnable}); the closure is kept, never re-resolved. */
-  makeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet>;
-  /** Validate a publish coordinate's shape (`name:version`, version exact),
-   * throwing on a malformed one — called at vend time so a bad address fails
-   * fast, positioned. */
-  validateCoordinate(name: Name): void;
-  /** Package a publish batch into wire form (see RepositoryWriter.package). */
-  package(members: PublishMember[], release: readonly RepositoryPublishRef[]): Computable<PublishableFileSet[]>;
-  /** Upload one packaged artifact (see RepositoryWriter.publish). */
-  publish(artifact: PublishableFileSet): Computable<PublishStatus>;
+  validateSelections?(selections: Selected<V>[]): Computable<void>;
 }
 
 /**
  * Whether `source` is a package registry (structurally — the same move as
  * {@link isRepository}): what a `repository_group` requires of a route target,
  * and how one ecosystem's publish packaging recognizes coordinates of its own
- * ecosystem in a release (by then comparing `language` for identity).
+ * ecosystem in a release (by then comparing `format` for identity).
  */
-export function isPackageRegistry(source: unknown): source is RegistryAdapter<unknown, unknown> {
-  const registry = source as Partial<RegistryAdapter<unknown, unknown>>;
+export function isPackageRegistry(source: unknown): source is PackageRegistry<unknown, unknown> {
+  const registry = source as Partial<PackageRegistry<unknown, unknown>>;
   return (
     typeof registry === "object" &&
     registry !== null &&
-    typeof registry.language === "object" &&
+    typeof registry.format === "object" &&
     typeof registry.getRequirements === "function" &&
     typeof registry.fetch === "function"
   );
 }
 
 /**
- * Vend the read reference for a written package name: the language claims the
+ * Vend the read reference for a written package name: the format claims the
  * identity portion and anything left over rides the ref as a projection into
  * the resolved content — so the caller holds one deferred ref with nothing of
  * the name left to interpret. The repository is the ref's source: at the
  * consumer's collection point references group by that source, so everything
  * written against one repository resolves in one joint batch.
  */
-export function vendPackageRef<V, C>(source: RepositoryReader, language: PackageLanguage<V, C>, name: Name): RepositoryRef {
-  const { requirement, projection } = language.splitReference(name);
+export function vendPackageRef<V, C>(source: RefSource, format: PackageFormat<V, C>, name: Name): RepositoryRef {
+  const { requirement, projection } = format.splitReference(name);
   const ref = new RepositoryRef(source, requirement);
   return projection ? ref.find(projection.pattern, projection.prefix) : ref;
 }
 
 /** The requirement a reference declares, read straight off its own `name:version`
- *  (a manifest records the declared constraint). Undefined for a versionless ref. */
-export function declaredRequirementOf<V, C>(language: PackageLanguage<V, C>, ref: RepositoryRef): Computable<Requirement | undefined> {
-  const split = language.splitIdentity(ref.name);
-  return Computable.resolve(split ? { pkg: split.identifier, constraint: split.version } : undefined);
+ *  — the full requirement parse, so a manifest records the declared constraint
+ *  with any override marker stripped (a marker is resolution advice, never part
+ *  of the constraint), and a versionless or malformed reference rejects with
+ *  the same message resolution gives it. */
+export function declaredRequirementOf<V, C>(format: PackageFormat<V, C>, ref: RepositoryRef): Computable<Requirement | undefined> {
+  try {
+    return Computable.resolve(format.parseRequirement(ref.name));
+  } catch (err) {
+    return Computable.reject(toError(err));
+  }
+}
+
+/**
+ * The declared requirement of `ref` as its SOURCE answers it — the dispatch
+ * behind RepositoryReader's optional `declaredRequirement`: a package
+ * registry's answer is pure written-form parsing, taken from its format; a
+ * repository with its own member table (a catalog) implements the method; a
+ * repository with nothing to record (fetch — members pin by URL + digest)
+ * implements neither, which IS the answer.
+ */
+export function declaredRequirementFrom(source: RefSource, ref: RepositoryRef): Computable<Requirement | undefined> {
+  if (isPackageRegistry(source)) {
+    return declaredRequirementOf(source.format, ref);
+  }
+  return source.declaredRequirement?.(ref) ?? Computable.resolve(undefined);
+}
+
+/**
+ * An already-resolved package made runnable by whatever delivered it — the
+ * dispatch behind RepositoryReader's optional `makeRunnable`: a package
+ * registry's answer is pure format convention; a catalog looks its member up
+ * and delegates (its own method). The closure the package carries is kept
+ * either way — never re-resolved.
+ */
+export function runnableFrom(source: RefSource, pkg: PackageFileSet): Computable<RunnableFileSet> {
+  if (isPackageRegistry(source)) {
+    return source.format.makeRunnable(pkg);
+  }
+  if (source.makeRunnable) {
+    return source.makeRunnable(pkg);
+  }
+  return Computable.reject(new Error(`'${pkg.packageName}' was delivered by a repository that cannot make it runnable`));
 }
 
 /** A selection's `pkg@version` node id — the resolver's node-id form, also the
@@ -302,18 +295,18 @@ interface DomainResolution<V> extends Resolution, ResolvedRepairs<V> {
  * `fabr cat @npm:pkg:ver:file` succeed when the closure is unresolvable here.
  */
 export function resolvePackages<V, C>(
-  context: RepositoryContext,
-  registry: RegistryAdapter<V, C>,
+  context: ResolutionContext,
+  registry: PackageRegistry<V, C>,
   references: RepositoryRef[]
 ): Computable<Resolution> {
-  const { language } = registry;
+  const { format } = registry;
   /* The operation is a property of this collection point, read from the context
    * (the repository is interned per BuildContext, so it reflects the config
    * these references were consumed under). */
   return context.getGlobalString(BUILD_OPERATION).then(operation => {
     const requirements = references.map(reference => {
       try {
-        return language.parseRequirement(reference.name);
+        return format.parseRequirement(reference.name);
       } catch (err) {
         throw new RequirementResolutionError([reference], toError(err));
       }
@@ -380,7 +373,7 @@ export function resolvePackages<V, C>(
      * nothing of its own). */
     const { roots: rootReqs, keys: rootKeys } = canonicalRequirements(requirements);
     const rootIndex = new Map<string, number>(rootKeys.map((key, index) => [key, index]));
-    return getJointResolution(context, registry, rootReqs, rootKeys)
+    return getJointResolution(context, registry, repositoryAlias(references), rootReqs, rootKeys)
       .then(repairs => ({ roots, operation, rootIndex, alternates, ...repairs }) satisfies DomainResolution<V>)
       .catch(err => attributeResolutionFailure(err, references, requirements));
   });
@@ -403,14 +396,14 @@ export function resolvePackages<V, C>(
  * honor the constraint.
  */
 export function materializePackages<V, C>(
-  context: RepositoryContext,
-  registry: RegistryAdapter<V, C>,
+  context: ResolutionContext,
+  registry: PackageRegistry<V, C>,
   references: RepositoryRef[],
   resolution: Resolution,
   options?: MaterializeOptions
 ): Computable<FileSet[]> {
-  const { language } = registry;
-  const domain = language.versionDomain;
+  const { format } = registry;
+  const domain = format;
   const resolved = resolution as DomainResolution<V>;
   if (resolved.operation === FILES_OPERATION) {
     return Computable.forAll(
@@ -420,7 +413,7 @@ export function materializePackages<V, C>(
   }
   const { selections, rootIndex, operation, violations, alternates } = resolved;
   const permissive = options?.resolutionMode === "permissive" || operation === "run";
-  const requirements = references.map(reference => language.parseRequirement(reference.name));
+  const requirements = references.map(reference => format.parseRequirement(reference.name));
   /* An alternate (`?`) reference demands nothing and delivers nothing of its
    * own — the sanctioned fork arrives nested inside the canonical closure. */
   const demanded = requirements.filter(req => req.override !== "alternate");
@@ -446,7 +439,7 @@ export function materializePackages<V, C>(
    * delivery ships must be explicitly written — as a `?`, or as an exact
    * unmarked pin (the catalog form). See resolver/Overrides. */
   const written = writtenVersions(domain, alternates, demanded);
-  const refText = refTextFor(context);
+  const refText = refTextFor(references, registry);
   /* Judge the repairs first: the verdict is decided by the resolution alone
    * (no content, and — since the resolution carries its own edges — no
    * metadata), so a closure that cannot be delivered says so before anything
@@ -466,7 +459,7 @@ export function materializePackages<V, C>(
       const outstanding = scopedViolations.filter(violation => !allSanctioned(domain, needed, written, violation.pkg));
       const duplicates = coexistingVersions(needed).filter(([pkg]) => !allSanctioned(domain, needed, written, pkg));
       if (outstanding.length > 0 || duplicates.length > 0) {
-        return suggestSanctions(outstanding, resolved, needed, requirements, suggestSourcesFor(context, registry)).then(suggestion => {
+        return suggestSanctions(outstanding, resolved, needed, requirements, suggestSourcesFor(context, registry, repositoryAlias(references))).then(suggestion => {
           throw conflictError(root, outstanding, duplicates, needed, domain.versionToString, refText, written, suggestion);
         });
       }
@@ -504,7 +497,7 @@ export function materializePackages<V, C>(
           );
           return operation === "run"
             ? Computable.forAll(
-                assembled.map(pkg => (pkg === undefined ? Computable.resolve<FileSet>(EMPTY_FILESET) : registry.makeRunnable(pkg))),
+                assembled.map(pkg => (pkg === undefined ? Computable.resolve<FileSet>(EMPTY_FILESET) : registry.format.makeRunnable(pkg))),
                 (...launched: FileSet[]) => launched
               )
             : Computable.resolve(assembled.map(pkg => pkg ?? EMPTY_FILESET));
@@ -515,11 +508,19 @@ export function materializePackages<V, C>(
 }
 
 /** The written form of a reference into this domain, for pasteable
- * suggestions — rendered with the repository's own declared name (a
- * suggestion must read exactly as the user would write it here). */
-function refTextFor(context: RepositoryContext): RefRenderer {
-  const name = context.target.name;
+ * suggestions — rendered with the alias the references were written against
+ * (a suggestion must read exactly as the user would write it here; the
+ * registry's own identity — a url — is the fallback when no reference
+ * carries one, e.g. programmatic use). */
+function refTextFor(references: RepositoryRef[], registry: { identity: string }): RefRenderer {
+  const name = repositoryAlias(references) ?? registry.identity;
   return (pkg, versionText, marker) => `${name}:${pkg}:${versionText}${marker ?? ""}`;
+}
+
+/** The declared alias the batch's references were written against (they share
+ * a source, so the first stamped one speaks for the batch). */
+function repositoryAlias(references: RepositoryRef[]): string | undefined {
+  return references.find(reference => reference.repositoryName !== undefined)?.repositoryName;
 }
 
 /**
@@ -615,7 +616,7 @@ function attributeResolutionFailure(err: unknown, references: RepositoryRef[], r
  * resolution can say so; position cannot).
  */
 function buildClosure<V, C>(
-  registry: RegistryAdapter<V, C>,
+  registry: PackageRegistry<V, C>,
   req: Requirement,
   index: number,
   selections: Selected<V>[],
@@ -623,7 +624,7 @@ function buildClosure<V, C>(
   edges: EdgeMap,
   packages: Map<string, PackageFileSet>
 ): PackageFileSet {
-  const domain = registry.language.versionDomain;
+  const domain = registry.format;
   const reachable = selections.filter(sel => sel.reachableFrom?.includes(index));
   /* The delivered root is what the root requirement BINDS to — normally the
    * principal, but a violated root requirement is answered by its fork. */
@@ -633,7 +634,7 @@ function buildClosure<V, C>(
     throw new Error(`Resolution of ${requirementKey(req)} does not contain its own root package`);
   }
   const rootId = selectionId(domain, root);
-  const origin = resolutionOrigin(registry.language, req, selections);
+  const origin = resolutionOrigin(registry.format, req, selections);
   const forkIds = new Set(selections.filter(sel => sel.fork !== undefined).map(sel => selectionId(domain, sel)));
   /* Delivery members: the root's reachable slice of the fetched batch — an
    * edge leading outside it (a gated optional pruned from the walk) is
@@ -672,13 +673,12 @@ function buildClosure<V, C>(
  * selections that answer "why is this package here / why this version". It
  * carries no registry identity — "who provided this" is answered by following
  * the chain to the written reference and the declaration it names. */
-function resolutionOrigin<V, C>(language: PackageLanguage<V, C>, req: Requirement, selections: Selected<V>[]): IResolutionOrigin<V> {
+function resolutionOrigin<V, C>(format: PackageFormat<V, C>, req: Requirement, selections: Selected<V>[]): IResolutionOrigin<V> {
   return {
     kind: PACKAGE_RESOLUTION_PROVENANCE,
     root: req,
     selections,
-    versionToString: language.versionDomain.versionToString,
-    packageOfPath: language.packageOfPath,
+    versionToString: format.versionToString,
   };
 }
 
@@ -692,10 +692,10 @@ function resolutionOrigin<V, C>(language: PackageLanguage<V, C>, req: Requiremen
  * pending on the delivered ref (RepositoryRef.deliveredAs), finished by the
  * driving context.
  */
-function resolveBarePackage<V, C>(registry: RegistryAdapter<V, C>, reference: RepositoryRef): Computable<FileSet> {
-  const { language } = registry;
-  const domain = language.versionDomain;
-  const req = language.parseRequirement(reference.name);
+function resolveBarePackage<V, C>(registry: PackageRegistry<V, C>, reference: RepositoryRef): Computable<FileSet> {
+  const { format } = registry;
+  const domain = format;
+  const req = format.parseRequirement(reference.name);
   const constraint = domain.parseConstraint(req.constraint);
   if (domain.isFloorless(constraint)) {
     throw new Error(
@@ -706,7 +706,7 @@ function resolveBarePackage<V, C>(registry: RegistryAdapter<V, C>, reference: Re
   const version = domain.minimumOf(constraint);
   const edge: IRequirementEdge = { requiredBy: ROOT_REQUIRER, constraint: req.constraint };
   const selection: Selected<V> = { pkg: req.pkg, version, selectedBy: edge, reachedVia: edge, reachableFrom: [0] };
-  const origin = resolutionOrigin(language, req, [selection]);
+  const origin = resolutionOrigin(format, req, [selection]);
   return registry
     .fetch(req.pkg, version)
     .then(pkg => new PackageFileSet(pkg, pkg.packageName, pkg.version, [], origin))
@@ -737,15 +737,16 @@ function resolveBarePackage<V, C>(registry: RegistryAdapter<V, C>, reference: Re
  * resolver/ResolutionReport): the written reference form, the registry's
  * version list, and a memoized enrichment-free re-resolve.
  */
-function suggestSourcesFor<V, C>(context: RepositoryContext, registry: RegistryAdapter<V, C>): SuggestSources<V, C> {
+function suggestSourcesFor<V, C>(context: ResolutionContext, registry: PackageRegistry<V, C>, alias: string | undefined): SuggestSources<V, C> {
   return {
-    domain: registry.language.versionDomain,
-    refText: refTextFor(context),
-    availableVersions: pkg => registry.availableVersions(pkg),
+    domain: registry.format,
+    refText: (pkg, versionText, marker) => `${alias ?? registry.identity}:${pkg}:${versionText}${marker ?? ""}`,
+    availableVersions: pkg => registry.availableVersions?.(pkg) ?? Computable.resolve(undefined),
     resolve: roots =>
       getJointResolution(
         context,
         registry,
+        alias,
         roots,
         roots.map(req => requirementKey(req)),
         false
@@ -773,23 +774,24 @@ function suggestSourcesFor<V, C>(context: RepositoryContext, registry: RegistryA
  * served for another.
  */
 function getJointResolution<V, C>(
-  context: RepositoryContext,
-  registry: RegistryAdapter<V, C>,
+  context: ResolutionContext,
+  registry: PackageRegistry<V, C>,
+  alias: string | undefined,
   roots: Requirement[],
   rootKeys: string[],
   enrich = true
 ): Computable<ResolvedRepairs<V>> {
-  const { language } = registry;
+  const { format } = registry;
   return registry.environmentKey().then(environment => {
     return context
       /* Newline-join the roots: a version constraint may contain spaces (a
        * quoted hyphen range, `1.2.3 - 2.3.4`), so a space delimiter isn't
        * obviously injective — a newline can appear in neither a package name
        * nor a constraint, matching how file deps are already newline-separated. */
-      .memoize(language.resolutionTag, `${registry.identity} ${environment}\n${rootKeys.join("\n")}`, () => {
+      .memoize(format.resolutionTag, `${registry.identity} ${environment}\n${rootKeys.join("\n")}`, () => {
         /* A memo miss means real resolution work on behalf of the consumer */
-        context.notifyProgress({ kind: "repository-resolve", repository: context.target, requirements: rootKeys });
-        return resolveMVS(roots, language.versionDomain, registry).then(result => {
+        context.notifyProgress({ kind: "repository-resolve", repository: alias ?? registry.identity, requirements: rootKeys });
+        return resolveMVS(roots, format, registry).then(result => {
           /* Hard errors (unparseable constraints, unconstrained-only
            * requirements) are not repairable in any mode. Grouped and
            * enriched with pin suggestions before throwing — typed + per-error
@@ -800,7 +802,7 @@ function getJointResolution<V, C>(
             if (!enrich) {
               throw new ResolutionWalkError(result.errors);
             }
-            return completeRepairSet(result.errors, roots, suggestSourcesFor(context, registry)).then(failures => {
+            return completeRepairSet(result.errors, roots, suggestSourcesFor(context, registry, alias)).then(failures => {
               throw new ResolutionWalkError(failures);
             });
           }
@@ -808,7 +810,7 @@ function getJointResolution<V, C>(
         });
       })
       .then(files => files.readFile(RESOLUTION_FILE))
-      .then(data => deserializeResolutionDoc(JSON.parse(data) as IResolutionDoc, language.parseVersion));
+      .then(data => deserializeResolutionDoc(JSON.parse(data) as IResolutionDoc, format.parseVersion));
   });
 }
 
@@ -819,12 +821,12 @@ function getJointResolution<V, C>(
  * are ordinary selections of the one tree — and stays hard in every mode.
  */
 function validatedResolutionDoc<V, C>(
-  registry: RegistryAdapter<V, C>,
+  registry: PackageRegistry<V, C>,
   roots: Requirement[],
   result: MVSResolution<V>
 ): Computable<FileSet> {
-  return registry.validateSelections(result.selections).then(() => {
-    const doc = serializeResolutionDoc(roots, result, registry.language.versionDomain.versionToString);
+  return (registry.validateSelections?.(result.selections) ?? Computable.resolve(undefined)).then(() => {
+    const doc = serializeResolutionDoc(roots, result, registry.format.versionToString);
     return new FileSet(new Map([[RESOLUTION_FILE, MemoryFile.from(JSON.stringify(doc, undefined, 2))]]));
   });
 }

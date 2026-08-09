@@ -27,8 +27,10 @@ import {
   Materialized,
   MaterializeOptions,
   RepositoryPublishRef,
+  materializeAll,
   materializeLists,
   materializeShallow,
+  ResolutionContext,
   renamedDelivery,
   Repository,
   RepositoryRef,
@@ -38,6 +40,7 @@ import { FileSetRef, FileSourceRef } from "../core/FileSetRef";
 import { RunnableFileSet, toRunnable } from "../core/RunnableFileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { Requirement } from "../resolver/Types";
+import { declaredRequirementFrom } from "../resolver/PackageResolver";
 import { Flag } from "../core/Flag";
 import {
   IProvenanceStep,
@@ -366,7 +369,7 @@ export class BuildContext {
   /**
    * The contents of an archive file, expanded through the build cache: keyed on
    * the file's content hash under EXPAND_TAG (same `memo:` convention as
-   * RepositoryContext.memoize), so one archive is expanded once however many
+   * TargetContext.memoize), so one archive is expanded once however many
    * selectors project into it, identical bytes share the expansion across runs,
    * and an unpack-semantics change is a tag bump. Name resolution — and so
    * namespace traversal — is this context's job, which is why expansion meets
@@ -374,6 +377,20 @@ export class BuildContext {
    */
   public expandArchive(file: IFile): Computable<FileSet> {
     return this.getCachedOrBuild(`memo:${EXPAND_TAG} ${file.hash}`, () => expandOnce(file));
+  }
+
+  /**
+   * This context as the resolution layer's consuming-side surface (see
+   * {@link ResolutionContext}) — for collection points entered from the
+   * BuildContext itself (the CLI's resolveName, command/tool resolution). A
+   * TargetContext satisfies the interface directly and passes itself instead.
+   */
+  public resolutionContext(): ResolutionContext {
+    return {
+      getGlobalString: name => this.getProperty(name).then(prop => prop.toString()),
+      memoize: (tag, key, create) => this.getCachedOrBuild(`memo:${tag} ${key}`, create),
+      notifyProgress: event => this.execution.notifyProgress(event),
+    };
   }
 
   /**
@@ -1069,7 +1086,7 @@ export class BuildContext {
    */
   public resolveName(ref: INameValue, stack?: IDependencyStack): Computable<(FileSource | Repository)[]> {
     return this.resolveFileValue(ref.value, stack, { relativeTo: ref })
-      .then(materializeShallow)
+      .then(sources => materializeShallow(this.resolutionContext(), sources))
       .then(delivered => this.finishDelivered(delivered));
   }
 
@@ -1134,7 +1151,10 @@ export class BuildContext {
                    * normal find/naming path (any rename facet rides the
                    * projection). The written-name rule applies to the
                    * projection, not to the requirement itself. */
-                  references.push(source.getRepositoryRef(rest));
+                  /* Stamp the alias the repository was reached by, as written —
+                   * how the resolution layer renders suggestions and progress in
+                   * the user's own spelling. */
+                  references.push(source.getRepositoryRef(rest).withRepositoryName(decl?.name ?? retainedPrefix));
                 } else if (source instanceof PackageFileSet || source instanceof RunnableFileSet) {
                   /* A projection into a package or a runnable DEFERS (a
                    * FileSetRef): applied eagerly it would erase what the
@@ -1360,7 +1380,7 @@ export class BuildContext {
      * events, no build-cache entries of its own. */
     const provider = this.model.getRepositoryProvider(target.type);
     if (provider) {
-      return provider(new RepositoryContext(target, this)).then(
+      return provider(new DeclaredTargetContext(target, targetDef, this, stack)).then(
         (repository): SourceRef[] => [repository],
         err => {
           throw new DependencyFailedError(target, err);
@@ -1645,7 +1665,7 @@ function nonNameValueError(prop: IPropertyDecl, value: IMapValue | ICommandValue
 /** The requirement one dep source declares (see {@link TargetContext.collectDeclaredRequirements}). */
 function declaredRequirementOf(source: SourceRef): Computable<Requirement | undefined> {
   if (source instanceof RepositoryRef) {
-    return source.source.declaredRequirement(source);
+    return declaredRequirementFrom(source.source, source);
   }
   if (source instanceof PackageFileSet) {
     /* A built-package dep is versionless until publish, contributing `*` (rewritten at sync). */
@@ -1825,7 +1845,7 @@ export abstract class TargetContext {
   private resolveCommandRunnable(command: IPositionedName): Computable<RunnableFileSet> {
     return this.context
       .resolveFileValue(command.name, this.stack, { relativeTo: command.ref, callerOverrides: this.runOverrides() })
-      .then(sources => materializeLists([sources]))
+      .then(sources => materializeLists(this.context.resolutionContext(), [sources]))
       .then(([resolved]) => this.context.finishDelivered(resolved))
       .then(resolved => asRunnable(resolved, command.name.toString()));
   }
@@ -1840,7 +1860,7 @@ export abstract class TargetContext {
     }
     return this.context
       .resolveFileValue(stdin.name, this.stack, { relativeTo: stdin.ref })
-      .then(sources => materializeLists([sources]))
+      .then(sources => materializeLists(this.context.resolutionContext(), [sources]))
       .then(([resolved]) => this.context.finishDelivered(resolved))
       .then(resolved => {
         const set = FileSet.unionAll(...resolved.filter((source): source is FileSet => source instanceof FileSet));
@@ -1892,6 +1912,72 @@ export abstract class TargetContext {
 
   public getRequiredString(name: string, overrides?: Constraints): Computable<string> {
     return this.getRequiredProperty(name, overrides).then(prop => prop.toString());
+  }
+
+  /** An optional STRING property; undefined when not written and no default. */
+  public getString(name: string, overrides?: Constraints): Computable<string | undefined> {
+    return this.getProperty(name, overrides).then(prop => prop?.toString());
+  }
+
+  /**
+   * Resolve-phase memoization: results of pure resolution work (e.g. a joint
+   * version selection), persisted under `memo:<tag> <key>`. The tag is a
+   * stable `name:version` — bump the version when the computation's behavior
+   * changes. Distinct from evaluate entries, and never announced as building.
+   */
+  public memoize(tag: string, key: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
+    return this.context.getCachedOrBuild(`memo:${tag} ${key}`, create);
+  }
+
+  /**
+   * Settle deferred sources (as {@link getFileProperty} returns them) to their
+   * delivered content: references resolve and fetch, pending projections apply
+   * (with archive descent), plain content passes through — the collection-point
+   * machinery bound to this context. This is how a content-backed registry
+   * member (a `repository_group` content route) reads the declared source it
+   * serves, at resolve time.
+   */
+  public materializeSources(sources: SourceRef[]): Computable<(FileSource | Repository | FileSet)[]> {
+    return materializeAll(this, sources).then(delivered => this.context.finishDelivered(delivered));
+  }
+
+  /**
+   * The run's fixed surroundings — the build cache, log, source/absolute
+   * FileSources (for config a repository consults, e.g. a `.npmrc` read through
+   * the source FS so it participates in watch-mode invalidation), and per-plugin
+   * state. Shared by every BuildContext of the run.
+   */
+  public get execution(): ExecutionContext {
+    return this.context.execution;
+  }
+
+  /**
+   * Download through the cache (see BuildCache.getOrFetch); an actual fetch
+   * (a miss) is announced as progress, attributed to this evaluation's declared
+   * target. The optional `resource` is a human noun for what is being fetched
+   * (e.g. "metadata", "package"), carried on the progress event for display.
+   * `options.immutable = false` declares a mutable pointer document (see
+   * FetchOptions) — cached per HTTP caching semantics and revalidated,
+   * instead of frozen forever.
+   */
+  public fetch(
+    url: string,
+    tag: string,
+    process: (content: Readable, ctx: IFetchContext) => Computable<FileSet>,
+    resource?: string,
+    headers?: Record<string, string>,
+    options?: FetchOptions
+  ): Computable<FileSet> {
+    return this.context.getCachedOrFetch(
+      url,
+      tag,
+      (content, ctx) => {
+        this.notifyProgress({ kind: "fetch", url, target: this.getDeclaredContext().target, resource });
+        return process(content, ctx);
+      },
+      headers,
+      options
+    );
   }
 
   public getFlags(name: string, overrides?: Constraints): Computable<Flag[]> {
@@ -1973,7 +2059,7 @@ export abstract class TargetContext {
          * rule commonly wants one contained (`entry`) and the rest extracted. */
         const contained = values.map(value => value instanceof ContainedSources);
         const lists = values.map(value => (value instanceof ContainedSources ? value.sources : value));
-        return materializeLists(lists, options).then(partitions => {
+        return materializeLists(this.context.resolutionContext(), lists, options).then(partitions => {
           /* The delivery machinery returns entities with their projections
            * pending; the context — the driver — finishes the walk here, except
            * for the parts whose consumer reinterprets the pending refs. */
@@ -2088,7 +2174,7 @@ export abstract class TargetContext {
      * its own here rather than through `collect`. */
     return this.context
       .getTarget(name, this.stack, this.runOverrides())
-      .then(sources => materializeLists([sources]))
+      .then(sources => materializeLists(this.context.resolutionContext(), [sources]))
       .then(([resolved]) => this.context.finishDelivered(resolved))
       .then(resolved => asRunnable(resolved, name));
   }
@@ -2111,7 +2197,7 @@ export abstract class TargetContext {
       if (sources.length === 0 && fallbackGlobal !== undefined) {
         return this.getGlobalRunnable(fallbackGlobal);
       }
-      return materializeLists([sources])
+      return materializeLists(this.context.resolutionContext(), [sources])
         .then(([resolved]) => this.context.finishDelivered(resolved))
         .then(resolved => asRunnable(resolved, name));
     });
@@ -2210,19 +2296,24 @@ export class DeclaredTargetContext extends TargetContext {
   }
 
   public getWildcardProperties(overrides?: Constraints): Computable<{ key: Name; decl: IPropertyDecl }[]> {
-    const keyed = this.target.properties.filter(
-      (prop): prop is IPropertyDecl & { keyRef: Name } => prop.keyRef !== undefined
+    /* EVERY property the targetdef does not explicitly declare is a member —
+     * a reference-shaped name carries its parsed keyRef, and a bare identifier
+     * (`lodash = @npm;`) IS its own key. The schema's `*` entry is the wildcard
+     * TYPE declaration, not a property named `*`, so a literal `*` member (a
+     * group's catch-all route) is a member like any other. */
+    const members = this.target.properties.filter(
+      prop => prop.name === "*" || !this.targetDef.properties.has(prop.name)
     );
-    /* Enumeration only: substitute the coordinate keys (under any caller override,
+    /* Enumeration only: substitute the member keys (under any caller override,
      * so their `${...}` resolves consistently with every other name) and hand
-     * back their decls; content is gathered later so coordinates can be validated
-     * first. A coordinate is a write address, not a build reference — it carries
+     * back their decls; content is gathered later so keys can be validated
+     * first. A member key is an address, not a build reference — it carries
      * no `<k=v>` delta to layer against the override — so setting the context
      * (getContextWithOverrides) is equivalent here to threading callerOverrides. */
     const context = this.context.getContextWithOverrides(overrides);
     return Computable.forAll(
-      keyed.map(prop => context.substituteNameVars(prop.keyRef, this.stack)),
-      (...keys: Name[]) => keys.map((key, i) => ({ key, decl: keyed[i] }))
+      members.map(prop => context.substituteNameVars(prop.keyRef ?? Name.fromLiteral(prop.name), this.stack)),
+      (...keys: Name[]) => keys.map((key, i) => ({ key, decl: members[i] }))
     );
   }
 
@@ -2429,120 +2520,3 @@ function manifestEvalInput(value: BuildActionInput): string {
   return "{\n" + value.toManifest() + "\n}";
 }
 
-/**
- * The narrow runtime surface a repository provider works against: the
- * declaration's configuration properties, resolve-phase caching (memos and
- * fetches — distinct from evaluate entries, and never announced as
- * building), and progress attribution to the repository's own declaration.
- */
-export class RepositoryContext {
-  public readonly target: ITargetDecl;
-  private readonly context: BuildContext;
-  private readonly props: Map<string, IPropertyDecl>;
-
-  constructor(target: ITargetDecl, context: BuildContext) {
-    this.target = target;
-    this.context = context;
-    this.props = new Map(target.properties.map(prop => [prop.name, prop]));
-  }
-
-  public getRequiredString(name: string): Computable<string> {
-    const prop = this.props.get(name);
-    if (!prop) {
-      throw new Error("Missing required property " + name);
-    }
-    return this.context.resolveStringProperty(prop, this.target).then(prop => prop.toString());
-  }
-
-  /** An optional STRING property of the declaration; undefined when not written. */
-  public getString(name: string): Computable<string | undefined> {
-    const prop = this.props.get(name);
-    if (!prop) {
-      return Computable.resolve(undefined);
-    }
-    return this.context.resolveStringProperty(prop, this.target).then(prop => prop.toString());
-  }
-
-  /**
-   * Resolve a FILES property of this repository's declaration to its deferred
-   * sources — external references (as inert RepositoryRefs, not yet resolved or
-   * fetched) and any local targets (evaluated/built during resolution). The
-   * primitive a repository provider reads a property through; `overrides` layer
-   * over the ambient config (e.g. a catalog forces `BUILD_OPERATION=build` so its
-   * members resolve as mountable packages). A missing property is the empty set.
-   */
-  public getFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]> {
-    const prop = this.props.get(name);
-    if (!prop) {
-      return Computable.resolve([]);
-    }
-    return this.context.resolveFileProperty(prop, this.target, undefined, overrides);
-  }
-
-  /**
-   * A global (build-config) property this repository resolves under — the same
-   * property surface every rule sees (constraints are pre-forced into it; there
-   * is no separate "constraint" notion outside BuildContext's own reporting).
-   * This instance is interned per BuildContext, so the value reflects what the
-   * references were consumed with — e.g. the build verb (`BUILD_OPERATION`,
-   * which decides whether the repository delivers a plain package or a runnable).
-   */
-  public getGlobalString(name: string): Computable<string> {
-    return this.context.getProperty(name).then(prop => prop.toString());
-  }
-
-  /**
-   * Resolve-phase memoization: results of pure resolution work (e.g. a joint
-   * version selection), persisted under `memo:<tag> <key>`. The tag is a
-   * stable `name:version` — bump the version when the computation's behavior
-   * changes.
-   */
-  public memoize(tag: string, key: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
-    return this.context.getCachedOrBuild(`memo:${tag} ${key}`, create);
-  }
-
-  /**
-   * Download through the cache (see BuildCache.getOrFetch); an actual fetch
-   * (a miss) is announced as progress, attributed to this repository. The
-   * optional `resource` is a human noun for what is being fetched (e.g.
-   * "metadata", "package"), carried on the progress event for display.
-   * `options.immutable = false` declares a mutable pointer document (see
-   * FetchOptions) — cached per HTTP caching semantics and revalidated,
-   * instead of frozen forever.
-   */
-  public fetch(
-    url: string,
-    tag: string,
-    process: (content: Readable, ctx: IFetchContext) => Computable<FileSet>,
-    resource?: string,
-    headers?: Record<string, string>,
-    options?: FetchOptions
-  ): Computable<FileSet> {
-    return this.context.getCachedOrFetch(
-      url,
-      tag,
-      (content, ctx) => {
-        this.notifyProgress({ kind: "fetch", url, target: this.target, resource });
-        return process(content, ctx);
-      },
-      headers,
-      options
-    );
-  }
-
-  /**
-   * The run's fixed surroundings — the build cache, log, source/absolute
-   * FileSources (for config a repository consults, e.g. a `.npmrc` read through
-   * the source FS so it participates in watch-mode invalidation), and per-plugin
-   * state (see {@link ExecutionContext.getOrCreatePluginContext}). Shared by every
-   * BuildContext of the run, so it is where a plugin keeps state common to its
-   * per-context instances.
-   */
-  public get execution(): ExecutionContext {
-    return this.context.execution;
-  }
-
-  public notifyProgress(event: ProgressEvent): void {
-    this.context.execution.notifyProgress(event);
-  }
-}

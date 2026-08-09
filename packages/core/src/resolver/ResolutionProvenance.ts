@@ -30,16 +30,33 @@ export const PACKAGE_RESOLUTION_PROVENANCE = "package-resolution";
  * already-loaded resolution document — retained, not copied, and only
  * consulted if an explanation is actually needed.
  *
- * The two ecosystem-specific concerns are parameterized: how versions print,
- * and how a file path within the resolved output maps to its owning package
- * (a consequence of the layout the repository chose).
+ * The one ecosystem-specific concern is parameterized: how versions print.
+ * Everything else — including which package owns a path within the resolved
+ * output — is answerable from the selections themselves.
  */
 export interface IResolutionOrigin<V> extends IProvenanceStep {
   kind: typeof PACKAGE_RESOLUTION_PROVENANCE;
   root: Requirement;
   selections: Selected<V>[];
   versionToString(version: V): string;
-  packageOfPath(path: string): string;
+}
+
+/**
+ * The selection owning `path` within a mounted closure: the one whose package
+ * name is a leading component-prefix of the path (longest wins — a scoped npm
+ * name is simply a two-component prefix). Purely positional: the selections
+ * carry every name in the closure, so no ecosystem naming convention is
+ * needed. Undefined when nothing owns it — e.g. a path mounted under a
+ * dependency *alias*, which is deliberately not a resolution name.
+ */
+function owningSelection<V>(selections: Selected<V>[], path: string): Selected<V> | undefined {
+  let best: Selected<V> | undefined;
+  for (const sel of selections) {
+    if ((path === sel.pkg || path.startsWith(sel.pkg + "/")) && sel.pkg.length > (best ? best.pkg.length : -1)) {
+      best = sel;
+    }
+  }
+  return best;
 }
 
 /**
@@ -50,10 +67,9 @@ export interface IResolutionOrigin<V> extends IProvenanceStep {
  * determined the selected version, so every name in it is justified.
  */
 export function explainResolutionPath<V>(origin: IResolutionOrigin<V>, path: string): string[] {
-  const pkg = origin.packageOfPath(path);
-  const selection = origin.selections.find(sel => sel.pkg === pkg);
+  const selection = owningSelection(origin.selections, path);
   if (!selection) {
-    return [`${pkg} is not present in the resolution of ${origin.root.pkg}:${origin.root.constraint}`];
+    return [`'${path}' is not owned by a package in the resolution of ${origin.root.pkg}:${origin.root.constraint}`];
   }
   const { id, find, pathTo } = resolutionExplainer(origin.selections, origin.versionToString);
 

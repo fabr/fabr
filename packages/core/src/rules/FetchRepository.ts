@@ -21,19 +21,9 @@ import { Computable } from "../core/Computable";
 import { attachHelp } from "../core/Errors";
 import { FileSet, IFile } from "../core/FileSet";
 import { Name } from "../core/Name";
-import { PackageFileSet } from "../core/PackageFileSet";
-import {
-  attributedTo,
-  Repository,
-  RepositoryPublishRef,
-  RepositoryReader,
-  RepositoryRef,
-  Resolution,
-} from "../core/Repository";
-import { Requirement } from "../resolver/Types";
-import { RunnableFileSet } from "../core/RunnableFileSet";
+import { attributedTo, Repository, RepositoryPublishRef, RepositoryReader, RepositoryRef } from "../core/Repository";
 import { ExpectedDigest, isIntegrity, parseIntegrity, verifyingStream } from "../support/Integrity";
-import { RepositoryContext } from "../model/BuildContext";
+import { TargetContext } from "../model/BuildContext";
 import { RepositoryRegistration } from "./Types";
 
 /**
@@ -60,33 +50,22 @@ class FetchRepository implements Repository, RepositoryReader {
   constructor(
     private readonly repositoryName: string,
     private readonly members: Map<string, FetchMember>,
-    private readonly context: RepositoryContext
+    private readonly context: TargetContext
   ) {}
 
   /**
-   * Phase 1 — the table is already written down, so resolution is a name lookup
-   * with nothing to fetch or version-select.
+   * Deliver every member the reference selects (downloading those and only
+   * those — the table is a pin, not a download list), each named by its member
+   * name so the reference's own projection applies over `<member>/…` — the
+   * same name space a local file of that name would occupy. Genuinely
+   * per-reference: there is nothing to version-select, so the reader face is
+   * exactly this.
    */
-  public resolve(references: RepositoryRef[]): Computable<Resolution> {
-    return Computable.resolve({
-      roots: references.map(reference => ({ reference, name: reference.name.getLiteralPrefix() })),
-    });
+  public deliver(reference: RepositoryRef): Computable<FileSet> {
+    return attributedTo(reference, () => this.deliverName(reference.name));
   }
 
-  /** Phase 2 — download the named members (and only those). */
-  public materialize(references: RepositoryRef[]): Computable<FileSet[]> {
-    return Computable.forAll(
-      references.map(reference => attributedTo(reference, () => this.deliver(reference.name))),
-      (...delivered: FileSet[]) => delivered
-    );
-  }
-
-  /**
-   * Deliver every member the reference selects, each named by its member name so
-   * the reference's own projection applies over `<member>/…` — the same name
-   * space a local file of that name would occupy.
-   */
-  private deliver(name: Name): Computable<FileSet> {
+  private deliverName(name: Name): Computable<FileSet> {
     const selected = this.select(name);
     if (selected.length === 0) {
       /* Rejection, not a throw: materialize is called synchronously, so throwing
@@ -94,9 +73,7 @@ class FetchRepository implements Repository, RepositoryReader {
       return Computable.reject(
         attachHelp(
           new Error(`${this.repositoryName} has no download matching '${name.toString()}'`),
-          this.members.size > 0
-            ? `it declares: ${[...this.members.keys()].sort().join(", ")}`
-            : "it declares no downloads"
+          this.members.size > 0 ? `it declares: ${[...this.members.keys()].sort().join(", ")}` : "it declares no downloads"
         )
       );
     }
@@ -156,16 +133,6 @@ class FetchRepository implements Repository, RepositoryReader {
     );
   }
 
-  /** A download is content, not a package: there is no bin to launch. */
-  public makeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet> {
-    throw new Error(`${this.repositoryName} delivers plain downloads, which cannot be run ('${pkg.packageName}')`);
-  }
-
-  /** A fetch member is pinned by URL and digest, not by a version constraint. */
-  public declaredRequirement(): Computable<Requirement | undefined> {
-    return Computable.resolve(undefined);
-  }
-
   /**
    * The whole name is the projection: `@dl` is what gets addressed, and the
    * member name stays in the path so projecting into a member reads exactly as
@@ -213,18 +180,22 @@ function streamed(stream: NodeJS.ReadableStream): Computable<void> {
  * so, but only the author knows that), so the declaration is where that claim
  * gets made in checkable form.
  */
-function readMembers(context: RepositoryContext): Computable<Map<string, FetchMember>> {
-  const names = context.target.properties.map(property => property.name);
-  return Computable.forAll(
-    names.map(name => context.getString(name).then(value => [name, value ?? ""] as const)),
-    (...entries: (readonly [string, string])[]) => {
-      const members = new Map<string, FetchMember>();
-      for (const [name, value] of entries) {
-        members.set(name, readMember(context.target.name, name, value));
+function readMembers(context: TargetContext): Computable<Map<string, FetchMember>> {
+  /* Members via the wildcard surface: every non-declared property, its key
+   * variable-substituted — so a member may be named `${VARIANT}.tgz` — while
+   * the VALUE resolves under the written property name. */
+  return context.getWildcardProperties().then(wildcards =>
+    Computable.forAll(
+      wildcards.map(member => context.getString(member.decl.name).then(value => [member.key.toGlobString(), value ?? ""] as const)),
+      (...entries: (readonly [string, string])[]) => {
+        const members = new Map<string, FetchMember>();
+        for (const [name, value] of entries) {
+          members.set(name, readMember(context.name, name, value));
+        }
+        rejectShadowedMembers(context.name, [...members.keys()]);
+        return members;
       }
-      rejectShadowedMembers(context.target.name, [...members.keys()]);
-      return members;
-    }
+    )
   );
 }
 
@@ -242,7 +213,9 @@ function rejectShadowedMembers(repositoryName: string, names: string[]): void {
     if (sorted[i].startsWith(sorted[i - 1] + "/")) {
       throw attachHelp(
         new Error(
-          `download '${paths.get(sorted[i - 1])}' in ${repositoryName} conflicts with '${paths.get(sorted[i])}': a member may not be a path prefix of another member`
+          `download '${paths.get(sorted[i - 1])}' in ${repositoryName} conflicts with '${paths.get(
+            sorted[i]
+          )}': a member may not be a path prefix of another member`
         ),
         "a reference to the deeper name would be ambiguous with a projection into the shorter one — rename one of them"
       );
@@ -251,7 +224,10 @@ function rejectShadowedMembers(repositoryName: string, names: string[]): void {
 }
 
 function readMember(repositoryName: string, memberName: string, value: string): FetchMember {
-  const values = value.trim().split(/\s+/).filter(entry => entry !== "");
+  const values = value
+    .trim()
+    .split(/\s+/)
+    .filter(entry => entry !== "");
   const integrity = values.filter(isIntegrity);
   const urls = values.filter(entry => !isIntegrity(entry));
   const where = `download '${memberName}' in ${repositoryName}`;
@@ -264,7 +240,7 @@ function readMember(repositoryName: string, memberName: string, value: string): 
   if (integrity.length !== 1) {
     throw attachHelp(
       new Error(`${where} states ${integrity.length === 0 ? "no integrity digest" : "several integrity digests"}`),
-      "a URL is not immutable on its own, so every download must state one digest, e.g. \"sha256-<base64>\""
+      'a URL is not immutable on its own, so every download must state one digest, e.g. "sha256-<base64>"'
     );
   }
   const digest = parseIntegrity(integrity[0]);
@@ -276,8 +252,8 @@ function readMember(repositoryName: string, memberName: string, value: string): 
   return { url: urls[0], digest };
 }
 
-function createFetchRepository(context: RepositoryContext): Computable<Repository> {
-  return readMembers(context).then(members => new FetchRepository(context.target.name, members, context));
+function createFetchRepository(context: TargetContext): Computable<Repository> {
+  return readMembers(context).then(members => new FetchRepository(context.name, members, context));
 }
 
 export const fetchRepositoryRegistration: RepositoryRegistration = { type: "fetch", provider: createFetchRepository };

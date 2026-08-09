@@ -27,6 +27,12 @@ import { chainSteps, IProvenanceStep } from "./Provenance";
 import { Name } from "./Name";
 import type { PublishableFileSet } from "./PublishableFileSet";
 import type { Requirement } from "../resolver/Types";
+import type { ProgressEvent } from "../model/ExecutionContext";
+/* Value imports used only inside function bodies (the resolution-layer
+ * dispatch below), so the module cycle with the resolver is init-safe:
+ * neither module touches the other's bindings at load time. */
+import { isPackageRegistry, materializePackages, resolvePackages } from "../resolver/PackageResolver";
+import type { PackageRegistry } from "../resolver/PackageResolver";
 
 /**
  * One resolved root of a {@link Resolution}: the input reference and the name
@@ -102,53 +108,43 @@ export function isRepository(source: SourceRef): source is Repository {
  */
 export interface RepositoryReader {
   /**
-   * Phase 1 — resolve versions + dependency tree over the batch, WITHOUT
-   * fetching. Returns an opaque, repository-specific Resolution the caller holds
-   * and hands back to `materialize`; its `roots` name each resolved reference so
-   * a caller (a catalog) can key by name without fetching.
+   * Deliver what ONE reference names. Single-item by design: joint version
+   * selection over a batch is the resolution layer's business (a package
+   * registry never implements this face — the collection machinery dispatches
+   * its references to resolvePackages/materializePackages instead), so what
+   * remains here is a repository whose delivery is genuinely per-reference —
+   * a fetch repository's named download, a catalog's pinned-member lookup.
+   * Projections and provenance carried by the reference are applied by the
+   * caller (see materializeAll); `options.resolutionMode` is the
+   * delivery-shape judgment of resolution repairs (see MaterializeOptions),
+   * for a repository (the catalog) whose members carry resolved closures.
    */
-  resolve(references: RepositoryRef[]): Computable<Resolution>;
-
-  /**
-   * Phase 2 — materialize (fetch + assemble) the given references, a SUBSET of a
-   * prior Resolution. Each reference's dependency closure comes from that
-   * pre-resolved tree, never re-resolved, so a subset fetch preserves the joint
-   * pin. The repository delivers the artifact its *operation* asks for — a plain
-   * package for build/test, a runnable for run — reading it (and any global
-   * config it selects on, e.g. a host platform) from its RepositoryContext,
-   * interned per BuildContext. Projections and provenance carried by the
-   * references are applied by the caller (see materializeAll).
-   *
-   * `options.resolutionMode` is the delivery-shape judgment of resolution
-   * repairs (see MaterializeOptions): a permissive delivery accepts a repaired
-   * closure (nested); a strict one (the default) errors on any repair in the
-   * delivered closure. Run delivery is permissive implicitly (a runnable is a
-   * sealed install by invariant).
-   */
-  materialize(references: RepositoryRef[], resolution: Resolution, options?: MaterializeOptions): Computable<FileSet[]>;
+  deliver(reference: RepositoryRef, options?: MaterializeOptions): Computable<FileSet>;
 
   /**
    * Repackage an already-resolved package (its closure carried) as a runnable,
-   * **without re-resolving** — a pure, ecosystem-specific transform (for npm:
-   * mount the closure as node_modules + a bin surface from package.json). It is
-   * separate from `materialize`'s run delivery precisely so that a package
-   * resolved in one place can be launched with the *exact* closure it was
-   * resolved with: a catalog pins its members' versions jointly, then hands one
-   * back here to be made runnable, keeping that joint closure rather than letting
-   * a fresh resolution pick different (wrong) dependencies. The package must be
-   * one this repository produced (a catalog delegates to its member's source).
+   * **without re-resolving** — a pure, ecosystem-specific transform. OPTIONAL,
+   * and implemented only where the answer is genuinely the repository's own (a
+   * catalog looks the member up and delegates): for a package registry the
+   * answer is pure format convention, so callers dispatch to
+   * `format.makeRunnable` instead (see {@link runnableFrom}) — keeping the
+   * exact closure the package was resolved with either way.
    */
-  makeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet>;
+  makeRunnable?(pkg: PackageFileSet): Computable<RunnableFileSet>;
 
   /**
    * The requirement `ref` declares — package name + the version constraint as
    * WRITTEN — for a generated manifest (which records what a package *requires*,
    * not what fabr's joint resolution pinned, which a transitive constraint may
-   * have bumped). Undefined if the reference declares no version to record. npm
-   * reads it off the reference's own name (`pkg:1.2.3`); a catalog, whose refs
-   * carry no inline version, looks the member up and delegates to *its* source.
+   * have bumped). Undefined if the reference declares no version to record.
+   * OPTIONAL, and implemented only where the answer is the repository's own (a
+   * catalog, whose refs carry no inline version, looks the member up and
+   * delegates to *its* source): for a package registry the answer is pure
+   * written-form parsing, so callers dispatch to the format instead (see
+   * {@link declaredRequirementFrom}). Absent — a fetch repository, whose
+   * members are pinned by URL + digest, not version — means nothing to record.
    */
-  declaredRequirement(ref: RepositoryRef): Computable<Requirement | undefined>;
+  declaredRequirement?(ref: RepositoryRef): Computable<Requirement | undefined>;
 }
 
 /**
@@ -233,12 +229,46 @@ export function attributedTo(reference: RepositoryRef, deliver: () => Computable
   }
 }
 
+/**
+ * What the resolution layer needs from the CONSUMING collection point — the
+ * operation the references are consumed under (a global-config read), the
+ * resolve-phase memo store, and progress reporting. Every TargetContext
+ * satisfies it structurally; the repositories themselves contribute only
+ * per-name answers (their captured contexts stay their own business, for
+ * their own transports).
+ */
+export interface ResolutionContext {
+  getGlobalString(name: string): Computable<string>;
+  memoize(tag: string, key: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet>;
+  notifyProgress(event: ProgressEvent): void;
+}
+
+/** What a {@link RepositoryRef} resolves against: a per-reference deliverer,
+ * or a package registry whose references the resolution layer batches. */
+export type RefSource = RepositoryReader | PackageRegistry<unknown, unknown>;
+
+/**
+ * Resolve + deliver one repository's reference batch — the resolution layer's
+ * dispatch: a package registry's references resolve jointly
+ * (resolvePackages/materializePackages, the batch machinery); any other
+ * repository delivers per reference. Repositories no longer carry batch
+ * methods at all — batching IS this layer.
+ */
 export function resolveAndMaterialize(
-  reader: RepositoryReader,
+  context: ResolutionContext,
+  source: RefSource,
   references: RepositoryRef[],
   options?: MaterializeOptions
 ): Computable<FileSet[]> {
-  return reader.resolve(references).then(resolution => reader.materialize(references, resolution, options));
+  if (isPackageRegistry(source)) {
+    return resolvePackages(context, source, references).then(resolution =>
+      materializePackages(context, source, references, resolution, options)
+    );
+  }
+  return Computable.forAll(
+    references.map(reference => source.deliver(reference, options)),
+    (...delivered: FileSet[]) => delivered
+  );
 }
 
 /** One member of a destination's publish batch: where the content goes (the
@@ -301,14 +331,19 @@ export class RepositoryPublishRef {
  */
 export class RepositoryRef {
   constructor(
-    public readonly source: RepositoryReader,
+    public readonly source: RefSource,
     /** The reference remainder written after the repository alias,
      *  uninterpreted — how it parses is the repository's own syntax, re-read
      *  wherever it is consumed (each phase parses afresh; a ref is carried
      *  currency, never a parsed struct). */
     public readonly name: Name,
     public readonly projections: ReadonlyArray<IProjection> = [],
-    public readonly steps: ReadonlyArray<IProvenanceStep> = []
+    public readonly steps: ReadonlyArray<IProvenanceStep> = [],
+    /** The alias the repository was reached by, as written (`@deps`) — stamped
+     *  where the reference resolves (the site that matched the declaration),
+     *  like a publish ref's repositoryName. Display-only: how the resolution
+     *  layer renders suggestions and progress in the user's own spelling. */
+    public readonly repositoryName?: string
   ) {}
 
   /** The name as written — the display form for messages. */
@@ -316,11 +351,16 @@ export class RepositoryRef {
     return this.name.toString();
   }
 
+  /** @return a copy carrying the written repository alias (see repositoryName). */
+  public withRepositoryName(repositoryName: string): RepositoryRef {
+    return new RepositoryRef(this.source, this.name, this.projections, this.steps, repositoryName);
+  }
+
   /**
    * @return a copy carrying an additional provenance step (innermost first).
    */
   public withStep(step: IProvenanceStep): RepositoryRef {
-    return new RepositoryRef(this.source, this.name, this.projections, [...this.steps, step]);
+    return new RepositoryRef(this.source, this.name, this.projections, [...this.steps, step], this.repositoryName);
   }
 
   /**
@@ -333,7 +373,7 @@ export class RepositoryRef {
    * files, only a narrower reference.
    */
   public find(name: Name, prefix = ""): RepositoryRef {
-    return new RepositoryRef(this.source, this.name, [...this.projections, { pattern: name, prefix }], this.steps);
+    return new RepositoryRef(this.source, this.name, [...this.projections, { pattern: name, prefix }], this.steps, this.repositoryName);
   }
 
   /**
@@ -398,7 +438,7 @@ export function renamedDelivery(source: SourceRef, renameTo: Name, written: stri
     return source.withPackageName(renameTo.toString());
   }
   if (source instanceof RepositoryRef && source.projections.length === 0) {
-    return new RepositoryRef(source.source, source.name.withRenameTo(renameTo), source.projections, source.steps);
+    return new RepositoryRef(source.source, source.name.withRenameTo(renameTo), source.projections, source.steps, source.repositoryName);
   }
   throw attachHelp(
     new Error(`'${written}' does not deliver a package, so there is no name for '-> ' to rename`),
@@ -463,7 +503,7 @@ export type Materialized = FileSource | Repository | FileSetRef;
  * package, a runnable) pass through untouched; a projected source comes back as
  * a pending {@link FileSetRef} for the caller to finish (see Materialized).
  */
-export function materializeShallow(sources: SourceRef[]): Computable<Materialized[]> {
+export function materializeShallow(context: ResolutionContext, sources: SourceRef[]): Computable<Materialized[]> {
   const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
   const finish = (finished: Map<RepositoryRef, FileSet | FileSetRef>): Materialized[] =>
     sources.map((source): Materialized => (source instanceof RepositoryRef ? finished.get(source)! : source));
@@ -472,7 +512,7 @@ export function materializeShallow(sources: SourceRef[]): Computable<Materialize
   }
   const batches = [...groupByRepository(references).entries()];
   return Computable.forAll(
-    batches.map(([repository, refs]) => resolveAndMaterialize(repository, refs)),
+    batches.map(([repository, refs]) => resolveAndMaterialize(context, repository, refs)),
     (...results: FileSet[][]) => {
       const finished = new Map<RepositoryRef, FileSet | FileSetRef>();
       batches.forEach(([, refs], batchIndex) =>
@@ -497,7 +537,7 @@ export function materializeShallow(sources: SourceRef[]): Computable<Materialize
  * applied — a projected source comes back as a pending {@link FileSetRef} for
  * the driver to finish (see Materialized).
  */
-export function materializeAll(sources: SourceRef[], options?: MaterializeOptions): Computable<Materialized[]> {
+export function materializeAll(context: ResolutionContext, sources: SourceRef[], options?: MaterializeOptions): Computable<Materialized[]> {
   const references = gatherReferences(sources);
   const finish = (finished: Map<RepositoryRef, FileSet | FileSetRef>): Materialized[] => {
     const rebuilt = new Map<PackageFileSet, PackageFileSet>();
@@ -527,7 +567,7 @@ export function materializeAll(sources: SourceRef[], options?: MaterializeOption
   }
   const batches = [...groupByRepository(references).entries()];
   return Computable.forAll(
-    batches.map(([repository, refs]) => resolveAndMaterialize(repository, refs, options)),
+    batches.map(([repository, refs]) => resolveAndMaterialize(context, repository, refs, options)),
     (...results: FileSet[][]) => {
       const finished = new Map<RepositoryRef, FileSet | FileSetRef>();
       batches.forEach(([, refs], batchIndex) =>
@@ -546,8 +586,8 @@ export function materializeAll(sources: SourceRef[], options?: MaterializeOption
  * `getGlobalRunnable`/`getRunnableProperty`): each is just this plus its own
  * shaping (filter to FileSet / assert a runnable / key per name).
  */
-export function materializeLists(lists: SourceRef[][], options?: MaterializeOptions): Computable<Materialized[][]> {
-  return materializeAll(lists.flat(), options).then(resolved => {
+export function materializeLists(context: ResolutionContext, lists: SourceRef[][], options?: MaterializeOptions): Computable<Materialized[][]> {
+  return materializeAll(context, lists.flat(), options).then(resolved => {
     const partitioned: Materialized[][] = [];
     let index = 0;
     for (const list of lists) {
@@ -582,8 +622,8 @@ function gatherReferences(sources: SourceRef[]): RepositoryRef[] {
   return references;
 }
 
-export function groupByRepository(references: RepositoryRef[]): Map<RepositoryReader, RepositoryRef[]> {
-  const groups = new Map<RepositoryReader, RepositoryRef[]>();
+export function groupByRepository(references: RepositoryRef[]): Map<RefSource, RepositoryRef[]> {
+  const groups = new Map<RefSource, RepositoryRef[]>();
   for (const reference of references) {
     const group = groups.get(reference.source);
     if (group) {

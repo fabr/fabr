@@ -24,7 +24,7 @@ import { FileSetRef } from "./FileSetRef";
 import { MemoryFile } from "./MemoryFS";
 import { Name } from "./Name";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
-import { materializeAll, renamedDelivery, Repository, RepositoryReader, RepositoryRef, Resolution } from "./Repository";
+import { materializeAll, renamedDelivery, Repository, RepositoryReader, RepositoryRef, ResolutionContext } from "./Repository";
 import { parseName } from "../model/Parser";
 
 /** deliveredAs reads only the reference itself, never its source. */
@@ -112,27 +112,19 @@ class StubRepository implements Repository {
     throw new Error(`not a publish destination ('${name.toString()}')`);
   }
 
-  public resolve(references: RepositoryRef[]): Computable<Resolution> {
-    return Computable.resolve({ roots: references.map(reference => ({ reference, name: reference.name.toString() })) });
-  }
-
-  public materialize(references: RepositoryRef[]): Computable<FileSet[]> {
-    return Computable.resolve(
-      references.map(reference => {
-        const name = reference.name.toString();
-        return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}`)]]), name, "1.0.0");
-      })
-    );
-  }
-
-  public makeRunnable(): never {
-    throw new Error("not runnable");
-  }
-
-  public declaredRequirement(): Computable<undefined> {
-    return Computable.resolve(undefined);
+  public deliver(reference: RepositoryRef): Computable<FileSet> {
+    const name = reference.name.toString();
+    return Computable.resolve(new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}`)]]), name, "1.0.0"));
   }
 }
+
+/** The consuming-side surface the resolution layer wants — enough for tests
+ * whose repositories deliver per reference (nothing joint to memoize). */
+const RESOLUTION_CONTEXT: ResolutionContext = {
+  getGlobalString: () => Computable.resolve("build"),
+  memoize: (_tag, _key, create) => create("unused"),
+  notifyProgress: () => undefined,
+};
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.then(resolve, reject));
@@ -151,7 +143,7 @@ describe("materializeAll over cyclic package graphs", () => {
     builder.wire(b, [a]);
     builder.seal();
 
-    const [delivered] = await toPromise(materializeAll([a]));
+    const [delivered] = await toPromise(materializeAll(RESOLUTION_CONTEXT, [a]));
     /* Nothing to resolve beneath it, so the very same value comes back — no
      * copy, no infinite walk. */
     expect(delivered).to.equal(a);
@@ -171,7 +163,7 @@ describe("materializeAll over cyclic package graphs", () => {
     builder.wire(buddy, [app]);
     builder.seal();
 
-    const [delivered] = await toPromise(materializeAll([app]));
+    const [delivered] = await toPromise(materializeAll(RESOLUTION_CONTEXT, [app]));
     const rebuiltApp = delivered as PackageFileSet;
     expect(rebuiltApp).to.be.instanceOf(PackageFileSet);
     expect(rebuiltApp).to.not.equal(app);
@@ -183,7 +175,7 @@ describe("materializeAll over cyclic package graphs", () => {
 
     /* Entering at the other node of the cycle judges the same way: buddy
      * reaches the ref through the cycle, so it too must rebuild. */
-    const [second] = await toPromise(materializeAll([buddy]));
+    const [second] = await toPromise(materializeAll(RESOLUTION_CONTEXT, [buddy]));
     const secondBuddy = second as PackageFileSet;
     expect(secondBuddy).to.not.equal(buddy);
     const secondApp = secondBuddy.dependencies[0] as PackageFileSet;

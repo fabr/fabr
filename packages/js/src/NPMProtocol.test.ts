@@ -22,9 +22,10 @@ import * as crypto from "node:crypto";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
-import { Computable, IntegrityError } from "@fabr-build/core";
+import { Computable, FileSet, IntegrityError, MemoryFile, versionToString } from "@fabr-build/core";
 import {
   expectedTarballDigest,
+  NPM_FORMAT,
   parseMetadataResponse,
   publishToRegistry,
   toPublishAccess,
@@ -328,5 +329,58 @@ describe("publishToRegistry second factor", () => {
     } finally {
       server.close();
     }
+  });
+});
+
+describe("NPM_FORMAT.readContentPackage", () => {
+  function packageFiles(manifest: Record<string, unknown>): FileSet {
+    return new FileSet(new Map([["package.json", MemoryFile.from(JSON.stringify(manifest))]]));
+  }
+
+  async function failure(computable: Computable<unknown>): Promise<Error> {
+    try {
+      await computable;
+    } catch (err) {
+      return err as Error;
+    }
+    throw new Error("expected rejection, but it resolved");
+  }
+
+  const MANIFEST = {
+    name: "amperize",
+    version: "1.2.3",
+    dependencies: { xmldom: "^0.6.0", fsevents: "^2.0.0" },
+    optionalDependencies: { fsevents: "^2.0.0" },
+    peerDependencies: { react: ">=16", ganache: "^7.0.0" },
+    peerDependenciesMeta: { ganache: { optional: true } },
+  };
+
+  it("reads identity + requirements from the package.json, npm's reading", async () => {
+    const content = await NPM_FORMAT.readContentPackage(packageFiles(MANIFEST));
+    expect(content.name).to.equal("amperize");
+    expect(versionToString(content.version)).to.equal("1.2.3");
+    /* Regular dep kept; optionalDependencies dropped (their platform gates are
+     * unprobeable in a manifest read, and optional means absence is tolerated)
+     * including the fsevents dependencies-entry it overrides; optional peer
+     * dropped; non-optional peer kept, soft. */
+    expect(content.requirements).to.deep.equal([
+      { pkg: "xmldom", constraint: "^0.6.0" },
+      { pkg: "react", constraint: ">=16", soft: true },
+    ]);
+  });
+
+  it("requires a package.json at the content root, and says how to project to it", async () => {
+    /* The git-tarball shape: manifest one level down, the root not stripped. */
+    const files = new FileSet(new Map([["amperize-main/package.json", MemoryFile.from(JSON.stringify(MANIFEST))]]));
+    const err = await failure(NPM_FORMAT.readContentPackage(files));
+    expect(err.message).to.contain("no package.json at the content root");
+    expect((err as { help?: string }).help).to.contain(":*:**");
+  });
+
+  it("rejects a manifest with no version", async () => {
+    const unversioned: Record<string, unknown> = { ...MANIFEST };
+    delete unversioned.version;
+    const err = await failure(NPM_FORMAT.readContentPackage(packageFiles(unversioned)));
+    expect(err.message).to.contain("package.json declares no version");
   });
 });

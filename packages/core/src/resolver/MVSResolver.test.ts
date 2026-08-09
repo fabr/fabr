@@ -21,7 +21,7 @@ import { Computable } from "../core/Computable";
 import { resolveMVS } from "./MVSResolver";
 import { parseVersion, SEMVER, SemverVersion, versionToString } from "./Semver";
 import { MetadataFetchError, VersionNotFoundError } from "../core/Errors";
-import { PackageRegistry, Requirement, MVSResolution, Selected } from "./Types";
+import { RequirementSource, Requirement, MVSResolution, Selected } from "./Types";
 import { expect } from "chai";
 
 /**
@@ -31,8 +31,8 @@ import { expect } from "chai";
  * without it an unpublished version stays a hard failure, as for a registry
  * without the hook.
  */
-function mockRegistry(data: Record<string, Record<string, Record<string, string>>>, raisable = false): PackageRegistry<SemverVersion> {
-  const registry: PackageRegistry<SemverVersion> = {
+function mockRegistry(data: Record<string, Record<string, Record<string, string>>>, raisable = false): RequirementSource<SemverVersion> {
+  const registry: RequirementSource<SemverVersion> = {
     getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
       const deps = data[pkg]?.[versionToString(version)];
       if (deps === undefined) {
@@ -97,10 +97,10 @@ function deferredRegistry(
   data: Record<string, Record<string, Record<string, string>>>,
   pick: (pending: string[]) => number,
   raisable: boolean
-): { registry: PackageRegistry<SemverVersion>; drain: () => void } {
+): { registry: RequirementSource<SemverVersion>; drain: () => void } {
   const base = mockRegistry(data, raisable);
   const queue: Array<{ key: string; deliver: () => void }> = [];
-  const registry: PackageRegistry<SemverVersion> = {
+  const registry: RequirementSource<SemverVersion> = {
     getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
       return Computable.from((resolve, reject) => {
         const deliver = (): void => {
@@ -853,7 +853,7 @@ describe("MVSResolver", () => {
     };
     const calls = new Map<string, number>();
     const base = mockRegistry(data);
-    const registry: PackageRegistry<SemverVersion> = {
+    const registry: RequirementSource<SemverVersion> = {
       getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
         const id = `${pkg}@${versionToString(version)}`;
         calls.set(id, (calls.get(id) ?? 0) + 1);
@@ -900,7 +900,7 @@ describe("MVSResolver", () => {
      * terminal not-found for the offered version (nothing the registry will
      * actually serve satisfies the requirement — an unfetchable selection must
      * never look resolved). */
-    const registry: PackageRegistry<SemverVersion> = {
+    const registry: RequirementSource<SemverVersion> = {
       getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
         if (pkg === "A") {
           return Computable.resolve([{ pkg: "B", constraint: "^1.0.0" }]);

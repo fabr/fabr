@@ -27,8 +27,6 @@ import {
   MemoryFile,
   Name,
   isPackageRegistry,
-  MaterializeOptions,
-  materializePackages,
   NpmPlatform,
   PackageFileSet,
   packToTarball,
@@ -39,18 +37,14 @@ import {
   PublishMember,
   PublishStatus,
   readStream,
-  RegistryAdapter,
+  PackageRegistry,
   Repository,
-  RepositoryContext,
+  TargetContext,
   RepositoryPublishRef,
-  RepositoryReader,
   RepositoryRef,
   RepositoryRegistration,
   RepositoryWriter,
   Requirement,
-  Resolution,
-  resolvePackages,
-  RunnableFileSet,
   Selected,
   select,
   SEMVER,
@@ -61,27 +55,24 @@ import {
   tripleToNpm,
   unpackStream,
   vendPackageRef,
-  declaredRequirementOf,
   VersionNotFoundError,
   versionToString,
 } from "@fabr-build/core";
-import { makeNpmRunnable } from "./JSPackage";
 import {
   INPMPackageMetadata,
   matchesTargetPlatform,
-  NPM_LANGUAGE,
+  NPM_FORMAT,
   NpmPublishIdentity,
   parseMetadataResponse,
   PublishAccess,
   publishToRegistry,
   toPublishAccess,
-  splitNameVersion,
   stripArchiveRoot,
   tarballBasename,
   unsupportedPlatformReason,
   verifyTarballStream,
 } from "./NPMProtocol";
-import { dependencyBlock, dependencyRequirement, memberDependencies, optionalPeers, rewriteManifest, unresolvableDependencies } from "./PackageJson";
+import { declaredDependencies, memberDependencies, rewriteManifest, unresolvableDependencies } from "./PackageJson";
 import { NPMAuth } from "./NPMAuth";
 import { jsPluginContext } from "./JSPluginContext";
 
@@ -120,23 +111,25 @@ function packagePath(pkg: string): string {
 
 /**
  * The repository an `npm_repository` declaration builds: the
- * {@link RegistryAdapter} for the npm ecosystem — metadata, packuments,
+ * {@link PackageRegistry} for the npm ecosystem — metadata, packuments,
  * tarballs, the publish PUT, and npm's per-name policies (dependency-block
  * reading, os/cpu/libc gating, platform validation). Its reader face hands
  * each reference batch to the package resolver
  * (resolvePackages/materializePackages) with itself as the registry the
  * resolution reads from.
  */
-export class NPMRepository implements Repository, RepositoryReader, RepositoryWriter, RegistryAdapter<SemverVersion, SemverConstraint> {
-  public readonly language = NPM_LANGUAGE;
+export class NPMRepository
+  implements Repository, RepositoryWriter, PackageRegistry<SemverVersion, SemverConstraint>
+{
+  public readonly format = NPM_FORMAT;
   private readonly url: string;
-  private readonly context: RepositoryContext;
+  private readonly context: TargetContext;
   /** The access level this repository's publishes request (see {@link PublishAccess}). */
   private readonly access: PublishAccess;
   /* In-process memo over the persistent metadata cache, keyed by "pkg/version" */
   private readonly metadataCache: Map<string, Computable<INPMPackageMetadata>>;
 
-  constructor(url: string, context: RepositoryContext, access: PublishAccess = null) {
+  constructor(url: string, context: TargetContext, access: PublishAccess = null) {
     this.url = url.replace(/\/+$/, "");
     this.context = context;
     this.access = access;
@@ -149,24 +142,12 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
   }
 
   public getRepositoryRef(name: Name): RepositoryRef {
-    return vendPackageRef(this, this.language, name);
+    return vendPackageRef(this, this.format, name);
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    this.validateCoordinate(name); /* validate the address shape up front */
+    this.format.parsePublishCoordinate(name); /* validate the address shape up front */
     return new RepositoryPublishRef(this, name);
-  }
-
-  public resolve(references: RepositoryRef[]): Computable<Resolution> {
-    return resolvePackages(this.context, this, references);
-  }
-
-  public materialize(references: RepositoryRef[], resolution: Resolution, options?: MaterializeOptions): Computable<FileSet[]> {
-    return materializePackages(this.context, this, references, resolution, options);
-  }
-
-  public declaredRequirement(ref: RepositoryRef): Computable<Requirement | undefined> {
-    return declaredRequirementOf(this.language, ref);
   }
 
   /* The run's registry-auth authority (the combined project + user `.npmrc`,
@@ -188,30 +169,6 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    */
   private authHeadersFor(url: string): Computable<Record<string, string>> {
     return this.npmAuth().then(auth => auth.getHeadersFor(url));
-  }
-
-  /** Validate a publish coordinate's shape at vend time (see RegistryAdapter). */
-  public validateCoordinate(name: Name): void {
-    this.coordinateIdentity(name);
-  }
-
-  /** The name + exact version a publish coordinate assigns, re-parsed from the
-   *  written name (an address is carried as its Name; each consumer parses
-   *  afresh, as the read side does with reference names). */
-  private coordinateIdentity(ref: Name): NpmPublishIdentity {
-    const split = splitNameVersion(ref);
-    if (!split) {
-      const literal = ref.toString();
-      throw new Error(`publish coordinate '${literal}' must name a version (e.g. ${literal}:1.0.0)`);
-    }
-    const { identifier: name, version } = split;
-    /* A coordinate pins an exact version (unlike a read requirement's range). */
-    try {
-      parseVersion(version);
-    } catch {
-      throw new Error(`publish coordinate '${name}' must pin an exact version, got '${version}'`);
-    }
-    return { name, version };
   }
 
   /**
@@ -237,19 +194,19 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     /* The npm-shaped slice of the release: coordinates addressed to ANY npm
      * destination (so a cross-registry npm twin participates in the rewrite),
      * their identities re-parsed from the written name. A destination is npm
-     * iff its repository SPEAKS npm — language identity, which homogeneity
+     * iff its repository SPEAKS npm — format identity, which homogeneity
      * makes answer for every coordinate in the repository, whichever registry
      * a group routes it to. An address in some other ecosystem's namespace (a
      * file path, say) has no name/version and is ignored. */
     const npmRelease = release
-      .filter(coordinate => isPackageRegistry(coordinate.source) && coordinate.source.language === NPM_LANGUAGE)
-      .map(coordinate => this.coordinateIdentity(coordinate.name));
+      .filter(coordinate => isPackageRegistry(coordinate.source) && coordinate.source.format === NPM_FORMAT)
+      .map(coordinate => this.format.parsePublishCoordinate(coordinate.name));
     /* Later entries win the merge: own-batch assignments over release-wide. (A
      * name can't be batch-unique but release-ambiguous *and missing* from the
      * batch map — own coordinates are a subset of the release's.) */
     const memberVersions = new Map([
       ...uniqueAssignments(npmRelease),
-      ...uniqueAssignments(members.map(member => this.coordinateIdentity(member.destination.name))),
+      ...uniqueAssignments(members.map(member => this.format.parsePublishCoordinate(member.destination.name))),
     ]);
     const memberNames = new Set(npmRelease.map(identity => identity.name));
     return Computable.forAll(
@@ -263,7 +220,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     memberVersions: ReadonlyMap<string, string>,
     memberNames: ReadonlySet<string>
   ): Computable<PublishableFileSet> {
-    const identity = this.coordinateIdentity(member.destination.name);
+    const identity = this.format.parsePublishCoordinate(member.destination.name);
     const { content } = member;
     return content.get("package.json").then(manifestFile => {
       if (!manifestFile) {
@@ -310,7 +267,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    * authentication — from the environment or the per-registry `.npmrc`.
    */
   public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
-    const identity = this.coordinateIdentity(artifact.destination.name);
+    const identity = this.format.parsePublishCoordinate(artifact.destination.name);
     const { name, version } = identity;
     const tgzFile = artifact.get(tarballBasename(name, version));
     const manifestFile = artifact.get("package.json");
@@ -330,15 +287,6 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
         auth.otpProvider(this.url, this.context.execution.interaction)
       )
     );
-  }
-
-  /**
-   * Make an already-resolved npm package launchable, keeping the exact closure
-   * it carries (no re-resolution) — the domain dispatches here for its `run`
-   * delivery and for a catalog delegating a jointly-pinned member.
-   */
-  public makeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet> {
-    return makeNpmRunnable(pkg);
   }
 
   /**
@@ -363,7 +311,8 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
 
   /**
    * PackageRegistry implementation: the requirements of pkg@version are its
-   * declared `dependencies` and (non-optional) `peerDependencies`, plus the
+   * declared `dependencies` and (non-optional) `peerDependencies` (the shared
+   * manifest reading, {@link declaredDependencies}), plus the
    * `optionalDependencies` that are installable on the target. The dominant use
    * of the latter is os/cpu-gated native binaries (esbuild's @esbuild/<platform>
    * engine): all variants are listed, and only the target-matching one(s) are
@@ -375,29 +324,11 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
    * closure (one version per name, flat mount) — the peer/regular distinction
    * only exists to work around duplicate-tolerant regular deps, which fabr
    * doesn't have. A violated peer surfaces as an ordinary violation (strict error, or
-   * a sealed-tool fork — npm's --legacy-peer-deps posture). An
-   * `optional: true` peer ("if present, must match") is never auto-installed,
-   * npm parity; devDependencies stay ignored.
+   * a sealed-tool fork — npm's --legacy-peer-deps posture).
    */
   public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
     return this.getVersionMetadata(pkg, versionToString(version)).then(meta => {
-      /* npm's rule: an entry in optionalDependencies overrides the same name in
-       * dependencies, so a dep listed in both is optional (os/cpu-gated, dropped
-       * if the target doesn't match). @parcel/watcher lists its per-platform native
-       * binaries in both — treating them as required would reject the ones for
-       * other platforms as EBADPLATFORM. */
-      const optionalDeps = dependencyBlock(meta.optionalDependencies);
-      const optionalPeerNames = optionalPeers(meta.peerDependenciesMeta);
-      const peers = [...dependencyBlock(meta.peerDependencies)]
-        .filter(([dep]) => !optionalPeerNames.has(dep) && !optionalDeps.has(dep))
-        .map(([dep, spec]) => ({ ...dependencyRequirement(dep, spec), soft: true }));
-      const required = [
-        ...[...dependencyBlock(meta.dependencies)]
-          .filter(([dep]) => !optionalDeps.has(dep))
-          .map(([dep, spec]) => dependencyRequirement(dep, spec)),
-        ...peers,
-      ];
-      const optional = [...optionalDeps].map(([dep, spec]) => dependencyRequirement(dep, spec));
+      const { required, optional } = declaredDependencies(meta);
       if (optional.length === 0) {
         return Computable.resolve(required);
       }
@@ -478,7 +409,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
     });
   }
 
-  /** The registry's version list for repair suggestions (see RegistryAdapter):
+  /** The registry's version list for repair suggestions (see PackageRegistry):
    *  the packument read, without the staleness retry (suggestions are advisory). */
   public availableVersions(pkg: string): Computable<SemverVersion[] | undefined> {
     return this.publishedVersions(pkg, false);
@@ -644,7 +575,7 @@ export class NPMRepository implements Repository, RepositoryReader, RepositoryWr
   }
 }
 
-function createRepository(context: RepositoryContext): Computable<Repository> {
+function createRepository(context: TargetContext): Computable<Repository> {
   return Computable.forAll(
     [context.getRequiredString("url"), context.getString("access")],
     (url, access) => new NPMRepository(url, context, toPublishAccess(access))

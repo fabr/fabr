@@ -141,7 +141,7 @@ export interface Violation<V> {
 /**
  * A floor-raise repair: `constraint`'s declared minimum was never published, so
  * the lowest *published* satisfying version was selected in its place (via the
- * registry's {@link PackageRegistry.lowestAvailable} hook). Only raises whose
+ * registry's {@link RequirementSource.lowestAvailable} hook). Only raises whose
  * raised version made the result are reported — a raise superseded by a higher
  * requirement's floor never shaped it.
  */
@@ -268,6 +268,13 @@ export interface VersionDomain<V, C> {
   versionToString(version: V): string;
 
   /**
+   * Parse the canonical form produced by {@link versionToString} — the other
+   * half of the round-trip pair (e.g. reading versions back out of a persisted
+   * resolution document). Throws on anything else.
+   */
+  parseVersion(text: string): V;
+
+  /**
    * The exact version `text` names, when it is a single concrete version
    * rather than a range — undefined otherwise. What override markers demand
    * of their version (`pkg:1.4.2?`), and what lets an unmarked pin count as a
@@ -285,11 +292,14 @@ export interface VersionDomain<V, C> {
 }
 
 /**
- * Read access to package metadata within a repository. All answers are expected
- * to be immutable documents (a given pkg@version never changes its declared
- * requirements), which is what makes resolution results cacheable.
+ * What the resolution walk reads: the requirements a pkg@version declares, and
+ * the floor-raise hook — resolveMVS's whole view of a registry (the full
+ * registry surface, PackageResolver's `PackageRegistry`, extends this). All
+ * answers are expected to be immutable documents (a given pkg@version never
+ * changes its declared requirements), which is what makes resolution results
+ * cacheable.
  */
-export interface PackageRegistry<V> {
+export interface RequirementSource<V> {
   /**
    * @return the requirements declared by pkg@version (e.g. the dependencies
    * from its package.json). Rejects with a VersionNotFoundError (core/Errors)

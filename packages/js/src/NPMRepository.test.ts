@@ -41,8 +41,10 @@ import {
   PackageFileSet,
   parseVersion,
   RepositoryPublishRef,
-  RepositoryContext,
+  TargetContext,
+  MaterializeOptions,
   RepositoryRef,
+  ResolutionContext,
   resolveAndMaterialize,
   materializeAll,
   conflictError,
@@ -62,7 +64,7 @@ import { NPMRepository } from "./NPMRepository";
 import { assembleNodeModules, assembleScopedNodeModules } from "./JSPackage";
 import {
   matchesTargetPlatform,
-  npmPackageOfPath,
+  NPM_FORMAT,
   parseMetadataResponse,
   platformGateAdmits,
   splitNpmReference,
@@ -87,7 +89,6 @@ function origin(
     root,
     selections,
     versionToString,
-    packageOfPath: npmPackageOfPath,
   };
 }
 
@@ -147,7 +148,7 @@ describe("explainResolutionPath", () => {
 
   it("degrades gracefully for a package not in the resolution", () => {
     expect(explainResolutionPath(chokidarClosure, "mystery/index.js")).to.deep.equal([
-      "mystery is not present in the resolution of chokidar:3.5.3",
+      "'mystery/index.js' is not owned by a package in the resolution of chokidar:3.5.3",
     ]);
   });
 });
@@ -345,13 +346,13 @@ function fakeExecution(npmrc?: string): ExecutionContext {
 }
 
 /**
- * A minimal RepositoryContext that serves a fixed set of URLs and records every
+ * A minimal TargetContext that serves a fixed set of URLs and records every
  * fetch, so a test can assert which documents were (and were not) requested.
  * A served Error is delivered as that URL's failure (a registry status), and
  * any unexpected fetch rejects — so a test that expected the dependency closure
  * to be skipped fails loudly if it isn't.
  */
-function fakeContext(operation: string, served: Record<string, FileSet | Error>, fetched: string[]): RepositoryContext {
+function fakeContext(operation: string, served: Record<string, FileSet | Error>, fetched: string[]): TargetContext {
   /* Properties the repository reads: the operation, and a fixed TARGET triple —
    * test packages carry no os/cpu/libc gates, so it never filters anything; it
    * only has to resolve (getJointResolution reads it for the memo key). */
@@ -359,7 +360,8 @@ function fakeContext(operation: string, served: Record<string, FileSet | Error>,
   return {
     /* The declared name of the repository, as the domain renders references
      * (suggestions read `@npm:pkg:ver`, matching what a user would write). */
-    target: { name: "@npm" },
+    name: "@npm",
+    getDeclaredContext: () => ({ target: { name: "@npm" } }),
     getGlobalString: (name: string) =>
       name in globals ? Computable.resolve(globals[name]) : Computable.reject(new Error(`unexpected property: ${name}`)),
     fetch: (url: string) => {
@@ -375,7 +377,20 @@ function fakeContext(operation: string, served: Record<string, FileSet | Error>,
     memoize: (_tag: string, _key: string, fn: () => Computable<FileSet>) => fn(),
     notifyProgress: () => undefined,
     execution: fakeExecution(),
-  } as unknown as RepositoryContext;
+  } as unknown as TargetContext;
+}
+
+/** The machinery context each repository's references are driven with — the
+ * consuming side and the repository share one fake context in these tests. */
+const machineryContexts = new WeakMap<object, TargetContext>();
+function npmRepository(url: string, context: TargetContext): NPMRepository {
+  const repo = new NPMRepository(url, context);
+  machineryContexts.set(repo, context);
+  return repo;
+}
+/** resolveAndMaterialize through the context the repository was built with. */
+function drive(repo: object & { getRepositoryRef?: unknown }, refs: RepositoryRef[], options?: MaterializeOptions): Computable<FileSet[]> {
+  return resolveAndMaterialize(machineryContexts.get(repo)! as unknown as ResolutionContext, repo as never, refs, options);
 }
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {
@@ -413,10 +428,10 @@ describe("cyclic dependency closures through resolve + materialize", () => {
       [`${REG}/tarball/ping.tgz`]: packageTarball("ping.marker"),
       [`${REG}/tarball/pong.tgz`]: packageTarball("pong.marker"),
     };
-    const repo = new NPMRepository(REG, fakeContext("build", served, []));
+    const repo = npmRepository(REG, fakeContext("build", served, []));
     const ref = new RepositoryRef(repo, Name.fromLiteral("ping:1.0.0"));
 
-    const [delivered] = await toPromise(resolveAndMaterialize(repo, [ref]));
+    const [delivered] = await toPromise(drive(repo, [ref]));
     const ping = delivered as PackageFileSet;
     expect(ping.packageName).to.equal("ping");
     const pong = ping.dependencies[0] as PackageFileSet;
@@ -446,10 +461,10 @@ describe("NPMRepository resolveAll under files", () => {
       [`${REG}/@parcel%2fwatcher/2.4.1`]: metadataFor("@parcel/watcher", "2.4.1", { "node-addon-api": "^7.0.0" }),
       [`${REG}/tarball/2.4.1.tgz`]: packageTarball(),
     };
-    const repo = new NPMRepository(REG, fakeContext(FILES_OPERATION, served, fetched));
+    const repo = npmRepository(REG, fakeContext(FILES_OPERATION, served, fetched));
     const ref = new RepositoryRef(repo, Name.fromLiteral("@parcel/watcher:2.4.1"));
 
-    const [delivered] = await toPromise(resolveAndMaterialize(repo, [ref]));
+    const [delivered] = await toPromise(drive(repo, [ref]));
 
     expect(delivered).to.be.instanceOf(PackageFileSet);
     const pkg = delivered as PackageFileSet;
@@ -467,19 +482,19 @@ describe("NPMRepository resolveAll under files", () => {
       [`${REG}/left-pad/1.2.0`]: metadataFor("left-pad", "1.2.0", {}),
       [`${REG}/tarball/1.2.0.tgz`]: packageTarball(),
     };
-    const repo = new NPMRepository(REG, fakeContext(FILES_OPERATION, served, fetched));
+    const repo = npmRepository(REG, fakeContext(FILES_OPERATION, served, fetched));
     const ref = new RepositoryRef(repo, Name.fromLiteral("left-pad:^1.2.0"));
 
-    const [delivered] = await toPromise(resolveAndMaterialize(repo, [ref]));
+    const [delivered] = await toPromise(drive(repo, [ref]));
 
     expect((delivered as PackageFileSet).version).to.equal("1.2.0");
   });
 
   it("rejects projecting into a floorless version", async () => {
-    const repo = new NPMRepository(REG, fakeContext(FILES_OPERATION, {}, []));
+    const repo = npmRepository(REG, fakeContext(FILES_OPERATION, {}, []));
     const ref = new RepositoryRef(repo, Name.fromLiteral("left-pad:*"));
 
-    const err = await rejection(() => resolveAndMaterialize(repo, [ref]));
+    const err = await rejection(() => drive(repo, [ref]));
     expect(err.message).to.match(/without a version lower bound/);
   });
 });
@@ -537,7 +552,7 @@ describe("NPMRepository lowestAvailable", () => {
   it("raises to the lowest published version satisfying the constraint", async () => {
     const fetched: string[] = [];
     const served = { [`${REG}/left-pad`]: packument(["1.0.0", "1.6.0", "2.0.0"]) };
-    const repo = new NPMRepository(REG, fakeContext("build", served, fetched));
+    const repo = npmRepository(REG, fakeContext("build", served, fetched));
 
     const raised = await toPromise(repo.lowestAvailable("left-pad", "^1.2.0"));
 
@@ -551,7 +566,7 @@ describe("NPMRepository lowestAvailable", () => {
      * target was being built, instead of the written requirement). */
     const fetched: string[] = [];
     const url = `${REG}/no-such-package-xyzzy`;
-    const repo = new NPMRepository(REG, fakeContext("build", { [url]: new HttpStatusError(404, url) }, fetched));
+    const repo = npmRepository(REG, fakeContext("build", { [url]: new HttpStatusError(404, url) }, fetched));
 
     const raised = await toPromise(repo.lowestAvailable("no-such-package-xyzzy", "^1.0.0"));
 
@@ -565,7 +580,7 @@ describe("NPMRepository lowestAvailable", () => {
      * stale copy of a registry that has since appended the version. */
     const fetched: string[] = [];
     const served = { [`${REG}/left-pad`]: packument(["1.0.0"]) };
-    const repo = new NPMRepository(REG, fakeContext("build", served, fetched));
+    const repo = npmRepository(REG, fakeContext("build", served, fetched));
 
     expect(await toPromise(repo.lowestAvailable("left-pad", "^2.0.0"))).to.equal(undefined);
     expect(fetched).to.deep.equal([`${REG}/left-pad`, `${REG}/left-pad`]);
@@ -576,7 +591,7 @@ describe("NPMRepository lowestAvailable", () => {
      * repair rather than silently report no raise. */
     const fetched: string[] = [];
     const url = `${REG}/left-pad`;
-    const repo = new NPMRepository(REG, fakeContext("build", { [url]: new HttpStatusError(503, url) }, fetched));
+    const repo = npmRepository(REG, fakeContext("build", { [url]: new HttpStatusError(503, url) }, fetched));
 
     const err = await rejection(() => toPromise(repo.lowestAvailable("left-pad", "^1.0.0")));
     expect(err.message).to.equal(`503 Service Unavailable: ${url}`);
@@ -600,8 +615,8 @@ describe("NPMRepository metadata memo", () => {
         return u === url ? Computable.resolve(good) : Computable.reject(new Error(`unexpected fetch: ${u}`));
       },
       execution: fakeExecution(),
-    } as unknown as RepositoryContext;
-    const repo = new NPMRepository(REG, context);
+    } as unknown as TargetContext;
+    const repo = npmRepository(REG, context);
 
     /* The first resolve hits the transient failure. */
     await rejection(() => toPromise(repo.getRequirements("pkg", parseVersion("1.0.0"))));
@@ -626,8 +641,8 @@ describe("NPMRepository metadata memo", () => {
         name in globals ? Computable.resolve(globals[name]) : Computable.reject(new Error(`unexpected property: ${name}`)),
       fetch: (u: string) => (u === url ? Computable.resolve(meta) : Computable.reject(new Error(`unexpected fetch: ${u}`))),
       execution: fakeExecution(),
-    } as unknown as RepositoryContext;
-    const repo = new NPMRepository(REG, context);
+    } as unknown as TargetContext;
+    const repo = npmRepository(REG, context);
 
     const requirements = await toPromise(repo.getRequirements("plugin", parseVersion("1.0.0")));
     expect(requirements).to.deep.equal([
@@ -664,8 +679,8 @@ describe("NPMRepository metadata memo", () => {
         name in globals ? Computable.resolve(globals[name]) : Computable.reject(new Error(`unexpected property: ${name}`)),
       fetch: (u: string) => (u === url ? Computable.resolve(meta) : Computable.reject(new Error(`unexpected fetch: ${u}`))),
       execution: fakeExecution(),
-    } as unknown as RepositoryContext;
-    const repo = new NPMRepository(REG, context);
+    } as unknown as TargetContext;
+    const repo = npmRepository(REG, context);
 
     const requirements = await toPromise(repo.getRequirements("odd", parseVersion("1.0.0")));
     expect(requirements).to.deep.equal([{ pkg: "eslint", constraint: "^9.0.0", soft: true }]);
@@ -681,7 +696,7 @@ describe("NPMRepository metadata memo", () => {
       "string-width": "^5.1.2",
       "wrap-ansi-cjs": "npm:wrap-ansi@^7.0.0",
     });
-    const repo = new NPMRepository(REG, fakeContext("build", { [url]: meta }, []));
+    const repo = npmRepository(REG, fakeContext("build", { [url]: meta }, []));
 
     const requirements = await toPromise(repo.getRequirements("@isaacs/cliui", parseVersion("8.0.2")));
 
@@ -756,13 +771,13 @@ describe("assertNoAliasCollisions", () => {
   });
 });
 
-/** A stub RepositoryContext serving a project `.npmrc` (the credential source)
+/** A stub TargetContext serving a project `.npmrc` (the credential source)
  *  through the execution's source FileSource; package()/publish() otherwise don't touch it. */
-function npmrcContext(npmrc?: string): RepositoryContext {
+function npmrcContext(npmrc?: string): TargetContext {
   return {
     target: { name: "@npm" },
     execution: fakeExecution(npmrc),
-  } as unknown as RepositoryContext;
+  } as unknown as TargetContext;
 }
 
 /** A publish coordinate: an address (`name:version`) vended by its npm destination. */
@@ -1033,7 +1048,7 @@ function authCapturingContext(
   served: Record<string, FileSet>,
   captured: Record<string, Record<string, string> | undefined>,
   npmrc?: string
-): RepositoryContext {
+): TargetContext {
   const globals: Record<string, string> = { [BUILD_OPERATION]: operation, [TARGET]: "arm64-apple-macosx15.0" };
   return {
     getGlobalString: (name: string) =>
@@ -1043,7 +1058,7 @@ function authCapturingContext(
       return url in served ? Computable.resolve(served[url]) : Computable.reject(new Error(`unexpected fetch: ${url}`));
     },
     execution: fakeExecution(npmrc),
-  } as unknown as RepositoryContext;
+  } as unknown as TargetContext;
 }
 
 describe("NPMRepository read authentication", () => {
@@ -1061,13 +1076,13 @@ describe("NPMRepository read authentication", () => {
       [metadataUrl]: new FileSet(new Map([[METADATA_FILE, MemoryFile.from(JSON.stringify(meta))]])),
       [cdnTarball]: packageTarball(),
     };
-    const repo = new NPMRepository(
+    const repo = npmRepository(
       REG,
       authCapturingContext(FILES_OPERATION, served, captured, "//registry.example.org/:_authToken=secret-token")
     );
     const ref = new RepositoryRef(repo, Name.fromLiteral("left-pad:1.2.0"));
 
-    await toPromise(resolveAndMaterialize(repo, [ref]));
+    await toPromise(drive(repo, [ref]));
 
     /* Metadata is on the registry host → authenticated; the tarball is on a
      * different host (a CDN whose url came from the metadata) → no credential
@@ -1083,10 +1098,10 @@ describe("NPMRepository read authentication", () => {
       [metadataUrl]: metadataFor("left-pad", "1.2.0", {}),
       [`${REG}/tarball/1.2.0.tgz`]: packageTarball(),
     };
-    const repo = new NPMRepository(REG, authCapturingContext(FILES_OPERATION, served, captured));
+    const repo = npmRepository(REG, authCapturingContext(FILES_OPERATION, served, captured));
     const ref = new RepositoryRef(repo, Name.fromLiteral("left-pad:1.2.0"));
 
-    await toPromise(resolveAndMaterialize(repo, [ref]));
+    await toPromise(drive(repo, [ref]));
 
     expect(captured[metadataUrl]).to.deep.equal({});
   });
@@ -1111,12 +1126,14 @@ describe("override markers", () => {
   /* Parsed, not fromLiteral: a written `?` marker arrives as a trailing GLOB
    * part (the lexer's reading), which the version split folds back — the
    * fidelity this harness must exercise. */
+  /* Refs stamped with the alias a build file would have written them under,
+   * so suggestions render pasteably (the alias rides the ref now). */
   const refsFor = (repo: NPMRepository, names: string[]): RepositoryRef[] =>
-    names.map(name => new RepositoryRef(repo, parseName(name)));
+    names.map(name => new RepositoryRef(repo, parseName(name)).withRepositoryName("@npm"));
 
   it("a '?' pair — principal and fork — sanctions the coexistence in a strict delivery", async () => {
-    const repo = new NPMRepository(REG, fakeContext("build", served, []));
-    const delivered = await toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:2.5.0?", "C:1.5.0?"])));
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const delivered = await toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:2.5.0?", "C:1.5.0?"])));
     expect(delivered).to.have.lengthOf(4);
     /* The alternates themselves deliver nothing — the fork arrives nested
      * inside the canonical closure (under A, whose edge needs it). */
@@ -1134,17 +1151,17 @@ describe("override markers", () => {
   });
 
   it("an exact unmarked pin of the principal completes the sanction too (the catalog form)", async () => {
-    const repo = new NPMRepository(REG, fakeContext("build", served, []));
-    const delivered = await toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:2.5.0", "C:1.5.0?"])));
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const delivered = await toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:2.5.0", "C:1.5.0?"])));
     expect(delivered).to.have.lengthOf(4);
   });
 
   it("an exact pin OF THE FORK delivers a nested override, so a carried closure still lays out", async () => {
-    const repo = new NPMRepository(REG, fakeContext("build", served, []));
+    const repo = npmRepository(REG, fakeContext("build", served, []));
     /* The catalog form again, but the unmarked pin names the *fork*: the
      * requirement is answered by C@1.5.0 while the principal stays 2.5.0. */
     const delivered = await toPromise(
-      resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:1.5.0", "C:2.5.0?"]))
+      drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:1.5.0", "C:2.5.0?"]))
     );
     const packages = delivered.filter(
       (set): set is PackageFileSet => set instanceof PackageFileSet && [...set].length > 0
@@ -1170,8 +1187,8 @@ describe("override markers", () => {
     /* One '?' alone would implicitly bless coexistence with whatever the rest
      * of the tree resolves to; the whole coexisting set must be named, so
      * drift on any side re-errors, phrased as the set mismatch it is. */
-    const repo = new NPMRepository(REG, fakeContext("build", served, []));
-    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:1.5.0?"]))));
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const err = await rejection(() => toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:1.5.0?"]))));
     expect(err.message).to.contain("required C versions: 1.5.0, 2.5.0 — allowed: 1.5.0");
     expect(err.message).to.contain("add @npm:C:2.5.0?");
     /* The suggestion completes the written set — it does not re-suggest the
@@ -1181,8 +1198,8 @@ describe("override markers", () => {
   });
 
   it("an unsanctioned conflict fails strict with pasteable suggestions", async () => {
-    const repo = new NPMRepository(REG, fakeContext("build", served, []));
-    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0"]))));
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const err = await rejection(() => toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0"]))));
     expect(err.message).to.contain("does not satisfy '~1.5.0'");
     /* Resolution-pure, and rendered as the help (the remedy line): the whole
      * coexisting set as '?' sanctions — no unmarked pin, which would be a
@@ -1191,16 +1208,16 @@ describe("override markers", () => {
   });
 
   it("a stale alternate reports the version now required instead", async () => {
-    const repo = new NPMRepository(REG, fakeContext("build", served, []));
-    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:2.5.0?", "C:1.4.0?"]))));
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const err = await rejection(() => toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:2.5.0?", "C:1.4.0?"]))));
     expect(err.message).to.contain("required C versions: 1.5.0, 2.5.0 — allowed: 2.5.0, 1.4.0");
     expect(err.message).to.contain("add @npm:C:1.5.0?");
   });
 
   it("a '!' force substitutes every requirement and coerces the rest", async () => {
     const fetched: string[] = [];
-    const repo = new NPMRepository(REG, fakeContext("build", served, fetched));
-    const delivered = await toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:2.5.0!"])));
+    const repo = npmRepository(REG, fakeContext("build", served, fetched));
+    const delivered = await toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:2.5.0!"])));
     expect(delivered).to.have.lengthOf(3);
     /* A's ~1.5.0 was coerced onto 2.5.0: the losing version is neither
      * resolved nor fetched. */
@@ -1211,20 +1228,20 @@ describe("override markers", () => {
   });
 
   it("forcing and permitting the same package is contradictory", async () => {
-    const repo = new NPMRepository(REG, fakeContext("build", served, []));
-    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "C:2.5.0!", "C:1.5.0?"]))));
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const err = await rejection(() => toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "C:2.5.0!", "C:1.5.0?"]))));
     expect(err.message).to.contain("both forced ('!') and permitted as an alternate ('?')");
   });
 
   it("two forces at different versions are contradictory too", async () => {
-    const repo = new NPMRepository(REG, fakeContext("build", served, []));
-    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["A:1.1.0", "C:2.5.0!", "C:1.5.0!"]))));
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const err = await rejection(() => toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "C:2.5.0!", "C:1.5.0!"]))));
     expect(err.message).to.contain("forced ('!') at two different versions");
   });
 
   it("a marker demands an exact version, not a range", async () => {
-    const repo = new NPMRepository(REG, fakeContext("build", served, []));
-    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["C:^1.0.0?"]))));
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const err = await rejection(() => toPromise(drive(repo, refsFor(repo, ["C:^1.0.0?"]))));
     expect(err.message).to.contain("needs an exact version");
   });
 
@@ -1247,8 +1264,8 @@ describe("override markers", () => {
     /* The jest-30 shape: members require `T: '*'` / `U: '*'`. The whole
      * repairable failure is one fact with one pasteable fix — per-package
      * detail lines inside it, latest-stable `?` suggestions as the help. */
-    const repo = new NPMRepository(REG, fakeContext("build", floorlessServed, []));
-    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["P:1.0.0"]))));
+    const repo = npmRepository(REG, fakeContext("build", floorlessServed, []));
+    const err = await rejection(() => toPromise(drive(repo, refsFor(repo, ["P:1.0.0"]))));
     expect(err.message.match(/required only without a version lower bound/g)).to.have.lengthOf(1);
     expect(err.message).to.contain("'T' — required by Q@1.2.0, R@1.3.0");
     expect(err.message).to.contain("'U' — required by R@1.3.0");
@@ -1269,8 +1286,8 @@ describe("override markers", () => {
       [`${REG}/V/1.5.0`]: metadataFor("V", "1.5.0", {}, { dist: tarballDist("v1") }),
       [`${REG}/V/2.5.0`]: metadataFor("V", "2.5.0", {}, { dist: tarballDist("v2") }),
     };
-    const repo = new NPMRepository(REG, fakeContext("build", cascade, []));
-    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["P:1.0.0"]))));
+    const repo = npmRepository(REG, fakeContext("build", cascade, []));
+    const err = await rejection(() => toPromise(drive(repo, refsFor(repo, ["P:1.0.0"]))));
     expect(err.message).to.contain("'W' — required by P@1.0.0");
     expect(err.message).to.contain("1 version conflict(s)");
     expect(helpText(err)).to.contain("@npm:W:2.0.0?");
@@ -1278,8 +1295,8 @@ describe("override markers", () => {
   });
 
   it("the suggested '?' alternates supply the floorless-only versions (attach-last)", async () => {
-    const repo = new NPMRepository(REG, fakeContext("build", floorlessServed, []));
-    const delivered = await toPromise(resolveAndMaterialize(repo, refsFor(repo, ["P:1.0.0", "T:24.2.0?", "U:3.1.0?"])));
+    const repo = npmRepository(REG, fakeContext("build", floorlessServed, []));
+    const delivered = await toPromise(drive(repo, refsFor(repo, ["P:1.0.0", "T:24.2.0?", "U:3.1.0?"])));
     expect(delivered).to.have.lengthOf(3);
     /* The alternates deliver nothing of their own; T and U ride inside P's
      * closure as ordinary members — transitive, not direct deps. */
@@ -1306,8 +1323,8 @@ describe("override markers", () => {
       [`${REG}/C/3.0.0`]: metadataFor("C", "3.0.0", {}, { dist: tarballDist("c3") }),
       [`${REG}/C`]: new FileSet(new Map([["versions.json", MemoryFile.from(JSON.stringify(["1.5.0", "2.0.0", "3.0.0"]))]])),
     };
-    const repo = new NPMRepository(REG, fakeContext("build", disjoint, []));
-    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, refsFor(repo, ["D:1.0.0", 'C:">=2.0.0"']))));
+    const repo = npmRepository(REG, fakeContext("build", disjoint, []));
+    const err = await rejection(() => toPromise(drive(repo, refsFor(repo, ["D:1.0.0", 'C:">=2.0.0"']))));
     expect(helpText(err)).to.contain("@npm:C:3.0.0 (satisfies every requirement on C)");
   });
 });
@@ -1331,13 +1348,15 @@ describe("merged layout across a batch", () => {
     [`${REG}/tarball/entities4.tgz`]: packageTarball("v4.marker"),
     [`${REG}/tarball/entities6.tgz`]: packageTarball("v6.marker"),
   };
+  /* Refs stamped with the alias a build file would have written them under,
+   * so suggestions render pasteably (the alias rides the ref now). */
   const refsFor = (repo: NPMRepository, names: string[]): RepositoryRef[] =>
-    names.map(name => new RepositoryRef(repo, parseName(name)));
+    names.map(name => new RepositoryRef(repo, parseName(name)).withRepositoryName("@npm"));
 
   it("nests a member's private copy the merged layout needs, not only its own delivery's", async () => {
-    const repo = new NPMRepository(REG, fakeContext("build", served, []));
+    const repo = npmRepository(REG, fakeContext("build", served, []));
     const delivered = await toPromise(
-      resolveAndMaterialize(repo, refsFor(repo, ["jsdom:1.0.0", "md:1.0.0", "entities:4.0.0?", "entities:6.0.0?"]))
+      drive(repo, refsFor(repo, ["jsdom:1.0.0", "md:1.0.0", "entities:4.0.0?", "entities:6.0.0?"]))
     );
     const packages = delivered.filter(set => [...set].length > 0);
     /* parse5 carries the copy its edge binds, even though its own delivery
@@ -1364,15 +1383,17 @@ describe("package rename", () => {
     [`${REG}/tarball/3.0.0.tgz`]: packageTarball(),
     [`${REG}/tarball/2.0.0.tgz`]: packageTarball(),
   };
+  /* Refs stamped with the alias a build file would have written them under,
+   * so suggestions render pasteably (the alias rides the ref now). */
   const refsFor = (repo: NPMRepository, names: string[]): RepositoryRef[] =>
     names.map(name => repo.getRepositoryRef(parseName(name)));
 
   it("delivers the package under the written name, and mounts it there", async () => {
-    const repo = new NPMRepository(REG, fakeContext("build", served, []));
+    const repo = npmRepository(REG, fakeContext("build", served, []));
     /* materializeAll, not resolveAndMaterialize: the rename is applied where
      * every delivery is finished (RepositoryRef.deliveredAs), which is the
      * collection point's job, not the repository's. */
-    const [delivered] = await toPromise(materializeAll(refsFor(repo, ["stream-browserify:3.0.0 -> stream"])));
+    const [delivered] = await toPromise(materializeAll(machineryContexts.get(repo)! as unknown as ResolutionContext, refsFor(repo, ["stream-browserify:3.0.0 -> stream"])));
     expect((delivered as PackageFileSet).packageName).to.equal("stream");
     /* The mount follows the delivered identity, so a source importing 'stream'
      * resolves the shim — while its own closure keeps its real names. */
@@ -1387,9 +1408,9 @@ describe("package rename", () => {
      * — pins and fetches it once and differs only in what the two deliveries are
      * called. */
     const fetched: string[] = [];
-    const repo = new NPMRepository(REG, fakeContext("build", served, fetched));
+    const repo = npmRepository(REG, fakeContext("build", served, fetched));
     const delivered = await toPromise(
-      materializeAll(refsFor(repo, ["stream-browserify:3.0.0", "stream-browserify:3.0.0 -> stream"]))
+      materializeAll(machineryContexts.get(repo)! as unknown as ResolutionContext, refsFor(repo, ["stream-browserify:3.0.0", "stream-browserify:3.0.0 -> stream"]))
     );
     expect(delivered.map(set => (set as PackageFileSet).packageName)).to.deep.equal(["stream-browserify", "stream"]);
     expect(fetched.filter(url => url.endsWith("/tarball/3.0.0.tgz"))).to.have.lengthOf(1);
@@ -1486,7 +1507,7 @@ describe("multi-route domains (repository groups)", () => {
 
   /** The repository a `repository_group` declares — a registry of registries,
    *  each route key parsed exactly as the rule parses a declared route. */
-  function groupDomain(context: RepositoryContext, routes: Array<[string, string]>): RepositoryGroup<SemverVersion, SemverConstraint> {
+  function groupDomain(context: TargetContext, routes: Array<[string, string]>): RepositoryGroup<SemverVersion, SemverConstraint> {
     const table = routes.map(([text, url]) => {
       const parsed = parseRouteKey(text);
       if ("error" in parsed) {
@@ -1494,7 +1515,9 @@ describe("multi-route domains (repository groups)", () => {
       }
       return { key: parsed, member: new NPMRepository(url, context) };
     });
-    return new RepositoryGroup(context, table);
+    const group = new RepositoryGroup(context, NPM_FORMAT, table);
+    machineryContexts.set(group, context);
+    return group;
   }
 
   const served: Record<string, FileSet | Error> = {
@@ -1513,7 +1536,7 @@ describe("multi-route domains (repository groups)", () => {
     const repo = groupDomain(fakeContext("build", served, fetched), [["@scope/*", PRIV], ["*", REG]]);
     const ref = new RepositoryRef(repo, Name.fromLiteral("app:1.0.0"));
 
-    const [delivered] = await toPromise(resolveAndMaterialize(repo, [ref]));
+    const [delivered] = await toPromise(drive(repo, [ref]));
     const app = delivered as PackageFileSet;
     expect(app.packageName).to.equal("app");
     expect((app.dependencies[0] as PackageFileSet).packageName).to.equal("@scope/icons");
@@ -1531,7 +1554,7 @@ describe("multi-route domains (repository groups)", () => {
       return memoize(tag, key, fn);
     };
     const repo = groupDomain(context, [["@scope/*", PRIV], ["*", REG]]);
-    await toPromise(resolveAndMaterialize(repo, [new RepositoryRef(repo, Name.fromLiteral("app:1.0.0"))]));
+    await toPromise(drive(repo, [new RepositoryRef(repo, Name.fromLiteral("app:1.0.0"))]));
     expect(memoKeys).to.have.lengthOf(1);
     expect(memoKeys[0]).to.contain("npm:resolve:17");
     expect(memoKeys[0]).to.contain(`@scope/*=${PRIV}`);
@@ -1542,7 +1565,7 @@ describe("multi-route domains (repository groups)", () => {
     /* A closed domain (no catch-all): not an error class of its own — the
      * domain simply does not serve the package. */
     const repo = groupDomain(fakeContext("build", served, []), [["@scope/*", PRIV]]);
-    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, [new RepositoryRef(repo, Name.fromLiteral("left-pad:1.0.0"))])));
+    const err = await rejection(() => toPromise(drive(repo, [new RepositoryRef(repo, Name.fromLiteral("left-pad:1.0.0"))])));
     expect(err.message).to.contain("has no route serving 'left-pad'");
     expect(err.message).to.contain("@scope/*");
   });
@@ -1559,25 +1582,26 @@ describe("multi-route domains (repository groups)", () => {
       }),
     };
     const repo = groupDomain(fakeContext("build", gated, []), [["@scope/*", PRIV], ["*", REG]]);
-    const err = await rejection(() => toPromise(resolveAndMaterialize(repo, [new RepositoryRef(repo, Name.fromLiteral("app:1.0.0"))])));
+    const err = await rejection(() => toPromise(drive(repo, [new RepositoryRef(repo, Name.fromLiteral("app:1.0.0"))])));
     expect(err.message).to.contain("@scope/native@1.0.0 is not supported for the target platform");
   });
 
-  it("partitions a publish batch by route and reassembles carriers in member order", async () => {
+  it("vends publish refs bound directly to the routed member registry", async () => {
+    /* Publishing through a group is pure pass-through: the ref's source IS the
+     * destination registry the coordinate routes to, so BuildSync's ordinary
+     * partition-by-destination handles a multi-registry release with no group
+     * publish machinery at all. */
     const context = npmrcContext();
     const repo = groupDomain(context, [["@scope/*", PRIV], ["*", REG]]);
-    /* Interleaved destinations, so a partition that loses the original order
-     * would visibly mis-assign carriers. */
-    const coordinates = ["@scope/x:1.0.0", "demo:1.2.3", "@scope/y:2.0.0"];
-    const members = coordinates.map(text => {
-      const destination = repo.getRepositoryPublishRef(Name.fromLiteral(text));
-      const name = text.substring(0, text.lastIndexOf(":"));
-      const content = publishFileSet({ "package.json": JSON.stringify({ name, version: "0.0.0-dev" }) });
-      return { destination, content };
-    });
-    const carriers = await toPromise(repo.package(members, members.map(member => member.destination)));
-    expect(carriers.map(carrier => carrier.destination)).to.deep.equal(members.map(member => member.destination));
-    expect(carriers.map(carrier => carrier.provides)).to.deep.equal(["@scope/x", "demo", "@scope/y"]);
+    const scoped = repo.getRepositoryPublishRef(Name.fromLiteral("@scope/x:1.0.0"));
+    const pub = repo.getRepositoryPublishRef(Name.fromLiteral("demo:1.2.3"));
+    expect(scoped.source).to.be.instanceOf(NPMRepository);
+    expect(pub.source).to.be.instanceOf(NPMRepository);
+    expect(scoped.source).to.not.equal(pub.source);
+    /* And the bound member packages its own batch end to end. */
+    const content = publishFileSet({ "package.json": JSON.stringify({ name: "@scope/x", version: "0.0.0-dev" }) });
+    const carriers = await toPromise(scoped.source.package([{ destination: scoped, content }], [scoped, pub]));
+    expect(carriers.map(carrier => carrier.provides)).to.deep.equal(["@scope/x"]);
   });
 
   it("routes publish coordinates, refusing one no route serves", () => {

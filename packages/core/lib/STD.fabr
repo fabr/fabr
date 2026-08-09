@@ -156,6 +156,10 @@ targetdef fetch {
 # what resolves must never depend on what a registry happens to be missing).
 # All routed registries must speak the same package ecosystem.
 #
+# A route's value may instead be a file set, which is interpreted as a package of
+# the same kind as the rest of the repository group. In this case, the key must be
+# the full name of the package.
+#
 targetdef repository_group {
     * = FILES;
 }

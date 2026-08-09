@@ -45,7 +45,12 @@ describe("Flag", () => {
      * point untouched (materializeAll's identity branch), keeping its Flag
      * identity, rather than collapsing to an anonymous empty set. */
     const flag = new Flag("ts/no_strict", []);
-    const [materialized] = await toPromise(materializeAll([flag]));
+    const [materialized] = await toPromise(
+      materializeAll(
+        { getGlobalString: () => Computable.resolve("build"), memoize: (_t, _k, create) => create("unused"), notifyProgress: () => undefined },
+        [flag]
+      )
+    );
     expect(materialized).to.equal(flag);
     expect(materialized).to.be.instanceOf(Flag);
   });

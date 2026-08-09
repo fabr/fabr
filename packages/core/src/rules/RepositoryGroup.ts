@@ -19,35 +19,24 @@
 
 import { Computable } from "../core/Computable";
 import { attachHelp } from "../core/Errors";
-import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { PackageFileSet } from "../core/PackageFileSet";
-import { PublishableFileSet } from "../core/PublishableFileSet";
 import {
   isRepository,
-  MaterializeOptions,
-  PublishMember,
-  PublishStatus,
   Repository,
   RepositoryPublishRef,
-  RepositoryReader,
   RepositoryRef,
-  RepositoryWriter,
-  Resolution,
   SourceRef,
 } from "../core/Repository";
-import { RunnableFileSet } from "../core/RunnableFileSet";
-import { RepositoryContext } from "../model/BuildContext";
+import { TargetContext } from "../model/BuildContext";
 import { Requirement, Selected } from "../resolver/Types";
+import { PackageFormat } from "../resolver/PackageFormat";
 import {
-  declaredRequirementOf,
   isPackageRegistry,
-  materializePackages,
-  PackageLanguage,
-  RegistryAdapter,
-  resolvePackages,
+  PackageRegistry,
   vendPackageRef,
 } from "../resolver/PackageResolver";
+import { contentPackageMember } from "./ContentPackage";
 import { RepositoryRegistration } from "./Types";
 
 /**
@@ -69,7 +58,7 @@ export interface RouteKey {
 /** One route: names matching `key` are served by `member`. */
 export interface Route<V, C> {
   readonly key: RouteKey;
-  readonly member: RegistryAdapter<V, C>;
+  readonly member: PackageRegistry<V, C>;
 }
 
 /** The canonical text of a route key (`@fortawesome/*`, `lodash`, `*`). */
@@ -94,16 +83,13 @@ function moreSpecific(a: RouteKey, b: RouteKey): boolean {
 }
 
 /**
- * Parse a written route key, enforcing the shape rule: a literal name, or a
- * literal with one trailing `*`. Returns an error message (for the caller to
- * position at the route) on any other pattern shape — `?`, a character class,
- * an extglob, an interior or doubled `*` — or on a `${...}` substitution (the
- * key's name text is canonical, never substituted).
+ * Parse a route key (its variables already substituted — the caller reads keys
+ * through the wildcard-property surface), enforcing the shape rule: a literal
+ * name, or a literal with one trailing `*`. Returns an error message (for the
+ * caller to position at the route) on any other pattern shape — `?`, a
+ * character class, an extglob, an interior or doubled `*`.
  */
 export function parseRouteKey(text: string): RouteKey | { error: string } {
-  if (text.includes("${")) {
-    return { error: `route key '${text}' may not contain a variable substitution` };
-  }
   const prefix = text.endsWith("*");
   const literal = prefix ? text.slice(0, -1) : text;
   const bad = literal.match(/[*?[\]()]/);
@@ -164,7 +150,7 @@ export function bestRoute<R extends { key: RouteKey }>(routes: readonly R[], nam
 
 /**
  * The repository a `repository_group` declares: a registry made of other
- * registries — a {@link RegistryAdapter} implementing every per-name operation
+ * registries — a {@link PackageRegistry} implementing every per-name operation
  * by delegating to the member the name routes to. Its reader face hands each
  * reference batch to the package resolver with ITSELF as the registry, so the
  * whole closure of a reference written against the group, transitive
@@ -176,42 +162,54 @@ export function bestRoute<R extends { key: RouteKey }>(routes: readonly R[], nam
  * a MetadataFetchError, which keeps only the cause's message), and the routes
  * are listed so the remedy is visible. No fall-through, ever.
  */
-export class RepositoryGroup<V, C> implements Repository, RepositoryReader, RepositoryWriter, RegistryAdapter<V, C> {
-  public readonly language: PackageLanguage<V, C>;
-
+export class RepositoryGroup<V, C>
+  implements Repository, PackageRegistry<V, C>
+{
   constructor(
-    private readonly context: RepositoryContext,
+    private readonly context: TargetContext,
+    /** The domain's shared format — every member holds this same instance
+     * (registry members by the homogeneity check, content members by
+     * construction), so the factory passes it explicitly rather than having
+     * the group trust whichever member happens to be first. */
+    public readonly format: PackageFormat<V, C>,
     private readonly routes: Route<V, C>[]
-  ) {
-    this.language = routes[0].member.language;
-  }
+  ) {}
 
   /** The group's declared name (`@deps`), for miss diagnostics. */
   private get groupName(): string {
-    return this.context.target.name;
+    return this.context.name;
   }
 
   public getRepositoryRef(name: Name): RepositoryRef {
     /* The ref's source is the GROUP, so every reference written against it
      * lands in one joint batch at the consumer's collection point. */
-    return vendPackageRef(this, this.language, name);
+    return vendPackageRef(this, this.format, name);
   }
 
+  /**
+   * Publishing is pure pass-through: the routed member vends its own ref
+   * (validating the address shape itself), so the sync binds directly to the
+   * destination registry — `BuildSync` already partitions a release by
+   * destination and drives each one's package/publish, which is the only
+   * "multi-registry" work a group could have added. A member without the vend
+   * (a content route) is refused here, routes listed.
+   */
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    this.validateCoordinate(name); /* validate the route + address shape up front */
-    return new RepositoryPublishRef(this, name);
-  }
-
-  public resolve(references: RepositoryRef[]): Computable<Resolution> {
-    return resolvePackages(this.context, this, references);
-  }
-
-  public materialize(references: RepositoryRef[], resolution: Resolution, options?: MaterializeOptions): Computable<FileSet[]> {
-    return materializePackages(this.context, this, references, resolution, options);
-  }
-
-  public declaredRequirement(ref: RepositoryRef): Computable<Requirement | undefined> {
-    return declaredRequirementOf(this.language, ref);
+    const member = this.memberFor(name.getLiteralPathPrefix());
+    if (!member) {
+      throw attachHelp(
+        new Error(`${this.groupName} has no route serving publish coordinate '${name.toString()}'`),
+        `its routes are: ${this.routes.map(route => routeKeyText(route.key)).join(", ")}`
+      );
+    }
+    const destination = member as Partial<Repository>;
+    if (typeof destination.getRepositoryPublishRef !== "function") {
+      throw attachHelp(
+        new Error(`publish coordinate '${name.toString()}' routes to a member of ${this.groupName} that is not a publish destination`),
+        "a content route serves declared files and cannot be published to — route the name to a registry to publish it"
+      );
+    }
+    return destination.getRepositoryPublishRef(name);
   }
 
   /** The serialized route table — the identity a resolution memo keys on:
@@ -221,18 +219,20 @@ export class RepositoryGroup<V, C> implements Repository, RepositoryReader, Repo
   }
 
   /** The registry serving `pkg`, undefined when no route claims it. */
-  private memberFor(pkg: string): RegistryAdapter<V, C> | undefined {
+  private memberFor(pkg: string): PackageRegistry<V, C> | undefined {
     return bestRoute(this.routes, pkg)?.member;
   }
 
   /** The registry serving `pkg`, or the miss error (see the class comment). */
-  private routed(pkg: string): RegistryAdapter<V, C> | Error {
+  private routed(pkg: string): PackageRegistry<V, C> | Error {
     const member = this.memberFor(pkg);
     if (member) {
       return member;
     }
     return new Error(
-      `${this.groupName} has no route serving '${pkg}' (its routes are: ${this.routes.map(route => routeKeyText(route.key)).join(", ")})`
+      `${this.groupName} has no route serving '${pkg}' (its routes are: ${this.routes
+        .map(route => routeKeyText(route.key))
+        .join(", ")})`
     );
   }
 
@@ -248,10 +248,10 @@ export class RepositoryGroup<V, C> implements Repository, RepositoryReader, Repo
 
   public availableVersions(pkg: string): Computable<V[] | undefined> {
     const member = this.memberFor(pkg);
-    return member ? member.availableVersions(pkg) : Computable.resolve(undefined);
+    return member?.availableVersions ? member.availableVersions(pkg) : Computable.resolve(undefined);
   }
 
-  /** Environment keys deduplicated across the members — with a shared language
+  /** Environment keys deduplicated across the members — with a shared format
    * they answer alike, but the memo key must be right even if they differ. */
   public environmentKey(): Computable<string> {
     return Computable.forAll(
@@ -261,9 +261,9 @@ export class RepositoryGroup<V, C> implements Repository, RepositoryReader, Repo
   }
 
   /** Post-resolution policy runs per member, each over its routed slice of the
-   * finished graph. */
+   * finished graph (members without a policy contribute none). */
   public validateSelections(selections: Selected<V>[]): Computable<void> {
-    const slices = new Map<RegistryAdapter<V, C>, Selected<V>[]>();
+    const slices = new Map<PackageRegistry<V, C>, Selected<V>[]>();
     for (const sel of selections) {
       const member = this.routed(sel.pkg);
       if (member instanceof Error) {
@@ -274,7 +274,7 @@ export class RepositoryGroup<V, C> implements Repository, RepositoryReader, Repo
       slices.set(member, [...(slices.get(member) ?? []), sel]);
     }
     return Computable.forAll(
-      [...slices].map(([member, sliced]) => member.validateSelections(sliced)),
+      [...slices].map(([member, sliced]) => member.validateSelections?.(sliced) ?? Computable.resolve(undefined)),
       () => undefined
     );
   }
@@ -284,63 +284,6 @@ export class RepositoryGroup<V, C> implements Repository, RepositoryReader, Repo
     return member instanceof Error ? Computable.reject(member) : member.fetch(pkg, version);
   }
 
-  public makeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet> {
-    const member = this.routed(pkg.packageName);
-    return member instanceof Error ? Computable.reject(member) : member.makeRunnable(pkg);
-  }
-
-  public validateCoordinate(name: Name): void {
-    const member = this.memberFor(name.getLiteralPathPrefix());
-    if (!member) {
-      throw attachHelp(
-        new Error(`${this.groupName} has no route serving publish coordinate '${name.toString()}'`),
-        `its routes are: ${this.routes.map(route => routeKeyText(route.key)).join(", ")}`
-      );
-    }
-    member.validateCoordinate(name);
-  }
-
-  /**
-   * Package a publish batch: the members partition by routed registry (each
-   * registry packages its own slice jointly, seeing the whole release for
-   * cross-registry rewrites), and the carriers reassemble in member order.
-   */
-  public package(members: PublishMember[], release: readonly RepositoryPublishRef[]): Computable<PublishableFileSet[]> {
-    const batches = new Map<RegistryAdapter<V, C>, { member: PublishMember; index: number }[]>();
-    for (const [index, member] of members.entries()) {
-      const routed = this.routed(member.destination.name.getLiteralPathPrefix());
-      if (routed instanceof Error) {
-        /* Can't happen: the publish ref was routed at vend time. Guards a
-         * route table edited since. */
-        throw routed;
-      }
-      batches.set(routed, [...(batches.get(routed) ?? []), { member, index }]);
-    }
-    const batchList = [...batches];
-    return Computable.forAll(
-      batchList.map(([routed, batch]) =>
-        routed.package(
-          batch.map(entry => entry.member),
-          release
-        )
-      ),
-      (...packaged: PublishableFileSet[][]) => {
-        /* Reassemble in member order: each registry returns carriers parallel
-         * to the batch it was given, indexed back to the caller's positions. */
-        const carriers = new Array<PublishableFileSet>(members.length);
-        batchList.forEach(([, batch], group) =>
-          batch.forEach((entry, position) => (carriers[entry.index] = packaged[group][position]))
-        );
-        return carriers;
-      }
-    );
-  }
-
-  /** Upload one packaged artifact via the registry its coordinate routes to. */
-  public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
-    const member = this.routed(artifact.destination.name.getLiteralPathPrefix());
-    return member instanceof Error ? Computable.reject(member) : member.publish(artifact);
-  }
 }
 
 /**
@@ -366,94 +309,156 @@ export class RepositoryGroup<V, C> implements Repository, RepositoryReader, Repo
  * declared registries cannot do, each being its own independently resolved
  * domain.
  *
+ * A route's value may instead be package **content** — a fetched archive's
+ * expansion, a local directory — in which case the value IS the one package
+ * the key names, resolved from the ecosystem's manifest inside it:
+ *
+ * The content-served package participates in the joint resolution like any
+ * registry-served one (its declared version answers range requirements on the
+ * name; its own requirements route through the group), with exactly one
+ * version available. Content routes borrow the group's format, so at least
+ * one route must name a registry.
+ *
  * Routes are read from the declaration's own properties: nothing is reserved
  * (a package may be named anything, including `default`), and a name no route
  * matches is simply not served — never a fall-through to another registry
  * (see DESIGN-repository-group.md). A group with no `*` route is a legitimate
  * closed domain.
  */
-function createRepositoryGroup(context: RepositoryContext): Computable<Repository> {
-  const groupName = context.target.name;
-  const properties = context.target.properties;
-  /* All validation happens inside the forAll callback: a provider is invoked
-   * synchronously, so a failure must reject the Computable, never throw past
-   * it — and a then-callback's throw is exactly that. */
-  return Computable.forAll(
-    properties.map(prop => context.getFileProperty(prop.name)),
-    (...values) => {
-      /* Routes are read off the property NAMES directly (not through the
-       * wildcard-property surface, which drops bare-identifier keys — an exact
-       * unscoped route like `lodash = @npm;` has no keyRef). The name text is
-       * canonical and never variable-substituted: what routes is what is
-       * written, so a `${...}` in a key is rejected by the shape check. */
-      const routes = properties.map(prop => {
-        const key = parseRouteKey(prop.name);
-        if ("error" in key) {
+function createRepositoryGroup(context: TargetContext): Computable<Repository> {
+  const groupName = context.name;
+  /* Routes are the declaration's wildcard members: every property the targetdef
+   * does not declare, its key variable-substituted like any other name — so a
+   * route may be written `${SCOPE}/* = @fa;` — while the VALUE resolves under
+   * the written property name. What routes is the substituted text; the shape
+   * check judges it after substitution. All validation happens inside the
+   * forAll callback: a provider is invoked synchronously, so a failure must
+   * reject the Computable, never throw past it — and a then-callback's throw
+   * is exactly that. */
+  return context.getWildcardProperties().then(members =>
+    Computable.forAll(
+      members.map(member => context.getFileProperty(member.decl.name)),
+      (...values) => {
+        const routes = members.map(member => {
+          const text = member.key.toGlobString();
+          const key = parseRouteKey(text);
+          if ("error" in key) {
+            throw attachHelp(
+              new Error(`route '${member.decl.name}' in ${groupName}: ${key.error}`),
+              "a route key is a literal package name (`lodash`), a literal with a trailing '*' (`@fortawesome/*`, `acme-*`), " +
+                "or the catch-all `*`"
+            );
+          }
+          return { name: member.decl.name, key };
+        });
+        if (routes.length === 0) {
           throw attachHelp(
-            new Error(`route '${prop.name}' in ${groupName}: ${key.error}`),
-            "a route key is a literal package name (`lodash`), a literal with a trailing '*' (`@fortawesome/*`, `acme-*`), " +
-              "or the catch-all `*`"
+            new Error(`${groupName} declares no routes`),
+            "declare at least one route (`<name-prefix> = <repository>;`), e.g. `* = @npm;`"
           );
         }
-        return { name: prop.name, key };
-      });
-      if (routes.length === 0) {
-        throw attachHelp(
-          new Error(`${groupName} declares no routes`),
-          "declare at least one route (`<name-prefix> = <repository>;`), e.g. `* = @npm;`"
-        );
-      }
-      /* Two textually distinct keys can parse to one canonical key (`a:b` and
-       * `a/b` — the separators are equivalent name-component boundaries), a
-       * duplicate the property-level check cannot see. */
-      const canonical = new Map<string, string>();
-      for (const route of routes) {
-        const text = routeKeyText(route.key);
-        const existing = canonical.get(text);
-        if (existing !== undefined) {
+        /* Two textually distinct keys can parse to one canonical key (`a:b` and
+         * `a/b` — the separators are equivalent name-component boundaries), a
+         * duplicate the property-level check cannot see. */
+        const canonical = new Map<string, string>();
+        for (const route of routes) {
+          const text = routeKeyText(route.key);
+          const existing = canonical.get(text);
+          if (existing !== undefined) {
+            throw attachHelp(
+              new Error(`routes '${existing}' and '${route.name}' in ${groupName} are the same key ('${text}')`),
+              "':' and '/' are equivalent name-component separators in a route key — remove one of the two routes"
+            );
+          }
+          canonical.set(text, route.name);
+        }
+        const classified = routes.map((route, index) => routeValue(groupName, route.name, values[index]));
+        /* Homogeneity: a domain is defined by ONE shared format (the name
+         * and version forms every member agrees on), checked by object
+         * identity — the per-ecosystem format is a shared singleton, so two
+         * npm registries hold the same object while a registry of another
+         * ecosystem cannot. No ecosystem tags anywhere. Content routes have no
+         * format of their own — they borrow the group's, which is why the
+         * group must have at least one registry route to define it. */
+        const anchor = classified.findIndex(value => "registry" in value);
+        if (anchor === -1) {
           throw attachHelp(
-            new Error(`routes '${existing}' and '${route.name}' in ${groupName} are the same key ('${text}')`),
-            "':' and '/' are equivalent name-component separators in a route key — remove one of the two routes"
+            new Error(`${groupName} has no registry route — content routes borrow their package ecosystem from one`),
+            "declare at least one route naming a registry (e.g. `* = @npm;`) alongside the content routes"
           );
         }
-        canonical.set(text, route.name);
+        const format = (classified[anchor] as RegistryRoute).registry.format;
+        const foreign = classified.findIndex(value => "registry" in value && value.registry.format !== format);
+        if (foreign > anchor) {
+          throw attachHelp(
+            new Error(
+              `route '${routes[foreign].name}' in ${groupName} names a repository speaking a different package format than ` +
+                `route '${routes[anchor].name}'`
+            ),
+            "one group resolves one ecosystem's names jointly — declare a separate group (or repository) per ecosystem"
+          );
+        }
+        const table: Route<unknown, unknown>[] = routes.map((route, index) => {
+          const value = classified[index];
+          if ("registry" in value) {
+            return { key: route.key, member: value.registry };
+          }
+          /* A content route serves exactly ONE declared package — the name that
+           * is its key — so a prefix cannot mean anything for it. */
+          if (route.key.prefix) {
+            throw attachHelp(
+              new Error(`route '${route.name}' in ${groupName} maps a name prefix to package content`),
+              "a content route serves exactly one package, so its key must be the package's literal name (`amperize = ./vendor/amperize;`)"
+            );
+          }
+          return { key: route.key, member: contentPackageMember(format, context, routeKeyText(route.key), value.content) };
+        });
+        return new RepositoryGroup(context, format, table);
       }
-      const members = routes.map((route, index) => routeMember(groupName, route.name, values[index]));
-      /* Homogeneity: a domain is defined by ONE shared language (the name
-       * and version forms every member agrees on), checked by object
-       * identity — the per-ecosystem language is a shared singleton, so two
-       * npm registries hold the same object while a registry of another
-       * ecosystem cannot. No ecosystem tags anywhere. */
-      const language = members[0].language;
-      const foreign = members.findIndex(member => member.language !== language);
-      if (foreign > 0) {
-        throw attachHelp(
-          new Error(
-            `route '${routes[foreign].name}' in ${groupName} names a repository speaking a different package language than ` +
-              `route '${routes[0].name}'`
-          ),
-          "one group resolves one ecosystem's names jointly — declare a separate group (or repository) per ecosystem"
-        );
-      }
-      const table: Route<unknown, unknown>[] = routes.map((route, index) => ({ key: route.key, member: members[index] }));
-      return new RepositoryGroup(context, table);
-    }
+    )
   );
 }
 
-/** The registry a route's value names: exactly one repository, one that is a
- * package registry (what `npm_repository` declares), and not itself a group. */
-function routeMember(groupName: string, routeName: string, sources: readonly SourceRef[]): RegistryAdapter<unknown, unknown> {
+/** A registry route's member, classified by {@link routeValue}. */
+interface RegistryRoute {
+  readonly registry: PackageRegistry<unknown, unknown>;
+}
+
+/** A content route's declared source, classified by {@link routeValue}. */
+interface ContentRoute {
+  readonly content: SourceRef;
+}
+
+/**
+ * Classify one route's value. A value naming a repository is a **registry
+ * route**: exactly one repository, one that is a package registry (what
+ * `npm_repository` declares), and not itself a group. Any other value is a
+ * **content route** — the value IS the one package the key names
+ * (`amperize = @dl:amperize.tgz:*:**;`, or a local directory), served by the
+ * format's single-package member ({@link ContentPackageMember}): its version and requirements are read
+ * from the ecosystem's manifest inside the content, so it joins the domain's
+ * joint resolution exactly as a registry-served package does.
+ */
+function routeValue(groupName: string, routeName: string, sources: readonly SourceRef[]): RegistryRoute | ContentRoute {
   const repositories = sources.filter(isRepository);
-  if (repositories.length !== 1 || sources.length !== 1) {
+  if (repositories.length === 0) {
+    if (sources.length !== 1) {
+      throw attachHelp(
+        new Error(
+          `route '${routeName}' in ${groupName} must name a registry or one package's content` +
+            (sources.length === 0 ? " (its value resolves to nothing)" : ` (its value resolves to ${sources.length} sources)`)
+        ),
+        "a route's value is a reference to a declared registry (`@fortawesome/* = @fa;`) or the content of the one package " +
+          "the key names (`amperize = @dl:amperize.tgz:*:**;`)"
+      );
+    }
+    return { content: sources[0] };
+  }
+  if (repositories.length > 1 || sources.length !== 1) {
     throw attachHelp(
       new Error(
         `route '${routeName}' in ${groupName} must name exactly one repository` +
-          (repositories.length === 0
-            ? " (its value does not resolve to one)"
-            : repositories.length > 1
-              ? ` (it names ${repositories.length})`
-              : " (its value carries more than the repository)")
+          (repositories.length > 1 ? ` (it names ${repositories.length})` : " (its value carries more than the repository)")
       ),
       "a route's value is a reference to a declared registry, e.g. `@fortawesome/* = @fa;`"
     );
@@ -470,7 +475,7 @@ function routeMember(groupName: string, routeName: string, sources: readonly Sou
         : "a route's value must be a registry declaration such as an npm_repository (a fetch or catalog repository does not resolve package names)"
     );
   }
-  return member;
+  return { registry: member };
 }
 
 export const repositoryGroupRegistration: RepositoryRegistration = { type: "repository_group", provider: createRepositoryGroup };

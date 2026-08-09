@@ -13,7 +13,7 @@ version number.
 - Add support for bash extended globs (eg !(expr) ).
 - Add support for default targets and default target properties.
 - Add support for package renaming using -> rename syntax.
-- New `repository_group` target for adding multiple scoped repositories.
+- Add `repository_group` target for adding multiple scoped repositories and package overrides.
 
 @fabr/js:
 - Generated package.json now strips build-only fields (devDependencies, scripts, …) from an imported manifest, and emits array metadata (keywords, os, cpu) as JSON arrays.

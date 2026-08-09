@@ -391,6 +391,7 @@ function rangeMinimum(range: IRange): SemverVersion {
 
 export const SEMVER: VersionDomain<SemverVersion, SemverConstraint> = {
   parseConstraint,
+  parseVersion,
   compare: compareVersions,
 
   minimumOf(constraint: SemverConstraint): SemverVersion {

@@ -36,8 +36,9 @@ import {
   isCanonicalFileName,
   isJsonObject,
   Name,
+  IContentPackage,
   NpmPlatform,
-  PackageLanguage,
+  PackageFormat,
   parseIntegrity,
   parseJson,
   parseVersion,
@@ -47,9 +48,12 @@ import {
   SemverVersion,
   sendRequest,
   splitOverrideMarker,
+  toJsonObject,
   verifyingStream,
 } from "@fabr-build/core";
 import { otpChallengeOf, OtpProvider } from "./NPMAuth";
+import { makeNpmRunnable } from "./JSPackage";
+import { declaredDependencies } from "./PackageJson";
 import * as crypto from "node:crypto";
 import { Transform } from "node:stream";
 
@@ -466,16 +470,6 @@ export function isSemverConstraint(text: string): boolean {
 }
 
 /**
- * The package owning a path within a mounted closure, per the node_modules
- * naming convention consumers mount packages with ("@scope/name/..." or
- * "name/...").
- */
-export function npmPackageOfPath(path: string): string {
-  const parts = path.split("/");
-  return parts[0].startsWith("@") && parts.length > 1 ? `${parts[0]}/${parts[1]}` : parts[0];
-}
-
-/**
  * Split an npm `name:version` identity on its **last** colon into the package
  * name and the version tail (a constraint on a read, an exact version on a
  * publish — the caller validates which). Returns undefined when there is no
@@ -553,21 +547,82 @@ export function parseNpmRequirement(name: Name): Requirement {
   return { pkg, constraint };
 }
 
+const PACKAGE_JSON = "package.json";
+
 /**
- * The npm ecosystem's {@link PackageLanguage} — ONE shared instance: every npm
+ * Read package content as the npm package its manifest declares — the
+ * {@link PackageFormat.readContentPackage} of the npm ecosystem, and the whole
+ * of npm's contribution to a `repository_group` content route: the
+ * `package.json` at the content root supplies the identity, version and
+ * requirements (the shared {@link declaredDependencies} fold — regular deps
+ * plus non-optional peers). `optionalDependencies` are dropped: their os/cpu
+ * gates live in each *dependency's* own metadata — with whatever registry that
+ * name routes to, which a manifest read cannot ask — and npm's optional
+ * contract is exactly that absence is tolerated.
+ */
+function readNpmContentPackage(files: FileSet): Computable<IContentPackage<SemverVersion>> {
+  const manifestFile = files.getFile(PACKAGE_JSON);
+  if (!manifestFile) {
+    return Computable.reject(
+      attachHelp(
+        new Error(`no ${PACKAGE_JSON} at the content root`),
+        "the content must be the package's own root: project into an archive with ':*:**' " +
+          "(a git/npm tarball wraps the package in one root directory), or into a directory with ':**'"
+      )
+    );
+  }
+  return manifestFile.readString().then(text => {
+    const manifest = parseJson(text, PACKAGE_JSON, toJsonObject);
+    if (typeof manifest.version !== "string") {
+      throw attachHelp(
+        new Error(`${PACKAGE_JSON} declares no version`),
+        "a content-served package needs a version to take part in version selection — declare one in the manifest"
+      );
+    }
+    return {
+      name: typeof manifest.name === "string" ? manifest.name : undefined,
+      version: parseVersion(manifest.version),
+      requirements: declaredDependencies(manifest).required,
+    };
+  });
+}
+
+/**
+ * The name + exact version an npm publish coordinate assigns, re-parsed from
+ * the written name (an address is carried as its Name; each consumer parses
+ * afresh, as the read side does with reference names). A coordinate pins an
+ * exact version, unlike a read requirement's range.
+ */
+export function parseNpmPublishCoordinate(ref: Name): NpmPublishIdentity {
+  const split = splitNameVersion(ref);
+  if (!split) {
+    const literal = ref.toString();
+    throw new Error(`publish coordinate '${literal}' must name a version (e.g. ${literal}:1.0.0)`);
+  }
+  const { identifier: name, version } = split;
+  try {
+    parseVersion(version);
+  } catch {
+    throw new Error(`publish coordinate '${name}' must pin an exact version, got '${version}'`);
+  }
+  return { name, version };
+}
+
+/**
+ * The npm ecosystem's {@link PackageFormat} — ONE shared instance: every npm
  * registry holds this object, and sharing it is what admits registries to one
  * `repository_group` (the homogeneity check is object identity). The
  * resolution tag names the persisted-resolution memo shape; bump it when the
  * resolution computation or the document changes behavior.
  */
-export const NPM_LANGUAGE: PackageLanguage<SemverVersion, SemverConstraint> = {
-  versionDomain: SEMVER,
+export const NPM_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
+  ...SEMVER,
   resolutionTag: "npm:resolve:17",
-  parseVersion,
   splitReference: splitNpmReference,
-  splitIdentity: splitNameVersion,
   parseRequirement: parseNpmRequirement,
-  packageOfPath: npmPackageOfPath,
+  parsePublishCoordinate: parseNpmPublishCoordinate,
+  readContentPackage: readNpmContentPackage,
+  makeRunnable: makeNpmRunnable,
 };
 
 /**
