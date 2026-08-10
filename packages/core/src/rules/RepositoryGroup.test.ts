@@ -34,6 +34,7 @@ import {
   PublishStatus,
   Repository,
   RepositoryPublishRef,
+  RepositoryReader,
   RepositoryRef,
   } from "../core/Repository";
 import { VersionNotFoundError } from "../core/Errors";
@@ -47,11 +48,7 @@ import { LogFormatter, LogLevel } from "../support/Log";
 import { parseVersion, SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
 import { Requirement, Selected } from "../resolver/Types";
 import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
-import {
-  declaredRequirementOf,
-  PackageRegistry,
-  vendPackageRef,
-} from "../resolver/PackageResolver";
+import { declaredRequirementOf, vendPackageRef } from "../resolver/PackageResolver";
 import { bestRoute, parseRouteKey, repositoryGroupRegistration, RouteKey, routeKeyText } from "./RepositoryGroup";
 import { PluginContribution, RuleRegistration } from "./Types";
 
@@ -223,7 +220,7 @@ type RegistryTable = Record<string, Record<string, string>>;
  * which registry served which package — standing alone as a repository, its
  * reader face driven by the package-domain functions exactly as
  * npm_repository's is. */
-class FakeRegistry implements Repository, PackageRegistry<SemverVersion, SemverConstraint> {
+class FakeRegistry implements Repository, RepositoryReader<SemverVersion, SemverConstraint> {
   public readonly requested: string[] = [];
   public readonly fetched: string[] = [];
 

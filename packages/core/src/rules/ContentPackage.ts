@@ -25,10 +25,10 @@ import { PackageFileSet } from "../core/PackageFileSet";
 import { SourceRef } from "../core/Repository";
 import { TargetContext } from "../model/BuildContext";
 import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
-import { PackageRegistry } from "../resolver/PackageResolver";
+import { RepositoryReader } from "../core/Repository";
 
 /**
- * The {@link PackageRegistry} serving ONE declared package from content — what
+ * The {@link RepositoryReader} serving ONE declared package from content — what
  * a `repository_group` **content route** constructs:
  *
  * ```
@@ -64,7 +64,7 @@ export function contentPackageMember<V, C>(
   context: TargetContext,
   name: string,
   source: SourceRef
-): PackageRegistry<V, C> {
+): RepositoryReader<V, C> {
   /* Where this route was declared, for error attribution. */
   const site = `content route '${name}' in ${context.name}`;
 

@@ -41,7 +41,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
 import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
-import { PackageRegistry } from "../resolver/PackageResolver";
+import { RepositoryReader } from "../core/Repository";
 import { ResolutionContext } from "../core/Repository";
 import { expect } from "chai";
 
@@ -125,7 +125,7 @@ describe("CatalogRepository (through the model)", () => {
     return repo;
   }
 
-  class BackingRepo implements Repository, PackageRegistry<SemverVersion, SemverConstraint> {
+  class BackingRepo implements Repository, RepositoryReader<SemverVersion, SemverConstraint> {
     public readonly format = CAT_FORMAT;
     /** Every requirement read — how a test proves the WHOLE catalog was
      * version-resolved (pinning reads every member) while only named members

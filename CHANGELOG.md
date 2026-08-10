@@ -6,7 +6,7 @@ version number.
 @fabr/core:
 - `include` paths may now glob (`include lib/**/*.fabr;`).
 - Cap maximum concurrent connections + executing processes.
-- New 'fetch' repository source for arbitrary http/https fetching.
+- New 'fetch' download source for arbitrary http/https fetching.
 - Enable automatic extraction and traversal of archive files.
 - Fix: generate command names resolved incorrectly.
 - Fix: remove excessive synchronous mkdirs

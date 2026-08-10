@@ -139,10 +139,13 @@ export interface IRuleDefinition {
 
 /**
  * Repositories are not rule-built targets: a provider lazily constructs the
- * Repository instance for a declaration, per BuildContext (its configuration
- * resolves under that context's constraints).
+ * instance for a declaration, per BuildContext (its configuration resolves
+ * under that context's constraints). What it constructs is the declaration's
+ * value as a source: a {@link Repository} (vending references the resolution
+ * layer batches), or a plain {@link FileSource} for a declared namespace with
+ * nothing to resolve (a `fetch` table).
  */
-export type RepositoryProvider = (context: TargetContext) => Computable<Repository>;
+export type RepositoryProvider = (context: TargetContext) => Computable<Repository | FileSource>;
 
 /**
  * A rule contributed to a build (by core or a plugin): the knowledge of how to

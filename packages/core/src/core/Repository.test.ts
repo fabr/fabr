@@ -24,11 +24,11 @@ import { FileSetRef } from "./FileSetRef";
 import { MemoryFile } from "./MemoryFS";
 import { Name } from "./Name";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
-import { materializeAll, renamedDelivery, Repository, RepositoryReader, RepositoryRef, ResolutionContext } from "./Repository";
+import { materializeAll, renamedDelivery, Repository, RepositoryLookup, RepositoryRef, ResolutionContext } from "./Repository";
 import { parseName } from "../model/Parser";
 
 /** deliveredAs reads only the reference itself, never its source. */
-const SOURCE = {} as unknown as RepositoryReader;
+const SOURCE = {} as unknown as RepositoryLookup;
 
 function ref(written: string): RepositoryRef {
   return new RepositoryRef(SOURCE, parseName(written));

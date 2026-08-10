@@ -30,7 +30,7 @@ import {
   RepositoryPublishRef,
   RepositoryRef,
   RepositoryWriter,
-  RepositoryReader,
+  RepositoryLookup,
   SourceRef,
 } from "../core/Repository";
 import { PackageFileSet } from "../core/PackageFileSet";
@@ -208,7 +208,7 @@ registerRule("test_map", {}, context =>
  * tests); what the collection point owes a plain repository is that every
  * gathered reference is delivered, by the repository it names. */
 const batchCalls: { repo: string; name: string }[] = [];
-class TestRepo implements Repository, RepositoryReader {
+class TestRepo implements Repository, RepositoryLookup {
   private readonly cache = new Map<string, FileSet>();
 
   constructor(private readonly label: string = "repo") {}

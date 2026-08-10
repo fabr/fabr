@@ -294,7 +294,7 @@ export interface VersionDomain<V, C> {
 /**
  * What the resolution walk reads: the requirements a pkg@version declares, and
  * the floor-raise hook — resolveMVS's whole view of a registry (the full
- * registry surface, PackageResolver's `PackageRegistry`, extends this). All
+ * registry surface, PackageResolver's `RepositoryReader`, extends this). All
  * answers are expected to be immutable documents (a given pkg@version never
  * changes its declared requirements), which is what makes resolution results
  * cacheable.

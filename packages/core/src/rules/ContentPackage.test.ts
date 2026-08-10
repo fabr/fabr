@@ -29,7 +29,7 @@ import { RunnableFileSet } from "../core/RunnableFileSet";
 import { TargetContext } from "../model/BuildContext";
 import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
 import { parseVersion, SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
-import { PackageRegistry } from "../resolver/PackageResolver";
+import { RepositoryReader } from "../core/Repository";
 import { contentPackageMember } from "./ContentPackage";
 
 /** A minimal format for driving the member: `pkg.json` manifests over semver
@@ -73,7 +73,7 @@ function packageFiles(manifest: Record<string, unknown>, extra: Record<string, s
   return new FileSet(new Map(entries));
 }
 
-function memberFor(files: FileSet, name = "mylib"): PackageRegistry<SemverVersion, SemverConstraint> {
+function memberFor(files: FileSet, name = "mylib"): RepositoryReader<SemverVersion, SemverConstraint> {
   return contentPackageMember(FORMAT, contextFor(), name, files);
 }
 

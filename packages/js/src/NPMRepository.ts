@@ -26,7 +26,7 @@ import {
   lowestSatisfying,
   MemoryFile,
   Name,
-  isPackageRegistry,
+  isRepositoryReader,
   NpmPlatform,
   PackageFileSet,
   packToTarball,
@@ -37,7 +37,7 @@ import {
   PublishMember,
   PublishStatus,
   readStream,
-  PackageRegistry,
+  RepositoryReader,
   Repository,
   TargetContext,
   RepositoryPublishRef,
@@ -111,7 +111,7 @@ function packagePath(pkg: string): string {
 
 /**
  * The repository an `npm_repository` declaration builds: the
- * {@link PackageRegistry} for the npm ecosystem — metadata, packuments,
+ * {@link RepositoryReader} for the npm ecosystem — metadata, packuments,
  * tarballs, the publish PUT, and npm's per-name policies (dependency-block
  * reading, os/cpu/libc gating, platform validation). Its reader face hands
  * each reference batch to the package resolver
@@ -119,7 +119,7 @@ function packagePath(pkg: string): string {
  * resolution reads from.
  */
 export class NPMRepository
-  implements Repository, RepositoryWriter, PackageRegistry<SemverVersion, SemverConstraint>
+  implements Repository, RepositoryWriter, RepositoryReader<SemverVersion, SemverConstraint>
 {
   public readonly format = NPM_FORMAT;
   private readonly url: string;
@@ -199,7 +199,7 @@ export class NPMRepository
      * a group routes it to. An address in some other ecosystem's namespace (a
      * file path, say) has no name/version and is ignored. */
     const npmRelease = release
-      .filter(coordinate => isPackageRegistry(coordinate.source) && coordinate.source.format === NPM_FORMAT)
+      .filter(coordinate => isRepositoryReader(coordinate.source) && coordinate.source.format === NPM_FORMAT)
       .map(coordinate => this.format.parsePublishCoordinate(coordinate.name));
     /* Later entries win the merge: own-batch assignments over release-wide. (A
      * name can't be batch-unique but release-ambiguous *and missing* from the
@@ -310,7 +310,7 @@ export class NPMRepository
   }
 
   /**
-   * PackageRegistry implementation: the requirements of pkg@version are its
+   * RepositoryReader implementation: the requirements of pkg@version are its
    * declared `dependencies` and (non-optional) `peerDependencies` (the shared
    * manifest reading, {@link declaredDependencies}), plus the
    * `optionalDependencies` that are installable on the target. The dominant use
@@ -375,7 +375,7 @@ export class NPMRepository
   }
 
   /**
-   * The floor-raise hook (see PackageRegistry): the lowest *published* version
+   * The floor-raise hook (see RepositoryReader): the lowest *published* version
    * of `pkg` satisfying `constraint`, consulted only when the constraint's own
    * minimum turned out unpublished. Reads the **packument** — the registry's
    * mutable per-package version list — through the mutable-fetch TTL cache
@@ -409,7 +409,7 @@ export class NPMRepository
     });
   }
 
-  /** The registry's version list for repair suggestions (see PackageRegistry):
+  /** The registry's version list for repair suggestions (see RepositoryReader):
    *  the packument read, without the staleness retry (suggestions are advisory). */
   public availableVersions(pkg: string): Computable<SemverVersion[] | undefined> {
     return this.publishedVersions(pkg, false);

@@ -34,8 +34,10 @@ import { Name } from "../core/Name";
 import { PackageFileSet, PackageGraphBuilder } from "../core/PackageFileSet";
 import {
   attributedTo,
+  isRepositoryReader,
   MaterializeOptions,
   RefSource,
+  RepositoryReader,
   ResolutionContext,
   RepositoryRef,
   Resolution,
@@ -54,77 +56,12 @@ import {
   IRequirementEdge,
   MVSResolution,
   Requirement,
-  RequirementSource,
   ROOT_REQUIRER,
   Selected,
   VersionDomain,
 } from "./Types";
 
 const RESOLUTION_FILE = "resolution.json";
-
-/**
- * A package registry as this module drives one: a transport for one ecosystem
- * — everything that needs the url, the credentials, or the wire formats, and
- * nothing that orchestrates. `npm_repository` implements this directly; a
- * `repository_group` implements it by routing every call to the member the
- * name routes to; a content route's member derives every answer from its
- * manifest. The driver functions ({@link resolvePackages} /
- * {@link materializePackages}) only ever ask per-name questions of the one
- * registry they are given — which is why a group's whole closure, transitive
- * requirements included, flows through the group and gets routed there.
- *
- * Reading only: a registry that is also a publish destination additionally
- * carries the repository write face ({@link RepositoryWriter}) — whether a
- * coordinate CAN publish is that surface's presence, judged where the
- * coordinate routes; the coordinate's *shape* is written-form knowledge,
- * parsed by {@link PackageFormat.parsePublishCoordinate}.
- */
-export interface PackageRegistry<V, C> extends RequirementSource<V> {
-  /** The shared per-ecosystem format (see {@link PackageFormat}): object
-   * identity across registries is what admits them to one domain. */
-  readonly format: PackageFormat<V, C>;
-  /** Stable identity for the resolution memo key, and nothing else (npm: the
-   * registry url; a group: its serialized route table). */
-  readonly identity: string;
-  /**
-   * An opaque discriminator of what a resolution is computed *for* — anything
-   * beyond the roots that shapes the graph (npm: the target platform, which
-   * gates optional deps; a content member: its manifest's claims). Folded into
-   * the resolution memo key.
-   */
-  environmentKey(): Computable<string>;
-  /** Fetch one exact package version's content. */
-  fetch(pkg: string, version: V): Computable<PackageFileSet>;
-  /** The published-version list for repair suggestions; undefined when the
-   * registry has no such package. Reads a mutable document — failure-path
-   * only, and optional: absence means no suggestions. */
-  availableVersions?(pkg: string): Computable<V[] | undefined>;
-  /**
-   * Post-resolution policy over the final selections (npm: EBADPLATFORM — a
-   * non-optional dependency on a package for another platform), rejected to
-   * fail the whole resolution. Called once per resolution, after the graph
-   * converges, before it is persisted. Optional: most registries have no
-   * policy.
-   */
-  validateSelections?(selections: Selected<V>[]): Computable<void>;
-}
-
-/**
- * Whether `source` is a package registry (structurally — the same move as
- * {@link isRepository}): what a `repository_group` requires of a route target,
- * and how one ecosystem's publish packaging recognizes coordinates of its own
- * ecosystem in a release (by then comparing `format` for identity).
- */
-export function isPackageRegistry(source: unknown): source is PackageRegistry<unknown, unknown> {
-  const registry = source as Partial<PackageRegistry<unknown, unknown>>;
-  return (
-    typeof registry === "object" &&
-    registry !== null &&
-    typeof registry.format === "object" &&
-    typeof registry.getRequirements === "function" &&
-    typeof registry.fetch === "function"
-  );
-}
 
 /**
  * Vend the read reference for a written package name: the format claims the
@@ -155,14 +92,13 @@ export function declaredRequirementOf<V, C>(format: PackageFormat<V, C>, ref: Re
 
 /**
  * The declared requirement of `ref` as its SOURCE answers it — the dispatch
- * behind RepositoryReader's optional `declaredRequirement`: a package
+ * behind RepositoryLookup's optional `declaredRequirement`: a package
  * registry's answer is pure written-form parsing, taken from its format; a
  * repository with its own member table (a catalog) implements the method; a
- * repository with nothing to record (fetch — members pin by URL + digest)
- * implements neither, which IS the answer.
+ * repository with nothing to record implements neither, which IS the answer.
  */
 export function declaredRequirementFrom(source: RefSource, ref: RepositoryRef): Computable<Requirement | undefined> {
-  if (isPackageRegistry(source)) {
+  if (isRepositoryReader(source)) {
     return declaredRequirementOf(source.format, ref);
   }
   return source.declaredRequirement?.(ref) ?? Computable.resolve(undefined);
@@ -170,13 +106,13 @@ export function declaredRequirementFrom(source: RefSource, ref: RepositoryRef): 
 
 /**
  * An already-resolved package made runnable by whatever delivered it — the
- * dispatch behind RepositoryReader's optional `makeRunnable`: a package
+ * dispatch behind RepositoryLookup's optional `makeRunnable`: a package
  * registry's answer is pure format convention; a catalog looks its member up
  * and delegates (its own method). The closure the package carries is kept
  * either way — never re-resolved.
  */
 export function runnableFrom(source: RefSource, pkg: PackageFileSet): Computable<RunnableFileSet> {
-  if (isPackageRegistry(source)) {
+  if (isRepositoryReader(source)) {
     return source.format.makeRunnable(pkg);
   }
   if (source.makeRunnable) {
@@ -271,10 +207,10 @@ interface DomainResolution<V> extends Resolution, ResolvedRepairs<V> {
  * minimal-version selection over every root at a collection point) — is what
  * these functions compute over a (declaring context, registry) pair. A
  * repository that serves packages (`npm_repository`, or a `repository_group`
- * routing to other registries) implements its RepositoryReader face by
- * delegating here with itself as the registry: the consumer's collection
- * point groups references by source repository and hands each batch to this
- * driver, which yields the materialized graph back to it.
+ * routing to other registries) carries the {@link RepositoryReader} face, and
+ * the consumer's collection point groups references by source repository and
+ * hands each batch to this driver, which yields the materialized graph back
+ * to it.
  *
  * The driver only ever asks per-name questions of the one registry it was
  * handed — including for every transitive requirement discovered mid-walk —
@@ -296,7 +232,7 @@ interface DomainResolution<V> extends Resolution, ResolvedRepairs<V> {
  */
 export function resolvePackages<V, C>(
   context: ResolutionContext,
-  registry: PackageRegistry<V, C>,
+  registry: RepositoryReader<V, C>,
   references: RepositoryRef[]
 ): Computable<Resolution> {
   const { format } = registry;
@@ -397,7 +333,7 @@ export function resolvePackages<V, C>(
  */
 export function materializePackages<V, C>(
   context: ResolutionContext,
-  registry: PackageRegistry<V, C>,
+  registry: RepositoryReader<V, C>,
   references: RepositoryRef[],
   resolution: Resolution,
   options?: MaterializeOptions
@@ -616,7 +552,7 @@ function attributeResolutionFailure(err: unknown, references: RepositoryRef[], r
  * resolution can say so; position cannot).
  */
 function buildClosure<V, C>(
-  registry: PackageRegistry<V, C>,
+  registry: RepositoryReader<V, C>,
   req: Requirement,
   index: number,
   selections: Selected<V>[],
@@ -692,7 +628,7 @@ function resolutionOrigin<V, C>(format: PackageFormat<V, C>, req: Requirement, s
  * pending on the delivered ref (RepositoryRef.deliveredAs), finished by the
  * driving context.
  */
-function resolveBarePackage<V, C>(registry: PackageRegistry<V, C>, reference: RepositoryRef): Computable<FileSet> {
+function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, reference: RepositoryRef): Computable<FileSet> {
   const { format } = registry;
   const domain = format;
   const req = format.parseRequirement(reference.name);
@@ -737,7 +673,7 @@ function resolveBarePackage<V, C>(registry: PackageRegistry<V, C>, reference: Re
  * resolver/ResolutionReport): the written reference form, the registry's
  * version list, and a memoized enrichment-free re-resolve.
  */
-function suggestSourcesFor<V, C>(context: ResolutionContext, registry: PackageRegistry<V, C>, alias: string | undefined): SuggestSources<V, C> {
+function suggestSourcesFor<V, C>(context: ResolutionContext, registry: RepositoryReader<V, C>, alias: string | undefined): SuggestSources<V, C> {
   return {
     domain: registry.format,
     refText: (pkg, versionText, marker) => `${alias ?? registry.identity}:${pkg}:${versionText}${marker ?? ""}`,
@@ -775,7 +711,7 @@ function suggestSourcesFor<V, C>(context: ResolutionContext, registry: PackageRe
  */
 function getJointResolution<V, C>(
   context: ResolutionContext,
-  registry: PackageRegistry<V, C>,
+  registry: RepositoryReader<V, C>,
   alias: string | undefined,
   roots: Requirement[],
   rootKeys: string[],
@@ -821,7 +757,7 @@ function getJointResolution<V, C>(
  * are ordinary selections of the one tree — and stays hard in every mode.
  */
 function validatedResolutionDoc<V, C>(
-  registry: PackageRegistry<V, C>,
+  registry: RepositoryReader<V, C>,
   roots: Requirement[],
   result: MVSResolution<V>
 ): Computable<FileSet> {

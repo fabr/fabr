@@ -23,9 +23,11 @@ import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import {
   groupByRepository,
+  isRepositoryReader,
   MaterializeOptions,
   Repository,
   RepositoryPublishRef,
+  RepositoryLookup,
   RepositoryReader,
   RepositoryRef,
   Resolution,
@@ -38,7 +40,7 @@ import { attachHelp, ConflictError, IConflictSource, RequirementResolutionError,
 import { Name } from "../core/Name";
 import { TargetContext } from "../model/BuildContext";
 import { BUILD_OPERATION, BUILD_OVERRIDE } from "../model/Constraints";
-import { declaredRequirementFrom, isPackageRegistry, materializePackages, PackageRegistry, resolvePackages, runnableFrom } from "../resolver/PackageResolver";
+import { declaredRequirementFrom, materializePackages, resolvePackages, runnableFrom } from "../resolver/PackageResolver";
 import { RepositoryRegistration } from "./Types";
 
 /**
@@ -68,7 +70,7 @@ import { RepositoryRegistration } from "./Types";
  * resolution, so eager).
  */
 type CatalogMember =
-  | { readonly kind: "repository"; readonly source: PackageRegistry<unknown, unknown>; readonly reference: RepositoryRef; readonly resolution: Resolution }
+  | { readonly kind: "repository"; readonly source: RepositoryReader<unknown, unknown>; readonly reference: RepositoryRef; readonly resolution: Resolution }
   | { readonly kind: "local"; readonly pkg: PackageFileSet };
 
 /** The catalog's driver-facing view of a context: the pin (and every member
@@ -83,7 +85,7 @@ function buildForced(context: ResolutionContext): ResolutionContext {
   };
 }
 
-export class CatalogRepository implements Repository, RepositoryReader {
+export class CatalogRepository implements Repository, RepositoryLookup {
   constructor(
     private readonly catalogName: string,
     /* The narrow consuming-side surface of the context this instance was
@@ -242,7 +244,7 @@ function conflictSide(member: CatalogMember): IConflictSource {
  * repository the entries came from (members materialize on demand from these),
  * plus any already-built local entries. */
 interface ResolvedPackageSet {
-  readonly resolutions: ReadonlyArray<{ source: PackageRegistry<unknown, unknown>; resolution: Resolution }>;
+  readonly resolutions: ReadonlyArray<{ source: RepositoryReader<unknown, unknown>; resolution: Resolution }>;
   readonly local: ReadonlyArray<FileSource>;
 }
 
@@ -281,7 +283,7 @@ function resolveDeps(context: TargetContext): Computable<ResolvedPackageSet> {
         /* A catalog pins package VERSIONS, so its entries must come from a
          * repository that resolves them — a fetch repository's members (URL +
          * digest pins) have no version to pin. */
-        if (!isPackageRegistry(source)) {
+        if (!isRepositoryReader(source)) {
           throw new RequirementResolutionError(
             refs,
             attachHelp(
@@ -292,7 +294,7 @@ function resolveDeps(context: TargetContext): Computable<ResolvedPackageSet> {
         }
         return resolvePackages(buildForced(context), source, refs).then(resolution => ({ source, resolution }));
       }),
-      (...resolutions: { source: PackageRegistry<unknown, unknown>; resolution: Resolution }[]) => ({ resolutions, local })
+      (...resolutions: { source: RepositoryReader<unknown, unknown>; resolution: Resolution }[]) => ({ resolutions, local })
     );
   });
 }

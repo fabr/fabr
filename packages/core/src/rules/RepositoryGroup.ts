@@ -23,19 +23,17 @@ import { Name } from "../core/Name";
 import { PackageFileSet } from "../core/PackageFileSet";
 import {
   isRepository,
+  isRepositoryReader,
   Repository,
   RepositoryPublishRef,
+  RepositoryReader,
   RepositoryRef,
   SourceRef,
 } from "../core/Repository";
 import { TargetContext } from "../model/BuildContext";
 import { Requirement, Selected } from "../resolver/Types";
 import { PackageFormat } from "../resolver/PackageFormat";
-import {
-  isPackageRegistry,
-  PackageRegistry,
-  vendPackageRef,
-} from "../resolver/PackageResolver";
+import { vendPackageRef } from "../resolver/PackageResolver";
 import { contentPackageMember } from "./ContentPackage";
 import { RepositoryRegistration } from "./Types";
 
@@ -58,7 +56,7 @@ export interface RouteKey {
 /** One route: names matching `key` are served by `member`. */
 export interface Route<V, C> {
   readonly key: RouteKey;
-  readonly member: PackageRegistry<V, C>;
+  readonly member: RepositoryReader<V, C>;
 }
 
 /** The canonical text of a route key (`@fortawesome/*`, `lodash`, `*`). */
@@ -150,7 +148,7 @@ export function bestRoute<R extends { key: RouteKey }>(routes: readonly R[], nam
 
 /**
  * The repository a `repository_group` declares: a registry made of other
- * registries — a {@link PackageRegistry} implementing every per-name operation
+ * registries — a {@link RepositoryReader} implementing every per-name operation
  * by delegating to the member the name routes to. Its reader face hands each
  * reference batch to the package resolver with ITSELF as the registry, so the
  * whole closure of a reference written against the group, transitive
@@ -163,7 +161,7 @@ export function bestRoute<R extends { key: RouteKey }>(routes: readonly R[], nam
  * are listed so the remedy is visible. No fall-through, ever.
  */
 export class RepositoryGroup<V, C>
-  implements Repository, PackageRegistry<V, C>
+  implements Repository, RepositoryReader<V, C>
 {
   constructor(
     private readonly context: TargetContext,
@@ -219,12 +217,12 @@ export class RepositoryGroup<V, C>
   }
 
   /** The registry serving `pkg`, undefined when no route claims it. */
-  private memberFor(pkg: string): PackageRegistry<V, C> | undefined {
+  private memberFor(pkg: string): RepositoryReader<V, C> | undefined {
     return bestRoute(this.routes, pkg)?.member;
   }
 
   /** The registry serving `pkg`, or the miss error (see the class comment). */
-  private routed(pkg: string): PackageRegistry<V, C> | Error {
+  private routed(pkg: string): RepositoryReader<V, C> | Error {
     const member = this.memberFor(pkg);
     if (member) {
       return member;
@@ -263,7 +261,7 @@ export class RepositoryGroup<V, C>
   /** Post-resolution policy runs per member, each over its routed slice of the
    * finished graph (members without a policy contribute none). */
   public validateSelections(selections: Selected<V>[]): Computable<void> {
-    const slices = new Map<PackageRegistry<V, C>, Selected<V>[]>();
+    const slices = new Map<RepositoryReader<V, C>, Selected<V>[]>();
     for (const sel of selections) {
       const member = this.routed(sel.pkg);
       if (member instanceof Error) {
@@ -421,7 +419,7 @@ function createRepositoryGroup(context: TargetContext): Computable<Repository> {
 
 /** A registry route's member, classified by {@link routeValue}. */
 interface RegistryRoute {
-  readonly registry: PackageRegistry<unknown, unknown>;
+  readonly registry: RepositoryReader<unknown, unknown>;
 }
 
 /** A content route's declared source, classified by {@link routeValue}. */
@@ -464,7 +462,7 @@ function routeValue(groupName: string, routeName: string, sources: readonly Sour
     );
   }
   const member = repositories[0];
-  if (!isPackageRegistry(member) || member instanceof RepositoryGroup) {
+  if (!isRepositoryReader(member) || member instanceof RepositoryGroup) {
     throw attachHelp(
       new Error(
         `route '${routeName}' in ${groupName} does not name a package registry` +

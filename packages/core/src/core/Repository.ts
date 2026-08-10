@@ -26,13 +26,13 @@ import { RunnableFileSet } from "./RunnableFileSet";
 import { chainSteps, IProvenanceStep } from "./Provenance";
 import { Name } from "./Name";
 import type { PublishableFileSet } from "./PublishableFileSet";
-import type { Requirement } from "../resolver/Types";
+import type { Requirement, RequirementSource, Selected } from "../resolver/Types";
+import type { PackageFormat } from "../resolver/PackageFormat";
 import type { ProgressEvent } from "../model/ExecutionContext";
 /* Value imports used only inside function bodies (the resolution-layer
  * dispatch below), so the module cycle with the resolver is init-safe:
  * neither module touches the other's bindings at load time. */
-import { isPackageRegistry, materializePackages, resolvePackages } from "../resolver/PackageResolver";
-import type { PackageRegistry } from "../resolver/PackageResolver";
+import { materializePackages, resolvePackages } from "../resolver/PackageResolver";
 
 /**
  * One resolved root of a {@link Resolution}: the input reference and the name
@@ -62,7 +62,8 @@ export interface Resolution {
  * read and write faces alike (as distinct from a FileSource, which is a
  * container that can answer queries about files it already has). Capability is
  * discovered by asking: each vend method returns a ref carrying the matching
- * provider ({@link RepositoryReader} / {@link RepositoryWriter}) or throws — a
+ * provider (a read face — {@link RepositoryReader} or {@link RepositoryLookup}
+ * — or the write face, {@link RepositoryWriter}) or throws — a
  * read-only repository (a catalog) refuses to vend publish refs, a write-only
  * one refuses read refs, and a vended ref IS the proof of capability, so no
  * consumer ever capability-tests or hits an unsupported operation. How a name
@@ -97,23 +98,21 @@ export function isRepository(source: SourceRef): source is Repository {
 }
 
 /**
- * The read face of a repository, carried by every {@link RepositoryRef} it
- * vends: resolution of named requirements into file content. Resolution is a
- * domain (all references against it at one collection point resolve together,
- * e.g. joint minimal-version-selection), split into two phases so *fetching*
- * can be deferred past *resolving*: `resolve` fixes versions + the tree (cheap,
- * eager — the pin); `materialize` fetches + assembles a *subset* of that
- * resolution on demand. {@link resolveAndMaterialize} is just the two composed —
- * what a normal consumer, which needs all of its own references, uses.
+ * The LOOKUP read face of a repository: per-reference delivery from an
+ * already-fixed resolution — a catalog's pinned-member lookup. The counterpart
+ * of {@link RepositoryReader} (the resolving read face, whose references the
+ * resolution layer batches for joint version selection): a repository carries
+ * this face instead when every answer is already pinned, so delivery is
+ * genuinely per-reference and there is nothing joint left to resolve.
  */
-export interface RepositoryReader {
+export interface RepositoryLookup {
   /**
    * Deliver what ONE reference names. Single-item by design: joint version
-   * selection over a batch is the resolution layer's business (a package
+   * selection over a batch is the resolution layer's business (a resolving
    * registry never implements this face — the collection machinery dispatches
    * its references to resolvePackages/materializePackages instead), so what
    * remains here is a repository whose delivery is genuinely per-reference —
-   * a fetch repository's named download, a catalog's pinned-member lookup.
+   * a catalog's pinned-member lookup.
    * Projections and provenance carried by the reference are applied by the
    * caller (see materializeAll); `options.resolutionMode` is the
    * delivery-shape judgment of resolution repairs (see MaterializeOptions),
@@ -141,10 +140,77 @@ export interface RepositoryReader {
    * catalog, whose refs carry no inline version, looks the member up and
    * delegates to *its* source): for a package registry the answer is pure
    * written-form parsing, so callers dispatch to the format instead (see
-   * {@link declaredRequirementFrom}). Absent — a fetch repository, whose
-   * members are pinned by URL + digest, not version — means nothing to record.
+   * {@link declaredRequirementFrom}). Absent means nothing to record.
    */
   declaredRequirement?(ref: RepositoryRef): Computable<Requirement | undefined>;
+}
+
+/**
+ * The RESOLVING read face of a repository — a package registry as the
+ * resolution layer (PackageResolver) drives one: a transport for one ecosystem
+ * — everything that needs the url, the credentials, or the wire formats, and
+ * nothing that orchestrates. References against this face resolve jointly (the
+ * resolution layer batches them — see resolvePackages); the counterpart for a
+ * repository whose answers are already pinned is the per-reference
+ * {@link RepositoryLookup} face. `npm_repository` implements this directly; a
+ * `repository_group` implements it by routing every call to the member the
+ * name routes to; a content route's member derives every answer from its
+ * manifest. The driver functions (resolvePackages / materializePackages) only
+ * ever ask per-name questions of the one registry they are given — which is
+ * why a group's whole closure, transitive requirements included, flows through
+ * the group and gets routed there.
+ *
+ * Reading only: a registry that is also a publish destination additionally
+ * carries the repository write face ({@link RepositoryWriter}) — whether a
+ * coordinate CAN publish is that surface's presence, judged where the
+ * coordinate routes; the coordinate's *shape* is written-form knowledge,
+ * parsed by {@link PackageFormat.parsePublishCoordinate}.
+ */
+export interface RepositoryReader<V, C> extends RequirementSource<V> {
+  /** The shared per-ecosystem format (see {@link PackageFormat}): object
+   * identity across registries is what admits them to one domain. */
+  readonly format: PackageFormat<V, C>;
+  /** Stable identity for the resolution memo key, and nothing else (npm: the
+   * registry url; a group: its serialized route table). */
+  readonly identity: string;
+  /**
+   * An opaque discriminator of what a resolution is computed *for* — anything
+   * beyond the roots that shapes the graph (npm: the target platform, which
+   * gates optional deps; a content member: its manifest's claims). Folded into
+   * the resolution memo key.
+   */
+  environmentKey(): Computable<string>;
+  /** Fetch one exact package version's content. */
+  fetch(pkg: string, version: V): Computable<PackageFileSet>;
+  /** The published-version list for repair suggestions; undefined when the
+   * registry has no such package. Reads a mutable document — failure-path
+   * only, and optional: absence means no suggestions. */
+  availableVersions?(pkg: string): Computable<V[] | undefined>;
+  /**
+   * Post-resolution policy over the final selections (npm: EBADPLATFORM — a
+   * non-optional dependency on a package for another platform), rejected to
+   * fail the whole resolution. Called once per resolution, after the graph
+   * converges, before it is persisted. Optional: most registries have no
+   * policy.
+   */
+  validateSelections?(selections: Selected<V>[]): Computable<void>;
+}
+
+/**
+ * Whether `source` is a package registry (structurally — the same move as
+ * {@link isRepository}): what a `repository_group` requires of a route target,
+ * and how one ecosystem's publish packaging recognizes coordinates of its own
+ * ecosystem in a release (by then comparing `format` for identity).
+ */
+export function isRepositoryReader(source: unknown): source is RepositoryReader<unknown, unknown> {
+  const registry = source as Partial<RepositoryReader<unknown, unknown>>;
+  return (
+    typeof registry === "object" &&
+    registry !== null &&
+    typeof registry.format === "object" &&
+    typeof registry.getRequirements === "function" &&
+    typeof registry.fetch === "function"
+  );
 }
 
 /**
@@ -243,9 +309,10 @@ export interface ResolutionContext {
   notifyProgress(event: ProgressEvent): void;
 }
 
-/** What a {@link RepositoryRef} resolves against: a per-reference deliverer,
- * or a package registry whose references the resolution layer batches. */
-export type RefSource = RepositoryReader | PackageRegistry<unknown, unknown>;
+/** What a {@link RepositoryRef} resolves against: a repository's read face —
+ * resolving (references batched by the resolution layer) or lookup
+ * (per-reference delivery from an already-fixed pin). */
+export type RefSource = RepositoryLookup | RepositoryReader<unknown, unknown>;
 
 /**
  * Resolve + deliver one repository's reference batch — the resolution layer's
@@ -260,7 +327,7 @@ export function resolveAndMaterialize(
   references: RepositoryRef[],
   options?: MaterializeOptions
 ): Computable<FileSet[]> {
-  if (isPackageRegistry(source)) {
+  if (isRepositoryReader(source)) {
     return resolvePackages(context, source, references).then(resolution =>
       materializePackages(context, source, references, resolution, options)
     );
