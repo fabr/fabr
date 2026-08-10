@@ -3,7 +3,7 @@ Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
 version number.
 
 ## Fabr 0.2.0
-@fabr/core:
+@fabr-build/core:
 - `include` paths may now glob (`include lib/**/*.fabr;`).
 - Cap maximum concurrent connections + executing processes.
 - New 'fetch' download source for arbitrary http/https fetching.
@@ -14,8 +14,10 @@ version number.
 - Add support for default targets and default target properties.
 - Add support for package renaming using -> rename syntax.
 - Add `repository_group` target for adding multiple scoped repositories and package overrides.
+- Detect a plugin that loads its own nested copy of `@fabr-build/core` (a broken install) and report it clearly.
 
-@fabr/js:
+@fabr-build/js:
+- Add a jest compatibility test runner (`JS_TEST_RUNNER = @fabr-build/js-tools/jest-runner;`)
 - Generated package.json now strips build-only fields (devDependencies, scripts, …) from an imported manifest, and emits array metadata (keywords, os, cpu) as JSON arrays.
 - Add support for package aliases in external dependencies.
 - Add resources (copied as-is) inputs to js_package.
@@ -30,7 +32,8 @@ version number.
 - Drop lightningcss; esbuild now handles css modules directly.
 - Fix TS source importing local references using full package path.
 - Fix esbuild resolver erroring on survivable misses.
-- Fix assorted depepdency resolution issues.
+- Fix sass errors to report positions in the original sources via source maps.
+- Fix assorted dependency resolution issues.
 
 ## Fabr 0.1.0
 

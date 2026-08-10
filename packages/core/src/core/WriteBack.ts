@@ -112,7 +112,6 @@ export function writeBackCandidates(sources: ReadonlyArray<SourceRef>): IWriteBa
 }
 
 
-/** What one applied candidate did — reported per file by the driver. */
 /**
  * What a write-back does to the tree, told to whoever owns it.
  *
@@ -151,6 +150,11 @@ export interface IWriteBackObserver {
  *
  * The driver drives this — nothing in the build graph may.
  */
+/** Monotonic across the process, so no two temp siblings ever share a name —
+ * two candidates in one batch may resolve to the same destination, and the pid
+ * alone would give their in-flight temps the same path. */
+let tempCounter = 0;
+
 export function writeBackFile(write: IResolvedWriteBack, realRoot: string, observer: IWriteBackObserver): Computable<string> {
   const destination = path.resolve(write.destination);
   assertContained(destination, realRoot);
@@ -159,7 +163,7 @@ export function writeBackFile(write: IResolvedWriteBack, realRoot: string, obser
     /* Temp sibling + rename (stageWrite): atomic for a concurrent reader, and it
      * replaces the directory entry rather than writing through a cache-blob
      * hardlink — the same rule the served-install sync writes under. */
-    const temp = `${destination}.fabr-writeback-${process.pid}`;
+    const temp = `${destination}.fabr-writeback-${process.pid}-${tempCounter++}`;
     observer.touches(temp);
     /* Announced before creating them, and only the ones that were actually
      * missing — an existing directory is nobody's change. */

@@ -267,13 +267,13 @@ export function createPackageJson(
   }
 
   const dependencies = packageDependencies(declared);
-  if (Object.keys(dependencies).length > 0) {
-    packageJson.dependencies = dependencies;
+  if (dependencies.size > 0) {
+    packageJson.dependencies = Object.fromEntries(dependencies);
   }
   /* provided_deps → peerDependencies: the host supplies the one shared copy. */
   const peerDependencies = peerDependenciesOf(providedDeclared);
-  if (Object.keys(peerDependencies).length > 0) {
-    packageJson.peerDependencies = peerDependencies;
+  if (peerDependencies.size > 0) {
+    packageJson.peerDependencies = Object.fromEntries(peerDependencies);
   }
 
   return MemoryFile.from(JSON.stringify(packageJson, undefined, 2) + "\n");
@@ -292,11 +292,11 @@ export function createPackageJson(
  * the declaration, not what fabr's joint resolution selected: a published
  * manifest says what the package *requires*, and the consumer resolves it.
  */
-function packageDependencies(declared: (Requirement | undefined)[]): Record<string, string> {
-  const dependencies: Record<string, string> = {};
+function packageDependencies(declared: (Requirement | undefined)[]): Map<string, string> {
+  const dependencies = new Map<string, string>();
   for (const req of declared) {
     if (req) {
-      dependencies[req.pkg] = req.constraint;
+      dependencies.set(req.pkg, req.constraint);
     }
   }
   return dependencies;
@@ -308,11 +308,11 @@ function packageDependencies(declared: (Requirement | undefined)[]): Record<stri
  * declaration (what the package requires of its host), not what resolution pinned;
  * unlike `dependencies` there is no `@types/*` split — a peer is a runtime peer.
  */
-function peerDependenciesOf(providedDeclared: (Requirement | undefined)[]): Record<string, string> {
-  const peerDependencies: Record<string, string> = {};
+function peerDependenciesOf(providedDeclared: (Requirement | undefined)[]): Map<string, string> {
+  const peerDependencies = new Map<string, string>();
   for (const req of providedDeclared) {
     if (req) {
-      peerDependencies[req.pkg] = req.constraint;
+      peerDependencies.set(req.pkg, req.constraint);
     }
   }
   return peerDependencies;

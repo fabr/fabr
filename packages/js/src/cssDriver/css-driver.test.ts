@@ -20,7 +20,7 @@
  * safe: sass is required lazily inside main(), not at load. */
 
 import * as assert from "node:assert/strict";
-import { isPartial, isSass, plainCssName } from "./css-driver";
+import { isPartial, isSass, plainCssName, sassFailure } from "./css-driver";
 
 describe("isSass", () => {
   it("matches .scss/.sass including modules", () => {
@@ -42,6 +42,21 @@ describe("output name mapping", () => {
   it("maps a module source to a .module.css, for esbuild to scope", () => {
     assert.equal(plainCssName("a/Foo.module.scss"), "a/Foo.module.css");
     assert.equal(plainCssName("Foo.module.sass"), "Foo.module.css");
+  });
+});
+
+describe("sassFailure", () => {
+  it("attributes a positioned failure 1-based from the exception's 0-based span", () => {
+    /* The shape sass-embedded's Exception carries: span.start is a 0-based
+     * SourceLocation. */
+    const err = { message: "Undefined variable.", span: { start: { offset: 41, line: 2, column: 9 } } };
+    assert.equal(sassFailure("a/Foo.scss", err).message, "a/Foo.scss:3:10: sass: Undefined variable.");
+  });
+  it("attributes a spanless failure to the file alone", () => {
+    assert.equal(sassFailure("a/Foo.scss", new Error("compiler exited")).message, "a/Foo.scss: sass: compiler exited");
+  });
+  it("stringifies a non-Error throw", () => {
+    assert.equal(sassFailure("Foo.scss", "boom").message, "Foo.scss: sass: boom");
   });
 });
 

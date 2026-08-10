@@ -199,9 +199,9 @@ export class Name {
     /* The literal alias path itself is excluded, mirroring makeProjector's
      * plain arm: `x:** -> tmpl` renames the files *under* x, never x — a
      * globstar admits its own base, which would otherwise emit the base file
-     * under the template's collapsed (empty-capture) name. */
-    const alias = selector.lastIndexOf(NAME_LEVEL_SEPARATOR);
-    const aliasPath = alias === -1 ? undefined : selector.substring(0, alias).replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR);
+     * under the template's collapsed (empty-capture) name. Unescaped, like the
+     * projector's: it is compared against real paths. */
+    const aliasPath = this.aliasAsPath(false);
     const excluded = aliasPath !== undefined && !GLOB_METACHAR.test(aliasPath) ? aliasPath : undefined;
     /* An unmatched globstar group substitutes as "" (native to `replace`), which
      * can leave a doubled or edge slash (a root-level recursive prefix); fabr
@@ -236,11 +236,15 @@ export class Name {
     }
     const selector = this.toGlobString();
     const matcher = globMatcher(normalizeHead(selector.replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR)));
-    const alias = selector.lastIndexOf(NAME_LEVEL_SEPARATOR);
-    if (alias === -1) {
+    /* The alias PATH is compared against real input paths (`relative`), so it
+     * must be the unescaped rendering — the escaped selector exists only for
+     * the matcher, and a literal alias containing `(`/`)`/`!`/`|` renders
+     * escaped there. Only the glob-alias arm, which compiles a pattern, wants
+     * the escaped form. */
+    const aliasPath = this.aliasAsPath(false);
+    if (aliasPath === undefined) {
       return input => (matcher(input) ? prefix + input : undefined);
     }
-    const aliasPath = selector.substring(0, alias).replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR);
     if (!GLOB_METACHAR.test(aliasPath)) {
       /* Literal alias: name each result relative to the alias dir (relative()
        * normalizes its operands itself). A remainder that climbs out of the
@@ -262,8 +266,21 @@ export class Name {
     /* Glob alias (`pkg*:lib/*`): no concrete dir to name relative to, so strip
      * the matched alias textually. A remainder climbing under a glob alias has
      * no coherent naming and never matches (its `..` survives in the pattern). */
-    const strip = globPrefixRegex(aliasPath + NAME_COMPONENT_SEPARATOR);
+    const strip = globPrefixRegex(this.aliasAsPath(true)! + NAME_COMPONENT_SEPARATOR);
     return input => (matcher(input) ? prefix + input.replace(strip, "") : undefined);
+  }
+
+  /**
+   * The alias portion (everything before the last `:`) as a slash path, or
+   * undefined for a slash-form name. `escape` selects the rendering: escaped
+   * feeds a pattern compiler ({@link globPrefixRegex}); unescaped is the path
+   * itself, for comparison against real input paths — the two disagree
+   * whenever a literal component contains glob punctuation.
+   */
+  private aliasAsPath(escape: boolean): string | undefined {
+    const rendered = this.renderParts(escape);
+    const alias = rendered.lastIndexOf(NAME_LEVEL_SEPARATOR);
+    return alias === -1 ? undefined : rendered.substring(0, alias).replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR);
   }
 
   /**

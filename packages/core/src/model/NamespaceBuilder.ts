@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { validateProperty, validateTarget } from "./Validate";
+import { validateProperty, validateTarget, validateTargetDef } from "./Validate";
 import { Diagnostic, ISourcePosition, Log } from "../support/Log";
 import {
   DeclKind,
@@ -183,11 +183,15 @@ export class NamespaceBuilder {
     /* Default properties/targets live apart from `content` but are validated the
      * same way (a `default X = …;` is a schema-less property like any global). */
     node.defaultContent.forEach(child => this.validateDecl(child));
+    /* Targetdefs likewise live apart: each schema's own `default` values are
+     * validated against the declared type here, so a malformed default fails
+     * the load rather than the first resolution that takes it. */
+    node.targetDefs.forEach(def => validateTargetDef(def, this.log));
   }
 
   /** Validate one collated declaration: a target against its targetdef schema, a
-   * schema-less property (global or default) structurally. A targetdef itself
-   * has nothing to check here. */
+   * schema-less property (global or default) structurally. (A targetdef's own
+   * schema is validated in {@link resolve}, off `targetDefs`.) */
   private validateDecl(decl: ITargetDefDecl | ITargetDecl | IPropertyDecl): void {
     if (decl.kind === DeclKind.Target) {
       const targetDef = this.resolveTargetDef(decl.type);

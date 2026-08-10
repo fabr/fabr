@@ -38,6 +38,7 @@
 import { createRequire } from "node:module";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { atLeastNode } from "../testRunner/RunTests";
 
 /** jest releases this layer is written against. Checked at startup: the layer
  * uses jest's libraries directly, so an untested major would fail obscurely
@@ -79,8 +80,7 @@ export function userModule(name: string): unknown {
  * the real cause would be unrecoverable from the symptom.
  */
 export function assertSupportedHost(): void {
-  const [major, minor] = process.versions.node.split(".").map(Number);
-  if (major < MINIMUM_NODE[0] || (major === MINIMUM_NODE[0] && minor < MINIMUM_NODE[1])) {
+  if (!atLeastNode(MINIMUM_NODE[0], MINIMUM_NODE[1])) {
     throw new Error(
       `The jest compatibility runner needs node ${MINIMUM_NODE.join(".")} or later ` +
         `(this is ${process.versions.node}): it intercepts ES module edges via module.registerHooks.`

@@ -1156,6 +1156,16 @@ describe("override markers", () => {
     expect(delivered).to.have.lengthOf(4);
   });
 
+  it("a non-canonically written sanction ('v'-prefix) still matches the versions it names", async () => {
+    /* Sanction sets store canonical versionToString forms — a written pin or
+     * '?' recorded verbatim as 'v2.5.0' could never match the selection the
+     * judgment renders as '2.5.0'. Covers both written forms: the unmarked
+     * pin and the alternate. */
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const delivered = await toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:v2.5.0", "C:v1.5.0?"])));
+    expect(delivered).to.have.lengthOf(4);
+  });
+
   it("an exact pin OF THE FORK delivers a nested override, so a carried closure still lays out", async () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
     /* The catalog form again, but the unmarked pin names the *fork*: the

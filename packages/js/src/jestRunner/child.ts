@@ -114,10 +114,8 @@ export async function runTestFile(request: IChildRequest): Promise<IChildResult>
    * the mock silently never applies. */
   const jest = makeJestObject(env, { filename: request.testFile });
   (globalThis as Record<string, unknown>).jest = jest;
-  registry.jestGlobalsFor = (caller: ILoaderModule | undefined) => ({
-    jest: makeJestObject(env, caller ?? { filename: request.testFile }),
-    expect: (globalThis as Record<string, unknown>).expect,
-  });
+  registry.jestGlobalsFor = (caller: ILoaderModule | undefined) =>
+    makeJestGlobals(makeJestObject(env, caller ?? { filename: request.testFile }));
 
   /* jest 29 exports the adapter directly; 30 exports it as `.default`. */
   const circus = jestLibrary("jest-circus/runner") as { default?: TestFramework };
@@ -146,6 +144,45 @@ export async function runTestFile(request: IChildRequest): Promise<IChildResult>
     })),
     execError: result.testExecError?.message,
   };
+}
+
+/** `@jest/globals`' exports besides `jest` itself: the framework surface circus
+ * installs on the global object (plus `expect`), re-served under the module's
+ * name so an explicit `import { describe } from "@jest/globals"` works. */
+const FRAMEWORK_GLOBALS = [
+  "expect",
+  "describe",
+  "fdescribe",
+  "xdescribe",
+  "it",
+  "fit",
+  "xit",
+  "test",
+  "xtest",
+  "beforeAll",
+  "beforeEach",
+  "afterAll",
+  "afterEach",
+];
+
+/**
+ * The `@jest/globals` namespace for one caller. `jest` is the caller's own (its
+ * module specifiers resolve against that caller); everything else is read off
+ * the global object at serve time — a module can only import `@jest/globals`
+ * while circus is loading it, which is after circus installed the globals. A
+ * missing member means that ordering broke (or an unsupported circus), which
+ * must fail here rather than surface as a silently-undefined import.
+ */
+export function makeJestGlobals(jest: unknown): Record<string, unknown> {
+  const globals = globalThis as Record<string, unknown>;
+  const namespace: Record<string, unknown> = { jest };
+  for (const name of FRAMEWORK_GLOBALS) {
+    if (globals[name] === undefined) {
+      throw new Error(`fabr jest runner: '@jest/globals' cannot serve '${name}' — the framework's globals are not installed yet`);
+    }
+    namespace[name] = globals[name];
+  }
+  return namespace;
 }
 
 /** A throw need not be an Error: a string or object rejection must still be

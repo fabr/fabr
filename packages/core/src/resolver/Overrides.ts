@@ -67,11 +67,23 @@ export function canonicalRequirements(requirements: readonly Requirement[]): { r
 }
 
 /**
+ * The canonical (`versionToString`) form of a written exact version, or
+ * undefined when the text is a range (or the domain has no exact-version
+ * notion). Every sanction set must store this form: {@link allSanctioned}
+ * compares against `versionToString(selection)`, so a non-canonical spelling
+ * (`v1.4.2`, `1.4.2+build`) recorded verbatim could never match.
+ */
+export function canonicalExactVersion<V, C>(domain: VersionDomain<V, C>, text: string): string | undefined {
+  const exact = domain.exactVersion?.(text);
+  return exact === undefined ? undefined : domain.versionToString(exact);
+}
+
+/**
  * The versions the user explicitly WROTE per package — `?` sanctions plus
  * exact unmarked pins (the catalog form; recognized via the domain's
- * `exactVersion`, so a range stays a floor, not a written version). This is
- * the right-hand side of the sanction rule: a strict delivery ships only
- * version sets ⊆ what was written.
+ * `exactVersion`, so a range stays a floor, not a written version), all in
+ * canonical `versionToString` form. This is the right-hand side of the
+ * sanction rule: a strict delivery ships only version sets ⊆ what was written.
  */
 export function writtenVersions<V, C>(
   domain: VersionDomain<V, C>,
@@ -83,11 +95,12 @@ export function writtenVersions<V, C>(
     written.set(pkg, new Set(versions));
   }
   for (const req of demanded) {
-    if (domain.exactVersion?.(req.constraint) === undefined) {
+    const exact = canonicalExactVersion(domain, req.constraint);
+    if (exact === undefined) {
       continue;
     }
     const versions = written.get(req.pkg) ?? new Set();
-    written.set(req.pkg, versions.add(req.constraint));
+    written.set(req.pkg, versions.add(exact));
   }
   return written;
 }

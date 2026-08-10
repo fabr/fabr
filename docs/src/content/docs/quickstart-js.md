@@ -137,8 +137,26 @@ describe("greet", () => {
 
 ### Running a jest-flavoured suite
 
-If your tests are written against jest, select the jest-compatibility runner — the same fabr
-runner with a jest environment layered on — and declare the globals' types:
+If your tests are written against jest, first extend the catalog with the members the layer needs.
+`@types/jest` supplies the globals' types; its dependency closure also needs a handful of explicit
+pins — packages it requires only with unbounded ranges (so nothing else picks a version for them),
+and two it needs at coexisting versions, which the `?` marker sanctions. Miss one and fabr tells
+you exactly which:
+
+```
+catalog @pkg {
+  deps = @npm:typescript:5.4.5 @npm:@types/node:20.12.7
+         @npm:chai:4.3.6 @npm:@types/chai:4.3.1
+         @npm:@types/jest:30.0.0
+         @npm:jsdom:26.1.0                        # only if your tests need a DOM
+         @npm:@types/istanbul-lib-report:3.0.3? @npm:@types/yargs-parser:21.0.3?
+         @npm:ansi-styles:4.1.0? @npm:ansi-styles:5.2.0?
+         @npm:picomatch:2.3.1? @npm:picomatch:4.0.5?;
+}
+```
+
+Then select the jest-compatibility runner — the same fabr runner with a jest environment layered
+on — and declare the globals' types:
 
 ```
 JS_TEST_RUNNER = @fabr-build/js-tools/jest-runner;   # or per target: test_runner = …;

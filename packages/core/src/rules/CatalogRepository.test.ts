@@ -351,6 +351,46 @@ describe("CatalogRepository (through the model)", () => {
     }
   });
 
+  it("rejects a catalog entry that is another catalog's member (no chaining)", async () => {
+    /* Each catalog is its own joint resolution; pinning another catalog's
+     * member would nest one inside another, so it is refused with a remedy
+     * naming the two sanctioned alternatives. */
+    const model = build(
+      "package_repo @backing { }\n" +
+        "catalog @inner { deps = @backing:foo; }\n" +
+        "catalog @outer { deps = @inner:foo; }\n" +
+        "test_deps a { deps = @outer:foo; }\n"
+    );
+    try {
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      expect.fail("expected the chained entry to be rejected");
+    } catch (err) {
+      const failure = findCause(err, RequirementResolutionError);
+      expect(failure, "a RequirementResolutionError in the cause chain").to.not.be.undefined;
+      expect(failure!.cause.message).to.contain("is a member of another catalog");
+    }
+  });
+
+  it("rejects an entry that names no packages (a bare repository reference)", async () => {
+    /* `deps = @backing;` resolves to the repository itself — it pins nothing,
+     * and silence would leave the catalog quietly missing the entry. */
+    const model = build(
+      "package_repo @backing { }\n" +
+        "catalog @cat { deps = @backing; }\n" +
+        "test_deps a { deps = @cat:foo; }\n"
+    );
+    try {
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      expect.fail("expected the bare repository entry to be rejected");
+    } catch (err) {
+      let message = "";
+      for (let current: unknown = err; current instanceof Error; current = (current as { cause?: unknown }).cause) {
+        message = current.message;
+      }
+      expect(message).to.contain("names no packages");
+    }
+  });
+
   it("reports two entries claiming one package name (from different sources) as a two-sided conflict", async () => {
     /* Two repositories each resolve a package named 'dup' — a genuine conflict
      * (not two versions of one package), reported as the general ConflictError

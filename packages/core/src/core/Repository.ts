@@ -22,7 +22,6 @@ import { attachHelp, RequirementResolutionError, toError } from "./Errors";
 import { FileSetRef, IProjection } from "./FileSetRef";
 import { FileSet, FileSource } from "./FileSet";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
-import { RunnableFileSet } from "./RunnableFileSet";
 import { chainSteps, IProvenanceStep } from "./Provenance";
 import { Name } from "./Name";
 import type { PublishableFileSet } from "./PublishableFileSet";
@@ -119,17 +118,6 @@ export interface RepositoryLookup {
    * for a repository (the catalog) whose members carry resolved closures.
    */
   deliver(reference: RepositoryRef, options?: MaterializeOptions): Computable<FileSet>;
-
-  /**
-   * Repackage an already-resolved package (its closure carried) as a runnable,
-   * **without re-resolving** — a pure, ecosystem-specific transform. OPTIONAL,
-   * and implemented only where the answer is genuinely the repository's own (a
-   * catalog looks the member up and delegates): for a package registry the
-   * answer is pure format convention, so callers dispatch to
-   * `format.makeRunnable` instead (see {@link runnableFrom}) — keeping the
-   * exact closure the package was resolved with either way.
-   */
-  makeRunnable?(pkg: PackageFileSet): Computable<RunnableFileSet>;
 
   /**
    * The requirement `ref` declares — package name + the version constraint as
@@ -271,12 +259,6 @@ export interface MaterializeOptions {
   resolutionMode?: "strict" | "permissive";
 }
 
-/**
- * The eager one-shot: resolve a batch and immediately materialize the whole of
- * it — a normal consumer needs all of its own references, so it resolves and
- * fetches together. The collection point ({@link materializeAll}) uses this; a
- * catalog does NOT — it holds the Resolution and materializes members on demand.
- */
 /**
  * Run one reference's delivery, attributing any failure to the written
  * reference: the ref's carried provenance lets the driver point back at the

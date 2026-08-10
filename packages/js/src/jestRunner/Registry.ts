@@ -45,6 +45,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createRequire, Module } from "node:module";
 import { assetStubFor } from "./Assets";
 import { isCodeUnderTest, RUNNER_ROOT } from "./Tools";
@@ -207,7 +208,18 @@ export class MockRegistry {
       }
       return NOT_MOCKED;
     }
-    return this.instance(key, () => (entry.factory ? entry.factory() : this.automockOf(key)));
+    return this.instance(key, () => (entry.factory ? entry.factory() : this.manualOrAutomock(key, request)));
+  }
+
+  /**
+   * A factory-less `jest.mock('./x')`: jest's contract is that a MANUAL mock
+   * wins over the automock — an adjacent `__mocks__/<name>` beside the resolved
+   * module, or a root `__mocks__/<package>` entry — and only where neither
+   * exists is a mock derived from the real module's shape.
+   */
+  private manualOrAutomock(key: string, request: string): unknown {
+    const manual = adjacentMock(key) ?? this.rootMocks.get(request);
+    return manual !== undefined ? this.load(manual) : this.automockOf(key);
   }
 
   /** The stamp for the ESM seam's synthetic URLs: node's ESM module map is not
@@ -247,11 +259,15 @@ export class MockRegistry {
     if (this.loadingActual.has(key)) {
       return false;
     }
-    if (assetStubFor(key) !== undefined) {
-      return true;
-    }
+    /* Mirrors serve()'s order: an explicit registration — `jest.unmock`
+     * included — wins over the asset-stub default, so an unmocked stylesheet
+     * falls through to node rather than minting a mock URL that serve() would
+     * then refuse to honour. */
     const entry = this.entries.get(key);
-    return (entry !== undefined && !entry.unmocked) || this.rootMocks.has(key);
+    if (entry !== undefined) {
+      return !entry.unmocked;
+    }
+    return this.rootMocks.has(key) || assetStubFor(key) !== undefined;
   }
 
   /**
@@ -306,12 +322,21 @@ export class MockRegistry {
     return createRequire(caller?.filename ?? path.join(this.root, "index.js"));
   }
 
+  /** The registry key for a registration. An unresolvable specifier is
+   * legitimately keyed by its text for a `{virtual: true}` mock or an unmock
+   * (there is nothing real to protect), for an asset request (judged on the
+   * request — see Assets.ts), and for a package whose mock is a root
+   * `__mocks__` entry (which is what makes it servable at all); anything else
+   * is a typo'd `jest.mock`, and gets jest's own error for one. */
   private keyFor(specifier: string, caller: ILoaderModule | undefined, allowUnresolved: boolean): string {
     const resolved = this.resolve(specifier, caller);
-    if (resolved === undefined && !allowUnresolved) {
+    if (resolved !== undefined) {
+      return resolved;
+    }
+    if (allowUnresolved || assetStubFor(specifier) !== undefined || this.rootMocks.has(specifier)) {
       return specifier;
     }
-    return resolved ?? specifier;
+    throw new Error(`Cannot find module '${specifier}' from '${caller?.filename ?? this.root}'`);
   }
 
   private load(request: string, caller?: ILoaderModule): unknown {
@@ -358,32 +383,62 @@ function esmExports(): Map<string, unknown> {
   return globals[ESM_EXPORTS] as Map<string, unknown>;
 }
 
+/** Where the staged installation mounts the compiled source tree — the js
+ * rules' COMPILE_OUT_DIR, duplicated here because the runner executes in test
+ * child processes and must not load the host's rule code. */
+const COMPILED_TREE = "build";
+
 /**
  * The root-level `__mocks__` convention: a file named for an installed package
  * mocks it *without* any `jest.mock` call. Listed once at startup — it is
  * consulted on every bare require, and the directory cannot change under a
- * hermetic run. (Adjacent `__mocks__` directories, which mock user modules only
- * when asked, are found through ordinary resolution instead.)
+ * hermetic run. A source tree's root `__mocks__` is staged under the compiled
+ * mount (`build/__mocks__` — the pipeline stages the compile's output tree, not
+ * the source layout), so that is the directory that matters; the bare install
+ * root is listed too, second, so a file there — nothing stages one today — is
+ * still honoured but never shadows a compiled entry. (Adjacent `__mocks__`
+ * directories, which mock user modules only when a factory-less `jest.mock`
+ * asks, are instead probed beside the resolved module — see
+ * {@link MockRegistry.serve}.)
  */
 function listRootMocks(root: string): Map<string, string> {
   const mocks = new Map<string, string>();
-  const dir = path.join(root, "__mocks__");
   const add = (entryDir: string, prefix: string): void => {
     for (const entry of fs.readdirSync(entryDir, { withFileTypes: true })) {
       if (entry.isDirectory() && prefix === "" && entry.name.startsWith("@")) {
         /* A scoped package's mock is one level down: __mocks__/@scope/pkg.js */
         add(path.join(entryDir, entry.name), `${entry.name}/`);
       } else if (entry.isFile()) {
-        mocks.set(prefix + entry.name.replace(/\.[cm]?[jt]sx?$/, ""), path.join(entryDir, entry.name));
+        const name = prefix + entry.name.replace(/\.[cm]?[jt]sx?$/, "");
+        if (!mocks.has(name)) {
+          mocks.set(name, path.join(entryDir, entry.name));
+        }
       }
     }
   };
-  try {
-    add(dir, "");
-  } catch {
-    /* No root __mocks__ directory: the ordinary case. */
+  for (const dir of [path.join(root, COMPILED_TREE, "__mocks__"), path.join(root, "__mocks__")]) {
+    try {
+      add(dir, "");
+    } catch {
+      /* No __mocks__ directory here: the ordinary case. */
+    }
   }
   return mocks;
+}
+
+/**
+ * The adjacent-`__mocks__` convention: a user module's manual mock is
+ * `__mocks__/<name>.js` in the resolved file's own directory (the staged tree
+ * is compiled, so the mock is a `.js` whatever its source was). Only for user
+ * modules — a package's manual mock is the root convention above, so anything
+ * resolved into node_modules is not probed.
+ */
+function adjacentMock(key: string): string | undefined {
+  if (!path.isAbsolute(key) || key.includes(`${path.sep}node_modules${path.sep}`)) {
+    return undefined;
+  }
+  const candidate = path.join(path.dirname(key), "__mocks__", path.basename(key).replace(/\.[cm]?[jt]sx?$/, "") + ".js");
+  return fs.existsSync(candidate) ? candidate : undefined;
 }
 
 /** node's CJS loader internals, as far as we reach into them. */
@@ -441,7 +496,7 @@ function installEsmSeam(registry: MockRegistry): void {
        * same rule serve() applies to a CJS caller, judged here on the
        * importing module's URL. */
       const parent = (context as { parentURL?: string }).parentURL;
-      if (parent !== undefined && parent.startsWith("file:") && isRunnerInternal(fileFromUrl(parent))) {
+      if (parent !== undefined && parent.startsWith("file:") && isRunnerInternal(fileURLToPath(parent))) {
         return nextResolve(specifier, context);
       }
       /* Resolve FIRST and key on the answer. Asking the registry to resolve the
@@ -454,7 +509,7 @@ function installEsmSeam(registry: MockRegistry): void {
       } catch (err) {
         failure = err;
       }
-      const key = resolved?.url.startsWith("file:") ? fileFromUrl(resolved.url) : specifier;
+      const key = resolved?.url.startsWith("file:") ? fileURLToPath(resolved.url) : specifier;
       /* The URL carries whichever name the registry actually knows the mock
        * under: the resolved path normally, the bare specifier for a root
        * `__mocks__` entry or a virtual mock (both registered by name, which the
@@ -539,8 +594,4 @@ function keyFromMockUrl(url: string): string {
  * registry never mocks for — see the exemption in {@link MockRegistry.serve}. */
 function isRunnerInternal(filename: string | undefined): boolean {
   return filename !== undefined && filename.startsWith(RUNNER_ROOT + path.sep);
-}
-
-function fileFromUrl(url: string): string {
-  return path.normalize(decodeURIComponent(new URL(url).pathname));
 }

@@ -17,9 +17,11 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import crypto from "crypto";
 import { Computable, ComputableSource } from "../core/Computable";
-import { attachHelp } from "../core/Errors";
+import { attachHelp, IntegrityError, toError } from "../core/Errors";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
+import { HASH_ALGORITHM } from "../core/FSWrapper";
 import { Name } from "../core/Name";
 import { IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
 import { ExpectedDigest, isIntegrity, parseIntegrity, verifyingStream } from "../support/Integrity";
@@ -141,18 +143,28 @@ class FetchSource implements FileSource {
         (content, ctx) => {
           const { hashing, verify } = verifyingStream(member.digest, member.url);
           const output = ctx.createOutput();
+          /* pipe() does not forward a source error: a body dropped mid-stream
+           * (reset, idle timeout) must fail this attempt through the hasher,
+           * not raise an unhandled 'error' on the bare response. */
+          content.on("error", err => hashing.destroy(toError(err)));
           content.pipe(hashing).pipe(output.stream, { end: false });
           return streamed(hashing)
-            .then(() => {
-              /* Before finalize: a digest mismatch must leave nothing behind. */
-              try {
-                verify();
-              } catch (err) {
+            .then(
+              () => {
+                /* Before finalize: a digest mismatch must leave nothing behind. */
+                try {
+                  verify();
+                } catch (err) {
+                  output.discard();
+                  throw err;
+                }
+                return output.finalize(path);
+              },
+              err => {
                 output.discard();
                 throw err;
               }
-              return output.finalize(path);
-            })
+            )
             .then((file: IFile) => new FileSet(new Map([[path, file]])));
         },
         path
@@ -165,7 +177,7 @@ class FetchSource implements FileSource {
         if (!file) {
           throw new Error(`download '${path}' in ${this.declaredName} did not produce a file`);
         }
-        return file;
+        return verifiedAgainst(file, member.digest, member.url);
       });
   }
 }
@@ -208,6 +220,38 @@ function streamed(stream: NodeJS.ReadableStream): Computable<void> {
     stream.on("end", () => resolve(undefined));
     stream.on("error", err => reject(err instanceof Error ? err : new Error(String(err))));
   });
+}
+
+/**
+ * Judge a delivered file against the declared digest. The streaming check in
+ * {@link FetchSource.download} gates only the cache *commit*: a cache hit (or a
+ * second member sharing the URL under a different digest) serves stored bytes
+ * with no fetch to stream through, so the declaration is re-judged against the
+ * store here — an edited digest fails identically warm or cold. Free in the
+ * declared-sha256 case (the store's own algorithm — a hash compare); any other
+ * algorithm reads the content back through a hasher.
+ */
+function verifiedAgainst(file: IFile, digest: ExpectedDigest, url: string): Computable<IFile> {
+  if (digest.algorithm === HASH_ALGORITHM) {
+    const expected = digest.encoding === "hex" ? digest.value : Buffer.from(digest.value, "base64").toString("hex");
+    if (expected !== file.hash) {
+      throw new IntegrityError(url, digest.algorithm, digest.value, encodeDigest(file.hash, digest.encoding));
+    }
+    return Computable.resolve(file);
+  }
+  return file.getBuffer().then(buffer => {
+    const actual = crypto.createHash(digest.algorithm).update(buffer).digest(digest.encoding);
+    if (actual !== digest.value) {
+      throw new IntegrityError(url, digest.algorithm, digest.value, actual);
+    }
+    return file;
+  });
+}
+
+/** The store's hex hash re-encoded to the declaration's encoding, so the
+ *  mismatch message shows both sides in the form the user wrote. */
+function encodeDigest(hexHash: string, encoding: "base64" | "hex"): string {
+  return encoding === "hex" ? hexHash : Buffer.from(hexHash, "hex").toString("base64");
 }
 
 /**

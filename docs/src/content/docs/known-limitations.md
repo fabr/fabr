@@ -47,15 +47,17 @@ Results are reported in [CTRF](https://ctrf.io) form.
 fake timers), `expect` with jest's matchers, `.each`, snapshots, and a jsdom environment — using
 jest's own libraries, so their behaviour is jest's rather than an imitation of it. It is *fabr's
 runner plus a compatibility layer*, not jest hosted by fabr: none of jest's own orchestrator runs.
+Setup files are a convention rather than a property: a source named `setupTests` at the root of the
+target's source tree compiles with the tests and is loaded by every test process before any test
+file, with jest's `setupFilesAfterEnv` semantics (both runner flavours honour it).
 
 What is **not** there yet, each failing loudly rather than silently doing nothing:
 
 - `{...styles}` on a stylesheet import spreads to `{}` — the stub answers any property with its
   own name, but cannot enumerate class names it has never compiled. (Same limitation as jest's
   usual `identity-obj-proxy` mapping.)
-- `setup` files and a declared `mocks` map (jest's `setupFiles`/`setupFilesAfterEach` and
-  `moduleNameMapper`), and the per-file `@jest-environment` docblock pragma.
-- `test.concurrent` and `test.failing`.
+- A declared `mocks` map (jest's `moduleNameMapper`), and the per-file `@jest-environment`
+  docblock pragma.
 - ESM-mode jest (`useESM`). Tests and the local module graph compile to CommonJS; external
   ESM-only packages load fine as leaves, and a top-level-`await` ESM graph can only be mocked
   (which is also true under jest).

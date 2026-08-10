@@ -118,48 +118,80 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
   });
 
   /* Per-value shape rules, checked here where the schema is known (a wildcard
-   * member is typed by the `*` entry): block<->MAP agreement, then either the MAP
-   * entry rules or the `sel -> tmpl` rename primitive (REWRITE / templated FILES). */
+   * member is typed by the `*` entry). */
   decl.properties.forEach(prop => {
     const type = (targetDef.properties.get(prop.name) ?? wildcard)?.type;
     if (type === undefined) {
       return; /* already reported as unrecognized */
     }
-    if (prop.values.some(value => isCommandValue(value))) {
-      /* A pipeline (`a | b > c`) parses to a command value (well-formedness
-       * already a parse error). It is only meaningful in a COMMAND property — the
-       * mirror of a `{...}` block being MAP-only. */
-      if (type !== PropertyType.Command) {
-        log.log(DIAG_INVALID_COMMAND, {
-          detail: "pipeline operators ('|', '<', '>', '2>', '&>') are only valid in a COMMAND property",
-          loc: declPosn(prop),
-        });
-        isValid = false;
-      }
-    } else if (type === PropertyType.Command) {
-      /* A COMMAND property with no operators is a bare single-stage command
-       * (`run = astro build`) — a non-empty value list is all it needs. */
-      if (prop.values.length === 0) {
-        log.log(DIAG_INVALID_COMMAND, { detail: "a command is required", loc: declPosn(prop) });
-        isValid = false;
-      }
-    } else if (type === PropertyType.Map) {
-      if (!validateMapProperty(prop, log)) {
-        isValid = false;
-      }
-    } else if (!hasMapValue(prop)) {
-      prop.values.forEach(value => {
-        if (!validateRenameValue(prop, value, type, log)) {
-          isValid = false;
-        }
-      });
-    } else {
-      /* A `{ ... }` block written for a non-MAP property. */
-      log.log(DIAG_INVALID_MAP, { detail: "a `{ ... }` block is only valid for a MAP property", loc: declPosn(prop) });
+    if (!validatePropertyShape(prop, type, log)) {
       isValid = false;
     }
   });
 
+  return isValid;
+}
+
+/**
+ * The per-value shape rules for one property against its schema type — shared
+ * by a written property ({@link validateTarget}) and a targetdef's own
+ * `default` ({@link validateTargetDef}): block<->MAP agreement, command
+ * placement, then either the MAP entry rules or the `sel -> tmpl` rename
+ * primitive (REWRITE / templated FILES).
+ */
+function validatePropertyShape(prop: IPropertyDecl, type: PropertyType, log: Log): boolean {
+  let isValid = true;
+  if (prop.values.some(value => isCommandValue(value))) {
+    /* A pipeline (`a | b > c`) parses to a command value (well-formedness
+     * already a parse error). It is only meaningful in a COMMAND property — the
+     * mirror of a `{...}` block being MAP-only. */
+    if (type !== PropertyType.Command) {
+      log.log(DIAG_INVALID_COMMAND, {
+        detail: "pipeline operators ('|', '<', '>', '2>', '&>') are only valid in a COMMAND property",
+        loc: declPosn(prop),
+      });
+      isValid = false;
+    }
+  } else if (type === PropertyType.Command) {
+    /* A COMMAND property with no operators is a bare single-stage command
+     * (`run = astro build`) — a non-empty value list is all it needs. */
+    if (prop.values.length === 0) {
+      log.log(DIAG_INVALID_COMMAND, { detail: "a command is required", loc: declPosn(prop) });
+      isValid = false;
+    }
+  } else if (type === PropertyType.Map) {
+    if (!validateMapProperty(prop, log)) {
+      isValid = false;
+    }
+  } else if (!hasMapValue(prop)) {
+    prop.values.forEach(value => {
+      if (!validateRenameValue(prop, value, type, log)) {
+        isValid = false;
+      }
+    });
+  } else {
+    /* A `{ ... }` block written for a non-MAP property. */
+    log.log(DIAG_INVALID_MAP, { detail: "a `{ ... }` block is only valid for a MAP property", loc: declPosn(prop) });
+    isValid = false;
+  }
+  return isValid;
+}
+
+/**
+ * Validate a targetdef's own schema: each property's `default` values are
+ * checked against the declared type exactly as a written property's would be —
+ * at load, whether or not any target ever takes the default (the same
+ * discipline as a default target: declared ⇒ validated). Without this, a
+ * malformed default surfaces only when some target omits the property, as a
+ * resolution error far from the mistake.
+ */
+export function validateTargetDef(decl: ITargetDefDecl, log: Log): boolean {
+  let isValid = true;
+  decl.properties.forEach(schema => {
+    if (schema.default && !validatePropertyShape(schema.default, schema.type, log)) {
+      isValid = false;
+    }
+  });
   return isValid;
 }
 

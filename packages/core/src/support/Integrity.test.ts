@@ -70,6 +70,19 @@ describe("Integrity", () => {
       expect(parseIntegrity("sha1-abc")).to.equal(undefined);
       expect(parseIntegrity("")).to.equal(undefined);
     });
+
+    it("collects every entry of the strongest algorithm", () => {
+      const parsed = parseIntegrity("sha512-aaa sha512-bbb sha256-ccc");
+      expect(parsed?.algorithm).to.equal("sha512");
+      expect(parsed?.value).to.equal("aaa");
+      expect(parsed?.alternates).to.deep.equal(["bbb"]);
+    });
+
+    it("strips an entry's '?options' suffix", () => {
+      const parsed = parseIntegrity("sha256-abc?opt=1 sha256-def?other");
+      expect(parsed?.value).to.equal("abc");
+      expect(parsed?.alternates).to.deep.equal(["def"]);
+    });
   });
 
   describe("verifyingStream", () => {
@@ -99,6 +112,24 @@ describe("Integrity", () => {
 
     it("checks nothing when no digest is expected", async () => {
       await check(undefined, "anything at all");
+    });
+
+    it("passes content matching ANY listed digest of the strongest algorithm", async () => {
+      const other = `sha256-${crypto.createHash("sha256").update("something else").digest("base64")}`;
+      await check(`${other} ${sri("sha256")}`);
+      await check(`${sri("sha256")} ${other}`);
+    });
+
+    it("fails when content matches none of the listed digests", async () => {
+      const a = `sha256-${crypto.createHash("sha256").update("one").digest("base64")}`;
+      const b = `sha256-${crypto.createHash("sha256").update("two").digest("base64")}`;
+      let caught: unknown;
+      await check(`${a} ${b}`).catch(err => (caught = err));
+      expect(caught).to.be.instanceOf(IntegrityError);
+    });
+
+    it("verifies against the digest with its '?options' suffix stripped", async () => {
+      await check(`${sri("sha256")}?some-option`);
     });
   });
 });

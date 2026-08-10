@@ -47,9 +47,16 @@ import { RunnableFileSet } from "../core/RunnableFileSet";
 import { BUILD_OPERATION, FILES_OPERATION } from "../model/Constraints";
 import { PackageFormat } from "./PackageFormat";
 import { resolveMVS } from "./MVSResolver";
-import { allSanctioned, canonicalRequirements, requirementKey, satisfiedByAnySelection, writtenVersions } from "./Overrides";
+import {
+  allSanctioned,
+  canonicalExactVersion,
+  canonicalRequirements,
+  requirementKey,
+  satisfiedByAnySelection,
+  writtenVersions,
+} from "./Overrides";
 import { deserializeResolutionDoc, IResolutionDoc, ResolvedRepairs, serializeResolutionDoc } from "./ResolutionDoc";
-import { coexistingVersions, edgeBinding, nodeId } from "./ResolutionGraph";
+import { coexistingVersions, edgeBinding, nodeId, selectionId } from "./ResolutionGraph";
 import { IResolutionOrigin, PACKAGE_RESOLUTION_PROVENANCE } from "./ResolutionProvenance";
 import { completeRepairSet, conflictError, RefRenderer, suggestSanctions, SuggestSources, unrepairableError } from "./ResolutionReport";
 import {
@@ -105,26 +112,16 @@ export function declaredRequirementFrom(source: RefSource, ref: RepositoryRef): 
 }
 
 /**
- * An already-resolved package made runnable by whatever delivered it — the
- * dispatch behind RepositoryLookup's optional `makeRunnable`: a package
- * registry's answer is pure format convention; a catalog looks its member up
- * and delegates (its own method). The closure the package carries is kept
- * either way — never re-resolved.
+ * An already-resolved package made runnable by whatever delivered it: pure
+ * format convention, keyed off the registry the package came from (a catalog
+ * passes its member's own source). The closure the package carries is kept —
+ * never re-resolved.
  */
 export function runnableFrom(source: RefSource, pkg: PackageFileSet): Computable<RunnableFileSet> {
   if (isRepositoryReader(source)) {
     return source.format.makeRunnable(pkg);
   }
-  if (source.makeRunnable) {
-    return source.makeRunnable(pkg);
-  }
   return Computable.reject(new Error(`'${pkg.packageName}' was delivered by a repository that cannot make it runnable`));
-}
-
-/** A selection's `pkg@version` node id — the resolver's node-id form, also the
- * id space of the transient edge map a permissive delivery is planned from. */
-function selectionId<V, C>(domain: VersionDomain<V, C>, sel: Selected<V>): string {
-  return nodeId(domain, sel.pkg, sel.version);
 }
 
 /**
@@ -256,7 +253,8 @@ export function resolvePackages<V, C>(
     for (const req of requirements) {
       if (req.override === "alternate") {
         const versions = alternates.get(req.pkg) ?? new Set();
-        alternates.set(req.pkg, versions.add(req.constraint));
+        /* Canonical form: the sanction judgment compares versionToString. */
+        alternates.set(req.pkg, versions.add(canonicalExactVersion(format, req.constraint) ?? req.constraint));
       }
     }
     const contradicted = requirements.find(req => req.override === "force" && alternates.has(req.pkg));

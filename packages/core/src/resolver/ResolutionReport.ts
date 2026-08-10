@@ -31,7 +31,7 @@
 import { Computable } from "../core/Computable";
 import { attachHelp, ResolutionWalkError } from "../core/Errors";
 import { nodeId, resolutionExplainer, ResolutionExplainer } from "./ResolutionGraph";
-import { canonicalRequirements } from "./Overrides";
+import { canonicalExactVersion, canonicalRequirements } from "./Overrides";
 import { IResolutionError, MVSResolution, Requirement, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
 
 /** Render a reference as the repository's users write it — `@npm:pkg:1.4.2?`
@@ -367,8 +367,10 @@ export function suggestSanctions<V, C>(
   const written = (pkg: string): ReadonlySet<string> => {
     const versions = new Set<string>();
     for (const req of demanded) {
-      if (req.pkg === pkg && (req.override === "alternate" || domain.exactVersion?.(req.constraint) !== undefined)) {
-        versions.add(req.constraint);
+      const exact = canonicalExactVersion(domain, req.constraint);
+      if (req.pkg === pkg && (req.override === "alternate" || exact !== undefined)) {
+        /* Canonical form: sanctionLine filters against versionToString. */
+        versions.add(exact ?? req.constraint);
       }
     }
     return versions;

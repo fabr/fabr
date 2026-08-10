@@ -159,6 +159,30 @@ describe("validateTarget (MAP properties)", () => {
   });
 });
 
+describe("validateTargetDef (schema defaults)", () => {
+  /* A schema's own `default` values are validated against the declared type at
+   * load — no target need ever take the default for a malformed one to fail. */
+  it("accepts a default matching the declared type", () => {
+    expect(validationErrors("targetdef t { name = STRING default abc; }\n")).to.deep.equal([]);
+  });
+
+  it("rejects a `{ ... }` block default on a non-MAP property, with no target in sight", () => {
+    const errors = validationErrors("targetdef t { name = STRING default { k = v; }; }\n");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/block is only valid for a MAP property/);
+  });
+
+  it("validates a MAP default block's internals", () => {
+    const errors = validationErrors("targetdef t { metadata = MAP default { k = v; k = w; }; }\n");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/duplicate/i);
+  });
+
+  it("accepts an empty default (present-but-empty is a legal value)", () => {
+    expect(validationErrors("targetdef t { version = STRING default; }\n")).to.deep.equal([]);
+  });
+});
+
 describe("validateProperty (global / schema-less properties)", () => {
   it("validates a global map block's internals (duplicate key)", () => {
     const errors = validationErrors("meta = { A = 1; A = 2; };");

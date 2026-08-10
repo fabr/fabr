@@ -56,7 +56,11 @@ interface IJsdomModule {
  * node-realm `Event` and dispatches it at a jsdom `EventTarget` hits a realm
  * mismatch and fails in a way that has nothing to do with the test. The list is
  * jest's own (`@jest/environment-jsdom-abstract`'s curated overrides) rather
- * than one discovered failure by failure.
+ * than one discovered failure by failure — plus `navigator` and `WebSocket`,
+ * which node itself now ships (21 and 22.4 respectively) and which a
+ * browser-targeted test must see as jsdom's: its `navigator` carries the DOM's
+ * userAgent (and is what jsdom's own APIs consult), and a node-realm WebSocket
+ * is the same realm mismatch as a node-realm Event.
  */
 const SHADOWED_NODE_GLOBALS = new Set([
   "AbortController",
@@ -75,6 +79,7 @@ const SHADOWED_NODE_GLOBALS = new Set([
   "MessageChannel",
   "MessageEvent",
   "MessagePort",
+  "navigator",
   "ReadableStream",
   "Request",
   "Response",
@@ -85,6 +90,7 @@ const SHADOWED_NODE_GLOBALS = new Set([
   "TransformStream",
   "URL",
   "URLSearchParams",
+  "WebSocket",
   "WritableStream",
 ]);
 

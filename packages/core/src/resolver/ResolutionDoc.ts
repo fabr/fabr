@@ -59,6 +59,8 @@ interface IRequirementsEntry {
  * fork selections and `!`-coerced edges. Version strings are in the owning
  * ecosystem's canonical form; everything else is ecosystem-free. */
 export interface IResolutionDoc {
+  /** Self-description for anyone reading the cache file — deserialization
+   * never reads it (the memo key already fixes the roots). */
   roots: Requirement[];
   selections: IResolutionEntry[];
   violations: IViolationEntry[];

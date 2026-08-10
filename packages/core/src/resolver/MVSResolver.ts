@@ -504,12 +504,20 @@ function resolvePhase<V, C>(
         return;
       }
       const selectedPkgs = new Set([...selected.values()].map(sel => sel.pkg));
-      const firing = softReqs.filter(entry => !softFired.has(entry) && !selectedPkgs.has(entry.req.pkg));
       /* Attach-last alternates: a package the converged tree requires only
        * floorlessly (nothing selects it) takes its written `?` version — the
-       * deterministic answer the requirements alone cannot give. */
+       * deterministic answer the requirements alone cannot give. "Selects" is
+       * judged over PUBLISHED selections, the same view judgeConverged takes:
+       * a phantom occupying the slot is no deliverable answer, so its package
+       * still wants the alternate. (The soft-req guard keeps the full view
+       * deliberately — a phantom's demand is still a demand, answered by the
+       * raise machinery, not by installing the peer.) */
+      const publishedPkgs = new Set(
+        [...selected.values()].filter(sel => !notPublished.has(nodeId(sel.pkg, sel.version))).map(sel => sel.pkg)
+      );
+      const firing = softReqs.filter(entry => !softFired.has(entry) && !selectedPkgs.has(entry.req.pkg));
       const supplying = [...alternateAnswers].filter(
-        ([pkg]) => !alternateFired.has(pkg) && floorlessRequired.has(pkg) && !selectedPkgs.has(pkg)
+        ([pkg]) => !alternateFired.has(pkg) && floorlessRequired.has(pkg) && !publishedPkgs.has(pkg)
       );
       if (firing.length === 0 && supplying.length === 0) {
         finish();
@@ -522,6 +530,15 @@ function resolvePhase<V, C>(
       }
       for (const [pkg, version] of supplying) {
         alternateFired.add(pkg);
+        /* A phantom in the slot (an unpublished floor from a superseded
+         * demand) must not out-floor the supplied answer — evict it so the
+         * supply reads as the root selection it is. An in-effect edge that
+         * genuinely needed the phantom still fails at convergence: it now
+         * judges against the supplied version and violates. */
+        const current = selected.get(pkg);
+        if (current && notPublished.has(nodeId(current.pkg, current.version))) {
+          selected.delete(pkg);
+        }
         attempt({ pkg, constraint: domain.versionToString(version) }, version, ROOT_REQUIRER);
       }
       if (--pending === 0) {

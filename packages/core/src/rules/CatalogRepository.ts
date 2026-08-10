@@ -18,7 +18,7 @@
  */
 
 import { Computable } from "../core/Computable";
-import { FileSet, FileSource } from "../core/FileSet";
+import { FileSet } from "../core/FileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import {
@@ -35,7 +35,7 @@ import {
 } from "../core/Repository";
 import { FileSetRef } from "../core/FileSetRef";
 import { Requirement } from "../resolver/Types";
-import { chainSteps } from "../core/Provenance";
+import { chainSteps, describeProvenance } from "../core/Provenance";
 import { attachHelp, ConflictError, IConflictSource, RequirementResolutionError, toError } from "../core/Errors";
 import { Name } from "../core/Name";
 import { TargetContext } from "../model/BuildContext";
@@ -174,23 +174,6 @@ export class CatalogRepository implements Repository, RepositoryLookup {
   }
 
   /**
-   * Make a pinned member runnable — for a parent catalog chaining onto this one
-   * (`catalog @a { deps = @b:x }` running `@a:x` delegates here). The package is
-   * one of ours, looked up by name; its own source does the ecosystem-specific
-   * work.
-   */
-  public makeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet> {
-    return this.pinned.then(table => {
-      const member = table.get(pkg.packageName);
-      if (!member) {
-        /* Can't happen: a parent catalog only delegates a member it got from us. */
-        throw new Error(`internal: catalog ${this.catalogName} has no member '${pkg.packageName}' to make runnable`);
-      }
-      return this.toRunnable(pkg.packageName, member, pkg);
-    });
-  }
-
-  /**
    * The requirement a member was **declared** with in the catalog's `deps` — NOT
    * the version the joint resolution pinned it to. A locally-built member is
    * versionless (its version is assigned at publish), contributing `*`; an external
@@ -245,7 +228,7 @@ function conflictSide(member: CatalogMember): IConflictSource {
  * plus any already-built local entries. */
 interface ResolvedPackageSet {
   readonly resolutions: ReadonlyArray<{ source: RepositoryReader<unknown, unknown>; resolution: Resolution }>;
-  readonly local: ReadonlyArray<FileSource>;
+  readonly local: ReadonlyArray<FileSet>;
 }
 
 /**
@@ -277,19 +260,37 @@ function resolveDeps(context: TargetContext): Computable<ResolvedPackageSet> {
       const base = pendingLocal.source;
       throw projectsInto(base instanceof PackageFileSet ? `'${base.packageName}'` : "of a local target");
     }
-    const local = sources.filter((source): source is FileSource => source instanceof FileSet);
+    const local = sources.filter((source): source is FileSet => source instanceof FileSet);
+    /* Anything neither a requirement nor content pins nothing — a bare
+     * repository alias (`deps = @npm;`) or a fetch table. Silence here would
+     * leave the catalog quietly empty of the entry. */
+    const inert = sources.find(source => !(source instanceof RepositoryRef) && !(source instanceof FileSet));
+    if (inert) {
+      throw attachHelp(
+        new Error(`Catalog ${context.name} has an entry that names no packages`),
+        "each entry must name specific packages — an external requirement (`@npm:pkg:1.2.3`) or a built package target; a bare repository reference pins nothing"
+      );
+    }
     return Computable.forAll(
       [...groupByRepository(references).entries()].map(([source, refs]) => {
         /* A catalog pins package VERSIONS, so its entries must come from a
-         * repository that resolves them — a fetch repository's members (URL +
-         * digest pins) have no version to pin. */
+         * repository that resolves them. The one non-resolving source a
+         * reference can carry today is another catalog — deliberately
+         * rejected: each catalog is its own joint resolution, and chaining
+         * would nest one inside another (see RATIONALE.md). */
         if (!isRepositoryReader(source)) {
+          const entry = refs[0].name.toString();
           throw new RequirementResolutionError(
             refs,
-            attachHelp(
-              new Error(`Catalog entry '${refs[0].name.toString()}' comes from a repository that does not resolve package versions`),
-              "a catalog pins versions of registry packages; reference the repository's content directly instead"
-            )
+            source instanceof CatalogRepository
+              ? attachHelp(
+                  new Error(`Catalog entry '${entry}' is a member of another catalog`),
+                  "a catalog cannot pin another catalog's members — pin the package directly here, or reference the other catalog's member at the point of use"
+                )
+              : attachHelp(
+                  new Error(`Catalog entry '${entry}' comes from a repository that does not resolve package versions`),
+                  "a catalog pins versions of registry packages; reference the repository's content directly instead"
+                )
           );
         }
         return resolvePackages(buildForced(context), source, refs).then(resolution => ({ source, resolution }));
@@ -321,8 +322,9 @@ function buildCatalog(catalogName: string, set: ResolvedPackageSet): Map<string,
   }
   for (const content of set.local) {
     if (!(content instanceof PackageFileSet)) {
+      const from = describeProvenance(content.origin);
       throw attachHelp(
-        new Error(`Catalog ${catalogName} has an entry that does not resolve to a package`),
+        new Error(`Catalog ${catalogName} has an entry that does not resolve to a package${from ? ` (${from})` : ""}`),
         "every catalog entry must be a package — an @npm requirement or a built package target"
       );
     }

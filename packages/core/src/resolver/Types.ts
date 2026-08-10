@@ -55,11 +55,14 @@ export interface Requirement {
    *   this version at resolve time. Ranges the forced version does not
    *   satisfy are recorded as {@link MVSResolution.coerced} — data, never
    *   violations. Participates in resolution (and its memo identity).
-   * - `"alternate"` (`?`) — a judgment-time sanction, never a demand: it
-   *   contributes no floor and is excluded from the resolver's roots
-   *   entirely (the consumer applies it when judging violations at
-   *   delivery). Listed here for the parse's completeness; the resolver
-   *   never sees one.
+   * - `"alternate"` (`?`) — a sanction plus a supply of last resort, never an
+   *   ordinary demand: it contributes no floor and mounts nothing of its own.
+   *   It IS a resolver root, handled by a dedicated attach-last branch
+   *   (MVSResolver's enqueue): only when the converged tree requires the
+   *   package solely floorlessly does the written version supply a selection.
+   *   Included in the canonical roots and the resolution memo key (its
+   *   {@link requirementKey} carries the marker); the sanction itself is
+   *   judged by the consumer at delivery.
    */
   override?: "alternate" | "force";
 }
@@ -182,7 +185,7 @@ export interface MVSResolution<V> {
    * requirements), i.e. the resolution's edges as the packages declared them.
    * The walk collects these to compute reachability; handing them back is what
    * lets a consumer lay the result out — where each edge leads is a pure
-   * function of these plus {@link MVSResolution.selections} (see edgeTargets),
+   * function of these plus {@link MVSResolution.selections} (see edgeBinding),
    * so a layout needs no second read of package metadata. Pruned nodes are not
    * listed: only what the resolution selected.
    */

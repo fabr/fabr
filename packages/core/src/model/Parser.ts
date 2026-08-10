@@ -351,6 +351,10 @@ const DIAG_WILDCARD_DEFAULT = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
   "The '*' wildcard cannot have a default (it types only keys that are written)"
 );
+const DIAG_DEFAULT_BEFORE_TYPE = new Diagnostic<{ key: string; loc: ISourcePosition }>(
+  LogLevel.Error,
+  "Property '{key}' declares 'default' before its type — write the type first ('{key} = FILES default …;')"
+);
 const DIAG_NESTING_TOO_DEEP = new Diagnostic<{ loc: ISourcePosition }>(
   LogLevel.Error,
   `Block nesting is too deep (limit ${MAX_BLOCK_DEPTH})`
@@ -1771,7 +1775,16 @@ export class BuildParser {
         }
       }
       if (type === undefined) {
-        this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'MAP'");
+        if (defaultDecl) {
+          /* `default` ended the keyword run before any type keyword. The clause
+           * itself parsed clean (values and ';' consumed), so this is an
+           * ordinary logged error at the key, not a thrown recovery — the
+           * generic unexpected-token report would point at whatever follows
+           * the clause, nowhere near the mistake. */
+          this.log.log(DIAG_DEFAULT_BEFORE_TYPE, { key, loc: { ...this.source, offset: token.start } });
+        } else {
+          this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'MAP'");
+        }
       } else if (required && defaultDecl) {
         /* A default supplies the property whenever it is unwritten, so nothing is
          * left for REQUIRED to demand — the pair says both "must be written" and

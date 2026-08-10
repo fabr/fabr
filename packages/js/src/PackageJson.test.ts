@@ -88,6 +88,28 @@ describe("createPackageJson", () => {
     expect(pkg.maintainers).to.deep.equal([{ name: "Alice" }, { name: "Bob" }]);
   });
 
+  it("emits declared requirements as dependencies, keeping a name that shadows an Object member", async () => {
+    const pkg = await generate(undefined, new Map(), [
+      { pkg: "lodash", constraint: "^4.0.0" },
+      undefined, // a dep with no external requirement (a built co-member)
+      { pkg: "__proto__", constraint: "^1.0.0" },
+    ]);
+    const dependencies = pkg.dependencies as Record<string, string>;
+    expect(dependencies.lodash).to.equal("^4.0.0");
+    /* Own data property, not the inherited prototype accessor — a dep is a
+     * user-chosen name, so the accumulator must not treat it as one. */
+    expect(Object.getOwnPropertyDescriptor(dependencies, "__proto__")?.value).to.equal("^1.0.0");
+    expect(JSON.stringify(dependencies)).to.contain('"__proto__":"^1.0.0"');
+  });
+
+  it("emits provided_deps requirements as peerDependencies, omitting the block when empty", async () => {
+    const provided: Requirement[] = [{ pkg: "@fabr-build/core", constraint: "^0.1.0" }];
+    const file = createPackageJson(new FileSet(new Map()), undefined, "pkg", "1.0.0", [], provided, JS_TARGET, new Map());
+    const pkg = JSON.parse(await file.readString()) as Record<string, unknown>;
+    expect(pkg.peerDependencies).to.deep.equal({ "@fabr-build/core": "^0.1.0" });
+    expect(await generate(undefined, new Map())).to.not.have.property("dependencies");
+  });
+
   it("rejects a metadata key fabr computes, and one it strips", async () => {
     const rejects = async (metadata: PropertyMap, pattern: RegExp): Promise<void> => {
       try {

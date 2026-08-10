@@ -35,10 +35,13 @@ import { JSTarget } from "./JSPackage";
 /** Where esbuild writes and the rule collects the bundle output from. */
 export const BUNDLE_OUTDIR = "out";
 
-/** A source's name after the compile that precedes the link: `.ts`/`.tsx` become
- * `.js`, anything else is already what it will be called. */
+/** The default OUTPUT name for an entry: every spelling the pipeline compiles
+ * or links (`.ts`/`.tsx`/`.jsx`/`.mts`/`.cts`/`.mjs`/`.cjs`) maps to `.js` —
+ * the bundle is a fresh file esbuild always writes as `.js`, so even a
+ * module-flavoured entry (`.mts`, `.mjs`) yields a plain `.js` bundle name.
+ * Anything else keeps its name (and fails the `.js` check downstream). */
 export function compiledName(name: string): string {
-  return name.replace(/\.tsx?$/i, ".js");
+  return name.replace(/\.(?:tsx?|jsx|[cm]ts|[cm]js)$/i, ".js");
 }
 
 export interface IBundleEntrySource {
@@ -168,9 +171,10 @@ function refPackageName(ref: RepositoryRef): string {
  * Map each entry to its bundle entry pair. `path` is where the file is staged —
  * for a loose source its compiled name at the bundle root, for one located
  * inside a mounted container the path under that mount. `name` is what the
- * reference CALLS it, and the output is derived from that: `.ts`/`.tsx` becomes
- * `.js` (identity otherwise), then the `output` REWRITE renames it (first
- * matching value; unmatched → unchanged). The final name must end in `.js` — the
+ * reference CALLS it, and the output is derived from that: any compiled/linked
+ * spelling becomes `.js` ({@link compiledName}), then the `output` REWRITE
+ * renames it (first matching value; unmatched → unchanged). The final name
+ * must end in `.js` — the
  * driver hands esbuild the extensionless stem, which it re-appends.
  * @throws if an output name doesn't end in `.js`.
  */
@@ -179,7 +183,9 @@ export function computeBundleEntries(entries: IBundleEntrySource[], rewrite: Rew
     const compiled = compiledName(name);
     const output = rewrite(compiled) ?? compiled;
     if (!output.endsWith(".js")) {
-      throw new Error(`js_bundle output '${output}' (from entry '${name}') must end in '.js'`);
+      throw new Error(
+        `js_bundle output '${output}' (from entry '${name}') must end in '.js' — rename it with an 'output' rewrite (output = <selector> -> <name>.js;)`
+      );
     }
     return { in: path, out: output.slice(0, -".js".length) };
   });

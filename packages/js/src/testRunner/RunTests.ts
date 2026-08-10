@@ -198,13 +198,15 @@ function finish(results: ITestResult[], reportPath: string, start: number): void
   process.exitCode = failed > 0 ? 1 : 0;
 }
 
-/* Per-test timeout: a safety net so a hung test (a runaway loop, a subprocess
+/** Per-test timeout: a safety net so a hung test (a runaway loop, a subprocess
  * blocked on stdin that never closes) fails as a timeout rather than hanging the
  * whole run forever — node:test defaults to no timeout, unlike jest's 5s. Baked
  * in (tests run with a clean env, so an env knob could not reach here) and set
  * generously — well above the slowest legit test (the watch/serve suites cap
- * themselves at 90s) — so it only ever catches a genuine hang. */
-const TEST_TIMEOUT_MS = 120_000;
+ * themselves at 90s) — so it only ever catches a genuine hang. Shared across
+ * flavours: node:test takes it for the run here, and the jest flavour hands it
+ * to circus, which enforces it per test and honours a test's own override. */
+export const TEST_TIMEOUT_MS = 120_000;
 
 /* The timeout's complement: the timeout fails a hung TEST, but cannot make a
  * test-file PROCESS exit — JS can't preempt, so a test that leaked live handles

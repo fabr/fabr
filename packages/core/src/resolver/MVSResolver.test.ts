@@ -1174,6 +1174,25 @@ describe("force overrides", () => {
     expect(result.selections.find(sel => sel.pkg === "T")?.selectedBy).to.deep.equal({ requiredBy: "(root)", constraint: "26.0.0" });
   });
 
+  it("an alternate still answers when the package's only selection is a phantom", () => {
+    /* T's only floor comes from a SUPERSEDED node (C@1.0.0 — expanded by the
+     * whole-closure walk, but C selects 2.0.0) and names an unpublished
+     * version, so the slot holds a phantom. The in-effect edge (C@2.0.0's) is
+     * floorless, so the written alternate must fire exactly as it does when
+     * nothing selects T at all — and must beat the phantom's higher floor. */
+    const result = resolve(
+      { B: "1.0.0", C: "2.0.0", T: "1.0.0?" },
+      {
+        B: { "1.0.0": { C: ">=1.0.0" } },
+        C: { "1.0.0": { T: "9.9.9" }, "2.0.0": { T: "*" } },
+        T: { "1.0.0": {}, "3.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["B@1.0.0", "C@2.0.0", "T@1.0.0"]);
+    expect(result.errors).to.deep.equal([]);
+    expect(result.selections.find(sel => sel.pkg === "T")?.selectedBy).to.deep.equal({ requiredBy: "(root)", constraint: "1.0.0" });
+  });
+
   it("an alternate stays inert when a floored requirement selects the package", () => {
     const result = resolve(
       { A: "1.0.0", T: "26.0.0?" },

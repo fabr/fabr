@@ -42,7 +42,7 @@ interface FetchLog {
  * over `body`, against a stub output handle — so a test exercises the digest
  * gate and the commit/discard decision, not just the wiring around them.
  */
-function fakeContext(members: Record<string, string>, log: FetchLog, body = BODY): TargetContext {
+function fakeContext(members: Record<string, string>, log: FetchLog, body: string | Readable = BODY): TargetContext {
   return {
     name: "@dl",
     getWildcardProperties: () =>
@@ -58,13 +58,41 @@ function fakeContext(members: Record<string, string>, log: FetchLog, body = BODY
         stream: new Writable({ write: (_chunk, _enc, done): void => done() }),
         finalize: (name: string): Computable<IFile> => {
           log.finalized.push(name);
-          return Computable.resolve({ name } as unknown as IFile);
+          return Computable.resolve(storedFile(name, body));
         },
         discard: (): void => {
           log.discarded++;
         },
       };
-      return process(Readable.from([body]), { createOutput: () => output });
+      return process(typeof body === "string" ? Readable.from([body]) : body, { createOutput: () => output });
+    },
+  } as unknown as TargetContext;
+}
+
+/** A file as the store would serve it: content-hashed, readable back. */
+function storedFile(name: string, content: string | Readable): IFile {
+  const bytes = typeof content === "string" ? content : "";
+  return {
+    name,
+    hash: crypto.createHash("sha256").update(bytes).digest("hex"),
+    getBuffer: () => Computable.resolve(Buffer.from(bytes)),
+  } as unknown as IFile;
+}
+
+/**
+ * A TargetContext whose `fetch` answers from "cache": the process callback is
+ * never run — the stored file for `cachedBytes` is served directly, as a warm
+ * cache does — so a test exercises the hit-path digest judgment.
+ */
+function cachedContext(members: Record<string, string>, log: FetchLog, cachedBytes: string): TargetContext {
+  return {
+    name: "@dl",
+    getWildcardProperties: () =>
+      Computable.resolve(Object.keys(members).map(name => ({ key: Name.fromLiteral(name), decl: { name } }))),
+    getString: (name: string) => Computable.resolve(members[name]),
+    fetch: (url: string): Computable<FileSet> => {
+      log.urls.push(url);
+      return Computable.resolve(new FileSet(new Map([["stored", storedFile("stored", cachedBytes)]])));
     },
   } as unknown as TargetContext;
 }
@@ -73,7 +101,7 @@ function newLog(): FetchLog {
   return { urls: [], finalized: [], discarded: 0 };
 }
 
-function sourceFor(members: Record<string, string>, log: FetchLog, body?: string): Computable<FileSource> {
+function sourceFor(members: Record<string, string>, log: FetchLog, body?: string | Readable): Computable<FileSource> {
   return fetchSourceRegistration.provider(fakeContext(members, log, body)) as Computable<FileSource>;
 }
 
@@ -195,6 +223,90 @@ describe("fetch source", () => {
     expect(String(err)).to.contain("integrity check failed");
     expect(log.discarded).to.equal(1);
     expect(log.finalized).to.deep.equal([]);
+  });
+
+  it("fails the attempt (and discards) when the body drops mid-stream", async () => {
+    /* pipe() does not forward a source error; without the explicit wiring this
+     * is an unhandled 'error' event, not a rejection. */
+    const log = newLog();
+    const broken = new Readable({
+      read(): void {
+        this.destroy(new Error("connection reset mid-body"));
+      },
+    });
+    const source = await sourceFor(TABLE, log, broken);
+    const err = await Computable.resolve(undefined)
+      .then(() => source.find(Name.fromLiteral("amperize.tgz")))
+      .then(
+        () => undefined,
+        (e: Error) => e
+      );
+    expect(String(err)).to.contain("connection reset mid-body");
+    expect(log.discarded).to.equal(1);
+    expect(log.finalized).to.deep.equal([]);
+  });
+
+  describe("cache hits", () => {
+    /* The streaming digest gate only guards the commit; a hit serves stored
+     * bytes with nothing streaming past, so the declaration is re-judged
+     * against the store. */
+    const hitSource = (members: Record<string, string>, log: FetchLog, cachedBytes: string): Computable<FileSource> =>
+      fetchSourceRegistration.provider(cachedContext(members, log, cachedBytes)) as Computable<FileSource>;
+
+    it("serves a hit whose stored content matches the declared digest", async () => {
+      const log = newLog();
+      const source = await hitSource({ "amperize.tgz": `https://host/a/sha ${sri()}` }, log, BODY);
+      const files = await source.find(Name.fromLiteral("amperize.tgz"));
+      expect([...files].map(([name]) => name)).to.deep.equal(["amperize.tgz"]);
+    });
+
+    it("re-judges an edited digest against stored content — warm and cold agree", async () => {
+      const log = newLog();
+      const source = await hitSource({ "amperize.tgz": `https://host/a/sha ${sri("expected bytes")}` }, log, BODY);
+      const err = await Computable.resolve(undefined)
+        .then(() => source.find(Name.fromLiteral("amperize.tgz")))
+        .then(
+          () => undefined,
+          (e: Error) => e
+        );
+      expect(String(err)).to.contain("integrity check failed");
+    });
+
+    it("checks each member's own digest when two share a URL", async () => {
+      /* First-fetched content serves both members off one cache entry; the
+       * member whose declaration disagrees must still fail. */
+      const log = newLog();
+      const table = {
+        "good.tgz": `https://host/shared ${sri()}`,
+        "bad.tgz": `https://host/shared ${sri("other bytes")}`,
+      };
+      const source = await hitSource(table, log, BODY);
+      const good = await source.find(Name.fromLiteral("good.tgz"));
+      expect(good.isEmpty()).to.equal(false);
+      const err = await Computable.resolve(undefined)
+        .then(() => source.find(Name.fromLiteral("bad.tgz")))
+        .then(
+          () => undefined,
+          (e: Error) => e
+        );
+      expect(String(err)).to.contain("integrity check failed");
+    });
+
+    it("verifies a non-store algorithm by reading the content back", async () => {
+      const log = newLog();
+      const sha512 = `sha512-${crypto.createHash("sha512").update(BODY).digest("base64")}`;
+      const source = await hitSource({ "amperize.tgz": `https://host/a/sha ${sha512}` }, log, BODY);
+      const files = await source.find(Name.fromLiteral("amperize.tgz"));
+      expect(files.isEmpty()).to.equal(false);
+      const bad = await hitSource({ "amperize.tgz": `https://host/a/sha ${sha512}` }, newLog(), "other bytes");
+      const err = await Computable.resolve(undefined)
+        .then(() => bad.find(Name.fromLiteral("amperize.tgz")))
+        .then(
+          () => undefined,
+          (e: Error) => e
+        );
+      expect(String(err)).to.contain("integrity check failed");
+    });
   });
 
   describe("declaration errors", () => {

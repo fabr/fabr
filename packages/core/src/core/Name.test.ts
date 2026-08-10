@@ -237,6 +237,41 @@ describe("Name", () => {
       expect(name.makeProjector()("src/bar/x.ts")).to.equal("src/bar/x.ts");
     });
 
+    it("strips a literal alias containing glob punctuation", () => {
+      /* The alias path is compared against real input paths, so it must be the
+       * unescaped rendering — `(`/`)`/`!`/`|` are escaped in the matcher's
+       * glob string but literal on disk. */
+      for (const dir of ["foo(1)", "foo!bar", "a|b"]) {
+        const name = new NameBuilder()
+          .appendLiteralString(`${dir}:`)
+          .appendGlobMetachars("*")
+          .appendLiteralString(".txt")
+          .name();
+        const project = name.makeProjector();
+        expect(project(`${dir}/x.txt`), dir).to.equal("x.txt");
+        expect(project("other/x.txt"), dir).to.equal(undefined);
+      }
+    });
+
+    it("excludes a punctuation-carrying alias itself from its own globstar", () => {
+      const name = new NameBuilder().appendLiteralString("x(1):").appendGlobMetachars("**").name();
+      const project = name.makeProjector();
+      expect(project("x(1)/y.txt")).to.equal("y.txt");
+      /* `x(1):**` means the files under x(1), never x(1) itself. */
+      expect(project("x(1)")).to.equal(undefined);
+    });
+
+    it("renames under a punctuation-carrying alias without emitting the base", () => {
+      const name = new NameBuilder()
+        .appendLiteralString("x(1):")
+        .appendGlobMetachars("**")
+        .name()
+        .withRenameTo(new NameBuilder().appendLiteralString("out/").appendGlobMetachars("**").name());
+      const project = name.makeProjector();
+      expect(project("x(1)/a/b.txt")).to.equal("out/a/b.txt");
+      expect(project("x(1)")).to.equal(undefined);
+    });
+
     it("prepends the prefix onto a colon-stripped name (colon x prefix)", () => {
       const name = new NameBuilder()
         .appendLiteralString("src:")

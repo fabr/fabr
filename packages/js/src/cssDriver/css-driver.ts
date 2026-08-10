@@ -87,13 +87,14 @@ function writeOut(outdir: string, rel: string, contents: string | Uint8Array): v
  * every styled source in one run, and sass does not name the input in the error
  * it throws — so an unattributed failure leaves the reader bisecting by hand
  * (and reading whichever file the last *warning* happened to mention, which is
- * worse than nothing). Where sass reported a position, it is a position in the
- * user's own file, so keep it as-is.
+ * worse than nothing). Where sass reported a position (a sass-embedded
+ * Exception carries `span`, whose `start` line/column are 0-based), it is a
+ * position in the user's own file, rendered 1-based as `rel:line:column`.
  */
-function sassFailure(rel: string, err: unknown): Error {
-  const reported = err as { message?: string; loc?: { line?: number; column?: number } };
-  const line = reported?.loc?.line;
-  const at = line === undefined ? rel : `${rel}:${line}:${reported.loc?.column ?? 0}`;
+export function sassFailure(rel: string, err: unknown): Error {
+  const reported = err as { message?: string; span?: { start?: { line?: number; column?: number } } };
+  const start = reported?.span?.start;
+  const at = start?.line === undefined ? rel : `${rel}:${start.line + 1}:${(start.column ?? 0) + 1}`;
   return new Error(`${at}: sass: ${reported?.message ?? String(err)}`);
 }
 

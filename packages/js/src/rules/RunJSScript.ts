@@ -47,6 +47,7 @@ import {
 } from "@fabr-build/core";
 import {
   assembleNodeModules,
+  classifySourceByExt,
   compileContents,
   makeNpmRunnable,
   moduleTypeFile,
@@ -54,6 +55,12 @@ import {
   resourceFiles,
   stripPackageJson,
 } from "../JSPackage";
+
+/** The compiled entry's emitted name: tsc keeps the module flavour
+ * (`.mts`→`.mjs`, `.cts`→`.cjs`); `.ts`/`.tsx` emit `.js`. */
+export function compiledEntryName(entryName: string): string {
+  return entryName.replace(/\.(?:([cm])?ts|tsx)$/i, (_match, flavour: string | undefined) => `.${(flavour ?? "").toLowerCase()}js`);
+}
 
 function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
   /* deps/entry are built content — resolve them under build, not the run
@@ -108,9 +115,9 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
              * node_modules), then launch the entry's compiled `.js`. A root
              * package.json carries the module `type` matching JS_TARGET so node
              * runs the emitted code (ESM by default) in the right mode. */
-            if (/\.tsx?$/i.test(entryName)) {
+            if (classifySourceByExt(entryName) === "ts") {
               const jsTarget = parseJSTarget(target);
-              const launchName = entryName.replace(/\.tsx?$/i, ".js");
+              const launchName = compiledEntryName(entryName);
               /* Loose-dep runtime resources (.json, templates, assets): tsc
                * neither compiles nor emits them, so they never ride compiledTree
                * and must be carried into the install explicitly — rooted at the

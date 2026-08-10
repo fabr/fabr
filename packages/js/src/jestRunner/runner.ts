@@ -48,19 +48,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ITestResult, TestStatus } from "@fabr-build/core";
 import { buildReport, formatTestFailures, formatTestSummary, reportPathOf } from "../testRunner/Report";
-import { parseRunnerArgs } from "../testRunner/RunTests";
+import { parseRunnerArgs, TEST_TIMEOUT_MS } from "../testRunner/RunTests";
 import { assertSupportedHost, requireEnvironment } from "./Tools";
 import { describeThrown, runTestFile } from "./child";
 import type { IChildRequest, IChildResult, IChildTestResult } from "./child";
-
-/**
- * Per-test timeout handed to circus. Generous, and a safety net rather than a
- * policy: it only ever catches a genuine hang, and a test (or `jest.setTimeout`)
- * overrides it per jest's own rules. The shim flavour had to bake this in
- * because node:test takes one timeout for the whole run; circus takes it per
- * test, which is why it can simply be passed along here.
- */
-const TEST_TIMEOUT_MS = 120_000;
 
 /**
  * How long a child may run without reporting at all. A backstop against a
@@ -322,12 +313,13 @@ function toTestResults(file: ICompletedFile): ITestResult[] {
     ];
   }
   return file.result.results.map((test: IChildTestResult) => {
-    /* Circus hands back jest's FULLY formatted failure — the matcher diff, the
-     * code frame, the stack. Keeping only the first line (as a one-line-per-test
-     * summary wants) throws away the part that says what actually differed, so
-     * the summary takes the first line and the rest becomes the trace, which the
-     * report renders indented beneath it. */
-    const [summary, ...detail] = test.failureMessages.length > 0 ? withFabrRemedy(test.failureMessages[0]).split("\n") : [];
+    /* Circus hands back jest's FULLY formatted failures — one per failure, and
+     * a test can carry several (its body AND a failing hook, each with the
+     * matcher diff, the code frame, the stack), so every one is kept, blank-line
+     * separated as jest prints them. The summary takes the first line and the
+     * rest becomes the trace, which the report renders indented beneath it. */
+    const [summary, ...detail] =
+      test.failureMessages.length > 0 ? test.failureMessages.map(withFabrRemedy).join("\n\n").split("\n") : [];
     return {
       name: test.fullName,
       filePath: relative,

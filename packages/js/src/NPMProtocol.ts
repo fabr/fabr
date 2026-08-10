@@ -222,10 +222,6 @@ export function tarballBasename(name: string, version: string): string {
   return `${name}-${version}.tgz`;
 }
 
-/** SRI algorithms fabr will verify against, strongest first — sha1 is accepted
- * only via the legacy `dist.shasum`, never as an SRI entry. */
-
-
 /** The digest a registry's `dist` metadata promises for a tarball: the strongest
  * SRI in `dist.integrity` (base64), else the legacy sha1 `dist.shasum` (hex).
  * Undefined when `dist` carries neither — nothing to verify against. */

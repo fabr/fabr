@@ -97,20 +97,6 @@ export function edgeBinding<V, C>(
 }
 
 /**
- * {@link edgeBinding} as a (0- or 1-element) list, for callers that iterate a
- * requirement's targets — reachability follows exactly what layout mounts, so
- * the two cannot disagree about what a delivery contains.
- */
-export function edgeTargets<V, C>(
-  domain: VersionDomain<V, C>,
-  selections: readonly Selected<V>[],
-  req: Requirement
-): Selected<V>[] {
-  const bound = edgeBinding(domain, selections, req);
-  return bound ? [bound] : [];
-}
-
-/**
  * Reader over a resolution's provenance edges: node identity, lookup by it,
  * and the requirement path back to a root. Every "why is this here / why this
  * version" answer is one of these, so provenance rendering and a delivery's

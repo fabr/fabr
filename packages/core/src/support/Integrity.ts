@@ -34,6 +34,10 @@ export interface ExpectedDigest {
   readonly algorithm: string;
   readonly encoding: "base64" | "hex";
   readonly value: string;
+  /** Further acceptable digests of the same algorithm — SRI allows several
+   *  entries per algorithm, and content matching ANY of them passes (a value
+   *  covering more than one published variant of a resource). */
+  readonly alternates?: readonly string[];
 }
 
 /** True for a token shaped like an SRI digest. Distinguishes an integrity value
@@ -52,9 +56,17 @@ export function isIntegrity(value: string): boolean {
 export function parseIntegrity(integrity: string): ExpectedDigest | undefined {
   const entries = integrity.trim().split(/\s+/);
   for (const algorithm of SRI_ALGORITHMS) {
-    const match = entries.find(entry => entry.startsWith(`${algorithm}-`));
-    if (match) {
-      return { algorithm, encoding: "base64", value: match.slice(algorithm.length + 1) };
+    /* Every entry of the strongest stated algorithm (content matching any one
+     * passes), each with its optional `?options` suffix stripped — the spec's
+     * `<alg>-<base64>?<options>` form; no options are defined, so they are
+     * ignored. */
+    const values = entries
+      .filter(entry => entry.startsWith(`${algorithm}-`))
+      .map(entry => entry.slice(algorithm.length + 1).replace(/\?.*$/, ""));
+    if (values.length > 0) {
+      /* `alternates` only when present: the common one-digest shape stays a
+       * three-field record (deep-equality consumers see no phantom field). */
+      return { algorithm, encoding: "base64", value: values[0], ...(values.length > 1 ? { alternates: values.slice(1) } : {}) };
     }
   }
   return undefined;
@@ -83,8 +95,9 @@ export function verifyingStream(expected: ExpectedDigest | undefined, resource: 
       return;
     }
     const actual = hash.digest(expected.encoding);
-    if (actual !== expected.value) {
-      throw new IntegrityError(resource, expected.algorithm, expected.value, actual);
+    const acceptable = [expected.value, ...(expected.alternates ?? [])];
+    if (!acceptable.includes(actual)) {
+      throw new IntegrityError(resource, expected.algorithm, acceptable.join(" | "), actual);
     }
   };
   return { hashing, verify };

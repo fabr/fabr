@@ -217,8 +217,8 @@ incompatible versions of one package — the conflict is resolved with a one-cha
 **exact** version, written wherever the dependency is:
 
 ```
-deps = @npm:aws-param-store-sdkv3:4.0.0,
-       @npm:tslib:2.6.2?, @npm:tslib:1.14.1?,   # both versions may ship: 1.14.1 nests where required
+deps = @npm:aws-param-store-sdkv3:4.0.0
+       @npm:tslib:2.6.2? @npm:tslib:1.14.1?     # both versions may ship: 1.14.1 nests where required
        @npm:tight-peer:2.0.0!;                  # forced: everyone gets this version
 ```
 
@@ -228,7 +228,7 @@ deps = @npm:aws-param-store-sdkv3:4.0.0,
   is not a dependency — it demands nothing and delivers nothing directly — and it matches exactly:
   if either side of the conflict moves to a different version, the build errors again and tells
   you which marker to update. In a `catalog`, an ordinary exact pin of the canonical counts as its
-  half of the sanction (`deps = @npm:tslib:2.6.2, @npm:tslib:1.14.1?;`). A `?` also **supplies**
+  half of the sanction (`deps = @npm:tslib:2.6.2 @npm:tslib:1.14.1?;`). A `?` also **supplies**
   the version for a package that is required only with unbounded ranges (`@types/node: "*"` and
   friends), where no version is otherwise selectable — again without becoming a dependency.
 - `!` **forces a version**: every requirement on the package, from any dependency, is replaced by

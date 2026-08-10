@@ -770,9 +770,10 @@ export class BuildCache {
         continue;
       }
       /* The mime rides after the name (names are encodeURI'd, so the name can
-       * never eat it) — appending keeps the line forward-readable: a parser
-       * destructuring the first three fields still reads old-format entries'
-       * shape, and vice versa an older fabr ignores the trailing field. */
+       * never eat it). parseManifest requires the field, so an old-format
+       * (mime-less) entry re-reads as malformed — a miss — and rebuilds: the
+       * intended behavior for a manifest format change (the format-change
+       * equivalent of a tag bump). */
       manifest += `${file.hash} ${file.mode.toString(8)} ${encodeURI(name)} ${file.mime}\n`;
       backed.set(name, new BuildFile(this.blobRoot, file.hash, name, file.mode, file.mime));
     }

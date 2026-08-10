@@ -210,7 +210,11 @@ describe("SourceFileSource", () => {
       const src = watched().src;
       await src.applyWriteBack([candidate("recorded", path.join(sourceRoot, "src/__snapshots__/a.snap"))]);
       expect(src["isExpectedChange"]("src/__snapshots__"), "the directory it created").to.equal(true);
-      expect(src["isExpectedChange"](`src/__snapshots__/a.snap.fabr-writeback-${process.pid}`), "the temp sibling").to.equal(true);
+      /* The temp name is the writer's own (pid + counter) — learn it from the
+       * record rather than reconstructing it. */
+      const temp = [...src["expected"].keys()].find(name => name.startsWith("src/__snapshots__/a.snap.fabr-writeback-"));
+      expect(temp, "the temp sibling is recorded").to.not.equal(undefined);
+      expect(src["isExpectedChange"](temp!), "the temp sibling").to.equal(true);
     });
 
     it("refutes the expectation and arms when the file turns out to hold something else", async () => {
@@ -248,7 +252,12 @@ describe("SourceFileSource", () => {
     it("still owns the temp sibling's disappearance (the rename consumes it)", async () => {
       const src = watched().src;
       await src.applyWriteBack([candidate("recorded", path.join(sourceRoot, "a.snap"))]);
-      expect(src["isExpectedChange"](`a.snap.fabr-writeback-${process.pid}`, true)).to.equal(true);
+      /* The temp name is the writer's own business (pid + counter); ownership
+       * rides on what the write ANNOUNCED, so learn the name from the record
+       * rather than reconstructing it. */
+      const temp = [...src["expected"].keys()].find(name => name.startsWith("a.snap.fabr-writeback-"));
+      expect(temp, "the temp sibling is recorded").to.not.equal(undefined);
+      expect(src["isExpectedChange"](temp!, true)).to.equal(true);
     });
 
     it("refutes a directory removal covering written-back content", async () => {

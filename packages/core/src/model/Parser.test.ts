@@ -489,6 +489,15 @@ describe("Parser Tests", () => {
     expect(errors[0]).to.match(/cannot be both REQUIRED and have a default/);
   });
 
+  it("rejects 'default' written before the type keyword, positioned at the property", () => {
+    /* The clause parses clean (values and ';' consumed), so the parse recovers
+     * and the following property still loads — one error, at the mistake, not
+     * a generic unexpected-token report at whatever follows the clause. */
+    const errors = parseInvalid("targetdef t { srcs = default a.ts; other = STRING; }");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.match(/'srcs' declares 'default' before its type/);
+  });
+
   it("rejects a default on the '*' wildcard", () => {
     /* The wildcard types only keys that ARE written, so there is no unwritten
      * property for a default to supply — rejected, not silently ignored. */

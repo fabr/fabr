@@ -19,7 +19,7 @@
 
 import { expect } from "chai";
 import { IFile, MemoryFile, PackageFileSet, RewriteFn } from "@fabr-build/core";
-import { buildBundleOptions, computeBundleEntries, computeExternalNames, IBundleEntrySource } from "./JSBundle";
+import { buildBundleOptions, compiledName, computeBundleEntries, computeExternalNames, IBundleEntrySource } from "./JSBundle";
 import { parseJSTarget } from "./JSPackage";
 
 /** A package with a single index.js and the given (already-built) deps. */
@@ -85,9 +85,49 @@ describe("computeBundleEntries", () => {
     ]);
   });
 
-  it("rejects an output that does not end in .js", () => {
+  it("defaults every compiled/linked entry spelling to a .js bundle name", () => {
+    /* The staged path keeps the compile's module flavour (.mts → .mjs); the
+     * OUTPUT is a fresh bundle, always .js. */
+    const entries: IBundleEntrySource[] = [
+      { path: "src/app.js", name: "src/app.jsx" },
+      { path: "src/main.mjs", name: "src/main.mts" },
+      { path: "src/task.cjs", name: "src/task.cts" },
+      { path: "src/util.mjs", name: "src/util.mjs" },
+      { path: "src/legacy.cjs", name: "src/legacy.cjs" },
+    ];
+    expect(computeBundleEntries(entries, noRewrite)).to.deep.equal([
+      { in: "src/app.js", out: "src/app" },
+      { in: "src/main.mjs", out: "src/main" },
+      { in: "src/task.cjs", out: "src/task" },
+      { in: "src/util.mjs", out: "src/util" },
+      { in: "src/legacy.cjs", out: "src/legacy" },
+    ]);
+  });
+
+  it("rejects an output that does not end in .js, naming the 'output' rewrite escape hatch", () => {
     const toCss: RewriteFn = () => "out.css";
-    expect(() => computeBundleEntries([source("src/index.ts")], toCss)).to.throw(/must end in '.js'/);
+    expect(() => computeBundleEntries([source("src/index.ts")], toCss)).to.throw(/must end in '.js'.*'output' rewrite/);
+    /* A genuinely non-JS entry gets the same actionable message, not a bare
+     * complaint about its own extension. */
+    expect(() => computeBundleEntries([{ path: "logo.svg", name: "logo.svg" }], noRewrite)).to.throw(/'output' rewrite/);
+  });
+});
+
+describe("compiledName", () => {
+  it("maps compile inputs and module-flavoured JS to .js", () => {
+    expect(compiledName("a/x.ts")).to.equal("a/x.js");
+    expect(compiledName("a/x.tsx")).to.equal("a/x.js");
+    expect(compiledName("a/x.jsx")).to.equal("a/x.js");
+    expect(compiledName("a/x.mts")).to.equal("a/x.js");
+    expect(compiledName("a/x.cts")).to.equal("a/x.js");
+    expect(compiledName("a/x.mjs")).to.equal("a/x.js");
+    expect(compiledName("a/x.cjs")).to.equal("a/x.js");
+  });
+  it("leaves .js and non-JS names alone", () => {
+    expect(compiledName("a/x.js")).to.equal("a/x.js");
+    expect(compiledName("logo.svg")).to.equal("logo.svg");
+    /* Extension-only, never a substring match. */
+    expect(compiledName("a/x.mts.txt")).to.equal("a/x.mts.txt");
   });
 });
 

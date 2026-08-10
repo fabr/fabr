@@ -21,12 +21,17 @@ import { expect } from "chai";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Computable } from "./Computable";
 import { FileSet, IFile } from "./FileSet";
 import { FSFileSource } from "./FSFileSource";
 import { MemoryFile } from "./MemoryFS";
 import { parseName } from "../model/Parser";
 import { locateSource } from "./Provenance";
-import { IWriteBackCandidate, WriteBackFileSet, writeBackCandidates } from "./WriteBack";
+import { IWriteBackCandidate, IWriteBackObserver, WriteBackFileSet, writeBackCandidates, writeBackFile } from "./WriteBack";
+
+function toPromise<T>(computable: Computable<T>): Promise<T> {
+  return new Promise((resolve, reject) => computable.then(resolve, reject));
+}
 
 /** A fresh project directory per test, cleaned up after it. */
 let dir = "";
@@ -81,5 +86,35 @@ describe("writeBackCandidates", () => {
     const plain = new FileSet(new Map<string, IFile>());
     expect(writeBackCandidates([carrier, plain])).to.deep.equal([offered]);
     expect(writeBackCandidates([plain])).to.deep.equal([]);
+  });
+});
+
+describe("writeBackFile", () => {
+  function observed(): { observer: IWriteBackObserver; touched: string[] } {
+    const touched: string[] = [];
+    return { observer: { content: () => undefined, touches: p => touched.push(p) }, touched };
+  }
+
+  it("writes the candidate's bytes at the destination via a temp sibling", async () => {
+    const { observer } = observed();
+    const destination = path.join(dir, "sub", "a.snap");
+    const written = await toPromise(writeBackFile({ file: MemoryFile.from("fresh"), destination }, fs.realpathSync(dir), observer));
+    expect(written).to.equal(destination);
+    expect(fs.readFileSync(destination, "utf8")).to.equal("fresh");
+  });
+
+  it("gives writes to one destination distinct temp siblings", async () => {
+    /* Two candidates in one batch may resolve to the same destination, so the
+     * temp name must be unique per write, not just per process. */
+    const { observer, touched } = observed();
+    const destination = path.join(dir, "a.snap");
+    const root = fs.realpathSync(dir);
+    await Promise.all([
+      toPromise(writeBackFile({ file: MemoryFile.from("one"), destination }, root, observer)),
+      toPromise(writeBackFile({ file: MemoryFile.from("two"), destination }, root, observer)),
+    ]);
+    const temps = touched.filter(name => name.startsWith(`${destination}.fabr-writeback-`));
+    expect(temps).to.have.lengthOf(2);
+    expect(new Set(temps).size).to.equal(2);
   });
 });
