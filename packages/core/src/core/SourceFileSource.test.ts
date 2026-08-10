@@ -21,9 +21,12 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { BuildCache } from "./BuildCache";
+import { WatchController } from "./WatchController";
 import { ComputableSource } from "./Computable";
 import { hashString } from "./FSWrapper";
+import { MemoryFile } from "./MemoryFS";
 import { SourceFileSource } from "./SourceFileSource";
+import { IResolvedWriteBack } from "./WriteBack";
 import { expect } from "chai";
 
 function toPromise<T>(computable: ComputableSource<T>): Promise<T> {
@@ -114,5 +117,148 @@ describe("SourceFileSource", () => {
      * those bytes — so the manifest key can never disagree with what is staged. */
     expect((await toPromise(file.getBuffer())).toString()).to.equal("v1");
     expect(file.hash).to.equal(hashV1);
+  });
+  describe("applyWriteBack", () => {
+    /** A source rooted at the project directory — the write goes through the object
+     * that owns the tree, which is what lets it recognize its own echo. */
+    const src = (root: string): SourceFileSource => new SourceFileSource(root, cache);
+    const candidate = (content: string, destination: string): IResolvedWriteBack => ({ file: MemoryFile.from(content), destination });
+  
+    /* Nothing here asks whether the bytes differ: an unchanged record is never
+     * offered in the first place (see snapshotWriteBacks), so every candidate
+     * reaching a source is a real change. */
+    it("writes a candidate and reports where it landed", async () => {
+      const dest = path.join(sourceRoot, "a.snap");
+      fs.writeFileSync(dest, "old");
+      expect(await src(sourceRoot).applyWriteBack([candidate("new", dest)])).to.deep.equal([dest]);
+      expect(fs.readFileSync(dest, "utf8")).to.equal("new");
+    });
+  
+    it("creates a record that did not exist, directory and all", async () => {
+      const dest = path.join(sourceRoot, "src/__snapshots__/a.snap");
+      await src(sourceRoot).applyWriteBack([candidate("fresh", dest)]);
+      expect(fs.readFileSync(dest, "utf8")).to.equal("fresh");
+    });
+  
+    it("replaces the file rather than writing through it", async () => {
+      /* A destination may be hardlinked into the content store (it was staged as
+       * an input), and writing through the link would corrupt the shared blob.
+       * Replacement leaves the other link — here, a stand-in for the blob —
+       * holding the original bytes. */
+      const dest = path.join(sourceRoot, "a.snap");
+      const blob = path.join(sourceRoot, "blob");
+      fs.writeFileSync(blob, "old");
+      fs.linkSync(blob, dest);
+      await src(sourceRoot).applyWriteBack([candidate("new", dest)]);
+      expect(fs.readFileSync(dest, "utf8")).to.equal("new");
+      expect(fs.readFileSync(blob, "utf8")).to.equal("old");
+    });
+  
+    it("refuses a destination outside the project", async () => {
+      const project = path.join(sourceRoot, "project");
+      fs.mkdirSync(project);
+      const outside = path.join(sourceRoot, "escaped.snap");
+      /* Refused before any I/O, so this throws rather than rejecting. */
+      let refusal: Error | undefined;
+      try {
+        await src(project).applyWriteBack([candidate("x", outside)]);
+      } catch (err) {
+        refusal = err as Error;
+      }
+      expect(refusal?.message).to.contain("outside the project directory");
+      expect(fs.existsSync(outside)).to.equal(false);
+    });
+  });
+
+  describe("its own writes, under watch", () => {
+    /** A source whose `armFlush` is observable — the one thing a refuted
+     * expectation does. */
+    const watched = (): { src: SourceFileSource; arms: number } => {
+      const controller = new WatchController(10);
+      let arms = 0;
+      controller.armFlush = (): void => {
+        arms += 1;
+      };
+      return { src: new SourceFileSource(sourceRoot, cache, controller), get arms() { return arms; } };
+    };
+
+    const candidate = (content: string, destination: string): IResolvedWriteBack => ({ file: MemoryFile.from(content), destination });
+
+    it("treats a write-back's own destination as expected, so it arms nothing", async () => {
+      /* Not destructured: `arms` is a live count, and pulling it out here would
+       * read it before anything had happened. */
+      const w = watched();
+      const src = w.src;
+      const dest = path.join(sourceRoot, "a.snap");
+      await src.applyWriteBack([candidate("recorded", dest)]);
+      /* The watch event for this path must not become a rebuild — its only
+       * outcome would be to write the identical bytes again. */
+      expect(src["isExpectedChange"]("a.snap")).to.equal(true);
+      /* Re-reading confirms the content, leaving the expectation standing (a
+       * filesystem may report the same change twice). `ingest` directly rather
+       * than `get`: it is where the hash is computed and so where confirmation
+       * happens, and it does not register a live query. */
+      await toPromise(src.ingest("a.snap"));
+      expect(src["isExpectedChange"]("a.snap")).to.equal(true);
+      expect(w.arms).to.equal(0);
+    });
+
+    it("expects the paths a write only incidentally disturbs", async () => {
+      /* A write is not one event: it renames from a temp sibling and may have
+       * had to create the directory. Recognizing only the destination would
+       * leave the other two arming a rebuild. */
+      const src = watched().src;
+      await src.applyWriteBack([candidate("recorded", path.join(sourceRoot, "src/__snapshots__/a.snap"))]);
+      expect(src["isExpectedChange"]("src/__snapshots__"), "the directory it created").to.equal(true);
+      expect(src["isExpectedChange"](`src/__snapshots__/a.snap.fabr-writeback-${process.pid}`), "the temp sibling").to.equal(true);
+    });
+
+    it("refutes the expectation and arms when the file turns out to hold something else", async () => {
+      /* Somebody edited the record between the write and the event. The change
+       * was recorded as dirty by the deferred notify; this is what gives it a
+       * reason to be applied. */
+      const w = watched();
+      const src = w.src;
+      const dest = path.join(sourceRoot, "a.snap");
+      await src.applyWriteBack([candidate("recorded", dest)]);
+      fs.writeFileSync(dest, "edited by hand");
+      await toPromise(src.ingest("a.snap"));
+      expect(src["isExpectedChange"]("a.snap")).to.equal(false);
+      expect(w.arms).to.equal(1);
+    });
+
+    it("leaves a path it never wrote alone", async () => {
+      const src = watched().src;
+      expect(src["isExpectedChange"]("untouched.txt")).to.equal(false);
+    });
+
+    it("treats DELETING a written-back file as somebody else's change", async () => {
+      /* The confirm-by-content backstop lives in ingest, which never runs for
+       * a removal (there is nothing left to read) — so the judgment itself
+       * must refute, or the deletion is deferred forever and no rebuild picks
+       * it up until an unrelated edit. */
+      const src = watched().src;
+      const dest = path.join(sourceRoot, "a.snap");
+      await src.applyWriteBack([candidate("recorded", dest)]);
+      expect(src["isExpectedChange"]("a.snap", true), "the removal is not ours").to.equal(false);
+      /* And the stale expectation is dropped, so a recreation is judged afresh. */
+      expect(src["isExpectedChange"]("a.snap")).to.equal(false);
+    });
+
+    it("still owns the temp sibling's disappearance (the rename consumes it)", async () => {
+      const src = watched().src;
+      await src.applyWriteBack([candidate("recorded", path.join(sourceRoot, "a.snap"))]);
+      expect(src["isExpectedChange"](`a.snap.fabr-writeback-${process.pid}`, true)).to.equal(true);
+    });
+
+    it("refutes a directory removal covering written-back content", async () => {
+      /* `rm -rf __snapshots__` is ONE delete event naming the directory, with
+       * no per-child deletes — the subtree scan is what catches the records
+       * beneath it. */
+      const src = watched().src;
+      await src.applyWriteBack([candidate("recorded", path.join(sourceRoot, "src/__snapshots__/a.snap"))]);
+      expect(src["isExpectedChange"]("src/__snapshots__", true)).to.equal(false);
+      expect(src["isExpectedChange"]("src/__snapshots__/a.snap")).to.equal(false);
+    });
   });
 });

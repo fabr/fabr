@@ -55,6 +55,9 @@ import {
   FSFileSource,
   writeFileSet,
   Constraints,
+  IResolvedWriteBack,
+  locateSource,
+  writeBackCandidates,
 } from "@fabr-build/core";
 import { DiagnosticErrorFormatter, ErrorFormatter } from "./ErrorFormatter";
 import { runInteractive, RunSupervisor } from "./RunHandler";
@@ -78,6 +81,20 @@ const DIAG_UNHANDLED = Diagnostic.Warn<{ message: string }>("Unhandled error: {m
 const DIAG_RESOLVING = Diagnostic.Info<{ requirements: string; name: string }>("Resolving {requirements} from {name}");
 const DIAG_FETCHING = Diagnostic.Info<{ resource: string; url: string }>("Fetching {resource}{url}");
 const DIAG_COPIED = Diagnostic.Info<{ count: number; dest: string }>("Copied {count} file(s) to {dest}");
+const DIAG_EXPECTATION_UPDATED = Diagnostic.Info<{ file: string }>("Updated {file}");
+/* A refreshed record with nowhere to go. Warned rather than passed over: the run
+ * is green and reports no update, so without this the next `check` run fails on
+ * the same stale record with nothing to say why `-u` did not help. */
+const DIAG_EXPECTATION_UNPLACEABLE = Diagnostic.Warn<{ test: string }>(
+  "Refreshed the recorded expectation for {test}, but it is not a source-tree file — there is nowhere to write it back to"
+);
+/* Two targets offered DIFFERENT refreshed content for one destination (their
+ * runs genuinely disagree — e.g. environment-dependent output). First offer
+ * wins; warned because silently picking one would make the loser's next check
+ * run fail with nothing to say why updating didn't help. */
+const DIAG_EXPECTATION_CONFLICT = Diagnostic.Warn<{ file: string }>(
+  "Conflicting updates for {file} from different test runs; keeping the first"
+);
 
 /** Progress verbs for the well-known operations; anything else renders as
  * "Running <operation> on <target>" */
@@ -196,7 +213,7 @@ export function runFabr(options: Options): Promise<void> {
         Computable.forAll(resolveNames(model, options, execution, site), (...results) => copyTarget(options, execution, results))
       );
     case "test":
-      return runWith(options, (model, execution) => testOperation(model, options, execution, options.targets), watch);
+      return runWith(options, (model, execution, site) => testOperation(model, options, execution, site, options.targets), watch);
     case "run":
       return runWith(options, (model, execution, site) => runProgram(model, options, execution, site, watch), watch);
     case "shell":
@@ -227,15 +244,92 @@ function buildOperation(model: BuildModel, options: Options, execution: Executio
 }
 
 /** `fabr test <targets>`: build each target's tests, run them, and report. */
-function testOperation(model: BuildModel, options: Options, execution: ExecutionContext, names: string[]): Computable<void> {
+function testOperation(
+  model: BuildModel,
+  options: Options,
+  execution: ExecutionContext,
+  site: IInvocationSite,
+  names: string[]
+): Computable<void> {
   const targets = buildTargets(model, options, execution, "test", names);
   /* Reporting lives in the forAll callback (not a trailing .then) so it
    * re-runs on every watch cycle: the callback is re-invoked whenever a
    * target re-settles to a new value, whereas a `.then` on the void result
    * would be short-circuited by the value-equality cutoff. */
   return Computable.forAll(targets, (...results) =>
-    reportTestResults(execution.log, names, results).then(() => buildStatus(execution))
+    reportTestResults(execution.log, names, results)
+      .then(() => applyExpectationUpdates(execution, site, results))
+      .then(() => buildStatus(execution))
   );
+}
+
+/**
+ * Write refreshed test expectations (snapshots) back into the source tree.
+ *
+ * The gate is the CANDIDATES' existence, not a re-read of any flag: a check
+ * run offers none by construction (its outputs never collect the records), so
+ * candidates exist exactly when the effective `TEST_EXPECTATIONS` was
+ * `update` — however it was spelled (`-u`, `-D`, or a declared global in the
+ * build file; the pipeline reads the model's value, so re-checking only the
+ * CLI's spelling here would silently discard a declared update's offers). The
+ * write still happens here, in the driver, after the build has settled green
+ * — nothing inside the build graph may touch the user's tree.
+ */
+function applyExpectationUpdates(execution: ExecutionContext, site: IInvocationSite, results: SourceRef[][]): Computable<void> {
+  /* Resolving each candidate's input to a place on disk is the driver's half of
+   * the arrangement: the rule offered content named relative to an input it
+   * belongs beside, which is all a rule can honestly know. An input with no
+   * source-tree location (a generated test) is where the offer runs out — said
+   * out loud, because the run is green and reports no update, so silence would
+   * leave the next `check` run failing on the same stale record with nothing to
+   * explain why `-u` did not help. */
+  const writes = new Map<string, IResolvedWriteBack>();
+  for (const { files, belongsTo, origin } of results.flatMap(sources => writeBackCandidates(sources))) {
+    /* The offer names its content in the inputs' own namespace and says, as one
+     * rename projection, how such a name names the input it belongs to. Applying
+     * it and locating that input is all the driver does — it needs no notion of
+     * what the content IS. */
+    const belongs = belongsTo.makeProjector();
+    for (const [name, file] of files) {
+      const input = belongs(name);
+      if (input === undefined) {
+        /* The offer's own rewrite does not name this file's input — a rule
+         * contradicting itself, so say which file rather than swallow it. */
+        execution.log.log(DIAG_EXPECTATION_UNPLACEABLE, { test: name });
+        continue;
+      }
+      const source = locateSource(origin, input);
+      if (source === undefined) {
+        execution.log.log(DIAG_EXPECTATION_UNPLACEABLE, { test: input });
+        continue;
+      }
+      /* The file's own name relative to the input's directory is where it goes,
+       * so a record lands beside the test exactly as it sits beside it here.
+       * Deduplicated by destination: two targets covering the same tree (a
+       * js_test beside a js_package) each offer the same record, and parallel
+       * writes to one path would collide on the temp sibling. Identical
+       * content collapses silently; divergent content is a real conflict. */
+      const destination = path.join(path.dirname(source), path.relative(path.dirname(input), name));
+      const existing = writes.get(destination);
+      if (existing === undefined) {
+        writes.set(destination, { file, destination });
+      } else if (existing.file.hash !== file.hash) {
+        execution.log.log(DIAG_EXPECTATION_CONFLICT, { file: path.relative(site.sourceFileSource.root, destination) });
+      }
+    }
+  }
+  if (writes.size === 0) {
+    return Computable.resolve(undefined);
+  }
+  /* Written through the SOURCE, not straight to the filesystem: it owns the
+   * tree, so it is the only thing that can recognize the resulting watch event
+   * as its own and keep the write from rebuilding the very target that produced
+   * it. The decision is still made here — only after a green build. */
+  return site.sourceFileSource.applyWriteBack([...writes.values()]).then((written: string[]) => {
+    for (const destination of written) {
+      execution.log.log(DIAG_EXPECTATION_UPDATED, { file: path.relative(site.sourceFileSource.root, destination) });
+    }
+  });
 }
 
 /**
@@ -262,7 +356,7 @@ function runInferred(
     groups.push(buildOperation(model, options, execution, plan.build));
   }
   if (plan.test.length > 0) {
-    groups.push(testOperation(model, options, execution, plan.test));
+    groups.push(testOperation(model, options, execution, site, plan.test));
   }
   const run = plan.run;
   if (!run) {

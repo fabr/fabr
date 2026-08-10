@@ -112,13 +112,33 @@ export class WatchController {
     this.onError(err);
   }
 
-  /** Note that a watched entry changed, (re)starting the quiet-window timer. */
-  public notifyChanged(entry: WatchEntry): void {
+  /**
+   * Note that a watched entry changed, (re)starting the quiet-window timer.
+   *
+   * With `defer`, the entry is recorded as dirty but the timer is NOT armed:
+   * the change will be applied by whatever flush happens next, and causes none
+   * of its own. This is for a change fabr itself made and already knows the
+   * outcome of — a written-back test expectation — where rebuilding *because of
+   * it* would only reproduce the bytes just written.
+   */
+  public notifyChanged(entry: WatchEntry, options?: { defer?: boolean }): void {
     if (this.closed) {
       return;
     }
     this.dirty.add(entry);
-    this.scheduleFlush();
+    if (!options?.defer) {
+      this.scheduleFlush();
+    }
+  }
+
+  /** Arm the quiet window for changes already recorded — how a deferred entry
+   * (see {@link notifyChanged}) becomes a rebuild when it turns out not to have
+   * been ours after all. No-op with nothing dirty: a flush of an empty batch
+   * would advance the build cycle and re-announce for no work. */
+  public armFlush(): void {
+    if (!this.closed && this.dirty.size > 0) {
+      this.scheduleFlush();
+    }
   }
 
   /** (Re)arm the quiet-window timer for a flush. */

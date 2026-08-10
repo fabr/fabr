@@ -18,14 +18,24 @@
  */
 
 import { expect } from "chai";
-import { EMPTY_FILESET, FileSet, INameValue } from "@fabr-build/core";
+import { Computable, EMPTY_FILESET, FileSet, INameValue, WritableSourceTree } from "@fabr-build/core";
 import { CommandLineSource, IInvocationSite } from "./CommandLineSource";
 
 const ABS_FILES = new FileSet(new Map());
 
+/** An empty source tree. Only its read half is exercised here — a name's
+ * location is the whole subject — so the write half stands in as a no-op rather
+ * than dragging a real cache and temp directory into a span-arithmetic test. */
+const SOURCE_TREE: WritableSourceTree = {
+  find: (name, prefix) => EMPTY_FILESET.find(name, prefix),
+  get: name => EMPTY_FILESET.get(name),
+  root: "/project",
+  applyWriteBack: () => Computable.resolve([]),
+};
+
 /** An invocation run in `invocationDir` of a project whose source tree is empty. */
 function siteAt(invocationDir: string): IInvocationSite {
-  return { sourceFileSource: EMPTY_FILESET, absFileSource: ABS_FILES, invocationDir };
+  return { sourceFileSource: SOURCE_TREE, absFileSource: ABS_FILES, invocationDir };
 }
 
 /** Where the decl says it is: file, and the excerpt its span covers. */
@@ -69,7 +79,9 @@ describe("CommandLineSource", () => {
     const source = new CommandLineSource(["ls", "./a.txt"]);
     const decl = source.refFor("./a.txt", siteAt("packages/js"));
     expect(decl.source.file).to.equal("packages/js/<command-line>");
-    expect(decl.source.fs).to.equal(EMPTY_FILESET);
+    /* Read through the SOURCE tree, not the absolute one — that pairing is what
+     * makes a relative name mean what it means in a build file. */
+    expect(decl.source.fs).to.equal(SOURCE_TREE);
   });
 
   it("reads an absolute name through the absolute file source, rooted nowhere", () => {

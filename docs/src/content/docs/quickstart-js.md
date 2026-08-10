@@ -135,6 +135,26 @@ describe("greet", () => {
 });
 ```
 
+### Running a jest-flavoured suite
+
+If your tests are written against jest, select the jest-compatibility runner — the same fabr
+runner with a jest environment layered on — and declare the globals' types:
+
+```
+JS_TEST_RUNNER = @fabr-build/js-tools/jest-runner;   # or per target: test_runner = …;
+
+js_package mylib {
+  srcs = src:**/*.ts src:**/__snapshots__/*.snap;
+  tests = src:**/*.test.ts;
+  test_deps = @pkg:@types/jest @pkg:jsdom;           # jsdom only if your tests need a DOM
+}
+```
+
+`jest.mock`, `jest.fn`, `expect`, `.each`, fake timers and snapshots all work, using jest's own
+libraries. Snapshot files are ordinary sources, so list them in `srcs` (above); `fabr test -u`
+refreshes them and writes them back. See [known limitations](/known-limitations/) for what the
+layer does not cover yet.
+
 Run them:
 
 ```sh

@@ -18,6 +18,7 @@
  */
 
 import { readFileSync } from "fs";
+import { TEST_EXPECTATIONS, UPDATE_EXPECTATIONS } from "@fabr-build/core";
 import { CommandLineSource } from "./CommandLineSource";
 import { dirname, join } from "path";
 
@@ -78,7 +79,7 @@ interface CommandSpec {
 
 const COMMAND_SPECS: CommandSpec[] = [
   { name: "build", synopsis: "[-w] <targets>", summary: "Build the given targets (the default command)", accepts: ["-w", "-q"] },
-  { name: "test", synopsis: "[-w] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-q"] },
+  { name: "test", synopsis: "[-w] [-u] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "-q"] },
   { name: "run", synopsis: "[-w] <target> [args…]", summary: "Execute a target, forwarding trailing args to it", accepts: ["-w", "-q"] },
   { name: "shell", synopsis: "<target>", summary: "Stage a target's build sandbox and open a shell in it (debugging)", accepts: ["-q"], singleTarget: true },
   { name: "ls", synopsis: "[-l] <names>", summary: "Build the given targets and list their contents", accepts: ["-l", "-q"] },
@@ -214,6 +215,7 @@ function printUsage(write: (message: string) => void = console.log): void {
       "\n\nOptions:\n" +
       "  -DPROP=VALUE      Force the given property PROP to VALUE (before the target for run)\n" +
       "  -w                Watch mode: rebuild / re-run as inputs change (build/test/run)\n" +
+      "  -u, --update      Update recorded test expectations (snapshots) from the run (test)\n" +
       "  -l                Long listing: hash and size per file (ls), or source location (list-*)\n" +
       "  --json            Emit JSON (the list-* verbs)\n" +
       "  --all             Include system-contributed targets (list-targets)\n" +
@@ -255,6 +257,12 @@ function applyOption(arg: string, options: Options, seenFlags: SeenFlag[]): void
   } else if (arg === "--all") {
     options.all = true;
     seenFlags.push({ raw: arg, flag: "--all" });
+  } else if (arg === "-u" || arg === "--update") {
+    /* Sugar for the -D pathway: update mode IS a build input (a check run and
+     * an update run are different builds and must not share a cache entry), so
+     * it rides the ordinary constraint rather than a side channel. */
+    options.properties.set(TEST_EXPECTATIONS, UPDATE_EXPECTATIONS);
+    seenFlags.push({ raw: arg, flag: "-u" });
   } else if (arg === "-q" || arg === "--quiet") {
     options.quiet = true;
     seenFlags.push({ raw: arg, flag: "-q" });

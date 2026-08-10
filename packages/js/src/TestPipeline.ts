@@ -23,45 +23,48 @@
  * runnable installation, and run the runner over the compiled test files,
  * reporting through the test report contract defined by @fabr-build/core.
  *
- * The runner resolves as the JS_TEST_RUNNER runnable — fabr's own by default
- * (`@fabr-build/js-tools/test-runner`, declared in JS.fabr over the compiled
- * runtime shipped in this installation) — and is executed standalone inside
- * the test working directory. A replacement must honor the runner contract:
- * invoked in the staged install as `<runner> --report=<file> <test files...>`,
- * red exit status on failure, report written as CTRF.
+ * The runner is the target's `test_runner` (defaulting to the `JS_TEST_RUNNER`
+ * global — fabr's own runner, or the jest-compatibility flavour), executed
+ * standalone inside the test working directory. The runner contract:
+ *
+ *     <runner> --report=<file> --env=<node|jsdom> [--update-snapshots]
+ *              [--setup=<module|./staged path>]… <test files…>
+ *
+ * red exit status on failure, report written as CTRF. `--env` names the
+ * environment the tests are compiled for; `--update-snapshots` asks the runner
+ * to rewrite recorded expectations instead of failing on them (see
+ * TEST_EXPECTATIONS), which the pipeline then offers back to the source tree;
+ * each `--setup` names something every test process loads before any test file,
+ * in the order given — fabr passes the target's conventional setup script (see
+ * {@link SETUP_STEM}), and the contract stays plural because it is the runner's,
+ * not this pipeline's.
  */
 
 import {
-  BuildAction,
   Computable,
+  Constraints,
   EMPTY_FILESET,
   SymlinkFile,
-  BuildActionInputs,
-  execute,
-  ExecutionError,
   FileSet,
-  fileSetInput,
-  findExecutable,
-  formatTestFailures,
-  getResultFileSet,
-  IActionContext,
-  IBuildActionDefinition,
-  ITestReport,
+  IFile,
+  IWriteBackCandidate,
   PackageFileSet,
-  readJsonFile,
   RunnableFileSet,
+  parseName,
   TargetContext,
   RuleResult,
   SourceRef,
-  stringListInput,
+  TEST_EXPECTATIONS,
   TEST_REPORT_FILENAME,
-  TestsFailedError,
-  toTestReport,
-  writeFileSet,
+  UPDATE_EXPECTATIONS,
+  WriteBackFileSet,
 } from "@fabr-build/core";
+import { posix } from "path";
+import { COMPILE_OUT_DIR, COMPILE_SRC_DIR } from "./rules/BuildJSCompile";
 import {
   assembleNodeModules,
   compileContents,
+  formatJSTarget,
   JSTarget,
   moduleTypeFile,
   parseJSTarget,
@@ -79,18 +82,51 @@ const GLOBALS_TYPES_MOUNT = "@types/fabr-test-globals/index.d.ts";
  * when @fabr-build/js tests itself so it doesn't collide with the synthetic mount. */
 const RUNNER_GLOBALS_TYPES = "testRunner/test-globals.d.ts";
 
+/** The directory a test file's recorded snapshots live in, beside it — jest's
+ * convention, and fabr's: the staged inputs land there (they are ordinary
+ * `srcs`) and the runner writes updates back there. */
+const SNAPSHOT_DIR = "__snapshots__";
+
+/**
+ * How a recorded snapshot's name names the test it belongs to — jest's layout
+ * convention, stated once as a rename projection instead of resolved per file.
+ * `a/__snapshots__/Foo.test.ts.snap` → `a/Foo.test.ts`; at the tree root the
+ * `**` captures nothing and the renamer normalizes the stray separator.
+ *
+ * This is what the driver applies to find the input each offered record belongs
+ * beside — so the convention lives here, in the rule that owns it, and the
+ * driver stays free of any notion of what a snapshot is.
+ */
+const SNAPSHOT_BELONGS_TO = parseName(`**/${SNAPSHOT_DIR}/*.snap`).withRenameTo(parseName("**/*"));
+
+/**
+ * The conventional per-target setup script: a source named `setupTests`
+ * (`.ts`, `.js`, …) at the root of the target's source tree is loaded into
+ * every test process before any test file — the jest ecosystem's
+ * `setupTests.js` convention, and the usual home for environment polyfills and
+ * suite-wide mocks.
+ *
+ * A convention rather than a property, deliberately for now: it is one file
+ * per target and it is already an ordinary source (so it compiles with the
+ * tests, may be TypeScript, and may use the test globals), which leaves a
+ * declaration with nothing to say that the name doesn't.
+ */
+const SETUP_STEM = "setupTests";
+
 /**
  * The runner's ambient globals types, extracted from its resolved install (a
  * test-globals.d.ts anywhere among its files) and mounted as the synthetic
  * @types package the test compile auto-includes; empty when the runner ships
  * none. Part of the runner contract, so a swapped JS_TEST_RUNNER carries its
- * own globals typings with it rather than inheriting fabr's.
+ * own globals typings with it rather than inheriting fabr's — and, equally,
+ * a runner typed by an ordinary `@types` package the target declares (the jest
+ * flavour, typed by `@types/jest`) ships none, since two sets of ambient
+ * describe/it declarations would collide.
  */
 function runnerGlobalsTypes(runner: FileSet): FileSet {
   const found = [...runner].find(([name]) => name === GLOBALS_TYPES_FILE || name.endsWith("/" + GLOBALS_TYPES_FILE));
   return found ? FileSet.layout({ [GLOBALS_TYPES_MOUNT]: found[1] }) : EMPTY_FILESET;
 }
-
 
 export interface ITestInputs {
   /** The as-written source and test sources: they join the same collection point
@@ -159,46 +195,65 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
        * source→output naming is never re-derived here — js_compile owns it. */
       const testStems = new Set([...tests].map(([name]) => stripExtension(name)));
       /* The runner is a *tool*, independent of what it tests, so it resolves
-       * apart as the JS_TEST_RUNNER runnable (the TSC precedent — its pins don't
-       * co-resolve with the tests' deps). */
-      return context.getGlobalRunnable("JS_TEST_RUNNER").then((runner): Computable<RuleResult> => {
-        /* The test compile may import the package's deps, the test_deps, and the
-         * runner globals directly (all passed to compileJsSources). The runtime
-         * install splits them like RunJSScript: packages mount as node_modules,
-         * while a loose *resource* dep (.json, a template — tsc never emits it)
-         * stages at the install root next to the compiled tests, so a `./x.json`
-         * import resolves. Compilable loose deps (.ts/.js) are excluded here — their
-         * output already rides the compiled tree (and a raw .js would collide). */
-        const allDeps = [...deps, ...testDeps];
-        const packages = allDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
-        const runtimeModules = assembleNodeModules(packages);
-        const resources = resourceFiles(allDeps.filter(dep => !(dep instanceof PackageFileSet)));
+       * apart (the TSC precedent — its pins don't co-resolve with the tests'
+       * deps); `test_runner` defaults to the JS_TEST_RUNNER global. */
+      return Computable.forAll(
+        [context.getRunnableProperty("test_runner", "JS_TEST_RUNNER"), context.getGlobalString(TEST_EXPECTATIONS)],
+        (runner, expectations): Computable<RuleResult> => {
+          /* The test compile may import the package's deps, the test_deps, and the
+           * runner globals directly (all passed to compileJsSources). The runtime
+           * install splits them like RunJSScript: packages mount as node_modules,
+           * while a loose *resource* dep (.json, a template — tsc never emits it)
+           * stages at the install root next to the compiled tests, so a `./x.json`
+           * import resolves. Compilable loose deps (.ts/.js) are excluded here — their
+           * output already rides the compiled tree (and a raw .js would collide). */
+          const allDeps = [...deps, ...testDeps];
+          const packages = allDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+          const runtimeModules = assembleNodeModules(packages);
+          const resources = resourceFiles(allDeps.filter(dep => !(dep instanceof PackageFileSet)));
 
-        /* Built as the package would build it, stylesheets included — a test
-         * importing one gets the CSS the package ships, not raw Sass. */
-        return compileContents(
-          context,
-          sources,
-          [...deps, ...testDeps, runnerGlobalsTypes(runner)],
-          { packageName: inputs.packageName }
-        ).then(built => {
-          if (built.sources.ts.isEmpty() && built.sources.js.isEmpty() && built.sources.jsx.isEmpty()) {
-            /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
-             * so there is nothing to run — a loud failure, not a silent green. */
-            throw new Error("Test target declares test files but none is a compilable source");
-          }
-          return planTestRun(
-            Computable.resolve(built.compiled),
-            FileSet.unionAll(built.passthrough, built.css),
-            runtimeModules,
-            resources,
-            runner,
-            testStems,
-            jsTarget,
-            inputs.packageName
-          );
-        });
-      });
+          /* Tests always compile and run as CommonJS, whatever the package
+           * itself is built as: call-time `require` is what makes module
+           * substitution (a runner's mocking layer) observable at all, and it
+           * is the seam such a layer intercepts. Component-wise — the ES
+           * version and the environment are the target's own and are kept. */
+          const testTarget: JSTarget = { ...jsTarget, module: "commonjs" };
+          /* Set unconditionally, including when the target already emits
+           * commonjs: the override is then a different SPELLING of the same
+           * target (`es2020` formats back as `es2020-commonjs-node`), which
+           * parses identically, yields an identical tsconfig, and so shares the
+           * one compile by cache key. Guarding it would trade that no-op for a
+           * special case.
+           *
+           * Built as the package would build it, stylesheets included — a test
+           * importing one gets the CSS the package ships, not raw Sass. */
+          return compileContents(context, sources, [...deps, ...testDeps, runnerGlobalsTypes(runner)], {
+            packageName: inputs.packageName,
+            constraints: Constraints.of({ JS_TARGET: formatJSTarget(testTarget) }),
+          }).then(built => {
+            if (built.sources.ts.isEmpty() && built.sources.js.isEmpty() && built.sources.jsx.isEmpty()) {
+              /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
+               * so there is nothing to run — a loud failure, not a silent green. */
+              throw new Error("Test target declares test files but none is a compilable source");
+            }
+            return planTestRun(context, {
+              compiled: Computable.resolve(built.compiled),
+              /* The lowered CSS is a sibling of the compiled code that imports it. */
+              copied: FileSet.unionAll(built.passthrough, built.css),
+              compileSrcs: built.compileSrcs,
+              nodeModules: runtimeModules,
+              resources,
+              runner,
+              tests,
+              testStems,
+              testTarget,
+              environment: jsTarget.environment,
+              packageName: inputs.packageName,
+              update: expectations === UPDATE_EXPECTATIONS,
+            });
+          });
+        }
+      );
     });
 }
 
@@ -220,9 +275,12 @@ function selfMount(packageName: string | undefined): FileSet {
   }
   /* Relative to the link's own DIRECTORY, which sits N levels below the install
    * root for an N-segment name: node_modules for the last segment, plus one per
-   * scope segment above it (node_modules/@scope/pkg -> ../..). */
+   * scope segment above it (node_modules/@scope/pkg -> ../..). It points at the
+   * COMPILED tree, not the install root: the emitted code lives under `build/`
+   * (mounted beside its sources so source maps resolve), so a self-referential
+   * `@scope/pkg/sub` has to land there or it resolves to nothing. */
   const up = "../".repeat(packageName.split("/").length);
-  return FileSet.layout({ [packageName]: new SymlinkFile(up.slice(0, -1)) });
+  return FileSet.layout({ [packageName]: new SymlinkFile(up + COMPILE_OUT_DIR) });
 }
 
 /** Strip a file's final extension: `a/foo.test.ts` → `a/foo.test`. Used to match
@@ -243,110 +301,230 @@ export function selectCompiledTestFiles(compiled: FileSet, testStems: Set<string
 }
 
 /**
+ * The compiled setup script, or undefined for a target that has none.
+ *
+ * Selected out of the ACTUAL compiled tree by stem, exactly as the test files
+ * are — the source→output naming is js_compile's, never re-derived here. It is
+ * the file at the tree's ROOT (jest's `<rootDir>/setupTests.js`, in fabr's
+ * terms the root of the target's own source tree, wherever that ends up
+ * mounted); one nested inside is an ordinary source, so a `helpers/setupTests.ts`
+ * cannot quietly become suite-wide setup. Two at the root (a `.ts` and a `.cts`,
+ * say) are ambiguous and a loud failure.
+ */
+export function selectCompiledSetupFile(compiled: FileSet): string | undefined {
+  const matches = [...compiled]
+    .map(([name]) => name)
+    .filter(name => /\.[cm]?js$/.test(name) && stripExtension(name) === SETUP_STEM)
+    .sort();
+  if (matches.length > 1) {
+    throw new Error(`Test target has more than one ${SETUP_STEM} script (${matches.join(", ")}); it may only have one`);
+  }
+  return matches[0];
+}
+
+interface ITestRun {
+  compiled: Computable<FileSet>;
+  copied: FileSet;
+  /** The compile's own `src/` tree, mounted beside the output so each `.js.map`
+   * resolves — see the layout in planTestRun. */
+  compileSrcs: FileSet;
+  nodeModules: FileSet;
+  resources: FileSet;
+  runner: RunnableFileSet;
+  /** The declared test sources, for mapping refreshed snapshots back to them. */
+  tests: FileSet;
+  testStems: Set<string>;
+  testTarget: JSTarget;
+  /** The environment the tests are compiled for, named to the runner. */
+  environment: JSTarget["environment"];
+  /** The package the sources may import themselves by, if any — see selfMount. */
+  packageName?: string;
+  update: boolean;
+}
+
+/**
  * Plan the test run: the runtime installation (deps/test-deps as node_modules,
  * the runner's install staged under {@link RUNNER_STAGE_DIR}, a minimal
  * package.json and any copied sources) is assembled in resolution, and the
  * compiled tree — the output of the shared js_compile sub-target — is passed
- * in as a concrete input. The js_test_run step's key covers both the staged
- * installation and the invocation (which tests run is part of what a cached
- * green result attests to). A generic exec can't serve here: a red run must
- * fail the target while keeping the report.
+ * in as a concrete input to the `js_test_run` sub-target.
+ *
+ * The run is a **sub-target** rather than an action yielded directly, so its
+ * output is observed here, in resolution: the report is the target's content,
+ * and any refreshed snapshot files become write-back candidates paired with
+ * their source locations. Because that reshaping is plain resolution code, it
+ * re-runs every evaluation — so the candidates reconstruct on the CACHE-HIT
+ * path too (a warm replay of an update run whose writes were never applied
+ * still offers them).
  */
-function planTestRun(
-  compiled: Computable<FileSet>,
-  copied: FileSet,
-  nodeModules: FileSet,
-  resources: FileSet,
-  runner: RunnableFileSet,
-  testStems: Set<string>,
-  jsTarget: JSTarget,
-  packageName?: string
-): Computable<RuleResult> {
-  return compiled.then(compiledTree => {
+function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResult> {
+  return run.compiled.then(compiledTree => {
     /* Pick the runnable test files out of the real compiled tree (js_compile named
      * them) rather than re-deriving names from the sources. Empty here means the
      * declared tests produced no runnable output — a loud failure, not a green. */
-    const testFiles = selectCompiledTestFiles(compiledTree, testStems);
+    const testFiles = selectCompiledTestFiles(compiledTree, run.testStems);
+    const setupFile = selectCompiledSetupFile(compiledTree);
     if (testFiles.length === 0) {
       throw new Error("Test target declares test files but none produced a runnable .js output");
     }
-    const packageJson = moduleTypeFile(jsTarget.module, { name: "fabr-test", private: true });
-    const staged = FileSet.unionAll(
-      FileSet.layout({
-        node_modules: [nodeModules, selfMount(packageName)],
-        [RUNNER_STAGE_DIR]: [runner],
-        "package.json": packageJson,
-      }),
-      stripPackageJson(copied),
-      resources,
-      compiledTree
-    );
+    const packageJson = moduleTypeFile(run.testTarget.module, { name: "fabr-test", private: true });
+    /* Everything the compiled code sees as a sibling: its own output, the
+     * sources tsc passed through (a `./x.json` import), and loose resource deps. */
+    const runtime = FileSet.unionAll(compiledTree, stripPackageJson(run.copied), run.resources);
+    /* Laid out AS THE COMPILE LAID IT OUT — output under `build/`, sources under
+     * `src/` — because each `.js.map` names its source relative to that pairing
+     * (`../../src/foo.ts`). Re-rooting the output at the install root, as this
+     * did, left every one of those paths resolving outside the install: node
+     * still mapped stack frames to `foo.ts` (the positions are in the map) but
+     * nothing could READ that file, so jest's code frame — which loads the file
+     * the top frame names — silently rendered nothing. `node_modules` and
+     * `package.json` stay at the root, where node's walk-up finds them from
+     * `build/` just as well. */
+    const staged = FileSet.layout({
+      node_modules: [run.nodeModules, selfMount(run.packageName)],
+      [RUNNER_STAGE_DIR]: [run.runner],
+      "package.json": packageJson,
+      [COMPILE_OUT_DIR]: [runtime],
+      [COMPILE_SRC_DIR]: [run.compileSrcs],
+    });
     /* Bare interpreter (e.g. "node"): resolved against PATH inside the step, so
-     * no host-specific absolute path enters the action manifest. */
-    const argv = runner.toCommandLine([`--report=${TEST_REPORT_FILENAME}`, ...testFiles], { base: RUNNER_STAGE_DIR });
-    return new BuildAction(JS_TEST_STEP, { staged, argv }, "test");
+     * no host-specific absolute path enters the action manifest.
+     *
+     * The invocation carries neither the report name nor the test files: the
+     * step invokes the runner once PER FILE (the contract permits any partition
+     * of the files), appending a per-invocation report name and the file — so
+     * each execution is admitted separately by the machine-wide process funnel
+     * and a wide suite no longer multiplies fabr's parallelism by the runner's. */
+    const argv = run.runner.toCommandLine(
+      [
+        `--env=${run.environment === "browser" ? "jsdom" : "node"}`,
+        ...(run.update ? ["--update-snapshots"] : []),
+        /* `./`-prefixed: the runner contract distinguishes a path within the
+         * installation from a bare module name by exactly that prefix. */
+        ...(setupFile === undefined ? [] : [`--setup=./${COMPILE_OUT_DIR}/${setupFile}`]),
+      ],
+      { base: RUNNER_STAGE_DIR }
+    );
+    /* Under `check` the run's only output is the report; under `update` the
+     * refreshed snapshot files are collected too. The selectors ride the action
+     * manifest, so the two modes can never share a cache entry. */
+    /* Collected THROUGH the `build/` mount (`dir:glob` names results relative to
+     * `dir`), so the refreshed records come back named as the compiled tree
+     * names them — the namespace the tests and the staged records are already
+     * matched in. */
+    const outputs = run.update
+      ? [TEST_REPORT_FILENAME, `${COMPILE_OUT_DIR}:${SNAPSHOT_DIR}/*.snap`, `${COMPILE_OUT_DIR}:**/${SNAPSHOT_DIR}/*.snap`]
+      : [TEST_REPORT_FILENAME];
+    /* Under `update` the runner REWRITES the recorded files it was given, so
+     * those inputs must be staged as writable copies. Everything else is staged
+     * as a hardlink into the content store, where the blob is read-only — which
+     * is the protection working, not a limitation to route around: writing
+     * through such a link would corrupt the entry every other build shares. */
+    const records = run.update ? recordedExpectations(runtime) : EMPTY_FILESET;
+    /* The action stages by INSTALL name, so the writable set is the same records
+     * seen through the mount; the comparison below wants them in the compiled
+     * tree's own namespace, which is what `records` is. */
+    const writable = FileSet.layout({ [COMPILE_OUT_DIR]: [records] });
+    return context
+      .subTarget("js_test_run", {
+        staged,
+        writable,
+        argv,
+        test_files: testFiles.map(file => `${COMPILE_OUT_DIR}/${file}`),
+        outputs,
+      })
+      .then(result => reshapeTestResult(result, run.tests, records));
   });
 }
 
-/**
- * The js_test_run build step: stage the complete installation (built in
- * resolution — deps as node_modules, the runner, the compiled tree, a minimal
- * package.json), execute the runner, and deliver the report artifact. Only
- * green runs enter the cache — a red run throws (as TestsFailedError when the
- * report says so), which also removes the partial entry, so tests re-run
- * until they pass.
- */
-const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 3, run: runTests };
-
-function runTests(inputs: BuildActionInputs, { workDir }: IActionContext): Computable<FileSet> {
-  const staged = fileSetInput(inputs, "staged");
-  const argv = stringListInput(inputs, "argv");
-  /* Tests run with a clean environment (no ambient vars that could alter their
-   * output); a test that must spawn a tool references it by an absolute path
-   * (e.g. process.execPath), which needs no PATH. The argv's leading command
-   * (the runner's interpreter) is PATH-resolved here, at run time. */
-  return writeFileSet(workDir, staged)
-    .then(() => execute(findExecutable(argv[0]), argv.slice(1), workDir, {}))
-    .catch(err => failedRun(workDir, err))
-    .then(() => getResultFileSet(workDir, TEST_REPORT_FILENAME))
-    .then(results => requireReport(results, argv));
+/** The files a runner may rewrite: the recorded expectations, by the same
+ * `__snapshots__/*.snap` convention the run's outputs are collected under.
+ * Named in the compiled tree's namespace, like everything it is matched against. */
+function recordedExpectations(runtime: FileSet): FileSet {
+  return runtime.remap(name => (snapshotStem(name) === undefined ? undefined : name));
 }
 
 /**
- * The report is the artifact a green run attests to, so a runner that exits 0
- * without writing one has broken the contract — reported as the execution
- * failure it is. Left unchecked it would cache as a passing target that ran no
- * tests, and stay cached.
+ * Split the run's output into what the target delivers and what it offers: the
+ * report is the content, and each refreshed snapshot file is paired with the
+ * source-tree location of the test it belongs to (see {@link snapshotWriteBacks}).
+ * With nothing to offer — every `check`-mode run — the plain report stands.
+ *
+ * `recorded` is the staged input the run was given, so that a record it
+ * reproduced unchanged can be dropped — see {@link snapshotWriteBacks}.
  */
-function requireReport(results: FileSet, argv: string[]): FileSet {
-  /* The collection pattern IS the report name, so an empty set means it is absent. */
-  if (results.isEmpty()) {
-    throw new ExecutionError(
-      `$ ${argv.join(" ")}\nthe test runner exited successfully but wrote no ${TEST_REPORT_FILENAME}`
-    );
+function reshapeTestResult(result: FileSet, tests: FileSet, recorded: FileSet): FileSet {
+  const { report = EMPTY_FILESET, snapshots } = result.partition(name => (name === TEST_REPORT_FILENAME ? "report" : "snapshots"));
+  const candidates = snapshots ? snapshotWriteBacks(snapshots, tests, recorded) : [];
+  return candidates.length === 0 ? report : new WriteBackFileSet(report, candidates);
+}
+
+/**
+ * Pair each refreshed snapshot file with where it belongs in the user's tree.
+ *
+ * The run works in compiled names (`Foo.test.js`) and the source tree in source
+ * names (`Foo.test.tsx`), so the two sides are matched on the **stem** — which
+ * is exactly how the runner found the checked-in file in the first place. That
+ * also handles a brand-new snapshot, which the runner necessarily emits under
+ * the compiled name: the destination name is derived here, from the test
+ * source, so what lands in the tree is jest's standard `<test file>.snap`
+ * either way.
+ *
+ * Each candidate names the TEST it belongs beside; resolving that to a place on
+ * disk is the driver's job, so nothing here is a host path and a test with no
+ * source location (a generated one) needs no special case — the driver finds it
+ * unplaceable and says so.
+ *
+ * A record the run reproduced unchanged is **not offered at all**: `recorded`
+ * is the staged input it was given, and both sides are already hashed, so
+ * changed-ness is decided here in the build's own terms rather than
+ * rediscovered by reading the user's file at write time. What comes out is
+ * therefore exactly the set of real changes — which is what lets the write
+ * itself be unconditional, and what keeps a no-op update run from touching the
+ * tree (so, under watch, producing no event to have to recognize).
+ */
+export function snapshotWriteBacks(snapshots: FileSet, tests: FileSet, recorded: FileSet): IWriteBackCandidate[] {
+  const byStem = new Map<string, IFile>();
+  const byName = new Map<string, IFile>();
+  for (const [name, file] of snapshots) {
+    const stem = snapshotStem(name);
+    if (stem !== undefined && recorded.getFile(name)?.hash !== file.hash) {
+      byStem.set(stem, file);
+      byName.set(name, file);
+    }
   }
-  return results;
+  const refreshed = new Map<string, IFile>();
+  for (const [name] of tests) {
+    /* An exact name match first — fabr's own runner names a record for the
+     * source (see SnapshotResolver), so this is the ordinary path. The stem
+     * fallback keeps the contract honest for a runner that names records after
+     * the compiled file it ran, which is jest's own default and so a perfectly
+     * conforming thing to do. Either way the record is REKEYED to the source
+     * name here, which is what makes the correspondence a pure naming rule the
+     * driver can apply without knowing anything about snapshots. */
+    const file = byName.get(snapshotNameFor(name)) ?? byStem.get(stripExtension(name));
+    if (file !== undefined) {
+      refreshed.set(snapshotNameFor(name), file);
+    }
+  }
+  return refreshed.size === 0 ? [] : [{ files: new FileSet(refreshed), belongsTo: SNAPSHOT_BELONGS_TO, origin: tests.origin }];
 }
 
-/**
- * Reject with the error a failed runner invocation should report: a test
- * failure when the run left a report saying so (rendered as the failure
- * summary), else the original execution error — the run itself broke, and no
- * report can improve on that. The report comes out of the action's results,
- * the same way a green run delivers it.
- */
-function failedRun(workDir: string, err: Error): Computable<never> {
-  return getResultFileSet(workDir, TEST_REPORT_FILENAME)
-    .then(results => results.get(TEST_REPORT_FILENAME))
-    .then(file => (file ? readJsonFile(file, toTestReport).then(report => toTestFailure(report, err)) : err))
-    /* Absent, or not a report we can read: the run's own error stands. */
-    .catch(() => err)
-    .then(failure => {
-      throw failure;
-    });
+/** Where a test source's record sits relative to it — jest's convention, and
+ * the name a write-back lands under. */
+function snapshotNameFor(testName: string): string {
+  return posix.join(posix.dirname(testName), SNAPSHOT_DIR, `${posix.basename(testName)}.snap`);
 }
 
-function toTestFailure(report: ITestReport, err: Error): Error {
-  const { summary } = report.results;
-  return summary.failed > 0 ? new TestsFailedError(formatTestFailures(report), summary.failed, summary.tests) : err;
+/** The test stem a collected `<dir>/__snapshots__/<test file>.snap` belongs to
+ * (`a/__snapshots__/Foo.test.js.snap` → `a/Foo.test`), or undefined if the name
+ * isn't a snapshot file. Both extensions come off: the `.snap`, then the test
+ * file's own — which is what makes a compiled name and a source name meet. */
+function snapshotStem(name: string): string | undefined {
+  const dir = posix.dirname(name);
+  if (posix.basename(dir) !== SNAPSHOT_DIR || !name.endsWith(".snap")) {
+    return undefined;
+  }
+  return posix.join(posix.dirname(dir), stripExtension(posix.basename(name, ".snap")));
 }
+

@@ -26,6 +26,7 @@ import { Computable, ComputableSource, ComputableState } from "./Computable";
 import { DEFAULT_FILE_MODE, FileSet, IFile, FileSource } from "./FileSet";
 import { hashFile, isDirectoryError, isNotFound, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
 import { toError } from "./Errors";
+import { IProvenanceStep, registerProvenanceLocator, registerProvenanceRenderer } from "./Provenance";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
 
 export interface FSFileStats {
@@ -310,7 +311,7 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
             return;
           }
           names.forEach(name => this.files.set(name, this.owner.ingest(name)));
-          this.owner.notifyQueryChanged(this);
+          this.owner.notifyQueryChanged(this, names);
         },
         () => {
           /* Vanished again, or unreadable: nothing to add, and a later event re-probes. */
@@ -320,7 +321,7 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   }
 
   private build(): Computable<FileSet> {
-    return buildFileSet(this.files, this.project);
+    return buildFileSet(this.files, this.project, this.root);
   }
 
   private deliver(generation: number): void {
@@ -440,17 +441,41 @@ export class FSFileSource implements FileSource {
     }
   }
 
+  /**
+   * Whether a change at `rel` is one fabr itself just made, and so must not
+   * arm a rebuild of its own. `removed` distinguishes a deletion, which needs
+   * its own judgment: a removed file can never be re-read, so the usual
+   * confirm-by-content backstop (ingest) will not run for it. Always false for
+   * a plain filesystem source — nothing writes through one;
+   * {@link SourceFileSource}, which owns the user's tree and is the only thing
+   * that writes back into it, overrides.
+   */
+  protected isExpectedChange(rel: string, removed = false): boolean {
+    void rel;
+    void removed;
+    return false;
+  }
+
   /** Remove a live query from the dispatch set (on its detach). */
   public unregisterQuery(query: TreeQuery): void {
     this.registrations.delete(query);
   }
 
-  /** Report that a query changed itself, outside the dispatch of a filesystem event —
+  /**
+   * Report that a query changed itself, outside the dispatch of a filesystem event —
    * a directory rescan finding files no event will ever mention (see
    * {@link TreeQuery.applyEvent}). The controller lives here, not on the query, so this
-   * is how a query reaches it; a no-op when not watching. */
-  public notifyQueryChanged(query: TreeQuery): void {
-    this.watchController?.notifyChanged(query);
+   * is how a query reaches it; a no-op when not watching.
+   *
+   * `found` names what the query picked up, so that a rescan of a directory
+   * fabr itself created is deferred like the events for its contents were: the
+   * rescan is the one path where a change reaches the controller without having
+   * passed the dispatch that judges it. Deferred only when EVERY name is ours —
+   * one file we did not write makes the whole rescan a real change.
+   */
+  public notifyQueryChanged(query: TreeQuery, found?: readonly string[]): void {
+    const defer = found !== undefined && found.length > 0 && found.every(name => this.isExpectedChange(name));
+    this.watchController?.notifyChanged(query, { defer });
   }
 
   /**
@@ -477,9 +502,16 @@ export class FSFileSource implements FileSource {
       }
       for (const event of events) {
         const rel = toPosix(path.relative(realRoot, event.path));
+        /* A change fabr itself just made is recorded but not armed — see
+         * notifyChanged's `defer`. Judged on the PATH here because this dispatch
+         * is synchronous; the content is confirmed later, when the ingest that
+         * re-reads the file computes its hash (see SourceFileSource) — except
+         * for a deletion, where there is nothing left to read and the judgment
+         * itself must settle it. */
+        const defer = this.isExpectedChange(rel, event.type === "delete");
         for (const query of this.registrations) {
           if (query.applyEvent(rel, event.type === "delete")) {
-            controller.notifyChanged(query);
+            controller.notifyChanged(query, { defer });
           }
         }
       }
@@ -563,25 +595,60 @@ export const FS = {
  * undefined for a non-member. See {@link Name.makeProjector}. */
 type Projector = (input: string) => string | undefined;
 
+/**
+ * Content read straight out of the user's source tree. The one provenance step
+ * that can answer {@link locateSource}: it holds the tree it walked and, per
+ * result name, the tree-relative path the file was read from (the query's
+ * projection is not invertible — `pkg/src:**\/*.ts` strips a prefix, a rename
+ * template rewrites outright — so the correspondence is recorded as it is made).
+ * That is what a write-back needs and what nothing else in the build can
+ * reconstruct: a file's *content* may since have been snapshotted into an
+ * immutable blob, but this says where it came from and, thus, where an updated
+ * version of it belongs.
+ */
+export const SOURCE_TREE_PROVENANCE = "source-tree";
+
+interface ISourceTreeOrigin extends IProvenanceStep {
+  readonly kind: typeof SOURCE_TREE_PROVENANCE;
+  /** The tree that was walked (absolute). */
+  readonly root: string;
+  /** Result name → the path under `root` it was read from. */
+  readonly paths: ReadonlyMap<string, string>;
+}
+
+registerProvenanceLocator(SOURCE_TREE_PROVENANCE, (step, name) => {
+  const { root, paths } = step as ISourceTreeOrigin;
+  const rel = paths.get(name);
+  return rel === undefined ? undefined : path.resolve(root, rel);
+});
+
+/* Renders nothing: the step exists to locate, and every diagnostic that would
+ * want the path already shows it (an FS file's display name IS its source
+ * path). Registered all the same, so the chain doesn't render a bare
+ * "(source-tree)" placeholder for a step that has nothing to add. */
+registerProvenanceRenderer(SOURCE_TREE_PROVENANCE, () => []);
+
 /** Resolve a query's held files into a FileSet, each named by the query's
- * projection. Shared by the one-shot and live `find` paths. */
+ * projection, carrying the source-tree provenance that maps those names back to
+ * where they were read from. Shared by the one-shot and live `find` paths. */
 function buildFileSet(
   files: Map<string, Computable<FSFile | undefined>>,
-  project: Projector
+  project: Projector,
+  root: string
 ): Computable<FileSet> {
-  return Computable.forAll(
-    Array.from(files.values()),
-    (...done: (FSFile | undefined)[]) =>
-      new FileSet(
-        done.reduce((result, file) => {
-          const name = file ? project(file.name) : undefined;
-          if (file && name !== undefined) {
-            result.set(name, file);
-          }
-          return result;
-        }, new Map<string, IFile>())
-      )
-  );
+  return Computable.forAll(Array.from(files.values()), (...done: (FSFile | undefined)[]) => {
+    const content = new Map<string, IFile>();
+    const paths = new Map<string, string>();
+    for (const file of done) {
+      const name = file ? project(file.name) : undefined;
+      if (file && name !== undefined) {
+        content.set(name, file);
+        paths.set(name, file.name);
+      }
+    }
+    const origin: ISourceTreeOrigin = { kind: SOURCE_TREE_PROVENANCE, root, paths };
+    return new FileSet(content, origin);
+  });
 }
 
 const WATCH_OPTIONS: parcelWatcher.Options = { ignore: ["**/node_modules/**", "**/.git/**"] };

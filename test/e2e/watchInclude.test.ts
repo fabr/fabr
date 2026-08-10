@@ -22,7 +22,14 @@ import { startFabrWatch } from "./harness";
  * edited. This drives that through the real CLI and the real filesystem watcher —
  * the deterministic semantics (ordering, silent drop, the vanished-file race) are
  * unit-tested in Loader.test.ts; this proves the whole stack reacts. */
-(globalThis as { jest?: { setTimeout(ms: number): void } }).jest?.setTimeout(90000);
+
+/* jest caps each test at `testTimeout` (30s); the fabr runner bounds tests
+ * itself. Called as a BARE `jest`: under real jest the object is injected into
+ * MODULE scope and is not on globalThis, so reaching it through globalThis was a
+ * silent no-op — these suites have been running at 30s and only passing because
+ * they finished in time. `@types/jest` rides the e2e target's deps, so the bare
+ * name type-checks under the fabr compile too. */
+jest.setTimeout(90000);
 
 const TIMEOUT = { timeoutMs: 60000 };
 

@@ -19,7 +19,6 @@
  * driver, which requires esbuild (unavailable to jest). Importing the driver
  * module is safe: esbuild is required lazily inside main(), not at load. */
 
-import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import { isBareSpecifier, packageOf, rewriteStyledImport, unresolvedHelp } from "./bundle-driver";
 

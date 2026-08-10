@@ -27,6 +27,7 @@ import { posix } from "path";
 import {
   attachHelp,
   BUILD_OVERRIDE,
+  Constraints,
   SubTargetInputs,
   CANONICAL,
   Computable,
@@ -93,6 +94,14 @@ export function parseJSTarget(target: string): JSTarget {
     throw new Error(`Malformed JS target '${target}': environment must be 'node' or 'browser', not '${environment}'`);
   }
   return { version: canonicalEsLevel(version), module, environment };
+}
+
+/** Render a JS target back to its written form, always in full (all three
+ * components), so it round-trips through {@link parseJSTarget}. Used where one
+ * component must be swapped and the rest preserved — the test compile forces
+ * `commonjs` without disturbing the version or the environment. */
+export function formatJSTarget(target: JSTarget): string {
+  return `${target.version}-${target.module}-${target.environment}`;
 }
 
 /**
@@ -392,6 +401,10 @@ export interface ICompiledContents {
   css: FileSet;
   /** The sources no step consumed, for the caller to place. */
   passthrough: FileSet;
+  /** Exactly what js_compile was handed as its `src/` tree (empty when nothing
+   * was compiled) — for a caller that mounts the output beside its sources so
+   * source maps resolve. See {@link compileSrcsOf}. */
+  compileSrcs: FileSet;
 }
 
 /**
@@ -427,6 +440,13 @@ export interface ICompileOptions {
    * written.
    */
   transpileJs?: boolean;
+  /**
+   * Extra constraints for the compile, layered over the build override — the
+   * test pipeline forces a commonjs-emitting JS_TARGET this way. The
+   * per-constraint target cache means the same sources coexist as (say)
+   * ESM-for-bundling and CJS-for-tests with no further machinery.
+   */
+  constraints?: Constraints;
 }
 
 /**
@@ -450,7 +470,7 @@ export function compileContents(
   const compiled =
     keepSourceJs && !requiresCompile(classified)
       ? undefined
-      : compileJsSources(context, classified, deps, options.packageName);
+      : compileJsSources(context, classified, deps, options);
   const css = compileCssSources(
     context,
     classified.css,
@@ -465,6 +485,7 @@ export function compileContents(
     passthrough: keepSourceJs
       ? FileSet.unionAll(passthroughFiles(classified), classified.js)
       : passthroughFiles(classified),
+    compileSrcs: compileSrcsOf(classified, deps) ?? EMPTY_FILESET,
   }));
 }
 
@@ -491,41 +512,58 @@ export function compileJsSources(
   context: TargetContext,
   sources: IJsSources,
   directDeps: FileSet[],
-  /** The package name the sources may import themselves by — see js_compile's
-   * `package_name`. A js_package passes its own name; a standalone compile or a
-   * js_test has no package identity and passes nothing. */
-  packageName?: string
+  options: ICompileOptions = {}
 ): Computable<FileSet> | undefined {
-  /* Deps split by kind. A built package mounts as node_modules, and a source-mode
-   * `Flag` rides alongside it — both are `deps` to js_compile (a Flag is an empty
-   * FileSet, so it mounts nothing; js_compile reads it back with getFlags("deps")
-   * to fold its tsconfig overlay). A *non-package* content dep is plain source the
-   * target needs but does not distribute — a `.d.ts` type shim, or test support
-   * like a harness. It joins the compile inputs (tsc sees it, and a relative `./x`
-   * import resolves to it as a sibling) but never `copied`, so it's compiled-
-   * against yet not shipped: a `.d.ts` emits nothing; a `.ts`'s output rides the
-   * compiled tree (into a js_test run install; a js_package would vendor it — use a
-   * package to avoid that). */
-  const mountDeps = directDeps.filter(dep => dep instanceof PackageFileSet || dep instanceof Flag);
-  const sourceDeps = directDeps.filter(dep => !(dep instanceof PackageFileSet) && !(dep instanceof Flag));
-
-  /* Nothing compilable and no source dep to compile against — no compile. A tree
-   * of declarations alone emits nothing, so it does not earn a sub-target. */
-  if (sources.ts.isEmpty() && sources.js.isEmpty() && sources.jsx.isEmpty() && sourceDeps.length === 0) {
+  const srcs = compileSrcsOf(sources, directDeps);
+  if (srcs === undefined) {
     return undefined;
   }
-
   /* Both .ts(x) and .js(x) go through js_compile: with allowJs, tsc downlevels
    * the JS to JS_TARGET and lets a .ts import a local .js. .d.ts joins as an
    * ambient input (the caller also passes it through as a resource). js_compile
    * owns the node_modules layout (assembleScopedNodeModules) and JSX-runtime
    * detection; TSC is added by js_compile itself. */
-  const srcs = FileSet.unionAll(compileInputs(sources), ...sourceDeps);
-  const inputs: SubTargetInputs = { srcs, deps: mountDeps, ...(packageName ? { package_name: packageName } : {}) };
+  const inputs: SubTargetInputs = {
+    srcs,
+    deps: mountedDeps(directDeps),
+    ...(options.packageName ? { package_name: options.packageName } : {}),
+  };
   return context.subTarget("js_compile", inputs, {
     label: "Compiling",
-    constraints: BUILD_OVERRIDE,
+    constraints: BUILD_OVERRIDE.with(options.constraints),
   });
+}
+
+/**
+ * Exactly what js_compile is handed as its `src/` tree, or undefined when there
+ * is nothing to compile (no TypeScript, no JSX, no plain JavaScript, and no
+ * source dep to compile against — a tree of declarations alone emits nothing,
+ * so it does not earn a sub-target).
+ *
+ * Exposed because a consumer that mounts the compiled output BESIDE its sources
+ * — the test install, so each `.js.map` resolves — needs the same set, not a
+ * re-derived approximation of it.
+ */
+export function compileSrcsOf(sources: IJsSources, directDeps: FileSet[]): FileSet | undefined {
+  const sourceDeps = directDeps.filter(dep => !(dep instanceof PackageFileSet) && !(dep instanceof Flag));
+  if (sources.ts.isEmpty() && sources.js.isEmpty() && sources.jsx.isEmpty() && sourceDeps.length === 0) {
+    return undefined;
+  }
+  return FileSet.unionAll(compileInputs(sources), ...sourceDeps);
+}
+
+/* Deps split by kind. A built package mounts as node_modules, and a source-mode
+ * `Flag` rides alongside it — both are `deps` to js_compile (a Flag is an empty
+ * FileSet, so it mounts nothing; js_compile reads it back with getFlags("deps")
+ * to fold its tsconfig overlay). A *non-package* content dep is plain source the
+ * target needs but does not distribute — a `.d.ts` type shim, or test support
+ * like a harness. It joins the compile inputs (tsc sees it, and a relative `./x`
+ * import resolves to it as a sibling) but never `copied`, so it's compiled-
+ * against yet not shipped: a `.d.ts` emits nothing; a `.ts`'s output rides the
+ * compiled tree (into a js_test run install; a js_package would vendor it — use a
+ * package to avoid that). */
+function mountedDeps(directDeps: FileSet[]): FileSet[] {
+  return directDeps.filter(dep => dep instanceof PackageFileSet || dep instanceof Flag);
 }
 
 /** @return the files without any root package.json (consumed, not copied through) */

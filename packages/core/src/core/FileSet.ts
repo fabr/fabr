@@ -23,7 +23,7 @@ import { FileSetRef } from "./FileSetRef";
 import type { IProjection } from "./FileSetRef";
 import { Computable, ComputableSource } from "./Computable";
 import { IDiagnosticNote } from "../support/Log";
-import { IProvenanceStep, registerProvenanceRenderer, renderProvenance } from "./Provenance";
+import { IProvenanceStep, registerProvenanceLocator, registerProvenanceRenderer, renderProvenance, locateSource } from "./Provenance";
 import { ConflictError } from "./Errors";
 import { canonicalFileName, isCanonicalFileName } from "../support/Paths";
 
@@ -509,14 +509,30 @@ function mergeOrigin(sources: IMergeSource[]): IMergeOrigin | undefined {
 registerProvenanceRenderer(FILESET_MERGE_PROVENANCE, (step, context): IDiagnosticNote[] => {
   const merge = step as IMergeOrigin;
   if (context.path !== undefined) {
-    for (const { prefix, fileset } of merge.sources) {
-      if (context.path.startsWith(prefix)) {
-        const rel = context.path.slice(prefix.length);
-        if (fileset.getFile(rel) !== undefined && fileset.origin !== undefined) {
-          return renderProvenance(fileset.origin, { ...context, path: rel });
-        }
-      }
+    const found = contributorOf(merge, context.path);
+    if (found?.fileset.origin !== undefined) {
+      return renderProvenance(found.fileset.origin, { ...context, path: found.rel });
     }
   }
   return [];
 });
+
+/* A merge repositions content, so it must rebase before delegating — the same
+ * "strip the mount prefix, find the holder, recurse" walk the renderer does. */
+registerProvenanceLocator(FILESET_MERGE_PROVENANCE, (step, path) => {
+  const found = contributorOf(step as IMergeOrigin, path);
+  return found && locateSource(found.fileset.origin, found.rel);
+});
+
+/** The merged-in set holding `path`, and the name it holds it under. */
+function contributorOf(merge: IMergeOrigin, path: string): { fileset: FileSet; rel: string } | undefined {
+  for (const { prefix, fileset } of merge.sources) {
+    if (path.startsWith(prefix)) {
+      const rel = path.slice(prefix.length);
+      if (fileset.getFile(rel) !== undefined) {
+        return { fileset, rel };
+      }
+    }
+  }
+  return undefined;
+}

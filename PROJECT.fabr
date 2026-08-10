@@ -26,16 +26,36 @@ FABR_METADATA = {
 catalog @pkg {
   deps = @npm:typescript:5.4.5 @npm:@types/node:20.12.7
          @npm:chai:4.3.6 @npm:@types/chai:4.3.1
+         @npm:@types/jest:30.0.0
          @npm:chai-as-promised:7.1.1 @npm:@types/chai-as-promised:7.1.8
          @npm:@parcel/watcher:2.6.0
          @npm:picomatch:4.0.5
          @npm:undici:8.9.0
          @npm:unicode-properties:1.3.1 @npm:@types/unicode-properties:1.3.0
-         @npm:tar-stream:3.1.7 @npm:@types/tar-stream:3.1.3;
+         @npm:tar-stream:3.1.7 @npm:@types/tar-stream:3.1.3
+         # Pulled in transitively by @types/jest, and required only without a
+         # lower bound ('*', the DefinitelyTyped house style), so nothing picks
+         # a version for them; and two packages @types/jest's closure needs at a
+         # version other than ours ('?' sanctions the coexistence).
+         @npm:@types/istanbul-lib-report:3.0.3? @npm:@types/yargs-parser:21.0.3?
+         @npm:ansi-styles:4.1.0? @npm:ansi-styles:5.2.0?
+         @npm:picomatch:2.3.1? @npm:picomatch:4.0.5?;
 }
 
 TSC = @pkg:typescript:tsc;
 JS_TARGET = es2021-commonjs;
+
+# Run fabr's own tests through the jest-compatibility runner. They use none of
+# jest's API — plain describe/it plus chai assertions — which is exactly why
+# they are worth running under it: the layer has to carry an ordinary suite
+# unchanged before it can claim to carry a jest one. (`yarn test` runs the same
+# files under real jest, so the two agree by construction.)
+JS_TEST_RUNNER = @fabr-build/js-tools/jest-runner;
+
+# The describe/it/expect globals' types. The jest runner ships no ambient
+# globals of its own — these would collide with them — so a target using it
+# declares them like any other test dependency.
+jest_types = @pkg:@types/jest;
 
 chai = @pkg:chai @pkg:@types/chai @pkg:chai-as-promised @pkg:@types/chai-as-promised;
 unicode_properties = @pkg:unicode-properties @pkg:@types/unicode-properties;
@@ -45,7 +65,7 @@ js_package @fabr-build/core {
   srcs = packages/core/src:**/*.ts packages/core:lib/** README.md COPYING -> LICENSE;
   tests = packages/core/src:**/*.test.ts;
   deps = @pkg:@types/node @pkg:@parcel/watcher @pkg:picomatch @pkg:undici unicode_properties tar_stream;
-  test_deps = chai;
+  test_deps = chai jest_types;
   metadata = { FABR_METADATA; description = Fabr core }
 }
 
@@ -54,7 +74,7 @@ js_package @fabr-build/js {
   tests = packages/js/src:**/*.test.ts;
   deps = @pkg:@types/node;
   provided_deps = @fabr-build/core;
-  test_deps = chai;
+  test_deps = chai jest_types;
   metadata = { FABR_METADATA; description = Fabr JS support plugin }
 }
 
@@ -62,7 +82,7 @@ js_package @fabr-build/cli {
   srcs = packages/cli/src:**/*.ts README.md COPYING -> LICENSE;
   tests = packages/cli/src:**/*.test.ts;
   deps = @pkg:@types/node @fabr-build/core @fabr-build/js;
-  test_deps = chai;
+  test_deps = chai jest_types;
   metadata = { FABR_METADATA; description = Fabr CLI }
 }
 
@@ -70,7 +90,7 @@ js_package @fabr-build/cli {
 # source dep — compiled as a sibling (so `./harness` resolves) but never run.
 js_test e2e_tests {
   tests = test:**/*.test.ts;
-  deps = test:**/*.ts @pkg:@types/node chai @fabr-build/cli;
+  deps = test:**/*.ts @pkg:@types/node chai jest_types @fabr-build/cli;
 }
 
 sync release {

@@ -27,6 +27,14 @@ import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
  * node:assert so it needs no downloaded assertion library; the stub tsc copies
  * the type-free test verbatim. A red run must fail the command AND render the
  * failure as a test outcome, not a build error. */
+/* jest caps each test at `testTimeout` (30s); the fabr runner bounds tests
+ * itself. Called as a BARE `jest`: under real jest the object is injected into
+ * MODULE scope and is not on globalThis, so reaching it through globalThis was a
+ * silent no-op — these suites have been running at 30s and only passing because
+ * they finished in time. `@types/jest` rides the e2e target's deps, so the bare
+ * name type-checks under the fabr compile too. */
+jest.setTimeout(90000);
+
 describe("e2e: fabr test (runner from @fabr-build/js)", () => {
   const project = (body: string): Record<string, string> => ({
     ...STUB_TSC,
@@ -46,6 +54,27 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     /* rendered as a test outcome (name + message), not a build failure */
     expect(result.stderr).to.contain("test failed");
     expect(result.stderr).to.contain("fails on purpose");
+  });
+
+  it("reports WHY a test file could not be loaded, not just that it failed", () => {
+    /* A file that throws while loading registers no tests, so node:test reports
+     * it with no diagnosis of its own — its `cause` is the bare string "test
+     * failed" — and streams the real error to the child's stderr. The runner
+     * captures that and attaches it, or the user is told only "test failed". */
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; }\n",
+        "src/thing.test.ts": 'require("./nonexistent-module");\ndescribe("thing", () => { it("never runs", () => {}); });\n',
+      },
+      ["-DJS_TARGET=es2020", "test", "thing"]
+    );
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.contain("Cannot find module");
+    expect(result.stderr).to.contain("nonexistent-module");
   });
 
   it("passes cleanly when the tests pass", () => {
@@ -121,5 +150,54 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     } finally {
       fs.rmSync(pidPath, { force: true });
     }
+  });
+  it("loads a conventional setupTests script into every test process", () => {
+    /* The convention's whole contract: a `setupTests` at the root of the source
+     * tree runs before the test file, with the runner's globals already
+     * installed. A polyfill is the usual content — a browser API the
+     * environment lacks — so the fixture asserts on exactly that shape. */
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; }\n",
+        /* `describe` proves the runner's own globals are installed first. */
+        "src/setupTests.ts": 'globalThis.ranSetup = typeof describe;\nglobalThis.Polyfilled = class {};\n',
+        "src/thing.test.ts":
+          'const assert = require("node:assert");\n' +
+          'describe("setup", () => { it("ran before the test file", () => {\n' +
+          '  assert.equal(globalThis.ranSetup, "function");\n' +
+          '  assert.equal(typeof globalThis.Polyfilled, "function");\n' +
+          "}); });\n",
+      },
+      ["-DJS_TARGET=es2020", "test", "thing"]
+    );
+    expect(result.stderr).to.contain("1 test passed");
+    expect(result.status).to.equal(0);
+  });
+
+  it("does not treat a nested setupTests as suite-wide setup", () => {
+    /* Rooted, so an ordinary source that happens to be named this stays an
+     * ordinary source — it is compiled and importable, but never preloaded. */
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; }\n",
+        "src/helpers/setupTests.ts": 'globalThis.ranSetup = true;\n',
+        "src/thing.test.ts":
+          'const assert = require("node:assert");\n' +
+          'describe("setup", () => { it("did not run", () => {\n' +
+          "  assert.equal(globalThis.ranSetup, undefined);\n" +
+          "}); });\n",
+      },
+      ["-DJS_TARGET=es2020", "test", "thing"]
+    );
+    expect(result.stderr).to.contain("1 test passed");
+    expect(result.status).to.equal(0);
   });
 });

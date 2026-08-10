@@ -33,22 +33,54 @@ Two consequences follow:
 host toolchain across the machines that share a cache. This is wasted recompute, not incorrect
 output.
 
-## Only fabr's own test runner is supported — not jest or vitest
+## Jest is supported through a compatibility layer, with gaps; vitest is not
 
 `fabr test` runs tests under **fabr's own runner**, built on Node's `node:test`. It provides the
 `describe`/`it`/`before`/`after` globals; you supply the assertion library yourself (list it in the
 target's `test_deps` — [chai](https://www.chaijs.com/), for example) and import it explicitly.
 Results are reported in [CTRF](https://ctrf.io) form.
 
-**Popular third-party runners — [jest](https://jestjs.io) and
-[vitest](https://vitest.dev) — are not yet supported.** Their APIs are not available: no `jest.mock` /
-`vi.mock` module mocking, no `jest.fn` spies, no built-in snapshot testing, no auto-magic transforms
-or their configuration. A suite written against jest or vitest will not run under `fabr test` as-is,
-and there is currently no way to select an alternative runner.
+**Jest-flavoured suites run through a compatibility layer.** Select it per target
+(`test_runner = @fabr-build/js-tools/jest-runner;`) or project-wide
+(`JS_TEST_RUNNER = @fabr-build/js-tools/jest-runner;`), and declare `@npm:@types/jest` in
+`test_deps` for the globals' types. It provides the `jest` object (mocks, spies, module mocking,
+fake timers), `expect` with jest's matchers, `.each`, snapshots, and a jsdom environment — using
+jest's own libraries, so their behaviour is jest's rather than an imitation of it. It is *fabr's
+runner plus a compatibility layer*, not jest hosted by fabr: none of jest's own orchestrator runs.
 
-**Workaround:** write tests against `node:test`-compatible globals plus a standalone assertion
-library. Porting an existing jest/vitest suite means replacing the runner-specific pieces (mocks,
-spies, snapshots) with plain equivalents.
+What is **not** there yet, each failing loudly rather than silently doing nothing:
+
+- `{...styles}` on a stylesheet import spreads to `{}` — the stub answers any property with its
+  own name, but cannot enumerate class names it has never compiled. (Same limitation as jest's
+  usual `identity-obj-proxy` mapping.)
+- `setup` files and a declared `mocks` map (jest's `setupFiles`/`setupFilesAfterEach` and
+  `moduleNameMapper`), and the per-file `@jest-environment` docblock pragma.
+- `test.concurrent` and `test.failing`.
+- ESM-mode jest (`useESM`). Tests and the local module graph compile to CommonJS; external
+  ESM-only packages load fine as leaves, and a top-level-`await` ESM graph can only be mocked
+  (which is also true under jest).
+- `window.location` cannot be replaced — jsdom defines it as unforgeable, under jest too. Replace
+  the global `location` instead.
+- Environment variables your `npm test` script used to set do not exist: `fabr test` runs with a
+  clean environment.
+- The environment (`node` or `jsdom`) follows the target's `JS_TARGET`, not a per-target property.
+- A jest-flavoured target needs `@types/jest`, whose dependency closure needs a handful of
+  explicit version pins in your catalog (fabr will tell you exactly which).
+
+**Vitest is not supported.** Its API is unavailable and there is no compatibility layer for it.
+
+## Recorded snapshots need `fabr test -u`, and their files must be declared inputs
+
+Snapshot files are ordinary sources: a target that uses them must list them, e.g.
+`srcs = src:**/*.ts src:**/__snapshots__/*.snap;`. A test run is hermetic — it works in a staged
+copy of its inputs and cannot write to your tree — so a missing or stale record **fails** rather
+than being quietly written. `fabr test -u <target>` re-runs with the runner asked to refresh its
+records, and fabr writes the changed ones back afterwards, reporting each. There is no `--ci` flag
+to remember: check mode is what a plain `fabr test` does, always.
+
+Two limits today: an update run must be otherwise green (a test red for any other reason yields
+nothing, so no updates are applied), and the *native* runner has no snapshot assertions yet —
+`fabr test -u` against it says so rather than doing nothing.
 
 ## npm resolution uses MVS and can differ from npm/yarn
 

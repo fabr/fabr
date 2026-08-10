@@ -36,11 +36,17 @@ fabr mylib            # a js_package supports build, so this builds it
 
 ### `test`
 
-Compile and run the targets' tests, reporting the results.
+Compile and run the targets' tests, reporting the results. A run is hermetic: the tests execute in
+a staged copy of their inputs and cannot write to your working tree.
 
 ```sh
 fabr test mylib
+fabr test -u mylib    # …and update the recorded expectations (snapshots) it produces
 ```
+
+`-u` re-runs asking the test runner to refresh the expectations it has on record rather than fail
+on them, and writes the changed ones back into your source tree afterwards, naming each. Nothing is
+written without it — and nothing is written if the run is red for any other reason.
 
 ### `run`
 
@@ -147,6 +153,7 @@ Emit the whole build vocabulary — types, properties, and flags — as one JSON
 |---|---|
 | `-DPROP=VALUE` | Force property `PROP` to `VALUE` for this run (overrides the build script and any default). |
 | `-w` | Watch mode: rebuild — and, for `run`, restage/relaunch when sources change. |
+| `-u`, `--update` | (`test`) Update the recorded test expectations — snapshots — from the run, writing the changed ones back into your source tree. |
 | `-q`, `--quiet` | Suppress the live subcommand output otherwise streamed as steps run; a *failed* step still shows its captured output. |
 | `-l` | Long listing: hash + size per file (`ls`), or source location (`list-*`). |
 | `--json` | Emit JSON (the `list-*` verbs). |

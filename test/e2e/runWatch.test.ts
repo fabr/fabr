@@ -23,10 +23,13 @@ import { spawnOrphanReaper, startFabrWatch } from "./harness";
  * SIGINT tears down both fabr and the child. The child inherits fabr's stdio,
  * so its stderr flows through to the harness. `exec` so the sleep replaces the
  * shell and a single SIGTERM stops it (no orphaned sleep). */
-/* jest caps each test at 5s; the fabr runner (node:test) imposes no such cap.
- * Bump it only under jest, reaching the global through globalThis so the bare
- * `jest` name (undeclared in the fabr test compile) never appears. */
-(globalThis as { jest?: { setTimeout(ms: number): void } }).jest?.setTimeout(90000);
+/* jest caps each test at `testTimeout` (30s); the fabr runner bounds tests
+ * itself. Called as a BARE `jest`: under real jest the object is injected into
+ * MODULE scope and is not on globalThis, so reaching it through globalThis was a
+ * silent no-op — these suites have been running at 30s and only passing because
+ * they finished in time. `@types/jest` rides the e2e target's deps, so the bare
+ * name type-checks under the fabr compile too. */
+jest.setTimeout(90000);
 
 /* A server that binds a Unix socket at a *stable* cwd-relative path (a `script`
  * runs in the caller's cwd, unchanged across restarts) and, on SIGTERM, holds it

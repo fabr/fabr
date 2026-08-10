@@ -43,7 +43,7 @@ function runPipeline(inputs: BuildActionInputs, ctx: IActionContext): Computable
 
   return writeFileSet(ctx.workDir, files)
     .then(() => stdinBytes(stdin))
-    .then(bytes => executePipeline(specs, ctx.workDir, () => ctx.createOutput(), bytes, ctx.quiet))
+    .then(bytes => executePipeline(ctx.processLimit, specs, ctx.workDir, () => ctx.createOutput(), bytes, ctx.quiet))
     .then(captured =>
       /* Plus any files the tools wrote, when an `output` projection is given (a
        * pure redirect genrule omits it and collects only the captures). A given

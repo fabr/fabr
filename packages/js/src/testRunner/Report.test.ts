@@ -17,10 +17,11 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* Note: this file is run by the fabr test harness itself (node:test based),
- * not by the workspace jest setup. */
+/* Note: this file is run by `fabr test`, not by the workspace jest setup
+ * (it is excluded there). It uses the describe/it GLOBALS rather than importing
+ * them, so it runs under whichever runner the target selects — importing from
+ * "node:test" would make it invisible to a jest-framework runner. */
 
-import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import type { ITestResult } from "@fabr-build/core";
 import { buildReport, formatTestFailures, formatTestSummary } from "./Report";

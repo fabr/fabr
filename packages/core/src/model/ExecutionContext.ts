@@ -197,13 +197,17 @@ export class ExecutionContext {
    * simultaneously; the machine's parallelism is what that work can actually
    * use.
    *
-   * The unit admitted is the *action*, not the process: a command pipeline's
-   * stages are pipe-wired and must co-run, so admitting them individually could
-   * wedge a pipeline half-started. One action holds one slot however many
-   * processes it runs. Applied at {@link BuildContext.runAction}'s miss path, so
-   * cache hits and the resolution memos sharing that cache queue for nothing.
+   * The unit admitted is the *process execution*, acquired around exactly the
+   * process lifetime by {@link IActionContext.execute} — with one refinement: a
+   * command pipeline's stages are pipe-wired and must co-run, so a pipeline is
+   * ONE unit (admitting its stages individually could wedge it half-started).
+   * Step code itself holds no slot — staging and collection are event-loop
+   * I/O, not machine parallelism — so a step waiting on its processes never
+   * holds a slot while waiting for one: no hold-and-wait, no deadlock, and a
+   * step may fan out as many executions as it likes (the per-file test run).
+   * Cache hits and the resolution memos sharing that cache queue for nothing.
    */
-  public readonly actionLimit = new Semaphore(availableParallelism());
+  public readonly processLimit = new Semaphore(availableParallelism());
   /** Per-run state a plugin keeps here, keyed by its {@link PluginKey}. Lazily
    *  populated on first access (see {@link getOrCreatePluginContext}). */
   private readonly pluginContexts = new Map<PluginKey<unknown>, unknown>();

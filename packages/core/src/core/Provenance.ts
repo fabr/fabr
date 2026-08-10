@@ -123,3 +123,44 @@ export function describeProvenance(step: IProvenanceStep | undefined): string | 
   return undefined;
 }
 
+/**
+ * Locate one named file's origin in the USER'S SOURCE TREE: given the step and
+ * the file's path within the content that step explains, the absolute path the
+ * file was read from — or undefined if this step can't say (content fabr
+ * produced, or a step that doesn't track locations).
+ *
+ * The third dispatch on a chain, alongside rendering and describing, and asked
+ * of provenance for the same reason: "where did this come from" is precisely
+ * what a chain records, it is runtime-only ghost data, and a step that
+ * *rearranges* files (a union, a mount) already knows how to rebase a path onto
+ * its contributor — so the walk composes through assembly for free.
+ */
+export type ProvenanceLocator = (step: IProvenanceStep, path: string) => string | undefined;
+
+const PROVENANCE_LOCATORS = new Map<string, ProvenanceLocator>();
+
+export function registerProvenanceLocator(kind: string, locator: ProvenanceLocator): void {
+  PROVENANCE_LOCATORS.set(kind, locator);
+}
+
+/**
+ * Walk a chain for the source-tree path of the file named `path` within the
+ * content it explains: the nearest step that can say wins, and a step that
+ * can't is transparent (the walk continues to its parent, since a step that
+ * merely annotates — a model reference, a target evaluation — doesn't move
+ * files). A locator that rebases (see FileSet's merge provenance) recurses on
+ * its own; only a step that genuinely repositions content needs to.
+ *
+ * @return the absolute source path, or undefined if nothing in the chain
+ * sources the file from the user's tree (it was built, generated or fetched).
+ */
+export function locateSource(step: IProvenanceStep | undefined, path: string): string | undefined {
+  for (let current = step; current; current = current.parent) {
+    const located = PROVENANCE_LOCATORS.get(current.kind)?.(current, path);
+    if (located !== undefined) {
+      return located;
+    }
+  }
+  return undefined;
+}
+

@@ -23,7 +23,14 @@ import { startFabrWatch } from "./harness";
  * content edits — the staged file is synced in place ("Updating ... content")
  * and the server observes the new bytes with NO restart — while an edit to the
  * server program itself still restarts it. */
-(globalThis as { jest?: { setTimeout(ms: number): void } }).jest?.setTimeout(90000);
+
+/* jest caps each test at `testTimeout` (30s); the fabr runner bounds tests
+ * itself. Called as a BARE `jest`: under real jest the object is injected into
+ * MODULE scope and is not on globalThis, so reaching it through globalThis was a
+ * silent no-op — these suites have been running at 30s and only passing because
+ * they finished in time. `@types/jest` rides the e2e target's deps, so the bare
+ * name type-checks under the fabr compile too. */
+jest.setTimeout(90000);
 
 /* The server announces itself, then polls `data.txt` in its cwd and announces
  * each distinct content it observes. `exec` is unavailable (the loop IS the

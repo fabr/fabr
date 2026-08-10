@@ -28,10 +28,13 @@ import { startFabrWatch } from "./harness";
  * can be starved well past a tight timeout. It resolves in well under a second
  * normally — the ceiling only bites under heavy load, so raising it costs nothing
  * in the common case while removing the flake. */
-/* jest caps each test at 5s; the fabr runner (node:test) imposes no such cap.
- * Bump it only under jest, reaching the global through globalThis so the bare
- * `jest` name (undeclared in the fabr test compile) never appears. */
-(globalThis as { jest?: { setTimeout(ms: number): void } }).jest?.setTimeout(90000);
+/* jest caps each test at `testTimeout` (30s); the fabr runner bounds tests
+ * itself. Called as a BARE `jest`: under real jest the object is injected into
+ * MODULE scope and is not on globalThis, so reaching it through globalThis was a
+ * silent no-op — these suites have been running at 30s and only passing because
+ * they finished in time. `@types/jest` rides the e2e target's deps, so the bare
+ * name type-checks under the fabr compile too. */
+jest.setTimeout(90000);
 
 describe("e2e: watch mode (fabr build -w)", () => {
   it("rebuilds on a source change and exits cleanly on SIGINT", async () => {

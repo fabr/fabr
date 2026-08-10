@@ -1472,7 +1472,7 @@ export class BuildContext {
       targetDef,
       inputs,
       owner.getDeclaredContext(),
-      options?.label ?? type,
+      options?.label,
       owner.stack
     );
     return buildContext.evaluateTarget(context, rule);
@@ -1482,30 +1482,35 @@ export class BuildContext {
    * Run a build action through the cache: the key is the step's identity plus
    * the canonical manifest of its (already-resolved) inputs — sound by
    * construction, since the step consumes nothing else. A miss is the moment
-   * real work happens: it waits for an execution slot
-   * ({@link ExecutionContext.actionLimit}) and then announces its (declared)
-   * target as building — so the announcement marks work starting, not work
-   * queued. Steps never run actions of their own (composition is via
-   * sub-targets, whose actions complete before their output becomes another
-   * action's inputs), so a held slot never waits on a slot.
+   * real work happens, and is announced as such (staging begins immediately;
+   * the announcement marks a cache miss with work begun, never a hit). The
+   * machine-wide bound is NOT taken here: step code holds no execution slot —
+   * a slot is acquired around each process the step runs, inside the context's
+   * {@link IActionContext.execute}/{@link IActionContext.executePipeline} —
+   * so a step waiting on its processes (or on many of them in parallel) can
+   * never hold a slot while waiting for one, and the funnel is deadlock-free
+   * by construction. Steps still never run actions of their own (composition
+   * is via sub-targets, whose actions complete before their output becomes
+   * another action's inputs).
    */
   public runAction(action: BuildAction, context: TargetContext): Computable<FileSet> {
     const key = `rule:${action.step.id}:${action.step.version}\n${manifestEvalInputs(action.inputs)}`;
     const cache = this.execution.buildCache;
-    return this.getCachedOrBuild(key, targetDir =>
-      this.execution.actionLimit.run(() => {
-        context.announceBuilding();
-        /* The cache owns the scratch dir and the content store, so the action's
-         * context — work dir + streaming-output factory — is assembled here, at the
-         * bridge between the cache's create callback and the step. */
-        const actionContext: IActionContext = {
-          workDir: targetDir,
-          createOutput: () => cache.getTemporaryWriteStream(),
-          quiet: this.execution.quiet,
-        };
-        return action.step.run(action.inputs, actionContext);
-      })
-    );
+    const execution = this.execution;
+    return this.getCachedOrBuild(key, targetDir => {
+      context.announceBuilding();
+      /* The cache owns the scratch dir and the content store, so the action's
+       * context — work dir, streaming-output factory, and the run's execution
+       * funnel — is assembled here, at the bridge between the cache's create
+       * callback and the step. */
+      const actionContext: IActionContext = {
+        workDir: targetDir,
+        createOutput: () => cache.getTemporaryWriteStream(),
+        quiet: execution.quiet,
+        processLimit: execution.processLimit,
+      };
+      return action.step.run(action.inputs, actionContext);
+    });
   }
 
   private findTargetInStack(target: string, stack?: IDependencyStack): IDependencyStack | undefined {
@@ -2095,12 +2100,21 @@ export abstract class TargetContext {
    * cross-build — a build-time tool executes on this machine), and asserted to be a
    * RunnableFileSet. The caller launches it via `toCommandLine`. The host-pinning is
    * internal by design: a consumer resolving a tool to run it needn't restate it.
+   *
+   * `fallbackGlobal` names the project-wide default to use when the target
+   * declares none (`test_runner`, else `JS_TEST_RUNNER`) — the per-target
+   * override of a project-wide tool choice, which the targetdef schema has no
+   * way to express (it types properties, it does not value them).
    */
-  public getRunnableProperty(name: string): Computable<RunnableFileSet> {
-    return this.getFileProperty(name, this.runOverrides())
-      .then(sources => materializeLists([sources]))
-      .then(([resolved]) => this.context.finishDelivered(resolved))
-      .then(resolved => asRunnable(resolved, name));
+  public getRunnableProperty(name: string, fallbackGlobal?: string): Computable<RunnableFileSet> {
+    return this.getFileProperty(name, this.runOverrides()).then(sources => {
+      if (sources.length === 0 && fallbackGlobal !== undefined) {
+        return this.getGlobalRunnable(fallbackGlobal);
+      }
+      return materializeLists([sources])
+        .then(([resolved]) => this.context.finishDelivered(resolved))
+        .then(resolved => asRunnable(resolved, name));
+    });
   }
 
   /**
@@ -2253,18 +2267,24 @@ export class DeclaredTargetContext extends TargetContext {
  * an action-verb `label` ("Compiling"): failures attribute to the declared
  * target with that label, provenance is left to the declared owner's stamp,
  * and the build announcement delegates to the declared owner.
+ *
+ * The label is **optional**, and its absence is meaningful: a sub-target with
+ * one is a distinguishable step *within* the target's work ("Compiling X"), one
+ * without simply IS that work, decomposed for structure rather than for
+ * display — so it announces nothing of its own (the umbrella "Testing X"
+ * already says it) and its failures attribute to the declared target plainly.
  */
 export class AnonymousTargetContext extends TargetContext {
   private readonly inputs: SubTargetInputs;
   private readonly declared: DeclaredTargetContext;
-  private readonly label: string;
+  private readonly label: string | undefined;
 
   constructor(
     context: BuildContext,
     targetDef: ITargetDefDecl,
     inputs: SubTargetInputs,
     declared: DeclaredTargetContext,
-    label: string,
+    label: string | undefined,
     stack?: IDependencyStack
   ) {
     super(context, targetDef, stack);
@@ -2363,16 +2383,19 @@ export class AnonymousTargetContext extends TargetContext {
      * step ("Compiling X") attributed to it. A sub-target is a target too: it
      * announces the same event, carrying its own constraints/operation, plus the
      * action-verb `label` that distinguishes it. Its requiredBy is left to the
-     * umbrella event (it belongs to the same declared target). */
+     * umbrella event (it belongs to the same declared target). An unlabelled
+     * sub-target *is* the umbrella's work and says nothing further. */
     this.declared.announceBuilding();
-    this.notifyProgress({
-      kind: "target-build",
-      target: this.declared.target,
-      operation: this.context.getConstraint(BUILD_OPERATION) ?? "build",
-      constraints: this.context.getConstraints(),
-      requiredBy: [],
-      label: this.label,
-    });
+    if (this.label !== undefined) {
+      this.notifyProgress({
+        kind: "target-build",
+        target: this.declared.target,
+        operation: this.context.getConstraint(BUILD_OPERATION) ?? "build",
+        constraints: this.context.getConstraints(),
+        requiredBy: [],
+        label: this.label,
+      });
+    }
   }
 }
 

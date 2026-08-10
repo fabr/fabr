@@ -33,8 +33,10 @@ module.exports = {
     /* The astro docs site (docs/src) is not a fabr TS package — its `astro:*`
      * virtual imports don't resolve under ts-jest */
     "!**/docs/**",
-    /* The runner runtime executes standalone under fabr test, not under jest */
+    /* The runner runtimes execute standalone in test child processes, not under
+     * jest (the jest-compat one loads jest's libraries from its own tool mount) */
     "!**/packages/js/src/testRunner/**",
+    "!**/packages/js/src/jestRunner/**",
     /* The bundle driver executes standalone in the bundle step (requires esbuild) */
     "!**/packages/js/src/bundleDriver/**",
     /* The CSS driver executes standalone in the css step (requires sass-embedded + lightningcss) */

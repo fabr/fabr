@@ -259,4 +259,50 @@ describe("WatchController", () => {
       expect(probe.detaches).to.equal(flushes);
     }
   });
+
+  it("records a deferred change without arming the timer", () => {
+    /* A change fabr itself made — a written-back test expectation. Rebuilding
+     * because of it would only reproduce the bytes just written. */
+    const events: string[] = [];
+    const timer = new FakeTimer();
+    const controller = new WatchController(10, timer);
+    controller.notifyChanged(changeEntry(e => events.push(e)), { defer: true });
+    expect(timer.hasPending).to.equal(false);
+    expect(events).to.deep.equal([]);
+  });
+
+  it("applies a deferred change on the next real change, rather than never", () => {
+    /* Deferring is not the same as calling the entry up to date: it stays
+     * dirty, so the next genuine event settles it along with everything else. */
+    const events: string[] = [];
+    const timer = new FakeTimer();
+    const controller = new WatchController(10, timer);
+    /* Recorded on settle only — each entry also reports its invalidate. */
+    controller.notifyChanged(changeEntry(e => e === "settle" && events.push("deferred")), { defer: true });
+    controller.notifyChanged(changeEntry(e => e === "settle" && events.push("real")));
+    expect(timer.hasPending).to.equal(true);
+    timer.fire();
+    expect(events).to.have.members(["deferred", "real"]);
+  });
+
+  it("arms a deferred change when it turns out not to have been ours", () => {
+    /* The write's hash did not match what the file actually holds, so somebody
+     * else edited it: the change was already recorded, it just needed a reason
+     * to be applied. */
+    const events: string[] = [];
+    const timer = new FakeTimer();
+    const controller = new WatchController(10, timer);
+    controller.notifyChanged(changeEntry(e => e === "settle" && events.push("settle")), { defer: true });
+    controller.armFlush();
+    expect(timer.hasPending).to.equal(true);
+    timer.fire();
+    expect(events).to.deep.equal(["settle"]);
+  });
+
+  it("does not arm a flush with nothing dirty", () => {
+    /* An empty batch would advance the build cycle and re-announce for no work. */
+    const timer = new FakeTimer();
+    new WatchController(10, timer).armFlush();
+    expect(timer.hasPending).to.equal(false);
+  });
 });

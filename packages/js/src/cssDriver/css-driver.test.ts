@@ -19,7 +19,6 @@
  * requires sass-embedded (unavailable to jest). Importing the driver module is
  * safe: sass is required lazily inside main(), not at load. */
 
-import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import { isPartial, isSass, plainCssName } from "./css-driver";
 

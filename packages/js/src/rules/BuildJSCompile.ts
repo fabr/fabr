@@ -46,6 +46,19 @@ import {
 /** Where the toolchain is mounted in the working dir — disjoint from src/node_modules/build. */
 const TOOL_DIR = ".tools/tsc";
 
+/**
+ * The compile's own layout: sources under `src/`, emitted output under `build/`.
+ *
+ * Exported because it is not private to this rule after all — a consumer that
+ * mounts the compiled tree ALONGSIDE its sources has to reproduce the same
+ * pairing, or the `sources` paths tsc writes into each `.js.map` (relative from
+ * outDir back to rootDir) resolve to nothing. The test install does exactly
+ * that, which is what lets a stack frame — and jest's code frame — name the
+ * original TypeScript.
+ */
+export const COMPILE_SRC_DIR = "src";
+export const COMPILE_OUT_DIR = "build";
+
 /** The automatic-runtime jsx mode: the dev variant (source-position
  * instrumentation, `<src>/jsx-dev-runtime`) for a debug build, else production. */
 export function jsxModeFor(buildType: string | undefined): "react-jsx" | "react-jsxdev" {
@@ -141,8 +154,8 @@ export function makeTsConfig(
        * `src/` tree (unlike a JS map, `inlineSources` does NOT embed sources
        * into it), which we don't ship — so it would only ever dangle. Editor
        * go-to-definition into the `.ts` awaits a future ship-source flag. */
-      outDir: "build",
-      rootDir: "src",
+      outDir: COMPILE_OUT_DIR,
+      rootDir: COMPILE_SRC_DIR,
       /* Strict by default (fabr's own code and modern TS); a target relaxes it
        * per its `deps` source-mode flags, folded in via `modeOverlay` below. */
       strict: true,
@@ -235,13 +248,13 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
         const tsconfig = makeTsConfig(parseJSTarget(target), jsx, modeOverlay, buildType, packageName, sourceVersion);
         const workingDir = FileSet.layout({
           node_modules: assembleScopedNodeModules(deps),
-          src: srcs,
+          [COMPILE_SRC_DIR]: srcs,
           "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
           [TOOL_DIR]: tsc,
         });
         /* The tool launches from its own mount (its deps resolve there); cwd is the
          * workspace root, so `include`/`node_modules` resolve against the sources. */
-        return createExecAction(workingDir, tsc.toCommandLine([], { base: TOOL_DIR }), "build:**", "compile");
+        return createExecAction(workingDir, tsc.toCommandLine([], { base: TOOL_DIR }), `${COMPILE_OUT_DIR}:**`, "compile");
       };
       return hasJsx ? resolveJsxImportSource(deps).then(build) : build("");
     }

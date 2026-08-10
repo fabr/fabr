@@ -27,6 +27,7 @@ import type { IOutputHandle } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { ExecutionError } from "../core/Errors";
 import { FileSet, IFile } from "../core/FileSet";
+import { Semaphore } from "./Semaphore";
 
 /**
  * @return a human-readable description of an OS-level error, without the errno
@@ -267,7 +268,25 @@ function commandLine(cmd: string, args: string[]): string {
   return "$ " + [cmd, ...args].map(quoteArg).join(" ");
 }
 
-export function execute(cmd: string, args: string[], cwd: string, env: Record<string, string>, quiet = true): Computable<void> {
+/**
+ * Run one command through the given execution funnel (a build step passes
+ * `IActionContext.processLimit`): the slot is acquired around exactly the
+ * process lifetime, so boundedness is enforced by this signature — there is no
+ * unbounded way to run a build process. The interactive spawns below take no
+ * limit, deliberately: the user's foreground program is not build parallelism.
+ */
+export function execute(
+  limit: Semaphore,
+  cmd: string,
+  args: string[],
+  cwd: string,
+  env: Record<string, string>,
+  quiet = true
+): Computable<void> {
+  return limit.run(() => executeUnbounded(cmd, args, cwd, env, quiet));
+}
+
+function executeUnbounded(cmd: string, args: string[], cwd: string, env: Record<string, string>, quiet: boolean): Computable<void> {
   /* A failed spawn emits 'error' then a spurious 'close' (code -2): Computable.fromOnce
    * keeps the first (informative ENOENT) rejection and drops the useless "-2". */
   return Computable.fromOnce((resolve, reject) => {
@@ -367,12 +386,26 @@ interface Capture {
  * enters the store). A single-stage pipeline is the ordinary "run one command
  * and capture its output" case.
  */
+/* The pipeline takes ONE slot of the funnel for all its stages: they are
+ * pipe-wired and must co-run — admitting them separately could wedge a stage
+ * behind its own reader. Bounded by signature, like `execute`. */
 export function executePipeline(
+  limit: Semaphore,
   specs: StageSpec[],
   cwd: string,
   createOutput: () => IOutputHandle,
   stdin?: Uint8Array,
   quiet = true
+): Computable<FileSet> {
+  return limit.run(() => pipelineUnbounded(specs, cwd, createOutput, stdin, quiet));
+}
+
+function pipelineUnbounded(
+  specs: StageSpec[],
+  cwd: string,
+  createOutput: () => IOutputHandle,
+  stdin: Uint8Array | undefined,
+  quiet: boolean
 ): Computable<FileSet> {
   const captures: Capture[] = [];
   return Computable.fromOnce<void>((resolve, reject) => {

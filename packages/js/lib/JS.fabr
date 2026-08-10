@@ -50,10 +50,51 @@ default JS_BUNDLER = @fabr-build/js-tools/bundle-driver;
 default CSS_COMPILER = @fabr-build/js-tools/css-driver;
 
 #
-# The test runner the js test rules run (fabr's own by default).
+# The test runner the js test rules run (fabr's own by default). A target
+# overrides it for itself with its `test_runner` property; set this to switch a
+# whole project (e.g. to the jest-compatibility runner below).
 #
 
 default JS_TEST_RUNNER = @fabr-build/js-tools/test-runner;
+
+#
+# The jest release the jest-compatibility runner takes its libraries from.
+# Pinned like any tool (TSC, SASS, ...) — fabr never hardcodes a tool version;
+# override this one default to move. Jest 29/30 are supported; the runner checks
+# at startup rather than failing obscurely later.
+#
+
+default JEST = @npm:jest:30.3.0;
+
+#
+# The transform the jest runner hoists `jest.mock` calls with. swc rather than
+# jest's own babel plugin on two measured grounds: the babel plugin also
+# VALIDATES a mock factory's free variables and rejects correct code that other
+# jest transformers accept (18 of 40 files in a real suite), and a test file
+# gets its own process, so the transform's first-call cost is paid per file and
+# never amortised — ~124ms with babel against ~8.5ms with swc. Native, so it
+# rides the same os/cpu platform gating as esbuild and lightningcss.
+#
+
+default SWC = @npm:@swc/core:1.15.43;
+
+#
+# The `@types/*` packages inside jest's closure that are required WITHOUT a
+# version lower bound ('*', the DefinitelyTyped house style), so nothing in the
+# closure picks a version for them. Fabr does not invent one — a floorless
+# requirement is satisfied by whatever the floored ones select, and here nothing
+# does — so they are named here. They are compile-time type declarations that
+# nothing in a test process ever loads; the versions matter only in that they
+# must exist. Overridable alongside JEST if a different jest release needs
+# different ones.
+#
+
+default JEST_TYPE_PINS = @npm:@types/node:20.12.7
+                         @npm:@types/babel__generator:7.27.0
+                         @npm:@types/babel__template:7.4.4
+                         @npm:@types/babel__traverse:7.28.0
+                         @npm:@types/istanbul-lib-report:3.0.3
+                         @npm:@types/yargs-parser:21.0.3;
 
 ################### Source-mode flags #####################
 
@@ -159,16 +200,24 @@ targetdef js_package {
     # they are emitted as peerDependencies (not dependencies) in the generated
     # package.json rather than bundled. Used by a plugin for @fabr-build/core.
     provided_deps = FILES;
-    # Files that ship as package content WITHOUT being compiled, including 
+    # Files that ship as package content WITHOUT being compiled, including
     # already-built JavaScript (note there are definitionally no checks on
     # the included files.)
     resources = FILES;
+    # Test source files, plus any supporting files (mocks, snapshots)
+    # May contain a setupTests.ts/setupTests.js; if present it will run
+    # before every test.
     tests = FILES;
     # Extra packages for compiling and running the tests only (assertion
     # libraries and their @types); never part of the package's own
     # dependencies. The describe/it globals are provided (and typed) by the
     # test runner.
     test_deps = FILES;
+    # The runner `fabr test` runs these tests under; defaults to the
+    # JS_TEST_RUNNER global. Any runnable honoring the runner contract will do —
+    # in practice, fabr's own runner or one of its compatibility flavours (see
+    # the jest runner in the driver-tools section).
+    test_runner = FILES;
     version = STRING;
     # Descriptive package.json fields (description, license, author, homepage,
     # ...), overlaid onto the generated manifest. A value is a string, a nested
@@ -215,8 +264,18 @@ targetdef js_bundle {
 #
 
 targetdef js_test {
+    # Test source files, plus any supporting files (mocks, snapshots)
+    # May contain a setupTests.ts/setupTests.js; if present it will run
+    # before every test.
     tests = FILES;
     deps = FILES;
+    # The runner these tests run under; defaults to the JS_TEST_RUNNER global.
+    test_runner = FILES;
+    # A source named `setupTests` (.ts/.js) at the ROOT of this target's source
+    # tree is loaded into every test process before any test file — the usual
+    # home for environment polyfills and suite-wide mocks. A convention, not a
+    # property: it is one file per target and already an ordinary source, so it
+    # compiles with the tests and may use the test globals.
 }
 
 #
@@ -272,6 +331,29 @@ targetdef js_compile {
     # The package name these sources are importable as, which enables
     # source that imports its own package by name to work correctly.
     package_name = STRING;
+}
+
+#
+# One execution of a test runner over a staged installation — the cache unit of
+# a test run. Composed automatically by `js_package`/`js_test` (which assemble
+# the installation and the invocation); there is nothing useful to declare by
+# hand. `staged` is the complete installation, `argv` the runner invocation, and
+# `outputs` the selectors for what the run leaves behind (the report, plus any
+# refreshed expectation files under TEST_EXPECTATIONS=update).
+#
+
+targetdef js_test_run {
+    staged = FILES;
+    # The subset of `staged` the runner is allowed to rewrite (the recorded
+    # expectations, under TEST_EXPECTATIONS=update): staged as writable copies
+    # rather than links into the content store.
+    writable = FILES;
+    # The runner invocation, without report or files: the step invokes it once
+    # per test_files entry (each execution admitted separately by the process
+    # funnel), appending a per-invocation report name and the file.
+    argv = REQUIRED STRING;
+    test_files = REQUIRED STRING;
+    outputs = REQUIRED STRING;
 }
 
 #
@@ -345,5 +427,33 @@ js_script @fabr-build/js-tools/css-driver {
 # on failure, report written as CTRF.
 js_script @fabr-build/js-tools/test-runner {
     entry = ../testRunner/runner.js;
-    deps = ../testRunner/Report.js ../testRunner/globals.js ../testRunner/test-globals.d.ts;
+    deps = ../testRunner/Report.js ../testRunner/globals.js ../testRunner/RunTests.js ../testRunner/test-globals.d.ts;
+}
+
+# Fabr's test runner with a JEST COMPATIBILITY LAYER: it drives JEST-CIRCUS
+# itself. Circus owns the framework (describe/it, hooks, .each/.only/.concurrent,
+# per-test timeouts, `expect` with its snapshot state and assertion counting);
+# fabr owns the module system (node's real loader, the mock registry, the
+# load-time hoist, the `jest` object). Neither jest's orchestrator nor
+# jest-runtime runs: circus is handed a facade over the eleven methods it
+# actually calls, so modules load through node and `require(esm)` keeps working
+# — the capability jest's own vm-based loader lacks.
+#
+# Select it per target (`test_runner = @fabr-build/js-tools/jest-runner;`) or
+# project-wide (`JS_TEST_RUNNER = @fabr-build/js-tools/jest-runner;`). A target
+# using it should declare `@npm:@types/jest` among its `test_deps` for the
+# describe/it/expect/jest globals' types — this runner deliberately ships no
+# ambient globals of its own, which would collide with them.
+#
+# A test file that imports describe/it from `node:test` DIRECTLY is invisible to
+# it — those registrations go to node:test, which this runner does not drive —
+# so a file that registers no tests is reported as a failure rather than
+# silently passing. Use the globals, or `@jest/globals`.
+js_script @fabr-build/js-tools/jest-runner {
+    entry = ../jestRunner/runner.js;
+    deps = ${JEST} ${SWC} JEST_TYPE_PINS
+           ../jestRunner/Assets.js ../jestRunner/child.js ../jestRunner/Config.js ../jestRunner/Environment.js
+           ../jestRunner/Failures.js ../jestRunner/Hoist.js ../jestRunner/JestObject.js ../jestRunner/Registry.js
+           ../jestRunner/RuntimeFacade.js ../jestRunner/SnapshotResolver.js ../jestRunner/Tools.js
+           ../testRunner/Report.js ../testRunner/RunTests.js;
 }

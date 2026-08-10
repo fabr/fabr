@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { FileSource, INameValue, NAME_COMPONENT_SEPARATOR, parseName, StringReader, syntheticValue } from "@fabr-build/core";
+import { FileSource, INameValue, NAME_COMPONENT_SEPARATOR, parseName, StringReader, syntheticValue, WritableSourceTree } from "@fabr-build/core";
 
 /**
  * Where the invocation was run, as a reference given there needs to know it: the
@@ -26,7 +26,15 @@ import { FileSource, INameValue, NAME_COMPONENT_SEPARATOR, parseName, StringRead
  * project has been located, so it is supplied at use rather than at parse.
  */
 export interface IInvocationSite {
-  sourceFileSource: FileSource;
+  /**
+   * The source tree, as something writable rather than as the bare `FileSource`
+   * interface: it is both what a bare path resolves through and what the driver
+   * writes refreshed test expectations back into, and the write belongs to the
+   * owner of the tree (see {@link WritableSourceTree}). That also means the
+   * project root need not be carried separately — the source knows its own, and
+   * containment against it is its own invariant.
+   */
+  sourceFileSource: WritableSourceTree;
   absFileSource: FileSource;
   invocationDir: string;
 }

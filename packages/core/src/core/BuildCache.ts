@@ -29,6 +29,7 @@ import { CANONICAL, DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
 import { deleteFile, HASH_ALGORITHM, hashString, readFile, readFileBuffer, readOnlyPermissions, rename, writeFile } from "./FSWrapper";
 import { registerTempTree, removeTempTree } from "./Staging";
 import { SymlinkFile } from "./SymlinkFile";
+import type { Semaphore } from "../support/Semaphore";
 import { Diagnostic, Log } from "../support/Log";
 import { SNIFF_LENGTH, sniffMime } from "../support/Mime";
 
@@ -65,9 +66,10 @@ export interface IFetchContext {
 
 /**
  * What a build step's `run` receives (see IBuildActionDefinition): the scratch
- * work directory plus a factory for streaming outputs. Built by {@link runAction}
- * around the cache, so a step can produce work-dir files (collected afterward) or
- * stream output straight into the store ({@link createOutput}).
+ * work directory, a factory for streaming outputs, and the run's execution
+ * funnel. Built by {@link runAction} around the cache, so a step can produce
+ * work-dir files (collected afterward) or stream output straight into the
+ * store ({@link createOutput}).
  */
 export interface IActionContext {
   readonly workDir: string;
@@ -76,6 +78,14 @@ export interface IActionContext {
    * failure (`-q`), rather than inherit fabr's stderr and let it stream live. Set
    * by the framework from the run's verbosity. */
   readonly quiet: boolean;
+  /**
+   * The machine-wide execution funnel, which `execute`/`executePipeline`
+   * require: a slot is held for exactly the process lifetime, and the step's
+   * own code never holds one — so a step may issue any number of executions,
+   * sequentially or in parallel (the per-file test run), and hold-and-wait is
+   * impossible by construction.
+   */
+  readonly processLimit: Semaphore;
 }
 
 const DIAG_SERVING_STALE = Diagnostic.Warn<{ url: string; reason: string }>(

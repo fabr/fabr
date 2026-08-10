@@ -321,8 +321,12 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
 /** Finish one staged write: `create` has produced the temp sibling; rename it
  * atomically over the target. On any failure, remove the temp best-effort so a
  * partial sync leaves no debris behind (a stale temp would otherwise linger, and
- * — before the counter went process-monotonic — poison later syncs). */
-function stageWrite(temp: string, targetName: string, create: Computable<void>): Computable<void> {
+ * — before the counter went process-monotonic — poison later syncs).
+ *
+ * Exported for the write-back path, which replaces a user's file under exactly
+ * the same rule: the destination may be a hardlink into the blob pool, so it is
+ * replaced rather than written through. */
+export function stageWrite(temp: string, targetName: string, create: Computable<void>): Computable<void> {
   return asExecutionError(
     create.then(() => rename(temp, targetName)).catch(err => {
       try {
@@ -371,8 +375,14 @@ function asExecutionError<T>(operation: Computable<T>): Computable<T> {
  * degenerate no-rename projection, so both compile to one `path -> name?`
  * function ({@link outputProjector}). A rename can collapse two written files
  * onto one output name — a {@link ConflictError}, mirroring FileSet.rename.
+ *
+ * Several selectors may be given, for a step whose output is genuinely two
+ * unrelated things (the test run's report *and* the snapshot files it
+ * refreshed): a file is kept if ANY selects it, named by the first that does.
+ * They are alternatives of one projection, not successive passes — everything
+ * unselected is still deleted exactly once.
  */
-export function getResultFileSet(targetDir: string, output: Name | string): Computable<FileSet> {
+export function getResultFileSet(targetDir: string, output: Name | string | ReadonlyArray<Name | string>): Computable<FileSet> {
   const project = outputProjector(output);
   const result = new Map<string, IFile>();
   /* Source path each output name came from, for a rename-collision message. */
@@ -426,7 +436,19 @@ export function getResultFileSet(targetDir: string, output: Name | string): Comp
  * strip the `dir/` prefix and name results relative to it — equivalent to the
  * colon projection, without needing the model parser to build a Name here.
  */
-function outputProjector(output: Name | string): (rel: string) => string | undefined {
+function outputProjector(output: Name | string | ReadonlyArray<Name | string>): (rel: string) => string | undefined {
+  if (typeof output !== "string" && !(output instanceof Name)) {
+    const projectors = output.map(one => outputProjector(one));
+    return rel => {
+      for (const project of projectors) {
+        const name = project(rel);
+        if (name !== undefined) {
+          return name;
+        }
+      }
+      return undefined;
+    };
+  }
   if (output instanceof Name) {
     return output.makeProjector();
   }

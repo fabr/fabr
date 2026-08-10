@@ -24,134 +24,44 @@
  * node:test's native describe/it plus whatever assertion/mock libraries the
  * target declares as ordinary dependencies.
  *
- * Usage: node runner.js [--report=<path>] <test-file>...
+ * Usage: node runner.js [--report=<path>] [--env=node] [--update-snapshots] <test-file>...
  * Exit code 0 if everything passed; 1 if any test failed. The report document
  * (see Report.ts) is written to the given path in either case.
+ *
+ * This is the base flavour: the runner core (RunTests.ts) plus a preload that
+ * installs the describe/it globals and nothing else. The jest-compatibility
+ * flavour (../jestRunner) is the same core with a much larger preload.
  */
 
-import { run } from "node:test";
-import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ITestResult } from "@fabr-build/core";
-import { buildReport, formatTestFailures, formatTestSummary, TEST_REPORT_FILENAME } from "./Report";
+import { IRunnerOptions, parseRunnerArgs, runTestFiles } from "./RunTests";
 
 /**
- * The fields we consume from node:test's test:pass / test:fail event data,
- * declared structurally so that the harness tolerates the (typed) shape
- * differences between node versions.
+ * Environments this flavour provides. It runs tests in the node process it is
+ * given, so `node` is the only one it can honestly claim — a target compiled
+ * for the browser needs a runner that installs a DOM (the jest flavour does).
+ * Said plainly rather than by silently running DOM tests without a DOM.
  */
-interface ITestEvent {
-  name: string;
-  file?: string;
-  skip?: boolean | string;
-  todo?: boolean | string;
-  details: {
-    duration_ms?: number;
-    /** 'suite' for describe-block completions, which aggregate their children */
-    type?: string;
-    error?: Error & { cause?: unknown };
-  };
-}
-
-interface IRunnerOptions {
-  report: string;
-  files: string[];
-}
-
-function parseArgs(argv: string[]): IRunnerOptions {
-  const options: IRunnerOptions = { report: TEST_REPORT_FILENAME, files: [] };
-  for (const arg of argv) {
-    if (arg.startsWith("--report=")) {
-      options.report = arg.substring("--report=".length);
-    } else {
-      options.files.push(arg);
-    }
+function requireSupportedEnvironment(options: IRunnerOptions): void {
+  if (options.env !== "node") {
+    throw new Error(
+      `The fabr test runner provides no '${options.env}' environment — it runs tests directly in node.\n` +
+        "Use a runner that supplies one (test_runner = @fabr-build/js-tools/jest-runner), or build the target for node."
+    );
   }
-  return options;
-}
-
-function record(results: ITestResult[], event: ITestEvent, kind: "pass" | "fail"): void {
-  if (event.details.type === "suite") {
-    /* Suite completions aggregate their children; only individual tests (and
-     * whole-file crashes, which arrive as failed tests) are recorded */
-    return;
-  }
-  let status: ITestResult["status"] = kind === "fail" ? "failed" : "passed";
-  if (kind === "pass" && event.skip) {
-    status = "skipped";
-  } else if (kind === "pass" && event.todo) {
-    status = "pending";
-  }
-  results.push({
-    name: event.name,
-    filePath: event.file ? path.relative(process.cwd(), event.file) : undefined,
-    status,
-    duration: event.details.duration_ms ?? 0,
-    message: kind === "fail" ? describeError(event.details.error) : undefined,
-  });
-}
-
-/**
- * node:test wraps the thrown assertion error in an ERR_TEST_FAILURE error
- * whose cause is the interesting part; unwrap it where present.
- */
-function describeError(error: (Error & { cause?: unknown }) | undefined): string {
-  if (!error) {
-    return "failed";
-  }
-  const cause = error.cause;
-  if (cause instanceof Error) {
-    return cause.message;
-  } else if (cause !== undefined) {
-    return String(cause);
-  }
-  return error.message;
-}
-
-function finish(results: ITestResult[], reportPath: string, start: number): void {
-  const report = buildReport(results, start, Date.now());
-  fs.writeFileSync(reportPath, JSON.stringify(report, undefined, 2));
-  const failed = report.results.summary.failed;
-  console.log(failed > 0 ? formatTestFailures(report) : formatTestSummary(report));
-  process.exitCode = failed > 0 ? 1 : 0;
-}
-
-/* Per-test timeout: a safety net so a hung test (a runaway loop, a subprocess
- * blocked on stdin that never closes) fails as a timeout rather than hanging the
- * whole run forever — node:test defaults to no timeout, unlike jest's 5s. Baked
- * in (tests run with a clean env, so an env knob could not reach here) and set
- * generously — well above the slowest legit test (the watch/serve suites cap
- * themselves at 90s) — so it only ever catches a genuine hang. */
-const TEST_TIMEOUT_MS = 120_000;
-
-/* The timeout's complement: the timeout fails a hung TEST, but cannot make a
- * test-file PROCESS exit — JS can't preempt, so a test that leaked live handles
- * (child pipes, watchers, timers) keeps the file's event loop alive after its
- * tests finish, the run's stream never ends, and the whole build hangs waiting.
- * forceExit exits each file's process once its tests complete regardless of
- * stray handles; anything the tests *spawned* and left behind is then reaped by
- * the host's process-group sweep at the action boundary (see core's Execute).
- * Not available before node 20.14/22.0 — older hosts keep the old behavior
- * rather than choke on an unknown option. */
-function forceExitOption(): { forceExit?: boolean } {
-  const [major, minor] = process.versions.node.split(".").map(Number);
-  return major >= 22 || (major === 20 && minor >= 14) ? { forceExit: true } : {};
 }
 
 export function main(argv: string[]): void {
-  const options = parseArgs(argv);
-  const results: ITestResult[] = [];
-  const start = Date.now();
-  /* Each test file runs in its own child process; preload the test-globals
-   * shim (describe/it/expect/...) into them via the inherited environment */
-  const preload = `--require ${JSON.stringify(path.join(__dirname, "globals.js"))}`;
-  process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, preload].filter(Boolean).join(" ");
-  const stream = run({ files: options.files.map(file => path.resolve(file)), timeout: TEST_TIMEOUT_MS, ...forceExitOption() });
-  stream.on("test:pass", data => record(results, data as unknown as ITestEvent, "pass"));
-  stream.on("test:fail", data => record(results, data as unknown as ITestEvent, "fail"));
-  stream.once("end", () => finish(results, options.report, start));
-  /* The event stream only flows (and thus only ends) if it is consumed */
-  stream.resume();
+  const options = parseRunnerArgs(argv);
+  requireSupportedEnvironment(options);
+  if (options.update) {
+    /* Nothing in this flavour records expectations yet, so `fabr test -u` would
+     * silently do nothing. Better to say so. */
+    throw new Error("The fabr test runner does not support recorded snapshots yet, so there is nothing to update");
+  }
+  /* Each test file runs in its own child process; the test-globals shim
+   * (describe/it/...) is preloaded into each. */
+  runTestFiles(options, [path.join(__dirname, "globals.js")]);
 }
 
 if (require.main === module) {

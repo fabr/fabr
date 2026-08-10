@@ -45,6 +45,20 @@ export const HOST = "HOST";
 export const TARGET = "TARGET";
 
 /**
+ * What a test run does when actual output diverges from a recorded expectation:
+ * `check` (fail — the default, declared in STD.fabr) or `update` (rewrite the
+ * record and offer it back to the source tree). `fabr test -u` sets it. Not a
+ * driver-injected fact like the above — an ordinary global property — but named
+ * here because the driver, core's write-back pass and the js test pipeline all
+ * have to agree on the spelling.
+ */
+export const TEST_EXPECTATIONS = "TEST_EXPECTATIONS";
+
+/** The {@link TEST_EXPECTATIONS} value that turns recorded expectations into
+ * offered updates. */
+export const UPDATE_EXPECTATIONS = "update";
+
+/**
  * The `files` operation: "give me the output files, and do no more than that."
  * A weaker form of `build` — it has no type-specific rules of its own; a generic
  * default rule (see rules/DefaultFilesRule) delegates it to the target's `build`

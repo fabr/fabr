@@ -44,6 +44,7 @@ export * from "./core/Repository";
 export * from "./core/SourceFileSource";
 export * from "./core/WatchController";
 export * from "./core/WorkList";
+export * from "./core/WriteBack";
 export * from "./model/BuildContext";
 export * from "./model/Constraints";
 export * from "./model/BuildModel";

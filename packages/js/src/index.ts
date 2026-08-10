@@ -40,6 +40,7 @@ import { buildJsBundleRule } from "./rules/BuildJSBundle";
 import { buildCssCompileRule } from "./rules/BuildCSSCompile";
 import { testJsPackageRule } from "./rules/TestJSPackage";
 import { jsTestRule } from "./rules/TestJSTest";
+import { jsTestRunRule } from "./rules/TestJSTestRun";
 import { jsScriptRule } from "./rules/RunJSScript";
 import { npmRepositoryRegistration } from "./NPMRepository";
 
@@ -72,6 +73,7 @@ export function activate(): PluginContribution {
       buildCssCompileRule,
       testJsPackageRule,
       jsTestRule,
+      jsTestRunRule,
       jsScriptRule,
     ],
     repositories: [npmRepositoryRegistration],

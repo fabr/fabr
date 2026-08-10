@@ -27,10 +27,14 @@ import { Computable } from "../core/Computable";
 import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { execute, executeInteractive, executePipeline } from "./Execute";
+import { Semaphore } from "./Semaphore";
 
 const NODE = process.execPath;
 const MISSING = "/nonexistent/fabr-definitely-not-here";
 const CWD = process.cwd();
+/* Wide enough that no test here ever queues: these tests exercise the process
+ * mechanics, not the funnel. */
+const LIMIT = new Semaphore(16);
 
 /** An in-memory stand-in for BuildCache.getTemporaryWriteStream: collect the
  * piped bytes and finalize to a MemoryFile, so the pipeline tests exercise the
@@ -50,8 +54,8 @@ function memoryOutput(): IOutputHandle {
   };
 }
 
-function runPipeline(stages: Parameters<typeof executePipeline>[0], stdin?: Uint8Array): Promise<FileSet> {
-  return new Promise((resolve, reject) => executePipeline(stages, CWD, memoryOutput, stdin).then(resolve, reject));
+function runPipeline(stages: Parameters<typeof executePipeline>[1], stdin?: Uint8Array): Promise<FileSet> {
+  return new Promise((resolve, reject) => executePipeline(LIMIT, stages, CWD, memoryOutput, stdin).then(resolve, reject));
 }
 
 /** The text of a captured file in the pipeline result. */
@@ -91,12 +95,12 @@ function collectSettlements<T>(c: Computable<T>, graceMs = 150): Promise<Array<{
 
 describe("execute", () => {
   it("resolves on a zero exit", async () => {
-    const outcomes = await collectSettlements(execute(NODE, ["-e", "process.exit(0)"], process.cwd(), {}));
+    const outcomes = await collectSettlements(execute(LIMIT, NODE, ["-e", "process.exit(0)"], process.cwd(), {}));
     expect(outcomes).to.deep.equal([{ ok: true, value: undefined }]);
   });
 
   it("rejects on a non-zero exit, reporting the code", async () => {
-    const outcomes = await collectSettlements(execute(NODE, ["-e", "process.exit(3)"], process.cwd(), {}));
+    const outcomes = await collectSettlements(execute(LIMIT, NODE, ["-e", "process.exit(3)"], process.cwd(), {}));
     expect(outcomes).to.have.length(1);
     expect(outcomes[0].ok).to.equal(false);
     expect(outcomes[0].err?.message).to.include("exited with error code 3");
@@ -105,7 +109,7 @@ describe("execute", () => {
   it("reports a spawn failure exactly once, with the exec error (not a bogus exit code)", async () => {
     /* Node fires 'error' (ENOENT) then 'close' (code -2); the informative error
      * must win and the 'close' must not settle a second time. */
-    const outcomes = await collectSettlements(execute(MISSING, [], process.cwd(), {}));
+    const outcomes = await collectSettlements(execute(LIMIT, MISSING, [], process.cwd(), {}));
     expect(outcomes).to.have.length(1);
     expect(outcomes[0].ok).to.equal(false);
     expect(outcomes[0].err?.message).to.include("unable to execute");
@@ -117,7 +121,7 @@ describe("execute", () => {
      * empty at once. Were stdin the default open pipe the parent holds, it would
      * block forever — so bound the wait and fail loudly on a hang. */
     const settled = collectSettlements(
-      execute(NODE, ["-e", "require('fs').readFileSync(0); process.exit(0)"], process.cwd(), {})
+      execute(LIMIT, NODE, ["-e", "require('fs').readFileSync(0); process.exit(0)"], process.cwd(), {})
     );
     const outcomes = await Promise.race([
       settled,
@@ -140,7 +144,7 @@ describe("execute", () => {
         'const c = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });' +
         'require("fs").writeFileSync(process.argv[1], String(c.pid));' +
         "c.unref();"; /* unref so the step's own process exits at once */
-      const outcomes = await collectSettlements(execute(NODE, ["-e", script, pidFile], dir, {}));
+      const outcomes = await collectSettlements(execute(LIMIT, NODE, ["-e", script, pidFile], dir, {}));
       expect(outcomes).to.deep.equal([{ ok: true, value: undefined }]);
       expect(await processGone(Number(fs.readFileSync(pidFile, "utf8")), 15000)).to.equal(true);
     } finally {
@@ -193,7 +197,7 @@ describe("executePipeline", () => {
   });
 
   it("fails on the first non-zero stage (pipefail), settling exactly once", async () => {
-    const outcomes = await collectSettlements(executePipeline([{ argv: [NODE, "-e", "process.exit(4)"] }], CWD, memoryOutput));
+    const outcomes = await collectSettlements(executePipeline(LIMIT, [{ argv: [NODE, "-e", "process.exit(4)"] }], CWD, memoryOutput));
     expect(outcomes).to.have.length(1);
     expect(outcomes[0].ok).to.equal(false);
     expect(outcomes[0].err?.message).to.include("exited with error code 4");
@@ -206,6 +210,7 @@ describe("executePipeline", () => {
      * crashes the process. Assert it settles once, within a bound. */
     const settled = collectSettlements(
       executePipeline(
+        LIMIT,
         [
           { argv: [NODE, "-e", "process.stdout.write(Buffer.alloc(4*1024*1024, 65))"] },
           { argv: [NODE, "-e", "process.exit(0)"], stdout: "out" },
@@ -222,7 +227,7 @@ describe("executePipeline", () => {
   });
 
   it("reports a stage spawn failure once, with the exec error", async () => {
-    const outcomes = await collectSettlements(executePipeline([{ argv: [MISSING] }], CWD, memoryOutput));
+    const outcomes = await collectSettlements(executePipeline(LIMIT, [{ argv: [MISSING] }], CWD, memoryOutput));
     expect(outcomes).to.have.length(1);
     expect(outcomes[0].ok).to.equal(false);
     expect(outcomes[0].err?.message).to.include("unable to execute");
@@ -241,7 +246,7 @@ describe("executePipeline", () => {
         'require("fs").writeFileSync(process.argv[1], String(c.pid));' +
         "c.unref();" +
         "process.exit(1);";
-      const outcomes = await collectSettlements(executePipeline([{ argv: [NODE, "-e", script, pidFile] }], dir, memoryOutput));
+      const outcomes = await collectSettlements(executePipeline(LIMIT, [{ argv: [NODE, "-e", script, pidFile] }], dir, memoryOutput));
       expect(outcomes).to.have.length(1);
       expect(outcomes[0].ok).to.equal(false);
       expect(await processGone(Number(fs.readFileSync(pidFile, "utf8")), 15000)).to.equal(true);

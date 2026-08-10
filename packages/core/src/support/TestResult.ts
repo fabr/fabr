@@ -48,8 +48,16 @@ export interface ITestResult {
   duration: number;
   /** Path of the test file, relative to the test working directory */
   filePath?: string;
-  /** Failure description (failed tests only) */
+  /** Failure description (failed tests only) — one line, the summary of what
+   * went wrong. */
   message?: string;
+  /**
+   * Supporting detail for a failure that the message alone cannot carry (CTRF's
+   * `trace`): a stack, or the output of a test file that died before any of its
+   * tests ran. Kept apart from `message` because the failure list shows one line
+   * per test — a trace is rendered under it, not folded into it.
+   */
+  trace?: string;
 }
 
 export interface ITestSummary {
@@ -93,15 +101,22 @@ export function formatTestSummary(report: ITestReport): string {
 
 /**
  * @return a multi-line failure report: the summary line followed by one
- * indented line per failed test, or just the summary if everything passed.
+ * indented line per failed test — plus, for a failure carrying one, its trace
+ * indented beneath. One line per test keeps a large red run readable (a matcher
+ * message can be a whole diff); a trace is the exception because a test that
+ * never ran has nothing else to say about itself.
  */
 export function formatTestFailures(report: ITestReport): string {
   const lines = [formatTestSummary(report)];
   for (const test of report.results.tests) {
     if (test.status === "failed") {
-      const where = test.filePath ? ` (${test.filePath})` : "";
+      /* …unless the test IS the file (a load failure), where it would repeat. */
+      const where = test.filePath && test.filePath !== test.name ? ` (${test.filePath})` : "";
       const detail = test.message ? `: ${firstLine(test.message)}` : "";
       lines.push(`  ${test.name}${where}${detail}`);
+      if (test.trace) {
+        lines.push(...test.trace.split("\n").map(line => `    ${line}`));
+      }
     }
   }
   return lines.join("\n");
@@ -116,8 +131,45 @@ function firstLine(text: string): string {
   return newline === -1 ? text : text.substring(0, newline);
 }
 
-/** The summary counters every reader of a report relies on being numbers. */
-const SUMMARY_COUNTERS = ["tests", "passed", "failed", "pending", "skipped", "other"];
+/** The summary fields every reader of a report relies on being numbers — the
+ * counters, plus `start`/`stop` (CTRF requires them, and the merge computes
+ * over them, so a report without them is not usable). */
+const SUMMARY_COUNTERS = ["tests", "passed", "failed", "pending", "skipped", "other", "start", "stop"];
+
+/**
+ * Merge per-invocation CTRF reports into the one report a test target
+ * delivers. The runner contract permits the caller to partition a target's
+ * test files across invocations (fabr runs one file per invocation, so each
+ * execution is admitted separately by the machine-wide funnel); each
+ * invocation writes its own report and the target's is their sum. The order
+ * is the caller's (the declared file order), so the merged document never
+ * depends on scheduling; start/stop are the earliest and latest — under
+ * parallel invocations the span, not the sum.
+ */
+export function mergeTestReports(reports: ITestReport[]): ITestReport {
+  if (reports.length === 0) {
+    throw new Error("mergeTestReports: no reports to merge");
+  }
+  const parts = reports.map(report => report.results);
+  const summaries = parts.map(part => part.summary);
+  const sum = (pick: (summary: ITestSummary) => number): number => summaries.reduce((total, summary) => total + pick(summary), 0);
+  return {
+    results: {
+      tool: parts[0].tool,
+      summary: {
+        tests: sum(summary => summary.tests),
+        passed: sum(summary => summary.passed),
+        failed: sum(summary => summary.failed),
+        pending: sum(summary => summary.pending),
+        skipped: sum(summary => summary.skipped),
+        other: sum(summary => summary.other),
+        start: Math.min(...summaries.map(summary => summary.start)),
+        stop: Math.max(...summaries.map(summary => summary.stop)),
+      },
+      tests: parts.flatMap(part => part.tests),
+    },
+  };
+}
 
 /**
  * Convert a parsed document to a report. The runner that wrote it is swappable
