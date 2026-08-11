@@ -261,6 +261,15 @@ export interface RepositoryWriter {
 }
 
 /**
+ * The resolved-and-assembled package behind one reference, deferred. Forcing it
+ * runs the joint resolution (shared across the batch, memoized); not forcing it
+ * runs none at all. `undefined` where the reference demands no delivery of its
+ * own — a `?` alternate, whose sanctioned fork arrives nested inside somebody
+ * else's closure.
+ */
+export type ClosureThunk = () => Computable<PackageFileSet | undefined>;
+
+/**
  * How a collection point consumes what it materializes — the enforcement input
  * for resolution repairs (floor raises, coexisting versions, conflict splits).
  * **"permissive"**: the closure is assembled
@@ -272,18 +281,19 @@ export interface RepositoryWriter {
  * about what the consuming rule does with the delivery, set by rule code at
  * its collection point — deliberately not a constraint (no grammar surface).
  */
-/**
- * The resolved-and-assembled package behind one reference, deferred. Forcing it
- * runs the joint resolution (shared across the batch, memoized); not forcing it
- * runs none at all. `undefined` where the reference demands no delivery of its
- * own — a `?` alternate, whose sanctioned fork arrives nested inside somebody
- * else's closure.
- */
-export type ClosureThunk = () => Computable<PackageFileSet | undefined>;
-
 export interface MaterializeOptions {
   resolutionMode?: "strict" | "permissive";
 }
+
+/**
+ * The judgment every launch-bound materialization makes: what is being resolved
+ * IS the program, so nothing links against its closure and repairs nest inside
+ * the install rather than failing. Shared by the code paths whose whole contract
+ * is "resolve this to a runnable and launch it" (the runnable accessors, a
+ * command stage's tool, the `run` verb's own name), so no rule of theirs has to
+ * restate it.
+ */
+export const PERMISSIVE_RESOLUTION: MaterializeOptions = { resolutionMode: "permissive" };
 
 /**
  * Run one reference's delivery, attributing any failure to the written
@@ -603,7 +613,11 @@ export type Materialized = FileSource | Repository | FileSetRef;
  * package, a runnable) pass through untouched; a projected source comes back as
  * a pending {@link FileSetRef} for the caller to finish (see Materialized).
  */
-export function materializeShallow(context: ResolutionContext, sources: SourceRef[]): Computable<Materialized[]> {
+export function materializeShallow(
+  context: ResolutionContext,
+  sources: SourceRef[],
+  options?: MaterializeOptions
+): Computable<Materialized[]> {
   const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
   const finish = (finished: Map<RepositoryRef, FileSet | FileSetRef>): Materialized[] =>
     sources.map((source): Materialized => (source instanceof RepositoryRef ? finished.get(source)! : source));
@@ -612,7 +626,7 @@ export function materializeShallow(context: ResolutionContext, sources: SourceRe
   }
   const batches = [...groupByRepository(references).entries()];
   return Computable.forAll(
-    batches.map(([repository, refs]) => resolveAndMaterialize(context, repository, refs)),
+    batches.map(([repository, refs]) => resolveAndMaterialize(context, repository, refs, options)),
     (...results: FileSet[][]) => {
       const finished = new Map<RepositoryRef, FileSet | FileSetRef>();
       batches.forEach(([, refs], batchIndex) =>

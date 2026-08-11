@@ -24,6 +24,8 @@ import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import {
+  MaterializeOptions,
+  PERMISSIVE_RESOLUTION,
   PublishMember,
   PublishStatus,
   Repository,
@@ -131,6 +133,10 @@ registerRule("test_globaltool", {}, context =>
     return EMPTY_FILESET;
   })
 );
+/* Resolve a tool to launch, through the two accessors that own that contract:
+ * a FILES property naming one, and a global naming one. */
+registerRule("test_tool", {}, context => context.getRunnableProperty("tool").then(() => EMPTY_FILESET));
+registerRule("test_globalrunnable", {}, context => context.getGlobalRunnable("TOOLGLOBAL").then(() => EMPTY_FILESET));
 /* Reads a STRING global under a caller override, for testing override precedence
  * against a <k=v> delta written on the global's value (the getGlobalString /
  * string path — the counterpart of test_globaltool). */
@@ -207,7 +213,7 @@ registerRule("test_map", {}, context =>
  * registries' property now, pinned at the resolver layer (RepositoryGroup
  * tests); what the collection point owes a plain repository is that every
  * gathered reference is delivered, by the repository it names. */
-const batchCalls: { repo: string; name: string }[] = [];
+const batchCalls: { repo: string; name: string; mode?: string }[] = [];
 class TestRepo implements Repository, RepositoryLookup {
   private readonly cache = new Map<string, FileSet>();
 
@@ -222,8 +228,11 @@ class TestRepo implements Repository, RepositoryLookup {
     throw new Error(`test_repo is not a publish destination ('${name.toString()}')`);
   }
 
-  public deliver(reference: RepositoryRef): Computable<FileSet> {
-    batchCalls.push({ repo: this.label, name: reference.name.toString() });
+  /* `mode` is recorded because the collection point's judgment is not
+   * observable in the delivered content: a repository with a resolution to
+   * judge (a real registry) accepts or refuses repairs by it. */
+  public deliver(reference: RepositoryRef, options?: MaterializeOptions): Computable<FileSet> {
+    batchCalls.push({ repo: this.label, name: reference.name.toString(), mode: options?.resolutionMode });
     return Computable.resolve(this.filesFor(reference.name.toString()));
   }
 
@@ -237,6 +246,19 @@ class TestRepo implements Repository, RepositoryLookup {
   }
 }
 registerRepositoryProvider("test_repo", context => Computable.resolve(new TestRepo(context.name)));
+
+/* Delivers a runnable rather than plain files, so the launch-bound accessors
+ * (getRunnableProperty / getGlobalRunnable / the run verb's resolveName) can be
+ * driven against a repository reference — what they ask FOR is recorded in
+ * batchCalls by the base class. */
+class TestToolRepo extends TestRepo {
+  public override deliver(reference: RepositoryRef, options?: MaterializeOptions): Computable<FileSet> {
+    return super
+      .deliver(reference, options)
+      .then(files => RunnableFileSet.forEntry(files, [...files].map(([name]) => name)[0]));
+  }
+}
+registerRepositoryProvider("test_tool_repo", context => Computable.resolve(new TestToolRepo(context.name)));
 
 /* Publish-capable repository double: vends publish refs, and packages each
  * member's content verbatim plus a `manifest.txt` naming its address — for
@@ -1288,6 +1310,45 @@ describe("BuildContext", () => {
     await model.getConfig(Constraints.of({}), execution).getTarget("a");
     expect(batchCalls.map(call => call.name).sort()).to.deep.equal(["one", "two"]);
     expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "two/data.txt"]);
+  });
+
+  it("Materializes a tool permissively, and ordinary deps strictly", async () => {
+    /* The judgment is the consuming code path's, and the launch-bound paths are
+     * where it is NOT a rule's to make: what they resolve IS the program, so its
+     * closure is never linked against and its repairs nest inside the install.
+     * A rule's own deps through the same repository are linked, and stay strict.
+     * (Regression: dropped when the operation left the resolution layer, which
+     * broke every bare external consumed as a tool — `serve { tool = @npm:… }`.) */
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_tool_repo { }\n" +
+      "targetdef test_tool { tool = FILES; }\n" +
+      "targetdef test_globalrunnable { }\n" +
+      "targetdef test_good { deps = FILES; }\n" +
+      "test_tool_repo tools { }\n" +
+      "TOOLGLOBAL = tools:viaglobal;\n" +
+      "test_tool a { tool = tools:viaproperty; }\n" +
+      "test_globalrunnable b { }\n" +
+      "test_good c { deps = tools:vialink; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    const config = model.getConfig(Constraints.of({}), execution);
+
+    batchCalls.length = 0;
+    await config.getTarget("a");
+    await config.getTarget("b");
+    await config.getTarget("c");
+    /* The run verb's own name is the same judgment, made by the driver — the
+     * only launch-bound path whose caller is outside the model. */
+    await config.resolveName(writtenOnCommandLine("tools:viaverb"), undefined, PERMISSIVE_RESOLUTION);
+
+    expect(batchCalls.map(call => `${call.name}=${call.mode ?? "strict"}`).sort()).to.deep.equal([
+      "viaglobal=permissive",
+      "vialink=strict",
+      "viaproperty=permissive",
+      "viaverb=permissive",
+    ]);
   });
 
   it("Partitions references by repository for resolution", async () => {

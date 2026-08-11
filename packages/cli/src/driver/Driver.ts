@@ -47,6 +47,7 @@ import {
   ProgressListener,
   PropertyType,
   PublishableFileSet,
+  PERMISSIVE_RESOLUTION,
   toRunnable,
   signalInteractiveChild,
   SourceRef,
@@ -393,7 +394,9 @@ function runProgram(
 ): Computable<void> {
   const config = configFor(model, options, execution, "run");
   const supervisor = watch ? new RunSupervisor(execution.buildCache, target, args, execution.log) : undefined;
-  return config.resolveName(options.commandLine.refFor(target, site)).then(sources => {
+  /* The name IS the program (`fabr run @npm:http-server:14.1.1`), so its closure
+   * is a sealed install — the same judgment a rule's `tool` property makes. */
+  return config.resolveName(options.commandLine.refFor(target, site), undefined, PERMISSIVE_RESOLUTION).then(sources => {
     /* A projected runnable (`fabr run pkg:tsc`) arrives pending — this is the
      * point a launcher is demanded, so it collapses here. */
     const runnable = sources.map(toRunnable).find(Boolean);

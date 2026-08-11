@@ -34,6 +34,7 @@ import {
   renamedDelivery,
   Repository,
   RepositoryRef,
+  PERMISSIVE_RESOLUTION,
   SourceRef,
 } from "../core/Repository";
 import { FileSetRef, FileSourceRef } from "../core/FileSetRef";
@@ -1083,10 +1084,18 @@ export class BuildContext {
    * input: its `value` is the reference and its siting is what makes a bare
    * path resolve — the same arm that resolves `./packages` written in a build
    * file, rooting at the file's own directory.
+   *
+   * `options` is the calling verb's judgment of what it will do with the result
+   * (see MaterializeOptions): `run` names a program to launch, so it passes
+   * PERMISSIVE_RESOLUTION; the file verbs (ls/cat/cp) take the strict default.
    */
-  public resolveName(ref: INameValue, stack?: IDependencyStack): Computable<(FileSource | Repository)[]> {
+  public resolveName(
+    ref: INameValue,
+    stack?: IDependencyStack,
+    options?: MaterializeOptions
+  ): Computable<(FileSource | Repository)[]> {
     return this.resolveFileValue(ref.value, stack, { relativeTo: ref })
-      .then(sources => materializeShallow(this.resolutionContext(), sources))
+      .then(sources => materializeShallow(this.resolutionContext(), sources, options))
       .then(delivered => this.finishDelivered(delivered));
   }
 
@@ -1845,7 +1854,7 @@ export abstract class TargetContext {
   private resolveCommandRunnable(command: IPositionedName): Computable<RunnableFileSet> {
     return this.context
       .resolveFileValue(command.name, this.stack, { relativeTo: command.ref, callerOverrides: this.runOverrides() })
-      .then(sources => materializeLists(this.context.resolutionContext(), [sources]))
+      .then(sources => materializeLists(this.context.resolutionContext(), [sources], PERMISSIVE_RESOLUTION))
       .then(([resolved]) => this.context.finishDelivered(resolved))
       .then(resolved => asRunnable(resolved, command.name.toString()));
   }
@@ -2174,7 +2183,7 @@ export abstract class TargetContext {
      * its own here rather than through `collect`. */
     return this.context
       .getTarget(name, this.stack, this.runOverrides())
-      .then(sources => materializeLists(this.context.resolutionContext(), [sources]))
+      .then(sources => materializeLists(this.context.resolutionContext(), [sources], PERMISSIVE_RESOLUTION))
       .then(([resolved]) => this.context.finishDelivered(resolved))
       .then(resolved => asRunnable(resolved, name));
   }
@@ -2197,7 +2206,7 @@ export abstract class TargetContext {
       if (sources.length === 0 && fallbackGlobal !== undefined) {
         return this.getGlobalRunnable(fallbackGlobal);
       }
-      return materializeLists(this.context.resolutionContext(), [sources])
+      return materializeLists(this.context.resolutionContext(), [sources], PERMISSIVE_RESOLUTION)
         .then(([resolved]) => this.context.finishDelivered(resolved))
         .then(resolved => asRunnable(resolved, name));
     });
