@@ -35,8 +35,10 @@ function testJsPackage(context: TargetContext): Computable<RuleResult> {
       context.getFileProperty("deps", BUILD_OVERRIDE),
       context.getFileProperty("provided_deps", BUILD_OVERRIDE),
       context.getFileProperty("test_deps", BUILD_OVERRIDE),
+      context.getFileProperty("test_resources", BUILD_OVERRIDE),
+      context.getFileProperty("test_expectations", BUILD_OVERRIDE),
     ],
-    (sourceRefs, testRefs, target, depSources, providedSources, testDepSources) =>
+    (sourceRefs, testRefs, target, depSources, providedSources, testDepSources, testResourceSources, expectationSources) =>
       /* A test install is self-contained — there is no fabr host to supply the
        * provided (peer) deps — so they are just more `deps` here: compiled and
        * installed identically, with no manifest to distinguish them. */
@@ -46,6 +48,8 @@ function testJsPackage(context: TargetContext): Computable<RuleResult> {
         target,
         depSources: [...depSources, ...providedSources],
         testDepSources,
+        testResourceSources,
+        expectationSources,
         packageName: context.name,
       })
   );

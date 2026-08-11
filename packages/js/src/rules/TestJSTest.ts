@@ -33,14 +33,18 @@ function runJsTest(context: TargetContext): Computable<RuleResult> {
       context.getFileProperty("tests", BUILD_OVERRIDE),
       context.getGlobalString("JS_TARGET", BUILD_OVERRIDE),
       context.getFileProperty("deps", BUILD_OVERRIDE),
+      context.getFileProperty("resources", BUILD_OVERRIDE),
+      context.getFileProperty("expectations", BUILD_OVERRIDE),
     ],
-    (testRefs, target, depSources) =>
+    (testRefs, target, depSources, testResourceSources, expectationSources) =>
       compileAndRunTests(context, {
         sourceRefs: [],
         testRefs,
         target,
         depSources,
         testDepSources: [],
+        testResourceSources,
+        expectationSources,
       })
   );
 }

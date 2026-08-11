@@ -30,6 +30,7 @@
 
 import * as fs from "fs";
 import { join } from "path";
+import { COMPILE_OUT_DIR } from "./BuildJSCompile";
 import {
   BuildAction,
   BuildActionInputs,
@@ -121,12 +122,12 @@ function runOneFile(ctx: IActionContext, argv: string[], file: string, index: nu
   /* Always captured (never live), as the one-invocation step always was: the
    * report carries the outcomes, the capture backs the no-report failure
    * path, and a per-file fan-out must not chatter a summary per process. */
-  return execute(ctx.processLimit, findExecutable(argv[0]), invocation, ctx.workDir, {}, true)
+  return execute(ctx.processLimit, findExecutable(argv[0]), invocation, join(ctx.workDir, COMPILE_OUT_DIR), {}, true)
     .then(
       () => undefined,
       (err: Error) => err
     )
-    .then(error => judgeRun(ctx.workDir, [argv[0], ...invocation], reportName, file, error));
+    .then(error => judgeRun(join(ctx.workDir, COMPILE_OUT_DIR), [argv[0], ...invocation], reportName, file, error));
 }
 
 /**

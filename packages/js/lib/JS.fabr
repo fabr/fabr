@@ -182,6 +182,11 @@ flag es2022 { }
 flag es2023 { }
 flag esnext { }
 
+#
+# Whether the sources require the DOM runtime.
+#
+flag dom { }
+
 ################### JS-specific targets ####################
 
 #
@@ -211,8 +216,16 @@ targetdef js_package {
     # Extra packages for compiling and running the tests only (assertion
     # libraries and their @types); never part of the package's own
     # dependencies. The describe/it globals are provided (and typed) by the
-    # test runner.
+    # test runner. A plain SOURCE here is test support: compiled with the test
+    # types in scope, never run as a test, never shipped (and kept out of the
+    # package's own compile).
     test_deps = FILES;
+    # Recorded expectations the tests compare against — jest's
+    # `__snapshots__/*.snap`, or any equivalent a runner reads. 
+    test_expectations = FILES;
+    # Files the tests need at runtime, staged verbatim: neither compiled nor
+    # shipped as package content.
+    test_resources = FILES;
     # The runner `fabr test` runs these tests under; defaults to the
     # JS_TEST_RUNNER global. Any runnable honoring the runner contract will do —
     # in practice, fabr's own runner or one of its compatibility flavours (see
@@ -271,6 +284,11 @@ targetdef js_test {
     deps = FILES;
     # The runner these tests run under; defaults to the JS_TEST_RUNNER global.
     test_runner = FILES;
+    # Files the tests need at runtime, staged verbatim (see js_package's
+    # test_resources — unprefixed here, since everything in a js_test is tests).
+    resources = FILES;
+    # Recorded expectations the tests compare against (see js_package).
+    expectations = FILES;
     # A source named `setupTests` (.ts/.js) at the ROOT of this target's source
     # tree is loaded into every test process before any test file — the usual
     # home for environment polyfills and suite-wide mocks. A convention, not a

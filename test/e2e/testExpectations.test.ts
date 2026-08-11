@@ -85,8 +85,12 @@ function reportOf(failed) {
       globals +
       "js_script fixture_runner { deps = runner:**; entry = runner:run.js; }\n" +
       "js_package thing {\n" +
-      "  srcs = src:**/*.ts src:**/__snapshots__/*.snap;\n" +
+      "  srcs = src:**/*.ts;\n" +
       "  tests = src:**/*.test.ts;\n" +
+      /* The records are `expectations`, not `srcs`: they are what the tests
+       * compare against and the only inputs -u may rewrite — never package
+       * content, which is what listing them as sources made them. */
+      "  test_expectations = src:**/__snapshots__/*.snap;\n" +
       "  test_runner = fixture_runner;\n" +
       "}\n",
     "runner/run.js": RUNNER,

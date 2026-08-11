@@ -41,6 +41,7 @@ import {
   resolveJsxImportSource,
   resolveSourceMode,
   resolveSourceVersion,
+  usesDom,
 } from "../JSPackage";
 
 /** Where the toolchain is mounted in the working dir — disjoint from src/node_modules/build. */
@@ -100,8 +101,8 @@ function selfReferencePaths(packageName: string): Record<string, string[]> {
 }
 
 /** The `lib` list: the source level, plus the DOM when emitting for a browser. */
-function libFor(level: string, environment: string): string[] {
-  return environment === "browser" ? [level, "dom"] : [level];
+function libFor(level: string, hasDom: boolean): string[] {
+  return hasDom ? [level, "dom"] : [level];
 }
 
 /**
@@ -145,7 +146,9 @@ export function makeTsConfig(
   modeOverlay: Record<string, unknown> = {},
   buildType?: string,
   packageName?: string,
-  sourceVersion?: string
+  sourceVersion?: string,
+  /** Whether the sources declared the `dom` flag — see usesDom. */
+  hasDom = false
 ): Record<string, unknown> {
   return {
     compilerOptions: {
@@ -178,7 +181,7 @@ export function makeTsConfig(
       /* `lib` is what the SOURCE may use, `target` what is EMITTED: different
        * questions, so a target that declares its source level gets that,
        * falling back to the emit level when it declares none. */
-      lib: libFor(sourceVersion ?? jsTarget.version, jsTarget.environment),
+      lib: libFor(sourceVersion ?? jsTarget.version, hasDom),
       ...defineClassFieldsOverride(sourceVersion, jsTarget.version),
       module: jsTarget.module === "esm" ? "esnext" : "commonjs",
       moduleResolution: "node",
@@ -245,7 +248,7 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       });
       const build = (jsxImportSource: string): RuleResult => {
         const jsx = jsxImportSource ? { mode: jsxModeFor(buildType), importSource: jsxImportSource } : undefined;
-        const tsconfig = makeTsConfig(parseJSTarget(target), jsx, modeOverlay, buildType, packageName, sourceVersion);
+        const tsconfig = makeTsConfig(parseJSTarget(target), jsx, modeOverlay, buildType, packageName, sourceVersion, usesDom(depFlags));
         const workingDir = FileSet.layout({
           node_modules: assembleScopedNodeModules(deps),
           [COMPILE_SRC_DIR]: srcs,

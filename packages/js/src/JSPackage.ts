@@ -228,6 +228,27 @@ export function esLevelOrder(version: string): number {
  * level comes back canonically spelled ({@link canonicalEsLevel}), so `es6` and
  * `es2015` yield the same tsconfig.
  */
+/**
+ * Whether the sources declare that they use the DOM (the `dom` flag, walked
+ * through `provides` like every other source-mode flag).
+ *
+ * A source fact, deliberately not read off JS_TARGET's environment: what a tree
+ * USES is invariant across every build of it, while what it is EMITTED for
+ * varies per consumer. It decides two things at once — the `dom` lib in the
+ * compile, and whether `fabr test` runs the suite under jsdom or plain node.
+ */
+export function usesDom(flags: Flag[]): boolean {
+  const seen = new Set<Flag>();
+  const walk = (flag: Flag): boolean => {
+    if (seen.has(flag)) {
+      return false;
+    }
+    seen.add(flag);
+    return flag.name === "dom" || flag.provides.some(walk);
+  };
+  return flags.some(walk);
+}
+
 export function resolveSourceVersion(flags: Flag[]): string | undefined {
   let highest: string | undefined;
   const seen = new Set<Flag>();

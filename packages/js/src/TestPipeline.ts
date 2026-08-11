@@ -58,6 +58,7 @@ import {
   TEST_REPORT_FILENAME,
   UPDATE_EXPECTATIONS,
   WriteBackFileSet,
+  Flag,
 } from "@fabr-build/core";
 import { posix } from "path";
 import { COMPILE_OUT_DIR, COMPILE_SRC_DIR } from "./rules/BuildJSCompile";
@@ -70,6 +71,7 @@ import {
   parseJSTarget,
   resourceFiles,
   stripPackageJson,
+  usesDom,
 } from "./JSPackage";
 
 /** The runner's ambient types for its preloaded globals, anywhere in its install */
@@ -142,6 +144,10 @@ export interface ITestInputs {
   /** Test-only packages (assertion libraries and their @types), available to
    * both the test compile and the test run but never to the package build */
   testDepSources: SourceRef[];
+  /** Files the tests need at runtime, staged verbatim (see `test_resources`). */
+  testResourceSources: SourceRef[];
+  /** Recorded expectations the tests compare against (see `expectations`). */
+  expectationSources: SourceRef[];
   /** The package name a js_package[test]'s sources may import themselves by; a
    * standalone js_test has no package identity and leaves it unset. */
   packageName?: string;
@@ -178,8 +184,10 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
       tests: inputs.testRefs,
       deps: inputs.depSources,
       testDeps: inputs.testDepSources,
+      testResources: inputs.testResourceSources,
+      expectations: inputs.expectationSources,
     })
-    .then(({ srcs, tests: testSets, deps, testDeps }): Computable<RuleResult> => {
+    .then(({ srcs, tests: testSets, deps, testDeps, testResources, expectations: expectationSets }): Computable<RuleResult> => {
       const tests = FileSet.unionAll(...testSets);
       if (tests.isEmpty()) {
         /* No tests declared: trivially green (and no runner is needed). A declared
@@ -247,7 +255,17 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
               tests,
               testStems,
               testTarget,
-              environment: jsTarget.environment,
+              /* The suite's environment follows the `dom` SOURCE flag, not the
+               * target it is emitted for: a tree that uses the DOM needs jsdom
+               * however it is built, and one that does not should run under plain
+               * node even when its bundle is emitted for a browser. Read off
+               * `deps` AND `test_deps` — the same flags the test compile sees, so
+               * a suite whose TESTS need a DOM its sources do not (a component
+               * library rendering in its tests) declares `dom` in test_deps and
+               * gets both the lib and the environment. */
+              needsDom: usesDom([...deps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
+              testResources: FileSet.unionAll(...testResources),
+              expectations: FileSet.unionAll(...expectationSets),
               packageName: inputs.packageName,
               update: expectations === UPDATE_EXPECTATIONS,
             });
@@ -335,8 +353,14 @@ interface ITestRun {
   tests: FileSet;
   testStems: Set<string>;
   testTarget: JSTarget;
-  /** The environment the tests are compiled for, named to the runner. */
-  environment: JSTarget["environment"];
+  /** Whether the suite needs a DOM (the `dom` source flag), named to the runner
+   * as its `--env`. */
+  needsDom: boolean;
+  /** Verbatim runtime files for the tests, mounted with the compiled output. */
+  testResources: FileSet;
+  /** The declared recorded expectations — staged beside the compiled tests, and
+   * the only inputs an update run may rewrite. */
+  expectations: FileSet;
   /** The package the sources may import themselves by, if any — see selfMount. */
   packageName?: string;
   update: boolean;
@@ -379,12 +403,20 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
      * nothing could READ that file, so jest's code frame — which loads the file
      * the top frame names — silently rendered nothing. `node_modules` and
      * `package.json` stay at the root, where node's walk-up finds them from
-     * `build/` just as well. */
+     * `build/` just as well.
+     *
+     * `build/` is ALSO the working directory (see js_test_run): a test's paths —
+     * `./x` from cwd or `__dirname`-relative alike — then mean what they mean in
+     * the source tree, since the compiled tree mirrors it. Staging resources
+     * anywhere else forced the declaration to re-encode fabr's layout. */
     const staged = FileSet.layout({
       node_modules: [run.nodeModules, selfMount(run.packageName)],
       [RUNNER_STAGE_DIR]: [run.runner],
       "package.json": packageJson,
-      [COMPILE_OUT_DIR]: [runtime],
+      /* Resources and records join the compiled tree, which is also the working
+       * directory: a test's `./x` means the same thing here as in the source
+       * tree, with no rename to re-encode fabr's layout in the declaration. */
+      [COMPILE_OUT_DIR]: [runtime, run.testResources, run.expectations],
       [COMPILE_SRC_DIR]: [run.compileSrcs],
     });
     /* Bare interpreter (e.g. "node"): resolved against PATH inside the step, so
@@ -397,13 +429,15 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
      * and a wide suite no longer multiplies fabr's parallelism by the runner's. */
     const argv = run.runner.toCommandLine(
       [
-        `--env=${run.environment === "browser" ? "jsdom" : "node"}`,
+        `--env=${run.needsDom ? "jsdom" : "node"}`,
         ...(run.update ? ["--update-snapshots"] : []),
         /* `./`-prefixed: the runner contract distinguishes a path within the
          * installation from a bare module name by exactly that prefix. */
-        ...(setupFile === undefined ? [] : [`--setup=./${COMPILE_OUT_DIR}/${setupFile}`]),
+        ...(setupFile === undefined ? [] : [`--setup=./${setupFile}`]),
       ],
-      { base: RUNNER_STAGE_DIR }
+      /* The runner stays at the install root while the working directory is the
+       * compiled tree, so its entry is reached one level up. */
+      { base: `../${RUNNER_STAGE_DIR}` }
     );
     /* Under `check` the run's only output is the report; under `update` the
      * refreshed snapshot files are collected too. The selectors ride the action
@@ -416,11 +450,15 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
       ? [TEST_REPORT_FILENAME, `${COMPILE_OUT_DIR}:${SNAPSHOT_DIR}/*.snap`, `${COMPILE_OUT_DIR}:**/${SNAPSHOT_DIR}/*.snap`]
       : [TEST_REPORT_FILENAME];
     /* Under `update` the runner REWRITES the recorded files it was given, so
-     * those inputs must be staged as writable copies. Everything else is staged
+     * those inputs must be staged as writable copies. The DECLARED
+     * `expectations` are that set — not whatever happens to sit in a
+     * `__snapshots__` directory, which made updatability a property of a path
+     * rather than a statement (and silently gave a runner recording elsewhere
+     * nothing to update). Everything else is staged
      * as a hardlink into the content store, where the blob is read-only — which
      * is the protection working, not a limitation to route around: writing
      * through such a link would corrupt the entry every other build shares. */
-    const records = run.update ? recordedExpectations(runtime) : EMPTY_FILESET;
+    const records = run.update ? run.expectations : EMPTY_FILESET;
     /* The action stages by INSTALL name, so the writable set is the same records
      * seen through the mount; the comparison below wants them in the compiled
      * tree's own namespace, which is what `records` is. */
@@ -430,7 +468,7 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
         staged,
         writable,
         argv,
-        test_files: testFiles.map(file => `${COMPILE_OUT_DIR}/${file}`),
+        test_files: testFiles,
         outputs,
       })
       .then(result => reshapeTestResult(result, run.tests, records));
@@ -440,10 +478,6 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
 /** The files a runner may rewrite: the recorded expectations, by the same
  * `__snapshots__/*.snap` convention the run's outputs are collected under.
  * Named in the compiled tree's namespace, like everything it is matched against. */
-function recordedExpectations(runtime: FileSet): FileSet {
-  return runtime.remap(name => (snapshotStem(name) === undefined ? undefined : name));
-}
-
 /**
  * Split the run's output into what the target delivers and what it offers: the
  * report is the content, and each refreshed snapshot file is paired with the

@@ -36,6 +36,7 @@ import {
   resolveJsxImportSource,
   resolveSourceMode,
   resolveSourceVersion,
+  usesDom,
   withBinShebangs,
 } from "./JSPackage";
 
@@ -718,6 +719,20 @@ describe("canonicalEsLevel", () => {
 
   it("orders an unparseable name lowest, so it can never win a max", () => {
     expect(esLevelOrder("nonsense")).to.be.lessThan(esLevelOrder("es5"));
+  });
+});
+
+describe("usesDom", () => {
+  it("reads the declared flag, not the emit target", () => {
+    expect(usesDom([new Flag("dom", [])])).to.equal(true);
+    expect(usesDom([new Flag("es2020", [])])).to.equal(false);
+    expect(usesDom([])).to.equal(false);
+  });
+
+  /* Walked through `provides` like every other source-mode flag, so a composite
+   * flag ("this is a browser widget") can supply it. */
+  it("finds it through a composite flag's provides", () => {
+    expect(usesDom([new Flag("widget", [new Flag("dom", [])])])).to.equal(true);
   });
 });
 

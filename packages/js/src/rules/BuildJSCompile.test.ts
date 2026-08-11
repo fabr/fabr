@@ -117,9 +117,16 @@ describe("makeTsConfig", () => {
     expect(cfg.compilerOptions.lib).to.deep.equal(["es2018"]);
   });
 
-  it("adds the dom lib for a browser target", () => {
-    const cfg = makeTsConfig(parseJSTarget("es2020-esm-browser")) as unknown as TsConfig;
-    expect(cfg.compilerOptions.lib).to.deep.equal(["es2020", "dom"]);
+  /* The `dom` lib follows the SOURCE flag, not the emit target: whether a tree
+   * uses the DOM is invariant across every build of it, while what it is emitted
+   * for is the consumer's choice. A browser bundle of DOM-free sources gets no
+   * dom lib, and node-emitted sources that use it do. */
+  it("adds the dom lib when the sources declare it, not when the target is browser", () => {
+    const browserNoDom = makeTsConfig(parseJSTarget("es2020-esm-browser")) as unknown as TsConfig;
+    expect(browserNoDom.compilerOptions.lib).to.deep.equal(["es2020"]);
+
+    const nodeWithDom = makeTsConfig(parseJSTarget("es2020-commonjs-node"), undefined, {}, undefined, undefined, undefined, true) as unknown as TsConfig;
+    expect(nodeWithDom.compilerOptions.lib).to.deep.equal(["es2020", "dom"]);
   });
 
   it("emits the real iteration protocol below es2015", () => {

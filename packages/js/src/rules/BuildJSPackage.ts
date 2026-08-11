@@ -35,6 +35,7 @@ import {
   RuleResult,
   TargetContext,
   toJsonObject,
+  Flag,
 } from "@fabr-build/core";
 import { compileContents, ICompiledContents, parseJSTarget, stripPackageJson, withBinShebangs } from "../JSPackage";
 import { createPackageJson } from "../PackageJson";
@@ -63,6 +64,11 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
        * not `dependencies` — and in strict-singleton resolution enforcement
        * (deferred). TSC is the compiler's own concern (resolved in js_compile),
        * independent of what it compiles. */
+      /* Read but NOT collected: see the subtraction below — this must not draw
+       * the test dependencies into the build's resolution. */
+      const testDeps = context.getFileProperty("test_deps");
+      const testResources = context.getFileProperty("test_resources");
+      const expectations = context.getFileProperty("test_expectations");
       const gathered = context.collect({
         srcs: context.getFileProperty("srcs"),
         resources: context.getFileProperty("resources"),
@@ -78,12 +84,35 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
       const declaredDeps = context.collectDeclaredRequirements(depSources);
       const declaredProvided = context.collectDeclaredRequirements(providedSources);
 
-      return gathered.then(({ srcs: srcSets, resources: resourceSets, tests: testSets, deps, provided }) => {
+      return Computable.forAll(
+        [gathered, testDeps, testResources, expectations],
+        (
+          { srcs: srcSets, resources: resourceSets, tests: testSets, deps, provided },
+          testDepSources,
+          testResourceSources,
+          expectationSources
+        ) => {
         const sources = FileSet.unionAll(...srcSets);
         const tests = FileSet.unionAll(...testSets);
         /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
         const seedJson = sources.get("package.json").then(file => file && readJsonFile(file, toJsonObject));
-        const compileSources = sources.minus(tests);
+        /* `srcs` minus everything declared test-only. `tests` is the obvious
+         * half; the other is the plain-SOURCE part of `test_deps` — test support
+         * that compiles with the test types in scope but is neither run nor
+         * shipped (an integration suite the entry file imports, a harness). A
+         * file named there is not package content, exactly as one named in
+         * `tests` is not.
+         *
+         * Read WITHOUT materializing: a plain source is already a FileSet, while
+         * an external package is still an inert RepositoryRef — so nothing here
+         * resolves or fetches, and an ordinary `fabr build` still never touches
+         * the test dependencies. PackageFileSet and Flag are excluded for the
+         * same reason compileSrcsOf excludes them: a built dep's file names
+         * could shadow real sources by coincidence, and a flag names nothing. */
+        const testOnlySources = [...testDepSources, ...testResourceSources, ...expectationSources].filter(
+          (source): source is FileSet => source instanceof FileSet && !(source instanceof PackageFileSet) && !(source instanceof Flag)
+        );
+        const compileSources = sources.minus(tests).minus(FileSet.unionAll(...testOnlySources));
 
         return Computable.forAll([seedJson, declaredDeps, declaredProvided], (seed, declared, providedDeclared) => {
           /* Compile against the deps laid out scoped: the sources see only these
