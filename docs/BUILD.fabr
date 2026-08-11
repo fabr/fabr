@@ -26,7 +26,7 @@ generate reference_docs {
 generate docs_site {
   srcs = ./src/** ./public/** ./astro.config.mjs
          ../CHANGELOG.md -> src/changelog.md
-         release/@npm/@fabr-build/cli/0.2.0/package.json -> src/fabr-version.json
+         release/@npm/@fabr-build/cli/*/package.json -> src/fabr-version.json
          reference_docs:*.md -> src/content/docs/reference/*.md;
   run = astro build;
   output = dist:**;
