@@ -73,18 +73,6 @@ type CatalogMember =
   | { readonly kind: "repository"; readonly source: RepositoryReader<unknown, unknown>; readonly reference: RepositoryRef; readonly resolution: Resolution }
   | { readonly kind: "local"; readonly pkg: PackageFileSet };
 
-/** The catalog's driver-facing view of a context: the pin (and every member
- * delivery from it) is BUILD-shaped regardless of how the catalog is consumed
- * — members are mountable packages; run-wrapping is the catalog's own final
- * step. The consumer's real operation is read separately (deliver). */
-function buildForced(context: ResolutionContext): ResolutionContext {
-  return {
-    getGlobalString: name => (name === BUILD_OPERATION ? Computable.resolve("build") : context.getGlobalString(name)),
-    memoize: (tag, key, create) => context.memoize(tag, key, create),
-    notifyProgress: event => context.notifyProgress(event),
-  };
-}
-
 export class CatalogRepository implements Repository, RepositoryLookup {
   constructor(
     private readonly catalogName: string,
@@ -156,8 +144,13 @@ export class CatalogRepository implements Repository, RepositoryLookup {
     if (member.kind === "local") {
       return Computable.resolve(member.pkg);
     }
-    return materializePackages(buildForced(this.context), member.source, [member.reference], member.resolution, options)
-      .then(([base]) => member.reference.stampProvenance(base) as PackageFileSet)
+    return materializePackages(this.context, member.source, [member.reference], member.resolution, options)
+      .then(([base]) => {
+        if (base === undefined) {
+          throw new Error(`internal: catalog member '${reference.name.toString()}' resolved to no package`);
+        }
+        return member.reference.stampProvenance(base) as PackageFileSet;
+      })
       .catch(err => {
         throw new RequirementResolutionError([reference], toError(err));
       });
@@ -293,7 +286,7 @@ function resolveDeps(context: TargetContext): Computable<ResolvedPackageSet> {
                 )
           );
         }
-        return resolvePackages(buildForced(context), source, refs).then(resolution => ({ source, resolution }));
+        return resolvePackages(context, source, refs).then(resolution => ({ source, resolution }));
       }),
       (...resolutions: { source: RepositoryReader<unknown, unknown>; resolution: Resolution }[]) => ({ resolutions, local })
     );

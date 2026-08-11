@@ -20,11 +20,13 @@
 import { createHash } from "node:crypto";
 import { Computable } from "../core/Computable";
 import { attachHelp, toError, VersionNotFoundError } from "../core/Errors";
-import { FileSet } from "../core/FileSet";
+import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { SourceRef } from "../core/Repository";
 import { TargetContext } from "../model/BuildContext";
+import { BUILD_OPERATION, FILES_OPERATION } from "../model/Constraints";
 import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
+import { resolveBarePackage } from "../resolver/PackageResolver";
 import { RepositoryReader } from "../core/Repository";
 
 /**
@@ -100,12 +102,31 @@ export function contentPackageMember<V, C>(
         throw positioned(err);
       }));
 
-  return {
+  const member: RepositoryReader<V, C> = {
     format,
     /* For the resolution memo key: WHICH member serves the name. The content's
      * resolution-relevant identity rides environmentKey — it is not knowable
      * synchronously. */
     identity: `content:${name}`,
+
+    /* Same authority as environmentKey's facts: the context this route was
+     * declared under (see RepositoryReader.deliver). */
+    deliver: (reference, options, closure): Computable<FileSet> =>
+      context.getGlobalString(BUILD_OPERATION).then(operation => {
+        /* Files alone: the route's content IS the answer, so no resolution. */
+        if (operation === FILES_OPERATION) {
+          return resolveBarePackage(member, reference);
+        }
+        if (!closure) {
+          return Computable.resolve<FileSet>(EMPTY_FILESET);
+        }
+        return closure().then(pkg => {
+          if (pkg === undefined) {
+            return Computable.resolve<FileSet>(EMPTY_FILESET);
+          }
+          return operation === "run" ? format.makeRunnable(pkg) : Computable.resolve<FileSet>(pkg);
+        });
+      }),
 
     environmentKey: (): Computable<string> =>
       load().then(({ content }) => {
@@ -153,4 +174,5 @@ export function contentPackageMember<V, C>(
 
     fetch: (_pkg, version) => load().then(({ files }) => new PackageFileSet(files, name, format.versionToString(version))),
   };
+  return member;
 }

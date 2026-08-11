@@ -28,12 +28,11 @@ import {
   toError,
   VersionNotFoundError,
 } from "../core/Errors";
-import { EMPTY_FILESET, FileSet } from "../core/FileSet";
+import { FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { Name } from "../core/Name";
 import { PackageFileSet, PackageGraphBuilder } from "../core/PackageFileSet";
 import {
-  attributedTo,
   isRepositoryReader,
   MaterializeOptions,
   RefSource,
@@ -44,7 +43,6 @@ import {
   ResolvedRoot,
 } from "../core/Repository";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { BUILD_OPERATION, FILES_OPERATION } from "../model/Constraints";
 import { PackageFormat } from "./PackageFormat";
 import { resolveMVS } from "./MVSResolver";
 import {
@@ -184,7 +182,6 @@ export function assertNoAliasCollisions<V, C>(
  */
 interface DomainResolution<V> extends Resolution, ResolvedRepairs<V> {
   readonly roots: ResolvedRoot[];
-  readonly operation: string;
   /** requirementKey → index into the resolution's roots (the space `reachableFrom` indexes). */
   readonly rootIndex: Map<string, number>;
   /**
@@ -233,10 +230,13 @@ export function resolvePackages<V, C>(
   references: RepositoryRef[]
 ): Computable<Resolution> {
   const { format } = registry;
-  /* The operation is a property of this collection point, read from the context
-   * (the repository is interned per BuildContext, so it reflects the config
-   * these references were consumed under). */
-  return context.getGlobalString(BUILD_OPERATION).then(operation => {
+  /* No operation here, by construction: a resolution is a function of the
+   * requirements alone, and what varies by operation is the SHAPE of the
+   * delivery, decided by the repository in its own `deliver`. That is also why
+   * the memo key has never carried the operation — build and run always shared
+   * one resolution, and the field only existed to be carried back out to
+   * materialize. */
+  return Computable.resolve(undefined).then(() => {
     const requirements = references.map(reference => {
       try {
         return format.parseRequirement(reference.name);
@@ -285,19 +285,6 @@ export function resolvePackages<V, C>(
     const roots: ResolvedRoot[] = references.flatMap((reference, index) =>
       requirements[index].override === "alternate" ? [] : [{ reference, name: requirements[index].pkg }]
     );
-    if (operation === FILES_OPERATION) {
-      return Computable.resolve<DomainResolution<V>>({
-        roots,
-        operation,
-        selections: [],
-        rootIndex: new Map(),
-        violations: [],
-        coerced: [],
-        raises: [],
-        requirements: new Map(),
-        alternates,
-      });
-    }
     /* Canonicalize the roots so the resolution (and its memo key, and the
      * reachableFrom indices) are independent of reference order. Alternates
      * ARE included: attach-last means a `?` can supply a floorless-only
@@ -308,7 +295,7 @@ export function resolvePackages<V, C>(
     const { roots: rootReqs, keys: rootKeys } = canonicalRequirements(requirements);
     const rootIndex = new Map<string, number>(rootKeys.map((key, index) => [key, index]));
     return getJointResolution(context, registry, repositoryAlias(references), rootReqs, rootKeys)
-      .then(repairs => ({ roots, operation, rootIndex, alternates, ...repairs }) satisfies DomainResolution<V>)
+      .then(repairs => ({ roots, rootIndex, alternates, ...repairs }) satisfies DomainResolution<V>)
       .catch(err => attributeResolutionFailure(err, references, requirements));
   });
 }
@@ -335,18 +322,14 @@ export function materializePackages<V, C>(
   references: RepositoryRef[],
   resolution: Resolution,
   options?: MaterializeOptions
-): Computable<FileSet[]> {
+): Computable<(PackageFileSet | undefined)[]> {
   const { format } = registry;
   const domain = format;
   const resolved = resolution as DomainResolution<V>;
-  if (resolved.operation === FILES_OPERATION) {
-    return Computable.forAll(
-      references.map(reference => attributedTo(reference, () => resolveBarePackage(registry, reference))),
-      (...delivered: FileSet[]) => delivered
-    );
-  }
-  const { selections, rootIndex, operation, violations, alternates } = resolved;
-  const permissive = options?.resolutionMode === "permissive" || operation === "run";
+  const { selections, rootIndex, violations, alternates } = resolved;
+  /* Permissiveness is the CONSUMER's judgment, passed in: a sealed install (every
+   * run-op rule, a catalog's run delivery) says so explicitly. */
+  const permissive = options?.resolutionMode === "permissive";
   const requirements = references.map(reference => format.parseRequirement(reference.name));
   /* An alternate (`?`) reference demands nothing and delivers nothing of its
    * own — the sanctioned fork arrives nested inside the canonical closure. */
@@ -429,12 +412,10 @@ export function materializePackages<V, C>(
               ? undefined
               : buildClosure(registry, req, rootIndex.get(requirementKey(req))!, selections, fetching, edges, packages)
           );
-          return operation === "run"
-            ? Computable.forAll(
-                assembled.map(pkg => (pkg === undefined ? Computable.resolve<FileSet>(EMPTY_FILESET) : registry.format.makeRunnable(pkg))),
-                (...launched: FileSet[]) => launched
-              )
-            : Computable.resolve(assembled.map(pkg => pkg ?? EMPTY_FILESET));
+          /* Assembled, not shaped: what a package BECOMES on delivery (mounted
+           * as-is, launched as a runnable, or reduced to its own files) is the
+           * repository's call, made in its `deliver`. */
+          return Computable.resolve(assembled);
         }
       );
     })
@@ -626,7 +607,13 @@ function resolutionOrigin<V, C>(format: PackageFormat<V, C>, req: Requirement, s
  * pending on the delivered ref (RepositoryRef.deliveredAs), finished by the
  * driving context.
  */
-function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, reference: RepositoryRef): Computable<FileSet> {
+/**
+ * A package's own files, with no dependency closure and no joint resolution —
+ * what BUILD_OPERATION=files asks for. Exported because a repository decides its
+ * own delivery shapes but this is resolver machinery: it mints the `Selected`
+ * and the resolution provenance a delivered package carries.
+ */
+export function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, reference: RepositoryRef): Computable<FileSet> {
   const { format } = registry;
   const domain = format;
   const req = format.parseRequirement(reference.name);

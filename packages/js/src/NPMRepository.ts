@@ -18,6 +18,11 @@
  */
 
 import {
+  EMPTY_FILESET,
+  FILES_OPERATION,
+  resolveBarePackage,
+  MaterializeOptions,
+  ClosureThunk,
   Computable,
   FileSet,
   HttpStatusError,
@@ -50,6 +55,7 @@ import {
   SEMVER,
   SemverConstraint,
   SemverVersion,
+  BUILD_OPERATION,
   TARGET,
   toJsonObject,
   tripleToNpm,
@@ -74,6 +80,7 @@ import {
 } from "./NPMProtocol";
 import { declaredDependencies, memberDependencies, rewriteManifest, unresolvableDependencies } from "./PackageJson";
 import { NPMAuth } from "./NPMAuth";
+import { makeNpmRunnable } from "./JSPackage";
 import { jsPluginContext } from "./JSPluginContext";
 
 const METADATA_FILE = "metadata.json";
@@ -307,6 +314,37 @@ export class NPMRepository
    */
   public environmentKey(): Computable<string> {
     return this.targetPlatform().then(target => `${target.os ?? "?"}-${target.cpu ?? "?"}-${target.libc ?? "?"}`);
+  }
+
+  /**
+   * RepositoryReader implementation: shape the delivery, from THIS instance's
+   * context — the same context targetPlatform reads TARGET from, so everything
+   * that varies per build config has one authority. Instances are interned per
+   * BuildContext, so a rule reading a FILES property under BUILD_OVERRIDE
+   * reaches a build-flavoured instance even when the rule itself was selected
+   * under `run`; the collection point consuming the references cannot know
+   * that, which is why it is not asked.
+   */
+  public deliver(reference: RepositoryRef, options?: MaterializeOptions, closure?: ClosureThunk): Computable<FileSet> {
+    return this.context.getGlobalString(BUILD_OPERATION).then(operation => {
+      /* Files alone: never force the closure. A package whose closure is
+       * unsatisfiable still HAS files, so resolving to obtain them would fail a
+       * delivery that has no business failing. */
+      if (operation === FILES_OPERATION) {
+        return resolveBarePackage(this, reference);
+      }
+      if (!closure) {
+        return Computable.resolve<FileSet>(EMPTY_FILESET);
+      }
+      return closure().then(pkg => {
+        /* A `?` alternate demands nothing of its own — its sanctioned fork
+         * arrives nested inside the closure that needed it. */
+        if (pkg === undefined) {
+          return Computable.resolve<FileSet>(EMPTY_FILESET);
+        }
+        return operation === "run" ? makeNpmRunnable(pkg) : Computable.resolve<FileSet>(pkg);
+      });
+    });
   }
 
   /**

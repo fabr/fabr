@@ -22,7 +22,10 @@ import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { CatalogRepository, catalogRepositoryRegistration } from "./CatalogRepository";
-import { Repository, RepositoryRef } from "../core/Repository";
+import { Repository, RepositoryRef,
+  MaterializeOptions,
+  ClosureThunk,
+} from "../core/Repository";
 import { Requirement } from "../resolver/Types";
 import { ConflictError, RequirementResolutionError } from "../core/Errors";
 import { MemoryFile } from "../core/MemoryFS";
@@ -146,6 +149,14 @@ describe("CatalogRepository (through the model)", () => {
     public environmentKey(): Computable<string> {
       return Computable.resolve("cattest-env");
     }
+
+      /* Members are pinned and delivered as packages: a catalog resolves
+       * build-shaped whatever it is consumed under. */
+      /* Delivers the assembled package as-is: these fakes stand in for a registry
+       * reached under an ordinary build. */
+      public deliver(_reference: RepositoryRef, _options?: MaterializeOptions, closure?: ClosureThunk): Computable<FileSet> {
+        return closure ? closure().then((pkg: PackageFileSet | undefined) => pkg ?? EMPTY_FILESET) : Computable.resolve<FileSet>(EMPTY_FILESET);
+      }
 
     public getRequirements(pkg: string, _version: SemverVersion): Computable<Requirement[]> {
       this.requested.push(pkg);

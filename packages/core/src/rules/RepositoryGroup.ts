@@ -21,6 +21,7 @@ import { Computable } from "../core/Computable";
 import { attachHelp } from "../core/Errors";
 import { Name } from "../core/Name";
 import { PackageFileSet } from "../core/PackageFileSet";
+import { FileSet } from "../core/FileSet";
 import {
   isRepository,
   isRepositoryReader,
@@ -29,6 +30,8 @@ import {
   RepositoryReader,
   RepositoryRef,
   SourceRef,
+  MaterializeOptions,
+  ClosureThunk,
 } from "../core/Repository";
 import { TargetContext } from "../model/BuildContext";
 import { Requirement, Selected } from "../resolver/Types";
@@ -247,6 +250,15 @@ export class RepositoryGroup<V, C>
   public availableVersions(pkg: string): Computable<V[] | undefined> {
     const member = this.memberFor(pkg);
     return member?.availableVersions ? member.availableVersions(pkg) : Computable.resolve(undefined);
+  }
+
+  /** Delegated like every other reader method: the member serving this name
+   * decides its own delivery. A group routes, it does not deliver — and the
+   * shape is not uniform across members, since a content route's package is its
+   * own (see contentPackageMember), not this group's format's. */
+  public deliver(reference: RepositoryRef, options?: MaterializeOptions, closure?: ClosureThunk): Computable<FileSet> {
+    const member = this.routed(this.format.parseRequirement(reference.name).pkg);
+    return member instanceof Error ? Computable.reject(member) : member.deliver(reference, options, closure);
   }
 
   /** Environment keys deduplicated across the members — with a shared format

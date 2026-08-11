@@ -36,7 +36,9 @@ import {
   RepositoryPublishRef,
   RepositoryReader,
   RepositoryRef,
-  } from "../core/Repository";
+  MaterializeOptions,
+  ClosureThunk,
+} from "../core/Repository";
 import { VersionNotFoundError } from "../core/Errors";
 import { TargetContext } from "../model/BuildContext";
 import { BuildModel } from "../model/BuildModel";
@@ -256,6 +258,13 @@ class FakeRegistry implements Repository, RepositoryReader<SemverVersion, Semver
   public environmentKey(): Computable<string> {
     return Computable.resolve("test-env");
   }
+
+    /* These fakes stand in for a registry reached under an ordinary build. */
+    /* Delivers the assembled package as-is: these fakes stand in for a registry
+     * reached under an ordinary build. */
+    public deliver(_reference: RepositoryRef, _options?: MaterializeOptions, closure?: ClosureThunk): Computable<FileSet> {
+      return closure ? closure().then((pkg: PackageFileSet | undefined) => pkg ?? EMPTY_FILESET) : Computable.resolve<FileSet>(EMPTY_FILESET);
+    }
 
   public availableVersions(pkg: string): Computable<SemverVersion[] | undefined> {
     const versions = Object.keys(this.table)

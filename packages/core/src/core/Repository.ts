@@ -168,6 +168,23 @@ export interface RepositoryReader<V, C> extends RequirementSource<V> {
    * the resolution memo key.
    */
   environmentKey(): Computable<string>;
+  /**
+   * Deliver one reference in this repository's own shape — the same method a
+   * {@link RepositoryLookup} implements, so both kinds of {@link RefSource}
+   * answer a delivery the same way.
+   *
+   * `closure` yields the resolved package with its dependency closure assembled,
+   * and is a THUNK because forcing it is itself the decision: a reader asked for
+   * files alone (BUILD_OPERATION=files) must not resolve at all — a package whose
+   * closure is unsatisfiable still has files, so resolving eagerly would fail a
+   * delivery that should succeed. It yields `undefined` for a reference that
+   * demands nothing of its own (a `?` alternate).
+   *
+   * The shape is the repository's business and no one else's: what varies by
+   * operation is decided HERE, from the context this instance was interned
+   * under, so nothing upstream has to carry the operation to reach this point.
+   */
+  deliver(reference: RepositoryRef, options?: MaterializeOptions, closure?: ClosureThunk): Computable<FileSet>;
   /** Fetch one exact package version's content. */
   fetch(pkg: string, version: V): Computable<PackageFileSet>;
   /** The published-version list for repair suggestions; undefined when the
@@ -255,6 +272,15 @@ export interface RepositoryWriter {
  * about what the consuming rule does with the delivery, set by rule code at
  * its collection point — deliberately not a constraint (no grammar surface).
  */
+/**
+ * The resolved-and-assembled package behind one reference, deferred. Forcing it
+ * runs the joint resolution (shared across the batch, memoized); not forcing it
+ * runs none at all. `undefined` where the reference demands no delivery of its
+ * own — a `?` alternate, whose sanctioned fork arrives nested inside somebody
+ * else's closure.
+ */
+export type ClosureThunk = () => Computable<PackageFileSet | undefined>;
+
 export interface MaterializeOptions {
   resolutionMode?: "strict" | "permissive";
 }
@@ -309,15 +335,40 @@ export function resolveAndMaterialize(
   references: RepositoryRef[],
   options?: MaterializeOptions
 ): Computable<FileSet[]> {
-  if (isRepositoryReader(source)) {
-    return resolvePackages(context, source, references).then(resolution =>
-      materializePackages(context, source, references, resolution, options)
-    );
-  }
+  /* One shape for both kinds of source: every reference is delivered by its
+   * repository. A registry additionally gets a thunk for its resolved closure —
+   * ONE joint resolution for the batch, forced only by the references whose
+   * delivery actually needs it (see ClosureThunk). */
+  const closures = isRepositoryReader(source) ? assembleClosures(context, source, references, options) : undefined;
   return Computable.forAll(
-    references.map(reference => source.deliver(reference, options)),
+    references.map((reference, index) =>
+      source.deliver(reference, options, closures && (() => closures().then(assembled => assembled[index])))
+    ),
     (...delivered: FileSet[]) => delivered
   );
+}
+
+/**
+ * The batch's assembled closures, one per reference, computed at most once
+ * however many references force it — memoized here rather than by the caller so
+ * that a batch mixing shapes (a files delivery beside a build one) still runs a
+ * single resolution, and a batch needing none runs zero.
+ */
+function assembleClosures<V, C>(
+  context: ResolutionContext,
+  source: RepositoryReader<V, C>,
+  references: RepositoryRef[],
+  options?: MaterializeOptions
+): () => Computable<(PackageFileSet | undefined)[]> {
+  let started: Computable<(PackageFileSet | undefined)[]> | undefined;
+  return () => {
+    if (!started) {
+      started = resolvePackages(context, source, references).then(resolution =>
+        materializePackages(context, source, references, resolution, options)
+      );
+    }
+    return started;
+  };
 }
 
 /** One member of a destination's publish batch: where the content goes (the
