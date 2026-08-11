@@ -166,6 +166,10 @@ Each `*`/`**` in the template replays the same-position wildcard from the select
 use only `*`/`**` (not `?` or `[…]`) and have an equal number of them. The `->` must be spaced, and if
 present must be the last part of the reference.
 
+A template with no wildcards at all is exempt: it names one file outright, so the selector may be any
+pattern — `srcs = foo/*/bar/index.ts -> index.ts;` names whatever it finds `index.ts`. It has to find
+exactly one, since renaming two different files to the same name is a conflict like any other.
+
 These can be applied anywhere, for example `@npm:esbuild:0.2.1:package.json` references the package.json
 file directly from the esbuild 0.2.1 package. These results are treated as simple files (ie not as the
 package they came from).

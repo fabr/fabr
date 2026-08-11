@@ -8,13 +8,14 @@ version number.
 - Cap maximum concurrent connections + executing processes.
 - New 'fetch' download source for arbitrary http/https fetching.
 - Enable automatic extraction and traversal of archive files.
-- Fix: generate command names resolved incorrectly.
-- Fix: remove excessive synchronous mkdirs
 - Add support for bash extended globs (eg !(expr) ).
 - Add support for default targets and default target properties.
 - Add support for package renaming using -> rename syntax.
 - Add `repository_group` target for adding multiple scoped repositories and package overrides.
 - Detect a plugin that loads its own nested copy of `@fabr-build/core` (a broken install) and report it clearly.
+- Allow rename from wildcard to fixed name (if matched once only)
+- Fix: generate command names resolved incorrectly.
+- Fix: remove excessive synchronous mkdirs
 
 @fabr-build/js:
 - Add a jest compatibility test runner (`JS_TEST_RUNNER = @fabr-build/js-tools/jest-runner;`)

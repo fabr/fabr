@@ -286,9 +286,10 @@ function validateBlock(entries: IMapItemDecl[], log: Log): boolean {
 /**
  * Validate a single property value's rename facet (if any) against its property
  * type; returns false and logs on a violation. Only the rules that NEED the
- * schema type live here — the rename's own well-formedness (`*`/`**` only, equal
- * wildcard counts, no `:` in the template) reads the written name alone and is
- * enforced by the parser, for every name including one no Validate pass sees.
+ * schema type live here — the rename's own well-formedness (`*`/`**` only and
+ * equal wildcard counts unless the template is wildcard-free, no `:` in the
+ * template) reads the written name alone and is enforced by the parser, for
+ * every name including one no Validate pass sees.
  */
 function validateRenameValue(prop: IPropertyDecl, value: IValue, type: PropertyType, log: Log): boolean {
   if (!isNameValue(value) || type !== PropertyType.Rewrite) {

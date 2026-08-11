@@ -174,6 +174,21 @@ describe("Name", () => {
       expect(rename("a/m/n/b")).to.equal("x/m/n/y");
     });
 
+    it("maps every match to a wildcard-free template (the collapse-to-one form)", () => {
+      /* The template fills no slot, so the selector's wildcards are matched and
+       * then discarded: the selector below names whichever file it selects
+       * `index.ts` (two of them being FileSet.rename's conflict). */
+      const sel = new NameBuilder()
+        .appendLiteralString("foo/")
+        .appendGlobMetachars("*")
+        .appendLiteralString("/bar/index.ts")
+        .name();
+      const rename = sel.makeRenamer(Name.fromLiteral("index.ts"));
+      expect(rename("foo/a/bar/index.ts")).to.equal("index.ts");
+      expect(rename("foo/b/bar/index.ts")).to.equal("index.ts");
+      expect(rename("foo/a/baz/index.ts")).to.equal(undefined);
+    });
+
     it("renders toReplacement as a $n string, escaping literal $", () => {
       const tmpl = new NameBuilder()
         .appendGlobMetachars("*")

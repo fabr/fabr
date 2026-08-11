@@ -41,11 +41,13 @@ export function globMatcher(glob: string): GlobMatcher {
  * zero-segment globstar leaves its group unmatched, which `replace` substitutes
  * as `""` — Name.makeRenamer then cleans up the stray slash.
  *
- * The caller guarantees (via Validate) that a rename glob uses only `*`/`**`
- * wildcards — `?` and `[...]` are rejected, because picomatch captures them
- * inconsistently (`?` not at all, a class as a group), which would desync the
- * positional `$n` references. With only `*`/`**` present picomatch emits exactly
- * one group per wildcard in order.
+ * The caller guarantees (via the parser) that a rename glob whose template has
+ * slots to fill uses only `*`/`**` wildcards — `?` and `[...]` are rejected,
+ * because picomatch captures them inconsistently (`?` not at all, a class as a
+ * group), which would desync the positional `$n` references. With only `*`/`**`
+ * present picomatch emits exactly one group per wildcard in order. A
+ * wildcard-free template references no group, so its selector is unrestricted
+ * and this is then used purely as a matcher.
  */
 export function globCaptureRegex(glob: string): RegExp {
   return picomatch.makeRe(glob, { dot: true, capture: true });

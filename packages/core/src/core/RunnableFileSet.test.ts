@@ -175,10 +175,10 @@ describe("RunnableFileSet.select", () => {
   });
 
   it("raises a conflict when two entries land on one name", () => {
-    /* The grammar rejects a many-to-one rename (unequal wildcard counts), so
-     * this is built past the parser: the guard is for projections assembled in
-     * code, and matches FileSet.rename's contract rather than silently keeping
-     * whichever file came last. */
+    /* A collapse-to-one-name rename is legal to *write* (the grammar exempts a
+     * wildcard-free template), so whether it is legal is decided here, against
+     * the files it actually selects: matching two is FileSet.rename's conflict,
+     * never silently keeping whichever file came last. */
     const surface = new FileSet(
       new Map<string, IFile>([["one.js", MemoryFile.from("1")], ["two.js", MemoryFile.from("2")]])
     );
@@ -189,7 +189,7 @@ describe("RunnableFileSet.select", () => {
       "",
       surface
     );
-    const manyToOne = [{ pattern: parseName("*.js").withRenameTo(parseName("out.js")), prefix: "" }];
+    const manyToOne = [{ pattern: parseName("*.js -> out.js"), prefix: "" }];
     expect(() => runnable.select(manyToOne)).to.throw(/Conflicting renamed files for out.js/);
   });
 });

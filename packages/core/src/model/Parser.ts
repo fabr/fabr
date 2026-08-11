@@ -372,14 +372,24 @@ function isWildcardKey(name: Name): boolean {
 }
 
 /**
- * Check that the number + kind of wildcards in a rename pattern match (ie we need
- * the same number on both sides, and glob only).
+ * Check that the template's wildcards can be replayed from the selector's: the
+ * same number on both sides, and `*`/`**` only (a `?`/`[...]` run captures
+ * inconsistently, so it cannot fill a slot).
+ *
+ * A **wildcard-free template** is exempt from both rules: it names one file
+ * outright, replaying nothing, so the selector may be any pattern. It is
+ * accepted even where it selects several files — collapsing distinct files onto
+ * one name is the ordinary rename conflict, judged at `find` against the actual
+ * file set ({@link FileSet.rename}), not a property of the written name.
  *
  * @return error message on failure, otherwise undefined.
  */
 function checkRenameWildcards(selector: Name, template: Name): string | undefined {
-  const selectorUnits = selector.getGlobUnits();
   const templateUnits = template.getGlobUnits();
+  if (templateUnits.length === 0) {
+    return undefined;
+  }
+  const selectorUnits = selector.getGlobUnits();
   const bad = [...selectorUnits, ...templateUnits].find(unit => unit !== "*" && unit !== "**");
   if (bad !== undefined) {
     return `rename wildcards must be '*' or '**' (found '${bad}')`;

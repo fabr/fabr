@@ -806,6 +806,18 @@ describe("Parser Tests", () => {
       expect(name.toString()).to.equal("golden:*.expect -> *.out");
     });
 
+    it("accepts a wildcard-free template collapsing a pattern to one name", () => {
+      /* It fills no slot, so neither wildcard rule applies: the counts need not
+       * agree and the selector may use any wildcard kind. Whether the collapse is
+       * legal is decided against the files it selects, not the written name —
+       * FileSet.rename conflicts unless it lands on a single file. */
+      const collapsed = firstValue("out = foo/*/bar/index.ts -> index.ts;");
+      expect(collapsed.toString()).to.equal("foo/*/bar/index.ts -> index.ts");
+      expect(collapsed.getRenameTo()?.toString()).to.equal("index.ts");
+      expect(firstValue("out = src/**/a?.js -> one.js;").getRenameTo()?.toString()).to.equal("one.js");
+      expect(parseName("golden:**/*.expect -> one.out").getRenameTo()?.toString()).to.equal("one.out");
+    });
+
     it("rejects a missing template after the arrow", () => {
       expect(parseInvalid("out = *.expect -> ;")).to.deep.equal([
         /* The caret sits on the ';' itself (col 19), not the space before it. */
@@ -850,7 +862,7 @@ describe("Parser Tests", () => {
     /* The wildcard rules read the written name alone, so they are enforced here
      * rather than in Validate — which means they also hold for a name that gets
      * no Validate pass: a schema-less global, and a CLI reference. */
-    it("rejects unequal wildcard counts, in either direction", () => {
+    it("rejects unequal wildcard counts, in either direction (a slotted template)", () => {
       expect(parseInvalid("out = *.a -> *.b.*;")).to.deep.equal([
         diagnosticBlock(
           1,
