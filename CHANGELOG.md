@@ -2,7 +2,7 @@ Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
 (`@fabr-build/core`) and the JavaScript plugin (`@fabr-build/js`) are released together and share a
 version number.
 
-## Fabr 0.2.0
+## Fabr 0.2.1
 @fabr-build/core:
 - `include` paths may now glob (`include lib/**/*.fabr;`).
 - Cap maximum concurrent connections + executing processes.
@@ -36,6 +36,7 @@ version number.
 - Fix esbuild resolver erroring on survivable misses.
 - Fix sass errors to report positions in the original sources via source maps.
 - Fix assorted dependency resolution issues.
+- Fix creating hardlinks in NPM publish tarballs (rejected by NPM)
 
 ## Fabr 0.1.0
 

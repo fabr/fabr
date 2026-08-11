@@ -18,6 +18,9 @@
  */
 
 import * as http from "node:http";
+import * as zlib from "node:zlib";
+import { Readable } from "node:stream";
+import * as tar from "tar-stream";
 import { AddressInfo } from "node:net";
 import { expect } from "chai";
 import {
@@ -837,6 +840,44 @@ describe("NPMRepository getRepositoryPublishRef", () => {
 });
 
 describe("NPMRepository publish", () => {
+  it("packs a member's tarball without hard links — the registry refuses them", async () => {
+    /* fabr dedups identical content as a tar hardlink by default, and npm's
+     * registry rejects an upload containing one outright (415, "Hard link is not
+     * allowed"). Two identical files in a package are enough to trip it — a pair
+     * of generated `.d.ts` stubs did. */
+    const repo = new NPMRepository(REG, npmrcContext());
+    const demo = coord(repo, "demo:1.2.3");
+    const [carrier] = await repo.package(
+      [
+        {
+          destination: demo,
+          content: publishFileSet({
+            "package.json": JSON.stringify({ name: "demo", version: "0.0.0-dev" }),
+            "a/runner.d.ts": "export {};\n",
+            "b/runner.d.ts": "export {};\n",
+          }),
+        },
+      ],
+      [demo]
+    );
+
+    const tgz = await (await carrier.get("demo-1.2.3.tgz"))!.getBuffer();
+    const types: string[] = [];
+    const extract = tar.extract();
+    await new Promise<void>((resolve, reject) => {
+      extract.on("entry", (header, stream, next) => {
+        types.push(header.type as string);
+        stream.on("end", next);
+        stream.resume();
+      });
+      extract.on("finish", () => resolve());
+      extract.on("error", reject);
+      Readable.from(zlib.gunzipSync(tgz)).pipe(extract);
+    });
+    /* The manifest and both identical stubs, each as its own regular entry. */
+    expect(types).to.deep.equal(["file", "file", "file"]);
+  });
+
   it("packages with version+dep rewrite and PUTs the libnpmpublish envelope", async () => {
     const server = await captureServer(201, "{}");
     try {

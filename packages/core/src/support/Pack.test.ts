@@ -104,11 +104,8 @@ describe("Pack", () => {
     expect((back as SymlinkFile).target).to.equal("real.txt");
   });
 
-  it("dedups identical content as a hardlink to the first entry", async () => {
-    const tarball = await packToTarball(fileSetOf({ "a.txt": "same", "b.txt": "same", "c.txt": "diff" }));
-
-    /* Read the raw entry headers: in sorted order a.txt is the content, b.txt a
-     * hardlink to it (identical bytes packed once), c.txt its own content. */
+  /** The raw entry headers of a packed tarball, in packed order. */
+  async function headersOf(tarball: Buffer): Promise<{ name: string; type: string }[]> {
     const headers: { name: string; type: string }[] = [];
     const extract = tar.extract();
     await new Promise<void>((resolve, reject) => {
@@ -121,6 +118,15 @@ describe("Pack", () => {
       extract.on("error", reject);
       Readable.from(zlib.gunzipSync(tarball)).pipe(extract);
     });
+    return headers;
+  }
+
+  it("dedups identical content as a hardlink to the first entry", async () => {
+    const tarball = await packToTarball(fileSetOf({ "a.txt": "same", "b.txt": "same", "c.txt": "diff" }));
+
+    /* Read the raw entry headers: in sorted order a.txt is the content, b.txt a
+     * hardlink to it (identical bytes packed once), c.txt its own content. */
+    const headers = await headersOf(tarball);
     expect(headers.find(h => h.name === "a.txt")?.type).to.equal("file");
     expect(headers.find(h => h.name === "b.txt")?.type).to.equal("link");
     expect(headers.find(h => h.name === "c.txt")?.type).to.equal("file");
@@ -128,6 +134,19 @@ describe("Pack", () => {
     /* It round-trips: both names come back sharing one content hash. */
     const unpacked = await unpackInTemp(tarball);
     expect(unpacked.size).to.equal(3);
+    expect((await unpacked.get("a.txt"))?.hash).to.equal((await unpacked.get("b.txt"))?.hash);
+  });
+
+  it("packs identical content as its own entry when hardlinks are off", async () => {
+    /* For a destination that refuses links — npm's registry rejects an upload
+     * containing one — the repeat carries its own bytes instead. */
+    const tarball = await packToTarball(fileSetOf({ "a.txt": "same", "b.txt": "same" }), { hardlinks: false });
+
+    const headers = await headersOf(tarball);
+    expect(headers.map(h => h.type)).to.deep.equal(["file", "file"]);
+
+    const unpacked = await unpackInTemp(tarball);
+    expect(unpacked.size).to.equal(2);
     expect((await unpacked.get("a.txt"))?.hash).to.equal((await unpacked.get("b.txt"))?.hash);
   });
 

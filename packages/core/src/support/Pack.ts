@@ -58,6 +58,22 @@ function entryContent(file: IFile): Computable<PackEntry> {
   return file.getBuffer().then((buffer: Buffer) => ({ kind: "file", buffer, mode: file.mode & 0o7777 }));
 }
 
+export interface PackOptions {
+  /**
+   * Whether a byte-identical repeat may be packed as a tar hardlink rather than
+   * as its own copy of the bytes (see {@link PackEntry}). Default **true**.
+   *
+   * Turn it off for an archive whose *destination* may refuse links, which is a
+   * property of that destination, not of tar: npm's registry rejects an upload
+   * containing any hard link outright (415, "Hard link is not allowed"). Note
+   * that fabr trips such a rule far more readily than the usual packer does —
+   * it dedups by content hash, where a tool packing a directory dedups by inode,
+   * so for fabr *any* two identical files suffice (a pair of generated `.d.ts`
+   * stubs will do it).
+   */
+  hardlinks?: boolean;
+}
+
 /**
  * Pack a FileSet into a single gzip-compressed tar archive — the inverse of
  * {@link unpackStream}. Entries are emitted in sorted name order with a fixed
@@ -66,7 +82,8 @@ function entryContent(file: IFile): Computable<PackEntry> {
  * Names are taken verbatim: any layout convention (npm's `package/` prefix,
  * say) is the caller's to impose on the FileSet first.
  */
-export function packToTarball(files: FileSet): Computable<Buffer> {
+export function packToTarball(files: FileSet, options: PackOptions = {}): Computable<Buffer> {
+  const hardlinks = options.hardlinks ?? true;
   const entries = [...files].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   /* First entry (in sorted order) to carry each content hash — a repeat becomes
    * a hardlink to it, so identical content is packed once. Symlinks are excluded
@@ -74,7 +91,7 @@ export function packToTarball(files: FileSet): Computable<Buffer> {
   const firstByHash = new Map<string, string>();
   return Computable.forAll(
     entries.map(([name, file]) => {
-      if (!(file instanceof SymlinkFile)) {
+      if (hardlinks && !(file instanceof SymlinkFile)) {
         const linkname = firstByHash.get(file.hash);
         if (linkname !== undefined) {
           return Computable.resolve<PackEntry>({ kind: "hardlink", linkname });

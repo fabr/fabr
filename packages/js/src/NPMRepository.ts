@@ -252,7 +252,11 @@ export class NPMRepository
           }
         }
         rooted.set("package/package.json", MemoryFile.from(manifestJson));
-        return packToTarball(new FileSet(rooted)).then(tgz => {
+        /* No hardlinks: the registry rejects an upload containing one (415,
+         * "Hard link is not allowed"), and fabr's content-hash dedup would emit
+         * one for any two identical files in the package. The wire format's
+         * constraints are this destination's to know. */
+        return packToTarball(new FileSet(rooted), { hardlinks: false }).then(tgz => {
           const files = new Map<string, IFile>([
             [tarballBasename(identity.name, identity.version), new MemoryFile(tgz)],
             ["package.json", MemoryFile.from(manifestJson)],
