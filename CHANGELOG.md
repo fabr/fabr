@@ -16,6 +16,7 @@ version number.
 - Allow rename from wildcard to fixed name (if matched once only)
 - Fix: generate command names resolved incorrectly.
 - Fix: remove excessive synchronous mkdirs
+- Fix: sync targets being unavailable to other build steps.
 
 @fabr-build/js:
 - Add a jest compatibility test runner (`JS_TEST_RUNNER = @fabr-build/js-tools/jest-runner;`)

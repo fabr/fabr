@@ -79,6 +79,7 @@ export * from "./support/Paths";
 export * from "./resolver/PackageFormat";
 export * from "./resolver/PackageResolver";
 export * from "./resolver/ResolutionDoc";
+export * from "./rules/BuildSync";
 export * from "./rules/CatalogRepository";
 export * from "./rules/ContentPackage";
 export * from "./rules/ExecAction";

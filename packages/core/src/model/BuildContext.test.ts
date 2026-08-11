@@ -37,11 +37,12 @@ import {
 } from "../core/Repository";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { PublishableFileSet } from "../core/PublishableFileSet";
-import { syncFilesRule, syncRule } from "../rules/BuildSync";
+import { SyncSource, syncRule } from "../rules/BuildSync";
+import { defaultFilesRule } from "../rules/DefaultFilesRule";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { Name } from "../core/Name";
 import { renderProvenance } from "../core/Provenance";
-import { ConflictError } from "../core/Errors";
+import { ConflictError, toError } from "../core/Errors";
 import { LogFormatter, LogLevel } from "../support/Log";
 import {
   BuildAction,
@@ -53,7 +54,7 @@ import {
 } from "../rules/Types";
 import { FSFileSource } from "../core/FSFileSource";
 import { scriptRunRule } from "../rules/RunScript";
-import { mapEntryOrigin, PropertyMap, PropertyMapValue } from "./BuildContext";
+import { BuildContext, mapEntryOrigin, PropertyMap, PropertyMapValue } from "./BuildContext";
 import { BUILD_OPERATION, Constraints } from "./Constraints";
 import { CircularDependencyError, DependencyFailedError, NameResolutionError, NoRuleFoundError, ReferenceFailedError } from "./Errors";
 import { ExecutionContext } from "./ExecutionContext";
@@ -260,6 +261,10 @@ class TestToolRepo extends TestRepo {
 }
 registerRepositoryProvider("test_tool_repo", context => Computable.resolve(new TestToolRepo(context.name)));
 
+/* Every member any destination has been asked to package, in call order — the
+ * probe behind the "packages only what is named" test. */
+const packagedMembers: string[] = [];
+
 /* Publish-capable repository double: vends publish refs, and packages each
  * member's content verbatim plus a `manifest.txt` naming its address — for
  * exercising the sync rules. */
@@ -269,6 +274,7 @@ class TestPubRepo extends TestRepo implements RepositoryWriter {
   }
 
   public package(members: PublishMember[]): Computable<PublishableFileSet[]> {
+    packagedMembers.push(...members.map(member => member.destination.toString()));
     return Computable.resolve(
       members.map(
         member =>
@@ -288,8 +294,9 @@ class TestPubRepo extends TestRepo implements RepositoryWriter {
   }
 }
 registerRepositoryProvider("test_pub", () => Computable.resolve(new TestPubRepo()));
-/* The real sync rules (build + files views), exercised against the double */
-testRules.push(syncRule, syncFilesRule);
+/* The real sync rule, exercised against the double — with the generic files
+ * rule, which is what serves a sync under `files` (it has none of its own). */
+testRules.push(syncRule, defaultFilesRule);
 
 /* A rule gathering two properties and a global through ONE collection point:
  * all of their references must land in a single joint resolution batch */
@@ -815,43 +822,109 @@ describe("BuildContext", () => {
     expect([...(one[0] as FileSet)].map(([name]) => name)).to.deep.equal(["one.tgz"]);
   });
 
-  it("Lays a sync out under member-coordinate directories for the files operation", async () => {
+  const RELEASE_INPUT =
+    "targetdef test_pub { }\n" +
+    "targetdef test_file { content = STRING; }\n" +
+    "targetdef sync { * = FILES; }\n" +
+    "test_pub pub { }\n" +
+    "test_file c1 { content = one; }\n" +
+    "test_file c2 { content = two; }\n" +
+    "sync release { pub:alpha:1.0.0 = c1; pub:beta:2.0.0 = c2; }\n";
+
+  /** The release above, as the given operation sees it. */
+  function releaseConfig(operation: string): BuildContext {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    const input =
-      "targetdef test_pub { }\n" +
-      "targetdef test_file { content = STRING; }\n" +
-      "targetdef sync { * = FILES; }\n" +
-      "test_pub pub { }\n" +
-      "test_file c1 { content = one; }\n" +
-      "test_file c2 { content = two; }\n" +
-      "sync release { pub:alpha:1.0.0 = c1; pub:beta:2.0.0 = c2; }\n";
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    const model = toBuildModel(
+      [parseBuildString(EMPTY_FILESET, "TEST.fabr", RELEASE_INPUT, logger)],
+      logger,
+      testContributions
+    );
     expect(errors).to.deep.equal([]);
-    const config = model.getConfig(Constraints.of({ [BUILD_OPERATION]: "files" }), execution);
+    return model.getConfig(Constraints.of({ [BUILD_OPERATION]: operation }), execution);
+  }
 
-    /* The whole release under `files`: ONE FileSet, each member's artifacts
-     * under its coordinate as a directory (alias separators as path
-     * separators). */
-    const all = await config.resolveName(writtenOnCommandLine("release"));
-    expect(all).to.have.length(1);
-    expect([...(all[0] as FileSet)].map(([name]) => name).sort()).to.deep.equal([
+  const namesOf = (sources: unknown[]): string[] =>
+    sources.flatMap(source => [...(source as FileSet)].map(([name]) => name)).sort();
+
+  it("Addresses a sync member's files by coordinate, identically under build and files", async () => {
+    /* The release is a namespace: a projection into it names a member's file by
+     * the ordinary written-name rule (alias separators as path separators), and
+     * means the same thing under either operation — `files` yields the build's
+     * own content, never a differently-shaped view of it, which is what lets one
+     * written reference mean one thing at the CLI and in a build script. */
+    for (const operation of ["files", "build"]) {
+      const config = releaseConfig(operation);
+      const slash = await config.resolveName(writtenOnCommandLine("release/pub/alpha/1.0.0/manifest.txt"));
+      expect(namesOf(slash), operation).to.deep.equal(["release/pub/alpha/1.0.0/manifest.txt"]);
+      /* Colon form strips to the last alias boundary, as anywhere else. */
+      const colon = await config.resolveName(writtenOnCommandLine("release:pub:alpha:1.0.0:manifest.txt"));
+      expect(namesOf(colon), operation).to.deep.equal(["manifest.txt"]);
+      /* The vended ref's display form is the full written coordinate — the
+       * resolver attached the repository's declared name (`pub`) at vend time. */
+      const file = await (colon[0] as FileSet).get("manifest.txt");
+      expect(await file!.readString(), operation).to.equal("pub:alpha:1.0.0");
+    }
+  });
+
+  it("Yields the carrier itself for a member named in full, and its files for a glob", async () => {
+    const config = releaseConfig("build");
+    /* Naming a member outright yields the entity — still publishable, which is
+     * what lets `fabr sync release/pub/alpha/1.0.0` publish just that one. */
+    const member = await config.resolveName(writtenOnCommandLine("release/pub/alpha/1.0.0"));
+    expect(member).to.have.length(1);
+    expect(member[0]).to.be.instanceOf(PublishableFileSet);
+    expect((member[0] as PublishableFileSet).destination.toString()).to.equal("pub:alpha:1.0.0");
+    /* Its content is the wire artifact as the destination made it, root-relative. */
+    expect(namesOf(member)).to.deep.equal(["f.txt", "manifest.txt"]);
+
+    /* A glob is a match over the namespace's files, not a name for an entry. */
+    const globbed = await config.resolveName(writtenOnCommandLine("release/**/manifest.txt"));
+    expect(namesOf(globbed)).to.deep.equal(["release/pub/alpha/1.0.0/manifest.txt", "release/pub/beta/2.0.0/manifest.txt"]);
+
+    /* A bare `**` spans every member — what a name that stops AT the release
+     * asks for, and how the file verbs list one (they hold files, so a source
+     * that is not itself a FileSet is opened out this way rather than silently
+     * listing nothing). */
+    const all = await releaseConfig("build").getTarget("release");
+    const everything = await (all[0] as SyncSource).find(parseName("**"));
+    expect([...everything].map(([name]) => name).sort()).to.deep.equal([
       "pub/alpha/1.0.0/f.txt",
       "pub/alpha/1.0.0/manifest.txt",
       "pub/beta/2.0.0/f.txt",
       "pub/beta/2.0.0/manifest.txt",
     ]);
+  });
 
-    /* So the ordinary written-name rule addresses one member's file — no
-     * bespoke namespace: the coordinate matches as alias segments and is
-     * stripped colon-form. */
-    const one = await config.resolveName(writtenOnCommandLine("release:pub:alpha:1.0.0:manifest.txt"));
-    expect(one).to.have.length(1);
-    expect([...(one[0] as FileSet)].map(([name]) => name)).to.deep.equal(["manifest.txt"]);
-    /* The vended ref's display form is the full written coordinate — the
-     * resolver attached the repository's declared name (`pub`) at vend time. */
-    const file = await (one[0] as FileSet).get("manifest.txt");
-    expect(await file!.readString()).to.equal("pub:alpha:1.0.0");
+  it("Packages only the members a reference names", async () => {
+    /* The declaration is a list of outputs, not an instruction to make all of
+     * them: naming one member must not build the others (the same property a
+     * `fetch` table has — the table is a pin, not a download list). */
+    packagedMembers.length = 0;
+    const config = releaseConfig("build");
+    await config.resolveName(writtenOnCommandLine("release/pub/alpha/1.0.0/manifest.txt"));
+    expect(packagedMembers).to.deep.equal(["pub:alpha:1.0.0"]);
+
+    /* And the whole release when the whole release is named. */
+    packagedMembers.length = 0;
+    const all = await releaseConfig("build").getTarget("release");
+    const release = all[0] as SyncSource;
+    const everything = await release.members();
+    expect([...packagedMembers].sort()).to.deep.equal(["pub:alpha:1.0.0", "pub:beta:2.0.0"]);
+    /* Selecting every member IS naming them all: `members()` narrows nothing
+     * rather than being a second way in, so the two cannot drift apart. */
+    const globbed = await release.members(parseName("**"));
+    expect(globbed).to.deep.equal(everything);
+  });
+
+  it("Reports a name that no member answers against the declared members", async () => {
+    const config = releaseConfig("files");
+    try {
+      await config.resolveName(writtenOnCommandLine("release/pub/gamma/3.0.0/manifest.txt"));
+      expect.fail("expected an unknown-member failure");
+    } catch (err) {
+      expect(toError(err).message).to.match(/release has no member matching 'pub\/gamma\/3\.0\.0\/manifest\.txt'/);
+    }
   });
 
   it("Defers a multi-source same-name collision to the consumer that unions", async () => {

@@ -30,14 +30,15 @@ describe("e2e: list-targetdefs", () => {
     /* No plugins declared, so only core's STD.fabr vocabulary is present. */
     const result = runFabr({ "PROJECT.fabr": "# empty\n" }, ["list-targetdefs"]);
     expect(result.status).to.equal(0);
-    /* Operations come from the registered rules: script/serve are run-only,
-     * generate is build-only, sync is build (dry-run artifacts) plus a files
-     * view, and flag carries a wildcard-operation rule. */
+    /* Operations come from the type's OWN registered rules: script/serve are
+     * run-only, generate and sync are build-only, and flag carries a
+     * wildcard-operation rule. The generic files rule serves every type (it is
+     * type-less), so it contributes to none of these listings. */
     expect(result.stdout).to.match(/^script \[run\]$/m);
     expect(result.stdout).to.match(/^serve \[run\]$/m);
     expect(result.stdout).to.match(/^generate \[build\]$/m);
     expect(result.stdout).to.match(/^flag \[\*\]$/m);
-    expect(result.stdout).to.match(/^sync \[build, files\]$/m);
+    expect(result.stdout).to.match(/^sync \[build\]$/m);
     /* A property line renders name + (REQUIRED) type as written in the def. */
     expect(result.stdout).to.match(/entry\s+REQUIRED FILES/);
     /* A pure repository type has no build rules, so no operations bracket. */

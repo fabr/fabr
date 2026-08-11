@@ -20,7 +20,7 @@
 import { TargetContext } from "../model/BuildContext";
 import { BUILD_OPERATION, BUILD_OVERRIDE, FILES_OPERATION } from "../model/Constraints";
 import { Computable } from "../core/Computable";
-import { FileSet } from "../core/FileSet";
+import { isFileSource } from "../core/Repository";
 import { RuleRegistration, RuleResult } from "./Types";
 
 /**
@@ -32,11 +32,18 @@ import { RuleRegistration, RuleResult } from "./Types";
  * operation is not here but at the leaves: a consumer that reads `files` off its
  * context (an `@npm:` repository, say) can deliver strictly less — a package's
  * own files with no dependency closure — when only the files are wanted.
+ *
+ * What `files` may skip is *work*, never content: the names a reference resolves
+ * to must not depend on the operation it was written under. So every file source
+ * the build yielded passes through, whatever shape it takes — several sources
+ * stay several, and a source that serves its content on its own terms (a `sync`
+ * release namespace, packaging members on demand) passes through as itself
+ * rather than being flattened. Only the deferred kinds drop out.
  */
 function deliverFiles(context: TargetContext): Computable<RuleResult> {
   return context.context.getTargetWithOverrides(context.name, BUILD_OVERRIDE).then(sources => {
-    const files = sources.find((source): source is FileSet => source instanceof FileSet);
-    if (!files) {
+    const files = sources.filter(isFileSource);
+    if (files.length === 0) {
       throw new Error(`internal: building '${context.name}' under files did not yield file content`);
     }
     return files;

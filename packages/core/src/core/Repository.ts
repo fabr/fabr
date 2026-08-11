@@ -97,6 +97,17 @@ export function isRepository(source: SourceRef): source is Repository {
 }
 
 /**
+ * Whether this source delivers content directly — a FileSet, or any other
+ * FileSource that answers `find`/`get` on its own terms (a `fetch` table, a
+ * release namespace). The complement is the deferred kinds, which promise
+ * content but cannot yet serve it: a Repository (resolve first) and the pending
+ * references (RepositoryRef, FileSetRef — a collection point applies them).
+ */
+export function isFileSource(source: SourceRef): source is FileSource {
+  return !isRepository(source) && !(source instanceof RepositoryRef) && !(source instanceof FileSetRef);
+}
+
+/**
  * The LOOKUP read face of a repository: per-reference delivery from an
  * already-fixed resolution — a catalog's pinned-member lookup. The counterpart
  * of {@link RepositoryReader} (the resolving read face, whose references the

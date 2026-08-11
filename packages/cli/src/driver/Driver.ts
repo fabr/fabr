@@ -41,12 +41,14 @@ import {
   LogLevel,
   IPropertyDecl,
   IPropertySchema,
+  isFileSource,
   isNameValue,
   ITargetDecl,
   ITargetDefDecl,
   ProgressListener,
   PropertyType,
   PublishableFileSet,
+  SyncSource,
   PERMISSIVE_RESOLUTION,
   toRunnable,
   signalInteractiveChild,
@@ -220,7 +222,7 @@ export function runFabr(options: Options): Promise<void> {
     case "shell":
       return runWith(options, (model, execution) => shellTarget(model, options, execution));
     case "sync":
-      return runWith(options, (model, execution) => syncTargets(model, options, execution));
+      return runWith(options, (model, execution, site) => syncTargets(model, options, execution, site));
     case "list-targets":
       return runWith(options, (model, execution) => listDeclaredTargets(model, options, execution));
     case "list-targetdefs":
@@ -241,7 +243,23 @@ function buildOperation(model: BuildModel, options: Options, execution: Executio
   const targets = buildTargets(model, options, execution, "build", names);
   /* Report inside the callback (see the test case) so a watch rebuild
    * re-prints its status rather than being cut off at the void result. */
-  return Computable.forAll(targets, () => buildStatus(execution));
+  return Computable.forAll(targets, (...results: SourceRef[][]) =>
+    Computable.forAll(results.map(realiseNamespaces), () => buildStatus(execution))
+  );
+}
+
+/**
+ * Force what a target's own build promises but produces on demand: a release
+ * namespace packages a member when something names one, so building the target
+ * itself — which asks for its outputs, not for a reference into them — must
+ * realise every member. That is the sync dry-run, and it is why laziness
+ * belongs to references into a namespace rather than to the target's build.
+ */
+function realiseNamespaces(sources: SourceRef[]): Computable<unknown> {
+  return Computable.forAll(
+    sources.filter((source): source is SyncSource => source instanceof SyncSource).map(release => release.members()),
+    (...realised: unknown[]) => realised
+  );
 }
 
 /** `fabr test <targets>`: build each target's tests, run them, and report. */
@@ -441,25 +459,38 @@ function shellTarget(model: BuildModel, options: Options, execution: ExecutionCo
 }
 
 /**
- * `fabr sync <target>…`: build each sync target under `build` to get its wire
- * artifacts (one PublishableFileSet  per member — a sync target's sources
- * ARE its members), then upload them. Building is the pure/cacheable half (the
- * same as a dry-run); the upload is the driver-level side effect, with the
- * credential read here (never a build input). Not watchable — publishing is a
- * one-shot.
+ * `fabr sync <name>…`: package the named wire artifacts under `build`, then
+ * upload them. Each name is resolved WHOLE (as ls/cat resolve theirs), so it may
+ * name a release — every member of it, packaged in publish order — or reach into
+ * one for a single member (`release/@npm/x/1.0.0`), which packages that member
+ * alone; a release is a namespace, so both are ordinary references into it.
+ * Packaging is the pure/cacheable half (the same as a dry-run); the upload is
+ * the driver-level side effect, with the credential read here (never a build
+ * input). Not watchable — publishing is a one-shot.
  */
-function syncTargets(model: BuildModel, options: Options, execution: ExecutionContext): Computable<void> {
-  const targets = buildTargets(model, options, execution, "build");
-  return Computable.forAll(targets, (...results: SourceRef[][]) => {
-    const publishable = results.flatMap((sources, i) => {
-      const members = sources.filter((source): source is PublishableFileSet => source instanceof PublishableFileSet);
-      if (members.length === 0) {
-        throw new Error(`'${options.targets[i]}' is not a sync target`);
-      }
-      return members;
-    });
-    return publishSync(execution, publishable);
-  });
+function syncTargets(model: BuildModel, options: Options, execution: ExecutionContext, site: IInvocationSite): Computable<void> {
+  const config = configFor(model, options, execution, "build");
+  const resolved = options.targets.map(name => config.resolveName(options.commandLine.refFor(name, site)));
+  return Computable.forAll(resolved, (...results: SourceRef[][]) =>
+    Computable.forAll(
+      results.map((sources, i) => membersOf(sources, options.targets[i])),
+      (...members: PublishableFileSet[][]) => publishSync(execution, members.flat())
+    )
+  );
+}
+
+/** The publishable members one resolved name yields: a whole release (its
+ *  namespace, packaged deps-first) or the individual carriers named. */
+function membersOf(sources: SourceRef[], name: string): Computable<PublishableFileSet[]> {
+  const releases = sources.filter((source): source is SyncSource => source instanceof SyncSource);
+  const carriers = sources.filter((source): source is PublishableFileSet => source instanceof PublishableFileSet);
+  if (releases.length === 0 && carriers.length === 0) {
+    throw new Error(`'${name}' is not a sync target`);
+  }
+  return Computable.forAll(
+    releases.map(release => release.members()),
+    (...packaged: PublishableFileSet[][]) => [...packaged.flat(), ...carriers]
+  );
 }
 
 /**
@@ -656,7 +687,34 @@ function resolveNames(
   site: IInvocationSite
 ): Computable<SourceRef[]>[] {
   const config = configFor(model, options, execution, FILES_OPERATION);
-  return options.targets.map(name => config.resolveName(options.commandLine.refFor(name, site)));
+  return options.targets.map(name =>
+    config
+      .resolveName(options.commandLine.refFor(name, site))
+      .then(sources => Computable.forAll(sources.map(openedOut), (...opened: SourceRef[]) => opened))
+  );
+}
+
+/** Everything, as a selector — what a name that stops at a source rather than
+ *  projecting into it asks for (see {@link openedOut}). */
+const ALL_FILES = parseName("**");
+
+/**
+ * The files behind one resolved source, for the verbs that only ever want files.
+ * A FileSet already IS its files; a source that instead serves them on its own
+ * terms — a `sync` release namespace, a `fetch` table — is asked for all of
+ * them, which is the same thing `<name>/**` asks for explicitly. Without this a
+ * name stopping at such a source resolves to something none of ls/cat/cp can
+ * read, and silently lists nothing.
+ *
+ * Deliberately not applied to every source: a RunnableFileSet reads a projection
+ * as *entry selection*, so asking it for `**` would narrow the program rather
+ * than list the install.
+ */
+function openedOut(source: SourceRef): Computable<SourceRef> {
+  if (source instanceof FileSet || !isFileSource(source)) {
+    return Computable.resolve(source);
+  }
+  return source.find(ALL_FILES).then(files => files);
 }
 
 /** Print the terminal build-status line: nothing built (this cycle), or a count.
