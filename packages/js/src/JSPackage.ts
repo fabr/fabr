@@ -266,7 +266,7 @@ export function resolveSourceMode(flags: Flag[]): Record<string, unknown> {
 }
 
 /** The build step a source belongs to — see {@link classifySourceByExt}. */
-export type JsSourceKind = "ts" | "dts" | "js" | "jsx" | "css" | "copy";
+export type JsSourceKind = "ts" | "dts" | "js" | "jsx" | "css" | "json" | "copy";
 
 /**
  * Classify a source file by which build step consumes it: `"ts"`/`"js"`/`"jsx"`
@@ -313,6 +313,15 @@ export function classifySourceByExt(path: string): JsSourceKind {
       case "scss":
       case "sass":
         return "css";
+      /* Like a .d.ts, a `.json` is a source in two roles: a runtime resource
+       * that ships verbatim, AND a compile input, because js_compile sets
+       * `resolveJsonModule` — under which `import cfg from "./x.json"` is
+       * resolved against the real file and typed from its contents. Withholding
+       * it left that option inert: the import could not resolve at all unless
+       * some ambient `declare module "*.json"` happened to be in scope, which
+       * silently replaces the document's real shape with an empty one. */
+      case "json":
+        return "json";
     }
   }
   return "copy";
@@ -328,6 +337,7 @@ export interface IJsSources {
   dts: FileSet;
   jsx: FileSet;
   css: FileSet;
+  json: FileSet;
   copy: FileSet;
 }
 
@@ -340,6 +350,7 @@ export function classifySources(sources: FileSet): IJsSources {
     dts: groups.dts ?? EMPTY_FILESET,
     jsx: groups.jsx ?? EMPTY_FILESET,
     css: groups.css ?? EMPTY_FILESET,
+    json: groups.json ?? EMPTY_FILESET,
     copy: groups.copy ?? EMPTY_FILESET,
   };
 }
@@ -349,7 +360,7 @@ export function classifySources(sources: FileSet): IJsSources {
  * declarations, which are ambient inputs tsc must see (e.g. a local shim).
  */
 export function compileInputs(sources: IJsSources): FileSet {
-  return FileSet.unionAll(sources.ts, sources.js, sources.jsx, sources.dts);
+  return FileSet.unionAll(sources.ts, sources.js, sources.jsx, sources.dts, sources.json);
 }
 
 /**
@@ -368,7 +379,7 @@ export function requiresCompile(sources: IJsSources): boolean {
  * installed package), so it is the one source in two buckets' worth of roles.
  */
 export function passthroughFiles(sources: IJsSources): FileSet {
-  return FileSet.unionAll(sources.copy, sources.dts);
+  return FileSet.unionAll(sources.copy, sources.dts, sources.json);
 }
 
 /**
@@ -384,7 +395,7 @@ export function resourceFiles(sets: FileSet[]): FileSet {
   return FileSet.unionAll(
     ...sets.map(set => {
       const classified = classifySources(set);
-      return FileSet.unionAll(classified.copy, classified.css);
+      return FileSet.unionAll(classified.copy, classified.json, classified.css);
     })
   );
 }
@@ -467,26 +478,32 @@ export function compileContents(
   /* The compile still runs for TypeScript/JSX; only the fate of the plain
    * JavaScript changes — it goes in as an input and comes back out untouched. */
   const keepSourceJs = options.transpileJs === false;
-  const compiled =
-    keepSourceJs && !requiresCompile(classified)
-      ? undefined
-      : compileJsSources(context, classified, deps, options);
+  const compiled = keepSourceJs && !requiresCompile(classified) ? undefined : compileJsSources(context, classified, deps, options);
   const css = compileCssSources(
     context,
     classified.css,
     deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)
   );
-  return Computable.forAll([compiled ?? Computable.resolve(EMPTY_FILESET), css], (built, lowered) => ({
-    sources: classified,
-    compiled: keepSourceJs ? withoutTranspiledJs(built, classified.js) : built,
-    css: lowered,
-    /* The JavaScript the compiler didn't deliver is delivered here instead, so
-     * the caller receives what it put in either way. */
-    passthrough: keepSourceJs
-      ? FileSet.unionAll(passthroughFiles(classified), classified.js)
-      : passthroughFiles(classified),
-    compileSrcs: compileSrcsOf(classified, deps) ?? EMPTY_FILESET,
-  }));
+  return Computable.forAll([compiled ?? Computable.resolve(EMPTY_FILESET), css], (built, lowered) => {
+    /* What the compile actually delivers — `built` minus the JavaScript held
+     * back under keepSourceJs, which the original is delivered in place of. */
+    const emitted = keepSourceJs ? withoutTranspiledJs(built, classified.js) : built;
+    return {
+      sources: classified,
+      compiled: emitted,
+      css: lowered,
+      /* The JavaScript the compiler didn't deliver is delivered here instead, so
+       * the caller receives what it put in either way. JSON is subtracted for the
+       * opposite reason: it is a compile input (resolveJsonModule), and tsc COPIES
+       * every JSON an emitted module imports into outDir — so shipping it here as
+       * well would be the same name from two different files, i.e. a conflict. A
+       * JSON nothing imports is not emitted, and does still ship from here. */
+      passthrough: (keepSourceJs ? FileSet.unionAll(passthroughFiles(classified), classified.js) : passthroughFiles(classified)).minus(
+        emitted
+      ),
+      compileSrcs: compileSrcsOf(classified, deps) ?? EMPTY_FILESET,
+    };
+  });
 }
 
 /**
@@ -571,7 +588,6 @@ export function stripPackageJson(files: FileSet): FileSet {
   return files.remap(name => (name === "package.json" ? undefined : name));
 }
 
-
 /** The diagnostic for a closure with no finite layout (see {@link mountWinners}):
  * name the cycle, and the pin that collapses it. */
 function unrepresentableCycle(cycle: string[]): Error {
@@ -585,7 +601,6 @@ function unrepresentableCycle(cycle: string[]): Error {
       "which removes the nesting the cycle needs"
   );
 }
-
 
 /** The package instances of a delivery, collected once: the direct roots,
  * every reachable instance (cycle-safe — a delivered graph carries complete,
@@ -724,11 +739,7 @@ interface PlannedNest {
  * tree, so a cycle that only exists once deliveries are merged is caught, and
  * one that never mounts is not misreported.
  */
-function mountWinners(
-  top: Map<string, string>,
-  byId: Map<string, PackageFileSet>,
-  pathOf: (name: string) => string
-): FileSet[] {
+function mountWinners(top: Map<string, string>, byId: Map<string, PackageFileSet>, pathOf: (name: string) => string): FileSet[] {
   const signature = (id: string, bindings: Map<string, string>): string =>
     [id, ...[...bindings].sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, to]) => `${name}=${to}`)].join("\n");
   /** Completed subtrees, and the positions on the current planning path (in
@@ -944,7 +955,12 @@ export function withBinShebangs(contents: FileSet): Computable<FileSet> {
     return Computable.resolve(contents);
   }
   return Computable.forAll(
-    binPaths.map(path => files.get(path)!.readString().then(text => [path, text] as const)),
+    binPaths.map(path =>
+      files
+        .get(path)!
+        .readString()
+        .then(text => [path, text] as const)
+    ),
     (...loaded) => {
       for (const [path, text] of loaded) {
         /* A bundled shell script carries its own `#!`; only a bare bin needs ours. */

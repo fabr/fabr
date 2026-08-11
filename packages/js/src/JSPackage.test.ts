@@ -26,10 +26,13 @@ import {
   binOf,
   canonicalEsLevel,
   classifySourceByExt,
+  classifySources,
+  compileInputs,
   esLevelOrder,
   hasPackageExport,
   makeNpmRunnable,
   parseJSTarget,
+  passthroughFiles,
   resolveJsxImportSource,
   resolveSourceMode,
   resolveSourceVersion,
@@ -826,8 +829,18 @@ describe("classifySourceByExt", () => {
   });
 
   it("still copies anything tsc neither compiles nor emits", () => {
-    expect(classifySourceByExt("src/data.json")).to.equal("copy");
     expect(classifySourceByExt("src/run.sh")).to.equal("copy");
+    expect(classifySourceByExt("src/logo.png")).to.equal("copy");
+  });
+
+  /* JSON is a compile input as well as a resource: js_compile sets
+   * resolveJsonModule, so tsc types `import cfg from "./x.json"` from the real
+   * document — which it can only do if the document is in the compile tree. */
+  it("gives json its own kind, so it both compiles and ships", () => {
+    expect(classifySourceByExt("src/data.json")).to.equal("json");
+    const sources = classifySources(new FileSet(new Map<string, IFile>([["src/data.json", MemoryFile.from("{}")]])));
+    expect([...compileInputs(sources)].map(([name]) => name)).to.deep.equal(["src/data.json"]);
+    expect([...passthroughFiles(sources)].map(([name]) => name)).to.deep.equal(["src/data.json"]);
   });
 });
 
