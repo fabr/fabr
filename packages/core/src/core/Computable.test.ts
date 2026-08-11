@@ -687,16 +687,8 @@ describe("Computable attach/detach", () => {
   it("re-propagates a dependency VALUE that changed while detached, on reattach", () => {
     const src = new TestSource<number>();
     src.set(1);
-    let bRuns = 0;
-    let cRuns = 0;
-    const b = src.then(x => {
-      bRuns++;
-      return x * 2;
-    });
-    const c = b.then(x => {
-      cRuns++;
-      return x + 1;
-    });
+    const b = src.then(x => x * 2);
+    const c = b.then(x => x + 1);
     const seen1: number[] = [];
     const obs = c.then(v => seen1.push(v));
     expect(seen1).to.deep.equal([3]); // src=1, b=2, c=3

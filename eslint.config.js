@@ -33,6 +33,10 @@ module.exports = tslint.config(
     "@typescript-eslint/no-namespace": 0,
     "@typescript-eslint/no-non-null-assertion": 0,
     "@typescript-eslint/no-explicit-any": "warn",
-    "@typescript-eslint/no-unused-vars": "warn",
+    /* A `_`-prefixed parameter is deliberately unused — the convention throughout,
+     * used to keep an interface method's signature readable in an implementation
+     * that ignores an argument. The default `args: "after-used"` honors it only in
+     * non-trailing position, which flags exactly the same intent inconsistently. */
+    "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
   }},
 );
