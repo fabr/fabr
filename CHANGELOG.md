@@ -5,6 +5,8 @@ version number.
 ## Fabr 0.3.0
 @fabr-build/core:
 - Add support for guarded properties.
+- Add xz archive support.
+- Add positional backrefs in rename templates.
 
 ## Fabr 0.2.1
 @fabr-build/core:

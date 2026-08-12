@@ -24,6 +24,10 @@ export enum NamePartKind {
   Literal,
   Glob,
   VarSubst,
+  /**
+   * A `$1`-style back-reference to a numbered wildcard.
+   */
+  Backref,
 }
 
 export interface NamePart {
@@ -172,13 +176,51 @@ export class Name {
   public toReplacement(): string {
     let slot = 0;
     return this.parts
-      .map(part =>
-        /* A literal `$` must be doubled so `replace` reads it as text, not a group
-         * ref. The function replacer inserts its result verbatim — a plain string
-         * `"$$"` would instead be read as an escape for a single `$` (a no-op). */
-        part.kind === NamePartKind.Glob ? `$${++slot}` : part.value.replaceAll("$", () => "$$")
-      )
+      .map(part => {
+        switch (part.kind) {
+          case NamePartKind.Glob:
+            /* A bare wildcard takes the next capture in order — the positional
+             * form, which is `$1…$n` written out. */
+            return `$${++slot}`;
+          case NamePartKind.Backref:
+            return `$${part.value}`;
+          default:
+            /* A literal `$` must be doubled so `replace` reads it as text, not a
+             * group ref. The function replacer inserts its result verbatim — a
+             * plain string `"$$"` would instead be read as an escape for a
+             * single `$` (a no-op). */
+            return part.value.replaceAll("$", () => "$$");
+        }
+      })
       .join("");
+  }
+
+  /**
+   * This name read as a **rename template**: any `$1`-style substitution becomes
+   * a capture back-reference ({@link NamePartKind.Backref}) instead of a
+   * variable read.
+   *
+   * The reinterpretation happens here, at the one place a template is parsed,
+   * rather than in the lexer — so `$1` keeps its ordinary meaning (a property
+   * named `1`, which cannot be declared, hence an unknown-property error)
+   * everywhere else, and no other reading of a name has to know captures exist.
+   */
+  public asRenameTemplate(): Name {
+    if (!this.parts.some(part => part.kind === NamePartKind.VarSubst && /^[0-9]+$/.test(part.value))) {
+      return this;
+    }
+    const parts = this.parts.map(part =>
+      part.kind === NamePartKind.VarSubst && /^[0-9]+$/.test(part.value)
+        ? { kind: NamePartKind.Backref, value: part.value }
+        : part
+    );
+    return new Name(parts, this.constraints, this.renameTo);
+  }
+
+  /** The wildcard indices this template back-references (`$1` → 1), in written
+   * order; empty for a template that replays positionally or not at all. */
+  public getBackrefIndices(): number[] {
+    return this.parts.filter(part => part.kind === NamePartKind.Backref).map(part => Number(part.value));
   }
 
   /**
@@ -634,6 +676,8 @@ export class Name {
           return result + part.value;
         case NamePartKind.VarSubst:
           return result + "${" + part.value + "}";
+        case NamePartKind.Backref:
+          return result + "$" + part.value;
       }
     }, "");
   }

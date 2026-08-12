@@ -407,13 +407,29 @@ function isWildcardKey(name: Name): boolean {
  */
 function checkRenameWildcards(selector: Name, template: Name): string | undefined {
   const templateUnits = template.getGlobUnits();
-  if (templateUnits.length === 0) {
+  const captures = template.getBackrefIndices();
+  if (templateUnits.length === 0 && captures.length === 0) {
     return undefined;
   }
   const selectorUnits = selector.getGlobUnits();
   const bad = [...selectorUnits, ...templateUnits].find(unit => unit !== "*" && unit !== "**");
   if (bad !== undefined) {
     return `rename wildcards must be '*' or '**' (found '${bad}')`;
+  }
+  if (captures.length > 0) {
+    /* Numbered back-references say which wildcard they replay, so counts need
+     * not match: a template may reuse one (`v$1/node-v$1`), reorder them, or
+     * leave some unused. Only that each names a wildcard the selector has. */
+    if (templateUnits.length > 0) {
+      return "a rename template replays wildcards either positionally ('*') or by number ('$1'), not both";
+    }
+    const outOfRange = captures.find(index => index < 1 || index > selectorUnits.length);
+    if (outOfRange !== undefined) {
+      return selectorUnits.length === 0
+        ? `'$${outOfRange}' has no wildcard to replay — the selector has none`
+        : `'$${outOfRange}' is out of range — the selector has ${selectorUnits.length} wildcard(s)`;
+    }
+    return undefined;
   }
   if (selectorUnits.length !== templateUnits.length) {
     return `selector and template must have equal wildcard counts (${selectorUnits.length} vs ${templateUnits.length})`;
@@ -1303,7 +1319,7 @@ export class BuildParser {
     if (!token) {
       this.unexpectedTokenError("a rename template");
     }
-    const template = this.tokenToName(token);
+    const template = this.tokenToName(token).asRenameTemplate();
     this.nextToken();
     if (this.token.type === TokenType.LANGLE && this.tokenAbutsPrev) {
       this.renameTemplateError("a rename template cannot carry constraints");

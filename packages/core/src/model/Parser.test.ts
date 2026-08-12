@@ -880,6 +880,49 @@ describe("Parser Tests", () => {
       ]);
     });
 
+    /* Numbered back-references: the explicit form of the same replay, which
+     * lifts the equal-count rule because each one says which wildcard it takes.
+     * (`$1` means a capture only in a template — elsewhere it is the ordinary
+     * substitution of a property named `1`, which cannot be declared.) */
+    describe("numbered captures", () => {
+      it("replays a capture more than once", () => {
+        const name = nameOf(parseValid("out = v*.tgz -> v$1/node-v$1.tgz;").properties[0].values[0]);
+        expect(name.getRenameTo()?.toString()).to.equal("v$1/node-v$1.tgz");
+      });
+
+      it("replays captures out of order, and drops unused ones", () => {
+        expect(parseInvalid("out = */*.a -> $2-$1.b;")).to.deep.equal([]);
+        expect(parseInvalid("out = */*.a -> only-$2.b;")).to.deep.equal([]);
+      });
+
+      it("rejects a reference to a wildcard the selector does not have", () => {
+        expect(parseInvalid("out = *.a -> $2.b;")).to.deep.equal([
+          diagnosticBlock(1, 11, "Invalid rename template: '$2' is out of range — the selector has 1 wildcard(s)", "out = *.a -> $2.b;"),
+        ]);
+        expect(parseInvalid("out = a.txt -> $1.b;")).to.deep.equal([
+          diagnosticBlock(1, 13, "Invalid rename template: '$1' has no wildcard to replay — the selector has none", "out = a.txt -> $1.b;"),
+        ]);
+      });
+
+      it("rejects mixing the two replay forms in one template", () => {
+        expect(parseInvalid("out = */*.a -> $1-*.b;")).to.deep.equal([
+          diagnosticBlock(
+            1,
+            13,
+            "Invalid rename template: a rename template replays wildcards either positionally ('*') or by number ('$1'), not both",
+            "out = */*.a -> $1-*.b;"
+          ),
+        ]);
+      });
+
+      it("leaves '$1' alone outside a rename template", () => {
+        /* Still an ordinary substitution there — the reinterpretation is the
+         * template's, so nothing else has to know captures exist. */
+        const name = nameOf(parseValid("out = $1.b;").properties[0].values[0]);
+        expect(name.getVariables()).to.deep.equal(["1"]);
+      });
+    });
+
     it("rejects a wildcard picomatch does not capture positionally", () => {
       expect(parseInvalid("out = a?.js -> a?.out;")).to.deep.equal([
         diagnosticBlock(
