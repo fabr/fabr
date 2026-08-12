@@ -24,7 +24,7 @@ import {
   DeclKind,
   IBuildFileContents,
   ICommandStage,
-  IDefaultableDecl,
+  IResolvableDecl,
   IMapItemDecl,
   IPropertyDecl,
   ITargetDecl,
@@ -117,7 +117,7 @@ function entriesOf(value: IValue | undefined): IMapItemDecl[] | undefined {
 function propertyValues(properties: IPropertyDecl[]): Record<string, string[]> {
   const result: Record<string, string[]> = {};
   for (const prop of properties) {
-    result[prop.name] = prop.values.map(value => nameText(nameOf(value)));
+    result[prop.name.toString()] = prop.values.map(value => nameText(nameOf(value)));
   }
   return result;
 }
@@ -128,10 +128,10 @@ function targetSummary(target: ITargetDecl): Record<string, unknown> {
 
 /** Defaults hold either kind of declaration, each summarized as its own kind is
  * elsewhere: a property by its values, a target by its type and properties. */
-function defaultValues(decls: IDefaultableDecl[]): Record<string, unknown> {
+function defaultValues(decls: IResolvableDecl[]): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const decl of decls) {
-    result[decl.name] =
+    result[decl.name.toString()] =
       decl.kind === DeclKind.Target ? targetSummary(decl) : decl.values.map(value => nameText(nameOf(value)));
   }
   return result;
@@ -141,7 +141,7 @@ function defaultValues(decls: IDefaultableDecl[]): Record<string, unknown> {
 function summarize(contents: IBuildFileContents): Record<string, unknown> {
   const targets: Record<string, unknown> = {};
   for (const target of contents.targets) {
-    targets[target.name] = targetSummary(target);
+    targets[target.name.toString()] = targetSummary(target);
   }
   const targetdefs: Record<string, Record<string, string>> = {};
   for (const def of contents.targetdefs) {
@@ -368,16 +368,15 @@ describe("Parser Tests", () => {
 
   it("parses coordinate-keyed members (sync)", () => {
     const contents = parseValid("sync fabr_release {\n @npm:@fabr/core:0.1 = core;\n @npm:@fabr/cli:0.2 = cli;\n}");
-    const target = contents.targets.find(t => t.name === "fabr_release");
+    const target = contents.targets.find(t => t.name.toString() === "fabr_release");
     expect(target?.type).to.equal("sync");
     expect(target?.properties.length).to.equal(2);
     const [core, cli] = target!.properties;
-    /* The coordinate is carried as a parsed reference on keyRef (and its canonical
-     * string is the property name); the value is the content target. */
-    expect(core.keyRef?.toString()).to.equal("@npm:@fabr/core:0.1");
-    expect(core.name).to.equal("@npm:@fabr/core:0.1");
+    /* The coordinate IS the key — a property key is a Name, so a whole
+     * reference needs no separate field; the value is the content target. */
+    expect(core.name.toString()).to.equal("@npm:@fabr/core:0.1");
     expect(core.values.map(v => nameOf(v).toString())).to.deep.equal(["core"]);
-    expect(cli.keyRef?.toString()).to.equal("@npm:@fabr/cli:0.2");
+    expect(cli.name.toString()).to.equal("@npm:@fabr/cli:0.2");
     expect(cli.values.map(v => nameOf(v).toString())).to.deep.equal(["cli"]);
   });
 
@@ -387,7 +386,7 @@ describe("Parser Tests", () => {
     /* `= oops;` is a bad statement; recovery must resume at the next statement
      * (which starts with an identifier), not swallow the rest of the file. */
     const result = parseBuildString(EMPTY_FILESET, "PROJECT.fabr", "a = 1;\n= oops;\nc = 3;\nd = 4;", logger);
-    expect(result.properties.map(p => p.name)).to.deep.equal(["a", "c", "d"]);
+    expect(result.properties.map(prop => prop.name.toBaseString())).to.deep.equal(["a", "c", "d"]);
     expect(errors).to.have.length(1);
   });
 
@@ -461,7 +460,7 @@ describe("Parser Tests", () => {
 
   it("names a default's decl for its property, so an error against it reads as that property", () => {
     const schema = parseValid("targetdef t { srcs = FILES default *.ts; }").targetdefs[0].properties.get("srcs");
-    expect(schema?.default?.name).to.equal("srcs");
+    expect(schema?.default && schema.default.name.toBaseString()).to.equal("srcs");
   });
 
   it("Targetdef default taking a map block", () => {
@@ -469,7 +468,7 @@ describe("Parser Tests", () => {
       "defines"
     );
     const entries = entriesOf(schema?.default?.values[0]) ?? [];
-    expect(entries.filter((item): item is IPropertyDecl => item.kind === DeclKind.Property).map(entry => entry.name)).to.deep.equal([
+    expect(entries.filter((item): item is IPropertyDecl => item.kind === DeclKind.Property).map(prop => prop.name.toBaseString())).to.deep.equal([
       "a",
       "b",
     ]);
@@ -789,7 +788,7 @@ describe("Parser Tests", () => {
       expect(name.toString()).to.equal("bundle.js");
     });
 
-    it("binds the arrow after a constraint delta", () => {
+    it("binds the arrow after a constraint requirement", () => {
       const name = firstValue("out = pkg<BUILD_TYPE=release>:*.js -> *.mjs;");
       expect(name.toString()).to.equal("pkg:*.js<BUILD_TYPE=release> -> *.mjs");
       expect(name.getRenameTo()?.toString()).to.equal("*.mjs");
@@ -1157,8 +1156,8 @@ describe("Parser Tests", () => {
         "js_bundle b {\n  meta = {\n    author = {\n      name = ann;\n    }\n    repository = {\n      type = git;\n    }\n  }\n}\nAFTER = 1;"
       );
       const entries = blockEntries(entriesOf(contents.targets[0].properties[0].values[0]));
-      expect(entries.map(entry => entry.name)).to.deep.equal(["author", "repository"]);
-      expect(contents.properties[0].name).to.equal("AFTER");
+      expect(entries.map(prop => prop.name.toBaseString())).to.deep.equal(["author", "repository"]);
+      expect(contents.properties[0].name.toBaseString()).to.equal("AFTER");
     });
 
     it("parses a nested block and a list of blocks", () => {
@@ -1167,11 +1166,11 @@ describe("Parser Tests", () => {
       ).targets[0].properties[0].values;
       const entries = blockEntries(entriesOf(values[0]));
       const repository = entries[0];
-      expect(repository.name).to.equal("repository");
+      expect(repository.name.toBaseString()).to.equal("repository");
       expect(repository.values).to.have.lengthOf(1);
-      expect(blockEntries(entriesOf(repository.values[0])).map(entry => entry.name)).to.deep.equal(["type", "url"]);
+      expect(blockEntries(entriesOf(repository.values[0])).map(prop => prop.name.toBaseString())).to.deep.equal(["type", "url"]);
       const maintainers = entries[1];
-      expect(maintainers.name).to.equal("maintainers");
+      expect(maintainers.name.toBaseString()).to.equal("maintainers");
       expect(maintainers.values).to.have.lengthOf(2);
       expect(maintainers.values.every(value => entriesOf(value) !== undefined)).to.equal(true);
     });
@@ -1186,7 +1185,7 @@ describe("Parser Tests", () => {
       expect(splice.kind).to.equal(DeclKind.MapSplice);
       expect(splice.kind === DeclKind.MapSplice && splice.ref.toString()).to.equal("FABR_METADATA");
       expect(entry.kind).to.equal(DeclKind.Property);
-      expect(entry.kind === DeclKind.Property && entry.name).to.equal("description");
+      expect(entry.kind === DeclKind.Property && entry.name.toBaseString()).to.equal("description");
     });
 
     it("accepts dotted foreign names as keys (not resolved as references)", () => {
@@ -1242,5 +1241,104 @@ describe("Parser Tests", () => {
     expect(errors).to.deep.equal([
       diagnosticBlock(1, 29, "Duplicate property 'srcs' in targetdef", "targetdef t { srcs = FILES; srcs = STRING; }"),
     ]);
+  });
+
+  /* The decl-position reading of the `<k=v>` facet: on a use it selects a
+   * configuration (a requirement), on a declaration it matches one (a guard). */
+  describe("constraint guards", () => {
+    /** The guard on a decl, rendered `KEY=value, …` (empty string if unguarded). */
+    function guardText(decl: IPropertyDecl): string {
+      return decl.name.getConstraints().map(([key, value]) => `${key}=${value.toString()}`).join(", ");
+    }
+
+    it("parses a guard on a target's property key", () => {
+      const target = parseValid("library l {\n  srcs = base.c;\n  srcs<TARGET=*-linux-*> = epoll.c;\n}").targets[0];
+      expect(target.properties.map(prop => prop.name.toBaseString())).to.deep.equal(["srcs", "srcs"]);
+      expect(target.properties.map(guardText)).to.deep.equal(["", "TARGET=*-linux-*"]);
+    });
+
+    it("parses a guard on a global", () => {
+      const properties = parseValid("TSC<TARGET=*-windows-*> = tsc.exe;").properties;
+      expect(properties.map(guardText)).to.deep.equal(["TARGET=*-windows-*"]);
+    });
+
+    it("parses a conjunction of guard keys", () => {
+      const target = parseValid("library l {\n  srcs<TARGET=*-linux-*, BUILD_TYPE=release> = fast.c;\n}").targets[0];
+      expect(guardText(target.properties[0])).to.equal("TARGET=*-linux-*, BUILD_TYPE=release");
+    });
+
+    it("distributes a guard block over the declarations it contains", () => {
+      const target = parseValid("library l {\n  srcs = base.c;\n  <TARGET=*-linux-*> {\n    srcs = epoll.c;\n    deps = libaio;\n  }\n}").targets[0];
+      expect(target.properties.map(prop => prop.name.toBaseString())).to.deep.equal(["srcs", "srcs", "deps"]);
+      /* Sugar only: the block leaves no trace beyond the guard on each decl. */
+      expect(target.properties.map(guardText)).to.deep.equal(["", "TARGET=*-linux-*", "TARGET=*-linux-*"]);
+    });
+
+    it("distributes a top-level guard block over globals", () => {
+      const properties = parseValid("<TARGET=*-windows-*> {\n  TSC = tsc.exe;\n}").properties;
+      expect(properties.map(prop => prop.name.toBaseString())).to.deep.equal(["TSC"]);
+      expect(properties.map(guardText)).to.deep.equal(["TARGET=*-windows-*"]);
+    });
+
+    it("conjoins a declaration's own guard with the enclosing block's", () => {
+      const target = parseValid("library l {\n  <TARGET=*-linux-*> {\n    srcs<BUILD_TYPE=release> = fast.c;\n  }\n}").targets[0];
+      expect(guardText(target.properties[0])).to.equal("TARGET=*-linux-*, BUILD_TYPE=release");
+    });
+
+    it("rejects a key guarded by both an enclosing block and the declaration", () => {
+      const errors = parseInvalid("library l {\n  <TARGET=*-linux-*> {\n    srcs<TARGET=*-apple-*> = kqueue.c;\n  }\n}");
+      expect(errors).to.have.lengthOf(1);
+      expect(errors[0]).to.contain("Constraint 'TARGET' is guarded on twice");
+    });
+
+    it("does not distribute a guard block into a map value", () => {
+      const target = parseValid("js_bundle b {\n  <TARGET=*-linux-*> {\n    defines = { DEBUG = true; };\n  }\n}").targets[0];
+      const entries = entriesOf(target.properties[0].values[0]) as IPropertyDecl[];
+      expect(guardText(target.properties[0])).to.equal("TARGET=*-linux-*");
+      /* The block guards the property, not the entries of the map it holds. */
+      expect(entries.map(guardText)).to.deep.equal([""]);
+    });
+
+    /* The transposition `deps = mylib<TARGET=*-linux-*>` for
+     * `deps<TARGET=*-linux-*> = mylib`. A requirement names a configuration to build
+     * under, and constraint values are exact, so a pattern there is meaningless
+     * — which is what makes the commonest form of the mistake diagnosable. */
+    it("rejects a pattern in a use-position requirement", () => {
+      const errors = parseInvalid("library l {\n  deps = mylib<TARGET=*-linux-*>;\n}");
+      expect(errors).to.have.lengthOf(1);
+      expect(errors[0]).to.contain("Constraint 'TARGET' is required as a pattern, but a requirement names an exact configuration");
+      expect(errors[0]).to.contain("did you mean a guard on the property");
+    });
+
+    it("still accepts an exact value in a use-position requirement", () => {
+      const target = parseValid("library l {\n  deps = mylib<BUILD_TYPE=release>;\n}").targets[0];
+      const value = target.properties[0].values[0];
+      expect(isNameValue(value) && value.value.getConstraints().map(([key]) => key)).to.deep.equal(["BUILD_TYPE"]);
+    });
+
+    it("guards a reference-shaped key, the facet meaning the same there", () => {
+      /* A key is a key: a `sync` coordinate's facet is read in DECL position
+       * like any other, so it guards the member rather than requiring a
+       * configuration of
+       * the coordinate (which, naming a publish destination, could not mean
+       * anything). Its value may therefore be a pattern. */
+      const target = parseValid("sync rel {\n  @npm:pkg:1.0<TARGET=*-linux-*> = content;\n}").targets[0];
+      expect(target.properties[0].name.toBaseString()).to.equal("@npm:pkg:1.0");
+      expect(guardText(target.properties[0])).to.equal("TARGET=*-linux-*");
+    });
+
+    it("rejects a rename on a property key", () => {
+      /* A rename says what to call what a name selects; a key selects nothing —
+       * it IS the name. */
+      const errors = parseInvalid("library l {\n  srcs -> out = a.c;\n}");
+      expect(errors).to.have.lengthOf(1);
+      expect(errors[0]).to.contain("a property key cannot carry a rename");
+    });
+
+    it("reports a guard that does not abut its property name", () => {
+      const errors = parseInvalid("library l {\n  srcs <TARGET=*-linux-*> = epoll.c;\n}");
+      expect(errors).to.have.lengthOf(1);
+      expect(errors[0]).to.contain("A constraint guard must abut the property name");
+    });
   });
 });

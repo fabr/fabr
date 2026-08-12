@@ -271,7 +271,7 @@ function readMembers(context: TargetContext): Computable<Map<string, FetchMember
   return context.getWildcardProperties().then(wildcards =>
     Computable.forAll(
       wildcards.map(member =>
-        context.getString(member.decl.name).then(value => [member.key.toGlobString().replaceAll(":", "/"), value ?? ""] as const)
+        context.getString(member.decl.name.toBaseString()).then(value => [member.key.toGlobString().replaceAll(":", "/"), value ?? ""] as const)
       ),
       (...entries: (readonly [string, string])[]) => {
         const members = new Map<string, FetchMember>();

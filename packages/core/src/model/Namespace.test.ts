@@ -19,13 +19,22 @@
 
 import { expect } from "chai";
 import { DeclKind, IBuildFile, ITargetDecl } from "./AST";
+import { Name } from "../core/Name";
 import { Namespace } from "./Namespace";
 import { parseName } from "./Parser";
 
 const fakeFile = {} as IBuildFile;
 
 function targetDecl(name: string): ITargetDecl {
-  return { kind: DeclKind.Target, type: "library", typeOffset: 0, name, offset: 0, properties: [], source: fakeFile };
+  return {
+    kind: DeclKind.Target,
+    type: "library",
+    typeOffset: 0,
+    name: Name.fromLiteral(name),
+    offset: 0,
+    properties: [],
+    source: fakeFile,
+  };
 }
 
 describe("Namespace.getPrefixMatch", () => {
@@ -34,7 +43,7 @@ describe("Namespace.getPrefixMatch", () => {
   it("strips everything before ':' (glob immediately after the target)", () => {
     /* `pkg:*.js` — colon projection: result names retain nothing of the prefix. */
     const match = ns.getPrefixMatch(parseName("pkg:*.js"));
-    expect(match?.decl.name).to.equal("pkg");
+    expect(match?.name).to.equal("pkg");
     expect(match?.retainedPrefix).to.equal("");
     expect(match?.rest.toString()).to.equal("*.js");
   });
@@ -42,14 +51,14 @@ describe("Namespace.getPrefixMatch", () => {
   it("keeps the written name for a '/' path (glob immediately after the target)", () => {
     /* `pkg/*.txt` — plain path: the `pkg/` prefix is retained on result names. */
     const match = ns.getPrefixMatch(parseName("pkg/*.txt"));
-    expect(match?.decl.name).to.equal("pkg");
+    expect(match?.name).to.equal("pkg");
     expect(match?.retainedPrefix).to.equal("pkg/");
     expect(match?.rest.toString()).to.equal("*.txt");
   });
 
   it("strips before ':' with a literal path segment before the glob", () => {
     const match = ns.getPrefixMatch(parseName("pkg:build/*.js"));
-    expect(match?.decl.name).to.equal("pkg");
+    expect(match?.name).to.equal("pkg");
     expect(match?.retainedPrefix).to.equal("");
     expect(match?.rest.toString()).to.equal("build/*.js");
   });

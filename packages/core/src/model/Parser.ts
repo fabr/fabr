@@ -23,7 +23,7 @@ import {
   DeclKind,
   IBuildFile,
   IBuildFileContents,
-  IDefaultableDecl,
+  IResolvableDecl,
   IIncludeDecl,
   IMapItemDecl,
   IPluginDecl,
@@ -307,6 +307,15 @@ function isSimpleName(text: string): boolean {
  */
 const MAX_BLOCK_DEPTH = 100;
 
+/**
+ * Which side of the `<k=v>` constraint facet is being parsed. Position decides
+ * what it means: on a *use* (a reference) it is a **requirement** — the
+ * configuration that reference must be built under, so its values are exact; on
+ * a *decl* (a property key) it is a **guard** — the configuration the
+ * declaration participates in, so its values are patterns.
+ */
+type ConstraintKind = "requirement" | "guard";
+
 const DIAG_PARSE_ERROR = new Diagnostic<{ actual: string; expected: string; loc: ISourcePosition }>(
   LogLevel.Error,
   "Read {actual} but expected {expected}"
@@ -322,6 +331,18 @@ const DIAG_UNEXPECTED_EOF = new Diagnostic<{ expected: string; loc: ISourcePosit
 const DIAG_RENAME_TEMPLATE = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
   LogLevel.Error,
   "Invalid rename template: {detail}"
+);
+const DIAG_GLOB_CONSTRAINT = new Diagnostic<{ key: string; loc: ISourcePosition; help: string[] }>(
+  LogLevel.Error,
+  "Constraint '{key}' is required as a pattern, but a requirement names an exact configuration"
+);
+const DIAG_SPACED_GUARD = new Diagnostic<{ loc: ISourcePosition; help: string[] }>(
+  LogLevel.Error,
+  "A constraint guard must abut the property name"
+);
+const DIAG_GUARD_CONFLICT = new Diagnostic<{ key: string; loc: ISourcePosition }>(
+  LogLevel.Error,
+  "Constraint '{key}' is guarded on twice — by an enclosing block and by this declaration"
 );
 const DIAG_INVALID_COMMAND = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
   LogLevel.Error,
@@ -414,7 +435,7 @@ export class BuildParser {
   /**
    * Whether the current token immediately abuts the previous one (no intervening
    * whitespace). Used to keep a constrained/projected reference atomic: a `<...>`
-   * constraint delta or a `:projection` tail only binds to a ref if it hugs it.
+   * constraint requirement or a `:projection` tail only binds to a ref if it hugs it.
    */
   private tokenAbutsPrev = false;
   /** End offset (exclusive) of the most recently consumed token */
@@ -737,7 +758,7 @@ export class BuildParser {
        * `<k=v>` constraints and `:projection` semantics. */
       const name = this.parseReference();
       /* A CLI name is the whole input: trailing tokens (e.g. a space before a
-       * `<...>` delta, which then doesn't abut and would be silently dropped)
+       * `<...>` requirement, which then doesn't abut and would be silently dropped)
        * are an error, not ignored. */
       if (this.token.type !== TokenType.EOF) {
         this.unexpectedTokenError("end of input");
@@ -1190,27 +1211,27 @@ export class BuildParser {
    * Reference ::= Ref Constraints?  (an abutting ':projection' tail rejoined)
    *
    * Assumes the current token is the base ref (NAME/IDENTIFIER/SIMPLE_NAME);
-   * consumes it, any *hugging* `<k=v, ...>` constraint delta, and — since a `<...>`
+   * consumes it, any *hugging* `<k=v, ...>` constraint requirement, and — since a `<...>`
    * splits what would otherwise be one reference token — any hugging `:projection`
    * tail, reassembling them into one Name. Leaves the current token positioned
    * after the reference. A `<...>`/`:tail` separated by whitespace does not bind.
    */
-  private parseReference(): Name {
+  private parseReference(kind: ConstraintKind = "requirement"): Name {
     const name = this.tokenToName(this.token as NameToken | IdentToken);
     this.nextToken();
-    return this.parseRefSuffix(name);
+    return this.parseRefSuffix(name, kind);
   }
 
   /**
    * The optional suffix after a reference's base token: an abutting `<k=v>`
-   * constraint delta and/or a `-> template` rename. Factored out so the
+   * constraint requirement and/or a `-> template` rename. Factored out so the
    * left-factored spaced-`<` path (a detached constraint on a preceding value,
    * or a redirect target reference) reuses the exact same tail handling.
    */
-  private parseRefSuffix(name: Name): Name {
+  private parseRefSuffix(name: Name, kind: ConstraintKind = "requirement"): Name {
     if (this.token.type === TokenType.LANGLE && this.tokenAbutsPrev) {
       this.nextToken(); /* consume '<' */
-      return this.applyConstraintsAndRename(name, this.parseConstraintList());
+      return this.applyConstraintsAndRename(name, this.parseConstraintList(undefined, kind));
     }
     /* `Reference (ARROW Template)?` — the rename half. The arrow is spaced, so it
      * binds regardless of any preceding `<...>`/`:proj`. */
@@ -1317,13 +1338,20 @@ export class BuildParser {
    *
    * Parse a `<k=v, …>` constraint body — the opening `<` already consumed —
    * through the closing `>`. An empty `<>`, a non-identifier key, and a repeated
-   * key are all errors. When `firstKey` is given, its key identifier is *also*
+   * key are all errors. `kind` says which side of the facet this is: a
+   * `"requirement"` (use position — the configuration a reference must be built
+   * under) takes exact values only, while a `"guard"` (decl position — the
+   * configuration a declaration participates in) is a pattern, since matching is
+   * the whole point.
+   * That asymmetry is also the diagnostic that catches the transposition
+   * `deps = mylib<TARGET=*-linux-*>` for `deps<TARGET=*-linux-*> = mylib`.
+   * When `firstKey` is given, its key identifier is *also*
    * already consumed and the current token is its `=` (the left-factored
    * spaced-`<` path, where the value loop reads the shared `<`+IDENTIFIER prefix
    * before the `=` discriminator decides constraint vs redirect); otherwise the
    * first key is read here (the ordinary abutting `ref<k=v>` path).
    */
-  private parseConstraintList(firstKey?: { text: string; start: number }): NameConstraint[] {
+  private parseConstraintList(firstKey?: { text: string; start: number }, kind: ConstraintKind = "requirement"): NameConstraint[] {
     const constraints: NameConstraint[] = [];
     const seen = new Set<string>();
     /* Inside the `<...>`, a `>` closes the constraint — never a redirect (see
@@ -1361,7 +1389,11 @@ export class BuildParser {
         ) {
           this.unexpectedTokenError("a constraint value");
         }
-        constraints.push([keyText, this.tokenToName(value)]);
+        const valueName = this.tokenToName(value);
+        if (kind === "requirement" && valueName.hasGlob()) {
+          this.globConstraintError(keyText, value.start);
+        }
+        constraints.push([keyText, valueName]);
         this.nextToken();
         /* Continue on a comma (unless it was trailing, before the '>'); otherwise
          * the list is done and a '>' must follow. */
@@ -1381,16 +1413,96 @@ export class BuildParser {
     throw new Error(PARSE_ERROR);
   }
 
+  /** A pattern where a use-position requirement wants an exact value — nearly
+   * always a guard written on the value instead of on the property it belongs
+   * to, so the help says so rather than merely restating the rule. */
+  private globConstraintError(key: string, offset: number): never {
+    this.log.log(DIAG_GLOB_CONSTRAINT, {
+      key,
+      loc: { ...this.source, offset },
+      help: [`did you mean a guard on the property — '<property><${key}=…> = <value>'?`],
+    });
+    throw new Error(PARSE_ERROR);
+  }
+
+  /**
+   * Read a property key: the name as written, including any abutting `<k=v>`,
+   * which in key position is the guard. Assumes the key token is current.
+   *
+   * A **spaced** `<` gets its own diagnostic rather than the bare "expected '='"
+   * that would otherwise land on it — the guard must abut its key, as a
+   * requirement must abut its reference.
+   */
+  private parsePropertyKey(): Name {
+    const base = this.tokenToName(this.token as NameToken | IdentToken);
+    this.nextToken();
+    return this.finishPropertyKey(base);
+  }
+
+  /** {@link parsePropertyKey} from the key token already consumed — the shape the
+   * top-level statement path arrives in, having had to read the following token
+   * to tell a property from a target declaration. */
+  private finishPropertyKey(base: Name): Name {
+    const key = this.parseRefSuffix(base, "guard");
+    if (this.token.type === TokenType.LANGLE) {
+      this.log.log(DIAG_SPACED_GUARD, {
+        loc: { ...this.source, offset: this.token.start },
+        help: ["write it against the name, as 'srcs<TARGET=*-linux-*> = …'"],
+      });
+      throw new Error(PARSE_ERROR);
+    }
+    return key;
+  }
+
   /**
    * PropertyDecl ::= NAME '=' NAME ';'
    *                       ^
    * @param name
    * @param nameOffset
    */
-  private parsePropertyDecl(name: string, nameOffset: number, keyRef?: Name, docComment?: string): IPropertyDecl {
+  /**
+   * @param key the key as written — a bare identifier, or a whole reference (a
+   * `sync` coordinate). Any `<k=v>` on it has already been parsed into its
+   * constraint facet, which in key position IS the guard; an enclosing guard
+   * block conjoins onto it here.
+   */
+  private parsePropertyDecl(key: Name, nameOffset: number, docComment?: string): IPropertyDecl {
+    if (key.getRenameTo() !== undefined) {
+      /* `srcs -> foo = …`: a rename says what to call what a name selects, and a
+       * key selects nothing — it IS the name. */
+      this.renameTemplateError("a property key cannot carry a rename", nameOffset);
+    }
+    const name = this.blockGuard ? key.withConstraints(this.mergeGuards(key.getConstraints(), nameOffset)) : key;
     this.consumeToken(TokenType.EQUALS);
-    const base = { kind: DeclKind.Property as const, source: this.source, name, offset: nameOffset, keyRef, docComment };
+    const base = {
+      kind: DeclKind.Property as const,
+      source: this.source,
+      name,
+      offset: nameOffset,
+      docComment,
+    };
     return this.parsePropertyValues(base);
+  }
+
+  /**
+   * The guard of the `<k=v> { … }` block being parsed, distributed onto every
+   * declaration within it (the block form is pure sugar — it introduces no scope
+   * of its own). Undefined outside such a block.
+   */
+  private blockGuard?: readonly NameConstraint[];
+
+  /** An inner declaration's own guard conjoined with the enclosing block's. A key
+   * guarded by both is an error: the two would have to agree, and if they do the
+   * inner one says nothing. */
+  private mergeGuards(own: readonly NameConstraint[], offset: number): readonly NameConstraint[] {
+    const block = this.blockGuard ?? [];
+    for (const [key] of own) {
+      if (block.some(([blockKey]) => blockKey === key)) {
+        this.log.log(DIAG_GUARD_CONFLICT, { key, loc: { ...this.source, offset } });
+        throw new Error(PARSE_ERROR);
+      }
+    }
+    return [...block, ...own];
   }
 
   /**
@@ -1499,9 +1611,45 @@ export class BuildParser {
       throw new Error(PARSE_ERROR);
     }
     this.blockDepth++;
+    /* A map block is a VALUE, not a body of declarations: an enclosing guard
+     * block distributes over the property that holds it, and no further. */
+    const outerGuard = this.blockGuard;
+    this.blockGuard = undefined;
     try {
       return this.parseMapBlockBody();
     } finally {
+      this.blockGuard = outerGuard;
+      this.blockDepth--;
+    }
+  }
+
+  /**
+   * GuardBlock ::= Constraints '{' PropertyList '}'
+   *                ^
+   *
+   * `<TARGET=…> { … }` — sugar for writing the guard on each of the contained
+   * declarations, which is exactly what it does: the block introduces no scope,
+   * so it yields the declarations themselves, guarded. Nested blocks conjoin.
+   * Assumes the current token is the opening `<`.
+   */
+  private parseGuardBlock(): IPropertyDecl[] {
+    if (this.blockDepth >= MAX_BLOCK_DEPTH) {
+      this.log.log(DIAG_NESTING_TOO_DEEP, { loc: { ...this.source, offset: this.token.start } });
+      throw new Error(PARSE_ERROR);
+    }
+    const at = this.token.start;
+    this.nextToken(); /* consume '<' */
+    const guard = this.parseConstraintList(undefined, "guard");
+    const outerGuard = this.blockGuard;
+    this.blockGuard = outerGuard ? this.mergeGuards(guard, at) : guard;
+    this.blockDepth++;
+    try {
+      this.consumeToken(TokenType.LBRACE);
+      const list = this.parsePropertyList();
+      this.consumeToken(TokenType.RBRACE);
+      return list;
+    } finally {
+      this.blockGuard = outerGuard;
       this.blockDepth--;
     }
   }
@@ -1521,7 +1669,7 @@ export class BuildParser {
         const name = this.tokenToName(keyToken);
         const next = this.nextToken();
         if (next.type === TokenType.EQUALS) {
-          entries.push(this.parsePropertyDecl(name.toString(), offset));
+          entries.push(this.parsePropertyDecl(name, offset));
         } else if (next.type === TokenType.SEMI || next.type === TokenType.RBRACE) {
           /* A splice: the reference's Name is kept intact (it may carry `${...}`
            * substitutions), resolved at read time. */
@@ -1555,21 +1703,25 @@ export class BuildParser {
     while (this.token.type !== TokenType.RBRACE && this.token.type !== TokenType.EOF) {
       try {
         const token = this.token;
-        if (token.type === TokenType.IDENTIFIER) {
-          this.nextToken();
-          list.push(this.parsePropertyDecl(token.text, token.start));
-        } else if (token.type === TokenType.NAME || token.type === TokenType.SIMPLE_NAME) {
-          /* A reference in key position — a `sync` member coordinate (`@npm:pkg:ver =
-           * srcs`), or a bare-name/path key (`@fabr-build/core`, `lib/x` — a SIMPLE_NAME).
-           * A plain property name is an IDENTIFIER (handled above); any wider key is a
-           * reference. Parse the full reference as the key; its canonical string is the
-           * property name, and the Name is carried on `keyRef` for the rule to read. */
+        if (token.type === TokenType.LANGLE) {
+          list.push(...this.parseGuardBlock());
+        } else if (
+          token.type === TokenType.IDENTIFIER ||
+          token.type === TokenType.NAME ||
+          token.type === TokenType.SIMPLE_NAME
+        ) {
+          /* One key path for every key: a plain property name, and equally a
+           * reference in key position — a `sync` member coordinate
+           * (`@npm:pkg:ver = srcs`) or a bare-name/path key (`@fabr-build/core`,
+           * `lib/x`). The key IS a Name either way; what an ordinary property
+           * has that a coordinate does not is simply a schema to be found under
+           * its base name. */
           const start = token.start;
-          const keyRef = this.parseReference();
+          const key = this.parsePropertyKey();
           const keyEnd = this.prevTokenEnd;
-          const decl = this.parsePropertyDecl(keyRef.toString(), start, keyRef);
-          /* Span the coordinate (not the whole `key = value`), so a per-member
-           * error underlines the offending reference. */
+          const decl = this.parsePropertyDecl(key, start);
+          /* Span the key (not the whole `key = value`), so a per-member error
+           * underlines the offending reference. */
           decl.endOffset = keyEnd;
           list.push(decl);
         } else {
@@ -1640,7 +1792,7 @@ export class BuildParser {
         source: this.source,
         type,
         typeOffset,
-        name: nameToken.text,
+        name: Name.fromLiteral(nameToken.text),
         offset: nameToken.start,
         endOffset: nameEnd,
         properties,
@@ -1659,14 +1811,14 @@ export class BuildParser {
    * `default`. Which form follows is decided by the token after it, exactly as
    * for an undefaulted declaration.
    */
-  private parseDefaultDecl(docComment: string | undefined): IDefaultableDecl {
+  private parseDefaultDecl(docComment: string | undefined): IResolvableDecl {
     const name = this.token;
     if (name.type !== TokenType.IDENTIFIER) {
       this.unexpectedTokenError("a property name or target type after 'default'");
     }
     const next = this.nextToken();
     if (next.type === TokenType.EQUALS) {
-      return this.parsePropertyDecl(name.text, name.start, undefined, docComment);
+      return this.parsePropertyDecl(Name.fromLiteral(name.text), name.start, docComment);
     } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.SIMPLE_NAME) {
       /* Only properties and targets have a default slot: a targetdef is not
        * defaultable, so `default targetdef x { … }` is an error reported at the
@@ -1754,7 +1906,7 @@ export class BuildParser {
             defaultDecl = this.parsePropertyValues({
               kind: DeclKind.Property,
               source: this.source,
-              name: key,
+              name: Name.fromLiteral(key),
               offset: token.start,
             });
             break;
@@ -1867,8 +2019,9 @@ export class BuildParser {
    * Parse a statement.
    *
    * Statement ::= PropertyDecl | TargetDecl | IncludeDecl | PluginDecl | TargetDefDecl | DefaultDecl
+   *             | GuardBlock
    *               ^
-   * PropertyDecl ::= NAME '=' expr ';'
+   * PropertyDecl ::= NAME Guard? '=' expr ';'
    * TargetDecl ::= NAME NAME '{' PropertyList '}'
    * IncludeDecl ::= 'include' NAME ';'
    * PluginDecl ::= 'plugin' NAME ';'
@@ -1889,8 +2042,13 @@ export class BuildParser {
         this.result.plugins.push(this.parsePluginDecl());
       } else if (token.text === "default") {
         this.result.defaults.push(this.parseDefaultDecl(doc));
-      } else if (next.type === TokenType.EQUALS) {
-        this.result.properties.push(this.parsePropertyDecl(token.text, token.start, undefined, doc));
+      } else if (next.type === TokenType.EQUALS || next.type === TokenType.LANGLE) {
+        /* `<` here is the property's constraint guard (`TSC<TARGET=…> = …`) —
+         * part of the key, which the discriminating read above has already
+         * stepped past. */
+        this.result.properties.push(
+          this.parsePropertyDecl(this.finishPropertyKey(Name.fromLiteral(token.text)), token.start, doc)
+        );
       } else if (next.type === TokenType.IDENTIFIER || next.type === TokenType.SIMPLE_NAME) {
         if (token.text === "targetdef") {
           this.result.targetdefs.push(this.parseTargetDefDecl(doc));
@@ -1900,6 +2058,9 @@ export class BuildParser {
       } else {
         this.unexpectedTokenError("Identifier or '='");
       }
+    } else if (token.type === TokenType.LANGLE) {
+      /* A statement-initial guard: `<TARGET=…> { … }` over global properties. */
+      this.result.properties.push(...this.parseGuardBlock());
     } else {
       this.unexpectedTokenError("Statement");
     }

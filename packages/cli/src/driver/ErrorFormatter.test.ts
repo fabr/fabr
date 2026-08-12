@@ -48,10 +48,18 @@ type ValueDecl = ConstructorParameters<typeof ReferenceFailedError>[0];
 type PropertyDecl = ConstructorParameters<typeof ReferenceFailedError>[1];
 
 function targetDecl(name: string, type = "js_package"): TargetDecl {
-  return { name, type, typeOffset: 0, offset: 0, endOffset: 0, properties: [], source: {} } as unknown as TargetDecl;
+  return {
+    name: parseName(name),
+    type,
+    typeOffset: 0,
+    offset: 0,
+    endOffset: 0,
+    properties: [],
+    source: {},
+  } as unknown as TargetDecl;
 }
 function propertyDecl(name: string): PropertyDecl {
-  return { name, values: [], offset: 0, endOffset: 0, source: {} } as unknown as PropertyDecl;
+  return { name: parseName(name), values: [], offset: 0, endOffset: 0, source: {} } as unknown as PropertyDecl;
 }
 function value(written = "x"): ValueDecl {
   return { value: parseName(written), offset: 0, endOffset: 0, source: {} } as unknown as ValueDecl;

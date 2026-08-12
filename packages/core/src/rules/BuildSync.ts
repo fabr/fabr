@@ -227,7 +227,7 @@ export class SyncSource implements FileSource {
      * sharing a package name stay distinct. */
     const sources = new Map<string, Computable<SourceRef[]>>();
     for (const path of paths) {
-      sources.set(path, this.context.getFileProperty(this.member(path).decl.name, BUILD_OVERRIDE));
+      sources.set(path, this.context.getFileProperty(this.member(path).decl.name.toBaseString(), BUILD_OVERRIDE));
     }
     const release = [...this.table.values()].map(member => member.assigned);
     return this.context.collect(sources).then(content => {
@@ -304,7 +304,7 @@ function syncPackages(context: TargetContext): Computable<RuleResult> {
         const clash = table.get(path);
         if (clash) {
           throw new NameResolutionError(
-            Name.fromLiteral(member.decl.name),
+            member.decl.name,
             declPosn(member.decl),
             undefined,
             `'${member.assigned.toString()}' is already published by this sync (declared as '${clash.decl.name}')`
@@ -331,7 +331,7 @@ function rejectShadowedMembers(declaredName: string, table: ReadonlyMap<string, 
     if (sorted[i].startsWith(sorted[i - 1] + NAME_COMPONENT_SEPARATOR)) {
       const member = table.get(sorted[i])!;
       throw new NameResolutionError(
-        Name.fromLiteral(member.decl.name),
+        member.decl.name,
         declPosn(member.decl),
         undefined,
         `'${sorted[i]}' in ${declaredName} is nested under member '${sorted[i - 1]}': a reference to it would be ` +

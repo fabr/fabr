@@ -70,16 +70,19 @@ function normalizeHead(pathForm: string): string {
  * A string expression, potentially consisting of literal, wildcard, and variable substitution parts
  */
 /**
- * A single constraint written on a reference (`<KEY=value>`): the key is a
- * scalar config identifier, the value a Name (so it may itself carry a `${subst}`).
- * Kept in written order (see Name.constraints).
+ * A single constraint written in a `<KEY=value>` facet: the key is a scalar
+ * config identifier, the value a Name (so it may itself carry a `${subst}`).
+ * Kept in written order (see Name.constraints). What it *means* is decided by
+ * position — a **requirement** on a reference, a **guard** on a declaration's
+ * key — so this carries only what was written.
  */
 export type NameConstraint = readonly [key: string, value: Name];
 
 export class Name {
   private parts: NamePart[];
   /**
-   * The constraint delta written on this reference (`ref<KEY=value, ...>`),
+   * The configuration this reference requires (`ref<KEY=value, ...>`), or — on
+   * a declaration's key — the configuration that guards it,
    * in written order, or empty. Kept apart from `parts` (which hold only the
    * resolvable base+projection literal): a FILES consumer applies these as a
    * config override when resolving the reference, while `toString` re-renders
@@ -116,14 +119,16 @@ export class Name {
   }
 
   /**
-   * @return a copy of this name carrying the given constraint delta (replacing
+   * @return a copy of this name carrying the given constraints (replacing
    * any it already had). The parts are unchanged — constraints ride alongside.
    */
   public withConstraints(constraints: readonly NameConstraint[]): Name {
     return new Name(this.parts, constraints, this.renameTo);
   }
 
-  /** @return the constraint delta written on this reference (empty if none). */
+  /** @return the constraints written on this name — what a reference *requires*
+   * of its referent's configuration, or what *guards* a declaration (empty if
+   * none; position is what decides which). */
   public getConstraints(): readonly NameConstraint[] {
     return this.constraints;
   }
@@ -411,7 +416,7 @@ export class Name {
   public getVariables(): string[] {
     const own = this.parts.filter(part => part.kind === NamePartKind.VarSubst).map(part => part.value);
     /* Constraint values may themselves reference variables (`<K=${X}>`), which
-     * must be resolved before the delta is applied. */
+     * must be resolved before the constraints are applied. */
     const withConstraints = this.constraints.reduce<string[]>(
       (vars, [, value]) => vars.concat(value.getVariables()),
       own
@@ -443,7 +448,7 @@ export class Name {
     }, []);
 
     /* Constraint values are substituted too (they share the variable space), so
-     * `<K=${X}>` resolves before the delta is applied / rendered. */
+     * `<K=${X}>` resolves before the constraints are applied / rendered. */
     const constraints = this.constraints.map<NameConstraint>(([key, value]) => [key, value.substitute(varNames, values)]);
     /* The rename target shares the variable space (`-> *.${BUILD_NO}.js`), and
      * is collapsed to literal parts here so replay never sees a VarSubst. */
@@ -497,10 +502,10 @@ export class Name {
 
   /**
    * @return the tail of this name from `start` (a suffix of its literal head),
-   * carrying the rename target but NOT the constraint delta. The sole use is
+   * carrying the rename target but NOT the constraints. The sole use is
    * splitting a reference into target + projection (getPrefixMatch, a
    * repository's getRepositoryRef): the tail IS the projection, so a `-> tmpl`
-   * rename (final naming) rides onto it, while the constraint delta stays behind
+   * rename (final naming) rides onto it, while the constraints stay behind
    * on the target it constrains (and is consumed at target resolution).
    */
   public substring(start: number): Name {
@@ -519,7 +524,7 @@ export class Name {
   /**
    * @return a new name with the given initial literal prefix added to the name.
    * A pure structural re-rooting of the path (used by {@link relativeTo}): the
-   * constraint delta and `-> tmpl` rename facet ride along unchanged, so a
+   * constraint and `-> tmpl` rename facets ride along unchanged, so a
    * file-relative reference keeps them (`./x.fabr -> PROJECT.fabr` re-rooted
    * against its including file still renames). A leading `./` on the head is
    * dropped at the seam so the joined path is `dir/x`, not `dir/./x` — the
@@ -638,10 +643,10 @@ export class Name {
   private withFacets(selector: string, render: (name: Name) => string): string {
     let result = selector;
     if (this.constraints.length > 0) {
-      /* Re-render the delta so a value used as a plain string reproduces its
+      /* Re-render the constraints so a value used as a plain string reproduces its
        * original text (`foo<a=b, c=d>`). */
-      const delta = this.constraints.map(([key, value]) => `${key}=${render(value)}`).join(", ");
-      result = `${result}<${delta}>`;
+      const written = this.constraints.map(([key, value]) => `${key}=${render(value)}`).join(", ");
+      result = `${result}<${written}>`;
     }
     if (this.renameTo !== undefined) {
       /* Canonical spaced arrow, mirroring the constraint round-trip (a STRING
@@ -669,6 +674,22 @@ export class Name {
    */
   public toString(): string {
     return this.withFacets(this.renderParts(false), name => name.toString());
+  }
+
+  /**
+   * @return the name **itself**, as written, with its facets left off: the
+   * `<k=v>` constraints and any `-> tmpl` rename say what to do *about* this
+   * name (which configuration it applies in, what to call what it selects) and
+   * are not part of what it names.
+   *
+   * This is what to key an index by, and what to compare against a name written
+   * somewhere else — so a property declared once per platform is looked up under
+   * the one name, while {@link toString} (facets included) is what tells its
+   * declarations apart. Renders as {@link toString} does, not as {@link
+   * toGlobString}: both sides of such a comparison are as-written text.
+   */
+  public toBaseString(): string {
+    return this.renderParts(false);
   }
 
   /**

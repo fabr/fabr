@@ -58,7 +58,7 @@ import { BuildContext, mapEntryOrigin, PropertyMap, PropertyMapValue } from "./B
 import { BUILD_OPERATION, Constraints } from "./Constraints";
 import { CircularDependencyError, DependencyFailedError, NameResolutionError, NoRuleFoundError, ReferenceFailedError } from "./Errors";
 import { ExecutionContext } from "./ExecutionContext";
-import { INameValue, syntheticValue } from "./AST";
+import { declName, INameValue, syntheticValue } from "./AST";
 import { StringReader } from "../support/StringReader";
 import { parseBuildString, parseName } from "./Parser";
 import { toBuildModel } from "./Sema";
@@ -118,7 +118,7 @@ registerRule("test_package", {}, context =>
 );
 registerRule("test_fail", {}, () => Computable.reject(new Error("reasons")));
 /* Resolves its dep under a caller-supplied constraint override, for testing
- * override precedence against a reference's own <k=v> delta. */
+ * override precedence against a reference's own <k=v> requirement. */
 registerRule("test_override", {}, context =>
   context.getFileSetProperties(["dep"], Constraints.of({ FLAVOR: "caller" })).then(({ dep }) => {
     lastDeps = FileSet.unionAll(...dep);
@@ -126,7 +126,7 @@ registerRule("test_override", {}, context =>
   })
 );
 /* Resolves a GLOBAL under a caller-supplied override, for testing override
- * precedence against a <k=v> delta written on the global's value (the
+ * precedence against a <k=v> requirement written on the global's value (the
  * getGlobalFileProperty path — e.g. getGlobalRunnable forcing BUILD_OPERATION=run). */
 registerRule("test_globaltool", {}, context =>
   context.collect({ tool: context.getGlobalFileProperty("GLOBALTOOL", Constraints.of({ FLAVOR: "caller" })) }).then(({ tool }) => {
@@ -139,7 +139,7 @@ registerRule("test_globaltool", {}, context =>
 registerRule("test_tool", {}, context => context.getRunnableProperty("tool").then(() => EMPTY_FILESET));
 registerRule("test_globalrunnable", {}, context => context.getGlobalRunnable("TOOLGLOBAL").then(() => EMPTY_FILESET));
 /* Reads a STRING global under a caller override, for testing override precedence
- * against a <k=v> delta written on the global's value (the getGlobalString /
+ * against a <k=v> requirement written on the global's value (the getGlobalString /
  * string path — the counterpart of test_globaltool). */
 let lastString: string | undefined;
 registerRule("test_globalstr", {}, context =>
@@ -361,6 +361,16 @@ registerRule("test_orphan_composer", {}, context =>
   context.getRequiredString("content").then(content => context.subTarget("test_orphan_sub", { data: content }, { label: "sub" }))
 );
 
+/* Reports the wildcard members (keys the schema never named) its target
+ * declares, so a test can observe which of them a configuration admits. */
+let lastMemberKeys: string[] | undefined;
+registerRule("test_members", {}, context =>
+  context.getWildcardProperties().then(members => {
+    lastMemberKeys = members.map(member => member.key.toString());
+    return EMPTY_FILESET;
+  })
+);
+
 const testContributions: PluginContribution[] = [{ rules: testRules, repositories: testRepos }];
 
 async function testGetProperty(input: string, prop: string, constraints?: Record<string, string>): Promise<string[]> {
@@ -442,17 +452,17 @@ describe("BuildContext", () => {
     } catch (err) {
       expect(err).to.be.instanceOf(DependencyFailedError);
       const outer = err as DependencyFailedError;
-      expect(outer.target.name).to.equal("a");
+      expect(declName(outer.target)).to.equal("a");
       /* The failure crossed the written reference 'b' in a's deps: the hop
        * records the use site (value span, property, owning target) */
       expect(outer.cause).to.be.instanceOf(ReferenceFailedError);
       const hop = outer.cause as ReferenceFailedError;
       expect(hop.value.value.toString()).to.equal("b");
-      expect(hop.property.name).to.equal("deps");
-      expect(hop.target?.name).to.equal("a");
+      expect(hop.property.name.toBaseString()).to.equal("deps");
+      expect(hop.target && declName(hop.target)).to.equal("a");
       expect(hop.cause).to.be.instanceOf(DependencyFailedError);
       const inner = hop.cause as DependencyFailedError;
-      expect(inner.target.name).to.equal("b");
+      expect(declName(inner.target)).to.equal("b");
       expect(inner.cause.message).to.equal("reasons");
     }
   });
@@ -477,8 +487,8 @@ describe("BuildContext", () => {
       expect(circular.name).to.equal("base");
       expect(circular.message).to.equal("Circular dependency: 'base' depends on itself");
       expect(circular.cycle.map(site => site.value.value.toString())).to.deep.equal(["base:*.ts"]);
-      expect(circular.cycle[0].property.name).to.equal("deps");
-      expect(circular.cycle[0].target?.name).to.equal("base");
+      expect(circular.cycle[0].property.name.toBaseString()).to.equal("deps");
+      expect(circular.cycle[0].target && declName(circular.cycle[0].target!)).to.equal("base");
     }
   });
 
@@ -502,7 +512,7 @@ describe("BuildContext", () => {
       expect(circular.name).to.equal("one");
       /* Closing reference first ('one', written in two's deps), back to the use
        * site that entered the cycle ('two', written in one's deps). */
-      expect(circular.cycle.map(site => `${site.target?.name} ${site.property.name} = ${site.value.value.toString()}`)).to.deep.equal([
+      expect(circular.cycle.map(site => `${site.target && declName(site.target)} ${site.property.name.toBaseString()} = ${site.value.value.toString()}`)).to.deep.equal([
         "two deps = one",
         "one deps = two",
       ]);
@@ -529,7 +539,7 @@ describe("BuildContext", () => {
       expect(cause).to.be.instanceOf(CircularDependencyError);
       const circular = cause as CircularDependencyError;
       expect(circular.name).to.equal("A");
-      expect(circular.cycle.map(site => `${site.property.name} = ${site.value.value.toString()}`)).to.deep.equal([
+      expect(circular.cycle.map(site => `${site.property.name.toBaseString()} = ${site.value.value.toString()}`)).to.deep.equal([
         "B = A",
         "A = B",
       ]);
@@ -674,12 +684,12 @@ describe("BuildContext", () => {
       const hop = (err as DependencyFailedError).cause;
       expect(hop).to.be.instanceOf(ReferenceFailedError);
       expect((hop as ReferenceFailedError).value.value.toString()).to.equal("n");
-      expect((hop as ReferenceFailedError).property.name).to.equal("deps");
+      expect((hop as ReferenceFailedError).property.name.toBaseString()).to.equal("deps");
       const cause = (hop as ReferenceFailedError).cause;
       expect(cause).to.be.instanceOf(NoRuleFoundError);
       const noRule = cause as NoRuleFoundError;
       expect(noRule.message).to.equal("No rule matches target 'n' of type 'test_constrained'");
-      expect(noRule.target.name).to.equal("n");
+      expect(declName(noRule.target)).to.equal("n");
       /* The full constraint set rides as data; presentation decides what shows */
       expect(noRule.constraints.isEmpty()).to.equal(true);
     }
@@ -730,8 +740,8 @@ describe("BuildContext", () => {
       expect(cause.message).to.equal("Unable to resolve 'fooff'");
       /* The use site identifies whose property the name was written in */
       const useSite = (cause as NameResolutionError).useSite;
-      expect(useSite?.property.name).to.equal("deps");
-      expect(useSite?.target?.name).to.equal("a");
+      expect(useSite && useSite.property.name.toBaseString()).to.equal("deps");
+      expect(useSite?.target && declName(useSite.target)).to.equal("a");
       /* The position points at the written value, not the target declaration */
       const position = (cause as NameResolutionError).position;
       expect(position.file).to.equal("TEST.fabr");
@@ -1204,10 +1214,10 @@ describe("BuildContext", () => {
     /* license arrived via the SHARED splice: origin names the written entry in
      * the shared block plus one via-hop; the literal entry has no hops. */
     const licenseOrigin = map && mapEntryOrigin(map, "license");
-    expect(licenseOrigin?.entry.name).to.equal("license");
+    expect(licenseOrigin && licenseOrigin.entry.name.toBaseString()).to.equal("license");
     expect(licenseOrigin?.via).to.have.lengthOf(1);
     const ownOrigin = map && mapEntryOrigin(map, "description");
-    expect(ownOrigin?.entry.name).to.equal("description");
+    expect(ownOrigin && ownOrigin.entry.name.toBaseString()).to.equal("description");
     expect(ownOrigin?.via).to.deep.equal([]);
   });
 
@@ -1645,7 +1655,7 @@ describe("BuildContext", () => {
     expect(model.getConfig(Constraints.of({ x: "1" }), other)).to.not.equal(model.getConfig(Constraints.of({ x: "1" }), execution));
   });
 
-  it("Applies a reference's <k=v> delta to the referenced target's build", async () => {
+  it("Applies a reference's <k=v> requirement to the referenced target's build", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     /* `leaf` bakes ${FLAVOR} into its output; the dependant references it once
@@ -1670,12 +1680,12 @@ describe("BuildContext", () => {
     expect(await readLeaf()).to.equal("fancy");
   });
 
-  it("A caller's constraint override takes precedence over a reference's own delta", async () => {
+  it("A caller's constraint override takes precedence over a reference's own requirement", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     /* The rule resolves `dep` under an explicit {FLAVOR: caller} override while
      * the reference carries <FLAVOR=ref>; the caller's requirement must win
-     * (e.g. a `run` rule forcing BUILD_OPERATION=run over a stray delta). */
+     * (e.g. a `run` rule forcing BUILD_OPERATION=run over a stray requirement). */
     const input =
       "targetdef test_override { dep = FILES; }\n" +
       "targetdef test_file { content = STRING; }\n" +
@@ -1689,13 +1699,13 @@ describe("BuildContext", () => {
     expect(await lastDeps!.get("f.txt").then(file => file?.readString())).to.equal("caller");
   });
 
-  it("A caller's override also wins over a delta on a GLOBAL's value", async () => {
+  it("A caller's override also wins over a requirement on a GLOBAL's value", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     /* Same precedence rule, through getGlobalTarget: the rule forces
      * {FLAVOR: caller} while the global's written value carries <FLAVOR=ref>.
-     * The override must ride as callerOverrides (applied after the delta),
-     * not be demoted to the ambient set (which the delta would beat). */
+     * The override must ride as callerOverrides (applied after the
+     * requirement), not be demoted to the ambient set (which it would beat). */
     const input =
       "targetdef test_globaltool { }\n" +
       "targetdef test_file { content = STRING; }\n" +
@@ -1710,13 +1720,13 @@ describe("BuildContext", () => {
     expect(await lastDeps!.get("f.txt").then(file => file?.readString())).to.equal("caller");
   });
 
-  it("A caller's override wins over a delta on a STRING global's value too", async () => {
+  it("A caller's override wins over a requirement on a STRING global's value too", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     /* The string path layers overrides identically to the file path: the rule
      * forces {FLAVOR: caller} while the global's value carries <FLAVOR=ref>, so
      * the override (threaded as callerOverrides, applied last) wins — rather than
-     * being folded into ambient, which the delta would beat. */
+     * being folded into ambient, which the requirement would beat. */
     const input =
       "targetdef test_globalstr { }\n" +
       "default FLAVOR = ambient;\n" +
@@ -1735,7 +1745,7 @@ describe("BuildContext", () => {
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     /* build/test resolve a whole target name via getTargetRef; a ${...} in that
      * name is substituted just as it is on the file/CLI path — previously it was
-     * substituted only when the reference also carried a <k=v> delta. */
+     * substituted only when the reference also carried a <k=v> requirement. */
     const input =
       "targetdef test_file { content = STRING; }\n" +
       "default WHICH = leaf;\n" +
@@ -1905,5 +1915,195 @@ describe("contributed-lib-relative FILES", () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  /*
+   * Conditional properties: the decl-position reading of the `<k=v>` facet.
+   * Guards FILTER — they never rank — so these assert the combination rules
+   * rather than any precedence order: a list-shaped read unions every matching
+   * declaration, a scalar read demands exactly one, and the targetdef's declared
+   * default supplies a property no guard admitted.
+   */
+  describe("conditional properties (constraint guards)", () => {
+    const GUARD_DEFS =
+      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_file { content = STRING; }\n" +
+      "targetdef test_dir { }\n" +
+      "default FLAVOR = none;\n";
+
+    /** Build `input` under `constraints` and return the file names its `deps`
+     * union delivered — the observable of a FILES read. */
+    async function depNames(input: string, constraints: Record<string, string> = {}): Promise<string[]> {
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      lastDeps = undefined;
+      await model.getConfig(Constraints.of(constraints), execution).getTarget("t");
+      return [...(lastDeps ?? EMPTY_FILESET)].map(([name]) => name).sort();
+    }
+
+    it("unions every matching declaration of a FILES property", async () => {
+      const input =
+        GUARD_DEFS +
+        "test_file base { content = A; }\n" +
+        "test_dir extra { }\n" +
+        "test_good t { deps = base; deps<FLAVOR=lin*> = extra; }\n";
+      /* The guarded declaration participates alongside the unguarded one — a
+       * guard decides participation, and participants combine as a value list
+       * always has. */
+      expect(await depNames(input, { FLAVOR: "linux" })).to.deep.equal(["a.expect", "c.txt", "f.txt", "sub/b.expect"]);
+      expect(await depNames(input, { FLAVOR: "windows" })).to.deep.equal(["f.txt"]);
+    });
+
+    it("unions two matching guarded declarations (guards are not ranked)", async () => {
+      const input =
+        GUARD_DEFS +
+        "test_file base { content = A; }\n" +
+        "test_dir extra { }\n" +
+        "test_good t { deps<FLAVOR=lin*> = base; deps<FLAVOR=*ux> = extra; }\n";
+      /* Both guards admit `linux`, and neither is 'more specific' — there is no
+       * such relation over patterns, so both contribute. */
+      expect(await depNames(input, { FLAVOR: "linux" })).to.deep.equal(["a.expect", "c.txt", "f.txt", "sub/b.expect"]);
+    });
+
+    it("yields nothing for a FILES property no guard admits", async () => {
+      const input = GUARD_DEFS + "test_file base { content = A; }\n" + "test_good t { deps<FLAVOR=lin*> = base; }\n";
+      expect(await depNames(input, { FLAVOR: "windows" })).to.deep.equal([]);
+    });
+
+    it("matches a guard against a conjunction of properties", async () => {
+      const input =
+        GUARD_DEFS +
+        "default BUILD_TYPE = debug;\n" +
+        "test_file base { content = A; }\n" +
+        "test_good t { deps<FLAVOR=lin*, BUILD_TYPE=release> = base; }\n";
+      expect(await depNames(input, { FLAVOR: "linux", BUILD_TYPE: "release" })).to.deep.equal(["f.txt"]);
+      /* Every pair must match: a conjunction, as in a rule's constraint set. */
+      expect(await depNames(input, { FLAVOR: "linux", BUILD_TYPE: "debug" })).to.deep.equal([]);
+      expect(await depNames(input, { FLAVOR: "windows", BUILD_TYPE: "release" })).to.deep.equal([]);
+    });
+
+    it("reads a guard through property resolution, so a declared default answers it", async () => {
+      /* Nothing is overridden here: `FLAVOR` resolves to its declared default,
+       * which is what the guard matches against — the configuration is the
+       * properties, not just the constraint set. */
+      const input = GUARD_DEFS + "test_file base { content = A; }\n" + "test_good t { deps<FLAVOR=none> = base; }\n";
+      expect(await depNames(input)).to.deep.equal(["f.txt"]);
+    });
+
+    it("takes the single matching declaration of a STRING property", async () => {
+      const input =
+        GUARD_DEFS +
+        "test_file t { content<FLAVOR=lin*> = linux; content<FLAVOR=win*> = windows; }\n" +
+        "test_good unused { deps = t; }\n";
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      const files = await model.getConfig(Constraints.of({ FLAVOR: "linux" }), execution).getTarget("t");
+      expect(await (files[0] as FileSet).readFile("f.txt")).to.equal("linux");
+    });
+
+    it("rejects two declarations of a STRING property matching at once", async () => {
+      const input = GUARD_DEFS + "test_file t { content<FLAVOR=lin*> = one; content<FLAVOR=*ux> = two; }\n";
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      try {
+        await model.getConfig(Constraints.of({ FLAVOR: "linux" }), execution).getTarget("t");
+        expect.fail("expected target t to fail");
+      } catch (err) {
+        /* A scalar cannot silently join two contributions the way a list can,
+         * and there is no ranking to break the tie — so it is an error naming
+         * both guards. */
+        expect(err).to.be.instanceOf(DependencyFailedError);
+        expect((err as DependencyFailedError).cause.message).to.contain("but takes a single value");
+      }
+    });
+
+    it("falls back to the targetdef's declared default when no guard matches", async () => {
+      const input =
+        "targetdef test_file { content = STRING default fallback; }\n" +
+        "default FLAVOR = none;\n" +
+        "test_file t { content<FLAVOR=lin*> = linux; }\n";
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      /* Guarded out ⇒ the target supplies no value here, which is exactly the
+       * case the schema's default exists for — the same path a target that
+       * never mentioned the property takes. */
+      const windows = await model.getConfig(Constraints.of({ FLAVOR: "windows" }), execution).getTarget("t");
+      expect(await (windows[0] as FileSet).readFile("f.txt")).to.equal("fallback");
+      const linux = await model.getConfig(Constraints.of({ FLAVOR: "linux" }), execution).getTarget("t");
+      expect(await (linux[0] as FileSet).readFile("f.txt")).to.equal("linux");
+    });
+
+    it("guards a global, and takes its `default` declaration when none matches", async () => {
+      const input = "default FLAVOR = none;\n" + "default TSC = generic;\n" + "TSC<FLAVOR=lin*> = tsc-linux;\n";
+      expect(await testGetProperty(input, "TSC", { FLAVOR: "linux" })).to.deep.equal(["tsc-linux"]);
+      /* An ordinary declaration displaces a `default` one only where it
+       * applies; guarded out, the default is what supplies the global. */
+      expect(await testGetProperty(input, "TSC", { FLAVOR: "windows" })).to.deep.equal(["generic"]);
+    });
+
+    it("reports a global that no declaration supplies in this configuration", async () => {
+      const input = "default FLAVOR = none;\n" + "TSC<FLAVOR=lin*> = tsc-linux;\n";
+      try {
+        await testGetProperty(input, "TSC", { FLAVOR: "windows" });
+        expect.fail("expected TSC to be unsupplied");
+      } catch (err) {
+        /* Declared but not here — which is a different mistake from a typo, and
+         * the message must not claim the property is unknown. */
+        expect(toError(err).message).to.contain("no declaration of it applies to this configuration");
+      }
+    });
+
+    it("distributes a guard block over the properties it contains", async () => {
+      const input =
+        GUARD_DEFS +
+        "test_file base { content = A; }\n" +
+        "test_dir extra { }\n" +
+        "test_good t {\n  deps = base;\n  <FLAVOR=lin*> {\n    deps = extra;\n  }\n}\n";
+      expect(await depNames(input, { FLAVOR: "linux" })).to.deep.equal(["a.expect", "c.txt", "f.txt", "sub/b.expect"]);
+      expect(await depNames(input, { FLAVOR: "windows" })).to.deep.equal(["f.txt"]);
+    });
+
+    it("guards a wildcard member (a key the schema never named)", async () => {
+      /* A member is enumerated rather than looked up, so its guard decides
+       * whether the member exists here — nothing to union or to call ambiguous. */
+      const input =
+        "default FLAVOR = none;\n" +
+        "targetdef test_members { * = FILES; }\n" +
+        "test_file base { content = A; }\n" +
+        "targetdef test_file { content = STRING; }\n" +
+        "test_members m { common = base; linux_only<FLAVOR=lin*> = base; }\n";
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      const keysUnder = async (flavor: string): Promise<string[]> => {
+        lastMemberKeys = undefined;
+        await model.getConfig(Constraints.of({ FLAVOR: flavor }), execution).getTarget("m");
+        return lastMemberKeys ?? [];
+      };
+      expect(await keysUnder("linux")).to.deep.equal(["common", "linux_only"]);
+      expect(await keysUnder("windows")).to.deep.equal(["common"]);
+    });
+
+    it("reports a guard naming a property nothing declares", async () => {
+      const input = GUARD_DEFS + "test_file base { content = A; }\n" + "test_good t { deps<NOSUCH=x> = base; }\n";
+      try {
+        await depNames(input);
+        expect.fail("expected the guard to fail");
+      } catch (err) {
+        /* A typo in a guard must not quietly mean "never" — the declaration
+         * would simply vanish from every build. */
+        expect(err).to.be.instanceOf(DependencyFailedError);
+        expect((err as DependencyFailedError).cause.message).to.contain("Unknown property 'NOSUCH'");
+      }
+    });
   });
 });

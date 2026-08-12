@@ -238,4 +238,50 @@ describe("default targets", () => {
       []
     );
   });
+
+  /* A guard makes a property declarable more than once, so what must be unique
+   * is (name, guard) rather than the name. */
+  describe("constraint guards", () => {
+    it("accepts a property declared once per guard", () => {
+      expect(
+        validationErrors(
+          "targetdef t { srcs = FILES; }\n" +
+            "t x { srcs = base.c; srcs<TARGET=*-linux-*> = epoll.c; srcs<TARGET=*-apple-*> = kqueue.c; }\n"
+        )
+      ).to.deep.equal([]);
+    });
+
+    it("reports two declarations sharing a guard as the duplicate they are", () => {
+      const errors = validationErrors(
+        "targetdef t { srcs = FILES; }\n" + "t x { srcs<TARGET=*-linux-*> = a.c; srcs<TARGET=*-linux-*> = b.c; }\n"
+      );
+      expect(errors).to.have.lengthOf(1);
+      expect(errors[0]).to.match(/Duplicate property 'srcs'/);
+    });
+
+    it("reports two unguarded declarations, guards elsewhere notwithstanding", () => {
+      const errors = validationErrors(
+        "targetdef t { srcs = FILES; }\n" + "t x { srcs = a.c; srcs<TARGET=*-linux-*> = b.c; srcs = c.c; }\n"
+      );
+      expect(errors).to.have.lengthOf(1);
+      expect(errors[0]).to.match(/Duplicate property 'srcs'/);
+    });
+
+    it("a guarded declaration satisfies REQUIRED", () => {
+      /* A guard makes a property conditional, not absent — whether it is
+       * supplied in a given configuration is a question for the build, and
+       * answering it here would mean deciding it without one. */
+      expect(
+        validationErrors("targetdef t { srcs = FILES REQUIRED; }\n" + "t x { srcs<TARGET=*-linux-*> = epoll.c; }\n")
+      ).to.deep.equal([]);
+    });
+
+    it("reports an unrecognized property once per guarded declaration", () => {
+      const errors = validationErrors(
+        "targetdef t { srcs = FILES; }\n" + "t x { bogus<TARGET=*-linux-*> = a; bogus<TARGET=*-apple-*> = b; }\n"
+      );
+      expect(errors).to.have.lengthOf(2);
+      expect(errors[0]).to.match(/Unrecognized property 'bogus'/);
+    });
+  });
 });

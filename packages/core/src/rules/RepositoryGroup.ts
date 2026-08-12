@@ -347,19 +347,19 @@ function createRepositoryGroup(context: TargetContext): Computable<Repository> {
    * is exactly that. */
   return context.getWildcardProperties().then(members =>
     Computable.forAll(
-      members.map(member => context.getFileProperty(member.decl.name)),
+      members.map(member => context.getFileProperty(member.decl.name.toBaseString())),
       (...values) => {
         const routes = members.map(member => {
           const text = member.key.toGlobString();
           const key = parseRouteKey(text);
           if ("error" in key) {
             throw attachHelp(
-              new Error(`route '${member.decl.name}' in ${groupName}: ${key.error}`),
+              new Error(`route '${member.decl.name.toBaseString()}' in ${groupName}: ${key.error}`),
               "a route key is a literal package name (`lodash`), a literal with a trailing '*' (`@fortawesome/*`, `acme-*`), " +
                 "or the catch-all `*`"
             );
           }
-          return { name: member.decl.name, key };
+          return { name: member.decl.name.toBaseString(), key };
         });
         if (routes.length === 0) {
           throw attachHelp(

@@ -19,6 +19,7 @@
 
 import {
   DeclKind,
+  declName,
   declPosn,
   hasMapValue,
   IMapItemDecl,
@@ -76,7 +77,10 @@ const DIAG_INVALID_COMMAND = new Diagnostic<{ detail: string; loc: ISourcePositi
  * @return true if validation succeeds, otherwise false (and errors are written to the log);
  */
 export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log: Log): boolean {
-  const seen = new Set();
+  /* Keys as written — what must be unique — and the properties named at all,
+   * which is what satisfies `required`. */
+  const seen = new Set<string>();
+  const declared = new Set<string>();
   let isValid = true;
   /* A `* = TYPE` entry in the targetdef admits any further keys — a target of this
    * type may carry members not named in the schema (a `sync`'s reference-keyed
@@ -85,34 +89,40 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
   const wildcard = targetDef.properties.get("*");
 
   decl.properties.forEach(prop => {
-    if (!targetDef.properties.has(prop.name) && !wildcard) {
+    if (!targetDef.properties.has(prop.name.toBaseString()) && !wildcard) {
       isValid = false;
       log.log(DIAG_UNEXPECTED_PROPERTY, {
         loc: declPosn(prop),
-        property: prop.name,
+        property: prop.name.toBaseString(),
         type: decl.type,
-        target: decl.name,
+        target: declName(decl),
       });
-    } else if (seen.has(prop.name)) {
+    } else if (seen.has(prop.name.toString())) {
       isValid = false;
       log.log(DIAG_DUPLICATE_PROPERTY, {
         loc: declPosn(prop),
-        property: prop.name,
+        property: prop.name.toBaseString(),
         type: decl.type,
-        target: decl.name,
+        target: declName(decl),
       });
     } else {
-      seen.add(prop.name);
+      /* A property may be written more than once when its declarations are told
+       * apart by their guards — so what must be unique is the key AS WRITTEN
+       * (`toString`, guard included), while `required` is satisfied by any
+       * declaration of the property (`toBaseString`): a guard makes a property
+       * conditional, not absent. Hence the two sets. */
+      seen.add(prop.name.toString());
+      declared.add(prop.name.toBaseString());
     }
   });
   targetDef.properties.forEach((value, key) => {
-    if (key !== "*" && value.required && !seen.has(key)) {
+    if (key !== "*" && value.required && !declared.has(key)) {
       isValid = false;
       log.log(DIAG_MISSING_PROPERTY, {
         loc: declPosn(decl),
         property: key,
         type: decl.type,
-        target: decl.name,
+        target: declName(decl),
       });
     }
   });
@@ -120,7 +130,7 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
   /* Per-value shape rules, checked here where the schema is known (a wildcard
    * member is typed by the `*` entry). */
   decl.properties.forEach(prop => {
-    const type = (targetDef.properties.get(prop.name) ?? wildcard)?.type;
+    const type = (targetDef.properties.get(prop.name.toBaseString()) ?? wildcard)?.type;
     if (type === undefined) {
       return; /* already reported as unrecognized */
     }
@@ -258,13 +268,14 @@ function validateBlock(entries: IMapItemDecl[], log: Log): boolean {
       }
       return;
     }
-    if (keys.has(entry.name)) {
-      isValid = fail(`duplicate map key '${entry.name}'`, entry);
+    const key = entry.name.toBaseString();
+    if (keys.has(key)) {
+      isValid = fail(`duplicate map key '${key}'`, entry);
     }
-    keys.add(entry.name);
+    keys.add(key);
     const blocks = entry.values.filter(isMapValue);
     if (blocks.length > 0 && blocks.length < entry.values.length) {
-      isValid = fail(`a map value is either strings or maps, not a mix (key '${entry.name}')`, entry);
+      isValid = fail(`a map value is either strings or maps, not a mix (key '${key}')`, entry);
     }
     entry.values.forEach(value => {
       if (isCommandValue(value)) {
@@ -312,7 +323,7 @@ function validateRenameValue(prop: IPropertyDecl, value: IValue, type: PropertyT
   }
   /* A REWRITE selector is a bare pattern (never a reference): no `:` and no
    * `<constraints>`. (A templated FILES value's selector is a real projection,
-   * so its `:` and delta are fine.) */
+   * so its `:` and constraints are fine.) */
   if (name.hasLevelSeparator()) {
     return fail("a REWRITE selector cannot contain ':'");
   }

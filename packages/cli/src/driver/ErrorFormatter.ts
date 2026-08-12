@@ -23,6 +23,7 @@ import {
   chainSteps,
   CircularDependencyError,
   constraintText,
+  declName,
   declPosn,
   DependencyFailedError,
   describeUseSite,
@@ -161,7 +162,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       err.errors.forEach(cause => this.walk(report, cause, trail, owner, root));
     } else if (err instanceof ReferenceFailedError) {
       const hop = { message: `required by ${describeUseSite(err.property, err.target)}`, loc: declPosn(err.value) };
-      this.walk(report, err.cause, [...trail, hop], owner, root ?? err.target?.name);
+      this.walk(report, err.cause, [...trail, hop], owner, err.target ? (root ?? declName(err.target)) : root);
     } else if (err instanceof DependencyFailedError) {
       const causes = err.cause instanceof MultiError ? err.cause.errors : [err.cause];
       /* Mechanical failures of the target's execution report as one group */
@@ -171,8 +172,8 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
          * a target directly) gets a hop against the requiring declaration; an
          * anonymous sub-target (label set) is part of its declared target. */
         const direct = cause instanceof DependencyFailedError && !cause.label;
-        const hops = direct ? [...trail, { message: `required by ${err.target.name}`, loc: declPosn(err.target) }] : trail;
-        this.walk(report, cause, hops, err, direct ? root ?? err.target.name : root);
+        const hops = direct ? [...trail, { message: `required by ${declName(err.target)}`, loc: declPosn(err.target) }] : trail;
+        this.walk(report, cause, hops, err, direct ? (root ?? declName(err.target)) : root);
       }
       if (execution.length > 0) {
         report.add(this.describeExecution(err, execution), trail, root);
@@ -283,7 +284,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   /**
    * A repository failure attributed to written reference(s): anchored at the
    * first culpable reference's own use site (underlining the written
-   * requirement, the use site on the headline, any constraint delta as the
+   * requirement, the use site on the headline, any constraint requirement as the
    * underline's label); deeper provenance hops and further culpable
    * references follow as notes. Without a written use site (a CLI name), it
    * anchors like any other cause.

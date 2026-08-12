@@ -2,6 +2,10 @@ Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
 (`@fabr-build/core`) and the JavaScript plugin (`@fabr-build/js`) are released together and share a
 version number.
 
+## Fabr 0.3.0
+@fabr-build/core:
+- Add support for guarded properties.
+
 ## Fabr 0.2.1
 @fabr-build/core:
 - `include` paths may now glob (`include lib/**/*.fabr;`).

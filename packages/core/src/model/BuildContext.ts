@@ -72,6 +72,7 @@ import {
   isNameValue,
   ITargetDecl,
   ITargetDefDecl,
+  declName,
 } from "./AST";
 import { IDiagnosticNote } from "../support/Log";
 import { EXPAND_TAG, expandOnce, findWithDescent } from "../support/Expand";
@@ -84,11 +85,12 @@ import {
   NoRuleFoundError,
   ReferenceFailedError,
 } from "./Errors";
-import { attachHelp, ConflictError, IConflictSide, IConflictSource } from "../core/Errors";
+import { attachHelp, ConflictError, IConflictSide, IConflictSource, toError } from "../core/Errors";
 import { closestMatch } from "../support/Suggest";
-import { Name, RewriteFn, makeRewrite } from "../core/Name";
+import { Name, NameConstraint, RewriteFn, makeRewrite } from "../core/Name";
+import { globMatcher } from "../support/Glob";
 import { parseName } from "./Parser";
-import { IPrefixMatch } from "./Namespace";
+import { IPrefixMatch, IPropertyEntry } from "./Namespace";
 import { Property } from "./Property";
 
 /**
@@ -147,8 +149,6 @@ function mergeMapInto(target: PropertyMap, source: PropertyMap, hop: IMapSpliceD
 
 interface IResolvedFileSource {
   sources: SourceRef[];
-  /** The declaration the name resolved to, if it named a target or property */
-  decl?: ITargetDecl | IPropertyDecl;
 }
 
 /** Attach a name's remedies to its error as the `help:` line, if there are any. */
@@ -183,7 +183,7 @@ registerProvenanceRenderer(TARGET_PROVENANCE, step => {
 
 /* Short attribution ("the name it was written as") for one-line messages */
 registerProvenanceDescriber(MODEL_REF_PROVENANCE, step => (step as IModelRefStep).value.value.toString());
-registerProvenanceDescriber(TARGET_PROVENANCE, step => (step as ITargetOrigin).decl.name);
+registerProvenanceDescriber(TARGET_PROVENANCE, step => declName((step as ITargetOrigin).decl));
 
 function renderModelRef(step: IModelRefStep, context: IRenderContext): IDiagnosticNote[] {
   const verb = context.stepIndex === 0 ? "from" : "via";
@@ -199,7 +199,7 @@ function renderModelRef(step: IModelRefStep, context: IRenderContext): IDiagnost
 /** "required by <target> <property>" without the leading verb: the use-site
  * attribution shared by model-ref notes and the driver's dependant chain. */
 export function describeUseSite(property: IPropertyDecl, target: ITargetDecl | undefined): string {
-  return target ? `${target.name} ${property.name}` : property.name;
+  return target ? `${declName(target)} ${property.name.toBaseString()}` : property.name.toBaseString();
 }
 
 /**
@@ -232,7 +232,7 @@ function findNextModelRef(step: IProvenanceStep | undefined): IModelRefStep | un
 
 interface IBuildModel {
   getConfig(constraints: Constraints, execution: ExecutionContext): BuildContext;
-  getDecl(name: string): IPropertyDecl | ITargetDecl | INamespaceDecl | undefined;
+  getDecl(name: string): IPropertyEntry | ITargetDecl | INamespaceDecl | undefined;
   getTargetDef(name: string): ITargetDefDecl | undefined;
   getPrefixMatch(name: Name): IPrefixMatch | undefined;
   /** Name enumerations, for nearest-match suggestions on an unresolved name. */
@@ -462,14 +462,14 @@ export class BuildContext {
   }
 
   public getTargetWithOverrides(name: string, overrides: Constraints): Computable<SourceRef[]> {
-    /* Through getTarget's callerOverrides so a property's value delta cannot
+    /* Through getTarget's callerOverrides so a property's value requirement cannot
      * beat the explicit override (a direct target decl folds as before). */
     return this.getTarget(name, undefined, overrides);
   }
 
   /**
    * Build the target named by a whole reference — a target name plus an optional
-   * `<k=v>` constraint delta (`mylib<BUILD_TYPE=release>`). The delta re-roots the
+   * `<k=v>` requirement (`mylib<BUILD_TYPE=release>`). The requirement re-roots the
    * build config for that target exactly as it would in a build script; a plain
    * name resolves as {@link getTarget}. This is what the CLI's `build`/`test`/
    * `sync`/`shell` verbs use so a constrained reference works on the command line
@@ -511,6 +511,83 @@ export class BuildContext {
   }
 
   /**
+   * Whether a property declaration's constraint guard — its key's `<k=v>` facet,
+   * which in *decl* position means "only where the configuration matches" —
+   * admits this configuration:
+   * every pair's pattern must match the value of the property it names (a
+   * conjunction — disjunction is a second declaration). An absent guard admits
+   * everything.
+   *
+   * The configuration is read as a PROPERTY, not as a raw constraint, because
+   * that is what it is: `TARGET` is a `default` property rather than an injected
+   * constraint, a `-D` or `<k=v>` override rides the same read (the constructor
+   * pre-forces the constraint set into the property cache), and a project's own
+   * flag (`default TRACING = off;`) is then guardable with no further design. A
+   * guard naming a property nothing declares is the ordinary unknown-property
+   * error — a typo in a guard must not quietly mean "never".
+   */
+  public guardAdmits(guard: readonly NameConstraint[] | undefined, stack?: IDependencyStack): Computable<boolean> {
+    if (!guard) {
+      return Computable.resolve(true);
+    }
+    return Computable.forAll(
+      guard.map(([key, pattern]) =>
+        this.substituteNameVars(pattern, stack).then(substituted =>
+          this.getProperty(key, stack).then(value => globMatcher(substituted.toGlobString())(value.toString()))
+        )
+      ),
+      (...admitted: boolean[]) => admitted.every(match => match)
+    );
+  }
+
+  /**
+   * The declarations of a property that **apply in this configuration**: those
+   * whose guard admits it, from the tier that answered — ordinary declarations
+   * if any of them matched, else the `default` ones. This is the whole of what a
+   * guard decides; what to do with more than one is the reader's business (see
+   * {@link mergedDecls} / {@link soleDecl}), because that depends on the shape
+   * of the read and not on the property.
+   *
+   * Empty is not an error: it means the property is unwritten *here*, so a
+   * caller falls back exactly as it does for a property never mentioned. Guards
+   * filter and never rank, so there is no most-specific tie-break among what
+   * comes back.
+   */
+  public getAvailableDecls(entry: IPropertyEntry | undefined, stack?: IDependencyStack): Computable<IPropertyDecl[]> {
+    if (!entry) {
+      return Computable.resolve([]);
+    }
+    const { decls, defaults } = entry;
+    const candidates = [...decls, ...defaults];
+    if (!candidates.some(candidate => candidate.name.hasConstraints())) {
+      /* Nothing is guarded, so there is nothing to decide: every declaration
+       * applies, and the tier rule alone picks between them. This is the shape
+       * of almost every property — one plain declaration, a `default` global
+       * nobody overrode, or an override that supersedes one — and taking it
+       * without evaluating a guard is what keeps an unguarded property free of
+       * a guard's costs, its property reads included. */
+      return Computable.resolve(decls.length > 0 ? decls : defaults);
+    }
+    try {
+      return Computable.forAll(
+        candidates.map(candidate => this.guardAdmits(candidate.name.getConstraints(), stack)),
+        (...admitted: boolean[]) => {
+          /* An ordinary declaration displaces a `default` one only where it
+           * applies, so the tiers are judged in order: the defaults answer
+           * exactly when nothing ordinary matched. */
+          const matched = candidates.filter((_, i) => admitted[i]);
+          const ordinary = matched.filter(candidate => decls.includes(candidate));
+          return ordinary.length > 0 ? ordinary : matched;
+        }
+      );
+    } catch (err) {
+      /* A guard reading an unknown property throws where it is built, not where
+       * it settles. */
+      return Computable.reject(toError(err));
+    }
+  }
+
+  /**
    * The unresolved-name error for `name`: positioned at the referencing value
    * when a dependency stack is present (a name written in a build file), a
    * plain message otherwise (a command-line name — nothing to point at), with
@@ -547,14 +624,16 @@ export class BuildContext {
     this.assertNonCircularProperty(name, stack);
     if (callerOverrides) {
       /* Mirror getTarget's override path: a caller's explicit override outranks a
-       * `<k=v>` delta on the property's value (ambient < delta < caller), so for a
-       * declared property it threads into the SAME value resolution rather than
-       * folding into ambient (which a delta would beat); a constrained name has no
-       * written delta to fight, so it keeps the ambient fold. Uncached, as there. */
+       * `<k=v>` requirement on the property's value (ambient < requirement < caller), so
+       * for a declared property it threads into the SAME value resolution rather than
+       * folding into ambient (which a requirement would beat); a constrained name has no
+       * written requirement to fight, so it keeps the ambient fold. Uncached, as there. */
       if (!this.constraints.has(name)) {
         const def = this.model.getDecl(name);
         if (def?.kind === DeclKind.Property) {
-          return this.resolveStringProperty(def, undefined, stack, callerOverrides);
+          return this.getAvailableDecls(def, stack).then(applicable =>
+            this.resolveStringProperty(unmatchedIfAbsent(soleDecl(applicable), name, def), undefined, stack, callerOverrides)
+          );
         }
       }
       return this.getContextWithOverrides(callerOverrides).getProperty(name, stack);
@@ -572,7 +651,9 @@ export class BuildContext {
       const nearest = def ? undefined : closestMatch(name, this.model.getProperties().map(prop => prop.name));
       throw this.unresolvedNameError(name, stack, reason, nearest ? [`did you mean '${nearest}'?`] : []);
     }
-    const result = this.resolveStringProperty(def, undefined, stack);
+    const result = this.getAvailableDecls(def, stack).then(applicable =>
+      this.resolveStringProperty(unmatchedIfAbsent(soleDecl(applicable), name, def), undefined, stack)
+    );
     this.propCache.set(name, result);
     return result;
   }
@@ -580,12 +661,12 @@ export class BuildContext {
   public getTarget(name: string, stack?: IDependencyStack, callerOverrides?: Constraints): Computable<SourceRef[]> {
     this.assertNonCircularTarget(name, stack);
     if (callerOverrides) {
-      /* A caller's explicit override must outrank a `<k=v>` delta written on a
-       * property's value (ambient < reference delta < caller override — see
+      /* A caller's explicit override must outrank a `<k=v>` requirement written on
+       * a property's value (ambient < requirement < caller override — see
        * resolvingContextFor), so for a property it rides into the SAME value
        * resolution the per-target property path uses, rather than being folded
-       * into a context's ambient set (which a delta would beat). The other
-       * branches — a `-D` repin, a direct target decl — have no written delta
+       * into a context's ambient set (which a requirement would beat). The other
+       * branches — a `-D` repin, a direct target decl — have no written requirement
        * to fight, so they keep the ambient fold, delegating to the overridden
        * context (whose own targetCache memoizes them). The property case is
        * uncached here: targetCache keys by bare name, and the referenced
@@ -593,7 +674,9 @@ export class BuildContext {
       const def = this.model.getDecl(name);
       if (!this.constraints.has(name) && def?.kind === DeclKind.Property) {
         this.assertNonCircularProperty(name, stack);
-        return this.resolveFileProperty(def, undefined, stack, callerOverrides);
+        return this.getAvailableDecls(def, stack).then(applicable =>
+          this.resolveFileProperty(unmatchedIfAbsent(mergedDecls(applicable), name, def), undefined, stack, callerOverrides)
+        );
       }
       return this.getContextWithOverrides(callerOverrides).getTarget(name, stack);
     }
@@ -623,7 +706,9 @@ export class BuildContext {
          * check is what turns `A = B; B = A;` into a positioned cycle error
          * instead of unbounded recursion. */
         this.assertNonCircularProperty(name, stack);
-        const result = this.resolveFileProperty(def, undefined, stack);
+        const result = this.getAvailableDecls(def, stack).then(applicable =>
+          this.resolveFileProperty(unmatchedIfAbsent(mergedDecls(applicable), name, def), undefined, stack)
+        );
         this.targetCache.set(name, result);
         return result;
       } else {
@@ -653,13 +738,13 @@ export class BuildContext {
   public getPrefixTargetIfExists(
     name: Name,
     stack?: IDependencyStack
-  ): { target: Computable<SourceRef[]>; rest: Name; decl: ITargetDecl | IPropertyDecl; retainedPrefix: string } | undefined {
+  ): { target: Computable<SourceRef[]>; rest: Name; name: string; retainedPrefix: string } | undefined {
     const result = this.model.getPrefixMatch(name);
     if (result) {
       return {
-        target: this.getTarget(result.decl.name, stack),
+        target: this.getTarget(result.name, stack),
         rest: result.rest,
-        decl: result.decl,
+        name: result.name,
         retainedPrefix: result.retainedPrefix,
       };
     }
@@ -728,17 +813,17 @@ export class BuildContext {
    * Resolve one written value in a STRING context to its substituted Name. A
    * STRING is inert — no references are resolved and no provenance is stamped —
    * but it flows through the SAME context resolution as {@link resolveFileValue}
-   * (the value's `<k=v>` delta, and any caller override, re-root the resolving
+   * (the value's `<k=v>` requirement, and any caller override, re-root the resolving
    * context via {@link resolvingContextFor}), so overrides layer uniformly
-   * (ambient < delta < caller) across the string and file contexts, and
+   * (ambient < requirement < caller) across the string and file contexts, and
    * conditional properties, which gate a value on that context, will read the
    * two symmetrically. The returned Name keeps its rename facet (only the
    * constraints facet is consumed here), for REWRITE/projection readers.
    */
   private resolveStringValue(name: Name, info: IDependencyStack, callerOverrides?: Constraints): Computable<Name> {
     /* A STRING's value IS its content, so — unlike a file reference, whose name
-     * is an address resolved under ambient while the delta/override re-roots the
-     * *referenced target's* build — the delta and override must reach the value's
+     * is an address resolved under ambient while the requirement/override re-roots
+     * the *referenced target's* build — they must reach the value's
      * own `${...}` substitution. So substitute the original name (facet stripped)
      * under the merged context, not resolvingContextFor's ambient-substituted
      * reference. */
@@ -878,8 +963,8 @@ export class BuildContext {
           if (item.kind === DeclKind.MapSplice) {
             mergeMapInto(map, resolved[i] as PropertyMap, item);
           } else {
-            map.set(item.name, resolved[i] as PropertyMapValue);
-            recordMapOrigin(map, item.name, { entry: item, via: [] });
+            map.set(item.name.toBaseString(), resolved[i] as PropertyMapValue);
+            recordMapOrigin(map, item.name.toBaseString(), { entry: item, via: [] });
           }
         });
         return map;
@@ -944,7 +1029,7 @@ export class BuildContext {
    * file resolution flows through: a property value ({@link resolveFileProperty}),
    * a `-D` constraint override ({@link getTarget}), a CLI `ls`/`cat`/`run` name
    * ({@link resolveName}), a command stage's tool or its `< stdin` redirect. The
-   * reference's `<k=v>` delta (and any caller
+   * reference's `<k=v>` requirement (and any caller
    * override) re-roots the resolving context (see {@link resolvingContextFor}),
    * under which it resolves to sources — target-prefix + `:`/glob projection etc.
    * ({@link resolveFileSource}), `relativeTo` rooting a bare path at the build
@@ -968,7 +1053,7 @@ export class BuildContext {
      * (a stdin redirect) overrides. */
     const relativeTo = options?.relativeTo ?? provenance?.property;
     /* A value written as `ref<k=v>` resolves under this context overridden by its
-     * delta, so the referenced target builds under those constraints and the
+     * requirement, so the referenced target builds under those constraints and the
      * model-ref step (stamped by that context) records them. */
     return this.resolvingContextFor(name, options?.callerOverrides, stack).then(({ context, reference }) => {
       const resolved = context.resolveFileSource(reference, relativeTo, stack);
@@ -1002,16 +1087,16 @@ export class BuildContext {
 
   /**
    * The context a reference resolves under, plus the reference with its
-   * constraint delta stripped. Constraints layer lowest-to-highest as **ambient
-   * (this) → the reference's own `<k=v>` delta → the caller's override**: the
-   * reference delta overrides the ambient config (its whole point), but a
+   * constraints stripped. They layer lowest-to-highest as **ambient (this) → the
+   * reference's own `<k=v>` requirement → the caller's override**: the
+   * requirement overrides the ambient config (its whole point), but a
    * consumer's *explicit* override — e.g. a rule forcing `BUILD_OPERATION=run`
    * on the tool it needs — is the operative requirement and wins over a stray
-   * delta on the same key. The reference is returned **fully substituted** with
-   * its `<k=v>` delta stripped (bare parts), so resolution proceeds on the parts
+   * requirement on the same key. The reference is returned **fully substituted**
+   * with its `<k=v>` stripped (bare parts), so resolution proceeds on the parts
    * and the merged context governs the build — and so every entry point that
    * routes through here (build/test/sync target names, file values, CLI names)
-   * gets `${...}` substitution uniformly, not only the ones carrying a delta.
+   * gets `${...}` substitution uniformly, not only the ones carrying a requirement.
    */
   private resolvingContextFor(
     name: Name,
@@ -1022,12 +1107,12 @@ export class BuildContext {
       if (!substituted.hasConstraints()) {
         return { context: this.getContextWithOverrides(callerOverrides), reference: substituted };
       }
-      const delta: Record<string, string> = Object.create(null);
+      const required: Record<string, string> = Object.create(null);
       for (const [key, value] of substituted.getConstraints()) {
-        delta[key] = value.toString();
+        required[key] = value.toString();
       }
       /* Caller override last, so it wins on a shared key. */
-      const merged = Constraints.of(delta).with(callerOverrides);
+      const merged = Constraints.of(required).with(callerOverrides);
       return { context: this.getContextWithOverrides(merged), reference: substituted.withConstraints([]) };
     });
   }
@@ -1110,7 +1195,7 @@ export class BuildContext {
       } else {
         const targetDep = this.getPrefixTargetIfExists(substName, stack);
         if (targetDep) {
-          const { target, rest, decl, retainedPrefix } = targetDep;
+          const { target, rest, name: matchedName, retainedPrefix } = targetDep;
           if (rest.isEmpty()) {
             /* Nothing to project, so a `-> name` here renames what the whole
              * reference delivers: the package rename, the same rule a delivered
@@ -1121,7 +1206,6 @@ export class BuildContext {
               sources: renameTo
                 ? sources.map(source => renamedDelivery(source, renameTo, substName.toString()))
                 : sources,
-              decl,
             }));
           } else {
             /* `rest` is the projection after the target; a `sel -> tmpl` rename
@@ -1163,7 +1247,7 @@ export class BuildContext {
                   /* Stamp the alias the repository was reached by, as written —
                    * how the resolution layer renders suggestions and progress in
                    * the user's own spelling. */
-                  references.push(source.getRepositoryRef(rest).withRepositoryName(decl?.name ?? retainedPrefix));
+                  references.push(source.getRepositoryRef(rest).withRepositoryName(matchedName));
                 } else if (source instanceof PackageFileSet || source instanceof RunnableFileSet) {
                   /* A projection into a package or a runnable DEFERS (a
                    * FileSetRef): applied eagerly it would erase what the
@@ -1184,7 +1268,7 @@ export class BuildContext {
                 }
               }
               if (containers.length === 0) {
-                return { sources: references, decl };
+                return { sources: references };
               }
               /* Each container projects separately and STAYS a separate source
                * (never merged — union, and its ConflictError, is the act of a
@@ -1206,7 +1290,7 @@ export class BuildContext {
                 if (matched.length === 0 && references.length === 0 && miss) {
                   throw miss();
                 }
-                return { sources: [...references, ...(matched.length > 0 ? matched : [EMPTY_FILESET])], decl };
+                return { sources: [...references, ...(matched.length > 0 ? matched : [EMPTY_FILESET])] };
               });
             });
           }
@@ -1255,7 +1339,7 @@ export class BuildContext {
         } else {
           /* The one reference with no decl to root a bare path at: a constraint
            * override's value (see getTarget), whether it came from `-D` or a
-           * `<k=v>` delta — a constraint set carries the value, never where it
+           * `<k=v>` requirement — a constraint set carries the value, never where it
            * was written. Only a declared name can answer here. */
           const written = name.toString();
           throw this.unresolvedNameError(written, undefined, `Unknown name '${written}'`, this.unknownNameHints(written, true));
@@ -1289,7 +1373,13 @@ export class BuildContext {
   private referencedProperty(ref: Name, info?: IDependencyStack): Computable<{ prop?: IPropertyDecl; name: Name }> {
     return this.substituteNameVars(ref, info).then(name => {
       const def = this.model.getDecl(name.toString());
-      return { prop: def?.kind === DeclKind.Property ? def : undefined, name };
+      if (def?.kind !== DeclKind.Property) {
+        return { prop: undefined, name };
+      }
+      /* A chased map/command property is a single value, so it selects like one
+       * — and a name whose declarations all guard it out reads as "not a
+       * property here", which is what each caller's own fallback is for. */
+      return this.getAvailableDecls(def, info).then(applicable => ({ prop: soleDecl(applicable), name }));
     });
   }
 
@@ -1545,7 +1635,7 @@ export class BuildContext {
   private findTargetInStack(target: string, stack?: IDependencyStack): IDependencyStack | undefined {
     let node = stack;
     while (node) {
-      if (node.target && node.target.name === target && node.context === this) {
+      if (node.target && declName(node.target) === target && node.context === this) {
         return node;
       }
       node = node.next;
@@ -1558,7 +1648,7 @@ export class BuildContext {
   private findPropertyInStack(property: string, stack?: IDependencyStack): IDependencyStack | undefined {
     let node = stack;
     while (node) {
-      if (node.property.name === property && node.target === undefined && node.context === this) {
+      if (node.property.name.toBaseString() === property && node.target === undefined && node.context === this) {
         return node;
       }
       node = node.next;
@@ -1669,6 +1759,84 @@ function commandInWrongContextError(prop: IPropertyDecl): Error {
  * is reported here rather than enumerating each excluded kind at the call site. */
 function nonNameValueError(prop: IPropertyDecl, value: IMapValue | ICommandValue, context: string): Error {
   return isMapValue(value) ? mapInWrongContextError(prop, context) : commandInWrongContextError(prop);
+}
+
+/**
+ * How a reader combines the declarations of one property that a configuration
+ * admits: `"union"` for a list-shaped read (FILES, REWRITE — the values simply
+ * concatenate, in written order), `"single"` for a scalar one, where two
+ * matching declarations are an error rather than a silent join.
+ */
+/**
+ * The applicable declarations as ONE — their values concatenated in written
+ * order: what a list-shaped read (FILES, REWRITE) makes of several, which is
+ * just the semantics a single declaration's value list already has.
+ */
+function mergedDecls(applicable: IPropertyDecl[]): IPropertyDecl | undefined {
+  if (applicable.length <= 1) {
+    return applicable[0];
+  }
+  /* One decl standing for the lot: the values in written order, and no guard
+   * left to re-read (this IS the result of reading them). Its position is the
+   * first contributor's, which is where a value error should point when the
+   * diagnosis is "this property", not "this value" — a per-value error carries
+   * its own value span regardless. */
+  return {
+    ...applicable[0],
+    name: applicable[0].name.withConstraints([]),
+    values: applicable.flatMap(decl => decl.values),
+  };
+}
+
+/**
+ * The single applicable declaration — what a scalar read (STRING, MAP, COMMAND,
+ * a projection) requires. Two is the error it is: a scalar cannot silently join
+ * them the way a list can, and guards are never ranked, so there is no tie to
+ * break.
+ */
+function soleDecl(applicable: IPropertyDecl[]): IPropertyDecl | undefined {
+  if (applicable.length > 1) {
+    throw ambiguousDeclsError(applicable);
+  }
+  return applicable[0];
+}
+
+/** One declaration's guard as it was written (`<TARGET=*-linux-*, BUILD_TYPE=release>`),
+ * for a message that has to say which declarations it is talking about. */
+function guardText(decl: IPropertyDecl): string {
+  return `<${decl.name
+    .getConstraints()
+    .map(([key, value]) => `${key}=${value.toString()}`)
+    .join(", ")}>`;
+}
+
+/**
+ * The selected declaration, or a hard error if every guard excluded this
+ * configuration. A *global* has no default tier to fall back to (unlike a
+ * target's property, which has its targetdef's declared default), so a property
+ * written only under guards that do not match is simply not supplied here — and
+ * saying that is far more use than the "unknown property" it is not.
+ */
+function unmatchedIfAbsent(selected: IPropertyDecl | undefined, name: string, entry: IPropertyEntry): IPropertyDecl {
+  if (selected) {
+    return selected;
+  }
+  const guards = [...entry.decls, ...entry.defaults].map(guardText);
+  throw attachHelp(
+    new Error(`'${name}' is declared, but no declaration of it applies to this configuration`),
+    `it is declared under ${guards.join(", ")} — add an unguarded declaration, or a 'default ${name} = …;'`
+  );
+}
+
+/** Two guards admitting one configuration, where only one value is wanted. Names
+ * both, since the fix is to make them disjoint (or to write the fallback in the
+ * targetdef's `default`), and neither is more wrong than the other. */
+function ambiguousDeclsError(chosen: IPropertyDecl[]): Error {
+  const guards = chosen.map(guardText).join(" and ");
+  return attachHelp(
+    new Error(`'${chosen[0].name}' is declared for this configuration by ${chosen.length} guards (${guards}), but takes a single value`),
+    "guards are never ranked against each other, so make them disjoint — a fallback belongs in the targetdef's `default`"
+  );
 }
 
 /** The requirement one dep source declares (see {@link TargetContext.collectDeclaredRequirements}). */
@@ -1906,7 +2074,7 @@ export abstract class TargetContext {
       if (!repository) {
         throw new Error(`'${name.toString()}' does not name a repository`);
       }
-      return repository.getRepositoryPublishRef(match.rest).withRepositoryName(match.decl.name);
+      return repository.getRepositoryPublishRef(match.rest).withRepositoryName(match.name);
     });
   }
 
@@ -2217,7 +2385,7 @@ export abstract class TargetContext {
    * counterpart of {@link getFileProperty}, with any repository references still
    * inert, for feeding into `collect` so they resolve jointly with the
    * evaluation's other requirements. Overrides ride as callerOverrides (caller
-   * precedence over a delta on the global's value).
+   * precedence over a requirement on the global's value).
    */
   public getGlobalFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]> {
     return this.context.getTarget(name, this.stack, overrides);
@@ -2232,7 +2400,7 @@ export abstract class TargetContext {
  */
 export class DeclaredTargetContext extends TargetContext {
   public readonly target: ITargetDecl;
-  private readonly props: Map<string, IPropertyDecl>;
+  private readonly props: Map<string, IPropertyDecl[]>;
   /** The build cycle in which this target last announced itself building, so a
    * watch rebuild (a new cycle) re-announces while a single cycle announces once
    * however many sub-actions miss the cache. */
@@ -2241,63 +2409,80 @@ export class DeclaredTargetContext extends TargetContext {
   constructor(target: ITargetDecl, targetDef: ITargetDefDecl, context: BuildContext, stack?: IDependencyStack) {
     super(context, targetDef, stack);
     this.target = target;
-    this.props = new Map(target.properties.map(prop => [prop.name, prop]));
+    /* Collate the body's declarations by name: a property may be written more
+     * than once, its declarations told apart by their guards (Validate rejects
+     * any other repeat), and which of them apply is decided per read. */
+    this.props = new Map();
+    for (const prop of target.properties) {
+      const existing = this.props.get(prop.name.toBaseString());
+      if (existing) {
+        existing.push(prop);
+      } else {
+        this.props.set(prop.name.toBaseString(), [prop]);
+      }
+    }
   }
 
-  /** The decl supplying `name`: the one written in this target's body, else the
-   * schema's declared default. Undefined when neither exists — the property is
-   * simply absent, and each accessor yields its own empty. */
-  private declFor(name: string): IPropertyDecl | undefined {
-    return this.props.get(name) ?? this.declaredDefault(name);
+  /**
+   * The declarations of `name` that apply here: whichever of this target body's
+   * declarations of it this configuration admits, else the schema's declared
+   * default — exactly the two tiers a global has, so both go through the one
+   * filter ({@link BuildContext.getAvailableDecls}). Empty when neither exists,
+   * or when every guard excluded this configuration and the schema declares no
+   * default: a guard makes the property unwritten *here*, so what follows is
+   * what follows for a target that never mentioned it. Each accessor then says
+   * what it makes of more than one.
+   */
+  private availableFor(name: string): Computable<IPropertyDecl[]> {
+    const declared = this.declaredDefault(name);
+    return this.context.getAvailableDecls(
+      { kind: DeclKind.Property, decls: this.props.get(name) ?? [], defaults: declared ? [declared] : [] },
+      this.stack
+    );
   }
 
   public get name(): string {
-    return this.target.name;
+    return declName(this.target);
   }
 
   /* Every accessor resolves on the ambient context and threads the caller's
    * override through as callerOverrides, so it is applied *last* (winning over
-   * any per-reference `<k=v>` delta) — the uniform ambient < delta < caller
-   * layering, rather than pre-baking the override into ambient (where a delta
+   * any per-reference `<k=v>` requirement) — the uniform ambient < requirement <
+   * caller layering, rather than pre-baking the override into ambient (where it
    * would beat it). */
   public getProperty(name: string, overrides?: Constraints): Computable<Property | undefined> {
-    const prop = this.declFor(name);
-    if (!prop) {
-      return Computable.resolve(undefined);
-    }
-    return this.context.resolveStringProperty(prop, this.target, this.stack, overrides);
+    return this.availableFor(name).then(applicable => {
+      const prop = soleDecl(applicable);
+      return prop ? this.context.resolveStringProperty(prop, this.target, this.stack, overrides) : undefined;
+    });
   }
 
   public getFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]> {
-    const prop = this.declFor(name);
-    if (!prop) {
-      return Computable.resolve([]);
-    }
-    return this.context.resolveFileProperty(prop, this.target, this.stack, overrides);
+    return this.availableFor(name).then(applicable => {
+      const prop = mergedDecls(applicable);
+      return prop ? this.context.resolveFileProperty(prop, this.target, this.stack, overrides) : [];
+    });
   }
 
   public getRewrite(name: string, overrides?: Constraints): Computable<RewriteFn> {
-    const prop = this.declFor(name);
-    if (!prop) {
-      return Computable.resolve(() => undefined);
-    }
-    return this.context.resolveRewrite(prop, this.target, this.stack, overrides);
+    return this.availableFor(name).then(applicable => {
+      const prop = mergedDecls(applicable);
+      return prop ? this.context.resolveRewrite(prop, this.target, this.stack, overrides) : (): undefined => undefined;
+    });
   }
 
   public getProjection(name: string, overrides?: Constraints): Computable<Name | undefined> {
-    const prop = this.declFor(name);
-    if (!prop) {
-      return Computable.resolve(undefined);
-    }
-    return this.context.resolveProjection(prop, this.target, this.stack, overrides);
+    return this.availableFor(name).then(applicable => {
+      const prop = soleDecl(applicable);
+      return prop ? this.context.resolveProjection(prop, this.target, this.stack, overrides) : undefined;
+    });
   }
 
   public getMap(name: string, overrides?: Constraints): Computable<PropertyMap> {
-    const prop = this.declFor(name);
-    if (!prop) {
-      return Computable.resolve(new Map());
-    }
-    return this.context.resolveMap(prop, this.target, this.stack, overrides);
+    return this.availableFor(name).then(applicable => {
+      const prop = soleDecl(applicable);
+      return prop ? this.context.resolveMap(prop, this.target, this.stack, overrides) : new Map();
+    });
   }
 
   public getDeclaredContext(): this {
@@ -2310,28 +2495,38 @@ export class DeclaredTargetContext extends TargetContext {
      * (`lodash = @npm;`) IS its own key. The schema's `*` entry is the wildcard
      * TYPE declaration, not a property named `*`, so a literal `*` member (a
      * group's catch-all route) is a member like any other. */
-    const members = this.target.properties.filter(
-      prop => prop.name === "*" || !this.targetDef.properties.has(prop.name)
+    const declared = this.target.properties.filter(
+      prop => prop.name.toBaseString() === "*" || !this.targetDef.properties.has(prop.name.toBaseString())
     );
     /* Enumeration only: substitute the member keys (under any caller override,
      * so their `${...}` resolves consistently with every other name) and hand
      * back their decls; content is gathered later so keys can be validated
      * first. A member key is an address, not a build reference — it carries
-     * no `<k=v>` delta to layer against the override — so setting the context
+     * no `<k=v>` requirement to layer against the override — so setting the context
      * (getContextWithOverrides) is equivalent here to threading callerOverrides. */
     const context = this.context.getContextWithOverrides(overrides);
+    /* A member is enumerated, never looked up by name, so its guard is applied
+     * per declaration rather than through the tiers: members do not combine
+     * (each is its own key), so there is nothing to union or to call ambiguous —
+     * a guard here just decides whether the member exists in this configuration.
+     * (A *reference*-keyed member — a `sync` coordinate — cannot carry one: the
+     * key's own `<…>` is read in decl position too, so it guards the member.) */
     return Computable.forAll(
-      members.map(prop => context.substituteNameVars(prop.keyRef ?? Name.fromLiteral(prop.name), this.stack)),
-      (...keys: Name[]) => keys.map((key, i) => ({ key, decl: members[i] }))
+      declared.map(prop => context.guardAdmits(prop.name.getConstraints(), this.stack)),
+      (...admitted: boolean[]) => declared.filter((_, i) => admitted[i])
+    ).then(members =>
+      Computable.forAll(
+        members.map(prop => context.substituteNameVars(prop.name.withConstraints([]), this.stack)),
+        (...keys: Name[]) => keys.map((key, i) => ({ key, decl: members[i] }))
+      )
     );
   }
 
   protected getCommandStages(name: string): Computable<IResolvedCommandStage[]> {
-    const prop = this.declFor(name);
-    if (!prop) {
-      return Computable.resolve([]);
-    }
-    return this.context.resolveCommand(prop, this.target, this.stack);
+    return this.availableFor(name).then(applicable => {
+      const prop = soleDecl(applicable);
+      return prop ? this.context.resolveCommand(prop, this.target, this.stack) : [];
+    });
   }
 
   public stampProvenance(result: FileSet): FileSet {

@@ -20,11 +20,26 @@
 import { DeclKind, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
 import { NAME_COMPONENT_SEPARATOR, Name } from "../core/Name";
 
-type ContentType = Namespace | ITargetDecl | IPropertyDecl;
+/**
+ * What a name maps to when it names a property: every declaration of it, in the
+ * two tiers a read consults — those written ordinarily, and those written
+ * `default`, which supply the property exactly when no ordinary declaration's
+ * guard matched.
+ *
+ */
+export interface IPropertyEntry {
+  kind: DeclKind.Property;
+  decls: IPropertyDecl[];
+  defaults: IPropertyDecl[];
+}
+
+type ContentType = Namespace | ITargetDecl | IPropertyEntry;
 
 export interface IPrefixMatch {
-  /* The matched declaration */
-  decl: ITargetDecl | IPropertyDecl;
+  /* The matched declaration, or — for a property — all of them */
+  decl: ITargetDecl | IPropertyEntry;
+  /* The matched name, qualified by any namespace path it was found under */
+  name: string;
   /* The part of the prefix string after the last ':' in the matched prefix (if any).
    * That is, if we match e.g. a/b:c/d at c, then `c` is the retained part
    */
@@ -52,10 +67,11 @@ export class Namespace {
   }
 
   /**
-   * @return the property with the given name or undefined if there is no such property
-   * (either the name does not exist or it is not a property)
+   * @return every declaration of the property with the given name, in the two
+   * tiers a read consults, or undefined if there is no such property (either the
+   * name does not exist or it is not a property)
    */
-  public getProperty(name: string): IPropertyDecl | undefined {
+  public getProperty(name: string): IPropertyEntry | undefined {
     const item = this.getDecl(name);
     if (item?.kind === DeclKind.Property) {
       return item;
@@ -114,7 +130,14 @@ export class Namespace {
       if (item instanceof Namespace) {
         result.push(...item.getProperties(qualified));
       } else if (item.kind === DeclKind.Property) {
-        result.push({ name: qualified, decl: item });
+        /* One row per NAME: this documents the configuration surface, so a
+         * property declared once per platform is still one property. The first
+         * declaration represents it (a default only if nothing else declares
+         * it), which is what "the effective set" meant before guards, too. */
+        const first = item.decls[0] ?? item.defaults[0];
+        if (first) {
+          result.push({ name: qualified, decl: first });
+        }
       }
     }
     return result;
@@ -140,12 +163,12 @@ export class Namespace {
         node = next;
       } else {
         if (next?.kind === DeclKind.Target || next?.kind === DeclKind.Property) {
-          const matchedLength = parts.slice(0, idx + 1).join(NAME_COMPONENT_SEPARATOR).length;
-          const matchPrefix = literalPrefix.substring(0, matchedLength + 1);
-          const rest = name.substring(matchedLength + 1);
+          const matched = parts.slice(0, idx + 1).join(NAME_COMPONENT_SEPARATOR);
+          const matchPrefix = literalPrefix.substring(0, matched.length + 1);
+          const rest = name.substring(matched.length + 1);
           const colonIdx = matchPrefix.lastIndexOf(":");
           const retainedPrefix = colonIdx === -1 ? matchPrefix : matchPrefix.substring(colonIdx + 1);
-          return { decl: next, retainedPrefix, rest };
+          return { decl: next, name: matched, retainedPrefix, rest };
         } else {
           return undefined;
         }
@@ -169,7 +192,7 @@ export class Namespace {
    * @param name
    * @returns
    */
-  public getDecl(name: string): ITargetDecl | IPropertyDecl | INamespaceDecl | undefined {
+  public getDecl(name: string): ITargetDecl | IPropertyEntry | INamespaceDecl | undefined {
     const parts = name.split(NAME_COMPONENT_SEPARATOR);
     const targetName = parts.pop()!; /* Array must contain at least 1 element */
     const item = this.getNamespacePrefix(parts)?.content.get(targetName);

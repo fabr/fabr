@@ -56,7 +56,7 @@ describe("Name", () => {
     it("keeps the constraint apart from the resolvable parts", () => {
       const parts = new NameBuilder().appendLiteralString("pkg:build/").appendGlobMetachars("*").appendLiteralString(".js").name();
       const name = parts.withConstraints([["BUILD_TYPE", Name.fromLiteral("release")]]);
-      /* The projection glob rides in the parts; the delta rides alongside */
+      /* The projection glob rides in the parts; the constraints ride alongside */
       expect(name.getConstraints()).to.have.length(1);
       expect(name.toString()).to.equal("pkg:build/*.js<BUILD_TYPE=release>");
     });
@@ -90,7 +90,7 @@ describe("Name", () => {
       expect(name.getRenameTo()?.toString()).to.equal("*.out");
     });
 
-    it("renders after the constraint delta", () => {
+    it("renders after the constraints", () => {
       const name = selector()
         .withConstraints([["BUILD_TYPE", Name.fromLiteral("release")]])
         .withRenameTo(template());
@@ -129,7 +129,7 @@ describe("Name", () => {
     it("keeps the rename and constraint facets when re-rooted relative to a file", () => {
       /* A file-relative reference (`./DOCGEN.fabr -> PROJECT.fabr`) is re-rooted
        * against its including file via relativeTo → withPrefix; the facets must
-       * survive so the rename (and any delta) still applies at the new path. */
+       * survive so the rename (and any constraints) still apply at the new path. */
       const name = new NameBuilder()
         .appendLiteralString("DOCGEN.fabr")
         .name()

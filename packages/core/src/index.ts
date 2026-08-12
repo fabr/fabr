@@ -54,7 +54,7 @@ export * from "./model/Errors";
 export { parseName } from "./model/Parser";
 export * from "./core/Name";
 export * from "./model/Property";
-export { declPosn, isNameValue, PropertyType, syntheticValue } from "./model/AST";
+export { declName, declPosn, isNameValue, PropertyType, syntheticValue } from "./model/AST";
 export type { INameValue, IPropertyDecl, ITargetDecl, ITargetDefDecl, IPropertySchema } from "./model/AST";
 export * from "./resolver/MVSResolver";
 export * from "./resolver/Overrides";

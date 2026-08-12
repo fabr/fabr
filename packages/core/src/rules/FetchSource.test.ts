@@ -46,7 +46,7 @@ function fakeContext(members: Record<string, string>, log: FetchLog, body: strin
   return {
     name: "@dl",
     getWildcardProperties: () =>
-      Computable.resolve(Object.keys(members).map(name => ({ key: Name.fromLiteral(name), decl: { name } }))),
+      Computable.resolve(Object.keys(members).map(name => ({ key: Name.fromLiteral(name), decl: { name: Name.fromLiteral(name) } }))),
     getString: (name: string) => Computable.resolve(members[name]),
     fetch: (
       url: string,
@@ -88,7 +88,7 @@ function cachedContext(members: Record<string, string>, log: FetchLog, cachedByt
   return {
     name: "@dl",
     getWildcardProperties: () =>
-      Computable.resolve(Object.keys(members).map(name => ({ key: Name.fromLiteral(name), decl: { name } }))),
+      Computable.resolve(Object.keys(members).map(name => ({ key: Name.fromLiteral(name), decl: { name: Name.fromLiteral(name) } }))),
     getString: (name: string) => Computable.resolve(members[name]),
     fetch: (url: string): Computable<FileSet> => {
       log.urls.push(url);

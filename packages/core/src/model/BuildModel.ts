@@ -18,7 +18,7 @@
  */
 
 import { DeclKind, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
-import { IPrefixMatch, Namespace } from "./Namespace";
+import { IPrefixMatch, IPropertyEntry, Namespace } from "./Namespace";
 import { BuildContext } from "./BuildContext";
 import { BUILD_OPERATION, Constraints } from "./Constraints";
 import { ExecutionContext } from "./ExecutionContext";
@@ -189,7 +189,7 @@ export class BuildModel {
     return config;
   }
 
-  public getDecl(name: string): IPropertyDecl | ITargetDecl | INamespaceDecl | undefined {
+  public getDecl(name: string): IPropertyEntry | ITargetDecl | INamespaceDecl | undefined {
     return this.root.getDecl(name);
   }
 

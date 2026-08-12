@@ -24,6 +24,7 @@ import {
   BuildContext,
   BuildModel,
   Computable,
+  declName,
   declPosn,
   Diagnostic,
   ExecutionContext,
@@ -767,11 +768,11 @@ function progressListener(log: Log): ProgressListener {
          * declared target derives its verb from the operation ("Building"). */
         const verb = event.label ?? OPERATION_VERBS[event.operation] ?? `Running ${event.operation} on`;
         const requiredBy =
-          event.requiredBy.length > 0 ? ` (required by ${event.requiredBy.map(decl => decl.name).join(" < ")})` : "";
+          event.requiredBy.length > 0 ? ` (required by ${event.requiredBy.map(declName).join(" < ")})` : "";
         /* Surface the explicit constraints (a reference `<BUILD_TYPE=release>`
-         * delta or a -D override), eliding the ambient keys the driver injected
+         * requirement or a -D override), eliding the ambient keys the driver injected
          * (host facts, and BUILD_OPERATION — already the verb). */
-        log.log(DIAG_BUILDING, { verb, name: event.target.name, chain: renderConstraints(event.constraints) + requiredBy });
+        log.log(DIAG_BUILDING, { verb, name: declName(event.target), chain: renderConstraints(event.constraints) + requiredBy });
         break;
       }
       case "repository-resolve":
@@ -882,7 +883,7 @@ function copyTarget(options: Options, execution: ExecutionContext, results: Sour
  *   component (`cp -r dir out` → `out/dir/`).
  * The final component is taken from the *parsed* name so its `<k=v>` / `-> tmpl`
  * facets are stripped first (`mylib<BUILD_TYPE=release>` nests under `mylib`, not
- * the literal facet text — a delta constrains the build, it is not part of the
+ * the literal facet text — a requirement constrains the build, it is not part of the
  * name). "Directly names a file" wraps unless the source is a **lone delivered
  * file whose basename is that leaf** (`files:a.txt` → `a.txt`, flat).
  */
@@ -1154,7 +1155,7 @@ function providedTargetsJson(model: BuildModel): Record<string, unknown>[] {
     .map(({ name, decl }) => ({
       name,
       type: decl.type,
-      properties: decl.properties.map(prop => ({ name: prop.name, value: renderPropertyValue(prop) })),
+      properties: decl.properties.map(prop => ({ name: prop.name.toBaseString(), value: renderPropertyValue(prop) })),
       location: formatDeclLocation(decl),
       description: decl.docComment ?? null,
     }));

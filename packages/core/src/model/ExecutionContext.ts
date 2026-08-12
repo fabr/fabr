@@ -23,7 +23,7 @@ import { Computable } from "../core/Computable";
 import { FileSource } from "../core/FileSet";
 import { Log } from "../support/Log";
 import { Semaphore } from "../support/Semaphore";
-import { ITargetDecl } from "./AST";
+import { declName, ITargetDecl } from "./AST";
 import { Constraints } from "./Constraints";
 
 /**
@@ -64,7 +64,7 @@ export interface ITargetBuildEvent {
   /** The full constraint set the target is building under. The driver decides
    * what to surface (it elides the ambient keys it injected — the host facts
    * and BUILD_OPERATION — leaving the explicit ones, e.g. a reference's
-   * `<BUILD_TYPE=release>` delta or a `-D` override). */
+   * `<BUILD_TYPE=release>` requirement or a `-D` override). */
   constraints: Constraints;
   /** The targets that required this one (nearest requester first; empty for a
    * target requested directly, and for a sub-target — the umbrella declared
@@ -292,7 +292,7 @@ export class ExecutionContext {
      * from a cache-miss path. */
     if (event.kind === "target-build" && event.label === undefined) {
       const topLevel = event.requiredBy.length > 0 ? event.requiredBy[event.requiredBy.length - 1] : event.target;
-      this.builtTargets.add(topLevel.name);
+      this.builtTargets.add(declName(topLevel));
     }
     this.progressListener?.(event);
   }

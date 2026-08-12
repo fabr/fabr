@@ -50,14 +50,14 @@ export interface INamespaceDecl extends IBaseDecl {
   namespaces: INamespaceDecl[];
   targets: ITargetDecl[];
   properties: IPropertyDecl[];
-  defaults: IDefaultableDecl[];
+  defaults: IResolvableDecl[];
 }
 
 export interface ITargetDecl extends IBaseDecl {
   kind: DeclKind.Target;
   type: string;
   typeOffset: number;
-  name: string;
+  name: Name;
   properties: IPropertyDecl[];
   /** The doc-comment prose written above this target, marker-stripped, or
    * undefined if none. Runtime-only documentation metadata (read for docs of
@@ -178,15 +178,7 @@ export interface ICommandValue extends IBaseValue {
 
 export interface IPropertyDecl extends IBaseDecl {
   kind: DeclKind.Property;
-  name: string;
-  /**
-   * The property key parsed as a reference, when it was written as one rather than
-   * a bare identifier (a `sync` member coordinate, `@npm:pkg:ver = srcs`). `name`
-   * is then its canonical string. Absent for ordinary schema properties. Such
-   * properties are enumerated by their rule (not looked up by name) and bypass the
-   * targetdef schema check.
-   */
-  keyRef?: Name;
+  name: Name;
   values: IValue[];
   /** The doc-comment prose written above this property, marker-stripped, or
    * undefined if none. Runtime-only documentation metadata (read for docs of
@@ -194,13 +186,6 @@ export interface IPropertyDecl extends IBaseDecl {
   docComment?: string;
 }
 
-/**
- * A bare `NAME;` statement inside a `{ ... }` block: splices the named
- * block-valued property's entries at that position (the in-block analogue of
- * the top-level `metadata = SHARED;` bare-reference chase). Entries and
- * splices apply in written order, later values winning — so an entry after a
- * splice overrides a same-named key the splice brought in.
- */
 export interface IMapSpliceDecl extends IBaseDecl {
   kind: DeclKind.MapSplice;
   ref: Name;
@@ -263,18 +248,40 @@ export interface IBuildFileContents {
   targets: ITargetDecl[];
   targetdefs: ITargetDefDecl[];
   properties: IPropertyDecl[];
-  defaults: IDefaultableDecl[];
+  defaults: IResolvableDecl[];
   includes: IIncludeDecl[];
   plugins: IPluginDecl[];
 }
 
 export type IDecl = ITargetDecl | IPropertyDecl | INamespaceDecl | IIncludeDecl | IPluginDecl | IValue;
 
-/** A declaration that may be written `default` — used if and only if there is no
- * non-default declaration of the same name. */
-export type IDefaultableDecl = IPropertyDecl | ITargetDecl;
+/**
+ * A declaration that a reference **resolves to** — hence one a configuration can
+ * vary. Both consequences follow from that and from nothing else: it may be
+ * written `default` (used only where no ordinary declaration of the name
+ * applies), and its `name` is a {@link Name} whose constraint facet guards it.
+ *
+ * The complement ({@link IPlainNamedDecl}) is structure and vocabulary, which
+ * neither varies nor is referred to by value.
+ */
+export type IResolvableDecl = IPropertyDecl | ITargetDecl;
 
-export type INamedDecl = ITargetDecl | IPropertyDecl | INamespaceDecl | ITargetDefDecl;
+/** A declaration named by a plain identifier path: it introduces a scope or a
+ * type rather than something built, so there is no configuration for a name of
+ * its to vary with. (The two are otherwise unrelated — a namespace shares the
+ * value index with targets and properties, while a targetdef has an index of its
+ * own; what unites them here is only the shape of the name.) */
+export type IPlainNamedDecl = INamespaceDecl | ITargetDefDecl;
+
+export type INamedDecl = IResolvableDecl | IPlainNamedDecl;
+
+/** A declaration's name as a plain string, whichever kind it is — for the
+ * namespace machinery, which indexes all four alike. A resolvable decl's facets
+ * are left off ({@link Name.toBaseString}): they qualify the declaration, not
+ * the name it goes under. */
+export function declName(decl: INamedDecl): string {
+  return typeof decl.name === "string" ? decl.name : decl.name.toBaseString();
+}
 
 export type IScope = INamespaceDecl | IBuildFileContents;
 
