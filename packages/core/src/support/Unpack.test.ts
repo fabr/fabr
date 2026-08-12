@@ -22,6 +22,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as tar from "tar-stream";
+import * as xz from "@napi-rs/lzma/xz";
 import { unpackStream } from "./Unpack";
 import { BuildCache, IOutputHandle } from "../core/BuildCache";
 import { SymlinkFile } from "../core/SymlinkFile";
@@ -83,6 +84,25 @@ describe("Unpack", () => {
     expect(result.size).to.equal(1);
     const file = await result.get("package.json");
     expect(file?.hash).to.equal("ff344d6ce0cb6497bcc78b026420dee7538870af60809bab61e9a2e83b70a287");
+  });
+
+  it("tar.xz — decompresses the xz layer and unpacks the tar beneath it", async () => {
+    /* Built here rather than pasted as a fixture, so the test exercises a real
+     * xz container (the shape most native toolchains publish) rather than a
+     * blob whose provenance nobody can check. */
+    const pack = tar.pack();
+    pack.entry({ name: "payload/greeting.txt" }, "hello from xz\n");
+    pack.entry({ name: "payload/other.txt" }, "second\n");
+    pack.finalize();
+    const tarred = await new Promise<Buffer>(resolve => {
+      const chunks: Buffer[] = [];
+      pack.on("data", (chunk: Buffer) => chunks.push(chunk));
+      pack.on("end", () => resolve(Buffer.concat(chunks)));
+    });
+
+    const result = await withTimeout(unpackStream(Readable.from(xz.compressSync(tarred)), createOutput));
+    expect([...result].map(([name]) => name).sort()).to.deep.equal(["payload/greeting.txt", "payload/other.txt"]);
+    expect(await result.readFile("payload/greeting.txt")).to.equal("hello from xz\n");
   });
 
   it("preserves the executable bit from tar entry modes", async () => {

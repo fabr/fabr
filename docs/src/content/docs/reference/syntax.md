@@ -176,6 +176,20 @@ A template with no wildcards at all is exempt: it names one file outright, so th
 pattern — `srcs = foo/*/bar/index.ts -> index.ts;` names whatever it finds `index.ts`. It has to find
 exactly one, since renaming two different files to the same name is a conflict like any other.
 
+A template can also name the wildcards it wants by number, `$1` for the first, `$2` for the second and
+so on — the same replay written explicitly. Because each one says which wildcard it takes, the counts
+need not match: a numbered template may **reuse** a wildcard, **reorder** them, or leave some out.
+
+```
+srcs = v*.tgz -> v$1/node-v$1.tgz;    # $1 twice — impossible positionally
+srcs = */*.a -> $2-$1.b;              # reordered
+srcs = */*.a -> only-$2.b;            # first wildcard unused
+```
+
+The two forms don't mix in one template, and every `$n` must name a wildcard the selector actually has.
+(`$1` means a back reference only inside a rename template; anywhere else it is an ordinary
+[variable substitution](#variable-substitution).)
+
 These can be applied anywhere, for example `@npm:esbuild:0.2.1:package.json` references the package.json
 file directly from the esbuild 0.2.1 package. These results are treated as simple files (ie not as the
 package they came from).
@@ -207,8 +221,10 @@ data = ./vendor.tgz;           # no path inside it: the tarball itself, as a fil
 ```
 
 Whether a file can be opened this way is decided by its contents, not its name: naming a text file
-`notes.tgz` doesn't make it an archive, and a real archive is recognized whatever it's called.
-Archives inside archives work the same way (`outer.tgz:inner.tgz:**`).
+`notes.tgz` doesn't make it an archive, and a real archive is recognized whatever it's called. The
+formats recognized are **tar**, **zip**, and tar under **gzip** or **xz** compression (so `.tgz`,
+`.tar.gz` and `.tar.xz` all work, whatever they are named). Archives inside archives work the same
+way (`outer.tgz:inner.tgz:**`).
 
 The one thing that never looks inside an archive is `**`. A recursive glob matches the archive as an
 ordinary file, so `./**/*.ts` won't pick up `.ts` files packed inside archives it passed along the

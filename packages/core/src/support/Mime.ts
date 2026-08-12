@@ -36,6 +36,7 @@ export const SNIFF_LENGTH = 262;
 export const MIME_GZIP = "application/gzip";
 export const MIME_TAR = "application/x-tar";
 export const MIME_ZIP = "application/zip";
+export const MIME_XZ = "application/x-xz";
 /** The everything-else classification: every file has a mime; this is "nothing
  * fabr recognizes", NOT an error. */
 export const MIME_UNKNOWN = "application/octet-stream";
@@ -53,6 +54,15 @@ export function sniffMime(head: Buffer): string {
     return MIME_TAR;
   } else if (head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04) {
     return MIME_ZIP;
+  } else if (
+    head[0] === 0xfd &&
+    head[1] === 0x37 &&
+    head[2] === 0x7a &&
+    head[3] === 0x58 &&
+    head[4] === 0x5a &&
+    head[5] === 0x00
+  ) {
+    return MIME_XZ;
   } else {
     return MIME_UNKNOWN;
   }
@@ -60,5 +70,5 @@ export function sniffMime(head: Buffer): string {
 
 /** Whether this mime names an archive fabr can expand (see Expand.ts / Unpack.ts). */
 export function isArchiveMime(mime: string): boolean {
-  return mime === MIME_GZIP || mime === MIME_TAR || mime === MIME_ZIP;
+  return mime === MIME_GZIP || mime === MIME_TAR || mime === MIME_ZIP || mime === MIME_XZ;
 }

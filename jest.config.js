@@ -48,9 +48,17 @@ module.exports = {
   },
   transform: {
     "^.+\\.ts$": ["ts-jest", { tsconfig: "tsconfig.base.json" }],
+    /* `@napi-rs/lzma` ships its pure streaming logic as a single ESM source that
+     * its CJS entries pull in with `require(esm)` — fine on the Node fabr
+     * supports (and under fabr's own test runner, which uses Node's real
+     * loader), but jest's module system compiles it as CJS and chokes on
+     * `export`. Downlevel it so the REAL library runs here too, rather than
+     * mocking the one thing the xz path depends on. */
+    "^.+\\.mjs$": ["ts-jest", { tsconfig: { allowJs: true, module: "commonjs", target: "es2019" } }],
   },
+  transformIgnorePatterns: ["/node_modules/(?!@napi-rs/lzma/)"],
   moduleDirectories: ["node_modules"],
-  moduleFileExtensions: ["ts", "js"],
+  moduleFileExtensions: ["ts", "js", "mjs"],
   testRegex: ".*\\.test\\.ts$",
   /* The runner runtime's tests are node:test based and run under the fabr
    * test harness itself (fabr test @fabr-build/js), not under jest */

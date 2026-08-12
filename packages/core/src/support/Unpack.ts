@@ -19,13 +19,14 @@
 
 import { Readable, Writable } from "stream";
 import { createUnzip } from "zlib";
+import { createDecompressStream } from "@napi-rs/lzma/xz";
 import * as path from "path";
 import * as tar from "tar-stream";
 import type { IOutputHandle } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { FileSet, IFile } from "../core/FileSet";
 import { SymlinkFile } from "../core/SymlinkFile";
-import { MIME_GZIP, MIME_TAR, MIME_ZIP, SNIFF_LENGTH, sniffMime } from "./Mime";
+import { MIME_GZIP, MIME_TAR, MIME_XZ, MIME_ZIP, SNIFF_LENGTH, sniffMime } from "./Mime";
 
 /* Cap on nested compression layers: a real package is a single gzip layer over
  * a tar (`.tgz`), so anything beyond a small bound is a malformed or hostile
@@ -71,6 +72,18 @@ export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): 
           const zip = createUnzip();
           magicByteStream(zip, SNIFF_LENGTH, handleHeader, reject);
           return zip;
+        }
+        case MIME_XZ: {
+          /* `.tar.xz` — the shape most native toolchains publish. A compression
+           * layer like gzip's, re-sniffed the same way and counted against the
+           * same bound. */
+          if (++depth > MAX_COMPRESSION_LAYERS) {
+            reject(new Error(`Archive nests more than ${MAX_COMPRESSION_LAYERS} compression layers`));
+            return null;
+          }
+          const xz = createDecompressStream();
+          magicByteStream(xz, SNIFF_LENGTH, handleHeader, reject);
+          return xz;
         }
         case MIME_TAR: {
           const extract = tar.extract();

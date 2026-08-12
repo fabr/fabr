@@ -18,12 +18,13 @@
  */
 
 import { expect } from "chai";
-import { isArchiveMime, MIME_GZIP, MIME_TAR, MIME_UNKNOWN, MIME_ZIP, SNIFF_LENGTH, sniffMime } from "./Mime";
+import { isArchiveMime, MIME_GZIP, MIME_TAR, MIME_UNKNOWN, MIME_XZ, MIME_ZIP, SNIFF_LENGTH, sniffMime } from "./Mime";
 
 describe("sniffMime", () => {
   it("classifies the archive magics", () => {
     expect(sniffMime(Buffer.from([0x1f, 0x8b, 0x08, 0x00]))).to.equal(MIME_GZIP);
     expect(sniffMime(Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00]))).to.equal(MIME_ZIP);
+    expect(sniffMime(Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]))).to.equal(MIME_XZ);
     const tarHead = Buffer.alloc(SNIFF_LENGTH);
     tarHead.write("ustar", 257, "ascii");
     expect(sniffMime(tarHead)).to.equal(MIME_TAR);
@@ -32,6 +33,8 @@ describe("sniffMime", () => {
   it("classifies everything else — including short and empty heads — as unknown", () => {
     expect(sniffMime(Buffer.from("plain text, nothing magic"))).to.equal(MIME_UNKNOWN);
     expect(sniffMime(Buffer.from([0x1f]))).to.equal(MIME_UNKNOWN);
+    /* An xz magic is six bytes: a truncated one must not classify. */
+    expect(sniffMime(Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a]))).to.equal(MIME_UNKNOWN);
     expect(sniffMime(Buffer.alloc(0))).to.equal(MIME_UNKNOWN);
   });
 
@@ -39,6 +42,7 @@ describe("sniffMime", () => {
     expect(isArchiveMime(MIME_GZIP)).to.equal(true);
     expect(isArchiveMime(MIME_TAR)).to.equal(true);
     expect(isArchiveMime(MIME_ZIP)).to.equal(true);
+    expect(isArchiveMime(MIME_XZ)).to.equal(true);
     expect(isArchiveMime(MIME_UNKNOWN)).to.equal(false);
     expect(isArchiveMime("inode/symlink")).to.equal(false);
   });
