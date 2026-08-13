@@ -808,7 +808,7 @@ function mountWinners(top: Map<string, string>, byId: Map<string, PackageFileSet
 
   const mounts: FileSet[] = [];
   const emit = (node: PlannedNest, atPath: string): void => {
-    mounts.push(node.pkg.remap(filePath => `${atPath}/${filePath}`));
+    mounts.push(node.pkg.mountedAt(atPath));
     for (const [name, override] of node.overrides) {
       emit(override, `${atPath}/node_modules/${name}`);
     }

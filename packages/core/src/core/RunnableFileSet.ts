@@ -75,7 +75,7 @@ export class RunnableFileSet extends FileSet {
     public readonly launchCwd: "caller" | "install" = "caller",
     origin?: IProvenanceStep
   ) {
-    super(new Map(files), origin ?? (files instanceof FileSet ? files.origin : undefined));
+    super(files instanceof FileSet ? files : new Map(files), origin ?? (files instanceof FileSet ? files.origin : undefined));
   }
 
   /** A runnable with a single, definite launch entry — a `js_script`/`script`: a one-symlink surface. */

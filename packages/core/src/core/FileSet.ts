@@ -17,7 +17,6 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import * as path from "path";
 import { Name } from "./Name";
 import { FileSetRef } from "./FileSetRef";
 import type { IProjection } from "./FileSetRef";
@@ -144,8 +143,16 @@ export class FileSet implements FileSource {
    */
   public readonly origin: IProvenanceStep | undefined;
 
-  constructor(content: FileSetContent, origin?: IProvenanceStep, trust?: typeof CANONICAL) {
-    this.content = trust === CANONICAL ? content : FileSet.canonicalizeContent(content, origin);
+  /**
+   * Handed an existing FileSet, the receiver **shares** its content map rather
+   * than copying it: a set is immutable, its names are already canonical, and
+   * the derivation keeps them verbatim — so a re-wrap (a restamped package, a
+   * runnable over an install) costs nothing per file. Handed a raw map, `trust`
+   * decides whether the names are canonicalized (see {@link CANONICAL}).
+   */
+  constructor(content: FileSetContent | FileSet, origin?: IProvenanceStep, trust?: typeof CANONICAL) {
+    this.content =
+      content instanceof FileSet ? content.content : trust === CANONICAL ? content : FileSet.canonicalizeContent(content, origin);
     this.origin = origin;
   }
 
@@ -347,6 +354,26 @@ export class FileSet implements FileSource {
   }
 
   /**
+   * This set mounted under `prefix` — every name prefixed, nothing dropped,
+   * renamed or merged. The layout counterpart of {@link rename}: a canonical
+   * prefix onto a canonical name is canonical, so one canonicalization of the
+   * prefix stands in for one per file, and no collision is possible (a constant
+   * prefix keeps distinct names distinct). An empty prefix mounts at the root
+   * and is the receiver itself.
+   */
+  public mountedAt(prefix: string): FileSet {
+    if (prefix === "") {
+      return this;
+    }
+    const mount = canonicalFileName(prefix) + "/";
+    const result = new Map<string, IFile>();
+    for (const [name, file] of this.content) {
+      result.set(mount + name, file);
+    }
+    return new FileSet(result, this.origin, CANONICAL);
+  }
+
+  /**
    * Apply a name projection: `renamer` maps each file's path to its result name
    * (undefined drops it), returning a new FileSet. This is the loop behind
    * {@link find} — a plain glob projection and a `sel -> tmpl` rename alike —
@@ -368,7 +395,9 @@ export class FileSet implements FileSource {
       if (rawName === undefined) {
         continue;
       }
-      const newName = canonicalFileName(rawName);
+      /* Canonicalization is the identity on an already-canonical name, and
+       * answering that is much cheaper than producing the canonical form. */
+      const newName = isCanonicalFileName(rawName) ? rawName : canonicalFileName(rawName);
       const existing = result.get(newName);
       if (existing && !existing.isSameFile(file)) {
         throw new ConflictError(
@@ -438,9 +467,10 @@ export class FileSet implements FileSource {
   }
 
   public static layout(data: Record<string, FileSet | Array<FileSet | undefined> | IFile | undefined>): FileSet {
-    /* Prefixes introduce new names, so the result goes through the
-     * canonicalizing constructor (posix join — names are `/`-separated
-     * everywhere, whatever the host platform). */
+    /* A mounted name is prefix + a member's own (already canonical) name, so
+     * canonicalizing the *prefix* — once, not once per file — makes the whole
+     * result canonical by construction. Names are `/`-separated everywhere,
+     * whatever the host platform, so the join is a concatenation. */
     const result = new Map<string, IFile>();
     /* Contributors and the prefix each was mounted under, for lazy merge
      * provenance (see IMergeOrigin) — a raw IFile carries no origin, so only
@@ -448,26 +478,29 @@ export class FileSet implements FileSource {
     const sources: IMergeSource[] = [];
     for (const prefix in data) {
       const files = data[prefix];
-      const mount = prefix === "" ? "" : prefix + "/";
+      const root = prefix === "" ? "" : canonicalFileName(prefix);
+      const mount = root === "" ? "" : root + "/";
       if (Array.isArray(files)) {
         for (const fs of files) {
           if (fs) {
             for (const [name, file] of fs) {
-              result.set(path.posix.join(prefix, name), file);
+              result.set(mount + name, file);
             }
             sources.push({ prefix: mount, fileset: fs });
           }
         }
       } else if (files instanceof FileSet) {
         for (const [name, file] of files) {
-          result.set(path.posix.join(prefix, name), file);
+          result.set(mount + name, file);
         }
         sources.push({ prefix: mount, fileset: files });
       } else if (files !== undefined) {
-        result.set(prefix, files);
+        /* A bare file mounts *at* the prefix, which is then the whole name —
+         * so an empty one names nothing and is rejected, as it always was. */
+        result.set(canonicalFileName(prefix), files);
       }
     }
-    return new FileSet(result, mergeOrigin(sources));
+    return new FileSet(result, mergeOrigin(sources), CANONICAL);
   }
 
 }

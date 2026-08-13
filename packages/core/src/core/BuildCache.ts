@@ -26,7 +26,17 @@ import { Computable } from "./Computable";
 import { HttpStatusError } from "./Errors";
 import { ICacheControl, openUrlStream } from "./Fetch";
 import { CANONICAL, DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
-import { deleteFile, HASH_ALGORITHM, hashString, readFile, readFileBuffer, readOnlyPermissions, rename, writeFile } from "./FSWrapper";
+import {
+  deleteFile,
+  HASH_ALGORITHM,
+  hashString,
+  isNotFound,
+  readFile,
+  readFileBuffer,
+  readOnlyPermissions,
+  rename,
+  writeFile,
+} from "./FSWrapper";
 import { registerTempTree, removeTempTree } from "./Staging";
 import { SymlinkFile } from "./SymlinkFile";
 import type { Semaphore } from "../support/Semaphore";
@@ -224,6 +234,15 @@ const META_PREFIX = "!meta ";
  * regular file line leads with a hex content hash, so it can never be mistaken
  * for one of these (or for the `!meta` header). */
 const LINK_PREFIX = "@link ";
+
+const ZERO = "0".charCodeAt(0);
+
+/** Decode a manifest name/target field. `encodeURI` only ever introduces `%`
+ * escapes, so a field without one decodes to itself — and almost none have one,
+ * which makes the check worth making before the call. */
+function decodeName(field: string): string {
+  return field.indexOf("%") < 0 ? field : decodeURI(field);
+}
 
 /**
  * Implemements an MVP build cache.
@@ -714,24 +733,34 @@ export class BuildCache {
   }
 
   /** Read the entry stored under the (hashed) key, if any: its (blob-backed)
-   * files plus the cache-control metadata of a non-immutable entry. */
+   * files plus the cache-control metadata of a non-immutable entry.
+   *
+   * A missing entry is read as an ENOENT rather than tested for first: the open
+   * settles the question the probe could only guess at (an entry can be written
+   * or reclaimed between the two), and the read is one path resolution instead
+   * of two — this is the hottest lookup in the cache. */
   private cacheGet(key: string): Computable<ICacheEntry | undefined> {
     const file = this.manifestPath(key);
-    if (!fs.existsSync(file)) {
-      return Computable.resolve(undefined);
-    }
-    return readFile(file).then(data => {
-      try {
-        return this.parseManifest(data);
-      } catch {
-        /* A corrupt or truncated manifest is treated as a miss, not a hard
-         * failure: delete it so the entry rebuilds cleanly. This honors "the
-         * cache is safe to delete" at entry grain — a half-written line (a
-         * missing field, an undecodable name) must never fail the build forever. */
-        fs.rmSync(file, { force: true });
-        return undefined;
+    return readFile(file).then<ICacheEntry | undefined>(
+      data => {
+        try {
+          return this.parseManifest(data);
+        } catch {
+          /* A corrupt or truncated manifest is treated as a miss, not a hard
+           * failure: delete it so the entry rebuilds cleanly. This honors "the
+           * cache is safe to delete" at entry grain — a half-written line (a
+           * missing field, an undecodable name) must never fail the build forever. */
+          fs.rmSync(file, { force: true });
+          return undefined;
+        }
+      },
+      err => {
+        if (isNotFound(err)) {
+          return undefined;
+        }
+        throw err;
       }
-    });
+    );
   }
 
   /**
@@ -846,32 +875,59 @@ export class BuildCache {
   private parseManifest(data: string): ICacheEntry {
     const result = new Map();
     let meta: ICacheControl | undefined;
-    const lines = data.toString().split("\n");
-    if (lines[0]?.startsWith(META_PREFIX)) {
-      meta = JSON.parse(lines[0].substring(META_PREFIX.length)) as ICacheControl;
-      lines.shift();
+    let pos = 0;
+    const end = data.length;
+    if (data.startsWith(META_PREFIX)) {
+      const eol = data.indexOf("\n");
+      meta = JSON.parse(data.substring(META_PREFIX.length, eol < 0 ? end : eol)) as ICacheControl;
+      pos = eol < 0 ? end : eol + 1;
     }
-    for (const line of lines) {
+    /* Read line by line and field by field over the text as it stands, rather
+     * than splitting it into arrays: a large build reads hundreds of thousands
+     * of these lines, so every intermediate string here is one per file. */
+    while (pos < end) {
+      let eol = data.indexOf("\n", pos);
+      if (eol < 0) {
+        eol = end;
+      }
+      if (eol === pos) {
+        pos = eol + 1;
+        continue;
+      }
+      const line = data.substring(pos, eol);
+      pos = eol + 1;
       if (line.startsWith(LINK_PREFIX)) {
-        const [target, name] = line.substring(LINK_PREFIX.length).split(" ");
-        if (target === undefined || name === undefined) {
+        const rest = line.substring(LINK_PREFIX.length);
+        const gap = rest.indexOf(" ");
+        if (gap < 0) {
           throw new Error(`Malformed cache manifest link line: '${line}'`);
         }
-        result.set(decodeURI(name), new SymlinkFile(decodeURI(target)));
-      } else if (line) {
-        const [hash, mode, name, mime] = line.split(" ");
-        if (hash === undefined || mode === undefined || name === undefined || mime === undefined) {
-          throw new Error(`Malformed cache manifest line: '${line}'`);
-        }
-        /* Validated, not merely parsed: `parseInt` yields NaN for a corrupt
-         * field, which would ride on the IFile as a bogus permission mask
-         * instead of failing the parse (and so rebuilding the entry). */
-        const bits = parseInt(mode, 8);
-        if (!/^[0-7]+$/.test(mode) || !Number.isInteger(bits)) {
-          throw new Error(`Malformed cache manifest line: '${line}'`);
-        }
-        result.set(decodeURI(name), new BuildFile(this.blobRoot, hash, decodeURI(name), bits, mime));
+        result.set(decodeName(rest.substring(gap + 1)), new SymlinkFile(decodeName(rest.substring(0, gap))));
+        continue;
       }
+      const afterHash = line.indexOf(" ");
+      const afterMode = line.indexOf(" ", afterHash + 1);
+      const afterName = line.indexOf(" ", afterMode + 1);
+      if (afterHash < 0 || afterMode < 0 || afterName < 0) {
+        throw new Error(`Malformed cache manifest line: '${line}'`);
+      }
+      /* Validated, not merely parsed: a corrupt field must fail the parse (and
+       * so rebuild the entry) rather than ride on the IFile as a bogus
+       * permission mask. */
+      const mode = line.substring(afterHash + 1, afterMode);
+      let bits = 0;
+      for (let i = 0; i < mode.length; i++) {
+        const digit = mode.charCodeAt(i) - ZERO;
+        if (digit < 0 || digit > 7) {
+          throw new Error(`Malformed cache manifest line: '${line}'`);
+        }
+        bits = bits * 8 + digit;
+      }
+      if (mode.length === 0) {
+        throw new Error(`Malformed cache manifest line: '${line}'`);
+      }
+      const name = decodeName(line.substring(afterMode + 1, afterName));
+      result.set(name, new BuildFile(this.blobRoot, line.substring(0, afterHash), name, bits, line.substring(afterName + 1)));
     }
     /* A manifest is fabr's own memo of a canonical FileSet — its names were
      * canonicalized when the set was constructed and encoded when it was

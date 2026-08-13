@@ -69,7 +69,10 @@ export class PackageFileSet extends FileSet {
      */
     public readonly isNestedOverride: boolean = false
   ) {
-    super(new Map(files), origin ?? (files instanceof FileSet ? files.origin : undefined));
+    /* An existing FileSet passes straight through — the base shares its content
+     * (already canonical) rather than copying and rechecking every name, which
+     * is the whole cost of a restamp/re-wrap. Any other iterable is new names. */
+    super(files instanceof FileSet ? files : new Map(files), origin ?? (files instanceof FileSet ? files.origin : undefined));
   }
 
   /** This package's semantic `name@version` id — the identity that decides

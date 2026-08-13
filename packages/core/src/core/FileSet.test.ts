@@ -19,7 +19,7 @@
 
 import { expect } from "chai";
 import { FileSet } from "./FileSet";
-import { canonicalFileName } from "../support/Paths";
+import { canonicalFileName, isCanonicalFileName } from "../support/Paths";
 import { MemoryFile } from "./MemoryFS";
 import { ConflictError } from "./Errors";
 import { registerProvenanceRenderer, renderProvenance } from "./Provenance";
@@ -103,6 +103,51 @@ describe("FileSet name canonicalization", () => {
     expect(canonicalFileName("/abs/path")).to.equal("abs/path");
     expect(() => canonicalFileName("../..")).to.throw(/names no path/);
   });
+
+  /* isCanonicalFileName answers by a direct scan rather than by canonicalizing
+   * and comparing, so the two can drift; its contract is that it cannot. */
+  it("isCanonicalFileName agrees with canonicalFileName's fixed point", () => {
+    const fixedPoint = (name: string): boolean => {
+      try {
+        return canonicalFileName(name) === name;
+      } catch {
+        return false;
+      }
+    };
+    const corpus = [
+      "a",
+      "a/b",
+      "a/b/c.ts",
+      ".hidden",
+      "..a",
+      "a..b",
+      "a/..b/c",
+      "@scope/pkg/lib/x.js",
+      "",
+      ".",
+      "..",
+      "/",
+      "/a",
+      "//a",
+      "a/",
+      "a//b",
+      "a/./b",
+      "./a",
+      "../a",
+      "a/../b",
+      "a/..",
+      "a/b/../..",
+      "a\\b",
+      "a\u0000b",
+      "a\u001fb",
+      "a\u007fb",
+      "a b",
+      "a\tb",
+    ];
+    for (const name of corpus) {
+      expect(isCanonicalFileName(name), `isCanonicalFileName(${JSON.stringify(name)})`).to.equal(fixedPoint(name));
+    }
+  });
 });
 
 describe("FileSet.remap", () => {
@@ -117,6 +162,27 @@ describe("FileSet.remap", () => {
     expect([...remapped].map(([name]) => name)).to.deep.equal(["out/x.in"]);
     const two = set({ "out/x": "1", x: "2" });
     expect(() => two.remap(name => (name.startsWith("out/") ? name : `../out/${name}`))).to.throw(ConflictError);
+  });
+});
+
+describe("FileSet.mountedAt", () => {
+  it("prefixes every name, canonicalizing the prefix once", () => {
+    const files = set({ "lib/x.js": "1", "package.json": "2" });
+    const mounted = files.mountedAt("node_modules/./pkg/");
+    expect([...mounted].map(([name]) => name).sort()).to.deep.equal(["node_modules/pkg/lib/x.js", "node_modules/pkg/package.json"]);
+  });
+
+  it("agrees with the equivalent rename", () => {
+    const files = set({ "a/b.js": "1", "c.js": "2" });
+    expect([...files.mountedAt("m/n")].map(([name]) => name).sort()).to.deep.equal(
+      [...files.rename(name => `m/n/${name}`)].map(([name]) => name).sort()
+    );
+  });
+
+  it("mounts at the root for an empty prefix, and rejects a prefix naming no path", () => {
+    const files = set({ "a.js": "1" });
+    expect(files.mountedAt("")).to.equal(files);
+    expect(() => files.mountedAt("..")).to.throw(/names no path/);
   });
 });
 

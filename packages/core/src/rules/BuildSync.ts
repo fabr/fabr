@@ -192,7 +192,7 @@ export class SyncSource implements FileSource {
   /** The given carriers as one FileSet under their coordinates — the release's
    *  file namespace, built for exactly the members a projection touches. */
   private laidOut(paths: string[], carriers: ReadonlyArray<PublishableFileSet>): FileSet {
-    return FileSet.unionAll(...carriers.map((carrier, i) => carrier.rename(name => `${paths[i]}/${name}`)));
+    return FileSet.unionAll(...carriers.map((carrier, i) => carrier.mountedAt(paths[i])));
   }
 
   /**

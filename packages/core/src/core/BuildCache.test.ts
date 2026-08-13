@@ -122,6 +122,23 @@ describe("BuildCache", () => {
     expect((await toPromise(files.get("notes.txt")))!.mime).to.equal("application/octet-stream");
   });
 
+  it("round-trips names needing URI encoding (a space, a literal %)", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    /* The name field is encodeURI'd so the field separator stays unambiguous;
+     * a name carrying its own '%' must come back as written, not re-decoded. */
+    const names = ["dir/a b.txt", "100%25.txt", "plain.txt"];
+    const content = new Map(names.map(name => [name, MemoryFile.from(name)]));
+    await toPromise(cache.getOrCreate("encoded names", () => Computable.resolve(new FileSet(content))));
+
+    const reopened = new BuildCache(root, NULL_LOG);
+    const files = await toPromise(
+      reopened.getOrCreate("encoded names", () => {
+        throw new Error("cache entry should not be rebuilt");
+      })
+    );
+    expect([...files].map(([name]) => name).sort()).to.deep.equal([...names].sort());
+  });
+
   it("treats a mime-less (pre-mime) manifest line as a miss", async () => {
     const cache = new BuildCache(root, NULL_LOG);
     const build = (): Computable<FileSet> =>
