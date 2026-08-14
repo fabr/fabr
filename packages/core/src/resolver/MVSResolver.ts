@@ -1027,7 +1027,59 @@ function resolvePhase<V, C>(
           return [id, nodeRequirements.get(id) ?? []];
         })
       );
-      resolve({ selections, errors: [...round.errors.values()], violations, coerced: round.coerced, raises, requirements });
+      /* Candidates per package, in the canonical order — binding an edge only
+       * ever considers selections of its own package, so this is what the walk
+       * itself passes to edgeBinding (see targetsOf). Built once here rather
+       * than rescanning every selection per edge. */
+      const candidatesByPkg = new Map<string, Selected<V>[]>();
+      for (const selection of selections) {
+        candidatesByPkg.set(selection.pkg, [...(candidatesByPkg.get(selection.pkg) ?? []), selection]);
+      }
+      /* Where each of those edges LEADS, resolved once here rather than by
+       * every consumer: the delivery walks this instead of searching the
+       * selections per edge. Computed after the fork renumbering above, so the
+       * ids it names are the persisted ones. */
+      const edges = new Map<string, Map<string, string>>(
+        selections.map(sel => {
+          const from = new Map<string, string>();
+          for (const req of requirements.get(nodeId(sel.pkg, sel.version)) ?? []) {
+            /* The requirer's own name for the edge — first declaration wins, as
+             * the layout reads it. */
+            const name = req.alias ?? req.pkg;
+            if (from.has(name)) {
+              continue;
+            }
+            const target = edgeBinding(domain, candidatesByPkg.get(req.pkg) ?? [], req);
+            if (target) {
+              from.set(name, nodeId(target.pkg, target.version));
+            }
+          }
+          return [nodeId(sel.pkg, sel.version), from];
+        })
+      );
+      /* A root binds against what it reaches, not against everything: a fork
+       * packed for some other root's violated edge must not answer this one.
+       * Recorded as a position in `selections`, which is what a delivery needs
+       * to reach the node without a table of its own. */
+      const rootBindings = roots.map((root, rootIndex) => {
+        if (root.override === "alternate") {
+          return undefined;
+        }
+        const reachable = (candidatesByPkg.get(root.pkg) ?? []).filter(sel => sel.reachableFrom?.includes(rootIndex));
+        const bound = edgeBinding(domain, reachable, root);
+        const at = bound === undefined ? -1 : selections.indexOf(bound);
+        return at < 0 ? undefined : at;
+      });
+      resolve({
+        selections,
+        errors: [...round.errors.values()],
+        violations,
+        coerced: round.coerced,
+        raises,
+        requirements,
+        edges,
+        rootBindings,
+      });
     };
 
     /**

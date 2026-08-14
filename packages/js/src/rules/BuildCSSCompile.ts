@@ -36,7 +36,6 @@
 import {
   BUILD_OPERATION,
   Computable,
-  createExecAction,
   EMPTY_FILESET,
   FileSet,
   MemoryFile,
@@ -44,7 +43,7 @@ import {
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
-import { assembleNodeModules } from "../JSPackage";
+import { createNodeExecAction } from "../NodeExecAction";
 import { buildCssOptions, CSS_OUTDIR, CSS_SRC_ROOT, SCSS_DEPS_DIR } from "../CSSCompile";
 
 /** Where the CSS toolchain + driver mount — disjoint from the styled tree so the
@@ -62,18 +61,17 @@ function buildCssCompile(context: TargetContext): Computable<RuleResult> {
         return EMPTY_FILESET;
       }
       const options = buildCssOptions(fileNames);
-      const staged = FileSet.unionAll(
-        FileSet.layout({
-          [CSS_SRC_ROOT]: srcs,
-          [SCSS_DEPS_DIR]: assembleNodeModules(deps),
-          [TOOL_DIR]: compiler,
-          "css-manifest.json": MemoryFile.from(JSON.stringify(options)),
-        })
-      );
+      const staged = FileSet.layout({
+        [CSS_SRC_ROOT]: srcs,
+        [TOOL_DIR]: compiler,
+        "css-manifest.json": MemoryFile.from(JSON.stringify(options)),
+      });
       /* The driver launches from its own mount (its deps resolve there); cwd is
        * the working root, so the manifest and src/out roots resolve against it. */
       const argv = compiler.toCommandLine(["--manifest=css-manifest.json"], { base: TOOL_DIR });
-      return createExecAction(staged, argv, `${CSS_OUTDIR}:**`, "compile-css");
+      /* The deps go over unassembled: mounting them is the step's work, so it
+       * happens on a miss rather than on the way to asking whether there is one. */
+      return createNodeExecAction(staged, deps, argv, `${CSS_OUTDIR}:**`, { mount: SCSS_DEPS_DIR, label: "compile-css" });
     }
   );
 }

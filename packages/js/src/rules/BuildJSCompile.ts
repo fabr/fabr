@@ -32,9 +32,9 @@
  */
 
 
-import { Computable, createExecAction, FileSet, MemoryFile, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
+import { Computable, FileSet, MemoryFile, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
+import { createNodeExecAction, SCOPED } from "../NodeExecAction";
 import {
-  assembleScopedNodeModules,
   esLevelOrder,
   JSTarget,
   parseJSTarget,
@@ -249,15 +249,24 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       const build = (jsxImportSource: string): RuleResult => {
         const jsx = jsxImportSource ? { mode: jsxModeFor(buildType), importSource: jsxImportSource } : undefined;
         const tsconfig = makeTsConfig(parseJSTarget(target), jsx, modeOverlay, buildType, packageName, sourceVersion, usesDom(depFlags));
-        const workingDir = FileSet.layout({
-          node_modules: assembleScopedNodeModules(deps),
-          [COMPILE_SRC_DIR]: srcs,
-          "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
-          [TOOL_DIR]: tsc,
-        });
-        /* The tool launches from its own mount (its deps resolve there); cwd is the
-         * workspace root, so `include`/`node_modules` resolve against the sources. */
-        return createExecAction(workingDir, tsc.toCommandLine([], { base: TOOL_DIR }), `${COMPILE_OUT_DIR}:**`, "compile");
+        /* The deps are handed over UNASSEMBLED: laying out node_modules is the
+         * step's own work, so it happens on a cache miss rather than on the way
+         * to asking whether there is one (see COMPILE_ACTION).
+         *
+         * The tool launches from its own mount (its deps resolve there); cwd is
+         * the workspace root, so `include`/`node_modules` resolve against the
+         * sources. */
+        return createNodeExecAction(
+          FileSet.layout({
+            [COMPILE_SRC_DIR]: srcs,
+            "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
+            [TOOL_DIR]: tsc,
+          }),
+          deps,
+          tsc.toCommandLine([], { base: TOOL_DIR }),
+          `${COMPILE_OUT_DIR}:**`,
+          { layout: SCOPED, label: "compile" }
+        );
       };
       return hasJsx ? resolveJsxImportSource(deps).then(build) : build("");
     }

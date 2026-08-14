@@ -416,13 +416,12 @@ describe("assembling delivered edge-binding graphs", () => {
     expect(await contentAt(files, "m/node_modules/leaf/node_modules/x/index.js")).to.equal("// x@2.0.0");
   });
 
-  it("resolves two batches disagreeing about one packageId by first collection, deterministically", async () => {
+  it("rejects two batches disagreeing about one packageId (one id is one node)", () => {
     /* Two independently-resolved batches may deliver the same name@version
      * with DIFFERENT edges (one batch cannot — its edges are a function of
-     * the joint resolution). Doctrine, pinned deliberately: the first
-     * collected instance represents the id, its edges decide the flat
-     * mount's nesting, and the later instance's edges are never consulted —
-     * a deterministic pick, never a conflict. */
+     * the joint resolution). The merge resolves ids, not instances, so a
+     * disagreement would be settled by traversal order rather than by any
+     * decision: a conflict carrying both sides' provenance, never a pick. */
     const batchA = delivered(
       { "rootA@1.0.0": { p: "p@1.0.0" }, "p@1.0.0": { x: "x@1.0.0" }, "x@1.0.0": {} },
       "rootA@1.0.0"
@@ -431,11 +430,7 @@ describe("assembling delivered edge-binding graphs", () => {
       { "rootB@1.0.0": { p: "p@1.0.0" }, "p@1.0.0": { x: "x@2.0.0" }, "x@2.0.0": {} },
       "rootB@1.0.0"
     );
-    const files = entries(assembleNodeModules([batchA, batchB]));
-    /* x@2 wins the flat slot (highest); the representative p (batch A's) nests
-     * its own x@1 privately; batch B's p instance is never mounted. */
-    expect(await contentAt(files, "x/index.js")).to.equal("// x@2.0.0");
-    expect(await contentAt(files, "p/node_modules/x/index.js")).to.equal("// x@1.0.0");
+    expect(() => assembleNodeModules([batchA, batchB])).to.throw(ConflictError, /p@1\.0\.0/);
   });
 
   it("makes a delivered graph runnable with its nested override in the install", async () => {
@@ -505,12 +500,16 @@ describe("assembleNodeModules", () => {
 
   it("skips a listed dep that is the flat winner of its name (no duplicate mount)", () => {
     /* b@1 nests under a; b@1's own listed dep points back at the flat winner
-     * a@1 — a winner is never nested, so the cycle-shaped structure stops. */
-    const a = vpkg("a", "1.0.0");
-    const b1 = vpkg("b", "1.0.0", [a]);
-    const a2 = vpkg("a", "1.0.0", [b1]); /* same id as a — winner */
+     * a@1 — a winner is never nested, so the cycle-shaped structure stops.
+     * A real cycle, so built through the builder (one instance per node). */
+    const builder = new PackageGraphBuilder();
+    const a = builder.node(new Map<string, IFile>([["index.js", MemoryFile.from("// a@1.0.0")]]), "a", "1.0.0");
+    const b1 = builder.node(new Map<string, IFile>([["index.js", MemoryFile.from("// b@1.0.0")]]), "b", "1.0.0");
+    builder.wire(a, [b1]);
+    builder.wire(b1, [a]);
+    builder.seal();
     const b2 = vpkg("b", "2.0.0");
-    const root = vpkg("top", "1.0.0", [a2, b2]);
+    const root = vpkg("top", "1.0.0", [a, b2]);
     const files = entries(assembleNodeModules([root]));
     expect(files.has("a/node_modules/b/index.js")).to.equal(true);
     /* The nested b@1 does NOT nest a copy of a (a@1.0.0 is the flat winner). */
@@ -541,6 +540,27 @@ describe("assembleNodeModules", () => {
   it("accepts the same-identity root arriving twice", () => {
     const files = entries(assembleNodeModules([vpkg("tool", "1.0.0"), vpkg("tool", "1.0.0")]));
     expect(files.has("tool/index.js")).to.equal(true);
+  });
+
+  /* One id must be one node: the merge resolves ids, not instances, so two
+   * instances disagreeing under one id would be settled by traversal order —
+   * a conflict, not a pick (and the identity-named action key relies on it). */
+  it("rejects two different contents delivered under one id", () => {
+    const debug = new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from("// debug")]]), "mylib", undefined);
+    const release = new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from("// release")]]), "mylib", undefined);
+    expect(() => assembleNodeModules([pkg("x", [debug]), pkg("y", [release])])).to.throw(ConflictError, /mylib@\*/);
+  });
+
+  it("rejects two different edge bindings under one id, contents equal", () => {
+    const carrierOf = (dep: PackageFileSet): PackageFileSet =>
+      new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from("// carrier")]]), "carrier", "1.0.0", [dep]);
+    expect(() => assembleNodeModules([carrierOf(vpkg("q", "1.0.0")), carrierOf(vpkg("q", "2.0.0"))])).to.throw(ConflictError);
+  });
+
+  it("rejects a same-id disagreement in the scoped assembler too", () => {
+    const debug = new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from("// debug")]]), "mylib", undefined);
+    const release = new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from("// release")]]), "mylib", undefined);
+    expect(() => assembleScopedNodeModules([pkg("x", [debug]), pkg("y", [release])])).to.throw(ConflictError);
   });
 });
 

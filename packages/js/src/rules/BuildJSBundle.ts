@@ -35,7 +35,6 @@
 import {
   BUILD_OPERATION,
   Computable,
-  createExecAction,
   FileSet,
   FileSetRef,
   MemoryFile,
@@ -46,7 +45,8 @@ import {
   RunnableFileSet,
   TargetContext,
 } from "@fabr-build/core";
-import { assembleNodeModules, compileContents, JSTarget, parseJSTarget } from "../JSPackage";
+import { compileContents, JSTarget, parseJSTarget } from "../JSPackage";
+import { createNodeExecAction } from "../NodeExecAction";
 import {
   buildBundleOptions,
   BUNDLE_OUTDIR,
@@ -101,7 +101,6 @@ function stageBundle(
     code,
     css,
     FileSet.layout({
-      node_modules: assembleNodeModules(srcPackages),
       [TOOL_DIR]: bundler,
       "bundle-options.json": MemoryFile.from(JSON.stringify(options)),
     })
@@ -109,7 +108,9 @@ function stageBundle(
   /* The bundler launches from its own mount (its deps resolve there); cwd is
    * the working root, so the options manifest and outdir resolve against it. */
   const argv = bundler.toCommandLine(["--options=bundle-options.json"], { base: TOOL_DIR });
-  return createExecAction(staged, argv, `${BUNDLE_OUTDIR}:**`, "bundle");
+  /* The bundled packages go over unassembled — mounting them is the step's
+   * work, so a cache hit never pays for it. */
+  return createNodeExecAction(staged, srcPackages, argv, `${BUNDLE_OUTDIR}:**`, { label: "bundle" });
 }
 
 /** Where a bundled package mounts — assembleNodeModules' layout, which the

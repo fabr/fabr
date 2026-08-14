@@ -25,6 +25,7 @@
 
 import { posix } from "path";
 import {
+  assertSamePackageNode,
   attachHelp,
   BUILD_OVERRIDE,
   Constraints,
@@ -646,8 +647,14 @@ function collectPackages(sets: FileSet[]): CollectedPackages {
     }
     seen.add(pkg);
     all.push(pkg);
-    if (!byId.has(pkg.packageId)) {
+    const held = byId.get(pkg.packageId);
+    if (held === undefined) {
       byId.set(pkg.packageId, pkg);
+    } else {
+      /* Everything from here on resolves the id, not the instance, so a second
+       * instance must BE the same node — checked, or the merge would be settled
+       * by traversal order. */
+      assertSamePackageNode(held, pkg);
     }
     for (const dep of pkg.dependencies) {
       if (dep instanceof PackageFileSet) {

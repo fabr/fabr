@@ -19,6 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { resolveMVS } from "./MVSResolver";
+import { edgeBinding, nodeId } from "./ResolutionGraph";
 import { parseVersion, SEMVER, SemverVersion, versionToString } from "./Semver";
 import { MetadataFetchError, VersionNotFoundError } from "../core/Errors";
 import { RequirementSource, Requirement, MVSResolution, Selected } from "./Types";
@@ -1226,5 +1227,72 @@ describe("force overrides", () => {
     );
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@1.0.0", "C@2.0.0"]);
     expect(result.coerced.map(edge => edge.requiredBy).sort()).to.deep.equal(["A@1.0.0", "B@1.0.0"]);
+  });
+});
+
+/* The resolution stores where each edge leads (MVSResolution.edges) instead of
+ * leaving every consumer to recompute it. These pin the stored answers to the
+ * rule that produced them — the contract a layout relies on. */
+describe("resolved edges", () => {
+  /** What a consumer would compute for itself, the old way. */
+  function recomputed(result: MVSResolution<SemverVersion>): Map<string, Map<string, string>> {
+    const edges = new Map<string, Map<string, string>>();
+    for (const sel of result.selections) {
+      const id = nodeId(SEMVER, sel.pkg, sel.version);
+      const from = new Map<string, string>();
+      for (const req of result.requirements.get(id) ?? []) {
+        const name = req.alias ?? req.pkg;
+        if (from.has(name)) {
+          continue;
+        }
+        const target = edgeBinding(SEMVER, result.selections, req);
+        if (target) {
+          from.set(name, nodeId(SEMVER, target.pkg, target.version));
+        }
+      }
+      edges.set(id, from);
+    }
+    return edges;
+  }
+
+  const cases: Array<[string, Record<string, string>, Record<string, Record<string, Record<string, string>>>]> = [
+    ["a plain tree", { A: "^1.0.0" }, { A: { "1.0.0": { B: "^1.0.0" } }, B: { "1.0.0": {} } }],
+    [
+      "a diamond",
+      { A: "^1.0.0", B: "^1.0.0" },
+      { A: { "1.0.0": { C: "^1.0.0" } }, B: { "1.0.0": { C: "^1.2.0" } }, C: { "1.0.0": {}, "1.2.0": {} } },
+    ],
+    [
+      "a coexistence fork (the case where an edge binds somewhere other than the principal)",
+      { A: "^1.0.0", B: "^1.0.0" },
+      { A: { "1.0.0": { C: "^1.0.0" } }, B: { "1.0.0": { C: "^2.0.0" } }, C: { "1.0.0": {}, "2.0.0": {} } },
+    ],
+    ["a cycle", { A: "^1.0.0" }, { A: { "1.0.0": { B: "^1.0.0" } }, B: { "1.0.0": { A: "^1.0.0" } } }],
+  ];
+
+  for (const [what, roots, data] of cases) {
+    it(`stores what edgeBinding computes, for ${what}`, () => {
+      const result = resolve(roots, data);
+      expect(result.edges).to.deep.equal(recomputed(result));
+    });
+
+    it(`binds each root to what it reaches, for ${what}`, () => {
+      const result = resolve(roots, data);
+      const requirements = rootRequirements(roots);
+      result.rootBindings.forEach((stored, index) => {
+        /* The scoped rule: a root binds within what it reaches, so a fork
+         * packed for another root's violated edge cannot answer it. */
+        const reachable = result.selections.filter(sel => sel.reachableFrom?.includes(index));
+        const expected = edgeBinding(SEMVER, reachable, requirements[index]);
+        /* Stored as a position in `selections`, so a delivery reaches its root
+         * with an index rather than an id lookup. */
+        expect(stored === undefined ? undefined : result.selections[stored]).to.equal(expected);
+      });
+    });
+  }
+
+  it("names an aliased edge by the requirer's name for it", () => {
+    const result = resolve({ A: "^1.0.0" }, { A: { "1.0.0": { B: "^1.0.0" } }, B: { "1.0.0": {} } });
+    expect([...result.edges.get("A@1.0.0")!.keys()]).to.deep.equal(["B"]);
   });
 });

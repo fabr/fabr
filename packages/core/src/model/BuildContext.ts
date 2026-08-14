@@ -39,7 +39,7 @@ import {
 } from "../core/Repository";
 import { FileSetRef, FileSourceRef } from "../core/FileSetRef";
 import { RunnableFileSet, toRunnable } from "../core/RunnableFileSet";
-import { PackageFileSet } from "../core/PackageFileSet";
+import { manifestPackageInputs, PackageFileSet } from "../core/PackageFileSet";
 import { Requirement } from "../resolver/Types";
 import { declaredRequirementFrom } from "../resolver/PackageResolver";
 import { Flag } from "../core/Flag";
@@ -2710,7 +2710,17 @@ function manifestEvalInput(value: BuildActionInput): string {
   if (typeof value === "string") {
     return JSON.stringify(value);
   }
+  /* A package handed to a step whole is named by its identity, not listed file
+   * by file — the step assembles it itself, so the key must describe the
+   * closure it will assemble (see manifestPackageInputs) rather than a layout
+   * nothing has produced yet. Any other set is still its files. */
+  if (value instanceof PackageFileSet) {
+    return "{\n" + manifestPackageInputs([value]) + "\n}";
+  }
   if (Array.isArray(value)) {
+    if (value.some(element => element instanceof PackageFileSet)) {
+      return "{\n" + manifestPackageInputs(value as FileSet[]) + "\n}";
+    }
     return "[" + value.map(element => manifestEvalInput(element)).join(",") + "]";
   }
   /* A Name (a projection input) manifests by its canonical text — selector plus

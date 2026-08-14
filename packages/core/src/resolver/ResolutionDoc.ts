@@ -68,6 +68,17 @@ export interface IResolutionDoc {
   coerced?: IViolationEntry[];
   raises: IRaiseEntry[];
   requirements: IRequirementsEntry[];
+  /**
+   * The resolved edges (see {@link MVSResolution.edges}), positionally: entry
+   * `i` belongs to `selections[i]`, and each `[name, target]` pair names the
+   * *index* of the selection it binds to. Indices rather than `pkg@version`
+   * strings because there is one entry per edge in the whole graph — the
+   * document would otherwise grow by more than the selections it describes.
+   */
+  edges: [string, number][][];
+  /** Per root (see {@link MVSResolution.rootBindings}), the index of the
+   * selection it binds to; `null` for a root that selects nothing. */
+  rootBindings: (number | null)[];
 }
 
 /** The tree + repairs of a deserialized resolution document. */
@@ -78,6 +89,10 @@ export interface ResolvedRepairs<V> {
   readonly coerced: Violation<V>[];
   readonly raises: RaisedFloor<V>[];
   readonly requirements: Map<string, Requirement[]>;
+  /** See {@link MVSResolution.edges} — node id → (edge name → target node id). */
+  readonly edges: Map<string, Map<string, string>>;
+  /** See {@link MVSResolution.rootBindings} — root index → selection index. */
+  readonly rootBindings: (number | undefined)[];
 }
 
 export function serializeResolutionDoc<V>(
@@ -91,6 +106,8 @@ export function serializeResolutionDoc<V>(
     requiredBy: entry.requiredBy,
     selected: versionToString(entry.selected),
   });
+  /* Edge targets are stored by position, so the id→index map is built once. */
+  const index = new Map<string, number>(result.selections.map((sel, at) => [nodeKey(sel, versionToString), at]));
   return {
     roots,
     selections: result.selections.map(sel => ({
@@ -112,10 +129,25 @@ export function serializeResolutionDoc<V>(
     })),
     /* Already canonical: the resolver builds the map in its selections' order. */
     requirements: [...result.requirements].map(([node, requires]) => ({ node, requires })),
+    edges: result.selections.map(sel => {
+      const from = result.edges.get(nodeKey(sel, versionToString)) ?? new Map<string, string>();
+      return [...from].map(([name, target]): [string, number] => [name, index.get(target)!]);
+    }),
+    rootBindings: result.rootBindings.map(target => target ?? null),
   };
 }
 
+/** `pkg@version` — the id every per-node table in a resolution is joined by
+ * (the resolver's own {@link nodeId}, restated here to keep this module free of
+ * the domain). */
+function nodeKey<V>(selection: Selected<V>, versionToString: (version: V) => string): string {
+  return `${selection.pkg}@${versionToString(selection.version)}`;
+}
+
 export function deserializeResolutionDoc<V>(doc: IResolutionDoc, parseVersion: (text: string) => V): ResolvedRepairs<V> {
+  /* Edge targets are positional (see IResolutionDoc.edges); the ids they mean
+   * are read straight off the serialized selections, no version parsing. */
+  const ids = doc.selections.map(entry => `${entry.pkg}@${entry.version}`);
   const violation = (entry: IViolationEntry): Violation<V> => ({
     pkg: entry.pkg,
     constraint: entry.constraint,
@@ -141,5 +173,12 @@ export function deserializeResolutionDoc<V>(doc: IResolutionDoc, parseVersion: (
       requiredBy: entry.requiredBy,
     })),
     requirements: new Map((doc.requirements ?? []).map(entry => [entry.node, entry.requires])),
+    edges: new Map(
+      (doc.edges ?? []).map((from, at) => [
+        ids[at],
+        new Map(from.map(([name, target]): [string, string] => [name, ids[target]])),
+      ])
+    ),
+    rootBindings: (doc.rootBindings ?? []).map(target => target ?? undefined),
   };
 }

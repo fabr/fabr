@@ -25,6 +25,7 @@ import { IDiagnosticNote } from "../support/Log";
 import { IProvenanceStep, registerProvenanceLocator, registerProvenanceRenderer, renderProvenance, locateSource } from "./Provenance";
 import { ConflictError } from "./Errors";
 import { canonicalFileName, isCanonicalFileName } from "../support/Paths";
+import { hashString } from "./FSWrapper";
 
 /** The permission bits (`man 2 stat`, the low 12 bits — rwx triples plus
  * setuid/setgid/sticky) fabr records for a file when none are otherwise known:
@@ -110,6 +111,19 @@ export interface FileSource {
 type FileSetContent = Map<string, IFile>;
 
 /**
+ * The lazily-computed manifest hash of one content map, held in a cell **shared
+ * by every set sharing that map**. The hash is a property of the content, not
+ * of any one set, and only some sets are ever asked for it — a build constructs
+ * ~3× more packages than it keys — so it is computed on demand. A per-instance
+ * field would then be recomputed by whichever of a package's many re-wraps is
+ * asked first; the cell travels with the map instead: share the content, share
+ * the answer.
+ */
+interface IManifestHash {
+  value?: string;
+}
+
+/**
  * Construction-site marker asserting that a content map's names are already
  * canonical, so the constructor skips canonicalization. For names that are
  * canonical *by construction* only: a set derived name-unchanged from an
@@ -136,6 +150,8 @@ export const CANONICAL: unique symbol = Symbol("canonical-names");
  */
 export class FileSet implements FileSource {
   private content: FileSetContent;
+  /** Shared with any set sharing {@link content} — see {@link IManifestHash}. */
+  private readonly manifestHash: IManifestHash;
   /**
    * Optional provenance chain, preserved through single-source derivations.
    * This is runtime-only "ghost" data: it must never participate in manifests,
@@ -153,6 +169,7 @@ export class FileSet implements FileSource {
   constructor(content: FileSetContent | FileSet, origin?: IProvenanceStep, trust?: typeof CANONICAL) {
     this.content =
       content instanceof FileSet ? content.content : trust === CANONICAL ? content : FileSet.canonicalizeContent(content, origin);
+    this.manifestHash = content instanceof FileSet ? content.manifestHash : {};
     this.origin = origin;
   }
 
@@ -197,7 +214,9 @@ export class FileSet implements FileSource {
    * @return a copy of the receiver carrying the given provenance.
    */
   public withOrigin(origin: IProvenanceStep): FileSet {
-    return new FileSet(this.content, origin, CANONICAL);
+    /* `this`, not `this.content`: sharing the set shares its manifest-hash cell
+     * along with the map, which passing the bare map would not. */
+    return new FileSet(this, origin);
   }
 
   /**
@@ -308,6 +327,20 @@ export class FileSet implements FileSource {
 
   public isEmpty(): boolean {
     return this.content.size === 0;
+  }
+
+  /**
+   * The hash of this set's {@link toManifest} — a stable identity for its
+   * content, distinguishing exactly what the manifest distinguishes (names,
+   * content hashes and modes) and nothing else: not provenance, not the
+   * delivery that produced it.
+   *
+   * For an action that assembles its own inputs: the key can name a whole
+   * package by its id instead of listing its files, which is O(packages)
+   * rather than O(files) while staying injective over the bytes.
+   */
+  public toManifestHash(): string {
+    return (this.manifestHash.value ??= hashString(this.toManifest()));
   }
 
   public toManifest(): string {

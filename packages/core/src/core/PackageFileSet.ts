@@ -17,6 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { attachHelp, ConflictError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
 import { IProvenanceStep } from "./Provenance";
 /* Type-only: RepositoryRef values are only ever constructed/inspected on the
@@ -96,6 +97,92 @@ export class PackageFileSet extends FileSet {
    */
   public withPackageName(packageName: string): PackageFileSet {
     return new PackageFileSet(this, packageName, this.version, this.dependencies, this.origin, this.isNestedOverride);
+  }
+}
+
+/**
+ * The manifest of an input list for an action that **assembles its own
+ * inputs**: a package contributes its identity rather than its files, so the
+ * key is O(packages) instead of O(files).
+ *
+ * It must distinguish everything an assembler reads, which is more than the
+ * file contents: layout is decided by the dependency *edges* and by the
+ * nested-override flag, so two closures whose packages have identical contents
+ * but different bindings must not collide. Each reachable node therefore
+ * contributes its id, its {@link FileSet.toManifestHash}, its edge targets and its
+ * override flag; every node carries its own hash, so naming edges by
+ * package id is enough — no recursive hashing, which the (possibly cyclic)
+ * graph would not admit anyway. Inert {@link RepositoryRef} edges are omitted:
+ * an assembler cannot see through them, so they cannot affect what it builds.
+ *
+ * The direct list is emitted **in order** (mount order is significant) and the
+ * closure sorted (it is a set); a non-package member falls back to its file
+ * manifest, since only a whole package can be named by identity.
+ */
+export function manifestPackageInputs(sets: ReadonlyArray<FileSet>): string {
+  const reachable = new Set<PackageFileSet>();
+  const visit = (pkg: PackageFileSet): void => {
+    if (reachable.has(pkg)) {
+      return;
+    }
+    reachable.add(pkg);
+    for (const dep of pkg.dependencies) {
+      if (dep instanceof PackageFileSet) {
+        visit(dep);
+      }
+    }
+  };
+  const direct = sets.map(set => {
+    if (!(set instanceof PackageFileSet)) {
+      return `files {\n${set.toManifest()}\n}`;
+    }
+    visit(set);
+    return `mount ${set.packageId}`;
+  });
+  const closure = [...reachable].map(pkg => packageNodeSignature(pkg)).sort();
+  return [...direct, ...closure].join("\n");
+}
+
+/**
+ * One graph node as the manifest above names it: identity, content hash, edge
+ * targets by id, override flag — everything an assembler's outcome can depend
+ * on. Naming edges by id is sound because two instances sharing an id must
+ * agree on this whole line — the invariant the assemblers check at their merge
+ * ({@link assertSamePackageNode}) — so inductively an id names one node,
+ * however many instances carry it.
+ */
+export function packageNodeSignature(pkg: PackageFileSet): string {
+  const edges = pkg.dependencies
+    .filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)
+    .map(dep => dep.packageId)
+    .sort();
+  return `${pkg.packageId} ${pkg.toManifestHash()} [${edges.join(",")}]${pkg.isNestedOverride ? " nested" : ""}`;
+}
+
+/**
+ * Assert that two instances delivered under one {@link PackageFileSet.packageId}
+ * really are the same node — same bytes, same edge bindings. Everything
+ * downstream resolves the *id*, not the instance (the hoist's flat-mount dedup,
+ * the divergence check, an action key naming packages by identity), so two
+ * instances that disagree would be settled by traversal order rather than by
+ * any decision: a {@link ConflictError}, the general two-deliveries-disagree
+ * shape, not a pick.
+ */
+export function assertSamePackageNode(held: PackageFileSet, arrived: PackageFileSet): void {
+  const heldSignature = packageNodeSignature(held);
+  const arrivedSignature = packageNodeSignature(arrived);
+  if (heldSignature !== arrivedSignature) {
+    throw attachHelp(
+      new ConflictError(
+        "packages",
+        held.packageId,
+        { provenance: held.origin, detail: heldSignature },
+        { provenance: arrived.origin, detail: arrivedSignature }
+      ),
+      `two different packages are being delivered as '${held.packageId}' in one closure — ` +
+        "they cannot merge into one installation; give them distinct identities (version the target, " +
+        "or align the two sources on one content)"
+    );
   }
 }
 

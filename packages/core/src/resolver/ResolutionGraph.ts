@@ -46,6 +46,27 @@ export function selectionId<V, C>(domain: VersionDomain<V, C>, selection: Select
   return nodeId(domain, selection.pkg, selection.version);
 }
 
+/** Derived properties of a selection list, keyed by the list itself: a
+ * resolution is immutable and shared by every delivery made from it, so a
+ * property of the whole list is computed once rather than once per delivery.
+ * Weakly held — a resolution that falls out of use takes its view with it. */
+const FORK_IDS = new WeakMap<readonly Selected<unknown>[], ReadonlySet<string>>();
+
+/**
+ * The ids of the selections that are **forks** — the sanctioned second (third,
+ * …) version of a package, deliverable only nested under its requirers. A
+ * property of the resolution, so it is derived once for it.
+ */
+export function forkSelections<V, C>(domain: VersionDomain<V, C>, selections: readonly Selected<V>[]): ReadonlySet<string> {
+  const known = FORK_IDS.get(selections as readonly Selected<unknown>[]);
+  if (known !== undefined) {
+    return known;
+  }
+  const ids = new Set(selections.filter(sel => sel.fork !== undefined).map(sel => selectionId(domain, sel)));
+  FORK_IDS.set(selections as readonly Selected<unknown>[], ids);
+  return ids;
+}
+
 /** The highest of `selections` by version; undefined if there are none. Ties
  * keep the earlier, so the caller's order decides — pass a canonical one. */
 function highestOf<V, C>(domain: VersionDomain<V, C>, selections: readonly Selected<V>[]): Selected<V> | undefined {

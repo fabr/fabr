@@ -145,11 +145,6 @@ deps = @package/core<TARGET=arm64-apple-darwin24.6.0>;   # Depend on @package/co
 Constraints are transitive, ie the above example will also require @package/core's dependencies
 to be recursively built under the specified target as well, unless further overridden.
 
-The same facet written on the *left* of a declaration — on a property's key rather than on a value —
-is a **guard** instead, saying which configurations that declaration applies in: see
-[conditional properties](#conditional-properties). A requirement demands a configuration of what it
-names; a guard asks what the configuration already is. Position is what tells them apart, so a
-requirement takes an exact value where a guard takes a pattern.
 
 ### Projection and renaming
 
@@ -333,7 +328,7 @@ When resolved, each command must be a runnable target, an input redirection take
 must resolve to a single file, and output redirections must be a valid file path.
 
 
-### Conditional properties
+### Guarded properties
 
 A property declaration may carry a **guard** — the same `<KEY=value>` facet a
 [reference](#constraints) carries, written on the *declaration* instead of on a *use*. Position
@@ -351,16 +346,7 @@ library platform_io {
 }
 ```
 
-A guard may name any property, not only the standard ones — which is all a feature flag needs:
-
-```
-default TRACING = off;
-deps<TRACING=on> = tracing_lib;
-```
-
-Several keys in one guard are a conjunction (`<TARGET=*-linux-*, BUILD_TYPE=release>`); for a
-disjunction, write the declaration twice. A guard must abut the property name, and a property may
-be declared more than once only when its declarations carry different guards.
+Several keys in one guard are a conjunction (`<TARGET=*-linux-*, BUILD_TYPE=release>`);
 
 **Every matching declaration contributes.** For a files property they combine, exactly as the
 values of a single declaration do — above, a linux build gets the common sources *and* the epoll

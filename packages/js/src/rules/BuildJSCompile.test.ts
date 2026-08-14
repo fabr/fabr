@@ -41,7 +41,9 @@ function stubContext(flags: Flag[], packageName?: string): TargetContext {
   } as unknown as TargetContext;
 }
 
-/** Drive the rule and read back the tsconfig.json it stages into the action. */
+/** Drive the rule and read back the tsconfig.json it stages into the action.
+ * (`files` is what the rule lays out itself; node_modules is assembled by the
+ * step, from the unassembled `deps` beside it.) */
 async function generatedTsConfig(flags: Flag[], packageName?: string): Promise<TsConfig> {
   const result = await toPromise(jsCompileRule.evaluate(stubContext(flags, packageName)));
   expect(result).to.be.instanceOf(BuildAction);

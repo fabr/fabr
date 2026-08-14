@@ -54,7 +54,7 @@ import {
   writtenVersions,
 } from "./Overrides";
 import { deserializeResolutionDoc, IResolutionDoc, ResolvedRepairs, serializeResolutionDoc } from "./ResolutionDoc";
-import { coexistingVersions, edgeBinding, nodeId, selectionId } from "./ResolutionGraph";
+import { coexistingVersions, forkSelections, nodeId, selectionId } from "./ResolutionGraph";
 import { IResolutionOrigin, PACKAGE_RESOLUTION_PROVENANCE } from "./ResolutionProvenance";
 import { completeRepairSet, conflictError, RefRenderer, suggestSanctions, SuggestSources, unrepairableError } from "./ResolutionReport";
 import {
@@ -399,7 +399,9 @@ export function materializePackages<V, C>(
       }
       const fetchIds = [...toFetch.keys()];
       const fetching = new Set(fetchIds);
-      const edges = resolvedEdges(domain, delivered, resolved);
+      /* The resolution carries its own resolved edges — computed once, when it
+       * was computed — so laying it out is a walk, not a search. */
+      const edges = resolved.edges;
       /* Judged over the whole batch, since the consumer merges its
        * deliveries into one layout. */
       assertNoAliasCollisions(domain, toFetch, edges);
@@ -410,7 +412,7 @@ export function materializePackages<V, C>(
           const assembled = requirements.map(req =>
             req.override === "alternate"
               ? undefined
-              : buildClosure(registry, req, rootIndex.get(requirementKey(req))!, selections, fetching, edges, packages)
+              : buildClosure(registry, req, rootIndex.get(requirementKey(req))!, resolved, fetching, packages)
           );
           /* Assembled, not shaped: what a package BECOMES on delivery (mounted
            * as-is, launched as a runnable, or reduced to its own files) is the
@@ -436,44 +438,6 @@ function refTextFor(references: RepositoryRef[], registry: { identity: string })
  * a source, so the first stamped one speaks for the batch). */
 function repositoryAlias(references: RepositoryRef[]): string | undefined {
   return references.find(reference => reference.repositoryName !== undefined)?.repositoryName;
-}
-
-/**
- * The resolved dependency edges of the delivery — transient planning data,
- * never carried on the delivered values: for every fetched node, each
- * declared requirement resolved to the id of the selection it binds — the
- * principal when it satisfies the range, else the repairing fork (the
- * resolver's own edge rule, {@link edgeBinding}, so a layout cannot disagree
- * with the resolution it came from). Keyed by the name the *requirer* uses,
- * so an aliased dependency is an edge to the aliased package under the
- * alias.
- *
- * The requirements come from the resolution itself (the walk collected them
- * to compute reachability, and they are persisted with it), so the layout of
- * a cached resolution needs no metadata at all — the same edges the walk
- * followed, not a second reading of them.
- */
-function resolvedEdges<V, C>(domain: VersionDomain<V, C>, delivered: Selected<V>[], resolved: ResolvedRepairs<V>): EdgeMap {
-  const edges: EdgeMap = new Map();
-  for (const node of delivered) {
-    const fromId = selectionId(domain, node);
-    let from = edges.get(fromId);
-    if (!from) {
-      from = new Map();
-      edges.set(fromId, from);
-    }
-    for (const req of resolved.requirements.get(fromId) ?? []) {
-      const name = req.alias ?? req.pkg;
-      if (from.has(name)) {
-        continue;
-      }
-      const target = edgeBinding(domain, resolved.selections, req);
-      if (target) {
-        from.set(name, selectionId(domain, target));
-      }
-    }
-  }
-  return edges;
 }
 
 /**
@@ -534,23 +498,26 @@ function buildClosure<V, C>(
   registry: RepositoryReader<V, C>,
   req: Requirement,
   index: number,
-  selections: Selected<V>[],
+  resolved: DomainResolution<V>,
   fetching: ReadonlySet<string>,
-  edges: EdgeMap,
   packages: Map<string, PackageFileSet>
 ): PackageFileSet {
   const domain = registry.format;
+  const { selections, edges } = resolved;
+  const forkIds = forkSelections(domain, selections);
   const reachable = selections.filter(sel => sel.reachableFrom?.includes(index));
   /* The delivered root is what the root requirement BINDS to — normally the
-   * principal, but a violated root requirement is answered by its fork. */
-  const root = edgeBinding(domain, reachable, req);
+   * principal, but a violated root requirement is answered by its fork. The
+   * resolution decided that when it was computed (scoped to what this root
+   * reaches, so another root's fork cannot answer here). */
+  const at = resolved.rootBindings[index];
+  const root = at === undefined ? undefined : selections[at];
   if (!root) {
     /* Can't happen: a root requirement is always reachable from itself */
     throw new Error(`Resolution of ${requirementKey(req)} does not contain its own root package`);
   }
   const rootId = selectionId(domain, root);
   const origin = resolutionOrigin(registry.format, req, selections);
-  const forkIds = new Set(selections.filter(sel => sel.fork !== undefined).map(sel => selectionId(domain, sel)));
   /* Delivery members: the root's reachable slice of the fetched batch — an
    * edge leading outside it (a gated optional pruned from the walk) is
    * simply not carried. */

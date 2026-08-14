@@ -190,6 +190,31 @@ export interface MVSResolution<V> {
    * listed: only what the resolution selected.
    */
   requirements: Map<string, Requirement[]>;
+  /**
+   * The **resolved** edges of the selected graph: for each node, the selection
+   * each of its requirements binds to, keyed by the name the *requirer* uses
+   * (so an aliased dependency is an edge to the aliased package under the
+   * alias). The companion of {@link MVSResolution.requirements}, which is the
+   * same edges as *declared* — kept because explaining a resolution needs the
+   * constraint text, while laying one out needs only where each edge leads.
+   *
+   * Computed here, once, by {@link edgeBinding} — the one rule for what an edge
+   * binds to. A consumer reads the answer rather than recomputing it, which is
+   * what makes a delivery a walk over the graph instead of a search of it, and
+   * leaves nothing for a layout to disagree with.
+   */
+  edges: Map<string, Map<string, string>>;
+  /**
+   * Per canonical root (by index), the **index within `selections`** of the
+   * node its requirement binds to — scoped to what that root reaches, so a fork
+   * reachable only from a different root cannot capture it. Undefined for a
+   * root that selects nothing (an `?`-alternate, which demands nothing of its
+   * own).
+   *
+   * A position rather than an id so that reading it costs nothing: a delivery
+   * resolves its root with an array index, needing no id table of its own.
+   */
+  rootBindings: (number | undefined)[];
 }
 
 /**
