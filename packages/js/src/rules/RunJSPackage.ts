@@ -39,7 +39,7 @@ import { makeNpmRunnable } from "../JSPackage";
 
 function runJsPackage(context: TargetContext): Computable<RuleResult> {
   /* The package is built under build, since the ambient operation here is run. */
-  return context.context.getTargetWithOverrides(context.name, BUILD_OVERRIDE).then((buildResult): Computable<RuleResult> => {
+  return context.getSelfWithOverrides(BUILD_OVERRIDE).then((buildResult): Computable<RuleResult> => {
     const built = buildResult.find((s): s is PackageFileSet => s instanceof PackageFileSet);
     if (!built) {
       throw new Error("internal: js_package[build] did not yield a package");

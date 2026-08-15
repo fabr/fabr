@@ -41,7 +41,7 @@ import { RuleRegistration, RuleResult } from "./Types";
  * rather than being flattened. Only the deferred kinds drop out.
  */
 function deliverFiles(context: TargetContext): Computable<RuleResult> {
-  return context.context.getTargetWithOverrides(context.name, BUILD_OVERRIDE).then(sources => {
+  return context.getSelfWithOverrides(BUILD_OVERRIDE).then(sources => {
     const files = sources.filter(isFileSource);
     if (files.length === 0) {
       throw new Error(`internal: building '${context.name}' under files did not yield file content`);

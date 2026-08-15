@@ -461,10 +461,19 @@ export class BuildContext {
     return this.constraints.equals(constraints);
   }
 
-  public getTargetWithOverrides(name: string, overrides: Constraints): Computable<SourceRef[]> {
+  /**
+   * A target built under an explicit constraint override — how a rule reaches
+   * its own target under another operation (`js_package[run]` asking for its
+   * `[build]` result). Prefer {@link TargetContext.getSelfWithOverrides}, which
+   * supplies the caller's `stack`: the hop is an ordinary dependency edge and
+   * must stay part of the chain, or the target it reaches looks directly
+   * requested — no requester in its progress line, and, worse, a cycle closing
+   * through it is invisible to the cycle check and hits the stack limit instead.
+   */
+  public getTargetWithOverrides(name: string, overrides: Constraints, stack?: IDependencyStack): Computable<SourceRef[]> {
     /* Through getTarget's callerOverrides so a property's value requirement cannot
      * beat the explicit override (a direct target decl folds as before). */
-    return this.getTarget(name, undefined, overrides);
+    return this.getTarget(name, stack, overrides);
   }
 
   /**
@@ -2365,6 +2374,24 @@ export abstract class TargetContext {
   public runOverrides(extra?: Constraints): Constraints {
     const host = this.context.getConstraint(HOST);
     return RUN_OVERRIDE.with(host ? Constraints.of({ [TARGET]: host }) : undefined).with(extra);
+  }
+
+  /**
+   * This same target, resolved under an explicit constraint override — how an
+   * operation-specific rule reaches its own target under another operation
+   * (`js_package[run]` and the `files` rule both asking for their `[build]`
+   * result). It is a re-resolution in a different config, not a re-run of this
+   * evaluation: the overridden context memoizes it as it does any target.
+   *
+   * The rule-facing form of {@link BuildContext.getTargetWithOverrides}, and the
+   * one to use: the hop is an ordinary dependency edge, so it must carry this
+   * target's `stack`, which only the target context has. Without it the reached
+   * target looks directly requested — it announces with no requester, and a
+   * dependency cycle closing through the hop escapes the cycle check entirely
+   * (it recurses to the stack limit and reports that instead).
+   */
+  public getSelfWithOverrides(overrides: Constraints): Computable<SourceRef[]> {
+    return this.context.getTargetWithOverrides(this.name, overrides, this.stack);
   }
 
   /**

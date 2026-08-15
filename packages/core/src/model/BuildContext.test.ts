@@ -55,7 +55,7 @@ import {
 import { FSFileSource } from "../core/FSFileSource";
 import { scriptRunRule } from "../rules/RunScript";
 import { BuildContext, mapEntryOrigin, PropertyMap, PropertyMapValue } from "./BuildContext";
-import { BUILD_OPERATION, Constraints } from "./Constraints";
+import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints } from "./Constraints";
 import { CircularDependencyError, DependencyFailedError, NameResolutionError, NoRuleFoundError, ReferenceFailedError } from "./Errors";
 import { ExecutionContext } from "./ExecutionContext";
 import { declName, INameValue, syntheticValue } from "./AST";
@@ -117,6 +117,11 @@ registerRule("test_package", {}, context =>
   Computable.resolve(new PackageFileSet(new Map([["index.js", MemoryFile.from("")]]), context.name, "1.0.0"))
 );
 registerRule("test_fail", {}, () => Computable.reject(new Error("reasons")));
+/* The operation-hop shape: a rule for one operation whose result IS its own
+ * target under another (what `js_package[run]` and the `files` rule do — build
+ * myself, then present the result differently). The hop is a dependency edge
+ * like any other, so it must carry the stack; this rule is here to hold that. */
+registerRule("test_good", { [BUILD_OPERATION]: "run" }, context => context.getSelfWithOverrides(BUILD_OVERRIDE).then(() => EMPTY_FILESET));
 /* Resolves its dep under a caller-supplied constraint override, for testing
  * override precedence against a reference's own <k=v> requirement. */
 registerRule("test_override", {}, context =>
@@ -515,6 +520,41 @@ describe("BuildContext", () => {
       expect(circular.cycle.map(site => `${site.target && declName(site.target)} ${site.property.name.toBaseString()} = ${site.value.value.toString()}`)).to.deep.equal([
         "two deps = one",
         "one deps = two",
+      ]);
+    }
+  });
+
+  it("Reports a cycle that closes through an operation hop, rather than overflowing", async () => {
+    /* `one[build]` needs `two[run]`, whose rule's result IS `two[build]` (the
+     * js_package[run] shape) — and two's own deps close back on one. That last
+     * edge is only detectable if the hop passed the caller's stack along: with
+     * the hop starting a fresh chain, nothing on the stack names `one`, so the
+     * re-entry silently joins the in-flight evaluation and the graph recurses
+     * to a RangeError instead of naming the cycle. */
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_good { deps = FILES; }\n" +
+      "test_good one { deps = two<BUILD_OPERATION=run>; }\n" +
+      "test_good two { deps = one; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    try {
+      await model.getConfig(Constraints.of({}), execution).getTarget("one");
+      expect.fail("expected target one to fail");
+    } catch (err) {
+      let cause: Error = err as Error;
+      while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
+        cause = cause.cause;
+      }
+      expect(cause).to.be.instanceOf(CircularDependencyError);
+      const circular = cause as CircularDependencyError;
+      /* The whole loop, both use sites: one's deps naming two under `run`, and
+       * two's deps naming one back. */
+      expect(circular.cycle.map(site => `${site.target && declName(site.target)} ${site.property.name.toBaseString()} = ${site.value.value.toString()}`)).to.deep.equal([
+        "one deps = two<BUILD_OPERATION=run>",
+        "two deps = one",
       ]);
     }
   });
