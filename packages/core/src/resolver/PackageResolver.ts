@@ -54,7 +54,7 @@ import {
   writtenVersions,
 } from "./Overrides";
 import { deserializeResolutionDoc, IResolutionDoc, ResolvedRepairs, serializeResolutionDoc } from "./ResolutionDoc";
-import { coexistingVersions, forkSelections, nodeId, selectionId } from "./ResolutionGraph";
+import { coexistingVersions, nodeId, reachableFrom, resolutionIndex, selectionId, violationsByRequirer } from "./ResolutionGraph";
 import { IResolutionOrigin, PACKAGE_RESOLUTION_PROVENANCE } from "./ResolutionProvenance";
 import { completeRepairSet, conflictError, RefRenderer, suggestSanctions, SuggestSources, unrepairableError } from "./ResolutionReport";
 import {
@@ -136,6 +136,9 @@ export type EdgeMap = Map<string, Map<string, string>>;
  * whole batch's edges, since the consumer's collection point merges the
  * batch's deliveries into one layout. It takes an alias to reach: ordinary
  * edges name their own package.
+ *
+ * `edges` may be the resolution's whole stored edge map — the walk is driven
+ * by `members`, so a delivery pays for its own slice, not for the resolution.
  */
 export function assertNoAliasCollisions<V, C>(
   domain: VersionDomain<V, C>,
@@ -143,8 +146,9 @@ export function assertNoAliasCollisions<V, C>(
   edges: EdgeMap
 ): void {
   const held = new Map<string, Selected<V>>();
-  for (const [fromId, deps] of edges) {
-    if (!members.has(fromId)) {
+  for (const fromId of members.keys()) {
+    const deps = edges.get(fromId);
+    if (!deps) {
       continue;
     }
     for (const [name, toId] of deps) {
@@ -338,19 +342,42 @@ export function materializePackages<V, C>(
   const requestedKeys = new Set(demanded.map(requirementKey));
   /* The selections reachable from the requested roots — the fetch set.
    * Forks are reachable exactly through the violated edges bound to them,
-   * so a strict subset whose closure has no violations carries no forks. */
-  const needed = selections.filter(sel => sel.reachableFrom?.some(root => requestedRoots.has(root)));
-  const reachableIds = new Set(needed.map(sel => selectionId(domain, sel)));
+   * so a strict subset whose closure has no violations carries no forks.
+   *
+   * Walked forward over the resolution's own edges, so this costs the SUBSET
+   * rather than the whole resolution: `reachableFrom` indexes the other way
+   * (which roots reach a node), and consulting it would scan every selection
+   * on every delivery, however few packages the delivery names. */
+  const { byId } = resolutionIndex(domain, selections);
+  const seeds = [...requestedRoots]
+    .map(root => resolved.rootBindings[root])
+    .filter((at): at is number => at !== undefined)
+    .map(at => selectionId(domain, selections[at]));
+  const reachableIds = reachableFrom(resolved.edges, seeds);
+  /* Back to the resolution's canonical order (pkg, then version) — the walk
+   * reaches nodes in edge order, and everything downstream that reports on the
+   * delivery must read the same way whichever root led to a node first. */
+  const needed = [...reachableIds]
+    .map(id => byId.get(id))
+    .filter((sel): sel is Selected<V> => sel !== undefined)
+    .sort((a, b) => (a.pkg === b.pkg ? domain.compare(a.version, b.version) : a.pkg < b.pkg ? -1 : 1));
   /* A violation is a property of an *edge*: in scope iff its requirer is in
    * the delivered closure (a root-requirement violation: iff that root is
    * among the requested). Raises are NOT judged here in any mode: a raised
    * floor is the constraint's plain meaning when its literal minimum was
    * never published — the request was for the range, and the first published
    * version meeting it answers the request. Coerced edges are not judged
-   * either — suppressing them is what their `!` said to do. */
-  const edgeInScope = (requiredBy: string, pkg: string, constraint: string): boolean =>
-    requiredBy === ROOT_REQUIRER ? requestedKeys.has(`${pkg}:${constraint}`) : reachableIds.has(requiredBy);
-  const scopedViolations = violations.filter(violation => edgeInScope(violation.requiredBy, violation.pkg, violation.constraint));
+   * either — suppressing them is what their `!` said to do.
+   *
+   * Collected by asking the delivered nodes (and the requested roots) what they
+   * violated, rather than by passing over every violation the resolution
+   * recorded: in scope is a property of the requirer, so an index by requirer
+   * makes this proportional to the delivery too. */
+  const byRequirer = violationsByRequirer(violations);
+  const scopedViolations = [
+    ...(byRequirer.get(ROOT_REQUIRER) ?? []).filter(violation => requestedKeys.has(`${violation.pkg}:${violation.constraint}`)),
+    ...[...reachableIds].flatMap(id => byRequirer.get(id) ?? []),
+  ];
   const root = [...requestedKeys].sort().join(", ");
   /* The sanction rule is a set comparison: every version of a package this
    * delivery ships must be explicitly written — as a `?`, or as an exact
@@ -368,7 +395,12 @@ export function materializePackages<V, C>(
     /* A violated edge with NO repairing fork — nothing published
      * satisfies it — cannot be accepted in ANY mode, so it is judged
      * first: the strict error's remedies would be false advice for it. */
-    const unrepaired = scopedViolations.filter(violation => !satisfiedByAnySelection(domain, selections, violation));
+    /* Only selections of the violated package can satisfy it, so the question
+     * is asked of that package's candidates rather than of every selection. */
+    const { byPkg } = resolutionIndex(domain, selections);
+    const unrepaired = scopedViolations.filter(
+      violation => !satisfiedByAnySelection(domain, byPkg.get(violation.pkg) ?? [], violation)
+    );
     if (unrepaired.length > 0) {
       return Computable.reject(unrepairableError(root, unrepaired, selections, domain.versionToString, refText));
     }
@@ -504,8 +536,7 @@ function buildClosure<V, C>(
 ): PackageFileSet {
   const domain = registry.format;
   const { selections, edges } = resolved;
-  const forkIds = forkSelections(domain, selections);
-  const reachable = selections.filter(sel => sel.reachableFrom?.includes(index));
+  const { forkIds } = resolutionIndex(domain, selections);
   /* The delivered root is what the root requirement BINDS to — normally the
    * principal, but a violated root requirement is answered by its fork. The
    * resolution decided that when it was computed (scoped to what this root
@@ -518,12 +549,12 @@ function buildClosure<V, C>(
   }
   const rootId = selectionId(domain, root);
   const origin = resolutionOrigin(registry.format, req, selections);
-  /* Delivery members: the root's reachable slice of the fetched batch — an
-   * edge leading outside it (a gated optional pruned from the walk) is
-   * simply not carried. */
+  /* Delivery members: this root's reachable slice of the fetched batch — walked
+   * forward from the root over the resolution's edges, so it costs the slice
+   * rather than a pass over every selection. An edge leading outside the batch
+   * (a gated optional pruned from the walk) is simply not carried. */
   const members = new Set<string>();
-  for (const sel of reachable) {
-    const id = selectionId(domain, sel);
+  for (const id of reachableFrom(edges, [rootId])) {
     if (fetching.has(id)) {
       members.add(id);
     }

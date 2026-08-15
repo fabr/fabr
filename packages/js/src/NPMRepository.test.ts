@@ -1607,7 +1607,7 @@ describe("multi-route domains (repository groups)", () => {
     const repo = groupDomain(context, [["@scope/*", PRIV], ["*", REG]]);
     await toPromise(drive(repo, [new RepositoryRef(repo, Name.fromLiteral("app:1.0.0"))]));
     expect(memoKeys).to.have.lengthOf(1);
-    expect(memoKeys[0]).to.contain("npm:resolve:18");
+    expect(memoKeys[0]).to.contain("npm:resolve:19");
     expect(memoKeys[0]).to.contain(`@scope/*=${PRIV}`);
     expect(memoKeys[0]).to.contain(`*=${REG}`);
   });

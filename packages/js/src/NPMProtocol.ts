@@ -613,7 +613,7 @@ export function parseNpmPublishCoordinate(ref: Name): NpmPublishIdentity {
  */
 export const NPM_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   ...SEMVER,
-  resolutionTag: "npm:resolve:18",
+  resolutionTag: "npm:resolve:19",
   splitReference: splitNpmReference,
   parseRequirement: parseNpmRequirement,
   parsePublishCoordinate: parseNpmPublishCoordinate,

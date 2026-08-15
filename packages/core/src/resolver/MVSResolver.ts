@@ -19,7 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { MetadataFetchError, toError, VersionNotFoundError } from "../core/Errors";
-import { edgeBinding, nodeId as idOf } from "./ResolutionGraph";
+import { edgeBinding, nodeId as idOf, resolutionIndex } from "./ResolutionGraph";
 import {
   IRequirementEdge,
   IResolutionError,
@@ -1031,10 +1031,7 @@ function resolvePhase<V, C>(
        * ever considers selections of its own package, so this is what the walk
        * itself passes to edgeBinding (see targetsOf). Built once here rather
        * than rescanning every selection per edge. */
-      const candidatesByPkg = new Map<string, Selected<V>[]>();
-      for (const selection of selections) {
-        candidatesByPkg.set(selection.pkg, [...(candidatesByPkg.get(selection.pkg) ?? []), selection]);
-      }
+      const { byPkg: candidates } = resolutionIndex(domain, selections);
       /* Where each of those edges LEADS, resolved once here rather than by
        * every consumer: the delivery walks this instead of searching the
        * selections per edge. Computed after the fork renumbering above, so the
@@ -1049,7 +1046,7 @@ function resolvePhase<V, C>(
             if (from.has(name)) {
               continue;
             }
-            const target = edgeBinding(domain, candidatesByPkg.get(req.pkg) ?? [], req);
+            const target = edgeBinding(domain, candidates.get(req.pkg) ?? [], req);
             if (target) {
               from.set(name, nodeId(target.pkg, target.version));
             }
@@ -1065,7 +1062,7 @@ function resolvePhase<V, C>(
         if (root.override === "alternate") {
           return undefined;
         }
-        const reachable = (candidatesByPkg.get(root.pkg) ?? []).filter(sel => sel.reachableFrom?.includes(rootIndex));
+        const reachable = (candidates.get(root.pkg) ?? []).filter(sel => sel.reachableFrom?.includes(rootIndex));
         const bound = edgeBinding(domain, reachable, root);
         const at = bound === undefined ? -1 : selections.indexOf(bound);
         return at < 0 ? undefined : at;

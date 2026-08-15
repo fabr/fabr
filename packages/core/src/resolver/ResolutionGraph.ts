@@ -29,7 +29,7 @@
  * obliged to agree is how they stop agreeing.
  */
 
-import { Requirement, ROOT_REQUIRER, Selected, VersionDomain } from "./Types";
+import { Requirement, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
 
 /**
  * The identity of one concrete package version — `pkg@version` — as it appears
@@ -46,25 +46,101 @@ export function selectionId<V, C>(domain: VersionDomain<V, C>, selection: Select
   return nodeId(domain, selection.pkg, selection.version);
 }
 
-/** Derived properties of a selection list, keyed by the list itself: a
- * resolution is immutable and shared by every delivery made from it, so a
- * property of the whole list is computed once rather than once per delivery.
- * Weakly held — a resolution that falls out of use takes its view with it. */
-const FORK_IDS = new WeakMap<readonly Selected<unknown>[], ReadonlySet<string>>();
+/**
+ * The indexes a consumer of a resolution asks for repeatedly: which selections
+ * are forks, which selection an id names, and which selections a package has.
+ *
+ * Held per selection LIST rather than per query: a resolution is immutable and
+ * shared by every delivery made from it, so these are properties of the whole
+ * result, derived once for it instead of once per delivery. Weakly held — a
+ * resolution that falls out of use takes its indexes with it.
+ */
+export interface IResolutionIndex<V> {
+  /** The ids of the **fork** selections — a sanctioned second (third, …)
+   * version of a package, deliverable only nested under its requirers. */
+  readonly forkIds: ReadonlySet<string>;
+  /** Selections by {@link nodeId}, so a walk over the edges can reach the
+   * selection an id names. */
+  readonly byId: ReadonlyMap<string, Selected<V>>;
+  /** The selections of each package, in the resolution's canonical order — the
+   * candidate list {@link edgeBinding} actually considers. */
+  readonly byPkg: ReadonlyMap<string, Selected<V>[]>;
+}
+
+const INDEXES = new WeakMap<object, IResolutionIndex<unknown>>();
+
+export function resolutionIndex<V, C>(domain: VersionDomain<V, C>, selections: readonly Selected<V>[]): IResolutionIndex<V> {
+  const known = INDEXES.get(selections as object);
+  if (known !== undefined) {
+    return known as IResolutionIndex<V>;
+  }
+  const forkIds = new Set<string>();
+  const byId = new Map<string, Selected<V>>();
+  const byPkg = new Map<string, Selected<V>[]>();
+  for (const selection of selections) {
+    const id = selectionId(domain, selection);
+    byId.set(id, selection);
+    if (selection.fork !== undefined) {
+      forkIds.add(id);
+    }
+    const candidates = byPkg.get(selection.pkg);
+    if (candidates) {
+      candidates.push(selection);
+    } else {
+      byPkg.set(selection.pkg, [selection]);
+    }
+  }
+  const index: IResolutionIndex<V> = { forkIds, byId, byPkg };
+  INDEXES.set(selections as object, index as IResolutionIndex<unknown>);
+  return index;
+}
 
 /**
- * The ids of the selections that are **forks** — the sanctioned second (third,
- * …) version of a package, deliverable only nested under its requirers. A
- * property of the resolution, so it is derived once for it.
+ * The nodes reachable from `seeds`, by **walking the resolution's own edges**
+ * — the delivered subset of a joint resolution.
+ *
+ * A walk rather than a filter over `reachableFrom`: that index answers "which
+ * roots reach this node", so asking it what a root reaches costs a pass over
+ * every selection, per delivery, however small the subset. Following the edges
+ * forward is O(the subset) — which is what a delivery is proportional to.
+ *
+ * The two agree by construction: the resolver marked `reachableFrom` by
+ * following exactly these bindings (see the walk's own reachability pass).
  */
-export function forkSelections<V, C>(domain: VersionDomain<V, C>, selections: readonly Selected<V>[]): ReadonlySet<string> {
-  const known = FORK_IDS.get(selections as readonly Selected<unknown>[]);
-  if (known !== undefined) {
-    return known;
+export function reachableFrom(edges: ReadonlyMap<string, ReadonlyMap<string, string>>, seeds: Iterable<string>): Set<string> {
+  const reached = new Set<string>();
+  const pending = [...seeds];
+  while (pending.length > 0) {
+    const id = pending.pop()!;
+    if (reached.has(id)) {
+      continue;
+    }
+    reached.add(id);
+    for (const target of edges.get(id)?.values() ?? []) {
+      if (!reached.has(target)) {
+        pending.push(target);
+      }
+    }
   }
-  const ids = new Set(selections.filter(sel => sel.fork !== undefined).map(sel => selectionId(domain, sel)));
-  FORK_IDS.set(selections as readonly Selected<unknown>[], ids);
-  return ids;
+  return reached;
+}
+
+/** Violations indexed by the node that declared the violated edge, so scoping
+ * them to a delivery is a lookup per delivered node rather than a pass over
+ * every violation the resolution recorded. */
+const VIOLATIONS_BY_REQUIRER = new WeakMap<object, Map<string, unknown[]>>();
+
+export function violationsByRequirer<V>(violations: ReadonlyArray<Violation<V>>): Map<string, Violation<V>[]> {
+  const known = VIOLATIONS_BY_REQUIRER.get(violations as object);
+  if (known !== undefined) {
+    return known as Map<string, Violation<V>[]>;
+  }
+  const index = new Map<string, Violation<V>[]>();
+  for (const violation of violations) {
+    index.set(violation.requiredBy, [...(index.get(violation.requiredBy) ?? []), violation]);
+  }
+  VIOLATIONS_BY_REQUIRER.set(violations as object, index as Map<string, unknown[]>);
+  return index;
 }
 
 /** The highest of `selections` by version; undefined if there are none. Ties

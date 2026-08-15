@@ -25,7 +25,6 @@ interface IResolutionEntry {
   version: string;
   selectedBy?: IRequirementEdge;
   reachedVia?: IRequirementEdge;
-  reachableFrom?: number[];
   /** Fork index (see resolver Selected.fork); absent for the principal */
   fork?: number;
 }
@@ -115,7 +114,6 @@ export function serializeResolutionDoc<V>(
       version: versionToString(sel.version),
       selectedBy: sel.selectedBy,
       reachedVia: sel.reachedVia,
-      reachableFrom: sel.reachableFrom,
       fork: sel.fork,
     })),
     violations: result.violations.map(violation),
@@ -160,7 +158,6 @@ export function deserializeResolutionDoc<V>(doc: IResolutionDoc, parseVersion: (
       version: parseVersion(entry.version),
       selectedBy: entry.selectedBy,
       reachedVia: entry.reachedVia,
-      reachableFrom: entry.reachableFrom,
       fork: entry.fork,
     })),
     violations: (doc.violations ?? []).map(violation),

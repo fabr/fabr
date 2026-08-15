@@ -19,7 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { resolveMVS } from "./MVSResolver";
-import { edgeBinding, nodeId } from "./ResolutionGraph";
+import { edgeBinding, nodeId, reachableFrom } from "./ResolutionGraph";
 import { parseVersion, SEMVER, SemverVersion, versionToString } from "./Semver";
 import { MetadataFetchError, VersionNotFoundError } from "../core/Errors";
 import { RequirementSource, Requirement, MVSResolution, Selected } from "./Types";
@@ -1295,4 +1295,26 @@ describe("resolved edges", () => {
     const result = resolve({ A: "^1.0.0" }, { A: { "1.0.0": { B: "^1.0.0" } }, B: { "1.0.0": {} } });
     expect([...result.edges.get("A@1.0.0")!.keys()]).to.deep.equal(["B"]);
   });
+
+  /* A delivery carves its subset by walking these edges forward from its roots,
+   * where the resolver recorded the same reachability backwards as
+   * `reachableFrom`. Nothing keeps the two in step but this: they are computed
+   * by different code over the same bindings. */
+  for (const [what, roots, data] of cases) {
+    it(`walking the edges reaches exactly what reachableFrom marks, for ${what}`, () => {
+      const result = resolve(roots, data);
+      result.rootBindings.forEach((at, index) => {
+        if (at === undefined) {
+          return;
+        }
+        const walked = reachableFrom(result.edges, [nodeId(SEMVER, result.selections[at].pkg, result.selections[at].version)]);
+        const marked = new Set(
+          result.selections
+            .filter(sel => sel.reachableFrom?.includes(index))
+            .map(sel => nodeId(SEMVER, sel.pkg, sel.version))
+        );
+        expect([...walked].sort()).to.deep.equal([...marked].sort());
+      });
+    });
+  }
 });

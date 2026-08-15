@@ -105,8 +105,14 @@ export interface Selected<V> {
   reachedVia?: IRequirementEdge;
   /**
    * Indices into the resolution's root list identifying which root
-   * requirements (transitively) reach this selection — the basis for carving
-   * a joint resolution into per-root subsets.
+   * requirements (transitively) reach this selection.
+   *
+   * Resolver-internal and NOT persisted: it is the marking pass's own working
+   * state, used to prune superseded nodes and to scope each root's binding. A
+   * consumer carving the resolution into per-root subsets walks the edges
+   * forward instead ({@link reachableFrom}) — this index answers the opposite
+   * question ("which roots reach me"), so consulting it would cost a pass over
+   * every selection per delivery.
    */
   reachableFrom?: number[];
   /**
