@@ -186,6 +186,29 @@ export class ExecutionContext {
    * Read by {@link BuildContext.runAction} into each action's context; set by the
    * driver, and defaults to inherit-live. */
   public quiet = false;
+  /**
+   * The targets this run must rebuild even when their outputs are already
+   * cached (the driver's `-f`) — for timing a build step whose inputs have not
+   * changed. Held by *declaration*, so it says exactly what the command line
+   * named: a target's own sub-targets are forced with it (they are its work,
+   * asked through their declared owner — see {@link BuildContext.runAction}),
+   * its dependencies are not, and neither is decided by inference. Nothing is
+   * forced by default.
+   *
+   * Naming what to force is the only workable form: the cache key identifies
+   * the work and never who asked for it, so "force" cannot be a property of an
+   * entry — only of the run's request for it.
+   */
+  private readonly forcedTargets = new Set<ITargetDecl>();
+
+  /** Mark a target as one to rebuild rather than serve from cache. */
+  public forceTarget(target: ITargetDecl): void {
+    this.forcedTargets.add(target);
+  }
+
+  public isForced(target: ITargetDecl): boolean {
+    return this.forcedTargets.has(target);
+  }
   /** The interactive terminal, when there is one — see {@link UserInteraction}.
    * Set by the driver only when attached to a tty; its absence is the
    * "non-interactive run" signal. */

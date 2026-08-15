@@ -191,6 +191,18 @@ function isFresh(entry: ICacheEntry, now: number): boolean {
   return entry.meta === undefined || entry.meta.expires > now;
 }
 
+/** How an entry is demanded (see {@link BuildCache.getOrCreate}). */
+export interface ICreateOptions {
+  /**
+   * Rebuild the entry without consulting what is stored, then commit the result
+   * as usual — so a forced build leaves an ordinary entry behind and the next
+   * demand is an ordinary hit. It defeats the *lookup* only: an attempt already
+   * in flight for the key is still joined, since that work is being done by
+   * this run anyway.
+   */
+  force?: boolean;
+}
+
 /** Work trees this process has already taken ownership of, by path — see
  * {@link BuildCache.reclaimWorkTree}. */
 const reclaimedRoots = new Set<string>();
@@ -389,10 +401,12 @@ export class BuildCache {
     return path.join(this.ownWorkRoot, `${what}-${this.tempCounter++}`);
   }
 
-  public getOrCreate(cacheKey: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
+  public getOrCreate(cacheKey: string, create: (targetDir: string) => Computable<FileSet>, options?: ICreateOptions): Computable<FileSet> {
     const key = hashString(cacheKey);
     return this.withLock(key, () =>
-      this.cacheGet(key).then(entry => (entry && isFresh(entry, this.now()) ? entry.files : this.createEntry(key, create)))
+      options?.force
+        ? this.createEntry(key, create)
+        : this.cacheGet(key).then(entry => (entry && isFresh(entry, this.now()) ? entry.files : this.createEntry(key, create)))
     );
   }
 

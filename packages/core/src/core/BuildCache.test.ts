@@ -299,6 +299,46 @@ describe("BuildCache", () => {
     expect(await toPromise(b.readFile("out.txt"))).to.equal("content");
   });
 
+  it("rebuilds a stored entry when the demand forces it, and re-stores the result", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    let creates = 0;
+    const create = (): Computable<FileSet> => {
+      creates++;
+      return Computable.resolve(new FileSet(new Map([["out.txt", MemoryFile.from(`build ${creates}`)]])));
+    };
+    await toPromise(cache.getOrCreate("forced key", create));
+    /* Force defeats the lookup only: the rebuilt result commits as an ordinary
+     * entry, so the next unforced demand is a hit again — on the newer content. */
+    const forced = await toPromise(cache.getOrCreate("forced key", create, { force: true }));
+    expect(creates).to.equal(2);
+    expect(await toPromise(forced.readFile("out.txt"))).to.equal("build 2");
+    const served = await toPromise(cache.getOrCreate("forced key", create));
+    expect(creates).to.equal(2);
+    expect(await toPromise(served.readFile("out.txt"))).to.equal("build 2");
+  });
+
+  it("joins a forced demand to an attempt already in flight for the key", async () => {
+    /* The work is being redone by this run either way, so the second demand has
+     * nothing to force — joining is what "one attempt per key" means. */
+    const cache = new BuildCache(root, NULL_LOG);
+    let release!: () => void;
+    const gate = Computable.from<undefined>(resolve => {
+      release = () => resolve(undefined);
+    });
+    let creates = 0;
+    const create = (): Computable<FileSet> =>
+      gate.then(() => {
+        creates++;
+        return new FileSet(new Map([["out.txt", MemoryFile.from("content")]]));
+      });
+
+    const first = cache.getOrCreate("in-flight key", create);
+    const second = cache.getOrCreate("in-flight key", create, { force: true });
+    release();
+    await Promise.all([toPromise(first), toPromise(second)]);
+    expect(creates).to.equal(1);
+  });
+
   it("retries after a failed creation instead of joining it", async () => {
     const cache = new BuildCache(root, NULL_LOG);
     let failure: Error | undefined;

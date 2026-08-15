@@ -68,7 +68,9 @@ interface CommandSpec {
    * flag applied to a command it means nothing for (`fabr cat --json`). The
    * universal options (`-D`, `-h`/`--help`, `-v`/`--version`) are always allowed
    * and are not listed here. `-q` is accepted by every command that runs build
-   * steps but omitted from the synopses (like `-D`) to keep them focused. */
+   * steps but omitted from the synopses (like `-D`) to keep them focused; `-f`
+   * is validated the same way but omitted from the help text entirely (see
+   * {@link Options.force}). */
   accepts: string[];
   /** This command acts on exactly one target (`shell` stages a single sandbox),
    * so a second target is a usage error rather than being silently dropped.
@@ -78,9 +80,9 @@ interface CommandSpec {
 }
 
 const COMMAND_SPECS: CommandSpec[] = [
-  { name: "build", synopsis: "[-w] <targets>", summary: "Build the given targets (the default command)", accepts: ["-w", "-q"] },
-  { name: "test", synopsis: "[-w] [-u] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "-q"] },
-  { name: "run", synopsis: "[-w] <target> [args…]", summary: "Execute a target, forwarding trailing args to it", accepts: ["-w", "-q"] },
+  { name: "build", synopsis: "[-w] <targets>", summary: "Build the given targets (the default command)", accepts: ["-w", "-q", "-f"] },
+  { name: "test", synopsis: "[-w] [-u] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "-q", "-f"] },
+  { name: "run", synopsis: "[-w] <target> [args…]", summary: "Execute a target, forwarding trailing args to it", accepts: ["-w", "-q", "-f"] },
   { name: "shell", synopsis: "<target>", summary: "Stage a target's build sandbox and open a shell in it (debugging)", accepts: ["-q"], singleTarget: true },
   { name: "ls", synopsis: "[-l] <names>", summary: "Build the given targets and list their contents", accepts: ["-l", "-q"] },
   { name: "cat", synopsis: "<names>", summary: "Build a target and write its matching files to stdout", accepts: ["-q"] },
@@ -157,6 +159,15 @@ export interface Options {
   /** Suppress the live subcommand output that is otherwise streamed to stderr as
    * build steps run (`-q`/`--quiet`); failure messages still include it. */
   quiet: boolean;
+  /**
+   * Rebuild the named targets even when their outputs are already cached
+   * (`-f`/`--force`) — a development aid for timing a build step, undocumented
+   * for that reason. It reaches only the targets named on the command line and
+   * the anonymous sub-targets they decompose into (the work whose time is being
+   * measured); their dependencies build from cache as usual. Exclusive with
+   * `-w`: a watch cycle would force the same target on every rebuild.
+   */
+  force: boolean;
   /** Target names, or (for `ls`/`cat`/`cp`) whole name references — `pkg:build/*.js`
    * — resolved by the model, not split here. For `cp` the trailing destination
    * path has already been split off into `dest`. */
@@ -266,6 +277,9 @@ function applyOption(arg: string, options: Options, seenFlags: SeenFlag[]): void
   } else if (arg === "-q" || arg === "--quiet") {
     options.quiet = true;
     seenFlags.push({ raw: arg, flag: "-q" });
+  } else if (arg === "-f" || arg === "--force") {
+    options.force = true;
+    seenFlags.push({ raw: arg, flag: "-f" });
   } else if (arg === "-h" || arg === "--help") {
     printUsage();
     process.exit(0);
@@ -286,6 +300,16 @@ function applyOption(arg: string, options: Options, seenFlags: SeenFlag[]): void
   }
 }
 
+/** `-f` forces a rebuild of what was named *this* invocation; under `-w` there
+ * is no such thing — every cycle would rebuild it, so the two together are more
+ * likely a mistake than a request. Checked after each parsing pass, since the
+ * two flags can land in different ones (`fabr -f x -w`). */
+function checkFlagsCoherent(options: Options): void {
+  if (options.force && options.mode === Mode.Watch) {
+    usageError("Options '-f' and '-w' cannot be combined");
+  }
+}
+
 export function parseCommandLine(args: string[]): Options {
   const options: Options = {
     command: "build",
@@ -294,6 +318,7 @@ export function parseCommandLine(args: string[]): Options {
     json: false,
     all: false,
     quiet: false,
+    force: false,
     targets: [],
     properties: new Map(),
     commandLine: new CommandLineSource(args.slice(2)),
@@ -368,6 +393,7 @@ export function parseCommandLine(args: string[]): Options {
     printUsage();
     process.exit(0);
   }
+  checkFlagsCoherent(options);
   return options;
 }
 
@@ -402,13 +428,14 @@ export function completeCommandLine(options: Options, operationsOf: (target: str
       (operation === "test" ? plan.test : plan.build).push(arg);
     }
   }
-  /* The inferable commands are build/test/run, which accept -w and -q; a flag
+  /* The inferable commands are build/test/run, which accept -w, -q and -f; a flag
    * meaningful only to some other command needs that command written out. */
   for (const { raw, flag } of seenFlags) {
-    if (flag !== "-w" && flag !== "-q") {
+    if (flag !== "-w" && flag !== "-q" && flag !== "-f") {
       usageError(`Option '${raw}' is not valid without a command`);
     }
   }
+  checkFlagsCoherent(options);
   options.targets = [...plan.build, ...plan.test, ...(plan.run ? [plan.run.target] : [])];
   options.runArgs = plan.run?.args;
   return plan;

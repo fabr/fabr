@@ -412,6 +412,7 @@ function runProgram(
   args: string[] = options.runArgs ?? []
 ): Computable<void> {
   const config = configFor(model, options, execution, "run");
+  markForced(model, options, execution, [target]);
   const supervisor = watch ? new RunSupervisor(execution.buildCache, target, args, execution.log) : undefined;
   /* The name IS the program (`fabr run @npm:http-server:14.1.1`), so its closure
    * is a sealed install — the same judgment a rule's `tool` property makes. */
@@ -671,7 +672,28 @@ function buildTargets(
   names: string[] = options.targets
 ): Computable<SourceRef[]>[] {
   const config = configFor(model, options, execution, operation);
+  markForced(model, options, execution, names);
   return names.map(name => config.getTargetRef(name));
+}
+
+/**
+ * Mark what `-f` names, so those targets rebuild rather than serve from cache
+ * (see {@link ExecutionContext.forceTarget}). The names are the ones the user
+ * wrote, so the *model* says which target each is a reference to — the driver
+ * never splits a name itself. A name behind which there is no declared target
+ * (`fabr run -f @npm:esbuild`) marks nothing: there is no build of its own to
+ * force, only a fetch, which the flag is not about.
+ */
+function markForced(model: BuildModel, options: Options, execution: ExecutionContext, names: string[]): void {
+  if (!options.force) {
+    return;
+  }
+  for (const name of names) {
+    const target = model.getReferencedTarget(name);
+    if (target) {
+      execution.forceTarget(target);
+    }
+  }
 }
 
 /** Resolve each whole name (target + projection) under the `files` operation:

@@ -77,6 +77,7 @@ describe("Command", () => {
       json: false,
       all: false,
       quiet: false,
+      force: false,
       targets: [],
       deferred: ["foo"],
       properties: new Map(),
@@ -91,6 +92,7 @@ describe("Command", () => {
       json: false,
       all: false,
       quiet: false,
+      force: false,
       targets: ["foo", "bar"],
       properties: new Map(),
     });
@@ -109,6 +111,7 @@ describe("Command", () => {
       json: false,
       all: false,
       quiet: false,
+      force: false,
       targets: ["foo"],
       properties: new Map([["x", "1"]]),
     });
@@ -122,6 +125,7 @@ describe("Command", () => {
       json: false,
       all: false,
       quiet: false,
+      force: false,
       targets: ["foo", "bar"],
       properties: new Map(),
     });
@@ -196,6 +200,28 @@ describe("Command", () => {
   it("rejects -l on build and -w on ls", () => {
     expect(capture(["build", "-l", "foo"]).err.join("\n")).to.match(/'-l' is not valid for the 'build'/);
     expect(capture(["ls", "-w", "foo"]).err.join("\n")).to.match(/'-w' is not valid for the 'ls'/);
+  });
+
+  it("parses the (undocumented) force flag in both spellings", () => {
+    expect(parseCommandLine(["node", "fabr", "build", "-f", "foo"]).force).to.be.true;
+    expect(parseCommandLine(["node", "fabr", "test", "--force", "foo"]).force).to.be.true;
+    expect(parseCommandLine(["node", "fabr", "build", "foo"]).force).to.be.false;
+  });
+
+  it("keeps -f out of the help text (it is a development aid, not an interface)", () => {
+    const { out } = capture(["-h"]);
+    expect(out.join("\n")).to.not.match(/-f\b|--force/);
+  });
+
+  it("rejects -f for a command that builds nothing (ls)", () => {
+    expect(capture(["ls", "-f", "foo"]).err.join("\n")).to.match(/'-f' is not valid for the 'ls'/);
+  });
+
+  it("rejects -f together with -w, whichever order they are written in", () => {
+    /* Forcing names this invocation's work; a watch cycle would force the same
+     * target on every rebuild, so the pair is a mistake rather than a request. */
+    expect(capture(["build", "-f", "-w", "foo"]).err.join("\n")).to.match(/'-f' and '-w' cannot be combined/);
+    expect(capture(["-w", "build", "--force", "foo"]).err.join("\n")).to.match(/'-f' and '-w' cannot be combined/);
   });
 
   it("reports the flag as the user typed it (--quiet vs -q)", () => {
@@ -312,6 +338,21 @@ describe("Command", () => {
       expect(options.quiet).to.equal(true);
       expect(options.mode).to.equal(Mode.Normal);
       expect(result.run).to.deep.equal({ target: "server", args: ["-w"] });
+    });
+
+    it("takes a force flag from the deferred tail (`fabr lib -f`)", () => {
+      /* Only the second pass sees it, which is why the driver re-reads the
+       * run-wide options once the plan is complete. */
+      const options = parseCommandLine(["node", "fabr", "lib", "-f"]);
+      expect(options.force).to.equal(false);
+      completeCommandLine(options, operationsOf);
+      expect(options.force).to.equal(true);
+    });
+
+    it("rejects -f and -w even when they land in different parsing passes", () => {
+      const { exit, err } = capture(["-f", "lib", "-w"], operationsOf);
+      expect(exit).to.equal(1);
+      expect(err[0]).to.match(/'-f' and '-w' cannot be combined/);
     });
 
     it("rejects an option no inferable command accepts", () => {

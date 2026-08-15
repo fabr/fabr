@@ -18,7 +18,7 @@
  */
 
 import { Readable } from "stream";
-import { FetchOptions, IActionContext, IFetchContext } from "../core/BuildCache";
+import { FetchOptions, IActionContext, ICreateOptions, IFetchContext } from "../core/BuildCache";
 import { Computable, ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { FSFileSource } from "../core/FSFileSource";
@@ -751,8 +751,12 @@ export class BuildContext {
     return undefined;
   }
 
-  public getCachedOrBuild(manifest: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
-    return this.execution.buildCache.getOrCreate(manifest, create);
+  public getCachedOrBuild(
+    manifest: string,
+    create: (targetDir: string) => Computable<FileSet>,
+    options?: ICreateOptions
+  ): Computable<FileSet> {
+    return this.execution.buildCache.getOrCreate(manifest, create, options);
   }
 
   public getCachedOrFetch(
@@ -1611,12 +1615,16 @@ export class BuildContext {
    * by construction. Steps still never run actions of their own (composition
    * is via sub-targets, whose actions complete before their output becomes
    * another action's inputs).
+   *
+   * Under the run's {@link ExecutionContext.forceBuild} the entry is rebuilt
+   * rather than served, for the directly-requested targets only — see
+   * {@link forcedBuild}.
    */
   public runAction(action: BuildAction, context: TargetContext): Computable<FileSet> {
     const key = `rule:${action.step.id}:${action.step.version}\n${manifestEvalInputs(action.inputs)}`;
     const cache = this.execution.buildCache;
     const execution = this.execution;
-    return this.getCachedOrBuild(key, targetDir => {
+    const create = (targetDir: string): Computable<FileSet> => {
       context.announceBuilding();
       /* The cache owns the scratch dir and the content store, so the action's
        * context — work dir, streaming-output factory, and the run's execution
@@ -1629,7 +1637,25 @@ export class BuildContext {
         processLimit: execution.processLimit,
       };
       return action.step.run(action.inputs, actionContext);
-    });
+    };
+    return this.getCachedOrBuild(key, create, { force: this.forcedBuild(context) });
+  }
+
+  /**
+   * Whether this action belongs to a target the run was asked to force (`-f`,
+   * see {@link ExecutionContext.forceTarget}). The question is put to the
+   * *declared* owner, so a forced target's anonymous sub-targets — the compile
+   * whose time is being measured — are forced along with it, while the declared
+   * targets it depends on build from cache as usual.
+   *
+   * Asking by declaration rather than inferring the request from an empty
+   * dependency stack is load-bearing: a target re-entering its own build under
+   * an override ({@link getTargetWithOverrides}, how `js_package[run]` and the
+   * `files` rule reach their own `build`) passes no stack, so a *dependency*
+   * tool's build is indistinguishable from a directly-requested one there.
+   */
+  private forcedBuild(context: TargetContext): boolean {
+    return this.execution.isForced(context.getDeclaredContext().target);
   }
 
   private findTargetInStack(target: string, stack?: IDependencyStack): IDependencyStack | undefined {

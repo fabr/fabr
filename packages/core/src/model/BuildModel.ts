@@ -23,6 +23,7 @@ import { BuildContext } from "./BuildContext";
 import { BUILD_OPERATION, Constraints } from "./Constraints";
 import { ExecutionContext } from "./ExecutionContext";
 import { Name } from "../core/Name";
+import { parseName } from "./Parser";
 import { IRuleDefinition, PluginContribution, RepositoryProvider } from "../rules/Types";
 
 /**
@@ -207,5 +208,22 @@ export class BuildModel {
 
   public getPrefixMatch(name: Name): IPrefixMatch | undefined {
     return this.root.getPrefixMatch(name);
+  }
+
+  /**
+   * The declared target a written reference builds — its literal prefix, read
+   * exactly as resolution reads it, so `pkg:bin/x.js` and `pkg<BUILD_TYPE=release>`
+   * both name `pkg`. Undefined when the reference names no declared target at
+   * all (an external requirement, a bare path, an unknown name).
+   *
+   * This is for a caller holding a name it was *given* and needing to say
+   * something about the target behind it before building — the CLI's `-f`,
+   * which marks what the command line named. Asking the model keeps that
+   * reading in the one place that owns it: a driver splitting the name itself
+   * would be a second, divergent answer to what a reference means.
+   */
+  public getReferencedTarget(name: string): ITargetDecl | undefined {
+    const match = this.getPrefixMatch(parseName(name).withConstraints([]));
+    return match && this.getTargetDecl(match.name);
   }
 }
