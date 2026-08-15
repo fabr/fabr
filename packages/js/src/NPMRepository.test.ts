@@ -54,8 +54,7 @@ import {
   ROOT_REQUIRER,
   Selected,
   SemverVersion,
-  assertNoAliasCollisions,
-  EdgeMap,
+  ResolutionGraph,
   parseRouteKey,
   RepositoryGroup,
   SEMVER,
@@ -710,7 +709,7 @@ describe("NPMRepository metadata memo", () => {
   });
 });
 
-describe("assertNoAliasCollisions", () => {
+describe("ResolutionGraph.assertNoAliasCollisions", () => {
   /** A closure member, keyed as the id the edges refer to it by. */
   function members(...ids: string[]): Map<string, Selected<SemverVersion>> {
     return new Map(
@@ -721,48 +720,49 @@ describe("assertNoAliasCollisions", () => {
     );
   }
 
-  function edges(graph: Record<string, Record<string, string>>): EdgeMap {
-    return new Map(Object.entries(graph).map(([id, deps]) => [id, new Map(Object.entries(deps))]));
+  /** A graph holding exactly the batch's selections and edges. */
+  function graphOf(batch: Map<string, Selected<SemverVersion>>, edges: Record<string, Record<string, string>>): ResolutionGraph<SemverVersion> {
+    return new ResolutionGraph(version => SEMVER.versionToString(version), {
+      selections: [...batch.values()],
+      violations: [],
+      coerced: [],
+      raises: [],
+      requirements: new Map(),
+      edges: new Map(Object.entries(edges).map(([id, deps]) => [id, new Map(Object.entries(deps))])),
+      rootBindings: [],
+    });
   }
 
   it("accepts one name bound to several versions of one package", () => {
     /* Version divergence is layout's business (nesting), not a collision. */
-    assertNoAliasCollisions(
-      SEMVER,
-      members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "dep@1.0.0", "dep@2.0.0"),
-      edges({
-        "cli@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
-        "a@1.0.0": { dep: "dep@1.0.0" },
-        "b@1.0.0": { dep: "dep@2.0.0" },
-      })
-    );
+    const batch = members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "dep@1.0.0", "dep@2.0.0");
+    graphOf(batch, {
+      "cli@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
+      "a@1.0.0": { dep: "dep@1.0.0" },
+      "b@1.0.0": { dep: "dep@2.0.0" },
+    }).assertNoAliasCollisions(batch);
   });
 
   it("accepts an alias sharing the batch with the package's own name", () => {
-    assertNoAliasCollisions(
-      SEMVER,
-      members("cli@1.0.0", "@isaacs/cliui@8.0.2", "wrap-ansi@8.1.0", "wrap-ansi@7.0.0"),
-      edges({
-        "cli@1.0.0": { "@isaacs/cliui": "@isaacs/cliui@8.0.2", "wrap-ansi": "wrap-ansi@8.1.0" },
-        "@isaacs/cliui@8.0.2": { "wrap-ansi-cjs": "wrap-ansi@7.0.0" },
-      })
-    );
+    const batch = members("cli@1.0.0", "@isaacs/cliui@8.0.2", "wrap-ansi@8.1.0", "wrap-ansi@7.0.0");
+    graphOf(batch, {
+      "cli@1.0.0": { "@isaacs/cliui": "@isaacs/cliui@8.0.2", "wrap-ansi": "wrap-ansi@8.1.0" },
+      "@isaacs/cliui@8.0.2": { "wrap-ansi-cjs": "wrap-ansi@7.0.0" },
+    }).assertNoAliasCollisions(batch);
   });
 
   it("rejects two different packages claiming one install name", () => {
     /* Only an alias can reach this — an ordinary edge names its own package —
        and hoisting either would silently break the other's imports. */
+    const batch = members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "left-pad@1.0.0", "right-pad@1.0.0");
+    const graph = graphOf(batch, {
+      "cli@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
+      "a@1.0.0": { pad: "left-pad@1.0.0" },
+      "b@1.0.0": { pad: "right-pad@1.0.0" },
+    });
     const err = (() => {
       try {
-        assertNoAliasCollisions(
-          SEMVER,
-          members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "left-pad@1.0.0", "right-pad@1.0.0"),
-          edges({
-            "cli@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
-            "a@1.0.0": { pad: "left-pad@1.0.0" },
-            "b@1.0.0": { pad: "right-pad@1.0.0" },
-          })
-        );
+        graph.assertNoAliasCollisions(batch);
         return undefined;
       } catch (thrown) {
         return thrown as Error & { help?: string };
@@ -1492,9 +1492,21 @@ describe("conflictError (the strict repair report)", () => {
     selection("D", "1.0.0", { requiredBy: "A@1.0.0", constraint: "^1.0.0" }),
     selection("D", "2.0.0", rootEdge("^2.0.0")),
   ];
+  /** The delivery's graph: the same selections the slice ships, explained. */
+  const graphFor = (list: Selected<SemverVersion>[]): ResolutionGraph<SemverVersion> =>
+    new ResolutionGraph(versionToString, {
+      selections: list,
+      violations: [],
+      coerced: [],
+      raises: [],
+      requirements: new Map(),
+      edges: new Map(),
+      rootBindings: [],
+    });
+  const graph = graphFor(selections);
 
   it("reports violations and coexisting versions as structural facts", () => {
-    const err = conflictError("A:^1.0.0", [violation], duplicates, selections, versionToString, npmRefText) as Error & {
+    const err = conflictError("A:^1.0.0", [violation], duplicates, selections, graph, npmRefText) as Error & {
       help?: string;
     };
     expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0'");
@@ -1508,25 +1520,25 @@ describe("conflictError (the strict repair report)", () => {
      * remedy are the same — one full stanza, the rest summarised by name. */
     const requirers = ["A@1.0.0", "B@1.0.0", "E@1.0.0", "F@1.0.0", "G@1.0.0", "H@1.0.0", "I@1.0.0"];
     const violationsFrom = requirers.map(requiredBy => ({ ...violation, requiredBy }));
-    const err = conflictError("A:^1.0.0", violationsFrom, [], selections, versionToString, npmRefText);
+    const err = conflictError("A:^1.0.0", violationsFrom, [], selections, graph, npmRefText);
     expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0' required by A@1.0.0 (and 6 more)");
     expect(err.message).to.contain("'^2.0.0' also required by: B@1.0.0, E@1.0.0, F@1.0.0, G@1.0.0 (+2 more)");
     /* One stanza, not seven: the violation line appears exactly once */
     expect(err.message.match(/does not satisfy/g)).to.have.lengthOf(1);
     /* A distinct conflict (different selected version) keeps its own entry */
     const other = { pkg: "C", constraint: "^2.0.0", requiredBy: "B@1.0.0", selected: parseVersion("3.5.0") };
-    const two = conflictError("A:^1.0.0", [violation, other], [], selections, versionToString, npmRefText);
+    const two = conflictError("A:^1.0.0", [violation, other], [], selections, graph, npmRefText);
     expect(two.message.match(/does not satisfy/g)).to.have.lengthOf(2);
   });
 
   it("attributes both sides of a violation to their requirement paths", () => {
-    const err = conflictError("A:^1.0.0", [violation], [], selections, versionToString, npmRefText);
+    const err = conflictError("A:^1.0.0", [violation], [], selections, graph, npmRefText);
     expect(err.message).to.contain("3.0.0 selected by: B@1.0.0 -> C@3.0.0 (^3.0.0)");
     expect(err.message).to.contain("'^2.0.0' required via: A@1.0.0");
   });
 
   it("attributes each coexisting version to its requirement path", () => {
-    const err = conflictError("A:^1.0.0", [], duplicates, selections, versionToString, npmRefText);
+    const err = conflictError("A:^1.0.0", [], duplicates, selections, graph, npmRefText);
     expect(err.message).to.contain("1.0.0 required via: A@1.0.0 -> D@1.0.0 (^1.0.0)");
     expect(err.message).to.contain("2.0.0 required directly ('^2.0.0')");
   });
@@ -1535,7 +1547,7 @@ describe("conflictError (the strict repair report)", () => {
     /* A fork exists exactly because an edge violated, so the multiplicity is
      * the violation restated — one stanza, not two. */
     const cDuplicates: Array<[string, SemverVersion[]]> = [["C", [parseVersion("2.5.0"), parseVersion("3.0.0")]]];
-    const err = conflictError("A:^1.0.0", [violation], cDuplicates, selections, versionToString, npmRefText);
+    const err = conflictError("A:^1.0.0", [violation], cDuplicates, selections, graph, npmRefText);
     expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0'");
     expect(err.message).to.not.contain("requires multiple versions of C");
   });
@@ -1543,7 +1555,8 @@ describe("conflictError (the strict repair report)", () => {
   /* Provenance edges are optional (resolutions persisted before they existed),
    * so the bare statement of each repair has to stand on its own. */
   it("states the repairs alone when the resolution carries no provenance", () => {
-    const err = conflictError("A:^1.0.0", [violation], duplicates, [{ pkg: "C", version: parseVersion("3.0.0") }], versionToString, npmRefText);
+    const bare = [{ pkg: "C", version: parseVersion("3.0.0") }];
+    const err = conflictError("A:^1.0.0", [violation], duplicates, bare, graphFor(bare), npmRefText);
     expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0' required by A@1.0.0");
     expect(err.message).to.not.contain("selected by:");
     expect(err.message).to.not.contain("required via:");

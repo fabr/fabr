@@ -20,7 +20,6 @@
 import { Computable } from "../core/Computable";
 import {
   attachHelp,
-  ConflictError,
   MetadataFetchError,
   MultiError,
   RequirementResolutionError,
@@ -47,24 +46,17 @@ import { PackageFormat } from "./PackageFormat";
 import { resolveMVS } from "./MVSResolver";
 import {
   allSanctioned,
-  canonicalExactVersion,
   canonicalRequirements,
+  collectSanctions,
   requirementKey,
   satisfiedByAnySelection,
   writtenVersions,
 } from "./Overrides";
-import { deserializeResolutionDoc, IResolutionDoc, ResolvedRepairs, serializeResolutionDoc } from "./ResolutionDoc";
-import { coexistingVersions, nodeId, reachableFrom, resolutionIndex, selectionId, violationsByRequirer } from "./ResolutionGraph";
+import { deserializeResolutionDoc, IResolutionDoc, serializeResolutionDoc } from "./ResolutionDoc";
+import { coexistingVersions, ResolutionGraph } from "./ResolutionGraph";
 import { IResolutionOrigin, PACKAGE_RESOLUTION_PROVENANCE } from "./ResolutionProvenance";
 import { completeRepairSet, conflictError, RefRenderer, suggestSanctions, SuggestSources, unrepairableError } from "./ResolutionReport";
-import {
-  IRequirementEdge,
-  MVSResolution,
-  Requirement,
-  ROOT_REQUIRER,
-  Selected,
-  VersionDomain,
-} from "./Types";
+import { IRequirementEdge, MVSResolution, Requirement, ROOT_REQUIRER, Selected } from "./Types";
 
 const RESOLUTION_FILE = "resolution.json";
 
@@ -123,71 +115,17 @@ export function runnableFrom(source: RefSource, pkg: PackageFileSet): Computable
 }
 
 /**
- * The resolved dependency edges of a delivery batch: node id → (dependency
- * name → the id of the selection that edge binds to). The name is the one the
- * *requirer* uses — an alias for an aliased dependency.
+ * The domain's private {@link Resolution}: how the request maps onto the
+ * loaded resolution — the {@link ResolutionGraph} (the joint selection tree,
+ * its repairs, and every index a delivery reads), plus the root bookkeeping
+ * and sanctions that belong to the *request* rather than the resolution.
  */
-export type EdgeMap = Map<string, Map<string, string>>;
-
-/**
- * An alias binding one dependency name to two *different packages* cannot
- * install both under that name anywhere the two co-mount, and one of them
- * would silently lose its imports — a conflict, never a pick. Judged over the
- * whole batch's edges, since the consumer's collection point merges the
- * batch's deliveries into one layout. It takes an alias to reach: ordinary
- * edges name their own package.
- *
- * `edges` may be the resolution's whole stored edge map — the walk is driven
- * by `members`, so a delivery pays for its own slice, not for the resolution.
- */
-export function assertNoAliasCollisions<V, C>(
-  domain: VersionDomain<V, C>,
-  members: Map<string, Selected<V>>,
-  edges: EdgeMap
-): void {
-  const held = new Map<string, Selected<V>>();
-  for (const fromId of members.keys()) {
-    const deps = edges.get(fromId);
-    if (!deps) {
-      continue;
-    }
-    for (const [name, toId] of deps) {
-      const selection = members.get(toId);
-      if (!selection) {
-        continue;
-      }
-      const current = held.get(name);
-      if (current === undefined) {
-        held.set(name, selection);
-      } else if (current.pkg !== selection.pkg) {
-        throw attachHelp(
-          new ConflictError(
-            "packages",
-            name,
-            { detail: nodeId(domain, current.pkg, current.version) },
-            { detail: nodeId(domain, selection.pkg, selection.version) }
-          ),
-          `'${name}' is a dependency alias (npm:…) for two different packages in one closure, which cannot both be installed ` +
-            "under that name — pin one of the requirers to a version that does not alias it"
-        );
-      }
-    }
-  }
-}
-
-/**
- * The domain's private {@link Resolution}: the joint version selection +
- * reachable tree, the repairs recorded while resolving it (violations, raises,
- * and the fork selections repairing the violations — judged per delivery at
- * materialize), plus the operation it was resolved under (so materialize
- * delivers the same package-vs-runnable shape without a second context read).
- * `selections`/`rootIndex` are empty under the `files` operation, where
- * materialize fetches per-reference.
- */
-interface DomainResolution<V> extends Resolution, ResolvedRepairs<V> {
+interface DomainResolution<V> extends Resolution {
   readonly roots: ResolvedRoot[];
   /** requirementKey → index into the resolution's roots (the space `reachableFrom` indexes). */
   readonly rootIndex: Map<string, number>;
+  /** The loaded resolution itself. */
+  readonly graph: ResolutionGraph<V>;
   /**
    * The `?` sanctions written in this collection's references: pkg → the exact
    * versions whose forks a strict delivery may accept (nested). Judgment-time
@@ -251,41 +189,14 @@ export function resolvePackages<V, C>(
     /* Alternates (`?`) are judgment-time sanctions, not demands: they join
      * neither the roots (a catalog's member table must not see them) nor the
      * resolution memo (the outcome is unchanged by them) — they ride the
-     * in-memory resolution to the strict gate. A package both forced and
-     * alternated is contradictory. */
-    const alternates = new Map<string, Set<string>>();
-    for (const req of requirements) {
-      if (req.override === "alternate") {
-        const versions = alternates.get(req.pkg) ?? new Set();
-        /* Canonical form: the sanction judgment compares versionToString. */
-        alternates.set(req.pkg, versions.add(canonicalExactVersion(format, req.constraint) ?? req.constraint));
-      }
-    }
-    const contradicted = requirements.find(req => req.override === "force" && alternates.has(req.pkg));
-    if (contradicted) {
-      const culpable = references.filter((_, index) => requirements[index].pkg === contradicted.pkg);
+     * in-memory resolution to the strict gate. Contradictory markers are
+     * attributed to the written references that carry them. */
+    const alternates = collectSanctions(format, requirements, (pkg, message): never => {
       throw new RequirementResolutionError(
-        culpable,
-        new Error(`'${contradicted.pkg}' is both forced ('!') and permitted as an alternate ('?') — pick one`)
+        references.filter((_, index) => requirements[index].pkg === pkg),
+        new Error(message)
       );
-    }
-    /* Two forces at different versions are equally contradictory — the
-     * resolver would have to pick one silently. */
-    const forcedAt = new Map<string, string>();
-    for (const req of requirements) {
-      if (req.override !== "force") {
-        continue;
-      }
-      const existing = forcedAt.get(req.pkg);
-      if (existing !== undefined && existing !== req.constraint) {
-        const culpable = references.filter((_, index) => requirements[index].pkg === req.pkg);
-        throw new RequirementResolutionError(
-          culpable,
-          new Error(`'${req.pkg}' is forced ('!') at two different versions (${existing}, ${req.constraint}) — pick one`)
-        );
-      }
-      forcedAt.set(req.pkg, req.constraint);
-    }
+    });
     const roots: ResolvedRoot[] = references.flatMap((reference, index) =>
       requirements[index].override === "alternate" ? [] : [{ reference, name: requirements[index].pkg }]
     );
@@ -299,7 +210,7 @@ export function resolvePackages<V, C>(
     const { roots: rootReqs, keys: rootKeys } = canonicalRequirements(requirements);
     const rootIndex = new Map<string, number>(rootKeys.map((key, index) => [key, index]));
     return getJointResolution(context, registry, repositoryAlias(references), rootReqs, rootKeys)
-      .then(repairs => ({ roots, rootIndex, alternates, ...repairs }) satisfies DomainResolution<V>)
+      .then(graph => ({ roots, rootIndex, alternates, graph }) satisfies DomainResolution<V>)
       .catch(err => attributeResolutionFailure(err, references, requirements));
   });
 }
@@ -328,9 +239,8 @@ export function materializePackages<V, C>(
   options?: MaterializeOptions
 ): Computable<(PackageFileSet | undefined)[]> {
   const { format } = registry;
-  const domain = format;
   const resolved = resolution as DomainResolution<V>;
-  const { selections, rootIndex, violations, alternates } = resolved;
+  const { rootIndex, alternates, graph } = resolved;
   /* Permissiveness is the CONSUMER's judgment, passed in: a sealed install (every
    * run-op rule, a catalog's run delivery) says so explicitly. */
   const permissive = options?.resolutionMode === "permissive";
@@ -338,8 +248,12 @@ export function materializePackages<V, C>(
   /* An alternate (`?`) reference demands nothing and delivers nothing of its
    * own — the sanctioned fork arrives nested inside the canonical closure. */
   const demanded = requirements.filter(req => req.override !== "alternate");
-  const requestedRoots = new Set(demanded.map(req => rootIndex.get(requirementKey(req))!));
   const requestedKeys = new Set(demanded.map(requirementKey));
+  /* What a root requirement BINDS to — normally the principal, but a violated
+   * root requirement is answered by its fork. The resolution decided this when
+   * it was computed, scoped to what that root reaches, so another root's fork
+   * cannot answer here. */
+  const bindingOf = (req: Requirement): Selected<V> | undefined => graph.rootBinding(rootIndex.get(requirementKey(req))!);
   /* The selections reachable from the requested roots — the fetch set.
    * Forks are reachable exactly through the violated edges bound to them,
    * so a strict subset whose closure has no violations carries no forks.
@@ -348,19 +262,17 @@ export function materializePackages<V, C>(
    * rather than the whole resolution: `reachableFrom` indexes the other way
    * (which roots reach a node), and consulting it would scan every selection
    * on every delivery, however few packages the delivery names. */
-  const { byId } = resolutionIndex(domain, selections);
-  const seeds = [...requestedRoots]
-    .map(root => resolved.rootBindings[root])
-    .filter((at): at is number => at !== undefined)
-    .map(at => selectionId(domain, selections[at]));
-  const reachableIds = reachableFrom(resolved.edges, seeds);
-  /* Back to the resolution's canonical order (pkg, then version) — the walk
-   * reaches nodes in edge order, and everything downstream that reports on the
-   * delivery must read the same way whichever root led to a node first. */
-  const needed = [...reachableIds]
-    .map(id => byId.get(id))
-    .filter((sel): sel is Selected<V> => sel !== undefined)
-    .sort((a, b) => (a.pkg === b.pkg ? domain.compare(a.version, b.version) : a.pkg < b.pkg ? -1 : 1));
+  const seeds = new Set(
+    demanded
+      .map(bindingOf)
+      .filter((sel): sel is Selected<V> => sel !== undefined)
+      .map(sel => graph.id(sel))
+  );
+  const reachableIds = graph.reachable(seeds);
+  /* Back to the resolution's canonical order — the walk reaches nodes in edge
+   * order, and everything downstream that reports on the delivery must read
+   * the same way whichever root led to a node first. */
+  const needed = graph.nodesOf(reachableIds);
   /* A violation is a property of an *edge*: in scope iff its requirer is in
    * the delivered closure (a root-requirement violation: iff that root is
    * among the requested). Raises are NOT judged here in any mode: a raised
@@ -373,16 +285,18 @@ export function materializePackages<V, C>(
    * violated, rather than by passing over every violation the resolution
    * recorded: in scope is a property of the requirer, so an index by requirer
    * makes this proportional to the delivery too. */
-  const byRequirer = violationsByRequirer(violations);
   const scopedViolations = [
-    ...(byRequirer.get(ROOT_REQUIRER) ?? []).filter(violation => requestedKeys.has(`${violation.pkg}:${violation.constraint}`)),
-    ...[...reachableIds].flatMap(id => byRequirer.get(id) ?? []),
+    /* A violation carries no marker, so its key can only match an unmarked
+     * requested root — right by construction: a forced root surfaces as
+     * `coerced`, and an alternate is never demanded. */
+    ...graph.violationsOf(ROOT_REQUIRER).filter(violation => requestedKeys.has(requirementKey(violation))),
+    ...[...reachableIds].flatMap(id => graph.violationsOf(id)),
   ];
   const root = [...requestedKeys].sort().join(", ");
   /* The sanction rule is a set comparison: every version of a package this
    * delivery ships must be explicitly written — as a `?`, or as an exact
    * unmarked pin (the catalog form). See resolver/Overrides. */
-  const written = writtenVersions(domain, alternates, demanded);
+  const written = writtenVersions(format, alternates, demanded);
   const refText = refTextFor(references, registry);
   /* Judge the repairs first: the verdict is decided by the resolution alone
    * (no content, and — since the resolution carries its own edges — no
@@ -397,19 +311,18 @@ export function materializePackages<V, C>(
      * first: the strict error's remedies would be false advice for it. */
     /* Only selections of the violated package can satisfy it, so the question
      * is asked of that package's candidates rather than of every selection. */
-    const { byPkg } = resolutionIndex(domain, selections);
     const unrepaired = scopedViolations.filter(
-      violation => !satisfiedByAnySelection(domain, byPkg.get(violation.pkg) ?? [], violation)
+      violation => !satisfiedByAnySelection(format, graph.selectionsOf(violation.pkg), violation)
     );
     if (unrepaired.length > 0) {
-      return Computable.reject(unrepairableError(root, unrepaired, selections, domain.versionToString, refText));
+      return Computable.reject(unrepairableError(root, unrepaired, graph, refText));
     }
     if (!permissive) {
-      const outstanding = scopedViolations.filter(violation => !allSanctioned(domain, needed, written, violation.pkg));
-      const duplicates = coexistingVersions(needed).filter(([pkg]) => !allSanctioned(domain, needed, written, pkg));
+      const outstanding = scopedViolations.filter(violation => !allSanctioned(format, needed, written, violation.pkg));
+      const duplicates = coexistingVersions(needed).filter(([pkg]) => !allSanctioned(format, needed, written, pkg));
       if (outstanding.length > 0 || duplicates.length > 0) {
-        return suggestSanctions(outstanding, resolved, needed, requirements, suggestSourcesFor(context, registry, repositoryAlias(references))).then(suggestion => {
-          throw conflictError(root, outstanding, duplicates, needed, domain.versionToString, refText, written, suggestion);
+        return suggestSanctions(outstanding, graph, needed, requirements, suggestSourcesFor(context, registry, repositoryAlias(references))).then(suggestion => {
+          throw conflictError(root, outstanding, duplicates, needed, graph, refText, written, suggestion);
         });
       }
     }
@@ -418,34 +331,29 @@ export function materializePackages<V, C>(
   return judgeRepairs()
     .then(() => {
       /* Sealed (or fully sanctioned): the forks repairing the reachable
-       * violations are already in `needed`, nested by the layout plan.
-       * Fetch each distinct pkg@version once (an alias may bind two edges
-       * to one version — same version ⇒ same tarball ⇒ same content). */
-      const delivered = needed;
-      const toFetch = new Map<string, Selected<V>>();
-      for (const sel of delivered) {
-        const id = selectionId(domain, sel);
-        if (!toFetch.has(id)) {
-          toFetch.set(id, sel);
-        }
-      }
+       * violations are already in `needed`, nested by the layout plan. One
+       * fetch per member — ids are distinct by construction, and an alias
+       * binding two edges to one version is one id (one tarball, shared). */
+      const toFetch = new Map(needed.map(sel => [graph.id(sel), sel] as const));
       const fetchIds = [...toFetch.keys()];
-      const fetching = new Set(fetchIds);
-      /* The resolution carries its own resolved edges — computed once, when it
-       * was computed — so laying it out is a walk, not a search. */
-      const edges = resolved.edges;
       /* Judged over the whole batch, since the consumer merges its
        * deliveries into one layout. */
-      assertNoAliasCollisions(domain, toFetch, edges);
+      graph.assertNoAliasCollisions(toFetch);
       return Computable.forAll(
         fetchIds.map(id => registry.fetch(toFetch.get(id)!.pkg, toFetch.get(id)!.version)),
         (...fetched: PackageFileSet[]) => {
           const packages = new Map<string, PackageFileSet>(fetchIds.map((id, k) => [id, fetched[k]]));
-          const assembled = requirements.map(req =>
-            req.override === "alternate"
-              ? undefined
-              : buildClosure(registry, req, rootIndex.get(requirementKey(req))!, resolved, fetching, packages)
-          );
+          const assembled = requirements.map(req => {
+            if (req.override === "alternate") {
+              return undefined;
+            }
+            const bound = bindingOf(req);
+            if (!bound) {
+              /* Can't happen: a root requirement is always reachable from itself */
+              throw new Error(`Resolution of ${requirementKey(req)} does not contain its own root package`);
+            }
+            return buildClosure(registry, req, bound, graph, packages);
+          });
           /* Assembled, not shaped: what a package BECOMES on delivery (mounted
            * as-is, launched as a runnable, or reduced to its own files) is the
            * repository's call, made in its `deliver`. */
@@ -529,55 +437,41 @@ function attributeResolutionFailure(err: unknown, references: RepositoryRef[], r
 function buildClosure<V, C>(
   registry: RepositoryReader<V, C>,
   req: Requirement,
-  index: number,
-  resolved: DomainResolution<V>,
-  fetching: ReadonlySet<string>,
+  root: Selected<V>,
+  graph: ResolutionGraph<V>,
   packages: Map<string, PackageFileSet>
 ): PackageFileSet {
-  const domain = registry.format;
-  const { selections, edges } = resolved;
-  const { forkIds } = resolutionIndex(domain, selections);
-  /* The delivered root is what the root requirement BINDS to — normally the
-   * principal, but a violated root requirement is answered by its fork. The
-   * resolution decided that when it was computed (scoped to what this root
-   * reaches, so another root's fork cannot answer here). */
-  const at = resolved.rootBindings[index];
-  const root = at === undefined ? undefined : selections[at];
-  if (!root) {
-    /* Can't happen: a root requirement is always reachable from itself */
-    throw new Error(`Resolution of ${requirementKey(req)} does not contain its own root package`);
-  }
-  const rootId = selectionId(domain, root);
-  const origin = resolutionOrigin(registry.format, req, selections);
-  /* Delivery members: this root's reachable slice of the fetched batch — walked
-   * forward from the root over the resolution's edges, so it costs the slice
-   * rather than a pass over every selection. An edge leading outside the batch
-   * (a gated optional pruned from the walk) is simply not carried. */
-  const members = new Set<string>();
-  for (const id of reachableFrom(edges, [rootId])) {
-    if (fetching.has(id)) {
-      members.add(id);
-    }
-  }
+  const rootId = graph.id(root);
+  const origin = resolutionOrigin(registry.format, req, graph.selections);
+  /* A worklist over the graph, in the builder's own two-phase shape: discover
+   * each delivered (name, id) instance from the root, then wire its edges once
+   * its targets exist. Discovery IS the membership walk — everything reached
+   * from the root is delivered, and an edge leading outside the fetched batch
+   * (a gated optional pruned from the walk, hence not in `packages`) is simply
+   * not carried. An instance exists per (name, id): an aliased edge binds a
+   * restamped instance carrying the requirer's name for the package. */
   const builder = new PackageGraphBuilder();
   const instances = new Map<string, PackageFileSet>();
+  const pending: Array<[string, PackageFileSet]> = [];
   const instance = (name: string, id: string): PackageFileSet => {
     const key = `${name}\n${id}`;
     let node = instances.get(key);
     if (!node) {
       const files = packages.get(id)!;
-      node = builder.node(files, name, files.version, origin, forkIds.has(id));
-      /* Memoized BEFORE wiring, so a cycle lands on the instance under
-       * construction instead of recursing forever. */
+      node = builder.node(files, name, files.version, origin, graph.isFork(id));
       instances.set(key, node);
-      builder.wire(
-        node,
-        [...(edges.get(id) ?? [])].filter(([, toId]) => members.has(toId)).map(([depName, toId]) => instance(depName, toId))
-      );
+      pending.push([id, node]);
     }
     return node;
   };
   const delivered = instance(root.pkg, rootId);
+  while (pending.length > 0) {
+    const [id, node] = pending.pop()!;
+    builder.wire(
+      node,
+      [...graph.edgesOf(id)].filter(([, toId]) => packages.has(toId)).map(([depName, toId]) => instance(depName, toId))
+    );
+  }
   builder.seal();
   return delivered;
 }
@@ -596,33 +490,27 @@ function resolutionOrigin<V, C>(format: PackageFormat<V, C>, req: Requirement, s
 }
 
 /**
- * Deliver a single package's own files, resolved standalone — the `files`
- * operation's delivery (see resolvePackages). A top-level root's minimal-version
- * selection is simply its constraint's lower bound (nothing else constrains
- * it), so this is exactly the version the joint path would give the root, but
- * reached without walking — or fetching — the dependency closure. The result
- * is a bare PackageFileSet (no carried dependencies); any projection stays
- * pending on the delivered ref (RepositoryRef.deliveredAs), finished by the
- * driving context.
- */
-/**
  * A package's own files, with no dependency closure and no joint resolution —
- * what BUILD_OPERATION=files asks for. Exported because a repository decides its
- * own delivery shapes but this is resolver machinery: it mints the `Selected`
- * and the resolution provenance a delivered package carries.
+ * what BUILD_OPERATION=files asks for. A top-level root's minimal-version
+ * selection is simply its constraint's lower bound (nothing else constrains
+ * it), so this is exactly the version the joint path would give the root,
+ * reached without walking — or fetching — the closure; any projection stays
+ * pending on the delivered ref (RepositoryRef.deliveredAs), finished by the
+ * driving context. Exported because a repository decides its own delivery
+ * shapes but this is resolver machinery: it mints the `Selected` and the
+ * resolution provenance a delivered package carries.
  */
 export function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, reference: RepositoryRef): Computable<FileSet> {
   const { format } = registry;
-  const domain = format;
   const req = format.parseRequirement(reference.name);
-  const constraint = domain.parseConstraint(req.constraint);
-  if (domain.isFloorless(constraint)) {
+  const constraint = format.parseConstraint(req.constraint);
+  if (format.isFloorless(constraint)) {
     throw new Error(
       `Cannot resolve the files of '${req.pkg}' without a version lower bound ('${req.constraint}'): ` +
         "pin a version or range to project into a package"
     );
   }
-  const version = domain.minimumOf(constraint);
+  const version = format.minimumOf(constraint);
   const edge: IRequirementEdge = { requiredBy: ROOT_REQUIRER, constraint: req.constraint };
   const selection: Selected<V> = { pkg: req.pkg, version, selectedBy: edge, reachedVia: edge, reachableFrom: [0] };
   const origin = resolutionOrigin(format, req, [selection]);
@@ -641,8 +529,8 @@ export function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, refer
           throw raised
             ? attachHelp(
                 err,
-                `the lowest published version satisfying '${req.constraint}' is ${domain.versionToString(raised)} — ` +
-                  `pin '${req.pkg}:${domain.versionToString(raised)}' (a build resolves this automatically via a floor raise)`
+                `the lowest published version satisfying '${req.constraint}' is ${format.versionToString(raised)} — ` +
+                  `pin '${req.pkg}:${format.versionToString(raised)}' (a build resolves this automatically via a floor raise)`
               )
             : err;
         });
@@ -699,7 +587,7 @@ function getJointResolution<V, C>(
   roots: Requirement[],
   rootKeys: string[],
   enrich = true
-): Computable<ResolvedRepairs<V>> {
+): Computable<ResolutionGraph<V>> {
   const { format } = registry;
   return registry.environmentKey().then(environment => {
     return context
@@ -729,7 +617,7 @@ function getJointResolution<V, C>(
         });
       })
       .then(files => files.readFile(RESOLUTION_FILE))
-      .then(data => deserializeResolutionDoc(JSON.parse(data) as IResolutionDoc, format.parseVersion));
+      .then(data => deserializeResolutionDoc(JSON.parse(data) as IResolutionDoc, format));
   });
 }
 

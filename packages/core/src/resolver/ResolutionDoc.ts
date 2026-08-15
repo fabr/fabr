@@ -17,7 +17,8 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { IRequirementEdge, MVSResolution, RaisedFloor, Requirement, Selected, Violation } from "./Types";
+import { ResolutionGraph } from "./ResolutionGraph";
+import { IRequirementEdge, MVSResolution, Requirement, Selected, Violation } from "./Types";
 
 /** Serialized form of one selection in a persisted resolution document */
 interface IResolutionEntry {
@@ -80,20 +81,6 @@ export interface IResolutionDoc {
   rootBindings: (number | null)[];
 }
 
-/** The tree + repairs of a deserialized resolution document. */
-export interface ResolvedRepairs<V> {
-  readonly selections: Selected<V>[];
-  readonly violations: Violation<V>[];
-  /** Edges a `!` force override coerced (see resolver MVSResolution.coerced) */
-  readonly coerced: Violation<V>[];
-  readonly raises: RaisedFloor<V>[];
-  readonly requirements: Map<string, Requirement[]>;
-  /** See {@link MVSResolution.edges} — node id → (edge name → target node id). */
-  readonly edges: Map<string, Map<string, string>>;
-  /** See {@link MVSResolution.rootBindings} — root index → selection index. */
-  readonly rootBindings: (number | undefined)[];
-}
-
 export function serializeResolutionDoc<V>(
   roots: Requirement[],
   result: MVSResolution<V>,
@@ -142,7 +129,14 @@ function nodeKey<V>(selection: Selected<V>, versionToString: (version: V) => str
   return `${selection.pkg}@${versionToString(selection.version)}`;
 }
 
-export function deserializeResolutionDoc<V>(doc: IResolutionDoc, parseVersion: (text: string) => V): ResolvedRepairs<V> {
+/** Deserialize a resolution document into the loaded resolution — a
+ * {@link ResolutionGraph}, indexed and ready to deliver from. `domain` is any
+ * carrier of the version codec (a PackageFormat serves). */
+export function deserializeResolutionDoc<V>(
+  doc: IResolutionDoc,
+  domain: { parseVersion(text: string): V; versionToString(version: V): string }
+): ResolutionGraph<V> {
+  const parseVersion = (text: string): V => domain.parseVersion(text);
   /* Edge targets are positional (see IResolutionDoc.edges); the ids they mean
    * are read straight off the serialized selections, no version parsing. */
   const ids = doc.selections.map(entry => `${entry.pkg}@${entry.version}`);
@@ -152,7 +146,7 @@ export function deserializeResolutionDoc<V>(doc: IResolutionDoc, parseVersion: (
     requiredBy: entry.requiredBy,
     selected: parseVersion(entry.selected),
   });
-  return {
+  return new ResolutionGraph(version => domain.versionToString(version), {
     selections: doc.selections.map(entry => ({
       pkg: entry.pkg,
       version: parseVersion(entry.version),
@@ -177,5 +171,5 @@ export function deserializeResolutionDoc<V>(doc: IResolutionDoc, parseVersion: (
       ])
     ),
     rootBindings: (doc.rootBindings ?? []).map(target => target ?? undefined),
-  };
+  });
 }

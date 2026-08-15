@@ -29,7 +29,8 @@
  * obliged to agree is how they stop agreeing.
  */
 
-import { Requirement, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
+import { attachHelp, ConflictError } from "../core/Errors";
+import { DependencyName, NodeId, PackageName, RaisedFloor, Requirement, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
 
 /**
  * The identity of one concrete package version — `pkg@version` — as it appears
@@ -37,62 +38,212 @@ import { Requirement, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "
  * chain, and as the key of any per-node table a consumer builds. One
  * definition, because those tables are joined by it.
  */
-export function nodeId<V, C>(domain: VersionDomain<V, C>, pkg: string, version: V): string {
+export function nodeId<V, C>(domain: VersionDomain<V, C>, pkg: PackageName, version: V): NodeId {
   return `${pkg}@${domain.versionToString(version)}`;
 }
 
 /** {@link nodeId} of a selection. */
-export function selectionId<V, C>(domain: VersionDomain<V, C>, selection: Selected<V>): string {
+export function selectionId<V, C>(domain: VersionDomain<V, C>, selection: Selected<V>): NodeId {
   return nodeId(domain, selection.pkg, selection.version);
 }
 
-/**
- * The indexes a consumer of a resolution asks for repeatedly: which selections
- * are forks, which selection an id names, and which selections a package has.
- *
- * Held per selection LIST rather than per query: a resolution is immutable and
- * shared by every delivery made from it, so these are properties of the whole
- * result, derived once for it instead of once per delivery. Weakly held — a
- * resolution that falls out of use takes its indexes with it.
- */
-export interface IResolutionIndex<V> {
-  /** The ids of the **fork** selections — a sanctioned second (third, …)
-   * version of a package, deliverable only nested under its requirers. */
-  readonly forkIds: ReadonlySet<string>;
-  /** Selections by {@link nodeId}, so a walk over the edges can reach the
-   * selection an id names. */
-  readonly byId: ReadonlyMap<string, Selected<V>>;
-  /** The selections of each package, in the resolution's canonical order — the
-   * candidate list {@link edgeBinding} actually considers. */
-  readonly byPkg: ReadonlyMap<string, Selected<V>[]>;
+/** The data of a finished resolution — what {@link ResolutionGraph} is
+ * constructed over: the deserialized form of the persisted resolution doc
+ * (see ResolutionDoc), one field for one doc section. */
+export interface IResolutionData<V> {
+  readonly selections: Selected<V>[];
+  readonly violations: Violation<V>[];
+  readonly coerced: Violation<V>[];
+  readonly raises: RaisedFloor<V>[];
+  readonly requirements: Map<NodeId, Requirement[]>;
+  readonly edges: Map<NodeId, Map<DependencyName, NodeId>>;
+  readonly rootBindings: (number | undefined)[];
 }
 
-const INDEXES = new WeakMap<object, IResolutionIndex<unknown>>();
+const NONE: never[] = [];
+const NO_EDGES: ReadonlyMap<DependencyName, NodeId> = new Map();
 
-export function resolutionIndex<V, C>(domain: VersionDomain<V, C>, selections: readonly Selected<V>[]): IResolutionIndex<V> {
-  const known = INDEXES.get(selections as object);
-  if (known !== undefined) {
-    return known as IResolutionIndex<V>;
-  }
-  const forkIds = new Set<string>();
-  const byId = new Map<string, Selected<V>>();
-  const byPkg = new Map<string, Selected<V>[]>();
-  for (const selection of selections) {
-    const id = selectionId(domain, selection);
-    byId.set(id, selection);
-    if (selection.fork !== undefined) {
-      forkIds.add(id);
+/**
+ * A finished resolution **as a graph**: the resolved data plus the indexes
+ * every consumer of it asks for, built once at construction. A resolution is
+ * immutable and shared by every delivery made from it, so every recurring
+ * question — which selection an id names, which selections a package has,
+ * what a node violated, what a seed set reaches — is answered from one
+ * derivation instead of once per delivery. This IS the loaded resolution
+ * (deserialization returns one); a delivery reads it through this face, so it
+ * cannot disagree with the resolution it came from.
+ *
+ * Takes a `versionToString` rather than a whole VersionDomain (the explainer's
+ * precedent): a persisted resolution is readable on its own, without the
+ * ecosystem's comparison and constraint machinery.
+ */
+export class ResolutionGraph<V> implements IResolutionData<V> {
+  public readonly selections: Selected<V>[];
+  public readonly violations: Violation<V>[];
+  public readonly coerced: Violation<V>[];
+  public readonly raises: RaisedFloor<V>[];
+  public readonly requirements: Map<string, Requirement[]>;
+  public readonly edges: Map<string, Map<string, string>>;
+  public readonly rootBindings: (number | undefined)[];
+
+  private readonly byId = new Map<NodeId, Selected<V>>();
+  private readonly byPkg = new Map<PackageName, Selected<V>[]>();
+  private readonly byRequirer = new Map<NodeId, Violation<V>[]>();
+  /** id → position in {@link selections} — the canonical order, reimposable on
+   * any id subset without the domain's comparator. */
+  private readonly positions = new Map<NodeId, number>();
+
+  constructor(
+    public readonly versionToString: (version: V) => string,
+    data: IResolutionData<V>
+  ) {
+    this.selections = data.selections;
+    this.violations = data.violations;
+    this.coerced = data.coerced;
+    this.raises = data.raises;
+    this.requirements = data.requirements;
+    this.edges = data.edges;
+    this.rootBindings = data.rootBindings;
+    for (const selection of data.selections) {
+      const id = this.id(selection);
+      this.byId.set(id, selection);
+      this.positions.set(id, this.positions.size);
+      const candidates = this.byPkg.get(selection.pkg);
+      if (candidates) {
+        candidates.push(selection);
+      } else {
+        this.byPkg.set(selection.pkg, [selection]);
+      }
     }
-    const candidates = byPkg.get(selection.pkg);
-    if (candidates) {
-      candidates.push(selection);
-    } else {
-      byPkg.set(selection.pkg, [selection]);
+    for (const violation of data.violations) {
+      const held = this.byRequirer.get(violation.requiredBy);
+      if (held) {
+        held.push(violation);
+      } else {
+        this.byRequirer.set(violation.requiredBy, [violation]);
+      }
     }
   }
-  const index: IResolutionIndex<V> = { forkIds, byId, byPkg };
-  INDEXES.set(selections as object, index as IResolutionIndex<unknown>);
-  return index;
+
+  /** {@link nodeId} of a selection. */
+  public id(selection: Selected<V>): NodeId {
+    return `${selection.pkg}@${this.versionToString(selection.version)}`;
+  }
+
+  /** The selection an id names, if the resolution holds one. */
+  public node(id: NodeId): Selected<V> | undefined {
+    return this.byId.get(id);
+  }
+
+  /** The selections the given ids name, in the resolution's **canonical
+   * order** — whatever order the ids arrived in (typically a reachability
+   * walk's). Ids the resolution does not hold are dropped. */
+  public nodesOf(ids: Iterable<NodeId>): Selected<V>[] {
+    return [...ids]
+      .filter(id => this.byId.has(id))
+      .sort((a, b) => this.positions.get(a)! - this.positions.get(b)!)
+      .map(id => this.byId.get(id)!);
+  }
+
+  /** The selections of a package, in the resolution's canonical order — the
+   * candidate list {@link edgeBinding} considers. */
+  public selectionsOf(pkg: PackageName): readonly Selected<V>[] {
+    return this.byPkg.get(pkg) ?? NONE;
+  }
+
+  /** Whether an id names a **fork** — a sanctioned second (third, …) version
+   * of a package, deliverable only nested under its requirers. */
+  public isFork(id: NodeId): boolean {
+    return this.byId.get(id)?.fork !== undefined;
+  }
+
+  /** The selection a canonical root (by index) binds to — decided when the
+   * resolution was computed, scoped to what that root reaches, so a fork
+   * packed for another root's violated edge cannot answer here. */
+  public rootBinding(index: number): Selected<V> | undefined {
+    const at = this.rootBindings[index];
+    return at === undefined ? undefined : this.selections[at];
+  }
+
+  /** A node's resolved edges: dependency name (the *requirer's* name for it —
+   * an alias for an aliased dependency) → the id of the selection it binds to. */
+  public edgesOf(id: NodeId): ReadonlyMap<DependencyName, NodeId> {
+    return this.edges.get(id) ?? NO_EDGES;
+  }
+
+  /** The nodes reachable from `seeds` by walking the resolved edges forward —
+   * O(the subset), which is what a delivery is proportional to. */
+  public reachable(seeds: Iterable<NodeId>): Set<NodeId> {
+    return reachableFrom(this.edges, seeds);
+  }
+
+  /** The violations declared by one node ({@link ROOT_REQUIRER} for root
+   * requirements), so scoping violations to a delivery is a lookup per
+   * delivered node rather than a pass over everything recorded. */
+  public violationsOf(requirerId: NodeId): readonly Violation<V>[] {
+    return this.byRequirer.get(requirerId) ?? NONE;
+  }
+
+  /**
+   * The chain of selected versions from a root requirement down to `node`,
+   * following each node's reachability edge, each annotated with the
+   * constraint its predecessor declared (the root-most carries none). Returned
+   * as segments, for a caller that appends its own before joining with " -> ".
+   */
+  public pathTo(node: Selected<V>): string[] {
+    const chain: string[] = [];
+    const seen = new Set<Selected<V>>();
+    let current: Selected<V> | undefined = node;
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      const via = current.reachedVia;
+      if (!via || via.requiredBy === ROOT_REQUIRER) {
+        chain.unshift(this.id(current));
+        break;
+      }
+      chain.unshift(`${this.id(current)} (${via.constraint})`);
+      current = this.byId.get(via.requiredBy);
+    }
+    return chain;
+  }
+
+  /** This resolution's {@link ResolutionExplainer} — the same indexes, behind
+   * the narrow explain-only face provenance rendering consumes. */
+  public explainer(): ResolutionExplainer<V> {
+    return { id: sel => this.id(sel), find: id => this.node(id), pathTo: node => this.pathTo(node) };
+  }
+
+  /**
+   * Assert that no dependency name among `members` (a delivery batch, keyed by
+   * id) binds two *different packages*: such an alias cannot install both
+   * under that name anywhere the two co-mount, and one of them would silently
+   * lose its imports — a conflict, never a pick. Judged over the whole batch,
+   * since the consumer's collection point merges the batch's deliveries into
+   * one layout; driven by `members`, so a delivery pays for its own slice, not
+   * for the resolution. It takes an alias to reach: ordinary edges name their
+   * own package.
+   */
+  public assertNoAliasCollisions(members: ReadonlyMap<NodeId, Selected<V>>): void {
+    const held = new Map<DependencyName, Selected<V>>();
+    for (const fromId of members.keys()) {
+      for (const [name, toId] of this.edgesOf(fromId)) {
+        const selection = members.get(toId);
+        if (!selection) {
+          continue;
+        }
+        const current = held.get(name);
+        if (current === undefined) {
+          held.set(name, selection);
+        } else if (current.pkg !== selection.pkg) {
+          throw attachHelp(
+            new ConflictError("packages", name, { detail: this.id(current) }, { detail: this.id(selection) }),
+            `'${name}' is a dependency alias (npm:…) for two different packages in one closure, which cannot both be installed ` +
+              "under that name — pin one of the requirers to a version that does not alias it"
+          );
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -107,8 +258,8 @@ export function resolutionIndex<V, C>(domain: VersionDomain<V, C>, selections: r
  * The two agree by construction: the resolver marked `reachableFrom` by
  * following exactly these bindings (see the walk's own reachability pass).
  */
-export function reachableFrom(edges: ReadonlyMap<string, ReadonlyMap<string, string>>, seeds: Iterable<string>): Set<string> {
-  const reached = new Set<string>();
+export function reachableFrom(edges: ReadonlyMap<NodeId, ReadonlyMap<DependencyName, NodeId>>, seeds: Iterable<NodeId>): Set<NodeId> {
+  const reached = new Set<NodeId>();
   const pending = [...seeds];
   while (pending.length > 0) {
     const id = pending.pop()!;
@@ -123,24 +274,6 @@ export function reachableFrom(edges: ReadonlyMap<string, ReadonlyMap<string, str
     }
   }
   return reached;
-}
-
-/** Violations indexed by the node that declared the violated edge, so scoping
- * them to a delivery is a lookup per delivered node rather than a pass over
- * every violation the resolution recorded. */
-const VIOLATIONS_BY_REQUIRER = new WeakMap<object, Map<string, unknown[]>>();
-
-export function violationsByRequirer<V>(violations: ReadonlyArray<Violation<V>>): Map<string, Violation<V>[]> {
-  const known = VIOLATIONS_BY_REQUIRER.get(violations as object);
-  if (known !== undefined) {
-    return known as Map<string, Violation<V>[]>;
-  }
-  const index = new Map<string, Violation<V>[]>();
-  for (const violation of violations) {
-    index.set(violation.requiredBy, [...(index.get(violation.requiredBy) ?? []), violation]);
-  }
-  VIOLATIONS_BY_REQUIRER.set(violations as object, index as Map<string, unknown[]>);
-  return index;
 }
 
 /** The highest of `selections` by version; undefined if there are none. Ties
@@ -206,11 +339,11 @@ export function edgeBinding<V, C>(
  */
 export interface ResolutionExplainer<V> {
   /** {@link nodeId} of a selection. */
-  id(selection: Selected<V>): string;
+  id(selection: Selected<V>): NodeId;
   /** The selection with that id, if the resolution holds one. A requirement
    * edge may name a node that was itself later superseded, so a `requiredBy`
    * lookup can legitimately miss. */
-  find(id: string): Selected<V> | undefined;
+  find(id: NodeId): Selected<V> | undefined;
   /**
    * The chain of selected versions from a root requirement down to `node`,
    * following each node's reachability edge, each annotated with the
@@ -225,25 +358,18 @@ export function resolutionExplainer<V>(
   selections: readonly Selected<V>[],
   versionToString: (version: V) => string
 ): ResolutionExplainer<V> {
-  const id = (selection: Selected<V>): string => `${selection.pkg}@${versionToString(selection.version)}`;
-  const byId = new Map(selections.map(selection => [id(selection), selection]));
-  const pathTo = (node: Selected<V>): string[] => {
-    const chain: string[] = [];
-    const seen = new Set<Selected<V>>();
-    let current: Selected<V> | undefined = node;
-    while (current && !seen.has(current)) {
-      seen.add(current);
-      const via = current.reachedVia;
-      if (!via || via.requiredBy === ROOT_REQUIRER) {
-        chain.unshift(id(current));
-        break;
-      }
-      chain.unshift(`${id(current)} (${via.constraint})`);
-      current = byId.get(via.requiredBy);
-    }
-    return chain;
-  };
-  return { id, find: key => byId.get(key), pathTo };
+  /* A bare selection list explained as a graph with nothing else in it — the
+   * synthetic case (a bare package's minted origin, a delivery slice) where no
+   * loaded resolution stands behind the selections. One pathTo, one home. */
+  return new ResolutionGraph(versionToString, {
+    selections: [...selections],
+    violations: [],
+    coerced: [],
+    raises: [],
+    requirements: new Map(),
+    edges: new Map(),
+    rootBindings: [],
+  }).explainer();
 }
 
 /**

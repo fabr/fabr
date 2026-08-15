@@ -25,7 +25,7 @@
  * here is shared by any ecosystem that resolves through the MVS core.
  */
 
-import { Requirement, Selected, VersionDomain, Violation } from "./Types";
+import { PackageName, Requirement, Selected, VersionDomain, Violation } from "./Types";
 
 /**
  * Split a written version slot's trailing override marker: `1.4.2?` (permitted
@@ -85,6 +85,47 @@ export function canonicalExactVersion<V, C>(domain: VersionDomain<V, C>, text: s
  * canonical `versionToString` form. This is the right-hand side of the
  * sanction rule: a strict delivery ships only version sets ⊆ what was written.
  */
+/**
+ * Collect the `?` sanctions written in a batch (pkg → the canonical exact
+ * versions whose forks a strict delivery may accept), rejecting the
+ * contradictory marker combinations — a package both forced and alternated,
+ * or forced at two different versions — via `fail`, which the caller supplies
+ * so the error is attributed to the written references (this module stays
+ * reference-free).
+ */
+export function collectSanctions<V, C>(
+  domain: VersionDomain<V, C>,
+  requirements: readonly Requirement[],
+  fail: (pkg: PackageName, message: string) => never
+): Map<PackageName, Set<string>> {
+  const alternates = new Map<PackageName, Set<string>>();
+  for (const req of requirements) {
+    if (req.override === "alternate") {
+      const versions = alternates.get(req.pkg) ?? new Set();
+      /* Canonical form: the sanction judgment compares versionToString. */
+      alternates.set(req.pkg, versions.add(canonicalExactVersion(domain, req.constraint) ?? req.constraint));
+    }
+  }
+  const contradicted = requirements.find(req => req.override === "force" && alternates.has(req.pkg));
+  if (contradicted) {
+    fail(contradicted.pkg, `'${contradicted.pkg}' is both forced ('!') and permitted as an alternate ('?') — pick one`);
+  }
+  /* Two forces at different versions are equally contradictory — the
+   * resolver would have to pick one silently. */
+  const forcedAt = new Map<PackageName, string>();
+  for (const req of requirements) {
+    if (req.override !== "force") {
+      continue;
+    }
+    const existing = forcedAt.get(req.pkg);
+    if (existing !== undefined && existing !== req.constraint) {
+      fail(req.pkg, `'${req.pkg}' is forced ('!') at two different versions (${existing}, ${req.constraint}) — pick one`);
+    }
+    forcedAt.set(req.pkg, req.constraint);
+  }
+  return alternates;
+}
+
 export function writtenVersions<V, C>(
   domain: VersionDomain<V, C>,
   alternates: ReadonlyMap<string, ReadonlySet<string>>,

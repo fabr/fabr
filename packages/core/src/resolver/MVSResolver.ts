@@ -19,7 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { MetadataFetchError, toError, VersionNotFoundError } from "../core/Errors";
-import { edgeBinding, nodeId as idOf, resolutionIndex } from "./ResolutionGraph";
+import { edgeBinding, nodeId as idOf } from "./ResolutionGraph";
 import {
   IRequirementEdge,
   IResolutionError,
@@ -1029,9 +1029,18 @@ function resolvePhase<V, C>(
       );
       /* Candidates per package, in the canonical order — binding an edge only
        * ever considers selections of its own package, so this is what the walk
-       * itself passes to edgeBinding (see targetsOf). Built once here rather
-       * than rescanning every selection per edge. */
-      const { byPkg: candidates } = resolutionIndex(domain, selections);
+       * itself passes to edgeBinding (see targetsOf). Built locally: the
+       * ResolutionGraph (which indexes the same way) wraps the *finished*
+       * resolution, which this is still becoming. */
+      const candidates = new Map<string, Selected<V>[]>();
+      for (const selection of selections) {
+        const held = candidates.get(selection.pkg);
+        if (held) {
+          held.push(selection);
+        } else {
+          candidates.set(selection.pkg, [selection]);
+        }
+      }
       /* Where each of those edges LEADS, resolved once here rather than by
        * every consumer: the delivery walks this instead of searching the
        * selections per edge. Computed after the fork renumbering above, so the

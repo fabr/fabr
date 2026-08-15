@@ -30,7 +30,7 @@
 
 import { Computable } from "../core/Computable";
 import { attachHelp, ResolutionWalkError } from "../core/Errors";
-import { nodeId, resolutionExplainer, ResolutionExplainer } from "./ResolutionGraph";
+import { nodeId, ResolutionExplainer, ResolutionGraph } from "./ResolutionGraph";
 import { canonicalExactVersion, canonicalRequirements } from "./Overrides";
 import { IResolutionError, MVSResolution, Requirement, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
 
@@ -175,13 +175,18 @@ export function conflictError<V>(
   root: string,
   violations: Violation<V>[],
   duplicates: Array<[string, V[]]>,
-  selections: readonly Selected<V>[],
-  versionToString: (version: V) => string,
+  needed: readonly Selected<V>[],
+  graph: ResolutionGraph<V>,
   refText: RefRenderer,
   written?: ReadonlyMap<string, ReadonlySet<string>>,
   suggestion?: string[]
 ): Error {
-  const explainer = resolutionExplainer(selections, versionToString);
+  const { versionToString } = graph;
+  /* Chains explain through the whole resolution — a subset delivery's chain
+   * may pass through a node it does not itself ship. The set-mismatch note
+   * below stays scoped to `needed`: what THIS delivery ships is the fact the
+   * sanction is judged against. */
+  const explainer = graph.explainer();
   const lines: string[] = [];
   const violatedPkgs = new Set(violations.map(violation => violation.pkg));
   const sanctionNoted = new Set<string>();
@@ -198,7 +203,7 @@ export function conflictError<V>(
     const declared = written?.get(first.pkg);
     if (declared && declared.size > 0 && !sanctionNoted.has(first.pkg)) {
       sanctionNoted.add(first.pkg);
-      const shipped = selections.filter(sel => sel.pkg === first.pkg).map(sel => versionToString(sel.version));
+      const shipped = needed.filter(sel => sel.pkg === first.pkg).map(sel => versionToString(sel.version));
       const missing = shipped.filter(version => !declared.has(version));
       if (missing.length > 0) {
         lines.push(
@@ -238,11 +243,11 @@ export function conflictError<V>(
 export function unrepairableError<V>(
   root: string,
   violations: Violation<V>[],
-  selections: readonly Selected<V>[],
-  versionToString: (version: V) => string,
+  graph: ResolutionGraph<V>,
   refText: RefRenderer
 ): Error {
-  const explainer = resolutionExplainer(selections, versionToString);
+  const { versionToString } = graph;
+  const explainer = graph.explainer();
   const groups = groupViolations(violations, versionToString);
   const lines = groups.flatMap(({ first, others }) => [
     `no published version of ${first.pkg} satisfies '${first.constraint}' required by ${first.requiredBy}`,

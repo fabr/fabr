@@ -19,12 +19,29 @@
 
 import { Computable } from "../core/Computable";
 
+/** A bare package name — the per-name slot minimal version selection selects
+ * over, and the namespace a {@link Requirement} demands from. */
+export type PackageName = string;
+
+/**
+ * The identity of one concrete selected package version — `pkg@version` (the
+ * resolver's `nodeId` form): the key every per-node table in a resolution is
+ * joined by. A `requiredBy` holds one, or {@link ROOT_REQUIRER} for a root
+ * requirement.
+ */
+export type NodeId = string;
+
+/** The name a requirer resolves a dependency by: normally the dependency's own
+ * {@link PackageName}, but the local alias for an aliased requirement
+ * ({@link Requirement.alias}) — hence the name a consumer mounts it under. */
+export type DependencyName = string;
+
 /**
  * A single declared dependency: some version of `pkg` satisfying `constraint`,
  * where the constraint syntax is interpreted by the ecosystem's VersionDomain.
  */
 export interface Requirement {
-  pkg: string;
+  pkg: PackageName;
   constraint: string;
   /**
    * The name the requirer knows this dependency by, when that differs from the
@@ -35,7 +52,7 @@ export interface Requirement {
    * imports use, hence as the name a consumer must lay the result out under
    * (the requirer's code literally `require`s it).
    */
-  alias?: string;
+  alias?: DependencyName;
   /**
    * Attach-first (peer) semantics: primarily a constraint on whatever the tree
    * selects for `pkg` — satisfied by any selection in range — demanding its
@@ -79,7 +96,7 @@ export const ROOT_REQUIRER = "(root)";
  * requirement) and the constraint it declared.
  */
 export interface IRequirementEdge {
-  requiredBy: string;
+  requiredBy: NodeId;
   constraint: string;
 }
 
@@ -99,7 +116,7 @@ export interface IRequirementEdge {
  * still deserialize.
  */
 export interface Selected<V> {
-  pkg: string;
+  pkg: PackageName;
   version: V;
   selectedBy?: IRequirementEdge;
   reachedVia?: IRequirementEdge;
@@ -141,9 +158,9 @@ export interface Selected<V> {
  * `pkg` satisfies `constraint`).
  */
 export interface Violation<V> {
-  pkg: string;
+  pkg: PackageName;
   constraint: string;
-  requiredBy: string;
+  requiredBy: NodeId;
   selected: V;
 }
 
@@ -155,11 +172,11 @@ export interface Violation<V> {
  * requirement's floor never shaped it.
  */
 export interface RaisedFloor<V> {
-  pkg: string;
+  pkg: PackageName;
   constraint: string;
   declared: V;
   raised: V;
-  requiredBy: string;
+  requiredBy: NodeId;
 }
 
 /**
@@ -195,7 +212,7 @@ export interface MVSResolution<V> {
    * so a layout needs no second read of package metadata. Pruned nodes are not
    * listed: only what the resolution selected.
    */
-  requirements: Map<string, Requirement[]>;
+  requirements: Map<NodeId, Requirement[]>;
   /**
    * The **resolved** edges of the selected graph: for each node, the selection
    * each of its requirements binds to, keyed by the name the *requirer* uses
@@ -209,7 +226,7 @@ export interface MVSResolution<V> {
    * what makes a delivery a walk over the graph instead of a search of it, and
    * leaves nothing for a layout to disagree with.
    */
-  edges: Map<string, Map<string, string>>;
+  edges: Map<NodeId, Map<DependencyName, NodeId>>;
   /**
    * Per canonical root (by index), the **index within `selections`** of the
    * node its requirement binds to — scoped to what that root reaches, so a fork
