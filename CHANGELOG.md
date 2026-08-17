@@ -7,6 +7,10 @@ version number.
 - Add support for guarded properties.
 - Add xz archive support.
 - Add positional backrefs in rename templates.
+- General optimizations, especially for cache-hits.
+
+@fabr-build/cli:
+- Live progress display on terminal with progress bars and test status (suppressed with -q)
 
 ## Fabr 0.2.1
 @fabr-build/core:

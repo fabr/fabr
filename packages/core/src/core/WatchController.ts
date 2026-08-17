@@ -81,11 +81,11 @@ export class WatchController {
   private closed = false;
 
   constructor(
-    private readonly quietMs = 100,
+    private readonly quietMs: number,
     private readonly timer: WatchTimer = defaultTimer,
     private readonly onError: (err: Error) => void = () => {},
-    /** Invoked once per applied batch, just before the graph is re-settled — the
-     * driver uses it to advance the build cycle so progress re-announces. */
+    /** Invoked once per applied batch, just before the graph is re-settled —
+     * how the facade advances the build cycle (emitting its cycle-start). */
     private readonly onBeforeApply: () => void = () => {},
     /** Surface a non-fatal watcher notice (e.g. a backend fallback) for the
      * driver to render; core never logs directly. */
@@ -134,7 +134,7 @@ export class WatchController {
   /** Arm the quiet window for changes already recorded — how a deferred entry
    * (see {@link notifyChanged}) becomes a rebuild when it turns out not to have
    * been ours after all. No-op with nothing dirty: a flush of an empty batch
-   * would advance the build cycle and re-announce for no work. */
+   * would advance the build cycle for no work. */
   public armFlush(): void {
     if (!this.closed && this.dirty.size > 0) {
       this.scheduleFlush();

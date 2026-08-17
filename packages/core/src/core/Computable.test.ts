@@ -995,6 +995,55 @@ describe("ComputableHandle", () => {
     ComputableSource.onUnhandledError = undefined;
   });
 
+  it("onSettled fires on every settlement, including a revalidation no then-tail sees", () => {
+    const leaf = new TestSource<number>();
+    const derived = leaf.then(v => v * 10);
+    const thenRuns: number[] = [];
+    derived.then(v => thenRuns.push(v));
+    const settles: Array<number | Error | undefined> = [];
+    const handle = new ComputableHandle<number>(source => settles.push(source.value));
+    handle.seat(derived);
+
+    leaf.set(1);
+    expect(settles).to.deep.equal([10]);
+    /* A batch that converges to the same value: the then-tail is cut off, the
+     * settlement observer is not. */
+    leaf.invalidate();
+    leaf.set(1);
+    expect(settles).to.deep.equal([10, 10]);
+    expect(thenRuns).to.deep.equal([10]);
+    leaf.invalidate();
+    leaf.set(2);
+    expect(settles).to.deep.equal([10, 10, 20]);
+    expect(thenRuns).to.deep.equal([10, 20]);
+  });
+
+  it("onSettled observes from seating onward, and stops on release or reseat", () => {
+    const a = new TestSource<number>();
+    const b = new TestSource<number>();
+    a.set(1);
+    const settles: Array<number | Error | undefined> = [];
+    const handle = new ComputableHandle<number>(source => settles.push(source.value));
+    /* Seating an already-settled chain reports nothing until its next settlement. */
+    handle.seat(a.then(v => v));
+    expect(settles).to.deep.equal([]);
+    a.invalidate();
+    a.set(2);
+    expect(settles).to.deep.equal([2]);
+
+    handle.seat(b.then(v => v));
+    /* The superseded chain settles into the void; the new one reports. */
+    a.invalidate();
+    a.set(3);
+    b.set(5);
+    expect(settles).to.deep.equal([2, 5]);
+
+    handle.release();
+    b.invalidate();
+    b.set(6);
+    expect(settles).to.deep.equal([2, 5]);
+  });
+
   it("holds a seated chain attached, and unwinds it on release", () => {
     const leaf = new TestSource<number>();
     leaf.set(1);

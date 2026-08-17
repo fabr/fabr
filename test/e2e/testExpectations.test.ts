@@ -18,7 +18,10 @@
  */
 
 import { expect } from "chai";
-import { runFabr, startFabrWatch, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
+import { runFabr, startFabrWatch, started, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
+
+/** Start lines only — see {@link started}. */
+const TESTING_THING = started("Testing thing");
 
 /*
  * Recorded test expectations end to end: `TEST_EXPECTATIONS`, the runner's
@@ -182,13 +185,13 @@ function reportOf(failed) {
     it("does not re-test because of its own write-back, but still re-tests on a real change", async () => {
       const session = startFabrWatch(project("one"), ["-DJS_TARGET=es2020", "test", "-u", "-w", "thing"]);
       try {
-        await session.waitFor("Testing thing", { timeoutMs: 60000 });
+        await session.waitFor(TESTING_THING, { timeoutMs: 60000 });
         await session.waitFor("Updated " + SNAP, { timeoutMs: 60000 });
         await session.waitFor("Watching for changes", { timeoutMs: 60000 });
         /* The write landed and the watcher is live. Nothing further must happen
          * of its own accord — so give the quiet window (and then some) a chance
          * to produce the echo rebuild, and require that it did not. */
-        await session.waitFor("Testing thing", { count: 2, timeoutMs: 3000 }).then(
+        await session.waitFor(TESTING_THING, { count: 2, timeoutMs: 3000 }).then(
           () => {
             throw new Error("the write-back triggered a rebuild:\n" + session.stderr);
           },
@@ -198,7 +201,7 @@ function reportOf(failed) {
         /* A real edit still rebuilds — and the refreshed record is picked up
          * with it, so the run is green rather than failing against a stale one. */
         session.write("src/thing.test.ts", 'exports.value = "two";\n');
-        await session.waitFor("Testing thing", { count: 2, timeoutMs: 60000 });
+        await session.waitFor(TESTING_THING, { count: 2, timeoutMs: 60000 });
         await session.waitFor("Updated " + SNAP, { count: 2, timeoutMs: 60000 });
       } finally {
         await session.stop();

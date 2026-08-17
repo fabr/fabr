@@ -25,6 +25,7 @@
  * set is core + js + fabr; anything beyond that can be built by fabr itself and
  * loaded via a plugin declaration. */
 
+export * from "./Fabr";
 export * from "./core/BuildCache";
 export * from "./core/Computable";
 export * from "./core/Fetch";
@@ -48,6 +49,8 @@ export * from "./core/WriteBack";
 export * from "./model/BuildContext";
 export * from "./model/Constraints";
 export * from "./model/BuildModel";
+export * from "./model/BuildEvents";
+export * from "./model/ErrorFormatter";
 export * from "./model/ExecutionContext";
 export * from "./model/Loader";
 export * from "./model/Errors";

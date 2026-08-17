@@ -15,7 +15,10 @@
  */
 
 import { expect } from "chai";
-import { startFabrWatch } from "./harness";
+import { startFabrWatch, started } from "./harness";
+
+/** Start lines only — see {@link started}. */
+const BUILDING_GEN = started("Building gen");
 
 /* A globbing `include` makes the set of build files *itself* a live query: which
  * files the model is made of changes when one appears or disappears, with nothing
@@ -49,13 +52,13 @@ describe("e2e: watch mode over a glob include", () => {
       ["build", "-w", "gen"]
     );
     try {
-      await session.waitFor("Building gen", TIMEOUT);
+      await session.waitFor(BUILDING_GEN, TIMEOUT);
       await session.waitFor("Watching for changes", TIMEOUT);
 
       /* A build file appearing under the pattern joins the model: MESSAGE is now
        * assigned, so gen's command differs and it rebuilds. */
       session.write("targets/message.fabr", "MESSAGE = added;\n");
-      await session.waitFor("Building gen", { count: 2, ...TIMEOUT });
+      await session.waitFor(BUILDING_GEN, { count: 2, ...TIMEOUT });
       await session.waitFor("Built gen", { count: 2, ...TIMEOUT });
 
       /* Removing it drops it from the model — reverting MESSAGE to the default,

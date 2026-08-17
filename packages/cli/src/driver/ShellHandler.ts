@@ -28,6 +28,7 @@ import {
   Log,
   writeFileSet,
 } from "@fabr-build/core";
+import { withTerminalSuspended } from "./Terminal";
 
 const DIAG_SHELL = Diagnostic.Info<{ name: string; dir: string; commands: string }>(
   "Sandbox for '{name}' staged at {dir}\nThe build step would run:\n{commands}\nOpening a shell there with the build's own (clean) environment — exit to clean up. Bare tools like `ls` won't resolve (no PATH); run the command above (absolute paths) or set PATH yourself."
@@ -61,8 +62,9 @@ export function shellInto(cache: BuildCache, name: string, action: BuildAction |
       /* $SHELL is the user's login shell; fall back to a POSIX shell. Launched
        * with the build step's own env (a clean {}), NOT the parent's — so the
        * sandbox faithfully reflects what the build runs under (the printed command
-       * uses absolute paths so it stays runnable there). */
-      return executeInteractive(process.env.SHELL || "/bin/sh", [], dir, {});
+       * uses absolute paths so it stays runnable there). The shell owns the
+       * terminal for as long as the user is in it. */
+      return withTerminalSuspended(() => executeInteractive(process.env.SHELL || "/bin/sh", [], dir, {}));
     })
     .finally(() => cache.releaseWorkDir(dir));
 }

@@ -16,8 +16,9 @@
 
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
+import { Readable } from "node:stream";
 import { expect } from "chai";
-import { fetchUrl, openUrlStream, sendRequest } from "./Fetch";
+import { fetchUrl, openUrlStream, reportingProgress, sendRequest } from "./Fetch";
 
 interface Received {
   method?: string;
@@ -162,5 +163,40 @@ describe("openUrlStream redirects", () => {
       await src.close();
       await dest.close();
     }
+  });
+});
+
+describe("reportingProgress", () => {
+  it("delivers every byte to a consumer that attaches a tick late, counting them past", async () => {
+    const source = Readable.from([Buffer.from("abc"), Buffer.from("defg")]);
+    const counts: number[] = [];
+    const counted = reportingProgress(source, bytes => counts.push(bytes));
+    /* The wrap must not start the flow on its own: a consumer that attaches
+     * only after an await (a mkdir, say) must still see the whole body. */
+    await new Promise(resolve => setImmediate(resolve));
+    const chunks: Buffer[] = [];
+    for await (const chunk of counted) {
+      chunks.push(chunk as Buffer);
+    }
+    expect(Buffer.concat(chunks).toString()).to.equal("abcdefg");
+    expect(counts[counts.length - 1]).to.equal(7);
+  });
+
+  it("fails the consumer when the source fails, rather than hanging it", async () => {
+    const source = new Readable({
+      read(): void {
+        this.destroy(new Error("boom"));
+      },
+    });
+    const counted = reportingProgress(source, () => undefined);
+    let failed: Error | undefined;
+    try {
+      for await (const chunk of counted) {
+        void chunk;
+      }
+    } catch (err) {
+      failed = err as Error;
+    }
+    expect(failed?.message).to.equal("boom");
   });
 });

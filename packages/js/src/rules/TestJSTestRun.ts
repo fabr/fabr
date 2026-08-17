@@ -57,6 +57,7 @@ import {
   toError,
   toTestReport,
   writeFileSet,
+  TaskProgress,
 } from "@fabr-build/core";
 
 /**
@@ -86,20 +87,64 @@ function runTests(inputs: BuildActionInputs, ctx: IActionContext): Computable<Fi
    * output); a test that must spawn a tool references it by an absolute path
    * (e.g. process.execPath), which needs no PATH. The argv's leading command
    * (the runner's interpreter) is PATH-resolved here, at run time. */
-  return writeFileSet(workDir, staged.minus(writable))
-    .then(() => writeFileSet(workDir, writable, { copy: true }))
-    .then(() =>
-      Computable.forAll(
+  /* One admission for the whole installation — the two writes are halves of
+   * staging it, not separate pieces of work — and given back before any test
+   * process asks for a slot of its own. */
+  return ctx
+    .admit(() => writeFileSet(workDir, staged.minus(writable)).then(() => writeFileSet(workDir, writable, { copy: true })))
+    .then(() => {
+      /* Each file's outcome is known the moment its invocation ends — the
+       * report it wrote is read there — so the run can say how it is going
+       * while it goes, rather than only in the summary at the end. */
+      const tally = new RunTally(testFiles.length, ctx.report.progress);
+      return Computable.forAll(
         /* All issued at once: each execution queues on the funnel, which is
          * what schedules the files — against each other and against every
          * other execution in the build. A red file must not abort its
          * siblings (the report must be complete), so an invocation NEVER
          * rejects here; its outcome is judged as data below. */
-        testFiles.map((file, index) => runOneFile(ctx, argv, file, index)),
+        testFiles.map((file, index) => runOneFile(ctx, argv, file, index).then(run => tally.add(run))),
         (...runs) => concludeRun(workDir, runs)
-      )
-    )
+      );
+    })
     .then(() => getResultFileSet(workDir, outputs));
+}
+
+/**
+ * The run's outcomes so far, reported as each file lands.
+ *
+ * Per *file*, not per test: a file's report exists only once its process has
+ * written it, so this is as live as the runner contract allows — the runner is
+ * invoked, writes a report and exits, and says nothing in between. (Per-test
+ * ticking would need it to stream, which is a change to a contract that is
+ * deliberately swappable.) A file whose invocation failed outright counts as
+ * finished with nothing to add; the summary at the end is what judges it.
+ */
+class RunTally {
+  private files = 0;
+  private passed = 0;
+  private failed = 0;
+
+  constructor(
+    private readonly totalFiles: number,
+    private readonly report?: (progress: TaskProgress) => void
+  ) {}
+
+  /** Record one finished invocation, and pass the run through unchanged. */
+  public add(run: IFileRun): IFileRun {
+    this.files++;
+    const summary = run.report?.results.summary;
+    this.passed += summary?.passed ?? 0;
+    this.failed += summary?.failed ?? 0;
+    this.report?.({
+      measure: "tests",
+      files: this.files,
+      totalFiles: this.totalFiles,
+      passed: this.passed,
+      failed: this.failed,
+    });
+    return run;
+  }
 }
 
 /** One invocation's outcome: its report, or the failure no report explains. */
@@ -119,10 +164,14 @@ function invocationReport(index: number): string {
 function runOneFile(ctx: IActionContext, argv: string[], file: string, index: number): Computable<IFileRun> {
   const reportName = invocationReport(index);
   const invocation = [...argv.slice(1), `--report=${reportName}`, file];
-  /* Always captured (never live), as the one-invocation step always was: the
-   * report carries the outcomes, the capture backs the no-report failure
-   * path, and a per-file fan-out must not chatter a summary per process. */
-  return execute(ctx.processLimit, findExecutable(argv[0]), invocation, join(ctx.workDir, COMPILE_OUT_DIR), {}, true)
+  /* Always captured (never streamed), as the one-invocation step always was:
+   * the report carries the outcomes, the capture backs the no-report failure
+   * path, and a per-file fan-out must not chatter a summary per process. The
+   * activity half of the report is still passed through — these invocations
+   * take slots of the machine's funnel like any others, and a run waiting for
+   * one must not look like a run in progress. */
+  const report = { ...ctx.report, output: undefined };
+  return execute(ctx.processLimit, findExecutable(argv[0]), invocation, join(ctx.workDir, COMPILE_OUT_DIR), {}, report)
     .then(
       () => undefined,
       (err: Error) => err

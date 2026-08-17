@@ -19,12 +19,13 @@
 
 import { availableParallelism } from "os";
 import { BuildCache } from "../core/BuildCache";
-import { Computable } from "../core/Computable";
+import { Computable, ComputableHandle, ComputableSource, ComputableState } from "../core/Computable";
 import { FileSource } from "../core/FileSet";
+import { activityCounter, ITaskReport } from "../support/Execute";
 import { Log } from "../support/Log";
 import { Semaphore } from "../support/Semaphore";
 import { declName, ITargetDecl } from "./AST";
-import { Constraints } from "./Constraints";
+import { BuildEvent, BuildListener, TaskDescription, TaskProgress, TaskState } from "./BuildEvents";
 
 /**
  * The driver's terminal, for the rare interaction a protocol genuinely requires
@@ -47,74 +48,6 @@ export interface UserInteraction {
    */
   openUrl(url: string, purpose: string): Computable<void>;
 }
-
-/**
- * A target actually starting to build (a build-cache miss, as opposed to being
- * served from cache) — either a declared target or an anonymous sub-target of
- * one (a sub-target is a target too: it builds under a context with its own
- * constraints and operation, so it is not a separate event kind — it just
- * carries a `label`). The driver renders "Building X" for a declared target and
- * e.g. "Compiling X" for a labelled sub-target.
- */
-export interface ITargetBuildEvent {
-  kind: "target-build";
-  target: ITargetDecl;
-  /** The BUILD_OPERATION the evaluation is running under ('build', 'test', ...) */
-  operation: string;
-  /** The full constraint set the target is building under. The driver decides
-   * what to surface (it elides the ambient keys it injected — the host facts
-   * and BUILD_OPERATION — leaving the explicit ones, e.g. a reference's
-   * `<BUILD_TYPE=release>` requirement or a `-D` override). */
-  constraints: Constraints;
-  /** The targets that required this one (nearest requester first; empty for a
-   * target requested directly, and for a sub-target — the umbrella declared
-   * event carries the chain). */
-  requiredBy: ITargetDecl[];
-  /** For an anonymous sub-target: the action verb its creator gave it
-   * ("Compiling"), used verbatim as the display verb; absent for a declared
-   * target, where the driver derives the verb from `operation`. */
-  label?: string;
-}
-
-/**
- * A repository actually resolving a batch of requirements (as opposed to the
- * resolution being served from a memo). Emitted by the repository's own
- * implementation, since only it knows when real resolution work happens.
- */
-export interface IRepositoryResolveEvent {
-  kind: "repository-resolve";
-  /** The repository the requirements are resolved against, as the references
-   *  wrote it (the declared alias) — the resolution layer holds no decl. */
-  repository: string;
-  /** The requirement keys of the joint batch */
-  requirements: string[];
-}
-
-/**
- * A URL actually being fetched (as opposed to served from cache).
- */
-export interface IFetchEvent {
-  kind: "fetch";
-  url: string;
-  /** The target (usually a repository) on whose behalf the fetch happens */
-  target: ITargetDecl;
-  /**
-   * An optional human noun for what is being fetched (e.g. "metadata",
-   * "package"), supplied by the repository so the driver can distinguish kinds
-   * of download; the URL alone is opaque.
-   */
-  resource?: string;
-}
-
-/**
- * Progress: work that is actually being performed, as opposed to being
- * served from cache — never emitted for a cache hit. The model and rules
- * only emit events — rendering them is the listener's (i.e. the driver's)
- * job.
- */
-export type ProgressEvent = ITargetBuildEvent | IRepositoryResolveEvent | IFetchEvent;
-
-export type ProgressListener = (event: ProgressEvent) => void;
 
 /**
  * A typed handle a plugin uses to stash its own per-run state on the
@@ -141,28 +74,37 @@ export class PluginKey<T> {
  */
 export class BuildCycle {
   private count = 0;
+  private readonly observers: Array<(cycle: number) => void> = [];
 
   public get current(): number {
     return this.count;
   }
 
-  /** Advance to the next build cycle (watch mode, before re-settling the graph). */
+  /** Advance to the next build cycle (watch mode, before re-settling the
+   *  graph), notifying observers with the new cycle's number. */
   public advance(): void {
     this.count++;
+    this.observers.forEach(observer => observer(this.count));
+  }
+
+  /** Observe each advance — how the execution turns the watch controller's
+   *  cycle boundary into a `cycle-start` build event. */
+  public onAdvance(observer: (cycle: number) => void): void {
+    this.observers.push(observer);
   }
 }
 
 /**
  * The fixed runtime surroundings of a build run, as distinct from the model
  * (which is purely the declarations as written): the build cache to run
- * against, the driver's diagnostic log, and its progress observer. Constructed
- * by the driver and threaded through getConfig(), so every BuildContext of a
- * run — including the constraint-override configs spawned during evaluation —
- * shares the one instance.
+ * against, the driver's diagnostic log, and its build-event listeners.
+ * Constructed by the driver and threaded through getConfig(), so every
+ * BuildContext of a run — including the constraint-override configs spawned
+ * during evaluation — shares the one instance.
  *
  * The `log` is here as a run-surrounding the *driver* reads (status lines, the
- * failure tree); the model still only ever emits ProgressEvents and never logs
- * — reporting stays the driver's job.
+ * failure tree); the model still only ever emits BuildEvents and never logs —
+ * reporting stays the driver's job.
  */
 export class ExecutionContext {
   public readonly buildCache: BuildCache;
@@ -180,12 +122,15 @@ export class ExecutionContext {
   public readonly absFileSource: FileSource;
   /** The build-cycle counter, shared with the watch controller (which advances it). */
   private readonly cycle: BuildCycle;
-  private progressListener?: ProgressListener;
-  /** Whether a subcommand's output is captured to a buffer and shown only on
-   * failure (`-q`), rather than inherited live to fabr's stderr as the step runs.
-   * Read by {@link BuildContext.runAction} into each action's context; set by the
-   * driver, and defaults to inherit-live. */
-  public quiet = false;
+  /** The build-event subscribers (the driver's renderer, and the execution's
+   *  own built-target record). */
+  private readonly listeners: BuildListener[] = [];
+  /** Whether any subscriber asked for `task-output` events; with none, a step
+   *  is given no output sink and captures instead. */
+  private wantsOutput = false;
+  /** Identities for {@link runTask}; per-run, so a listener may key its own
+   *  per-task state (a start time, a pane row) by them. */
+  private nextTaskId = 1;
   /**
    * The targets this run must rebuild even when their outputs are already
    * cached (the driver's `-f`) — for timing a build step whose inputs have not
@@ -235,17 +180,11 @@ export class ExecutionContext {
   /** Per-run state a plugin keeps here, keyed by its {@link PluginKey}. Lazily
    *  populated on first access (see {@link getOrCreatePluginContext}). */
   private readonly pluginContexts = new Map<PluginKey<unknown>, unknown>();
-  /** The top-level (directly-requested) targets that had work performed for
-   * them since the last {@link takeBuiltTargets} — accumulated from
-   * `target-build` progress events (emitted only from a cache-miss path — never
-   * a cache hit), so an empty set is exactly "nothing happened". A dependency's
-   * build is *attributed to the requester at the end of its demand chain* (the
-   * directly-requested target), not recorded under its own name: the set
-   * answers "which of the run's requests did this cycle do work for", so a
-   * request whose own evaluation yields no action (a `serve` target whose
-   * `files` dependency rebuilt) still counts as built. Sub-target events (a
-   * `label`) are skipped — their declared owner announces alongside. The driver
-   * reports these names per watch cycle. */
+  /** The top-level (directly-requested) targets that had tasks performed for
+   * them since the last {@link endCycle}, reported on the cycle-end event. A
+   * dependency's build is attributed to the outermost requester on its demand
+   * chain, so the set answers "which of the run's requests did this cycle do
+   * work for". Fed by {@link recordBuiltTarget}. */
   private readonly builtTargets = new Set<string>();
 
   constructor(
@@ -262,31 +201,95 @@ export class ExecutionContext {
     this.sourceFileSource = sourceFileSource;
     this.absFileSource = absFileSource;
     this.cycle = cycle;
+    /* Subscribed first, so the built-target record is current by the time any
+     * later listener sees the same event. */
+    this.onBuildEvent(event => this.recordBuiltTarget(event));
+    this.cycle.onAdvance(count => this.emit({ kind: "cycle-start", cycle: count }));
   }
 
   /**
-   * @return the declared targets that built since the previous call (or since the
-   * start), clearing that baseline — so each watch-mode rebuild reports only what
-   * it did. A one-shot run calls this once; an empty list means the run had no
-   * effect ("already up to date").
+   * Designate `evaluation` as the run's evaluation: each of its settlements
+   * ends the current cycle. Called once per run ({@link Fabr.evaluate}); were a
+   * second chain ever observed, {@link endCycle}'s guard keeps a cycle from
+   * being reported twice.
    */
-  public takeBuiltTargets(): string[] {
-    const names = [...this.builtTargets];
+  public observeEvaluation(evaluation: ComputableSource<unknown>): void {
+    /* The chain's dependant list keeps the sink alive; nothing to store. */
+    new ComputableHandle(source => this.endCycle(source.state === ComputableState.Error)).seat(evaluation);
+  }
+
+  /** The last cycle a cycle-end was emitted for — the once-per-cycle guard. */
+  private lastEndedCycle = -1;
+
+  /** Emit the cycle-end for the current cycle, carrying everything built since
+   *  the last report. */
+  private endCycle(failed: boolean): void {
+    const cycle = this.cycle.current;
+    if (cycle === this.lastEndedCycle) {
+      return;
+    }
+    this.lastEndedCycle = cycle;
+    const built = [...this.builtTargets];
     this.builtTargets.clear();
-    return names;
-  }
-
-  /** The current build cycle — a target's per-cycle announce flag is keyed by it
-   *  (see {@link BuildCycle}). */
-  public get buildGeneration(): number {
-    return this.cycle.current;
+    this.emit({ kind: "cycle-end", cycle, failed, built });
   }
 
   /**
-   * Install the progress listener notified as work is actually performed.
+   * Subscribe to the build event stream. `output: true` additionally requests
+   * `task-output` events; with no output subscriber (`-q`, a headless run) a
+   * step captures its subprocess output and reports it only on failure.
    */
-  public onProgress(listener: ProgressListener): void {
-    this.progressListener = listener;
+  /* Listeners must not throw: an exception propagates into whatever emission
+   * point fired (a task's create path, the watch flush). */
+  public onBuildEvent(listener: BuildListener, options?: { output?: boolean }): void {
+    this.listeners.push(listener);
+    this.wantsOutput ||= options?.output === true;
+  }
+
+  /**
+   * Perform `run` as one tracked task: emits task-start now and task-end when
+   * the returned chain settles, either way. `run` receives the task's
+   * {@link ITaskReport} for streaming its output, phases, and progress.
+   */
+  public runTask<T>(task: TaskDescription, run: (report: ITaskReport) => Computable<T>): Computable<T> {
+    const id = this.nextTaskId++;
+    /* Each task-progress carries the latest of both halves, so any single
+     * status event is the task's whole condition. */
+    let state: TaskState = "running";
+    let latest: TaskProgress | undefined;
+    const status = (): void => this.emit({ kind: "task-progress", id, task, state, progress: latest });
+    const report: ITaskReport = {
+      output: this.wantsOutput ? { line: line => this.emit({ kind: "task-output", id, task, line }) } : undefined,
+      activity: activityCounter(next => {
+        state = next;
+        status();
+      }),
+      progress: measured => {
+        latest = measured;
+        status();
+      },
+    };
+    this.emit({ kind: "task-start", id, task, state });
+    const end = (failed: boolean): void => this.emit({ kind: "task-end", id, task, failed });
+    /* A synchronous throw must still end the task, or the start dangles (a
+     * phantom "running" row for the rest of a watch session). */
+    let chain: Computable<T>;
+    try {
+      chain = run(report);
+    } catch (err) {
+      end(true);
+      throw err;
+    }
+    return chain.then(
+      result => {
+        end(false);
+        return result;
+      },
+      err => {
+        end(true);
+        throw err;
+      }
+    );
   }
 
   /** This run's state for `key`, or undefined if no plugin has established it
@@ -307,16 +310,20 @@ export class ExecutionContext {
     return context;
   }
 
-  public notifyProgress(event: ProgressEvent): void {
-    /* Record the *top-level* target each build serves, for the driver's
-     * per-cycle status line: the announced target itself when directly
-     * requested, else the outermost requester on its demand chain
-     * (`requiredBy` is nearest-first, so its last element). Every event is
-     * from a cache-miss path. */
-    if (event.kind === "target-build" && event.label === undefined) {
-      const topLevel = event.requiredBy.length > 0 ? event.requiredBy[event.requiredBy.length - 1] : event.target;
-      this.builtTargets.add(declName(topLevel));
+  /** Deliver an event to every subscriber, in subscription order. */
+  private emit(event: BuildEvent): void {
+    this.listeners.forEach(listener => listener(event));
+  }
+
+  /** Record the top-level target a task serves: the building target itself
+   *  when directly requested, else the outermost requester on its demand chain
+   *  (`requiredBy` is nearest-first, so its last element). */
+  private recordBuiltTarget(event: BuildEvent): void {
+    /* A labelled sub-task re-adds its owner (its description spreads the
+     * owner's target/requiredBy); the Set absorbs the duplicate. */
+    if (event.kind === "task-start" && event.task.kind === "target-build") {
+      const { target, requiredBy } = event.task;
+      this.builtTargets.add(declName(requiredBy.length > 0 ? requiredBy[requiredBy.length - 1] : target));
     }
-    this.progressListener?.(event);
   }
 }

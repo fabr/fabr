@@ -17,36 +17,21 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { ConflictError, ExecutionError, MultiError, RequirementResolutionError, TestsFailedError } from "../core/Errors";
+import { chainSteps, IProvenanceStep, renderProvenance } from "../core/Provenance";
+import { RepositoryRef } from "../core/Repository";
+import { Diagnostic, IDiagnosticDetail, IDiagnosticNote, ISourceSpan, Log } from "../support/Log";
+import { declName, declPosn } from "./AST";
+import { constraintText, describeUseSite, IModelRefStep, MODEL_REF_PROVENANCE } from "./BuildContext";
+import { AMBIENT_CONSTRAINT_KEYS, BUILD_OPERATION, preferredOperation } from "./Constraints";
 import {
-  BUILD_OPERATION,
   BuildFilesInvalidError,
-  chainSteps,
   CircularDependencyError,
-  constraintText,
-  declName,
-  declPosn,
   DependencyFailedError,
-  describeUseSite,
-  Diagnostic,
-  ExecutionError,
-  ConflictError,
-  IDiagnosticDetail,
-  IDiagnosticNote,
-  IModelRefStep,
-  IProvenanceStep,
-  ISourceSpan,
-  Log,
-  MODEL_REF_PROVENANCE,
-  MultiError,
   NameResolutionError,
   NoRuleFoundError,
   ReferenceFailedError,
-  renderProvenance,
-  RepositoryRef,
-  RequirementResolutionError,
-  TestsFailedError,
-} from "@fabr-build/core";
-import { preferredOperation } from "./Command";
+} from "./Errors";
 
 /** All failures render through one template: describe() produces the final
  * message, and the structured detail (span, label, notes, help) rides along. */
@@ -55,7 +40,12 @@ const DIAG_FAILURE = Diagnostic.Error<{ message: string }>("{message}");
 type IDiagnostic = { message: string } & IDiagnosticDetail;
 
 /** Verb phrasing for "Cannot <verb> '<target>'", by operation. */
-const NO_RULE_VERBS: Record<string, string> = { build: "build", test: "test", run: "run", files: "resolve the files of" };
+const NO_RULE_VERBS = new Map([
+  ["build", "build"],
+  ["test", "test"],
+  ["run", "run"],
+  ["files", "resolve the files of"],
+]);
 
 /**
  * Converts a build failure (tree) into human-readable diagnostics on the log:
@@ -128,7 +118,7 @@ class PendingReport {
 export class DiagnosticErrorFormatter implements ErrorFormatter {
   /** Ambient constraint keys (host facts, BUILD_OPERATION), elided from every
    * constraint display exactly as progress lines elide them. */
-  constructor(private readonly ambientConstraintKeys: ReadonlySet<string>) {}
+  constructor(private readonly ambientConstraintKeys: ReadonlySet<string> = AMBIENT_CONSTRAINT_KEYS) {}
 
   public report(log: Log, err: Error): void {
     /* The build files were invalid: each error was already reported as its own
@@ -269,7 +259,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
    * type *does* support is the remedy, named as the command that would do it. */
   private describeNoRule(cause: NoRuleFoundError): IDiagnostic {
     const operation = cause.constraints.get(BUILD_OPERATION) ?? "build";
-    const verb = NO_RULE_VERBS[operation] ?? `perform '${operation}' on`;
+    const verb = NO_RULE_VERBS.get(operation) ?? `perform '${operation}' on`;
     const overrides = [...cause.constraints]
       .filter(([key]) => !this.ambientConstraintKeys.has(key))
       .map(([key, value]) => `${key}=${value}`);
@@ -378,4 +368,13 @@ function describeCauses(causes: Error[]): string {
     return causes[0].message;
   }
   return `${causes.length} errors:\n` + causes.map(cause => "  " + cause.message.split("\n").join("\n  ")).join("\n");
+}
+
+const DEFAULT_FORMATTER: ErrorFormatter = new DiagnosticErrorFormatter();
+
+/** Report a failed evaluation through `log`, rendered by the default
+ *  {@link DiagnosticErrorFormatter} — the one error-reporting path, shared by
+ *  the driver's catch sites and the facade's watch channel. */
+export function reportFailure(log: Log, err: Error): void {
+  DEFAULT_FORMATTER.report(log, err);
 }

@@ -739,12 +739,25 @@ function reportUnobserved(err: Error): void {
 class Sink<T> extends ComputableSource<never> {
   private seated: ComputableSource<T> | undefined;
 
+  constructor(private readonly onSettled?: (source: ComputableSource<T>) => void) {
+    super();
+  }
+
   /** Hold `source`: becoming its dependant is what keeps it (and everything below it)
    * attached, and — for a raw source — what starts it. */
   public seat(source: ComputableSource<T>): void {
     this.clear();
     this.seated = source;
     this.attachTo([source]);
+  }
+
+  /** Fires on each settlement of the seated chain — a settle OR a
+   * revalidate-unchanged, which a `then` tail cannot see. */
+  protected override maybeRecompute(): void {
+    const source = this.seated;
+    if (source?.isSettled()) {
+      this.onSettled?.(source);
+    }
   }
 
   /** Withdraw demand: the source loses a dependant and, if it was the last, detaches and
@@ -779,7 +792,16 @@ class Sink<T> extends ComputableSource<never> {
  * failure — a sink reads nothing, so a seated chain still answers for its own errors).
  */
 export class ComputableHandle<T> {
-  private readonly sink = new Sink<T>();
+  private readonly sink: Sink<T>;
+
+  /** `onSettled`, if given, fires on every settlement of the seated chain from
+   *  seating onward — including a revalidation that changed no value, which no
+   *  `then` tail is notified of. A chain already settled when seated reports
+   *  nothing until its next settlement. Fixed at construction, like a sink's
+   *  handlers. */
+  constructor(onSettled?: (source: ComputableSource<T>) => void) {
+    this.sink = new Sink<T>(onSettled);
+  }
 
   /** Hold `source`, releasing whatever was held before. */
   public seat(source: ComputableSource<T>): void {

@@ -595,27 +595,32 @@ function getJointResolution<V, C>(
        * quoted hyphen range, `1.2.3 - 2.3.4`), so a space delimiter isn't
        * obviously injective — a newline can appear in neither a package name
        * nor a constraint, matching how file deps are already newline-separated. */
-      .memoize(format.resolutionTag, `${registry.identity} ${environment}\n${rootKeys.join("\n")}`, () => {
-        /* A memo miss means real resolution work on behalf of the consumer */
-        context.notifyProgress({ kind: "repository-resolve", repository: alias ?? registry.identity, requirements: rootKeys });
-        return resolveMVS(roots, format, registry).then(result => {
-          /* Hard errors (unparseable constraints, unconstrained-only
-           * requirements) are not repairable in any mode. Grouped and
-           * enriched with pin suggestions before throwing — typed + per-error
-           * root attribution, so the resolve catch can map each failure to
-           * the written reference(s) that pulled its subtree in, instead of
-           * blaming the whole collection point. */
-          if (result.errors.length > 0) {
-            if (!enrich) {
-              throw new ResolutionWalkError(result.errors);
-            }
-            return completeRepairSet(result.errors, roots, suggestSourcesFor(context, registry, alias)).then(failures => {
-              throw new ResolutionWalkError(failures);
-            });
-          }
-          return validatedResolutionDoc(registry, roots, result);
-        });
-      })
+      .memoize(format.resolutionTag, `${registry.identity} ${environment}\n${rootKeys.join("\n")}`, () =>
+        /* A memo miss means real resolution work on behalf of the consumer —
+         * tracked, so the metadata reads it fans out are attributable to a
+         * resolution still in flight rather than appearing on their own. */
+        context.runTask(
+          { kind: "repository-resolve", repository: alias ?? registry.identity, consumer: context.name, requirements: rootKeys },
+          () =>
+            resolveMVS(roots, format, registry).then(result => {
+              /* Hard errors (unparseable constraints, unconstrained-only
+               * requirements) are not repairable in any mode. Grouped and
+               * enriched with pin suggestions before throwing — typed + per-error
+               * root attribution, so the resolve catch can map each failure to
+               * the written reference(s) that pulled its subtree in, instead of
+               * blaming the whole collection point. */
+              if (result.errors.length > 0) {
+                if (!enrich) {
+                  throw new ResolutionWalkError(result.errors);
+                }
+                return completeRepairSet(result.errors, roots, suggestSourcesFor(context, registry, alias)).then(failures => {
+                  throw new ResolutionWalkError(failures);
+                });
+              }
+              return validatedResolutionDoc(registry, roots, result);
+            })
+        )
+      )
       .then(files => files.readFile(RESOLUTION_FILE))
       .then(data => deserializeResolutionDoc(JSON.parse(data) as IResolutionDoc, format));
   });

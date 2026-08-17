@@ -20,6 +20,7 @@
 import { Readable } from "stream";
 import { FetchOptions, IActionContext, ICreateOptions, IFetchContext } from "../core/BuildCache";
 import { Computable, ComputableSource } from "../core/Computable";
+import { admitted, ITaskReport } from "../support/Execute";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { FSFileSource } from "../core/FSFileSource";
 import {
@@ -50,8 +51,9 @@ import {
   registerProvenanceRenderer,
 } from "../core/Provenance";
 import { BuildAction, BuildActionInput, BuildActionInputs, IRuleDefinition, RepositoryProvider, SubTargetInputs } from "../rules/Types";
-import { BUILD_OPERATION, Constraints, HOST, RUN_OVERRIDE, TARGET } from "./Constraints";
-import { ExecutionContext, ProgressEvent } from "./ExecutionContext";
+import { Constraints, HOST, RUN_OVERRIDE, TARGET } from "./Constraints";
+import { IFetchReport, ITargetBuildTask, TaskDescription } from "./BuildEvents";
+import { ExecutionContext } from "./ExecutionContext";
 import { ITargetOrigin, TARGET_PROVENANCE } from "./Target";
 import {
   CommandPipeline,
@@ -388,9 +390,14 @@ export class BuildContext {
    */
   public resolutionContext(): ResolutionContext {
     return {
+      /* No target: a collection point entered from the BuildContext itself is
+       * the invocation's own (the CLI resolving a name it was given). A
+       * *target's* collection points pass the TargetContext, which satisfies
+       * this interface directly and names itself. */
+      name: "<command line>",
       getGlobalString: name => this.getProperty(name).then(prop => prop.toString()),
       memoize: (tag, key, create) => this.getCachedOrBuild(`memo:${tag} ${key}`, create),
-      notifyProgress: event => this.execution.notifyProgress(event),
+      runTask: (task, run) => this.execution.runTask(task, run),
     };
   }
 
@@ -766,16 +773,6 @@ export class BuildContext {
     options?: ICreateOptions
   ): Computable<FileSet> {
     return this.execution.buildCache.getOrCreate(manifest, create, options);
-  }
-
-  public getCachedOrFetch(
-    url: string,
-    tag: string,
-    process: (content: Readable, ctx: IFetchContext) => Computable<FileSet>,
-    headers?: Record<string, string>,
-    options?: FetchOptions
-  ): Computable<FileSet> {
-    return this.execution.buildCache.getOrFetch(url, tag, process, headers, options);
   }
 
   /**
@@ -1633,20 +1630,25 @@ export class BuildContext {
     const key = `rule:${action.step.id}:${action.step.version}\n${manifestEvalInputs(action.inputs)}`;
     const cache = this.execution.buildCache;
     const execution = this.execution;
-    const create = (targetDir: string): Computable<FileSet> => {
-      context.announceBuilding();
-      /* The cache owns the scratch dir and the content store, so the action's
-       * context — work dir, streaming-output factory, and the run's execution
-       * funnel — is assembled here, at the bridge between the cache's create
-       * callback and the step. */
-      const actionContext: IActionContext = {
-        workDir: targetDir,
-        createOutput: () => cache.getTemporaryWriteStream(),
-        quiet: execution.quiet,
-        processLimit: execution.processLimit,
-      };
-      return action.step.run(action.inputs, actionContext);
-    };
+    /* The action IS the task reported: this callback runs only on a miss, so a
+     * task exists exactly when something is performed, bracketing the step's
+     * own chain. A target with several actions reports each. */
+    const create = (targetDir: string): Computable<FileSet> =>
+      execution.runTask(context.taskDescription(), report => {
+        /* The cache owns the scratch dir and the content store, so the action's
+         * context — work dir, streaming-output factory, the run's execution
+         * funnel, and the report this step's executions announce through — is
+         * assembled here, at the bridge between the cache's create callback and
+         * the step. */
+        const actionContext: IActionContext = {
+          workDir: targetDir,
+          createOutput: () => cache.getTemporaryWriteStream(),
+          report,
+          processLimit: execution.processLimit,
+          admit: work => admitted(execution.processLimit, report, work),
+        };
+        return action.step.run(action.inputs, actionContext);
+      });
     return this.getCachedOrBuild(key, create, { force: this.forcedBuild(context) });
   }
 
@@ -1746,7 +1748,7 @@ function requestingTargets(target: ITargetDecl, stack?: IDependencyStack): ITarg
  *
  * A rule cannot tell whether it is building a declared or an anonymous target:
  * the interface is uniform, and only the two raw-value primitives
- * (`getProperty`, `getFileProperty`) and `announceBuilding` differ between the
+ * (`getProperty`, `getFileProperty`) and `taskDescription` differ between the
  * two implementations. Everything else — materialization, flag extraction,
  * collection, globals, sub-targets — derives from those and is shared here.
  */
@@ -1956,10 +1958,13 @@ export abstract class TargetContext {
    * resolveMap); an absent property yields an empty map. */
   public abstract getMap(name: string, overrides?: Constraints): Computable<PropertyMap>;
 
-  /** Announce the declared target this evaluation belongs to as building
-   * (once) — see DeclaredTargetContext; an anonymous target delegates to its
-   * declared owner. */
-  public abstract announceBuilding(): void;
+  /**
+   * How an action of this target is described as a task: the declared target
+   * under this evaluation's constraints, plus a labelled sub-target's action
+   * verb ("Compiling X" rather than "Building X"). Read by {@link runAction}
+   * once per action actually performed.
+   */
+  public abstract taskDescription(): ITargetBuildTask;
 
   /** The declared target context this evaluation ultimately belongs to
    * (itself, for a declared target). */
@@ -2057,7 +2062,7 @@ export abstract class TargetContext {
   private resolveCommandRunnable(command: IPositionedName): Computable<RunnableFileSet> {
     return this.context
       .resolveFileValue(command.name, this.stack, { relativeTo: command.ref, callerOverrides: this.runOverrides() })
-      .then(sources => materializeLists(this.context.resolutionContext(), [sources], PERMISSIVE_RESOLUTION))
+      .then(sources => materializeLists(this, [sources], PERMISSIVE_RESOLUTION))
       .then(([resolved]) => this.context.finishDelivered(resolved))
       .then(resolved => asRunnable(resolved, command.name.toString()));
   }
@@ -2072,7 +2077,7 @@ export abstract class TargetContext {
     }
     return this.context
       .resolveFileValue(stdin.name, this.stack, { relativeTo: stdin.ref })
-      .then(sources => materializeLists(this.context.resolutionContext(), [sources]))
+      .then(sources => materializeLists(this, [sources]))
       .then(([resolved]) => this.context.finishDelivered(resolved))
       .then(resolved => {
         const set = FileSet.unionAll(...resolved.filter((source): source is FileSet => source instanceof FileSet));
@@ -2165,28 +2170,29 @@ export abstract class TargetContext {
 
   /**
    * Download through the cache (see BuildCache.getOrFetch); an actual fetch
-   * (a miss) is announced as progress, attributed to this evaluation's declared
-   * target. The optional `resource` is a human noun for what is being fetched
-   * (e.g. "metadata", "package"), carried on the progress event for display.
-   * `options.immutable = false` declares a mutable pointer document (see
-   * FetchOptions) — cached per HTTP caching semantics and revalidated,
-   * instead of frozen forever.
+   * (a miss) is reported as a task, attributed to this evaluation's
+   * declared target. `report` says what the download is (a human noun for what
+   * is being fetched, and whether it is a content or an index read — see
+   * {@link IFetchReport}); nothing in it reaches the cache key or the request.
+   * `options.immutable = false`
+   * declares a mutable pointer document (see FetchOptions) — cached per HTTP
+   * caching semantics and revalidated, instead of frozen forever.
    */
   public fetch(
     url: string,
     tag: string,
     process: (content: Readable, ctx: IFetchContext) => Computable<FileSet>,
-    resource?: string,
+    report: IFetchReport,
     headers?: Record<string, string>,
     options?: FetchOptions
   ): Computable<FileSet> {
-    return this.context.getCachedOrFetch(
+    /* The download IS the task: the cache applies the tracker around the
+     * transfer alone (never a hit), and counts the body past onto its report. */
+    return this.context.execution.buildCache.getOrFetch(
       url,
       tag,
-      (content, ctx) => {
-        this.notifyProgress({ kind: "fetch", url, target: this.getDeclaredContext().target, resource });
-        return process(content, ctx);
-      },
+      process,
+      run => this.runTask({ kind: "fetch", url, target: this.getDeclaredContext().target, ...report }, run),
       headers,
       options
     );
@@ -2271,7 +2277,7 @@ export abstract class TargetContext {
          * rule commonly wants one contained (`entry`) and the rest extracted. */
         const contained = values.map(value => value instanceof ContainedSources);
         const lists = values.map(value => (value instanceof ContainedSources ? value.sources : value));
-        return materializeLists(this.context.resolutionContext(), lists, options).then(partitions => {
+        return materializeLists(this, lists, options).then(partitions => {
           /* The delivery machinery returns entities with their projections
            * pending; the context — the driver — finishes the walk here, except
            * for the parts whose consumer reinterprets the pending refs. */
@@ -2350,9 +2356,10 @@ export abstract class TargetContext {
     });
   }
 
-  /** Emit a progress event on behalf of this target (see ProgressEvent) */
-  public notifyProgress(event: ProgressEvent): void {
-    this.context.execution.notifyProgress(event);
+  /** Perform `run` as one tracked task on behalf of this target — see
+   *  {@link ExecutionContext.runTask}. */
+  public runTask<T>(task: TaskDescription, run: (report: ITaskReport) => Computable<T>): Computable<T> {
+    return this.context.execution.runTask(task, run);
   }
 
   public getGlobalString(name: string, overrides?: Constraints): Computable<string> {
@@ -2404,7 +2411,7 @@ export abstract class TargetContext {
      * its own here rather than through `collect`. */
     return this.context
       .getTarget(name, this.stack, this.runOverrides())
-      .then(sources => materializeLists(this.context.resolutionContext(), [sources], PERMISSIVE_RESOLUTION))
+      .then(sources => materializeLists(this, [sources], PERMISSIVE_RESOLUTION))
       .then(([resolved]) => this.context.finishDelivered(resolved))
       .then(resolved => asRunnable(resolved, name));
   }
@@ -2427,7 +2434,7 @@ export abstract class TargetContext {
       if (sources.length === 0 && fallbackGlobal !== undefined) {
         return this.getGlobalRunnable(fallbackGlobal);
       }
-      return materializeLists(this.context.resolutionContext(), [sources], PERMISSIVE_RESOLUTION)
+      return materializeLists(this, [sources], PERMISSIVE_RESOLUTION)
         .then(([resolved]) => this.context.finishDelivered(resolved))
         .then(resolved => asRunnable(resolved, name));
     });
@@ -2447,17 +2454,13 @@ export abstract class TargetContext {
 
 /**
  * A declared target's context: properties resolve from its `ITargetDecl`, and
- * it owns the "is building" announcement (fired once, at the first actual
- * cache miss beneath it — an evaluation is only *potentially* a build, since
- * it may be served entirely from cache or produce content with no build).
+ * it names the target every task beneath it is attributed to (an
+ * evaluation is only *potentially* a build, since it may be served entirely
+ * from cache or produce content with no build).
  */
 export class DeclaredTargetContext extends TargetContext {
   public readonly target: ITargetDecl;
   private readonly props: Map<string, IPropertyDecl[]>;
-  /** The build cycle in which this target last announced itself building, so a
-   * watch rebuild (a new cycle) re-announces while a single cycle announces once
-   * however many sub-actions miss the cache. */
-  private announcedGeneration = -1;
 
   constructor(target: ITargetDecl, targetDef: ITargetDefDecl, context: BuildContext, stack?: IDependencyStack) {
     super(context, targetDef, stack);
@@ -2591,19 +2594,13 @@ export class DeclaredTargetContext extends TargetContext {
     return new DependencyFailedError(this.target, err);
   }
 
-  public announceBuilding(): void {
-    const generation = this.context.execution.buildGeneration;
-    if (this.announcedGeneration === generation) {
-      return;
-    }
-    this.announcedGeneration = generation;
-    this.notifyProgress({
+  public taskDescription(): ITargetBuildTask {
+    return {
       kind: "target-build",
       target: this.target,
-      operation: this.context.getConstraint(BUILD_OPERATION) ?? "build",
       constraints: this.context.getConstraints(),
       requiredBy: requestingTargets(this.target, this.stack),
-    });
+    };
   }
 }
 
@@ -2726,24 +2723,22 @@ export class AnonymousTargetContext extends TargetContext {
     return new DependencyFailedError(this.declared.target, err, this.label);
   }
 
-  public announceBuilding(): void {
-    /* The umbrella "Building X" (the declared target, once), then this specific
-     * step ("Compiling X") attributed to it. A sub-target is a target too: it
-     * announces the same event, carrying its own constraints/operation, plus the
-     * action-verb `label` that distinguishes it. Its requiredBy is left to the
-     * umbrella event (it belongs to the same declared target). An unlabelled
-     * sub-target *is* the umbrella's work and says nothing further. */
-    this.declared.announceBuilding();
-    if (this.label !== undefined) {
-      this.notifyProgress({
-        kind: "target-build",
-        target: this.declared.target,
-        operation: this.context.getConstraint(BUILD_OPERATION) ?? "build",
-        constraints: this.context.getConstraints(),
-        requiredBy: [],
-        label: this.label,
-      });
-    }
+  /**
+   * A sub-target is a target too: it describes its work the same way, carrying
+   * its own constraints/operation, plus the action-verb `label` that
+   * distinguishes this step within its owner's work ("Compiling X"). An
+   * *unlabelled* sub-target (the test run) is not a distinguishable step — it
+   * IS the declared target's work — so it describes itself exactly as its owner
+   * would, and reads as "Testing X".
+   */
+  public taskDescription(): ITargetBuildTask {
+    return {
+      ...this.declared.taskDescription(),
+      /* This evaluation's own constraints (operation included), which may
+       * differ from the owner's (a test compile forced to `build`). */
+      constraints: this.context.getConstraints(),
+      label: this.label,
+    };
   }
 }
 

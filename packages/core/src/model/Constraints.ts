@@ -34,6 +34,24 @@ export const BUILD_OPERATION = "BUILD_OPERATION";
  */
 export const HOST = "HOST";
 
+/** Constraint keys the driver injects as ambient context, elided from
+ *  constraint displays (the verb and the host facts speak for themselves). */
+export const AMBIENT_CONSTRAINT_KEYS: ReadonlySet<string> = new Set([BUILD_OPERATION, HOST]);
+
+const OPERATION_PREFERENCE = ["build", "test", "run"];
+
+/**
+ * @return the operation to suggest for a target whose type supports
+ * `operations` (as BuildModel.getOperations reports them, `"*"` being any),
+ * preferring the commonest verbs; undefined when none of them is suggestible.
+ */
+export function preferredOperation(operations: string[]): string | undefined {
+  if (operations.includes("*")) {
+    return OPERATION_PREFERENCE[0];
+  }
+  return OPERATION_PREFERENCE.find(operation => operations.includes(operation));
+}
+
 /**
  * The platform triple we are *building for*. `default TARGET = ${HOST};` (STD.fabr),
  * overridable per build (`-D TARGET=…`) or per reference (`ref<TARGET=…>`) to

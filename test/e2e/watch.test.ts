@@ -15,7 +15,11 @@
  */
 
 import { expect } from "chai";
-import { startFabrWatch } from "./harness";
+import { startFabrWatch, started } from "./harness";
+
+/** Each unit of work logs a start line and a completion line, so a test that
+ *  counts rebuilds must count the start lines alone. */
+const BUILDING_GEN = started("Building gen");
 
 /* Watch mode smoke test through the real CLI: a long-running `fabr build -w`
  * subprocess that we drive by mutating a fixture file and asserting on the
@@ -49,13 +53,13 @@ describe("e2e: watch mode (fabr build -w)", () => {
     );
     try {
       /* Initial build establishes the live graph and starts watching. */
-      await session.waitFor("Building gen", { timeoutMs: 60000 });
+      await session.waitFor(BUILDING_GEN, { timeoutMs: 60000 });
       await session.waitFor("Watching for changes", { timeoutMs: 60000 });
 
       /* Editing the source triggers exactly one more build cycle: the target
        * re-announces ("Building gen" again) and re-reports ("Built gen"). */
       session.write("src/gen.sh", 'mkdir -p out\nprintf "V2\\n" > out/msg.txt\n');
-      await session.waitFor("Building gen", { count: 2, timeoutMs: 60000 });
+      await session.waitFor(BUILDING_GEN, { count: 2, timeoutMs: 60000 });
       await session.waitFor("Built gen", { count: 2, timeoutMs: 60000 });
     } finally {
       const code = await session.stop();

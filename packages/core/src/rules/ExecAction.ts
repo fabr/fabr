@@ -60,9 +60,12 @@ function runExec(inputs: BuildActionInputs, ctx: IActionContext): Computable<Fil
   const files = fileSetInput(inputs, "files");
   const argv = stringListInput(inputs, "argv");
   const outputs = stringInput(inputs, "outputs", "**");
-  return writeFileSet(ctx.workDir, files)
-    .then(() => execute(ctx.processLimit, findExecutable(argv[0]), argv.slice(1), ctx.workDir, {}, ctx.quiet))
-    .then(() => getResultFileSet(ctx.workDir, outputs));
+  return ctx.admit(() => writeFileSet(ctx.workDir, files))
+    .then(() => execute(ctx.processLimit, findExecutable(argv[0]), argv.slice(1), ctx.workDir, {}, ctx.report))
+    /* Collecting is the other half of the step's own machine work — reading
+     * and hashing what the tool wrote — and is admitted for the same reason as
+     * staging, once the execution's slot has been given back. */
+    .then(() => ctx.admit(() => getResultFileSet(ctx.workDir, outputs)));
 }
 
 export const EXEC_ACTION: IBuildActionDefinition = { id: "core:exec", version: 2, run: runExec };

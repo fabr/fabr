@@ -352,6 +352,17 @@ export interface WatchSession {
   stop(signal?: NodeJS.Signals): Promise<number>;
 }
 
+/**
+ * Matches the line announcing a unit of work *starting* — "Building gen" — and
+ * not the one announcing the same work finishing ("✓ Building gen (1.2s)"),
+ * which repeats the verb verbatim. Anchored at the diagnostic's level prefix,
+ * where only a start line puts the verb. Use this wherever a test *counts*
+ * announcements (n cycles ⇒ n starts); a plain substring would count both.
+ */
+export function started(what: string): RegExp {
+  return new RegExp("^info:" + what.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "m");
+}
+
 function toGlobalRegExp(pattern: string | RegExp): RegExp {
   if (pattern instanceof RegExp) {
     return pattern.global ? pattern : new RegExp(pattern.source, pattern.flags + "g");

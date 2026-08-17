@@ -477,7 +477,9 @@ export class NPMRepository
               const versions = parseJson(data, `package document for ${pkg} from ${this.url}`, toPublishedVersions);
               return new FileSet(new Map([[VERSIONS_FILE, MemoryFile.from(JSON.stringify(versions))]]));
             }),
-          "version list",
+          /* An index read: a resolution makes one of these per package it
+           * walks, and the resolve that asked is the item worth recording. */
+          { resource: "version list", role: "index" },
           headers,
           forceRevalidate ? { immutable: false, forceRevalidate: true } : { immutable: false }
         )
@@ -557,7 +559,8 @@ export class NPMRepository
                 const meta = parseMetadataResponse(data, key);
                 return new FileSet(new Map([[METADATA_FILE, MemoryFile.from(JSON.stringify(meta))]]));
               }),
-            "metadata",
+            /* As the version list: one per package version considered. */
+            { resource: "metadata", role: "index" },
             headers
           )
         )
@@ -608,7 +611,7 @@ export class NPMRepository
                 return stripArchiveRoot(files);
               });
             },
-            "package",
+            { resource: "package", role: "content" },
             headers
           )
         )

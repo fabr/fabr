@@ -32,6 +32,7 @@ import {
   writeFileSet,
 } from "@fabr-build/core";
 import { ChildProcess } from "node:child_process";
+import { resumeActiveTerminal, suspendActiveTerminal, withTerminalSuspended } from "./Terminal";
 
 /**
  * `fabr run`'s execution half — kept apart from the driver's model/dispatch
@@ -54,7 +55,9 @@ export function runInteractive(cache: BuildCache, runnable: RunnableFileSet, cal
   const dir = cache.createWorkDir("run-");
   const argv = launchArgv(runnable, callerArgs, dir);
   return writeFileSet(dir, runnable)
-    .then(() => executeInteractive(findExecutable(argv[0]), argv.slice(1), launchDir(runnable, dir)))
+    /* The program owns the terminal while it runs (it inherits fabr's stdio),
+     * so fabr's own display steps aside for the duration. */
+    .then(() => withTerminalSuspended(() => executeInteractive(findExecutable(argv[0]), argv.slice(1), launchDir(runnable, dir))))
     /* Remove the staged install whichever way the run ends — a staging or launch
      * failure must not leak the work dir (only the success path did before). */
     .finally(() => cache.releaseWorkDir(dir));
@@ -269,6 +272,11 @@ export class RunSupervisor {
         this.log.log(DIAG_RESTART, { name: this.name });
       }
       const child = spawnInteractive(findExecutable(argv[0]), argv.slice(1), launchDir(runnable, install.dir));
+      /* The supervised program owns the terminal from here until it exits —
+       * which outlives the build that launched it, so the hand-over is bracketed
+       * by the child's own lifetime rather than by a chain. Rebuild diagnostics
+       * still print; only the live pane stands down. */
+      suspendActiveTerminal();
       install.child = child;
       this.current = install;
       /* `target` is not re-pointed here — it was set when this install was staged,
@@ -362,6 +370,8 @@ export class RunSupervisor {
     if (err) {
       this.log.log(DIAG_RUN_ERROR, { name: this.name, message: err.message });
     }
+    /* The terminal is fabr's again (a restart's new child suspends it afresh). */
+    resumeActiveTerminal();
     install.child = undefined;
     if (this.current === install) {
       this.current = undefined;

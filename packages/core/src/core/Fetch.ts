@@ -19,7 +19,7 @@
 
 import * as http from "http";
 import { URL } from "url";
-import { Readable } from "stream";
+import { Readable, Transform } from "stream";
 import { EnvHttpProxyAgent, interceptors, request as httpRequest } from "undici";
 import { Computable } from "./Computable";
 import { HttpStatusError } from "./Errors";
@@ -157,6 +157,47 @@ export interface UrlStreamResponse {
   cacheControl: ICacheControl;
   /** Present for a 200; absent for a 304. */
   stream?: Readable;
+  /**
+   * The body's declared size in bytes, when the origin declared one — for
+   * reporting a download's progress as a fraction. Absent for a chunked or
+   * unlabelled response, which is why a consumer must be able to report bare
+   * bytes with no total.
+   */
+  contentLength?: number;
+}
+
+/**
+ * The declared body size, or undefined when the origin declared none — or
+ * declared nonsense. A size is only ever used to render a fraction, so an
+ * unusable one degrades to "no total" rather than failing the download.
+ */
+function parseContentLength(value: string | string[] | undefined): number | undefined {
+  const size = typeof value === "string" ? Number(value) : NaN;
+  return Number.isSafeInteger(size) && size >= 0 ? size : undefined;
+}
+
+/**
+ * Pass `stream` through unchanged while reporting how many bytes have gone by,
+ * for a caller displaying a download's progress.
+ *
+ * Counted inside a Transform, not by a `data` listener: a listener would put
+ * the counter in flowing mode at once, silently discarding whatever arrives
+ * before the real consumer attaches — whereas `_transform` only sees bytes as
+ * the consumer draws them, so backpressure holds and a consumer that attaches
+ * a tick late loses nothing. Errors are forwarded, so a failed transfer still
+ * fails the consumer rather than hanging it.
+ */
+export function reportingProgress(stream: Readable, report: (bytes: number) => void): Readable {
+  let seen = 0;
+  const counter = new Transform({
+    transform(chunk: Buffer, _encoding, done): void {
+      seen += chunk.length;
+      report(seen);
+      done(null, chunk);
+    },
+  });
+  stream.on("error", err => counter.destroy(err instanceof Error ? err : new Error(String(err))));
+  return stream.pipe(counter);
 }
 
 /**
@@ -186,7 +227,11 @@ export function openUrlStream(
     httpRequest(urlstring, { method: "GET", headers, dispatcher }).then(response => {
       const resHeaders = response.headers as http.IncomingHttpHeaders;
       if (response.statusCode === 200) {
-        resolve({ cacheControl: parseCacheControl(resHeaders, now()), stream: response.body });
+        resolve({
+          cacheControl: parseCacheControl(resHeaders, now()),
+          stream: response.body,
+          contentLength: parseContentLength(resHeaders["content-length"]),
+        });
       } else if (response.statusCode === 304 && conditional) {
         void response.body.dump(); /* discard the (empty) body so the socket is released */
         resolve({ cacheControl: parseCacheControl(resHeaders, now()) });

@@ -18,6 +18,7 @@
  */
 
 import { expect } from "chai";
+import { SILENT_REPORT } from "../support/Execute";
 import { Computable } from "./Computable";
 import { FileSet, IFile } from "./FileSet";
 import { FileSetRef } from "./FileSetRef";
@@ -121,9 +122,10 @@ class StubRepository implements Repository {
 /** The consuming-side surface the resolution layer wants — enough for tests
  * whose repositories deliver per reference (nothing joint to memoize). */
 const RESOLUTION_CONTEXT: ResolutionContext = {
+  name: "test",
   getGlobalString: () => Computable.resolve("build"),
   memoize: (_tag, _key, create) => create("unused"),
-  notifyProgress: () => undefined,
+  runTask: (_task, run) => run(SILENT_REPORT),
 };
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {

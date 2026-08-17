@@ -27,7 +27,8 @@ import { Name } from "./Name";
 import type { PublishableFileSet } from "./PublishableFileSet";
 import type { Requirement, RequirementSource, Selected } from "../resolver/Types";
 import type { PackageFormat } from "../resolver/PackageFormat";
-import type { ProgressEvent } from "../model/ExecutionContext";
+import type { TaskDescription } from "../model/BuildEvents";
+import type { ITaskReport } from "../support/Execute";
 /* Value imports used only inside function bodies (the resolution-layer
  * dispatch below), so the module cycle with the resolver is init-safe:
  * neither module touches the other's bindings at load time. */
@@ -333,9 +334,12 @@ export function attributedTo(reference: RepositoryRef, deliver: () => Computable
  * their own transports).
  */
 export interface ResolutionContext {
+  /** Whose collection point this is — the consuming target's name, or a
+   *  catalog's. Reported as the subject of the resolution work. */
+  readonly name: string;
   getGlobalString(name: string): Computable<string>;
   memoize(tag: string, key: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet>;
-  notifyProgress(event: ProgressEvent): void;
+  runTask<T>(task: TaskDescription, run: (report: ITaskReport) => Computable<T>): Computable<T>;
 }
 
 /** What a {@link RepositoryRef} resolves against: a repository's read face —

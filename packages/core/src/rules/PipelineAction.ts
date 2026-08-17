@@ -41,9 +41,11 @@ function runPipeline(inputs: BuildActionInputs, ctx: IActionContext): Computable
   const output = inputs.output instanceof Name ? inputs.output : undefined;
   const stdin = inputs.stdin instanceof FileSet ? inputs.stdin : undefined;
 
-  return writeFileSet(ctx.workDir, files)
+  return ctx.admit(() => writeFileSet(ctx.workDir, files))
     .then(() => stdinBytes(stdin))
-    .then(bytes => executePipeline(ctx.processLimit, specs, ctx.workDir, () => ctx.createOutput(), bytes, ctx.quiet))
+    .then(bytes =>
+      executePipeline(ctx.processLimit, specs, ctx.workDir, () => ctx.createOutput(), bytes, ctx.report)
+    )
     .then(captured =>
       /* Plus any files the tools wrote, when an `output` projection is given (a
        * pure redirect genrule omits it and collects only the captures). A given
@@ -54,7 +56,7 @@ function runPipeline(inputs: BuildActionInputs, ctx: IActionContext): Computable
        * captures are the output.) */
       output === undefined
         ? Computable.resolve(captured)
-        : getResultFileSet(ctx.workDir, output).then(written => {
+        : ctx.admit(() => getResultFileSet(ctx.workDir, output)).then(written => {
             if (written.isEmpty()) {
               throw attachHelp(
                 new Error(`the command produced no files matching output pattern '${output.toString()}'`),

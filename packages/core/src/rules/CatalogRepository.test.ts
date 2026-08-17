@@ -44,15 +44,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
 import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
-import { RepositoryReader } from "../core/Repository";
-import { ResolutionContext } from "../core/Repository";
+import { RepositoryReader, ResolutionContext } from "../core/Repository";
 import { expect } from "chai";
+import { SILENT_REPORT } from "../support/Execute";
 
 /* getRepositoryRef vending is pure — an empty catalog suffices. */
 const TEST_RESOLUTION_CONTEXT: ResolutionContext = {
+  name: "@cat",
   getGlobalString: () => Computable.resolve("build"),
   memoize: (_tag, _key, create) => create("unused"),
-  notifyProgress: () => undefined,
+  runTask: (_task, run) => run(SILENT_REPORT),
 };
 const emptyCatalog = new CatalogRepository("@cat", TEST_RESOLUTION_CONTEXT, Computable.resolve(new Map()));
 

@@ -20,21 +20,19 @@
 import {
   BUILD_OPERATION,
   FILES_OPERATION,
-  BuildCache,
   BuildContext,
   BuildModel,
+  buildOperation,
   Computable,
-  declName,
+  ComputableHandle,
   declPosn,
   Diagnostic,
   ExecutionContext,
+  Fabr,
   FileSet,
   formatTestSummary,
   IFile,
-  BuildCycle,
-  getSourceFileSource,
   getTestReport,
-  loadProject,
   Name,
   parseName,
   Log,
@@ -46,44 +44,39 @@ import {
   isNameValue,
   ITargetDecl,
   ITargetDefDecl,
-  ProgressListener,
   PropertyType,
   PublishableFileSet,
+  reportFailure,
   SyncSource,
+  testOperation,
+  forceTargets,
   PERMISSIVE_RESOLUTION,
   toRunnable,
   signalInteractiveChild,
   SourceRef,
   toError,
-  WatchController,
-  FSFileSource,
   writeFileSet,
   Constraints,
   IResolvedWriteBack,
   locateSource,
   writeBackCandidates,
 } from "@fabr-build/core";
-import { DiagnosticErrorFormatter, ErrorFormatter } from "./ErrorFormatter";
 import { runInteractive, RunSupervisor } from "./RunHandler";
 import { shellInto } from "./ShellHandler";
 import { publishSync } from "./SyncHandler";
 import { completeCommandLine, Mode, Options } from "./Command";
-import { getSourceRoot, getBuildCacheRoot, getHostProperties, PROJECT_FILENAME } from "./Environment";
+import { getSourceRoot, getBuildCacheRoot, getHostProperties } from "./Environment";
 import { IInvocationSite } from "./CommandLineSource";
 import { TerminalInteraction } from "./Interaction";
+import { ProgressReporter } from "./Progress";
+import { setActiveTerminal, TerminalStream } from "./Terminal";
 import * as path from "node:path";
 
-const DIAG_BUILD_COMPLETE = Diagnostic.Info<{ targets: string }>("Built {targets}");
-const DIAG_UP_TO_DATE = Diagnostic.Info<Record<string, never>>("Already up to date");
 const DIAG_BUILD_FAILED = Diagnostic.Error<Record<string, never>>("Build failed");
 const DIAG_ERROR = Diagnostic.Error<{ message: string }>("{message}");
 const DIAG_TEST_RESULT = Diagnostic.Info<{ name: string; summary: string }>("{name}: {summary}");
-const DIAG_BUILDING = Diagnostic.Info<{ verb: string; name: string; chain: string }>("{verb} {name}{chain}");
 const DIAG_WATCHING = Diagnostic.Info<Record<string, never>>("Watching for changes (Ctrl-C to stop)");
-const DIAG_WATCH_WARNING = Diagnostic.Warn<{ message: string }>("{message}");
 const DIAG_UNHANDLED = Diagnostic.Warn<{ message: string }>("Unhandled error: {message}");
-const DIAG_RESOLVING = Diagnostic.Info<{ requirements: string; name: string }>("Resolving {requirements} from {name}");
-const DIAG_FETCHING = Diagnostic.Info<{ resource: string; url: string }>("Fetching {resource}{url}");
 const DIAG_COPIED = Diagnostic.Info<{ count: number; dest: string }>("Copied {count} file(s) to {dest}");
 const DIAG_EXPECTATION_UPDATED = Diagnostic.Info<{ file: string }>("Updated {file}");
 /* A refreshed record with nowhere to go. Warned rather than passed over: the run
@@ -100,39 +93,10 @@ const DIAG_EXPECTATION_CONFLICT = Diagnostic.Warn<{ file: string }>(
   "Conflicting updates for {file} from different test runs; keeping the first"
 );
 
-/** Progress verbs for the well-known operations; anything else renders as
- * "Running <operation> on <target>" */
-const OPERATION_VERBS: Record<string, string> = { build: "Building", test: "Testing", run: "Running" };
-
-/** Constraint keys the driver injects as ambient context, elided from progress
- * output: the host facts, and BUILD_OPERATION (already shown as the verb). */
-const AMBIENT_CONSTRAINT_KEYS = new Set([BUILD_OPERATION, ...Object.keys(getHostProperties())]);
-
-/**
- * @return a ` [k=v, ...]` annotation of the explicit constraints a target is
- * building under (the ambient keys elided), or "" when there are none — so a
- * default build reads exactly as before.
- */
-function renderConstraints(constraints: Constraints): string {
-  const shown = [...constraints].filter(([key]) => !AMBIENT_CONSTRAINT_KEYS.has(key));
-  return shown.length > 0 ? ` [${shown.map(([key, value]) => key + "=" + value).join(", ")}]` : "";
-}
-
-/** Quiet-window (ms) a burst of filesystem events is collapsed behind before a
- * rebuild — long enough to coalesce an editor's save, short enough to feel live. */
-const WATCH_QUIET_MS = 100;
-
 /** How long a signalled watch process's teardown may take before the shutdown
  * deadline force-exits — generous for a native watcher unsubscribe, short
  * enough that a stuck teardown can't hang a test runner or CI. */
 const SHUTDOWN_GRACE_MS = 5000;
-
-/** The presentation of build failures — swappable; see ErrorFormatter. */
-const errorFormatter: ErrorFormatter = new DiagnosticErrorFormatter(AMBIENT_CONSTRAINT_KEYS);
-
-function reportFailure(log: Log, err: Error): void {
-  errorFormatter.report(log, err);
-}
 
 /**
  * A consumer closing the pipe early (`fabr cat … | head`, `… | jq -e`) makes the
@@ -185,7 +149,13 @@ function flushAndExit(code: number): void {
  * `site` is where the invocation was run — known only once the project has been
  * located, so the harness supplies it rather than the parse: it is what a name
  * given on the command line is written in (see {@link CommandLineSource}). */
-export type Operation = (model: BuildModel, execution: ExecutionContext, site: IInvocationSite) => Computable<void>;
+export type Operation = (model: BuildModel, execution: ExecutionContext, site: IInvocationSite) => Computable<void | Takeover>;
+
+/** What a process-takeover verb's evaluation resolves to: the launch to
+ *  perform once the evaluation has settled and its cycle closed (`fabr run`'s
+ *  interactive program). The takeover owns the process from its invocation —
+ *  its chain ends in the exit. */
+export type Takeover = () => Computable<void>;
 
 /**
  * The CLI entry: dispatch the command to a tiny operation (each closing over
@@ -217,7 +187,7 @@ export function runFabr(options: Options): Promise<void> {
         Computable.forAll(resolveNames(model, options, execution, site), (...results) => copyTarget(options, execution, results))
       );
     case "test":
-      return runWith(options, (model, execution, site) => testOperation(model, options, execution, site, options.targets), watch);
+      return runWith(options, (model, execution, site) => runTest(model, options, execution, site, options.targets), watch);
     case "run":
       return runWith(options, (model, execution, site) => runProgram(model, options, execution, site, watch), watch);
     case "shell":
@@ -235,51 +205,30 @@ export function runFabr(options: Options): Promise<void> {
     default: /* build, or no command at all */
       return options.deferred
         ? runWith(options, (model, execution, site) => runInferred(model, options, execution, site, options.mode === Mode.Watch), watch)
-        : runWith(options, (model, execution) => buildOperation(model, options, execution, options.targets), watch);
+        : runWith(options, (model, execution) => runBuild(model, options, execution, options.targets), watch);
   }
 }
 
-/** `fabr build <targets>`: build each target and print the status marker. */
-function buildOperation(model: BuildModel, options: Options, execution: ExecutionContext, names: string[]): Computable<void> {
-  const targets = buildTargets(model, options, execution, "build", names);
-  /* Report inside the callback (see the test case) so a watch rebuild
-   * re-prints its status rather than being cut off at the void result. */
-  return Computable.forAll(targets, (...results: SourceRef[][]) =>
-    Computable.forAll(results.map(realiseNamespaces), () => buildStatus(execution))
-  );
+/** `fabr build <targets>`: the core operation; the marker rides cycle-end. */
+function runBuild(model: BuildModel, options: Options, execution: ExecutionContext, names: string[]): Computable<void> {
+  markForced(model, options, execution, names);
+  return buildOperation(configFor(model, options, execution, "build"), names).then(() => undefined);
 }
 
-/**
- * Force what a target's own build promises but produces on demand: a release
- * namespace packages a member when something names one, so building the target
- * itself — which asks for its outputs, not for a reference into them — must
- * realise every member. That is the sync dry-run, and it is why laziness
- * belongs to references into a namespace rather than to the target's build.
- */
-function realiseNamespaces(sources: SourceRef[]): Computable<unknown> {
-  return Computable.forAll(
-    sources.filter((source): source is SyncSource => source instanceof SyncSource).map(release => release.members()),
-    (...realised: unknown[]) => realised
-  );
-}
-
-/** `fabr test <targets>`: build each target's tests, run them, and report. */
-function testOperation(
+/** `fabr test <targets>`: the core operation, with the summaries and
+ * expectation write-backs composed onto its results — a `then` on the results
+ * re-runs exactly when a watch cycle changed them, so per-change reporting is
+ * ordinary composition. */
+function runTest(
   model: BuildModel,
   options: Options,
   execution: ExecutionContext,
   site: IInvocationSite,
   names: string[]
 ): Computable<void> {
-  const targets = buildTargets(model, options, execution, "test", names);
-  /* Reporting lives in the forAll callback (not a trailing .then) so it
-   * re-runs on every watch cycle: the callback is re-invoked whenever a
-   * target re-settles to a new value, whereas a `.then` on the void result
-   * would be short-circuited by the value-equality cutoff. */
-  return Computable.forAll(targets, (...results) =>
-    reportTestResults(execution.log, names, results)
-      .then(() => applyExpectationUpdates(execution, site, results))
-      .then(() => buildStatus(execution))
+  markForced(model, options, execution, names);
+  return testOperation(configFor(model, options, execution, "test"), names).then(results =>
+    reportTestResults(execution.log, names, results).then(() => applyExpectationUpdates(execution, site, results))
   );
 }
 
@@ -369,21 +318,28 @@ function runInferred(
   execution: ExecutionContext,
   site: IInvocationSite,
   watch: boolean
-): Computable<void> {
+): Computable<void | Takeover> {
   const plan = completeCommandLine(options, name => operationsOf(model, name));
   const groups: Computable<void>[] = [];
   if (plan.build.length > 0) {
-    groups.push(buildOperation(model, options, execution, plan.build));
+    groups.push(runBuild(model, options, execution, plan.build));
   }
   if (plan.test.length > 0) {
-    groups.push(testOperation(model, options, execution, site, plan.test));
+    groups.push(runTest(model, options, execution, site, plan.test));
   }
   const run = plan.run;
   if (!run) {
     return Computable.forAll(groups, () => undefined);
   }
-  const program = (): Computable<void> => runProgram(model, options, execution, site, watch, run.target, run.args);
-  return watch ? Computable.forAll([...groups, program()], () => undefined) : Computable.forAll(groups, () => undefined).then(program);
+  const program = (): Computable<void | Takeover> => runProgram(model, options, execution, site, watch, run.target, run.args);
+  if (watch) {
+    return Computable.forAll([...groups, program()], () => undefined);
+  }
+  /* One-shot: the groups build first, then the run target — all one
+   * evaluation; the program launch rides out as its takeover. (The marker
+   * prints before the launch — the command-less form is build-flavoured, and
+   * a one-line summary ahead of the program is its status report.) */
+  return Computable.forAll(groups, () => undefined).then(program);
 }
 
 /** @return the operations the named target's type supports, or none at all if
@@ -410,13 +366,13 @@ function runProgram(
   watch: boolean,
   target: string = options.targets[0],
   args: string[] = options.runArgs ?? []
-): Computable<void> {
+): Computable<void | Takeover> {
   const config = configFor(model, options, execution, "run");
   markForced(model, options, execution, [target]);
   const supervisor = watch ? new RunSupervisor(execution.buildCache, target, args, execution.log) : undefined;
   /* The name IS the program (`fabr run @npm:http-server:14.1.1`), so its closure
    * is a sealed install — the same judgment a rule's `tool` property makes. */
-  return config.resolveName(options.commandLine.refFor(target, site), undefined, PERMISSIVE_RESOLUTION).then(sources => {
+  return config.resolveName(options.commandLine.refFor(target, site), undefined, PERMISSIVE_RESOLUTION).then<void | Takeover>(sources => {
     /* A projected runnable (`fabr run pkg:tsc`) arrives pending — this is the
      * point a launcher is demanded, so it collapses here. */
     const runnable = sources.map(toRunnable).find(Boolean);
@@ -430,19 +386,16 @@ function runProgram(
         : new Error(`'${target}' is not runnable (it has no BUILD_OPERATION=run result)`);
     }
     if (supervisor) {
-      /* The per-cycle completion marker ("Built X" / "Already up to date"), as
-       * the build/test watch verbs print — but deferred until the supervisor's
-       * reaction (stage+swap or in-place sync) has landed, so the marker is the
-       * cycle's terminal line, after "Restarting"/"Updating content". The
-       * cycle's build delta is captured NOW, at settle: an overlapping next
-       * cycle must not have its builds scooped into this cycle's late marker.
-       * One-shot run stays unmarked (status noise ahead of the program's own
-       * output). The cycle is captured with the delta, for the same reason. */
-      const built = execution.takeBuiltTargets();
-      const cycle = execution.buildGeneration;
-      return supervisor.update(runnable).then(() => reportBuildStatus(execution.log, built, cycle));
+      /* The supervisor's reaction is inside the observed chain, so the watch
+       * observer — where the cycle ends and the marker renders — fires only
+       * after it lands: the marker stays the cycle's terminal line. */
+      return supervisor.update(runnable);
     }
-    return runInteractive(execution.buildCache, runnable, args).then(code => flushAndExit(code));
+    /* One-shot: the launch is not evaluation — it is what happens after the
+     * evaluation settles (and its cycle closes), so it is handed back as the
+     * run's takeover rather than performed in-chain. */
+    const takeover: Takeover = () => runInteractive(execution.buildCache, runnable, args).then(code => flushAndExit(code));
+    return takeover;
   });
 }
 
@@ -452,12 +405,17 @@ function runProgram(
  * under `build` like the real step, so the inputs that fill the sandbox are the
  * real ones. Exits with the shell's own code.
  */
-function shellTarget(model: BuildModel, options: Options, execution: ExecutionContext): Computable<void> {
+function shellTarget(model: BuildModel, options: Options, execution: ExecutionContext): Computable<void | Takeover> {
   const config = configFor(model, options, execution, "build");
   return config
     .resolveActionForShell(options.targets[0])
-    .then(action => shellInto(execution.buildCache, options.targets[0], action, execution.log))
-    .then(code => flushAndExit(code));
+    .then<void | Takeover>(action => {
+      /* The shell owns the process once launched — a takeover, like run's
+       * program, so the evaluation settles (and its cycle closes) first. */
+      const takeover: Takeover = () =>
+        shellInto(execution.buildCache, options.targets[0], action, execution.log).then(code => flushAndExit(code));
+      return takeover;
+    });
 }
 
 /**
@@ -508,7 +466,22 @@ async function runWith(options: Options, operation: Operation, watch = false): P
    * Color is a render-time decision only (NO_COLOR is any non-empty value):
    * captured tool output arrives colored regardless and is stripped when off. */
   const color = process.stderr.isTTY === true && !process.env.NO_COLOR;
-  const log = new LogFormatter(LogLevel.Info, line => process.stderr.write(line + "\n"), color);
+  /* One component owns stderr: everything fabr renders — diagnostics, and the
+   * build steps' output the pump forwards — is written through it, so the live
+   * pane can erase and repaint around each block. Without a tty there is no
+   * pane and it is a direct write (the pane is a derived view of what the log
+   * already records, so its absence loses nothing). */
+  /* `-q` asks for less happening on the terminal, and the live pane is the
+   * most of it: a display that repaints ten times a second is not what someone
+   * who just silenced the build's own tools wants left running. So quiet drops
+   * the pane as well as the streamed output — and (see ProgressReporter) does
+   * NOT get the start lines back in its place, which is the one thing that
+   * would make asking for quiet produce more output than not asking. */
+  const terminal = new TerminalStream(process.stderr, process.stderr.isTTY === true && !options.quiet);
+  const log = new LogFormatter(LogLevel.Info, line => terminal.write(line), color);
+  /* Published for the code that hands the terminal over rather than writes to
+   * it (a prompt, an interactive child) — see withTerminalSuspended. */
+  setActiveTerminal(terminal);
 
   Computable.onUnhandledError = err => log.log(DIAG_UNHANDLED, { message: err.message });
 
@@ -523,38 +496,28 @@ async function runWith(options: Options, operation: Operation, watch = false): P
 
   try {
     const sourceRoot = await getSourceRoot();
-    const buildCache = new BuildCache(getBuildCacheRoot(), log);
-
-    /* The build cycle is shared: the watch controller advances it before each
-     * re-settle, and the execution reads it. Built first (it depends on nothing),
-     * so the controller — whose `onBeforeApply` advances it — and the execution —
-     * which is built with the source file source that is built with the controller
-     * — can both be wired to it without a construction cycle. */
-    const cycle = new BuildCycle();
-    const controller = watch
-      ? new WatchController(
-          WATCH_QUIET_MS,
-          undefined,
-          err => reportFailure(log, err),
-          () => cycle.advance(),
-          message => log.log(DIAG_WATCH_WARNING, { message })
-        )
-      : undefined;
-    const sourceFileSource = getSourceFileSource(sourceRoot, buildCache, controller);
-    const absFileSource = new FSFileSource("/");
-    const execution = new ExecutionContext(buildCache, log, sourceFileSource, absFileSource, cycle);
+    /* The run itself lives in core; the driver hands it the paths its
+     * environment policy chose. */
+    const fabr = new Fabr({ sourceRoot, cacheRoot: getBuildCacheRoot(), log, watch });
+    const execution = fabr.execution;
     /* Where the user typed the command, in the source tree's own namespace: a
      * name given on the command line resolves its bare paths from here, as a
      * name written in a build file resolves them from that file's directory. */
     const site: IInvocationSite = {
-      sourceFileSource,
-      absFileSource,
+      sourceFileSource: fabr.sourceFileSource,
+      absFileSource: execution.absFileSource,
       invocationDir: path.relative(sourceRoot, process.cwd()).split(path.sep).join("/"),
     };
-    execution.onProgress(progressListener(log));
-    /* Under -q a subcommand's output is captured and shown only on failure;
-     * otherwise the step inherits fabr's stderr and streams live as it runs. */
-    execution.quiet = options.quiet;
+    /* Build events become the log's start/completion lines, the pane, and the
+     * prefixed step-output lines. Under -q the subscription asks for no output
+     * events, so steps capture and show output only on failure. */
+    const progress = new ProgressReporter(log, {
+      terminal,
+      color,
+      quiet: options.quiet,
+      markers: showsMarkers(options.command, watch),
+    });
+    execution.onBuildEvent(progress.buildListener, { output: !options.quiet });
     /* A terminal to ask on (an npm publish's second-factor ceremony) — only
      * when both the answer channel (stdin) and the question channel (stderr,
      * the diagnostic stream) are ttys; its absence is the "non-interactive
@@ -563,8 +526,8 @@ async function runWith(options: Options, operation: Operation, watch = false): P
       execution.interaction = new TerminalInteraction(log);
     }
 
-    if (controller) {
-      return runWatched(operation, execution, site, log, controller);
+    if (fabr.controller) {
+      return runWatched(operation, fabr, site, log);
     }
 
     /* One-shot runs must route termination signals through process.exit rather
@@ -593,9 +556,16 @@ async function runWith(options: Options, operation: Operation, watch = false): P
       });
     }
 
-    return loadProject(execution, PROJECT_FILENAME)
-      .then(model => operation(model, execution, site))
-      .then(() => flushAndExit(0))
+    return fabr
+      .evaluate(model => operation(model, execution, site))
+      .then(takeover => {
+        /* The evaluation has settled and its cycle closed; a takeover verb now
+         * gets the process (its chain owns the exit), anything else is done. */
+        if (takeover) {
+          return takeover();
+        }
+        flushAndExit(0);
+      })
       .catch(err => {
         reportFailure(log, err);
         log.log(DIAG_BUILD_FAILED, {});
@@ -612,6 +582,17 @@ async function runWith(options: Options, operation: Operation, watch = false): P
   }
 }
 
+/** Whether this verb's runs render the per-cycle status marker ("Built X" /
+ * "Already up to date"): the build/test verbs do, `run` only under watch (a
+ * one-shot run's marker is status noise ahead of the program's own output);
+ * the query and side-effect verbs never — their outcome is their own output. */
+function showsMarkers(command: string, watch: boolean): boolean {
+  if (command === "run") {
+    return watch;
+  }
+  return command === "build" || command === "test";
+}
+
 /**
  * The watch lifecycle: put the source tree into watch mode, run the operation
  * once to establish the live graph, then keep re-reporting as the operation's
@@ -621,13 +602,8 @@ async function runWith(options: Options, operation: Operation, watch = false): P
  * on SIGINT. The returned promise deliberately never resolves; the process is
  * kept alive by the persistent watchers and ends only via the signal handler.
  */
-function runWatched(
-  operation: Operation,
-  execution: ExecutionContext,
-  site: IInvocationSite,
-  log: Log,
-  controller: WatchController
-): Promise<void> {
+function runWatched(operation: Operation, fabr: Fabr, site: IInvocationSite, log: Log): Promise<void> {
+  const controller = fabr.controller!;
   const shutdown = (): void => {
     /* Hard deadline first: teardown must never be able to pin a signalled watch
      * process alive (a hung native unsubscribe, a stuck closer) — exit 1 marks
@@ -644,18 +620,37 @@ function runWatched(
   process.on("SIGTERM", shutdown);
   process.on("SIGHUP", shutdown);
 
-  /* This observer re-fires every time the operation's Computable re-settles (the
-   * revalidation cascade after a change), so status/failure render per cycle. */
-  loadProject(execution, PROJECT_FILENAME)
-    .then(model => operation(model, execution, site))
-    .then(
-      () => log.log(DIAG_WATCHING, {}),
-      err => {
-        reportFailure(log, err);
+  /* The run's evaluation, observed for *settlement* rather than for a value
+   * change — a rebuild that converges to identical values (or the same
+   * failure) settles without notifying any `then`, but a handle's onSettled
+   * still fires, once per applied batch. The execution observes it first (the
+   * cycle-end and its marker); this second handle renders what the stream
+   * deliberately doesn't carry: the failure tree, and the watching
+   * announcements. */
+  const outcome = fabr.evaluate(model => operation(model, fabr.execution, site)).then(
+    () => undefined,
+    (err: Error) => err
+  );
+  let lastFailure: Error | undefined;
+  let announced = false;
+  const observer = new ComputableHandle<Error | undefined>(source => {
+    const result = source.value;
+    const failed = result instanceof Error;
+    if (failed) {
+      /* Render only a NEW failure — never re-print an unchanged tree per cycle. */
+      if (result !== lastFailure) {
+        reportFailure(log, result);
         log.log(DIAG_BUILD_FAILED, {});
         log.log(DIAG_WATCHING, {});
       }
-    );
+    } else if (!announced || lastFailure !== undefined) {
+      /* Announced once, and again on a red-to-green transition. */
+      log.log(DIAG_WATCHING, {});
+    }
+    announced = true;
+    lastFailure = failed ? result : undefined;
+  });
+  observer.seat(outcome);
   return new Promise<void>(() => {});
 }
 
@@ -663,36 +658,10 @@ function configFor(model: BuildModel, options: Options, execution: ExecutionCont
   return model.getConfig(Constraints.of({ ...getHostProperties(), [BUILD_OPERATION]: operation, ...Object.fromEntries(options.properties) }), execution);
 }
 
-/** Build each named target under the given operation (bare target names). */
-function buildTargets(
-  model: BuildModel,
-  options: Options,
-  execution: ExecutionContext,
-  operation: string,
-  names: string[] = options.targets
-): Computable<SourceRef[]>[] {
-  const config = configFor(model, options, execution, operation);
-  markForced(model, options, execution, names);
-  return names.map(name => config.getTargetRef(name));
-}
-
-/**
- * Mark what `-f` names, so those targets rebuild rather than serve from cache
- * (see {@link ExecutionContext.forceTarget}). The names are the ones the user
- * wrote, so the *model* says which target each is a reference to — the driver
- * never splits a name itself. A name behind which there is no declared target
- * (`fabr run -f @npm:esbuild`) marks nothing: there is no build of its own to
- * force, only a fetch, which the flag is not about.
- */
+/** Apply `-f`'s force marks for `names` (see core's {@link forceTargets}). */
 function markForced(model: BuildModel, options: Options, execution: ExecutionContext, names: string[]): void {
-  if (!options.force) {
-    return;
-  }
-  for (const name of names) {
-    const target = model.getReferencedTarget(name);
-    if (target) {
-      execution.forceTarget(target);
-    }
+  if (options.force) {
+    forceTargets(model, execution, names);
   }
 }
 
@@ -738,73 +707,6 @@ function openedOut(source: SourceRef): Computable<SourceRef> {
     return Computable.resolve(source);
   }
   return source.find(ALL_FILES).then(files => files);
-}
-
-/** Print the terminal build-status line: nothing built (this cycle), or a count.
- * Uses the per-cycle delta so a watch rebuild reports only what it rebuilt. */
-function buildStatus(execution: ExecutionContext): void {
-  /* Report which declared targets actually rebuilt this cycle (the per-target
-   * "Building X" lines already scrolled past during the build; this is the
-   * completion marker — useful especially in watch mode). Nothing built ⇒ the
-   * run was a no-op. */
-  reportBuildStatus(execution.log, execution.takeBuiltTargets(), execution.buildGeneration);
-}
-
-/** The build cycle a completion marker was last printed for; see {@link reportBuildStatus}. */
-let markedCycle = -1;
-
-/**
- * The marker's rendering half, over an already-captured delta — for a caller
- * that must take the delta at one time and print at another (run -w defers the
- * marker past the supervisor's reaction).
- *
- * The marker summarises a *cycle*, not a chain, and a cycle can have several
- * independent chains reporting it (an inferred invocation's build and test
- * groups, plus a supervised program). The delta is consumed, so the first to
- * report already carries the whole cycle's work: a later one in the same cycle
- * speaks only if it has work of its own to add, rather than repeating the
- * summary as a vacuous "already up to date".
- */
-function reportBuildStatus(log: Log, built: string[], cycle: number): void {
-  if (built.length === 0) {
-    if (markedCycle === cycle) {
-      return;
-    }
-    log.log(DIAG_UP_TO_DATE, {});
-  } else {
-    log.log(DIAG_BUILD_COMPLETE, { targets: built.join(", ") });
-  }
-  markedCycle = cycle;
-}
-
-/**
- * Render ExecutionContext progress events as diagnostics: a target is announced
- * when (and only when) it actually starts building (its first build-cache
- * miss), attributed with the chain of targets that required it.
- */
-function progressListener(log: Log): ProgressListener {
-  return event => {
-    switch (event.kind) {
-      case "target-build": {
-        /* A sub-target carries its action verb as `label` ("Compiling"); a
-         * declared target derives its verb from the operation ("Building"). */
-        const verb = event.label ?? OPERATION_VERBS[event.operation] ?? `Running ${event.operation} on`;
-        const requiredBy =
-          event.requiredBy.length > 0 ? ` (required by ${event.requiredBy.map(declName).join(" < ")})` : "";
-        /* Surface the explicit constraints (a reference `<BUILD_TYPE=release>`
-         * requirement or a -D override), eliding the ambient keys the driver injected
-         * (host facts, and BUILD_OPERATION — already the verb). */
-        log.log(DIAG_BUILDING, { verb, name: declName(event.target), chain: renderConstraints(event.constraints) + requiredBy });
-        break;
-      }
-      case "repository-resolve":
-        log.log(DIAG_RESOLVING, { requirements: event.requirements.join(", "), name: event.repository });
-        break;
-      case "fetch":
-        log.log(DIAG_FETCHING, { resource: event.resource ? `${event.resource} ` : "", url: event.url });
-        break;
-    }
-  };
 }
 
 /**

@@ -24,7 +24,7 @@ import * as path from "path";
 import { Readable, Transform, Writable } from "stream";
 import { Computable } from "./Computable";
 import { HttpStatusError } from "./Errors";
-import { ICacheControl, openUrlStream } from "./Fetch";
+import { ICacheControl, openUrlStream, reportingProgress } from "./Fetch";
 import { CANONICAL, DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
 import {
   deleteFile,
@@ -39,6 +39,7 @@ import {
 } from "./FSWrapper";
 import { registerTempTree, removeTempTree } from "./Staging";
 import { SymlinkFile } from "./SymlinkFile";
+import type { ITaskReport, TaskTracker } from "../support/Execute";
 import type { Semaphore } from "../support/Semaphore";
 import { Diagnostic, Log } from "../support/Log";
 import { SNIFF_LENGTH, sniffMime } from "../support/Mime";
@@ -84,18 +85,37 @@ export interface IFetchContext {
 export interface IActionContext {
   readonly workDir: string;
   createOutput(): IOutputHandle;
-  /** Whether the action should capture a subprocess's output and show it only on
-   * failure (`-q`), rather than inherit fabr's stderr and let it stream live. Set
-   * by the framework from the run's verbosity. */
-  readonly quiet: boolean;
+  /**
+   * How this action's executions report themselves — where their output goes,
+   * and their funnel phases — already resolved against the run's verbosity
+   * (`-q` leaves no output sink, so the step captures). A step passes it to
+   * {@link execute}/{@link executePipeline} and makes no display decisions of
+   * its own; the one it may make is to withhold the output sink where its own
+   * contract says the output belongs elsewhere (the test runner's report).
+   */
+  readonly report: ITaskReport;
   /**
    * The machine-wide execution funnel, which `execute`/`executePipeline`
    * require: a slot is held for exactly the process lifetime, and the step's
-   * own code never holds one — so a step may issue any number of executions,
-   * sequentially or in parallel (the per-file test run), and hold-and-wait is
-   * impossible by construction.
+   * own code never holds one *across* one of those — so a step may issue any
+   * number of executions, sequentially or in parallel (the per-file test run),
+   * and hold-and-wait is impossible by construction.
    */
   readonly processLimit: Semaphore;
+  /**
+   * Run the step's own machine-heavy work — staging a tree of inputs — through
+   * that same funnel, reported like an execution. Staging is I/O rather than
+   * CPU, but it is machine work all the same, and without admission every
+   * action that passes its cache-miss check stages at once: on a wide graph
+   * that is a hundred trees of hardlinks in flight, and a display of what the
+   * build is doing that is mostly a list of them.
+   *
+   * The slot is taken and given back around `work` alone. It must therefore
+   * NOT enclose an `execute` — a slot held while asking for another is
+   * hold-and-wait, and at capacity that is a deadlock (see Semaphore). Stage,
+   * then run: they are separate admissions, never nested.
+   */
+  admit<T>(work: () => Computable<T>): Computable<T>;
 }
 
 const DIAG_SERVING_STALE = Diagnostic.Warn<{ url: string; reason: string }>(
@@ -176,6 +196,7 @@ export interface FetchOptions {
    * evidence the copy is stale (e.g. it lacks a version known to exist). */
   forceRevalidate?: boolean;
 }
+
 
 /** A cache entry as read back from disk: its files, plus freshness metadata for
  * a mutable entry. */
@@ -456,6 +477,12 @@ export class BuildCache {
     url: string,
     tag: string,
     process: (content: Readable, ctx: IFetchContext) => Computable<FileSet>,
+    /** Brackets the actual transfer as the caller's task: applied around the
+     * miss path alone (a hit transfers nothing), with the transfer's byte
+     * progress landing on the report it provides. The tracker is the caller's
+     * because the task's description — whose behalf the fetch is on — is the
+     * caller's to state. */
+    track: TaskTracker<FileSet>,
     headers?: Record<string, string>,
     options?: FetchOptions
   ): Computable<FileSet> {
@@ -469,7 +496,7 @@ export class BuildCache {
         if (entry && isFresh(entry, this.now()) && !options?.forceRevalidate) {
           return entry.files;
         }
-        return this.fetch(key, url, process, headers, entry, options);
+        return this.fetch(key, url, process, track, headers, entry, options);
       })
     );
   }
@@ -487,6 +514,7 @@ export class BuildCache {
     key: string,
     url: string,
     process: (content: Readable, ctx: IFetchContext) => Computable<FileSet>,
+    track: TaskTracker<FileSet>,
     headers: Record<string, string> | undefined,
     entry: ICacheEntry | undefined,
     options: FetchOptions | undefined
@@ -503,9 +531,19 @@ export class BuildCache {
         const meta = options?.immutable !== false ? undefined : response.cacheControl;
         const stream = response.stream;
         if (stream) {
+          /* The transfer bracketed as the caller's task, the body counted past
+           * for byte progress against the declared size. */
           return this.createEntry(
             key,
-            targetDir => process(stream, { targetDir, createOutput: () => this.getTemporaryWriteStream() }),
+            targetDir =>
+              track(report =>
+                process(
+                  reportingProgress(stream, bytes =>
+                    report.progress({ measure: "bytes", done: bytes, total: response.contentLength })
+                  ),
+                  { targetDir, createOutput: () => this.getTemporaryWriteStream() }
+                )
+              ),
             meta
           );
         }

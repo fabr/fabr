@@ -167,7 +167,7 @@ class FetchSource implements FileSource {
             )
             .then((file: IFile) => new FileSet(new Map([[path, file]])));
         },
-        path
+        { resource: path, role: "content" }
       )
       .then(files => {
         /* By single file rather than by name: the cache entry is keyed on the

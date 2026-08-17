@@ -18,7 +18,7 @@
  */
 
 import { readFileSync } from "fs";
-import { TEST_EXPECTATIONS, UPDATE_EXPECTATIONS } from "@fabr-build/core";
+import { preferredOperation, TEST_EXPECTATIONS, UPDATE_EXPECTATIONS } from "@fabr-build/core";
 import { CommandLineSource } from "./CommandLineSource";
 import { dirname, join } from "path";
 
@@ -117,30 +117,6 @@ const COMMAND_SPECS: CommandSpec[] = [
 const COMMANDS = new Set(COMMAND_SPECS.map((c) => c.name));
 const COMMAND_BY_NAME = new Map(COMMAND_SPECS.map((c) => [c.name, c]));
 
-/**
- * The build verbs in the order fabr picks between them for a target whose
- * command was left out: what a target that supports several is most likely
- * wanted for, with the interactive `run` the last resort. A `serve` or
- * `js_script` target supports only `run`, so it is the only reading of naming
- * one. Shared by that inference and by the "no rule" report's suggestion, so
- * what fabr suggests is what fabr would have done.
- */
-const OPERATION_PREFERENCE = ["build", "test", "run"];
-
-/**
- * @return the operation to perform on a target whose type supports
- * `operations` (as {@link BuildModel.getOperations} reports them, `"*"` being
- * a rule that constrains no operation and so supports all), or undefined if it
- * supports none of the build verbs — the caller then asks for what it wanted
- * and gets the ordinary "no rule matches" report.
- */
-export function preferredOperation(operations: string[]): string | undefined {
-  if (operations.includes("*")) {
-    return OPERATION_PREFERENCE[0];
-  }
-  return OPERATION_PREFERENCE.find((operation) => operations.includes(operation));
-}
-
 /** Model-query verbs: they inspect the loaded model rather than building targets,
  * so a bare invocation (no targets) is a valid "list everything" request. */
 const QUERY_COMMANDS = new Set(["list-targets", "list-targetdefs", "list-properties", "list-all"]);
@@ -157,7 +133,8 @@ export interface Options {
    * the only ones listed. */
   all: boolean;
   /** Suppress the live subcommand output that is otherwise streamed to stderr as
-   * build steps run (`-q`/`--quiet`); failure messages still include it. */
+   * build steps run (`-q`/`--quiet`), as well as the live progress display.
+   */
   quiet: boolean;
   /**
    * Rebuild the named targets even when their outputs are already cached
@@ -230,7 +207,7 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  -l                Long listing: hash and size per file (ls), or source location (list-*)\n" +
       "  --json            Emit JSON (the list-* verbs)\n" +
       "  --all             Include system-contributed targets (list-targets)\n" +
-      "  -q, --quiet       Suppress live subcommand output (shown by default as steps run)\n" +
+      "  -q, --quiet       Suppress live output: subcommand output and the progress display\n" +
       "  --                End of options: following arguments are targets, even if they start with '-'\n" +
       "  -h, --help        Print this help and exit\n" +
       "  -v, --version     Print the fabr version and exit\n"

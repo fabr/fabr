@@ -26,7 +26,8 @@ import { IOutputHandle } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
-import { execute, executeInteractive, executePipeline } from "./Execute";
+import { TaskState } from "../model/BuildEvents";
+import { activityCounter, execute, executeInteractive, executePipeline, lineSplitter, SILENT_REPORT } from "./Execute";
 import { Semaphore } from "./Semaphore";
 
 const NODE = process.execPath;
@@ -55,7 +56,7 @@ function memoryOutput(): IOutputHandle {
 }
 
 function runPipeline(stages: Parameters<typeof executePipeline>[1], stdin?: Uint8Array): Promise<FileSet> {
-  return new Promise((resolve, reject) => executePipeline(LIMIT, stages, CWD, memoryOutput, stdin).then(resolve, reject));
+  return new Promise((resolve, reject) => executePipeline(LIMIT, stages, CWD, memoryOutput, stdin, SILENT_REPORT).then(resolve, reject));
 }
 
 /** The text of a captured file in the pipeline result. */
@@ -93,14 +94,135 @@ function collectSettlements<T>(c: Computable<T>, graceMs = 150): Promise<Array<{
   });
 }
 
+describe("lineSplitter", () => {
+  /** Feed `chunks` through a splitter and collect the lines it emits. */
+  function split(chunks: string[], flush = true): string[] {
+    const lines: string[] = [];
+    const splitter = lineSplitter({ line: (text: string) => lines.push(text) });
+    chunks.forEach(chunk => splitter.push(Buffer.from(chunk)));
+    if (flush) {
+      splitter.flush();
+    }
+    return lines;
+  }
+
+  it("emits complete lines and holds a partial one until its newline arrives", () => {
+    /* Chunk boundaries fall wherever the OS put them — the split must follow the
+     * bytes, not the arrivals. */
+    expect(split(["one\ntw", "o\nthree\n"])).to.deep.equal(["one", "two", "three"]);
+  });
+
+  it("holds an unterminated tail back until flush", () => {
+    expect(split(["done"], false)).to.deep.equal([]);
+    expect(split(["done"])).to.deep.equal(["done"]);
+  });
+
+  it("normalizes \\r\\n and treats a bare \\r as a line ending", () => {
+    /* A tool repainting one line in place emits no newline at all; without this
+     * its bytes would hold the rest of the output hostage until the stream ends. */
+    expect(split(["a\r\nb\rc\n"])).to.deep.equal(["a", "b", "c"]);
+  });
+
+  it("does not manufacture a blank line when \\r\\n is split across chunks", () => {
+    /* A chunk-final \r may be half of a \r\n the OS split; splitting it eagerly
+     * would read the pair as two line endings. */
+    expect(split(["a\r", "\nb\n"])).to.deep.equal(["a", "b"]);
+  });
+
+  it("ends a line at a held \\r once the next chunk shows no \\n follows", () => {
+    expect(split(["a\r", "b\n"])).to.deep.equal(["a", "b"]);
+  });
+
+  it("treats a trailing \\r at flush as the line's ending, not its content", () => {
+    expect(split(["a\r"])).to.deep.equal(["a"]);
+  });
+
+  it("emits an empty line for a blank line rather than dropping it", () => {
+    expect(split(["a\n\nb\n"])).to.deep.equal(["a", "", "b"]);
+  });
+});
+
+describe("activityCounter", () => {
+  function record(): { states: TaskState[]; phase: ReturnType<typeof activityCounter> } {
+    const states: TaskState[] = [];
+    return { states, phase: activityCounter(state => states.push(state)) };
+  }
+
+  it("reports waiting only while everything the work wants is queued", () => {
+    const { states, phase } = record();
+    phase("queued");
+    expect(states).to.deep.equal(["waiting"]);
+    phase("started");
+    expect(states).to.deep.equal(["waiting", "running"]);
+    phase("finished");
+    /* Nothing queued and nothing running is still "running" — the moment
+     * between admissions is not a state anybody is waiting to hear about. */
+    expect(states).to.deep.equal(["waiting", "running"]);
+  });
+
+  it("keeps a fan-out's state held by the executions still in flight", () => {
+    const { states, phase } = record();
+    phase("queued");
+    phase("queued");
+    phase("started");
+    /* The first execution finishing must not clear the state the queued one
+     * still holds: with one admitted piece gone and one still waiting for a
+     * slot, the work is back to waiting. */
+    phase("finished");
+    expect(states).to.deep.equal(["waiting", "running", "waiting"]);
+  });
+});
+
 describe("execute", () => {
+  it("streams output to a sink, line by line, when given one", async () => {
+    const lines: string[] = [];
+    const script = "process.stdout.write('out one\\nout two\\n'); console.error('err'); process.exit(0)";
+    const outcomes = await collectSettlements(
+      execute(LIMIT, NODE, ["-e", script], process.cwd(), {}, { ...SILENT_REPORT, output: { line: (text: string) => lines.push(text) } })
+    );
+    expect(outcomes).to.deep.equal([{ ok: true, value: undefined }]);
+    /* Both streams reach the one sink (fabr's output is stderr either way). */
+    expect(lines.sort()).to.deep.equal(["err", "out one", "out two"]);
+  });
+
+  /* The child prints text that does NOT appear in its own command line, so
+   * "was the output included in the error?" can be asked of the message. */
+  const REASON_SCRIPT = "console.error('x'.repeat(9)); process.exit(2)";
+  const REASON = "xxxxxxxxx";
+
+  it("keeps a streamed failure's message to the command and outcome, output having already been delivered", async () => {
+    const lines: string[] = [];
+    const outcomes = await collectSettlements(
+      execute(LIMIT, NODE, ["-e", REASON_SCRIPT], process.cwd(), {}, { ...SILENT_REPORT, output: { line: (text: string) => lines.push(text) } })
+    );
+    expect(lines).to.deep.equal([REASON]);
+    expect(outcomes[0].err?.message).to.include("exited with error code 2");
+    expect(outcomes[0].err?.message).to.not.include(REASON);
+  });
+
+  it("captures output into the failure message when there is no sink", async () => {
+    const outcomes = await collectSettlements(execute(LIMIT, NODE, ["-e", REASON_SCRIPT], process.cwd(), {}, SILENT_REPORT));
+    expect(outcomes[0].err?.message).to.include(REASON);
+  });
+
+  it("delivers a tool's unterminated last line", async () => {
+    const lines: string[] = [];
+    await collectSettlements(
+      execute(LIMIT, NODE, ["-e", "process.stderr.write('no newline here')"], process.cwd(), {}, {
+        ...SILENT_REPORT,
+        output: { line: (text: string) => lines.push(text) },
+      })
+    );
+    expect(lines).to.deep.equal(["no newline here"]);
+  });
+
   it("resolves on a zero exit", async () => {
-    const outcomes = await collectSettlements(execute(LIMIT, NODE, ["-e", "process.exit(0)"], process.cwd(), {}));
+    const outcomes = await collectSettlements(execute(LIMIT, NODE, ["-e", "process.exit(0)"], process.cwd(), {}, SILENT_REPORT));
     expect(outcomes).to.deep.equal([{ ok: true, value: undefined }]);
   });
 
   it("rejects on a non-zero exit, reporting the code", async () => {
-    const outcomes = await collectSettlements(execute(LIMIT, NODE, ["-e", "process.exit(3)"], process.cwd(), {}));
+    const outcomes = await collectSettlements(execute(LIMIT, NODE, ["-e", "process.exit(3)"], process.cwd(), {}, SILENT_REPORT));
     expect(outcomes).to.have.length(1);
     expect(outcomes[0].ok).to.equal(false);
     expect(outcomes[0].err?.message).to.include("exited with error code 3");
@@ -109,7 +231,7 @@ describe("execute", () => {
   it("reports a spawn failure exactly once, with the exec error (not a bogus exit code)", async () => {
     /* Node fires 'error' (ENOENT) then 'close' (code -2); the informative error
      * must win and the 'close' must not settle a second time. */
-    const outcomes = await collectSettlements(execute(LIMIT, MISSING, [], process.cwd(), {}));
+    const outcomes = await collectSettlements(execute(LIMIT, MISSING, [], process.cwd(), {}, SILENT_REPORT));
     expect(outcomes).to.have.length(1);
     expect(outcomes[0].ok).to.equal(false);
     expect(outcomes[0].err?.message).to.include("unable to execute");
@@ -121,7 +243,7 @@ describe("execute", () => {
      * empty at once. Were stdin the default open pipe the parent holds, it would
      * block forever — so bound the wait and fail loudly on a hang. */
     const settled = collectSettlements(
-      execute(LIMIT, NODE, ["-e", "require('fs').readFileSync(0); process.exit(0)"], process.cwd(), {})
+      execute(LIMIT, NODE, ["-e", "require('fs').readFileSync(0); process.exit(0)"], process.cwd(), {}, SILENT_REPORT)
     );
     const outcomes = await Promise.race([
       settled,
@@ -144,7 +266,7 @@ describe("execute", () => {
         'const c = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });' +
         'require("fs").writeFileSync(process.argv[1], String(c.pid));' +
         "c.unref();"; /* unref so the step's own process exits at once */
-      const outcomes = await collectSettlements(execute(LIMIT, NODE, ["-e", script, pidFile], dir, {}));
+      const outcomes = await collectSettlements(execute(LIMIT, NODE, ["-e", script, pidFile], dir, {}, SILENT_REPORT));
       expect(outcomes).to.deep.equal([{ ok: true, value: undefined }]);
       expect(await processGone(Number(fs.readFileSync(pidFile, "utf8")), 15000)).to.equal(true);
     } finally {
@@ -197,7 +319,7 @@ describe("executePipeline", () => {
   });
 
   it("fails on the first non-zero stage (pipefail), settling exactly once", async () => {
-    const outcomes = await collectSettlements(executePipeline(LIMIT, [{ argv: [NODE, "-e", "process.exit(4)"] }], CWD, memoryOutput));
+    const outcomes = await collectSettlements(executePipeline(LIMIT, [{ argv: [NODE, "-e", "process.exit(4)"] }], CWD, memoryOutput, undefined, SILENT_REPORT));
     expect(outcomes).to.have.length(1);
     expect(outcomes[0].ok).to.equal(false);
     expect(outcomes[0].err?.message).to.include("exited with error code 4");
@@ -216,7 +338,9 @@ describe("executePipeline", () => {
           { argv: [NODE, "-e", "process.exit(0)"], stdout: "out" },
         ],
         CWD,
-        memoryOutput
+        memoryOutput,
+        undefined,
+        SILENT_REPORT
       )
     );
     const outcomes = await Promise.race([
@@ -227,7 +351,7 @@ describe("executePipeline", () => {
   });
 
   it("reports a stage spawn failure once, with the exec error", async () => {
-    const outcomes = await collectSettlements(executePipeline(LIMIT, [{ argv: [MISSING] }], CWD, memoryOutput));
+    const outcomes = await collectSettlements(executePipeline(LIMIT, [{ argv: [MISSING] }], CWD, memoryOutput, undefined, SILENT_REPORT));
     expect(outcomes).to.have.length(1);
     expect(outcomes[0].ok).to.equal(false);
     expect(outcomes[0].err?.message).to.include("unable to execute");
@@ -246,7 +370,7 @@ describe("executePipeline", () => {
         'require("fs").writeFileSync(process.argv[1], String(c.pid));' +
         "c.unref();" +
         "process.exit(1);";
-      const outcomes = await collectSettlements(executePipeline(LIMIT, [{ argv: [NODE, "-e", script, pidFile] }], dir, memoryOutput));
+      const outcomes = await collectSettlements(executePipeline(LIMIT, [{ argv: [NODE, "-e", script, pidFile] }], dir, memoryOutput, undefined, SILENT_REPORT));
       expect(outcomes).to.have.length(1);
       expect(outcomes[0].ok).to.equal(false);
       expect(await processGone(Number(fs.readFileSync(pidFile, "utf8")), 15000)).to.equal(true);

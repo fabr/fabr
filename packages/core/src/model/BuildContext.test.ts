@@ -1586,18 +1586,18 @@ describe("BuildContext", () => {
         const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
         const events: string[] = [];
         const runExecution = new ExecutionContext(new BuildCache(root, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
-        runExecution.onProgress(event => events.push(event.kind));
+        runExecution.onBuildEvent(event => events.push(event.kind));
         const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
         expect(errors).to.deep.equal([]);
         await model.getConfig(Constraints.of({}), runExecution).getTarget("a");
         return events;
       };
 
-      /* Cold: the leaf evaluate runs once; the sub-target's miss announces its
-       * declared target as building (once) */
+      /* Cold: the leaf evaluate runs once; its action is one task, reported
+       * from start to end */
       const first = await run();
       expect(leafRuns).to.equal(1);
-      expect(first).to.deep.equal(["target-build"]);
+      expect(first).to.deep.equal(["task-start", "task-end"]);
 
       /* Warm (fresh model + execution, same cache): served entirely from the
        * entry — no rule evaluate runs, nothing is announced */

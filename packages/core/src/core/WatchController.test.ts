@@ -202,7 +202,9 @@ describe("WatchController", () => {
 
   it("advances the cycle (onBeforeApply) once per applied batch, and not when nothing changed", () => {
     let cycles = 0;
-    const controller = new WatchController(50, timer, () => {}, () => cycles++);
+    const controller = new WatchController(50, timer, () => {}, () => {
+      cycles++;
+    });
     /* A batch with a real change: cycle advances once, before the settle. */
     controller.notifyChanged(changeEntry(() => {}));
     timer.fire();

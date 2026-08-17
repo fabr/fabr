@@ -120,6 +120,7 @@ export class ErrorTrackingLog implements Log {
     this.inner.log(diagnostic, params);
   }
 
+
   public get errorCount(): number {
     return this.errors;
   }

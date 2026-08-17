@@ -21,9 +21,8 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import * as fsPromises from "fs/promises";
-import { HOST, hostTriple } from "@fabr-build/core";
+import { HOST, hostTriple, PROJECT_FILENAME } from "@fabr-build/core";
 
-export const PROJECT_FILENAME = "PROJECT.fabr";
 export const BUILD_CACHE_ENV = "FABR_CACHE_DIR";
 
 /**

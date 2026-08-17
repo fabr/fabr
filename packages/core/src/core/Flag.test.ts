@@ -18,6 +18,7 @@
  */
 
 import { expect } from "chai";
+import { SILENT_REPORT } from "../support/Execute";
 import { Computable } from "./Computable";
 import { FileSet } from "./FileSet";
 import { Flag } from "./Flag";
@@ -47,7 +48,7 @@ describe("Flag", () => {
     const flag = new Flag("ts/no_strict", []);
     const [materialized] = await toPromise(
       materializeAll(
-        { getGlobalString: () => Computable.resolve("build"), memoize: (_t, _k, create) => create("unused"), notifyProgress: () => undefined },
+        { name: "test", getGlobalString: () => Computable.resolve("build"), memoize: (_t, _k, create) => create("unused"), runTask: (_task, run) => run(SILENT_REPORT) },
         [flag]
       )
     );

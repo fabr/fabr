@@ -28,6 +28,115 @@ import { Computable } from "../core/Computable";
 import { ExecutionError } from "../core/Errors";
 import { FileSet, IFile } from "../core/FileSet";
 import { Semaphore } from "./Semaphore";
+import type { TaskProgress, TaskState } from "../model/BuildEvents";
+
+/**
+ * Where a running process's output goes, one complete line at a time — the
+ * live alternative to capturing it and reporting it only on failure. A step is
+ * given one by the framework, and it is the *driver* that implements it, which
+ * is what keeps attribution (prefixing each line with the target it came from)
+ * a rendering decision rather than something the execution layer has to know.
+ */
+export interface IOutputSink {
+  /** One complete line of the child's output, newline already stripped. */
+  line(text: string): void;
+}
+
+/**
+ * Where one process execution is in the machine-wide funnel: `queued` waiting
+ * for a slot, `started` holding one, `finished` having given it back.
+ *
+ * Reported per *execution*, not per step, because a step may run many at once
+ * (the per-file test fan-out) — so whoever displays it counts, rather than
+ * being told a state that the last execution to finish would wrongly clear.
+ */
+export type ExecutionPhase = "queued" | "started" | "finished";
+
+/**
+ * Derive a task's {@link TaskState} from its executions' phases, calling
+ * `onState` on each change. Counted rather than assigned because a step may
+ * run several executions at once — the first to finish must not clear a state
+ * the others still hold.
+ */
+export function activityCounter(onState: (state: TaskState) => void): (phase: ExecutionPhase) => void {
+  let queued = 0;
+  let running = 0;
+  let reported: TaskState = "running";
+  return phase => {
+    if (phase === "queued") {
+      queued++;
+    } else if (phase === "started") {
+      queued--;
+      running++;
+    } else {
+      running--;
+    }
+    /* Blocked only while everything it wants is queued: one admitted piece
+     * running is the work running, however much else is behind it. */
+    const state: TaskState = running === 0 && queued > 0 ? "waiting" : "running";
+    if (state !== reported) {
+      reported = state;
+      onState(state);
+    }
+  };
+}
+
+/**
+ * How a task reports itself to the build-event stream, handed to the code
+ * performing it by ExecutionContext.runTask. Display only: nothing here
+ * reaches the cache key, the command, or the outcome.
+ */
+export interface ITaskReport {
+  /** Where output goes, line by line; absent ⇒ captured, shown only on failure
+   *  — the one optional channel, its absence being the display decision. */
+  output?: IOutputSink;
+  /** Where each execution's funnel phases go. */
+  activity: (phase: ExecutionPhase) => void;
+  /** Where the work says how far along it is. Callable as often as it likes:
+   *  a listener keeps the latest and displays it on its own schedule. */
+  progress: (progress: TaskProgress) => void;
+}
+
+/** The report for work nobody observes — a unit test's stand-in. */
+export const SILENT_REPORT: ITaskReport = { activity: () => undefined, progress: () => undefined };
+
+/** Brackets a unit of work as a reported task — the shape of a partially
+ *  applied ExecutionContext.runTask, for a layer that must apply the caller's
+ *  bracketing around work whose timing only it knows (the cache around an
+ *  actual transfer). */
+export type TaskTracker<T> = (run: (report: ITaskReport) => Computable<T>) => Computable<T>;
+
+/**
+ * Split a byte stream into lines for a sink: a partial line is held until its
+ * newline arrives, `\r\n` is normalized, a bare `\r` (a tool repainting one
+ * line) also ends a line — except a chunk-final `\r`, held back in case it is
+ * half of a split `\r\n` — and the unterminated tail is flushed at stream end.
+ */
+export function lineSplitter(sink: IOutputSink): { push(chunk: Uint8Array): void; flush(): void } {
+  let held = "";
+  return {
+    push(chunk: Uint8Array): void {
+      held += Buffer.from(chunk).toString("utf8");
+      /* Hold a trailing \r back from the split (see above); it rejoins the
+       * remainder so the next chunk (or flush) sees it in context. */
+      const splittable = held.endsWith("\r") ? held.slice(0, -1) : held;
+      const carried = held.slice(splittable.length);
+      const lines = splittable.split(/\r\n|\n|\r/);
+      /* The last element is the unterminated remainder (empty if the chunk
+       * ended exactly on a newline) — hold it for the next chunk. */
+      held = (lines.pop() ?? "") + carried;
+      lines.forEach(line => sink.line(line));
+    },
+    flush(): void {
+      if (held.length > 0) {
+        /* A held trailing \r was a line ending after all — just one that never
+         * got its \n. It terminates the line rather than appearing in it. */
+        sink.line(held.endsWith("\r") ? held.slice(0, -1) : held);
+        held = "";
+      }
+    },
+  };
+}
 
 /**
  * @return a human-readable description of an OS-level error, without the errno
@@ -281,28 +390,51 @@ export function execute(
   args: string[],
   cwd: string,
   env: Record<string, string>,
-  quiet = true
+  report: ITaskReport
 ): Computable<void> {
-  return limit.run(() => executeUnbounded(cmd, args, cwd, env, quiet));
+  return admitted(limit, report, () => executeUnbounded(cmd, args, cwd, env, report.output));
 }
 
-function executeUnbounded(cmd: string, args: string[], cwd: string, env: Record<string, string>, quiet: boolean): Computable<void> {
+/**
+ * Take a slot of the funnel for `work`, reporting `queued` before asking for
+ * the slot and `started`/`finished` around holding it.
+ */
+export function admitted<T>(limit: Semaphore, report: ITaskReport, work: () => Computable<T>): Computable<T> {
+  report.activity("queued");
+  return limit.run(() => {
+    report.activity("started");
+    /* A synchronous throw must still report `finished`, or the task looks
+     * running forever (the Semaphore turns the throw into a rejection). */
+    try {
+      return work().finally(() => report.activity("finished"));
+    } catch (err) {
+      report.activity("finished");
+      throw err;
+    }
+  });
+}
+
+function executeUnbounded(cmd: string, args: string[], cwd: string, env: Record<string, string>, sink?: IOutputSink): Computable<void> {
   /* A failed spawn emits 'error' then a spurious 'close' (code -2): Computable.fromOnce
    * keeps the first (informative ENOENT) rejection and drops the useless "-2". */
   return Computable.fromOnce((resolve, reject) => {
     const line = commandLine(cmd, args);
     /* stdin from /dev/null ("ignore"), not the default open pipe: a build step is
      * non-interactive, so a tool that reads stdin must get EOF at once rather than
-     * blocking forever on input the parent never sends. Then two modes for the
-     * output streams: `quiet` PIPES and captures them, showing them only if the
-     * step fails; otherwise the child INHERITS fabr's stderr for both (fd 2), so
-     * output goes straight to the terminal, live, and a failure needn't reprint
-     * what already scrolled by. Both streams go to *stderr*, never stdout: fabr's
-     * stdout is reserved for its own data (cat/ls), and a genrule runs during those
-     * too. The environment (color forced) is the same either way — deterministic,
-     * and a captured or inherited failure reads well on a TTY. */
+     * blocking forever on input the parent never sends. Both output streams are
+     * always PIPED — fabr is the pump either way — and the two modes differ only
+     * in what it does with the bytes: with a `sink` they are split into lines and
+     * forwarded live (so the driver can attribute each line to this step and keep
+     * its own terminal display coherent); without one they are captured and shown
+     * only if the step fails (`-q`). Nothing is ever inherited: a child writing
+     * straight to fd 2 could not be attributed, and would scribble through
+     * whatever the driver is painting. Everything lands on *stderr*, never
+     * stdout: fabr's stdout is reserved for its own data (cat/ls), and a genrule
+     * runs during those too. The environment (color forced) is the same either
+     * way — deterministic, and both a captured and a streamed failure read well
+     * on a TTY. */
     const output: Uint8Array[] = [];
-    const stdio: Array<"ignore" | "pipe" | number> = quiet ? ["ignore", "pipe", "pipe"] : ["ignore", 2, 2];
+    const stdio: Array<"ignore" | "pipe" | number> = ["ignore", "pipe", "pipe"];
     const proc = spawn(cmd, args, { cwd, env: { ...FORCE_COLOR_ENV, ...env }, stdio, windowsHide: true, ...DETACHED });
     trackGroup(proc.pid);
     /* Sweep on 'exit', not 'close': a straggler holding the step's output pipes
@@ -314,24 +446,29 @@ function executeUnbounded(cmd: string, args: string[], cwd: string, env: Record<
     proc.on("exit", () => {
       swept = sweepGroup(proc.pid);
     });
-    if (quiet) {
-      proc.stdout?.on("data", data => output.push(data));
-      proc.stderr?.on("data", data => output.push(data));
-    }
+    /* One splitter for both streams, so a tool writing to each keeps its lines
+     * in arrival order rather than interleaved mid-line. */
+    const lines = sink && lineSplitter(sink);
+    const consume = (data: Uint8Array): void => (lines ? lines.push(data) : void output.push(data));
+    proc.stdout?.on("data", consume);
+    proc.stderr?.on("data", consume);
     /* Failure to spawn at all (e.g. missing executable) is reported through
      * the 'error' event; without a handler it would crash the process. */
     proc.on("error", err => {
       reject(new ExecutionError(`${line}\nunable to execute: ${systemErrorText(err)}`));
     });
-    /* Failures report the command line, then (quiet only) the captured output,
-     * then how it ended; inherited output already reached the terminal live. */
+    /* Failures report the command line, then (captured only) the output, then
+     * how it ended; streamed output has already reached the terminal live. */
     proc.on("close", (code, signal) => {
+      /* Whatever the tool left unterminated is still its output, and a tool
+       * that dies mid-line is exactly when it matters most. */
+      lines?.flush();
       const how = signal ? `terminated by signal ${signal}` : code !== 0 ? `exited with error code ${code}` : undefined;
       const deliver = (): void => {
         if (how === undefined) {
           resolve();
         } else {
-          reject(new ExecutionError(quiet ? withOutput(line, output, how) : `${line}\n${how}`));
+          reject(new ExecutionError(lines ? `${line}\n${how}` : withOutput(line, output, how)));
         }
       };
       /* Report only once the group is gone, so whoever reclaims the work dir on this
@@ -394,10 +531,10 @@ export function executePipeline(
   specs: StageSpec[],
   cwd: string,
   createOutput: () => IOutputHandle,
-  stdin?: Uint8Array,
-  quiet = true
+  stdin: Uint8Array | undefined,
+  report: ITaskReport
 ): Computable<FileSet> {
-  return limit.run(() => pipelineUnbounded(specs, cwd, createOutput, stdin, quiet));
+  return admitted(limit, report, () => pipelineUnbounded(specs, cwd, createOutput, stdin, report.output));
 }
 
 function pipelineUnbounded(
@@ -405,7 +542,7 @@ function pipelineUnbounded(
   cwd: string,
   createOutput: () => IOutputHandle,
   stdin: Uint8Array | undefined,
-  quiet: boolean
+  sink: IOutputSink | undefined
 ): Computable<FileSet> {
   const captures: Capture[] = [];
   return Computable.fromOnce<void>((resolve, reject) => {
@@ -424,6 +561,9 @@ function pipelineUnbounded(
     /* Un-redirected stderr only — a stage that captures stderr sends it to a
      * handle, so there is nothing here to report on that stage's failure. */
     const stderr: Uint8Array[][] = specs.map(() => []);
+    /* One line splitter per stage (feeding the shared sink), so two stages
+     * writing at once can't interleave mid-line. Absent ⇒ buffering instead. */
+    const stageLines = specs.map(() => sink && lineSplitter(sink));
     const exit: Array<number | string | undefined> = specs.map(() => undefined);
     let settled = false;
     let remaining = specs.length;
@@ -465,16 +605,15 @@ function pipelineUnbounded(
         const isLast = i === specs.length - 1;
         const capBoth = spec.both !== undefined;
         const capStdout = spec.stdout !== undefined || capBoth;
-        const capStderr = spec.stderr !== undefined || capBoth;
         /* stdin: first stage from supplied bytes (else EOF); a later stage reads the
-         * previous stage's stdout (wired below). A stream captured as content or
-         * feeding the next stage is PIPED. A user-facing un-redirected stream is
-         * INHERITED to fabr's stderr (fd 2, live) — or, under `quiet`, piped and
-         * buffered (stderr, to report on failure) / discarded (a final stdout nobody
-         * reads). Env stays clean ({}) either way: captured content must be raw. */
+         * previous stage's stdout (wired below). Every stream fabr looks at is
+         * PIPED — captured as content, feeding the next stage, streamed to the
+         * sink, or buffered to report on failure. The one stream nobody wants is a
+         * final un-redirected stdout with no sink, which is discarded unread. Env
+         * stays clean ({}) throughout: captured content must be raw. */
         const stdinCfg = i === 0 ? (stdin ? "pipe" : "ignore") : "pipe";
-        const stdoutCfg = capStdout || !isLast ? "pipe" : quiet ? "ignore" : 2;
-        const stderrCfg = capStderr ? "pipe" : quiet ? "pipe" : 2;
+        const stdoutCfg = capStdout || !isLast || sink ? "pipe" : "ignore";
+        const stderrCfg = "pipe";
         const proc = spawn(argvs[i][0], argvs[i].slice(1), {
           cwd,
           env: {},
@@ -506,15 +645,22 @@ function pipelineUnbounded(
           }
           if (spec.stderr !== undefined) {
             proc.stderr?.pipe(capture(spec.stderr), { end: false });
-          } else if (quiet) {
-            /* Un-redirected stderr, buffered (small) to report on failure; not
-             * quiet, it was inherited to fd 2 above and there is nothing to buffer. */
-            proc.stderr?.on("data", data => stderr[i].push(data));
+          } else {
+            /* Un-redirected stderr: the user's own stream — streamed live to the
+             * sink, or buffered (small) to report on this stage's failure. */
+            const lines = stageLines[i];
+            proc.stderr?.on("data", data => (lines ? lines.push(data) : void stderr[i].push(data)));
           }
+        }
+        /* A final un-redirected stdout is the pipeline's own output: with a sink
+         * it streams live like stderr; without one it was never piped at all. */
+        if (isLast && !capStdout && sink) {
+          proc.stdout?.on("data", data => stageLines[i]?.push(data));
         }
         proc.on("error", e => fail(new ExecutionError(`${stageCommandLine(spec)}\nunable to execute: ${systemErrorText(e)}`)));
         proc.on("close", (code, signal) => {
           exit[i] = signal ?? code ?? 0;
+          stageLines[i]?.flush();
           /* Propagate a broken pipe upstream (SIGPIPE-equivalent): if this stage
            * exited while its producer is still writing, close fabr's read end of
            * the producer's stdout so the producer's next write fails, rather than

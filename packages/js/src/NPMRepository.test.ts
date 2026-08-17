@@ -377,7 +377,7 @@ function fakeContext(operation: string, served: Record<string, FileSet | Error>,
     /* In-memory passthrough: the full resolve+materialize path exercises the
      * real resolution against the served metadata, uncached. */
     memoize: (_tag: string, _key: string, fn: () => Computable<FileSet>) => fn(),
-    notifyProgress: () => undefined,
+    runTask: (_work: unknown, run: () => unknown) => run(),
     execution: fakeExecution(),
   } as unknown as TargetContext;
 }

@@ -18,27 +18,17 @@
  */
 
 import { expect } from "chai";
-import {
-  BUILD_OPERATION,
-  CircularDependencyError,
-  ConflictError,
-  Constraints,
-  DependencyFailedError,
-  ExecutionError,
-  HOST,
-  IDiagnosticNote,
-  Log,
-  MultiError,
-  parseName,
-  NoRuleFoundError,
-  ReferenceFailedError,
-  registerProvenanceRenderer,
-} from "@fabr-build/core";
+import { ConflictError, ExecutionError, MultiError } from "../core/Errors";
+import { registerProvenanceRenderer } from "../core/Provenance";
+import { IDiagnosticNote, Log } from "../support/Log";
+import { parseName } from "./Parser";
+import { BUILD_OPERATION, Constraints } from "./Constraints";
+import { CircularDependencyError, DependencyFailedError, NoRuleFoundError, ReferenceFailedError } from "./Errors";
 import { DiagnosticErrorFormatter } from "./ErrorFormatter";
 
 /** A stand-in for the driver-injected host facts, and the keys a report elides. */
 const HOST_TRIPLE = "arm64-apple-macosx15.0";
-const AMBIENT: ReadonlySet<string> = new Set([BUILD_OPERATION, HOST]);
+
 
 /* The AST decl types aren't exported, so recover them from the error constructors.
  * The formatter only reads name/offset/source, so partial stubs suffice (spans
@@ -69,9 +59,10 @@ function value(written = "x"): ValueDecl {
 type Captured = { message: string; notes?: IDiagnosticNote[]; help?: string[] };
 
 /** Capture the diagnostics the formatter emits, keeping message, notes and help. */
-function capture(err: Error, ambient: ReadonlySet<string> = new Set()): Captured[] {
+function capture(err: Error, ambient?: ReadonlySet<string>): Captured[] {
   const out: Captured[] = [];
   const log: Log = { log: (_diag, params) => out.push(params as unknown as Captured) };
+  /* No `ambient` exercises the formatter's own AMBIENT_CONSTRAINT_KEYS default. */
   new DiagnosticErrorFormatter(ambient).report(log, err);
   return out;
 }
@@ -191,7 +182,7 @@ describe("DiagnosticErrorFormatter", () => {
     /* `fabr build` on a run-only targetdef (js_script) — the habitual first
      * mistake, so its wording is worth pinning. */
     const err = new NoRuleFoundError(targetDecl("tool", "js_script"), Constraints.of({ [BUILD_OPERATION]: "build", HOST: HOST_TRIPLE }));
-    const [diag] = capture(err, AMBIENT);
+    const [diag] = capture(err);
     expect(diag.message).to.equal("Cannot build 'tool': no rule matches target type 'js_script'");
   });
 
@@ -200,7 +191,7 @@ describe("DiagnosticErrorFormatter", () => {
      * overrides are worth showing (and the set is a Constraints, not a record —
      * enumerating it as one rendered its private field). */
     const constraints = Constraints.of({ [BUILD_OPERATION]: "test", HOST: HOST_TRIPLE, BUILD_TYPE: "release" });
-    const [diag] = capture(new NoRuleFoundError(targetDecl("lib"), constraints), AMBIENT);
+    const [diag] = capture(new NoRuleFoundError(targetDecl("lib"), constraints));
     expect(diag.message).to.equal("Cannot test 'lib': no rule matches target type 'js_package' (BUILD_TYPE=release)");
   });
 });

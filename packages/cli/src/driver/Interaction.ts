@@ -20,6 +20,7 @@
 import { Computable, Diagnostic, Log, UserInteraction } from "@fabr-build/core";
 import { spawn } from "node:child_process";
 import * as readline from "node:readline";
+import { withTerminalSuspended } from "./Terminal";
 
 const DIAG_OPEN_URL = Diagnostic.Info<{ purpose: string; url: string }>("{purpose}: {url}");
 
@@ -49,6 +50,12 @@ export class TerminalInteraction implements UserInteraction {
   constructor(private readonly log: Log) {}
 
   public prompt(question: string): Computable<string> {
+    /* readline writes the question and echoes the answer to stderr directly:
+     * fabr's own display steps aside until the line is in. */
+    return withTerminalSuspended(() => this.ask(question));
+  }
+
+  private ask(question: string): Computable<string> {
     return Computable.from((resolve, reject) => {
       const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
       let answered = false;
