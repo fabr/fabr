@@ -7,6 +7,8 @@ version number.
 - Add support for guarded properties.
 - Add xz archive support.
 - Add positional backrefs in rename templates.
+- Add backtick command expressions.
+- Add `2>&1` stream duplication to command pipelines (and its `1>&2` mirror).
 - General optimizations, especially for cache-hits.
 - Fix package aliases not working in catalogs.
 

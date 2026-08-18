@@ -40,8 +40,7 @@ import { BUILD_OPERATION } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
-import { StageSpec } from "../support/Execute";
-import { createPipelineAction } from "./PipelineAction";
+import { createPipelineAction, stagePipeline } from "./PipelineAction";
 import { RuleRegistration, RuleResult } from "./Types";
 
 function generate(context: TargetContext): Computable<RuleResult> {
@@ -59,30 +58,11 @@ function generate(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-/**
- * Stage the install and yield the pipeline action. A **single-stage** command
- * runs the tool *over* `srcs` (the npx-in-project layout: the tool mounts at the
- * sandbox root, its `node_modules` adjacent to the sources — so a source that
- * imports the tool, e.g. `astro.config.mjs` doing `import 'astro/config'`,
- * resolves). A **multi-stage** pipeline instead mounts each stage under its own
- * `.fabr-cmd-<n>/` subdir so the tools don't share a `node_modules`; the streams
- * connect them, and no source imports a pipe stage's modules.
- */
+/** Stage the install (see {@link stagePipeline}, shared with command
+ * substitution) and yield the pipeline action. */
 function assemblePipeline(srcs: FileSet, stages: ResolvedCommandPipeline, output: Name | undefined): RuleResult {
-  const single = stages.length === 1;
-  const mounts: FileSet[] = [];
-  const specs: StageSpec[] = stages.map((stage, i) => {
-    const dir = single ? undefined : `.fabr-cmd-${i}`;
-    mounts.push(dir === undefined ? stage.runnable : FileSet.layout({ [dir]: stage.runnable }));
-    return {
-      argv: stage.runnable.toCommandLine(stage.args, dir === undefined ? undefined : { base: dir }),
-      stdout: stage.stdout,
-      stderr: stage.stderr,
-      both: stage.both,
-    };
-  });
-  const staged = FileSet.unionAll(srcs, ...mounts);
-  return createPipelineAction(staged, specs, stages[0].stdin, output, "generate");
+  const { files, specs } = stagePipeline(stages, srcs);
+  return createPipelineAction(files, specs, stages[0].stdin, output, "generate");
 }
 
 export const generateRule: RuleRegistration = { type: "generate", constraints: { [BUILD_OPERATION]: "build" }, evaluate: generate };

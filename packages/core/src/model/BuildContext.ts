@@ -17,10 +17,11 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import * as path from "path";
 import { Readable } from "stream";
 import { FetchOptions, IActionContext, ICreateOptions, IFetchContext } from "../core/BuildCache";
 import { Computable, ComputableSource } from "../core/Computable";
-import { admitted, ITaskReport } from "../support/Execute";
+import { admitted, ITaskReport, StageSpec, StageStreams } from "../support/Execute";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { FSFileSource } from "../core/FSFileSource";
 import {
@@ -61,6 +62,7 @@ import {
   declPosn,
   hasMapValue,
   ICommandStage,
+  StreamName,
   IDecl,
   IMapItemDecl,
   IMapSpliceDecl,
@@ -78,7 +80,6 @@ import {
 } from "./AST";
 import { IDiagnosticNote } from "../support/Log";
 import { EXPAND_TAG, expandOnce, findWithDescent } from "../support/Expand";
-import type { StageStreams } from "../support/Execute";
 import {
   CircularDependencyError,
   DependencyFailedError,
@@ -88,8 +89,9 @@ import {
   ReferenceFailedError,
 } from "./Errors";
 import { attachHelp, ConflictError, IConflictSide, IConflictSource, toError } from "../core/Errors";
+import { createPipelineAction, stagePipeline } from "../rules/PipelineAction";
 import { closestMatch } from "../support/Suggest";
-import { Name, NameConstraint, RewriteFn, makeRewrite } from "../core/Name";
+import { Name, NameConstraint, RewriteFn, makeRewrite, NamePart, NamePartKind } from "../core/Name";
 import { globMatcher } from "../support/Glob";
 import { parseName } from "./Parser";
 import { IPrefixMatch, IPropertyEntry } from "./Namespace";
@@ -254,6 +256,73 @@ function useSiteOf(stack: IDependencyStack | undefined): IUseSite | undefined {
   return stack ? { value: stack.value, property: stack.property, target: stack.target } : undefined;
 }
 
+/** The content name a substitution's stdout is captured under. Internal to the
+ * substitution path — the FileSet it names never leaves {@link
+ * BuildContext.captureOutput}, which reads this one entry and discards the rest. */
+const SUBST_CAPTURE = ".value";
+
+/**
+ * Point a substitution's streams at where its *value* comes from, and everything
+ * else at nothing.
+ *
+ * A redirect inside a substitution writes into a FileSet nobody can ever read —
+ * the pipeline's output is consumed here for one entry and dropped — so a written
+ * target `2> log` is meaningless as a *name* and means only "not on my terminal".
+ * It is therefore treated as `/dev/null`: the stream still needs a destination
+ * (leaving it unset would send it to the task's output sink, the opposite of
+ * silencing), so it gets a generated one and the bytes go nowhere.
+ *
+ * Generating **every** name is what makes the value's own capture safe. The two
+ * share one namespace with last-writer-wins semantics, so a written `2> <capture>`
+ * would otherwise have silently replaced the value with stderr — and *no* reserved
+ * name could have prevented that, a redirect target being substitutable (`> ${X}`).
+ * The fix is not a name nobody would pick but a map no user string reaches: these
+ * need only be distinct from each other.
+ *
+ * A command that redirects its own stdout keeps that redirect, so it captures
+ * nothing and the value is empty — as `$(cmd > f)` is in a shell.
+ */
+function captureStages(stages: ResolvedCommandStage[]): ResolvedCommandStage[] {
+  const last = stages.length - 1;
+  return stages.map((stage, i) => ({
+    ...stage,
+    stdout: stage.stdout !== undefined ? `.drop-${i}-out` : i === last && stage.mergedTo !== "err" ? SUBST_CAPTURE : undefined,
+    stderr: stage.stderr !== undefined ? `.drop-${i}-err` : undefined,
+  }));
+}
+
+/**
+ * What a command's bytes become as substituted text: trailing whitespace
+ * trimmed, then every internal whitespace run collapsed to a single space.
+ *
+ * This is what a shell produces, rather than a literal newline→space swap — its
+ * IFS pass word-splits and rejoins, so `"a\n\nb\n"` is `"a b"` and not
+ * `"a  b "`. It also tidies the tool output this exists to consume
+ * (`pkg-config --cflags` and friends). A command whose output is genuinely
+ * whitespace-significant wants `generate` and a file, not a name.
+ */
+function normalizeCommandOutput(text: string): string {
+  return text.trim().replace(/\s+/g, " ");
+}
+
+/**
+ * How a pipeline with no written form describes itself — a rule passing resolved
+ * stages to {@link BuildContext.captureOutput} wrote no command text for it.
+ * Each stage renders as its entry's basename plus its arguments (`tsc --version`)
+ * rather than the whole staged argv, which carries an absolute path through the
+ * cache's work tree and would say nothing a reader wants.
+ */
+function describeArgv(specs: StageSpec[], stages: ResolvedCommandStage[]): string {
+  return specs
+    .map((spec, i) => {
+      /* The entry is the argv element the stage's own args follow — everything
+       * before it is the launcher (`node`, an interpreter). */
+      const entry = spec.argv[spec.argv.length - stages[i].args.length - 1];
+      return [entry === undefined ? spec.argv[0] : path.basename(entry), ...stages[i].args].join(" ");
+    })
+    .join(" | ");
+}
+
 interface IDependencyStack {
   target?: ITargetDecl;
   property: IPropertyDecl;
@@ -289,7 +358,9 @@ interface IResolvedCommandStage {
   stdin?: IPositionedName;
   stdout?: IPositionedName;
   stderr?: IPositionedName;
-  both?: IPositionedName;
+  /** Carried straight through from the parse — a dup names streams, not names,
+   * so there is nothing in it to substitute or position. */
+  mergedTo?: StreamName;
 }
 
 /**
@@ -388,13 +459,13 @@ export class BuildContext {
    * BuildContext itself (the CLI's resolveName, command/tool resolution). A
    * TargetContext satisfies the interface directly and passes itself instead.
    */
-  public resolutionContext(): ResolutionContext {
+  public resolutionContext(name = "<command line>"): ResolutionContext {
     return {
       /* No target: a collection point entered from the BuildContext itself is
        * the invocation's own (the CLI resolving a name it was given). A
        * *target's* collection points pass the TargetContext, which satisfies
        * this interface directly and names itself. */
-      name: "<command line>",
+      name,
       getGlobalString: name => this.getProperty(name).then(prop => prop.toString()),
       memoize: (tag, key, create) => this.getCachedOrBuild(`memo:${tag} ${key}`, create),
       runTask: (task, run) => this.execution.runTask(task, run),
@@ -1358,18 +1429,114 @@ export class BuildContext {
     });
   }
 
+  /**
+   * Settle every substituted part of a name — `${vars}` and `` `commands` ``
+   * alike, in one pass, since a name is only substituted once. The two differ
+   * only in how each part's text is obtained ({@link substitutedText}); gathering
+   * and replacement treat them identically.
+   */
   public substituteNameVars(name: Name, stack?: IDependencyStack): Computable<Name> {
-    const vars = name.getVariables();
+    const parts = name.getSubstitutions();
+    if (parts.length === 0) {
+      return Computable.resolve(name);
+    }
     return Computable.forAll(
-      vars.map(varName => this.getProperty(varName, stack)),
-      (...resolvedVars) => {
-        const substName = name.substitute(
-          vars,
-          resolvedVars.map(prop => prop.toString())
-        );
-        return substName;
-      }
+      parts.map(part => this.substitutedText(part, stack)),
+      (...texts: string[]) => name.substitute(new Map(parts.map((part, i) => [part, texts[i]])))
     );
+  }
+
+  /** One substituted part's text: a property's value, or a command's stdout.
+   * Two identically-written commands run once between them — not by being
+   * deduplicated here, but because they key the same action, which the build
+   * cache already serves from one in-flight attempt. */
+  private substitutedText(part: NamePart, stack?: IDependencyStack): Computable<string> {
+    return part.kind === NamePartKind.CommandSubst
+      ? this.runCommandSubst(part, stack)
+      : this.getProperty(part.value, stack).then(prop => prop.toString());
+  }
+
+  /**
+   * Run one `` `cmd` `` substitution and return the text it produced: resolve the
+   * parsed pipeline the parser attached, stage it exactly as `generate` does, and
+   * run it as an ordinary build action — so the value is keyed, cached, deduped
+   * in flight and reported like any other work.
+   *
+   * The action belongs to no target (see {@link runOwnAction}); `srcs` are empty,
+   * a substitution having no inputs to glob over, and stdout is captured under a
+   * fixed name that only this function ever reads.
+   */
+  private runCommandSubst(part: NamePart, stack?: IDependencyStack): Computable<string> {
+    const pipeline = part.command;
+    if (pipeline === undefined || pipeline.length === 0) {
+      return Computable.reject(new Error(`Malformed command substitution '${part.value}'`));
+    }
+    return Computable.forAll(
+      pipeline.map(stage => this.resolveCommandStage(stage, stack?.property, stack?.target, stack)),
+      (...substituted: IResolvedCommandStage[]) => substituted
+    ).then(substituted => this.runResolvedCommand(substituted, part.value, stack));
+  }
+
+  /**
+   * Substitute a parsed pipeline's names and run it for its output — the
+   * `` `cmd` `` half of {@link captureOutput}, which is where a rule holding
+   * already-resolved stages enters instead. `written` names the command in
+   * errors and in the work item it reports as.
+   */
+  public runResolvedCommand(
+    substituted: IResolvedCommandStage[],
+    written: string,
+    stack?: IDependencyStack
+  ): Computable<string> {
+    return Computable.forAll(
+      substituted.map(stage => this.resolveSubstStage(stage, written, stack)),
+      (...resolved: ResolvedCommandStage[]) => resolved
+    ).then(stages => this.captureOutput(stages, written));
+  }
+
+  /**
+   * Run a resolved pipeline and return its stdout as text: stage it exactly as
+   * `generate` does, run it as an ordinary build action — so the value is keyed,
+   * cached, deduped in flight and reported like any other work — and normalize
+   * the bytes ({@link normalizeCommandOutput}).
+   *
+   * The action belongs to no target (see {@link runOwnAction}) and stages no
+   * `srcs`: the pipeline's inputs are whatever its own stages carry.
+   * `written` labels the work; without one it is derived from the staged argv.
+   */
+  public captureOutput(stages: ResolvedCommandStage[], written?: string): Computable<string> {
+    if (stages.length === 0) {
+      return Computable.resolve("");
+    }
+    const captured = captureStages(stages);
+    const { files, specs } = stagePipeline(captured, EMPTY_FILESET);
+    const action = createPipelineAction(files, specs, captured[0].stdin, undefined);
+    return this.runOwnAction(action, { kind: "command-subst", command: written ?? describeArgv(specs, captured) })
+      .then(output => output.get(SUBST_CAPTURE))
+      .then(file => (file ? file.readString() : ""))
+      .then(normalizeCommandOutput);
+  }
+
+  /** One substituted stage resolved for execution: its command to a runnable, its
+   * args taken literally. A substitution has no `srcs`, so — unlike a `generate`
+   * stage — there is nothing for an arg to glob over and none is expanded. */
+  private resolveSubstStage(stage: IResolvedCommandStage, written: string, stack?: IDependencyStack): Computable<ResolvedCommandStage> {
+    if (stage.stdin !== undefined) {
+      return Computable.reject(new Error(`'< ' is not available in a command substitution (in \`${written}\`)`));
+    }
+    return this.resolveFileValue(stage.command.name, stack, {
+      relativeTo: stage.command.ref,
+      callerOverrides: RUN_OVERRIDE,
+    })
+      .then(sources => materializeLists(this.resolutionContext(`\`${written}\``), [sources], PERMISSIVE_RESOLUTION))
+      .then(([resolved]) => this.finishDelivered(resolved))
+      .then(resolved => ({
+        runnable: asRunnable(resolved, stage.command.name.toString()),
+        args: stage.args.map(arg => arg.name.toString()),
+        stdout: stage.stdout?.name.toString(),
+        stderr: stage.stderr?.name.toString(),
+        mergedTo: stage.mergedTo,
+      }));
   }
 
   /**
@@ -1455,15 +1622,18 @@ export class BuildContext {
    * as the resolved name's `ref`. */
   private resolveCommandStage(
     stage: ICommandStage,
-    prop: IPropertyDecl,
+    prop: IPropertyDecl | undefined,
     target: ITargetDecl | undefined,
     stack: IDependencyStack | undefined
   ): Computable<IResolvedCommandStage> {
+    /* A command substitution can sit in a value with no owning property decl (a
+     * global's), and the stack frame is built *from* that decl — so with none,
+     * the caller's stack stands as the attribution and only the per-name span is
+     * lost, which the written value itself already carries. */
     const position = (value: INameValue): Computable<IPositionedName> =>
-      this.substituteNameVars(value.value, { property: prop, target, context: this, value, next: stack }).then(name => ({
-        name,
-        ref: value,
-      }));
+      this.substituteNameVars(value.value, prop ? { property: prop, target, context: this, value, next: stack } : stack).then(
+        name => ({ name, ref: value })
+      );
     const positionOpt = (value: INameValue | undefined): Computable<IPositionedName | undefined> =>
       value ? position(value) : Computable.resolve(undefined);
     return Computable.forAll(
@@ -1473,9 +1643,15 @@ export class BuildContext {
         positionOpt(stage.stdin),
         positionOpt(stage.stdout),
         positionOpt(stage.stderr),
-        positionOpt(stage.both),
       ],
-      (command, args, stdin, stdout, stderr, both): IResolvedCommandStage => ({ command, args, stdin, stdout, stderr, both })
+      (command, args, stdin, stdout, stderr): IResolvedCommandStage => ({
+        command,
+        args,
+        stdin,
+        stdout,
+        stderr,
+        mergedTo: stage.mergedTo,
+      })
     );
   }
 
@@ -1627,6 +1803,24 @@ export class BuildContext {
    * {@link forcedBuild}.
    */
   public runAction(action: BuildAction, context: TargetContext): Computable<FileSet> {
+    return this.performAction(action, context.taskDescription(), this.forcedBuild(context));
+  }
+
+  /**
+   * Run an action described by something that is **not** a target — today, a
+   * `` `cmd` `` substitution, which belongs to no target at all (it may be
+   * written in a global) and so describes its own work item rather than
+   * borrowing one's name. Never forced: `-f` marks *targets*, and there is no
+   * target here to have been named.
+   */
+  public runOwnAction(action: BuildAction, task: TaskDescription): Computable<FileSet> {
+    return this.performAction(action, task, false);
+  }
+
+  /** The action cache/report core, over an already-decided description and force
+   * answer — the two things {@link runAction} reads from its TargetContext, and
+   * the only two a target-free caller has to supply itself. */
+  private performAction(action: BuildAction, task: TaskDescription, force: boolean): Computable<FileSet> {
     const key = `rule:${action.step.id}:${action.step.version}\n${manifestEvalInputs(action.inputs)}`;
     const cache = this.execution.buildCache;
     const execution = this.execution;
@@ -1634,7 +1828,7 @@ export class BuildContext {
      * task exists exactly when something is performed, bracketing the step's
      * own chain. A target with several actions reports each. */
     const create = (targetDir: string): Computable<FileSet> =>
-      execution.runTask(context.taskDescription(), report => {
+      execution.runTask(task, report => {
         /* The cache owns the scratch dir and the content store, so the action's
          * context — work dir, streaming-output factory, the run's execution
          * funnel, and the report this step's executions announce through — is
@@ -1649,7 +1843,7 @@ export class BuildContext {
         };
         return action.step.run(action.inputs, actionContext);
       });
-    return this.getCachedOrBuild(key, create, { force: this.forcedBuild(context) });
+    return this.getCachedOrBuild(key, create, { force });
   }
 
   /**
@@ -2006,6 +2200,28 @@ export abstract class TargetContext {
    * resolution surface a rule needs — substitution + the chase happen underneath
    * ({@link getCommandStages}).
    */
+  /**
+   * Run a command and return its **stdout as text**, trimmed and
+   * whitespace-collapsed exactly as a `` `cmd` `` substitution is — for a rule
+   * that needs a tool to *tell* it something (a version, a set of flags) rather
+   * than to produce files.
+   *
+   * Takes an **already-resolved** command, in either of two forms: a pipeline as
+   * {@link getCommandProperty} yields one, or — the common case — a single
+   * runnable the rule already holds (`getGlobalRunnable("TSC")`) plus its
+   * arguments. Both skip re-resolving a tool the rule has in hand, which would
+   * otherwise materialize the same reference again at a second collection point.
+   *
+   * The result is keyed and cached like any other action (staged runnable
+   * manifest + argv), so the same command asked for here and written as a
+   * substitution hits one entry.
+   */
+  public getCommandOutput(cmd: ResolvedCommandStage[]): Computable<string>;
+  public getCommandOutput(cmd: RunnableFileSet, ...args: string[]): Computable<string>;
+  public getCommandOutput(cmd: ResolvedCommandStage[] | RunnableFileSet, ...args: string[]): Computable<string> {
+    return this.context.captureOutput(Array.isArray(cmd) ? cmd : [{ runnable: cmd, args }]);
+  }
+
   public getCommandProperty(name: string, srcs: FileSet): Computable<ResolvedCommandPipeline> {
     return this.getCommandStages(name).then(stages =>
       Computable.forAll(
@@ -2026,7 +2242,7 @@ export abstract class TargetContext {
         stdin,
         stdout: stage.stdout?.name.toString(),
         stderr: stage.stderr?.name.toString(),
-        both: stage.both?.name.toString(),
+        mergedTo: stage.mergedTo,
       })
     );
   }

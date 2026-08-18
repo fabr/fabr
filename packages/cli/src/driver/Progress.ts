@@ -379,6 +379,11 @@ function describe(task: TaskDescription): string {
       return `Resolving ${task.consumer} dependencies from ${task.repository}`;
     case "fetch":
       return `Fetching ${task.resource} ${task.url}`;
+    case "command-subst":
+      /* A substitution belongs to no target, so it names itself: the command as
+       * written is what a reader recognizes it by, and the only thing there is
+       * to say about it. */
+      return `Running \`${task.command}\``;
   }
 }
 
@@ -416,6 +421,8 @@ function attribution(task: TaskDescription): string {
       return task.repository;
     case "fetch":
       return task.url;
+    case "command-subst":
+      return `\`${task.command}\``;
   }
 }
 

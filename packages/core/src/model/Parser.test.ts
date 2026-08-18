@@ -647,8 +647,10 @@ describe("Parser Tests", () => {
 
     it("substitutes variables in constraint values", () => {
       const name = firstValue("dep = mylib<BUILD_TYPE=${DEFAULT}>;");
-      expect(name.getVariables()).to.deep.equal(["DEFAULT"]);
-      expect(name.substitute(["DEFAULT"], ["release"]).toString()).to.equal("mylib<BUILD_TYPE=release>");
+      expect(name.getSubstitutions().map(part => part.value)).to.deep.equal(["DEFAULT"]);
+      expect(name.substitute(new Map(name.getSubstitutions().map(part => [part, "release"]))).toString()).to.equal(
+        "mylib<BUILD_TYPE=release>"
+      );
     });
 
     it("rejects an empty constraint list", () => {
@@ -796,8 +798,10 @@ describe("Parser Tests", () => {
 
     it("substitutes variables in the template", () => {
       const name = firstValue("out = *.entry.js -> *.${BUILD_NO}.min.js;");
-      expect(name.getVariables()).to.deep.equal(["BUILD_NO"]);
-      expect(name.substitute(["BUILD_NO"], ["7"]).toString()).to.equal("*.entry.js -> *.7.min.js");
+      expect(name.getSubstitutions().map(part => part.value)).to.deep.equal(["BUILD_NO"]);
+      expect(name.substitute(new Map(name.getSubstitutions().map(part => [part, "7"]))).toString()).to.equal(
+        "*.entry.js -> *.7.min.js"
+      );
     });
 
     it("parses on a command-line name (parseName parity)", () => {
@@ -919,7 +923,7 @@ describe("Parser Tests", () => {
         /* Still an ordinary substitution there — the reinterpretation is the
          * template's, so nothing else has to know captures exist. */
         const name = nameOf(parseValid("out = $1.b;").properties[0].values[0]);
-        expect(name.getVariables()).to.deep.equal(["1"]);
+        expect(name.getSubstitutions().map(part => part.value)).to.deep.equal(["1"]);
       });
     });
 
@@ -1076,7 +1080,7 @@ describe("Parser Tests", () => {
       if (stage.stdin !== undefined) parts.push("<", stage.stdin.value.toString());
       if (stage.stdout !== undefined) parts.push(">", stage.stdout.value.toString());
       if (stage.stderr !== undefined) parts.push("2>", stage.stderr.value.toString());
-      if (stage.both !== undefined) parts.push("&>", stage.both.value.toString());
+      if (stage.mergedTo !== undefined) parts.push(stage.mergedTo === "out" ? "2>&1" : "1>&2");
       return parts.join(" ");
     }
     function sequence(src: string): string {
@@ -1092,7 +1096,117 @@ describe("Parser Tests", () => {
 
     it("parses stdin, stderr and both redirects", () => {
       expect(sequence("run = tool < src 2> err;")).to.equal("tool < src 2> err");
-      expect(sequence("run = a b &> log;")).to.equal("a b &> log");
+      /* `&> n` IS `> n 2>&1` — it holds no state of its own, so it flattens to
+       * the pair rather than surviving as a third kind of capture. */
+      expect(sequence("run = a b &> log;")).to.equal("a b > log 2>&1");
+    });
+
+    it("applies redirects in written order, so a dup takes stdout's destination at that point", () => {
+      /* Shell semantics: `> f 2>&1` sends both to f, while `2>&1 > f` dups stderr
+       * onto stdout's *then*-current destination (the default sink) and only
+       * afterwards moves stdout — so the two are not the same command. */
+      expect(sequence("run = tool > f 2>&1;")).to.equal("tool > f 2>&1");
+      expect(sequence("run = tool 2>&1 > f;")).to.equal("tool > f");
+      expect(sequence("run = tool 2>&1;")).to.equal("tool 2>&1");
+      /* The other direction: stdout onto the diagnostic sink, keeping a chatty
+       * stage's output out of the captured value. Which side survives is what a
+       * bare "they are merged" flag could not have recorded. */
+      expect(sequence("run = tool 1>&2;")).to.equal("tool 1>&2");
+    });
+
+    it("takes a dup as one token, not a redirect to a file named '&1'", () => {
+      /* `2>` + a target `&1` would be a plausible mis-parse; the fd digits are read
+       * whole, so anything that is not one of fabr's two streams is an error rather
+       * than a filename. A self-dup is the no-op it says. */
+      expect(sequence("run = tool 2>&2;")).to.equal("tool");
+      expect(parseInvalid("run = tool 2>&3;")).to.deep.equal([
+        diagnosticBlock(1, 12, "Invalid command: '&3' is not a stream: fabr has stdout (1) and stderr (2)", "run = tool 2>&3;"),
+      ]);
+      expect(parseInvalid("run = tool 2>&x;")).to.deep.equal([
+        diagnosticBlock(1, 12, "Invalid command: '&' is not a stream: fabr has stdout (1) and stderr (2)", "run = tool 2>&x;"),
+      ]);
+    });
+
+    it("rejects redirecting one stream twice, dups included", () => {
+      expect(parseInvalid("run = tool 2> a 2>&1;")).to.deep.equal([
+        diagnosticBlock(1, 17, "Invalid command: stderr is redirected more than once", "run = tool 2> a 2>&1;"),
+      ]);
+      expect(parseInvalid("run = tool 2>&1 2> a;")).to.deep.equal([
+        diagnosticBlock(1, 17, "Invalid command: stderr is redirected more than once", "run = tool 2>&1 2> a;"),
+      ]);
+      expect(parseInvalid("run = tool &> a 2> b;")).to.deep.equal([
+        diagnosticBlock(1, 17, "Invalid command: stderr is redirected more than once", "run = tool &> a 2> b;"),
+      ]);
+    });
+
+    it("allows a dup mid-pipeline — it captures nothing, it feeds the pipe", () => {
+      expect(sequence("run = a 2>&1 | b > out;")).to.equal("a 2>&1 | b > out");
+      expect(parseInvalid("run = a > f | b;")).to.deep.equal([
+        diagnosticBlock(1, 13, "Invalid command: only the final stage of a pipeline can capture stdout ('>' / '&>')", "run = a > f | b;"),
+      ]);
+    });
+
+    /* --- command substitution ------------------------------------------- */
+
+    /** The `Name` of a property's sole value, for substitution tests. */
+    function valueName(src: string): Name {
+      const value = parseValid(src).properties[0].values[0];
+      return isNameValue(value) ? value.value : fail("expected a name value");
+    }
+
+    /** The command substitutions written in a value, as their source text —
+     * `getSubstitutions` returns `${var}` parts too, which these tests never mix
+     * in but which the filter keeps honest. */
+    function commandsOf(src: string): string[] {
+      return commandPartsOf(src).map(part => part.value);
+    }
+
+    function commandPartsOf(src: string): NamePart[] {
+      return valueName(src)
+        .getSubstitutions()
+        .filter(part => part.kind === NamePartKind.CommandSubst);
+    }
+
+    it("reads a backtick expression as a substitution part of the name", () => {
+      expect(commandsOf("V = `node --version`;")).to.deep.equal(["node --version"]);
+      /* It is a *part*, so it composes with adjacent text exactly as `${...}`
+       * does — the property that ruled out treating it as a whole value. */
+      expect(commandsOf("V = v`ls`;")).to.deep.equal(["ls"]);
+      expect(commandsOf("V = pre`a`mid`b`post;")).to.deep.equal(["a", "b"]);
+    });
+
+    it("round-trips a substitution through toString", () => {
+      expect(valueName("V = v`ls -1`/x;").toString()).to.equal("v`ls -1`/x");
+    });
+
+    it("carries the parsed pipeline, not just the text", () => {
+      const parts = commandPartsOf("V = `a --x | b 2>&1`;");
+      expect(parts).to.have.length(1);
+      const pipeline = parts[0].command ?? [];
+      expect(pipeline.map(renderStage)).to.deep.equal(["a --x", "b 2>&1"]);
+    });
+
+    it("takes its quoting from the ordinary word grammar", () => {
+      /* Double quotes have interior structure, so a substitution works inside
+       * one; single quotes are literal-only, which is the escape hatch for a
+       * backtick that means itself. */
+      expect(commandsOf('V = "pre `cmd a` post";')).to.deep.equal(["cmd a"]);
+      expect(commandsOf("V = '`cmd`';")).to.deep.equal([]);
+      /* A quoted word *inside* a substitution may itself contain a backtick —
+       * which is why the extent cannot be found by scanning for the next one. */
+      expect(commandsOf("V = `tool 'a`b'`;")).to.deep.equal(["tool 'a`b'"]);
+    });
+
+    it("rejects an unterminated substitution", () => {
+      expect(parseInvalid("V = `node --version;")).to.deep.equal([
+        diagnosticBlock(1, 5, "Invalid command: unterminated command substitution (no closing '`')", "V = `node --version;"),
+      ]);
+    });
+
+    it("rejects an empty substitution", () => {
+      expect(parseInvalid("V = ``;")).to.deep.equal([
+        diagnosticBlock(1, 5, "Invalid command: empty command substitution", "V = ``;"),
+      ]);
     });
 
     it("keeps an abutting <k=v> a constraint on the command, not a stdin redirect", () => {
@@ -1241,7 +1355,7 @@ describe("Parser Tests", () => {
       const entries = blockEntries(
         entriesOf(parseValid("js_bundle b {\n  defines = { VERSION = ${BUILD_NO}; }\n}").targets[0].properties[0].values[0])
       );
-      expect(nameOf(entries[0].values[0]).getVariables()).to.deep.equal(["BUILD_NO"]);
+      expect(nameOf(entries[0].values[0]).getSubstitutions().map(part => part.value)).to.deep.equal(["BUILD_NO"]);
     });
 
     it("parses an empty block", () => {

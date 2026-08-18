@@ -185,7 +185,20 @@ export interface IFetchTask {
 export type IFetchReport = Pick<IFetchTask, "resource" | "role">;
 
 /**
- * What a task *is*: a build action, a repository resolution, or a download.
+ * A `` `cmd` `` substitution being run (on a cache miss). Unlike every other
+ * build action this belongs to no target — it may be written in a global, which
+ * has none — so it describes itself by the command as written rather than
+ * borrowing a target's name.
  */
-export type TaskDescription = ITargetBuildTask | IRepositoryResolveTask | IFetchTask;
+export interface ICommandSubstTask {
+  kind: "command-subst";
+  /** The command as written between the backticks. */
+  command: string;
+}
+
+/**
+ * What a task *is*: a build action, a repository resolution, a download, or a
+ * command substitution.
+ */
+export type TaskDescription = ITargetBuildTask | IRepositoryResolveTask | IFetchTask | ICommandSubstTask;
 

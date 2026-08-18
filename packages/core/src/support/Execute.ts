@@ -505,16 +505,25 @@ function executeUnbounded(cmd: string, args: string[], cwd: string, env: Record<
   });
 }
 
-/** The output streams a pipeline stage captures as content, each named by the
- * content its bytes become. `both` merges stdout and stderr in arrival order
- * (the `&>` redirect); `stdout`/`stderr` collect each separately. A name being
- * present is the signal to capture that stream (capturing stdout is only valid
- * on the final stage — an earlier stage's stdout feeds the pipe). Shared by the
- * resolved rule stage ({@link ResolvedCommandStage}) and the run spec. */
+/**
+ * Where a pipeline stage's output streams go. A name being present is the signal
+ * to capture that stream as content under it (capturing stdout is only valid on
+ * the final stage — an earlier stage's stdout feeds the pipe); absent means the
+ * stream's default, which for stdout is the pipe or the pipeline's own output and
+ * for stderr is the diagnostic sink. Shared by the resolved rule stage
+ * ({@link ResolvedCommandStage}) and the run spec.
+ *
+ * `mergedTo` is a dup (`2>&1` / `1>&2`): the stream whose destination both share,
+ * so one capture handle with the two interleaved in arrival order. It subsumes
+ * `&>` (`&> n` is `> n 2>&1`) and also covers the *un*captured case, where the
+ * merge decides only which stream's default the pair lands on — stdout's output,
+ * or the diagnostic sink. The non-surviving stream never carries a name of its
+ * own: `mergedTo: "out"` ⇒ `stderr` unset, and vice versa.
+ */
 export interface StageStreams {
   stdout?: string;
   stderr?: string;
-  both?: string;
+  mergedTo?: "out" | "err";
 }
 
 /** One stage of an {@link executePipeline}: the resolved argv to run plus the
@@ -635,8 +644,9 @@ function pipelineUnbounded(
     try {
       specs.forEach((spec, i) => {
         const isLast = i === specs.length - 1;
-        const capBoth = spec.both !== undefined;
-        const capStdout = spec.stdout !== undefined || capBoth;
+        /* stdout must be read whenever it has anywhere to go: its own capture, a
+         * `1>&2` dup into stderr's capture, the next stage, or the sink. */
+        const capStdout = spec.stdout !== undefined || (spec.mergedTo === "err" && spec.stderr !== undefined);
         /* stdin: first stage from supplied bytes (else EOF); a later stage reads the
          * previous stage's stdout (wired below). Every stream fabr looks at is
          * PIPED — captured as content, feeding the next stage, streamed to the
@@ -665,28 +675,46 @@ function pipelineUnbounded(
         proc.stdin?.on("error", () => undefined);
         proc.stdout?.on("error", () => undefined);
         /* Captures stream into store handles (piped with `{ end: false }` — the
-         * handle is ended by finalize, not by the source). `&>` merges stdout and
-         * stderr, chunk-interleaved, into one handle. */
-        if (capBoth) {
-          const merged = capture(spec.both!);
-          proc.stdout?.pipe(merged, { end: false });
-          proc.stderr?.pipe(merged, { end: false });
+         * handle is ended by finalize, not by the source). A dup gives both
+         * streams ONE handle, so the shared destination is opened once and both
+         * are piped into it, chunk-interleaved. */
+        const captureName = spec.mergedTo === "err" ? spec.stderr : spec.stdout;
+        const shared = captureName !== undefined ? capture(captureName) : undefined;
+        const lines = stageLines[i];
+        if (spec.mergedTo !== undefined) {
+          /* Both streams to the survivor's destination: its capture handle if it
+           * has one, else its default — which for `2>&1` is the pipeline's own
+           * output (so the lines ARE stdout now, labelled as such) and for `1>&2`
+           * the diagnostic sink. With no capture and no sink there is nothing to
+           * merge into, and the bytes are buffered for the failure report exactly
+           * as an un-dup'd stderr would be. */
+          const label = spec.mergedTo;
+          const merge = (stream: NodeJS.ReadableStream | null): void => {
+            if (shared) {
+              stream?.pipe(shared, { end: false });
+            } else {
+              stream?.on("data", data => (lines ? lines[label].push(data) : void stderr[i].push(data)));
+            }
+          };
+          merge(proc.stdout);
+          merge(proc.stderr);
         } else {
-          if (spec.stdout !== undefined) {
-            proc.stdout?.pipe(capture(spec.stdout), { end: false });
+          if (shared) {
+            proc.stdout?.pipe(shared, { end: false });
           }
           if (spec.stderr !== undefined) {
             proc.stderr?.pipe(capture(spec.stderr), { end: false });
           } else {
             /* Un-redirected stderr: the user's own stream — streamed live to the
              * sink, or buffered (small) to report on this stage's failure. */
-            const lines = stageLines[i];
             proc.stderr?.on("data", data => (lines ? lines.err.push(data) : void stderr[i].push(data)));
           }
         }
         /* A final un-redirected stdout is the pipeline's own output: with a sink
-         * it streams live like stderr; without one it was never piped at all. */
-        if (isLast && !capStdout && sink) {
+         * it streams live like stderr; without one it was never piped at all. A
+         * dup already routed both streams above — including stdout — so this must
+         * not attach a second reader and count it twice. */
+        if (isLast && !capStdout && sink && spec.mergedTo === undefined) {
           proc.stdout?.on("data", data => stageLines[i]?.out.push(data));
         }
         proc.on("error", e => fail(new ExecutionError(`${stageCommandLine(spec)}\nunable to execute: ${systemErrorText(e)}`)));

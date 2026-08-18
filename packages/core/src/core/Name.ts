@@ -19,6 +19,7 @@
 
 import * as path from "path";
 import { globCaptureRegex, globMatcher, globPrefixRegex } from "../support/Glob";
+import type { CommandPipeline } from "../model/AST";
 
 export enum NamePartKind {
   Literal,
@@ -28,11 +29,30 @@ export enum NamePartKind {
    * A `$1`-style back-reference to a numbered wildcard.
    */
   Backref,
+  /**
+   * A backtick `cmd args` `` command substitution: 
+   */
+  CommandSubst,
+}
+
+/** Whether a part's text is supplied from *outside* the name — a variable to
+ * look up or a command to run. The two differ only in how that text is obtained,
+ * which is the resolver's business and not the name's, so everything here treats
+ * them alike. */
+function isSubstituted(part: NamePart): boolean {
+  return part.kind === NamePartKind.VarSubst || part.kind === NamePartKind.CommandSubst;
 }
 
 export interface NamePart {
   kind: NamePartKind;
+  /** The written form: a literal's text, a variable's name, a back-reference's
+   * digits — and, for a command substitution, its source text */
   value: string;
+  /**
+   * A command substitution's parsed pipeline — attached by the parser and read
+   * back by the model to resolve the part. 
+   */
+  command?: CommandPipeline;
 }
 
 /**
@@ -455,32 +475,38 @@ export class Name {
     return this.parts.some(part => part.kind === NamePartKind.VarSubst);
   }
 
-  public getVariables(): string[] {
-    const own = this.parts.filter(part => part.kind === NamePartKind.VarSubst).map(part => part.value);
-    /* Constraint values may themselves reference variables (`<K=${X}>`), which
-     * must be resolved before the constraints are applied. */
-    const withConstraints = this.constraints.reduce<string[]>(
-      (vars, [, value]) => vars.concat(value.getVariables()),
-      own
-    );
-    /* The rename target may reference variables too (`-> *.${BUILD_NO}.js`). */
-    return this.renameTo ? withConstraints.concat(this.renameTo.getVariables()) : withConstraints;
+  /**
+   * Every part of this name whose text comes from outside it — variables and
+   * command substitutions alike — including those inside its constraint values
+   * and rename target. The caller resolves each however that kind requires (a
+   * property lookup, a command run) and hands the results back to
+   * {@link substitute}, which is what lets one pass settle both.
+   */
+  public getSubstitutions(): NamePart[] {
+    const own = this.parts.filter(isSubstituted);
+    /* Constraint values may themselves substitute (`<K=${X}>`), which must be
+     * resolved before the constraints are applied. */
+    const withConstraints = this.constraints.reduce<NamePart[]>((parts, [, value]) => parts.concat(value.getSubstitutions()), own);
+    /* The rename target may substitute too (`-> *.${BUILD_NO}.js`). */
+    return this.renameTo ? withConstraints.concat(this.renameTo.getSubstitutions()) : withConstraints;
   }
 
   /**
-   * Replace all substitution variable names with the given values.
-   * @param substitutionMap
-   * @returns
+   * Replace every substituted part with its resolved text, collapsing it to a
+   * Literal — so nothing downstream of substitution knows a variable or a
+   * command was ever there.
+   *
+   * Keyed by **part identity**, not by written form: {@link getSubstitutions}
+   * hands back the very objects this walks (through constraint values and the
+   * rename target too), so there is no key space to collide in — a variable
+   * named `X` and a command written `X` are simply different parts.
    */
-  public substitute(varNames: string[], values: string[]): Name {
-    const substitutionMap = new Map<string, string>(varNames.map((key, index) => [key, values[index]]));
-
+  public substitute(resolved: ReadonlyMap<NamePart, string>): Name {
     /* Note: internally we collapse strings down so that afterwards we can treat it as if
      * the subst vars were never there.
      */
     const parts = this.parts.reduce<NamePart[]>((rest, part) => {
-      const newPart =
-        part.kind === NamePartKind.VarSubst ? { kind: NamePartKind.Literal, value: substitutionMap.get(part.value)! } : part;
+      const newPart = isSubstituted(part) ? { kind: NamePartKind.Literal, value: resolved.get(part)! } : part;
       if (rest.length > 0 && rest[rest.length - 1].kind === newPart.kind) {
         rest[rest.length - 1] = { kind: newPart.kind, value: rest[rest.length - 1].value + newPart.value };
       } else {
@@ -489,12 +515,12 @@ export class Name {
       return rest;
     }, []);
 
-    /* Constraint values are substituted too (they share the variable space), so
-     * `<K=${X}>` resolves before the constraints are applied / rendered. */
-    const constraints = this.constraints.map<NameConstraint>(([key, value]) => [key, value.substitute(varNames, values)]);
-    /* The rename target shares the variable space (`-> *.${BUILD_NO}.js`), and
-     * is collapsed to literal parts here so replay never sees a VarSubst. */
-    const renameTo = this.renameTo?.substitute(varNames, values);
+    /* Constraint values are substituted too (they share the name's resolution),
+     * so `<K=${X}>` resolves before the constraints are applied / rendered. */
+    const constraints = this.constraints.map<NameConstraint>(([key, value]) => [key, value.substitute(resolved)]);
+    /* The rename target substitutes as well (`-> *.${BUILD_NO}.js`), collapsed to
+     * literal parts here so replay never sees a VarSubst. */
+    const renameTo = this.renameTo?.substitute(resolved);
     return new Name(parts, constraints, renameTo);
   }
 
@@ -678,6 +704,8 @@ export class Name {
           return result + "${" + part.value + "}";
         case NamePartKind.Backref:
           return result + "$" + part.value;
+        case NamePartKind.CommandSubst:
+          return result + "`" + part.value + "`";
       }
     }, "");
   }
@@ -842,6 +870,19 @@ export class NameBuilder {
    */
   public appendSubstVar(str: string): this {
     this.append(NamePartKind.VarSubst, str);
+    return this;
+  }
+
+  /**
+   * Add a command substitution: `text` as written (without the backticks) plus
+   * the parsed command, which core carries but never inspects.
+   */
+  public appendCommandSubst(text: string, command: CommandPipeline): this {
+    this.parts.push({ kind: NamePartKind.CommandSubst, value: text, command });
+    /* Never a merge candidate, in either direction: two adjacent substitutions
+     * are two commands, and concatenating their source texts would make them one
+     * (unrunnable) command — so clear `last` rather than pointing it here. */
+    this.last = undefined;
     return this;
   }
 

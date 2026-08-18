@@ -134,6 +134,42 @@ url = "${NPM_REPOSITORY_URL}";
 version = ${FABR_VERSION};
 ```
 
+### Command substitution
+
+Backticks run a command and substitute what it wrote to stdout, for a tool that reports fixed
+information — a version, a set of compiler flags:
+
+```
+TSC_VERSION = `${TSC} --version`;
+```
+
+A backtick expression is a *part* of a value, exactly like `${NAME}`, so it composes with the text
+around it and may appear anywhere a variable may — including in double quotes, in a guard, or in a
+reference. Single quotes are literal, so ``'`cmd`'`` is a backtick string rather than a command.
+
+```
+srcs = build/v`${TSC} --version`/*.js;
+```
+
+The output is **trimmed**, and internal runs of whitespace (newlines included) are collapsed to
+single spaces — the same text a shell would substitute. A command whose output is genuinely
+multi-line wants a [`generate`](#command-property) target and a file instead.
+
+Between the backticks is a command pipeline in the same form as a
+[command property](#command-property), so `|` and the redirections work and the command's own words
+substitute first. Two differences follow from a substitution's value *being* its stdout:
+
+- A redirection to a name **discards** that stream — the file it would write is unreachable, so
+  `2> log` simply silences stderr. Redirecting stdout leaves the substitution with nothing to
+  capture, and its value is empty.
+- `2>&1` folds stderr into the value, which is otherwise stdout only.
+
+The command runs once and its result is cached against the tool and its arguments, so the same
+substitution written in several places costs one run.
+
+The command must name a fabr **runnable** — a target, a global, or a package reference such as
+`@npm:typescript:5.4.5:tsc`. A tool that only exists on the host (`cc`, `sed`, etc) cannot be named.
+
 ### Constraints
 
 A reference can **require** a configuration, as a `<KEY=value>` facet on the reference:
@@ -326,6 +362,24 @@ cmd = my_script -l < src/input.txt | pagination > output.txt;
 
 When resolved, each command must be a runnable target, an input redirection takes a name reference that
 must resolve to a single file, and output redirections must be a valid file path.
+
+The redirections are:
+
+| Form | Meaning |
+| --- | --- |
+| `< name` | Feed the first stage's stdin from a reference resolving to a single file. |
+| `> name` | Capture stdout as content called `name` (final stage only — an earlier stage's stdout feeds the pipe). |
+| `2> name` | Capture stderr as content called `name`. |
+| `2>&1` | Send stderr wherever stdout currently goes. `1>&2` is the mirror; those are the only two streams. |
+| `&> name` | Capture both together — exactly `> name 2>&1`. |
+
+Redirections apply **in written order**, as in a shell: `> f 2>&1` sends both streams to `f`, while
+`2>&1 > f` sends stderr where stdout was going *before* the redirection (so, to fabr's own output)
+and only then moves stdout to `f`. Unlike a shell, redirecting the same stream twice is an error
+rather than the last one quietly winning.
+
+A stream that is not redirected is reported by fabr as the target's output, and is shown if the
+command fails.
 
 
 ### Guarded properties

@@ -20,7 +20,8 @@ import { Computable } from "../core/Computable";
 import { attachHelp } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
-import { executePipeline, StageSpec } from "../support/Execute";
+import { executePipeline, StageSpec, StageStreams } from "../support/Execute";
+import { RunnableFileSet } from "../core/RunnableFileSet";
 import { BuildAction, BuildActionInputs } from "./Types";
 import { fileSetInput, stringInput } from "./ExecAction";
 
@@ -79,8 +80,48 @@ function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | undefined> 
 }
 
 /* v2: a declared `output` glob that matches nothing is now an error, not a
- * cached empty success — bump so entries cached green under v1 re-run. */
-export const PIPELINE_ACTION = { id: "core:command-pipeline", version: 2, run: runPipeline };
+ * cached empty success — bump so entries cached green under v1 re-run.
+ * v3: the stage spec's stream members changed shape (`both` → `stdout` +
+ * `mergeErr`), and the spec is serialized into the key, so v2 entries would key
+ * differently for the same command. */
+export const PIPELINE_ACTION = { id: "core:command-pipeline", version: 3, run: runPipeline };
+
+/** One stage as {@link stagePipeline} needs it: the runnable to launch plus its
+ * argv and stream destinations. Structurally the model's `ResolvedCommandStage`,
+ * spelt without naming it — this module sits *below* the model (which imports it),
+ * so it cannot import the model's types back. */
+export interface RunnableStage extends StageStreams {
+  runnable: RunnableFileSet;
+  args: string[];
+}
+
+/**
+ * Stage a resolved pipeline: mount each stage's runnable and turn it into a run
+ * spec. A **single-stage** command mounts the tool *at the root*, over `srcs` (the
+ * npx-in-project layout: the tool's `node_modules` sits adjacent to the sources,
+ * so a source importing the tool resolves). A **multi-stage** pipeline instead
+ * mounts each stage under its own `.fabr-cmd-<n>/` so the tools don't share a
+ * `node_modules`; the streams connect them, and no source imports a pipe stage's
+ * modules.
+ *
+ * Shared by `generate` and by command substitution, which differ only in what
+ * they collect afterwards — the mounting rule is the same either way.
+ */
+export function stagePipeline(stages: ReadonlyArray<RunnableStage>, srcs: FileSet): { files: FileSet; specs: StageSpec[] } {
+  const single = stages.length === 1;
+  const mounts: FileSet[] = [];
+  const specs: StageSpec[] = stages.map((stage, i) => {
+    const dir = single ? undefined : `.fabr-cmd-${i}`;
+    mounts.push(dir === undefined ? stage.runnable : FileSet.layout({ [dir]: stage.runnable }));
+    return {
+      argv: stage.runnable.toCommandLine(stage.args, dir === undefined ? undefined : { base: dir }),
+      stdout: stage.stdout,
+      stderr: stage.stderr,
+      mergedTo: stage.mergedTo,
+    };
+  });
+  return { files: FileSet.unionAll(srcs, ...mounts), specs };
+}
 
 /** @return a command-pipeline action from the resolved per-stage specs, the
  * combined staged fileset, an optional single-file stdin, and the `output`

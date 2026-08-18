@@ -29,6 +29,8 @@ import {
   IPluginDecl,
   IPropertyDecl,
   ICommandStage,
+  CommandPipeline,
+  StreamName,
   ICommandValue,
   INameValue,
   IPropertySchema,
@@ -80,11 +82,16 @@ enum TokenType {
   /* Command-pipeline operators (a `COMMAND` property value). `<` stdin and `>`
    * stdout reuse LANGLE/RANGLE (disambiguated from a `<k=v>` constraint by not
    * abutting); these are the forms that need their own token: the pipe, and the
-   * fd-prefixed redirects `2>`/`1>`/`&>` (recognized by an abutting `2`/`1`/`&`). */
+   * fd-prefixed redirects `2>`/`1>`/`&>` (recognized by an abutting `2`/`1`/`&`),
+   * and the `N>&M` dup, which takes no target and so cannot be `N>` plus a word. */
   PIPE,
   REDIR_STDOUT,
   REDIR_STDERR,
   REDIR_BOTH,
+  REDIR_DUP,
+  /** The `` ` `` bounding a command substitution — a token so the sub-parse can
+   * stop on it, never a name character. */
+  BACKTICK,
   ERROR = -1,
 }
 
@@ -110,6 +117,8 @@ const CHAR_AT = "@".codePointAt(0);
 const CHAR_HASH = "#".codePointAt(0);
 const CHAR_DASH = "-".codePointAt(0);
 const CHAR_DOT = ".".codePointAt(0);
+const CHAR_AMP = "&".codePointAt(0);
+const CHAR_BACKTICK = "`".codePointAt(0);
 const CHAR_COLON = ":".codePointAt(0);
 const CHAR_PIPE = "|".codePointAt(0);
 const CHAR_LPAREN = "(".codePointAt(0);
@@ -136,11 +145,18 @@ interface IdentToken extends TokenBase {
   text: string;
 }
 
-interface NonNameToken extends TokenBase {
-  type: Exclude<TokenType, TokenType.NAME | TokenType.IDENTIFIER | TokenType.SIMPLE_NAME>;
+/** `N>&M` — the fds it names, already validated to be 1 or 2. */
+interface DupToken extends TokenBase {
+  type: TokenType.REDIR_DUP;
+  from: number;
+  to: number;
 }
 
-type Token = NameToken | IdentToken | NonNameToken;
+interface NonNameToken extends TokenBase {
+  type: Exclude<TokenType, TokenType.NAME | TokenType.IDENTIFIER | TokenType.SIMPLE_NAME | TokenType.REDIR_DUP>;
+}
+
+type Token = NameToken | IdentToken | DupToken | NonNameToken;
 
 const TOKEN_NAME_MAP = {
   [TokenType.EOF]: "EOF",
@@ -159,6 +175,8 @@ const TOKEN_NAME_MAP = {
   [TokenType.REDIR_STDOUT]: "'1>'",
   [TokenType.REDIR_STDERR]: "'2>'",
   [TokenType.REDIR_BOTH]: "'&>'",
+  [TokenType.REDIR_DUP]: "'2>&1'",
+  [TokenType.BACKTICK]: "'`'",
   [TokenType.ERROR]: "ERROR",
 };
 
@@ -179,10 +197,18 @@ const enum CommandOpKind {
   Stdout,
   Stderr,
   Both,
+  Dup,
 }
 
-/** A pipeline operator with its source offset (for positioned errors). */
-type CommandOp = { op: CommandOpKind; at: number };
+/** Whether an operator takes a following target name. A dup (`2>&1`) is the one
+ * redirect that does not — it names a stream, not a destination. */
+function takesTarget(op: CommandOpKind): boolean {
+  return op !== CommandOpKind.Pipe && op !== CommandOpKind.Dup;
+}
+
+/** A pipeline operator with its source offset (for positioned errors), plus — for
+ * a dup — the fds it names (`{from: 2, to: 1}` for `2>&1`). */
+type CommandOp = { op: CommandOpKind; at: number; from?: number; to?: number };
 
 const OP_SYMBOL: Record<CommandOpKind, string> = {
   [CommandOpKind.Pipe]: "|",
@@ -190,11 +216,73 @@ const OP_SYMBOL: Record<CommandOpKind, string> = {
   [CommandOpKind.Stdout]: ">",
   [CommandOpKind.Stderr]: "2>",
   [CommandOpKind.Both]: "&>",
+  [CommandOpKind.Dup]: "N>&M",
 };
 
 /** The "missing target" message for a dangling redirect operator, naming it. */
 function missingTarget(op: CommandOpKind): string {
   return `redirect '${OP_SYMBOL[op]}' must be followed by a target name`;
+}
+
+/**
+ * Where one of a stage's output streams goes: a captured content name, or — with
+ * no `file` — the stream's default (the pipe to the next stage / the pipeline's
+ * own output, and the diagnostic sink respectively).
+ *
+ * **Object identity is the mechanism**, not a detail: a dup points one stream at
+ * *the same object* as the other, so a later capture replacing that object leaves
+ * the dup on the old one (shell's `2>&1 > f`), and `err === out` at the end of the
+ * stage is exactly "these two share one destination".
+ */
+type Dest = { file?: INameValue };
+
+/** A stage's output fds while its redirects are being applied left to right.
+ * `out` and `err` start as two *distinct* defaults — both undirected, but not the
+ * same destination, which is what makes a subsequent dup observable. */
+interface StageFds {
+  out: Dest;
+  err: Dest;
+  /** Which stream a dup made the survivor, if one has been written. Only
+   * meaningful while `out` and `err` are still the same object — a later capture
+   * on the survivor's side splits them again and strands this. */
+  mergedTo?: StreamName;
+}
+
+/** A stage under construction: its names, plus the fd table not yet flattened
+ * onto them (see {@link flattenStage}). */
+interface PendingStage {
+  stage: ICommandStage;
+  fds: StageFds;
+}
+
+function newStageFds(): StageFds {
+  return { out: {}, err: {} };
+}
+
+/** How each stream is named in a diagnostic (the fd table's own terms are `out`
+ * and `err`; a user wrote `>` and `2>`). */
+const STREAM_LABEL: Record<StreamName, string> = { out: "stdout", err: "stderr" };
+
+/**
+ * Collapse the fd table onto the stage: whichever captures were named, plus the
+ * surviving stream when the two ended up sharing one destination — the point at
+ * which `&> n` and `> n 2>&1` become indistinguishable, as they should.
+ *
+ * The share is judged by identity *now*, not by whether a dup was written: a
+ * capture after the dup (`2>&1 > f`) replaced one side's destination and split
+ * them again, which is exactly shell's ordering rule and leaves `mergedTo`
+ * stranded — so it is only read when the two still agree.
+ */
+function flattenStage({ stage, fds }: PendingStage): ICommandStage {
+  const mergedTo = fds.err === fds.out ? fds.mergedTo : undefined;
+  if (mergedTo !== "err" && fds.out.file !== undefined) {
+    stage.stdout = fds.out.file;
+  }
+  if (mergedTo !== "out" && fds.err.file !== undefined) {
+    stage.stderr = fds.err.file;
+  }
+  stage.mergedTo = mergedTo;
+  return stage;
 }
 
 function isWhitespace(ch: number): boolean {
@@ -208,6 +296,7 @@ function isWhitespace(ch: number): boolean {
 function isArrowTerminator(ch: number | undefined): boolean {
   return ch === undefined || isWhitespace(ch);
 }
+
 
 /**
  * Extract the doc-comment block from the whitespace/comment `gap` that precedes
@@ -462,6 +551,10 @@ export class BuildParser {
   private suppressRedirect = false;
   /** Current `{ ... }` block nesting, bounded by {@link MAX_BLOCK_DEPTH}. */
   private blockDepth = 0;
+  /** Whether we are lexing inside a `` `cmd` `` substitution, where a backtick
+   * closes it rather than opening a nested one (there is no nesting). A counter
+   * only so it restores correctly; it never exceeds 1. */
+  private commandSubstDepth = 0;
 
   private source: IBuildFile;
   private result: IBuildFileContents;
@@ -515,6 +608,18 @@ export class BuildParser {
           builder?.appendEscapedString(this.reader.substring(posn));
           this.readSubstVar(builder);
           posn = this.reader.currentOffset();
+          break;
+        case CHAR_BACKTICK:
+          /* A double-quoted string has interior structure, so a substitution
+           * works inside one exactly as `${...}` does. Inside a substitution's
+           * own quoted word it stays a literal character instead — there is no
+           * nesting, and the quote reader is what consumes the region whole, so
+           * such a backtick can never be mistaken for the closing one. */
+          if (this.commandSubstDepth === 0) {
+            builder?.appendEscapedString(this.reader.substring(posn));
+            this.readCommandSubst(builder);
+            posn = this.reader.currentOffset();
+          }
           break;
         case CHAR_DQUOTE:
           return true;
@@ -674,6 +779,19 @@ export class BuildParser {
           maybeIdent = false;
           nameBuilder.appendEscapedString(this.reader.substring(posn));
           this.readSubstVar(nameBuilder);
+          posn = this.reader.currentOffset();
+          break;
+        case CHAR_BACKTICK:
+          /* Inside a substitution's own words a backtick ENDS the word (and the
+           * command): fabr has no nested substitution — shell's `\`` escape for
+           * it is deliberately not adopted — so the innermost backtick is always
+           * a close, never an open. */
+          if (this.commandSubstDepth > 0) {
+            return true;
+          }
+          maybeIdent = false;
+          nameBuilder.appendEscapedString(this.reader.substring(posn));
+          this.readCommandSubst(nameBuilder);
           posn = this.reader.currentOffset();
           break;
         case CHAR_STAR:
@@ -854,6 +972,19 @@ export class BuildParser {
         this.reader.next();
         this.token = { type: TokenType.PIPE, start: tokenStart };
         break;
+      case CHAR_BACKTICK:
+        /* Only a *closing* backtick is a token of its own. An opening one starts
+         * a name — possibly a name that is nothing else (`V = \`node --version\`;`)
+         * — so it must reach the name scan, which recurses into the substitution.
+         * Depth tells the two apart: inside a substitution there is nothing to
+         * open, only the close to stop on. */
+        if (this.commandSubstDepth > 0) {
+          this.reader.next();
+          this.token = { type: TokenType.BACKTICK, start: tokenStart };
+          break;
+        }
+        this.token = this.readNameOrIdentifier();
+        break;
       case CHAR_DASH:
         /* A whitespace-delimited `->` is the rename ARROW (`sel -> tmpl`); a `-`
          * anywhere else stays a name char. The leading gap is guaranteed (this
@@ -882,6 +1013,15 @@ export class BuildParser {
     if (!this.suppressRedirect && fd !== undefined && this.reader.current() === CHAR_RANGLE) {
       this.reader.next(); /* the '>' */
       this.token = { type: REDIR_FD_TOKEN[fd], start: this.token.start };
+      /* `N>&M` is a dup — stream N takes stream M's current destination — not `N>`
+       * with a target named `&M`: it takes no target at all, so it must be folded
+       * here rather than left for the redirect parser to read a word. Recognized
+       * generally (so `1>&2` reads as the dup it is, rather than failing on a
+       * baffling target name) and validated to fabr's two fds in `readDupFd`. */
+      const from = fd === "1" ? 1 : fd === "2" ? 2 : undefined;
+      if (from !== undefined && this.reader.current() === CHAR_AMP) {
+        this.token = { type: TokenType.REDIR_DUP, start: this.token.start, from, to: this.readDupFd(this.token.start) };
+      }
     }
     /* Attach any doc-comment block from the gap just skipped to this token, so a
      * decl parser can read the documentation written above the declaration. */
@@ -892,6 +1032,27 @@ export class BuildParser {
       }
     }
     return this.token;
+  }
+
+  /**
+   * The `&M` half of a dup redirect (`2>&1`), the reader sitting on the `&`.
+   * Consumes it and the fd digits. Fabr's process model has exactly two streams,
+   * so only 1 and 2 are fds — anything else (`2>&3`, `2>&`, `2>&x`) is a
+   * positioned error naming what is available, rather than a silent mis-parse
+   * into a redirect targeting a file called `&3`.
+   */
+  private readDupFd(opStart: number): number {
+    this.reader.next(); /* the '&' */
+    const start = this.reader.currentOffset();
+    this.reader.skipUntil(ch => !isDigit(ch));
+    const digits = this.reader.substring(start);
+    if (digits !== "1" && digits !== "2") {
+      this.commandError(
+        `'${digits === "" ? "&" : "&" + digits}' is not a stream: fabr has stdout (1) and stderr (2)`,
+        opStart
+      );
+    }
+    return Number(digits);
   }
 
   private consumeToken(type: TokenType): Token {
@@ -1014,6 +1175,11 @@ export class BuildParser {
       case TokenType.REDIR_BOTH:
         op = CommandOpKind.Both;
         break;
+      case TokenType.REDIR_DUP: {
+        const { start, from, to } = this.token;
+        this.nextToken();
+        return { op: CommandOpKind.Dup, at: start, from, to };
+      }
       default:
         return undefined;
     }
@@ -1033,6 +1199,7 @@ export class BuildParser {
       case TokenType.REDIR_STDOUT:
       case TokenType.REDIR_STDERR:
       case TokenType.REDIR_BOTH:
+      case TokenType.REDIR_DUP:
         return true;
       default:
         return false;
@@ -1047,7 +1214,7 @@ export class BuildParser {
   /**
    * Command  ::= Stage ('|' Stage)*
    * Stage    ::= Word+ Redirect*
-   * Redirect ::= ('<' | '>' | '2>' | '&>') Word
+   * Redirect ::= ('<' | '>' | '2>' | '&>') Word | '2>&1'
    *
    * Parse a command pipeline in one pass, building the stages directly. `stage0`
    * is the words {@link parsePropertyDecl} already collected before the first
@@ -1059,7 +1226,7 @@ export class BuildParser {
    */
   private parseCommand(stage0: IValue[], firstOp: CommandOp, firstTarget?: INameValue): ICommandStage[] {
     const stages: ICommandStage[] = [];
-    let stage = this.firstStage(stage0, firstOp);
+    let pending = this.firstStage(stage0, firstOp);
     let op: CommandOp | undefined = firstOp;
     /* `firstTarget` supplies the target of `firstOp` when the value loop already
      * read it (the left-factored spaced-`<` redirect path: the shared IDENTIFIER
@@ -1067,13 +1234,16 @@ export class BuildParser {
      * op consumes it; later ops parse their own target. */
     while (op !== undefined) {
       if (op.op === CommandOpKind.Pipe) {
-        if (stage.stdout !== undefined || stage.both !== undefined) {
+        /* Only a *capture* is barred mid-pipeline: `2>&1` sets no destination of
+         * its own (it hands stderr to the pipe, which is meaningful), so it is
+         * judged by out's file, not by whether stderr was touched. */
+        if (pending.fds.out.file !== undefined) {
           this.commandError("only the final stage of a pipeline can capture stdout ('>' / '&>')", op.at);
         }
-        stages.push(stage);
-        stage = { command: this.parseRequiredWord(op), args: [] };
+        stages.push(flattenStage(pending));
+        pending = { stage: { command: this.parseRequiredWord(op), args: [] }, fds: newStageFds() };
       } else {
-        this.assignRedirect(stage, op, firstTarget ?? this.parseRequiredWord(op));
+        this.applyRedirect(pending, op, takesTarget(op.op) ? (firstTarget ?? this.parseRequiredWord(op)) : undefined);
         if (op.op === CommandOpKind.Stdin && stages.length > 0) {
           this.commandError("only the first stage of a pipeline can take stdin ('<')", op.at);
         }
@@ -1081,19 +1251,19 @@ export class BuildParser {
       firstTarget = undefined;
       /* Trailing words up to the next operator (or the property's end) are the
        * current stage's args — args may follow a redirect (`cmd a > out b`). */
-      while (!this.atCommandOp() && this.token.type !== TokenType.SEMI && this.token.type !== TokenType.RBRACE) {
-        stage.args.push(this.parseWord());
+      while (!this.atCommandOp() && !this.atCommandEnd()) {
+        pending.stage.args.push(this.parseWord());
       }
       op = this.tryCommandOp();
     }
-    stages.push(stage);
+    stages.push(flattenStage(pending));
     return stages;
   }
 
   /** Stage 0, from the words already collected before the first operator: the
    * first is the command, the rest args. Empty (a leading operator) or a block
    * word is a positioned error. */
-  private firstStage(words: IValue[], firstOp: CommandOp): ICommandStage {
+  private firstStage(words: IValue[], firstOp: CommandOp): PendingStage {
     if (words.length === 0) {
       this.commandError(
         firstOp.op === CommandOpKind.Pipe ? "empty command (nothing beside '|')" : "a redirect must follow a command",
@@ -1101,7 +1271,71 @@ export class BuildParser {
       );
     }
     const [command, ...args] = words;
-    return { command: this.asWord(command), args: args.map(word => this.asWord(word)) };
+    return { stage: { command: this.asWord(command), args: args.map(word => this.asWord(word)) }, fds: newStageFds() };
+  }
+
+  /**
+   * A `` `cmd args` `` substitution, the reader sitting on the opening backtick:
+   * parse the command pipeline it contains and append it to `builder` as one
+   * {@link NamePartKind.CommandSubst} part, carrying both its source text (the
+   * key its result is substituted under) and the parsed pipeline.
+   *
+   * Called from the middle of {@link readNameOrIdentifier}'s character scan, so
+   * the two layers have to hand off cleanly in both directions. Going in, the
+   * token layer is primed with {@link nextToken}. Coming out, the loop stops
+   * **on** the closing backtick token without consuming past it — the reader is
+   * then positioned exactly after that backtick, which is where the character
+   * scan must resume. (Consuming one token further would leave the reader beyond
+   * a lookahead token the caller never asked for.) `this.token` is left holding
+   * the backtick, which the caller's own `nextToken` overwrites on return.
+   */
+  private readCommandSubst(builder?: NameBuilder): void {
+    const open = this.reader.currentOffset();
+    this.reader.next(); /* the opening backtick — consumed here, not lexed */
+    this.commandSubstDepth++;
+    try {
+      this.nextToken(); /* primes the first word of the command */
+      const pipeline = this.parseCommandSubstPipeline(open);
+      /* The text between the backticks, exactly as written: what the part renders
+       * as, and the key its resolved value is looked up under — so two
+       * identically-written commands are one command. */
+      builder?.appendCommandSubst(this.reader.substring(open + 1, this.token.start), pipeline);
+    } finally {
+      this.commandSubstDepth--;
+    }
+  }
+
+  /** The pipeline inside a substitution: the first stage's words, then — if an
+   * operator follows — the ordinary {@link parseCommand}, which stops at the
+   * closing backtick like any other terminator. */
+  private parseCommandSubstPipeline(open: number): CommandPipeline {
+    const words: IValue[] = [];
+    while (!this.atCommandOp() && !this.atCommandEnd()) {
+      words.push(this.parseValue());
+    }
+    const op = this.tryCommandOp();
+    if (op !== undefined) {
+      return this.parseCommand(words, op);
+    }
+    if (this.token.type !== TokenType.BACKTICK) {
+      this.commandError("unterminated command substitution (no closing '`')", open);
+    }
+    if (words.length === 0) {
+      this.commandError("empty command substitution", open);
+    }
+    const [command, ...args] = words;
+    return [{ command: this.asWord(command), args: args.map(word => this.asWord(word)) }];
+  }
+
+  /** Whether the current token ends a command — the property's own terminators,
+   * plus the backtick that closes a substitution. */
+  private atCommandEnd(): boolean {
+    return (
+      this.token.type === TokenType.SEMI ||
+      this.token.type === TokenType.RBRACE ||
+      this.token.type === TokenType.EOF ||
+      (this.commandSubstDepth > 0 && this.token.type === TokenType.BACKTICK)
+    );
   }
 
   /** Parse one command word (a name-value reference); the caller guarantees a
@@ -1113,7 +1347,7 @@ export class BuildParser {
   /** Parse a required word — a `|`'s next command or a redirect's target —
    * erroring, positioned at the operator, when none follows. */
   private parseRequiredWord(op: CommandOp): INameValue {
-    if (this.atCommandOp() || this.token.type === TokenType.SEMI || this.token.type === TokenType.RBRACE) {
+    if (this.atCommandOp() || this.atCommandEnd()) {
       this.commandError(op.op === CommandOpKind.Pipe ? "empty command (nothing beside '|')" : missingTarget(op.op), op.at);
     }
     return this.parseWord();
@@ -1127,10 +1361,21 @@ export class BuildParser {
     return value;
   }
 
-  /** Bind a redirect's target to its stream on `stage`, erroring if that stream
-   * is already captured (`> a > b`) or captured by both a specific and a
-   * combined redirect (`&>` with `>`/`2>`). */
-  private assignRedirect(stage: ICommandStage, op: CommandOp, target: INameValue): void {
+  /**
+   * Apply one redirect to the stage's fd table, in written order. A capture
+   * *replaces* the stream's destination with a fresh {@link Dest}, so an earlier
+   * dup keeps pointing at the old one (`2>&1 > f` leaves stderr on the default
+   * sink, as in a shell); a dup instead *aliases* the two, which is what
+   * {@link flattenStage} reads back as "one destination".
+   *
+   * Redirecting a stream twice stays an error, unlike a shell's last-one-wins:
+   * in a build script it is a mistake worth catching, not an intent. A dup counts
+   * as redirecting its `from` stream, and self-dup (`2>&2`) is the no-op it says.
+   */
+  private applyRedirect({ stage, fds }: PendingStage, op: CommandOp, target: INameValue | undefined): void {
+    /* Whether a stream has been given a destination of its own — a capture, or a
+     * dup that pointed it somewhere else. */
+    const directed = (fd: Dest, other: Dest): boolean => fd.file !== undefined || fd === other;
     switch (op.op) {
       case CommandOpKind.Stdin:
         if (stage.stdin !== undefined) {
@@ -1139,22 +1384,36 @@ export class BuildParser {
         stage.stdin = target;
         break;
       case CommandOpKind.Stdout:
-        if (stage.stdout !== undefined || stage.both !== undefined) {
+        if (fds.out.file !== undefined) {
           this.commandError("stdout is redirected more than once", op.at);
         }
-        stage.stdout = target;
+        fds.out = { file: target };
         break;
       case CommandOpKind.Stderr:
-        if (stage.stderr !== undefined || stage.both !== undefined) {
+        if (directed(fds.err, fds.out)) {
           this.commandError("stderr is redirected more than once", op.at);
         }
-        stage.stderr = target;
+        fds.err = { file: target };
         break;
+      case CommandOpKind.Dup: {
+        if (op.from === op.to) {
+          break; /* `1>&1` / `2>&2`: a stream to its own destination, a no-op */
+        }
+        const [from, to]: [StreamName, StreamName] = op.from === 1 ? ["out", "err"] : ["err", "out"];
+        if (directed(fds[from], fds[to])) {
+          this.commandError(`${STREAM_LABEL[from]} is redirected more than once`, op.at);
+        }
+        fds[from] = fds[to];
+        fds.mergedTo = to;
+        break;
+      }
       case CommandOpKind.Both:
-        if (stage.stdout !== undefined || stage.stderr !== undefined || stage.both !== undefined) {
+        if (fds.out.file !== undefined || directed(fds.err, fds.out)) {
           this.commandError("a stream is redirected more than once", op.at);
         }
-        stage.both = target;
+        fds.out = { file: target };
+        fds.err = fds.out;
+        fds.mergedTo = "out";
         break;
       default:
         break;

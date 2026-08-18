@@ -20,23 +20,36 @@
 import { Name, NameBuilder } from "./Name";
 import { expect } from "chai";
 
+/** Substitute by written name, as the model's resolver does: gather the name's
+ * substituted parts, resolve each (here, a lookup in `values`), replace by part
+ * identity. */
+function substituted(name: Name, values: Record<string, string>): Name {
+  const parts = name.getSubstitutions();
+  return name.substitute(new Map(parts.map(part => [part, values[part.value]])));
+}
+
+/** The written forms of a name's substituted parts, in order. */
+function substitutions(name: Name): string[] {
+  return name.getSubstitutions().map(part => part.value);
+}
+
 describe("Name", () => {
   it("Substitute", () => {
     let name = new NameBuilder().appendLiteralString("ab").appendSubstVar("CD").appendLiteralString("ef").name();
-    expect(name.substitute(["CD"], ["actual value"]).toString()).to.equal("abactual valueef");
+    expect(substituted(name, { CD: "actual value" }).toString()).to.equal("abactual valueef");
     expect(name.toString()).to.equal("ab${CD}ef");
 
     name = new NameBuilder().appendSubstVar("CD").name();
-    expect(name.substitute(["CD"], ["actual value"]).toString()).to.equal("actual value");
+    expect(substituted(name, { CD: "actual value" }).toString()).to.equal("actual value");
     expect(name.toString()).to.equal("${CD}");
   });
 
   it("keeps adjacent substitution variables distinct", () => {
     /* `${A}${B}` must not merge into a single variable `AB`. */
     const name = new NameBuilder().appendSubstVar("A").appendSubstVar("B").name();
-    expect(name.getVariables()).to.deep.equal(["A", "B"]);
+    expect(substitutions(name)).to.deep.equal(["A", "B"]);
     expect(name.toString()).to.equal("${A}${B}");
-    expect(name.substitute(["A", "B"], ["x", "y"]).toString()).to.equal("xy");
+    expect(substituted(name, { A: "x", B: "y" }).toString()).to.equal("xy");
   });
 
   describe("constraints", () => {
@@ -64,8 +77,8 @@ describe("Name", () => {
     it("collects variables from constraint values and substitutes them", () => {
       const value = new NameBuilder().appendSubstVar("DEFAULT_TYPE").name();
       const name = Name.fromLiteral("mylib").withConstraints([["BUILD_TYPE", value]]);
-      expect(name.getVariables()).to.include("DEFAULT_TYPE");
-      const resolved = name.substitute(["DEFAULT_TYPE"], ["release"]);
+      expect(substitutions(name)).to.include("DEFAULT_TYPE");
+      const resolved = substituted(name, { DEFAULT_TYPE: "release" });
       expect(resolved.toString()).to.equal("mylib<BUILD_TYPE=release>");
       expect(resolved.getConstraints().map(([, v]) => v.toString())).to.deep.equal(["release"]);
     });
@@ -115,8 +128,8 @@ describe("Name", () => {
         .appendLiteralString(".js")
         .name();
       const name = selector().withRenameTo(stamped);
-      expect(name.getVariables()).to.include("BUILD_NO");
-      const resolved = name.substitute(["BUILD_NO"], ["42"]);
+      expect(substitutions(name)).to.include("BUILD_NO");
+      const resolved = substituted(name, { BUILD_NO: "42" });
       expect(resolved.toString()).to.equal("*.expect -> *.42.js");
     });
 

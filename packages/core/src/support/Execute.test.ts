@@ -328,7 +328,8 @@ describe("executePipeline", () => {
       [
         {
           argv: [NODE, "-e", "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{process.stdout.write('O'+d);process.stderr.write('E')})"],
-          both: "log",
+          stdout: "log",
+          mergedTo: "out" as const,
         },
       ],
       Buffer.from("x")
@@ -336,6 +337,38 @@ describe("executePipeline", () => {
     const log = await captured(files, "log");
     expect(log).to.contain("Ox");
     expect(log).to.contain("E");
+  });
+
+  it("sends stdout into stderr's capture for the '1>&2' dup", async () => {
+    /* The mirror of `&>`: the survivor is stderr, so the single capture is named
+     * by `2>` and stdout joins it. */
+    const files = await runPipeline([
+      {
+        argv: [NODE, "-e", "process.stdout.write('O');process.stderr.write('E')"],
+        stderr: "log",
+        mergedTo: "err" as const,
+      },
+    ]);
+    const log = await captured(files, "log");
+    expect(log).to.contain("O");
+    expect(log).to.contain("E");
+  });
+
+  it("labels dup'd stderr as stdout when neither stream is captured", async () => {
+    /* With no capture the merge is only observable in the labelling: under
+     * `2>&1` these bytes ARE stdout, so a sink must not file them as diagnostics. */
+    const labelled: Array<[string, string]> = [];
+    await new Promise((resolve, reject) =>
+      executePipeline(
+        LIMIT,
+        [{ argv: [NODE, "-e", "process.stderr.write('E\\n')"], mergedTo: "out" as const }],
+        CWD,
+        memoryOutput,
+        undefined,
+        { ...SILENT_REPORT, output: { line: (text: string, stream: string) => labelled.push([stream, text]) } }
+      ).then(resolve, reject)
+    );
+    expect(labelled).to.deep.equal([["out", "E"]]);
   });
 
   it("fails on the first non-zero stage (pipefail), settling exactly once", async () => {

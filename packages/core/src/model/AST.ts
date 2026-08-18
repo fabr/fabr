@@ -144,12 +144,15 @@ export function isCommandValue(value: IValue): value is ICommandValue {
 
 /**
  * One stage of a command pipeline ({@link ICommandValue}): a command reference,
- * its args, and any stream redirects. `command`/`args`/`stdin` are fabr references
- * (the command a runnable, args literal-or-glob, `< stdin` a single-file source);
- * `stdout`/`stderr`/`both` are the output names their captured streams (`>`/`2>`/
- * `&>`) become content under. Each is an {@link INameValue} — the `Name` plus its
- * source span — so the rule can position a resolution error (an unresolvable
- * command, a failed glob) at the exact token in the `run = …` line.
+ * its args, and the destinations of its streams. `command`/`args`/`stdin` are fabr
+ * references (the command a runnable, args literal-or-glob, `< stdin` a single-file
+ * source); `stdout`/`stderr` are the output names their captured streams (`>`/`2>`)
+ * become content under. Each is an {@link INameValue} — the `Name` plus its source
+ * span — so the rule can position a resolution error (an unresolvable command, a
+ * failed glob) at the exact token in the `run = …` line.
+ *
+ * This is the *flattened* result of applying the stage's redirects left to right
+ * (see the parser's `StageFds`).
  */
 export interface ICommandStage {
   command: INameValue;
@@ -157,8 +160,12 @@ export interface ICommandStage {
   stdin?: INameValue;
   stdout?: INameValue;
   stderr?: INameValue;
-  both?: INameValue;
+  mergedTo?: StreamName;
 }
+
+/** One of the two output streams a stage has, as a destination — fabr's process
+ * model has no other fds, which is what bounds `N>&M` to these two. */
+export type StreamName = "out" | "err";
 
 /** A parsed command pipeline: an ordered list of {@link ICommandStage}s (the
  * stages of `a | b | c`), names still as written. */
