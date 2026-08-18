@@ -537,12 +537,12 @@ export function compileContents(
  * undefined when there is nothing to compile. `directDeps` are the deps the
  * sources may import directly (the package's own deps — `@types/node` among them
  * where the sources use Node APIs — plus test_deps / runner globals for a test
- * compile), resolved jointly by the caller's collection point. They are laid out
- * *scoped*
- * (`assembleScopedNodeModules`): the sources see only these direct deps at the
- * top of node_modules, while the full transitive closure is reachable only by
- * the deps themselves — so a source importing an undeclared transitive dep fails
- * to compile. TSC is the compiler's own concern, resolved inside js_compile. The
+ * compile), resolved jointly by the caller's collection point. They are what
+ * the sources may NAME: js_compile writes them as a dependency manifest in
+ * which the sources' own row lists exactly these, while the transitive closure
+ * is reachable only from the rows of the deps that declared it — so a source
+ * importing an undeclared transitive dep fails to compile. TSC is the
+ * compiler's own concern, resolved inside js_compile. The
  * sub-target builds under BUILD_OPERATION=build (a compile is a build even for a
  * test target). Plain .js/.jsx sources go through the same compile (tsc allowJs),
  * so they are downleveled to JS_TARGET and a .ts may import a local .js.
@@ -560,8 +560,8 @@ export function compileJsSources(
   /* Both .ts(x) and .js(x) go through js_compile: with allowJs, tsc downlevels
    * the JS to JS_TARGET and lets a .ts import a local .js. .d.ts joins as an
    * ambient input (the caller also passes it through as a resource). js_compile
-   * owns the node_modules layout (assembleScopedNodeModules) and JSX-runtime
-   * detection; TSC is added by js_compile itself. */
+   * owns how the deps reach the compiler (the dependency manifest) and the
+   * JSX-runtime detection; TSC is added by js_compile itself. */
   const inputs: SubTargetInputs = {
     srcs,
     deps: mountedDeps(directDeps),
@@ -867,24 +867,24 @@ function compareVersionText(a: string | undefined, b: string | undefined): numbe
   }
 }
 
-/** The hidden store (a dot-dir, so never itself a resolvable package name) that
- * holds the full closure; each package's real files live at
- * `<STORE>/<name>`, so store packages resolve each other as siblings. */
-const SCOPED_STORE = ".pkgs/node_modules";
+/** The install's own hidden area (a dot-dir, so never itself a resolvable
+ * package name) holding the full closure; each package's real files live at
+ * `<SCOPED_AREA>/<name>`, so they resolve each other as siblings. */
+const SCOPED_AREA = ".pkgs/node_modules";
 
 /**
  * Lay out the given DIRECT sources as node_modules, but scoped so the consuming
  * sources see only the direct deps — not the transitive closure. The full
- * closure's real files go into a hidden store (`.pkgs/node_modules/<name>`
- * per hoist winner, so store packages resolve each other as siblings); each
- * *direct* package is then
- * exposed at the top of node_modules as a symlink into the store. Node/tsc
+ * closure's real files go into the install's own hidden area
+ * (`.pkgs/node_modules/<name>` per hoist winner, so they resolve each other as
+ * siblings); each *direct* package is then exposed at the top of node_modules
+ * as a symlink into it. Node/tsc
  * resolve the symlink to its real store path (`preserveSymlinks: false`), so a
- * direct dep resolves *its* imports from the store (the whole closure), while a
+ * direct dep resolves *its* imports from there (the whole closure), while a
  * source importing an undeclared transitive dep finds nothing at the top level
  * and fails. A delivery carrying a sanctioned second version of a package (a
- * `?` alternate's fork) nests it under its requirers within the store
- * (`<STORE>/<requirer>/node_modules/<name>`) — decided by the shared
+ * `?` alternate's fork) nests it under its requirers within that area
+ * (`<area>/<requirer>/node_modules/<name>`) — decided by the shared
  * {@link mountWinners} planner from the delivered edge bindings, exactly as
  * the flat layout decides its nests — so node resolution finds the nested
  * copy from the requirer and the flat winner from everywhere else.
@@ -898,14 +898,14 @@ export function assembleScopedNodeModules(directSets: FileSet[]): FileSet {
    * (every collected instance is otherwise mounted — winners flat, overrides
    * under the parents that list them). */
   const top = hoistWinners(collected, true);
-  const mounts = mountWinners(top, collected.byId, name => `${SCOPED_STORE}/${name}`);
+  const mounts = mountWinners(top, collected.byId, name => `${SCOPED_AREA}/${name}`);
   const topLevel: FileSet[] = [];
   const linked = new Set<string>();
   for (const set of directSets) {
     if (set instanceof PackageFileSet) {
       if (!linked.has(set.packageName)) {
         linked.add(set.packageName);
-        topLevel.push(new FileSet(new Map([[set.packageName, storeLink(set.packageName)]])));
+        topLevel.push(new FileSet(new Map([[set.packageName, scopedAreaLink(set.packageName)]])));
       }
     } else {
       topLevel.push(set);
@@ -914,12 +914,13 @@ export function assembleScopedNodeModules(directSets: FileSet[]): FileSet {
   return FileSet.unionAll(...mounts, ...topLevel);
 }
 
-/** A relative symlink from `node_modules/<name>` to the package's store copy.
- * The target is resolved from the link's own directory, so a scoped name
- * (`@x/y`, one directory deep) needs one `../` to climb back to node_modules. */
-function storeLink(packageName: string): SymlinkFile {
+/** A relative symlink from `node_modules/<name>` to the package's copy in the
+ * install's own scoped area. The target is resolved from the link's own
+ * directory, so a scoped name (`@x/y`, one directory deep) needs one `../` to
+ * climb back to node_modules. */
+function scopedAreaLink(packageName: string): SymlinkFile {
   const depth = (packageName.match(/\//g) ?? []).length;
-  return new SymlinkFile(`${"../".repeat(depth)}${SCOPED_STORE}/${packageName}`);
+  return new SymlinkFile(`${"../".repeat(depth)}${SCOPED_AREA}/${packageName}`);
 }
 
 /**

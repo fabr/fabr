@@ -1,0 +1,155 @@
+/*
+ * Copyright (c) 2026 Nathan Keynes <nkeynes@deadcoderemoval.net>
+ *
+ * This file is part of Fabr.
+ *
+ * Fabr is free software: you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * Fabr is distributed in the hope that it will be useful, but WITHOUT ANY
+ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * Fabr. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+import { expect } from "chai";
+import * as path from "path";
+import type { IPnpPackageInfo, IPnpSerializedState } from "../PnPManifest";
+import { PnpResolver, splitSpecifier, typesPackageName } from "./PnPResolver";
+
+const ROOT = path.resolve("/workspace");
+
+/** A manifest of the shape the generator emits, with the rows a test names. */
+function manifest(
+  rows: Array<[string, string, Record<string, string>]>,
+  fallback: Record<string, string> = {},
+  topLevel: Record<string, string> = {}
+): IPnpSerializedState {
+  return {
+    __info: [],
+    dependencyTreeRoots: [],
+    enableTopLevelFallback: true,
+    ignorePatternData: null,
+    fallbackExclusionList: [],
+    fallbackPool: Object.entries(fallback),
+    packageRegistryData: [
+      [null, [[null, { packageLocation: "./", packageDependencies: Object.entries(topLevel), linkType: "SOFT" }]]],
+      ...rows.map(([name, reference, dependencies]): [string, Array<[string, IPnpPackageInfo]>] => [
+        name,
+        [
+          [
+            reference,
+            {
+              packageLocation: `./.fabr-tree/${reference}/`,
+              packageDependencies: Object.entries(dependencies),
+              linkType: "HARD" as const,
+            },
+          ],
+        ],
+      ]),
+    ],
+  };
+}
+
+describe("splitSpecifier", () => {
+  it("splits a package name from its subpath, scoped names included", () => {
+    expect(splitSpecifier("three")).to.deep.equal({ name: "three", subpath: "" });
+    expect(splitSpecifier("three/examples/loader")).to.deep.equal({ name: "three", subpath: "examples/loader" });
+    expect(splitSpecifier("@radix-ui/react-slot")).to.deep.equal({ name: "@radix-ui/react-slot", subpath: "" });
+    expect(splitSpecifier("@radix-ui/react-slot/dist/x")).to.deep.equal({ name: "@radix-ui/react-slot", subpath: "dist/x" });
+  });
+
+  it("declines anything that is not a package reference", () => {
+    /* Relative, rooted and subpath-import specifiers are the compiler's to
+     * resolve against the filesystem — the table never sees them. */
+    expect(splitSpecifier("./sibling")).to.equal(undefined);
+    expect(splitSpecifier("../up")).to.equal(undefined);
+    expect(splitSpecifier("/abs/path")).to.equal(undefined);
+    expect(splitSpecifier("#internal")).to.equal(undefined);
+  });
+});
+
+describe("typesPackageName", () => {
+  it("names the sidecar in npm's mangled spelling", () => {
+    expect(typesPackageName("three")).to.equal("@types/three");
+    expect(typesPackageName("@babel/traverse")).to.equal("@types/babel__traverse");
+  });
+});
+
+describe("PnpResolver", () => {
+  it("answers a package with what its own row binds", () => {
+    const resolver = new PnpResolver(
+      manifest([
+        ["postprocessing", "ref-pp", { postprocessing: "ref-pp", three: "ref-three" } ],
+        ["three", "ref-three", { three: "ref-three" }],
+      ]),
+      ROOT
+    );
+    const issuer = path.join(ROOT, ".fabr-tree/ref-pp/index.d.ts");
+    expect(resolver.locationOf("three", issuer)).to.equal(path.join(ROOT, ".fabr-tree/ref-three"));
+  });
+
+  it("falls back to the declared surface for a name the issuer never declared", () => {
+    /* The postprocessing/three case: a package's typings import a peer it did
+     * not declare, whose types the CONSUMER declared. A tree forgave this
+     * ambiently; the pool forgives it deliberately, and only within the surface
+     * the consumer wrote down. */
+    const resolver = new PnpResolver(
+      manifest(
+        [
+          ["postprocessing", "ref-pp", { postprocessing: "ref-pp" }],
+          ["@types/three", "ref-types", { "@types/three": "ref-types" }],
+        ],
+        { "@types/three": "ref-types" },
+        { "@types/three": "ref-types" }
+      ),
+      ROOT
+    );
+    const issuer = path.join(ROOT, ".fabr-tree/ref-pp/index.d.ts");
+    expect(resolver.locationOf("@types/three", issuer)).to.equal(path.join(ROOT, ".fabr-tree/ref-types"));
+    /* With no pool, the same lookup finds nothing — the fallback is the whole
+     * difference. */
+    const strict = new PnpResolver(
+      manifest([["postprocessing", "ref-pp", { postprocessing: "ref-pp" }]], {}, {}),
+      ROOT
+    );
+    expect(strict.locationOf("@types/three", issuer)).to.equal(undefined);
+  });
+
+  it("treats a file under no package location as the compilation itself", () => {
+    const resolver = new PnpResolver(manifest([["left-pad", "ref-lp", {}]], {}, { "left-pad": "ref-lp" }), ROOT);
+    expect(resolver.locationOf("left-pad", path.join(ROOT, "src/index.ts"))).to.equal(path.join(ROOT, ".fabr-tree/ref-lp"));
+  });
+
+  it("gives an unsatisfied peer no binding, so it falls back like any undeclared name", () => {
+    const state = manifest([["plugin", "ref-plugin", { plugin: "ref-plugin" }]], { react: "ref-react" }, {});
+    state.packageRegistryData[1][1][0][1].packageDependencies.push(["react", null]);
+    state.packageRegistryData.push([
+      "react",
+      [["ref-react", { packageLocation: "./.fabr-tree/ref-react/", packageDependencies: [], linkType: "HARD" }]],
+    ]);
+    const resolver = new PnpResolver(state, ROOT);
+    expect(resolver.locationOf("react", path.join(ROOT, ".fabr-tree/ref-plugin/index.js"))).to.equal(
+      path.join(ROOT, ".fabr-tree/ref-react")
+    );
+  });
+
+  it("merges the tables of rows that share a location, so both names work inside it", () => {
+    /* An alias and the real package are one directory; a file inside it cannot
+     * say which row it is, and both spellings must resolve. */
+    const state = manifest([
+      ["stream", "ref-alias", { stream: "ref-alias" }],
+      ["stream-browserify", "ref-real", { "stream-browserify": "ref-real" }],
+    ]);
+    state.packageRegistryData[2][1][0][1].packageLocation = "./.fabr-tree/ref-alias/";
+    const resolver = new PnpResolver(state, ROOT);
+    const inside = path.join(ROOT, ".fabr-tree/ref-alias/index.js");
+    expect(resolver.locationOf("stream", inside)).to.equal(path.join(ROOT, ".fabr-tree/ref-alias"));
+    expect(resolver.locationOf("stream-browserify", inside)).to.equal(path.join(ROOT, ".fabr-tree/ref-alias"));
+  });
+});

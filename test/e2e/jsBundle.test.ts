@@ -94,7 +94,10 @@ for (const entry of opts.entries) {
       "PROJECT.fabr": [
         "plugin @fabr-build/js;",
         "js_script marking_tsc { entry = ./marking-tsc.js; }",
-        "TSC = marking_tsc;",
+        /* The driver is the whole toolchain — it carries the compiler as its
+         * own dependency — so standing in for the compiler is one line (see
+         * STUB_TSC_CONFIG). */
+        "TSC_DRIVER = marking_tsc;",
         "js_script my_bundler { entry = ./echo-util.js; }",
         "JS_BUNDLER = my_bundler;",
         "js_bundle app { entry = ./main.ts; srcs = ./util.js; }",
@@ -141,8 +144,10 @@ for (const entry of opts.entries) {
     };
     const result = runFabr(project, ["cat", "app:index.js"]);
     expect(result.status).to.equal(0);
-    /* `in` is the path under the mount — not a copy restaged at the bundle root. */
-    expect(result.stdout).to.contain("ENTRY=node_modules/@scope/thing/index.js");
+    /* `in` is the path where the package's files are staged — not a copy
+     * restaged at the bundle root. Under the default (manifest) resolution that
+     * is its tree under the pool mount. */
+    expect(result.stdout).to.match(/ENTRY=\.fabr-tree\/[0-9a-f]{64}\/index\.js/);
     expect(result.stdout).to.contain('const hello = "world";');
   });
 
@@ -175,4 +180,67 @@ for (const entry of opts.entries) {
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal('// stub-bundled\nconsole.log("hello");\n');
   });
+
+  /* What the rule STAGES for the bundler, in each resolution mode. esbuild's
+   * own half — that it reads this manifest and resolves through it — is its
+   * native PnP support, exercised by the real driver; what fabr owes it is a
+   * table whose locations exist, which is what this asserts. */
+  const inspectingBundler = `const fs = require("fs"), path = require("path");
+const optsArg = process.argv.find(a => a.startsWith("--options="));
+const opts = JSON.parse(fs.readFileSync(optsArg.slice("--options=".length), "utf8"));
+const BREAK = String.fromCharCode(10);
+const report = ["manifest=" + fs.existsSync(".pnp.data.json"), "node_modules=" + fs.existsSync("node_modules")];
+if (fs.existsSync(".pnp.data.json")) {
+  const state = JSON.parse(fs.readFileSync(".pnp.data.json", "utf8"));
+  for (const [name, rows] of state.packageRegistryData) {
+    if (name === null) continue;
+    for (const [, info] of rows) {
+      report.push("row=" + name + " resolves=" + fs.existsSync(path.join(info.packageLocation, "package.json")));
+    }
+  }
+}
+report.push("external=" + JSON.stringify(opts.external));
+for (const entry of opts.entries) {
+  const out = path.join(opts.outdir, entry.out + ".js");
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  fs.writeFileSync(out, report.join(BREAK) + BREAK);
+}
+`;
+
+  const staging = {
+    ...STUB_TSC,
+    "PROJECT.fabr": [
+      "plugin @fabr-build/js;",
+      STUB_TSC_CONFIG,
+      "js_script my_bundler { entry = ./inspect-bundler.js; }",
+      "JS_BUNDLER = my_bundler;",
+      "js_package @scope/thing { version = 1.0.0; srcs = pkg/src:**; }",
+      "js_package simple { version = 2.0.0; srcs = simplepkg/src:**; }",
+      "js_bundle app { entry = ./main.js; srcs = @scope/thing simple; deps = @scope/absent; }",
+      "js_package @scope/absent { version = 3.0.0; srcs = absent/src:**; }",
+      "",
+    ].join("\n"),
+    "inspect-bundler.js": inspectingBundler,
+    "main.js": 'console.log("hello");\n',
+    "pkg/src/index.ts": 'export const hello = "world";\n',
+    "simplepkg/src/index.ts": 'export const simple = 1;\n',
+    "absent/src/index.ts": 'export const absent = 1;\n',
+  };
+
+  it("stages a resolvable manifest and the tree-pool mount, and no node_modules at all", () => {
+    const result = runFabr(staging, ["cat", "app:main.js"]);
+    expect(result.status, result.stderr).to.equal(0);
+    /* The table replaces the tree: every package the bundle inlines has a row,
+     * and every row's location resolves — through the one pool link staged
+     * beside it. A scoped name and a plain one alike. */
+    expect(result.stdout).to.contain("manifest=true");
+    expect(result.stdout).to.contain("node_modules=false");
+    expect(result.stdout).to.contain("row=@scope/thing resolves=true");
+    expect(result.stdout).to.contain("row=simple resolves=true");
+    /* A declared dep is externalized, never resolved — so it is not in the
+     * table, and its import survives the bundle. */
+    expect(result.stdout).to.not.contain("row=@scope/absent");
+    expect(result.stdout).to.contain('external=["@scope/absent"]');
+  });
+
 });

@@ -43,7 +43,7 @@ catalog @pkg {
          @npm:picomatch:2.3.1? @npm:picomatch:4.0.5?;
 }
 
-TSC = @pkg:typescript:tsc;
+TYPESCRIPT = @pkg:typescript;
 JS_TARGET = es2021-commonjs;
 
 # Run fabr's own tests through the jest-compatibility runner. They use none of
@@ -76,7 +76,9 @@ js_package @fabr-build/js {
   tests = packages/js/src:**/*.test.ts;
   deps = @pkg:@types/node;
   provided_deps = @fabr-build/core;
-  test_deps = chai jest_types tar_stream;
+  # typescript: the tsc driver's tests drive the real compiler (the driver
+  # itself requires it from the tool install fabr stages, never from here).
+  test_deps = chai jest_types tar_stream @pkg:typescript;
   metadata = { FABR_METADATA; description = Fabr JS support plugin }
 }
 

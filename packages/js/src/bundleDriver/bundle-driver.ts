@@ -278,6 +278,22 @@ async function resolveSingleVariant(
 }
 
 /** Translate the fabr options document into esbuild's BuildOptions. */
+/**
+ * Yarn's standard manifest name, which fabr writes beside the bundle's options
+ * when dependencies are presented as a table (see PnPManifest.PNP_DATA_FILE —
+ * an ecosystem constant both sides know independently, since driver code must
+ * not import fabr's own modules at runtime).
+ */
+const PNP_DATA_FILE = ".pnp.data.json";
+
+/**
+ * Whether this bundle resolves through a PnP manifest, which esbuild reads
+ * natively — no plugin involvement, and nothing for fabr to stage per package.
+ */
+function usesManifest(): boolean {
+  return fs.existsSync(path.resolve(process.cwd(), PNP_DATA_FILE));
+}
+
 function toEsbuildOptions(options: IBundleOptions, unresolved: Set<string>): Record<string, unknown> {
   return {
     entryPoints: options.entries,
@@ -295,6 +311,16 @@ function toEsbuildOptions(options: IBundleOptions, unresolved: Set<string>): Rec
      * the importing JS; every other stylesheet keeps global names. */
     loader: { ".module.css": "local-css", ".css": "global-css" },
     ...(options.define ? { define: options.define } : {}),
+    /* Load-bearing under a manifest, and only there: esbuild finds the manifest
+     * by walking UP from the importing file, and fabr's packages live in the
+     * shared build cache — outside this workspace — reached through one symlink.
+     * Resolving that link away (the default) would leave a package's own
+     * imports walking up through the cache, where there is no manifest to find,
+     * and every transitive dependency would fail to resolve. Keeping the link
+     * spelling means the walk reaches this workspace's table instead. Safe
+     * precisely because the table decides identity: it gives each package ONE
+     * location, so preserving symlinks cannot fork one package into two. */
+    ...(usesManifest() ? { preserveSymlinks: true } : {}),
   };
 }
 

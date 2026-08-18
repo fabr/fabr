@@ -63,7 +63,7 @@ import {
   versionToString,
 } from "@fabr-build/core";
 import { NPMRepository } from "./NPMRepository";
-import { assembleNodeModules, assembleScopedNodeModules } from "./JSPackage";
+import { assembleNodeModules } from "./JSPackage";
 import {
   matchesTargetPlatform,
   NPM_FORMAT,
@@ -1183,12 +1183,12 @@ describe("override markers", () => {
     const a = delivered[0] as PackageFileSet;
     const nested = a.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
     expect(nested.map(dep => `${dep.packageName}@${dep.version}`)).to.contain("C@1.5.0");
-    /* And the linked (scoped) layout can represent it: the winner takes the
-     * flat store slot, the sanctioned fork nests under its requirer. */
-    const assembled = assembleScopedNodeModules(delivered.filter(set => [...set].length > 0));
+    /* And a layout can represent it: the winner takes the flat slot, the
+     * sanctioned fork nests under its requirer. */
+    const assembled = assembleNodeModules(delivered.filter(set => [...set].length > 0));
     const names = new Set([...assembled].map(([name]) => name));
-    expect(names.has(".pkgs/node_modules/C/package.json")).to.equal(true);
-    expect(names.has(".pkgs/node_modules/A/node_modules/C/package.json")).to.equal(true);
+    expect(names.has("C/package.json")).to.equal(true);
+    expect(names.has("A/node_modules/C/package.json")).to.equal(true);
   });
 
   it("an exact unmarked pin of the principal completes the sanction too (the catalog form)", async () => {
@@ -1229,9 +1229,9 @@ describe("override markers", () => {
       "1.0.0",
       packages
     );
-    const names = new Set([...assembleScopedNodeModules([carrier])].map(([name]) => name));
-    expect(names.has(".pkgs/node_modules/C/v2.5.0.marker")).to.equal(true);
-    expect(names.has(".pkgs/node_modules/P/node_modules/C/v1.5.0.marker")).to.equal(true);
+    const names = new Set([...assembleNodeModules([carrier])].map(([name]) => name));
+    expect(names.has("C/v2.5.0.marker")).to.equal(true);
+    expect(names.has("P/node_modules/C/v1.5.0.marker")).to.equal(true);
   });
 
   it("a lone '?' is an incomplete sanction — every shipping version must be written", async () => {
@@ -1353,11 +1353,11 @@ describe("override markers", () => {
      * closure as ordinary members — transitive, not direct deps. */
     expect([...delivered[1]].length).to.equal(0);
     expect([...delivered[2]].length).to.equal(0);
-    const assembled = assembleScopedNodeModules(delivered.filter(set => [...set].length > 0));
+    const assembled = assembleNodeModules(delivered.filter(set => [...set].length > 0));
     const names = new Set([...assembled].map(([name]) => name));
-    expect(names.has(".pkgs/node_modules/T/package.json")).to.equal(true);
-    /* Not linked at the top level — it is not a direct dependency */
-    expect(names.has("T")).to.equal(false);
+    /* Mounted as an ordinary member of P's closure — nothing of its own was
+     * delivered for it to be mounted FROM. */
+    expect(names.has("T/package.json")).to.equal(true);
   });
 
   it("suggests a verified single-version pin where a disjunctive range admits one", async () => {
@@ -1448,10 +1448,10 @@ describe("package rename", () => {
     expect((delivered as PackageFileSet).packageName).to.equal("stream");
     /* The mount follows the delivered identity, so a source importing 'stream'
      * resolves the shim — while its own closure keeps its real names. */
-    const names = new Set([...assembleScopedNodeModules([delivered as FileSet])].map(([name]) => name));
-    expect(names.has(".pkgs/node_modules/stream/package.json")).to.equal(true);
-    expect(names.has(".pkgs/node_modules/readable-stream/package.json")).to.equal(true);
-    expect(names.has(".pkgs/node_modules/stream-browserify/package.json")).to.equal(false);
+    const names = new Set([...assembleNodeModules([delivered as FileSet])].map(([name]) => name));
+    expect(names.has("stream/package.json")).to.equal(true);
+    expect(names.has("readable-stream/package.json")).to.equal(true);
+    expect(names.has("stream-browserify/package.json")).to.equal(false);
   });
 
   it("is a stamp, not a second requirement: one resolution, one fetch", async () => {

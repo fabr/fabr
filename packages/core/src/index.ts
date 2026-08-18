@@ -33,6 +33,7 @@ export * from "./core/FileSet";
 export * from "./core/FSFileSource";
 export * from "./core/Staging";
 export * from "./core/PackageFileSet";
+export { HASH_ALGORITHM, hashString } from "./core/FSWrapper";
 export * from "./core/FileSetRef";
 export * from "./core/RunnableFileSet";
 export * from "./core/PublishableFileSet";

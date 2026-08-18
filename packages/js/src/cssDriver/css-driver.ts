@@ -41,7 +41,9 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ICssOptions } from "../CSSCompile";
+import { PnpResolver, splitSpecifier } from "../pnp/PnPResolver";
 
 /* Minimal structural typing for the slice of sass-embedded's API we use — it is
  * not a fabr dependency (it is fetched at build time), so its own types are not
@@ -50,12 +52,67 @@ interface ISassResult {
   css: string;
   loadedUrls: Array<{ pathname?: string; href?: string }>;
 }
+/** What Sass hands a {@link ISassFileImporter}: which file the load is written
+ * in, and whether it came from an `@import` (which alone may load
+ * import-only files). */
+interface ISassCanonicalizeContext {
+  containingUrl: URL | null;
+  fromImport: boolean;
+}
+/**
+ * Sass's *file* importer: it answers with a location and Sass does the rest —
+ * partials (`_x.scss`), index files, extensions, and the read itself. That is
+ * exactly the seam a package table needs, since the table's answer is a
+ * DIRECTORY and everything below it is ordinary Sass file resolution.
+ */
+interface ISassFileImporter {
+  findFileUrl(url: string, context: ISassCanonicalizeContext): URL | null;
+}
 interface ISassCompiler {
-  compileAsync(path: string, options?: { loadPaths?: string[] }): Promise<ISassResult>;
+  compileAsync(path: string, options?: { loadPaths?: string[]; importers?: ISassFileImporter[] }): Promise<ISassResult>;
   dispose(): Promise<void>;
 }
 interface ISass {
   initAsyncCompiler(): Promise<ISassCompiler>;
+}
+
+/**
+ * Resolve a package-shaped Sass load through the dependency table.
+ *
+ * Sass consults an importer only for a load its own relative resolution did not
+ * answer, so what arrives here is either a package reference
+ * (`@shorthand/design-system/colours`) or a bare name meant for a load path
+ * (`variables`, resolved next to the importing file or under a loadPath). The
+ * first is answered from the table — the package part to its location, the rest
+ * appended for Sass to finish — and the second is declined, which leaves Sass's
+ * own machinery in charge of it.
+ *
+ * A webpack-style `~pkg` prefix is refused rather than silently stripped: it is
+ * a bundler convention, not a Sass one, and quietly accepting it here would
+ * make stylesheets that only build under fabr.
+ */
+export function packageImporter(resolver: PnpResolver): ISassFileImporter {
+  return {
+    findFileUrl(url: string, context: ISassCanonicalizeContext): URL | null {
+      if (url.startsWith("~")) {
+        throw new Error(
+          `css: '${url}' uses the webpack '~' prefix, which Sass does not define — write the package name directly ('${url.slice(1)}')`
+        );
+      }
+      const split = splitSpecifier(url);
+      if (split === undefined || context.containingUrl === null) {
+        return null;
+      }
+      const location = resolver.locationOf(split.name, context.containingUrl.pathname);
+      if (location === undefined) {
+        return null;
+      }
+      /* A directory, deliberately: Sass appends the partial/index/extension
+       * candidates to it, so `@use "pkg/colours"` finds `_colours.scss` exactly
+       * as it would under a load path. */
+      return pathToFileURL(split.subpath ? path.join(location, split.subpath) : location);
+    },
+  };
 }
 
 /** Whether a source is Sass (the ones this driver compiles; anything else is
@@ -104,7 +161,7 @@ export function sassFailure(rel: string, err: unknown): Error {
  * passes through verbatim. A `.module.scss` is no different here — it lowers to
  * `.module.css` and stops, the scoping being esbuild's (see the file header).
  */
-async function lowerFile(rel: string, options: ICssOptions, compiler: ISassCompiler): Promise<void> {
+async function lowerFile(rel: string, options: ICssOptions, compiler: ISassCompiler, importers?: ISassFileImporter[]): Promise<void> {
   const inputPath = path.join(options.srcRoot, rel);
   if (!isSass(rel)) {
     writeOut(options.outdir, rel, fs.readFileSync(inputPath));
@@ -114,7 +171,7 @@ async function lowerFile(rel: string, options: ICssOptions, compiler: ISassCompi
    * intentionally unused for now. */
   let css: string;
   try {
-    css = (await compiler.compileAsync(inputPath, { loadPaths: options.loadPaths })).css;
+    css = (await compiler.compileAsync(inputPath, { loadPaths: options.loadPaths, importers })).css;
   } catch (err) {
     throw sassFailure(rel, err);
   }
@@ -136,6 +193,11 @@ export async function main(argv: string[]): Promise<void> {
   const sass = require("sass-embedded") as ISass;
 
   const options = JSON.parse(fs.readFileSync(parseManifestPath(argv), "utf8")) as ICssOptions;
+  /* Where the dependencies are: a table beside the sources (nothing mounted),
+   * or — with no manifest — the load paths fabr staged, which is the classic
+   * layout and needs no importer at all. */
+  const resolver = PnpResolver.load(process.cwd());
+  const importers = resolver ? [packageImporter(resolver)] : undefined;
   const compiler = await sass.initAsyncCompiler();
   try {
     // Sequential for now — correctness first; the warm compiler already
@@ -150,7 +212,7 @@ export async function main(argv: string[]): Promise<void> {
       if (isPartial(rel)) {
         continue;
       }
-      await lowerFile(rel, options, compiler);
+      await lowerFile(rel, options, compiler, importers);
     }
   } finally {
     await compiler.dispose();

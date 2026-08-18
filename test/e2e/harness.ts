@@ -317,9 +317,15 @@ const rootDir = cfg.rootDir || "src", outDir = cfg.outDir || "build";
 `,
 };
 
-/** The project lines that make the stub a runnable toolchain and point TSC at it. */
+/**
+ * The project lines that make the stub a runnable toolchain and point the
+ * compile at it. One global: what `js_compile` execs is the TypeScript DRIVER,
+ * which carries the real compiler as its own dependency — so replacing the
+ * driver replaces the whole toolchain, and a stub that compiles by copying
+ * needs no typescript at all.
+ */
 export const STUB_TSC_CONFIG =
-  "js_script stub_tsc { deps = teststub:typescript/**; entry = teststub:typescript/bin/tsc; }\nTSC = stub_tsc;\n";
+  "js_script stub_tsc { deps = teststub:typescript/**; entry = teststub:typescript/bin/tsc; }\nTSC_DRIVER = stub_tsc;\n";
 
 /**
  * A live `fabr <cmd> -w` subprocess for watch-mode e2e: unlike {@link runFabr}

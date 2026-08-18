@@ -18,14 +18,16 @@
  */
 
 import { expect } from "chai";
-import { buildCssOptions, CSS_OUTDIR, CSS_SRC_ROOT, SCSS_DEPS_DIR } from "./CSSCompile";
+import { buildCssOptions, CSS_OUTDIR, CSS_SRC_ROOT } from "./CSSCompile";
 
 describe("buildCssOptions", () => {
-  it("names every source and points at the src root, loadPaths and outdir", () => {
+  it("names every source and points at the src root and outdir", () => {
     const options = buildCssOptions(["a/Foo.module.scss", "b.scss", "c.css"]);
     expect(options.srcRoot).to.equal(CSS_SRC_ROOT);
     expect(options.outdir).to.equal(CSS_OUTDIR);
-    expect(options.loadPaths).to.deep.equal([SCSS_DEPS_DIR]);
+    /* No load paths: a package load is the importer's to answer from the
+     * dependency table, and nothing is mounted for one to point at. */
+    expect(options.loadPaths).to.deep.equal([]);
     expect(options.files).to.include.members(["a/Foo.module.scss", "b.scss", "c.css"]);
   });
 

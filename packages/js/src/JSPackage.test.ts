@@ -18,7 +18,17 @@
  */
 
 import { expect } from "chai";
-import { Computable, ConflictError, FileSet, Flag, IFile, MemoryFile, PackageFileSet, PackageGraphBuilder, SymlinkFile } from "@fabr-build/core";
+import {
+  Computable,
+  ConflictError,
+  FileSet,
+  Flag,
+  IFile,
+  MemoryFile,
+  PackageFileSet,
+  PackageGraphBuilder,
+  SymlinkFile,
+} from "@fabr-build/core";
 import {
   assembleNodeModules,
   assembleScopedNodeModules,
@@ -57,8 +67,11 @@ function entries(set: FileSet): Map<string, IFile> {
   return new Map(set);
 }
 
+/* The scoped layout has no consumer today (see assembleScopedNodeModules): it
+ * is kept for a filesystem-resolving compiler, and kept TESTED so that whoever
+ * wires one up inherits a working arrangement rather than an untested one. */
 describe("assembleScopedNodeModules", () => {
-  it("exposes only direct deps at the top level, the closure only in the store", () => {
+  it("exposes only direct deps at the top level, the closure only in the scoped area", () => {
     const transitive = pkg("b4a");
     const direct = pkg("tar-stream", [transitive]);
     const files = entries(assembleScopedNodeModules([direct]));
@@ -76,7 +89,7 @@ describe("assembleScopedNodeModules", () => {
     expect(files.has(".pkgs/node_modules/b4a/index.js")).to.equal(true);
   });
 
-  it("points a scoped package's symlink back up to the store", () => {
+  it("points a scoped package's symlink back up to the scoped area", () => {
     const files = entries(assembleScopedNodeModules([pkg("@types/node")]));
     /* From node_modules/@types/node the link must climb one level to reach the store. */
     const top = files.get("@types/node");
@@ -557,10 +570,12 @@ describe("assembleNodeModules", () => {
     expect(() => assembleNodeModules([carrierOf(vpkg("q", "1.0.0")), carrierOf(vpkg("q", "2.0.0"))])).to.throw(ConflictError);
   });
 
-  it("rejects a same-id disagreement in the scoped assembler too", () => {
+  it("rejects a same-id disagreement in CONTENT, not just in edges", () => {
+    /* One id, two different builds of it: settled by traversal order rather
+     * than by any decision, so it is refused like any two-deliveries-disagree. */
     const debug = new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from("// debug")]]), "mylib", undefined);
     const release = new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from("// release")]]), "mylib", undefined);
-    expect(() => assembleScopedNodeModules([pkg("x", [debug]), pkg("y", [release])])).to.throw(ConflictError);
+    expect(() => assembleNodeModules([pkg("x", [debug]), pkg("y", [release])])).to.throw(ConflictError);
   });
 });
 

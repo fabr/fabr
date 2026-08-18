@@ -37,8 +37,8 @@ import {
   rename,
   writeFile,
 } from "./FSWrapper";
-import { registerTempTree, removeTempTree } from "./Staging";
-import { SymlinkFile } from "./SymlinkFile";
+import { registerTempTree, removeTempTree, writeFileSet } from "./Staging";
+import { CacheLink, SymlinkFile } from "./SymlinkFile";
 import type { ITaskReport, TaskTracker } from "../support/Execute";
 import type { Semaphore } from "../support/Semaphore";
 import { Diagnostic, Log } from "../support/Log";
@@ -82,6 +82,10 @@ export interface IFetchContext {
  * work-dir files (collected afterward) or stream output straight into the
  * store ({@link createOutput}).
  */
+/** The tree pool's directory within a cache — the path a {@link CacheLink} to
+ * the pool names, so it is one constant and not two spellings. */
+const TREE_DIR = "tree";
+
 export interface IActionContext {
   readonly workDir: string;
   createOutput(): IOutputHandle;
@@ -94,6 +98,29 @@ export interface IActionContext {
    * contract says the output belongs elsewhere (the test runner's report).
    */
   readonly report: ITaskReport;
+  /**
+   * Materialize a tree in the cache's pool and answer its path — the step-side
+   * half of {@link BuildCache.ensureTree}, for a step whose work IS
+   * materializing something durable (a package a tool will resolve through a
+   * manifest rather than a staged copy).
+   *
+   * Deliberately the only cache capability a step gets besides
+   * {@link createOutput}: both are "put content where the cache keeps content",
+   * which a step legitimately does, and neither lets it reach keys, entries or
+   * anything else the cache owns.
+   */
+  ensureTree(files: FileSet): Computable<string>;
+  /**
+   * The cache's tree pool as a mountable link, for a step that stages the pool
+   * WHOLE and addresses the trees in it by name (a generated resolution table
+   * naming them) rather than mounting one tree at a position.
+   *
+   * A link and not a path on purpose: it is the same narrow shape as
+   * {@link ensureTree} — something to put in a FileSet — and it hands a step no
+   * way to reach the cache's own layout. Where the pool sits within a cache
+   * stays the cache's business.
+   */
+  readonly treePool: CacheLink;
   /**
    * The machine-wide execution funnel, which `execute`/`executePipeline`
    * require: a slot is held for exactly the process lifetime, and the step's
@@ -291,6 +318,9 @@ function decodeName(field: string): string {
 export class BuildCache {
   private readonly root: string;
   private readonly blobRoot: string;
+  /** The tree pool: one directory per materialized tree, named by the manifest
+   * hash of its contents — see {@link ensureTree}. */
+  private readonly treeRoot: string;
   /** Every process's work tree lives under here, one subtree each. */
   private readonly workRoot: string;
   /** This process's own subtree — where every transient the cache writes goes:
@@ -326,9 +356,18 @@ export class BuildCache {
    */
   private readonly inflight = new Map<string, Computable<FileSet>>();
 
+  /**
+   * Trees currently being materialized, by name: a second demand joins the
+   * first rather than building its own temp (the same dedup {@link inflight}
+   * gives entries — across processes the atomic publish is what keeps them
+   * safe, not a lock).
+   */
+  private readonly inflightTrees = new Map<string, Computable<string>>();
+
   constructor(cachePath: string, log: Log, now: () => number = Date.now) {
     this.root = cachePath;
     this.blobRoot = path.resolve(cachePath, "blob");
+    this.treeRoot = path.resolve(cachePath, TREE_DIR);
     this.workRoot = path.resolve(cachePath, "work");
     this.ownWorkRoot = path.resolve(this.workRoot, `${hostTag()}-${process.pid}`);
     this.log = log;
@@ -753,6 +792,119 @@ export class BuildCache {
     });
   }
 
+  /** Where {@link ensureTree} publishes, as an absolute path on this machine. */
+  public get treePath(): string {
+    return this.treeRoot;
+  }
+
+  /**
+   * The tree pool as a mountable link — what a step stages when it addresses
+   * trees by name itself (a generated manifest naming them) rather than
+   * mounting one tree at a position. Handed out by the cache because the cache
+   * owns both halves: the pool's name within a cache, and where this cache is.
+   */
+  public get treePoolLink(): CacheLink {
+    return new CacheLink(TREE_DIR, this.root);
+  }
+
+  /**
+   * Materialize `files` once, permanently, and return the path of the tree.
+   *
+   * This is the **tree pool**, the exact counterpart of the blob pool one
+   * dimension up: files by content hash, trees by manifest hash, the same
+   * discipline. An existing tree is served as it stands; a missing one is built
+   * in a temp sibling and published by a single atomic `rename`.
+   *
+   * **The tree at `tree/<H>` is the materialization of the FileSet whose
+   * manifest hashes to `H`.** That is a property of this signature rather than
+   * a convention callers keep: there is no key to pass, so none can be passed
+   * wrongly, an entry deleted and demanded again rebuilds under the same name
+   * by construction, and any entry can be checked by re-manifesting what it
+   * holds — the pool is fsck-able, which is what a future GC will want when it
+   * decides whether a directory is what it claims to be. (Modes are the one
+   * subtlety for such a check: a tree's files carry the blob pool's read-only
+   * bits, while the manifest records their real ones.)
+   *
+   * The cache knows nothing about what a tree MEANS — it is handed files. What
+   * it guarantees is the discipline a consumer needs:
+   *
+   * - **Materialize-once.** Files are hardlinks out of the blob pool (an
+   *   in-memory file is ingested first, so a tree is always a pure function of
+   *   the blob pool), which is why a tree costs links once, ever, and why
+   *   deleting the pool loses nothing: everything rematerializes byte-identically.
+   * - **Atomic publish.** A concurrent process racing the same tree loses its
+   *   rename (a non-empty destination is never replaced), discards its temp and
+   *   uses the winner's — identical by construction. No locks.
+   * - **Ordering is the caller's**, and it matters: trees reference each other
+   *   by relative link, so a caller must publish
+   *   dependencies before dependents, and a crash then leaves only complete
+   *   trees whose references are complete.
+   *
+   * The temp sibling lives directly under the pool root (never the work tree),
+   * so the publish is a rename within one directory of one filesystem — the same
+   * assumption the hardlinks already make.
+   */
+  public ensureTree(files: FileSet): Computable<string> {
+    /* Memoized on the FileSet, so a hit costs the lookup and an existsSync —
+     * which is why nothing here needs deferring behind a thunk. */
+    const key = files.toManifestHash();
+    const entry = path.resolve(this.treeRoot, key);
+    if (fs.existsSync(entry)) {
+      return Computable.resolve(entry);
+    }
+    const running = this.inflightTrees.get(key);
+    if (running) {
+      return running;
+    }
+    const result = this.materializeTree(entry, files);
+    this.inflightTrees.set(key, result);
+    result.finally(() => this.inflightTrees.delete(key));
+    return result;
+  }
+
+  /** Build the tree in a temp sibling and publish it by rename; a lost race
+   * (it now exists — identical content by name) is success. The temp is
+   * removed on every path, and registered meanwhile so an interrupted run does
+   * not leave it behind. */
+  private materializeTree(entry: string, files: FileSet): Computable<string> {
+    /* Before anything exists to clean up. */
+    this.assertNothingOwnedElsewhere(entry, files);
+    fs.mkdirSync(this.treeRoot, { recursive: true });
+    /* Built in this process's work tree, which is already the right place for
+     * two reasons and needs no scheme of its own for either. It shares the
+     * cache's filesystem — the invariant the staged hardlinks impose anyway —
+     * so the publish below is a plain same-device rename. And its cleanup is
+     * inherited whole: the work root is registered with the exit hook and swept
+     * for dead owners at startup, so a crash needs nothing from here. The pool
+     * therefore only ever contains complete trees, which is what lets anything
+     * scanning it (a future GC, an fsck) trust every directory it sees. */
+    const temp = this.createWorkDir("tree-");
+    /* The assertion above is what makes a plain {@link storeContent} sound here,
+     * and the order is the argument: past it no file is one a caller still owns,
+     * so the rename arm — the only one that could evict content out from under
+     * someone — is unreachable by construction. What is left is safe: a
+     * pool-backed file skips, and an in-memory one takes the ensureBlob arm,
+     * whose bytes and hash are the same object. So generated content interns on
+     * its way through and every regular file in the tree is a link into the
+     * pool, which is what keeps a tree a pure hardlink farm (and what any later
+     * link-count reasoning over the pool would rely on). The view it returns
+     * carries no origin, so restamp it: writeFileSet attributes a case-collision
+     * through it, and the diagnostic should name where the tree came from. */
+    return this.storeContent(files)
+      .then(backed => writeFileSet(temp, files.origin === undefined ? backed : backed.withOrigin(files.origin)))
+      .then(() =>
+        rename(temp, entry).catch(err => {
+          if (!fs.existsSync(entry)) {
+            throw err;
+          }
+        })
+      )
+      /* Eager politeness on the failure path — the rename consumed it on the
+       * success path, and the work-tree sweep is the backstop for neither. */
+      .finally(() => this.releaseWorkDir(temp))
+      .then(() => entry);
+  }
+
   /**
    * Build (or rebuild) the entry: run `create` in a clean scratch dir, then
    * put its outputs. The put is the commit point — on failure the scratch dir
@@ -764,20 +916,13 @@ export class BuildCache {
      * owner-named dir is one another process can neither collide with nor be
      * confused by (see {@link reclaimWorkTree}). */
     const targetDir = this.createWorkDir();
+    /* The work dir is scratch either way: on success its outputs now live in
+     * the content pool with the manifest written, and on failure the partial
+     * work must go so a retry starts fresh. The `<key>.manifest` file is
+     * untouched. */
     return create(targetDir)
       .then(result => this.cachePut(key, result, meta))
-      .then(result => {
-        /* The work dir was only scratch for the step — its outputs now live
-         * in the content pool and the manifest is written, so discard it.
-         * The `<key>.manifest` file is untouched. */
-        this.releaseWorkDir(targetDir);
-        return result;
-      })
-      .catch(err => {
-        /* Drop the partial work so a retry starts fresh */
-        this.releaseWorkDir(targetDir);
-        throw err;
-      });
+      .finally(() => this.releaseWorkDir(targetDir));
   }
 
   private manifestPath(key: string): string {
@@ -868,6 +1013,40 @@ export class BuildCache {
     return writeFile(tmp, manifest)
       .then(() => rename(tmp, manifestPath))
       .then(() => new FileSet(backed, undefined, CANONICAL));
+  }
+
+  /**
+   * Refuse to materialize a tree from a file that lives at a path the cache
+   * does not own — content someone else is holding, at a path they may still
+   * write to.
+   *
+   * There is no safe way to take one. Staging is by HARDLINK, so taking it
+   * would share an inode with that writer — making a content-named tree, which
+   * everything downstream treats as immutable, mutable behind its readers.
+   * Ingesting it into the pool first is no better: a RENAME evicts a file its
+   * owner still expects to find, and taking its BYTES reads them now while
+   * `file.hash` was recorded earlier, so a path that has drifted in between
+   * lands under the stale hash — poisoning a blob every future consumer of that
+   * hash then shares. The pool's whole discipline is that a file's hash and its
+   * bytes come from ONE read; this is the only place that could separate them,
+   * so it refuses instead.
+   *
+   * Nothing legitimate is being turned away: fetched, built and snapshot
+   * content is pool-backed by construction, and generated content is in memory
+   * (its bytes and its hash are the same object, so staging writes exactly what
+   * was hashed). A path-backed file arriving here means something upstream
+   * broke the delivery contract, which is worth a loud failure at the boundary
+   * rather than a quiet one inside a tree everything else will trust.
+   */
+  private assertNothingOwnedElsewhere(entry: string, files: FileSet): void {
+    for (const [name, file] of files) {
+      const abspath = file.getAbsPath();
+      if (abspath !== undefined && !(file instanceof SymlinkFile) && abspath !== path.resolve(this.blobRoot, file.hash)) {
+        throw new Error(
+          `Internal error: cannot materialize the tree '${entry}' from '${name}', which lives outside the cache at '${abspath}'`
+        );
+      }
+    }
   }
 
   /**

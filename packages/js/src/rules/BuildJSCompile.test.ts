@@ -30,20 +30,36 @@ function toPromise<T>(computable: Computable<T>): Promise<T> {
  * rule can be driven to the tsconfig it generates. `deps` carries the source-mode
  * flags (read via getFlags) exactly as it does in a real build. */
 function stubContext(flags: Flag[], packageName?: string): TargetContext {
-  const tsc = { toCommandLine: () => ["node", "tsc"] } as unknown as RunnableFileSet;
+  /* The one tool the rule mounts, answering with the argv its install would
+   * launch. An empty install: the rule mounts it as a FileSet, so the stub has
+   * to be a real one — only the argv is under test here. */
+  const tool = (argv: string[]): RunnableFileSet =>
+    Object.assign(new FileSet(new Map()), { toCommandLine: () => argv }) as unknown as RunnableFileSet;
+  const tools: Record<string, RunnableFileSet> = {
+    TSC_DRIVER: tool(["node", ".tools/tsc/tscDriver/tsc-driver.js"]),
+  };
   return {
     getFileSetProperties: () =>
       Computable.resolve({ srcs: [new FileSet(new Map([["a.ts", MemoryFile.from("export const x = 1;")]]))], deps: [] }),
-    getGlobalString: (name: string) => Computable.resolve(name === "JS_TARGET" ? "es2021-commonjs" : "debug"),
-    getGlobalRunnable: () => Computable.resolve(tsc),
+    getGlobalString: (name: string) =>
+      Computable.resolve(name === "JS_TARGET" ? "es2021-commonjs" : "debug"),
+    getGlobalRunnable: (name: string) => Computable.resolve(tools[name]),
     getFlags: () => Computable.resolve(flags),
     getProperty: () => Computable.resolve(packageName === undefined ? undefined : new Property([packageName])),
+    /* Nothing reaches the store here (the stub declares no package deps), so a
+     * cache that only knows where its store would be is enough. */
+    execution: { buildCache: { storePath: "/store" } },
   } as unknown as TargetContext;
 }
 
-/** Drive the rule and read back the tsconfig.json it stages into the action.
- * (`files` is what the rule lays out itself; node_modules is assembled by the
- * step, from the unassembled `deps` beside it.) */
+/** Drive the rule and answer the action it yielded. */
+async function compileAction(): Promise<BuildAction> {
+  const result = await toPromise(jsCompileRule.evaluate(stubContext([])));
+  expect(result).to.be.instanceOf(BuildAction);
+  return result as BuildAction;
+}
+
+/** Drive the rule and read back the tsconfig.json it stages into the action. */
 async function generatedTsConfig(flags: Flag[], packageName?: string): Promise<TsConfig> {
   const result = await toPromise(jsCompileRule.evaluate(stubContext(flags, packageName)));
   expect(result).to.be.instanceOf(BuildAction);
@@ -261,4 +277,16 @@ describe("js_compile source-mode flags (through deps)", () => {
     const cfg = await generatedTsConfig([]);
     expect(cfg.compilerOptions.strict).to.equal(true);
   });
+});
+
+describe("js_compile toolchain", () => {
+  /* The regression this pins: the compiler's own `tsc` bin cannot be told where
+   * packages are, so exec'ing it against a manifest layout resolved nothing —
+   * every `types` entry unfound. What runs is always fabr's driver, over
+   * whatever release ${TYPESCRIPT} pins. */
+  it("execs the driver, never the pinned compiler's own bin", async () => {
+    const argv = (await compileAction()).inputs.argv as string[];
+    expect(argv).to.deep.equal(["node", ".tools/tsc/tscDriver/tsc-driver.js"]);
+  });
+
 });

@@ -43,8 +43,8 @@ import {
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
-import { createNodeExecAction } from "../NodeExecAction";
-import { buildCssOptions, CSS_OUTDIR, CSS_SRC_ROOT, SCSS_DEPS_DIR } from "../CSSCompile";
+import { buildCssOptions, CSS_OUTDIR, CSS_SRC_ROOT } from "../CSSCompile";
+import { createNodeExecAction, PNP } from "../NodeExecAction";
 
 /** Where the CSS toolchain + driver mount — disjoint from the styled tree so the
  * tools' deps neither collide with nor are visible to the sources. */
@@ -52,7 +52,10 @@ const TOOL_DIR = ".fabr-css";
 
 function buildCssCompile(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
-    [context.getFileSetProperties(["srcs", "deps"]), context.getGlobalRunnable("CSS_COMPILER")],
+    [
+      context.getFileSetProperties(["srcs", "deps"]),
+      context.getGlobalRunnable("CSS_COMPILER"),
+    ],
     ({ srcs: srcSets, deps }, compiler): RuleResult => {
       const srcs = FileSet.unionAll(...srcSets);
       const fileNames = [...srcs].map(([name]) => name);
@@ -61,17 +64,22 @@ function buildCssCompile(context: TargetContext): Computable<RuleResult> {
         return EMPTY_FILESET;
       }
       const options = buildCssOptions(fileNames);
-      const staged = FileSet.layout({
+      const workspace = {
         [CSS_SRC_ROOT]: srcs,
         [TOOL_DIR]: compiler,
         "css-manifest.json": MemoryFile.from(JSON.stringify(options)),
-      });
+      };
       /* The driver launches from its own mount (its deps resolve there); cwd is
        * the working root, so the manifest and src/out roots resolve against it. */
       const argv = compiler.toCommandLine(["--manifest=css-manifest.json"], { base: TOOL_DIR });
-      /* The deps go over unassembled: mounting them is the step's work, so it
-       * happens on a miss rather than on the way to asking whether there is one. */
-      return createNodeExecAction(staged, deps, argv, `${CSS_OUTDIR}:**`, { mount: SCSS_DEPS_DIR, label: "compile-css" });
+      /* Nothing is mounted: the stylesheets' dependency closure is a table the
+       * step generates beside them on a miss, which the driver's importer
+       * reads. A styled tree that imports from one large package used to stage
+       * that package's every file — the cost this removes. */
+      return createNodeExecAction(FileSet.layout(workspace), deps, argv, `${CSS_OUTDIR}:**`, {
+        layout: PNP,
+        label: "compile-css",
+      });
     }
   );
 }

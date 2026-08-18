@@ -40,7 +40,7 @@ Create a `PROJECT.fabr` at your project root:
 plugin @fabr-build/js;
 
 # Optional: which TypeScript compiler to use, and the output target.
-TSC = @npm:typescript:5.4.5:tsc;
+TYPESCRIPT = @npm:typescript:5.4.5;
 JS_TARGET = es2021-commonjs;
 
 js_package mylib {
@@ -100,7 +100,7 @@ catalog @pkg {
          @npm:chai:4.3.6 @npm:@types/chai:4.3.1;
 }
 
-TSC = @pkg:typescript:tsc;   # reference a catalog member as @pkg:<name>
+TYPESCRIPT = @pkg:typescript;   # reference a catalog member as @pkg:<name>
 
 js_package mylib {
   srcs = src:**/*.ts;

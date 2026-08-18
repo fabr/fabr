@@ -235,7 +235,7 @@ deps = mylib -> renamedlib;                      # a built package, mounted unde
 ```
 
 A projection against a package being run — under fabr run, or via a property that takes a runnable
-such as TSC or a serve target's tool — searches the program names the package declares in its
+such as a serve target's tool — searches the program names the package declares in its
 bin as well as its files, so `@npm:typescript:5.4.5:tsc` selects the tsc compiler to run. A package
 declaring a single bin needs no projection: that bin is the default entry. One declaring several has no
 default, so the reference must name one — typescript declares both tsc and tsserver, and leaving
@@ -308,7 +308,7 @@ name = value;
 Default properties are specified with the `default` keyword:
 
 ```
-default TSC = @npm:typescript:5.4.5:tsc;
+default TYPESCRIPT = @npm:typescript:5.4.5;
 ```
 
 A default property is used if and only if there is no non-default property with the same name

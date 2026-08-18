@@ -32,6 +32,8 @@ version number.
 - Fix: sync targets being unavailable to other build steps.
 
 @fabr-build/js:
+- BREAKING: TSC property has changed to TYPESCRIPT without the bin;
+TSC=@npm:typescript:5.4.5:tsc becomes TYPESCRIPT=@npm:typescript:5.4.5.
 - Add a jest compatibility test runner (`JS_TEST_RUNNER = @fabr-build/js-tools/jest-runner;`)
 - Generated package.json now strips build-only fields (devDependencies, scripts, …) from an imported manifest, and emits array metadata (keywords, os, cpu) as JSON arrays.
 - Add support for package aliases in external dependencies.

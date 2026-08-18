@@ -115,10 +115,11 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
         const compileSources = sources.minus(tests).minus(FileSet.unionAll(...testOnlySources));
 
         return Computable.forAll([seedJson, declaredDeps, declaredProvided], (seed, declared, providedDeclared) => {
-          /* Compile against the deps laid out scoped: the sources see only these
-           * direct deps, while the transitive closure is reachable only by the
-           * deps themselves (assembleScopedNodeModules). Provided deps are on the
-           * compile path too (js codes against core's types), just not delivered. */
+          /* Compile against the direct deps: the sources see only these, while
+           * the transitive closure is reachable only by the deps themselves —
+           * the dependency manifest's doing, not a layout's. Provided deps are
+           * on the compile path too (js codes against core's types), just not
+           * delivered. */
           /* Stylesheets in `srcs` are built like any other source, so the
            * package exports CSS rather than Sass (a `.module.css` still unscoped
            * — scoping is the bundler's). One meant to be `@use`d BY other

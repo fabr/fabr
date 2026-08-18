@@ -15,13 +15,24 @@ default NPM_REPOSITORY_URL = https://registry.npmjs.org/;
 default JS_TARGET = es6-esm;
 
 #
-# The default typescript compiler to use (if compiling typescript).
-# You'll usually want to override this to set a specific version.
+# INTERNAL: the program `js_compile` actually runs — fabr's TypeScript driver,
+# which drives the compiler through its API so that module resolution can come
+# from the build's dependency manifest, which a `tsc` process cannot do. Not a
+# supported override point and not a way to change compiler: ${TYPESCRIPT} is
+# the pin that governs what compiles your code. Named here only because a rule
+# reaches its own tools the same way every other driver is reached.
+#
+
+default TSC_DRIVER = @fabr-build/js-tools/tsc-driver;
+
+#
+# The TypeScript release the driver compiles with — the one version knob for
+# compiles. You'll usually want to override this to set a specific version.
 # (Note these must be pinned versions or ranges; mutable dist-tags like
 # 'latest' are not supported as they make the build non-deterministic.)
 #
 
-default TSC = @npm:typescript:5.4.5:tsc;
+default TYPESCRIPT = @npm:typescript:5.4.5;
 
 #
 # The esbuild library the bundle driver requires for JS bundling.
@@ -59,7 +70,8 @@ default JS_TEST_RUNNER = @fabr-build/js-tools/test-runner;
 
 #
 # The jest release the jest-compatibility runner takes its libraries from.
-# Pinned like any tool (TSC, SASS, ...) — fabr never hardcodes a tool version;
+# Pinned like any tool (TYPESCRIPT, SASS, ...) — fabr never hardcodes a tool
+# version;
 # override this one default to move. Jest 29/30 are supported; the runner checks
 # at startup rather than failing obscurely later.
 #
@@ -433,7 +445,20 @@ js_script @fabr-build/js-tools/bundle-driver {
 # lowering, driven by the rule's options manifest.
 js_script @fabr-build/js-tools/css-driver {
     entry = ../cssDriver/css-driver.js;
-    deps = ${SASS};
+    deps = ${SASS} ../pnp/PnPResolver.js;
+}
+
+# The TypeScript driver `js_compile` runs (see TSC_DRIVER): drives the compiler
+# through its API, resolving modules from the build's dependency manifest rather
+# than from a node_modules tree. It depends on the compiler PACKAGE, exactly as
+# the bundle and css drivers depend on theirs — the API is what it drives, so
+# the `tsc` bin would mean nothing to it — and ${TYPESCRIPT} is therefore the
+# one pin governing what compiles your code. Run in the staged workspace exactly
+# as the `tsc` bin is, and with no manifest present it resolves through the
+# filesystem like the bin does — so it is a drop-in for either layout.
+js_script @fabr-build/js-tools/tsc-driver {
+    entry = ../tscDriver/tsc-driver.js;
+    deps = ../pnp/PnPResolver.js ${TYPESCRIPT};
 }
 
 # Fabr's own test runner ('fabr test' / js_test / js_package tests): wraps

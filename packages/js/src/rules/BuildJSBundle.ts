@@ -46,7 +46,8 @@ import {
   TargetContext,
 } from "@fabr-build/core";
 import { compileContents, JSTarget, parseJSTarget } from "../JSPackage";
-import { createNodeExecAction } from "../NodeExecAction";
+import { createNodeExecAction, PNP } from "../NodeExecAction";
+import { treeMountOf } from "../PnPManifest";
 import {
   buildBundleOptions,
   BUNDLE_OUTDIR,
@@ -96,27 +97,27 @@ function stageBundle(
   const entries = computeBundleEntries(entrySources, rewrite);
   const external = computeExternalNames(srcs, deps);
   const options = buildBundleOptions(jsTarget, buildType, entries, external, defines);
-
-  const staged = FileSet.unionAll(
-    code,
-    css,
-    FileSet.layout({
-      [TOOL_DIR]: bundler,
-      "bundle-options.json": MemoryFile.from(JSON.stringify(options)),
-    })
-  );
+  const workspace = {
+    [TOOL_DIR]: bundler,
+    "bundle-options.json": MemoryFile.from(JSON.stringify(options)),
+  };
   /* The bundler launches from its own mount (its deps resolve there); cwd is
    * the working root, so the options manifest and outdir resolve against it. */
   const argv = bundler.toCommandLine(["--options=bundle-options.json"], { base: TOOL_DIR });
-  /* The bundled packages go over unassembled — mounting them is the step's
-   * work, so a cache hit never pays for it. */
-  return createNodeExecAction(staged, srcPackages, argv, `${BUNDLE_OUTDIR}:**`, { label: "bundle" });
+  /* The bundled packages go over unassembled and unmaterialized: esbuild reads
+   * the PnP table natively, so the step generates it (and the trees it names)
+   * on a miss. The entry paths in the options document already name those trees
+   * — a pure function of content, so naming one costs nothing here. */
+  return createNodeExecAction(FileSet.unionAll(code, css, FileSet.layout(workspace)), srcPackages, argv, `${BUNDLE_OUTDIR}:**`, {
+    layout: PNP,
+    label: "bundle",
+  });
 }
 
-/** Where a bundled package mounts — assembleNodeModules' layout, which the
- * entry paths must agree with. */
+/** Where a bundled package's files are staged, which an entry path inside one
+ * must agree with: its tree under the pool mount. */
 function mountOf(pkg: PackageFileSet): string {
-  return `node_modules/${pkg.packageName}`;
+  return treeMountOf(pkg);
 }
 
 /** An entry that is a projection over a package is CONTAINED: the package mounts

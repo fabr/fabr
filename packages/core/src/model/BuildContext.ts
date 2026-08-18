@@ -1837,6 +1837,8 @@ export class BuildContext {
         const actionContext: IActionContext = {
           workDir: targetDir,
           createOutput: () => cache.getTemporaryWriteStream(),
+          ensureTree: files => cache.ensureTree(files),
+          treePool: cache.treePoolLink,
           report,
           processLimit: execution.processLimit,
           admit: work => admitted(execution.processLimit, report, work),

@@ -30,8 +30,9 @@ import { readStream } from "./Fetch";
 import { SILENT_REPORT, TaskTracker } from "../support/Execute";
 import { DEFAULT_FILE_MODE, FileSet } from "./FileSet";
 import { hashString } from "./FSWrapper";
+import { FSFile } from "./FSFileSource";
 import { MemoryFile } from "./MemoryFS";
-import { SymlinkFile } from "./SymlinkFile";
+import { CacheLink, SymlinkFile } from "./SymlinkFile";
 import { Log } from "../support/Log";
 import { expect } from "chai";
 
@@ -222,6 +223,31 @@ describe("BuildCache", () => {
     expect(link).to.be.instanceOf(SymlinkFile);
     expect((link as SymlinkFile).target).to.equal("real.txt");
     expect(await toPromise(files.readFile("real.txt"))).to.equal("hi");
+  });
+
+  it("never reconstructs a cache link from a manifest, whatever the target text spells", async () => {
+    /* The laundering regression: a delivered tarball can contain a symlink whose
+     * literal target reads `fabr-cache:…`. Nothing may promote that text back
+     * into the class staging exempts from containment — so it round-trips as the
+     * ordinary symlink it always was, and the guard disposes of it as usual. */
+    const cache = new BuildCache(root, NULL_LOG);
+    await toPromise(
+      cache.getOrCreate("with a suspicious link", () =>
+        Computable.resolve(
+          new FileSet(new Map<string, import("./FileSet").IFile>([["evil", new SymlinkFile("fabr-cache:tree/../../../etc")]]))
+        )
+      )
+    );
+    const reopened = new BuildCache(root, NULL_LOG);
+    const files = await toPromise(
+      reopened.getOrCreate("with a suspicious link", () => {
+        throw new Error("cache entry should not be rebuilt");
+      })
+    );
+    const link = (await toPromise(files.get("evil")))!;
+    expect(link).to.be.instanceOf(SymlinkFile);
+    expect(link).to.not.be.instanceOf(CacheLink);
+    expect((link as SymlinkFile).target).to.equal("fabr-cache:tree/../../../etc");
   });
 
   it("writes the manifest atomically, leaving no temp debris", async () => {
@@ -871,5 +897,183 @@ describe("BuildCache work tree", () => {
     new BuildCache(root, NULL_LOG);
     expect(fs.existsSync(path.join(own, "debris"))).to.equal(false);
     expect(fs.existsSync(own), "and the tree itself is ready to use").to.equal(true);
+  });
+});
+
+describe("BuildCache.ensureTree (the tree pool)", () => {
+  let root: string;
+
+  beforeEach(() => {
+    /* A real temp dir of its own, like every other cache test: a tree's files
+     * are hardlinks out of the blob pool, so both must sit on one filesystem
+     * (and a cache pointed at the repo would leak blobs into it). */
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-treepool-test-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** A FileSet of in-memory files, `name -> content`. */
+  function fileset(files: Record<string, string>): FileSet {
+    return new FileSet(new Map(Object.entries(files).map(([name, content]) => [name, MemoryFile.from(content)])));
+  }
+
+  it("names an entry by the manifest hash of what it holds", async () => {
+    /* The invariant the signature enforces: `tree/<H>` IS the materialization
+     * of the FileSet whose manifest hashes to H, so a tree is verifiable by
+     * re-manifesting it and no caller can name one wrongly. */
+    const cache = new BuildCache(root, NULL_LOG);
+    const files = fileset({ "node_modules/a/index.js": "a" });
+    const entry = await toPromise(cache.ensureTree(files));
+    expect(entry).to.equal(path.join(root, "tree", files.toManifestHash()));
+    expect(fs.readFileSync(path.join(entry, "node_modules/a/index.js"), "utf8")).to.equal("a");
+
+    /* An equal FileSet is the same entry, served without rebuilding. */
+    expect(await toPromise(cache.ensureTree(fileset({ "node_modules/a/index.js": "a" })))).to.equal(entry);
+    expect(fs.readdirSync(path.join(root, "tree"))).to.deep.equal([files.toManifestHash()]);
+  });
+
+  it("holds a tree's files as read-only hardlinks into the blob pool", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const stored = await toPromise(
+      cache.getOrCreate("a tool", () => Computable.resolve(new FileSet(new Map([["bin/tool", new MemoryFile(Buffer.from("#!/bin/sh\n"), 0o755)]]))))
+    );
+    const pooled = (await toPromise(stored.get("bin/tool")))!;
+    const entry = await toPromise(
+      cache.ensureTree(new FileSet(new Map([["bin/tool", pooled], ["lib/generated.js", MemoryFile.from("x")]])))
+    );
+
+    /* One inode, shared with the blob pool — so a tree costs links, never bytes —
+     * and read-only, so nothing staged from it can write through. */
+    const file = path.join(entry, "bin/tool");
+    expect(fs.statSync(file).ino).to.equal(fs.statSync(path.join(root, "blob", hashString("#!/bin/sh\n"))).ino);
+    expect(fs.statSync(file).mode & 0o777).to.equal(0o555);
+
+    /* Generated content interns on its way through, so the tree is a hardlink
+     * farm all the way down: an in-memory file gains its blob here, and the
+     * staged file is a link to it (two names, one inode) rather than a copy. */
+    const generated = fs.statSync(path.join(entry, "lib/generated.js"));
+    expect(generated.ino).to.equal(fs.statSync(path.join(root, "blob", hashString("x"))).ino);
+    expect(generated.nlink).to.equal(2);
+    expect(generated.mode & 0o777).to.equal(0o444);
+  });
+
+  it("is an accelerator only: deleting a tree rematerializes it identically", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const files = fileset({ "node_modules/a/index.js": "a" });
+    const entry = await toPromise(cache.ensureTree(files));
+    fs.rmSync(entry, { recursive: true, force: true });
+    /* Same files, same name — the identity is derived, not remembered. */
+    expect(await toPromise(cache.ensureTree(files))).to.equal(entry);
+    expect(fs.readFileSync(path.join(entry, "node_modules/a/index.js"), "utf8")).to.equal("a");
+  });
+
+  it("holds a delivered package's own symlinks, and drops one that escapes it", async () => {
+    /* What a tarball can carry, and the only link kind a tree holds now: an
+     * in-package relative symlink. It is staged like any other file, under the
+     * same containment rule the rest of staging applies. */
+    const cache = new BuildCache(root, NULL_LOG);
+    const entry = await toPromise(
+      cache.ensureTree(
+        new FileSet(
+          new Map<string, import("./FileSet").IFile>([
+            ["lib/real.js", MemoryFile.from("x")],
+            ["lib/alias.js", new SymlinkFile("real.js")],
+            ["escape.js", new SymlinkFile("../../../etc/passwd")],
+          ])
+        )
+      )
+    );
+    expect(fs.readlinkSync(path.join(entry, "lib/alias.js"))).to.equal("real.js");
+    expect(fs.readFileSync(path.join(entry, "lib/alias.js"), "utf8")).to.equal("x");
+    expect(fs.existsSync(path.join(entry, "escape.js"))).to.equal(false);
+  });
+
+  it("builds in the work tree, so the pool only ever holds complete trees", async () => {
+    /* Nothing partial is ever visible under `tree/` — which is what lets a
+     * scan of it (a future GC, an fsck) trust every directory it sees, with no
+     * skip-the-temps convention to know about. The temp is a work dir like any
+     * other, so its cleanup rides the work tree's exit hook and startup sweep. */
+    const cache = new BuildCache(root, NULL_LOG);
+    const files = fileset({ "index.js": "x" });
+    const materializing = cache.ensureTree(files);
+    /* Synchronously after the call: the temp exists (createWorkDir is sync)
+     * while the writes are still in flight. */
+    const workDirs = fs
+      .readdirSync(path.join(root, "work"))
+      .flatMap(owner => fs.readdirSync(path.join(root, "work", owner)));
+    expect(workDirs.filter(name => name.startsWith("tree-"))).to.have.lengthOf(1);
+    expect(fs.readdirSync(path.join(root, "tree"))).to.deep.equal([]);
+
+    const entry = await toPromise(materializing);
+    /* And afterwards the pool holds exactly the finished tree, the work dir
+     * having been consumed by the publish. */
+    expect(fs.readdirSync(path.join(root, "tree"))).to.deep.equal([files.toManifestHash()]);
+    expect(fs.readFileSync(path.join(entry, "index.js"), "utf8")).to.equal("x");
+  });
+
+  it("yields to the winner of a concurrent race for the same tree", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    /* Another process publishes the entry while this one is still writing its
+     * temp: the rename then fails, the temp is discarded, and the winner's
+     * directory — the same content by name — is what everyone uses. The
+     * injection lands after the call because the writes are async; whichever
+     * branch it reaches (rename-loses, or the fast path if it beat the temp),
+     * what is asserted is the same guarantee — a published entry is never
+     * replaced and nothing is left behind. */
+    const files = fileset({ "loser.txt": "ours" });
+    const published = path.join(root, "tree", files.toManifestHash());
+    const materializing = cache.ensureTree(files);
+    fs.mkdirSync(published, { recursive: true });
+    fs.writeFileSync(path.join(published, "winner.txt"), "theirs");
+
+    const entry = await toPromise(materializing);
+    expect(entry).to.equal(published);
+    expect(fs.readFileSync(path.join(entry, "winner.txt"), "utf8")).to.equal("theirs");
+    expect(fs.existsSync(path.join(entry, "loser.txt"))).to.equal(false);
+    /* Nothing left behind: the discarded temp is gone. */
+    expect(fs.readdirSync(path.join(root, "tree"))).to.deep.equal([files.toManifestHash()]);
+  });
+
+  it("refuses a file that lives outside the cache, rather than taking it either way", () => {
+    /* The only two ways to take one are both wrong: a rename evicts a file its
+     * owner still expects, and re-reading its bytes stores them under the hash
+     * recorded earlier — poisoning a blob if the path has drifted. */
+    const cache = new BuildCache(root, NULL_LOG);
+    const elsewhere = path.join(root, "mine.txt");
+    fs.writeFileSync(elsewhere, "held by someone else");
+    const held = new FSFile(root, "mine.txt", fs.statSync(elsewhere), hashString("held by someone else"), "text/plain");
+    /* Synchronously, at the call: this is a broken delivery contract rather
+     * than a build failure, so it fails where the mistake is instead of riding
+     * a chain. */
+    expect(() => cache.ensureTree(new FileSet(new Map([["lib/held.txt", held]])))).to.throw(
+      /cannot materialize the tree .* from 'lib\/held\.txt', which lives outside the cache/
+    );
+    /* And it is refused BEFORE anything exists to clean up. */
+    expect(fs.existsSync(elsewhere), "the file is left where its owner put it").to.equal(true);
+    expect(fs.existsSync(path.join(root, "tree")) ? fs.readdirSync(path.join(root, "tree")) : []).to.deep.equal([]);
+  });
+
+  it("leaves no entry (and no debris) when the files fail to materialize", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const broken = new FileSet(new Map([["a.txt", MemoryFile.from("x")], ["a.txt/b.txt", MemoryFile.from("y")]]));
+    let error: Error | undefined;
+    await toPromise(cache.ensureTree(broken)).catch((err: Error) => (error = err));
+    expect(error).to.not.equal(undefined);
+    expect(fs.existsSync(path.join(root, "tree", broken.toManifestHash()))).to.equal(false);
+    expect(fs.readdirSync(path.join(root, "tree"))).to.deep.equal([]);
+  });
+
+  it("joins an in-flight materialization rather than racing itself", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    /* The second demand gets the FIRST one's attempt — the same node, not an
+     * equal answer — which is what keeps two concurrent consumers of one
+     * package from both writing it. */
+    const first = cache.ensureTree(fileset({ "index.js": "x" }));
+    const second = cache.ensureTree(fileset({ "index.js": "x" }));
+    expect(second).to.equal(first);
+    expect(await toPromise(second)).to.equal(await toPromise(first));
+    expect(fs.readdirSync(path.join(root, "tree"))).to.have.lengthOf(1);
   });
 });

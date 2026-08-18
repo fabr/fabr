@@ -19,21 +19,33 @@
 
 /**
  * The js_compile rule: the one TS-compile path, a self-contained target
- * `{ srcs = FILES; deps = FILES }`. `deps` is the node_modules the sources are
+ * `{ srcs = FILES; deps = FILES }`. `deps` are the dependencies the sources are
  * compiled against (package deps + any @types, already resolved by the caller
- * so materialization here is a no-op). It resolves its *own*
- * toolchain — `TSC` (a build tool, independent of what it compiles) as a
- * **runnable** (`BUILD_OPERATION=run`), so it needn't know how to launch it —
- * and its own `JS_TARGET`, derives the tsconfig, and lays out the working
- * directory. The tool is **mounted apart** from the workspace (under `TOOL_DIR`,
- * not merged into `node_modules`): the tool's own dependencies must not collide
- * with — nor be visible to — the sources' `node_modules`. It runs with cwd at
+  * so materialization here is a no-op). It resolves its *own* toolchain as a
+ * **runnable** (`BUILD_OPERATION=run`), so it needn't know how to launch it:
+ * fabr's TypeScript **driver** (TSC_DRIVER, internal), which carries the pinned
+ * compiler as one of its own dependencies — the compiler's own CLI cannot be
+ * told where packages are, and this one can. It resolves its own `JS_TARGET`,
+ * derives the tsconfig, and lays out the working directory. The tool is
+ * **mounted apart** from the workspace (under `TOOL_DIR`): its dependencies
+ * must not collide with — nor be visible to — the sources'. It runs with cwd at
  * the workspace root and yields the `exec` action (output: `build/**`).
+ *
+ * The dependencies reach the compiler as a generated PnP manifest over the
+ * cache's tree pool, so a compile stages only its own sources however large its
+ * closure — there is no tree to build.
  */
 
 
-import { Computable, FileSet, MemoryFile, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
-import { createNodeExecAction, SCOPED } from "../NodeExecAction";
+import {
+  Computable,
+  FileSet,
+  MemoryFile,
+  PackageFileSet,
+  RuleRegistration,
+  RuleResult,
+  TargetContext,
+} from "@fabr-build/core";
 import {
   esLevelOrder,
   JSTarget,
@@ -43,6 +55,7 @@ import {
   resolveSourceVersion,
   usesDom,
 } from "../JSPackage";
+import { createNodeExecAction, PNP } from "../NodeExecAction";
 
 /** Where the toolchain is mounted in the working dir — disjoint from src/node_modules/build. */
 const TOOL_DIR = ".tools/tsc";
@@ -95,6 +108,11 @@ function emitsSourceMap(buildType: string | undefined): boolean {
  * against the tsconfig's own directory (TS 4.1+), which is the scope wanted.
  * Targets are relative (TS requires that without a baseUrl) and extensionless,
  * so tsc applies its usual extension search.
+ *
+ * Not what resolves a self-reference any more — the manifest's self row does
+ * that, before any `paths` lookup happens. It stays for the DECLARATION
+ * EMITTER, which consults `paths` when synthesizing a specifier for a type it
+ * cannot otherwise name; that is not resolution, and nothing else supplies it.
  */
 function selfReferencePaths(packageName: string): Record<string, string[]> {
   return { [packageName]: ["./src/index"], [`${packageName}/*`]: ["./src/*"] };
@@ -140,6 +158,21 @@ function needsDownlevelIteration(target: string): boolean {
   return esLevelOrder(target) < 2015;
 }
 
+/**
+ * The `@types` packages a compile includes without being asked — tsc's own
+ * automatic inclusion, which scans `node_modules/@types` and so finds nothing
+ * when there is no tree to scan. Stating the list explicitly reproduces the
+ * rule exactly (the DIRECT dependencies that are types packages; a transitive
+ * one was never automatic either) and is what a compiler reading the manifest
+ * needs, since it has no directory to enumerate.
+ */
+function automaticTypes(deps: FileSet[]): string[] {
+  return deps
+    .filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet && dep.packageName.startsWith("@types/"))
+    .map(dep => dep.packageName.substring("@types/".length))
+    .sort();
+}
+
 export function makeTsConfig(
   jsTarget: JSTarget,
   jsx?: { mode: string; importSource: string },
@@ -148,7 +181,11 @@ export function makeTsConfig(
   packageName?: string,
   sourceVersion?: string,
   /** Whether the sources declared the `dom` flag — see usesDom. */
-  hasDom = false
+  hasDom = false,
+  /** The automatic `@types` inclusions, where the compiler cannot discover them
+   * for itself (see {@link automaticTypes}); omitted under the classic layout,
+   * where tsc's own scan is authoritative. */
+  types?: string[]
 ): Record<string, unknown> {
   return {
     compilerOptions: {
@@ -183,6 +220,7 @@ export function makeTsConfig(
        * falling back to the emit level when it declares none. */
       lib: libFor(sourceVersion ?? jsTarget.version, hasDom),
       ...defineClassFieldsOverride(sourceVersion, jsTarget.version),
+      ...(types ? { types } : {}),
       module: jsTarget.module === "esm" ? "esnext" : "commonjs",
       moduleResolution: "node",
       ...(packageName ? { paths: selfReferencePaths(packageName) } : {}),
@@ -221,12 +259,12 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
     [
       context.getFileSetProperties(["srcs", "deps"]),
       context.getGlobalString("JS_TARGET"),
-      context.getGlobalRunnable("TSC"),
+      context.getGlobalRunnable("TSC_DRIVER"),
       context.getGlobalString("BUILD_TYPE"),
       context.getFlags("deps"),
       context.getProperty("package_name"),
     ],
-    ({ srcs: srcSets, deps }, target, tsc, buildType, depFlags, packageNameProp) => {
+    ({ srcs: srcSets, deps }, target, driver, buildType, depFlags, packageNameProp) => {
       const packageName = packageNameProp?.toString();
       const srcs = FileSet.unionAll(...srcSets);
       /* Source-mode flags (strictness relaxations) ride among `deps` like any
@@ -238,34 +276,55 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       /* The ES level these sources are written against (an `es<level>` flag
        * among deps), which drives `lib` and the class-field semantics. */
       const sourceVersion = resolveSourceVersion(depFlags);
-      /* js_compile owns its node_modules layout (only it needs it) and its JSX
-       * runtime: both read the ordered direct deps directly. A .tsx/.jsx source
-       * needs a jsxImportSource (auto-detected from the deps); a JSX-free compile
-       * omits it. */
+      /* js_compile owns how its dependencies reach the compiler (only it needs
+       * to) and its JSX runtime: both read the ordered direct deps directly. A
+       * .tsx/.jsx source needs a jsxImportSource (auto-detected from the deps);
+       * a JSX-free compile omits it. */
       const hasJsx = [...srcs].some(([name]) => {
         const lower = name.toLowerCase();
         return lower.endsWith(".tsx") || lower.endsWith(".jsx");
       });
       const build = (jsxImportSource: string): RuleResult => {
         const jsx = jsxImportSource ? { mode: jsxModeFor(buildType), importSource: jsxImportSource } : undefined;
-        const tsconfig = makeTsConfig(parseJSTarget(target), jsx, modeOverlay, buildType, packageName, sourceVersion, usesDom(depFlags));
-        /* The deps are handed over UNASSEMBLED: laying out node_modules is the
-         * step's own work, so it happens on a cache miss rather than on the way
-         * to asking whether there is one (see COMPILE_ACTION).
+        const tsconfig = makeTsConfig(
+          parseJSTarget(target),
+          jsx,
+          modeOverlay,
+          buildType,
+          packageName,
+          sourceVersion,
+          usesDom(depFlags),
+          automaticTypes(deps)
+        );
+        const workspace = {
+          [COMPILE_SRC_DIR]: srcs,
+          "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
+          /* The driver's own install, compiler included: `typescript` is one of
+           * its declared dependencies, so it sits in the install's node_modules
+           * and the driver requires it from there. One mount, one pin
+           * (${TYPESCRIPT}) governing what compiles the sources. */
+          [TOOL_DIR]: driver,
+        };
+        /* The tool launches from its own mount (its deps resolve there); cwd is
+         * the workspace root, so `include` and dependency resolution alike
+         * resolve against the staged workspace.
          *
-         * The tool launches from its own mount (its deps resolve there); cwd is
-         * the workspace root, so `include`/`node_modules` resolve against the
-         * sources. */
+         * The dependencies go over UNASSEMBLED, with the layout named rather
+         * than built: composition is a table the step generates on a miss, so
+         * evaluation stages nothing and a hit costs nothing. */
         return createNodeExecAction(
-          FileSet.layout({
-            [COMPILE_SRC_DIR]: srcs,
-            "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
-            [TOOL_DIR]: tsc,
-          }),
+          FileSet.layout(workspace),
           deps,
-          tsc.toCommandLine([], { base: TOOL_DIR }),
+          driver.toCommandLine([], { base: TOOL_DIR }),
           `${COMPILE_OUT_DIR}:**`,
-          { layout: SCOPED, label: "compile" }
+          {
+            layout: PNP,
+            label: "compile",
+            /* The sources' own package identity is a row like any other, which
+             * is how a package's references to itself resolve without the
+             * compiler ever searching for them. */
+            ...(packageName ? { self: { name: packageName, location: `./${COMPILE_SRC_DIR}/` } } : {}),
+          }
         );
       };
       return hasJsx ? resolveJsxImportSource(deps).then(build) : build("");

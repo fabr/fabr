@@ -1,0 +1,336 @@
+/*
+ * Copyright (c) 2026 Nathan Keynes <nkeynes@deadcoderemoval.net>
+ *
+ * This file is part of Fabr.
+ *
+ * Fabr is free software: you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * Fabr is distributed in the hope that it will be useful, but WITHOUT ANY
+ * WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * Fabr. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/**
+ * The delivered package graph as a **Yarn PnP manifest** — composition as a
+ * table instead of a tree.
+ *
+ * Walk-up resolution couples a package's environment to its location: one mount
+ * per instance forces one environment per instance, so either the environment
+ * moves into the mount (edge-keyed trees, which fork physical copies per
+ * context) or it comes from the surroundings (the old hoisted install, which
+ * forgave undeclared edges by accident). A table breaks the coupling: a
+ * package's tree is content-named, mounted once, and *what it sees* is a row
+ * here.
+ *
+ * The format is Yarn's rather than fabr's own because the seams already exist —
+ * esbuild reads `.pnp.data.json` natively, the `@yarnpkg/sdks` route feeds
+ * tsserver, and a node loader is generated rather than written. tsc is the one
+ * missing seam and fabr owns its invocation, hence the tsc driver
+ * (tscDriver/tsc-driver.ts) rather than a patched compiler.
+ *
+ * PnP is package-granular: the table answers "which directory is this package
+ * here", and the file part of a specifier (`main`/`types`/extensions) is
+ * ordinary filesystem work inside it. So real per-package directories are still
+ * needed — the cache's tree pool — but no tree OF them is ever built.
+ */
+
+import {
+  FileSet,
+  hashString,
+  MemoryFile,
+  packageNodeSignature,
+  PackageFileSet,
+} from "@fabr-build/core";
+
+/** Where the tree pool is mounted in the staged workspace — one symlink per
+ * action, so every location in the manifest is relative and its bytes say
+ * nothing about this machine. */
+export const TREE_MOUNT = ".fabr-tree";
+
+/** The manifest's file name, as PnP-aware tools look for it. Yarn's standard,
+ * so the driver that reads it knows the same constant independently rather than
+ * importing across the process boundary (see tscDriver/PnPResolver.ts). */
+export const PNP_DATA_FILE = ".pnp.data.json";
+
+/**
+ * A dependency's target as PnP spells it: a bare reference when the name the
+ * requirer uses is the depended-on package's own, a `[name, reference]` tuple
+ * when it is an alias, and `null` for a peer nothing satisfied.
+ */
+export type PnpDependencyTarget = string | [string, string] | null;
+
+/** One row's payload. `linkType` is advisory for consumers that copy rather
+ * than link; a package's tree is a real directory, hence `HARD`. */
+export interface IPnpPackageInfo {
+  packageLocation: string;
+  packageDependencies: Array<[string, PnpDependencyTarget]>;
+  linkType: "HARD" | "SOFT";
+  discardFromLookup?: boolean;
+}
+
+/**
+ * The serialized manifest (`.pnp.data.json`), the subset of Yarn's state that
+ * resolution actually consumes. `packageRegistryData` is a nested association
+ * list — name → reference → info — with the top-level package keyed by a
+ * `null` name and reference, exactly as Yarn writes it.
+ */
+export interface IPnpSerializedState {
+  __info: string[];
+  dependencyTreeRoots: Array<{ name: string; reference: string }>;
+  enableTopLevelFallback: boolean;
+  ignorePatternData: string | null;
+  fallbackExclusionList: Array<[string, string[]]>;
+  fallbackPool: Array<[string, PnpDependencyTarget]>;
+  packageRegistryData: Array<[string | null, Array<[string | null, IPnpPackageInfo]>]>;
+}
+
+/** The sources being compiled, when they carry a package identity: the name
+ * they may import themselves by, and where they are staged (a directory path
+ * relative to the manifest, `./src/`). */
+export interface ISelfPackage {
+  readonly name: string;
+  readonly location: string;
+}
+
+/** The self row's reference. A fixed label rather than a hash: it names a place
+ * in this build, not content, and it cannot collide with a package's reference
+ * (those are hex digests). */
+const SELF_REFERENCE = "self";
+
+/** A manifest and the packages it names, which the caller must materialize as
+ * content entries before anything reads it. */
+export interface IPnpManifest {
+  readonly state: IPnpSerializedState;
+  /** Every package with a row, deduplicated by instance. */
+  readonly packages: ReadonlyArray<PackageFileSet>;
+  /** The manifest as the file to stage. */
+  toFile(): MemoryFile;
+}
+
+const INFO = [
+  "This file is generated by fabr. It maps every package this build resolved to",
+  "its content-addressed directory in the build cache's tree pool.",
+];
+
+/**
+ * Build the manifest for a compilation whose directly declared dependencies are
+ * `directDeps` (packages only — a Flag or a loose FileSet has no row).
+ *
+ * The sources being compiled are the top-level package (`packageLocation:
+ * "./"`), so they see exactly what was declared and nothing else — the
+ * undeclared-transitive rule the scoped layout enforced positionally, now
+ * enforced by the table.
+ *
+ * **Fallback is on, deliberately.** `fallbackPool` is the declared surface
+ * again, and PnP's try-the-issuer-then-the-pool semantics is what restores the
+ * one thing the old hoisted install got right: a package whose typings import a
+ * peer it never declared (`postprocessing`'s `three`, whose types are the
+ * consumer's `@types/three`) resolves through the pool rather than failing.
+ * Scoped to the declared surface, so it forgives phantoms the consumer could
+ * have written down, and nothing else. Strictness (an empty pool plus explicit
+ * extensions) stays available as policy later.
+ */
+export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage): IPnpManifest {
+  const roots = directDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+  const rows = new Map<string, Array<[string, IPnpPackageInfo]>>();
+  const packages: PackageFileSet[] = [];
+  for (const pkg of reachablePackages(roots)) {
+    const reference = referenceOf(pkg);
+    const existing = rows.get(pkg.packageName) ?? [];
+    rows.set(pkg.packageName, existing);
+    /* One row per (name, reference). Two delivered INSTANCES can carry one
+     * identity — a graph is a set of nodes, not of objects — and by
+     * {@link assertSamePackageNode} they are then the same node, so the second
+     * would be a duplicate row rather than a distinct one. */
+    if (existing.some(([held]) => held === reference)) {
+      continue;
+    }
+    packages.push(pkg);
+    existing.push([reference, packageInfo(pkg, reference)]);
+  }
+  /* ONE dependency table, used by both rows that stand for the sources: the
+   * anonymous top-level and, where the sources are a package, the self row.
+   * They must agree — a source file matches the self row (its location is the
+   * longer prefix), so a difference would silently change what the sources can
+   * resolve — so they are derived rather than written twice. */
+  const topLevel = dependencyList(roots);
+  const selfRow = self && selfPackageRow(self, topLevel);
+  const state: IPnpSerializedState = {
+    __info: INFO,
+    /* Empty rather than a synthesized root locator: the roots concept exists to
+     * mark workspaces, of which a compilation has none — its sources are the
+     * anonymous top-level package. Its only effect is that the fallback also
+     * applies to the top level, which is a no-op here because the pool IS the
+     * top level's dependencies. */
+    dependencyTreeRoots: [],
+    enableTopLevelFallback: true,
+    ignorePatternData: null,
+    fallbackExclusionList: [],
+    fallbackPool: topLevel,
+    packageRegistryData: [
+      [null, [[null, { packageLocation: "./", packageDependencies: topLevel, linkType: "SOFT" }]]],
+      ...(selfRow ? [selfRow] : []),
+      ...[...rows]
+        .sort(byText(([name]) => name))
+        .map(([name, versions]): [string, Array<[string | null, IPnpPackageInfo]>] => [
+          name,
+          [...versions].sort(byText(([reference]) => reference)),
+        ]),
+    ],
+  };
+  return { state, packages, toFile: () => MemoryFile.from(serialize(state)) };
+}
+
+/**
+ * The sources being compiled, WHEN they are a package: a row under the name
+ * they may import themselves by.
+ *
+ * It resolves everything the top-level row does, plus its own name — which is
+ * the whole of what a package's self-reference means, and subsumes the
+ * `paths` mapping a tsconfig would otherwise carry: `pkg/sub` lands at
+ * `<location>/sub` by the same rooted probing every other row's subpaths use,
+ * and bare `pkg` at the location's own index.
+ *
+ * `SOFT`, like the top-level row and like a Yarn workspace: it is a place in
+ * the project, not a package materialized in the pool — which is also what
+ * keeps it out of the pool-facing queries (see PnPResolver.packageOf).
+ */
+function selfPackageRow(self: ISelfPackage, topLevel: Array<[string, PnpDependencyTarget]>): [string, Array<[string, IPnpPackageInfo]>] {
+  return [
+    self.name,
+    [
+      [
+        SELF_REFERENCE,
+        {
+          packageLocation: self.location,
+          packageDependencies: [[self.name, SELF_REFERENCE] as [string, PnpDependencyTarget], ...topLevel].sort(byText(([name]) => name)),
+          linkType: "SOFT",
+        },
+      ],
+    ],
+  ];
+}
+
+/**
+ * A package's **reference**: its label in this table, minted from the identity
+ * idiom the engine already uses for a package node — content hash, edge targets
+ * by id, override flag ({@link packageNodeSignature}).
+ *
+ * NOT the content digest, which is the *location's* identity: two instances can
+ * hold identical bytes and still resolve differently — a republished version
+ * whose content never changed, coexisting under a `?` divergence, or one
+ * package bound to different versions of a requirement by different requirers.
+ * Those must be separate rows with separate dependency tables, and keying on
+ * content alone would collapse them onto one, handing half their requirers a
+ * table that is not theirs. Content is what a package IS; content plus edges is
+ * what a package is HERE.
+ *
+ * Flat by design, and enough by design. A reference does not have to summarize
+ * a subgraph the way a content address does, because the table states every
+ * node's edges explicitly: a consumer follows rows, it never compares two
+ * references to decide whether two closures agree.
+ *
+ * Hashed rather than carried verbatim: a reference is repeated in every
+ * dependency entry that names the package, so raw signatures would multiply
+ * through the document and escape badly in JSON.
+ */
+const REFERENCES = new WeakMap<PackageFileSet, string>();
+
+function referenceOf(pkg: PackageFileSet): string {
+  const known = REFERENCES.get(pkg);
+  if (known !== undefined) {
+    return known;
+  }
+  const reference = hashString(packageNodeSignature(pkg));
+  REFERENCES.set(pkg, reference);
+  return reference;
+}
+
+/** Every package the roots reach, roots first, each instance once — the walk
+ * is by instance and must be cycle-safe, delivered graphs being genuinely
+ * cyclic. */
+function reachablePackages(roots: ReadonlyArray<PackageFileSet>): PackageFileSet[] {
+  const seen = new Set<PackageFileSet>();
+  const found: PackageFileSet[] = [];
+  const visit = (pkg: PackageFileSet): void => {
+    if (seen.has(pkg)) {
+      return;
+    }
+    seen.add(pkg);
+    found.push(pkg);
+    for (const dep of pkg.dependencies) {
+      if (dep instanceof PackageFileSet) {
+        visit(dep);
+      }
+    }
+  };
+  roots.forEach(visit);
+  return found;
+}
+
+/** One package's row payload: where its content is, and every name it may
+ * resolve — its own included, so a package can import itself by name. */
+function packageInfo(pkg: PackageFileSet, reference: string): IPnpPackageInfo {
+  return {
+    packageLocation: `./${treeMountOf(pkg)}/`,
+    packageDependencies: [
+      [pkg.packageName, reference] as [string, PnpDependencyTarget],
+      ...dependencyList(pkg.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)),
+    ].sort(byText(([name]) => name)),
+    linkType: "HARD",
+  };
+}
+
+/** Edges as PnP dependency entries, sorted and deduplicated by name (a graph
+ * cannot bind one name twice at one node; a repeat would be a delivery bug, and
+ * taking the first keeps the table well-formed rather than ambiguous). */
+function dependencyList(deps: ReadonlyArray<PackageFileSet>): Array<[string, PnpDependencyTarget]> {
+  const entries = new Map<string, PnpDependencyTarget>();
+  for (const dep of deps) {
+    if (!entries.has(dep.packageName)) {
+      entries.set(dep.packageName, referenceOf(dep));
+    }
+  }
+  return [...entries].sort(byText(([name]) => name));
+}
+
+/**
+ * Where a package's files are staged, relative to the working directory: its
+ * tree under the pool mount.
+ *
+ * The tree's name is the package's content digest — the same hex string the
+ * FileSet carries, that a package node's signature quotes, and that the cache
+ * derives the tree from ({@link BuildCache.ensureTree}) — so a pool directory
+ * traces back to whatever named it with nothing to un-salt on the way. Its
+ * being content alone is what makes a tree context-free: composition is this
+ * table, so the same bytes are one directory however many environments deliver
+ * them, and no package is ineligible, a workspace-built one included. Were the
+ * tree format ever to change, the version belongs in the pool PATH — one
+ * renamed directory for the whole format — not in every name.
+ */
+export function treeMountOf(pkg: PackageFileSet): string {
+  return `${TREE_MOUNT}/${pkg.toManifestHash()}`;
+}
+
+
+/** Ascending comparator over a text projection — every list in the manifest is
+ * sorted through one, so the bytes are a function of the graph and not of
+ * traversal order. */
+function byText<T>(of: (value: T) => string): (a: T, b: T) => number {
+  return (a, b) => (of(a) < of(b) ? -1 : of(a) > of(b) ? 1 : 0);
+}
+
+/** The manifest's bytes: two-space JSON like Yarn's own, newline-terminated.
+ * Nothing here is machine- or time-dependent, so identical graphs give
+ * identical bytes — which is what lets this one file stand in for the whole
+ * closure in the action key. */
+function serialize(state: IPnpSerializedState): string {
+  return `${JSON.stringify(state, undefined, 2)}\n`;
+}

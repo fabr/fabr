@@ -42,11 +42,6 @@ export const CSS_OUTDIR = "out";
 /** Where the styled sources are staged (the driver reads from here). */
 export const CSS_SRC_ROOT = "src";
 
-/** Where the scss dependency packages are mounted — the Sass `loadPaths` root
- * against which `@use "@scope/pkg/partial"` resolves (the Sass analogue of the
- * node_modules mount). */
-export const SCSS_DEPS_DIR = "scss_deps";
-
 /**
  * The options document fabr writes for the CSS driver — a plain, tool-free
  * description of the compile. The driver reads it and lowers each styled source.
@@ -98,7 +93,10 @@ export function buildCssOptions(fileNames: string[]): ICssOptions {
   return {
     files: [...fileNames].sort(),
     srcRoot: CSS_SRC_ROOT,
-    loadPaths: [SCSS_DEPS_DIR],
+    /* None: the dependencies are a table the driver's importer reads, not a
+     * tree with roots to search. The field stays because it is the driver
+     * contract's, and a swapped driver may still be handed load paths. */
+    loadPaths: [],
     outdir: CSS_OUTDIR,
   };
 }
