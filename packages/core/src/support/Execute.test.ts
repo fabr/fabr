@@ -98,7 +98,7 @@ describe("lineSplitter", () => {
   /** Feed `chunks` through a splitter and collect the lines it emits. */
   function split(chunks: string[], flush = true): string[] {
     const lines: string[] = [];
-    const splitter = lineSplitter({ line: (text: string) => lines.push(text) });
+    const splitter = lineSplitter((text: string) => lines.push(text));
     chunks.forEach(chunk => splitter.push(Buffer.from(chunk)));
     if (flush) {
       splitter.flush();
@@ -198,6 +198,26 @@ describe("execute", () => {
     expect(lines).to.deep.equal([REASON]);
     expect(outcomes[0].err?.message).to.include("exited with error code 2");
     expect(outcomes[0].err?.message).to.not.include(REASON);
+  });
+
+  it("keeps each stream's lines its own, never splicing a partial line onto the other's", async () => {
+    const lines: Array<[string, string]> = [];
+    /* stdout leaves a line unfinished, stderr writes a whole one, stdout then
+     * finishes its own. Through a shared splitter these spliced into
+     * "Compiling: 41%src/a.ts: error TS2322" plus a stray " done". */
+    const script =
+      "process.stdout.write('Compiling: 41%');" +
+      "setTimeout(() => { process.stderr.write('src/a.ts: error TS2322\\n'); process.stdout.write(' done\\n'); }, 60)";
+    await collectSettlements(
+      execute(LIMIT, NODE, ["-e", script], process.cwd(), {}, {
+        ...SILENT_REPORT,
+        output: { line: (text: string, stream: string) => lines.push([stream, text]) },
+      })
+    );
+    expect(lines).to.deep.equal([
+      ["err", "src/a.ts: error TS2322"],
+      ["out", "Compiling: 41% done"],
+    ]);
   });
 
   it("captures output into the failure message when there is no sink", async () => {

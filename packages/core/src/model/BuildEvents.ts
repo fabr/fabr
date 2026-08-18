@@ -17,6 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import type { OutputStream } from "../support/Execute";
 import { ITargetDecl } from "./AST";
 import { Constraints } from "./Constraints";
 
@@ -102,6 +103,10 @@ export interface ITaskProgressEvent extends ITaskEvent {
 export interface ITaskOutputEvent extends ITaskEvent {
   kind: "task-output";
   line: string;
+  /** Which of the child's streams it came from. Carried because only the child
+   *  can say, and nothing downstream can recover it — never as a severity (see
+   *  {@link OutputStream}). */
+  stream: OutputStream;
 }
 
 /**

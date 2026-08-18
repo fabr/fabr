@@ -130,8 +130,11 @@ describe("ProgressReporter", () => {
     /* Every task event is self-describing: output is interpretable alone. The
      * declared target, not the sub-target label: two steps of one target are
      * both that target's output, and the prefix says whose line this is. */
-    send(reporter, { kind: "task-output", id: 1, task: building("//pkg", "Compiling"), line: "src/a.ts(1,1): error TS2322" });
-    expect(lines).to.deep.equal(["info://pkg | src/a.ts(1,1): error TS2322"]);
+    send(reporter, { kind: "task-output", id: 1, task: building("//pkg", "Compiling"), line: "tsc: error TS2322", stream: "err" });
+    send(reporter, { kind: "task-output", id: 1, task: building("//pkg", "Compiling"), line: "tsc: 41% done", stream: "out" });
+    /* Both streams named, symmetrically: which one a tool chose says nothing
+     * about severity (tsc writes its errors to stdout), only where it came from. */
+    expect(lines).to.deep.equal(["info://pkg err| tsc: error TS2322", "info://pkg out| tsc: 41% done"]);
   });
 
   it("renders a cycle opening as nothing — the record arrives on the cycle-end", () => {

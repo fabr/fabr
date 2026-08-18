@@ -259,7 +259,7 @@ export class ExecutionContext {
     let latest: TaskProgress | undefined;
     const status = (): void => this.emit({ kind: "task-progress", id, task, state, progress: latest });
     const report: ITaskReport = {
-      output: this.wantsOutput ? { line: line => this.emit({ kind: "task-output", id, task, line }) } : undefined,
+      output: this.wantsOutput ? { line: (line, stream) => this.emit({ kind: "task-output", id, task, line, stream }) } : undefined,
       activity: activityCounter(next => {
         state = next;
         status();

@@ -182,9 +182,16 @@ export class ProgressReporter {
       }
 
       case "task-output":
-        /* One output line, prefixed with the target it came from. The prefix is
-         * attribution, not presentation, so it applies with or without a pane. */
-        this.log.log(DIAG_STEP_OUTPUT, { prefix: this.style(SGR_DIM, attribution(event.task) + " |"), line: event.line });
+        /* One output line, prefixed with the target it came from and the stream
+         * it arrived on. The prefix is attribution, not presentation, so it
+         * applies with or without a pane. Both streams are named, symmetrically:
+         * tools disagree about which one a diagnostic belongs on (tsc writes its
+         * errors to stdout), so marking only `err` would imply a severity the
+         * stream does not carry. */
+        this.log.log(DIAG_STEP_OUTPUT, {
+          prefix: this.style(SGR_DIM, `${attribution(event.task)} ${event.stream}|`),
+          line: event.line,
+        });
         return;
 
       case "cycle-start":

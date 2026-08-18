@@ -31,6 +31,15 @@ import { Semaphore } from "./Semaphore";
 import type { TaskProgress, TaskState } from "../model/BuildEvents";
 
 /**
+ * Which of a child's two streams a line arrived on. Carried because it is the
+ * child's own statement about the line and nothing downstream can recover it —
+ * NOT as a severity: tools disagree about which stream a diagnostic belongs on
+ * (tsc writes its errors to stdout), so a display that marked one of them
+ * special would be claiming something the stream does not mean.
+ */
+export type OutputStream = "out" | "err";
+
+/**
  * Where a running process's output goes, one complete line at a time — the
  * live alternative to capturing it and reporting it only on failure. A step is
  * given one by the framework, and it is the *driver* that implements it, which
@@ -39,7 +48,7 @@ import type { TaskProgress, TaskState } from "../model/BuildEvents";
  */
 export interface IOutputSink {
   /** One complete line of the child's output, newline already stripped. */
-  line(text: string): void;
+  line(text: string, stream: OutputStream): void;
 }
 
 /**
@@ -107,12 +116,18 @@ export const SILENT_REPORT: ITaskReport = { activity: () => undefined, progress:
 export type TaskTracker<T> = (run: (report: ITaskReport) => Computable<T>) => Computable<T>;
 
 /**
- * Split a byte stream into lines for a sink: a partial line is held until its
- * newline arrives, `\r\n` is normalized, a bare `\r` (a tool repainting one
- * line) also ends a line — except a chunk-final `\r`, held back in case it is
- * half of a split `\r\n` — and the unterminated tail is flushed at stream end.
+ * Split ONE byte stream into lines: a partial line is held until its newline
+ * arrives, `\r\n` is normalized, a bare `\r` (a tool repainting one line) also
+ * ends a line — except a chunk-final `\r`, held back in case it is half of a
+ * split `\r\n` — and the unterminated tail is flushed at stream end.
+ *
+ * One stream, and a plain `emit` rather than a sink, because a child's stdout
+ * and stderr are independent byte streams: pushed through a shared splitter,
+ * an unfinished line on one is spliced onto the next line of the other
+ * ("Compiling: 41%" + "src/a.ts: error TS2322" as a single line). Each stream
+ * gets its own, and the caller says which stream the lines came from.
  */
-export function lineSplitter(sink: IOutputSink): { push(chunk: Uint8Array): void; flush(): void } {
+export function lineSplitter(emit: (line: string) => void): { push(chunk: Uint8Array): void; flush(): void } {
   let held = "";
   return {
     push(chunk: Uint8Array): void {
@@ -125,13 +140,13 @@ export function lineSplitter(sink: IOutputSink): { push(chunk: Uint8Array): void
       /* The last element is the unterminated remainder (empty if the chunk
        * ended exactly on a newline) — hold it for the next chunk. */
       held = (lines.pop() ?? "") + carried;
-      lines.forEach(line => sink.line(line));
+      lines.forEach(emit);
     },
     flush(): void {
       if (held.length > 0) {
         /* A held trailing \r was a line ending after all — just one that never
          * got its \n. It terminates the line rather than appearing in it. */
-        sink.line(held.endsWith("\r") ? held.slice(0, -1) : held);
+        emit(held.endsWith("\r") ? held.slice(0, -1) : held);
         held = "";
       }
     },
@@ -446,12 +461,21 @@ function executeUnbounded(cmd: string, args: string[], cwd: string, env: Record<
     proc.on("exit", () => {
       swept = sweepGroup(proc.pid);
     });
-    /* One splitter for both streams, so a tool writing to each keeps its lines
-     * in arrival order rather than interleaved mid-line. */
-    const lines = sink && lineSplitter(sink);
-    const consume = (data: Uint8Array): void => (lines ? lines.push(data) : void output.push(data));
-    proc.stdout?.on("data", consume);
-    proc.stderr?.on("data", consume);
+    /* A splitter per stream (see lineSplitter): stdout and stderr are
+     * independent, so a shared one splices an unfinished line on one onto the
+     * next line of the other. Captured mode keeps them merged in arrival order
+     * — those bytes are replayed verbatim in a failure report, where the
+     * interleaving as it happened is what reads correctly. */
+    const streams = sink && {
+      out: lineSplitter(text => sink.line(text, "out")),
+      err: lineSplitter(text => sink.line(text, "err")),
+    };
+    const consume =
+      (stream: OutputStream) =>
+      (data: Uint8Array): void =>
+        streams ? streams[stream].push(data) : void output.push(data);
+    proc.stdout?.on("data", consume("out"));
+    proc.stderr?.on("data", consume("err"));
     /* Failure to spawn at all (e.g. missing executable) is reported through
      * the 'error' event; without a handler it would crash the process. */
     proc.on("error", err => {
@@ -462,13 +486,14 @@ function executeUnbounded(cmd: string, args: string[], cwd: string, env: Record<
     proc.on("close", (code, signal) => {
       /* Whatever the tool left unterminated is still its output, and a tool
        * that dies mid-line is exactly when it matters most. */
-      lines?.flush();
+      streams?.out.flush();
+      streams?.err.flush();
       const how = signal ? `terminated by signal ${signal}` : code !== 0 ? `exited with error code ${code}` : undefined;
       const deliver = (): void => {
         if (how === undefined) {
           resolve();
         } else {
-          reject(new ExecutionError(lines ? `${line}\n${how}` : withOutput(line, output, how)));
+          reject(new ExecutionError(streams ? `${line}\n${how}` : withOutput(line, output, how)));
         }
       };
       /* Report only once the group is gone, so whoever reclaims the work dir on this
@@ -561,9 +586,16 @@ function pipelineUnbounded(
     /* Un-redirected stderr only — a stage that captures stderr sends it to a
      * handle, so there is nothing here to report on that stage's failure. */
     const stderr: Uint8Array[][] = specs.map(() => []);
-    /* One line splitter per stage (feeding the shared sink), so two stages
-     * writing at once can't interleave mid-line. Absent ⇒ buffering instead. */
-    const stageLines = specs.map(() => sink && lineSplitter(sink));
+    /* A line splitter per stage AND per stream (feeding the shared sink), so
+     * neither two stages writing at once nor one stage's two streams can splice
+     * their partial lines together. Absent ⇒ buffering instead. */
+    const stageLines = specs.map(
+      () =>
+        sink && {
+          out: lineSplitter(text => sink.line(text, "out")),
+          err: lineSplitter(text => sink.line(text, "err")),
+        }
+    );
     const exit: Array<number | string | undefined> = specs.map(() => undefined);
     let settled = false;
     let remaining = specs.length;
@@ -649,18 +681,19 @@ function pipelineUnbounded(
             /* Un-redirected stderr: the user's own stream — streamed live to the
              * sink, or buffered (small) to report on this stage's failure. */
             const lines = stageLines[i];
-            proc.stderr?.on("data", data => (lines ? lines.push(data) : void stderr[i].push(data)));
+            proc.stderr?.on("data", data => (lines ? lines.err.push(data) : void stderr[i].push(data)));
           }
         }
         /* A final un-redirected stdout is the pipeline's own output: with a sink
          * it streams live like stderr; without one it was never piped at all. */
         if (isLast && !capStdout && sink) {
-          proc.stdout?.on("data", data => stageLines[i]?.push(data));
+          proc.stdout?.on("data", data => stageLines[i]?.out.push(data));
         }
         proc.on("error", e => fail(new ExecutionError(`${stageCommandLine(spec)}\nunable to execute: ${systemErrorText(e)}`)));
         proc.on("close", (code, signal) => {
           exit[i] = signal ?? code ?? 0;
-          stageLines[i]?.flush();
+          stageLines[i]?.out.flush();
+          stageLines[i]?.err.flush();
           /* Propagate a broken pipe upstream (SIGPIPE-equivalent): if this stage
            * exited while its producer is still writing, close fabr's read end of
            * the producer's stdout so the producer's next write fails, rather than
