@@ -127,6 +127,21 @@ export function dependencyRequirement(name: string, spec: string): Requirement {
   };
 }
 
+/**
+ * One dependency-block entry stating `requirement` — the inverse of
+ * {@link dependencyRequirement}, and the only place a generated manifest writes
+ * a dependency. A requirement carrying a local alias is stated in npm's alias
+ * form (`"typescript-6": "npm:typescript@6.0.0-beta"`), because the entry name
+ * is what the shipped code imports: recording the package's own name would
+ * install it where nothing looks for it.
+ */
+export function requirementSpec(requirement: Requirement): { name: string; spec: string } {
+  const { pkg, constraint, alias } = requirement;
+  return alias === undefined || alias === pkg
+    ? { name: pkg, spec: constraint }
+    : { name: alias, spec: `${ALIAS_PREFIX}${pkg}@${constraint}` };
+}
+
 const ALIAS_PREFIX = "npm:";
 
 /** The peers a `peerDependenciesMeta` block marks `optional: true`. */
@@ -296,7 +311,8 @@ function packageDependencies(declared: (Requirement | undefined)[]): Map<string,
   const dependencies = new Map<string, string>();
   for (const req of declared) {
     if (req) {
-      dependencies.set(req.pkg, req.constraint);
+      const { name, spec } = requirementSpec(req);
+      dependencies.set(name, spec);
     }
   }
   return dependencies;
@@ -312,7 +328,8 @@ function peerDependenciesOf(providedDeclared: (Requirement | undefined)[]): Map<
   const peerDependencies = new Map<string, string>();
   for (const req of providedDeclared) {
     if (req) {
-      peerDependencies.set(req.pkg, req.constraint);
+      const { name, spec } = requirementSpec(req);
+      peerDependencies.set(name, spec);
     }
   }
   return peerDependencies;

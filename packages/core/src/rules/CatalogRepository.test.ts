@@ -93,14 +93,22 @@ describe("CatalogRepository.getRepositoryRef", () => {
 describe("CatalogRepository (through the model)", () => {
   /* The runnable record is format-level (launching is format convention). */
   const ran: string[] = [];
-  /** The test ecosystem: a versionless grammar (a whole written name IS the
-   * package, implicitly at 1.0.0) over semver — the catalog's own aliasing is
-   * what these tests exercise, not version syntax. */
+  /** The test ecosystem: a near-versionless grammar over semver — a written
+   * name IS the package, implicitly at 1.0.0, with an optional `:version` tail
+   * for the tests that need two versions of one package. Read off the name's
+   * base form, since the facets (a `-> alias` rename) say what to do *about*
+   * the reference and name no part of the package. */
   const CAT_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
     ...SEMVER,
     resolutionTag: "cattest:resolve:1",
     splitReference: (name: Name) => ({ requirement: name }),
-    parseRequirement: (name: Name) => ({ pkg: name.toString(), constraint: "1.0.0" }),
+    parseRequirement: (name: Name) => {
+      const written = name.toBaseString();
+      const colon = written.lastIndexOf(":");
+      return colon === -1
+        ? { pkg: written, constraint: "1.0.0" }
+        : { pkg: written.substring(0, colon), constraint: written.substring(colon + 1) };
+    },
     parsePublishCoordinate: () => {
       throw new Error("not used");
     },
@@ -166,23 +174,46 @@ describe("CatalogRepository (through the model)", () => {
 
     public fetch(pkg: string, version: SemverVersion): Computable<PackageFileSet> {
       this.materialized.push(pkg);
-      return Computable.resolve(new PackageFileSet(new Map([[`${pkg}/data.txt`, MemoryFile.from(pkg)]]), pkg, versionToString(version)));
+      return Computable.resolve(new PackageFileSet(new Map([[`${pkg}/data.txt`, contentOf(pkg)]]), pkg, versionToString(version)));
     }
+  }
+
+  /* One fixture file per package, shared by every version of it: the deps rule
+   * below unions the delivered sets flat (a real consumer mounts each package
+   * apart), so two versions of one package must carry the same file identity to
+   * union — these tests are about what a delivery is NAMED, not about content. */
+  const contents = new Map<string, MemoryFile>();
+  function contentOf(pkg: string): MemoryFile {
+    let file = contents.get(pkg);
+    if (!file) {
+      file = MemoryFile.from(pkg);
+      contents.set(pkg, file);
+    }
+    return file;
   }
 
   let lastDeps: FileSet | undefined;
   /* The delivered sets before the union, for a test that cares about the
    * identity a delivery carries rather than its content. */
   let lastDepSets: FileSet[] = [];
+  /* What a manifest would record of those deps (collectDeclaredRequirements —
+   * the declaration, not what resolution pinned). */
+  let lastDeclared: (Requirement | undefined)[] = [];
   const depsRule: RuleRegistration = {
     type: "test_deps",
     constraints: {},
     evaluate: (context: TargetContext) =>
-      context.getFileSetProperties(["deps"]).then(({ deps }) => {
-        lastDepSets = deps;
-        lastDeps = FileSet.unionAll(...deps);
-        return EMPTY_FILESET;
-      }),
+      context.getFileProperty("deps").then(sources =>
+        Computable.forAll(
+          [context.collectDeclaredRequirements(sources), context.getFileSetProperties(["deps"])],
+          (declared, { deps }) => {
+            lastDeclared = declared;
+            lastDepSets = deps;
+            lastDeps = FileSet.unionAll(...deps);
+            return EMPTY_FILESET;
+          }
+        )
+      ),
   };
   let lastTool: FileSet | undefined;
   const runRule: RuleRegistration = {
@@ -303,9 +334,56 @@ describe("CatalogRepository (through the model)", () => {
     /* Only the identity is the rename's: the content is the pinned member's,
      * and the member was resolved and fetched under its own name. */
     expect(await delivered.readFile("foo/data.txt")).to.equal("foo");
+    /* A rename at the USE site is what this requirer knows it by, so it — not
+     * the member's own address — is what a generated manifest would record. */
+    expect(lastDeclared).to.deep.equal([{ pkg: "foo", constraint: "1.0.0", alias: "renamed" }]);
     const repo = backings.get("@backing")!;
     expect(repo.requested).to.deep.equal(["foo"]);
     expect(repo.materialized).to.deep.equal(["foo"]);
+  });
+
+  it("pins two versions of one package side by side, each addressed by its written alias", async () => {
+    /* The address is what must be unique in a catalog, not the package behind
+     * it: an entry written with a rename is keyed — and delivered — under that
+     * alias, so a second entry for the same package is an ordinary member
+     * rather than a same-name conflict. */
+    const model = build(
+      "package_repo @backing { }\n" +
+        "catalog @cat { deps = @backing:foo:1.0.0 @backing:foo:2.0.0 -> foo2; }\n" +
+        "test_deps a { deps = @cat:foo @cat:foo2; }\n"
+    );
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    const [one, two] = lastDepSets as PackageFileSet[];
+    /* Each alias delivered its own pinned version, named as it is addressed —
+     * so a consumer can mount both. */
+    expect([one.packageName, one.version]).to.deep.equal(["foo", "1.0.0"]);
+    expect([two.packageName, two.version]).to.deep.equal(["foo2", "2.0.0"]);
+    /* One joint resolution over both entries, and each version fetched under
+     * the package's own name: only the address is the alias's. */
+    expect(backings.get("@backing")!.materialized).to.deep.equal(["foo", "foo"]);
+    /* And a manifest generated for the consumer records each dep under the name
+     * the consumer's own code imports it by — the address, with the package it
+     * stands for carried as the alias. */
+    expect(lastDeclared).to.deep.equal([
+      { pkg: "foo", constraint: "1.0.0" },
+      { pkg: "foo", constraint: "2.0.0", alias: "foo2" },
+    ]);
+  });
+
+  it("reports two entries claiming one ALIAS as a conflict (the address, not the package)", async () => {
+    const model = build(
+      "package_repo @backing { }\n" +
+        "catalog @cat { deps = @backing:foo -> shared @backing:bar -> shared; }\n" +
+        "test_deps a { deps = @cat:shared; }\n"
+    );
+    try {
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      expect.fail("expected the duplicate alias to conflict");
+    } catch (err) {
+      const conflict = findCause(err, ConflictError);
+      expect(conflict, "a ConflictError in the cause chain").to.not.be.undefined;
+      expect(conflict!.key).to.equal("shared");
+    }
   });
 
   it("delivers a member as a runnable under run, delegating to its source (no re-resolution)", async () => {

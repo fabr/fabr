@@ -40,17 +40,20 @@ import { attachHelp, ConflictError, IConflictSource, RequirementResolutionError,
 import { Name } from "../core/Name";
 import { TargetContext } from "../model/BuildContext";
 import { BUILD_OPERATION, BUILD_OVERRIDE } from "../model/Constraints";
-import { declaredRequirementFrom, materializePackages, resolvePackages, runnableFrom } from "../resolver/PackageResolver";
+import { aliasedAs, declaredRequirementFrom, materializePackages, resolvePackages, runnableFrom } from "../resolver/PackageResolver";
 import { RepositoryRegistration } from "./Types";
 
 /**
  * A **catalog** is an explicit, named, opt-in shared collection point: it pins a
  * fixed set of requirements (its `deps` property), resolves them **jointly and
  * once** — the single minimal-version-selection over all of the catalog's roots —
- * and exposes each resolved root by its package name. A reference `@cat:pkg`
- * therefore delivers an *already-resolved* package (carrying its co-resolved
- * closure), so every consumer gets the same versions and does no resolution of
- * its own.
+ * and exposes each resolved root by the name it is delivered as — its package
+ * name, or the alias a written rename gives it (`@npm:typescript:6.0.0-beta ->
+ * typescript-6`), which is what lets two versions of one package sit side by
+ * side in a catalog: it is the address that must be unique, not the package
+ * behind it. A reference `@cat:pkg` therefore delivers an *already-resolved*
+ * package (carrying its co-resolved closure), so every consumer gets the same
+ * versions and does no resolution of its own.
  *
  * Mechanically it is just a {@link Repository} whose read face answers from a
  * **table** rather than a registry: the joint resolution is the catalog's own
@@ -119,7 +122,7 @@ export class CatalogRepository implements Repository, RepositoryLookup {
    *  failure — like any repository not having a requirement — attributed to the
    *  reference that wrote it. */
   private memberOf(reference: RepositoryRef, table: Map<string, CatalogMember>): CatalogMember {
-    const alias = reference.name.getLiteralPrefix();
+    const alias = aliasOf(reference);
     const member = table.get(alias);
     if (!member) {
       throw new RequirementResolutionError(
@@ -149,7 +152,11 @@ export class CatalogRepository implements Repository, RepositoryLookup {
         if (base === undefined) {
           throw new Error(`internal: catalog member '${reference.name.toString()}' resolved to no package`);
         }
-        return member.reference.stampProvenance(base) as PackageFileSet;
+        /* Finished like any other delivery — provenance stamped, and a rename
+         * written on the ENTRY applied, so the member is named as the table
+         * keys it. It can be no FileSetRef: a projecting entry is refused at
+         * resolveDeps, so the reference carries no projections. */
+        return member.reference.deliveredAs(base) as PackageFileSet;
       })
       .catch(err => {
         throw new RequirementResolutionError([reference], toError(err));
@@ -172,9 +179,14 @@ export class CatalogRepository implements Repository, RepositoryLookup {
    * versionless (its version is assigned at publish), contributing `*`; an external
    * member delegates to its own source repository (which reads the declaration off
    * `@npm:pkg:1.2.3`), so the catalog parses no version syntax itself.
+   *
+   * The **address** is the name the requirer knows it by — a member pinned under
+   * an alias (`@dep:typescript-6`) is imported under that name — so it is
+   * recorded as the requirement's alias where it differs from the package's own
+   * name. (A rename written on `ref` itself outranks it, applied by the caller.)
    */
   public declaredRequirement(ref: RepositoryRef): Computable<Requirement | undefined> {
-    const name = ref.name.toString();
+    const name = aliasOf(ref);
     return this.pinned.then(table => {
       const member = table.get(name);
       if (!member) {
@@ -182,7 +194,9 @@ export class CatalogRepository implements Repository, RepositoryLookup {
       }
       return member.kind === "local"
         ? Computable.resolve<Requirement | undefined>({ pkg: name, constraint: member.pkg.version ?? "*" })
-        : declaredRequirementFrom(member.reference.source, member.reference);
+        : declaredRequirementFrom(member.reference.source, member.reference).then(requirement =>
+            requirement === undefined ? undefined : aliasedAs(requirement, name)
+          );
     });
   }
 
@@ -205,6 +219,15 @@ export class CatalogRepository implements Repository, RepositoryLookup {
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
     throw new Error(`a catalog is not a publish destination (cannot sync to '${name.toString()}')`);
   }
+}
+
+/** The member name a consumer's reference asks for: the literal up to a
+ * projection `:`, with the facets left off — a `-> ` written HERE renames what
+ * the catalog delivers (applied where every delivery is finished) and names no
+ * member. Every table lookup goes through this, so they cannot disagree about
+ * what a reference addresses. */
+function aliasOf(reference: RepositoryRef): string {
+  return reference.name.getLiteralPrefix();
 }
 
 /** The provenance + concrete detail attributing one catalog entry (for a
@@ -295,9 +318,11 @@ function resolveDeps(context: TargetContext): Computable<ResolvedPackageSet> {
 
 /**
  * Build the catalog's lookup table from its resolved-but-unfetched package set:
- * each repository's resolution names its roots (keyed without fetching), plus
- * any already-built local entries. Two entries claiming one package name from
- * different sources are a conflict; a non-package local entry is rejected.
+ * each repository's resolution names its roots as they will be delivered (keyed
+ * without fetching), plus any already-built local entries — whose rename, if
+ * written, was applied where they were referenced, so both kinds key by the
+ * name they answer to. Two entries claiming one name are a conflict; a
+ * non-package local entry is rejected.
  */
 function buildCatalog(catalogName: string, set: ResolvedPackageSet): Map<string, CatalogMember> {
   const table = new Map<string, CatalogMember>();

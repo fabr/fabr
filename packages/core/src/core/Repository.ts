@@ -35,11 +35,13 @@ import type { ITaskReport } from "../support/Execute";
 import { materializePackages, resolvePackages } from "../resolver/PackageResolver";
 
 /**
- * One resolved root of a {@link Resolution}: the input reference and the name
- * the repository resolved it to — the one thing a caller can read out of an
- * otherwise-opaque Resolution, so it can key/address entries (a catalog keys its
- * members by this) *without* fetching them. `name` is whatever identity the
- * repository addresses entries by (npm: the package name).
+ * One resolved root of a {@link Resolution}: the input reference and the name it
+ * is *delivered* as — the one thing a caller can read out of an otherwise-opaque
+ * Resolution, so it can key/address entries (a catalog keys its members by this)
+ * *without* fetching them. `name` is the identity the repository addresses
+ * entries by (npm: the package name), or — when the reference writes a rename —
+ * the name that rename gives the delivery (see {@link renamedDelivery}), so an
+ * addressing key and the package it addresses can never disagree.
  */
 export interface ResolvedRoot {
   readonly reference: RepositoryRef;

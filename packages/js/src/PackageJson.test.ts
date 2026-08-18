@@ -19,7 +19,7 @@
 
 import { expect } from "chai";
 import { FileSet, PropertyMap, Requirement } from "@fabr-build/core";
-import { createPackageJson, dependencyBlock, dependencyRequirement, optionalPeers } from "./PackageJson";
+import { createPackageJson, dependencyBlock, dependencyRequirement, optionalPeers, requirementSpec } from "./PackageJson";
 import { JSTarget } from "./JSPackage";
 
 const JS_TARGET: JSTarget = { version: "esnext", module: "commonjs", environment: "node" };
@@ -100,6 +100,19 @@ describe("createPackageJson", () => {
      * user-chosen name, so the accumulator must not treat it as one. */
     expect(Object.getOwnPropertyDescriptor(dependencies, "__proto__")?.value).to.equal("^1.0.0");
     expect(JSON.stringify(dependencies)).to.contain('"__proto__":"^1.0.0"');
+  });
+
+  it("emits an aliased requirement under the name the shipped code imports", async () => {
+    /* Two versions of one package, told apart by a written rename: the manifest
+     * has to state both, each keyed by the name our own code requires. */
+    const pkg = await generate(undefined, new Map(), [
+      { pkg: "typescript", constraint: "5.4.5" },
+      { pkg: "typescript", constraint: "6.0.0-beta", alias: "typescript-6" },
+    ]);
+    expect(pkg.dependencies).to.deep.equal({
+      typescript: "5.4.5",
+      "typescript-6": "npm:typescript@6.0.0-beta",
+    });
   });
 
   it("emits provided_deps requirements as peerDependencies, omitting the block when empty", async () => {
@@ -190,6 +203,38 @@ describe("dependencyRequirement", () => {
     /* Rejected downstream as the unparseable constraint it is, rather than
      * mistaken for something fabr can resolve. */
     expect(dependencyRequirement("local", "file:../local")).to.deep.equal({ pkg: "local", constraint: "file:../local" });
+  });
+});
+
+describe("requirementSpec", () => {
+  it("states an ordinary requirement under the package's own name", () => {
+    expect(requirementSpec({ pkg: "lodash", constraint: "^4.0.0" })).to.deep.equal({ name: "lodash", spec: "^4.0.0" });
+  });
+
+  it("states an aliased requirement in npm's alias form, keyed by the local name", () => {
+    /* The entry name is what the shipped code imports — recording `typescript`
+     * would install the package where nothing looks for it. */
+    expect(requirementSpec({ pkg: "typescript", constraint: "6.0.0-beta", alias: "typescript-6" })).to.deep.equal({
+      name: "typescript-6",
+      spec: "npm:typescript@6.0.0-beta",
+    });
+  });
+
+  it("round-trips whatever dependencyRequirement reads", () => {
+    for (const [name, spec] of [
+      ["lodash", "^4.0.0"],
+      ["wrap-ansi-cjs", "npm:wrap-ansi@^7.0.0"],
+      ["types", "npm:@types/node@^20.1.0"],
+    ]) {
+      expect(requirementSpec(dependencyRequirement(name, spec))).to.deep.equal({ name, spec });
+    }
+  });
+
+  it("states an alias to the package's own name plainly (it renames nothing)", () => {
+    expect(requirementSpec({ pkg: "wrap-ansi", constraint: "^7.0.0", alias: "wrap-ansi" })).to.deep.equal({
+      name: "wrap-ansi",
+      spec: "^7.0.0",
+    });
   });
 });
 

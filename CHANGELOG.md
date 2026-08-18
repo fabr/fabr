@@ -8,6 +8,7 @@ version number.
 - Add xz archive support.
 - Add positional backrefs in rename templates.
 - General optimizations, especially for cache-hits.
+- Fix package aliases not working in catalogs.
 
 @fabr-build/cli:
 - Live progress display on terminal with progress bars and test status (suppressed with -q)

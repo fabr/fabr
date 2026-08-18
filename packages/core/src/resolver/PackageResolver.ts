@@ -95,10 +95,26 @@ export function declaredRequirementOf<V, C>(format: PackageFormat<V, C>, ref: Re
  * repository with nothing to record implements neither, which IS the answer.
  */
 export function declaredRequirementFrom(source: RefSource, ref: RepositoryRef): Computable<Requirement | undefined> {
-  if (isRepositoryReader(source)) {
-    return declaredRequirementOf(source.format, ref);
-  }
-  return source.declaredRequirement?.(ref) ?? Computable.resolve(undefined);
+  const declared = isRepositoryReader(source)
+    ? declaredRequirementOf(source.format, ref)
+    : (source.declaredRequirement?.(ref) ?? Computable.resolve(undefined));
+  /* A rename written HERE is the name this requirer knows the package by (its
+   * own code imports it under that name), so it is recorded as the requirement's
+   * alias — the fact belongs to the written reference, which is why it is read
+   * here rather than inside a format's identity parse. A source answering for
+   * itself (a catalog, whose member address is a name of its own) has already
+   * said what it is known by; only a rename at the use site outranks that. */
+  return declared.then(requirement => (requirement === undefined ? undefined : aliasedAs(requirement, ref.name.getRenameTo()?.toString())));
+}
+
+/**
+ * A declared requirement as known by `name` — the local name its requirer
+ * imports it under, recorded as {@link Requirement.alias} so a generated
+ * manifest can state it (npm: `"typescript-6": "npm:typescript@6.0.0-beta"`).
+ * A name matching the package's own renames nothing, and neither does none.
+ */
+export function aliasedAs(requirement: Requirement, name: string | undefined): Requirement {
+  return name === undefined || name === requirement.pkg ? requirement : { ...requirement, alias: name };
 }
 
 /**
@@ -197,8 +213,16 @@ export function resolvePackages<V, C>(
         new Error(message)
       );
     });
+    /* A root is named as it is DELIVERED — the written rename when the reference
+     * carries one, the resolved package name otherwise — so a caller addressing
+     * the resolution's roots (a catalog keying its members) and the delivery
+     * itself (RepositoryRef.deliveredAs) agree by construction. Only the
+     * addressing name is renamed: what is resolved and fetched is the package
+     * the requirement names. */
     const roots: ResolvedRoot[] = references.flatMap((reference, index) =>
-      requirements[index].override === "alternate" ? [] : [{ reference, name: requirements[index].pkg }]
+      requirements[index].override === "alternate"
+        ? []
+        : [{ reference, name: reference.name.getRenameTo()?.toString() ?? requirements[index].pkg }]
     );
     /* Canonicalize the roots so the resolution (and its memo key, and the
      * reachableFrom indices) are independent of reference order. Alternates
