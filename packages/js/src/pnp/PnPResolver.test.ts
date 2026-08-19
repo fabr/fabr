@@ -18,8 +18,11 @@
  */
 
 import { expect } from "chai";
+import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import type { IPnpPackageInfo, IPnpSerializedState } from "../PnPManifest";
+import type { ExportsValue } from "./PackageExports";
 import { PnpResolver, splitSpecifier, typesPackageName } from "./PnPResolver";
 
 const ROOT = path.resolve("/workspace");
@@ -88,7 +91,8 @@ describe("PnpResolver", () => {
         ["postprocessing", "ref-pp", { postprocessing: "ref-pp", three: "ref-three" } ],
         ["three", "ref-three", { three: "ref-three" }],
       ]),
-      ROOT
+      ROOT,
+      []
     );
     const issuer = path.join(ROOT, ".fabr-tree/ref-pp/index.d.ts");
     expect(resolver.locationOf("three", issuer)).to.equal(path.join(ROOT, ".fabr-tree/ref-three"));
@@ -108,7 +112,8 @@ describe("PnpResolver", () => {
         { "@types/three": "ref-types" },
         { "@types/three": "ref-types" }
       ),
-      ROOT
+      ROOT,
+      []
     );
     const issuer = path.join(ROOT, ".fabr-tree/ref-pp/index.d.ts");
     expect(resolver.locationOf("@types/three", issuer)).to.equal(path.join(ROOT, ".fabr-tree/ref-types"));
@@ -116,13 +121,14 @@ describe("PnpResolver", () => {
      * difference. */
     const strict = new PnpResolver(
       manifest([["postprocessing", "ref-pp", { postprocessing: "ref-pp" }]], {}, {}),
-      ROOT
+      ROOT,
+      []
     );
     expect(strict.locationOf("@types/three", issuer)).to.equal(undefined);
   });
 
   it("treats a file under no package location as the compilation itself", () => {
-    const resolver = new PnpResolver(manifest([["left-pad", "ref-lp", {}]], {}, { "left-pad": "ref-lp" }), ROOT);
+    const resolver = new PnpResolver(manifest([["left-pad", "ref-lp", {}]], {}, { "left-pad": "ref-lp" }), ROOT, []);
     expect(resolver.locationOf("left-pad", path.join(ROOT, "src/index.ts"))).to.equal(path.join(ROOT, ".fabr-tree/ref-lp"));
   });
 
@@ -133,7 +139,7 @@ describe("PnpResolver", () => {
       "react",
       [["ref-react", { packageLocation: "./.fabr-tree/ref-react/", packageDependencies: [], linkType: "HARD" }]],
     ]);
-    const resolver = new PnpResolver(state, ROOT);
+    const resolver = new PnpResolver(state, ROOT, []);
     expect(resolver.locationOf("react", path.join(ROOT, ".fabr-tree/ref-plugin/index.js"))).to.equal(
       path.join(ROOT, ".fabr-tree/ref-react")
     );
@@ -147,9 +153,112 @@ describe("PnpResolver", () => {
       ["stream-browserify", "ref-real", { "stream-browserify": "ref-real" }],
     ]);
     state.packageRegistryData[2][1][0][1].packageLocation = "./.fabr-tree/ref-alias/";
-    const resolver = new PnpResolver(state, ROOT);
+    const resolver = new PnpResolver(state, ROOT, []);
     const inside = path.join(ROOT, ".fabr-tree/ref-alias/index.js");
     expect(resolver.locationOf("stream", inside)).to.equal(path.join(ROOT, ".fabr-tree/ref-alias"));
     expect(resolver.locationOf("stream-browserify", inside)).to.equal(path.join(ROOT, ".fabr-tree/ref-alias"));
+  });
+});
+
+describe("PnpResolver, resolving a specifier in full", () => {
+  /** The conditions a compiler resolves under, which is the world these cases
+   * are written in. */
+  const CONDITIONS = ["types", "import", "node"];
+  let store: string;
+
+  beforeEach(() => {
+    store = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pnpexports-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(store, { recursive: true, force: true });
+  });
+
+  /** A package in the store under `reference`, carrying the manifest fields a
+   * case is about. */
+  function pkg(reference: string, json: { exports?: ExportsValue; imports?: ExportsValue } = {}): void {
+    fs.mkdirSync(path.join(store, reference), { recursive: true });
+    fs.writeFileSync(path.join(store, reference, "package.json"), JSON.stringify({ name: reference, version: "1.0.0", ...json }));
+  }
+
+  /** A resolver over `store`, with a row per package named and every name
+   * declared by the top level. */
+  function resolving(...names: Array<[string, string]>): PnpResolver {
+    const rows = names.map(([name, reference]): [string, string, Record<string, string>] => [name, reference, { [name]: reference }]);
+    const declared = Object.fromEntries(names);
+    const state = manifest(rows, declared, declared);
+    /* Locations relative to the store, which is where the fixture writes the
+     * manifests this reads. */
+    for (const [, references] of state.packageRegistryData) {
+      for (const [, info] of references) {
+        info.packageLocation = info.packageLocation.replace("./.fabr-tree/", "./");
+      }
+    }
+    return new PnpResolver(state, store, CONDITIONS);
+  }
+
+  const from = (): string => path.join(store, "src/index.ts");
+
+  it("hands back the directory for a package that publishes no exports", () => {
+    pkg("ref-plain");
+    const resolver = resolving(["plain", "ref-plain"]);
+    expect(resolver.resolveSpecifier("plain", from())).to.equal(path.join(store, "ref-plain"));
+    /* And a subpath appended to it, for the caller to probe — which is all node
+     * ever did before `exports` existed. */
+    expect(resolver.resolveSpecifier("plain/deep/thing", from())).to.equal(path.join(store, "ref-plain/deep/thing"));
+  });
+
+  it("answers with the file a package's exports map publishes", () => {
+    pkg("ref-modern", {
+      exports: { ".": { types: "./dist/index.d.ts", default: "./dist/index.js" }, "./client": "./dist/client/index.js" },
+    });
+    const resolver = resolving(["modern", "ref-modern"]);
+    expect(resolver.resolveSpecifier("modern", from())).to.equal(path.join(store, "ref-modern/dist/index.d.ts"));
+    expect(resolver.resolveSpecifier("modern/client", from())).to.equal(path.join(store, "ref-modern/dist/client/index.js"));
+  });
+
+  it("refuses a subpath the package does not publish, rather than probing for it", () => {
+    /* The difference an exports map makes: the file is right there, and has no
+     * name. Falling back to the path would resolve something the package's own
+     * consumers cannot resolve. */
+    pkg("ref-modern", { exports: { ".": "./dist/index.js" } });
+    const resolver = resolving(["modern", "ref-modern"]);
+    expect(resolver.resolveSpecifier("modern/dist/index.js", from())).to.equal(undefined);
+    expect(resolver.resolveSpecifier("modern/internal", from())).to.equal(undefined);
+  });
+
+  it("answers a private #specifier from the map of the package that wrote it", () => {
+    pkg("ref-private", { imports: { "#state": "./src/state.js", "#helper": "helper/deep" } });
+    pkg("ref-helper", { exports: { "./deep": "./lib/deep.js" } });
+    const resolver = resolving(["private", "ref-private"], ["helper", "ref-helper"]);
+    const inside = path.join(store, "ref-private/src/app.js");
+    expect(resolver.resolveSpecifier("#state", inside)).to.equal(path.join(store, "ref-private/src/state.js"));
+    /* A redirection to another package resolves from the same issuer, so it
+     * sees exactly what the package that wrote it may see. */
+    expect(resolver.resolveSpecifier("#helper", inside)).to.equal(path.join(store, "ref-helper/lib/deep.js"));
+    /* And a `#` name means nothing outside the package that declared it. */
+    expect(resolver.resolveSpecifier("#state", from())).to.equal(undefined);
+  });
+
+  it("names a file by the subpath its package publishes, not by where it sits", () => {
+    pkg("ref-modern", { exports: { ".": "./dist/index.d.ts", "./client": "./dist/client/index.d.ts" } });
+    const resolver = resolving(["modern", "ref-modern"]);
+    expect(resolver.packageOf(path.join(store, "ref-modern/dist/client/index.d.ts"))).to.deep.equal({
+      name: "modern",
+      subpath: "client",
+    });
+    expect(resolver.packageOf(path.join(store, "ref-modern/dist/index.d.ts"))).to.deep.equal({ name: "modern", subpath: "" });
+    /* A file with no published name keeps its path: unnameable either way, and
+     * the path at least says which file it was. */
+    expect(resolver.packageOf(path.join(store, "ref-modern/dist/internal.d.ts"))).to.deep.equal({
+      name: "modern",
+      subpath: "dist/internal.d.ts",
+    });
+  });
+
+  it("reports which package an invalid exports map belongs to", () => {
+    pkg("ref-broken", { exports: { ".": "./index.js", import: "./esm.js" } });
+    const resolver = resolving(["broken", "ref-broken"]);
+    expect(() => resolver.resolveSpecifier("broken", from())).to.throw(/ref-broken.package.json: .*cannot be mixed/);
   });
 });

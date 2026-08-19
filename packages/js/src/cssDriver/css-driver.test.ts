@@ -20,11 +20,13 @@
  * safe: sass is required lazily inside main(), not at load. */
 
 import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { IPnpPackageInfo, IPnpSerializedState } from "../PnPManifest";
 import { PnpResolver } from "../pnp/PnPResolver";
-import { isPartial, isSass, packageImporter, plainCssName, sassFailure } from "./css-driver";
+import { isPartial, isSass, packageImporter, plainCssName, SASS_CONDITIONS, sassFailure } from "./css-driver";
 
 describe("isSass", () => {
   it("matches .scss/.sass including modules", () => {
@@ -117,7 +119,7 @@ describe("packageImporter", () => {
       ["@shorthand/fonts", [entry("ref-fonts", {})]],
     ],
   };
-  const importer = packageImporter(new PnpResolver(state, root));
+  const importer = packageImporter(new PnpResolver(state, root, SASS_CONDITIONS));
   /** A load written in `file`, as Sass reports it. */
   const load = (url: string, file: string): string | null => {
     const found = importer.findFileUrl(url, { containingUrl: pathToFileURL(path.resolve(root, file)), fromImport: false });
@@ -170,5 +172,73 @@ describe("packageImporter", () => {
       () => load("~@shorthand/design-system/colours", "src/theme.scss"),
       /uses the webpack '~' prefix.*write the package name directly \('@shorthand\/design-system\/colours'\)/
     );
+  });
+});
+
+describe("packageImporter, over packages that publish an exports map", () => {
+  let store: string;
+
+  beforeEach(() => {
+    store = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-cssexports-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(store, { recursive: true, force: true });
+  });
+
+  /** A package in the store, with the manifest the case is about. */
+  function pkg(reference: string, manifest: Record<string, unknown>): void {
+    fs.mkdirSync(path.join(store, reference), { recursive: true });
+    fs.writeFileSync(path.join(store, reference, "package.json"), JSON.stringify({ name: reference, version: "1.0.0", ...manifest }));
+  }
+
+  /** An importer over the store, with a row for each name given. */
+  function importing(...names: Array<[string, string]>): (url: string, file: string) => string | null {
+    const declared = Object.entries(Object.fromEntries(names));
+    const state: IPnpSerializedState = {
+      __info: [],
+      dependencyTreeRoots: [],
+      enableTopLevelFallback: true,
+      ignorePatternData: null,
+      fallbackExclusionList: [],
+      fallbackPool: declared,
+      packageRegistryData: [
+        [null, [[null, { packageLocation: "./", packageDependencies: declared, linkType: "SOFT" }]]],
+        ...names.map(([name, reference]): [string, Array<[string, IPnpPackageInfo]>] => [
+          name,
+          [[reference, { packageLocation: `./${reference}/`, packageDependencies: declared, linkType: "HARD" }]],
+        ]),
+      ],
+    };
+    const importer = packageImporter(new PnpResolver(state, store, SASS_CONDITIONS));
+    return (url, file) => {
+      const found = importer.findFileUrl(url, { containingUrl: pathToFileURL(path.resolve(store, file)), fromImport: false });
+      return found === null ? null : fileURLToPath(found);
+    };
+  }
+
+  it("takes the sass face of a package that publishes several", () => {
+    /* A design system shipping both compiled CSS and its Sass sources names them
+     * apart by condition — and a stylesheet wants the sources, or `@use` has
+     * nothing to work with. */
+    pkg("ref-ds", {
+      exports: { "./colours": { sass: "./src/_colours.scss", style: "./dist/colours.css", default: "./dist/colours.css" } },
+    });
+    const load = importing(["@shorthand/design-system", "ref-ds"]);
+    assert.equal(load("@shorthand/design-system/colours", "theme.scss"), path.join(store, "ref-ds/src/_colours.scss"));
+  });
+
+  it("keeps handing back the directory for a package that publishes no map", () => {
+    /* Nothing to say, so nothing said: sass's partial/index/extension search is
+     * what resolves it, exactly as before. */
+    pkg("ref-plain", {});
+    const load = importing(["plain", "ref-plain"]);
+    assert.equal(load("plain/colours", "theme.scss"), path.join(store, "ref-plain/colours"));
+  });
+
+  it("declines a load a package's map does not publish", () => {
+    pkg("ref-ds", { exports: { "./colours": "./src/_colours.scss" } });
+    const load = importing(["@shorthand/design-system", "ref-ds"]);
+    assert.equal(load("@shorthand/design-system/internal", "theme.scss"), null);
   });
 });

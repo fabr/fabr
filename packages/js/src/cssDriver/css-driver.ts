@@ -62,8 +62,9 @@ interface ISassCanonicalizeContext {
 /**
  * Sass's *file* importer: it answers with a location and Sass does the rest —
  * partials (`_x.scss`), index files, extensions, and the read itself. That is
- * exactly the seam a package table needs, since the table's answer is a
- * DIRECTORY and everything below it is ordinary Sass file resolution.
+ * the seam a package table needs for a package that publishes no `exports`,
+ * whose answer is a DIRECTORY with ordinary Sass file resolution below it; a
+ * package that publishes a map answers with the file, which Sass takes as given.
  */
 interface ISassFileImporter {
   findFileUrl(url: string, context: ISassCanonicalizeContext): URL | null;
@@ -83,9 +84,10 @@ interface ISass {
  * answer, so what arrives here is either a package reference
  * (`@shorthand/design-system/colours`) or a bare name meant for a load path
  * (`variables`, resolved next to the importing file or under a loadPath). The
- * first is answered from the table — the package part to its location, the rest
- * appended for Sass to finish — and the second is declined, which leaves Sass's
- * own machinery in charge of it.
+ * first is answered from the table — the package part to its location, and the
+ * rest by the package's own `exports` map where it has one, else appended for
+ * Sass to finish — and the second is declined, which leaves Sass's own
+ * machinery in charge of it.
  *
  * A webpack-style `~pkg` prefix is refused rather than silently stripped: it is
  * a bundler convention, not a Sass one, and quietly accepting it here would
@@ -99,21 +101,31 @@ export function packageImporter(resolver: PnpResolver): ISassFileImporter {
           `css: '${url}' uses the webpack '~' prefix, which Sass does not define — write the package name directly ('${url.slice(1)}')`
         );
       }
-      const split = splitSpecifier(url);
-      if (split === undefined || context.containingUrl === null) {
+      if (splitSpecifier(url) === undefined || context.containingUrl === null) {
         return null;
       }
-      const location = resolver.locationOf(split.name, context.containingUrl.pathname);
-      if (location === undefined) {
+      const target = resolver.resolveSpecifier(url, context.containingUrl.pathname);
+      if (target === undefined) {
         return null;
       }
-      /* A directory, deliberately: Sass appends the partial/index/extension
-       * candidates to it, so `@use "pkg/colours"` finds `_colours.scss` exactly
-       * as it would under a load path. */
-      return pathToFileURL(split.subpath ? path.join(location, split.subpath) : location);
+      /* Usually a DIRECTORY, deliberately: Sass appends the partial/index/
+       * extension candidates to it, so `@use "pkg/colours"` finds
+       * `_colours.scss` exactly as it would under a load path. A package that
+       * publishes an `exports` map answers with the file itself, which Sass
+       * takes as given — the package named it, so there is nothing to probe. */
+      return pathToFileURL(target);
     },
   };
 }
+
+/**
+ * The world a stylesheet compilation resolves in. `sass` is the ecosystem's
+ * condition for "the Sass source, not the compiled CSS"; `style` is the older
+ * spelling, which packages predating `sass` still publish under. Neither is
+ * ordered here — the package's own map decides which of its faces wins when it
+ * offers both.
+ */
+export const SASS_CONDITIONS = ["sass", "style"];
 
 /** Whether a source is Sass (the ones this driver compiles; anything else is
  * already plain CSS and passes through). */
@@ -196,7 +208,7 @@ export async function main(argv: string[]): Promise<void> {
   /* Where the dependencies are: a table beside the sources (nothing mounted),
    * or — with no manifest — the load paths fabr staged, which is the classic
    * layout and needs no importer at all. */
-  const resolver = PnpResolver.load(process.cwd());
+  const resolver = PnpResolver.load(process.cwd(), SASS_CONDITIONS);
   const importers = resolver ? [packageImporter(resolver)] : undefined;
   const compiler = await sass.initAsyncCompiler();
   try {

@@ -47,8 +47,9 @@ import * as path from "node:path";
 import type { IBundleOptions } from "../JSBundle";
 
 /* Minimal structural typing for the slice of esbuild's API we use — esbuild is
- * not a fabr dependency (it is fetched at build time), so its own types are not
- * available here; these mirror the documented shapes. */
+ * fetched at build time rather than depended on, so its own types are not
+ * available to compile this file (it is a test dependency, which is a different
+ * thing); these mirror the documented shapes. */
 interface IMessage {
   text: string;
 }
@@ -298,6 +299,12 @@ function toEsbuildOptions(options: IBundleOptions, unresolved: Set<string>): Rec
   return {
     entryPoints: options.entries,
     outdir: options.outdir,
+    /* Stated rather than inherited: esbuild's service captures a working
+     * directory when it STARTS, which for a driver invoked as its own process
+     * is the same thing — but it is the step's cwd that the options manifest,
+     * the entry paths and the outdir are all relative to, so the build says so
+     * itself instead of depending on when the service happened to come up. */
+    absWorkingDir: process.cwd(),
     bundle: true,
     write: true,
     platform: options.platform,
@@ -310,6 +317,13 @@ function toEsbuildOptions(options: IBundleOptions, unresolved: Set<string>): Rec
     /* css-modules: `.module.css` scopes its identifiers and exports the map to
      * the importing JS; every other stylesheet keeps global names. */
     loader: { ".module.css": "local-css", ".css": "global-css" },
+    /* ADDED to esbuild's own conditions, not replacing them. `module-sync`
+     * marks an ESM entry that may be loaded synchronously — node 22 and later
+     * require() exactly these, and fabr's compiler resolves them for that
+     * reason, so a bundler that did not know the condition would refuse a
+     * package that had just typechecked. Bundling one costs nothing: esbuild
+     * consumes ESM whatever format it is emitting. */
+    conditions: ["module-sync"],
     ...(options.define ? { define: options.define } : {}),
     /* Load-bearing under a manifest, and only there: esbuild finds the manifest
      * by walking UP from the importing file, and fabr's packages live in the

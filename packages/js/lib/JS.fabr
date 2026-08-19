@@ -445,7 +445,7 @@ js_script @fabr-build/js-tools/bundle-driver {
 # lowering, driven by the rule's options manifest.
 js_script @fabr-build/js-tools/css-driver {
     entry = ../cssDriver/css-driver.js;
-    deps = ${SASS} ../pnp/PnPResolver.js;
+    deps = ${SASS} ../pnp/PnPResolver.js ../pnp/PackageExports.js;
 }
 
 # The TypeScript driver `js_compile` runs (see TSC_DRIVER): drives the compiler
@@ -458,7 +458,7 @@ js_script @fabr-build/js-tools/css-driver {
 # filesystem like the bin does — so it is a drop-in for either layout.
 js_script @fabr-build/js-tools/tsc-driver {
     entry = ../tscDriver/tsc-driver.js;
-    deps = ../pnp/PnPResolver.js ${TYPESCRIPT};
+    deps = ../pnp/PnPResolver.js ../pnp/PackageExports.js ${TYPESCRIPT};
 }
 
 # Fabr's own test runner ('fabr test' / js_test / js_package tests): wraps

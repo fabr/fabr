@@ -96,6 +96,18 @@ interface TsConfig {
 }
 
 describe("makeTsConfig", () => {
+  it("states no moduleResolution, which only the driver can choose", () => {
+    /* The right value depends on the compiler version — before TypeScript 6 a
+     * CommonJS emit cannot pair with `bundler`, and from 6 `node10` is an
+     * error — and the version is known only to the driver that loads it.
+     * Re-stating one here compiles today and fails on whichever release the
+     * project pins tomorrow. */
+    for (const target of ["es2018-commonjs", "es2020-esm", "es2020-esm-browser"]) {
+      const cfg = makeTsConfig(parseJSTarget(target)) as unknown as TsConfig;
+      expect(cfg.compilerOptions, target).to.not.have.property("moduleResolution");
+    }
+  });
+
   it("includes .tsx so a .tsx source isn't silently ignored", () => {
     const cfg = makeTsConfig(parseJSTarget("es2018-commonjs")) as unknown as TsConfig;
     /* `.tsx` must be in `include` — a `.ts`-only glob never matches it, so a .tsx

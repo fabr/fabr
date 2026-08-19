@@ -579,13 +579,18 @@ describe("assembleNodeModules", () => {
   });
 });
 
-/** A package whose package.json declares (or not) a `./jsx-runtime` export. */
+/** A package that provides (or not) the JSX runtime — the map publishing the
+ * subpath AND the file it names, since providing it takes both. */
 function jsxPkg(name: string, providesJsxRuntime: boolean): PackageFileSet {
   const json = JSON.stringify({
     name,
     exports: providesJsxRuntime ? { ".": "./index.js", "./jsx-runtime": "./jsx-runtime.js" } : { ".": "./index.js" },
   });
-  return new PackageFileSet(new Map<string, IFile>([["package.json", MemoryFile.from(json)]]), name);
+  const files: Array<[string, IFile]> = [["package.json", MemoryFile.from(json)], ["index.js", MemoryFile.from("")]];
+  if (providesJsxRuntime) {
+    files.push(["jsx-runtime.js", MemoryFile.from("")]);
+  }
+  return new PackageFileSet(new Map<string, IFile>(files), name);
 }
 
 function settle<T>(c: Computable<T>): Promise<T> {
@@ -601,21 +606,57 @@ async function rejectionMessage<T>(c: Computable<T>): Promise<string> {
 }
 
 describe("hasPackageExport", () => {
-  const manifest = (content: string): IFile => MemoryFile.from(content);
+  /** A package with the given manifest, holding `files` (empty content — only
+   * their presence is ever asked about). */
+  const pkg = (manifest: string, ...files: string[]): PackageFileSet =>
+    new PackageFileSet(
+      new Map<string, IFile>([
+        ["package.json", MemoryFile.from(manifest)],
+        ...files.map((name): [string, IFile] => [name, MemoryFile.from("")]),
+      ]),
+      "probe"
+    );
 
-  it("detects a declared subpath in the exports map", async () => {
-    const json = manifest(JSON.stringify({ exports: { ".": "./index.js", "./jsx-runtime": "./jsx-runtime.js" } }));
-    expect(await settle(hasPackageExport(json, "./jsx-runtime"))).to.equal(true);
-    expect(await settle(hasPackageExport(json, "./missing"))).to.equal(false);
+  it("detects a declared subpath whose file the package holds", async () => {
+    const react = pkg(JSON.stringify({ exports: { ".": "./index.js", "./jsx-runtime": "./jsx-runtime.js" } }), "jsx-runtime.js");
+    expect(await settle(hasPackageExport(react, "./jsx-runtime"))).to.equal(true);
+    expect(await settle(hasPackageExport(react, "./missing"))).to.equal(false);
+  });
+
+  it("resolves the subpath as a consumer would, not as a literal key", async () => {
+    /* A package that publishes the subpath through a pattern exposes it just as
+       much as one that names it outright — the consumer's import is identical. */
+    const patterned = pkg(JSON.stringify({ exports: { "./*": "./src/*.js" } }), "src/jsx-runtime.js");
+    expect(await settle(hasPackageExport(patterned, "./jsx-runtime"))).to.equal(true);
+    /* And a hole punched in that pattern closes it again. */
+    const blocked = pkg(JSON.stringify({ exports: { "./jsx-runtime": null, "./*": "./src/*.js" } }), "src/jsx-runtime.js");
+    expect(await settle(hasPackageExport(blocked, "./jsx-runtime"))).to.equal(false);
+  });
+
+  it("is not answered by a catch-all pattern that lands on nothing", async () => {
+    /* markdown-it's map, and the fortawesome icon packs'. A wildcard says a
+       subpath maps SOMEWHERE, not that anything is there — read as a capability
+       it would claim the package provides a JSX runtime, a JSON parser, and
+       whatever else one thought to ask for. It published 16 targets' worth of
+       "multiple JSX runtimes" before the file was looked for. */
+    const catchAll = pkg(JSON.stringify({ exports: { ".": "./index.js", "./*": { require: "./*", import: "./*" } } }), "index.js", "lib/token.js");
+    expect(await settle(hasPackageExport(catchAll, "./jsx-runtime"))).to.equal(false);
+    /* The same map still answers for what the package really holds. */
+    expect(await settle(hasPackageExport(catchAll, "./lib/token.js"))).to.equal(true);
+  });
+
+  it("answers no when the map publishes a file the package does not hold", async () => {
+    const missing = pkg(JSON.stringify({ exports: { "./jsx-runtime": "./jsx-runtime.js" } }));
+    expect(await settle(hasPackageExport(missing, "./jsx-runtime"))).to.equal(false);
   });
 
   it("answers no without an exports map, or for an unreadable manifest", async () => {
     /* A question *about a dependency*: a manifest fabr can't read exposes no
        subpath — whoever builds that dependency is the one to report it. */
-    expect(await settle(hasPackageExport(manifest(JSON.stringify({ main: "index.js" })), "./jsx-runtime"))).to.equal(false);
-    expect(await settle(hasPackageExport(manifest(JSON.stringify({ exports: "./index.js" })), "./jsx-runtime"))).to.equal(false);
-    expect(await settle(hasPackageExport(manifest("not json"), "./jsx-runtime"))).to.equal(false);
-    expect(await settle(hasPackageExport(manifest("[]"), "./jsx-runtime"))).to.equal(false);
+    expect(await settle(hasPackageExport(pkg(JSON.stringify({ main: "index.js" }), "jsx-runtime.js"), "./jsx-runtime"))).to.equal(false);
+    expect(await settle(hasPackageExport(pkg(JSON.stringify({ exports: "./index.js" }), "jsx-runtime.js"), "./jsx-runtime"))).to.equal(false);
+    expect(await settle(hasPackageExport(pkg("not json"), "./jsx-runtime"))).to.equal(false);
+    expect(await settle(hasPackageExport(pkg("[]"), "./jsx-runtime"))).to.equal(false);
   });
 });
 

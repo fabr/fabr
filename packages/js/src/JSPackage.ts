@@ -52,6 +52,7 @@ import {
   toJsonObject,
 } from "@fabr-build/core";
 import { compileCssSources } from "./CSSCompile";
+import { type ExportsValue, resolveExports } from "./pnp/PackageExports";
 
 export interface JSTarget {
   version: string;
@@ -116,27 +117,58 @@ export function moduleTypeFile(module: JSTarget["module"], extra: Record<string,
   return MemoryFile.from(JSON.stringify({ ...extra, type: module === "esm" ? "module" : "commonjs" }));
 }
 
-/** True iff a package's `package.json` declares the given `subpath` in its
- * `exports` map (e.g. `./jsx-runtime`). The general "does this package expose
- * subpath X" test that subpath-shaped capability signals build on. */
-export function hasPackageExport(manifest: IFile, subpath: string): Computable<boolean> {
+/** The conditions a capability probe asks under. Not any one consumer's world:
+ * the question is whether the package publishes the subpath at all, so the
+ * answer should not turn on which of its faces the eventual importer sees. */
+const PROBE_CONDITIONS = new Set(["types", "import", "require", "module-sync", "node", "browser"]);
+
+/**
+ * True iff a package PROVIDES the given subpath (`./jsx-runtime`): its `exports`
+ * map publishes a name for it, AND the file that name lands on is really in the
+ * package. The general "does this package expose subpath X" test that
+ * subpath-shaped capability signals build on.
+ *
+ * Both halves are needed and the second is the load-bearing one. A catch-all
+ * pattern is common — `"./*": "./*"` (markdown-it, the fortawesome icon packs) —
+ * and it answers every subpath there could ever be, so a map read alone claims
+ * the package provides a JSX runtime, and a JSON parser, and anything else one
+ * cares to name. What a wildcard states is that a subpath maps SOMEWHERE, not
+ * that anything is there. Resolving the name and then looking for the file it
+ * names is the question actually being asked, and it stays right in both
+ * directions: a package that publishes the subpath through a pattern onto a real
+ * file provides it just as much as one that names it outright.
+ */
+export function hasPackageExport(pkg: PackageFileSet, subpath: string): Computable<boolean> {
   return (
-    readJsonFile(manifest, toJsonObject)
-      /* Own keys, not `in`: a subpath must be declared by the package, not
-       * inherited from Object.prototype. (Object.hasOwn needs a newer lib than
-       * the JS_TARGET fabr builds itself under.) */
-      .then(json => isJsonObject(json.exports) && Object.keys(json.exports).includes(subpath))
+    pkg
+      .get("package.json")
+      .then(manifest => (manifest === undefined ? false : publishedFile(pkg, manifest, subpath)))
       /* An unreadable manifest exposes no subpath — this asks a question about a
-       * dependency, and answers "no"; whoever *builds* that dependency reports it. */
+       * dependency, and answers "no"; whoever *builds* that dependency reports it.
+       * An invalid `exports` map is the same: reported where it is resolved. */
       .catch(() => false)
   );
 }
 
+/** Whether `pkg`'s map publishes `subpath` and the package holds the file that
+ * resolves to. */
+function publishedFile(pkg: PackageFileSet, manifest: IFile, subpath: string): Computable<boolean> {
+  return readJsonFile(manifest, toJsonObject).then(json => {
+    /* `null` reads as no map at all (node falls back to `main`), so it exposes
+     * nothing through this route either. */
+    const exports = json.exports as ExportsValue | undefined;
+    const target = exports === undefined || exports === null ? undefined : resolveExports(exports, subpath, PROBE_CONDITIONS);
+    return target === undefined ? false : pkg.get(target.slice(2)).then(file => file !== undefined);
+  });
+}
+
 /**
- * Whether a dependency provides the JSX automatic runtime, read from its
- * `package.json` `exports` (NOT a filename scan — a package may map the subpath
- * to a differently-named file). `@types/*` never qualifies: it carries the
- * types, not the runtime `jsxImportSource` points at.
+ * Whether a dependency provides the JSX automatic runtime: its `package.json`
+ * publishes `./jsx-runtime` and the file that names is in the package. Not a
+ * filename scan — a package may map the subpath to a differently-named file, so
+ * the map says WHICH file and the package says whether it is there. `@types/*`
+ * never qualifies: it carries the types, not the runtime `jsxImportSource`
+ * points at.
  *
  * TODO: this recognizer is the seed of a general capability model — it should
  * move to a declared `capability jsxRuntime { … }` in JS.fabr once the model can
@@ -146,7 +178,7 @@ function providesJsxRuntime(pkg: PackageFileSet): Computable<boolean> {
   if (pkg.packageName.startsWith("@types/")) {
     return Computable.resolve(false);
   }
-  return pkg.get("package.json").then(file => (file ? hasPackageExport(file, "./jsx-runtime") : false));
+  return hasPackageExport(pkg, "./jsx-runtime");
 }
 
 /** The `jsxImportSource` for a TSX compile: the first direct dep (in written

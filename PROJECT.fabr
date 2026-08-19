@@ -34,6 +34,10 @@ catalog @pkg {
          @npm:unicode-properties:1.3.1 @npm:@types/unicode-properties:1.3.0
          @npm:tar-stream:3.1.7 @npm:@types/tar-stream:3.1.3
          @npm:@napi-rs/lzma:1.5.1
+         # The bundle driver's tests drive the real bundler; pinned to the same
+         # version ESBUILD names, since what they check is what THAT esbuild
+         # does with a package's export conditions.
+         @npm:esbuild:0.28.1
          # Pulled in transitively by @types/jest, and required only without a
          # lower bound ('*', the DefinitelyTyped house style), so nothing picks
          # a version for them; and two packages @types/jest's closure needs at a
@@ -44,6 +48,10 @@ catalog @pkg {
 }
 
 TYPESCRIPT = @pkg:typescript;
+# The bundler, pinned from the same catalog for the same reason: the bundle
+# driver's tests assert what THIS esbuild does with a package's conditions, so
+# the one they run must be the one fabr runs.
+ESBUILD = @pkg:esbuild;
 JS_TARGET = es2021-commonjs;
 
 # Run fabr's own tests through the jest-compatibility runner. They use none of
@@ -76,9 +84,11 @@ js_package @fabr-build/js {
   tests = packages/js/src:**/*.test.ts;
   deps = @pkg:@types/node;
   provided_deps = @fabr-build/core;
-  # typescript: the tsc driver's tests drive the real compiler (the driver
-  # itself requires it from the tool install fabr stages, never from here).
-  test_deps = chai jest_types tar_stream @pkg:typescript;
+  # typescript / esbuild: the tsc and bundle drivers' tests drive the real tools
+  # (each driver itself requires its own from the tool install fabr stages,
+  # never from here). The bundler's single-variant rule is a claim about what
+  # esbuild does with a package's conditions, so only the real one can hold it.
+  test_deps = chai jest_types tar_stream @pkg:typescript @pkg:esbuild;
   metadata = { FABR_METADATA; description = Fabr JS support plugin }
 }
 

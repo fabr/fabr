@@ -222,7 +222,12 @@ export function makeTsConfig(
       ...defineClassFieldsOverride(sourceVersion, jsTarget.version),
       ...(types ? { types } : {}),
       module: jsTarget.module === "esm" ? "esnext" : "commonjs",
-      moduleResolution: "node",
+      /* `moduleResolution` is deliberately NOT stated. The right value depends
+       * on the compiler version — before TypeScript 6 a CommonJS emit cannot be
+       * paired with `bundler` (TS5095); from 6, `node10` is a deprecation error
+       * (TS5107) — and the version is known only to the driver, which loads the
+       * compiler. So the driver supplies it (see `resolutionFor`), and a project
+       * that states one of its own keeps it. */
       ...(packageName ? { paths: selfReferencePaths(packageName) } : {}),
       /* JS source maps for debuggable builds; `release` omits them. `inlineSources`
        * embeds the original TS into each `.js.map`, so the maps are self-contained
