@@ -14,10 +14,10 @@
  * details.
  */
 
-/* Note: this file is run by the fabr test harness itself (node:test based), not
- * by the workspace jest setup — it lives beside the standalone CSS driver, which
- * requires sass-embedded (unavailable to jest). Importing the driver module is
- * safe: sass is required lazily inside main(), not at load. */
+/* The CSS driver requires sass-embedded lazily, inside main() — so nothing here
+ * needs it, and these run under jest as well as under the fabr test harness.
+ * What they pin is the driver's own resolution policy, which follows dart-sass's
+ * NodePackageImporter rather than node's rules (see packageImporter). */
 
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -236,9 +236,37 @@ describe("packageImporter, over packages that publish an exports map", () => {
     assert.equal(load("plain/colours", "theme.scss"), path.join(store, "ref-plain/colours"));
   });
 
-  it("declines a load a package's map does not publish", () => {
+  it("falls through to the directory for a load the map does not publish", () => {
+    /* dart-sass's own NodePackageImporter treats a map as a first choice, not a
+       gate: a load it does not publish goes to the ordinary directory search.
+       `exports` encapsulates a package's JavaScript — Sass never agreed to
+       that, and enforcing it here stops stylesheets that compile under plain
+       Sass. */
     pkg("ref-ds", { exports: { "./colours": "./src/_colours.scss" } });
     const load = importing(["@shorthand/design-system", "ref-ds"]);
-    assert.equal(load("@shorthand/design-system/internal", "theme.scss"), null);
+    assert.equal(load("@shorthand/design-system/internal", "theme.scss"), path.join(store, "ref-ds/internal"));
+  });
+
+  it("takes the package's legacy stylesheet fields for a root the map leaves out", () => {
+    /* The `sass`/`style` fields are the stylesheet counterpart of `types`/`main`
+       — consulted for the ROOT only, since a field describes one entry point,
+       and `sass` ahead of `style`. */
+    pkg("ref-fields", { sass: "./src/_lib.scss", style: "./dist/lib.css" });
+    assert.equal(importing(["fields", "ref-fields"])("fields", "theme.scss"), path.join(store, "ref-fields/src/_lib.scss"));
+
+    pkg("ref-style", { style: "./dist/lib.css" });
+    assert.equal(importing(["styled", "ref-style"])("styled", "theme.scss"), path.join(store, "ref-style/dist/lib.css"));
+
+    /* A map that publishes the root wins over them. */
+    pkg("ref-both", { sass: "./src/_lib.scss", exports: { ".": { sass: "./exp/root.scss" } } });
+    assert.equal(importing(["both", "ref-both"])("both", "theme.scss"), path.join(store, "ref-both/exp/root.scss"));
+
+    /* A map that publishes only a SUBPATH leaves the root to them. */
+    pkg("ref-closed", { sass: "./src/_lib.scss", exports: { "./other": { sass: "./exp/o.scss" } } });
+    assert.equal(importing(["closed", "ref-closed"])("closed", "theme.scss"), path.join(store, "ref-closed/src/_lib.scss"));
+
+    /* And they answer for the root alone — a subpath falls to the directory. */
+    pkg("ref-sub", { sass: "./src/_lib.scss" });
+    assert.equal(importing(["subbed", "ref-sub"])("subbed/other", "theme.scss"), path.join(store, "ref-sub/other"));
   });
 });

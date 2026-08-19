@@ -84,10 +84,21 @@ interface ISass {
  * answer, so what arrives here is either a package reference
  * (`@shorthand/design-system/colours`) or a bare name meant for a load path
  * (`variables`, resolved next to the importing file or under a loadPath). The
- * first is answered from the table — the package part to its location, and the
- * rest by the package's own `exports` map where it has one, else appended for
- * Sass to finish — and the second is declined, which leaves Sass's own
- * machinery in charge of it.
+ * table answers the first — the package part to its location — and declines the
+ * second, which leaves Sass's own machinery in charge of it.
+ *
+ * Below the package root this follows dart-sass's own `NodePackageImporter`
+ * rather than node's rules, because that is the resolver a stylesheet author
+ * expects and the one they get everywhere else. The differences are real:
+ *
+ * - An `exports` map is a FIRST CHOICE, not a gate. Where it publishes the
+ *   load, it answers; where it does not, the load falls through to the ordinary
+ *   directory search rather than failing. `exports` encapsulates a package's
+ *   JavaScript; Sass never agreed to that, and treating it as a boundary stops
+ *   stylesheets compiling that compile under plain Sass.
+ * - The package's legacy `sass` and `style` FIELDS answer for the root, in that
+ *   order, when the map does not — the stylesheet counterpart of `types`/`main`,
+ *   and root-only for the same reason: a field describes one entry point.
  *
  * A webpack-style `~pkg` prefix is refused rather than silently stripped: it is
  * a bundler convention, not a Sass one, and quietly accepting it here would
@@ -101,19 +112,30 @@ export function packageImporter(resolver: PnpResolver): ISassFileImporter {
           `css: '${url}' uses the webpack '~' prefix, which Sass does not define — write the package name directly ('${url.slice(1)}')`
         );
       }
-      if (splitSpecifier(url) === undefined || context.containingUrl === null) {
+      const split = splitSpecifier(url);
+      if (split === undefined || context.containingUrl === null) {
         return null;
       }
-      const target = resolver.resolveSpecifier(url, context.containingUrl.pathname);
-      if (target === undefined) {
+      const issuer = context.containingUrl.pathname;
+      const location = resolver.locationOf(split.name, issuer);
+      if (location === undefined) {
         return null;
       }
-      /* Usually a DIRECTORY, deliberately: Sass appends the partial/index/
-       * extension candidates to it, so `@use "pkg/colours"` finds
-       * `_colours.scss` exactly as it would under a load path. A package that
-       * publishes an `exports` map answers with the file itself, which Sass
-       * takes as given — the package named it, so there is nothing to probe. */
-      return pathToFileURL(target);
+      /* Three sources, in dart-sass's own order. The map first, but only where
+       * the package HAS one — the resolver answers a mapless package with its
+       * directory, which is the last of the three and not the first. */
+      const manifest = stylesheetManifest(location);
+      const published = manifest.publishes ? resolver.resolveSpecifier(url, issuer) : undefined;
+      if (published !== undefined) {
+        return pathToFileURL(published);
+      }
+      if (split.subpath === "" && manifest.entry !== undefined) {
+        return pathToFileURL(manifest.entry);
+      }
+      /* A DIRECTORY where nothing named the file: Sass appends the partial,
+       * index and extension candidates to it, so `@use "pkg/colours"` finds
+       * `_colours.scss` exactly as it would under a load path. */
+      return pathToFileURL(split.subpath ? path.join(location, split.subpath) : location);
     },
   };
 }
@@ -126,6 +148,36 @@ export function packageImporter(resolver: PnpResolver): ISassFileImporter {
  * offers both.
  */
 export const SASS_CONDITIONS = ["sass", "style"];
+
+/** The package's own fields naming its stylesheet entry point, in the order
+ * dart-sass reads them. Pre-`exports` metadata, and still what many published
+ * design systems carry instead of a map. */
+const STYLESHEET_FIELDS = ["sass", "style"];
+
+/** As much of a package's manifest as a stylesheet load reads: whether it
+ * publishes a map at all, and the entry point its legacy fields name. */
+interface IStylesheetManifest {
+  readonly publishes: boolean;
+  readonly entry: string | undefined;
+}
+
+/**
+ * A package's stylesheet metadata. An unreadable manifest carries none — this
+ * asks a question about a dependency, and whoever builds that dependency is the
+ * one to report what is wrong with it.
+ */
+export function stylesheetManifest(location: string): IStylesheetManifest {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(location, "package.json"), "utf8")) as Record<string, unknown>;
+    const named = STYLESHEET_FIELDS.map(field => manifest[field]).find(value => typeof value === "string");
+    return {
+      publishes: manifest.exports !== undefined && manifest.exports !== null,
+      entry: named === undefined ? undefined : path.resolve(location, named as string),
+    };
+  } catch {
+    return { publishes: false, entry: undefined };
+  }
+}
 
 /** Whether a source is Sass (the ones this driver compiles; anything else is
  * already plain CSS and passes through). */
