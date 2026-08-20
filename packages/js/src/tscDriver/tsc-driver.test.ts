@@ -23,7 +23,7 @@ import * as os from "os";
 import * as path from "path";
 import type { IPnpSerializedState, PnpDependencyTarget } from "../PnPManifest";
 import { PnpResolver } from "../pnp/PnPResolver";
-import { main, resolutionFor, rewriteDeclaration } from "./tsc-driver";
+import { main, relativizeBuildRoot, resolutionFor, rewriteDeclaration } from "./tsc-driver";
 
 /** A staged workspace: sources, a tsconfig, a manifest, and a store the
  * manifest's locations point into through the same link a build step stages. */
@@ -829,5 +829,75 @@ describe("rewriteDeclaration, over every form a declaration can carry a path in"
       expect(rewriteDeclaration(emitted, `${form}\n`, resolver), form).to.contain('"zustand"');
       expect(rewriteDeclaration(emitted, `${form}\n`, resolver), form).to.not.contain(".fabr-tree");
     }
+  });
+});
+
+describe("emitted output, over where the compile ran", () => {
+  /* The automatic JSX runtime's dev variant is the emit that carries a source
+   * path into shipped code (`_jsxFileName`), so it is what these compile. The
+   * runtime is a fixture package because the emitted import has to resolve —
+   * what is under test is the path in the output, not React. */
+  const JSX_RUNTIME = {
+    "jsx-dev-runtime.d.ts":
+      "export declare const jsxDEV: any;\n" +
+      "export declare const Fragment: any;\n" +
+      "export declare namespace JSX {\n" +
+      "  interface Element {}\n" +
+      "  interface IntrinsicElements {\n" +
+      "    [name: string]: any;\n" +
+      "  }\n" +
+      "}\n",
+    "jsx-dev-runtime.js": "exports.jsxDEV = () => undefined;\nexports.Fragment = undefined;\n",
+  };
+
+  /** Compile one `.tsx` under the dev JSX runtime and answer what was emitted. */
+  function compileJsx(source: string): { root: string; emitted: string; status: number; output: string } {
+    const work = fixture();
+    const runtime = work.add("myjsx", JSX_RUNTIME);
+    stage(work.root, [["myjsx", runtime, []]], [["myjsx", runtime]], []);
+    /* The staged project, plus the jsx options: everything else about it is
+     * what every other case here compiles under. */
+    const configPath = path.join(work.root, "tsconfig.json");
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    config.compilerOptions.jsx = "react-jsxdev";
+    config.compilerOptions.jsxImportSource = "myjsx";
+    config.include = ["./src/**/*.tsx"];
+    fs.writeFileSync(configPath, JSON.stringify(config));
+    fs.writeFileSync(path.join(work.root, "src", "App.tsx"), source);
+    const { status, output } = compile(work.root);
+    return { root: work.root, status, output, emitted: fs.readFileSync(path.join(work.root, "build/App.js"), "utf8") };
+  }
+
+  const SOURCE = "export const App = (): unknown => <div className=\"x\">hi</div>;\n";
+
+  it("names the source relative to the project, never by the directory the compile ran in", () => {
+    const { root, emitted, status, output } = compileJsx(SOURCE);
+    expect(status, output).to.equal(0);
+    /* Without this the case would pass on an emit that carries no path at all,
+     * proving nothing. */
+    expect(emitted).to.contain("_jsxFileName");
+    expect(emitted).to.contain("src/App.tsx");
+    expect(emitted).to.not.contain(root);
+  });
+
+  it("emits the same bytes for the same source compiled in different directories", () => {
+    const first = compileJsx(SOURCE);
+    const second = compileJsx(SOURCE);
+    expect(first.root).to.not.equal(second.root);
+    expect(first.emitted).to.equal(second.emitted);
+  });
+});
+
+describe("relativizeBuildRoot", () => {
+  it("leaves text naming nothing under the root untouched", () => {
+    const text = 'const a = "/elsewhere/src/App.tsx";\n';
+    expect(relativizeBuildRoot(text, "/build/root")).to.equal(text);
+  });
+
+  it("takes the root however it is spelled, and every occurrence", () => {
+    const text = 'a("/build/root/src/a.tsx"); b("/build/root/src/b.tsx");';
+    const expected = 'a("src/a.tsx"); b("src/b.tsx");';
+    expect(relativizeBuildRoot(text, "/build/root")).to.equal(expected);
+    expect(relativizeBuildRoot(text, "/build/root/")).to.equal(expected);
   });
 });

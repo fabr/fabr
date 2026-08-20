@@ -483,6 +483,30 @@ export function rewriteDeclaration(fileName: string, text: string, resolver: Pnp
   return rewritten;
 }
 
+/**
+ * Cut the compile's own directory out of emitted text, leaving the root-relative
+ * path the sourcemaps already use.
+ *
+ * TypeScript names a source by the path it was given, and the driver is given
+ * absolute ones (a parsed config resolves its file names against the project
+ * directory). Any emit that carries a source path therefore carries THIS
+ * compile's staging directory — `_jsxFileName` under the automatic JSX runtime's
+ * dev variant is the one that reaches shipped code, ~1400 of them in a real app
+ * bundle. That directory is named for the process that made it, so the same
+ * inputs emit different bytes on every build: the artifact stops being a
+ * function of its cache key, and a content-hashed asset name derived from it
+ * churns for no reason.
+ *
+ * Applied to every emitted file rather than to the one construct that is known
+ * to do this, because what must not appear in the output is the path, whichever
+ * emitter wrote it.
+ */
+export function relativizeBuildRoot(text: string, root: string): string {
+  /* TypeScript spells paths with forward slashes whatever the platform. */
+  const prefix = `${root.replace(/\\/g, "/").replace(/\/+$/, "")}/`;
+  return text.includes(prefix) ? text.split(prefix).join("") : text;
+}
+
 /** The first specifier in `text` that points inside the tree pool, if any. */
 function treeReferenceIn(text: string, from: string, treeRoots: ReadonlyArray<string>): string | undefined {
   for (const [, , , specifier] of text.matchAll(QUOTED_SPECIFIER)) {
@@ -552,7 +576,11 @@ export function main(argv: string[]): number {
    * and the step's output is collected from a tree that was never wrong. */
   const emitted = program.emit(undefined, (fileName, text, writeByteOrderMark) => {
     const rewritable = resolver !== undefined && DECLARATION_FILE.test(fileName);
-    host.writeFile(fileName, rewritable ? rewriteDeclaration(fileName, text, resolver) : text, writeByteOrderMark);
+    const rewritten = rewritable ? rewriteDeclaration(fileName, text, resolver) : text;
+    /* After the declaration rewrite, which reports a pool path as a fault: this
+     * one relativizes the compile's own root, and a fault must not be quietly
+     * tidied into something that looks fine. */
+    host.writeFile(fileName, relativizeBuildRoot(rewritten, root), writeByteOrderMark);
   });
   /* Sorted and deduplicated as the CLI does it: the pre-emit set already
    * carries the project's own option diagnostics, so the config errors overlap
