@@ -40,9 +40,13 @@ function mockRegistry(data: Record<string, Record<string, Record<string, string>
         throw new VersionNotFoundError(pkg, versionToString(version), `${pkg}@${versionToString(version)} not found in mock registry`);
       }
       return Computable.resolve(
-        Object.entries(deps).map(([dep, constraint]) =>
-          constraint.startsWith("peer ") ? { pkg: dep, constraint: constraint.substring(5), soft: true } : { pkg: dep, constraint }
-        )
+        Object.entries(deps).map(([dep, constraint]) => {
+          /* 'peer? ' is npm's `peerDependenciesMeta: { optional: true }`. */
+          if (constraint.startsWith("peer? ")) {
+            return { pkg: dep, constraint: constraint.substring(6), soft: true, attachOnly: true };
+          }
+          return constraint.startsWith("peer ") ? { pkg: dep, constraint: constraint.substring(5), soft: true } : { pkg: dep, constraint };
+        })
       );
     },
   };
@@ -553,6 +557,65 @@ describe("MVSResolver", () => {
     );
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "chai@4.2.0", "plugin@1.0.0"]);
     expect(result.violations).to.deep.equal([]);
+    expect(result.errors).to.deep.equal([]);
+  });
+
+  it("an optional peer binds what the tree provides", () => {
+    /* zustand's shape: `peerDependencies: {react}` with
+     * `peerDependenciesMeta: {react: {optional: true}}` and no dependencies of
+     * its own. A hoisted tree let it reach the hoisted react by walking up; a
+     * dependency table has to record the edge or the import resolves to
+     * nothing. */
+    const result = resolve(
+      { app: "1.0.0" },
+      {
+        app: { "1.0.0": { zustand: "3.7.1", react: "18.0.0" } },
+        zustand: { "3.7.1": { react: "peer? >=16.8" } },
+        react: { "18.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["app@1.0.0", "react@18.0.0", "zustand@3.7.1"]);
+    expect([...(result.edges.get("zustand@3.7.1") ?? [])]).to.deep.equal([["react", "react@18.0.0"]]);
+    expect(result.errors).to.deep.equal([]);
+  });
+
+  it("an optional peer nothing provides installs nothing and reports nothing", () => {
+    /* The other half of npm's contract, and the reason it cannot simply be a
+     * soft requirement: a soft one installs its minimum as a last resort, an
+     * optional peer installs nothing at all. */
+    const result = resolve(
+      { app: "1.0.0" },
+      {
+        app: { "1.0.0": { zustand: "3.7.1" } },
+        zustand: { "3.7.1": { react: "peer? >=16.8" } },
+        react: { "18.0.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["app@1.0.0", "zustand@3.7.1"]);
+    expect([...(result.edges.get("zustand@3.7.1") ?? [])]).to.deep.equal([]);
+    expect(result.errors).to.deep.equal([]);
+    expect(result.violations).to.deep.equal([]);
+  });
+
+  it("an optional peer attaches to what is delivered and resurrects nothing", () => {
+    /* The dylan regression. A selection can exist without being delivered — here
+     * `stale` is demanded by A@1.0.0, which loses to A@2.0.0 and is pruned with
+     * its subtree. An optional peer must attach to what the tree DELIVERS, so
+     * binding one must not drag such a selection back in: doing so installs a
+     * package npm never would, and walks metadata nothing needs (the real one
+     * carried a `git+https://` spec no semver domain can parse). */
+    const result = resolve(
+      { app: "1.0.0" },
+      {
+        app: { "1.0.0": { A: "^2.0.0", B: "1.0.0", P: "1.0.0" } },
+        B: { "1.0.0": { A: ">=1.0.0" } },
+        A: { "1.0.0": { stale: "1.0.0" }, "2.0.0": {} },
+        stale: { "1.0.0": {} },
+        P: { "1.0.0": { stale: "peer? >=1" } },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@2.0.0", "B@1.0.0", "P@1.0.0", "app@1.0.0"]);
+    expect([...(result.edges.get("P@1.0.0") ?? [])]).to.deep.equal([]);
     expect(result.errors).to.deep.equal([]);
   });
 

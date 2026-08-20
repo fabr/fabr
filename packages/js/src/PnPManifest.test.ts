@@ -18,11 +18,29 @@
  */
 
 import { expect } from "chai";
-import { Computable, FileSet, Flag, IFile, MemoryFile, PackageFileSet, PackageGraphBuilder } from "@fabr-build/core";
+import {
+  Computable,
+  FileSet,
+  Flag,
+  IFile,
+  MemoryFile,
+  PACKAGE_RESOLUTION_PROVENANCE,
+  PackageFileSet,
+  PackageGraphBuilder,
+} from "@fabr-build/core";
 import { packageNodeSignature } from "@fabr-build/core";
 import { IPnpPackageInfo, pnpManifestOf, PnpDependencyTarget, treeMountOf } from "./PnPManifest";
 
+/** A package as a REPOSITORY delivered it — carrying a resolution provenance,
+ * which is what marks it as something this build did not produce and therefore
+ * cannot be held to a complete dependency list. */
 function pkg(name: string, version = "1.0.0", deps: PackageFileSet[] = [], body = ""): PackageFileSet {
+  return built(name, version, deps, body).withOrigin({ kind: PACKAGE_RESOLUTION_PROVENANCE });
+}
+
+/** A package as a target of THIS project produced it: no resolution provenance,
+ * so its declared surface is held to be complete. */
+function built(name: string, version = "1.0.0", deps: PackageFileSet[] = [], body = ""): PackageFileSet {
   return new PackageFileSet(
     new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}@${version}${body}`)]]),
     name,
@@ -137,6 +155,53 @@ describe("pnpManifestOf", () => {
     expect(manifest.packages.map(pkg => pkg.packageName)).to.deep.equal(["left-pad"]);
   });
 
+  it("pools the whole closure, not just the declared surface", () => {
+    /* The `reactcss` shape: a delivered package importing something it never
+       declared. It works under every other package manager because everything
+       is hoisted where everyone can see it, and no build can fix the package,
+       so the pool carries the closure rather than the declared roots. */
+    const deep = pkg("deep");
+    const manifest = pnpManifestOf([pkg("top", "1.0.0", [pkg("middle", "1.0.0", [deep])])]);
+    const pooled = manifest.state.fallbackPool.map(([name]) => name);
+    expect(pooled).to.deep.equal(["deep", "middle", "top"]);
+  });
+
+  it("still supplies a barred package with what the project declared", () => {
+    /* The regression this guards: a node-builtin shim is named once for the
+       whole bundle (`@dep:path-browserify -> path`) and is meant to answer for
+       every package in it — including first-party ones, which is where the
+       imports of `path` actually are. Barring those packages from the pool must
+       not take the project's own supplies away with it, so the declared surface
+       is written into their rows instead. */
+    const shim = pkg("path");
+    const ours = built("@shorthand/appcore", "1.0.0", [pkg("lodash")]);
+    const manifest = pnpManifestOf([ours, shim, pkg("three")]);
+    const row = [...rowsOf(manifest, "@shorthand/appcore").values()][0]!;
+    const visible = row.packageDependencies.map(([name]) => name);
+    /* Its own name, its own dependency, and the project's declared supplies. */
+    expect(visible).to.deep.equal(["@shorthand/appcore", "lodash", "path", "three"]);
+    /* A package the project did NOT declare stays out of reach: the row carries
+       the declared surface, not the closure the pool holds. */
+    const deep = built("@shorthand/other", "1.0.0", [pkg("outer", "1.0.0", [pkg("buried")])]);
+    const wider = pnpManifestOf([deep]);
+    const otherRow = [...rowsOf(wider, "@shorthand/other").values()][0]!;
+    expect(otherRow.packageDependencies.map(([name]) => name)).to.deep.equal(["@shorthand/other", "outer"]);
+    expect(wider.state.fallbackPool.map(([name]) => name)).to.contain("buried");
+  });
+
+  it("bars the packages this project built from the pool", () => {
+    /* The strictness that still pays. A package fabr produced is one whose
+       undeclared import is a bug with an author here, and whose `.js` sources
+       are transpiled without ever being typechecked — so nothing else would
+       catch it. Packages that came from a repository keep the pool. */
+    const ours = built("@shorthand/ui", "1.0.0", [pkg("react")]);
+    const manifest = pnpManifestOf([ours, pkg("chalk")]);
+    expect(manifest.state.fallbackExclusionList.map(([name]) => name)).to.deep.equal(["@shorthand/ui"]);
+    /* Everything is still POOLED — the exclusion says who may not read the
+       pool, never what is in it, so an excluded package is still reachable. */
+    expect(manifest.state.fallbackPool.map(([name]) => name)).to.deep.equal(["@shorthand/ui", "chalk", "react"]);
+  });
+
   it("is byte-stable: the same graph in any order yields the same manifest", async () => {
     const shared = pkg("shared");
     const first = pnpManifestOf([pkg("a", "1.0.0", [shared]), pkg("b", "1.0.0", [shared])]);
@@ -169,6 +234,10 @@ describe("pnpManifestOf", () => {
   "ignorePatternData": null,
   "fallbackExclusionList": [],
   "fallbackPool": [
+    [
+      "ansi-styles",
+      ${JSON.stringify(references[0])}
+    ],
     [
       "chalk",
       ${JSON.stringify(references[1])}

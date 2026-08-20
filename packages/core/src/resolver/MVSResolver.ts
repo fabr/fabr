@@ -321,6 +321,13 @@ function resolvePhase<V, C>(
         floorlessRequired.add(req.pkg);
         return;
       }
+      if (req.attachOnly) {
+        /* Never a demand, not even the last-resort one a soft requirement
+         * fires: npm does not install an optional peer, and neither does this.
+         * It is still recorded (see nodeRequirements), so it binds if something
+         * else selects the package. */
+        return;
+      }
       if (req.soft) {
         softReqs.push({ req, requiredBy });
         return;
@@ -619,6 +626,17 @@ function resolvePhase<V, C>(
       const neededPhantoms = new Map<string, { pkg: string; version: V; err: VersionNotFoundError }>();
 
       const followEdge = (from: string, req: Requirement): void => {
+        if (req.attachOnly) {
+          /* An optional peer attaches to what the tree DELIVERS; it never makes
+           * anything deliverable. Walking it here would do exactly that — the
+           * walk is what decides reachability, so binding a selection some
+           * pruned branch left lying around would resurrect it and its whole
+           * subtree, installing a package npm would not have installed and
+           * reading metadata nothing needs. The binding itself is not lost: the
+           * edge map is built from the requirements directly (see `edges` in
+           * finalize), so a peer the tree does deliver is still bound. */
+          return;
+        }
         let constraint: C;
         try {
           constraint = domain.parseConstraint(req.constraint);

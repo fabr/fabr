@@ -108,6 +108,16 @@ export class PnpResolver {
   private readonly byLocation: Array<{ prefix: string; locator: LocatorKey; name: string | null; stored: boolean }> = [];
   private readonly fallback = new Map<string, string>();
   private readonly topLevel: LocatorKey;
+  /** The rows that stand for the SOURCES rather than for a delivered package —
+   * PnP's `SOFT` link type, which is the top-level row and the self row naming
+   * the same files as a package. They are the one thing in the table this build
+   * can fix, so they resolve strictly (see {@link locationOf}). */
+  private readonly sources = new Set<LocatorKey>();
+  /** Rows the manifest bars from the pool — the packages this build produced,
+   * which are held to their declared surface for the same reason the sources
+   * are. Kept as locators, so an excluded package's own row still answers
+   * everything it did declare. */
+  private readonly excluded = new Set<LocatorKey>();
   /** Which package each DIRECTORY belongs to. The locator of a file is a
    * property of the directory holding it, and a compile asks tens of thousands
    * of times over a few thousand directories — without this, every question
@@ -136,6 +146,9 @@ export class PnpResolver {
         const key = locatorKey(name, reference);
         const location = path.resolve(root, info.packageLocation);
         this.rows.set(key, { location, dependencies: dependencyMap(info.packageDependencies) });
+        if (info.linkType === "SOFT") {
+          this.sources.add(key);
+        }
         if (info.discardFromLookup !== true) {
           const stored = info.linkType !== "SOFT";
           this.byLocation.push({ prefix: withSeparator(location), locator: key, name, stored });
@@ -149,6 +162,11 @@ export class PnpResolver {
             this.byLocation.push({ prefix: withSeparator(real), locator: key, name, stored });
           }
         }
+      }
+    }
+    for (const [name, references] of state.fallbackExclusionList) {
+      for (const reference of references) {
+        this.excluded.add(locatorKey(name, reference));
       }
     }
     if (state.enableTopLevelFallback) {
@@ -310,8 +328,16 @@ export class PnpResolver {
    * which is a resolution failure for the caller to report as one.
    */
   public locationOf(name: string, issuer: string): string | undefined {
-    const from = this.rows.get(this.locatorOf(issuer));
-    const bound = from?.dependencies.get(name) ?? this.fallback.get(name);
+    const locator = this.locatorOf(issuer);
+    const from = this.rows.get(locator);
+    /* The pool answers for a package that arrived from a repository, whose
+     * undeclared imports are the ecosystem's to fix and not this build's. It
+     * does not answer for anything this project produced — the sources, and the
+     * packages the manifest excludes — because there the declared surface is
+     * what this project wrote down, and an import missing from it is a bug with
+     * an author. */
+    const pooled = this.sources.has(locator) || this.excluded.has(locator) ? undefined : this.fallback.get(name);
+    const bound = from?.dependencies.get(name) ?? pooled;
     return bound === undefined ? undefined : this.rows.get(bound)?.location;
   }
 

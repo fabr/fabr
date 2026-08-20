@@ -63,6 +63,18 @@ export interface Requirement {
    */
   soft?: boolean;
   /**
+   * Attach-ONLY (npm's `peerDependenciesMeta: { optional: true }`): a constraint
+   * on whatever the tree selects for `pkg`, and never a demand for it — where
+   * {@link soft} installs its minimum as a last resort, this installs nothing
+   * ever, and simply does not bind when the package is absent.
+   *
+   * It is still a requirement, and that is the whole point of recording it: the
+   * requirer must be able to REACH the package when a consumer does provide it
+   * (`zustand` optionally peering on `react`). A hoisted tree gave that away for
+   * free by walking up; a dependency table has to say it.
+   */
+  attachOnly?: boolean;
+  /**
    * A user-written override marker on the requirement's exact version
    * (`@npm:pkg:1.4.2?` / `@npm:pkg:2.0.0!`; the constraint carries the bare
    * version, the marker rides here):

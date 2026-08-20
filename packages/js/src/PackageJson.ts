@@ -183,8 +183,17 @@ export function declaredDependencies(manifest: IDependencyDecls): { required: Re
   const optionalDeps = dependencyBlock(manifest.optionalDependencies);
   const optionalPeerNames = optionalPeers(manifest.peerDependenciesMeta);
   const peers = [...dependencyBlock(manifest.peerDependencies)]
-    .filter(([dep]) => !optionalPeerNames.has(dep) && !optionalDeps.has(dep))
-    .map(([dep, spec]) => ({ ...dependencyRequirement(dep, spec), soft: true }));
+    .filter(([dep]) => !optionalDeps.has(dep))
+    /* An `optional: true` peer is never installed, but it is still a
+     * requirement: if the consumer provides the package, the requirer has to be
+     * able to reach it. Dropping it entirely is what a hoisted tree could
+     * afford — the requirer found the hoisted copy by walking up — and what a
+     * dependency table cannot. */
+    .map(([dep, spec]) => ({
+      ...dependencyRequirement(dep, spec),
+      soft: true,
+      ...(optionalPeerNames.has(dep) ? { attachOnly: true } : {}),
+    }));
   const required = [
     ...[...dependencyBlock(manifest.dependencies)]
       .filter(([dep]) => !optionalDeps.has(dep))

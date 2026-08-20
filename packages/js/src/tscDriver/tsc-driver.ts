@@ -303,12 +303,22 @@ function installResolution(
       }
     }
     /* The `@types` sidecar: the compiler's own rule reproduced, and the last
-     * resort for a package shipping no typings anywhere. Gated like the others
-     * on the package having published this name — a sidecar describes a module
-     * the program can load, so it may not be what makes an unpublished subpath
-     * resolvable. (Stock tsc is laxer here; this is the driver's own rule that
-     * what compiles is what will run.) */
-    if (split !== undefined && published !== undefined) {
+     * resort for a name whose own package ships no typings. Which of two
+     * failures brought us here decides whether it may answer:
+     *
+     * - The package is in this compilation and published nothing for the name.
+     *   The sidecar may NOT rescue that: it describes a module the program
+     *   loads, and the package has just said this one is not loadable, so
+     *   accepting it would compile an import node answers with
+     *   ERR_PACKAGE_PATH_NOT_EXPORTED.
+     * - The package is not in this compilation at all. Then there is nothing to
+     *   contradict, and the sidecar IS the dependency — the DefinitelyTyped
+     *   shape for an API that is no npm package (`@types/aws-lambda`) or one a
+     *   project types without installing. Nothing can fail to load here,
+     *   because nothing loads.
+     */
+    const declared = split !== undefined && resolver.locationOf(split.name, issuer) !== undefined;
+    if (split !== undefined && (published !== undefined || !declared)) {
       const sidecar = typesPackageName(split.name);
       probes.push(() => through(split.subpath ? `${sidecar}/${split.subpath}` : sidecar, issuer));
     }

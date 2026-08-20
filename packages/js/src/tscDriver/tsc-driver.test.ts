@@ -580,6 +580,25 @@ describe("the tsc driver", () => {
     expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("the esm face");
   });
 
+  it("types a dependency that exists only as its @types package", () => {
+    /* The DefinitelyTyped shape for an API that is not an npm package at all
+       (`@types/aws-lambda`), and for one a project types without installing
+       (`@types/ffprobe`): the declarations ARE the dependency, and the name has
+       no row of its own. Nothing here can fail to load, because nothing here
+       loads. */
+    const sidecar = work.add(
+      "@types/ffprobe",
+      { "index.d.ts": "export declare function probe(): 'the sidecar types';\n" },
+      { main: "", types: "index.d.ts" }
+    );
+    stage(work.root, [["@types/ffprobe", sidecar, [["@types/ffprobe", sidecar]]]], [["@types/ffprobe", sidecar]], []);
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { probe } from "ffprobe";\nexport const which = probe();\n');
+
+    const { status, output } = compile(work.root);
+    expect(status, output).to.equal(0);
+    expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("the sidecar types");
+  });
+
   it("refuses a subpath the map does not publish, whatever the sidecar offers", () => {
     /* An `@types` package describes a module the program can LOAD. It may fill
      * in declarations for a name the package published and left untyped; it may

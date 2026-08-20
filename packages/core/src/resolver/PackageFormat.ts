@@ -57,7 +57,7 @@ export interface IContentPackage<V> {
 export interface PackageFormat<V, C> extends VersionDomain<V, C> {
   /**
    * The memo tag persisted joint resolutions are keyed under (e.g.
-   * `npm:resolve:19`) — bumped when the resolution computation or the document
+   * `npm:resolve:20`) — bumped when the resolution computation or the document
    * shape changes behavior.
    */
   readonly resolutionTag: string;

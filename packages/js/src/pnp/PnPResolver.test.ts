@@ -145,6 +145,54 @@ describe("PnpResolver", () => {
     );
   });
 
+  it("gives the pool to a delivered package and withholds it from the sources", () => {
+    /* The split that decides where strictness pays. A DELIVERED package that
+       imports what it never declared is npm's problem, not this build's — no
+       amount of refusing fixes `reactcss`, and it resolves everywhere else. The
+       SOURCES are the opposite: an undeclared import there means the package
+       this build is about to publish is broken, and its author can fix it. */
+    const resolver = new PnpResolver(
+      manifest(
+        [
+          ["postprocessing", "ref-pp", { postprocessing: "ref-pp" }],
+          ["three", "ref-three", { three: "ref-three" }],
+        ],
+        { three: "ref-three" },
+        {}
+      ),
+      ROOT,
+      []
+    );
+    expect(resolver.locationOf("three", path.join(ROOT, ".fabr-tree/ref-pp/index.js"))).to.equal(
+      path.join(ROOT, ".fabr-tree/ref-three")
+    );
+    /* The same name, asked from the sources, is not answered: their declared
+       surface is exactly what this project wrote down. */
+    expect(resolver.locationOf("three", path.join(ROOT, "src/index.ts"))).to.equal(undefined);
+  });
+
+  it("withholds the pool from a package the manifest excludes", () => {
+    /* The manifest bars the packages this project built. Their own row still
+       answers everything they declared — the exclusion is about the pool, not
+       about the package. */
+    const state = manifest(
+      [
+        ["@shorthand/ui", "ref-ui", { "@shorthand/ui": "ref-ui", lodash: "ref-lodash" }],
+        ["lodash", "ref-lodash", {}],
+        ["three", "ref-three", {}],
+      ],
+      { three: "ref-three" },
+      {}
+    );
+    state.fallbackExclusionList = [["@shorthand/ui", ["ref-ui"]]];
+    const resolver = new PnpResolver(state, ROOT, []);
+    const inside = path.join(ROOT, ".fabr-tree/ref-ui/index.js");
+    /* Declared: answered by its own row. */
+    expect(resolver.locationOf("lodash", inside)).to.equal(path.join(ROOT, ".fabr-tree/ref-lodash"));
+    /* Undeclared: not answered, though the pool holds it. */
+    expect(resolver.locationOf("three", inside)).to.equal(undefined);
+  });
+
   it("merges the tables of rows that share a location, so both names work inside it", () => {
     /* An alias and the real package are one directory; a file inside it cannot
      * say which row it is, and both spellings must resolve. */

@@ -627,11 +627,12 @@ describe("NPMRepository metadata memo", () => {
     expect(requirements).to.be.an("array");
   });
 
-  it("treats non-optional peerDependencies as ordinary requirements", async () => {
+  it("treats peerDependencies as requirements, an optional one attach-only", async () => {
     /* The plugin pattern: the peer joins the joint pin like any requirement
        ("present at a compatible version"); sharing holds by construction in a
        strict closure. An optional-flagged peer ("if present, must match") is
-       never auto-installed — npm parity. */
+       never auto-installed — npm parity — but is still carried, because the
+       requirer has to be able to REACH it when a consumer does provide it. */
     const url = `${REG}/plugin/1.0.0`;
     const meta = metadataFor("plugin", "1.0.0", { lodash: "^4.0.0" }, {
       peerDependencies: { eslint: "^9.0.0", typescript: ">=5" },
@@ -650,6 +651,7 @@ describe("NPMRepository metadata memo", () => {
     expect(requirements).to.deep.equal([
       { pkg: "lodash", constraint: "^4.0.0" },
       { pkg: "eslint", constraint: "^9.0.0", soft: true },
+      { pkg: "typescript", constraint: ">=5", soft: true, attachOnly: true },
     ]);
   });
 
@@ -1620,7 +1622,7 @@ describe("multi-route domains (repository groups)", () => {
     const repo = groupDomain(context, [["@scope/*", PRIV], ["*", REG]]);
     await toPromise(drive(repo, [new RepositoryRef(repo, Name.fromLiteral("app:1.0.0"))]));
     expect(memoKeys).to.have.lengthOf(1);
-    expect(memoKeys[0]).to.contain("npm:resolve:19");
+    expect(memoKeys[0]).to.contain("npm:resolve:20");
     expect(memoKeys[0]).to.contain(`@scope/*=${PRIV}`);
     expect(memoKeys[0]).to.contain(`*=${REG}`);
   });

@@ -45,6 +45,7 @@ import {
   FileSet,
   hashString,
   MemoryFile,
+  PACKAGE_RESOLUTION_PROVENANCE,
   packageNodeSignature,
   PackageFileSet,
 } from "@fabr-build/core";
@@ -128,32 +129,35 @@ const INFO = [
  * undeclared-transitive rule the scoped layout enforced positionally, now
  * enforced by the table.
  *
- * **Fallback is on, deliberately.** `fallbackPool` is the declared surface
- * again, and PnP's try-the-issuer-then-the-pool semantics is what restores the
- * one thing the old hoisted install got right: a package whose typings import a
- * peer it never declared (`postprocessing`'s `three`, whose types are the
- * consumer's `@types/three`) resolves through the pool rather than failing.
- * Scoped to the declared surface, so it forgives phantoms the consumer could
- * have written down, and nothing else. Strictness (an empty pool plus explicit
- * extensions) stays available as policy later.
+ * **Fallback is on, deliberately, and holds the whole closure.** PnP's
+ * try-the-issuer-then-the-pool semantics is what restores the one thing the old
+ * hoisted install got right: a published package that imports something it
+ * never declared. Two shapes of it, both common and neither fixable from here —
+ * a package whose typings import a peer it did not declare (`postprocessing`'s
+ * `three`, whose types are the consumer's `@types/three`), and a package that
+ * plainly requires one (`reactcss` requires `react` and declares nothing at
+ * all). They work under every other package manager because everything is
+ * hoisted where everyone can see it, and a build that refuses them buys no
+ * correctness it can act on.
+ *
+ * The strictness that IS worth keeping stays: the sources being compiled do not
+ * get the fallback (see PnpResolver), because a phantom import in first-party
+ * code is a bug whose author can fix it.
  */
 export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage): IPnpManifest {
   const roots = directDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
-  const rows = new Map<string, Array<[string, IPnpPackageInfo]>>();
   const packages: PackageFileSet[] = [];
+  const seen = new Set<string>();
   for (const pkg of reachablePackages(roots)) {
-    const reference = referenceOf(pkg);
-    const existing = rows.get(pkg.packageName) ?? [];
-    rows.set(pkg.packageName, existing);
     /* One row per (name, reference). Two delivered INSTANCES can carry one
      * identity — a graph is a set of nodes, not of objects — and by
      * {@link assertSamePackageNode} they are then the same node, so the second
      * would be a duplicate row rather than a distinct one. */
-    if (existing.some(([held]) => held === reference)) {
-      continue;
+    const key = `${pkg.packageName}\0${referenceOf(pkg)}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      packages.push(pkg);
     }
-    packages.push(pkg);
-    existing.push([reference, packageInfo(pkg, reference)]);
   }
   /* ONE dependency table, used by both rows that stand for the sources: the
    * anonymous top-level and, where the sources are a package, the self row.
@@ -161,6 +165,46 @@ export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage): IPnpM
    * longer prefix), so a difference would silently change what the sources can
    * resolve — so they are derived rather than written twice. */
   const topLevel = dependencyList(roots);
+  /* The pool is the whole delivered closure, not the declared surface.
+   *
+   * What it restores is the one thing a hoisted install got right by accident:
+   * a published package that imports something it never declared. The ecosystem
+   * is full of them — `reactcss` requires `react` and declares nothing — and
+   * they work everywhere else because everything is hoisted where everyone can
+   * see it. A build cannot fix those packages, so refusing them buys nothing
+   * and costs every project that depends on one.
+   *
+   * It costs a POOL, not edges: PnP consults it only after a row misses, so
+   * this is N entries rather than the N² a row-per-visible-package would be.
+   * And it aligns the compile with what actually runs — a runnable or a test
+   * mounts a flat node_modules, where all of this resolves anyway, so the
+   * compile was the strictest link rather than the truthful one.
+   *
+   * The sources being compiled are deliberately NOT given it (see PnpResolver):
+   * a phantom import in first-party code is a bug its author can fix, and the
+   * one place the check still pays for itself. */
+  const pool = dependencyList(packages);
+  /* Packages this project BUILT are held to the declared surface, exactly as
+   * the sources are: an undeclared import in one means the package it is about
+   * to publish is broken, and its author is here. The permissiveness above is
+   * for packages nobody here can fix.
+   *
+   * It is not merely a second reading of the compile's own check. A package's
+   * `.js` sources are transpiled and never typechecked (`checkJs: false`), so
+   * their imports are resolution-checked nowhere else; without this the pool
+   * would quietly answer them at the point of USE, in some other target's
+   * bundle, long after the package that got it wrong was built. */
+  const excluded = packages.filter(pkg => !isResolved(pkg));
+  const barred = new Set(excluded);
+  /* Rows built last, because a barred package's row carries the declared
+   * surface the pool would otherwise have answered for it. */
+  const rows = new Map<string, Array<[string, IPnpPackageInfo]>>();
+  for (const pkg of packages) {
+    const reference = referenceOf(pkg);
+    const existing = rows.get(pkg.packageName) ?? [];
+    rows.set(pkg.packageName, existing);
+    existing.push([reference, packageInfo(pkg, reference, barred.has(pkg) ? topLevel : [])]);
+  }
   const selfRow = self && selfPackageRow(self, topLevel);
   const state: IPnpSerializedState = {
     __info: INFO,
@@ -172,8 +216,8 @@ export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage): IPnpM
     dependencyTreeRoots: [],
     enableTopLevelFallback: true,
     ignorePatternData: null,
-    fallbackExclusionList: [],
-    fallbackPool: topLevel,
+    fallbackExclusionList: exclusionList(excluded),
+    fallbackPool: pool,
     packageRegistryData: [
       [null, [[null, { packageLocation: "./", packageDependencies: topLevel, linkType: "SOFT" }]]],
       ...(selfRow ? [selfRow] : []),
@@ -275,17 +319,63 @@ function reachablePackages(roots: ReadonlyArray<PackageFileSet>): PackageFileSet
   return found;
 }
 
-/** One package's row payload: where its content is, and every name it may
- * resolve — its own included, so a package can import itself by name. */
-function packageInfo(pkg: PackageFileSet, reference: string): IPnpPackageInfo {
+/**
+ * One package's row payload: where its content is, and every name it may
+ * resolve — its own included, so a package can import itself by name.
+ *
+ * `supplied` is the compilation's own declared surface, written into the rows of
+ * the packages BARRED from the pool. Those two facts are easy to conflate and
+ * are not the same: the pool is the ecosystem's phantom imports, which a
+ * first-party package has no business leaning on, while the declared surface is
+ * what this project deliberately put in front of everything — a node-builtin
+ * shim (`@dep:path-browserify -> path`) is named once for the whole bundle and
+ * is meant to answer for every package in it. Taking the pool away from a
+ * package must not take that away too, so it is stated in the row instead of
+ * being read from the pool.
+ */
+function packageInfo(pkg: PackageFileSet, reference: string, supplied: ReadonlyArray<[string, PnpDependencyTarget]> = []): IPnpPackageInfo {
+  const own = new Map<string, PnpDependencyTarget>([
+    [pkg.packageName, reference],
+    ...dependencyList(pkg.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)),
+  ]);
+  for (const [name, target] of supplied) {
+    if (!own.has(name)) {
+      own.set(name, target);
+    }
+  }
   return {
     packageLocation: `./${treeMountOf(pkg)}/`,
-    packageDependencies: [
-      [pkg.packageName, reference] as [string, PnpDependencyTarget],
-      ...dependencyList(pkg.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)),
-    ].sort(byText(([name]) => name)),
+    packageDependencies: [...own].sort(byText(([name]) => name)),
     linkType: "HARD",
   };
+}
+
+/** Whether a package arrived from a repository — its provenance carries a
+ * resolution step — as opposed to being built by a target of this project. The
+ * question provenance exists to answer, so no property of the content itself is
+ * consulted. */
+function isResolved(pkg: PackageFileSet): boolean {
+  for (let step = pkg.origin; step !== undefined; step = step.parent) {
+    if (step.kind === PACKAGE_RESOLUTION_PROVENANCE) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** The packages barred from the fallback pool, in PnP's `[name, [references]]`
+ * shape and sorted for byte-stability. */
+function exclusionList(excluded: ReadonlyArray<PackageFileSet>): Array<[string, string[]]> {
+  const byName = new Map<string, string[]>();
+  for (const pkg of excluded) {
+    const held = byName.get(pkg.packageName) ?? [];
+    byName.set(pkg.packageName, held);
+    const reference = referenceOf(pkg);
+    if (!held.includes(reference)) {
+      held.push(reference);
+    }
+  }
+  return [...byName].map(([name, references]): [string, string[]] => [name, [...references].sort()]).sort(byText(([name]) => name));
 }
 
 /** Edges as PnP dependency entries, sorted and deduplicated by name (a graph
