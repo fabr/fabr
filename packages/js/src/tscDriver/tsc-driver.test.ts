@@ -23,7 +23,7 @@ import * as os from "os";
 import * as path from "path";
 import type { IPnpSerializedState, PnpDependencyTarget } from "../PnPManifest";
 import { PnpResolver } from "../pnp/PnPResolver";
-import { main, relativizeBuildRoot, resolutionFor, rewriteDeclaration } from "./tsc-driver";
+import { assertDrivableCompiler, main, relativizeBuildRoot, resolutionFor, rewriteDeclaration } from "./tsc-driver";
 
 /** A staged workspace: sources, a tsconfig, a manifest, and a store the
  * manifest's locations point into through the same link a build step stages. */
@@ -899,5 +899,22 @@ describe("relativizeBuildRoot", () => {
     const expected = 'a("src/a.tsx"); b("src/b.tsx");';
     expect(relativizeBuildRoot(text, "/build/root")).to.equal(expected);
     expect(relativizeBuildRoot(text, "/build/root/")).to.equal(expected);
+  });
+});
+
+describe("assertDrivableCompiler", () => {
+  it("accepts the releases carrying the compiler API this driver uses", () => {
+    expect(() => assertDrivableCompiler("5.4.5")).to.not.throw();
+    expect(() => assertDrivableCompiler("6.0.3")).to.not.throw();
+  });
+
+  it("rejects TypeScript 7 as a different job, not a stricter one", () => {
+    /* 7's entry point exports version information and nothing else, so an
+     * unchecked run dies on an undefined host member instead. */
+    expect(() => assertDrivableCompiler("7.0.2")).to.throw(/driver of its own/);
+  });
+
+  it("rejects a compiler predating the resolution hooks", () => {
+    expect(() => assertDrivableCompiler("4.9.5")).to.throw(/find none of the build's dependencies/);
   });
 });

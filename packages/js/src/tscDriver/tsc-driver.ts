@@ -148,11 +148,40 @@ interface ITypeScript {
   createModuleResolutionCache(currentDirectory: string, getCanonicalFileName: (name: string) => string, options?: CompilerOptions): unknown;
 }
 
-/** The compiler releases whose resolution hooks this driver installs
- * (`resolveModuleNameLiterals` landed in 5.0). An older one would silently
- * resolve through the filesystem — i.e. find nothing — so it fails loudly
- * instead. */
+/** The compiler releases this driver can drive.
+ *
+ * The floor is where its resolution hooks exist (`resolveModuleNameLiterals`
+ * landed in 5.0); an older compiler would silently resolve through the
+ * filesystem — i.e. find nothing.
+ *
+ * The ceiling is the classic compiler API itself. TypeScript 7 is the Go port:
+ * its `typescript` entry point exports `version` and `versionMajorMinor` and
+ * nothing else, with the compiler reachable only through a separate `unstable/`
+ * surface. Everything below (`createProgram`, the CompilerHost, the resolution
+ * hooks) is gone, so 7 is not a stricter version of this driver's job but a
+ * different one, and wants its own driver rather than a branch in this one.
+ * Checked by version rather than by feature probe so the diagnosis names the
+ * cause — an unchecked 7 fails deep inside on an undefined host instead. */
 const MINIMUM_TYPESCRIPT = 5;
+const MAXIMUM_TYPESCRIPT = 6;
+
+/** Reject a compiler this driver cannot drive, naming which way it is out of
+ * range — the alternative is failing later on an undefined host member, which
+ * says nothing about the compiler being wrong. */
+export function assertDrivableCompiler(version: string): void {
+  const major = Number(version.split(".")[0]);
+  if (major >= MINIMUM_TYPESCRIPT && major <= MAXIMUM_TYPESCRIPT) {
+    return;
+  }
+  const range = `${MINIMUM_TYPESCRIPT}.x-${MAXIMUM_TYPESCRIPT}.x`;
+  throw new Error(
+    major > MAXIMUM_TYPESCRIPT
+      ? `fabr's TypeScript driver drives typescript ${range}, but found ${version}: TypeScript ${major} exposes no compiler API to drive ` +
+        "(its entry point is version information alone) and needs a driver of its own. Pin ${TYPESCRIPT} to a 6.x or 5.x release."
+      : `fabr's TypeScript driver drives typescript ${range}, but found ${version}: it resolves modules through hooks added in ` +
+        `${MINIMUM_TYPESCRIPT}.0, so an older compiler would find none of the build's dependencies.`
+  );
+}
 
 /** An emitted declaration file, in each of its spellings. */
 const DECLARATION_FILE = /\.d\.[cm]?ts$/;
@@ -536,9 +565,7 @@ export function main(argv: string[]): number {
   // are not available at compile time).
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const ts = require("typescript") as ITypeScript;
-  if (Number(ts.version.split(".")[0]) < MINIMUM_TYPESCRIPT) {
-    throw new Error(`fabr's TypeScript driver needs typescript ${MINIMUM_TYPESCRIPT}.0 or newer (found ${ts.version})`);
-  }
+  assertDrivableCompiler(ts.version);
   const root = process.cwd();
   const configPath = path.resolve(root, projectOf(argv));
   if (!fs.existsSync(configPath)) {
