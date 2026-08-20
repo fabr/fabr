@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sed -n '95,120p' packages/core/src/model/BuildModel.ts)",
+      "Bash(sed -n '575,600p' packages/core/src/model/BuildContext.ts)",
+      "Bash(sed -n '864,975p' packages/core/src/model/BuildContext.ts)",
+      "Bash(yarn bootstrap *)",
+      "Bash(yarn --silent node -e 'console.log\\(process.env.PATH.split\\(\":\"\\).slice\\(0,3\\).join\\(\"\\\\n\"\\)\\)')",
+      "Bash(yarn exec *)",
+      "Bash(FABR_KEY_LOG=/tmp/keys-y1.log yarn fabr test @fabr-build/core)",
+      "Bash(FABR_KEY_LOG=/tmp/keys-y2.log yarn fabr test @fabr-build/core)",
+      "Bash(sed -n 25,120p /Users/nkeynes/src/fabr/packages/core/src/core/RunnableFileSet.test.ts)",
+      "Bash(sed -n 20,90p /Users/nkeynes/src/fabr/packages/core/src/core/SymlinkFile.test.ts)",
+      "Bash(sed -n 25,110p /Users/nkeynes/src/fabr/packages/core/src/core/SourceFileSource.test.ts)",
+      "Bash(tar xzf *)",
+      "Bash(yarn jest *)"
+    ]
+  }
+}
