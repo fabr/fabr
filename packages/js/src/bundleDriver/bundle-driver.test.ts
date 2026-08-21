@@ -28,7 +28,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { isBareSpecifier, main, packageOf, rewriteStyledImport, unresolvedHelp } from "./bundle-driver";
+import { isBareSpecifier, main, packageOf, rewriteStyledImport, treeOf, unresolvedHelp } from "./bundle-driver";
 
 describe("packageOf", () => {
   it("takes the first segment of an unscoped specifier", () => {
@@ -198,5 +198,66 @@ describe("the bundle driver's single-variant rule, over real esbuild", () => {
      * under. */
     publishing({ ".": { require: "./cjs.cjs" } });
     assert.deepEqual(await facesIn("esm"), ["CJS_COPY"]);
+  });
+});
+
+describe("a styled import written as a package subpath", () => {
+  let work: string;
+
+  beforeEach(() => {
+    work = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-styled-"));
+    const pkg = path.join(work, "node_modules/styledpkg");
+    fs.mkdirSync(pkg, { recursive: true });
+    fs.writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ name: "styledpkg", version: "1.0.0" }));
+    /* What css_compile would have lowered the .scss to; the .scss itself is a
+     * source, and never reaches the bundle. */
+    fs.writeFileSync(path.join(pkg, "styles.module.css"), ".styled { color: STYLED_MARKER; }\n");
+    fs.writeFileSync(path.join(work, "entry.mjs"), 'import "styledpkg/styles.module.scss";\nconsole.log("app");\n');
+  });
+
+  afterEach(() => {
+    fs.rmSync(work, { recursive: true, force: true });
+    process.exitCode = undefined;
+  });
+
+  /* An `import` statement in an esm bundle is the bundle's OWN kind, which is
+   * exactly where the driver declines to re-resolve. The redirect to the
+   * lowered stylesheet has to happen anyway — esbuild cannot resolve a .scss,
+   * so declining without rewriting first fails the build. */
+  it("is redirected to the lowered stylesheet even when its kind is the bundle's own", async () => {
+    const options = {
+      entries: [{ in: "entry.mjs", out: "bundle" }],
+      external: [],
+      platform: "browser",
+      format: "esm",
+      target: "es2021",
+      minify: false,
+      sourcemap: false,
+      outdir: "out",
+    };
+    fs.writeFileSync(path.join(work, "options.json"), JSON.stringify(options));
+    const cwd = process.cwd();
+    try {
+      process.chdir(work);
+      await main(["--options=options.json"]);
+    } finally {
+      process.chdir(cwd);
+    }
+    assert.equal(process.exitCode ?? 0, 0, "the bundle should have succeeded");
+    assert.ok(fs.readFileSync(path.join(work, "out", "bundle.css"), "utf8").includes("STYLED_MARKER"));
+  });
+});
+
+describe("treeOf", () => {
+  it("answers the pooled tree a staged path belongs to", () => {
+    assert.equal(treeOf(".fabr-tree/abc123/lib/deep/sub"), ".fabr-tree/abc123");
+    assert.equal(treeOf("/work/w-1/.fabr-tree/abc123"), "/work/w-1/.fabr-tree/abc123");
+  });
+
+  it("leaves a path outside the pool as it is", () => {
+    /* The workspace's own sources, staged at the bundle root: no tree to name,
+     * so the path itself remains the key. */
+    assert.equal(treeOf("/work/w-1/src/App"), "/work/w-1/src/App");
+    assert.equal(treeOf(undefined), "");
   });
 });

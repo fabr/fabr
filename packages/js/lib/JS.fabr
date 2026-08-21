@@ -438,7 +438,7 @@ default npm_repository @npm {
 # swapped in by overriding the global.
 js_script @fabr-build/js-tools/bundle-driver {
     entry = ../bundleDriver/bundle-driver.js;
-    deps = ${ESBUILD};
+    deps = ${ESBUILD} ../pnp/PnPResolver.js ../pnp/PackageExports.js;
 }
 
 # The CSS compiler `css_compile` runs (the default `CSS_COMPILER`): Sass

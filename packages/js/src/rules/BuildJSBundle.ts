@@ -35,6 +35,7 @@
 import {
   BUILD_OPERATION,
   Computable,
+  Constraints,
   FileSet,
   FileSetRef,
   MemoryFile,
@@ -45,7 +46,7 @@ import {
   RunnableFileSet,
   TargetContext,
 } from "@fabr-build/core";
-import { compileContents, JSTarget, parseJSTarget } from "../JSPackage";
+import { compileContents, formatJSTarget, JSTarget, parseJSTarget } from "../JSPackage";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
 import { treeMountOf } from "../PnPManifest";
 import {
@@ -212,22 +213,47 @@ function composeBundle(context: TargetContext, inputs: IBundleInputs): Computabl
 }
 
 function buildJsBundle(context: TargetContext): Computable<RuleResult> {
-  const config = Computable.forAll(
+  return Computable.forAll(
     [context.getGlobalString("JS_TARGET"), context.getGlobalString("BUILD_TYPE")],
-    (target, buildType) => ({ target, buildType })
+    (target, buildType) => {
+      const jsTarget = parseJSTarget(target);
+      /* A bundle asks for its inputs as ESM whatever it ships as. Only ESM
+       * carries the import graph a bundler needs: `require` hands back a
+       * namespace built at run time, so every export of a required module must
+       * survive, and tree-shaking becomes impossible. Lowering to CommonJS is
+       * lossy, and the bundler re-emits everything anyway — so the loss buys
+       * nothing and costs whatever the unused half of each dependency weighs.
+       *
+       * The mirror of the test compile's swap to `commonjs`, and set the same
+       * way: component-wise (the ES version and environment are the target's
+       * own), unconditionally, so a target already emitting ESM re-spells the
+       * same target and shares the one compile by cache key.
+       *
+       * What it does NOT decide is the shipped format — that stays
+       * {@link buildBundleOptions}'s reading of JS_TARGET, so a browser bundle
+       * still lands as an iife. */
+      const inputTarget = Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: "esm" }) });
+      return buildWithInputs(context, jsTarget, buildType, inputTarget);
+    }
   );
+}
+
+function buildWithInputs(
+  context: TargetContext,
+  jsTarget: JSTarget,
+  buildType: string,
+  inputTarget: Constraints
+): Computable<RuleResult> {
   return Computable.forAll(
     [
-      context.getFileProperty("srcs"),
-      context.getContainedFileProperty("entry"),
-      context.getFileProperty("deps"),
-      config,
+      context.getFileProperty("srcs", inputTarget),
+      context.getContainedFileProperty("entry", inputTarget),
+      context.getFileProperty("deps", inputTarget),
       context.getGlobalRunnable("JS_BUNDLER"),
       context.getRewrite("output"),
       context.getMap("defines"),
     ],
-    (srcSources, entrySources, depSources, { target, buildType }, bundler, rewrite, defineMap) => {
-      const jsTarget = parseJSTarget(target);
+    (srcSources, entrySources, depSources, bundler, rewrite, defineMap) => {
       /* esbuild `define` takes code text per identifier; a map value is that
        * text verbatim (esbuild's own contract — no probing). Sub-maps have no
        * meaning as code text, so defines is flat by contract. */

@@ -44,6 +44,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { PnpResolver } from "../pnp/PnPResolver";
 import type { IBundleOptions } from "../JSBundle";
 
 /* Minimal structural typing for the slice of esbuild's API we use — esbuild is
@@ -154,11 +155,64 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
   const external = new Set(options.external);
   const nativeKind = options.format === "cjs" ? "require-call" : "import-statement";
   const otherKind = nativeKind === "require-call" ? "import-statement" : "require-call";
-  /* One resolved answer per bare specifier *per importing directory*, reused
-   * whatever the importer kind. The kind is what the cache exists to collapse;
-   * the directory is not interchangeable — node resolution walks up from it, so
-   * two importers under nested installs legitimately reach different copies. */
+  /* One resolved answer per bare specifier, per the thing resolution is a
+   * function of, reused whatever the importer kind — the kind is what the cache
+   * exists to collapse.
+   *
+   * What that thing is differs by mode. Resolving through node's own search, the
+   * importing DIRECTORY is not interchangeable: the walk up from it decides, so
+   * two importers under nested installs legitimately reach different copies.
+   * Resolving through a manifest there is no walk — a bare specifier is answered
+   * from the importer's PACKAGE — so every directory within one pooled tree
+   * shares an answer, and keying by directory only splits it into as many
+   * entries as the package has directories. On a large graph that is the
+   * difference between resolving each dependency once and resolving it for every
+   * folder that mentions it. */
+  const byPackage = usesManifest();
   const variantCache = new Map<string, IOnResolveResult>();
+  /* Only the manifest's own view of who-sees-what is wanted here, never a
+   * resolution: the conditions are irrelevant to {@link PnpResolver.locationOf}. */
+  const manifest = byPackage ? PnpResolver.load(process.cwd(), []) : undefined;
+  const kindMatters = new Map<string, boolean>();
+
+  /**
+   * Whether the importer's kind can change which file this package answers with
+   * — i.e. whether it is worth spending a resolve to pin it.
+   *
+   * A package publishing no `exports` cannot: without a map the choice falls to
+   * `mainFields`, which reads the same however the import was written. One whose
+   * map never mentions `import` or `require` cannot either. Anything else might,
+   * and gets pinned.
+   *
+   * Deliberately syntactic, and deliberately one-sided. Modelling the map well
+   * enough to prove two conditions agree would be resolving it — the job left to
+   * esbuild — and being wrong that way is invisible: the package simply arrives
+   * twice and the bundle grows. So every uncertainty (no manifest, no location,
+   * an unreadable package.json) answers `true`, which costs a resolve and
+   * nothing else.
+   */
+  function kindCanMatter(specifier: string, importer: string): boolean {
+    if (manifest === undefined) {
+      return true;
+    }
+    const location = manifest.locationOf(packageOf(specifier), importer);
+    if (location === undefined) {
+      return true;
+    }
+    const known = kindMatters.get(location);
+    if (known !== undefined) {
+      return known;
+    }
+    let matters = true;
+    try {
+      const json = JSON.parse(fs.readFileSync(path.join(location, "package.json"), "utf8")) as { exports?: unknown };
+      matters = json.exports !== undefined && json.exports !== null && mentionsKind(json.exports);
+    } catch {
+      /* Unreadable: assume it matters. */
+    }
+    kindMatters.set(location, matters);
+    return matters;
+  }
 
   return {
     name: "fabr-resolver",
@@ -211,12 +265,17 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
          * written relatively or as a package subpath — CSS resolves by the same
          * rules as JS, so where the specifier came from cannot change it. */
         const specifier = rewriteStyledImport(args.path);
-        const variantKey = `${args.resolveDir}\0${specifier}`;
+        const variantKey = `${byPackage ? treeOf(args.resolveDir) : args.resolveDir}\0${specifier}`;
         const cached = variantCache.get(variantKey);
         if (cached) {
           return cached;
         }
 
+        if (specifier === args.path && !kindCanMatter(specifier, args.importer ?? args.resolveDir ?? "")) {
+          /* esbuild's own resolution answers this identically, and does it
+           * without a round trip back out to us. */
+          return null;
+        }
         const resolved = await resolveSingleVariant(build, { ...args, path: specifier }, nativeKind, otherKind);
         if (resolved) {
           variantCache.set(variantKey, resolved);
@@ -286,6 +345,29 @@ async function resolveSingleVariant(
  * not import fabr's own modules at runtime).
  */
 const PNP_DATA_FILE = ".pnp.data.json";
+
+/** Whether an `exports` map names either of the conditions the importer's kind
+ * selects, anywhere within it. A map that never mentions them answers the same
+ * whichever way it is asked. */
+export function mentionsKind(exports: unknown): boolean {
+  if (Array.isArray(exports)) {
+    return exports.some(mentionsKind);
+  }
+  if (typeof exports !== "object" || exports === null) {
+    return false;
+  }
+  return Object.entries(exports as Record<string, unknown>).some(
+    ([key, value]) => key === "import" || key === "require" || key === "module-sync" || mentionsKind(value)
+  );
+}
+
+/** The pooled tree a staged path belongs to — `.fabr-tree/<hash>`, which under a
+ * manifest IS the importing package — or the path itself if it lies outside the
+ * pool (the workspace's own sources, staged at the bundle root). */
+export function treeOf(dir: string | undefined): string {
+  const match = /^(.*\.fabr-tree\/[^/]+)/.exec(dir ?? "");
+  return match ? match[1] : (dir ?? "");
+}
 
 /**
  * Whether this bundle resolves through a PnP manifest, which esbuild reads

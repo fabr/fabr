@@ -20,6 +20,7 @@ version number.
 TSC=@npm:typescript:5.4.5:tsc becomes TYPESCRIPT=@npm:typescript:5.4.5.
 - Add Yarn PnP resolution support, enabled currently for our owned tools.
 - Rewrite module-specifiers for ESM targets where required.
+- `js_bundle` now requests ESM format inputs regardless of target
 
 ## Fabr 0.2.1
 @fabr-build/core:
