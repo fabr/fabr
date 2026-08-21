@@ -45,7 +45,17 @@ import { NpmPublishIdentity } from "./NPMProtocol";
 /** Fields fabr computes from the target itself — a `metadata` key naming one is
  *  rejected (it would be silently overridden), and a seed copy is dropped (fabr
  *  recomputes it for the built layout, so the source's value would be wrong). */
-const COMPUTED_FIELDS = new Set(["name", "version", "type", "main", "types", "bin", "dependencies", "peerDependencies"]);
+const COMPUTED_FIELDS = new Set([
+  "name",
+  "version",
+  "type",
+  "main",
+  "types",
+  "exports",
+  "bin",
+  "dependencies",
+  "peerDependencies",
+]);
 
 /** Fields stripped from an imported package.json (and rejected in `metadata`):
  *  they collide with what fabr owns — the tarball contents (`files`,
@@ -235,6 +245,98 @@ function encodeMap(map: PropertyMap): Record<string, unknown> {
   return Object.fromEntries([...map].map(([key, value]) => [key, encodeMetadataValue(value, false)]));
 }
 
+/** One subpath's export conditions, in the order node reads them: `types` before
+ *  any runtime condition (a runtime condition matches everything, so anything
+ *  after it is unreachable), `default` last. A single-emit package gives every
+ *  entry one runtime condition; a dual-emit one adds `import`/`require` beside it
+ *  without changing the shape. */
+type ExportConditions = Map<string, string>;
+
+/** The stem the compile emits a source under — its name without the extension —
+ *  or undefined for a source that emits no module of its own to name a subpath
+ *  for: a declaration file, a stylesheet, a JSON resource. */
+function emittedStem(name: string): string | undefined {
+  if (/\.d\.[cm]?ts$/.test(name)) {
+    return undefined;
+  }
+  return /^(.*)\.[cm]?[jt]sx?$/.exec(name)?.[1];
+}
+
+/** A single-condition entry renders as the bare target path npm's own manifests
+ *  use; anything richer as the condition object. */
+function renderConditions(conditions: ExportConditions): unknown {
+  const sole = conditions.size === 1 ? conditions.get("default") : undefined;
+  return sole ?? Object.fromEntries(conditions);
+}
+
+/**
+ * The generated `exports` map: one entry per source the target names in
+ * `exports`, published at the subpath its emitted file already sits at —
+ * `index.js` at the package root is `.`, anything else is `./` plus its path
+ * without the extension.
+ *
+ * So declaring exports **narrows** rather than renames: every subpath is exactly
+ * what path resolution reached before there was a map at all, and what the map
+ * adds is that everything undeclared becomes private. That is what lets entry
+ * points be declared in source terms — fabr owns the emit layout, so an author
+ * naming target paths would be writing against a layout that is not theirs.
+ *
+ * `./package.json` is published unconditionally. Every other file is public only
+ * if the author names its source; package.json has no source to name, being
+ * generated here, and a file nobody is able to declare should not become
+ * unreachable merely because the map exists. Consumers do reach for it by name
+ * (version banners, plugin discovery), so the alternative is an
+ * `ERR_PACKAGE_PATH_NOT_EXPORTED` with no remedy available to either side.
+ */
+function exportsByConvention(files: FileSet, sources: string[]): Record<string, unknown> | undefined {
+  if (sources.length === 0) {
+    return undefined;
+  }
+  const names = new Set([...files].map(([filename]) => filename));
+  const entries = new Map<string, ExportConditions>();
+  for (const source of sources) {
+    const stem = emittedStem(source);
+    if (stem === undefined || !names.has(`${stem}.js`)) {
+      throw new Error(`'${source}' is named in exports, but produces no JavaScript in the built package`);
+    }
+    const conditions: ExportConditions = new Map();
+    if (names.has(`${stem}.d.ts`)) {
+      conditions.set("types", `./${stem}.d.ts`);
+    }
+    conditions.set("default", `./${stem}.js`);
+    entries.set(stem === "index" ? "." : `./${stem}`, conditions);
+  }
+  /* Sorted, so the map does not carry the source set's iteration order into the
+   * manifest (its bytes are a cache input). `.` sorts first on its own — it is a
+   * prefix of every other subpath. Explicit subpaths are order-independent to
+   * node; only patterns are ordered, and there are none here yet. */
+  const map = new Map<string, unknown>(
+    [...entries.keys()].sort().map(subpath => [subpath, renderConditions(entries.get(subpath)!)])
+  );
+  map.set("./package.json", "./package.json");
+  return Object.fromEntries(map);
+}
+
+/** Everything the generated manifest is computed from. */
+export interface IPackageJsonInputs {
+  /** The package's built contents — where the entry points are found. */
+  files: FileSet;
+  /** An imported source package.json, whose descriptive fields are carried over. */
+  seed?: Record<string, unknown>;
+  name: string;
+  version?: string;
+  /** Declared requirements from `deps` → `dependencies`. */
+  declared: (Requirement | undefined)[];
+  /** Declared requirements from `provided_deps` → `peerDependencies`. */
+  provided: (Requirement | undefined)[];
+  jsTarget: JSTarget;
+  metadata: PropertyMap;
+  /** The sources named in `exports`, by the name they compile under. Empty for a
+   *  target declaring none, which publishes no map — `main`/`types` by convention
+   *  and every emitted file reachable, exactly as before. */
+  exports?: string[];
+}
+
 /**
  * Generate the package.json for the built package: the computed identity leads,
  * then the imported seed (minus the stripped/computed fields), then the declared
@@ -243,16 +345,17 @@ function encodeMap(map: PropertyMap): Record<string, unknown> {
  * (`peerDependencies`). Computed fields always win; metadata may name neither a
  * computed nor a stripped field.
  */
-export function createPackageJson(
-  files: FileSet,
-  seed: Record<string, unknown> | undefined,
-  name: string,
-  version: string | undefined,
-  declared: (Requirement | undefined)[],
-  providedDeclared: (Requirement | undefined)[],
-  jsTarget: JSTarget,
-  metadata: PropertyMap
-): MemoryFile {
+export function createPackageJson({
+  files,
+  seed,
+  name,
+  version,
+  declared,
+  provided,
+  jsTarget,
+  metadata,
+  exports = [],
+}: IPackageJsonInputs): MemoryFile {
   /* The identity leads (the conventional reading order — name, then version), so
    * it is placed before the seed and metadata are copied in; a key keeps its
    * first-placed position, while the computed assignments below still win on value. */
@@ -284,6 +387,13 @@ export function createPackageJson(
   if (names.has("index.d.ts")) {
     packageJson.types = "index.d.ts";
   }
+  /* `main`/`types` stay by convention alongside the map: node ignores them once
+   * `exports` exists, and they remain the entry point for everything that reads
+   * a manifest without resolving one (bundlers, older tooling). */
+  const exported = exportsByConvention(files, exports);
+  if (exported !== undefined) {
+    packageJson.exports = exported;
+  }
 
   const bin = binByConvention(files);
   if (bin.size > 0) {
@@ -295,7 +405,7 @@ export function createPackageJson(
     packageJson.dependencies = Object.fromEntries(dependencies);
   }
   /* provided_deps → peerDependencies: the host supplies the one shared copy. */
-  const peerDependencies = peerDependenciesOf(providedDeclared);
+  const peerDependencies = peerDependenciesOf(provided);
   if (peerDependencies.size > 0) {
     packageJson.peerDependencies = Object.fromEntries(peerDependencies);
   }

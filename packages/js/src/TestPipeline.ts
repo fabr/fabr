@@ -31,7 +31,9 @@
  *              [--setup=<module|./staged path>]… <test files…>
  *
  * red exit status on failure, report written as CTRF. `--env` names the
- * environment the tests are compiled for; `--update-snapshots` asks the runner
+ * environment the suite RUNS in, which follows the `dom` source flag rather than
+ * the target it is emitted for (see where it is read, below);
+ * `--update-snapshots` asks the runner
  * to rewrite recorded expectations instead of failing on them (see
  * TEST_EXPECTATIONS), which the pipeline then offers back to the source tree;
  * each `--setup` names something every test process loads before any test file,
