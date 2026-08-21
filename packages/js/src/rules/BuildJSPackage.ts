@@ -27,6 +27,7 @@ import {
   BUILD_OPERATION,
   Computable,
   FileSet,
+  FileSetRef,
   FileSource,
   PackageFileSet,
   readJsonFile,
@@ -39,6 +40,24 @@ import {
 } from "@fabr-build/core";
 import { compileContents, ICompiledContents, parseJSTarget, stripPackageJson, withBinShebangs } from "../JSPackage";
 import { createPackageJson } from "../PackageJson";
+
+/**
+ * Read one collected `exports` source as the plain file set it must be. The
+ * property names this package's own entry points, so a dependency or a flag
+ * there can only have been meant for `deps` — and unioning a package's files in
+ * as sources would compile them as if they were ours, which is worth an error
+ * rather than a silent miscompile.
+ */
+function asExportSource(source: FileSet | FileSetRef): FileSet {
+  const base = source instanceof FileSetRef ? source.source : source;
+  if (base instanceof PackageFileSet) {
+    throw new Error(`exports names this package's own source files: '${base.packageName}' is a dependency`);
+  }
+  if (base instanceof Flag) {
+    throw new Error(`exports names this package's own source files: '${base.name}' is a flag`);
+  }
+  return source instanceof FileSetRef ? source.select() : source;
+}
 
 function buildJsPackage(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
@@ -73,6 +92,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
         srcs: context.getFileProperty("srcs"),
         resources: context.getFileProperty("resources"),
         tests: context.getFileProperty("tests"),
+        exports: context.getFileProperty("exports"),
         deps: depSources,
         provided: providedSources,
       });
@@ -87,12 +107,17 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
       return Computable.forAll(
         [gathered, testDeps, testResources, expectations],
         (
-          { srcs: srcSets, resources: resourceSets, tests: testSets, deps, provided },
+          { srcs: srcSets, resources: resourceSets, tests: testSets, exports: exportSets, deps, provided },
           testDepSources,
           testResourceSources,
           expectationSources
         ) => {
-        const sources = FileSet.unionAll(...srcSets);
+        /* The declared entry points are compile inputs in their own right, so a
+         * target may name one that `srcs` does not cover (js_bundle's `entry` has
+         * the same relation to its `srcs`). Naming the same file twice is not a
+         * conflict — a union is by file identity, not by arrival. */
+        const exported = FileSet.unionAll(...exportSets.map(asExportSource));
+        const sources = FileSet.unionAll(...srcSets, exported);
         const tests = FileSet.unionAll(...testSets);
         /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
         const seedJson = sources.get("package.json").then(file => file && readJsonFile(file, toJsonObject));
@@ -154,16 +179,20 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
              * installed npm command is launchable — derived from the bin convention,
              * not a hand-written source shebang (see withBinShebangs). */
             return withBinShebangs(delivered).then(shebanged => {
-              const packageJson = createPackageJson(
-                shebanged,
+              const packageJson = createPackageJson({
+                files: shebanged,
                 seed,
-                context.name,
-                version?.toString(),
+                name: context.name,
+                version: version?.toString(),
                 declared,
-                providedDeclared,
+                provided: providedDeclared,
                 jsTarget,
-                metadata
-              );
+                metadata,
+                /* Named by their source names: the map is generated from the
+                 * emitted counterparts, so an author declares entry points in
+                 * the terms they wrote them in, never in fabr's emit layout. */
+                exports: [...exported].map(([sourceName]) => sourceName),
+              });
               const assembled = FileSet.unionAll(shebanged, new FileSet(new Map([["package.json", packageJson]])));
               return new PackageFileSet(assembled, context.name, version?.toString(), carried);
             });

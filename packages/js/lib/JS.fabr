@@ -217,6 +217,9 @@ targetdef js_package {
     # they are emitted as peerDependencies (not dependencies) in the generated
     # package.json rather than bundled. Used by a plugin for @fabr-build/core.
     provided_deps = FILES;
+    # The package's public entry points, named as the sources they compile from.
+    # Sources are added to the compiled srcs list (if not already present).
+    exports = FILES;
     # Files that ship as package content WITHOUT being compiled, including
     # already-built JavaScript (note there are definitionally no checks on
     # the included files.)

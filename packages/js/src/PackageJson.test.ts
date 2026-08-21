@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { FileSet, PropertyMap, Requirement } from "@fabr-build/core";
+import { FileSet, MemoryFile, PropertyMap, Requirement } from "@fabr-build/core";
 import { createPackageJson, dependencyBlock, dependencyRequirement, optionalPeers, requirementSpec } from "./PackageJson";
 import { JSTarget } from "./JSPackage";
 
@@ -30,7 +30,33 @@ async function generate(
   metadata: PropertyMap,
   declared: (Requirement | undefined)[] = []
 ): Promise<Record<string, unknown>> {
-  const file = createPackageJson(new FileSet(new Map()), seed, "pkg", "1.0.0", declared, [], JS_TARGET, metadata);
+  const file = createPackageJson({
+    files: new FileSet(new Map()),
+    seed,
+    name: "pkg",
+    version: "1.0.0",
+    declared,
+    provided: [],
+    jsTarget: JS_TARGET,
+    metadata,
+  });
+  return JSON.parse(await file.readString());
+}
+
+/** Generate a package.json for a package whose built contents are `files`
+ *  (name → anything; only the names are read) and whose declared entry points
+ *  are the sources `exports`. */
+async function generateExports(files: string[], exports: string[]): Promise<Record<string, unknown>> {
+  const file = createPackageJson({
+    files: new FileSet(new Map(files.map(name => [name, MemoryFile.from("")]))),
+    name: "pkg",
+    version: "1.0.0",
+    declared: [],
+    provided: [],
+    jsTarget: JS_TARGET,
+    metadata: new Map(),
+    exports,
+  });
   return JSON.parse(await file.readString());
 }
 
@@ -117,7 +143,15 @@ describe("createPackageJson", () => {
 
   it("emits provided_deps requirements as peerDependencies, omitting the block when empty", async () => {
     const provided: Requirement[] = [{ pkg: "@fabr-build/core", constraint: "^0.1.0" }];
-    const file = createPackageJson(new FileSet(new Map()), undefined, "pkg", "1.0.0", [], provided, JS_TARGET, new Map());
+    const file = createPackageJson({
+      files: new FileSet(new Map()),
+      name: "pkg",
+      version: "1.0.0",
+      declared: [],
+      provided,
+      jsTarget: JS_TARGET,
+      metadata: new Map(),
+    });
     const pkg = JSON.parse(await file.readString()) as Record<string, unknown>;
     expect(pkg.peerDependencies).to.deep.equal({ "@fabr-build/core": "^0.1.0" });
     expect(await generate(undefined, new Map())).to.not.have.property("dependencies");
@@ -134,6 +168,48 @@ describe("createPackageJson", () => {
     };
     await rejects(new Map([["name", ["x"]]]), /set by fabr/);
     await rejects(new Map([["scripts", ["x"]]]), /not carried/);
+  });
+
+  it("publishes no exports map for a target declaring no entry points", async () => {
+    const pkg = await generateExports(["index.js", "index.d.ts", "server.js"], []);
+    expect(pkg).to.not.have.property("exports");
+    /* The convention entry points are unaffected either way. */
+    expect(pkg.main).to.equal("index.js");
+    expect(pkg.types).to.equal("index.d.ts");
+  });
+
+  it("publishes each declared entry point at the subpath its emitted file sits at", async () => {
+    const pkg = await generateExports(
+      ["index.js", "index.d.ts", "server.js", "server.d.ts", "lib/api.js", "lib/api.d.ts", "internal.js"],
+      ["index.ts", "server.ts", "lib/api.ts"]
+    );
+    expect(pkg.exports).to.deep.equal({
+      ".": { types: "./index.d.ts", default: "./index.js" },
+      "./lib/api": { types: "./lib/api.d.ts", default: "./lib/api.js" },
+      "./server": { types: "./server.d.ts", default: "./server.js" },
+      "./package.json": "./package.json",
+    });
+    /* Undeclared, so unreachable — that narrowing is what the map is for. */
+    expect(Object.keys(pkg.exports as object)).to.not.contain("./internal");
+    /* main/types stay by convention: node ignores them once a map exists, but
+     * whatever reads a manifest without resolving one still needs them. */
+    expect(pkg.main).to.equal("index.js");
+  });
+
+  it("renders an entry with no declarations as the bare target path", async () => {
+    const pkg = await generateExports(["index.js", "helper.js"], ["helper.jsx"]);
+    expect(pkg.exports).to.deep.equal({ "./helper": "./helper.js", "./package.json": "./package.json" });
+  });
+
+  it("rejects an entry point that emits no JavaScript", async () => {
+    for (const source of ["styles.scss", "data.json", "types.d.ts", "missing.ts"]) {
+      try {
+        await generateExports(["index.js", "styles.css", "data.json", "types.d.ts"], [source]);
+        expect.fail(`expected '${source}' to be rejected`);
+      } catch (err) {
+        expect((err as Error).message).to.match(/named in exports, but produces no JavaScript/);
+      }
+    }
   });
 });
 

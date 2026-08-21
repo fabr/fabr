@@ -81,6 +81,7 @@ js_package @fabr-build/core {
 
 js_package @fabr-build/js {
   srcs = packages/js/src:**/*.ts packages/js:lib/** README.md COPYING -> LICENSE;
+  exports = packages/js/src:index.ts;
   tests = packages/js/src:**/*.test.ts;
   deps = @pkg:@types/node;
   provided_deps = @fabr-build/core;
