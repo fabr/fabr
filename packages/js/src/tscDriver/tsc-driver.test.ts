@@ -23,7 +23,15 @@ import * as os from "os";
 import * as path from "path";
 import type { IPnpSerializedState, PnpDependencyTarget } from "../PnPManifest";
 import { PnpResolver } from "../pnp/PnPResolver";
-import { assertDrivableCompiler, main, relativizeBuildRoot, resolutionFor, rewriteDeclaration } from "./tsc-driver";
+import {
+  assertDrivableCompiler,
+  emittedPathOf,
+  emittedSpecifier,
+  main,
+  relativizeBuildRoot,
+  resolutionFor,
+  rewriteDeclaration,
+} from "./tsc-driver";
 
 /** A staged workspace: sources, a tsconfig, a manifest, and a store the
  * manifest's locations point into through the same link a build step stages. */
@@ -899,6 +907,135 @@ describe("relativizeBuildRoot", () => {
     const expected = 'a("src/a.tsx"); b("src/b.tsx");';
     expect(relativizeBuildRoot(text, "/build/root")).to.equal(expected);
     expect(relativizeBuildRoot(text, "/build/root/")).to.equal(expected);
+  });
+});
+
+describe("emittedPathOf", () => {
+  const layout = { rootDir: "/work/src", outDir: "/work/build", preserveJsx: false };
+
+  it("re-roots a source into the output directory under its runtime extension", () => {
+    expect(emittedPathOf("/work/src/a/b.ts", layout)).to.equal("/work/build/a/b.js");
+    expect(emittedPathOf("/work/src/b.tsx", layout)).to.equal("/work/build/b.js");
+    expect(emittedPathOf("/work/src/b.mts", layout)).to.equal("/work/build/b.mjs");
+    expect(emittedPathOf("/work/src/b.cts", layout)).to.equal("/work/build/b.cjs");
+  });
+
+  it("keeps a .tsx extension where the project preserves JSX", () => {
+    expect(emittedPathOf("/work/src/b.tsx", { ...layout, preserveJsx: true })).to.equal("/work/build/b.jsx");
+    /* Only the JSX extension is affected — a .ts still emits JavaScript. */
+    expect(emittedPathOf("/work/src/b.ts", { ...layout, preserveJsx: true })).to.equal("/work/build/b.js");
+  });
+
+  it("emits beside the source when the project has no outDir", () => {
+    expect(emittedPathOf("/work/src/b.ts", { preserveJsx: false })).to.equal("/work/src/b.js");
+  });
+
+  it("names nothing for a source this compile does not emit", () => {
+    /* A declaration emits no JavaScript at all... */
+    expect(emittedPathOf("/work/src/b.d.ts", layout)).to.equal(undefined);
+    /* ...an unknown extension is another producer's artifact... */
+    expect(emittedPathOf("/work/src/b.scss", layout)).to.equal(undefined);
+    /* ...and a source outside the root is a dependency, named by a package. */
+    expect(emittedPathOf("/elsewhere/b.ts", layout)).to.equal(undefined);
+    /* An outDir with no rootDir leaves the mapping under-determined. */
+    expect(emittedPathOf("/work/src/b.ts", { outDir: "/work/build", preserveJsx: false })).to.equal(undefined);
+  });
+});
+
+describe("emittedSpecifier", () => {
+  it("names a sibling relatively, and says so explicitly", () => {
+    expect(emittedSpecifier("/build", "/build/bar.js")).to.equal("./bar.js");
+    expect(emittedSpecifier("/build", "/build/dir/index.js")).to.equal("./dir/index.js");
+  });
+
+  it("climbs where the target is above the importer", () => {
+    expect(emittedSpecifier("/build/deep", "/build/bar.js")).to.equal("../bar.js");
+  });
+});
+
+describe("ES-module specifier rewriting", () => {
+  /** Stage a project emitting `module` over a fixed set of sources, compile it,
+   * and answer what was emitted. */
+  function compileModules(module: string): { status: number; output: string; js: string; declaration: string } {
+    const work = fixture();
+    stage(work.root, [], [], [], undefined, module);
+    const src = path.join(work.root, "src");
+    fs.mkdirSync(path.join(src, "dir"), { recursive: true });
+    fs.writeFileSync(path.join(src, "bar.ts"), "export const b = 1;\n");
+    fs.writeFileSync(path.join(src, "dir", "index.ts"), "export const d = 2;\n");
+    fs.writeFileSync(path.join(src, "side.ts"), "export {};\n");
+    fs.writeFileSync(path.join(src, "types.ts"), "export type X = string;\n");
+    /* `make`'s return type is never imported by name, so the declaration for
+     * anything inferred from it can only be written as an import type. */
+    fs.writeFileSync(path.join(src, "shape.ts"), "export interface Shape {\n  n: number;\n}\nexport const make = (): Shape => ({ n: 1 });\n");
+    fs.writeFileSync(
+      path.join(src, "foo.ts"),
+      'import { b } from "./bar";\n' +
+        'import { make } from "./shape";\n' +
+        'export * from "./dir";\n' +
+        'export type { X } from "./types";\n' +
+        'import "./side";\n' +
+        'const lazy = (): Promise<unknown> => import("./bar.js");\n' +
+        "export const code = 'import { b } from \"./bar\";';\n" +
+        "export const thing = make();\n" +
+        "export const v = b + lazy.length;\n"
+    );
+    const { status, output } = compile(work.root);
+    return {
+      status,
+      output,
+      js: fs.readFileSync(path.join(work.root, "build/foo.js"), "utf8"),
+      declaration: fs.readFileSync(path.join(work.root, "build/foo.d.ts"), "utf8"),
+    };
+  }
+
+  it("names the emitted file, so node's ESM loader can resolve what tsc wrote", () => {
+    const { status, output, js } = compileModules("esnext");
+    expect(status, output).to.equal(0);
+    expect(js).to.contain('from "./bar.js"');
+    /* A directory resolves to its index — the case an extension append gets
+     * wrong, and the reason this is driven by resolution. */
+    expect(js).to.contain('from "./dir/index.js"');
+    /* A side-effect import carries no binding but still has to load. */
+    expect(js).to.contain('import "./side.js"');
+    expect(js).to.contain('import("./bar.js")');
+  });
+
+  it("leaves a specifier that already names the emitted file alone", () => {
+    /* The source writes `./bar.js`, which resolves to bar.ts and emits as
+     * bar.js: the rewrite is idempotent across both authoring styles. */
+    const { js } = compileModules("esnext");
+    expect(js).to.not.contain('import("./bar.js.js")');
+  });
+
+  it("rewrites a string constant holding import syntax not at all", () => {
+    /* The hazard a pass over the emitted text cannot avoid: this is a value, not
+     * an import, and changing it would change what the program computes. */
+    const { js } = compileModules("esnext");
+    expect(js).to.contain('const code = \'import { b } from "./bar";\'');
+  });
+
+  it("corrects the declarations beside the JavaScript", () => {
+    const { declaration } = compileModules("esnext");
+    expect(declaration).to.contain('from "./types.js"');
+    expect(declaration).to.contain('from "./dir/index.js"');
+  });
+
+  it("corrects the import types the declaration emitter writes for itself", () => {
+    /* Extensionless, this is TS2834 for a consumer resolving node16/nodenext —
+     * and under the skipLibCheck such a consumer almost certainly sets, the
+     * error is suppressed and the type quietly becomes `any`. */
+    const { declaration } = compileModules("esnext");
+    expect(declaration).to.contain('import("./shape.js").Shape');
+  });
+
+  it("leaves a CommonJS emit as written", () => {
+    /* CommonJS resolves an extensionless specifier itself, so there is nothing
+     * to correct and nothing fabr should be changing. */
+    const { status, output, js } = compileModules("commonjs");
+    expect(status, output).to.equal(0);
+    expect(js).to.contain('require("./bar")');
+    expect(js).to.contain('require("./dir")');
   });
 });
 

@@ -82,8 +82,66 @@ interface IEmitResult {
   emitSkipped: boolean;
   diagnostics: readonly Diagnostic[];
 }
+/* The syntax tree, as far as the specifier rewrite reads it: every node carries
+ * a `kind`, and the four forms that can hold a module specifier expose the
+ * members their `update` factory takes back. */
+interface INode {
+  kind: number;
+}
+interface IStringLiteralNode extends INode {
+  text: string;
+}
+interface ISourceFileNode extends INode {
+  fileName: string;
+}
+interface IImportDeclarationNode extends INode {
+  modifiers?: unknown;
+  importClause?: unknown;
+  moduleSpecifier?: INode;
+  /** `assert`/`with` — named `assertClause` before TypeScript 5.3. */
+  attributes?: unknown;
+  assertClause?: unknown;
+}
+interface IExportDeclarationNode extends INode {
+  modifiers?: unknown;
+  isTypeOnly: boolean;
+  exportClause?: unknown;
+  moduleSpecifier?: INode;
+  attributes?: unknown;
+  assertClause?: unknown;
+}
+interface ICallExpressionNode extends INode {
+  expression: INode;
+  typeArguments?: unknown;
+  arguments: readonly INode[];
+}
+/** `import("./x").T` — the one specifier an emitter writes of its own accord. */
+interface IImportTypeNode extends INode {
+  argument: INode;
+  qualifier?: unknown;
+  typeArguments?: unknown;
+  isTypeOf: boolean;
+  /** `assert`/`with` — named `assertions` before TypeScript 5.3. */
+  attributes?: unknown;
+  assertions?: unknown;
+}
+interface ILiteralTypeNode extends INode {
+  literal: INode;
+}
+/** A transform over one file's tree, in the compiler's own two-step shape. */
+type TransformerFactory = (context: unknown) => (sourceFile: ISourceFileNode) => INode;
+interface ICustomTransformers {
+  before?: TransformerFactory[];
+  afterDeclarations?: TransformerFactory[];
+}
 interface IProgram {
-  emit(targetSourceFile?: SourceFile, writeFile?: WriteFile): IEmitResult;
+  emit(
+    targetSourceFile?: SourceFile,
+    writeFile?: WriteFile,
+    cancellationToken?: unknown,
+    emitOnlyDtsFiles?: boolean,
+    customTransformers?: ICustomTransformers
+  ): IEmitResult;
 }
 type WriteFile = (fileName: string, text: string, writeByteOrderMark: boolean) => void;
 
@@ -119,6 +177,49 @@ interface ITypeScript {
   version: string;
   ModuleKind: { CommonJS: number; ES2015: number; Node16: number; NodeNext: number; Preserve?: number };
   ModuleResolutionKind: { Node10?: number; NodeJs?: number; Node16: number; NodeNext: number; Bundler: number };
+  JsxEmit: { Preserve: number };
+  SyntaxKind: { ImportKeyword: number };
+  /* Node construction and traversal, for the specifier rewrite. The `update`
+   * forms take the node's own members back, so a caller passes through
+   * everything it is not changing. */
+  factory: {
+    createStringLiteral(text: string): IStringLiteralNode;
+    updateImportDeclaration(
+      node: INode,
+      modifiers: unknown,
+      importClause: unknown,
+      moduleSpecifier: INode,
+      attributes: unknown
+    ): INode;
+    updateExportDeclaration(
+      node: INode,
+      modifiers: unknown,
+      isTypeOnly: boolean,
+      exportClause: unknown,
+      moduleSpecifier: INode,
+      attributes: unknown
+    ): INode;
+    updateCallExpression(node: INode, expression: INode, typeArguments: unknown, args: readonly INode[]): INode;
+    createLiteralTypeNode(literal: INode): INode;
+    /** Positionally stable across the releases this driver drives: 5.3 renamed
+     * the third parameter `assertions` to `attributes` without moving it. */
+    updateImportTypeNode(
+      node: INode,
+      argument: INode,
+      attributes: unknown,
+      qualifier: unknown,
+      typeArguments: unknown,
+      isTypeOf: boolean
+    ): INode;
+  };
+  visitNode(node: INode, visitor: (node: INode) => INode): INode;
+  visitEachChild(node: INode, visitor: (node: INode) => INode, context: unknown): INode;
+  isImportDeclaration(node: INode): boolean;
+  isExportDeclaration(node: INode): boolean;
+  isCallExpression(node: INode): boolean;
+  isStringLiteral(node: INode): boolean;
+  isImportTypeNode(node: INode): boolean;
+  isLiteralTypeNode(node: INode): boolean;
   sys: {
     newLine: string;
     useCaseSensitiveFileNames: boolean;
@@ -536,6 +637,218 @@ export function relativizeBuildRoot(text: string, root: string): string {
   return text.includes(prefix) ? text.split(prefix).join("") : text;
 }
 
+/** Where a compile's sources are rooted, where its output lands, and whether
+ * `.tsx` keeps its own extension. */
+interface IEmitLayout {
+  rootDir?: string;
+  outDir?: string;
+  preserveJsx: boolean;
+}
+
+/** The runtime extension each source extension emits as; absent means this
+ * compiler emits nothing for it. */
+const EMITTED_EXTENSION = new Map<string, string>([
+  [".ts", ".js"],
+  [".tsx", ".js"],
+  [".mts", ".mjs"],
+  [".cts", ".cjs"],
+  [".js", ".js"],
+  [".jsx", ".js"],
+  [".mjs", ".mjs"],
+  [".cjs", ".cjs"],
+  [".json", ".json"],
+]);
+
+/**
+ * Where this compile's output for `source` lands, or undefined where it has none
+ * to name: a declaration, another producer's extension, a source outside
+ * `rootDir`, or an `outDir` whose `rootDir` is unstated (the compiler infers
+ * that from the whole file list, which is not given here). Undefined means leave
+ * the specifier as written. With no `outDir` the output sits beside its source.
+ */
+export function emittedPathOf(source: string, layout: IEmitLayout): string | undefined {
+  if (DECLARATION_FILE.test(source)) {
+    return undefined;
+  }
+  const extension = path.extname(source);
+  const emitted = extension === ".tsx" && layout.preserveJsx ? ".jsx" : EMITTED_EXTENSION.get(extension);
+  if (emitted === undefined) {
+    return undefined;
+  }
+  const renamed = (name: string): string => name.slice(0, -extension.length) + emitted;
+  if (layout.outDir === undefined) {
+    return renamed(source);
+  }
+  if (layout.rootDir === undefined) {
+    return undefined;
+  }
+  const relative = path.relative(layout.rootDir, source);
+  return relative.startsWith("..") || path.isAbsolute(relative) ? undefined : path.join(layout.outDir, renamed(relative));
+}
+
+/** The specifier naming `target` from a file emitted into `from`: relative, said
+ * explicitly (a bare `bar.js` would name a package), in forward slashes. */
+export function emittedSpecifier(from: string, target: string): string {
+  const relative = path.relative(from, target).split(path.sep).join("/");
+  return relative.startsWith(".") ? relative : `./${relative}`;
+}
+
+/**
+ * Rewrite each relative module specifier to name the file this compile emitted
+ * for it — `./bar` to `./bar.js`, `./dir` to `./dir/index.js` — as node's ESM
+ * loader requires and tsc will never write (microsoft/TypeScript#16577; fabr
+ * can, having chosen the emit format).
+ *
+ * Two things this must not be simplified into. It resolves rather than appending
+ * an extension, because only resolution tells a directory from a file and knows
+ * `./bar.js` already names `bar.ts` — which is also what makes it idempotent;
+ * anything resolving nowhere, or to something this compile does not emit, is
+ * left as written. And it is a transform rather than a pass over the emitted
+ * text, because a string constant holding import syntax is indistinguishable
+ * from an import to a scanner. Synthesized literals survive emit precisely
+ * because the emitter reprints original source text and a factory node has none.
+ */
+function specifierRewriter(
+  ts: ITypeScript,
+  resolve: (specifier: string, containingFile: string) => string | undefined,
+  layout: IEmitLayout
+): TransformerFactory {
+  return context => sourceFile => {
+    const emitted = emittedPathOf(sourceFile.fileName, layout);
+    if (emitted === undefined) {
+      return sourceFile;
+    }
+    const from = path.dirname(emitted);
+    /** The replacement for a specifier node, or undefined to leave it be — which
+     * covers anything that is not a rewritable specifier, so a caller may hand
+     * over whatever sits in the position. */
+    const rewrite = (node: INode | undefined): INode | undefined => {
+      if (node === undefined || !ts.isStringLiteral(node)) {
+        return undefined;
+      }
+      const specifier = (node as IStringLiteralNode).text;
+      if (!specifier.startsWith(".")) {
+        return undefined;
+      }
+      const resolved = resolve(specifier, sourceFile.fileName);
+      const target = resolved === undefined ? undefined : emittedPathOf(resolved, layout);
+      if (target === undefined) {
+        return undefined;
+      }
+      const next = emittedSpecifier(from, target);
+      return next === specifier ? undefined : ts.factory.createStringLiteral(next);
+    };
+    /* One matcher per form that can hold a module specifier: rebuilt node, or
+     * undefined for "not mine, or nothing to change". */
+    const forForm = <T extends INode>(is: (node: INode) => boolean, rebuild: (node: T) => INode | undefined) => {
+      return (node: INode): INode | undefined => (is(node) ? rebuild(node as T) : undefined);
+    };
+    const rewritten = [
+      forForm<IImportDeclarationNode>(
+        node => ts.isImportDeclaration(node),
+        decl => {
+          const next = rewrite(decl.moduleSpecifier);
+          return next && ts.factory.updateImportDeclaration(decl, decl.modifiers, decl.importClause, next, decl.attributes ?? decl.assertClause);
+        }
+      ),
+      forForm<IExportDeclarationNode>(
+        node => ts.isExportDeclaration(node),
+        decl => {
+          const next = rewrite(decl.moduleSpecifier);
+          return (
+            next &&
+            ts.factory.updateExportDeclaration(decl, decl.modifiers, decl.isTypeOnly, decl.exportClause, next, decl.attributes ?? decl.assertClause)
+          );
+        }
+      ),
+      /* `import("./x").T` — what the declaration emitter writes for a type it
+       * cannot otherwise name. Extensionless it is TS2834 for a node16/nodenext
+       * consumer, and under skipLibCheck that is suppressed and the type quietly
+       * becomes `any` instead. */
+      forForm<IImportTypeNode>(
+        node => ts.isImportTypeNode(node),
+        type => {
+          const next = ts.isLiteralTypeNode(type.argument) ? rewrite((type.argument as ILiteralTypeNode).literal) : undefined;
+          return (
+            next &&
+            ts.factory.updateImportTypeNode(
+              type,
+              ts.factory.createLiteralTypeNode(next),
+              type.attributes ?? type.assertions,
+              type.qualifier,
+              type.typeArguments,
+              type.isTypeOf
+            )
+          );
+        }
+      ),
+      /* `import("./x")` — the dynamic form, which reaches the emitted chunk verbatim. */
+      forForm<ICallExpressionNode>(
+        node => ts.isCallExpression(node),
+        call => {
+          const next = call.expression.kind === ts.SyntaxKind.ImportKeyword ? rewrite(call.arguments[0]) : undefined;
+          return next && ts.factory.updateCallExpression(call, call.expression, call.typeArguments, [next, ...call.arguments.slice(1)]);
+        }
+      ),
+    ];
+    const visit = (node: INode): INode => {
+      for (const match of rewritten) {
+        const next = match(node);
+        if (next !== undefined) {
+          return next;
+        }
+      }
+      return ts.visitEachChild(node, visit, context);
+    };
+    return ts.visitNode(sourceFile, visit);
+  };
+}
+
+/**
+ * The layout an ES-module emit is rewritten in, or undefined where no rewrite
+ * applies: CommonJS resolves extensionless specifiers itself, `preserve` exists
+ * to keep what was written, and `node16`/`nodenext` decide per file from the
+ * enclosing package's type — a judgment this driver would have to reproduce
+ * rather than read.
+ */
+function emitLayoutOf(ts: ITypeScript, options: CompilerOptions, root: string): IEmitLayout | undefined {
+  if (!emitsEsModules(ts, options)) {
+    return undefined;
+  }
+  const directory = (value: unknown): string | undefined => (typeof value === "string" ? path.resolve(root, value) : undefined);
+  return {
+    rootDir: directory(options.rootDir),
+    outDir: directory(options.outDir),
+    preserveJsx: options.jsx === ts.JsxEmit.Preserve,
+  };
+}
+
+/**
+ * Resolve as the compilation does, for the rewrite to ask what a relative
+ * specifier names. The compiler's own entry point rather than the host hook
+ * above, which exists to answer PACKAGE names from the manifest — a relative
+ * specifier probes where it is told, and is the compiler's business either way.
+ * The cache keeps asking again (the program resolved these once already) from
+ * costing a second probe per import.
+ */
+function moduleResolver(
+  ts: ITypeScript,
+  host: ICompilerHost,
+  options: CompilerOptions,
+  root: string
+): (specifier: string, containingFile: string) => string | undefined {
+  const cache = ts.createModuleResolutionCache(root, name => host.getCanonicalFileName(name), options);
+  return (specifier, containingFile) =>
+    ts.resolveModuleName(specifier, containingFile, options, host, cache).resolvedModule?.resolvedFileName;
+}
+
+/** Whether the project emits ES modules: the ES2015..ESNext block, which stops
+ * short of `node16`/`nodenext` (per-file) and `preserve` (as written). */
+function emitsEsModules(ts: ITypeScript, options: CompilerOptions): boolean {
+  const module = options.module;
+  return typeof module === "number" && module >= ts.ModuleKind.ES2015 && module < ts.ModuleKind.Node16;
+}
+
 /** The first specifier in `text` that points inside the tree pool, if any. */
 function treeReferenceIn(text: string, from: string, treeRoots: ReadonlyArray<string>): string | undefined {
   for (const [, , , specifier] of text.matchAll(QUOTED_SPECIFIER)) {
@@ -598,17 +911,30 @@ export function main(argv: string[]): number {
     host,
     projectReferences: parsed.projectReferences,
   });
+  /* Relative specifiers are corrected during emit, where resolution answers what
+   * each names; the rewrites below then act on the text that produces. One
+   * rewriter serves both phases — the JavaScript and the declarations land in
+   * the same directory, so they name each other identically. */
+  const layout = emitLayoutOf(ts, parsed.options, root);
+  const rewriter = layout && specifierRewriter(ts, moduleResolver(ts, host, parsed.options, root), layout);
+  const transformers = rewriter && { before: [rewriter], afterDeclarations: [rewriter] };
   /* Declarations are rewritten on their way out rather than re-read afterwards:
    * the emitter hands each file over here, so nothing incorrect is ever written
    * and the step's output is collected from a tree that was never wrong. */
-  const emitted = program.emit(undefined, (fileName, text, writeByteOrderMark) => {
-    const rewritable = resolver !== undefined && DECLARATION_FILE.test(fileName);
-    const rewritten = rewritable ? rewriteDeclaration(fileName, text, resolver) : text;
-    /* After the declaration rewrite, which reports a pool path as a fault: this
-     * one relativizes the compile's own root, and a fault must not be quietly
-     * tidied into something that looks fine. */
-    host.writeFile(fileName, relativizeBuildRoot(rewritten, root), writeByteOrderMark);
-  });
+  const emitted = program.emit(
+    undefined,
+    (fileName, text, writeByteOrderMark) => {
+      const rewritable = resolver !== undefined && DECLARATION_FILE.test(fileName);
+      const rewritten = rewritable ? rewriteDeclaration(fileName, text, resolver) : text;
+      /* After the declaration rewrite, which reports a pool path as a fault: this
+       * one relativizes the compile's own root, and a fault must not be quietly
+       * tidied into something that looks fine. */
+      host.writeFile(fileName, relativizeBuildRoot(rewritten, root), writeByteOrderMark);
+    },
+    undefined,
+    false,
+    transformers
+  );
   /* Sorted and deduplicated as the CLI does it: the pre-emit set already
    * carries the project's own option diagnostics, so the config errors overlap
    * it and would otherwise print twice. */
@@ -708,8 +1034,7 @@ export function resolutionFor(ts: ITypeScript, options: CompilerOptions): number
    * CommonJS one from TypeScript 6, which is the whole reason this function
    * exists. Anything else the ecosystem still emits (`amd`, `umd`, `system`,
    * `none`) takes `node10`, which every compiler accepts. */
-  const esModules = typeof module === "number" && module >= ts.ModuleKind.ES2015 && module < ts.ModuleKind.Node16;
-  if (esModules || (ts.ModuleKind.Preserve !== undefined && module === ts.ModuleKind.Preserve)) {
+  if (emitsEsModules(ts, options) || (ts.ModuleKind.Preserve !== undefined && module === ts.ModuleKind.Preserve)) {
     return kinds.Bundler;
   }
   /* An unstated `module` is treated as the CommonJS it may well default to:
