@@ -370,12 +370,12 @@ function installResolution(
    * files carries declarations.
    *
    * A condition names an implementation and this compilation wants types, so one
-   * answer is not always the answer: a package may describe its faces under
+   * answer is not always the answer: a package may describe its formats under
    * `import`/`require` and keep its only declaration file behind a `types` key
    * listed AFTER them, which reading the first answer and stopping renders
    * untyped. The package's preferences are walked in its own order until one of
    * them declares something — which is the compiler's own behaviour, and why a
-   * types-preferring pass would be wrong: a package whose `require` face has its
+   * types-preferring pass would be wrong: a package whose `require` format has its
    * own declarations beside it must still get those, not the generic ones a
    * trailing `types` names.
    *
@@ -643,6 +643,11 @@ interface IEmitLayout {
   rootDir?: string;
   outDir?: string;
   preserveJsx: boolean;
+  /** What `.js` output is renamed to (`--emit-extension`), for a caller shipping
+   *  this compile beside another one's. Only the extension a plain `.ts`/`.js`
+   *  source lands on moves: a source that pinned its own format (`.mts`, `.cjs`)
+   *  already names one and keeps it. See {@link RENAMED_EXTENSION}. */
+  jsExtension?: string;
 }
 
 /** The runtime extension each source extension emits as; absent means this
@@ -671,10 +676,14 @@ export function emittedPathOf(source: string, layout: IEmitLayout): string | und
     return undefined;
   }
   const extension = path.extname(source);
-  const emitted = extension === ".tsx" && layout.preserveJsx ? ".jsx" : EMITTED_EXTENSION.get(extension);
-  if (emitted === undefined) {
+  const mapped = extension === ".tsx" && layout.preserveJsx ? ".jsx" : EMITTED_EXTENSION.get(extension);
+  if (mapped === undefined) {
     return undefined;
   }
+  /* The rename applies to `.js` alone, so it moves exactly the output whose
+   * format is the compile's to decide; `.mjs`/`.cjs` came from a source that
+   * pinned its own and must not be renamed out of it. */
+  const emitted = mapped === ".js" && layout.jsExtension !== undefined ? layout.jsExtension : mapped;
   const renamed = (name: string): string => name.slice(0, -extension.length) + emitted;
   if (layout.outDir === undefined) {
     return renamed(source);
@@ -811,7 +820,7 @@ function specifierRewriter(
  * enclosing package's type — a judgment this driver would have to reproduce
  * rather than read.
  */
-function emitLayoutOf(ts: ITypeScript, options: CompilerOptions, root: string): IEmitLayout | undefined {
+function emitLayoutOf(ts: ITypeScript, options: CompilerOptions, root: string, jsExtension?: string): IEmitLayout | undefined {
   if (!emitsEsModules(ts, options)) {
     return undefined;
   }
@@ -820,7 +829,73 @@ function emitLayoutOf(ts: ITypeScript, options: CompilerOptions, root: string): 
     rootDir: directory(options.rootDir),
     outDir: directory(options.outDir),
     preserveJsx: options.jsx === ts.JsxEmit.Preserve,
+    jsExtension,
   };
+}
+
+/**
+ * What each `--emit-extension` renames the compile's own `.js` family to: the
+ * JavaScript, its declaration, and its source map. This table IS the set of
+ * accepted extensions, so what the driver claims to support and what it knows
+ * how to spell cannot drift apart.
+ *
+ * Only the `.js` family appears, because only its format is the compile's to
+ * decide: a `.cjs` emitted from a `.cts` source carries the format that source
+ * pinned, and so does its `.d.cts`.
+ */
+const RENAMED_EXTENSION = new Map<string, ReadonlyArray<readonly [RegExp, string]>>([
+  [
+    ".mjs",
+    [
+      [/\.d\.ts$/, ".d.mts"],
+      [/\.js\.map$/, ".mjs.map"],
+      [/\.js$/, ".mjs"],
+    ],
+  ],
+]);
+
+/**
+ * The name an emitted file ships under once the compile's `.js` family is
+ * renamed — `index.js` → `index.mjs`, `index.d.ts` → `index.d.mts`,
+ * `index.js.map` → `index.mjs.map` — or the name unchanged where the rename does
+ * not reach it.
+ */
+export function renamedOutput(fileName: string, jsExtension: string | undefined): string {
+  for (const [pattern, replacement] of (jsExtension === undefined ? undefined : RENAMED_EXTENSION.get(jsExtension)) ?? []) {
+    if (pattern.test(fileName)) {
+      return fileName.replace(pattern, replacement);
+    }
+  }
+  return fileName;
+}
+
+/**
+ * Repoint a renamed file's own references to its sibling map: the emitted
+ * JavaScript's `//# sourceMappingURL=` comment, and the map's `file` field. Both
+ * name the pre-rename spelling, and a map whose `file` disagrees with the
+ * artifact is what a debugger fails to line up.
+ */
+function retargetSourceMap(fileName: string, text: string, jsExtension: string): string {
+  if (fileName.endsWith(".js.map")) {
+    /* Patched through the parser rather than by pattern: `sourcesContent` embeds
+     * whole source files, so a textual match for the `file` field could as
+     * easily land inside one of them. */
+    const map = JSON.parse(text) as { file?: unknown };
+    if (typeof map.file === "string" && map.file.endsWith(".js")) {
+      map.file = `${map.file.slice(0, -".js".length)}${jsExtension}`;
+    }
+    return JSON.stringify(map);
+  }
+  if (fileName.endsWith(".js")) {
+    /* Anchored at the end of the file, where the emitter puts the link: the same
+     * text can appear earlier inside a string literal in the compiled source —
+     * likely enough in a build tool, which is the kind of package this compiles. */
+    return text.replace(
+      /(\/\/# sourceMappingURL=[^\n]*)\.js\.map(\s*)$/,
+      (whole, prefix: string, tail: string) => `${prefix}${jsExtension}.map${tail}`
+    );
+  }
+  return text;
 }
 
 /**
@@ -915,7 +990,16 @@ export function main(argv: string[]): number {
    * each names; the rewrites below then act on the text that produces. One
    * rewriter serves both phases — the JavaScript and the declarations land in
    * the same directory, so they name each other identically. */
-  const layout = emitLayoutOf(ts, parsed.options, root);
+  const jsExtension = emitExtensionOf(argv);
+  const layout = emitLayoutOf(ts, parsed.options, root, jsExtension);
+  if (jsExtension !== undefined && layout === undefined) {
+    /* Renaming without rewriting is the exact failure `--emit-extension` refuses
+     * `.cjs` for, and it is reachable the other way round too: only an ES-module
+     * emit has its specifiers corrected ({@link emitLayoutOf}), so a CommonJS one
+     * renamed to `.mjs` would ship CommonJS syntax under a name node reads as an
+     * ES module, its extensionless `require`s naming files that are not there. */
+    throw new Error(`tsc-driver: --emit-extension needs an ES-module emit; this project's 'module' produces CommonJS`);
+  }
   const rewriter = layout && specifierRewriter(ts, moduleResolver(ts, host, parsed.options, root), layout);
   const transformers = rewriter && { before: [rewriter], afterDeclarations: [rewriter] };
   /* Declarations are rewritten on their way out rather than re-read afterwards:
@@ -929,7 +1013,13 @@ export function main(argv: string[]): number {
       /* After the declaration rewrite, which reports a pool path as a fault: this
        * one relativizes the compile's own root, and a fault must not be quietly
        * tidied into something that looks fine. */
-      host.writeFile(fileName, relativizeBuildRoot(rewritten, root), writeByteOrderMark);
+      const relativized = relativizeBuildRoot(rewritten, root);
+      /* The rename lands here rather than on the emitted tree afterwards: the
+       * specifiers inside were written by the transformer against the same
+       * layout, so the two agree by construction. Only the file's own map
+       * references still name the pre-rename spelling. */
+      const retargeted = jsExtension === undefined ? relativized : retargetSourceMap(fileName, relativized, jsExtension);
+      host.writeFile(renamedOutput(fileName, jsExtension), retargeted, writeByteOrderMark);
     },
     undefined,
     false,
@@ -1050,6 +1140,30 @@ export function resolutionFor(ts: ITypeScript, options: CompilerOptions): number
 function projectOf(argv: string[]): string {
   const flag = argv.findIndex(arg => arg === "--project" || arg === "-p");
   return flag >= 0 && argv[flag + 1] !== undefined ? argv[flag + 1] : "tsconfig.json";
+}
+
+/**
+ * `--emit-extension <.mjs>`: what this compile's `.js` output is named instead,
+ * so its tree can ship beside another compile's without colliding. A driver
+ * option rather than a compiler one — tsc picks an output extension from the
+ * source's, and has no setting that would move it.
+ *
+ * Only `.mjs` is spelled ({@link RENAMED_EXTENSION}). `.cjs` would additionally
+ * need the CommonJS emit's specifiers rewritten (`require("./util")` does not
+ * find `util.cjs`), which this driver does not do — it rewrites specifiers for
+ * an ES-module emit alone.
+ */
+function emitExtensionOf(argv: string[]): string | undefined {
+  const flag = argv.indexOf("--emit-extension");
+  if (flag < 0) {
+    return undefined;
+  }
+  const extension = argv[flag + 1];
+  if (extension === undefined || !RENAMED_EXTENSION.has(extension)) {
+    const accepted = [...RENAMED_EXTENSION.keys()].map(known => `'${known}'`).join(", ");
+    throw new Error(`tsc-driver: --emit-extension accepts ${accepted}, not '${extension ?? ""}'`);
+  }
+  return extension;
 }
 
 /**

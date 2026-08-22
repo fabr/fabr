@@ -8,8 +8,12 @@
 default NPM_REPOSITORY_URL = https://registry.npmjs.org/;
 
 #
-# The default target for JS output.
-# This is constructed as a pair of <ES-version>-<Module-Format>
+# The default target for JS output, written <ES-version>-<module>-<environment>
+# (the last two optional): es2022, es2022-esm, es6-esm-browser.
+#
+# The module component is `commonjs`, `esm`, or `dual`. `dual` ships BOTH formats
+# of a js_package in one tree — CommonJS as `.js`/`.d.ts` (what `type`, `main`
+# and `types` describe) and ES modules as `.mjs`/`.d.mts` beside it.
 #
 
 default JS_TARGET = es6-esm;
@@ -364,6 +368,11 @@ targetdef js_compile {
     # The package name these sources are importable as, which enables
     # source that imports its own package by name to work correctly.
     package_name = STRING;
+    # What this compile's `.js` output is named instead (only `.mjs`), for the
+    # ES-module format of a dual package: its tree ships beside the CommonJS
+    # format's, which occupies the same names. Emitted specifiers are renamed to
+    # match, so the compile has to know rather than being renamed afterwards.
+    module_extension = STRING;
 }
 
 #

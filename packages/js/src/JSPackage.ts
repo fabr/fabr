@@ -56,8 +56,93 @@ import { type ExportsValue, resolveExports } from "./pnp/PackageExports";
 
 export interface JSTarget {
   version: string;
-  module: "esm" | "commonjs";
+  /** `dual` is esm PLUS a CommonJS compatibility fork, and only a published
+   *  package has two formats to ship — see {@link soleModuleFormat}. */
+  module: "esm" | "commonjs" | "dual";
   environment: "node" | "browser";
+}
+
+/** A target pinned to ONE module format — what any single emitted artifact is
+ *  built from, `dual` having been resolved to a format by whoever pinned it. */
+export type PinnedJSTarget = JSTarget & { module: "esm" | "commonjs" };
+
+/**
+ * The extensions a delivered JavaScript module carries — its own, and the
+ * declaration beside it. An ordinary source emits the plain pair; a source that
+ * pins its own module format (`.mts`, `.cts`) emits the matching pinned pair.
+ *
+ * The ESM pair doubles as what a dual package's ES-module format is renamed to.
+ * The CommonJS format keeps the plain one, so it is byte-identical to a
+ * single-format CommonJS build and the package's `type`, `main` and `types`
+ * describe it without qualification; `.mjs`/`.d.mts` are self-describing, and
+ * reachable only through the `exports` map, i.e. only by tooling new enough to
+ * know them.
+ */
+export const JS_EXTENSION = ".js";
+export const TYPE_EXTENSION = ".d.ts";
+export const ESM_JS_EXTENSION = ".mjs";
+export const ESM_TYPE_EXTENSION = ".d.mts";
+export const CJS_JS_EXTENSION = ".cjs";
+export const CJS_TYPE_EXTENSION = ".d.cts";
+
+/**
+ * Whether an emitted name belongs to the ES-module format — the `.mjs` family a
+ * dual package takes from its ESM compile, and exactly what it must drop from
+ * the CommonJS one.
+ *
+ * The two compiles see the same sources and so emit the same names twice over.
+ * That partition resolves it, and resolves `.mts`/`.cts` with it: a source that
+ * pinned its own format emits under that name from BOTH compiles, and this rule
+ * keeps the copy from the compile whose module setting agrees with the pin — an
+ * `.mts` from the ESM side, a `.cts` from the CommonJS side. Which is also the
+ * only correct choice, since a file's relative specifiers were rewritten to name
+ * the siblings of the format it was emitted in.
+ */
+export function isEsmFormatOutput(name: string): boolean {
+  return name.endsWith(ESM_JS_EXTENSION) || name.endsWith(`${ESM_JS_EXTENSION}.map`) || name.endsWith(ESM_TYPE_EXTENSION);
+}
+
+/** A bin as {@link binByConvention} claims it: an executable directly under
+ *  `bin/`, extension and all. */
+const BIN_ENTRY = /^bin\/[^/]+$/;
+
+/** A delivered file's name without its artifact suffix — the `.map` of a source
+ *  map, then the module or declaration extension — so one module's JavaScript,
+ *  declaration and map all answer the same stem. */
+function artifactStem(name: string): string {
+  const unmapped = name.endsWith(".map") ? name.slice(0, -".map".length) : name;
+  const suffix = /\.d\.[cm]?ts$/.exec(unmapped) ?? /\.[cm]?js$/.exec(unmapped);
+  return suffix === null ? unmapped : unmapped.slice(0, -suffix[0].length);
+}
+
+/**
+ * The two compiles of a dual package reduced to the single tree it ships: each
+ * format keeps only what it is the right producer of ({@link isEsmFormatOutput}).
+ * The CommonJS format is thereby byte-identical to a single-format build, which is
+ * what lets `type`, `main` and `types` describe it without qualification.
+ *
+ * A bin has no second format — it is the package as a PROGRAM, launched by node
+ * and never imported, so there is no condition to select on. Where the CommonJS
+ * format delivers one, the ES-module format's copy is dropped rather than shipped as
+ * a dead file that would also collide for the command name (see
+ * {@link binByConvention}). Where it does NOT — a bin compiled from an `.mts`
+ * source has no CommonJS format at all — the ES-module copy is the only one there
+ * is, and dropping it too would silently leave the package with no bin.
+ */
+export function dualFormatOutputs(commonjs: FileSet, esm: FileSet): FileSet[] {
+  const primary = commonjs.remap(name => (isEsmFormatOutput(name) ? undefined : name));
+  const claimed = new Set([...primary].map(([name]) => name).filter(name => BIN_ENTRY.test(name)).map(artifactStem));
+  const secondary = esm.remap(name =>
+    isEsmFormatOutput(name) && !(BIN_ENTRY.test(name) && claimed.has(artifactStem(name))) ? name : undefined
+  );
+  return [primary, secondary];
+}
+
+/** The one module format a target reads as wherever a single artifact is produced
+ *  — a runnable install, a bundle — since only a published package can ship two.
+ *  `dual` is esm with a CommonJS fork beside it, so alone it reads as esm. */
+export function soleModuleFormat(module: JSTarget["module"]): "esm" | "commonjs" {
+  return module === "commonjs" ? "commonjs" : "esm";
 }
 
 /** ECMAScript version names (es5, es2018, esnext) accepted as a JS target's
@@ -76,21 +161,21 @@ export function canonicalEsLevel(version: string): string {
 }
 
 /**
- * Parse a JS target triple `<esversion>[-commonjs|-esm][-node|-browser]`
- * (e.g. `es2018-esm`, `es6-esm-browser`). Malformed triples — an unknown module
- * or environment component, extra components, a non-ES version — are rejected
- * rather than silently mis-parsed to the defaults.
+ * Parse a JS target triple `<esversion>[-commonjs|-esm|-dual][-node|-browser]`
+ * (e.g. `es2018-esm`, `es6-esm-browser`, `es2022-dual`). Malformed triples — an
+ * unknown module or environment component, extra components, a non-ES version —
+ * are rejected rather than silently mis-parsed to the defaults.
  */
 export function parseJSTarget(target: string): JSTarget {
   const [version, module = "commonjs", environment = "node", ...rest] = target.split("-");
   if (rest.length > 0) {
-    throw new Error(`Malformed JS target '${target}': expected '<esversion>[-commonjs|-esm][-node|-browser]'`);
+    throw new Error(`Malformed JS target '${target}': expected '<esversion>[-commonjs|-esm|-dual][-node|-browser]'`);
   }
   if (!ES_VERSION.test(version)) {
     throw new Error(`Malformed JS target '${target}': '${version}' is not an ECMAScript version (es5, es2018, esnext)`);
   }
-  if (module !== "commonjs" && module !== "esm") {
-    throw new Error(`Malformed JS target '${target}': module must be 'commonjs' or 'esm', not '${module}'`);
+  if (module !== "commonjs" && module !== "esm" && module !== "dual") {
+    throw new Error(`Malformed JS target '${target}': module must be 'commonjs', 'esm' or 'dual', not '${module}'`);
   }
   if (environment !== "node" && environment !== "browser") {
     throw new Error(`Malformed JS target '${target}': environment must be 'node' or 'browser', not '${environment}'`);
@@ -112,14 +197,18 @@ export function formatJSTarget(target: JSTarget): string {
  * per the `es6-esm` default target). `extra` fields (e.g. name/private for a
  * test install) are merged ahead of the computed `type`. Shared by every node
  * install fabr stages to run compiled output — the test runner and js_script.
+ *
+ * Takes a resolved format rather than a target's own module, so a caller holding a
+ * `dual` target must reduce it ({@link soleModuleFormat}) — an install has one
+ * `type` and cannot be both.
  */
-export function moduleTypeFile(module: JSTarget["module"], extra: Record<string, unknown> = {}): MemoryFile {
+export function moduleTypeFile(module: "esm" | "commonjs", extra: Record<string, unknown> = {}): MemoryFile {
   return MemoryFile.from(JSON.stringify({ ...extra, type: module === "esm" ? "module" : "commonjs" }));
 }
 
 /** The conditions a capability probe asks under. Not any one consumer's world:
  * the question is whether the package publishes the subpath at all, so the
- * answer should not turn on which of its faces the eventual importer sees. */
+ * answer should not turn on which of its formats the eventual importer sees. */
 const PROBE_CONDITIONS = new Set(["types", "import", "require", "module-sync", "node", "browser"]);
 
 /**
@@ -512,6 +601,14 @@ export interface ICompileOptions {
    * ESM-for-bundling and CJS-for-tests with no further machinery.
    */
   constraints?: Constraints;
+  /**
+   * What this compile's `.js` output is named instead — `.mjs`, for the ES-module
+   * format of a dual package, whose tree ships beside the CommonJS format's and would
+   * otherwise collide with it name for name. It rides into the compile rather
+   * than being applied to its output afterwards because the emitted specifiers
+   * have to name the renamed siblings.
+   */
+  moduleExtension?: string;
 }
 
 /**
@@ -598,6 +695,7 @@ export function compileJsSources(
     srcs,
     deps: mountedDeps(directDeps),
     ...(options.packageName ? { package_name: options.packageName } : {}),
+    ...(options.moduleExtension ? { module_extension: options.moduleExtension } : {}),
   };
   return context.subTarget("js_compile", inputs, {
     label: "Compiling",

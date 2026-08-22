@@ -121,11 +121,11 @@ describe("the bundle driver's single-variant rule, over real esbuild", () => {
   beforeEach(() => {
     work = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-variant-"));
     /* One package reached two ways: an ESM importer and a CJS importer of the
-     * same name, in one graph. Each face carries a marker, so which of them the
+     * same name, in one graph. Each copy carries a marker, so which of them the
      * bundle ended up holding is readable in the output. */
     fs.mkdirSync(path.join(work, "node_modules"), { recursive: true });
-    fs.writeFileSync(path.join(work, "viaImport.mjs"), 'import { face } from "dualpkg";\nexport const fromImport = face;\n');
-    fs.writeFileSync(path.join(work, "viaRequire.cjs"), 'const { face } = require("dualpkg");\nmodule.exports.fromRequire = face;\n');
+    fs.writeFileSync(path.join(work, "viaImport.mjs"), 'import { marker } from "dualpkg";\nexport const fromImport = marker;\n');
+    fs.writeFileSync(path.join(work, "viaRequire.cjs"), 'const { marker } = require("dualpkg");\nmodule.exports.fromRequire = marker;\n');
     /* Both values are USED, or tree-shaking would decide the question. */
     fs.writeFileSync(
       path.join(work, "entry.mjs"),
@@ -138,17 +138,17 @@ describe("the bundle driver's single-variant rule, over real esbuild", () => {
     process.exitCode = undefined;
   });
 
-  /** Install `dualpkg` with the given `exports` map, both faces present. */
+  /** Install `dualpkg` with the given `exports` map, both copies present. */
   function publishing(exports: unknown): void {
     const pkg = path.join(work, "node_modules/dualpkg");
     fs.mkdirSync(pkg, { recursive: true });
     fs.writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ name: "dualpkg", version: "1.0.0", exports }));
-    fs.writeFileSync(path.join(pkg, "esm.mjs"), 'export const face = "ESM_COPY";\n');
-    fs.writeFileSync(path.join(pkg, "cjs.cjs"), 'module.exports = { face: "CJS_COPY" };\n');
+    fs.writeFileSync(path.join(pkg, "esm.mjs"), 'export const marker = "ESM_COPY";\n');
+    fs.writeFileSync(path.join(pkg, "cjs.cjs"), 'module.exports = { marker: "CJS_COPY" };\n');
   }
 
-  /** Bundle in `format` and answer which faces of the package came out. */
-  async function facesIn(format: "cjs" | "esm"): Promise<string[]> {
+  /** Bundle in `format` and answer which copies of the package came out. */
+  async function copiesIn(format: "cjs" | "esm"): Promise<string[]> {
     const options = {
       entries: [{ in: "entry.mjs", out: `bundle-${format}` }],
       external: [],
@@ -176,8 +176,8 @@ describe("the bundle driver's single-variant rule, over real esbuild", () => {
     publishing({ ".": { import: "./esm.mjs", require: "./cjs.cjs" } });
     /* The bundle's own format decides, and decides once: the `import` site does
      * not get its own copy just for asking differently. */
-    assert.deepEqual(await facesIn("cjs"), ["CJS_COPY"]);
-    assert.deepEqual(await facesIn("esm"), ["ESM_COPY"]);
+    assert.deepEqual(await copiesIn("cjs"), ["CJS_COPY"]);
+    assert.deepEqual(await copiesIn("esm"), ["ESM_COPY"]);
   });
 
   it("stays single when the package publishes a synchronously-loadable entry", async () => {
@@ -187,17 +187,17 @@ describe("the bundle driver's single-variant rule, over real esbuild", () => {
      * matches from either direction is only worth having if it collapses the
      * two, and it would be worth nothing if it forked them instead. */
     publishing({ ".": { "module-sync": "./esm.mjs", require: "./cjs.cjs" } });
-    assert.deepEqual(await facesIn("cjs"), ["ESM_COPY"]);
-    assert.deepEqual(await facesIn("esm"), ["ESM_COPY"]);
+    assert.deepEqual(await copiesIn("cjs"), ["ESM_COPY"]);
+    assert.deepEqual(await copiesIn("esm"), ["ESM_COPY"]);
   });
 
-  it("takes the one face a single-condition package publishes, whatever the format", async () => {
+  it("takes the one copy a single-condition package publishes, whatever the format", async () => {
     /* The other kind: a package with nothing to choose between. The native kind
      * finds nothing and the fallback answers, so a CJS-only package still
      * bundles into an ESM output rather than failing on the kind it was asked
      * under. */
     publishing({ ".": { require: "./cjs.cjs" } });
-    assert.deepEqual(await facesIn("esm"), ["CJS_COPY"]);
+    assert.deepEqual(await copiesIn("esm"), ["CJS_COPY"]);
   });
 });
 

@@ -530,7 +530,7 @@ function installEsmSeam(registry: MockRegistry): void {
       }
       const key = keyFromMockUrl(url);
       /* Force the instance into existence — published under this URL's own key
-       * — before generating the module's face: its export names are what the
+       * — before generating the module's ESM source: its export names are what the
        * importing module links against, and an ESM edge may well be the first
        * thing to reach this mock. */
       registry.publishForEsm(key);
@@ -557,7 +557,7 @@ function withoutHooks<T>(fn: () => T): T {
 }
 
 /**
- * Source for a mocked module's ESM face. The registration is hoisted above
+ * Source for a mocked module's ESM format. The registration is hoisted above
  * every require, so the instance already exists here and its export names are
  * enumerable — which is what lets named imports link.
  */

@@ -46,19 +46,28 @@ async function generate(
 /** Generate a package.json for a package whose built contents are `files`
  *  (name → anything; only the names are read) and whose declared entry points
  *  are the sources `exports`. */
-async function generateExports(files: string[], exports: string[]): Promise<Record<string, unknown>> {
+async function generateExports(
+  files: string[],
+  exports: string[],
+  module: JSTarget["module"] = "commonjs"
+): Promise<Record<string, unknown>> {
   const file = createPackageJson({
     files: new FileSet(new Map(files.map(name => [name, MemoryFile.from("")]))),
     name: "pkg",
     version: "1.0.0",
     declared: [],
     provided: [],
-    jsTarget: JS_TARGET,
+    jsTarget: { ...JS_TARGET, module },
     metadata: new Map(),
     exports,
   });
   return JSON.parse(await file.readString());
 }
+
+/** A dual package's built contents for the given source stems: both formats of
+ *  each, as the two compiles emit them. */
+const dualFiles = (...stems: string[]): string[] =>
+  stems.flatMap(stem => [`${stem}.js`, `${stem}.d.ts`, `${stem}.mjs`, `${stem}.d.mts`]);
 
 describe("createPackageJson", () => {
   it("strips functional fields from an imported package.json but keeps descriptive + unknown ones", async () => {
@@ -199,6 +208,97 @@ describe("createPackageJson", () => {
   it("renders an entry with no declarations as the bare target path", async () => {
     const pkg = await generateExports(["index.js", "helper.js"], ["helper.jsx"]);
     expect(pkg.exports).to.deep.equal({ "./helper": "./helper.js", "./package.json": "./package.json" });
+  });
+
+  it("publishes both formats of a dual package under nested conditions", async () => {
+    const pkg = await generateExports(dualFiles("index", "server"), ["index.ts", "server.ts"], "dual");
+    expect(pkg.exports).to.deep.equal({
+      ".": {
+        import: { types: "./index.d.mts", default: "./index.mjs" },
+        require: { types: "./index.d.ts", default: "./index.js" },
+      },
+      "./server": {
+        import: { types: "./server.d.mts", default: "./server.mjs" },
+        require: { types: "./server.d.ts", default: "./server.js" },
+      },
+      "./package.json": "./package.json",
+    });
+    /* The CommonJS format is what `type`/`main`/`types` describe, so the legacy
+     * fallback stays coherent for whatever cannot read the map. */
+    expect(pkg.type).to.equal("commonjs");
+    expect(pkg.main).to.equal("index.js");
+    expect(pkg.types).to.equal("index.d.ts");
+  });
+
+  it("publishes only the format a format-pinned entry point has", async () => {
+    /* An `.mts` source emits ES modules and nothing else, so there is no
+     * CommonJS file for a `require` condition to name — and naming one that was
+     * never emitted would be worse than not answering `require` at all. */
+    const files = [...dualFiles("index"), "esm.mjs", "esm.d.mts"];
+    const pkg = await generateExports(files, ["esm.mts"], "dual");
+    expect((pkg.exports as Record<string, unknown>)["./esm"]).to.deep.equal({
+      types: "./esm.d.mts",
+      default: "./esm.mjs",
+    });
+  });
+
+  it("publishes an exhaustive map for a dual package declaring no entry points", async () => {
+    /* A dual package must have a map — conditions are the only way to choose a
+     * format — so "declared nothing" has to be spelled out rather than omitted,
+     * and it must still narrow nothing. */
+    const files = [...dualFiles("index", "lib/index"), "styles.css", "index.js.map"];
+    const pkg = await generateExports(files, [], "dual");
+    const bothFormats = (stem: string): unknown => ({
+      import: { types: `./${stem}.d.mts`, default: `./${stem}.mjs` },
+      require: { types: `./${stem}.d.ts`, default: `./${stem}.js` },
+    });
+    expect(pkg.exports).to.deep.equal({
+      /* The package root is not a subpath, so no pattern reaches it. */
+      ".": bothFormats("index"),
+      /* One wildcard per subpath shape node's own resolution publishes — which
+       * between them cover `./index`, `./lib/index` and both their spellings. */
+      "./*": bothFormats("*"),
+      "./*.js": bothFormats("*"),
+      "./*.mjs": bothFormats("*"),
+      /* `pkg/lib` is what CommonJS directory resolution answers today, and a map
+       * does no directory indexes — so it is named outright. */
+      "./lib": bothFormats("lib/index"),
+      /* No format accounts for an asset, so it is reachable under its own name. */
+      "./styles.css": "./styles.css",
+      "./package.json": "./package.json",
+    });
+  });
+
+  it("publishes a delivered spelling the formats do not name, as itself", async () => {
+    /* `foo.ts` and `foo.cts` side by side are two modules sharing a stem: the
+     * formats bind `./foo` to the `.ts` pair, so the `.cjs` would go unnamed — and
+     * `require("pkg/foo.cjs")`, which resolves in a single-format build, would
+     * start failing. It is a different module, so it resolves to itself rather
+     * than to the stem's conditions. */
+    const pkg = await generateExports([...dualFiles("foo"), "foo.cjs", "foo.d.cts"], [], "dual");
+    const exports = pkg.exports as Record<string, unknown>;
+    expect(exports["./foo.cjs"]).to.equal("./foo.cjs");
+    /* The `.js` spelling IS one of the formats, so it resolves to both of them —
+     * `import "pkg/foo.js"` must reach the ES-module copy, not load the
+     * CommonJS one alongside it. */
+    expect(exports["./foo.js"]).to.deep.equal(exports["./foo"]);
+    expect(exports["./foo.mjs"]).to.deep.equal(exports["./foo"]);
+  });
+
+  it("leaves a single-format package with no map when nothing is declared", async () => {
+    /* Only a dual package needs one: with one format, every emitted file is
+     * already reachable by path. */
+    expect(await generateExports(["index.js", "index.d.ts"], [])).to.not.have.property("exports");
+  });
+
+  it("publishes a format-pinned entry point under the spelling it emitted", async () => {
+    /* A `.cts` source emits `.cjs`/`.d.cts` — not the `.js` the format's first
+     * spelling names — under a single-format target as much as a dual one. */
+    const pkg = await generateExports(["legacy.cjs", "legacy.d.cts"], ["legacy.cts"]);
+    expect((pkg.exports as Record<string, unknown>)["./legacy"]).to.deep.equal({
+      types: "./legacy.d.cts",
+      default: "./legacy.cjs",
+    });
   });
 
   it("rejects an entry point that emits no JavaScript", async () => {

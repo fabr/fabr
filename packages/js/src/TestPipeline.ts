@@ -68,7 +68,7 @@ import {
   assembleNodeModules,
   compileContents,
   formatJSTarget,
-  JSTarget,
+  PinnedJSTarget,
   moduleTypeFile,
   parseJSTarget,
   resourceFiles,
@@ -227,7 +227,7 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
            * substitution (a runner's mocking layer) observable at all, and it
            * is the seam such a layer intercepts. Component-wise — the ES
            * version and the environment are the target's own and are kept. */
-          const testTarget: JSTarget = { ...jsTarget, module: "commonjs" };
+          const testTarget: PinnedJSTarget = { ...jsTarget, module: "commonjs" };
           /* Set unconditionally, including when the target already emits
            * commonjs: the override is then a different SPELLING of the same
            * target (`es2020` formats back as `es2020-commonjs-node`), which
@@ -354,7 +354,7 @@ interface ITestRun {
   /** The declared test sources, for mapping refreshed snapshots back to them. */
   tests: FileSet;
   testStems: Set<string>;
-  testTarget: JSTarget;
+  testTarget: PinnedJSTarget;
   /** Whether the suite needs a DOM (the `dom` source flag), named to the runner
    * as its `--env`. */
   needsDom: boolean;

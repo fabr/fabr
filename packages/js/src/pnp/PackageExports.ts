@@ -72,7 +72,7 @@ export function resolveExports(exports: ExportsValue, subpath: string, condition
  * what node would load; the rest are the ones it passed over.
  *
  * Why a caller would want the rest: a condition names an IMPLEMENTATION, and a
- * compiler is asking about DECLARATIONS. A package may describe its faces under
+ * compiler is asking about DECLARATIONS. A package may describe its formats under
  * `import`/`require` and keep the only declaration file behind a `types` key
  * listed after them — bad practice, and common. Reading one answer and stopping
  * makes that package untyped; walking its preferences until one of them answers

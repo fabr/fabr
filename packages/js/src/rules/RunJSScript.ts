@@ -37,6 +37,7 @@ import {
   BUILD_OPERATION,
   BUILD_OVERRIDE,
   Computable,
+  Constraints,
   FileSet,
   FileSetRef,
   PackageFileSet,
@@ -49,10 +50,12 @@ import {
   assembleNodeModules,
   classifySourceByExt,
   compileContents,
+  formatJSTarget,
   makeNpmRunnable,
   moduleTypeFile,
   parseJSTarget,
   resourceFiles,
+  soleModuleFormat,
   stripPackageJson,
 } from "../JSPackage";
 
@@ -125,13 +128,20 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
                * resolves. Compilable loose deps are excluded (their output is
                * already in compiledTree — and a raw .js would collide by name). */
               const resources = resourceFiles(deps.filter(d => !(d instanceof PackageFileSet)));
-              return compileContents(context, entrySet, deps).then(built => {
+              /* A runnable install is a single artifact with one `type`, so a
+               * `dual` target reduces to its sole format — for the compile as well
+               * as the manifest, or js_compile would be asked to emit both. Set
+               * unconditionally: for an already-single target this is the same
+               * target respelt, so it shares the one compile by cache key. */
+              const format = soleModuleFormat(jsTarget.module);
+              const faceTarget = Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: format }) });
+              return compileContents(context, entrySet, deps, { constraints: faceTarget }).then(built => {
                 const install = FileSet.unionAll(
                   FileSet.layout({ node_modules: assembleNodeModules(packages) }),
                   stripPackageJson(built.passthrough),
                   built.compiled,
                   resources,
-                  new FileSet(new Map([["package.json", moduleTypeFile(jsTarget.module)]]))
+                  new FileSet(new Map([["package.json", moduleTypeFile(format)]]))
                 );
                 return RunnableFileSet.forEntry(install, launchName, argv, "node");
               });

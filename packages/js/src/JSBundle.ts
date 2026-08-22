@@ -30,7 +30,7 @@
  */
 
 import { FileSet, PackageFileSet, RepositoryRef, RewriteFn } from "@fabr-build/core";
-import { JSTarget } from "./JSPackage";
+import { JSTarget, soleModuleFormat } from "./JSPackage";
 
 /** Where esbuild writes and the rule collects the bundle output from. */
 export const BUNDLE_OUTDIR = "out";
@@ -205,7 +205,8 @@ export function buildBundleOptions(
   external: string[],
   defines: Record<string, string>
 ): IBundleOptions {
-  const format = jsTarget.module === "esm" ? "esm" : jsTarget.environment === "browser" ? "iife" : "cjs";
+  /* A bundle is a single artifact, so a `dual` target reads as its sole format. */
+  const format = soleModuleFormat(jsTarget.module) === "esm" ? "esm" : jsTarget.environment === "browser" ? "iife" : "cjs";
   const minify = buildType === "release" || buildType === "relwithdebinfo";
   const sourcemap: "linked" | false = buildType === "release" ? false : "linked";
   return {

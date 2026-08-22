@@ -221,6 +221,9 @@ export function makeTsConfig(
       lib: libFor(sourceVersion ?? jsTarget.version, hasDom),
       ...defineClassFieldsOverride(sourceVersion, jsTarget.version),
       ...(types ? { types } : {}),
+      /* One compile emits one module system. A `dual` package is built as two
+       * compiles, each pinned to a format by its caller, so `dual` reaching here
+       * means a caller forgot to pin one — see the assert in compileTypescript. */
       module: jsTarget.module === "esm" ? "esnext" : "commonjs",
       /* `moduleResolution` is deliberately NOT stated. The right value depends
        * on the compiler version — before TypeScript 6 a CommonJS emit cannot be
@@ -268,9 +271,19 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       context.getGlobalString("BUILD_TYPE"),
       context.getFlags("deps"),
       context.getProperty("package_name"),
+      context.getProperty("module_extension"),
     ],
-    ({ srcs: srcSets, deps }, target, driver, buildType, depFlags, packageNameProp) => {
+    ({ srcs: srcSets, deps }, target, driver, buildType, depFlags, packageNameProp, moduleExtensionProp) => {
+      const jsTarget = parseJSTarget(target);
+      if (jsTarget.module === "dual") {
+        /* Not a user error: every caller pins a format (js_package builds one
+         * compile per format, the test and bundle paths force theirs), so this can
+         * only be a rule that forgot to. Silently picking one would emit half a
+         * package under the wrong name. */
+        throw new Error("js_compile cannot emit a dual target: its caller must pin a module format");
+      }
       const packageName = packageNameProp?.toString();
+      const moduleExtension = moduleExtensionProp?.toString();
       const srcs = FileSet.unionAll(...srcSets);
       /* Source-mode flags (strictness relaxations) ride among `deps` like any
        * other dep — read here with getFlags and recognized into a compilerOptions
@@ -292,7 +305,7 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       const build = (jsxImportSource: string): RuleResult => {
         const jsx = jsxImportSource ? { mode: jsxModeFor(buildType), importSource: jsxImportSource } : undefined;
         const tsconfig = makeTsConfig(
-          parseJSTarget(target),
+          jsTarget,
           jsx,
           modeOverlay,
           buildType,
@@ -317,10 +330,14 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
          * The dependencies go over UNASSEMBLED, with the layout named rather
          * than built: composition is a table the step generates on a miss, so
          * evaluation stages nothing and a hit costs nothing. */
+        /* The ES-module format of a dual package emits `.mjs` so its tree can ship
+         * beside the CommonJS format's. The driver does the renaming, because the
+         * specifiers it writes have to name the renamed siblings. */
+        const emitExtension = moduleExtension ? ["--emit-extension", moduleExtension] : [];
         return createNodeExecAction(
           FileSet.layout(workspace),
           deps,
-          driver.toCommandLine([], { base: TOOL_DIR }),
+          driver.toCommandLine(emitExtension, { base: TOOL_DIR }),
           `${COMPILE_OUT_DIR}:**`,
           {
             layout: PNP,

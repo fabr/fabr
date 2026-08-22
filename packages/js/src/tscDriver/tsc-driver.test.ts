@@ -129,7 +129,7 @@ function stage(
 
 /** Run the driver in `root`, capturing what it writes where tsc writes its
  * diagnostics. */
-function compile(root: string): { status: number; output: string } {
+function compile(root: string, argv: string[] = []): { status: number; output: string } {
   const cwd = process.cwd();
   const write = process.stdout.write.bind(process.stdout);
   let output = "";
@@ -139,7 +139,7 @@ function compile(root: string): { status: number; output: string } {
   }) as typeof process.stdout.write;
   try {
     process.chdir(root);
-    return { status: main([]), output };
+    return { status: main(argv), output };
   } finally {
     process.stdout.write = write;
     process.chdir(cwd);
@@ -293,43 +293,43 @@ describe("the tsc driver", () => {
     const late = work.add(
       "late",
       {
-        "dist/esm/https.js": "export const face = 1;\n",
+        "dist/esm/https.js": "export const marker = 1;\n",
         "dist/cjs/https.js": "module.exports = {};\n",
-        "https.d.ts": "export declare const face: 'the trailing types key';\n",
+        "https.d.ts": "export declare const marker: 'the trailing types key';\n",
       },
       { exports: { "./https": { import: "./dist/esm/https.js", require: "./dist/cjs/https.js", types: "./https.d.ts" } } }
     );
     stage(work.root, [["late", late, [["late", late]]]], [["late", late]], []);
-    fs.writeFileSync(work.root + "/src/index.ts", 'import { face } from "late/https";\nexport const which = face;\n');
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { marker } from "late/https";\nexport const which = marker;\n');
 
     const { status, output } = compile(work.root);
     expect(status, output).to.equal(0);
     expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("the trailing types key");
   });
 
-  it("prefers the declarations beside the face it resolved over a trailing types key", () => {
+  it("prefers the declarations beside the format it resolved over a trailing types key", () => {
     /* The same map, but the implementations have their own declarations. Those
-     * are this compilation's — the two faces of a dual package need not describe
+     * are this compilation's — the two formats of a dual package need not describe
      * the same shape — so the walk stops at the first key that answers rather
      * than preferring `types` wherever it appears. Reaching for `types` first
      * would hand a CommonJS compile the generic declarations instead. */
     const both = work.add(
       "both",
       {
-        "dist/esm/https.js": "export const face = 1;\n",
-        "dist/esm/https.d.ts": "export declare const face: 'the esm declarations';\n",
+        "dist/esm/https.js": "export const marker = 1;\n",
+        "dist/esm/https.d.ts": "export declare const marker: 'the esm declarations';\n",
         "dist/cjs/https.js": "module.exports = {};\n",
-        "dist/cjs/https.d.ts": "export declare const face: 'the cjs declarations';\n",
-        "https.d.ts": "export declare const face: 'the generic declarations';\n",
+        "dist/cjs/https.d.ts": "export declare const marker: 'the cjs declarations';\n",
+        "https.d.ts": "export declare const marker: 'the generic declarations';\n",
       },
       { exports: { "./https": { import: "./dist/esm/https.js", require: "./dist/cjs/https.js", types: "./https.d.ts" } } }
     );
     stage(work.root, [["both", both, [["both", both]]]], [["both", both]], []);
-    fs.writeFileSync(work.root + "/src/index.ts", 'import { face } from "both/https";\nexport const which = face;\n');
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { marker } from "both/https";\nexport const which = marker;\n');
 
     const { status, output } = compile(work.root);
     expect(status, output).to.equal(0);
-    /* The fixture emits CommonJS, so the `require` face's own declarations win. */
+    /* The fixture emits CommonJS, so the `require` format's own declarations win. */
     expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("the cjs declarations");
   });
 
@@ -342,9 +342,9 @@ describe("the tsc driver", () => {
     const dual = work.add(
       "dual",
       {
-        "dist/index.mjs": "export const face = 1;\n",
+        "dist/index.mjs": "export const marker = 1;\n",
         "dist/index.cjs": "module.exports = {};\n",
-        "dist/index.d.ts": "export declare const face: 'the single d.ts';\n",
+        "dist/index.d.ts": "export declare const marker: 'the single d.ts';\n",
       },
       {
         main: "./dist/index.cjs",
@@ -353,7 +353,7 @@ describe("the tsc driver", () => {
       }
     );
     stage(work.root, [["dual", dual, [["dual", dual]]]], [["dual", dual]], []);
-    fs.writeFileSync(work.root + "/src/index.ts", 'import { face } from "dual";\nexport const which = face;\n');
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { marker } from "dual";\nexport const which = marker;\n');
 
     const { status, output } = compile(work.root);
     expect(status, output).to.equal(0);
@@ -368,11 +368,11 @@ describe("the tsc driver", () => {
      * so must the compile. */
     const closed = work.add(
       "closed",
-      { "index.js": "module.exports = {};\n", "index.d.ts": "export declare const face: 'the legacy entry';\n" },
+      { "index.js": "module.exports = {};\n", "index.d.ts": "export declare const marker: 'the legacy entry';\n" },
       { main: "./index.js", types: "./index.d.ts", exports: { "./sub": "./index.js" } }
     );
     stage(work.root, [["closed", closed, [["closed", closed]]]], [["closed", closed]], []);
-    fs.writeFileSync(work.root + "/src/index.ts", 'import { face } from "closed";\nexport const which = face;\n');
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { marker } from "closed";\nexport const which = marker;\n');
 
     const { status, output } = compile(work.root);
     expect(status).to.not.equal(0);
@@ -385,11 +385,11 @@ describe("the tsc driver", () => {
      * emits CommonJS, and this still runs, so it still compiles. */
     const sync = work.add(
       "modsync",
-      { "esm.js": "export const face = 1;\n", "esm.d.ts": "export declare const face: 'the module-sync entry';\n" },
+      { "esm.js": "export const marker = 1;\n", "esm.d.ts": "export declare const marker: 'the module-sync entry';\n" },
       { type: "module", exports: { ".": { "module-sync": "./esm.js" } } }
     );
     stage(work.root, [["modsync", sync, [["modsync", sync]]]], [["modsync", sync]], []);
-    fs.writeFileSync(work.root + "/src/index.ts", 'import { face } from "modsync";\nexport const which = face;\n');
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { marker } from "modsync";\nexport const which = marker;\n');
     const ran = compile(work.root);
     expect(ran.status, ran.output).to.equal(0);
     expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("the module-sync entry");
@@ -399,11 +399,11 @@ describe("the tsc driver", () => {
      * compilation must not resolve it however plainly its files sit there. */
     const esmOnly = work.add(
       "esmonly",
-      { "esm.js": "export const face = 1;\n", "esm.d.ts": "export declare const face: 'unreachable';\n" },
+      { "esm.js": "export const marker = 1;\n", "esm.d.ts": "export declare const marker: 'unreachable';\n" },
       { type: "module", exports: { ".": { import: "./esm.js" } } }
     );
     stage(work.root, [["esmonly", esmOnly, [["esmonly", esmOnly]]]], [["esmonly", esmOnly]], []);
-    fs.writeFileSync(work.root + "/src/index.ts", 'import { face } from "esmonly";\nexport const which = face;\n');
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { marker } from "esmonly";\nexport const which = marker;\n');
     const refused = compile(work.root);
     expect(refused.status).to.not.equal(0);
     expect(refused.output).to.contain("Cannot find module 'esmonly'");
@@ -428,23 +428,23 @@ describe("the tsc driver", () => {
   });
 
   it("takes the export condition matching the module system the project emits", () => {
-    /* One package, two faces. The fixture emits CommonJS, so the `require`
+    /* One package, two formats. The fixture emits CommonJS, so the `require`
      * typings are this compilation's — picking the other would type an ESM
      * default import that is not what this project will actually load. */
     const dual = work.add(
       "dual",
       {
-        "esm.d.ts": "export declare const face: 'the esm face';\n",
-        "cjs.d.ts": "export declare const face: 'the cjs face';\n",
+        "esm.d.ts": "export declare const marker: 'the esm format';\n",
+        "cjs.d.ts": "export declare const marker: 'the cjs format';\n",
       },
       { exports: { ".": { types: { import: "./esm.d.ts", require: "./cjs.d.ts" }, default: "./index.js" } } }
     );
     stage(work.root, [["dual", dual, [["dual", dual]]]], [["dual", dual]], []);
-    fs.writeFileSync(work.root + "/src/index.ts", 'import { face } from "dual";\nexport const which = face;\n');
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { marker } from "dual";\nexport const which = marker;\n');
 
     const { status, output } = compile(work.root);
     expect(status, output).to.equal(0);
-    expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("the cjs face");
+    expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("the cjs format");
   });
 
   it("resolves a dependency's own #private specifiers through its imports map", () => {
@@ -571,21 +571,21 @@ describe("the tsc driver", () => {
     }
   });
 
-  it("takes the ES-module face when the project emits ES modules", () => {
+  it("takes the ES-module format when the project emits ES modules", () => {
     /* The mirror of the CommonJS case, and the half a fixture hardcoded to
      * `commonjs` can never reach: the same package, the same map, the other
-     * emit, the other face. */
+     * emit, the other format. */
     const dual = work.add(
       "dual",
-      { "esm.d.ts": "export declare const face: 'the esm face';\n", "cjs.d.ts": "export declare const face: 'the cjs face';\n" },
+      { "esm.d.ts": "export declare const marker: 'the esm format';\n", "cjs.d.ts": "export declare const marker: 'the cjs format';\n" },
       { exports: { ".": { types: { import: "./esm.d.ts", require: "./cjs.d.ts" }, default: "./index.js" } } }
     );
     stage(work.root, [["dual", dual, [["dual", dual]]]], [["dual", dual]], [], undefined, "esnext");
-    fs.writeFileSync(work.root + "/src/index.ts", 'import { face } from "dual";\nexport const which = face;\n');
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { marker } from "dual";\nexport const which = marker;\n');
 
     const { status, output } = compile(work.root);
     expect(status, output).to.equal(0);
-    expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("the esm face");
+    expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("the esm format");
   });
 
   it("types a dependency that exists only as its @types package", () => {
@@ -613,7 +613,7 @@ describe("the tsc driver", () => {
      * not be what makes an unpublished name resolvable, or the compile would
      * accept an import node answers with ERR_PACKAGE_PATH_NOT_EXPORTED. */
     const closed = work.add("closed", { "index.js": "module.exports = {};\n", "sub.js": "module.exports = {};\n" }, { exports: { ".": "./index.js" } });
-    const sidecar = work.add("@types/closed", { "sub.d.ts": "export declare const face: 'from the sidecar';\n" });
+    const sidecar = work.add("@types/closed", { "sub.d.ts": "export declare const marker: 'from the sidecar';\n" });
     stage(
       work.root,
       [
@@ -623,7 +623,7 @@ describe("the tsc driver", () => {
       [["closed", closed], ["@types/closed", sidecar]],
       []
     );
-    fs.writeFileSync(work.root + "/src/index.ts", 'import { face } from "closed/sub";\nexport const which = face;\n');
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { marker } from "closed/sub";\nexport const which = marker;\n');
 
     const { status, output } = compile(work.root);
     expect(status).to.not.equal(0);
@@ -636,7 +636,7 @@ describe("the tsc driver", () => {
      * reason is stated once. */
     const broken = work.add("broken", { "index.js": "module.exports = {};\n" }, { exports: { ".": "./index.js", import: "./esm.js" } });
     stage(work.root, [["broken", broken, [["broken", broken]]]], [["broken", broken]], []);
-    fs.writeFileSync(work.root + "/src/index.ts", 'import { face } from "broken";\nexport const which: number = face;\nexport const other: number = "not a number";\n');
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { marker } from "broken";\nexport const which: number = marker;\nexport const other: number = "not a number";\n');
 
     const { status, output } = compile(work.root);
     expect(status).to.not.equal(0);
@@ -652,10 +652,10 @@ describe("the tsc driver", () => {
      * cross-version type leakage. */
     /* Distinct versions, or the compiler's own packageId dedup collapses the two
        into one module before the resolver's answer matters. */
-    const one = work.add("dep", { "index.d.ts": "export declare const face: 'version one';\n" }, { version: "1.0.0" });
-    const two = work.add("dep", { "index.d.ts": "export declare const face: 'version two';\n" }, { version: "2.0.0" });
-    const left = work.add("left", { "index.d.ts": 'export { face as leftFace } from "dep";\n' });
-    const right = work.add("right", { "index.d.ts": 'export { face as rightFace } from "dep";\n' });
+    const one = work.add("dep", { "index.d.ts": "export declare const marker: 'version one';\n" }, { version: "1.0.0" });
+    const two = work.add("dep", { "index.d.ts": "export declare const marker: 'version two';\n" }, { version: "2.0.0" });
+    const left = work.add("left", { "index.d.ts": 'export { marker as leftMarker } from "dep";\n' });
+    const right = work.add("right", { "index.d.ts": 'export { marker as rightMarker } from "dep";\n' });
     stage(
       work.root,
       [
@@ -669,7 +669,7 @@ describe("the tsc driver", () => {
     );
     fs.writeFileSync(
       work.root + "/src/index.ts",
-      'import { leftFace } from "left";\nimport { rightFace } from "right";\nexport const both = [leftFace, rightFace];\n'
+      'import { leftMarker } from "left";\nimport { rightMarker } from "right";\nexport const both = [leftMarker, rightMarker];\n'
     );
 
     const { status, output } = compile(work.root);
@@ -893,6 +893,109 @@ describe("emitted output, over where the compile ran", () => {
     const second = compileJsx(SOURCE);
     expect(first.root).to.not.equal(second.root);
     expect(first.emitted).to.equal(second.emitted);
+  });
+});
+
+/* `--emit-extension .mjs`: what the ES-module format of a dual package is built
+ * with, so its tree ships beside the CommonJS format's instead of occupying the
+ * same names. The rename has to happen inside the compile, because the
+ * specifiers the emitter writes must name the renamed siblings. */
+describe("emitting under a renamed extension", () => {
+  /** Compile an ES-module project holding `sources` under `--emit-extension
+   *  .mjs`, with source maps on, and answer what landed in `build/`. */
+  function compileRenamed(sources: Record<string, string>): {
+    status: number;
+    output: string;
+    emitted: string[];
+    read: (name: string) => string;
+  } {
+    const work = fixture();
+    stage(work.root, [], [], [], undefined, "esnext");
+    const configPath = path.join(work.root, "tsconfig.json");
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    config.compilerOptions.sourceMap = true;
+    config.include = ["./src/**/*.ts", "./src/**/*.mts", "./src/**/*.cts"];
+    fs.writeFileSync(configPath, JSON.stringify(config));
+    for (const [name, text] of Object.entries(sources)) {
+      fs.writeFileSync(path.join(work.root, "src", name), text);
+    }
+    const { status, output } = compile(work.root, ["--emit-extension", ".mjs"]);
+    const build = path.join(work.root, "build");
+    return {
+      status,
+      output,
+      emitted: fs.existsSync(build) ? fs.readdirSync(build).sort() : [],
+      read: name => fs.readFileSync(path.join(build, name), "utf8"),
+    };
+  }
+
+  it("renames the JavaScript, its declaration and its map, and repoints the specifiers", () => {
+    /* A type crosses the boundary as well as a value, so the specifier has to
+     * survive into the declaration too and both emitters can be checked. */
+    const { status, output, emitted, read } = compileRenamed({
+      "util.ts": "export interface Answer {\n  value: number;\n}\nexport const answer: Answer = { value: 42 };\n",
+      "index.ts": "import { answer, Answer } from './util';\nexport const value: Answer = answer;\n",
+    });
+    expect(status, output).to.equal(0);
+    expect(emitted).to.deep.equal([
+      "index.d.mts",
+      "index.mjs",
+      "index.mjs.map",
+      "util.d.mts",
+      "util.mjs",
+      "util.mjs.map",
+    ]);
+    /* The specifier names the file that was actually emitted — extensionless
+     * would not load under node's ES-module resolver, and `./util.js` names
+     * the OTHER format's file, which is a second copy of the same module. */
+    expect(read("index.mjs")).to.contain('from "./util.mjs"');
+    expect(read("index.d.mts")).to.contain('"./util.mjs"');
+  });
+
+  it("repoints a renamed file's own source map references", () => {
+    const { status, output, read } = compileRenamed({ "index.ts": "export const value = 1;\n" });
+    expect(status, output).to.equal(0);
+    /* Both halves of the link, or a debugger cannot pair the two: the comment
+     * naming the map, and the map's own claim about which file it describes. */
+    expect(read("index.mjs")).to.contain("//# sourceMappingURL=index.mjs.map");
+    expect(read("index.mjs")).to.not.contain("index.js.map");
+    expect(JSON.parse(read("index.mjs.map")).file).to.equal("index.mjs");
+  });
+
+  it("leaves a source that pinned its own module format alone", () => {
+    /* `.mts`/`.cts` name their format themselves, so the rename must not move
+     * them: it applies to the `.js` whose format is the COMPILE's to decide. */
+    const { status, output, emitted } = compileRenamed({
+      "index.ts": "export const value = 1;\n",
+      "legacy.cts": "export const old = 1;\n",
+      "modern.mts": "export const now = 1;\n",
+    });
+    expect(status, output).to.equal(0);
+    expect(emitted).to.contain("legacy.cjs");
+    expect(emitted).to.contain("legacy.d.cts");
+    expect(emitted).to.contain("modern.mjs");
+    expect(emitted).to.contain("index.mjs");
+  });
+
+  it("accepts only the extension it can emit correctly", () => {
+    /* `.cjs` would need the CommonJS emit's specifiers rewritten too, which this
+     * driver does not do — so it is refused rather than silently mis-emitted. */
+    const work = fixture();
+    stage(work.root, [], [], [], undefined, "esnext");
+    fs.writeFileSync(path.join(work.root, "src", "index.ts"), "export const value = 1;\n");
+    expect(() => compile(work.root, ["--emit-extension", ".cjs"])).to.throw(/accepts '\.mjs'/);
+  });
+
+  it("refuses to rename a CommonJS emit, whose specifiers it does not rewrite", () => {
+    /* The same failure the `.cjs` rejection guards against, reached from the
+     * other side: renaming a CommonJS emit to `.mjs` would ship CommonJS syntax
+     * under a name node reads as an ES module, its extensionless `require`s
+     * naming files that are not there. Reachable because js_compile's
+     * `module_extension` is a declared property. */
+    const work = fixture();
+    stage(work.root, [], [], [], undefined, "commonjs");
+    fs.writeFileSync(path.join(work.root, "src", "index.ts"), "export const value = 1;\n");
+    expect(() => compile(work.root, ["--emit-extension", ".mjs"])).to.throw(/needs an ES-module emit/);
   });
 });
 

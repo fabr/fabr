@@ -22,6 +22,7 @@ TSC=@npm:typescript:5.4.5:tsc becomes TYPESCRIPT=@npm:typescript:5.4.5.
 - Rewrite module-specifiers for ESM targets where required.
 - `js_bundle` now requests ESM format inputs regardless of target.
 - Add exports option for js_package.
+- Add support for dual-format js package output.
 
 ## Fabr 0.2.1
 @fabr-build/core:

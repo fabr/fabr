@@ -38,6 +38,7 @@ import {
   classifySourceByExt,
   classifySources,
   compileInputs,
+  dualFormatOutputs,
   esLevelOrder,
   hasPackageExport,
   makeNpmRunnable,
@@ -705,6 +706,48 @@ describe("parseJSTarget", () => {
     expect(() => parseJSTarget("es2018-esm-nodejs")).to.throw(/environment must be/);
     expect(() => parseJSTarget("es2018-esm-node-extra")).to.throw(/expected/);
     expect(() => parseJSTarget("es20x8-esm")).to.throw(/ECMAScript version/);
+  });
+});
+
+describe("dualFormatOutputs", () => {
+  /** The two compiles of a dual package: the same names emitted twice, plus
+   *  whatever each format alone produces. */
+  const compiled = (...names: string[]): FileSet => new FileSet(new Map(names.map(name => [name, MemoryFile.from("")])));
+  const partition = (commonjs: string[], esm: string[]): string[][] =>
+    dualFormatOutputs(compiled(...commonjs), compiled(...esm)).map(format => [...format].map(([name]) => name).sort());
+
+  it("takes the .mjs family from the ES-module compile and everything else from the CommonJS one", () => {
+    const [primary, secondary] = partition(
+      ["index.js", "index.d.ts", "index.js.map", "index.mjs", "index.d.mts"],
+      ["index.js", "index.d.ts", "index.mjs", "index.d.mts", "index.mjs.map"]
+    );
+    expect(primary).to.deep.equal(["index.d.ts", "index.js", "index.js.map"]);
+    expect(secondary).to.deep.equal(["index.d.mts", "index.mjs", "index.mjs.map"]);
+  });
+
+  it("keeps a format-pinned source's output from the compile whose format it pinned", () => {
+    /* `.mts`/`.cts` emit under their own names from BOTH compiles; only the one
+     * whose module setting agrees with the pin has the right syntax — and the
+     * right sibling specifiers. */
+    const [primary, secondary] = partition(["legacy.cjs", "legacy.d.cts", "modern.mjs"], ["legacy.cjs", "modern.mjs", "modern.d.mts"]);
+    expect(primary).to.deep.equal(["legacy.cjs", "legacy.d.cts"]);
+    expect(secondary).to.deep.equal(["modern.d.mts", "modern.mjs"]);
+  });
+
+  it("drops the ES-module copy of a bin the CommonJS format delivers", () => {
+    /* A bin is the package as a program: one format, no condition to select on. */
+    const [primary, secondary] = partition(["bin/tool.js", "bin/tool.mjs"], ["bin/tool.js", "bin/tool.mjs", "bin/tool.d.mts"]);
+    expect(primary).to.deep.equal(["bin/tool.js"]);
+    expect(secondary).to.deep.equal([]);
+  });
+
+  it("keeps a bin that has no CommonJS format at all", () => {
+    /* A bin compiled from an `.mts` emits only `.mjs`, which the CommonJS format
+     * discards as ES-module output. Dropping it from the other format too would
+     * leave the package with no bin and no error — the regression this guards. */
+    const [primary, secondary] = partition(["bin/tool.mjs"], ["bin/tool.mjs", "bin/tool.d.mts"]);
+    expect(primary).to.deep.equal([]);
+    expect(secondary).to.deep.equal(["bin/tool.d.mts", "bin/tool.mjs"]);
   });
 });
 

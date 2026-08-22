@@ -295,19 +295,24 @@ export const STUB_TSC: Record<string, string> = {
   "teststub/typescript/bin/tsc": `const fs = require("fs"), path = require("path");
 const cfg = JSON.parse(fs.readFileSync("tsconfig.json", "utf8")).compilerOptions || {};
 const rootDir = cfg.rootDir || "src", outDir = cfg.outDir || "build";
+// --emit-extension: the real driver renames its .js family so a dual package's
+// two formats can share one tree. Honoured here so a dual fixture gets two.
+const flag = process.argv.indexOf("--emit-extension");
+const jsExt = flag < 0 ? ".js" : process.argv[flag + 1];
+const dtsExt = jsExt === ".mjs" ? ".d.mts" : ".d.ts";
 (function walk(dir) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name);
     if (e.isDirectory()) walk(p);
     else if (e.name.endsWith(".ts") && !e.name.endsWith(".d.ts")) {
       const rel = path.relative(rootDir, p).replace(/\\.ts$/, "");
-      const outJs = path.join(outDir, rel + ".js");
+      const outJs = path.join(outDir, rel + jsExt);
       fs.mkdirSync(path.dirname(outJs), { recursive: true });
       fs.writeFileSync(outJs, fs.readFileSync(p, "utf8"));
-      fs.writeFileSync(path.join(outDir, rel + ".d.ts"), "export {};\\n");
+      fs.writeFileSync(path.join(outDir, rel + dtsExt), "export {};\\n");
     }
     else if (cfg.allowJs && /\\.jsx?$/.test(e.name)) {
-      const rel = path.relative(rootDir, p).replace(/\\.jsx?$/, ".js");
+      const rel = path.relative(rootDir, p).replace(/\\.jsx?$/, jsExt);
       const outJs = path.join(outDir, rel);
       fs.mkdirSync(path.dirname(outJs), { recursive: true });
       fs.writeFileSync(outJs, fs.readFileSync(p, "utf8"));
