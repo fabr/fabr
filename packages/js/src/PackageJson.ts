@@ -39,7 +39,16 @@ import {
   PropertyMapValue,
   Requirement,
 } from "@fabr-build/core";
-import { binByConvention, JSTarget } from "./JSPackage";
+import {
+  binByConvention,
+  CJS_JS_EXTENSION,
+  CJS_TYPE_EXTENSION,
+  ESM_JS_EXTENSION,
+  ESM_TYPE_EXTENSION,
+  JS_EXTENSION,
+  JSTarget,
+  TYPE_EXTENSION,
+} from "./JSPackage";
 import { NpmPublishIdentity } from "./NPMProtocol";
 
 /** Fields fabr computes from the target itself — a `metadata` key naming one is
@@ -245,28 +254,113 @@ function encodeMap(map: PropertyMap): Record<string, unknown> {
   return Object.fromEntries([...map].map(([key, value]) => [key, encodeMetadataValue(value, false)]));
 }
 
-/** One subpath's export conditions, in the order node reads them: `types` before
- *  any runtime condition (a runtime condition matches everything, so anything
- *  after it is unreachable), `default` last. A single-emit package gives every
- *  entry one runtime condition; a dual-emit one adds `import`/`require` beside it
- *  without changing the shape. */
-type ExportConditions = Map<string, string>;
+/** A subpath's export conditions in the order node reads them, nesting where a
+ *  condition resolves to further ones. `types` comes first because TypeScript
+ *  applies it IN ADDITION to the runtime conditions, so a runtime entry listed
+ *  ahead of it wins and hands the compiler the JavaScript; `default` comes last
+ *  because it matches every world, making anything after it unreachable. */
+type ExportConditions = Map<string, string | ExportConditions>;
+
+/** A TypeScript declaration file, in any of its module flavours. */
+const DECLARATION = /\.d\.[cm]?ts$/;
+
+/** A JavaScript file's extension paired with the declaration beside it. */
+type Spelling = readonly [js: string, types: string];
+
+const PLAIN: Spelling = [JS_EXTENSION, TYPE_EXTENSION];
+const PINNED_ESM: Spelling = [ESM_JS_EXTENSION, ESM_TYPE_EXTENSION];
+const PINNED_CJS: Spelling = [CJS_JS_EXTENSION, CJS_TYPE_EXTENSION];
+
+/**
+ * One format a package publishes: the condition it answers, and the spellings a
+ * file of that format can carry — the compile's own `.js`, plus the one a source
+ * that pinned its own module format (`.mts`, `.cts`) emits under. First match
+ * wins, so an entry point named as an `.mts` source resolves to the `.mjs` it
+ * really emitted rather than a `.js` that was never written.
+ *
+ * A single-format package has one format answering `default`; a dual package has
+ * two, told apart by how the consumer loaded the specifier.
+ */
+interface IExportFormat {
+  condition: string;
+  spellings: ReadonlyArray<Spelling>;
+}
+
+const SINGLE_FORMAT: ReadonlyArray<IExportFormat> = [{ condition: "default", spellings: [PLAIN, PINNED_ESM, PINNED_CJS] }];
+
+/* `import` first by convention only — the two are mutually exclusive, so unlike
+ * `types`-before-runtime nothing depends on the order. */
+const DUAL_FORMATS: ReadonlyArray<IExportFormat> = [
+  { condition: "import", spellings: [PINNED_ESM] },
+  { condition: "require", spellings: [PLAIN, PINNED_CJS] },
+];
+
+/** The spellings a module can be delivered under, in the order a single-format
+ *  build would have produced them: the name a consumer already writes when it
+ *  names the file rather than the subpath. */
+const DELIVERED_SPELLINGS: ReadonlyArray<string> = [JS_EXTENSION, CJS_JS_EXTENSION, ESM_JS_EXTENSION];
 
 /** The stem the compile emits a source under — its name without the extension —
  *  or undefined for a source that emits no module of its own to name a subpath
  *  for: a declaration file, a stylesheet, a JSON resource. */
 function emittedStem(name: string): string | undefined {
-  if (/\.d\.[cm]?ts$/.test(name)) {
+  if (DECLARATION.test(name)) {
     return undefined;
   }
   return /^(.*)\.[cm]?[jt]sx?$/.exec(name)?.[1];
 }
 
-/** A single-condition entry renders as the bare target path npm's own manifests
- *  use; anything richer as the condition object. */
+/** A lone `default` renders as the bare target path npm's own manifests use;
+ *  anything richer as the condition object, nested conditions and all. */
 function renderConditions(conditions: ExportConditions): unknown {
   const sole = conditions.size === 1 ? conditions.get("default") : undefined;
-  return sole ?? Object.fromEntries(conditions);
+  if (typeof sole === "string") {
+    return sole;
+  }
+  return Object.fromEntries([...conditions].map(([condition, value]) => [condition, typeof value === "string" ? value : renderConditions(value)]));
+}
+
+/** The conditions one format answers a subpath with — its declarations where the
+ *  compile emitted any, then its JavaScript — or undefined where this format has
+ *  no file for the subpath at all. That happens for a source that pinned its own
+ *  module format: an `.mts` entry point has an ES-module format and no CommonJS
+ *  one, and publishing a `require` condition pointing at a file that was never
+ *  emitted would be worse than not answering `require`. */
+function formatConditions(names: ReadonlySet<string>, stem: string, format: IExportFormat): ExportConditions | undefined {
+  const spelling = format.spellings.find(([js]) => names.has(`${stem}${js}`));
+  if (spelling === undefined) {
+    return undefined;
+  }
+  const [js, types] = spelling;
+  const conditions: ExportConditions = new Map();
+  if (names.has(`${stem}${types}`)) {
+    conditions.set("types", `./${stem}${types}`);
+  }
+  conditions.set("default", `./${stem}${js}`);
+  return conditions;
+}
+
+/** How a subpath is spelled for a stem: the package root for a root `index`,
+ *  else the stem said explicitly. */
+function subpathOf(stem: string): string {
+  return stem === "index" ? "." : `./${stem}`;
+}
+
+/** The conditions every format that HAS a file for `stem` answers with, or
+ *  undefined where no format does. One format publishes its conditions directly;
+ *  several nest under the condition each answers. Flattening a dual entry to a
+ *  single `types` beside `import`/`require` would be the commoner spelling and
+ *  the wrong one — one declaration file cannot describe both formats, which is
+ *  what a consumer's resolver reports as a module masquerading as the other
+ *  kind. */
+function conditionsFor(names: ReadonlySet<string>, stem: string, formats: ReadonlyArray<IExportFormat>): ExportConditions | undefined {
+  const published = formats
+    .map(format => [format, formatConditions(names, stem, format)] as const)
+    .filter((entry): entry is readonly [IExportFormat, ExportConditions] => entry[1] !== undefined);
+  if (published.length === 0) {
+    return undefined;
+  }
+  return published.length === 1 ? published[0][1] : new Map(published.map(([format, answer]) => [format.condition, answer]));
 }
 
 /**
@@ -288,30 +382,194 @@ function renderConditions(conditions: ExportConditions): unknown {
  * (version banners, plugin discovery), so the alternative is an
  * `ERR_PACKAGE_PATH_NOT_EXPORTED` with no remedy available to either side.
  */
-function exportsByConvention(files: FileSet, sources: string[]): Record<string, unknown> | undefined {
+function exportsByConvention(files: FileSet, sources: string[], formats: ReadonlyArray<IExportFormat>): Record<string, unknown> | undefined {
   if (sources.length === 0) {
     return undefined;
   }
   const names = new Set([...files].map(([filename]) => filename));
-  const entries = new Map<string, ExportConditions>();
+  const entries = new Map<string, ExportConditions | string>();
   for (const source of sources) {
     const stem = emittedStem(source);
-    if (stem === undefined || !names.has(`${stem}.js`)) {
+    const conditions = stem === undefined ? undefined : conditionsFor(names, stem, formats);
+    if (stem === undefined || conditions === undefined) {
       throw new Error(`'${source}' is named in exports, but produces no JavaScript in the built package`);
     }
-    const conditions: ExportConditions = new Map();
-    if (names.has(`${stem}.d.ts`)) {
-      conditions.set("types", `./${stem}.d.ts`);
-    }
-    conditions.set("default", `./${stem}.js`);
-    entries.set(stem === "index" ? "." : `./${stem}`, conditions);
+    entries.set(subpathOf(stem), conditions);
   }
-  /* Sorted, so the map does not carry the source set's iteration order into the
-   * manifest (its bytes are a cache input). `.` sorts first on its own — it is a
-   * prefix of every other subpath. Explicit subpaths are order-independent to
-   * node; only patterns are ordered, and there are none here yet. */
+  return renderExports(entries);
+}
+
+/**
+ * The subpaths naming a stem's delivered files by their own names, each paired
+ * with what it resolves to. Every spelling the package actually contains gets
+ * one, since each was reachable under its own name before there was a map.
+ *
+ * A spelling the stem's formats already name resolves to the FACES, so
+ * `import "pkg/foo.js"` reaches the ES-module copy rather than loading the
+ * CommonJS one into an ES-module consumer — the dual-package hazard, two
+ * instances of one module. A spelling they do not name — a `foo.cjs` from a
+ * `.cts` source sitting beside a `foo.ts` — is a different module that happens
+ * to share the stem, so it resolves to itself.
+ */
+function spellingSubpaths(names: ReadonlySet<string>, stem: string, conditions: ExportConditions): Array<[string, ExportConditions | string]> {
+  const targets = conditionTargets(conditions);
+  return DELIVERED_SPELLINGS.filter(spelling => names.has(`${stem}${spelling}`)).map(spelling => {
+    const file = `./${stem}${spelling}`;
+    return [file, targets.has(file) ? conditions : file];
+  });
+}
+
+/** Every file path a subpath's conditions resolve to, at any nesting depth. */
+function conditionTargets(conditions: ExportConditions, into = new Set<string>()): Set<string> {
+  for (const value of conditions.values()) {
+    if (typeof value === "string") {
+      into.add(value);
+    } else {
+      conditionTargets(value, into);
+    }
+  }
+  return into;
+}
+
+/** The stem a delivered JavaScript file sits under, or undefined for anything
+ *  that is not one — a declaration, a source map, an asset. */
+function deliveredStem(name: string): string | undefined {
+  if (DECLARATION.test(name)) {
+    return undefined;
+  }
+  const spelling = DELIVERED_SPELLINGS.find(extension => name.endsWith(extension));
+  return spelling === undefined ? undefined : name.slice(0, -spelling.length);
+}
+
+/** The subpath shapes the wildcards cover, as suffixes after the captured stem:
+ *  `pkg/foo` (what CommonJS extension search reaches), and the two spellings
+ *  naming a delivered file outright. */
+const PATTERN_SUFFIXES: ReadonlyArray<string> = ["", JS_EXTENSION, ESM_JS_EXTENSION];
+
+/** What the wildcards resolve a captured stem to: every format's own first
+ *  spelling, declarations included — what an ordinary source emits under a dual
+ *  build. A stem whose delivered files differ from this in any way is not covered
+ *  by them and takes explicit keys instead. */
+function patternConditions(stem: string, formats: ReadonlyArray<IExportFormat>): ExportConditions {
+  const answer = (format: IExportFormat): ExportConditions => {
+    const [js, types] = format.spellings[0];
+    return new Map<string, string | ExportConditions>([
+      ["types", `./${stem}${types}`],
+      ["default", `./${stem}${js}`],
+    ]);
+  };
+  return formats.length === 1 ? answer(formats[0]) : new Map(formats.map(format => [format.condition, answer(format)]));
+}
+
+/** Whether two condition sets publish the same thing — compared as the manifest
+ *  will carry them, since that is what a consumer resolves against. */
+function sameConditions(a: ExportConditions, b: ExportConditions): boolean {
+  return JSON.stringify(renderConditions(a)) === JSON.stringify(renderConditions(b));
+}
+
+/**
+ * Whether the wildcards answer everything this stem delivers, so it needs no
+ * explicit key. Both halves are needed: they must resolve it to the right files
+ * (`sameConditions`), AND it must deliver no spelling they do not name — a
+ * `foo.cjs` beside a `foo.ts` is a different module sharing the stem, and the
+ * wildcards would send `pkg/foo.cjs` to a `foo.cjs.js` that does not exist.
+ */
+function coveredByPatterns(names: ReadonlySet<string>, stem: string, conditions: ExportConditions, formats: ReadonlyArray<IExportFormat>): boolean {
+  const delivered = DELIVERED_SPELLINGS.filter(spelling => names.has(`${stem}${spelling}`));
+  return delivered.every(spelling => PATTERN_SUFFIXES.includes(spelling)) && sameConditions(conditions, patternConditions(stem, formats));
+}
+
+/**
+ * The `exports` map for a **dual** package whose target declares no entry points:
+ * every subpath that resolves in a single-format build of the same sources. It
+ * exists because a dual package must have a map — conditions are node's only
+ * mechanism for choosing a format — while "declared nothing" has to go on meaning
+ * "narrowed nothing".
+ *
+ * The regular case is three **wildcards**, one per subpath shape node's own
+ * resolution publishes: `pkg/foo` (CommonJS extension search), `pkg/foo.js` (what
+ * an ES-module consumer must write) and `pkg/foo.mjs`. One pattern could not do
+ * this — it publishes a single shape — but three can, and because `*` substitutes
+ * into the targets they supply the extension that a bare `"./*": "./*"` could
+ * not. Node prefers the longest suffix after `*`, so the three never disagree.
+ *
+ * What a wildcard would answer WRONGLY keeps an explicit key, which node matches
+ * ahead of any pattern: the package root (not a subpath a pattern can match), a
+ * module whose delivered files are not the plain dual quartet (a format-pinned
+ * `.cts`, a `resources` JavaScript with no declaration), `pkg/lib` for a
+ * `lib/index` (patterns do no directory indexes), and every non-module file,
+ * which resolves to itself.
+ *
+ * Declarations and source maps get no subpath of their own: nothing imports them
+ * by name, and a declaration is already published as its format's `types`.
+ */
+function exhaustiveExports(files: FileSet, formats: ReadonlyArray<IExportFormat>): Record<string, unknown> {
+  const names = new Set([...files].map(([filename]) => filename));
+  const entries = new Map<string, ExportConditions | string>();
+  const stems = new Map<string, ExportConditions>();
+  let patterned = false;
+  for (const stem of new Set([...names].map(deliveredStem))) {
+    const conditions = stem === undefined ? undefined : conditionsFor(names, stem, formats);
+    if (stem === undefined || conditions === undefined) {
+      continue;
+    }
+    stems.set(stem, conditions);
+    if (coveredByPatterns(names, stem, conditions, formats)) {
+      patterned = true;
+      /* The package root is not a subpath, so no pattern reaches it — while
+       * `./index`, `./index.js` and `./index.mjs` are ordinary and are. */
+      if (stem === "index") {
+        entries.set(".", conditions);
+      }
+    } else {
+      entries.set(subpathOf(stem), conditions);
+      for (const [subpath, target] of spellingSubpaths(names, stem, conditions)) {
+        entries.set(subpath, target);
+      }
+    }
+  }
+  if (patterned) {
+    for (const suffix of PATTERN_SUFFIXES) {
+      entries.set(`./*${suffix}`, patternConditions("*", formats));
+    }
+  }
+  /* `pkg/lib` for a `lib/index`, as CommonJS directory resolution answers it —
+   * unless the package also has a `lib.js`, which resolution prefers and which
+   * has already claimed the subpath. */
+  for (const [stem, conditions] of stems) {
+    const directory = stem.slice(0, -"/index".length);
+    if (stem.endsWith("/index") && !entries.has(`./${directory}`)) {
+      entries.set(`./${directory}`, conditions);
+    }
+  }
+  /* Anything no format accounts for — a stylesheet, a JSON resource, a template —
+   * is reachable by its own name and nothing else, so it maps to itself. */
+  for (const name of names) {
+    if (isOpaqueContent(name)) {
+      entries.set(`./${name}`, `./${name}`);
+    }
+  }
+  return renderExports(entries);
+}
+
+/** Whether a delivered file is reachable only under its own name: not a module
+ *  (so no format publishes it), and not one of the artifacts nothing ever imports
+ *  by name — a declaration, a source map, or the manifest itself. */
+function isOpaqueContent(name: string): boolean {
+  return deliveredStem(name) === undefined && !name.endsWith(".map") && !DECLARATION.test(name) && name !== "package.json";
+}
+
+/** Render a subpath→conditions table as the manifest's `exports` object.
+ *  Sorted, so the map does not carry a file set's iteration order into the
+ *  manifest (its bytes are a cache input). `.` sorts first on its own — it is a
+ *  prefix of every other subpath. Explicit subpaths are order-independent to
+ *  node; only patterns are ordered, and there are none here. */
+function renderExports(entries: Map<string, ExportConditions | string>): Record<string, unknown> {
   const map = new Map<string, unknown>(
-    [...entries.keys()].sort().map(subpath => [subpath, renderConditions(entries.get(subpath)!)])
+    [...entries.keys()].sort().map(subpath => {
+      const value = entries.get(subpath)!;
+      return [subpath, typeof value === "string" ? value : renderConditions(value)];
+    })
   );
   map.set("./package.json", "./package.json");
   return Object.fromEntries(map);
@@ -390,7 +648,13 @@ export function createPackageJson({
   /* `main`/`types` stay by convention alongside the map: node ignores them once
    * `exports` exists, and they remain the entry point for everything that reads
    * a manifest without resolving one (bundlers, older tooling). */
-  const exported = exportsByConvention(files, exports);
+  /* A dual package always publishes a map, because conditions are node's only
+   * mechanism for choosing a format; with nothing declared it publishes an
+   * exhaustive one, so declaring nothing still narrows nothing. A single-format
+   * package needs no map to be reachable, so it gets none. */
+  const dual = jsTarget.module === "dual";
+  const formats = dual ? DUAL_FORMATS : SINGLE_FORMAT;
+  const exported = exports.length > 0 ? exportsByConvention(files, exports, formats) : dual ? exhaustiveExports(files, formats) : undefined;
   if (exported !== undefined) {
     packageJson.exports = exported;
   }

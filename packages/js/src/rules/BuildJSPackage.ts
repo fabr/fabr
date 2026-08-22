@@ -26,6 +26,7 @@
 import {
   BUILD_OPERATION,
   Computable,
+  Constraints,
   FileSet,
   FileSetRef,
   FileSource,
@@ -38,7 +39,16 @@ import {
   toJsonObject,
   Flag,
 } from "@fabr-build/core";
-import { compileContents, ICompiledContents, parseJSTarget, stripPackageJson, withBinShebangs } from "../JSPackage";
+import {
+  compileContents,
+  dualFormatOutputs,
+  ESM_JS_EXTENSION,
+  formatJSTarget,
+  ICompiledContents,
+  parseJSTarget,
+  stripPackageJson,
+  withBinShebangs,
+} from "../JSPackage";
 import { createPackageJson } from "../PackageJson";
 
 /**
@@ -117,6 +127,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
          * the same relation to its `srcs`). Naming the same file twice is not a
          * conflict — a union is by file identity, not by arrival. */
         const exported = FileSet.unionAll(...exportSets.map(asExportSource));
+        const dual = jsTarget.module === "dual";
         const sources = FileSet.unionAll(...srcSets, exported);
         const tests = FileSet.unionAll(...testSets);
         /* If there's a 'package.json' in the source list, we can initialize the output package.json from it */
@@ -149,7 +160,22 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
            * package exports CSS rather than Sass (a `.module.css` still unscoped
            * — scoping is the bundler's). One meant to be `@use`d BY other
            * packages belongs in `resources`, which ships it verbatim. */
-          const contents = compileContents(context, compileSources, [...deps, ...provided], { packageName: context.name });
+          /* A dual target is built as TWO compiles, each pinned to a format — one
+           * compile emits one module system. The ES-module format additionally
+           * emits `.mjs`/`.d.mts`, so the two trees ship together at the package
+           * root instead of occupying the same names. */
+          const formatCompile = (format: "commonjs" | "esm"): Computable<ICompiledContents> =>
+            compileContents(context, compileSources, [...deps, ...provided], {
+              packageName: context.name,
+              constraints: Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: format }) }),
+              ...(format === "esm" ? { moduleExtension: ESM_JS_EXTENSION } : {}),
+            });
+          /* Single-format keeps the ambient target verbatim rather than respelling
+           * it, so nothing about an ordinary build moves. */
+          const contents = dual
+            ? formatCompile("commonjs")
+            : compileContents(context, compileSources, [...deps, ...provided], { packageName: context.name });
+          const esmContents = dual ? formatCompile("esm") : undefined;
 
           /* The package's DIRECT deps as written (built packages as packages,
            * external requirements as inert references, resolved fresh at each
@@ -170,11 +196,14 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
            * identity + carried deps. This runs in resolution on every evaluation
            * (whether the compile sub-target hit or missed), reconstructing the
            * runtime-only identity each time. */
-          const deliver = ({ compiled, css, passthrough }: ICompiledContents): Computable<FileSource> => {
+          const deliver = ({ compiled, css, passthrough }: ICompiledContents, esm?: ICompiledContents): Computable<FileSource> => {
+            /* Two formats, one tree — see dualFormatOutputs. */
+            const formats = esm ? dualFormatOutputs(compiled, esm.compiled) : [compiled];
             /* `resources` ship exactly as given — never compiled, so a prebuilt
              * .js keeps its own level and a hand-written .d.ts is the only
-             * declaration for it (no generated one to collide with). */
-            const delivered = FileSet.unionAll(compiled, stripPackageJson(passthrough), css, ...resourceSets);
+             * declaration for it (no generated one to collide with). Taken from
+             * the primary format alone: both compiles pass the same files through. */
+            const delivered = FileSet.unionAll(...formats, stripPackageJson(passthrough), css, ...resourceSets);
             /* Guarantee every declared bin opens with an interpreter line so the
              * installed npm command is launchable — derived from the bin convention,
              * not a hand-written source shebang (see withBinShebangs). */
@@ -201,7 +230,9 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
           /* The compiled/lowered parts are sub-target output; a target with
            * nothing to build yields empty ones and the package is just its
            * passthrough files + package.json, assembled in memory. */
-          return contents.then(deliver);
+          return esmContents === undefined
+            ? contents.then(primary => deliver(primary))
+            : Computable.forAll([contents, esmContents], (primary, secondary) => deliver(primary, secondary));
         });
       });
     }

@@ -62,6 +62,28 @@ import {
  * the sources being bundled. */
 const TOOL_DIR = ".fabr-esbuild";
 
+/**
+ * The target a bundle's inputs are built and compiled for: ESM, whatever the
+ * bundle itself ships as. Only ESM carries the import graph a bundler needs —
+ * `require` hands back a namespace built at run time, so every export of a
+ * required module must survive and tree-shaking becomes impossible. Lowering to
+ * CommonJS is lossy, and the bundler re-emits everything anyway, so the loss
+ * buys nothing and costs whatever the unused half of each dependency weighs.
+ *
+ * The mirror of the test compile's swap to `commonjs`, and set the same way:
+ * component-wise (the ES version and environment are the target's own),
+ * unconditionally, so a target already emitting ESM re-spells the same target
+ * and shares the one compile by cache key. It equally answers `dual`, which no
+ * single compile can emit.
+ *
+ * What it does NOT decide is the shipped format — that stays
+ * {@link buildBundleOptions}'s reading of JS_TARGET, so a browser bundle still
+ * lands as an iife.
+ */
+function bundleInputTarget(jsTarget: JSTarget): Constraints {
+  return Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: "esm" }) });
+}
+
 /** The resolved inputs a bundle is staged from: the target config plus the
  * collected contents (srcs/deps) and the bundler runnable. */
 interface IBundleInputs {
@@ -201,7 +223,13 @@ function composeBundle(context: TargetContext, inputs: IBundleInputs): Computabl
     );
     /* Both halves of what the sources may import: `srcs` packages are bundled in,
      * `deps` are externalized at link time — but the compile needs both. */
-    return compileContents(context, rootTree, [...srcPackages, ...inputs.deps], { transpileJs: false }).then(built => {
+    /* Compiled for the same target the referenced inputs were built under, not
+     * for the ambient one: these loose sources are bundled together with those,
+     * and one compile emits one module system whatever the bundle ships as. */
+    return compileContents(context, rootTree, [...srcPackages, ...inputs.deps], {
+      transpileJs: false,
+      constraints: bundleInputTarget(inputs.jsTarget),
+    }).then(built => {
       const code = FileSet.unionAll(built.compiled, built.passthrough);
       const entrySources: IBundleEntrySource[] = [
         ...looseEntries.flatMap(set => [...set].map(([name]) => ({ path: stagedEntry(code, name), name }))),
@@ -217,23 +245,7 @@ function buildJsBundle(context: TargetContext): Computable<RuleResult> {
     [context.getGlobalString("JS_TARGET"), context.getGlobalString("BUILD_TYPE")],
     (target, buildType) => {
       const jsTarget = parseJSTarget(target);
-      /* A bundle asks for its inputs as ESM whatever it ships as. Only ESM
-       * carries the import graph a bundler needs: `require` hands back a
-       * namespace built at run time, so every export of a required module must
-       * survive, and tree-shaking becomes impossible. Lowering to CommonJS is
-       * lossy, and the bundler re-emits everything anyway — so the loss buys
-       * nothing and costs whatever the unused half of each dependency weighs.
-       *
-       * The mirror of the test compile's swap to `commonjs`, and set the same
-       * way: component-wise (the ES version and environment are the target's
-       * own), unconditionally, so a target already emitting ESM re-spells the
-       * same target and shares the one compile by cache key.
-       *
-       * What it does NOT decide is the shipped format — that stays
-       * {@link buildBundleOptions}'s reading of JS_TARGET, so a browser bundle
-       * still lands as an iife. */
-      const inputTarget = Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: "esm" }) });
-      return buildWithInputs(context, jsTarget, buildType, inputTarget);
+      return buildWithInputs(context, jsTarget, buildType, bundleInputTarget(jsTarget));
     }
   );
 }
