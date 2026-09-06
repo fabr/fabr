@@ -29,7 +29,7 @@ import {
   PackageGraphBuilder,
 } from "@fabr-build/core";
 import { packageNodeSignature } from "@fabr-build/core";
-import { IPnpPackageInfo, pnpManifestOf, PnpDependencyTarget, treeMountOf } from "./PnPManifest";
+import { IPnpPackageInfo, pnpManifestOf, PnpDependencyTarget, referenceOf, treeMountOf } from "./PnPManifest";
 
 /** A package as a REPOSITORY delivered it — carrying a resolution provenance,
  * which is what marks it as something this build did not produce and therefore
@@ -187,6 +187,28 @@ describe("pnpManifestOf", () => {
     const otherRow = [...rowsOf(wider, "@shorthand/other").values()][0]!;
     expect(otherRow.packageDependencies.map(([name]) => name)).to.deep.equal(["@shorthand/other", "outer"]);
     expect(wider.state.fallbackPool.map(([name]) => name)).to.contain("buried");
+  });
+
+  it("pools only the hoist-visible copies, never a sealed nest's override", () => {
+    /* A phantom import answered from inside a sealed nest would be depending
+       on something the delivery deliberately holds sealed away — a hoisted
+       install answers with the hoisted copy or not at all. Both instances
+       still get ROWS (they are resolvable through their requirers); only the
+       pool is restricted. */
+    const nested = new PackageFileSet(
+      new Map<string, IFile>([["index.js", MemoryFile.from("// dup@1")]]),
+      "dup",
+      "1.0.0",
+      [],
+      undefined,
+      true
+    );
+    const flat = pkg("dup", "2.0.0");
+    const manifest = pnpManifestOf([flat, pkg("requirer", "1.0.0", [nested])]);
+    const dupEntries = manifest.state.fallbackPool.filter(([name]) => name === "dup");
+    expect(dupEntries, "one entry: the flat instance").to.have.lengthOf(1);
+    expect(dupEntries[0][1], "bound to the hoist-visible copy").to.equal(referenceOf(flat));
+    expect(rowsOf(manifest, "dup").size, "while both instances keep their rows").to.equal(2);
   });
 
   it("bars the packages this project built from the pool", () => {

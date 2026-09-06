@@ -450,14 +450,14 @@ default npm_repository @npm {
 # swapped in by overriding the global.
 js_script @fabr-build/js-tools/bundle-driver {
     entry = ../bundleDriver/bundle-driver.js;
-    deps = ${ESBUILD} ../pnp/PnPResolver.js ../pnp/PackageExports.js;
+    deps = ${ESBUILD} ../pnp/PnPResolver.js ../pnp/PackageExports.js ../pnp/ReadSet.js;
 }
 
 # The CSS compiler `css_compile` runs (the default `CSS_COMPILER`): Sass
 # lowering, driven by the rule's options manifest.
 js_script @fabr-build/js-tools/css-driver {
     entry = ../cssDriver/css-driver.js;
-    deps = ${SASS} ../pnp/PnPResolver.js ../pnp/PackageExports.js;
+    deps = ${SASS} ../pnp/PnPResolver.js ../pnp/PackageExports.js ../pnp/ReadSet.js;
 }
 
 # The TypeScript driver `js_compile` runs (see TSC_DRIVER): drives the compiler
@@ -470,7 +470,8 @@ js_script @fabr-build/js-tools/css-driver {
 # filesystem like the bin does — so it is a drop-in for either layout.
 js_script @fabr-build/js-tools/tsc-driver {
     entry = ../tscDriver/tsc-driver.js;
-    deps = ../pnp/PnPResolver.js ../pnp/PackageExports.js ${TYPESCRIPT};
+    deps = ../pnp/PnPResolver.js ../pnp/PackageExports.js ../pnp/ReadSet.js
+           ../tscDriver/Planning.js ../tscDriver/Wave.js ${TYPESCRIPT};
 }
 
 # Fabr's own test runner ('fabr test' / js_test / js_package tests): wraps

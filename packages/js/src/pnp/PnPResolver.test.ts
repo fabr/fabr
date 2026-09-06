@@ -208,6 +208,94 @@ describe("PnpResolver", () => {
   });
 });
 
+/**
+ * The location index: every which-package-holds-this-path question is answered
+ * by walking the path upward through an index rather than by scanning the
+ * table. Innermost wins, and every stored row is nameable — the instance name
+ * is the row's own name and reference, so there is no unnameable case. The
+ * fixture table is built to have every edge of that rule at once.
+ */
+describe("PnpResolver's containing-package questions", () => {
+  const STORE = path.resolve("/workspace/.fabr-tree");
+
+  /** A table whose locations nest: `outer` holds `inner` inside it, holds a
+   * source row inside it, and sits beside a package whose name starts the
+   * same. */
+  function nested(): PnpResolver {
+    const row = (location: string, linkType: "HARD" | "SOFT"): IPnpPackageInfo => ({
+      packageLocation: location,
+      packageDependencies: [],
+      linkType,
+    });
+    const state: IPnpSerializedState = {
+      __info: [],
+      dependencyTreeRoots: [],
+      enableTopLevelFallback: false,
+      ignorePatternData: null,
+      fallbackExclusionList: [],
+      fallbackPool: [],
+      packageRegistryData: [
+        [null, [[null, row("./", "SOFT")]]],
+        ["outer", [["r1", row("./.fabr-tree/outer/", "HARD")]]],
+        ["inner", [["r2", row("./.fabr-tree/outer/vendor/inner/", "HARD")]]],
+        /* Not a delivered package: a place in this build, nested inside one. */
+        ["sources", [["r4", row("./.fabr-tree/outer/generated/", "SOFT")]]],
+        /* The sibling whose name starts the same as `outer`. */
+        ["outerly", [["r5", row("./.fabr-tree/outerly/", "HARD")]]],
+      ],
+    };
+    return new PnpResolver(state, ROOT, []);
+  }
+
+  it("answers with the innermost package holding a file", () => {
+    const resolver = nested();
+    expect(resolver.instanceNameOf(path.join(STORE, "outer/vendor/inner/lib/a.d.ts"))).to.equal("inner#r2/lib/a.d.ts");
+    expect(resolver.instanceNameOf(path.join(STORE, "outer/lib/a.d.ts"))).to.equal("outer#r1/lib/a.d.ts");
+    expect(resolver.packageOf(path.join(STORE, "outer/vendor/inner/lib/a.d.ts"))?.name).to.equal("inner");
+  });
+
+  it("names a package root as the instance itself", () => {
+    expect(nested().instanceNameOf(path.join(STORE, "outer"))).to.equal("outer#r1");
+  });
+
+  it("does not mistake a sibling whose name starts the same", () => {
+    /* The separator is what makes this the different package it is: without it
+     * `.fabr-tree/outerly/` reads as a path inside `.fabr-tree/outer`. */
+    expect(nested().instanceNameOf(path.join(STORE, "outerly/lib/a.d.ts"))).to.equal("outerly#r5/lib/a.d.ts");
+  });
+
+  it("looks outward past a source row to the package holding it", () => {
+    /* A SOFT row is a place in this build, not a delivered instance — the walk
+     * continues outward, and the file is the enclosing package's. */
+    expect(nested().instanceNameOf(path.join(STORE, "outer/generated/a.d.ts"))).to.equal("outer#r1/generated/a.d.ts");
+  });
+
+  it("answers nothing for a path outside every package", () => {
+    const resolver = nested();
+    expect(resolver.instanceNameOf(path.join(ROOT, "src/index.ts"))).to.equal(undefined);
+    expect(resolver.instanceNameOf(path.resolve("/elsewhere/a.d.ts"))).to.equal(undefined);
+  });
+
+  it("derives the tree roots once and keeps answering the same", () => {
+    /* Read per file during a compile, so it is derived rather than rebuilt —
+     * which is only sound because the table cannot change after construction. */
+    const resolver = nested();
+    expect(resolver.treeRoots).to.deep.equal(resolver.treeRoots);
+    /* A root is where a delivered package SITS — the store itself, holding
+     * `outer` and `outerly`, and `outer/vendor`, holding the two nested ones.
+     * `outer/` is not one: the only row directly inside it is the source row,
+     * which is a place in this build rather than a package in a tree. */
+    expect([...resolver.treeRoots].sort()).to.deep.equal(
+      [withSep(STORE), withSep(path.join(STORE, "outer/vendor"))].sort()
+    );
+  });
+});
+
+/** A directory as the resolver spells one. */
+function withSep(directory: string): string {
+  return directory.endsWith(path.sep) ? directory : directory + path.sep;
+}
+
 describe("PnpResolver, resolving a specifier in full", () => {
   /** The conditions a compiler resolves under, which is the world these cases
    * are written in. */

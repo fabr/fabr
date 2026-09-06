@@ -168,7 +168,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
             compileContents(context, compileSources, [...deps, ...provided], {
               packageName: context.name,
               constraints: Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: format }) }),
-              ...(format === "esm" ? { moduleExtension: ESM_JS_EXTENSION } : {}),
+              moduleExtension: format === "esm" ? ESM_JS_EXTENSION : undefined,
             });
           /* Single-format keeps the ambient target verbatim rather than respelling
            * it, so nothing about an ordinary build moves. */

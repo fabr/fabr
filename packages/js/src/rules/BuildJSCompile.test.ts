@@ -297,7 +297,7 @@ describe("js_compile toolchain", () => {
    * every `types` entry unfound. What runs is always fabr's driver, over
    * whatever release ${TYPESCRIPT} pins. */
   it("execs the driver, never the pinned compiler's own bin", async () => {
-    const argv = (await compileAction()).inputs.argv as string[];
+    const argv = (await compileAction()).options.argv as string[];
     expect(argv).to.deep.equal(["node", ".tools/tsc/tscDriver/tsc-driver.js"]);
   });
 

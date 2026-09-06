@@ -26,6 +26,7 @@ import { IProvenanceStep, registerProvenanceLocator, registerProvenanceRenderer,
 import { ConflictError } from "./Errors";
 import { canonicalFileName, isCanonicalFileName } from "../support/Paths";
 import { hashString } from "./FSWrapper";
+import { manifestLine } from "./Manifest";
 
 /** The permission bits (`man 2 stat`, the low 12 bits — rwx triples plus
  * setuid/setgid/sticky) fabr records for a file when none are otherwise known:
@@ -211,6 +212,20 @@ export class FileSet implements FileSource {
   }
 
   /**
+   * This set's own delivered name — what a graph *edge* pointing at it is
+   * called, and so how a discovered-deps path names the step that reaches it
+   * (see BuildAction's DepsPath). Empty for an ordinary set: its files are already
+   * named, so they are reached directly rather than through a step.
+   *
+   * Unversioned deliberately — it names the binding, not the thing bound: two
+   * coexisting versions are told apart by *where* the walk found them, and the
+   * bytes at that position are what the key carries.
+   */
+  public get name(): string {
+    return "";
+  }
+
+  /**
    * @return a copy of the receiver carrying the given provenance.
    */
   public withOrigin(origin: IProvenanceStep): FileSet {
@@ -230,8 +245,8 @@ export class FileSet implements FileSource {
   /**
    * Resolve projections to positions *within this set* rather than extracting
    * the files: a map from each matched member's own name to the name the
-   * projection gives it. 
-   * 
+   * projection gives it.
+   *
    * The two names differ whenever the projection's naming facets do work — a path
    * segment before the `:` (`pkg/src/blah:index.ts` → `src/blah/index.ts` keyed,
    * called `index.ts`) or a rename (`pkg:*.ts -> *.js`). A rename never moves
@@ -267,10 +282,7 @@ export class FileSet implements FileSource {
    * rather than to whoever holds a pending reference to it.
    */
   public select(projections: ReadonlyArray<IProjection>): FileSet {
-    return projections.reduce(
-      (set: FileSet, projection) => set.rename(projection.pattern.makeProjector(projection.prefix)),
-      this
-    );
+    return projections.reduce((set: FileSet, projection) => set.rename(projection.pattern.makeProjector(projection.prefix)), this);
   }
 
   public find(name: Name, prefix = ""): Computable<FileSet> {
@@ -347,9 +359,7 @@ export class FileSet implements FileSource {
     const result = [];
     for (const name of [...this.content.keys()].sort()) {
       const file = this.content.get(name);
-      /* Mode participates in the manifest (octal): a consumer's cache key must
-       * turn over when an input's permission bits change, not just its content. */
-      result.push(`${file?.hash} ${(file?.mode ?? DEFAULT_FILE_MODE).toString(8)} ${name}`);
+      result.push(manifestLine(name, String(file?.hash), file?.mode ?? DEFAULT_FILE_MODE));
     }
     return result.join("\n");
   }
@@ -535,7 +545,6 @@ export class FileSet implements FileSource {
     }
     return new FileSet(result, mergeOrigin(sources), CANONICAL);
   }
-
 }
 
 export const EMPTY_FILESET: FileSet = new FileSet(new Map());
@@ -567,9 +576,7 @@ interface IMergeOrigin extends IProvenanceStep {
 /** A merge-provenance step over `sources`, or undefined when none carries an
  * origin — nothing to attribute, so don't pay for a step that can never explain. */
 function mergeOrigin(sources: IMergeSource[]): IMergeOrigin | undefined {
-  return sources.some(source => source.fileset.origin !== undefined)
-    ? { kind: FILESET_MERGE_PROVENANCE, sources }
-    : undefined;
+  return sources.some(source => source.fileset.origin !== undefined) ? { kind: FILESET_MERGE_PROVENANCE, sources } : undefined;
 }
 
 registerProvenanceRenderer(FILESET_MERGE_PROVENANCE, (step, context): IDiagnosticNote[] => {

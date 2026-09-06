@@ -35,3 +35,24 @@ export function select<T, U>(items: Iterable<T>, fn: (item: T) => U | undefined)
   }
   return result;
 }
+
+export function mapObject<K extends string | symbol | number, V, U>(input: Record<K, V>, fn: (key: K, value: V) => U): Record<K, U> {
+  const result = {} as Record<K, U>;
+  /* Own enumerable keys only, so an inherited member cannot be mapped in — the
+   * guard a `for...in` would need. */
+  for (const key of Object.keys(input) as K[]) {
+    result[key] = fn(key, input[key]);
+  }
+  return result;
+}
+
+/**
+ * Plain code-unit comparison, for canonical orderings. Key material and
+ * serialized documents sort with THIS (or `Array.sort`'s default), never
+ * `localeCompare`: a locale collation varies with the machine's ICU and can
+ * even order two distinct strings as equal, where the whole point of a
+ * canonical order is one answer everywhere. Locale collation is for display.
+ */
+export function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}

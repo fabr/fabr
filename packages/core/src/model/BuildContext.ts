@@ -19,9 +19,9 @@
 
 import * as path from "path";
 import { Readable } from "stream";
-import { FetchOptions, IActionContext, ICreateOptions, IFetchContext } from "../core/BuildCache";
+import { ActionContext, FetchOptions, ICreateOptions, IFetchContext } from "../core/BuildCache";
 import { Computable, ComputableSource } from "../core/Computable";
-import { admitted, ITaskReport, StageSpec, StageStreams } from "../support/Execute";
+import { ITaskReport, StageSpec, StageStreams } from "../support/Execute";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { FSFileSource } from "../core/FSFileSource";
 import {
@@ -41,7 +41,7 @@ import {
 } from "../core/Repository";
 import { FileSetRef, FileSourceRef } from "../core/FileSetRef";
 import { RunnableFileSet, toRunnable } from "../core/RunnableFileSet";
-import { manifestPackageInputs, PackageFileSet } from "../core/PackageFileSet";
+import { PackageFileSet } from "../core/PackageFileSet";
 import { Requirement } from "../resolver/Types";
 import { declaredRequirementFrom } from "../resolver/PackageResolver";
 import { Flag } from "../core/Flag";
@@ -51,7 +51,8 @@ import {
   registerProvenanceDescriber,
   registerProvenanceRenderer,
 } from "../core/Provenance";
-import { BuildAction, BuildActionInput, BuildActionInputs, IRuleDefinition, RepositoryProvider, SubTargetInputs } from "../rules/Types";
+import { BuildAction, BuildResult } from "../core/BuildAction";
+import { IRuleDefinition, RepositoryProvider, SubTargetInputs } from "../rules/Types";
 import { Constraints, HOST, RUN_OVERRIDE, TARGET } from "./Constraints";
 import { IFetchReport, ITargetBuildTask, TaskDescription } from "./BuildEvents";
 import { ExecutionContext } from "./ExecutionContext";
@@ -450,7 +451,7 @@ export class BuildContext {
    * the cache here and nowhere else.
    */
   public expandArchive(file: IFile): Computable<FileSet> {
-    return this.getCachedOrBuild(`memo:${EXPAND_TAG} ${file.hash}`, () => expandOnce(file));
+    return this.getCachedOrBuild(`memo:${EXPAND_TAG} ${file.hash}`, () => expandOnce(file).then(result => ({ result })));
   }
 
   /**
@@ -467,7 +468,8 @@ export class BuildContext {
        * this interface directly and names itself. */
       name,
       getGlobalString: name => this.getProperty(name).then(prop => prop.toString()),
-      memoize: (tag, key, create) => this.getCachedOrBuild(`memo:${tag} ${key}`, create),
+      memoize: (tag, key, create) =>
+        this.getCachedOrBuild(`memo:${tag} ${key}`, ctx => create(ctx.workDir).then(result => ({ result }))),
       runTask: (task, run) => this.execution.runTask(task, run),
     };
   }
@@ -838,12 +840,15 @@ export class BuildContext {
     return undefined;
   }
 
+  /** Demand an entry from the run's cache. The run's execution funnel is
+   * supplied here, so every entry built within a run is admitted through the one
+   * funnel whether or not the caller thought about it. */
   public getCachedOrBuild(
     manifest: string,
-    create: (targetDir: string) => Computable<FileSet>,
+    create: (ctx: ActionContext) => Computable<BuildResult>,
     options?: ICreateOptions
   ): Computable<FileSet> {
-    return this.execution.buildCache.getOrCreate(manifest, create, options);
+    return this.execution.buildCache.getOrCreate(manifest, create, { processLimit: this.execution.processLimit, ...options });
   }
 
   /**
@@ -1791,7 +1796,7 @@ export class BuildContext {
    * the announcement marks a cache miss with work begun, never a hit). The
    * machine-wide bound is NOT taken here: step code holds no execution slot —
    * a slot is acquired around each process the step runs, inside the context's
-   * {@link IActionContext.execute}/{@link IActionContext.executePipeline} —
+   * `execute`/`executePipeline` —
    * so a step waiting on its processes (or on many of them in parallel) can
    * never hold a slot while waiting for one, and the funnel is deadlock-free
    * by construction. Steps still never run actions of their own (composition
@@ -1803,7 +1808,9 @@ export class BuildContext {
    * {@link forcedBuild}.
    */
   public runAction(action: BuildAction, context: TargetContext): Computable<FileSet> {
-    return this.performAction(action, context.taskDescription(), this.forcedBuild(context));
+    /* An anonymous sub-target takes its declared owner's identity — see
+     * {@link targetKey}, including why the configuration is not part of it. */
+    return this.performAction(action, context.taskDescription(), this.forcedBuild(context), action.targetKey(context.getDeclaredContext().target));
   }
 
   /**
@@ -1817,35 +1824,22 @@ export class BuildContext {
     return this.performAction(action, task, false);
   }
 
-  /** The action cache/report core, over an already-decided description and force
-   * answer — the two things {@link runAction} reads from its TargetContext, and
-   * the only two a target-free caller has to supply itself. */
-  private performAction(action: BuildAction, task: TaskDescription, force: boolean): Computable<FileSet> {
-    const key = `rule:${action.step.id}:${action.step.version}\n${manifestEvalInputs(action.inputs)}`;
-    const cache = this.execution.buildCache;
+  /** The action cache/report core, over an already-decided description, force
+   * answer and target key — what {@link runAction} reads from its
+   * TargetContext, and what a target-free caller supplies itself (a target key
+   * being a *target's*
+   * coordinate, such a caller supplies none). */
+  private performAction(action: BuildAction, task: TaskDescription, force: boolean, targetKey?: string): Computable<FileSet> {
     const execution = this.execution;
     /* The action IS the task reported: this callback runs only on a miss, so a
      * task exists exactly when something is performed, bracketing the step's
      * own chain. A target with several actions reports each. */
-    const create = (targetDir: string): Computable<FileSet> =>
-      execution.runTask(task, report => {
-        /* The cache owns the scratch dir and the content store, so the action's
-         * context — work dir, streaming-output factory, the run's execution
-         * funnel, and the report this step's executions announce through — is
-         * assembled here, at the bridge between the cache's create callback and
-         * the step. */
-        const actionContext: IActionContext = {
-          workDir: targetDir,
-          createOutput: () => cache.getTemporaryWriteStream(),
-          ensureTree: files => cache.ensureTree(files),
-          treePool: cache.treePoolLink,
-          report,
-          processLimit: execution.processLimit,
-          admit: work => admitted(execution.processLimit, report, work),
-        };
-        return action.step.run(action.inputs, actionContext);
-      });
-    return this.getCachedOrBuild(key, create, { force });
+    const create = (ctx: ActionContext): Computable<BuildResult> =>
+      execution.runTask(task, report => action.step.run(action, ctx, report));
+    /* The action is the demand whole: the cache derives the key (anchor or
+     * complete, by the action's own shape), the discoverable deps and the
+     * change tracking from it. */
+    return execution.buildCache.getOrCreateAction(action, create, { force, targetKey, processLimit: execution.processLimit });
   }
 
   /**
@@ -2361,7 +2355,7 @@ export abstract class TargetContext {
    * changes. Distinct from evaluate entries, and never announced as building.
    */
   public memoize(tag: string, key: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet> {
-    return this.context.getCachedOrBuild(`memo:${tag} ${key}`, create);
+    return this.context.getCachedOrBuild(`memo:${tag} ${key}`, ctx => create(ctx.workDir).then(result => ({ result })));
   }
 
   /**
@@ -2960,43 +2954,4 @@ export class AnonymousTargetContext extends TargetContext {
   }
 }
 
-/**
- * @return the canonical manifest of a build step's input bag: keys in
- * sorted order, FileSets by their content manifests, strings as JSON values.
- * This is the input half of every evaluate cache key.
- */
-function manifestEvalInputs(inputs: BuildActionInputs): string {
-  return Object.keys(inputs)
-    .sort()
-    .map(name => `${name}=${manifestEvalInput(inputs[name])}`)
-    .join("\n");
-}
-
-function manifestEvalInput(value: BuildActionInput): string {
-  if (typeof value === "string") {
-    return JSON.stringify(value);
-  }
-  /* A package handed to a step whole is named by its identity, not listed file
-   * by file — the step assembles it itself, so the key must describe the
-   * closure it will assemble (see manifestPackageInputs) rather than a layout
-   * nothing has produced yet. Any other set is still its files. */
-  if (value instanceof PackageFileSet) {
-    return "{\n" + manifestPackageInputs([value]) + "\n}";
-  }
-  if (Array.isArray(value)) {
-    if (value.some(element => element instanceof PackageFileSet)) {
-      return "{\n" + manifestPackageInputs(value as FileSet[]) + "\n}";
-    }
-    return "[" + value.map(element => manifestEvalInput(element)).join(",") + "]";
-  }
-  /* A Name (a projection input) manifests by its canonical text — selector plus
-   * any `<constraints>` / `-> tmpl` facet all round-trip through toGlobString.
-   * It is the canonical form specifically because it is lossless: `toString`
-   * renders a quoted `'*'` and a wildcard `*` alike, which would collide two
-   * different projections onto one cache key. */
-  if (value instanceof Name) {
-    return JSON.stringify(value.toGlobString());
-  }
-  return "{\n" + value.toManifest() + "\n}";
-}
 
