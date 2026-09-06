@@ -488,7 +488,7 @@ describe("Name", () => {
 
     it("distinguishes a quoted metacharacter from live syntax — why identity uses the pattern form", () => {
       /* These two are different names; only toGlobString tells them apart, which
-       * is what keeps them off one cache key (see manifestEvalInput). */
+       * is what keeps them off one cache key (see BuildAction's manifestOption). */
       const quoted = literal("*");
       const wildcard = new NameBuilder().appendGlobMetachars("*").name();
       expect(quoted.toString()).to.equal(wildcard.toString());

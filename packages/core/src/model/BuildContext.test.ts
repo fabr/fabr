@@ -44,14 +44,9 @@ import { Name } from "../core/Name";
 import { renderProvenance } from "../core/Provenance";
 import { ConflictError, toError } from "../core/Errors";
 import { LogFormatter, LogLevel } from "../support/Log";
-import {
-  BuildAction,
-  IBuildActionDefinition,
-  PluginContribution,
-  RepositoryProvider,
-  RepositoryRegistration,
-  RuleRegistration,
-} from "../rules/Types";
+import { BuildAction, IBuildActionDefinition } from "../core/BuildAction";
+import { DiscoveredDeps } from "../core/Manifest";
+import { PluginContribution, RepositoryProvider, RepositoryRegistration, RuleRegistration } from "../rules/Types";
 import { FSFileSource } from "../core/FSFileSource";
 import { scriptRunRule } from "../rules/RunScript";
 import { BuildContext, mapEntryOrigin, PropertyMap, PropertyMapValue } from "./BuildContext";
@@ -121,7 +116,9 @@ registerRule("test_fail", {}, () => Computable.reject(new Error("reasons")));
  * target under another (what `js_package[run]` and the `files` rule do — build
  * myself, then present the result differently). The hop is a dependency edge
  * like any other, so it must carry the stack; this rule is here to hold that. */
-registerRule("test_good", { [BUILD_OPERATION]: "run" }, context => context.getSelfWithOverrides(BUILD_OVERRIDE).then(() => EMPTY_FILESET));
+registerRule("test_good", { [BUILD_OPERATION]: "run" }, context =>
+  context.getSelfWithOverrides(BUILD_OVERRIDE).then(() => EMPTY_FILESET)
+);
 /* Resolves its dep under a caller-supplied constraint override, for testing
  * override precedence against a reference's own <k=v> requirement. */
 registerRule("test_override", {}, context =>
@@ -259,9 +256,7 @@ registerRepositoryProvider("test_repo", context => Computable.resolve(new TestRe
  * batchCalls by the base class. */
 class TestToolRepo extends TestRepo {
   public override deliver(reference: RepositoryRef, options?: MaterializeOptions): Computable<FileSet> {
-    return super
-      .deliver(reference, options)
-      .then(files => RunnableFileSet.forEntry(files, [...files].map(([name]) => name)[0]));
+    return super.deliver(reference, options).then(files => RunnableFileSet.forEntry(files, [...files].map(([name]) => name)[0]));
   }
 }
 registerRepositoryProvider("test_tool_repo", context => Computable.resolve(new TestToolRepo(context.name)));
@@ -284,10 +279,7 @@ class TestPubRepo extends TestRepo implements RepositoryWriter {
       members.map(
         member =>
           new PublishableFileSet(
-            FileSet.unionAll(
-              member.content,
-              new FileSet(new Map([["manifest.txt", MemoryFile.from(member.destination.toString())]]))
-            ),
+            FileSet.unionAll(member.content, new FileSet(new Map([["manifest.txt", MemoryFile.from(member.destination.toString())]]))),
             member.destination
           )
       )
@@ -325,20 +317,20 @@ let leafRuns = 0;
 const TEST_LEAF_STEP: IBuildActionDefinition = {
   id: "test:leaf",
   version: 1,
-  run: inputs => {
+  run: action => {
     leafRuns++;
-    return Computable.resolve(new FileSet(new Map([["out.txt", MemoryFile.from(inputs.data as string)]])));
+    return Computable.resolve({ result: new FileSet(new Map([["out.txt", MemoryFile.from(action.options.data as string)]])) });
   },
 };
 registerRule("test_parent", {}, context =>
-  context.getRequiredString("content").then(content => new BuildAction(TEST_LEAF_STEP, { data: content }, "leaf"))
+  context.getRequiredString("content").then(content => new BuildAction(TEST_LEAF_STEP, {}, { data: content }, undefined, "leaf"))
 );
 
 /* An internal type built only as a sub-target: it reads its input through the
  * same context accessors as any target (unaware it is anonymous) and yields
  * the leaf action. */
 registerRule("test_sub", {}, context =>
-  context.getRequiredString("data").then(data => new BuildAction(TEST_LEAF_STEP, { data }, "sub"))
+  context.getRequiredString("data").then(data => new BuildAction(TEST_LEAF_STEP, {}, { data }, undefined, "sub"))
 );
 /* A rule that composes the sub-target: builds it, then wraps its output —
  * the wrap runs in resolution (every evaluation), reconstructing shape on the
@@ -360,10 +352,48 @@ registerRule("test_default_composer", {}, context => context.subTarget("test_sub
 /* A composer that builds a sub-target whose type has a rule but NO targetdef —
  * used to assert subTarget rejects a type missing from the build vocabulary. */
 registerRule("test_orphan_sub", {}, context =>
-  context.getRequiredString("data").then(data => new BuildAction(TEST_LEAF_STEP, { data }, "orphan"))
+  context.getRequiredString("data").then(data => new BuildAction(TEST_LEAF_STEP, {}, { data }, undefined, "orphan"))
 );
 registerRule("test_orphan_composer", {}, context =>
   context.getRequiredString("content").then(content => context.subTarget("test_orphan_sub", { data: content }, { label: "sub" }))
+);
+
+/* A step with **discoverable deps**: it is given the whole `headers` package
+ * but reads only the files its source names, and reports those as a selection
+ * — so the framework keys it on that selection rather than on everything it
+ * could have read. The package is module state so a test can change a header
+ * between builds under an unchanged source. */
+let compileRuns = 0;
+let testHeaders = new PackageFileSet(new Map(), "headers", "1.0.0");
+const TEST_COMPILE_STEP: IBuildActionDefinition = {
+  id: "test:compile",
+  version: 1,
+  run: action => {
+    compileRuns++;
+    const pkg = (action.discoverable!.headers as PackageFileSet[])[0];
+    const included = (action.options.includes as string).split(",").filter(name => pkg.getFile(name) !== undefined);
+    /* The output IS what it read, so reusing the wrong entry shows up as
+     * content rather than only as a missing run. */
+    return Computable.forAll(
+      included.map(name =>
+        pkg
+          .getFile(name)!
+          .readString()
+          .then(text => `${name}=${text}`)
+      ),
+      (...lines: string[]) => ({
+        result: new FileSet(new Map([["out.o", MemoryFile.from(lines.sort().join("\n"))]])),
+        /* Each read stated as the path that found it: the `headers` edge of the
+         * input's own members, then the file. */
+        discoveredDeps: new Map([["headers", included.map(name => ["headers", name])]]) as DiscoveredDeps,
+      })
+    );
+  },
+};
+registerRule("test_compile", {}, context =>
+  context
+    .getRequiredString("includes")
+    .then(includes => new BuildAction(TEST_COMPILE_STEP, {}, { includes }, { headers: [testHeaders] }))
 );
 
 /* Reports the wildcard members (keys the schema never named) its target
@@ -444,10 +474,7 @@ describe("BuildContext", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_good { deps = FILES; }\n" +
-      "targetdef test_fail { }\n" +
-      "test_fail b { }\n" +
-      "test_good a { deps = b; }\n";
+      "targetdef test_good { deps = FILES; }\n" + "targetdef test_fail { }\n" + "test_fail b { }\n" + "test_good a { deps = b; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
@@ -517,10 +544,11 @@ describe("BuildContext", () => {
       expect(circular.name).to.equal("one");
       /* Closing reference first ('one', written in two's deps), back to the use
        * site that entered the cycle ('two', written in one's deps). */
-      expect(circular.cycle.map(site => `${site.target && declName(site.target)} ${site.property.name.toBaseString()} = ${site.value.value.toString()}`)).to.deep.equal([
-        "two deps = one",
-        "one deps = two",
-      ]);
+      expect(
+        circular.cycle.map(
+          site => `${site.target && declName(site.target)} ${site.property.name.toBaseString()} = ${site.value.value.toString()}`
+        )
+      ).to.deep.equal(["two deps = one", "one deps = two"]);
     }
   });
 
@@ -552,10 +580,11 @@ describe("BuildContext", () => {
       const circular = cause as CircularDependencyError;
       /* The whole loop, both use sites: one's deps naming two under `run`, and
        * two's deps naming one back. */
-      expect(circular.cycle.map(site => `${site.target && declName(site.target)} ${site.property.name.toBaseString()} = ${site.value.value.toString()}`)).to.deep.equal([
-        "one deps = two<BUILD_OPERATION=run>",
-        "two deps = one",
-      ]);
+      expect(
+        circular.cycle.map(
+          site => `${site.target && declName(site.target)} ${site.property.name.toBaseString()} = ${site.value.value.toString()}`
+        )
+      ).to.deep.equal(["one deps = two<BUILD_OPERATION=run>", "two deps = one"]);
     }
   });
 
@@ -860,9 +889,7 @@ describe("BuildContext", () => {
      * detection, is the consumer's act). */
     const both = await config.resolveName(writtenOnCommandLine("m:package.json"));
     expect(both).to.have.length(2);
-    const contents = await Promise.all(
-      both.map(source => (source as FileSet).get("package.json").then(file => file!.readString()))
-    );
+    const contents = await Promise.all(both.map(source => (source as FileSet).get("package.json").then(file => file!.readString())));
     expect(contents.sort()).to.deep.equal(["one", "two"]);
 
     /* A name only one member matches: the missed members are dropped, not
@@ -885,17 +912,12 @@ describe("BuildContext", () => {
   function releaseConfig(operation: string): BuildContext {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    const model = toBuildModel(
-      [parseBuildString(EMPTY_FILESET, "TEST.fabr", RELEASE_INPUT, logger)],
-      logger,
-      testContributions
-    );
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", RELEASE_INPUT, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
     return model.getConfig(Constraints.of({ [BUILD_OPERATION]: operation }), execution);
   }
 
-  const namesOf = (sources: unknown[]): string[] =>
-    sources.flatMap(source => [...(source as FileSet)].map(([name]) => name)).sort();
+  const namesOf = (sources: unknown[]): string[] => sources.flatMap(source => [...(source as FileSet)].map(([name]) => name)).sort();
 
   it("Addresses a sync member's files by coordinate, identically under build and files", async () => {
     /* The release is a namespace: a projection into it names a member's file by
@@ -1054,8 +1076,7 @@ describe("BuildContext", () => {
     lastRewrite = undefined;
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    const input =
-      "targetdef test_rw { out = REWRITE; }\n" + "test_rw t { out = *.entry.js -> *.min.js; }\n";
+    const input = "targetdef test_rw { out = REWRITE; }\n" + "test_rw t { out = *.entry.js -> *.min.js; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
@@ -1208,7 +1229,13 @@ describe("BuildContext", () => {
 
     await model.getConfig(Constraints.of({}), execution).getTarget("t");
     expect(lastMap).to.deep.equal([
-      ["repository", new Map([["type", ["git"]], ["url", ["example.com"]]])],
+      [
+        "repository",
+        new Map([
+          ["type", ["git"]],
+          ["url", ["example.com"]],
+        ]),
+      ],
       ["maintainers", [new Map([["name", ["a"]]]), new Map([["name", ["b"]]])]],
     ]);
   });
@@ -1264,11 +1291,7 @@ describe("BuildContext", () => {
   it("Fails a splice cycle", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    const input =
-      "targetdef test_map { defines = MAP; }\n" +
-      "A = { B; }\n" +
-      "B = { A; }\n" +
-      "test_map t { defines = A; }\n";
+    const input = "targetdef test_map { defines = MAP; }\n" + "A = { B; }\n" + "B = { A; }\n" + "test_map t { defines = A; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
@@ -1327,9 +1350,7 @@ describe("BuildContext", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_map { defines = MAP; }\n" +
-      "SHARED = { license = gpl3; };\n" +
-      "test_map t { defines = ${SHARED}; }\n";
+      "targetdef test_map { defines = MAP; }\n" + "SHARED = { license = gpl3; };\n" + "test_map t { defines = ${SHARED}; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
@@ -1569,11 +1590,7 @@ describe("BuildContext", () => {
     await model.getConfig(Constraints.of({}), execution).getTarget("a");
     /* One batch for the whole evaluation — not one per property/global */
     expect(batchCalls.map(call => call.name).sort()).to.deep.equal(["one", "three", "two"]);
-    expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal([
-      "one/data.txt",
-      "three/data.txt",
-      "two/data.txt",
-    ]);
+    expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "three/data.txt", "two/data.txt"]);
   });
 
   it("Caches build steps at the boundary and announces only real work", async () => {
@@ -1649,8 +1666,7 @@ describe("BuildContext", () => {
   });
 
   it("Rejects a sub-target whose type has no registered targetdef", async () => {
-    const input =
-      "targetdef test_orphan_composer { content = STRING; }\n" + "test_orphan_composer a { content = shape; }\n";
+    const input = "targetdef test_orphan_composer { content = STRING; }\n" + "test_orphan_composer a { content = shape; }\n";
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
@@ -1687,7 +1703,9 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     expect(model.getConfig(Constraints.of({ x: "1" }), execution)).to.equal(model.getConfig(Constraints.of({ x: "1" }), execution));
-    expect(model.getConfig(Constraints.of({ x: "2" }), execution)).to.not.equal(model.getConfig(Constraints.of({ x: "1" }), execution));
+    expect(model.getConfig(Constraints.of({ x: "2" }), execution)).to.not.equal(
+      model.getConfig(Constraints.of({ x: "1" }), execution)
+    );
 
     /* Configs are per execution context: a fresh run never shares evaluation
      * state with another */
@@ -1786,16 +1804,78 @@ describe("BuildContext", () => {
     /* build/test resolve a whole target name via getTargetRef; a ${...} in that
      * name is substituted just as it is on the file/CLI path — previously it was
      * substituted only when the reference also carried a <k=v> requirement. */
-    const input =
-      "targetdef test_file { content = STRING; }\n" +
-      "default WHICH = leaf;\n" +
-      "test_file leaf { content = hi; }\n";
+    const input = "targetdef test_file { content = STRING; }\n" + "default WHICH = leaf;\n" + "test_file leaf { content = hi; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
     const sources = await model.getConfig(Constraints.of({}), execution).getTargetRef("${WHICH}");
     const files = FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet));
     expect(await files.get("f.txt").then(file => file?.readString())).to.equal("hi");
+  });
+});
+
+/**
+ * A step whose real inputs are only known after it ran: the framework demands
+ * it under an *anchor* (its always-real inputs, the discoverable deps omitted
+ * entirely) and keys the entry on the subset the run reports reading.
+ */
+describe("discovered dependencies", () => {
+  let root: string;
+  let runExecution: ExecutionContext;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-discovery-test-"));
+    runExecution = new ExecutionContext(new BuildCache(root, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
+    compileRuns = 0;
+  });
+  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const input = "targetdef test_compile { includes = STRING; }\n" + "test_compile t { includes = a.h; }\n";
+
+  /** Build `t` against the delivery as it currently stands. */
+  async function compile(headers: Record<string, string>): Promise<string> {
+    testHeaders = new PackageFileSet(
+      new Map(Object.entries(headers).map(([name, text]) => [name, MemoryFile.from(text)])),
+      "headers",
+      "1.0.0"
+    );
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    const sources = await model.getConfig(Constraints.of({}), runExecution).getTarget("t");
+    return (sources[0] as FileSet).readFile("out.o");
+  }
+
+  it("does not rebuild when a discoverable dep the step never read changes", async () => {
+    const first = await compile({ "a.h": "one", "b.h": "unused" });
+    expect(compileRuns).to.equal(1);
+    /* b.h is staged for the step and could have been read, but wasn't — so it
+     * is in neither the anchor (which omits them) nor the precise key
+     * (which holds only the reported reads), and its new bytes change nothing. */
+    expect(await compile({ "a.h": "one", "b.h": "edited" })).to.equal(first);
+    expect(compileRuns).to.equal(1);
+  });
+
+  it("does not rebuild when an unrelated discoverable dep appears", async () => {
+    await compile({ "a.h": "one", "b.h": "unused" });
+    /* Discoverable NAMES are out of the anchor as well as their contents: fabr
+     * stages them all, so a new file cannot shadow what a name already
+     * resolved to, and adding one invalidates nothing. */
+    await compile({ "a.h": "one", "b.h": "unused", "c.h": "new" });
+    expect(compileRuns).to.equal(1);
+  });
+
+  it("rebuilds when a discoverable dep the step read changes", async () => {
+    const first = await compile({ "a.h": "one", "b.h": "unused" });
+    const second = await compile({ "a.h": "two", "b.h": "unused" });
+    expect(compileRuns).to.equal(2);
+    expect(second).to.not.equal(first);
+    expect(second).to.equal("a.h=two");
+    /* Reverting reconstructs the first entry's key, which is still in the
+     * store — no run, no memo change. */
+    expect(await compile({ "a.h": "one", "b.h": "unused" })).to.equal(first);
+    expect(compileRuns).to.equal(2);
   });
 });
 

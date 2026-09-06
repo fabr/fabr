@@ -29,6 +29,7 @@ import {
   PackageGraphBuilder,
   SymlinkFile,
 } from "@fabr-build/core";
+import { referenceOf } from "./PnPManifest";
 import {
   assembleNodeModules,
   assembleScopedNodeModules,
@@ -430,21 +431,35 @@ describe("assembling delivered edge-binding graphs", () => {
     expect(await contentAt(files, "m/node_modules/leaf/node_modules/x/index.js")).to.equal("// x@2.0.0");
   });
 
-  it("rejects two batches disagreeing about one packageId (one id is one node)", () => {
-    /* Two independently-resolved batches may deliver the same name@version
-     * with DIFFERENT edges (one batch cannot — its edges are a function of
-     * the joint resolution). The merge resolves ids, not instances, so a
-     * disagreement would be settled by traversal order rather than by any
-     * decision: a conflict carrying both sides' provenance, never a pick. */
-    const batchA = delivered(
-      { "rootA@1.0.0": { p: "p@1.0.0" }, "p@1.0.0": { x: "x@1.0.0" }, "x@1.0.0": {} },
-      "rootA@1.0.0"
+  /* Two independently-resolved batches delivering one name@version with
+   * DIFFERENT edges — which a single batch cannot produce, its edges being a
+   * function of the joint resolution. Two nodes, one id. */
+  const disagreeingBatches = (): PackageFileSet[] => [
+    delivered({ "rootA@1.0.0": { p: "p@1.0.0" }, "p@1.0.0": { x: "x@1.0.0" }, "x@1.0.0": {} }, "rootA@1.0.0"),
+    delivered({ "rootB@1.0.0": { p: "p@1.0.0" }, "p@1.0.0": { x: "x@2.0.0" }, "x@2.0.0": {} }, "rootB@1.0.0"),
+  ];
+
+  it("rejects an INSTALL of two batches disagreeing about one packageId", () => {
+    /* A tree gives a package one directory and so one environment, so two
+     * different nodes claiming one name@version cannot both be installed —
+     * whichever mounted second would be settled by traversal order rather than
+     * by any decision. The refusal belongs to physical assembly, not to the
+     * planner, which is happy to hold this shape (see below). */
+    expect(() => assembleNodeModules(disagreeingBatches())).to.throw(ConflictError, /p@1\.0\.0/);
+  });
+
+  it("still NAMES the same delivery, because references need no tree", () => {
+    /* The other half of the same rule: a report can span surfaces that never
+     * co-resolved, where two nodes under one id is an ordinary fact about two
+     * deliveries rather than a contradiction within one — and a node's
+     * reference is its own signature, so it exists whatever layout does.
+     * Naming succeeds where installing refuses. */
+    const batches = disagreeingBatches();
+    const pOf = (root: PackageFileSet): PackageFileSet =>
+      [...root.dependencies].find((dep): dep is PackageFileSet => dep instanceof PackageFileSet && dep.packageName === "p")!;
+    expect(referenceOf(pOf(batches[0])), "the two p nodes get distinct references").to.not.equal(
+      referenceOf(pOf(batches[1]))
     );
-    const batchB = delivered(
-      { "rootB@1.0.0": { p: "p@1.0.0" }, "p@1.0.0": { x: "x@2.0.0" }, "x@2.0.0": {} },
-      "rootB@1.0.0"
-    );
-    expect(() => assembleNodeModules([batchA, batchB])).to.throw(ConflictError, /p@1\.0\.0/);
   });
 
   it("makes a delivered graph runnable with its nested override in the install", async () => {

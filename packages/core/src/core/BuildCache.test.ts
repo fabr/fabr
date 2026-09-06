@@ -24,7 +24,11 @@ import * as path from "path";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
-import { BuildCache } from "./BuildCache";
+import { ActionContext, BuildCache, IBuildState } from "./BuildCache";
+import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
+import { ActionFileInputs, BuildAction, BuildResult, IBuildActionDefinition, preciseActionKey } from "./BuildAction";
+import { narrowDeps } from "./BuildCache";
+import { DiscoveredDeps, parseRecordedBase } from "./Manifest";
 import { Computable } from "./Computable";
 import { readStream } from "./Fetch";
 import { SILENT_REPORT, TaskTracker } from "../support/Execute";
@@ -44,6 +48,11 @@ function toPromise<T>(computable: Computable<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.then(resolve, reject));
 }
 
+/** A plain step's answer: the files it produced and nothing discovered. */
+function produced(files: FileSet): Computable<BuildResult> {
+  return Computable.resolve({ result: files });
+}
+
 describe("BuildCache", () => {
   let root: string;
 
@@ -58,9 +67,7 @@ describe("BuildCache", () => {
   it("persists in-memory files into the cache directory", async () => {
     const cache = new BuildCache(root, NULL_LOG);
     const files = await toPromise(
-      cache.getOrCreate("test manifest", () =>
-        Computable.resolve(new FileSet(new Map([["meta.json", MemoryFile.from('{"name":"test"}')]])))
-      )
+      cache.getOrCreate("test manifest", () => produced(new FileSet(new Map([["meta.json", MemoryFile.from('{"name":"test"}')]]))))
     );
     const file = await toPromise(files.get("meta.json"));
     expect(file).to.not.equal(undefined);
@@ -73,17 +80,15 @@ describe("BuildCache", () => {
   it("preserves file mode through the manifest and stores blobs read-only", async () => {
     const cache = new BuildCache(root, NULL_LOG);
     const store = (): Computable<FileSet> =>
-      cache.getOrCreate(
-        "with modes",
-        () =>
-          Computable.resolve(
-            new FileSet(
-              new Map<string, import("./FileSet").IFile>([
-                ["bin/tool", new MemoryFile(Buffer.from("#!/bin/sh\n"), 0o755)],
-                ["lib/plain.js", new MemoryFile(Buffer.from("x"), 0o644)],
-              ])
-            )
+      cache.getOrCreate("with modes", () =>
+        produced(
+          new FileSet(
+            new Map<string, import("./FileSet").IFile>([
+              ["bin/tool", new MemoryFile(Buffer.from("#!/bin/sh\n"), 0o755)],
+              ["lib/plain.js", new MemoryFile(Buffer.from("x"), 0o644)],
+            ])
           )
+        )
       );
     const fresh = await toPromise(store());
 
@@ -109,9 +114,18 @@ describe("BuildCache", () => {
   it("persists the sniffed mime through the manifest", async () => {
     const cache = new BuildCache(root, NULL_LOG);
     const gzip = new MemoryFile(Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00]));
-    const store = (create: () => Computable<FileSet>): Computable<FileSet> => cache.getOrCreate("with mime", create);
+    const store = (create: () => Computable<BuildResult>): Computable<FileSet> => cache.getOrCreate("with mime", create);
     await toPromise(
-      store(() => Computable.resolve(new FileSet(new Map([["a.tgz", gzip], ["notes.txt", MemoryFile.from("text")]]))))
+      store(() =>
+        produced(
+          new FileSet(
+            new Map([
+              ["a.tgz", gzip],
+              ["notes.txt", MemoryFile.from("text")],
+            ])
+          )
+        )
+      )
     );
 
     /* A fresh cache serves the classification straight from the manifest —
@@ -132,7 +146,7 @@ describe("BuildCache", () => {
      * a name carrying its own '%' must come back as written, not re-decoded. */
     const names = ["dir/a b.txt", "100%25.txt", "plain.txt"];
     const content = new Map(names.map(name => [name, MemoryFile.from(name)]));
-    await toPromise(cache.getOrCreate("encoded names", () => Computable.resolve(new FileSet(content))));
+    await toPromise(cache.getOrCreate("encoded names", () => produced(new FileSet(content))));
 
     const reopened = new BuildCache(root, NULL_LOG);
     const files = await toPromise(
@@ -146,7 +160,7 @@ describe("BuildCache", () => {
   it("treats a mime-less (pre-mime) manifest line as a miss", async () => {
     const cache = new BuildCache(root, NULL_LOG);
     const build = (): Computable<FileSet> =>
-      cache.getOrCreate("legacy line", () => Computable.resolve(new FileSet(new Map([["x.txt", MemoryFile.from("x")]]))));
+      cache.getOrCreate("legacy line", () => produced(new FileSet(new Map([["x.txt", MemoryFile.from("x")]]))));
     await toPromise(build());
 
     /* Strip the trailing mime field, leaving the old three-field form. The
@@ -160,7 +174,59 @@ describe("BuildCache", () => {
     await toPromise(
       reopened.getOrCreate("legacy line", () => {
         rebuilt = true;
-        return Computable.resolve(new FileSet(new Map([["x.txt", MemoryFile.from("x")]])));
+        return produced(new FileSet(new Map([["x.txt", MemoryFile.from("x")]])));
+      })
+    );
+    expect(rebuilt).to.equal(true);
+  });
+
+  it("treats an entry manifest torn at a line boundary as a miss, not a shorter entry", async () => {
+    /* The case the count exists for, and the one no other field catches: the
+     * manifest is written temp-then-rename with no fsync, so a power loss can
+     * leave it whole lines short. Every line it kept parses, every blob it
+     * names exists — so without the count the cache would serve an INCOMPLETE
+     * build output as a hit. */
+    const cache = new BuildCache(root, NULL_LOG);
+    const files = new FileSet(
+      new Map([
+        ["a.txt", MemoryFile.from("a")],
+        ["b.txt", MemoryFile.from("b")],
+      ])
+    );
+    await toPromise(cache.getOrCreate("torn entry", () => produced(files)));
+
+    const manifestPath = path.join(root, hashString("torn entry") + ".manifest");
+    const lines = fs.readFileSync(manifestPath, "utf8").split("\n");
+    fs.writeFileSync(manifestPath, [...lines.slice(0, lines.length - 2), ""].join("\n"));
+
+    let rebuilt = false;
+    const served = await toPromise(
+      new BuildCache(root, NULL_LOG).getOrCreate("torn entry", () => {
+        rebuilt = true;
+        return produced(files);
+      })
+    );
+    expect(rebuilt, "a lost line is a miss").to.equal(true);
+    expect([...served].map(([name]) => name).sort()).to.deep.equal(["a.txt", "b.txt"]);
+  });
+
+  it("treats a countless (pre-count) manifest as a miss", async () => {
+    /* Requiring the field IS the format bump: every manifest written before the
+     * count reads as malformed and rebuilds, exactly as the mime-less ones did.
+     * No version constant, and nothing grandfathered. */
+    const cache = new BuildCache(root, NULL_LOG);
+    const build = (): Computable<FileSet> =>
+      cache.getOrCreate("countless", () => produced(new FileSet(new Map([["x.txt", MemoryFile.from("x")]]))));
+    await toPromise(build());
+
+    const manifestPath = path.join(root, hashString("countless") + ".manifest");
+    fs.writeFileSync(manifestPath, fs.readFileSync(manifestPath, "utf8").split("\n").slice(1).join("\n"));
+
+    let rebuilt = false;
+    await toPromise(
+      new BuildCache(root, NULL_LOG).getOrCreate("countless", () => {
+        rebuilt = true;
+        return produced(new FileSet(new Map([["x.txt", MemoryFile.from("x")]])));
       })
     );
     expect(rebuilt).to.equal(true);
@@ -169,7 +235,7 @@ describe("BuildCache", () => {
   it("treats a manifest with a corrupt mode field as a miss, not a NaN mode", async () => {
     const cache = new BuildCache(root, NULL_LOG);
     const build = (): Computable<FileSet> =>
-      cache.getOrCreate("bad mode", () => Computable.resolve(new FileSet(new Map([["x.txt", MemoryFile.from("x")]]))));
+      cache.getOrCreate("bad mode", () => produced(new FileSet(new Map([["x.txt", MemoryFile.from("x")]]))));
     await toPromise(build());
 
     /* Corrupt the stored mode. A bogus field must fail the parse (so the entry
@@ -183,7 +249,7 @@ describe("BuildCache", () => {
     const files = await toPromise(
       reopened.getOrCreate("bad mode", () => {
         rebuilt = true;
-        return Computable.resolve(new FileSet(new Map([["x.txt", MemoryFile.from("x")]])));
+        return produced(new FileSet(new Map([["x.txt", MemoryFile.from("x")]])));
       })
     );
     expect(rebuilt).to.equal(true);
@@ -193,17 +259,15 @@ describe("BuildCache", () => {
   it("round-trips a symlink through the manifest without materialising a blob", async () => {
     const cache = new BuildCache(root, NULL_LOG);
     await toPromise(
-      cache.getOrCreate(
-        "with symlink",
-        () =>
-          Computable.resolve(
-            new FileSet(
-              new Map<string, import("./FileSet").IFile>([
-                ["real.txt", MemoryFile.from("hi")],
-                ["link.txt", new SymlinkFile("real.txt")],
-              ])
-            )
+      cache.getOrCreate("with symlink", () =>
+        produced(
+          new FileSet(
+            new Map<string, import("./FileSet").IFile>([
+              ["real.txt", MemoryFile.from("hi")],
+              ["link.txt", new SymlinkFile("real.txt")],
+            ])
           )
+        )
       )
     );
     /* The link's target rides in the manifest, so no blob is created for its
@@ -233,9 +297,7 @@ describe("BuildCache", () => {
     const cache = new BuildCache(root, NULL_LOG);
     await toPromise(
       cache.getOrCreate("with a suspicious link", () =>
-        Computable.resolve(
-          new FileSet(new Map<string, import("./FileSet").IFile>([["evil", new SymlinkFile("fabr-cache:tree/../../../etc")]]))
-        )
+        produced(new FileSet(new Map<string, import("./FileSet").IFile>([["evil", new SymlinkFile("fabr-cache:tree/../../../etc")]])))
       )
     );
     const reopened = new BuildCache(root, NULL_LOG);
@@ -252,9 +314,7 @@ describe("BuildCache", () => {
 
   it("writes the manifest atomically, leaving no temp debris", async () => {
     const cache = new BuildCache(root, NULL_LOG);
-    await toPromise(
-      cache.getOrCreate("atomic", () => Computable.resolve(new FileSet(new Map([["a.txt", MemoryFile.from("hi")]]))))
-    );
+    await toPromise(cache.getOrCreate("atomic", () => produced(new FileSet(new Map([["a.txt", MemoryFile.from("hi")]])))));
     /* The manifest is present and the temp file was renamed into place, not left
      * behind (an atomic write, so no truncated manifest can ever be trusted). */
     expect(fs.existsSync(path.join(root, hashString("atomic") + ".manifest"))).to.equal(true);
@@ -275,9 +335,9 @@ describe("BuildCache", () => {
     const dirs: string[] = [];
     /* A failing attempt that gets as far as writing into its work dir — the
      * crashed-mid-build shape, which a retry must not inherit. */
-    const failing = (dir: string): Computable<FileSet> => {
-      dirs.push(dir);
-      fs.writeFileSync(path.join(dir, "partial.txt"), "half a build");
+    const failing = (ctx: ActionContext): Computable<BuildResult> => {
+      dirs.push(ctx.workDir);
+      fs.writeFileSync(path.join(ctx.workDir, "partial.txt"), "half a build");
       return Computable.reject(new Error("boom"));
     };
 
@@ -295,10 +355,10 @@ describe("BuildCache", () => {
      * work dirs are named by owner, so there is no shared per-key dir to
      * inherit debris through. */
     const files = await toPromise(
-      cache.getOrCreate("failing manifest", dir => {
-        dirs.push(dir);
-        expect(fs.readdirSync(dir), "a fresh work dir").to.deep.equal([]);
-        return Computable.resolve(new FileSet(new Map([["meta.json", MemoryFile.from('{"ok":true}')]])));
+      cache.getOrCreate("failing manifest", ctx => {
+        dirs.push(ctx.workDir);
+        expect(fs.readdirSync(ctx.workDir), "a fresh work dir").to.deep.equal([]);
+        return produced(new FileSet(new Map([["meta.json", MemoryFile.from('{"ok":true}')]])));
       })
     );
     expect(dirs[1]).to.not.equal(dirs[0]);
@@ -313,10 +373,10 @@ describe("BuildCache", () => {
       release = () => resolve(undefined);
     });
     let creates = 0;
-    const create = (): Computable<FileSet> =>
+    const create = (): Computable<BuildResult> =>
       gate.then(() => {
         creates++;
-        return new FileSet(new Map([["out.txt", MemoryFile.from("content")]]));
+        return { result: new FileSet(new Map([["out.txt", MemoryFile.from("content")]])) };
       });
 
     const first = cache.getOrCreate("shared key", create);
@@ -331,9 +391,9 @@ describe("BuildCache", () => {
   it("rebuilds a stored entry when the demand forces it, and re-stores the result", async () => {
     const cache = new BuildCache(root, NULL_LOG);
     let creates = 0;
-    const create = (): Computable<FileSet> => {
+    const create = (): Computable<BuildResult> => {
       creates++;
-      return Computable.resolve(new FileSet(new Map([["out.txt", MemoryFile.from(`build ${creates}`)]])));
+      return produced(new FileSet(new Map([["out.txt", MemoryFile.from(`build ${creates}`)]])));
     };
     await toPromise(cache.getOrCreate("forced key", create));
     /* Force defeats the lookup only: the rebuilt result commits as an ordinary
@@ -355,10 +415,10 @@ describe("BuildCache", () => {
       release = () => resolve(undefined);
     });
     let creates = 0;
-    const create = (): Computable<FileSet> =>
+    const create = (): Computable<BuildResult> =>
       gate.then(() => {
         creates++;
-        return new FileSet(new Map([["out.txt", MemoryFile.from("content")]]));
+        return { result: new FileSet(new Map([["out.txt", MemoryFile.from("content")]])) };
       });
 
     const first = cache.getOrCreate("in-flight key", create);
@@ -378,7 +438,7 @@ describe("BuildCache", () => {
     }
     expect(failure?.message).to.equal("boom");
     const recovered = await toPromise(
-      cache.getOrCreate("retry key", () => Computable.resolve(new FileSet(new Map([["out.txt", MemoryFile.from("ok")]]))))
+      cache.getOrCreate("retry key", () => produced(new FileSet(new Map([["out.txt", MemoryFile.from("ok")]]))))
     );
     expect(await toPromise(recovered.readFile("out.txt"))).to.equal("ok");
   });
@@ -421,9 +481,7 @@ describe("BuildCache", () => {
   it("returns the cached result without re-running the build", async () => {
     const cache = new BuildCache(root, NULL_LOG);
     await toPromise(
-      cache.getOrCreate("test manifest", () =>
-        Computable.resolve(new FileSet(new Map([["meta.json", MemoryFile.from('{"name":"test"}')]])))
-      )
+      cache.getOrCreate("test manifest", () => produced(new FileSet(new Map([["meta.json", MemoryFile.from('{"name":"test"}')]]))))
     );
 
     /* A separate BuildCache instance sees the persisted entry and never calls
@@ -533,6 +591,997 @@ describe("BuildCache", () => {
      * completes in the background, after the fd closes. */
     await new Promise(resolve => setTimeout(resolve, 25));
     expect(spoolFiles(root)).to.deep.equal([]);
+  });
+});
+
+/**
+ * Discovered dependencies: a step that may read any of its discoverable inputs
+ * but reports which of them it actually read — as a selection in the inputs'
+ * own vocabulary (package instances + package-root-relative files) — so the
+ * entry is keyed on that selection's content and a change to an unread
+ * discoverable dep invalidates nothing.
+ *
+ * The synthetic step is a miniature compiler over a delivered package of
+ * "headers": it always reads `a.h`, plus whatever `a.h`'s own content names (a
+ * comma-separated include list) — so a *content* change to a used header can
+ * change the read set, which is the only thing that makes a second record
+ * appear. Its output is what it read, so any stale reuse would show up as
+ * wrong content rather than merely as a wrong run count.
+ */
+describe("BuildCache discovered dependencies", () => {
+  let root: string;
+  let cache: BuildCache;
+  let runs: number;
+
+  /* The anchor: the always-real inputs (a source, an argv, a tool identity),
+   * with the discoverable inputs omitted entirely. */
+  const ANCHOR = 'rule:test:cc:1\nargv=["cc","-c","foo.c"]\nsrc={hash-of-foo.c 644 foo.c}';
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-discovered-deps-test-"));
+    cache = new BuildCache(root, NULL_LOG);
+    runs = 0;
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** The discoverable inputs as they currently stand: one delivered package of
+   * headers, name -> content. */
+  function discoverableDeps(headers: Record<string, string>, version = "1.0.0"): ActionFileInputs {
+    return { deps: [headerPackage(headers, version)] };
+  }
+
+  function headerPackage(
+    headers: Record<string, string>,
+    version = "1.0.0",
+    deps: PackageFileSet[] = [],
+    name = "hdrs"
+  ): PackageFileSet {
+    return new PackageFileSet(
+      new Map(Object.entries(headers).map(([file, content]) => [file, MemoryFile.from(content)])),
+      name,
+      version,
+      deps
+    );
+  }
+
+  function depsOf(discoverable: ActionFileInputs): PackageFileSet[] {
+    return discoverable.deps as PackageFileSet[];
+  }
+
+  /** What the step reports having read: files of the one header package,
+   * each stated as the path that found it — the package's own edge from the
+   * input's members, then the file. */
+  function selectionOf(discoverable: ActionFileInputs, names: string[]): DiscoveredDeps {
+    const held = depsOf(discoverable)[0].packageName;
+    return new Map([["deps", [...names].sort().map(file => [held, file])]]);
+  }
+
+  /** What the step reads: `a.h`, plus the headers `a.h` itself includes (of
+   * those that exist — an unresolvable include is simply not a read). */
+  async function readSet(discoverable: ActionFileInputs): Promise<string[]> {
+    const pkg = depsOf(discoverable)[0];
+    const includes = (await toPromise(pkg.readFile("a.h"))).split(",").filter(name => pkg.getFile(name) !== undefined);
+    return ["a.h", ...includes];
+  }
+
+  /** One demand of the compile against the inputs as they currently stand. */
+  function build(discoverable: ActionFileInputs, options?: { force?: boolean }): Promise<FileSet> {
+    return toPromise(
+      cache.getOrCreate(
+        ANCHOR,
+        () => {
+          runs++;
+          return Computable.from<BuildResult>(resolve => {
+            void readSet(discoverable).then(names =>
+              resolve({
+                result: new FileSet(new Map([["foo.o", MemoryFile.from(objectFor(names))]])),
+                discoveredDeps: selectionOf(discoverable, names),
+              })
+            );
+          });
+        },
+        { ...options, discoverable }
+      )
+    );
+  }
+
+  /** The "object file": exactly what the compile read, so reuse of the wrong
+   * entry is visible as content, not just as a missing run. */
+  function objectFor(names: string[]): string {
+    return [...names].sort().join("+");
+  }
+
+  /** The discovered-deps records under the anchor. */
+  function records(): string[] {
+    const dir = path.join(root, "deps", hashString(ANCHOR));
+    return fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+  }
+
+  it("stores the result under the precise key, never under the anchor", async () => {
+    const discoverable = discoverableDeps({ "a.h": "", "b.h": "unused" });
+    await build(discoverable);
+    expect(runs).to.equal(1);
+    /* The anchor omits the discoverable, so a result there would not be a
+     * function of its key — the entry lives under the precise key its reads
+     * make: the anchor, the content manifest of what the paths found, and the
+     * names they did not. */
+    expect(fs.existsSync(path.join(root, hashString(ANCHOR) + ".manifest"))).to.equal(false);
+    const used = narrowDeps(discoverable, selectionOf(discoverable, ["a.h"]));
+    expect(fs.existsSync(path.join(root, hashString(preciseActionKey(hashString(ANCHOR), used)) + ".manifest"))).to.equal(true);
+  });
+
+  it("does not join an in-flight attempt that was given different discoverable", async () => {
+    /**
+     * The in-flight dedup is a lock on the entry AND a join, and the key it
+     * used was the anchor alone. Two demands can share an anchor and differ in
+     * their discoverable inputs — under watch, a superseded cycle still running
+     * while the next one starts after a dependency's content changed — and
+     * joining those hands the second demand a result built from the FIRST's
+     * inputs, keyed on contents the second never saw.
+     *
+     * Held open here rather than raced, so the second demand provably arrives
+     * while the first is still running.
+     */
+    let release: (() => void) | undefined;
+    const held = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const slow = (discoverable: ActionFileInputs): Promise<FileSet> =>
+      toPromise(
+        cache.getOrCreate(
+          ANCHOR,
+          () => {
+            runs++;
+            return Computable.from<BuildResult>(resolve => {
+              void held
+                .then(() => readSet(discoverable))
+                .then(names =>
+                  resolve({
+                    result: new FileSet(new Map([["foo.o", MemoryFile.from(objectFor(names))]])),
+                    discoveredDeps: selectionOf(discoverable, names),
+                  })
+                );
+            });
+          },
+          { discoverable }
+        )
+      );
+    /* Two deliveries whose READ subsets differ: `a.h` names `b.h` in the
+     * second, so a result built from the first is the wrong answer for it. */
+    const first = slow(discoverableDeps({ "a.h": "", "b.h": "shared" }));
+    const second = slow(discoverableDeps({ "a.h": "b.h", "b.h": "shared" }));
+    release!();
+    const [one, two] = await Promise.all([first, second]);
+
+    expect(runs, "the second demand ran rather than joining").to.equal(2);
+    expect(await toPromise(one.readFile("foo.o"))).to.equal("a.h");
+    expect(await toPromise(two.readFile("foo.o")), "and got its own delivery's answer").to.equal("a.h+b.h");
+  });
+
+  it("still joins an in-flight attempt given the same discoverable", async () => {
+    /* The dedup that must survive: one anchor, one delivery, one run. */
+    let release: (() => void) | undefined;
+    const held = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const discoverable = discoverableDeps({ "a.h": "", "b.h": "shared" });
+    const slow = (): Promise<FileSet> =>
+      toPromise(
+        cache.getOrCreate(
+          ANCHOR,
+          () => {
+            runs++;
+            return Computable.from<BuildResult>(resolve => {
+              void held
+                .then(() => readSet(discoverable))
+                .then(names =>
+                  resolve({
+                    result: new FileSet(new Map([["foo.o", MemoryFile.from(objectFor(names))]])),
+                    discoveredDeps: selectionOf(discoverable, names),
+                  })
+                );
+            });
+          },
+          { discoverable }
+        )
+      );
+    const first = slow();
+    const second = slow();
+    release!();
+    await Promise.all([first, second]);
+    expect(runs, "one delivery, one run").to.equal(1);
+  });
+
+  it("serves a hit when an unread discoverable dep changes", async () => {
+    const first = await build(discoverableDeps({ "a.h": "", "b.h": "one" }));
+    expect(runs).to.equal(1);
+    /* b.h is delivered but not in the record, so its new bytes enter no key:
+     * the reconstructed precise key is the one already stored. This is the
+     * whole point of the mechanism. */
+    const second = await build(discoverableDeps({ "a.h": "", "b.h": "two" }));
+    expect(runs).to.equal(1);
+    expect(await toPromise(second.readFile("foo.o"))).to.equal(await toPromise(first.readFile("foo.o")));
+  });
+
+  it("serves a hit when an unrelated discoverable dep is added or removed", async () => {
+    await build(discoverableDeps({ "a.h": "", "b.h": "one" }));
+    expect(runs).to.equal(1);
+    /* Discoverable NAMES are out of the anchor too (staging guarantees one root
+     * per name, so nothing new can shadow what a name resolved to), which is
+     * what makes an added header a no-op. */
+    await build(discoverableDeps({ "a.h": "", "b.h": "one", "new.h": "arrived" }));
+    await build(discoverableDeps({ "a.h": "" }));
+    expect(runs).to.equal(1);
+  });
+
+  it("serves a hit when a read package's version bumps with identical bytes", async () => {
+    /* A walk step is the edge's DELIVERED name, which a republish does not
+     * move, and the key is the content found there — so a bump that moves no
+     * byte the compile read still replays, and hits. Versions are what the
+     * walk deliberately does not say. */
+    const first = await build(discoverableDeps({ "a.h": "", "b.h": "one" }, "1.0.0"));
+    expect(runs).to.equal(1);
+    const second = await build(discoverableDeps({ "a.h": "", "b.h": "one" }, "2.0.0"));
+    expect(runs).to.equal(1);
+    expect(await toPromise(second.readFile("foo.o"))).to.equal(await toPromise(first.readFile("foo.o")));
+  });
+
+  it("tells a forked name's two instances apart by the path that found each", async () => {
+    /* Two versions of one package name in one delivery — a direct root and a
+     * nested override under a requirer. Nothing has to guess which is which:
+     * `forked` and `requirer forked` are different paths, so the record states
+     * both reads exactly and each replays to its own instance. */
+    const fork = (oldBytes: string, newBytes: string): ActionFileInputs => {
+      const nested = headerPackage({ "f.h": oldBytes }, "1.0.0", [], "forked");
+      const requirer = headerPackage({ "r.h": "" }, "1.0.0", [nested], "requirer");
+      return { deps: [headerPackage({ "f.h": newBytes }, "2.0.0", [], "forked"), requirer] };
+    };
+    const discoverable = fork("old", "new");
+    const forked = (): DiscoveredDeps =>
+      new Map([
+        [
+          "deps",
+          [
+            ["forked", "f.h"],
+            ["requirer", "forked", "f.h"],
+          ],
+        ],
+      ]);
+    const demand = (discoverable: ActionFileInputs): Promise<FileSet> =>
+      toPromise(
+        cache.getOrCreate(
+          ANCHOR,
+          () => {
+            runs++;
+            return Computable.resolve({
+              result: new FileSet(new Map([["foo.o", MemoryFile.from("both")]])),
+              discoveredDeps: forked(),
+            });
+          },
+          { discoverable }
+        )
+      );
+    await demand(discoverable);
+    expect(runs).to.equal(1);
+    await demand(fork("old", "new"));
+    expect(runs, "both instances reconstructed, the entry hits").to.equal(1);
+    await demand(fork("edited", "new"));
+    expect(runs, "either instance's bytes moving is a miss").to.equal(2);
+  });
+
+  it("does not serve a stale entry when a direct binding is re-bound over a surviving instance", async () => {
+    /**
+     * The re-bind hazard (diagnosed 2026-08-31, fixed by recording the path).
+     *
+     * The direct binding for the name `lodash` moves from 4.0.0 to 5.0.0, while
+     * 4.0.0 survives in the closure — byte-identical — as a transitive of
+     * `express`. The compile resolves the bare name and reads whatever it binds
+     * to, so build 2 must produce v5's bytes; serving build 1's entry is a
+     * WRONG ANSWER, not merely a coarse one.
+     *
+     * The path is what states it: build 1 records `lodash index.d.ts`, and in
+     * build 2 that same path lands on v5, so the key moves with the binding.
+     * Naming what was read (an instance, a version) instead of WHERE it was
+     * found cannot express this — the surviving v4 answers such a record with
+     * every byte unchanged.
+     */
+    const lodash = (version: string, body: string): PackageFileSet =>
+      new PackageFileSet(new Map([["index.d.ts", MemoryFile.from(body)]]), "lodash", version, []);
+    const express = (deps: PackageFileSet[]): PackageFileSet =>
+      new PackageFileSet(new Map([["index.d.ts", MemoryFile.from("express")]]), "express", "1.0.0", deps);
+    /* Build 1: lodash@4 bound directly, express carrying nothing. Build 2: the
+     * direct binding is lodash@5, and the very same lodash@4 is still reachable
+     * under express. */
+    const before: ActionFileInputs = { deps: [lodash("4.0.0", "lodash v4"), express([])] };
+    const after: ActionFileInputs = { deps: [lodash("5.0.0", "lodash v5"), express([lodash("4.0.0", "lodash v4")])] };
+    /* What a compile does: resolve the bare name against its DIRECT deps, read
+     * that instance's declarations, and report the read as the path it took —
+     * the `lodash` edge of its own members, then the file. */
+    const compile = (discoverable: ActionFileInputs): Promise<FileSet> =>
+      toPromise(
+        cache.getOrCreate(
+          ANCHOR,
+          () => {
+            runs++;
+            const bound = depsOf(discoverable).find(pkg => pkg.packageName === "lodash")!;
+            return Computable.from<BuildResult>(resolve => {
+              void toPromise(bound.readFile("index.d.ts")).then(body =>
+                resolve({
+                  result: new FileSet(new Map([["foo.o", MemoryFile.from(body)]])),
+                  discoveredDeps: new Map([["deps", [["lodash", "index.d.ts"]]]]) as DiscoveredDeps,
+                })
+              );
+            });
+          },
+          { discoverable }
+        )
+      );
+    const first = await compile(before);
+    expect(runs).to.equal(1);
+    expect(await toPromise(first.readFile("foo.o"))).to.equal("lodash v4");
+    const second = await compile(after);
+    expect(await toPromise(second.readFile("foo.o")), "build 2 compiles against lodash@5").to.equal("lodash v5");
+    expect(runs, "the re-bind must not be answered from the old entry").to.equal(2);
+  });
+
+  it("rebuilds when a discoverable dep it read changes", async () => {
+    await build(discoverableDeps({ "a.h": "", "b.h": "unused" }));
+    const rebuilt = await build(discoverableDeps({ "a.h": "/* edited */", "b.h": "unused" }));
+    expect(runs).to.equal(2);
+    expect(await toPromise(rebuilt.readFile("foo.o"))).to.equal("a.h");
+    /* Same record, so nothing new to remember — the content discrimination all
+     * lives in the store's keys. */
+    expect(records()).to.have.lengthOf(1);
+  });
+
+  it("hits an older entry again when a used discoverable dep is reverted", async () => {
+    const original = await build(discoverableDeps({ "a.h": "", "b.h": "unused" }));
+    await build(discoverableDeps({ "a.h": "/* edited */", "b.h": "unused" }));
+    expect(runs).to.equal(2);
+    /* Both builds are still in the store, so reverting reconstructs the first
+     * one's key and hits it — free, and with no change to the memo, because the
+     * memo holds names and the store does the hashing. */
+    const reverted = await build(discoverableDeps({ "a.h": "", "b.h": "unused" }));
+    expect(runs).to.equal(2);
+    expect(await toPromise(reverted.readFile("foo.o"))).to.equal(await toPromise(original.readFile("foo.o")));
+    expect(records()).to.have.lengthOf(1);
+  });
+
+  it("rediscovers a deleted dependency rather than serving a stale entry", async () => {
+    await build(discoverableDeps({ "a.h": "c.h", "c.h": "included" }));
+    expect(runs).to.equal(1);
+    /* The record names c.h, which is gone: that record can say nothing
+     * about the delivery as it now stands, so it is dropped and the step
+     * re-runs. */
+    const rebuilt = await build(discoverableDeps({ "a.h": "" }));
+    expect(runs).to.equal(2);
+    expect(await toPromise(rebuilt.readFile("foo.o"))).to.equal("a.h");
+  });
+
+  it("re-derives an identical result with the cache deleted", async () => {
+    const before = await build(discoverableDeps({ "a.h": "c.h", "b.h": "unused", "c.h": "included" }));
+    fs.rmSync(root, { recursive: true, force: true });
+    cache = new BuildCache(root, NULL_LOG);
+    const after = await build(discoverableDeps({ "a.h": "c.h", "b.h": "unused", "c.h": "included" }));
+    expect(runs).to.equal(2);
+    expect(await toPromise(after.readFile("foo.o"))).to.equal(await toPromise(before.readFile("foo.o")));
+    /* And the memo re-derives with it: nothing about the result depended on it. */
+    expect(records()).to.have.lengthOf(1);
+  });
+
+  it("remembers both read sets when they alternate, and hits either", async () => {
+    const flat = discoverableDeps({ "a.h": "", "b.h": "unused", "c.h": "included" });
+    const wide = discoverableDeps({ "a.h": "c.h", "b.h": "unused", "c.h": "included" });
+    await build(flat);
+    await build(wide);
+    expect(runs).to.equal(2);
+    expect(records()).to.have.lengthOf(2);
+
+    /* A record set, not a union: a union is a superset, so its key would match
+     * only when the current read set happens to equal the whole of it. Both
+     * records are kept, and each alternation hits the entry it produced. */
+    expect(await toPromise((await build(flat)).readFile("foo.o"))).to.equal("a.h");
+    expect(await toPromise((await build(wide)).readFile("foo.o"))).to.equal("a.h+c.h");
+    expect(runs).to.equal(2);
+  });
+
+  it("keeps every distinct read set, and still finds the matching one", async () => {
+    /* Ten distinct read sets under one anchor. Records accumulate — nothing
+     * prunes them until the cache GC covers these directories — and the lookup
+     * walks them in whatever order they are read, so a long list costs probes
+     * and never a wrong answer. */
+    const headers = (count: number): Record<string, string> => {
+      const names = Array.from({ length: 10 }, (_unused, index) => `h${index}.h`);
+      return Object.fromEntries([["a.h", names.slice(0, count).join(",")], ...names.map(name => [name, "x"])]);
+    };
+    for (let count = 1; count <= 10; count++) {
+      await build(discoverableDeps(headers(count)));
+    }
+    expect(runs).to.equal(10);
+    expect(records()).to.have.lengthOf(10);
+    /* Every one of them still hits, including the oldest. */
+    await build(discoverableDeps(headers(10)));
+    await build(discoverableDeps(headers(1)));
+    expect(runs).to.equal(10);
+  });
+
+  it("joins concurrent demands for one anchor to a single run", async () => {
+    let release!: () => void;
+    const gate = Computable.from<undefined>(resolve => {
+      release = () => resolve(undefined);
+    });
+    const discoverable = discoverableDeps({ "a.h": "", "b.h": "unused" });
+    /* Dedup is on the ANCHOR + discoverable — the precise key isn't known until
+     * the step has run, so they are the only thing two demands for one compile
+     * share. */
+    const create = (): Computable<BuildResult> =>
+      gate.then(() => {
+        runs++;
+        return {
+          result: new FileSet(new Map([["foo.o", MemoryFile.from(objectFor(["a.h"]))]])),
+          discoveredDeps: selectionOf(discoverable, ["a.h"]),
+        };
+      });
+    const first = cache.getOrCreate(ANCHOR, create, { discoverable });
+    const second = cache.getOrCreate(ANCHOR, create, { discoverable });
+    release();
+    const [a, b] = await Promise.all([toPromise(first), toPromise(second)]);
+    expect(runs).to.equal(1);
+    expect(await toPromise(a.readFile("foo.o"))).to.equal("a.h");
+    expect(await toPromise(b.readFile("foo.o"))).to.equal("a.h");
+  });
+
+  it("records no discovered deps for a failed run", async () => {
+    await toPromise(
+      cache.getOrCreate(ANCHOR, () => Computable.reject<BuildResult>(new Error("boom")), {
+        discoverable: discoverableDeps({ "a.h": "" }),
+      })
+    ).then(
+      () => expect.fail("the failed run should have propagated"),
+      () => undefined
+    );
+    /* Only successful runs record: a phantom record would mask a later build
+     * that now succeeds (an unresolvable include finally present). */
+    expect(records()).to.deep.equal([]);
+  });
+
+  it("writes each record as a complete, content-named file", async () => {
+    await build(discoverableDeps({ "a.h": "c.h", "b.h": "unused", "c.h": "included" }));
+    const dir = path.join(root, "deps", hashString(ANCHOR));
+    /* Written temp-then-rename, so a name in the directory is always a whole
+     * file — and the name IS its content's hash, so an identical record is
+     * idempotent and a torn write could never masquerade as one. The body is
+     * the path document: a section per discoverable input, an indented line per
+     * path the run took, unmarked — no versions, no hashes, and nothing saying
+     * what any path was expected to find. */
+    for (const name of records()) {
+      const body = fs.readFileSync(path.join(dir, name), "utf8");
+      expect(hashString(body)).to.equal(name);
+      expect(body).to.equal("!discovered-deps 4\ndeps\n hdrs a.h\n hdrs c.h\n");
+    }
+    /* Nothing transient in the memo directory: the temp behind that rename
+     * lives in the work tree, like every other one. */
+    expect(records()).to.have.lengthOf(1);
+  });
+
+  it("treats a garbage record file as a miss, never an error", async () => {
+    const discoverable = discoverableDeps({ "a.h": "", "b.h": "unused" });
+    await build(discoverable);
+    expect(runs).to.equal(1);
+    const dir = path.join(root, "deps", hashString(ANCHOR));
+    /* A half-written or otherwise unusable record costs a probe: it either
+     * fails the format check, or reconstructs a key no run ever recorded. */
+    fs.writeFileSync(path.join(dir, "torn"), "!discovered-deps 4\ndeps\n hdrs b.");
+    fs.writeFileSync(path.join(dir, "empty"), "");
+    fs.writeFileSync(path.join(dir, "older"), "a.h\nb.h\n");
+    expect(await toPromise((await build(discoverable)).readFile("foo.o"))).to.equal("a.h");
+    expect(runs, "the good record still answers alongside the garbage").to.equal(1);
+
+    /* With nothing usable left, the demand simply misses and the step runs. */
+    for (const name of records().filter(entry => !["torn", "empty", "older"].includes(entry))) {
+      fs.rmSync(path.join(dir, name));
+    }
+    expect(await toPromise((await build(discoverable)).readFile("foo.o"))).to.equal("a.h");
+    expect(runs).to.equal(2);
+  });
+
+  it("keys a forced rebuild on the precise key too", async () => {
+    await build(discoverableDeps({ "a.h": "", "b.h": "unused" }));
+    await build(discoverableDeps({ "a.h": "", "b.h": "unused" }), { force: true });
+    expect(runs, "force defeats the lookup, not the discovery").to.equal(2);
+    expect(fs.existsSync(path.join(root, hashString(ANCHOR) + ".manifest"))).to.equal(false);
+    /* And it commits as an ordinary entry, so the next demand is a hit again. */
+    await build(discoverableDeps({ "a.h": "", "b.h": "unused" }));
+    expect(runs).to.equal(2);
+  });
+
+  it("keys on the whole deps manifest when a step reports no reads at all", async () => {
+    /* A step that declares discoverable inputs and discovers nothing is taken
+     * the only safe way — as having read all of them — so the entry lives
+     * under the anchor plus the whole discoverable manifest: literally what the
+     * complete key would have said. Predict reconstructs that key with no
+     * memo, so no record is recorded either. */
+    const discoverable = discoverableDeps({ "a.h": "", "b.h": "one" });
+    const demand = (files: ActionFileInputs): Promise<FileSet> =>
+      toPromise(
+        cache.getOrCreate(
+          ANCHOR,
+          () => {
+            runs++;
+            return produced(new FileSet(new Map([["foo.o", MemoryFile.from("opaque")]])));
+          },
+          { discoverable: files }
+        )
+      );
+    await demand(discoverable);
+    await demand(discoverable);
+    expect(runs, "an unchanged delivery still hits").to.equal(1);
+    expect(records(), "and no record was needed to find it").to.deep.equal([]);
+    await demand(discoverableDeps({ "a.h": "", "b.h": "two" }));
+    expect(runs, "and any change to it rebuilds").to.equal(2);
+  });
+
+  it("narrows a discoverable input of PLAIN filesets, which have no edges at all", async () => {
+    /**
+     * The C shape: `headers = src/include/*.h` is an ordinary FileSet, not a
+     * package, so the path to one of its files is one name long — the file's
+     * own. That is the general case and packages are the special one (they
+     * nest, so reaching their files takes edges first); nothing here is a
+     * package path with the packages taken out.
+     *
+     * Discovery over such an input used to buy exactly nothing: an unnamed
+     * member could not be narrowed, so every discoverable dep rode the key whether it
+     * was read or not.
+     */
+    const headers = (contents: Record<string, string>): ActionFileInputs => ({
+      headers: [new FileSet(new Map(Object.entries(contents).map(([name, text]) => [name, MemoryFile.from(text)])))],
+    });
+    const compile = (discoverable: ActionFileInputs, read: string[]): Promise<FileSet> =>
+      toPromise(
+        cache.getOrCreate(
+          ANCHOR,
+          () => {
+            runs++;
+            return Computable.resolve({
+              result: new FileSet(new Map([["foo.o", MemoryFile.from(read.join("+"))]])),
+              discoveredDeps: new Map([["headers", read.map(file => [file])]]) as DiscoveredDeps,
+            });
+          },
+          { discoverable }
+        )
+      );
+    const five = (b: string): ActionFileInputs => headers({ "a.h": "a", "b.h": b, "c.h": "c", "d.h": "d", "e.h": "e" });
+    const read = ["a.h", "c.h"];
+    await compile(five("one"), read);
+    expect(runs).to.equal(1);
+    await compile(five("two"), read);
+    expect(runs, "editing a header it never opened is free").to.equal(1);
+    const edited = headers({ "a.h": "a edited", "b.h": "one", "c.h": "c", "d.h": "d", "e.h": "e" });
+    expect(await toPromise((await compile(edited, read)).readFile("foo.o"))).to.equal("a.h+c.h");
+    expect(runs, "editing one it did open rebuilds").to.equal(2);
+  });
+
+  it("keys an input the selection never mentioned WHOLE, and one it did by its paths", async () => {
+    /**
+     * The defect this pins: core used to read an unmentioned input as "the run
+     * read nothing of it" — a claim only a recorder can make — so a discoverable
+     * input its recorder had never been taught about keyed as though it were
+     * irrelevant, and editing anything in it moved no key. A silent stale hit.
+     *
+     * The two halves are asserted against each other in one run, because it is
+     * the *difference* that is the contract (see the three states of DiscoveredDeps):
+     * `spoken` is mentioned, so an unread file of it is free; `unspoken` is
+     * omitted, so every byte of it is key material — no claim, no narrowing.
+     */
+    const input = (contents: Record<string, string>): FileSet[] => [
+      new FileSet(new Map(Object.entries(contents).map(([name, text]) => [name, MemoryFile.from(text)]))),
+    ];
+    const both = (readBytes: string, unreadBytes: string, otherBytes: string): ActionFileInputs => ({
+      spoken: input({ "read.h": readBytes, "unread.h": unreadBytes }),
+      unspoken: input({ "other.h": otherBytes }),
+    });
+    const compile = (discoverable: ActionFileInputs): Promise<FileSet> =>
+      toPromise(
+        cache.getOrCreate(
+          ANCHOR,
+          () => {
+            runs++;
+            /* `unspoken` is deliberately absent from the selection — this step
+             * knows nothing about it, exactly as a recorder taught only about
+             * one input would not. */
+            return Computable.resolve({
+              result: new FileSet(new Map([["foo.o", MemoryFile.from("built")]])),
+              discoveredDeps: new Map([["spoken", [["read.h"]]]]) as DiscoveredDeps,
+            });
+          },
+          { discoverable }
+        )
+      );
+    await compile(both("r", "u", "o"));
+    expect(runs).to.equal(1);
+    await compile(both("r", "u EDITED", "o"));
+    expect(runs, "the mentioned input still narrows: its unread file is not in the key").to.equal(1);
+    await compile(both("r", "u EDITED", "o EDITED"));
+    expect(runs, "the unmentioned input keys whole: editing it must rebuild").to.equal(2);
+    await compile(both("r EDITED", "u EDITED", "o EDITED"));
+    expect(runs, "and the mentioned input's READ file still keys as it always did").to.equal(3);
+  });
+
+  it("remembers a name that resolved to NOTHING, and rebuilds when it does", async () => {
+    /**
+     * A path that finds nothing: the step asked for the package `extra`, there
+     * was no such member, and its output depends on that (it fell back to
+     * `hdrs`). The path is written exactly like any other — nothing marks it as
+     * an expected absence — and replay classifies it: it contributes no bytes,
+     * only its own name in the key's absent section, which it leaves the moment
+     * a member of that name arrives, with every byte the step read unchanged.
+     *
+     * It ends at a FILE of the package it was looking for, per the contract
+     * (see DepsPath): that is what lets the arrival *say* something. A path
+     * ending at the package name would land on something holding no file, which
+     * would read exactly like the package still being missing — so the key
+     * would not move and this test's last line would fail.
+     */
+    const step = (discoverable: ActionFileInputs): Promise<FileSet> =>
+      toPromise(
+        cache.getOrCreate(
+          ANCHOR,
+          () => {
+            runs++;
+            return Computable.resolve({
+              result: new FileSet(new Map([["foo.o", MemoryFile.from("fell back")]])),
+              discoveredDeps: new Map([
+                [
+                  "deps",
+                  [
+                    ["hdrs", "a.h"],
+                    ["extra", "package.json"],
+                  ],
+                ],
+              ]) as DiscoveredDeps,
+            });
+          },
+          { discoverable }
+        )
+      );
+    await step(discoverableDeps({ "a.h": "" }));
+    await step(discoverableDeps({ "a.h": "" }));
+    expect(runs, "still absent, so the record still holds").to.equal(1);
+    /* And the record says so in as many words. */
+    const dir = path.join(root, "deps", hashString(ANCHOR));
+    expect(fs.readFileSync(path.join(dir, records()[0]), "utf8")).to.equal(
+      "!discovered-deps 4\ndeps\n extra package.json\n hdrs a.h\n"
+    );
+    /* The package arrives, carrying the manifest the path names — which is the
+     * guarantee the js recorder leans on when it appends one. */
+    await step({ deps: [headerPackage({ "a.h": "" }), headerPackage({ "x.h": "", "package.json": "{}" }, "1.0.0", [], "extra")] });
+    expect(runs, "the name resolves now, so it leaves the absent section and the key moves").to.equal(2);
+  });
+
+  it("keys a closure with no finite tree encoding like any other", async () => {
+    /* A cross-generation version cycle has no classic-tree layout, but keying
+     * needs no tree: a path is edges and a file name, and the fallback is
+     * the whole discoverable manifest, which a cyclic graph manifests fine. Two
+     * different closures key differently; the same closure hits. */
+    const cyclic = (bytes: string): ActionFileInputs => {
+      const builder = new PackageGraphBuilder();
+      const one = builder.node(new Map([["a.h", MemoryFile.from(bytes)]]), "ouro", "1.0.0");
+      const two = builder.node(new Map([["a.h", MemoryFile.from(`${bytes}-2`)]]), "ouro", "2.0.0");
+      builder.wire(one, [two]);
+      builder.wire(two, [one]);
+      builder.seal();
+      return { deps: [one] };
+    };
+    const demand = (discoverable: ActionFileInputs): Promise<FileSet> =>
+      toPromise(
+        cache.getOrCreate(
+          ANCHOR,
+          () => {
+            runs++;
+            return Computable.resolve({
+              result: new FileSet(new Map([["foo.o", MemoryFile.from("cyclic")]])),
+              discoveredDeps: new Map([["deps", [["ouro", "a.h"]]]]) as DiscoveredDeps,
+            });
+          },
+          { discoverable }
+        )
+      );
+    await demand(cyclic("one"));
+    await demand(cyclic("one"));
+    expect(runs, "the same closure hits").to.equal(1);
+    await demand(cyclic("two"));
+    expect(runs, "a different closure is a different key").to.equal(2);
+  });
+});
+
+/**
+ * The build-state record: one directory per target key holding three facts
+ * about one build — `inputs` (fabr's own manifest of what that build was made
+ * of, whose rows are NOT pool claims), `outputs` (a symlink to the entry it
+ * produced) and `state` (the tool's kept files, blob-backed). Both manifests
+ * are optional and every combination is legal; the pairing is what the
+ * directory exists for. The cache owns where it lives, its integrity, and when
+ * a stale attempt may write one; what the tool's bytes mean is the tool's
+ * business alone.
+ */
+describe("BuildCache build state", () => {
+  let root: string;
+  let cache: BuildCache;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-state-test-"));
+    cache = new BuildCache(root, NULL_LOG);
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const DRIVER_BYTES = "!step 1\nwhatever the driver wrote\n";
+
+  /** The inputs a build was made from, and the action key that names them —
+   * which is what the record keeps, verbatim, rather than a manifest built for
+   * the purpose. The awkward name is the point: rows are read back, so a space
+   * in a name has to survive the round trip. */
+  const INPUT_FILES = new FileSet(
+    new Map([
+      ["src/a file & 100%.ts", MemoryFile.from("alpha")],
+      ["tsconfig.json", MemoryFile.from("beta")],
+    ])
+  );
+
+  /** A build state as the cache records one: the action's own key material, and
+   * the tool's kept files. */
+  const STEP: IBuildActionDefinition = { id: "test:step", version: 1, run: () => Computable.resolve({ result: new FileSet(new Map()) }) };
+  const STATE = {
+    inputs: new BuildAction(STEP, { srcs: INPUT_FILES }, {}).actionKey(),
+    incrementalState: new FileSet(new Map([["graph", MemoryFile.from(DRIVER_BYTES)]])),
+  };
+
+  const recordDir = (targetKey: string): string => path.join(root, "incremental", targetKey);
+  const part = (targetKey: string, name: string): string => path.join(recordDir(targetKey), name);
+
+  /** An entry in the store as the cache's own machinery makes one, answering
+   * the hashed key it lives under — what a record's `outputs` link must
+   * name. */
+  const entry = async (name: string, files: Record<string, string>): Promise<string> => {
+    await toPromise(
+      cache.getOrCreate(name, () =>
+        produced(new FileSet(new Map(Object.entries(files).map(([n, text]) => [n, MemoryFile.from(text)]))))
+      )
+    );
+    return hashString(name);
+  };
+
+  /* Read back through a separate instance over the same store: the record is on
+   * disk, not in this process's head. */
+  const readState = (targetKey: string): Promise<IBuildState | undefined> =>
+    toPromise(new BuildCache(root, NULL_LOG).readBuildState(targetKey));
+
+  /** Record `STATE` against a fresh entry, answering that entry's key. */
+  const record = async (targetKey: string, entryName = `entry-for-${targetKey}`): Promise<string> => {
+    const key = await entry(entryName, { "out.js": entryName });
+    await toPromise(cache.writeBuildState(targetKey, cache.beginBuildStateAttempt(targetKey), key, STATE));
+    return key;
+  };
+
+  it("remembers a target key's build state and reads it back", async () => {
+    const targetKey = "target-key-one";
+    await record(targetKey);
+    const read = await readState(targetKey);
+    expect(
+      await toPromise(read!.incrementalState!.getFile("graph")!.readString()),
+      "the tool's file comes back byte-for-byte"
+    ).to.equal(DRIVER_BYTES);
+    /* The inputs manifest round-trips — name (escaping and all), hash and mode,
+     * which are the whole of what a record keeps of an input. */
+    const awkward = read!.inputs!.getFile("src/a file & 100%.ts");
+    expect(awkward?.hash).to.equal(INPUT_FILES.getFile("src/a file & 100%.ts")!.hash);
+    expect(awkward?.mode).to.equal(INPUT_FILES.getFile("src/a file & 100%.ts")!.mode);
+    expect(read!.inputs!.size).to.equal(2);
+    /* And the third fact, read THROUGH the link: the entry that build made. */
+    expect(await toPromise(read!.outputs.getFile("out.js")!.readString())).to.equal("entry-for-target-key-one");
+  });
+
+  it("is ordinary files, the tool's state ordinary blob content", async () => {
+    /* `inputs` (what was given) and `discovered` (what was accessed) are the
+     * action's own key material verbatim, each sealed with the trailing count
+     * that refuses a torn copy; `state` is an ordinary entry manifest whose
+     * bytes live in the blob pool under the hash its line references;
+     * `outputs` is a relative link to the entry itself. */
+    const targetKey = "target-key-format";
+    const key = await record(targetKey);
+    expect(fs.readdirSync(recordDir(targetKey)).sort()).to.deep.equal(["discovered", "inputs", "outputs", "state"]);
+    const inputs = fs.readFileSync(part(targetKey, "inputs"), "utf8");
+    expect(parseRecordedBase(inputs)?.rows.length, "the key material reads back, sealed").to.equal(2);
+    expect(fs.readFileSync(part(targetKey, "state"), "utf8").startsWith("!meta "), "the state is an entry manifest").to.equal(true);
+    expect(fs.readlinkSync(part(targetKey, "outputs"))).to.equal(path.join("..", "..", `${key}.manifest`));
+    expect(fs.existsSync(path.join(root, "blob", hashString(Buffer.from(DRIVER_BYTES)))), "the tool's blob is in the pool").to.equal(
+      true
+    );
+  });
+
+  it("answers nothing for a target key it has never seen", async () => {
+    expect(await readState("never-built")).to.equal(undefined);
+  });
+
+  it("refuses inputs truncated at a line boundary, keeping the rest of the record", async () => {
+    /* The load-bearing integrity case, and the one the manifest dialect alone
+     * cannot catch: a record cut at a line boundary parses clean, and a
+     * silently lost input line can lose a DELETION — a deleted source whose
+     * outputs are never subtracted, breaking byte-identity with a cold build.
+     * The meta's entry count is what refuses it, and what it must never do is
+     * hand back the short set. */
+    const targetKey = "target-key-truncated";
+    await record(targetKey);
+    const lines = fs.readFileSync(part(targetKey, "inputs"), "utf8").split("\n");
+    fs.writeFileSync(part(targetKey, "inputs"), [...lines.slice(0, lines.length - 2), ""].join("\n"));
+    const read = await readState(targetKey);
+    expect(read?.inputs, "a lost line is no inputs, never a shorter set").to.equal(undefined);
+    /* A different file tore; the tool's state still describes the entry the
+     * link names, which is a legal record — state without inputs. */
+    expect(read?.incrementalState?.size, "the good state file survives it").to.equal(1);
+    expect(read?.outputs.size).to.equal(1);
+  });
+
+  it("refuses inputs torn mid-line, rather than failing the build", async () => {
+    const targetKey = "target-key-torn";
+    await record(targetKey);
+    const text = fs.readFileSync(part(targetKey, "inputs"), "utf8");
+    fs.writeFileSync(part(targetKey, "inputs"), text.substring(0, Math.floor(text.length / 2)));
+    const read = await readState(targetKey);
+    expect(read?.inputs).to.equal(undefined);
+    expect(read?.incrementalState?.size).to.equal(1);
+  });
+
+  it("answers nothing when the tool's blob has gone", async () => {
+    /* A wiped pool (or the future GC): the record cannot say what the tool
+     * knew, so there is no record — a cold build, never an error. */
+    const targetKey = "target-key-swept";
+    await record(targetKey);
+    fs.rmSync(path.join(root, "blob", hashString(Buffer.from(DRIVER_BYTES))), { force: true });
+    expect(await readState(targetKey)).to.equal(undefined);
+  });
+
+  it("answers nothing for a dangling outputs link", async () => {
+    /* The evicted entry: the state names what that build emitted, so pairing it
+     * with an entry that is gone would have the tool skip emitting files that
+     * no longer exist — a wrong output, not a slow build. The link's own ENOENT
+     * is the whole invalidation. */
+    const targetKey = "target-key-evicted";
+    const key = await record(targetKey);
+    fs.rmSync(path.join(root, `${key}.manifest`), { force: true });
+    expect(await readState(targetKey)).to.equal(undefined);
+  });
+
+  it("answers nothing when the entry's own blob has gone", async () => {
+    /* What a dangling link does NOT cover: the manifest still parses while a
+     * file it names has been reclaimed, so the staged outputs would be short a
+     * file. */
+    const targetKey = "target-key-holed";
+    await record(targetKey);
+    fs.rmSync(path.join(root, "blob", hashString(Buffer.from("entry-for-target-key-holed"))), { force: true });
+    expect(await readState(targetKey)).to.equal(undefined);
+  });
+
+  it("reads the retired single-file record as no record", async () => {
+    /* The migration: an older cache's record is a FILE where a directory now
+     * belongs, so reading through it fails and the target key builds cold once.
+     * The layout change is its own discriminator — there is no format version. */
+    const targetKey = "target-key-old";
+    fs.mkdirSync(path.join(root, "incremental"), { recursive: true });
+    fs.writeFileSync(recordDir(targetKey), "!meta {}\nffff 644 src/a.ts text/plain\n");
+    expect(await readState(targetKey)).to.equal(undefined);
+  });
+
+  it("surfaces a real IO failure rather than reading it as an absent part", async () => {
+    /* Now that a missing part and a damaged one both read as absent, this is
+     * the only thing keeping an UNREADABLE one out of that bucket too:
+     * swallowing it would take the target key cold on every build, forever,
+     * with nothing said. */
+    const targetKey = "target-key-unreadable";
+    await record(targetKey);
+    fs.rmSync(part(targetKey, "inputs"));
+    fs.mkdirSync(part(targetKey, "inputs"));
+    expect(
+      await readState(targetKey).then(
+        () => "read",
+        () => "failed"
+      )
+    ).to.equal("failed");
+  });
+
+  it("records inputs with no state, and state with no inputs", async () => {
+    /* Both halves are optional and independent: a tool deriving its changes
+     * from its own state records no inputs, one keeping nothing records none. */
+    const inputsOnly = await entry("inputs-only", { "out.js": "x" });
+    await toPromise(
+      cache.writeBuildState("key-inputs-only", cache.beginBuildStateAttempt("key-inputs-only"), inputsOnly, {
+        inputs: STATE.inputs,
+      })
+    );
+    expect(fs.readdirSync(recordDir("key-inputs-only")).sort()).to.deep.equal(["discovered", "inputs", "outputs"]);
+    const inputsRead = await readState("key-inputs-only");
+    expect(inputsRead?.inputs?.size).to.equal(2);
+    expect(inputsRead?.incrementalState, "a part never written reads as absent").to.equal(undefined);
+
+    const stateOnly = await entry("state-only", { "out.js": "y" });
+    await toPromise(
+      cache.writeBuildState("key-state-only", cache.beginBuildStateAttempt("key-state-only"), stateOnly, {
+        incrementalState: STATE.incrementalState,
+      })
+    );
+    expect(fs.readdirSync(recordDir("key-state-only")).sort()).to.deep.equal(["outputs", "state"]);
+    const stateRead = await readState("key-state-only");
+    expect(stateRead?.inputs).to.equal(undefined);
+    expect(stateRead?.incrementalState?.size).to.equal(1);
+  });
+
+  it("writes no record where there is nothing to record", async () => {
+    /* A lone `outputs` link would say only "this target key last produced entry
+     * X", which the action already knows from its own key — so `incremental/`
+     * holds exactly the target keys that have incremental data. */
+    const targetKey = "key-nothing";
+    const key = await entry("nothing-entry", { "out.js": "z" });
+    await toPromise(cache.writeBuildState(targetKey, cache.beginBuildStateAttempt(targetKey), key, {}));
+    expect(fs.existsSync(recordDir(targetKey))).to.equal(false);
+    expect(await readState(targetKey)).to.equal(undefined);
+  });
+
+  it("leaves an existing record alone when a later build records nothing", async () => {
+    /* The same rule a red run needs: the three parts still describe one real
+     * earlier build, so a later incremental run may still work from it —
+     * conservatively, never wrongly. */
+    const targetKey = "key-keeps";
+    const first = await record(targetKey);
+    const later = await entry("later-entry", { "out.js": "later" });
+    await toPromise(cache.writeBuildState(targetKey, cache.beginBuildStateAttempt(targetKey), later, {}));
+    expect(fs.readlinkSync(part(targetKey, "outputs")), "still the earlier build's entry").to.equal(
+      path.join("..", "..", `${first}.manifest`)
+    );
+    expect((await readState(targetKey))?.inputs?.size).to.equal(2);
+  });
+
+  it("lets the record only advance: a superseded attempt records nothing", async () => {
+    /* Two attempts at one target key overlap normally — a watch rebuild has
+     * a different anchor, so nothing joins them — and the older one finishing
+     * last must not move the record backwards. */
+    const targetKey = "target-key-raced";
+    const newerEntry = await entry("newer", { "out.js": "newer" });
+    const olderEntry = await entry("older", { "out.js": "older" });
+    const first = cache.beginBuildStateAttempt(targetKey);
+    const second = cache.beginBuildStateAttempt(targetKey);
+    expect(second).to.be.greaterThan(first);
+
+    await toPromise(cache.writeBuildState(targetKey, second, newerEntry, STATE));
+    await toPromise(cache.writeBuildState(targetKey, first, olderEntry, STATE));
+    const outputs = async (): Promise<string> => toPromise((await readState(targetKey))!.outputs.getFile("out.js")!.readString());
+    expect(await outputs(), "the newer attempt's record stands").to.equal("newer");
+
+    /* And a later attempt still writes: the guard refuses the stale, not the
+     * target key. */
+    const newestEntry = await entry("newest", { "out.js": "newest" });
+    await toPromise(cache.writeBuildState(targetKey, cache.beginBuildStateAttempt(targetKey), newestEntry, STATE));
+    expect(await outputs()).to.equal("newest");
+  });
+
+  it("keeps each target key's generations apart", async () => {
+    const key = await entry("a-entry", { "out.js": "a" });
+    const one = cache.beginBuildStateAttempt("target-key-a");
+    cache.beginBuildStateAttempt("target-key-b");
+    cache.beginBuildStateAttempt("target-key-b");
+    /* b's second attempt must not make a's first look superseded. */
+    await toPromise(cache.writeBuildState("target-key-a", one, key, STATE));
+    expect(await toPromise((await readState("target-key-a"))!.outputs.getFile("out.js")!.readString())).to.equal("a");
+  });
+
+  it("commits by rename, leaving no debris in the incremental directory", async () => {
+    const targetKey = "target-key-atomic";
+    await record(targetKey);
+    expect(fs.readdirSync(path.join(root, "incremental"))).to.deep.equal([targetKey]);
   });
 });
 
@@ -657,7 +1706,11 @@ describe("BuildCache non-immutable fetches", () => {
     const warnings: Record<string, unknown>[] = [];
     const logging = new BuildCache(root, { log: (_diagnostic, params) => warnings.push(params) }, () => clock);
     const fetchLogged = (): Promise<string> =>
-      toPromise(logging.getOrFetch(origin.url, "test:1", store, UNTRACKED, undefined, { immutable: false }).then(files => files.readFile("doc.txt")));
+      toPromise(
+        logging
+          .getOrFetch(origin.url, "test:1", store, UNTRACKED, undefined, { immutable: false })
+          .then(files => files.readFile("doc.txt"))
+      );
     origin.respond(serve(200, { "cache-control": "max-age=300" }, "one"));
     await fetchLogged();
     expect(warnings).to.have.lengthOf(0);
@@ -672,7 +1725,11 @@ describe("BuildCache non-immutable fetches", () => {
     const warnings: Record<string, unknown>[] = [];
     const logging = new BuildCache(root, { log: (_diagnostic, params) => warnings.push(params) }, () => clock);
     const fetchLogged = (): Promise<string> =>
-      toPromise(logging.getOrFetch(origin.url, "test:1", store, UNTRACKED, undefined, { immutable: false }).then(files => files.readFile("doc.txt")));
+      toPromise(
+        logging
+          .getOrFetch(origin.url, "test:1", store, UNTRACKED, undefined, { immutable: false })
+          .then(files => files.readFile("doc.txt"))
+      );
     origin.respond(serve(200, { "cache-control": "max-age=300" }, "one"));
     await fetchLogged();
     clock += 301_000; /* stale */
@@ -691,7 +1748,11 @@ describe("BuildCache non-immutable fetches", () => {
     const warnings: Record<string, unknown>[] = [];
     const logging = new BuildCache(root, { log: (_diagnostic, params) => warnings.push(params) }, () => clock);
     const fetchLogged = (): Promise<string> =>
-      toPromise(logging.getOrFetch(origin.url, "test:1", store, UNTRACKED, undefined, { immutable: false }).then(files => files.readFile("doc.txt")));
+      toPromise(
+        logging
+          .getOrFetch(origin.url, "test:1", store, UNTRACKED, undefined, { immutable: false })
+          .then(files => files.readFile("doc.txt"))
+      );
     origin.respond(serve(200, { "cache-control": "max-age=300" }, "one"));
     await fetchLogged();
     clock += 301_000; /* stale */
@@ -772,7 +1833,13 @@ describe("BuildCache non-immutable fetches", () => {
         "test:1",
         content =>
           readStream(content).then(
-            () => new FileSet(new Map([[trap, MemoryFile.from("gotcha")], ["doc.txt", MemoryFile.from("one")]]))
+            () =>
+              new FileSet(
+                new Map([
+                  [trap, MemoryFile.from("gotcha")],
+                  ["doc.txt", MemoryFile.from("one")],
+                ])
+              )
           ),
         UNTRACKED,
         undefined,
@@ -800,14 +1867,14 @@ describe("BuildCache non-immutable fetches", () => {
     expect(origin.requests).to.have.lengthOf(1);
   });
 
-  it("leaves immutable fetches untouched: no meta line, never refetched", async () => {
+  it("records no freshness for an immutable fetch, and never refetches", async () => {
+    /* Every manifest carries the header, because the file count is a property
+     * of the document; what an immutable entry records there is no `expires`,
+     * so the origin's declared lifetime cannot expire it. */
     origin.respond(serve(200, { "cache-control": "max-age=1" }, "one"));
     expect(await fetchDoc()).to.equal("one");
-    const manifest = fs.readFileSync(
-      path.join(root, hashString(`fetch:test:1 ${origin.url}`) + ".manifest"),
-      "utf8"
-    );
-    expect(manifest).to.not.contain("!meta");
+    const manifest = fs.readFileSync(path.join(root, hashString(`fetch:test:1 ${origin.url}`) + ".manifest"), "utf8");
+    expect(manifest.split("\n")[0]).to.equal('!meta {"entries":1}');
     clock += 1_000_000_000; /* far past any origin-declared lifetime */
     expect(await fetchDoc()).to.equal("one");
     expect(origin.requests).to.have.lengthOf(1);
@@ -937,11 +2004,20 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
   it("holds a tree's files as read-only hardlinks into the blob pool", async () => {
     const cache = new BuildCache(root, NULL_LOG);
     const stored = await toPromise(
-      cache.getOrCreate("a tool", () => Computable.resolve(new FileSet(new Map([["bin/tool", new MemoryFile(Buffer.from("#!/bin/sh\n"), 0o755)]]))))
+      cache.getOrCreate("a tool", () =>
+        produced(new FileSet(new Map([["bin/tool", new MemoryFile(Buffer.from("#!/bin/sh\n"), 0o755)]])))
+      )
     );
     const pooled = (await toPromise(stored.get("bin/tool")))!;
     const entry = await toPromise(
-      cache.ensureTree(new FileSet(new Map([["bin/tool", pooled], ["lib/generated.js", MemoryFile.from("x")]])))
+      cache.ensureTree(
+        new FileSet(
+          new Map([
+            ["bin/tool", pooled],
+            ["lib/generated.js", MemoryFile.from("x")],
+          ])
+        )
+      )
     );
 
     /* One inode, shared with the blob pool — so a tree costs links, never bytes —
@@ -1000,9 +2076,7 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
     const materializing = cache.ensureTree(files);
     /* Synchronously after the call: the temp exists (createWorkDir is sync)
      * while the writes are still in flight. */
-    const workDirs = fs
-      .readdirSync(path.join(root, "work"))
-      .flatMap(owner => fs.readdirSync(path.join(root, "work", owner)));
+    const workDirs = fs.readdirSync(path.join(root, "work")).flatMap(owner => fs.readdirSync(path.join(root, "work", owner)));
     expect(workDirs.filter(name => name.startsWith("tree-"))).to.have.lengthOf(1);
     expect(fs.readdirSync(path.join(root, "tree"))).to.deep.equal([]);
 
@@ -1057,7 +2131,12 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
 
   it("leaves no entry (and no debris) when the files fail to materialize", async () => {
     const cache = new BuildCache(root, NULL_LOG);
-    const broken = new FileSet(new Map([["a.txt", MemoryFile.from("x")], ["a.txt/b.txt", MemoryFile.from("y")]]));
+    const broken = new FileSet(
+      new Map([
+        ["a.txt", MemoryFile.from("x")],
+        ["a.txt/b.txt", MemoryFile.from("y")],
+      ])
+    );
     let error: Error | undefined;
     await toPromise(cache.ensureTree(broken)).catch((err: Error) => (error = err));
     expect(error).to.not.equal(undefined);

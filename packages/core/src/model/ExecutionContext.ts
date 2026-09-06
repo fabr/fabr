@@ -146,7 +146,10 @@ export class ExecutionContext {
    */
   private readonly forcedTargets = new Set<ITargetDecl>();
 
-  /** Mark a target as one to rebuild rather than serve from cache. */
+  /** Mark a target as one to rebuild rather than serve from cache. The mark is
+   * on the DECL, so it covers every target that decl produces — CLI-level
+   * looseness, accepted deliberately: `-f` is a development aid, and naming one
+   * constrained instance of a decl is not something the command line can say. */
   public forceTarget(target: ITargetDecl): void {
     this.forcedTargets.add(target);
   }
@@ -167,7 +170,7 @@ export class ExecutionContext {
    * use.
    *
    * The unit admitted is the *process execution*, acquired around exactly the
-   * process lifetime by {@link IActionContext.execute} — with one refinement: a
+   * process lifetime by `execute` — with one refinement: a
    * command pipeline's stages are pipe-wired and must co-run, so a pipeline is
    * ONE unit (admitting its stages individually could wedge it half-started).
    * Step code itself holds no slot — staging and collection are event-loop

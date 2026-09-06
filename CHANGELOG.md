@@ -11,6 +11,7 @@ version number.
 - Add `2>&1` stream duplication to command pipelines (and its `1>&2` mirror).
 - General optimizations, especially for cache-hits.
 - Fix package aliases not working in catalogs.
+- Add discovered dependencies + incremental state support.
 
 @fabr-build/cli:
 - Live progress display on terminal with progress bars and test status (suppressed with -q)
@@ -23,6 +24,7 @@ TSC=@npm:typescript:5.4.5:tsc becomes TYPESCRIPT=@npm:typescript:5.4.5.
 - `js_bundle` now requests ESM format inputs regardless of target.
 - Add exports option for js_package.
 - Add support for dual-format js package output.
+- Add incremental TSC support.
 
 ## Fabr 0.2.1
 @fabr-build/core:

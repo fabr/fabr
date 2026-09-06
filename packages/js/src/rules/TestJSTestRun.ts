@@ -32,8 +32,9 @@ import * as fs from "fs";
 import { join } from "path";
 import { COMPILE_OUT_DIR } from "./BuildJSCompile";
 import {
+  BuildResult,
+  ActionContext,
   BuildAction,
-  BuildActionInputs,
   Computable,
   execute,
   ExecutionError,
@@ -42,7 +43,7 @@ import {
   findExecutable,
   formatTestFailures,
   getResultFileSet,
-  IActionContext,
+  ITaskReport,
   IBuildActionDefinition,
   ITestReport,
   mergeTestReports,
@@ -76,13 +77,13 @@ import {
  */
 const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 6, run: runTests };
 
-function runTests(inputs: BuildActionInputs, ctx: IActionContext): Computable<FileSet> {
+function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const workDir = ctx.workDir;
-  const staged = fileSetInput(inputs, "staged");
-  const writable = fileSetInput(inputs, "writable");
-  const argv = stringListInput(inputs, "argv");
-  const testFiles = stringListInput(inputs, "test_files");
-  const outputs = stringListInput(inputs, "outputs");
+  const staged = fileSetInput(action, "staged");
+  const writable = fileSetInput(action, "writable");
+  const argv = stringListInput(action, "argv");
+  const testFiles = stringListInput(action, "test_files");
+  const outputs = stringListInput(action, "outputs");
   /* Tests run with a clean environment (no ambient vars that could alter their
    * output); a test that must spawn a tool references it by an absolute path
    * (e.g. process.execPath), which needs no PATH. The argv's leading command
@@ -91,23 +92,24 @@ function runTests(inputs: BuildActionInputs, ctx: IActionContext): Computable<Fi
    * staging it, not separate pieces of work — and given back before any test
    * process asks for a slot of its own. */
   return ctx
-    .admit(() => writeFileSet(workDir, staged.minus(writable)).then(() => writeFileSet(workDir, writable, { copy: true })))
+    .admit(report, () => writeFileSet(workDir, staged.minus(writable)).then(() => writeFileSet(workDir, writable, { copy: true })))
     .then(() => {
       /* Each file's outcome is known the moment its invocation ends — the
        * report it wrote is read there — so the run can say how it is going
        * while it goes, rather than only in the summary at the end. */
-      const tally = new RunTally(testFiles.length, ctx.report.progress);
+      const tally = new RunTally(testFiles.length, report.progress);
       return Computable.forAll(
         /* All issued at once: each execution queues on the funnel, which is
          * what schedules the files — against each other and against every
          * other execution in the build. A red file must not abort its
          * siblings (the report must be complete), so an invocation NEVER
          * rejects here; its outcome is judged as data below. */
-        testFiles.map((file, index) => runOneFile(ctx, argv, file, index).then(run => tally.add(run))),
+        testFiles.map((file, index) => runOneFile(ctx, report, argv, file, index).then(run => tally.add(run))),
         (...runs) => concludeRun(workDir, runs)
       );
     })
-    .then(() => getResultFileSet(workDir, outputs));
+    .then(() => getResultFileSet(workDir, outputs))
+    .then(result => ({ result }));
 }
 
 /**
@@ -125,10 +127,7 @@ class RunTally {
   private passed = 0;
   private failed = 0;
 
-  constructor(
-    private readonly totalFiles: number,
-    private readonly report?: (progress: TaskProgress) => void
-  ) {}
+  constructor(private readonly totalFiles: number, private readonly report?: (progress: TaskProgress) => void) {}
 
   /** Record one finished invocation, and pass the run through unchanged. */
   public add(run: IFileRun): IFileRun {
@@ -161,7 +160,7 @@ function invocationReport(index: number): string {
   return `${TEST_REPORT_FILENAME}.${index}`;
 }
 
-function runOneFile(ctx: IActionContext, argv: string[], file: string, index: number): Computable<IFileRun> {
+function runOneFile(ctx: ActionContext, taskReport: ITaskReport, argv: string[], file: string, index: number): Computable<IFileRun> {
   const reportName = invocationReport(index);
   const invocation = [...argv.slice(1), `--report=${reportName}`, file];
   /* Always captured (never streamed), as the one-invocation step always was:
@@ -170,7 +169,7 @@ function runOneFile(ctx: IActionContext, argv: string[], file: string, index: nu
    * activity half of the report is still passed through — these invocations
    * take slots of the machine's funnel like any others, and a run waiting for
    * one must not look like a run in progress. */
-  const report = { ...ctx.report, output: undefined };
+  const report = { ...taskReport, output: undefined };
   return execute(ctx.processLimit, findExecutable(argv[0]), invocation, join(ctx.workDir, COMPILE_OUT_DIR), {}, report)
     .then(
       () => undefined,
@@ -253,13 +252,18 @@ function evaluateTestRun(context: TargetContext): Computable<RuleResult> {
       context.getRequiredProperty("outputs"),
     ],
     ({ staged, writable }, argv, testFiles, outputs) =>
-      new BuildAction(JS_TEST_STEP, {
-        staged: FileSet.unionAll(...staged),
-        writable: FileSet.unionAll(...writable),
-        argv: argv.getValues(),
-        test_files: testFiles.getValues(),
-        outputs: outputs.getValues(),
-      })
+      new BuildAction(
+        JS_TEST_STEP,
+        {
+          staged: FileSet.unionAll(...staged),
+          writable: FileSet.unionAll(...writable),
+        },
+        {
+          argv: argv.getValues(),
+          test_files: testFiles.getValues(),
+          outputs: outputs.getValues(),
+        }
+      )
   );
 }
 
