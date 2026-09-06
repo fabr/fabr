@@ -21,7 +21,7 @@
  * The js_compile rule: the one TS-compile path, a self-contained target
  * `{ srcs = FILES; deps = FILES }`. `deps` are the dependencies the sources are
  * compiled against (package deps + any @types, already resolved by the caller
-  * so materialization here is a no-op). It resolves its *own* toolchain as a
+ * so materialization here is a no-op). It resolves its *own* toolchain as a
  * **runnable** (`BUILD_OPERATION=run`), so it needn't know how to launch it:
  * fabr's TypeScript **driver** (TSC_DRIVER, internal), which carries the pinned
  * compiler as one of its own dependencies — the compiler's own CLI cannot be
@@ -36,16 +36,7 @@
  * closure — there is no tree to build.
  */
 
-
-import {
-  Computable,
-  FileSet,
-  MemoryFile,
-  PackageFileSet,
-  RuleRegistration,
-  RuleResult,
-  TargetContext,
-} from "@fabr-build/core";
+import { Computable, FileSet, MemoryFile, PackageFileSet, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
 import {
   esLevelOrder,
   JSTarget,
@@ -56,6 +47,7 @@ import {
   usesDom,
 } from "../JSPackage";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
+import { CHANGES_FILE, CHANGES_FLAG, DEPS_REPORT_FILE, DEPS_REPORT_FLAG, STATE_DIR, STATE_DIR_FLAG } from "../pnp/ReadSet";
 
 /** Where the toolchain is mounted in the working dir — disjoint from src/node_modules/build. */
 const TOOL_DIR = ".tools/tsc";
@@ -337,15 +329,30 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
         return createNodeExecAction(
           FileSet.layout(workspace),
           deps,
-          driver.toCommandLine(emitExtension, { base: TOOL_DIR }),
+          driver.toCommandLine(
+            [...emitExtension, DEPS_REPORT_FLAG, DEPS_REPORT_FILE, STATE_DIR_FLAG, STATE_DIR, CHANGES_FLAG, CHANGES_FILE],
+            { base: TOOL_DIR }
+          ),
           `${COMPILE_OUT_DIR}:**`,
           {
             layout: PNP,
             label: "compile",
+            /* The three locations the argv above names, so the step stages and
+             * collects the files the driver was told to use. The compile reads
+             * a handful of declaration files out of a whole closure and reports
+             * which, so the entry is keyed on that selection rather than on the
+             * whole deps input — editing a dependency this compile never opened
+             * then costs nothing. And it compiles incrementally: handed the last
+             * green build of this target key — its state, its output, and what
+             * changed since — the driver plans for itself and checks and emits
+             * only what the change reaches. */
+            depsReport: DEPS_REPORT_FILE,
+            stateDir: STATE_DIR,
+            changes: CHANGES_FILE,
             /* The sources' own package identity is a row like any other, which
              * is how a package's references to itself resolve without the
              * compiler ever searching for them. */
-            ...(packageName ? { self: { name: packageName, location: `./${COMPILE_SRC_DIR}/` } } : {}),
+            self: packageName ? { name: packageName, location: `./${COMPILE_SRC_DIR}/` } : undefined,
           }
         );
       };

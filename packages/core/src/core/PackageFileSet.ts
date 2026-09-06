@@ -76,6 +76,13 @@ export class PackageFileSet extends FileSet {
     super(files instanceof FileSet ? files : new Map(files), origin ?? (files instanceof FileSet ? files.origin : undefined));
   }
 
+  /** A package's delivered name — the name its requirers' edges call it by,
+   * which is what a discovered-deps walk follows. Unversioned: see
+   * {@link FileSet.name}. */
+  public override get name(): string {
+    return this.packageName;
+  }
+
   /** This package's semantic `name@version` id — the identity that decides
    * flat-mount deduplication (object identity is deliberately meaningless:
    * every delivery wraps its own instances). */
@@ -98,56 +105,51 @@ export class PackageFileSet extends FileSet {
   public withPackageName(packageName: string): PackageFileSet {
     return new PackageFileSet(this, packageName, this.version, this.dependencies, this.origin, this.isNestedOverride);
   }
+
+  public getDependency(name: string): PackageFileSet | RepositoryRef | undefined {
+    return this.dependencies.find(dep => dep.name === name);
+  }
 }
 
 /**
- * The manifest of an input list for an action that **assembles its own
- * inputs**: a package contributes its identity rather than its files, so the
- * key is O(packages) instead of O(files).
- *
- * It must distinguish everything an assembler reads, which is more than the
- * file contents: layout is decided by the dependency *edges* and by the
- * nested-override flag, so two closures whose packages have identical contents
- * but different bindings must not collide. Each reachable node therefore
- * contributes its id, its {@link FileSet.toManifestHash}, its edge targets and its
- * override flag; every node carries its own hash, so naming edges by
- * package id is enough — no recursive hashing, which the (possibly cyclic)
- * graph would not admit anyway. Inert {@link RepositoryRef} edges are omitted:
- * an assembler cannot see through them, so they cannot affect what it builds.
- *
- * The direct list is emitted **in order** (mount order is significant) and the
- * closure sorted (it is a set); a non-package member falls back to its file
- * manifest, since only a whole package can be named by identity.
+ * Flatten a FileSet list to everything it indirectly reaches: the given
+ * members in order, then every further FileSet a package member's edges bind,
+ * breadth-first, each instance once (an inert {@link RepositoryRef} edge has
+ * no files to add). Loose members are retained, and only package members have
+ * edges to follow. The closure walk behind {@link reachablePackages};
+ * cycle-safe, as a delivered graph is genuinely cyclic.
  */
-export function manifestPackageInputs(sets: ReadonlyArray<FileSet>): string {
-  const reachable = new Set<PackageFileSet>();
-  const visit = (pkg: PackageFileSet): void => {
-    if (reachable.has(pkg)) {
-      return;
+export function flattenFileSetArray(sets: ReadonlyArray<FileSet>): FileSet[] {
+  const seen = new Set<FileSet>(sets);
+  const result = [...sets];
+  for (let i = 0; i < result.length; i++) {
+    const item = result[i];
+    if (item instanceof PackageFileSet) {
+      item.dependencies.forEach(dep => {
+        if (dep instanceof FileSet && !seen.has(dep)) {
+          result.push(dep);
+          seen.add(dep);
+        }
+      });
     }
-    reachable.add(pkg);
-    for (const dep of pkg.dependencies) {
-      if (dep instanceof PackageFileSet) {
-        visit(dep);
-      }
-    }
-  };
-  const direct = sets.map(set => {
-    if (!(set instanceof PackageFileSet)) {
-      return `files {\n${set.toManifest()}\n}`;
-    }
-    visit(set);
-    return `mount ${set.packageId}`;
-  });
-  const closure = [...reachable].map(pkg => packageNodeSignature(pkg)).sort();
-  return [...direct, ...closure].join("\n");
+  }
+  return result;
+}
+
+/** Every package the given sets reach — the sets' package members and,
+ * recursively, every package their edges bind — the package view of
+ * {@link flattenFileSetArray}: breadth-first, each instance once. Consumers
+ * must not key on the order (they sort at use, or read the set). */
+export function reachablePackages(sets: ReadonlyArray<FileSet>): PackageFileSet[] {
+  return flattenFileSetArray(sets).filter((set): set is PackageFileSet => set instanceof PackageFileSet);
 }
 
 /**
- * One graph node as the manifest above names it: identity, content hash, edge
- * targets by id, override flag — everything an assembler's outcome can depend
- * on. Naming edges by id is sound because two instances sharing an id must
- * agree on this whole line — the invariant the assemblers check at their merge
+ * One graph node as the pnp reference and the layout planner name it: identity,
+ * content hash, edge targets by id, override flag — everything an assembler's
+ * outcome can depend on. Naming
+ * edges by id is sound because two instances sharing an id must agree on this
+ * whole line — the invariant the assemblers check at their merge
  * ({@link assertSamePackageNode}) — so inductively an id names one node,
  * however many instances carry it.
  */
@@ -161,12 +163,12 @@ export function packageNodeSignature(pkg: PackageFileSet): string {
 
 /**
  * Assert that two instances delivered under one {@link PackageFileSet.packageId}
- * really are the same node — same bytes, same edge bindings. Everything
- * downstream resolves the *id*, not the instance (the hoist's flat-mount dedup,
- * the divergence check, an action key naming packages by identity), so two
- * instances that disagree would be settled by traversal order rather than by
- * any decision: a {@link ConflictError}, the general two-deliveries-disagree
- * shape, not a pick.
+ * really are the same node — same bytes, same edge bindings.
+ *
+ * The layout planner resolves the node, not the id, so it can hold two nodes
+ * under one id; a physical install cannot, a tree giving a package one
+ * directory. So this is the assemblers' precondition, and a conflict rather
+ * than a pick.
  */
 export function assertSamePackageNode(held: PackageFileSet, arrived: PackageFileSet): void {
   const heldSignature = packageNodeSignature(held);

@@ -43,6 +43,7 @@ import {
   isJsonObject,
   MemoryFile,
   PackageFileSet,
+  packageNodeSignature,
   parseJson,
   parseVersion,
   readJsonFile,
@@ -754,19 +755,19 @@ function unrepresentableCycle(cycle: string[]): Error {
   );
 }
 
-/** The package instances of a delivery, collected once: the direct roots,
- * every reachable instance (cycle-safe — a delivered graph carries complete,
- * possibly cyclic edge bindings), one representative per packageId, and the
- * loose (non-package) sets passed through. */
+/** What {@link collectPackages} found: the direct roots, every reachable
+ * instance, one representative per node, and the loose sets. */
 interface CollectedPackages {
   roots: PackageFileSet[];
   all: PackageFileSet[];
-  byId: Map<string, PackageFileSet>;
+  byNode: Map<string, PackageFileSet>;
   loose: FileSet[];
 }
 
+/** Every package instance a delivery reaches, keyed by node signature, with the
+ * loose (non-package) sets passed through. */
 function collectPackages(sets: FileSet[]): CollectedPackages {
-  const byId = new Map<string, PackageFileSet>();
+  const byNode = new Map<string, PackageFileSet>();
   const loose: FileSet[] = [];
   const roots: PackageFileSet[] = [];
   const all: PackageFileSet[] = [];
@@ -777,14 +778,9 @@ function collectPackages(sets: FileSet[]): CollectedPackages {
     }
     seen.add(pkg);
     all.push(pkg);
-    const held = byId.get(pkg.packageId);
-    if (held === undefined) {
-      byId.set(pkg.packageId, pkg);
-    } else {
-      /* Everything from here on resolves the id, not the instance, so a second
-       * instance must BE the same node — checked, or the merge would be settled
-       * by traversal order. */
-      assertSamePackageNode(held, pkg);
+    const node = packageNodeSignature(pkg);
+    if (!byNode.has(node)) {
+      byNode.set(node, pkg);
     }
     for (const dep of pkg.dependencies) {
       if (dep instanceof PackageFileSet) {
@@ -800,38 +796,59 @@ function collectPackages(sets: FileSet[]): CollectedPackages {
       loose.push(set);
     }
   }
-  return { roots, all, byId, loose };
+  return { roots, all, byNode, loose };
 }
 
 /**
- * The flat (hoisted) winner per name: a root always holds its own name;
- * otherwise the highest version. Two *different* roots sharing a name is a
- * conflict, not a pick: every root was directly listed, so each must hold its
- * own top-level mount, and two can't — the layout is unrepresentable (roots
- * cannot nest under each other the way a transitive non-winner can).
- *
- * Under `strict`, delivered **override** instances (a `?` sanction's nested
- * fork — {@link PackageFileSet.isNestedOverride}) never take a flat slot, and
- * two *non*-override instances disagreeing on a name are a conflict rather
- * than a version pick: that shape is two deliveries resolved apart (a local
- * package's closure vs this collection's), where hoisting one would silently
- * hand the other's requirers a version their resolution never chose. The
- * sealed assembler keeps the permissive highest-wins pick (a tool install is
- * opaque; the store-layout notes track its known looseness).
+ * Assemblers only: within one collection point, no two distinct nodes may share
+ * a `packageId`. A tree gives a package one directory, so the second would be
+ * settled by traversal order. Joint resolution makes it unreachable, so a firing
+ * is a resolution bug rather than a closure to nest.
  */
-function hoistWinners({ roots, all, byId }: CollectedPackages, strict: boolean): Map<string, string> {
+function assertOnePackagePerId(collected: CollectedPackages): void {
+  const byId = new Map<string, PackageFileSet>();
+  /* One representative per distinct node, so any pair reaching the assertion is
+   * two nodes rather than two instances of one. */
+  for (const pkg of collected.byNode.values()) {
+    const held = byId.get(pkg.packageId);
+    if (held === undefined) {
+      byId.set(pkg.packageId, pkg);
+    } else {
+      assertSamePackageNode(held, pkg);
+    }
+  }
+}
+
+/**
+ * The flat (hoisted) winner per name, as a node signature: a root always holds
+ * its own name; otherwise the highest version. Two *different* roots sharing a
+ * name is a conflict rather than a pick — each was directly listed, so each
+ * needs its own top-level mount and two cannot have one.
+ *
+ * Under `strict`, override instances ({@link PackageFileSet.isNestedOverride})
+ * never take a flat slot, and two *non*-override instances disagreeing on a
+ * name conflict rather than picking a version — that shape is two deliveries
+ * resolved apart, where hoisting one hands the other's requirers a version
+ * their resolution never chose. Sealed (non-strict) installs keep the
+ * permissive highest-wins pick.
+ *
+ * Conflicts are reported by semantic **id**; the signature is the planner's key
+ * and means nothing to a reader.
+ */
+function hoistWinners({ roots, all, byNode }: CollectedPackages, strict: boolean): Map<string, string> {
   const top = new Map<string, string>();
+  const nodeOf = (pkg: PackageFileSet): string => packageNodeSignature(pkg);
   for (const root of roots) {
     const existing = top.get(root.packageName);
-    if (existing !== undefined && existing !== root.packageId) {
+    if (existing !== undefined && existing !== nodeOf(root)) {
       throw new ConflictError(
         "packages",
         root.packageName,
-        { provenance: byId.get(existing)!.origin, detail: existing },
+        { provenance: byNode.get(existing)!.origin, detail: byNode.get(existing)!.packageId },
         { provenance: root.origin, detail: root.packageId }
       );
     }
-    top.set(root.packageName, root.packageId);
+    top.set(root.packageName, nodeOf(root));
   }
   for (const pkg of all) {
     if (strict && pkg.isNestedOverride) {
@@ -839,18 +856,18 @@ function hoistWinners({ roots, all, byId }: CollectedPackages, strict: boolean):
     }
     const current = top.get(pkg.packageName);
     if (current === undefined) {
-      top.set(pkg.packageName, pkg.packageId);
-    } else if (current !== pkg.packageId && !roots.some(root => root.packageId === current)) {
+      top.set(pkg.packageName, nodeOf(pkg));
+    } else if (current !== nodeOf(pkg) && !roots.some(root => nodeOf(root) === current)) {
       if (strict) {
         throw new ConflictError(
           "packages",
           pkg.packageName,
-          { provenance: byId.get(current)!.origin, detail: current },
+          { provenance: byNode.get(current)!.origin, detail: byNode.get(current)!.packageId },
           { provenance: pkg.origin, detail: pkg.packageId }
         );
       }
-      if (compareVersionText(pkg.version, byId.get(current)!.version) > 0) {
-        top.set(pkg.packageName, pkg.packageId);
+      if (compareVersionText(pkg.version, byNode.get(current)!.version) > 0) {
+        top.set(pkg.packageName, nodeOf(pkg));
       }
     }
   }
@@ -866,47 +883,38 @@ interface PlannedNest {
 }
 
 /**
- * Mount every winner at `pathOf(name)`, nesting under each mounted instance
- * every dependency edge that binds somewhere other than what is *visible* at
- * its position — recursively: the tree encoding of the delivered (possibly
- * cyclic) graph, decided HERE, from the complete edge bindings the deliveries
- * carry, against the winners of everything this consumer is merging. The one
- * planner both assemblers share; only the namespace the winners land in
- * differs.
+ * {@link planPositions} with the instances mounted at their positions.
  *
- * A position is described entirely by its **bindings**: the flat winners
- * overridden by the divergences each enclosing mount introduced (kept
- * canonical — an entry equal to the flat winner is dropped, since it resolves
- * the same either way). Every divergence is mounted at the level that
- * introduced it — exactly where node's walk-up resolution finds it: the
- * private copy from its requirer, the flat winner from everyone else. Two
- * positions with equal bindings resolve every name identically and need the
- * same subtree, which is why a subtree is memoized on (packageId, bindings)
- * and shared rather than replanned — and why an ordinary dependency cycle
- * terminates: a cycle member's edge back to an already-bound name is not a
- * divergence.
- *
- * The same fact makes a repeat of a position still being planned fatal rather
- * than a stopping point. Each nesting is *forced*: a package can only see a
- * version other than its position's by carrying it privately. So returning to
- * a position already on the planning path means the forced sequence repeats
- * without end, and the closure has **no** finite node_modules layout — a
- * version cycle across generations (a@1 → b@1 → a@2 → b@2 → a@1) is the shape
- * that does it. A limit of the *layout*, not of the resolution (such a
- * closure resolves cleanly); judged here, at the merge that actually needs a
- * tree, so a cycle that only exists once deliveries are merged is caught, and
- * one that never mounts is not misreported.
+ * A position is described by its **bindings** — the flat winners overridden by
+ * each enclosing mount's divergences, kept canonical so equal bindings mean an
+ * identical subtree. Revisiting a position already on the planning path is fatal
+ * ({@link unrepresentableCycle}): the closure has no finite layout.
  */
-function mountWinners(top: Map<string, string>, byId: Map<string, PackageFileSet>, pathOf: (name: string) => string): FileSet[] {
-  const signature = (id: string, bindings: Map<string, string>): string =>
-    [id, ...[...bindings].sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, to]) => `${name}=${to}`)].join("\n");
+function mountWinners(top: Map<string, string>, byNode: Map<string, PackageFileSet>, pathOf: (name: string) => string): FileSet[] {
+  return planPositions(top, byNode, pathOf).map(({ pkg, at }) => pkg.mountedAt(at));
+}
+
+/**
+ * Where every instance sits in a normalized node_modules tree — the single
+ * source of placement for the assemblers. Placement derived anywhere else
+ * could let two mounts of the same graph disagree.
+ *
+ * Returns a list, not a map: a nested instance can occupy several positions.
+ */
+export function planPositions(
+  top: Map<string, string>,
+  byNode: Map<string, PackageFileSet>,
+  pathOf: (name: string) => string
+): Array<{ pkg: PackageFileSet; at: string }> {
+  const signature = (node: string, bindings: Map<string, string>): string =>
+    [node, ...[...bindings].sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, to]) => `${name}=${to}`)].join("\n");
   /** Completed subtrees, and the positions on the current planning path (in
    * order, so a repeat can name the cycle it closes). */
   const planned = new Map<string, PlannedNest>();
   const path: Array<{ id: string; key: string }> = [];
 
   const plan = (pkg: PackageFileSet, bindings: Map<string, string>): PlannedNest => {
-    const key = signature(pkg.packageId, bindings);
+    const key = signature(packageNodeSignature(pkg), bindings);
     const done = planned.get(key);
     if (done) {
       return done;
@@ -918,7 +926,7 @@ function mountWinners(top: Map<string, string>, byId: Map<string, PackageFileSet
     path.push({ id: pkg.packageId, key });
     const divergent = new Map<string, PackageFileSet>();
     for (const dep of pkg.dependencies) {
-      if (dep instanceof PackageFileSet && (bindings.get(dep.packageName) ?? top.get(dep.packageName)) !== dep.packageId) {
+      if (dep instanceof PackageFileSet && (bindings.get(dep.packageName) ?? top.get(dep.packageName)) !== packageNodeSignature(dep)) {
         divergent.set(dep.packageName, dep);
       }
     }
@@ -927,10 +935,10 @@ function mountWinners(top: Map<string, string>, byId: Map<string, PackageFileSet
      * override — but resolves to what the fallback already gives). */
     const nested = new Map(bindings);
     for (const [name, dep] of divergent) {
-      if (top.get(name) === dep.packageId) {
+      if (top.get(name) === packageNodeSignature(dep)) {
         nested.delete(name);
       } else {
-        nested.set(name, dep.packageId);
+        nested.set(name, packageNodeSignature(dep));
       }
     }
     const overrides = new Map<string, PlannedNest>();
@@ -943,17 +951,17 @@ function mountWinners(top: Map<string, string>, byId: Map<string, PackageFileSet
     return result;
   };
 
-  const mounts: FileSet[] = [];
+  const placed: Array<{ pkg: PackageFileSet; at: string }> = [];
   const emit = (node: PlannedNest, atPath: string): void => {
-    mounts.push(node.pkg.mountedAt(atPath));
+    placed.push({ pkg: node.pkg, at: atPath });
     for (const [name, override] of node.overrides) {
       emit(override, `${atPath}/node_modules/${name}`);
     }
   };
-  for (const [name, id] of top) {
-    emit(plan(byId.get(id)!, new Map()), pathOf(name));
+  for (const [name, node] of top) {
+    emit(plan(byNode.get(node)!, new Map()), pathOf(name));
   }
-  return mounts;
+  return placed;
 }
 
 /**
@@ -971,8 +979,9 @@ function mountWinners(top: Map<string, string>, byId: Map<string, PackageFileSet
  */
 export function assembleNodeModules(sets: FileSet[]): FileSet {
   const collected = collectPackages(sets);
+  assertOnePackagePerId(collected);
   const top = hoistWinners(collected, false);
-  const mounts = mountWinners(top, collected.byId, name => name);
+  const mounts = mountWinners(top, collected.byNode, name => name);
   return FileSet.unionAll(...mounts, ...collected.loose);
 }
 
@@ -1023,12 +1032,13 @@ const SCOPED_AREA = ".pkgs/node_modules";
  */
 export function assembleScopedNodeModules(directSets: FileSet[]): FileSet {
   const collected = collectPackages(directSets);
+  assertOnePackagePerId(collected);
   /* Strict: override instances nest and never take a flat slot; two
    * non-override instances disagreeing on a name conflict in hoistWinners
    * (every collected instance is otherwise mounted — winners flat, overrides
    * under the parents that list them). */
   const top = hoistWinners(collected, true);
-  const mounts = mountWinners(top, collected.byId, name => `${SCOPED_AREA}/${name}`);
+  const mounts = mountWinners(top, collected.byNode, name => `${SCOPED_AREA}/${name}`);
   const topLevel: FileSet[] = [];
   const linked = new Set<string>();
   for (const set of directSets) {

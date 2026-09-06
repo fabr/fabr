@@ -21,7 +21,13 @@ import { expect } from "chai";
 import { MemoryFile } from "./MemoryFS";
 import { ConflictError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
-import { assertSamePackageNode, manifestPackageInputs, PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
+import {
+  assertSamePackageNode,
+  flattenFileSetArray,
+  packageNodeSignature,
+  PackageFileSet,
+  PackageGraphBuilder,
+} from "./PackageFileSet";
 
 describe("PackageGraphBuilder", () => {
   function files(tag: string): Map<string, IFile> {
@@ -80,61 +86,58 @@ describe("PackageGraphBuilder", () => {
   });
 });
 
-describe("manifestPackageInputs", () => {
+describe("flattenFileSetArray", () => {
   function files(tag: string): Map<string, IFile> {
     return new Map([["index.js", MemoryFile.from(`// ${tag}`)]]);
   }
 
-  /** a → b, as a delivery would carry it. */
-  function graph(bTag: string, nested = false): PackageFileSet {
-    const builder = new PackageGraphBuilder();
-    const a = builder.node(files("a"), "a", "1.0.0");
-    const b = builder.node(files(bTag), "b", "1.0.0", undefined, nested);
-    builder.wire(a, [b]);
-    builder.wire(b, []);
-    builder.seal();
-    return a;
-  }
-
-  it("is stable for an unchanged closure", () => {
-    expect(manifestPackageInputs([graph("b")])).to.equal(manifestPackageInputs([graph("b")]));
+  it("retains loose members and appends a package member's closure, each instance once", () => {
+    const loose = new FileSet(files("loose"));
+    const shared = new PackageFileSet(files("shared"), "shared", "1.0.0");
+    const a = new PackageFileSet(files("a"), "a", "1.0.0", [shared]);
+    const b = new PackageFileSet(files("b"), "b", "1.0.0", [shared]);
+    const flat = flattenFileSetArray([loose, a, b]);
+    /* Given members in order first, then the closure breadth-first; the shared
+     * instance is deduplicated by identity. */
+    expect(flat).to.deep.equal([loose, a, b, shared]);
   });
 
-  /* The point of the identity form: the key must still turn over when a package
-   * the step will mount changes, even though the direct input's own id doesn't. */
-  it("turns over when a TRANSITIVE package's content changes", () => {
-    expect(manifestPackageInputs([graph("b")])).to.not.equal(manifestPackageInputs([graph("b changed")]));
-  });
-
-  it("turns over when an edge is rebound, contents unchanged", () => {
+  it("is cycle-safe", () => {
     const builder = new PackageGraphBuilder();
     const a = builder.node(files("a"), "a", "1.0.0");
     const b = builder.node(files("b"), "b", "1.0.0");
-    builder.wire(a, []);
+    builder.wire(a, [b]);
+    builder.wire(b, [a]);
+    builder.seal();
+    expect(flattenFileSetArray([a])).to.deep.equal([a, b]);
+  });
+});
+
+describe("packageNodeSignature", () => {
+  function files(tag: string): Map<string, IFile> {
+    return new Map([["index.js", MemoryFile.from(`// ${tag}`)]]);
+  }
+
+  it("names a package by one line — id, content hash, edges, override flag", () => {
+    const builder = new PackageGraphBuilder();
+    const a = builder.node(files("a"), "a", "1.0.0");
+    const b = builder.node(files("b"), "b", "1.0.0");
+    builder.wire(a, [b]);
     builder.wire(b, []);
     builder.seal();
-    /* Same two packages, byte-identical, but `a` no longer requires `b`: a
-     * different closure, so a different key. */
-    expect(manifestPackageInputs([a])).to.not.equal(manifestPackageInputs([graph("b")]));
+    const line = packageNodeSignature(a);
+    expect(line).to.contain("a@1.0.0");
+    expect(line).to.contain(a.toManifestHash());
+    expect(line).to.contain("[b@1.0.0]");
+    expect(line).to.not.contain("\n");
+    expect(line, "the line covers this node only, not the edge target's content").to.not.contain(b.toManifestHash());
   });
 
-  it("turns over when a package is delivered as a nested override", () => {
-    expect(manifestPackageInputs([graph("b")])).to.not.equal(manifestPackageInputs([graph("b", true)]));
-  });
-
-  it("keeps the mount order of the direct list, which decides layout", () => {
-    const x = new PackageFileSet(files("x"), "x", "1.0.0");
-    const y = new PackageFileSet(files("y"), "y", "1.0.0");
-    expect(manifestPackageInputs([x, y])).to.not.equal(manifestPackageInputs([y, x]));
-  });
-
-  it("names a package by identity and a loose set by its files", () => {
-    const pkg = new PackageFileSet(files("p"), "p", "1.0.0");
-    const loose = new FileSet(files("loose"));
-    const manifest = manifestPackageInputs([pkg, loose]);
-    expect(manifest).to.contain("mount p@1.0.0");
-    expect(manifest).to.contain(pkg.toManifestHash());
-    expect(manifest).to.contain("index.js");
+  it("distinguishes an edge rebinding and a nested-override delivery, contents unchanged", () => {
+    const leaf = (nested: boolean): PackageFileSet => new PackageFileSet(files("p"), "p", "1.0.0", [], undefined, nested);
+    const bound = new PackageFileSet(files("p"), "p", "1.0.0", [new PackageFileSet(files("d"), "d", "1.0.0")]);
+    expect(packageNodeSignature(leaf(false)), "an edge is part of the node").to.not.equal(packageNodeSignature(bound));
+    expect(packageNodeSignature(leaf(false)), "so is the placement flag").to.not.equal(packageNodeSignature(leaf(true)));
   });
 });
 
@@ -149,8 +152,7 @@ describe("assertSamePackageNode", () => {
   it("accepts two equal wrappings of one package", () => {
     /* Byte-identical, separately constructed — the ordinary shape of one
      * package arriving through two deliveries. */
-    const dep = (): PackageFileSet =>
-      new PackageFileSet(files("p"), "p", "1.0.0", [new PackageFileSet(files("q"), "q", "1.0.0")]);
+    const dep = (): PackageFileSet => new PackageFileSet(files("p"), "p", "1.0.0", [new PackageFileSet(files("q"), "q", "1.0.0")]);
     expect(() => assertSamePackageNode(dep(), dep())).to.not.throw();
   });
 

@@ -52,6 +52,12 @@ export function isDirectoryError(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | null)?.code === "EISDIR";
 }
 
+/** True if `err` is an ENOTDIR — a path component that had to be a directory is
+ * a file, so nothing below it can be read, now or ever under that layout. */
+export function isNotDirectoryError(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException | null)?.code === "ENOTDIR";
+}
+
 export function readFile(filepath: string, encoding: BufferEncoding = "utf8"): Computable<string> {
   return Computable.from<string>((resolve, reject) => {
     fs.readFile(filepath, encoding, (err, data) => {

@@ -32,6 +32,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { IPnpSerializedState, PnpDependencyTarget } from "../PnPManifest";
 import { exportedSubpath, exportsSubpath, type ExportsValue, resolveExportsAll, resolveImports } from "./PackageExports";
+import { IResolutionEdge, joinDepsPath } from "./ReadSet";
 
 /**
  * The manifest's file name. Yarn's standard, known independently on both sides
@@ -97,6 +98,19 @@ export function splitSpecifier(specifier: string): { name: string; subpath: stri
  * threading the set through every call would only invite two lookups in one
  * process to disagree about which files a package has.
  */
+/** A row as the location index holds it: the directory it occupies (with a
+ * trailing separator, so a prefix test cannot match a sibling whose name starts
+ * the same), and what the store-facing queries need to judge it by. `reference`
+ * is the row's PnP reference — the half of the instance name the path does not
+ * carry. */
+interface ILocationEntry {
+  prefix: string;
+  locator: LocatorKey;
+  name: string | null;
+  stored: boolean;
+  reference?: string;
+}
+
 export class PnpResolver {
   /** Rows by locator, and their locations longest-first so a prefix match picks
    * the innermost package. */
@@ -105,7 +119,23 @@ export class PnpResolver {
    * package (PnP's `HARD`) rather than a place in this build (`SOFT`: the
    * top-level sources, and the self row that names them as a package) — the
    * distinction the store-facing queries below turn on. */
-  private readonly byLocation: Array<{ prefix: string; locator: LocatorKey; name: string | null; stored: boolean }> = [];
+  private readonly byLocation: ILocationEntry[] = [];
+  /** The same entries keyed by the directory they name, each list in
+   * `byLocation`'s order. This is the index behind every which-package-holds-
+   * this-path question ({@link innermostAt}): a compile asks hundreds of
+   * thousands of times over a table of a few thousand rows, so a scan per
+   * question is O(files x packages) and dominates an incremental compile. */
+  private readonly byDirectory = new Map<string, ILocationEntry[]>();
+  /** {@link treeRoots}, derived once. The table is fixed after construction, so
+   * every answer this resolver gives is a pure function of it. */
+  private cachedTreeRoots: ReadonlyArray<string> | undefined;
+  /** {@link instanceNameOf} by resolved path. The read set asks the same file
+   * repeatedly — once per edge that named it — and the answer cannot move. */
+  private readonly instanceNames = new Map<string, string | undefined>();
+  /** {@link pathNameOf} by resolved path, memoized for the same reason. */
+  private readonly pathNames = new Map<string, string | undefined>();
+  /** {@link routes}, derived once — the table is fixed after construction. */
+  private cachedRoutes: Map<LocatorKey, string[]> | undefined;
   private readonly fallback = new Map<string, string>();
   private readonly topLevel: LocatorKey;
   /** The rows that stand for the SOURCES rather than for a delivered package —
@@ -130,6 +160,13 @@ export class PnpResolver {
   private readonly manifests = new Map<string, IPackageManifest>();
   /** The world this resolver answers for — see the class comment. */
   private readonly conditions: ReadonlySet<string>;
+  /** The package locations whose `package.json` this resolver has read — see
+   * {@link manifestsConsulted}. */
+  private readonly consultedManifests = new Set<string>();
+  /** Every resolution performed, keyed by requirer + specifier — the pair whose
+   * answer the fixed table makes constant, so a compile asking it ten thousand
+   * times records one edge. */
+  private readonly resolutions = new Map<string, IResolutionEdge>();
 
   /**
    * @param root the directory the manifest's relative locations resolve against
@@ -151,7 +188,8 @@ export class PnpResolver {
         }
         if (info.discardFromLookup !== true) {
           const stored = info.linkType !== "SOFT";
-          this.byLocation.push({ prefix: withSeparator(location), locator: key, name, stored });
+          const held = typeof reference === "string" ? reference : undefined;
+          this.byLocation.push({ prefix: withSeparator(location), locator: key, name, stored, reference: held });
           /* A store entry is reached through the workspace's store-root
            * symlink, but a compiler that does not preserve symlinks reports the
            * files it resolved by their REAL path — so a row must be findable
@@ -159,7 +197,7 @@ export class PnpResolver {
            * it belonged to the top level. */
           const real = realpathOf(location);
           if (real !== location) {
-            this.byLocation.push({ prefix: withSeparator(real), locator: key, name, stored });
+            this.byLocation.push({ prefix: withSeparator(real), locator: key, name, stored, reference: held });
           }
         }
       }
@@ -180,6 +218,15 @@ export class PnpResolver {
     /* Longest first: a package's location can sit inside another's (bundled
      * content), and the innermost is the one asking. */
     this.byLocation.sort((left, right) => right.prefix.length - left.prefix.length);
+    /* Built from the sorted array so each directory's own list keeps that
+     * order, which is what makes the index answer exactly as the scan did where
+     * rows share a location. */
+    for (const entry of this.byLocation) {
+      const at = entry.prefix.slice(0, -1);
+      const held = this.byDirectory.get(at) ?? [];
+      this.byDirectory.set(at, held);
+      held.push(entry);
+    }
     this.mergeSharedLocations();
   }
 
@@ -235,6 +282,34 @@ export class PnpResolver {
   }
 
   /**
+   * The innermost entry containing `target` that `admits` accepts — the one
+   * primitive under every containing-package question here.
+   *
+   * Answers by walking the path UPWARD rather than by scanning the table: an
+   * entry contains `target` exactly when its directory is `target` or an
+   * ancestor of it, so the walk meets the candidates innermost-first and stops
+   * at the first acceptable one. That is the same answer the longest-prefix-
+   * first scan gave — including its continuing outward where the innermost
+   * directory holds nothing the caller accepts (a store path inside the
+   * sources' own tree) — at O(depth) rather than O(table).
+   */
+  private innermostAt(target: string, admits: (entry: ILocationEntry) => boolean): ILocationEntry | undefined {
+    let at = target;
+    for (;;) {
+      for (const entry of this.byDirectory.get(at) ?? []) {
+        if (admits(entry)) {
+          return entry;
+        }
+      }
+      const up = path.dirname(at);
+      if (up === at) {
+        return undefined;
+      }
+      at = up;
+    }
+  }
+
+  /**
    * Which package a file belongs to: the row whose location is its longest
    * containing prefix, else the top-level package (the sources being compiled,
    * whose location is the root itself).
@@ -250,8 +325,7 @@ export class PnpResolver {
     if (known !== undefined) {
       return known;
     }
-    const prefix = directory + path.sep;
-    const locator = this.byLocation.find(entry => prefix.startsWith(entry.prefix))?.locator ?? this.topLevel;
+    const locator = this.innermostAt(directory, () => true)?.locator ?? this.topLevel;
     this.locatorByDirectory.set(directory, locator);
     return locator;
   }
@@ -278,17 +352,17 @@ export class PnpResolver {
    */
   public packageOf(file: string): { name: string; subpath: string } | undefined {
     const target = path.resolve(file);
-    /* Compared with a trailing separator on BOTH sides, so a path that is the
-     * package root itself — the commonest one the declaration emitter writes —
-     * matches its own location rather than falling just short of it. */
-    const within = withSeparator(target);
-    /* Longest-first, so the FIRST match is the innermost package — no scan of
-     * the rest, which a declaration full of these would pay per specifier. */
-    const innermost = this.byLocation.find(entry => entry.stored && entry.name !== null && within.startsWith(entry.prefix));
+    /* The walk starts at the path itself, so a path that IS a package root —
+     * the commonest one the declaration emitter writes — matches its own
+     * location rather than only its parent's. */
+    const innermost = this.innermostAt(target, entry => entry.stored && entry.name !== null);
     if (innermost === undefined) {
       return undefined;
     }
-    const sharing = this.byLocation.filter(entry => entry.name !== null && entry.prefix === innermost.prefix);
+    /* Read out of the index rather than by filtering the table: rows sharing a
+     * location are exactly one directory's list, and this runs per specifier a
+     * declaration names. */
+    const sharing = (this.byDirectory.get(innermost.prefix.slice(0, -1)) ?? []).filter(entry => entry.name !== null);
     const relative = path.relative(innermost.prefix, target).split(path.sep).join("/");
     return {
       name: sharing.map(entry => entry.name!).sort()[0],
@@ -305,7 +379,9 @@ export class PnpResolver {
   private publishedAs(location: string, file: string): string {
     const exports = this.manifestAt(location).exports;
     const published =
-      exports === undefined || exports === null ? undefined : describing(location, () => exportedSubpath(exports, exportsSubpath(file), this.conditions));
+      exports === undefined || exports === null
+        ? undefined
+        : describing(location, () => exportedSubpath(exports, exportsSubpath(file), this.conditions));
     if (published === undefined) {
       return file;
     }
@@ -319,7 +395,12 @@ export class PnpResolver {
    * package, wherever one might otherwise be written down.
    */
   public get treeRoots(): ReadonlyArray<string> {
-    return [...new Set(this.byLocation.filter(entry => entry.stored).map(entry => withSeparator(path.dirname(entry.prefix))))];
+    /* Derived once: something reads this per file, and rebuilding the set each
+     * time cost 1.5s of a full-program run. */
+    this.cachedTreeRoots ??= [
+      ...new Set(this.byLocation.filter(entry => entry.stored).map(entry => withSeparator(path.dirname(entry.prefix)))),
+    ];
+    return this.cachedTreeRoots;
   }
 
   /**
@@ -330,15 +411,183 @@ export class PnpResolver {
   public locationOf(name: string, issuer: string): string | undefined {
     const locator = this.locatorOf(issuer);
     const from = this.rows.get(locator);
+    /* Consulting a table is a READ of it, recorded as the EDGE below — who
+     * asked, for what, and what they got: what a specifier binds to can change
+     * with no file the compile read changing at all (a dependency added,
+     * removed, or re-aliased), so a consumer keying on its reads has to see
+     * the lookups it made as well as the files it got. */
+    const instance = this.sources.has(locator) ? undefined : instanceOfLocator(locator);
     /* The pool answers for a package that arrived from a repository, whose
      * undeclared imports are the ecosystem's to fix and not this build's. It
      * does not answer for anything this project produced — the sources, and the
      * packages the manifest excludes — because there the declared surface is
      * what this project wrote down, and an import missing from it is a bug with
      * an author. */
-    const pooled = this.sources.has(locator) || this.excluded.has(locator) ? undefined : this.fallback.get(name);
-    const bound = from?.dependencies.get(name) ?? pooled;
+    const barred = this.sources.has(locator) || this.excluded.has(locator);
+    const own = from?.dependencies.get(name);
+    const bound = own ?? (barred ? undefined : this.fallback.get(name));
+    const requirer = instance ?? "";
+    if (bound === undefined) {
+      /* A name nothing answers is recorded too, and is not merely an error
+       * waiting to happen: a caller given no answer may ask for something else
+       * instead (tsc settling for `@types/thing`), so the compilation's result
+       * can depend on this name having been unresolvable. */
+      this.resolutions.set(`${requirer}\0${name}`, { from: requirer, name, to: "", via: "absent" });
+    } else if (!this.sources.has(bound)) {
+      this.resolutions.set(`${requirer}\0${name}`, {
+        from: requirer,
+        name,
+        to: instanceOfLocator(bound),
+        via: own === undefined ? "fallback" : "own",
+      });
+    }
     return bound === undefined ? undefined : this.rows.get(bound)?.location;
+  }
+
+  /**
+   * Every resolution this run performed — the edges the step chains into walks
+   * (see {@link IResolutionEdge}).
+   *
+   * A resolution answered by the SOURCES is left out: they are the
+   * compilation's own files, which no walk over the delivered graph names and
+   * which the anchor covers whole.
+   */
+  public edges(): ReadonlyArray<IResolutionEdge> {
+    return [...this.resolutions.values()];
+  }
+
+  /**
+   * The package locations whose `package.json` this resolver read — the half a
+   * file listing cannot supply: resolution consults a package's `exports` map
+   * to decide which file a specifier names, so an `exports` edit moves the
+   * answer without touching the file that used to be the answer.
+   */
+  public manifestsConsulted(): ReadonlyArray<string> {
+    return [...this.consultedManifests];
+  }
+
+  /**
+   * The **instance name** of a resolved file: `<name>#<reference>/<path within
+   * it>` — which exact node of the delivered graph was read, and where in it —
+   * or undefined for anything outside a materialized package (the sources being
+   * compiled, the tool's own install, the compiler's libs).
+   *
+   * Store-free on purpose: the reference is the row's own locator reference,
+   * already in the table, so the name says nothing about this machine. Distinct
+   * from {@link packageOf}, which answers the subpath a package *publishes* for
+   * a file: that is what a consumer would have to WRITE to reach it, whereas
+   * this is where it lives.
+   */
+  public instanceNameOf(file: string): string | undefined {
+    const target = path.resolve(file);
+    const known = this.instanceNames.get(target);
+    if (known !== undefined || this.instanceNames.has(target)) {
+      return known;
+    }
+    const innermost = this.innermostAt(target, entry => entry.stored && entry.name !== null);
+    const name = innermost?.reference === undefined ? undefined : instanceName(innermost, target);
+    this.instanceNames.set(target, name);
+    return name;
+  }
+
+  /**
+   * The **path name** of a resolved file: the names an edge chain calls its
+   * package by, then the file within it — `@types/jest expect index.d.ts`. This
+   * is what fabr calls a dependency's file everywhere (its key material, its
+   * recorded base, its change lists), so a driver reporting these names and
+   * reading them back needs no translation in either direction.
+   *
+   * One canonical route per package — the first the walk reaches it by — so the
+   * name is one-to-one with the file. A route is not the only way in; it is the
+   * one everything agrees to use.
+   *
+   * Undefined for anything outside a materialized package (the sources being
+   * compiled, the tool's own install, the compiler's libs), exactly as
+   * {@link instanceNameOf} is.
+   */
+  public pathNameOf(file: string): string | undefined {
+    const target = path.resolve(file);
+    const known = this.pathNames.get(target);
+    if (known !== undefined || this.pathNames.has(target)) {
+      return known;
+    }
+    const innermost = this.innermostAt(target, entry => entry.stored && entry.name !== null);
+    const route = innermost === undefined ? undefined : this.routes().get(innermost.locator);
+    const relative = innermost === undefined ? "" : path.relative(innermost.prefix, target).split(path.sep).join("/");
+    const name = route === undefined ? undefined : joinDepsPath([...route, ...(relative === "" ? [] : [relative])]);
+    this.pathNames.set(target, name);
+    return name;
+  }
+
+  /**
+   * The path name of a bare specifier's FAILED package lookup, as seen from
+   * `issuer` — `thing package.json`, the route the lookup took ending at the
+   * manifest every package carries — or undefined where the lookup succeeded
+   * (or was never made, or the specifier names no package). The same name the
+   * read set reports the absence under, so a consumer recording it needs no
+   * translation against a later change list.
+   *
+   * Answered from the resolutions this run already performed, never by looking
+   * anything up: asking about a lookup is not making one.
+   */
+  public failedLookupOf(specifier: string, issuer: string): string | undefined {
+    const split = splitSpecifier(specifier);
+    if (split === undefined) {
+      return undefined;
+    }
+    const locator = this.locatorOf(issuer);
+    const requirer = this.sources.has(locator) ? "" : instanceOfLocator(locator);
+    const recorded = this.resolutions.get(`${requirer}\0${split.name}`);
+    if (recorded === undefined || recorded.via !== "absent") {
+      return undefined;
+    }
+    const route = this.routeOf(requirer);
+    return route === undefined ? undefined : joinDepsPath([...route, split.name, "package.json"]);
+  }
+
+  /**
+   * The canonical route to the package an INSTANCE name calls out, or to the
+   * top level for the empty name — what a route out of {@link edges} hangs off.
+   * Undefined for an instance the table does not place.
+   */
+  public routeOf(instance: string): string[] | undefined {
+    if (instance === "") {
+      return [];
+    }
+    const split = instance.lastIndexOf("#");
+    const locator = split < 0 ? undefined : locatorKey(instance.slice(0, split), instance.slice(split + 1));
+    return locator === undefined ? undefined : this.routes().get(locator);
+  }
+
+  /**
+   * Each package's canonical route from the top-level row: breadth-first, so
+   * the shortest wins and a repeat within a level is dropped. The table is fixed
+   * after construction, so this is computed once.
+   *
+   * The source rows are not packages and are skipped — a route through them
+   * would name the compilation itself, which is no dependency of anything.
+   */
+  private routes(): Map<LocatorKey, string[]> {
+    if (this.cachedRoutes !== undefined) {
+      return this.cachedRoutes;
+    }
+    const routes = new Map<LocatorKey, string[]>();
+    let frontier = [...(this.rows.get(this.topLevel)?.dependencies ?? [])].map(([name, locator]) => ({ locator, route: [name] }));
+    while (frontier.length > 0) {
+      const next: Array<{ locator: LocatorKey; route: string[] }> = [];
+      for (const { locator, route } of frontier) {
+        if (routes.has(locator) || this.sources.has(locator)) {
+          continue;
+        }
+        routes.set(locator, route);
+        for (const [name, dep] of this.rows.get(locator)?.dependencies ?? []) {
+          next.push({ locator: dep, route: [...route, name] });
+        }
+      }
+      frontier = next;
+    }
+    this.cachedRoutes = routes;
+    return routes;
   }
 
   /**
@@ -424,6 +673,11 @@ export class PnpResolver {
    * declares neither or has no readable manifest at all (a location this
    * compilation never materialized). */
   private manifestAt(location: string): IPackageManifest {
+    /* Recorded on every consultation, not only on the read that filled the
+     * cache: what a consumer keying on reads needs is which packages' manifests
+     * this resolution DEPENDED on, and caching one is an accident of this
+     * process. */
+    this.consultedManifests.add(location);
     const held = this.manifests.get(location);
     if (held !== undefined) {
       return held;
@@ -432,8 +686,6 @@ export class PnpResolver {
     this.manifests.set(location, read);
     return read;
   }
-
-
 }
 
 /** As much of a `package.json` as resolution reads: what the package publishes,
@@ -501,7 +753,21 @@ function realpathOf(location: string): string {
   }
 }
 
-/** A directory prefix that can only match at a path boundary. */
+/** A locator key's instance name: `<name>#<reference>`. Only meaningful for a
+ * stored, named row (a source row has no reference to name). */
+function instanceOfLocator(locator: LocatorKey): string {
+  const split = locator.indexOf("\0");
+  return `${locator.slice(0, split)}#${locator.slice(split + 1)}`;
+}
+
+/** A file's instance name: its holding row's instance, then its path within
+ * that row. */
+function instanceName(entry: ILocationEntry, target: string): string {
+  const relative = path.relative(entry.prefix, target).split(path.sep).join("/");
+  const at = `${entry.name}#${entry.reference}`;
+  return relative === "" ? at : `${at}/${relative}`;
+}
+
 function withSeparator(location: string): string {
   return location.endsWith(path.sep) ? location : location + path.sep;
 }

@@ -89,3 +89,17 @@ export function computableWorkList<K, V>(
 
   return expand([...new Set(seeds)]);
 }
+
+/**
+ * The first item `fn` answers something for, or undefined where none does:
+ * items are tried in order and `fn` is not called for any item after the one
+ * that answers.
+ *
+ * Sequential by contract, not by accident — the caller is relying on the tail
+ * going untouched, so this is not interchangeable with a parallel search.
+ */
+export function computableFind<T, U>(items: readonly T[], fn: (item: T) => Computable<U | undefined>): Computable<U | undefined> {
+  const at = (index: number): Computable<U | undefined> =>
+    index >= items.length ? Computable.resolve(undefined) : fn(items[index]).then(found => found ?? at(index + 1));
+  return at(0);
+}

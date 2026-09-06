@@ -18,8 +18,8 @@
  */
 
 import { Computable } from "../core/Computable";
-import { IActionContext } from "../core/BuildCache";
-import { FileSet, FileSource } from "../core/FileSet";
+import type { BuildAction } from "../core/BuildAction";
+import { FileSource } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { Repository } from "../core/Repository";
 import { TargetContext } from "../model/BuildContext";
@@ -34,27 +34,9 @@ export enum PropertyType {
 }
 
 /**
- * A build action's resolved inputs: a bag of plain, **manifestable** data —
- * FileSets fully materialized (inert references never cross), strings as values,
- * a `Name` for a projection. The action step sees exactly this bag, and it is the
- * cached unit: the cache key (step id + version + canonical manifest of the bag)
- * is a sound function of the inputs, so every member must reduce to a stable
- * manifest. That is why the type is narrow. A rule needing one action's output as
- * another's input builds the first as a sub-target and passes its resolved FileSet
- * here; there is no action nesting.
- *
- * A `Name` crosses where a step consumes a **projection** (a selector + optional
- * `-> tmpl` rename — e.g. `generate`'s `output`): its canonical `toString()`
- * manifests it, and on a cache miss the step receives the live `Name` and applies
- * it via `makeProjector` (no text re-parse, which would need the model layer).
- */
-export type BuildActionInput = string | string[] | FileSet | FileSet[] | Name;
-export type BuildActionInputs = Record<string, BuildActionInput>;
-
-/**
- * A sub-target's inputs ({@link TargetContext.subTarget}). Distinct from
- * {@link BuildActionInputs} because a sub-target is a **fully-fledged target**,
- * not an action: its rule's *evaluate* re-runs every build (it is not itself a
+ * A sub-target's inputs ({@link TargetContext.subTarget}). Distinct from a
+ * {@link BuildAction}'s input bags because a sub-target is a **fully-fledged
+ * target**, not an action: its rule's *evaluate* re-runs every build (it is not itself a
  * persistent-cache unit), reading these inputs through the anonymous
  * `TargetContext` exactly as a declared target reads its properties. So the bag
  * may carry the same un-reduced **model sources** a property holds — notably a
@@ -65,43 +47,12 @@ export type BuildActionInputs = Record<string, BuildActionInput>;
  * into the tsconfig *inside* the exec action's `files`). The manifestability
  * constraint is the action role's alone; a sub-target must instead satisfy the
  * ordinary target contract — its inputs make sense as properties on their own.
+ * Deliberately a flat bag: a sub-target is not an action, so the action struct's
+ * key-role partition means nothing here — the seam where roles are assigned is
+ * where a rule builds a BuildAction from resolved values.
  */
-export type SubTargetInput = BuildActionInput | FileSource | FileSource[];
+export type SubTargetInput = string | string[] | Name | FileSource | FileSource[];
 export type SubTargetInputs = Record<string, SubTargetInput>;
-
-/**
- * The build step of a build action: a pure function from resolved inputs
- * to output content, run in a framework-provided {@link IActionContext} (a work
- * directory for staged inputs / written outputs, plus a streaming-output factory
- * for output produced as a stream). This is the only unit of build caching; `id`
- * + `version` identify the step in every cache key, so a behavior change is a
- * version bump rather than a manual cache flush.
- */
-export interface IBuildActionDefinition {
-  id: string;
-  version: number;
-  run(inputs: BuildActionInputs, ctx: IActionContext): Computable<FileSet>;
-}
-
-/**
- * A build action: a build step plus its concrete (already-resolved)
- * inputs — the cacheable leaf a rule yields, or that a sub-target's rule
- * yields to produce that target's output. Actions do not compose directly:
- * composition is via sub-targets (see ResolveContext.subTarget), so an
- * action's inputs are always plain data.
- */
-export class BuildAction {
-  constructor(
-    public readonly step: IBuildActionDefinition,
-    public readonly inputs: BuildActionInputs,
-    public readonly label?: string
-  ) {}
-
-  /** @return a copy carrying the given display label */
-  public withLabel(label: string): BuildAction {
-    return new BuildAction(this.step, this.inputs, label);
-  }
-}
 
 /**
  * What a rule's evaluate yields: final content directly (a FileSource — flags,

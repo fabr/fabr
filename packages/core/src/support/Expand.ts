@@ -19,7 +19,7 @@
 
 import * as path from "path";
 import { Readable, Writable } from "stream";
-import type { IOutputHandle } from "../core/BuildCache";
+import type { IOutputHandle } from "./Execute";
 import { Computable, ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";

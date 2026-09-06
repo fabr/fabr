@@ -30,13 +30,19 @@ import { IProvenanceStep } from "./Provenance";
  * flags.
  */
 export class Flag extends FileSet {
-  public readonly name: string;
+  private readonly flagName: string;
   public readonly provides: Flag[];
 
   constructor(name: string, provides: Flag[], origin?: IProvenanceStep) {
     super(new Map(), origin);
-    this.name = name;
+    this.flagName = name;
     this.provides = provides;
+  }
+
+  /** The flag's own name — a Flag is exactly a named marker, so this IS the
+   * delivered name {@link FileSet.name} means. */
+  public override get name(): string {
+    return this.flagName;
   }
 
   /** Preserve flag identity through provenance stamping (the PackageFileSet

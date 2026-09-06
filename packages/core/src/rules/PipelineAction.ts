@@ -15,15 +15,14 @@
  */
 
 import { getResultFileSet, writeFileSet } from "../core/Staging";
-import { IActionContext } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { attachHelp } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
-import { executePipeline, StageSpec, StageStreams } from "../support/Execute";
+import { executePipeline, ITaskReport, StageSpec, StageStreams } from "../support/Execute";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { BuildAction, BuildActionInputs } from "./Types";
-import { fileSetInput, stringInput } from "./ExecAction";
+import { BuildAction, BuildResult, fileSetInput, stringInput } from "../core/BuildAction";
+import { ActionContext } from "../core/BuildCache";
 
 /**
  * The `command-pipeline` build action: stage the combined install (each stage's
@@ -34,19 +33,18 @@ import { fileSetInput, stringInput } from "./ExecAction";
  * files the tools wrote. One cacheable unit, keyed by the staged content + the
  * stage specs (see {@link runPipeline}).
  */
-function runPipeline(inputs: BuildActionInputs, ctx: IActionContext): Computable<FileSet> {
-  const files = fileSetInput(inputs, "files");
-  const specs: StageSpec[] = JSON.parse(stringInput(inputs, "spec"));
+function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
+  const files = fileSetInput(action, "files");
+  const specs: StageSpec[] = JSON.parse(stringInput(action, "spec"));
   /* `output` is a projection Name (selector + optional `-> tmpl` rename), or
    * absent for a pure-redirect genrule that collects only its captures. */
-  const output = inputs.output instanceof Name ? inputs.output : undefined;
-  const stdin = inputs.stdin instanceof FileSet ? inputs.stdin : undefined;
+  const output = action.options.output instanceof Name ? action.options.output : undefined;
+  const stdin = action.inputs.stdin instanceof FileSet ? action.inputs.stdin : undefined;
 
-  return ctx.admit(() => writeFileSet(ctx.workDir, files))
+  return ctx
+    .admit(report, () => writeFileSet(ctx.workDir, files))
     .then(() => stdinBytes(stdin))
-    .then(bytes =>
-      executePipeline(ctx.processLimit, specs, ctx.workDir, () => ctx.createOutput(), bytes, ctx.report)
-    )
+    .then(bytes => executePipeline(ctx.processLimit, specs, ctx.workDir, () => ctx.createOutput(), bytes, report))
     .then(captured =>
       /* Plus any files the tools wrote, when an `output` projection is given (a
        * pure redirect genrule omits it and collects only the captures). A given
@@ -57,16 +55,19 @@ function runPipeline(inputs: BuildActionInputs, ctx: IActionContext): Computable
        * captures are the output.) */
       output === undefined
         ? Computable.resolve(captured)
-        : ctx.admit(() => getResultFileSet(ctx.workDir, output)).then(written => {
-            if (written.isEmpty()) {
-              throw attachHelp(
-                new Error(`the command produced no files matching output pattern '${output.toString()}'`),
-                `check the output pattern, or that the command writes its output where '${output.toString()}' looks`
-              );
-            }
-            return FileSet.unionAll(written, captured);
-          })
-    );
+        : ctx
+            .admit(report, () => getResultFileSet(ctx.workDir, output))
+            .then(written => {
+              if (written.isEmpty()) {
+                throw attachHelp(
+                  new Error(`the command produced no files matching output pattern '${output.toString()}'`),
+                  `check the output pattern, or that the command writes its output where '${output.toString()}' looks`
+                );
+              }
+              return FileSet.unionAll(written, captured);
+            })
+    )
+    .then(result => ({ result }));
 }
 
 /** @return the first (only) file's bytes of a single-file stdin fileset, or
@@ -133,12 +134,11 @@ export function createPipelineAction(
   output: Name | undefined,
   label?: string
 ): BuildAction {
-  const inputs: BuildActionInputs = { files, spec: JSON.stringify(specs) };
-  if (output) {
-    inputs.output = output;
-  }
-  if (stdin) {
-    inputs.stdin = stdin;
-  }
-  return new BuildAction(PIPELINE_ACTION, inputs, label);
+  return new BuildAction(
+    PIPELINE_ACTION,
+    { files, ...(stdin ? { stdin } : {}) },
+    { spec: JSON.stringify(specs), ...(output ? { output } : {}) },
+    undefined,
+    label
+  );
 }

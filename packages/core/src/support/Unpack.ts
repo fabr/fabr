@@ -22,7 +22,7 @@ import { createUnzip } from "zlib";
 import { createDecompressStream } from "@napi-rs/lzma/xz";
 import * as path from "path";
 import * as tar from "tar-stream";
-import type { IOutputHandle } from "../core/BuildCache";
+import type { IOutputHandle } from "./Execute";
 import { Computable } from "../core/Computable";
 import { FileSet, IFile } from "../core/FileSet";
 import { SymlinkFile } from "../core/SymlinkFile";

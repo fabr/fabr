@@ -48,6 +48,7 @@ import {
   PACKAGE_RESOLUTION_PROVENANCE,
   packageNodeSignature,
   PackageFileSet,
+  reachablePackages,
 } from "@fabr-build/core";
 
 /** Where the tree pool is mounted in the staged workspace — one symlink per
@@ -183,7 +184,7 @@ export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage): IPnpM
    * The sources being compiled are deliberately NOT given it (see PnpResolver):
    * a phantom import in first-party code is a bug its author can fix, and the
    * one place the check still pays for itself. */
-  const pool = dependencyList(packages);
+  const pool = dependencyList(fallbackCandidates(packages));
   /* Packages this project BUILT are held to the declared surface, exactly as
    * the sources are: an undeclared import in one means the package it is about
    * to publish is broken, and its author is here. The permissiveness above is
@@ -246,7 +247,10 @@ export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage): IPnpM
  * the project, not a package materialized in the pool — which is also what
  * keeps it out of the pool-facing queries (see PnPResolver.packageOf).
  */
-function selfPackageRow(self: ISelfPackage, topLevel: Array<[string, PnpDependencyTarget]>): [string, Array<[string, IPnpPackageInfo]>] {
+function selfPackageRow(
+  self: ISelfPackage,
+  topLevel: Array<[string, PnpDependencyTarget]>
+): [string, Array<[string, IPnpPackageInfo]>] {
   return [
     self.name,
     [
@@ -254,7 +258,9 @@ function selfPackageRow(self: ISelfPackage, topLevel: Array<[string, PnpDependen
         SELF_REFERENCE,
         {
           packageLocation: self.location,
-          packageDependencies: [[self.name, SELF_REFERENCE] as [string, PnpDependencyTarget], ...topLevel].sort(byText(([name]) => name)),
+          packageDependencies: [[self.name, SELF_REFERENCE] as [string, PnpDependencyTarget], ...topLevel].sort(
+            byText(([name]) => name)
+          ),
           linkType: "SOFT",
         },
       ],
@@ -276,18 +282,17 @@ function selfPackageRow(self: ISelfPackage, topLevel: Array<[string, PnpDependen
  * table that is not theirs. Content is what a package IS; content plus edges is
  * what a package is HERE.
  *
- * Flat by design, and enough by design. A reference does not have to summarize
- * a subgraph the way a content address does, because the table states every
- * node's edges explicitly: a consumer follows rows, it never compares two
- * references to decide whether two closures agree.
- *
  * Hashed rather than carried verbatim: a reference is repeated in every
  * dependency entry that names the package, so raw signatures would multiply
- * through the document and escape badly in JSON.
+ * through the document and escape badly in JSON. Memoized per instance —
+ * module-scoped but keyed by the object, so it is a pure-function cache, not
+ * state; instances sharing an id share a signature
+ * ({@link assertSamePackageNode}), so the value is per-node even though the
+ * memo is per-instance.
  */
 const REFERENCES = new WeakMap<PackageFileSet, string>();
 
-function referenceOf(pkg: PackageFileSet): string {
+export function referenceOf(pkg: PackageFileSet): string {
   const known = REFERENCES.get(pkg);
   if (known !== undefined) {
     return known;
@@ -295,28 +300,6 @@ function referenceOf(pkg: PackageFileSet): string {
   const reference = hashString(packageNodeSignature(pkg));
   REFERENCES.set(pkg, reference);
   return reference;
-}
-
-/** Every package the roots reach, roots first, each instance once — the walk
- * is by instance and must be cycle-safe, delivered graphs being genuinely
- * cyclic. */
-function reachablePackages(roots: ReadonlyArray<PackageFileSet>): PackageFileSet[] {
-  const seen = new Set<PackageFileSet>();
-  const found: PackageFileSet[] = [];
-  const visit = (pkg: PackageFileSet): void => {
-    if (seen.has(pkg)) {
-      return;
-    }
-    seen.add(pkg);
-    found.push(pkg);
-    for (const dep of pkg.dependencies) {
-      if (dep instanceof PackageFileSet) {
-        visit(dep);
-      }
-    }
-  };
-  roots.forEach(visit);
-  return found;
 }
 
 /**
@@ -333,7 +316,11 @@ function reachablePackages(roots: ReadonlyArray<PackageFileSet>): PackageFileSet
  * package must not take that away too, so it is stated in the row instead of
  * being read from the pool.
  */
-function packageInfo(pkg: PackageFileSet, reference: string, supplied: ReadonlyArray<[string, PnpDependencyTarget]> = []): IPnpPackageInfo {
+function packageInfo(
+  pkg: PackageFileSet,
+  reference: string,
+  supplied: ReadonlyArray<[string, PnpDependencyTarget]> = []
+): IPnpPackageInfo {
   const own = new Map<string, PnpDependencyTarget>([
     [pkg.packageName, reference],
     ...dependencyList(pkg.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)),
@@ -378,6 +365,19 @@ function exclusionList(excluded: ReadonlyArray<PackageFileSet>): Array<[string, 
   return [...byName].map(([name, references]): [string, string[]] => [name, [...references].sort()]).sort(byText(([name]) => name));
 }
 
+/**
+ * The fallback pool's candidates: the delivery's **hoist-visible copies** —
+ * the flat (non-override) instance of each name, or nothing. A phantom import
+ * answered from inside a sealed nest would be depending on something the
+ * delivery deliberately holds sealed away, and a real hoisted install answers
+ * with the hoisted copy or not at all. At most one flat instance of a name
+ * exists in a delivery, so the winner is unique-or-absent and needs no
+ * tie-break; the sort is byte-stability of the serialized section only.
+ */
+function fallbackCandidates(packages: ReadonlyArray<PackageFileSet>): PackageFileSet[] {
+  return packages.filter(pkg => !pkg.isNestedOverride).sort(byText(pkg => referenceOf(pkg)));
+}
+
 /** Edges as PnP dependency entries, sorted and deduplicated by name (a graph
  * cannot bind one name twice at one node; a repeat would be a delivery bug, and
  * taking the first keeps the table well-formed rather than ambiguous). */
@@ -409,7 +409,6 @@ export function treeMountOf(pkg: PackageFileSet): string {
   return `${TREE_MOUNT}/${pkg.toManifestHash()}`;
 }
 
-
 /** Ascending comparator over a text projection — every list in the manifest is
  * sorted through one, so the bytes are a function of the graph and not of
  * traversal order. */
@@ -424,3 +423,4 @@ function byText<T>(of: (value: T) => string): (a: T, b: T) => number {
 function serialize(state: IPnpSerializedState): string {
   return `${JSON.stringify(state, undefined, 2)}\n`;
 }
+

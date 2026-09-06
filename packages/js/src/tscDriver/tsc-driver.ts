@@ -37,9 +37,25 @@
  * package), so the slice of the API used is typed structurally below.
  */
 
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { PnpResolver, splitSpecifier, typesPackageName } from "../pnp/PnPResolver";
+import { CHANGES_FLAG, DEPS_REPORT_FLAG, IChangeLists, joinDepsPath, STATE_DIR_FLAG, toChangeLists } from "../pnp/ReadSet";
+import {
+  DriverMemo,
+  ICompilePlan,
+  ICompileTelemetry,
+  IDriverDiagnostic,
+  IMemoEdge,
+  membershipTarget,
+  mergeMemo,
+  parseDriverMemo,
+  planCompile,
+  serializeDriverMemo,
+  serializeRunReport,
+} from "./Planning";
+import { IWaveResult, runWave } from "./Wave";
 
 /* Structural typing for the compiler API this driver uses. Opaque where the
  * shape is the compiler's business (diagnostics, source files, the program);
@@ -91,6 +107,24 @@ interface INode {
 interface IStringLiteralNode extends INode {
   text: string;
 }
+/** A node read back out of emitted text, which is the only kind that carries
+ * real positions — everything the declaration emitter synthesizes has none. */
+interface ISyntaxNode extends INode {
+  /** Where the node's text begins INCLUDING its leading trivia — so the run of
+   * a type literal's members is contiguous, and permuting the slices carries
+   * each member's own doc comment and indentation along with it. */
+  pos: number;
+  end: number;
+  /** The offset the node's own text starts at, leading trivia skipped — so a
+   * comment or the indentation before a node stays put when the node moves. */
+  getStart(source: ISyntaxNode): number;
+  /** A union's members, in the order the compiler printed them. */
+  types?: ReadonlyArray<ISyntaxNode>;
+  /** A type literal's members, likewise. */
+  members?: ReadonlyArray<ISyntaxNode>;
+  /** A member's name, absent on the three signature forms that have none. */
+  name?: ISyntaxNode;
+}
 interface ISourceFileNode extends INode {
   fileName: string;
 }
@@ -134,6 +168,34 @@ interface ICustomTransformers {
   before?: TransformerFactory[];
   afterDeclarations?: TransformerFactory[];
 }
+/**
+ * The properties of a source file this driver reads. Every one of them is a
+ * fact about the file's own form — its name, whether it is a module, and the
+ * augmentations it declares — which is all the wave needs of it (what a file
+ * MEANS is the checker's business, and is asked through the program).
+ */
+interface ISourceFileInfo {
+  fileName: string;
+  /** Present on a file that is an external module (it imports or exports
+   * something); absent on a script, whose declarations are global. */
+  externalModuleIndicator?: unknown;
+  /** `declare module "x"` blocks — including `declare global`, which is the one
+   * the wave cares about and which this driver treats conservatively (see
+   * {@link affectsGlobalScope}). */
+  moduleAugmentations?: ReadonlyArray<unknown>;
+}
+
+/** As much of a diagnostic as reporting one as DATA needs: everything else
+ * about it is the compiler's own business, and the human rendering goes through
+ * the compiler's own formatter. */
+interface IDiagnosticInfo {
+  file?: SourceFile;
+  start?: number;
+  code: number;
+  category: number;
+  messageText: unknown;
+}
+
 interface IProgram {
   emit(
     targetSourceFile?: SourceFile,
@@ -142,12 +204,30 @@ interface IProgram {
     emitOnlyDtsFiles?: boolean,
     customTransformers?: ICustomTransformers
   ): IEmitResult;
+  /** Every file the program holds — the sources, and every declaration file
+   * reached from them. The `--listFiles` answer, in process. */
+  getSourceFiles(): ReadonlyArray<ISourceFileInfo>;
+  /** The compiler's own bundled (or overridden) `lib.*.d.ts`: in the program,
+   * but not a node of the graph — it is the toolchain, which the caller keys as
+   * target-key identity rather than as an input file. */
+  isSourceFileDefaultLibrary(file: SourceFile): boolean;
+  /** Per-file diagnostics: what the wave asks of each of its members, and the
+   * whole point of driving the compiler per file rather than in bulk. */
+  getSyntacticDiagnostics(file?: SourceFile): readonly Diagnostic[];
+  getSemanticDiagnostics(file?: SourceFile): readonly Diagnostic[];
+  /** The compilation's own diagnostics, which belong to no file and are asked
+   * once per run. */
+  getOptionsDiagnostics(): readonly Diagnostic[];
+  getGlobalDiagnostics(): readonly Diagnostic[];
 }
 type WriteFile = (fileName: string, text: string, writeByteOrderMark: boolean) => void;
 
 interface ICompilerHost {
   getCurrentDirectory(): string;
   writeFile: WriteFile;
+  /** Every file the compiler opens goes through here — sources, declaration
+   * files, and the `package.json`s its resolution consults. */
+  readFile?: (fileName: string, encoding?: string) => string | undefined;
   getCanonicalFileName(fileName: string): string;
   getNewLine(): string;
   resolveModuleNameLiterals?: (
@@ -220,12 +300,40 @@ interface ITypeScript {
   isStringLiteral(node: INode): boolean;
   isImportTypeNode(node: INode): boolean;
   isLiteralTypeNode(node: INode): boolean;
+  isUnionTypeNode(node: INode): boolean;
+  isTypeLiteralNode(node: INode): boolean;
+  /** The AST children of a node — punctuation excluded, which is what lets a
+   * span-splicing rewrite leave every separator exactly where it was. */
+  forEachChild(node: INode, visit: (child: INode) => void): void;
+  createSourceFile(
+    fileName: string,
+    text: string,
+    languageVersion: number,
+    setParentNodes?: boolean,
+    scriptKind?: number
+  ): ISyntaxNode;
+  ScriptTarget: { Latest: number };
+  ScriptKind: { TS: number };
+  /** Whether a file is a module rather than a script — the compiler's own
+   * judgment, since "has an import or an export" has more forms than it looks
+   * (a bare `export {}`, `import.meta`, a `.mts` extension). */
+  isExternalModule?(file: SourceFile): boolean;
+  /** A diagnostic's message text, which is a chain rather than a string. */
+  flattenDiagnosticMessageText(text: unknown, newLine: string): string;
+  DiagnosticCategory: { [name: string]: unknown };
+  getLineAndCharacterOfPosition(file: SourceFile, position: number): { line: number; character: number };
   sys: {
     newLine: string;
     useCaseSensitiveFileNames: boolean;
     fileExists(path: string): boolean;
     readFile(path: string, encoding?: string): string | undefined;
-    readDirectory(path: string, extensions?: readonly string[], exclude?: readonly string[], include?: readonly string[], depth?: number): string[];
+    readDirectory(
+      path: string,
+      extensions?: readonly string[],
+      exclude?: readonly string[],
+      include?: readonly string[],
+      depth?: number
+    ): string[];
     getCurrentDirectory(): string;
   };
   getParsedCommandLineOfConfigFile(
@@ -234,7 +342,12 @@ interface ITypeScript {
     host: unknown
   ): IParsedCommandLine | undefined;
   createCompilerHost(options: CompilerOptions, setParentNodes?: boolean): ICompilerHost;
-  createProgram(options: { rootNames: readonly string[]; options: CompilerOptions; host: ICompilerHost; projectReferences?: unknown[] }): IProgram;
+  createProgram(options: {
+    rootNames: readonly string[];
+    options: CompilerOptions;
+    host: ICompilerHost;
+    projectReferences?: unknown[];
+  }): IProgram;
   getPreEmitDiagnostics(program: IProgram): readonly Diagnostic[];
   sortAndDeduplicateDiagnostics(diagnostics: readonly Diagnostic[]): readonly Diagnostic[];
   formatDiagnostics(diagnostics: readonly Diagnostic[], host: unknown): string;
@@ -246,7 +359,11 @@ interface ITypeScript {
     host: unknown,
     cache?: unknown
   ): IResolvedModuleWithFailedLookupLocations;
-  createModuleResolutionCache(currentDirectory: string, getCanonicalFileName: (name: string) => string, options?: CompilerOptions): unknown;
+  createModuleResolutionCache(
+    currentDirectory: string,
+    getCanonicalFileName: (name: string) => string,
+    options?: CompilerOptions
+  ): unknown;
 }
 
 /** The compiler releases this driver can drive.
@@ -286,6 +403,11 @@ export function assertDrivableCompiler(version: string): void {
 
 /** An emitted declaration file, in each of its spellings. */
 const DECLARATION_FILE = /\.d\.[cm]?ts$/;
+
+/** The digest a shape (an interface artifact's content hash) is taken with.
+ * Purely this driver's: both sides of the comparison — the staged base output
+ * and this run's emit — are hashed here. */
+const SHAPE_DIGEST = "sha256";
 
 /** File extensions that carry no types: a package resolving to one of these has
  * no typings of its own, which is what sends the lookup on to the recoveries
@@ -509,8 +631,7 @@ function installResolution(
     answers.set(key, answer);
     return answer;
   };
-  host.resolveModuleNameLiterals = (literals, containingFile) =>
-    literals.map(literal => resolveModule(literal.text, containingFile));
+  host.resolveModuleNameLiterals = (literals, containingFile) => literals.map(literal => resolveModule(literal.text, containingFile));
   /* A project may REPLACE one of the compiler's built-in libraries by depending
    * on `@typescript/lib-<name>` — a package the compiler looks for in
    * node_modules, i.e. somewhere that no longer exists. Same table, same
@@ -637,6 +758,108 @@ export function relativizeBuildRoot(text: string, root: string): string {
   return text.includes(prefix) ? text.split(prefix).join("") : text;
 }
 
+/**
+ * Put every union and every type literal in an emitted declaration into one
+ * canonical member order.
+ *
+ * TypeScript orders a union by type id, and ids are handed out as types are
+ * first created anywhere in the program — so a full compile and a wave print the
+ * same type differently, which breaks determinism and expands the next wave off
+ * a spuriously moved shape (see DESIGN-file-deps.md). Applied to every compile,
+ * full and wave alike, so the two agree by construction.
+ *
+ * Type literals only, never an `interface` or a class: inference never
+ * synthesizes an interface, so one is always authored and already deterministic.
+ * Unnamed members — call, construct and index signatures — never move, since
+ * overload resolution reads them in order.
+ *
+ * Rewritten by splicing spans, never by reprinting, so every separator and
+ * indent stays where the compiler put it; nesting is canonicalized
+ * innermost-first, so the result does not depend on visit order.
+ */
+export function canonicalizeUnions(ts: ITypeScript, fileName: string, text: string): string {
+  /* Neither construct can be present without one of these, and many declarations
+   * have neither: this skips the parse for them rather than the work, which is
+   * where the cost is. */
+  if (!text.includes("|") && !text.includes("{")) {
+    return text;
+  }
+  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  /** The text of a node's own name, or undefined for one with none. */
+  const nameOf = (node: ISyntaxNode): string | undefined =>
+    node.name === undefined ? undefined : text.slice(node.name.getStart(source), node.name.end);
+  /** Code-unit order, never a locale comparison: the point is one answer on
+   * every machine. Ties keep their original order, which is what makes the
+   * result total. */
+  const byKey = (keys: ReadonlyArray<string>, indices: ReadonlyArray<number>): number[] =>
+    [...indices].sort((a, b) => (keys[a] < keys[b] ? -1 : keys[a] > keys[b] ? 1 : a - b));
+  /** The canonical text of everything between `from` and `to`, with each child
+   * replaced by its own canonical text and every gap between them — punctuation,
+   * whitespace, comments — carried across untouched. */
+  function splice(node: ISyntaxNode, from: number, to: number): string {
+    let out = "";
+    let cursor = from;
+    ts.forEachChild(node, child => {
+      const at = (child as ISyntaxNode).getStart(source);
+      if (at < cursor) {
+        return;
+      }
+      out += text.slice(cursor, at) + canonical(child as ISyntaxNode);
+      cursor = (child as ISyntaxNode).end;
+    });
+    return out + text.slice(cursor, to);
+  }
+  /** The members' canonical texts, rearranged into `order` and spliced back into
+   * the spans they came from — so only the order changes. */
+  function rearrange(
+    node: ISyntaxNode,
+    members: ReadonlyArray<ISyntaxNode>,
+    at: (member: ISyntaxNode) => number,
+    order: number[]
+  ): string {
+    const texts = members.map(member => canonical(member, at(member)));
+    let out = "";
+    let cursor = node.getStart(source);
+    members.forEach((member, index) => {
+      out += text.slice(cursor, at(member)) + texts[order[index]];
+      cursor = member.end;
+    });
+    return out + text.slice(cursor, node.end);
+  }
+  function canonical(node: ISyntaxNode, from = node.getStart(source)): string {
+    if (ts.isUnionTypeNode(node) && (node.types ?? []).length > 1) {
+      const members = node.types!;
+      const texts = members.map(member => canonical(member));
+      return rearrange(
+        node,
+        members,
+        member => member.getStart(source),
+        byKey(
+          texts,
+          members.map((_, index) => index)
+        )
+      );
+    }
+    if (ts.isTypeLiteralNode(node) && (node.members ?? []).length > 1) {
+      const members = node.members!;
+      const names = members.map(member => nameOf(member) ?? "");
+      /* Only the named members move, and only into each other's slots: an
+       * unnamed one keeps its index exactly. */
+      const named = members
+        .map((member, index) => (member.name === undefined ? undefined : index))
+        .filter((i): i is number => i !== undefined);
+      const sorted = byKey(names, named);
+      const order = members.map((_, index) => index);
+      named.forEach((slot, index) => {
+        order[slot] = sorted[index];
+      });
+      return rearrange(node, members, member => member.pos, order);
+    }
+    return splice(node, from, node.end);
+  }
+  return splice(source, 0, text.length);
+}
+
 /** Where a compile's sources are rooted, where its output lands, and whether
  * `.tsx` keeps its own extension. */
 interface IEmitLayout {
@@ -720,14 +943,31 @@ export function emittedSpecifier(from: string, target: string): string {
 function specifierRewriter(
   ts: ITypeScript,
   resolve: (specifier: string, containingFile: string) => string | undefined,
-  layout: IEmitLayout
+  layout: IEmitLayout | undefined,
+  /**
+   * Told about every specifier position this traversal passes, in the form it
+   * was AUTHORED — before any rewrite of it, which is the only form a later
+   * build can re-resolve (`./foo.js` is what this compile's ES-module emit
+   * writes, not what the source said).
+   *
+   * Applied to the DECLARATION traversal, it is how forwarding edges are
+   * recorded: the emitter's own synthesized `import("…")` types pass through
+   * here, and those are precisely the edges no import in the source spells.
+   * Scanning the emitted text instead would see the rewritten specifiers and
+   * could not tell an import from a string constant that looks like one.
+   */
+  observe?: (containingFile: string, specifier: string) => void
 ): TransformerFactory {
   return context => sourceFile => {
-    const emitted = emittedPathOf(sourceFile.fileName, layout);
-    if (emitted === undefined) {
+    /* With no layout there is nothing to rewrite (a CommonJS emit resolves its
+     * own extensionless specifiers), and the traversal runs as an observer
+     * alone — which it must, because forwarding edges are a property of the
+     * declarations, not of the module format they were emitted for. */
+    const emitted = layout && emittedPathOf(sourceFile.fileName, layout);
+    if (emitted === undefined && observe === undefined) {
       return sourceFile;
     }
-    const from = path.dirname(emitted);
+    const from = emitted === undefined ? undefined : path.dirname(emitted);
     /** The replacement for a specifier node, or undefined to leave it be — which
      * covers anything that is not a rewritable specifier, so a caller may hand
      * over whatever sits in the position. */
@@ -736,11 +976,15 @@ function specifierRewriter(
         return undefined;
       }
       const specifier = (node as IStringLiteralNode).text;
-      if (!specifier.startsWith(".")) {
+      /* Before the relative-specifier filter below: a bare name is not
+       * rewritable, but a declaration that imports one forwards that package's
+       * interface to everyone who consumes it. */
+      observe?.(sourceFile.fileName, specifier);
+      if (from === undefined || !specifier.startsWith(".")) {
         return undefined;
       }
       const resolved = resolve(specifier, sourceFile.fileName);
-      const target = resolved === undefined ? undefined : emittedPathOf(resolved, layout);
+      const target = resolved === undefined ? undefined : emittedPathOf(resolved, layout!);
       if (target === undefined) {
         return undefined;
       }
@@ -757,7 +1001,10 @@ function specifierRewriter(
         node => ts.isImportDeclaration(node),
         decl => {
           const next = rewrite(decl.moduleSpecifier);
-          return next && ts.factory.updateImportDeclaration(decl, decl.modifiers, decl.importClause, next, decl.attributes ?? decl.assertClause);
+          return (
+            next &&
+            ts.factory.updateImportDeclaration(decl, decl.modifiers, decl.importClause, next, decl.attributes ?? decl.assertClause)
+          );
         }
       ),
       forForm<IExportDeclarationNode>(
@@ -766,7 +1013,14 @@ function specifierRewriter(
           const next = rewrite(decl.moduleSpecifier);
           return (
             next &&
-            ts.factory.updateExportDeclaration(decl, decl.modifiers, decl.isTypeOnly, decl.exportClause, next, decl.attributes ?? decl.assertClause)
+            ts.factory.updateExportDeclaration(
+              decl,
+              decl.modifiers,
+              decl.isTypeOnly,
+              decl.exportClause,
+              next,
+              decl.attributes ?? decl.assertClause
+            )
           );
         }
       ),
@@ -796,7 +1050,9 @@ function specifierRewriter(
         node => ts.isCallExpression(node),
         call => {
           const next = call.expression.kind === ts.SyntaxKind.ImportKeyword ? rewrite(call.arguments[0]) : undefined;
-          return next && ts.factory.updateCallExpression(call, call.expression, call.typeArguments, [next, ...call.arguments.slice(1)]);
+          return (
+            next && ts.factory.updateCallExpression(call, call.expression, call.typeArguments, [next, ...call.arguments.slice(1)])
+          );
         }
       ),
     ];
@@ -972,6 +1228,23 @@ export function main(argv: string[]): number {
     parsed.options.moduleResolution = resolutionFor(ts, parsed.options);
   }
   const host = ts.createCompilerHost(parsed.options, true);
+  const reportPath = depsReportOf(argv);
+  /* The directory this driver's own kept files live in, staged in and collected
+   * out again by the caller. Naming it is what asks for incremental mode. */
+  const stateDirectory = argOf(argv, STATE_DIR_FLAG);
+  /* What the compiler itself opened, recorded at the one place every read goes
+   * through. The program's file list is the headline answer, but only this sees
+   * the reads resolution makes on the way to it — a package's `package.json`,
+   * a nested one a subpath resolves through — which is the half `--listFiles`
+   * cannot give and which decides what a specifier names. */
+  const opened: string[] = [];
+  const readFile = host.readFile;
+  if (reportPath !== undefined && readFile !== undefined) {
+    host.readFile = (file: string, encoding?: string): string | undefined => {
+      opened.push(file);
+      return readFile.call(host, file, encoding);
+    };
+  }
   const resolver = PnpResolver.load(root, conditionsOf(ts, parsed.options));
   /* Manifest faults in the DEPENDENCIES: collected while resolving and reported
    * with everything else, rather than aborting the compilation the moment one
@@ -980,12 +1253,82 @@ export function main(argv: string[]): number {
   if (resolver) {
     installResolution(ts, host, parsed.options, resolver, root, faults);
   }
-  const program = ts.createProgram({
-    rootNames: parsed.fileNames,
-    options: parsed.options,
-    host,
-    projectReferences: parsed.projectReferences,
-  });
+  /* Resolution as the compilation does it, for the rewrite to ask what a
+   * relative specifier names and for the wave to ask what an edge names. */
+  const resolve = moduleResolver(ts, host, parsed.options, root);
+  /* Incremental mode: the caller stages this driver's own memo of the last
+   * green build into the state directory and hands over the names whose bytes
+   * moved since; the driver plans what that change reaches, checks and emits
+   * only that, and leaves the memo the next run works from back in the same
+   * directory. With no `--state-dir` the whole program is compiled, exactly as
+   * before — the flag is the whole of the difference. */
+  const handover = memoHandoverOf(argv, root);
+  if (handover !== undefined && reportPath === undefined) {
+    throw new Error(`tsc-driver: ${STATE_DIR_FLAG} needs ${DEPS_REPORT_FLAG}, which is where the run's reads are reported`);
+  }
+  const namer = nodeNamer(root, resolver);
+  const emitDirectory = emitDirectoryOf(parsed.options, root);
+  const plan =
+    handover === undefined
+      ? undefined
+      : planCompile(
+          handover.changes,
+          handover.memo,
+          new Set(parsed.fileNames.map(namer).filter((name): name is string => name !== undefined)),
+          sourceRootOf(parsed.options, root)
+        );
+  if (plan !== undefined) {
+    prepareEmitTree(root, emitDirectory, plan);
+  }
+  /**
+   * Whether the program currently built is rooted at a SUBSET of the project.
+   *
+   * A fact about this program rather than about the plan, and the two differ on
+   * exactly the run that matters: the fallback below rebuilds rooted at
+   * everything from the same plan, so a guard reading the plan's own bound would
+   * answer the same both times — bailing a second time, and a bail emits
+   * nothing, which the caller would commit as a green build of an empty delta.
+   */
+  let boundRooted = false;
+  const graph =
+    plan === undefined
+      ? undefined
+      : createWaveRun(ts, plan, root, resolver, resolve, () => boundRooted, parsed.fileNames, emitDirectory);
+  const resolveLiterals = host.resolveModuleNameLiterals;
+  if (graph !== undefined && resolveLiterals !== undefined) {
+    /* Every specifier the program resolves, recorded where the answer is
+     * already being computed: these are the use edges, and — for a dependency's
+     * declaration file, which has no body — its forwarding ones. */
+    host.resolveModuleNameLiterals = (literals, containingFile, redirected, options, containingSourceFile, reused) => {
+      const answers = resolveLiterals.call(host, literals, containingFile, redirected, options, containingSourceFile, reused);
+      literals.forEach((literal, index) =>
+        graph.resolved(containingFile, literal.text, answers[index]?.resolvedModule?.resolvedFileName)
+      );
+      return answers;
+    };
+  }
+  /**
+   * The program the wave runs against, rooted at the caller's **bound**.
+   *
+   * The rest of the project is excluded from the ROOTS only, never from the
+   * program: the compiler pulls in whatever the roots import, as ordinary
+   * sources with the standing they have in a full compile. What shrinks is
+   * construction, not meaning — which is why a wave's emit is byte-identical to
+   * a full compile's.
+   *
+   * `undefined` roots at every project file: a cold build, a caller that could
+   * not bound its change, and the fallback below.
+   */
+  const buildProgram = (roots: ReadonlySet<string> | undefined): IProgram => {
+    boundRooted = roots !== undefined;
+    return ts.createProgram({
+      rootNames: programRoots(parsed, roots, root),
+      options: parsed.options,
+      host,
+      projectReferences: parsed.projectReferences,
+    });
+  };
+  let program = buildProgram(plan?.roots);
   /* Relative specifiers are corrected during emit, where resolution answers what
    * each names; the rewrites below then act on the text that produces. One
    * rewriter serves both phases — the JavaScript and the declarations land in
@@ -1000,35 +1343,90 @@ export function main(argv: string[]): number {
      * ES module, its extensionless `require`s naming files that are not there. */
     throw new Error(`tsc-driver: --emit-extension needs an ES-module emit; this project's 'module' produces CommonJS`);
   }
-  const rewriter = layout && specifierRewriter(ts, moduleResolver(ts, host, parsed.options, root), layout);
-  const transformers = rewriter && { before: [rewriter], afterDeclarations: [rewriter] };
+  const rewriter = layout && specifierRewriter(ts, resolve, layout);
+  /* The declaration traversal doubles as the forwarding-edge recorder, and so
+   * runs whether or not there is anything to rewrite: what a file republishes
+   * through its own interface is a property of its declarations, not of the
+   * module format they were emitted for. Under a CommonJS emit `layout` is
+   * undefined and this transformer observes without changing a node. */
+  const declarations =
+    graph === undefined ? rewriter : specifierRewriter(ts, resolve, layout, (file, specifier) => graph.forwards(file, specifier));
+  const transformers =
+    rewriter === undefined && declarations === undefined
+      ? undefined
+      : { ...(rewriter ? { before: [rewriter] } : {}), ...(declarations ? { afterDeclarations: [declarations] } : {}) };
   /* Declarations are rewritten on their way out rather than re-read afterwards:
    * the emitter hands each file over here, so nothing incorrect is ever written
    * and the step's output is collected from a tree that was never wrong. */
-  const emitted = program.emit(
-    undefined,
-    (fileName, text, writeByteOrderMark) => {
-      const rewritable = resolver !== undefined && DECLARATION_FILE.test(fileName);
-      const rewritten = rewritable ? rewriteDeclaration(fileName, text, resolver) : text;
-      /* After the declaration rewrite, which reports a pool path as a fault: this
-       * one relativizes the compile's own root, and a fault must not be quietly
-       * tidied into something that looks fine. */
-      const relativized = relativizeBuildRoot(rewritten, root);
-      /* The rename lands here rather than on the emitted tree afterwards: the
-       * specifiers inside were written by the transformer against the same
-       * layout, so the two agree by construction. Only the file's own map
-       * references still name the pre-rename spelling. */
-      const retargeted = jsExtension === undefined ? relativized : retargetSourceMap(fileName, relativized, jsExtension);
-      host.writeFile(renamedOutput(fileName, jsExtension), retargeted, writeByteOrderMark);
-    },
-    undefined,
-    false,
-    transformers
-  );
+  const writeEmitted: WriteFile = (fileName, text, writeByteOrderMark) => {
+    const declaration = DECLARATION_FILE.test(fileName);
+    const rewritable = resolver !== undefined && declaration;
+    const rewritten = rewritable ? rewriteDeclaration(fileName, text, resolver) : text;
+    /* After the declaration rewrite, which reports a pool path as a fault: this
+     * one relativizes the compile's own root, and a fault must not be quietly
+     * tidied into something that looks fine. */
+    const relativized = relativizeBuildRoot(rewritten, root);
+    /* **Ordering invariant, both sides.** LAST of the text corrections, so the
+     * order it settles on is the order that ships — a specifier rewritten above
+     * sits inside `import("…").T` members, and sorting first would key on text
+     * this file never emits. And BEFORE `graph.emitted`, which takes the shape
+     * hash: the base's shape came from a committed entry written through here,
+     * so hashing non-canonical text would report a shape change on every re-emit
+     * of a union — the wave expansion this exists to stop. */
+    const canonical = declaration ? canonicalizeUnions(ts, fileName, relativized) : relativized;
+    /* The rename lands here rather than on the emitted tree afterwards: the
+     * specifiers inside were written by the transformer against the same
+     * layout, so the two agree by construction. Only the file's own map
+     * references still name the pre-rename spelling. */
+    const retargeted = jsExtension === undefined ? canonical : retargetSourceMap(fileName, canonical, jsExtension);
+    const written = renamedOutput(fileName, jsExtension);
+    graph?.emitted(written, declaration, retargeted, writeByteOrderMark);
+    host.writeFile(written, retargeted, writeByteOrderMark);
+  };
+  let fellBack = false;
+  let built = graph === undefined ? undefined : graph.run(program, transformers, writeEmitted);
+  if (graph !== undefined && graph.needsFallback()) {
+    /* The safety net: the wave needed a file this program was not holding. With
+     * a correct bound there is one way here — the change turned out to affect
+     * global scope, which only parsing reveals. The other is a bound bug, netted
+     * rather than trusted, and reported either way.
+     *
+     * Rooting at everything is what makes the rerun terminate as well as what
+     * makes it correct: the guard asks what THIS program is rooted at, so a
+     * program rooted at everything cannot trip it again. Nothing partial is
+     * emitted from an abandoned run.
+     *
+     * Do not pass `oldProgram`: TypeScript refuses structural reuse outright
+     * when the root list differs, which is the whole of what this rebuild
+     * does. */
+    program = buildProgram(undefined);
+    built = graph.run(program, transformers, writeEmitted);
+    fellBack = true;
+  }
+  const emitted = built ?? program.emit(undefined, writeEmitted, undefined, false, transformers);
+  /* After emit, so the declaration rewriter's own resolution work counts as the
+   * reading it is. Both written whether or not the compilation succeeded — a
+   * failed run is not cached, so neither is ever asked for. */
+  if (reportPath !== undefined && resolver !== undefined) {
+    fs.writeFileSync(
+      path.resolve(root, reportPath),
+      serializeRunReport(readSetOf(program, opened, resolver), resolver.edges(), graph?.telemetry(fellBack))
+    );
+  }
+  const memo = graph?.memo();
+  if (stateDirectory !== undefined && memo !== undefined) {
+    writeDriverState(path.resolve(root, stateDirectory), memo);
+  }
   /* Sorted and deduplicated as the CLI does it: the pre-emit set already
    * carries the project's own option diagnostics, so the config errors overlap
-   * it and would otherwise print twice. */
-  const diagnostics = ts.sortAndDeduplicateDiagnostics([...parsed.errors, ...ts.getPreEmitDiagnostics(program), ...emitted.diagnostics]);
+   * it and would otherwise print twice. In wave mode the per-file diagnostics
+   * come from the wave itself (a whole-program pass would defeat the point);
+   * the compilation's own — the options, and the globals — are still asked once. */
+  const diagnostics = ts.sortAndDeduplicateDiagnostics([
+    ...parsed.errors,
+    ...(graph === undefined ? ts.getPreEmitDiagnostics(program) : graph.diagnostics(program)),
+    ...emitted.diagnostics,
+  ]);
   if (diagnostics.length > 0) {
     /* Diagnostics go to stdout, as the CLI writes them. */
     process.stdout.write(renderDiagnostics(ts, diagnostics, host, parsed.options.pretty !== false));
@@ -1137,6 +1535,663 @@ export function resolutionFor(ts: ITypeScript, options: CompilerOptions): number
 
 /** The project to compile: `--project <path>`/`-p <path>` as the CLI spells it,
  * else `tsconfig.json` in the working directory. */
+/**
+ * The wave, bound to this run: what the driver records while it compiles, and
+ * what it reports afterwards.
+ *
+ * It exists because the two are the same act. Resolution answers what every
+ * specifier names, the declaration transformer visits every specifier a file
+ * republishes, and the emitter hands over every file written — so the graph
+ * fabr will remember is a by-product of compiling, never a second pass over the
+ * result. (A pass over emitted text could not do the job anyway: it would see
+ * the rewritten specifiers, and could not tell an import from a string constant
+ * that looks like one.)
+ */
+interface IWaveRun {
+  /** A specifier the declaration traversal passed, in its authored form — a
+   * forwarding edge of `containingFile`. */
+  forwards(containingFile: string, specifier: string): void;
+  /** A specifier the program resolved, and what it named. */
+  resolved(containingFile: string, specifier: string, target: string | undefined): void;
+  /** A file the emitter wrote, in its final form. */
+  emitted(written: string, isDeclaration: boolean, text: string, byteOrderMark: boolean): void;
+  /** Run the wave, answering what a whole-program emit would have. */
+  run(program: IProgram, transformers: ICustomTransformers | undefined, write: WriteFile): IEmitResult;
+  /** Whether this run must be abandoned and redone rooted at every project file
+   * — the wave needed a project file this program was not holding. */
+  needsFallback(): boolean;
+  /** The diagnostics the wave produced, plus the compilation's own. */
+  diagnostics(program: IProgram): readonly Diagnostic[];
+  /** The memo for the next build of this target key: the base's, merged
+   * with what this run learned (see {@link mergeMemo}). */
+  memo(): string;
+  /** The run's own account of itself, for the report's telemetry section. */
+  telemetry(fellBack: boolean): ICompileTelemetry;
+}
+
+function createWaveRun(
+  ts: ITypeScript,
+  plan: ICompilePlan,
+  root: string,
+  resolver: PnpResolver | undefined,
+  resolve: (specifier: string, containingFile: string) => string | undefined,
+  /** Whether the program currently built is rooted at a subset of the project —
+   * read per run, since the caller rebuilds rooted at everything and runs
+   * again. */
+  isBoundRooted: () => boolean,
+  /** Every project file the compilation has, rooted or not — the compiler's own
+   * account of what is on disk, which is what tells a file the bound wrongly
+   * left out from one that is legitimately absent (a deletion). */
+  projectFiles: readonly string[],
+  /** The output directory as a node-name prefix, so an attributed output is
+   * named as the caller's entry names it. */
+  emitDirectory: string
+): IWaveRun {
+  const nodeNameOf = nodeNamer(root, resolver);
+  /** The project's files by node name — what EXISTS, as against what this
+   * program was rooted at. */
+  const onDisk = new Set(projectFiles.map(file => nodeNameOf(file)).filter((name): name is string => name !== undefined));
+  /** Every specifier the program resolved, by the file that wrote it — the
+   * authority the forwarding observer asks before resolving anything itself. */
+  const resolutions = new Map<string, Map<string, string | undefined>>();
+  const useEdges = new Map<string, Map<string, IMemoEdge>>();
+  const forwardEdges = new Map<string, Map<string, IMemoEdge>>();
+  /** The declaration hashes of this run's emit, by source — the new side of the
+   * interface comparison. */
+  const shapes = new Map<string, string>();
+  /** The BASE build's declaration hash, by source — read from the staged base
+   * output at the moment this run first overwrites it. */
+  const baseShapes = new Map<string, string | undefined>();
+  /**
+   * What each written name held before THIS PROCESS first wrote it, hashed —
+   * memoized for the life of the process, never per run, because the fallback
+   * rerun re-emits over its own abandoned attempt's output and must still
+   * compare against the BASE build's artifact, not its own first draft's.
+   */
+  const priorShapes = new Map<string, string | undefined>();
+  const priorShapeOf = (written: string): string | undefined => {
+    if (!priorShapes.has(written)) {
+      let hash: string | undefined;
+      try {
+        hash = createHash(SHAPE_DIGEST).update(fs.readFileSync(written)).digest("hex");
+      } catch {
+        /* Nothing staged at this name — an added file, or a base that emitted
+         * none — which reads as "no shape to have matched". */
+        hash = undefined;
+      }
+      priorShapes.set(written, hash);
+    }
+    return priorShapes.get(written);
+  };
+  const emittedFiles: string[] = [];
+  /** Each source that emitted, and the output names it produced — the
+   * attribution a later build needs to drop a deleted file's outputs. */
+  const outputs = new Map<string, string[]>();
+  /** The output directory as a node-name prefix, stripped from an emitted name
+   * so the attribution is in the entry's namespace (see below). Empty where the
+   * compile emits beside its sources, which needs no stripping. */
+  const emitPrefix = emitDirectory;
+  const collected: Diagnostic[] = [];
+  /** Which file's declarations the emitter is currently writing — set around
+   * each per-file emit, which is what attributes a shape to its source without
+   * having to infer it from the output's name. */
+  let emitting: string | undefined;
+  let result: IWaveResult = { wave: [] };
+  /** Set when the wave needed a project file this program was not holding — a
+   * bound that did not hold, or a change that turned out to affect global scope.
+   * Either way the run is void and the caller rebuilds rooted at everything. */
+  let fallback = false;
+  /** Every file the program holds that is a node of the graph, by its name —
+   * built once when the wave runs, and what the report reads back. */
+  const byName = new Map<string, ISourceFileInfo>();
+  /** Each file's package lookups that found nothing, as the paths they took
+   * (see PnpResolver.failedLookupOf) — the memo's `failed` lines. Accumulated
+   * like the edges, never cleared per run: a lookup's outcome is a fact of the
+   * fixed table, the same both sides of a fallback rerun. */
+  const failedLookups = new Map<string, Set<string>>();
+
+  /** An edge, recording its target only where a later build could not re-derive
+   * it: a bare name is the package table's answer (as is a package's reference
+   * to itself), and anything landing inside a delivered package is bound by
+   * machinery membership cannot replay. */
+  const edgeFor = (specifier: string, target: string | undefined): IMemoEdge => {
+    const named = target === undefined ? undefined : nodeNameOf(target);
+    const derivable = isPathSpecifier(specifier) && (named === undefined || resolver?.instanceNameOf(target!) === undefined);
+    return derivable || named === undefined ? { specifier } : { specifier, target: named };
+  };
+  const record = (
+    into: Map<string, Map<string, IMemoEdge>>,
+    containingFile: string,
+    specifier: string,
+    target: string | undefined
+  ): void => {
+    const name = nodeNameOf(containingFile);
+    if (name === undefined) {
+      return;
+    }
+    const edges = into.get(name) ?? new Map<string, IMemoEdge>();
+    into.set(name, edges);
+    edges.set(specifier, edgeFor(specifier, target));
+    /* Whether any lookup this specifier's resolution made found nothing — a
+     * fact the resolved edge cannot carry: tsc may have settled for the
+     * `@types` sidecar (the edge then names it), or for nothing at all, and
+     * either way the one change that must re-check this file is the asked-for
+     * package APPEARING, which only this line gives an edge to. The sidecar's
+     * own probe is asked about too — an untyped import gaining `@types`
+     * typings later arrives as THAT absence resolving — and answers only where
+     * the probe was actually made and failed. */
+    if (!isPathSpecifier(specifier) && resolver !== undefined) {
+      const split = splitSpecifier(specifier);
+      for (const tried of split === undefined ? [specifier] : [specifier, typesPackageName(split.name)]) {
+        const absent = resolver.failedLookupOf(tried, containingFile);
+        if (absent !== undefined) {
+          const held = failedLookups.get(name) ?? new Set<string>();
+          failedLookups.set(name, held);
+          held.add(absent);
+        }
+      }
+    }
+  };
+  const edgeList = (from: Map<string, Map<string, IMemoEdge>>, name: string): IMemoEdge[] =>
+    [...(from.get(name)?.values() ?? [])].sort((left, right) => (left.specifier < right.specifier ? -1 : 1));
+
+  return {
+    resolved: (containingFile, specifier, target) => {
+      const held = resolutions.get(containingFile) ?? new Map<string, string | undefined>();
+      resolutions.set(containingFile, held);
+      held.set(specifier, target);
+      /* A declaration file has no body, so what it imports it forwards — which
+       * is what makes a dependency's own imports part of the graph a
+       * cross-package wave walks. */
+      record(DECLARATION_FILE.test(containingFile) ? forwardEdges : useEdges, containingFile, specifier, target);
+    },
+    forwards: (containingFile, specifier) => {
+      const known = resolutions.get(containingFile);
+      const target = known?.has(specifier) === true ? known.get(specifier) : resolve(specifier, containingFile);
+      record(forwardEdges, containingFile, specifier, target);
+    },
+    emitted: (written, isDeclaration, text, byteOrderMark) => {
+      const name = nodeNameOf(written);
+      if (name !== undefined) {
+        emittedFiles.push(name);
+        if (emitting !== undefined) {
+          /* Which source this output belongs to. Only the compiler knows the
+           * mapping — an emit extension renames it, a declaration and a map ride
+           * along — so it is RECORDED here rather than reproduced by a caller,
+           * and remembering what the compiler did is what lets a later build
+           * subtract the outputs of a source that has gone.
+           *
+           * Named relative to the OUTPUT directory, which is how the caller's
+           * entry names them (its collection strips that prefix) and the same
+           * namespace a shape is paired in. */
+          const attributed = outputs.get(emitting) ?? [];
+          outputs.set(emitting, attributed);
+          attributed.push(name.startsWith(emitPrefix) ? name.slice(emitPrefix.length) : name);
+        }
+      }
+      if (isDeclaration && emitting !== undefined) {
+        /* Both sides of the interface comparison, taken here \u2014 the one moment
+         * both artifacts exist: the staged base output still holds the last
+         * green build's bytes (this hook runs before the write), and the new
+         * declaration is in hand. Pairing by the WRITTEN name is what keeps a
+         * `foo.ts` beside a `foo.mts` \u2014 or a renamed `--emit-extension` output
+         * \u2014 compared against its own artifact, never a neighbour's. */
+        baseShapes.set(emitting, priorShapeOf(written));
+        shapes.set(
+          emitting,
+          createHash(SHAPE_DIGEST)
+            .update(byteOrderMark ? `\ufeff${text}` : text)
+            .digest("hex")
+        );
+      }
+    },
+    needsFallback: () => fallback,
+    run: (program, transformers, write) => {
+      /* A rebuild re-runs this from scratch, so nothing of the abandoned
+       * attempt may survive into the report. */
+      byName.clear();
+      emittedFiles.length = 0;
+      outputs.clear();
+      collected.length = 0;
+      shapes.clear();
+      baseShapes.clear();
+      fallback = false;
+      for (const file of program.getSourceFiles()) {
+        const name = program.isSourceFileDefaultLibrary(file) ? undefined : nodeNameOf(file.fileName);
+        if (name !== undefined) {
+          byName.set(name, file);
+        }
+      }
+      const isProject = (name: string): boolean =>
+        byName.has(name) && resolver?.instanceNameOf(byName.get(name)!.fileName) === undefined;
+      let emitSkipped = false;
+      const emitDiagnostics: Diagnostic[] = [];
+      result = runWave(plan, {
+        projectFiles: () => [...byName.keys()].filter(isProject),
+        /* What THIS program is rooted at, which is the only form of the question
+         * that survives the fallback: the caller re-runs with the same plan
+         * against a program rooted at everything, and a guard reading the plan's
+         * own bound would answer the same both times (see runWave). */
+        isBoundRooted: () => isBoundRooted(),
+        /* The wave is becoming every project file: discard the carried base
+         * outputs, whose stale members a full emit cannot correct (an output
+         * nothing current produces would linger into the entry). */
+        expanding: () => wipeEmitTree(root, emitDirectory),
+        isGlobal: name => {
+          const file = byName.get(name);
+          return file === undefined ? undefined : affectsGlobalScope(ts, file);
+        },
+        targetOf: (from, edge) => {
+          if (edge.target !== undefined) {
+            return edge.target;
+          }
+          /* The memo recorded no target because membership was expected to
+           * re-derive it — and where the file is still there, this driver can
+           * do better than derive it: it resolves as the compilation does.
+           * Where it is NOT, live resolution structurally cannot answer (the
+           * file an edge names is the file that has gone), and the base build's
+           * own list of names is the one world that still holds it. */
+          const resolved = resolve(edge.specifier, path.resolve(root, from));
+          const live = resolved === undefined ? undefined : nodeNameOf(resolved);
+          return live ?? membershipTarget(from, edge.specifier, name => plan.memo.has(name));
+        },
+        fileFor: name => {
+          const file = byName.get(name);
+          if (file === undefined) {
+            /* The wave needs a file this program does not hold. Where the file
+             * EXISTS, that is a bound the caller got wrong — the wave is a subset
+             * of the bound by construction, so it should be unreachable — and the
+             * run is void rather than answered from a program missing a file it
+             * needed to check.
+             *
+             * Where it does not exist there is nothing to build and nothing
+             * wrong: a deleted source (whose dependers the base's edges still
+             * reach), or a dependency's declaration, which this compile reads
+             * but never emits. */
+            if (onDisk.has(name)) {
+              fallback = true;
+            }
+            return undefined;
+          }
+          if (!isProject(name)) {
+            return undefined;
+          }
+          return () => {
+            emitting = name;
+            try {
+              const emit = program.emit(file, write, undefined, false, transformers);
+              emitDiagnostics.push(...emit.diagnostics);
+              emitSkipped = emitSkipped || emit.emitSkipped;
+            } finally {
+              emitting = undefined;
+            }
+            collected.push(...program.getSyntacticDiagnostics(file), ...program.getSemanticDiagnostics(file));
+            const shape = shapes.get(name);
+            if (shape !== undefined) {
+              return shape !== baseShapes.get(name);
+            }
+            /* No interface artifact to compare — an imported `.json`, or a
+             * hand-written declaration file, both of whose shape genuinely IS
+             * their content. Whether that content moved is exactly what the
+             * plan's seeds already say: they are fabr's own hash diff. */
+            return plan.seeds?.has(name) ?? true;
+          };
+        },
+      });
+      fallback = fallback || result.fellBack === true;
+      return { diagnostics: emitDiagnostics, emitSkipped };
+    },
+    diagnostics: program => [...program.getOptionsDiagnostics(), ...program.getGlobalDiagnostics(), ...collected],
+    memo: () => {
+      const learned: DriverMemo = new Map();
+      const known = new Set<string>(result.wave);
+      for (const [name, file] of byName) {
+        if (resolver?.instanceNameOf(file.fileName) !== undefined) {
+          /* Every dependency declaration this compile read is knowledge too:
+           * those candidate→candidate edges are what a cross-package wave
+           * walks, and a `.d.ts` this run never opened is one whose base line
+           * still stands. */
+          known.add(name);
+        } else if (!plan.memo.has(name)) {
+          /* A held project file with no line yet — a leaf nothing waves, like
+           * an imported `.json` outside the project's include globs. Its line
+           * is what makes it a member a later diff's membership replay can
+           * find. A held file that HAS a line is left alone: replacing it
+           * would lose forwarding edges only an emit of it records. */
+          known.add(name);
+        }
+      }
+      for (const name of known) {
+        const source = byName.get(name);
+        if (source === undefined) {
+          /* A deleted file: nothing current is known about it, and saying
+           * nothing is what lets the merge drop its line. */
+          continue;
+        }
+        learned.set(name, {
+          global: affectsGlobalScope(ts, source),
+          use: edgeList(useEdges, name),
+          forwarding: edgeList(forwardEdges, name),
+          ...(outputs.has(name) ? { outputs: [...outputs.get(name)!].sort() } : {}),
+          ...(failedLookups.has(name) ? { failed: [...failedLookups.get(name)!].sort() } : {}),
+        });
+      }
+      return serializeDriverMemo(mergeMemo(plan.memo, plan.deleted, learned));
+    },
+    telemetry: fellBack => ({
+      wave: result.wave,
+      ...(result.expanded ? { expanded: result.expanded } : {}),
+      emitted: [...new Set(emittedFiles)].sort(),
+      ...(fellBack ? { fellBack } : {}),
+      diagnostics: [...collected].map(diagnostic => structureDiagnostic(ts, diagnostic, nodeNameOf)),
+      ...(plan.roots === undefined ? {} : { bound: { roots: plan.roots.size, project: onDisk.size } }),
+    }),
+  };
+}
+
+/** The compile's output directory as a prefix on node names (`build/`), or the
+ * empty string where output lands beside its sources. */
+function emitDirectoryOf(options: CompilerOptions, root: string): string {
+  const outDir = options.outDir;
+  if (typeof outDir !== "string") {
+    return "";
+  }
+  const relative = path.relative(root, path.resolve(root, outDir)).split(path.sep).join("/");
+  return relative === "" || relative.startsWith("..") ? "" : `${relative}/`;
+}
+
+/** A file's name in the graph: a dependency by the path it is reached by (see
+ * PnpResolver.pathNameOf), a file of this compile by its staged path — the same
+ * names the read set reports and the change lists arrive in, so a seed finds its
+ * node. Undefined for anything that is neither — the compiler's own libraries,
+ * which are the toolchain and are keyed as target-key identity rather than as
+ * inputs. */
+function nodeNamer(root: string, resolver: PnpResolver | undefined): (file: string) => string | undefined {
+  return file => {
+    const reached = resolver?.pathNameOf(file);
+    if (reached !== undefined) {
+      return reached;
+    }
+    const relative = path.relative(root, path.resolve(file)).split(path.sep).join("/");
+    return relative.startsWith("..") || path.isAbsolute(relative) ? undefined : relative;
+  };
+}
+
+/** The compile's source root as a node-name prefix (`src`), or undefined where
+ * the project states none — the planner then classifies no project-space
+ * change and every change costs a full compile. */
+function sourceRootOf(options: CompilerOptions, root: string): string | undefined {
+  const rootDir = options.rootDir;
+  if (typeof rootDir !== "string") {
+    return undefined;
+  }
+  const relative = path.relative(root, path.resolve(root, rootDir)).split(path.sep).join("/");
+  return relative === "" || relative.startsWith("..") ? undefined : relative;
+}
+
+/**
+ * Make the staged base output tree agree with the plan before anything emits.
+ *
+ * A full compile (no seeds) starts from nothing — a carried tree could hold
+ * outputs nothing current produces, and a whole-project emit cannot correct
+ * what it does not write. A wave instead deletes exactly the outputs the memo
+ * attributes to sources that are gone: only the compiler that emitted them
+ * knew the source→output mapping, which is why the attribution was recorded
+ * rather than left to a consumer to reproduce.
+ */
+function prepareEmitTree(root: string, emitDirectory: string, plan: ICompilePlan): void {
+  if (plan.seeds === undefined) {
+    wipeEmitTree(root, emitDirectory);
+    return;
+  }
+  for (const name of plan.deleted) {
+    for (const output of plan.memo.get(name)?.outputs ?? []) {
+      const file = path.resolve(root, emitDirectory, output);
+      /* Containment: an attributed name is this driver's own record, but a
+       * damaged one must not reach outside the workspace. */
+      if (file.startsWith(path.resolve(root) + path.sep)) {
+        fs.rmSync(file, { force: true });
+      }
+    }
+  }
+}
+
+/** Discard the staged base outputs. A compile emitting beside its sources has
+ * no output directory of its own to discard — and never a carried base either,
+ * since its caller had nowhere conflict-free to stage one. */
+function wipeEmitTree(root: string, emitDirectory: string): void {
+  if (emitDirectory === "") {
+    return;
+  }
+  const dir = path.resolve(root, emitDirectory);
+  if (dir.startsWith(path.resolve(root) + path.sep)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Whether a file's declarations are facts about the whole program rather than
+ * about whoever imports it — the flag that makes a change unbounded, since
+ * nothing imports a global and so no edge can reach its dependents.
+ *
+ * A **script** (a file that is no module) declares everything globally. A
+ * module that carries any `declare module`/`declare global` block is treated
+ * the same way, which is stricter than the compiler's own rule (only the global
+ * form affects global scope): a module augmentation changes what some OTHER
+ * module means, and the cost of being wrong here is a missed re-check, while
+ * the cost of being conservative is one cold compile of a target key that rarely
+ * changes.
+ */
+function affectsGlobalScope(ts: ITypeScript, file: ISourceFileInfo): boolean {
+  /* JSON is neither: it declares nothing, and its shape is its content. */
+  if (file.fileName.endsWith(".json")) {
+    return false;
+  }
+  const isModule = ts.isExternalModule ? ts.isExternalModule(file) : file.externalModuleIndicator !== undefined;
+  return !isModule || (file.moduleAugmentations ?? []).length > 0;
+}
+
+/** A diagnostic as data — enough to compare two runs' outcomes without parsing
+ * rendered text, which is what a caller checking wave parity needs. The human
+ * rendering is unchanged and still goes to stdout. */
+function structureDiagnostic(
+  ts: ITypeScript,
+  diagnostic: Diagnostic,
+  nodeNameOf: (file: string) => string | undefined
+): IDriverDiagnostic {
+  const info = diagnostic as IDiagnosticInfo;
+  const at = info.file !== undefined && info.start !== undefined ? ts.getLineAndCharacterOfPosition(info.file, info.start) : undefined;
+  return {
+    ...(info.file ? { file: nodeNameOf((info.file as ISourceFileInfo).fileName) ?? (info.file as ISourceFileInfo).fileName } : {}),
+    code: info.code,
+    /* The compiler's own enum, read through its reverse mapping rather than a
+     * table of numbers this driver would have to keep in step. */
+    category: String(ts.DiagnosticCategory[String(info.category)] ?? info.category),
+    message: ts.flattenDiagnosticMessageText(info.messageText, " "),
+    ...(at ? { line: at.line + 1, character: at.character + 1 } : {}),
+  };
+}
+
+/**
+ * What this compilation read of the packages it was given, in the instance
+ * names the step translates back to its inputs (see ReadSet.ts) — the answer
+ * `tsc --listFiles` gives, plus the two halves a file listing structurally
+ * cannot:
+ *
+ * - the **manifests** resolution consulted. tsc reads a package's `package.json`
+ *   to decide which file a specifier names and never lists it, so without this
+ *   an `exports` edit would move the answer with nothing in the key to say so.
+ * - the **edges** taken: every lookup this run made, named by the path it took.
+ *   A file's own row carries its instance's ONE canonical route (pathNameOf),
+ *   so a shared package read through two requirers has its bytes named by one
+ *   of them — the edge rows are what pin the OTHER requirer's binding, without
+ *   which that edge could rebind with nothing in the key to say so. A fallback
+ *   resolution is two rows: its access path (which finds nothing) and the
+ *   pool's answer, pinned at the answering instance's own canonical route.
+ *
+ * Everything outside the package pool — the sources, the tool's own install,
+ * the compiler's libs — is left out here: those are in the step's anchor, and
+ * the resolver answering `undefined` for them is exactly that statement.
+ */
+function readSetOf(program: IProgram, opened: string[], resolver: PnpResolver): string[] {
+  const names = new Set<string>();
+  const add = (file: string): void => {
+    const name = resolver.pathNameOf(file);
+    if (name !== undefined) {
+      names.add(name);
+    }
+  };
+  for (const file of program.getSourceFiles()) {
+    add(file.fileName);
+  }
+  for (const file of opened) {
+    add(file);
+  }
+  for (const location of resolver.manifestsConsulted()) {
+    add(path.join(location, "package.json"));
+  }
+  /* Every lookup is a fact this run depended on, named by the path it TOOK —
+   * the route to the asker, then the asked name — ending at the manifest every
+   * package carries. For a lookup that resolved, the row pins the answering
+   * BINDING: the files it answered with may all be named by another requirer's
+   * route (one canonical route per instance — pathNameOf), so this row is what
+   * moves when this edge alone rebinds. For a lookup that found nothing the
+   * path resolves to nothing, and replay reports it as the absence it was. */
+  for (const edge of resolver.edges()) {
+    const at = resolver.routeOf(edge.from);
+    if (at !== undefined) {
+      names.add(joinDepsPath([...at, edge.name, "package.json"]));
+    }
+    /* A fallback resolution is TWO rows: the access path above — which finds
+     * nothing, the requirer not binding the name — and the ANSWER, pinned at
+     * the winning instance's own canonical route. That is a plain-indexing
+     * path (the cache replays, it never resolves a pool), and with the pool
+     * restricted to the delivery's one hoist-visible copy it covers the
+     * winner being edited, replaced or removed — its recorded rows die with
+     * it. The one change it cannot state is an answer APPEARING where nothing
+     * answered before, which requires the base build to have been green with
+     * the import unresolved. */
+    if (edge.via === "fallback") {
+      const answered = resolver.routeOf(edge.to);
+      if (answered !== undefined) {
+        names.add(joinDepsPath([...answered, "package.json"]));
+      }
+    }
+  }
+  return [...names];
+}
+
+/**
+ * The roots the program is built from: the caller's **bound**, intersected with
+ * the project files that are actually there. `undefined` roots at everything,
+ * which is the whole file list unchanged.
+ *
+ * Roots rather than the whole file list because **tsc discovers the rest
+ * itself**, and discovers it as ordinary source: a root's imports are followed
+ * from its current content, transitively, so the program ends up holding the
+ * bound plus its import closure. Construction therefore costs the closure a
+ * change reaches rather than the project, while every file in the program is
+ * the same kind of thing it would be in a full compile.
+ *
+ * The intersection is what makes a **deletion** an ordinary case: a name in the
+ * bound with no file behind it is simply not a root, and the wave reaches its
+ * dependers through the base's edges as it does for any other change.
+ */
+function programRoots(parsed: IParsedCommandLine, roots: ReadonlySet<string> | undefined, root: string): string[] {
+  if (roots === undefined) {
+    return parsed.fileNames;
+  }
+  const rooted = new Set([...roots].map(name => path.resolve(root, name)));
+  return parsed.fileNames.filter(file => rooted.has(path.resolve(file)));
+}
+
+/** What this driver keeps in its state directory: one file, its own memo of the
+ * last green build. The name is this driver's — fabr keeps whatever is there
+ * and never looks at the names. */
+const DRIVER_MEMO_FILE = "memo";
+
+/**
+ * What incremental mode was handed about the last green build: the change lists
+ * fabr's diff produced, and this driver's own memo back out of the state
+ * directory. Undefined without `--state-dir` — the ordinary CLI-parity
+ * invocation.
+ *
+ * The two documents fail differently, because they have different owners. The
+ * CHANGES file is fabr's half of the contract: one that cannot be read means
+ * the two sides disagree, which is a bug, and the failure it would otherwise
+ * hide behind is *permanent full compiles that look exactly like working
+ * incrementality* — so it is an error. The MEMO is this driver's own bytes
+ * round-tripped through fabr unread: one this build cannot parse is an older
+ * format's (or another driver's), and costs a cold compile rather than an
+ * error — the version-mismatch-means-cold rule.
+ *
+ * The pairing is one-directional for the same reason. State handed back with no
+ * change lists is fabr contradicting itself — it kept a base and then said
+ * nothing about what moved — so it is an error; an empty state directory
+ * alongside change lists is ordinary, being a first build or one whose state
+ * was lost, and compiles cold.
+ */
+function memoHandoverOf(argv: string[], root: string): { changes?: IChangeLists; memo?: DriverMemo } | undefined {
+  const stateDirectory = argOf(argv, STATE_DIR_FLAG);
+  if (stateDirectory === undefined) {
+    return undefined;
+  }
+  let memoText: string | undefined;
+  try {
+    memoText = fs.readFileSync(path.resolve(root, stateDirectory, DRIVER_MEMO_FILE), "utf8");
+  } catch {
+    memoText = undefined;
+  }
+  /* The FILE is what says there is a base, not the flag: a step composes one
+   * invocation and only learns whether it kept a last green build once it has
+   * looked, so it names the location either way and writes it only when it has
+   * one. */
+  const changesPath = argOf(argv, CHANGES_FLAG);
+  if (changesPath === undefined || !fs.existsSync(path.resolve(root, changesPath))) {
+    if (memoText !== undefined) {
+      throw new Error(`tsc-driver: state was handed back without ${CHANGES_FLAG}, so nothing says what it is still good for`);
+    }
+    /* No base: a cold build that still leaves the first memo. */
+    return {};
+  }
+  let changes: IChangeLists;
+  try {
+    changes = toChangeLists(JSON.parse(fs.readFileSync(path.resolve(root, changesPath), "utf8")));
+  } catch (err: unknown) {
+    throw new Error(`tsc-driver: unreadable change lists at ${changesPath} (${err instanceof Error ? err.message : String(err)})`);
+  }
+  const memo = memoText === undefined ? undefined : parseDriverMemo(memoText);
+  return { changes, memo };
+}
+
+/** Leave the memo the next run works from, in the directory the caller named.
+ * The directory need not exist yet — a first build is handed none. */
+function writeDriverState(directory: string, memo: string): void {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, DRIVER_MEMO_FILE), memo);
+}
+
+/** `--deps-report <file>`: where to write what this run read, relative to the
+ * working directory. Absent (the ordinary CLI-parity invocation) reports
+ * nothing. */
+function depsReportOf(argv: string[]): string | undefined {
+  return argOf(argv, DEPS_REPORT_FLAG);
+}
+
+/** A flag's value, or undefined for an absent flag; a flag with nothing after
+ * it is an error naming the flag. */
+function argOf(argv: string[], flag: string): string | undefined {
+  const at = argv.indexOf(flag);
+  if (at < 0) {
+    return undefined;
+  }
+  const value = argv[at + 1];
+  if (value === undefined) {
+    throw new Error(`tsc-driver: ${flag} needs a file`);
+  }
+  return value;
+}
+
 function projectOf(argv: string[]): string {
   const flag = argv.findIndex(arg => arg === "--project" || arg === "-p");
   return flag >= 0 && argv[flag + 1] !== undefined ? argv[flag + 1] : "tsconfig.json";
@@ -1178,8 +2233,13 @@ function configHost(ts: ITypeScript): unknown {
   return {
     fileExists: (file: string) => ts.sys.fileExists(file),
     readFile: (file: string, encoding?: string) => ts.sys.readFile(file, encoding),
-    readDirectory: (dir: string, extensions?: readonly string[], exclude?: readonly string[], include?: readonly string[], depth?: number) =>
-      ts.sys.readDirectory(dir, extensions, exclude, include, depth),
+    readDirectory: (
+      dir: string,
+      extensions?: readonly string[],
+      exclude?: readonly string[],
+      include?: readonly string[],
+      depth?: number
+    ) => ts.sys.readDirectory(dir, extensions, exclude, include, depth),
     useCaseSensitiveFileNames: ts.sys.useCaseSensitiveFileNames,
     getCurrentDirectory: () => ts.sys.getCurrentDirectory(),
     onUnRecoverableConfigFileDiagnostic: (diagnostic: Diagnostic) => {

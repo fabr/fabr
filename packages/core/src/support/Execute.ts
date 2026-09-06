@@ -23,7 +23,6 @@ import * as os from "os";
 import * as path from "path";
 import { Writable } from "stream";
 import { getSystemErrorMap } from "util";
-import type { IOutputHandle } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { ExecutionError } from "../core/Errors";
 import { FileSet, IFile } from "../core/FileSet";
@@ -49,6 +48,22 @@ export type OutputStream = "out" | "err";
 export interface IOutputSink {
   /** One complete line of the child's output, newline already stripped. */
   line(text: string, stream: OutputStream): void;
+}
+
+/**
+ * A streaming output sink: bytes are hashed as written and placed straight into
+ * the content store, with no memory buffer or work-dir round trip.
+ */
+export interface IOutputHandle {
+  /** Pipe into this with `{ end: false }` — the handle is ended by
+   * {@link finalize}/{@link discard}, not by the source. */
+  readonly stream: Writable;
+  /** End and flush the stream, store the bytes under their hash, and answer a
+   * cache-backed file named `name`. `mode` is the file's real permission bits
+   * (default non-executable), carried so an unpacked executable survives. */
+  finalize(name: string, mode?: number): Computable<IFile>;
+  /** Abandon the stream and delete its temp file — nothing enters the store. */
+  discard(): void;
 }
 
 /**
@@ -394,7 +409,7 @@ function commandLine(cmd: string, args: string[]): string {
 
 /**
  * Run one command through the given execution funnel (a build step passes
- * `IActionContext.processLimit`): the slot is acquired around exactly the
+ * `ActionContext.processLimit`): the slot is acquired around exactly the
  * process lifetime, so boundedness is enforced by this signature — there is no
  * unbounded way to run a build process. The interactive spawns below take no
  * limit, deliberately: the user's foreground program is not build parallelism.

@@ -22,12 +22,19 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { PassThrough } from "stream";
-import { IOutputHandle } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { TaskState } from "../model/BuildEvents";
-import { activityCounter, execute, executeInteractive, executePipeline, lineSplitter, SILENT_REPORT } from "./Execute";
+import {
+  activityCounter,
+  execute,
+  executeInteractive,
+  executePipeline,
+  IOutputHandle,
+  lineSplitter,
+  SILENT_REPORT,
+} from "./Execute";
 import { Semaphore } from "./Semaphore";
 
 const NODE = process.execPath;
