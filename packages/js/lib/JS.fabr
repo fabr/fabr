@@ -203,6 +203,32 @@ flag esnext { }
 #
 flag dom { }
 
+#
+# Whether the sources use node's runtime GLOBALS — `process`, `Buffer` and
+# `global` — which node supplies to every module and a browser does not. In a
+# bundle built for a `-browser` JS_TARGET the flag binds those identifiers to
+# shim packages; a `-node` bundle needs no help, so there it does nothing.
+#
+# The shims are NOT supplied by the flag: they are ordinary dependencies whose
+# versions are the project's to pin, so the target mounts them itself, under the
+# names node knows them by.
+#
+#     js_bundle app {
+#       entry = @myapp:index.js;
+#       srcs  = @npm:process:0.11.10 @npm:buffer:6.0.3 js/node_globals;
+#     }
+#
+# `process` and `buffer` must both be present — a missing one is an ordinary
+# unresolved import from the bundler. `global` needs no package (it binds to
+# `globalThis`), and an explicit `defines` entry for it wins.
+#
+# Node builtin MODULES (`import "path"`) are a separate matter, handled by
+# mounting a shim renamed to the builtin's own name:
+#
+#     srcs = @npm:path-browserify:1.0.1 -> path;
+#
+flag js/node_globals { }
+
 ################### JS-specific targets ####################
 
 #

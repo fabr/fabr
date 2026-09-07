@@ -166,4 +166,11 @@ describe("buildBundleOptions", () => {
     expect(buildBundleOptions(parseJSTarget("es2021-esm"), "debug", [], [], defines).define).to.deep.equal(defines);
     expect(buildBundleOptions(parseJSTarget("es2021-esm"), "debug", [], [], {})).to.not.have.property("define");
   });
+
+  it("passes inject through as esbuild `inject`, omitting the key when nothing is injected", () => {
+    const inject = [".fabr-node-globals.js"];
+    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "debug", [], [], {}, inject).inject).to.deep.equal(inject);
+    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "debug", [], [], {}, [])).to.not.have.property("inject");
+    expect(buildBundleOptions(parseJSTarget("es2021-esm"), "debug", [], [], {})).to.not.have.property("inject");
+  });
 });

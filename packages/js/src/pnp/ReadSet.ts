@@ -19,7 +19,7 @@
 
 /**
  * The vocabulary a driver and the step that runs it share for **what the run
- * read** — the discovered-dependency report (see DESIGN-discovered-deps.md).
+ * read** — the discovered-dependency report.
  *
  * A tool handed a package closure reads a small subset of it, so the step's
  * cache entry is keyed on that subset rather than on everything staged. Which

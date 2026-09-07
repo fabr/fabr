@@ -38,6 +38,7 @@ import {
   Constraints,
   FileSet,
   FileSetRef,
+  Flag,
   MemoryFile,
   PackageFileSet,
   RewriteFn,
@@ -46,7 +47,7 @@ import {
   RunnableFileSet,
   TargetContext,
 } from "@fabr-build/core";
-import { compileContents, formatJSTarget, JSTarget, parseJSTarget } from "../JSPackage";
+import { compileContents, formatJSTarget, JSTarget, parseJSTarget, usesNodeGlobals } from "../JSPackage";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
 import { treeMountOf } from "../PnPManifest";
 import {
@@ -61,6 +62,23 @@ import {
  * own node_modules so the tool's deps neither collide with nor are visible to
  * the sources being bundled. */
 const TOOL_DIR = ".fabr-esbuild";
+
+/** The generated module behind `js/node_globals`, staged at the working root and
+ * named as esbuild's `inject`. Node's globals are ordinary module exports in the
+ * browser shims, and esbuild fills a free identifier from an injected module's
+ * export of the SAME NAME — so the file is exactly that renaming, and it must
+ * export: an injected module that only imports is dead weight that binds
+ * nothing. The shim packages are the target's to mount (see JS.fabr); if one is
+ * missing this is where the bundler says so.
+ *
+ * `global` is absent deliberately — it needs no package, so it rides the
+ * `define` instead ({@link NODE_GLOBAL_DEFINES}) and costs nothing. */
+const NODE_GLOBALS_MODULE = ".fabr-node-globals.js";
+const NODE_GLOBALS_GLUE = 'export { Buffer } from "buffer";\nexport { default as process } from "process";\n';
+
+/** The half of node's globals that is a plain expression rather than a module.
+ * An explicit `defines` entry wins — this is a default, not a policy. */
+const NODE_GLOBAL_DEFINES: Record<string, string> = { global: "globalThis" };
 
 /**
  * The target a bundle's inputs are built and compiled for: ESM, whatever the
@@ -94,6 +112,9 @@ interface IBundleInputs {
    * esbuild `define` code text, verbatim as written (a string constant is
    * shell-quoted in source, `'"production"'`, exactly as esbuild's own CLI). */
   defines: Record<string, string>;
+  /** Whether to bind node's runtime globals for this bundle: the `js/node_globals`
+   * flag among srcs/deps, AND a browser target — a node bundle already has them. */
+  nodeGlobals: boolean;
   /** The entry as delivered: a plain fileset is staged at the bundle root, while
    * a projection over a package stays pending — the package mounts and the entry
    * is located inside it (see composeBundle). */
@@ -113,16 +134,18 @@ function stageBundle(
   css: FileSet,
   entrySources: IBundleEntrySource[]
 ): RuleResult {
-  const { jsTarget, buildType, rewrite, defines, srcs, deps, bundler } = inputs;
+  const { jsTarget, buildType, rewrite, defines, nodeGlobals, srcs, deps, bundler } = inputs;
   if (entrySources.length === 0) {
     throw new Error("js_bundle 'entry' resolved to no files — name at least one source to bundle");
   }
   const entries = computeBundleEntries(entrySources, rewrite);
   const external = computeExternalNames(srcs, deps);
-  const options = buildBundleOptions(jsTarget, buildType, entries, external, defines);
+  const inject = nodeGlobals ? [NODE_GLOBALS_MODULE] : [];
+  const options = buildBundleOptions(jsTarget, buildType, entries, external, defines, inject);
   const workspace = {
     [TOOL_DIR]: bundler,
     "bundle-options.json": MemoryFile.from(JSON.stringify(options)),
+    ...(nodeGlobals ? { [NODE_GLOBALS_MODULE]: MemoryFile.from(NODE_GLOBALS_GLUE) } : {}),
   };
   /* The bundler launches from its own mount (its deps resolve there); cwd is
    * the working root, so the options manifest and outdir resolve against it. */
@@ -250,6 +273,16 @@ function buildJsBundle(context: TargetContext): Computable<RuleResult> {
   );
 }
 
+/** The source-mode flags declared on this bundle, from either list they may be
+ * written in: `srcs`, where a bundle's own code arrives, or `deps`, where flags
+ * conventionally sit. A flag materializes to nothing in both. */
+function bundleFlags(context: TargetContext, inputTarget: Constraints): Computable<Flag[]> {
+  return Computable.forAll(
+    [context.getFlags("srcs", inputTarget), context.getFlags("deps", inputTarget)],
+    (srcFlags, depFlags) => [...srcFlags, ...depFlags]
+  );
+}
+
 function buildWithInputs(
   context: TargetContext,
   jsTarget: JSTarget,
@@ -264,12 +297,23 @@ function buildWithInputs(
       context.getGlobalRunnable("JS_BUNDLER"),
       context.getRewrite("output"),
       context.getMap("defines"),
+      bundleFlags(context, inputTarget),
     ],
-    (srcSources, entrySources, depSources, bundler, rewrite, defineMap) => {
+    (srcSources, entrySources, depSources, bundler, rewrite, defineMap, flags) => {
+      /* `js/node_globals` binds node's globals for a BROWSER bundle only: a node
+       * bundle is already given them, and the flag is a fact about the sources,
+       * so one tree bundling both ways declares it once and pays only where it
+       * is needed. */
+      const nodeGlobals = usesNodeGlobals(flags) && jsTarget.environment === "browser";
       /* esbuild `define` takes code text per identifier; a map value is that
        * text verbatim (esbuild's own contract — no probing). Sub-maps have no
        * meaning as code text, so defines is flat by contract. */
       const defines: Record<string, string> = Object.create(null);
+      /* Seeded before the declared entries, so an explicit `defines` for one of
+       * these wins rather than colliding. */
+      if (nodeGlobals) {
+        Object.assign(defines, NODE_GLOBAL_DEFINES);
+      }
       for (const [key, value] of defineMap) {
         /* A map scalar is a string list; a sub-map / list of sub-maps is not code text.
          * `every` with a type-predicate narrows `value` to string[] for the join below. */
@@ -292,6 +336,7 @@ function buildWithInputs(
           buildType,
           rewrite,
           defines,
+          nodeGlobals,
           entry,
           srcs,
           deps,

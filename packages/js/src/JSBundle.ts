@@ -81,6 +81,10 @@ export interface IBundleOptions {
   /** esbuild `define`: identifier -> replacement code text (the `defines` MAP,
    * verbatim). Omitted when no defines were declared. */
   define?: Record<string, string>;
+  /** esbuild `inject`: modules whose EXPORTS fill same-named free identifiers in
+   * every bundled module (the `js/node_globals` glue). Paths are relative to the
+   * working root. Omitted when nothing is injected. */
+  inject?: string[];
 }
 
 /** Every package name reachable from the given roots — the roots themselves plus
@@ -203,7 +207,8 @@ export function buildBundleOptions(
   buildType: string,
   entries: IBundleEntry[],
   external: string[],
-  defines: Record<string, string>
+  defines: Record<string, string>,
+  inject: string[] = []
 ): IBundleOptions {
   /* A bundle is a single artifact, so a `dual` target reads as its sole format. */
   const format = soleModuleFormat(jsTarget.module) === "esm" ? "esm" : jsTarget.environment === "browser" ? "iife" : "cjs";
@@ -219,5 +224,6 @@ export function buildBundleOptions(
     sourcemap,
     outdir: BUNDLE_OUTDIR,
     ...(Object.keys(defines).length > 0 ? { define: defines } : {}),
+    ...(inject.length > 0 ? { inject } : {}),
   };
 }

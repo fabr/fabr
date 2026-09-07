@@ -49,6 +49,7 @@ import {
   resolveSourceMode,
   resolveSourceVersion,
   usesDom,
+  usesNodeGlobals,
   withBinShebangs,
 } from "./JSPackage";
 
@@ -867,6 +868,18 @@ describe("usesDom", () => {
    * flag ("this is a browser widget") can supply it. */
   it("finds it through a composite flag's provides", () => {
     expect(usesDom([new Flag("widget", [new Flag("dom", [])])])).to.equal(true);
+  });
+});
+
+describe("usesNodeGlobals", () => {
+  it("reads the declared flag by its full namespaced name", () => {
+    expect(usesNodeGlobals([new Flag("js/node_globals", [])])).to.equal(true);
+    expect(usesNodeGlobals([new Flag("dom", [])])).to.equal(false);
+    expect(usesNodeGlobals([])).to.equal(false);
+  });
+
+  it("finds it through a composite flag's provides", () => {
+    expect(usesNodeGlobals([new Flag("legacy_app", [new Flag("js/node_globals", [])])])).to.equal(true);
   });
 });
 

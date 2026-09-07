@@ -372,6 +372,25 @@ export function usesDom(flags: Flag[]): boolean {
   return flags.some(walk);
 }
 
+/**
+ * Whether the sources use node's runtime globals (`js/node_globals`) — the same
+ * kind of source fact as {@link usesDom}, and read the same way. What it means
+ * is decided by the consumer: a browser bundle binds those identifiers to the
+ * shim packages the target mounts, a node bundle does nothing, since node
+ * supplies them.
+ */
+export function usesNodeGlobals(flags: Flag[]): boolean {
+  const seen = new Set<Flag>();
+  const walk = (flag: Flag): boolean => {
+    if (seen.has(flag)) {
+      return false;
+    }
+    seen.add(flag);
+    return flag.name === "js/node_globals" || flag.provides.some(walk);
+  };
+  return flags.some(walk);
+}
+
 export function resolveSourceVersion(flags: Flag[]): string | undefined {
   let highest: string | undefined;
   const seen = new Set<Flag>();

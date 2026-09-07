@@ -243,4 +243,75 @@ for (const entry of opts.entries) {
     expect(result.stdout).to.contain('external=["@scope/absent"]');
   });
 
+  /* `js/node_globals` is a source fact the BUNDLE acts on: it reports what fabr
+   * asked the bundler to do (inject + define) and what it staged for it. esbuild's
+   * own half — filling free identifiers from an injected module's exports — is
+   * esbuild's, so what fabr owes is a glue module that exports the right names. */
+  const globalsBundler = `const fs = require("fs"), path = require("path");
+const optsArg = process.argv.find(a => a.startsWith("--options="));
+const opts = JSON.parse(fs.readFileSync(optsArg.slice("--options=".length), "utf8"));
+const BREAK = String.fromCharCode(10);
+const report = [
+  "inject=" + JSON.stringify(opts.inject || []),
+  "global=" + ((opts.define || {}).global || "(unset)"),
+];
+for (const name of opts.inject || []) {
+  report.push("glue<<" + fs.readFileSync(name, "utf8").split(BREAK).join(" ") + ">>");
+}
+for (const entry of opts.entries) {
+  const out = path.join(opts.outdir, entry.out + ".js");
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  fs.writeFileSync(out, report.join(BREAK) + BREAK);
+}
+`;
+
+  const nodeGlobals = (target: string, bundle: string): Record<string, string> => ({
+    "PROJECT.fabr": [
+      "plugin @fabr-build/js;",
+      `JS_TARGET = ${target};`,
+      "js_script my_bundler { entry = ./globals-bundler.js; }",
+      "JS_BUNDLER = my_bundler;",
+      bundle,
+      "",
+    ].join("\n"),
+    "globals-bundler.js": globalsBundler,
+    "main.js": 'console.log("hello");\n',
+  });
+
+  const FLAGGED = "js_bundle app { entry = ./main.js; srcs = js/node_globals; }";
+
+  it("stages the node-globals glue and asks for it, for a browser bundle", () => {
+    const result = runFabr(nodeGlobals("es2021-esm-browser", FLAGGED), ["cat", "app:main.js"]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.contain('inject=[".fabr-node-globals.js"]');
+    /* The glue must EXPORT the names: an injected module that only imports its
+     * shims binds nothing while still costing every byte of them. */
+    expect(result.stdout).to.contain(
+      'glue<<export { Buffer } from "buffer"; export { default as process } from "process"; >>'
+    );
+    /* `global` needs no package, so it rides the define instead. */
+    expect(result.stdout).to.contain("global=globalThis");
+  });
+
+  it("does nothing for a node bundle, which is already given them", () => {
+    const result = runFabr(nodeGlobals("es2021-esm-node", FLAGGED), ["cat", "app:main.js"]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.contain("inject=[]");
+    expect(result.stdout).to.contain("global=(unset)");
+  });
+
+  it("leaves an explicitly declared `global` define alone", () => {
+    const declared = "js_bundle app { entry = ./main.js; srcs = js/node_globals; defines = { global = window; } }";
+    const result = runFabr(nodeGlobals("es2021-esm-browser", declared), ["cat", "app:main.js"]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.contain("global=window");
+  });
+
+  it("injects nothing when the flag is absent", () => {
+    const bare = "js_bundle app { entry = ./main.js; }";
+    const result = runFabr(nodeGlobals("es2021-esm-browser", bare), ["cat", "app:main.js"]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.contain("inject=[]");
+    expect(result.stdout).to.contain("global=(unset)");
+  });
 });

@@ -407,6 +407,7 @@ function toEsbuildOptions(options: IBundleOptions, unresolved: Set<string>): Rec
      * consumes ESM whatever format it is emitting. */
     conditions: ["module-sync"],
     ...(options.define ? { define: options.define } : {}),
+    ...(options.inject ? { inject: options.inject } : {}),
     /* Load-bearing under a manifest, and only there: esbuild finds the manifest
      * by walking UP from the importing file, and fabr's packages live in the
      * shared build cache — outside this workspace — reached through one symlink.
