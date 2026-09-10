@@ -127,6 +127,7 @@ interface ISyntaxNode extends INode {
 }
 interface ISourceFileNode extends INode {
   fileName: string;
+  text: string;
 }
 interface IImportDeclarationNode extends INode {
   modifiers?: unknown;
@@ -161,6 +162,41 @@ interface IImportTypeNode extends INode {
 }
 interface ILiteralTypeNode extends INode {
   literal: INode;
+}
+/* The node shapes the cross-format globals rewrite reads. These are parse-tree
+ * nodes (the rewrite runs first among the before-transforms), so `parent` and
+ * `getStart` are present; a synthesized replacement never re-enters it. */
+interface IIdentifierNode extends INode {
+  text: string;
+  parent?: INode;
+}
+interface IMetaPropertyNode extends INode {
+  keywordToken: number;
+  name: IIdentifierNode;
+}
+interface IPropertyAccessNode extends INode {
+  expression: INode;
+  name: INode;
+}
+interface ITypeOfExpressionNode extends INode {
+  expression: INode;
+}
+interface IShorthandPropertyAssignmentNode extends INode {
+  name: IIdentifierNode;
+}
+/** Where a node's own text sits in its file, for a diagnostic's span. */
+interface IPositionedNode extends INode {
+  end: number;
+  getStart(source: ISourceFileNode): number;
+}
+/** A symbol as the ambient-reference test reads it: only where its declarations
+ * live, which is what tells the global `__dirname` from a file's own binding. */
+interface ISymbolInfo {
+  declarations?: ReadonlyArray<{ getSourceFile(): { isDeclarationFile: boolean } }>;
+}
+interface ITypeChecker {
+  getSymbolAtLocation(node: INode): ISymbolInfo | undefined;
+  getShorthandAssignmentValueSymbol(node: INode): ISymbolInfo | undefined;
 }
 /** A transform over one file's tree, in the compiler's own two-step shape. */
 type TransformerFactory = (context: unknown) => (sourceFile: ISourceFileNode) => INode;
@@ -219,6 +255,7 @@ interface IProgram {
    * once per run. */
   getOptionsDiagnostics(): readonly Diagnostic[];
   getGlobalDiagnostics(): readonly Diagnostic[];
+  getTypeChecker(): ITypeChecker;
 }
 type WriteFile = (fileName: string, text: string, writeByteOrderMark: boolean) => void;
 
@@ -264,6 +301,13 @@ interface ITypeScript {
    * everything it is not changing. */
   factory: {
     createStringLiteral(text: string): IStringLiteralNode;
+    createIdentifier(text: string): IIdentifierNode;
+    createPropertyAccessExpression(expression: INode, name: string | INode): INode;
+    createMetaProperty(keywordToken: number, name: INode): INode;
+    createCallExpression(expression: INode, typeArguments: unknown, args: readonly INode[]): INode;
+    createStrictEquality(left: INode, right: INode): INode;
+    createParenthesizedExpression(expression: INode): INode;
+    createPropertyAssignment(name: string | INode, initializer: INode): INode;
     updateImportDeclaration(
       node: INode,
       modifiers: unknown,
@@ -302,6 +346,16 @@ interface ITypeScript {
   isLiteralTypeNode(node: INode): boolean;
   isUnionTypeNode(node: INode): boolean;
   isTypeLiteralNode(node: INode): boolean;
+  isIdentifier(node: INode): boolean;
+  isMetaProperty(node: INode): boolean;
+  isPropertyAccessExpression(node: INode): boolean;
+  isTypeOfExpression(node: INode): boolean;
+  isTypeQueryNode(node: INode): boolean;
+  isQualifiedName(node: INode): boolean;
+  isPropertyAssignment(node: INode): boolean;
+  isShorthandPropertyAssignment(node: INode): boolean;
+  isImportSpecifier(node: INode): boolean;
+  isExportSpecifier(node: INode): boolean;
   /** The AST children of a node — punctuation excluded, which is what lets a
    * span-splicing rewrite leave every separator exactly where it was. */
   forEachChild(node: INode, visit: (child: INode) => void): void;
@@ -320,7 +374,7 @@ interface ITypeScript {
   isExternalModule?(file: SourceFile): boolean;
   /** A diagnostic's message text, which is a chain rather than a string. */
   flattenDiagnosticMessageText(text: unknown, newLine: string): string;
-  DiagnosticCategory: { [name: string]: unknown };
+  DiagnosticCategory: { Error: number; [name: string]: unknown };
   getLineAndCharacterOfPosition(file: SourceFile, position: number): { line: number; character: number };
   sys: {
     newLine: string;
@@ -1194,6 +1248,268 @@ function specifierRewriter(
   };
 }
 
+/** The globals a CommonJS module has and an ES module does not: the two with an
+ * `import.meta` spelling to rewrite to, and the scaffolding without one, whose
+ * references are errors under an ES-module emit. */
+const CJS_PATH_GLOBALS = new Set(["__dirname", "__filename"]);
+const CJS_SCAFFOLDING = new Set(["require", "module", "exports"]);
+
+/** How each `import.meta` member is spelled in CommonJS; a member absent here
+ * has no CommonJS equivalent and errors instead. */
+const CJS_META_MEMBERS = new Map<string, (f: ITypeScript["factory"]) => INode>([
+  ["dirname", f => f.createIdentifier("__dirname")],
+  ["filename", f => f.createIdentifier("__filename")],
+  [
+    "url",
+    f =>
+      f.createPropertyAccessExpression(
+        f.createCallExpression(
+          f.createPropertyAccessExpression(
+            f.createCallExpression(f.createIdentifier("require"), undefined, [f.createStringLiteral("node:url")]),
+            "pathToFileURL"
+          ),
+          undefined,
+          [f.createIdentifier("__filename")]
+        ),
+        "href"
+      ),
+  ],
+  /* Parenthesized: the access this replaces was a primary expression, and the
+   * printer will not add the parens a `!import.meta.main` operand needs. */
+  [
+    "main",
+    f =>
+      f.createParenthesizedExpression(
+        f.createStrictEquality(f.createPropertyAccessExpression(f.createIdentifier("require"), "main"), f.createIdentifier("module"))
+      ),
+  ],
+]);
+
+/** The checker's "'import.meta' is only allowed when '--module' is …" grammar
+ * error, dropped where the rewrite replaced the meta-property it is about. */
+const IMPORT_META_MODULE_ERROR = 1343;
+
+/** The code the driver's own cross-format diagnostics carry — outside every
+ * range the compiler assigns. */
+const CROSS_FORMAT_ERROR = 79000;
+
+/** A file that guards any of the CommonJS globals with `typeof` chose its
+ * spellings knowing both formats, so its scaffolding references are presumed
+ * runtime-guarded and not errored (the rewrites still apply — they are correct
+ * either way). */
+const FORMAT_AWARE = /typeof[\s(]+(require|module|exports|__dirname|__filename)\b/;
+
+interface ICrossFormatGlobals {
+  transformer: TransformerFactory;
+  /** The run's diagnostics, finished: the checker's TS1343s on meta-properties
+   * the rewrite disposed of are dropped, the driver's own errors appended. */
+  finishDiagnostics(diagnostics: readonly Diagnostic[]): readonly Diagnostic[];
+}
+
+/**
+ * Bridge the module-system globals across an emit whose format differs from the
+ * source's shape — an emit-time correction like the specifier rewrite beside it.
+ * `@types/node` declares `__dirname`/`__filename` as unconditional ambient
+ * globals and the checker accepts `import.meta` wherever the module option
+ * allows it, so a CommonJS-shaped source emitted as ES modules (or the reverse
+ * — one half of a `dual` package) typechecks clean and throws `ReferenceError`
+ * at runtime. Under an ES-module emit, `__dirname`/`__filename` become
+ * `import.meta.dirname`/`.filename` (node ≥20.11), and a reference to
+ * `require`/`module`/`exports` — which no expression can substitute (`require`
+ * needs a hoisted `createRequire`) — is an error naming the fix. Under a
+ * CommonJS emit, `import.meta` members are rewritten per {@link CJS_META_MEMBERS}
+ * and any other use of `import.meta` errors with advice that survives fabr's
+ * generated tsconfig (TS1343's "change the module option" names a knob the
+ * project does not own).
+ *
+ * Only a reference resolving to an AMBIENT declaration (every declaration in a
+ * `.d.ts`) is rewritten or errored — a file shadowing `__dirname` with its own
+ * binding keeps it — and a direct `typeof` operand is left alone: rewriting
+ * `typeof __dirname` would flip what the guard detects. Scripts are skipped
+ * (no module format to bridge), and so are `node16`/`nodenext`/`preserve`
+ * projects, whose per-file format follows the source's own declared one.
+ *
+ * Undefined where no direction applies. `program` is a thunk because the wave
+ * fallback rebuilds the program under the same transformers.
+ */
+function crossFormatGlobals(ts: ITypeScript, options: CompilerOptions, program: () => IProgram): ICrossFormatGlobals | undefined {
+  const direction = emitsEsModules(ts, options)
+    ? "esm"
+    : options.module === undefined || options.module === ts.ModuleKind.CommonJS
+      ? "cjs"
+      : undefined;
+  if (direction === undefined) {
+    return undefined;
+  }
+  const f = ts.factory;
+  /* Meta-property starts this rewrite disposed of (rewritten or errored), per
+   * file — the span the checker reports TS1343 at, so the two match up. */
+  const disposed = new Map<string, Set<number>>();
+  const reported: Diagnostic[] = [];
+  const error = (sourceFile: ISourceFileNode, node: INode, message: string): void => {
+    const positioned = node as IPositionedNode;
+    const start = positioned.getStart(sourceFile);
+    reported.push({
+      file: sourceFile,
+      start,
+      length: positioned.end - start,
+      messageText: message,
+      category: ts.DiagnosticCategory.Error,
+      code: CROSS_FORMAT_ERROR,
+    } as Diagnostic);
+  };
+  const scaffoldingError = (name: string): string =>
+    name === "require"
+      ? "'require' is not defined in an ES module; use an import, or construct one with 'node:module'.createRequire"
+      : name === "module"
+        ? "'module' is not defined in an ES module; for a main-module check, test 'import.meta.main' instead"
+        : "'exports' is not defined in an ES module; use export declarations";
+
+  const esmTransform = (context: unknown, sourceFile: ISourceFileNode): INode => {
+    const checker = program().getTypeChecker();
+    const aware = FORMAT_AWARE.test(sourceFile.text);
+    /** Whether `node` is a value reference resolving to the ambient global —
+     * every declaration in a declaration file — rather than to a binding of the
+     * source's own, or to some property that happens to share the name. */
+    const ambientReference = (node: IIdentifierNode): boolean => {
+      const parent = node.parent;
+      if (parent === undefined) {
+        return false;
+      }
+      if (ts.isPropertyAccessExpression(parent) && (parent as IPropertyAccessNode).name === node) {
+        return false;
+      }
+      if (ts.isPropertyAssignment(parent) && (parent as IPropertyAccessNode).name === node) {
+        return false;
+      }
+      if (ts.isQualifiedName(parent) || ts.isTypeQueryNode(parent) || ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) {
+        return false;
+      }
+      const symbol = ts.isShorthandPropertyAssignment(parent)
+        ? checker.getShorthandAssignmentValueSymbol(parent)
+        : checker.getSymbolAtLocation(node);
+      const declarations = symbol?.declarations ?? [];
+      return declarations.length > 0 && declarations.every(declaration => declaration.getSourceFile().isDeclarationFile);
+    };
+    const metaAccess = (name: string): INode =>
+      f.createPropertyAccessExpression(
+        f.createMetaProperty(ts.SyntaxKind.ImportKeyword, f.createIdentifier("meta")),
+        name === "__dirname" ? "dirname" : "filename"
+      );
+    const visit = (node: INode): INode => {
+      if (ts.isTypeOfExpression(node)) {
+        /* The DIRECT operand of a typeof guard keeps its spelling — rewriting it
+         * flips what the guard detects; a deeper expression is visited normally. */
+        const operand = (node as ITypeOfExpressionNode).expression;
+        if (ts.isIdentifier(operand)) {
+          const name = (operand as IIdentifierNode).text;
+          if (CJS_PATH_GLOBALS.has(name) || CJS_SCAFFOLDING.has(name)) {
+            return node;
+          }
+        }
+        return ts.visitEachChild(node, visit, context);
+      }
+      if (ts.isShorthandPropertyAssignment(node)) {
+        /* `{ __dirname }` — the reference is the whole assignment, and its
+         * replacement has to carry the property name the shorthand implied. */
+        const name = (node as IShorthandPropertyAssignmentNode).name;
+        if (CJS_PATH_GLOBALS.has(name.text) && ambientReference(name)) {
+          return f.createPropertyAssignment(f.createIdentifier(name.text), metaAccess(name.text));
+        }
+        if (CJS_SCAFFOLDING.has(name.text) && !aware && ambientReference(name)) {
+          error(sourceFile, name, scaffoldingError(name.text));
+        }
+        return node;
+      }
+      if (ts.isIdentifier(node)) {
+        const name = (node as IIdentifierNode).text;
+        if (CJS_PATH_GLOBALS.has(name) && ambientReference(node as IIdentifierNode)) {
+          return metaAccess(name);
+        }
+        if (CJS_SCAFFOLDING.has(name) && !aware && ambientReference(node as IIdentifierNode)) {
+          error(sourceFile, node, scaffoldingError(name));
+        }
+        return node;
+      }
+      return ts.visitEachChild(node, visit, context);
+    };
+    return ts.visitNode(sourceFile, visit);
+  };
+
+  const cjsTransform = (context: unknown, sourceFile: ISourceFileNode): INode => {
+    const isImportMeta = (node: INode): boolean =>
+      ts.isMetaProperty(node) && (node as IMetaPropertyNode).keywordToken === ts.SyntaxKind.ImportKeyword;
+    const dispose = (node: INode): void => {
+      const starts = disposed.get(sourceFile.fileName) ?? new Set<number>();
+      starts.add((node as IPositionedNode).getStart(sourceFile));
+      disposed.set(sourceFile.fileName, starts);
+    };
+    const visit = (node: INode): INode => {
+      if (ts.isPropertyAccessExpression(node) && isImportMeta((node as IPropertyAccessNode).expression)) {
+        const access = node as IPropertyAccessNode;
+        dispose(access.expression);
+        const member = ts.isIdentifier(access.name) ? (access.name as IIdentifierNode).text : undefined;
+        const replacement = member === undefined ? undefined : CJS_META_MEMBERS.get(member)?.(f);
+        if (replacement !== undefined) {
+          return replacement;
+        }
+        error(
+          sourceFile,
+          node,
+          `'import.meta.${member ?? ""}' has no CommonJS equivalent; guard it behind a runtime check, or emit this source as ES modules only`
+        );
+        return node;
+      }
+      if (isImportMeta(node)) {
+        /* Bare, or under an element access: nothing to bind a member rewrite to. */
+        dispose(node);
+        error(sourceFile, node, "'import.meta' has no CommonJS equivalent; guard it behind a runtime check, or emit this source as ES modules only");
+        return node;
+      }
+      return ts.visitEachChild(node, visit, context);
+    };
+    return ts.visitNode(sourceFile, visit);
+  };
+
+  const scan = direction === "esm" ? [...CJS_PATH_GLOBALS, ...CJS_SCAFFOLDING] : ["import.meta"];
+  /* A source that pinned its own module format lands in an emitted file node
+   * loads as that format whatever the project's `module` says (`legacy.cts`
+   * emits into `legacy.cjs`), and there the OTHER direction's globals are the
+   * defined ones — so the bridge leaves it alone. */
+  const pinned = direction === "esm" ? [".cts", ".cjs"] : [".mts", ".mjs"];
+  return {
+    transformer: context => sourceFile => {
+      if (
+        sourceFile.fileName.endsWith(".d.ts") ||
+        sourceFile.fileName.endsWith(".json") ||
+        pinned.some(extension => sourceFile.fileName.endsWith(extension)) ||
+        !scan.some(token => sourceFile.text.includes(token))
+      ) {
+        return sourceFile;
+      }
+      /* A script has no module format to bridge (and under an ES-module package
+       * is broken in ways no expression rewrite reaches). */
+      const isModule = ts.isExternalModule
+        ? ts.isExternalModule(sourceFile)
+        : (sourceFile as unknown as ISourceFileInfo).externalModuleIndicator !== undefined;
+      if (!isModule) {
+        return sourceFile;
+      }
+      return direction === "esm" ? esmTransform(context, sourceFile) : cjsTransform(context, sourceFile);
+    },
+    finishDiagnostics: diagnostics => [
+      ...diagnostics.filter(diagnostic => {
+        const info = diagnostic as IDiagnosticInfo;
+        if (info.code !== IMPORT_META_MODULE_ERROR || info.file === undefined || info.start === undefined) {
+          return true;
+        }
+        return disposed.get((info.file as ISourceFileInfo).fileName)?.has(info.start) !== true;
+      }),
+      ...reported,
+    ],
+  };
+}
+
 /**
  * The layout this compile's specifiers are rewritten in, or undefined where
  * neither rewrite applies.
@@ -1481,6 +1797,10 @@ export function main(argv: string[]): number {
     throw new Error(`tsc-driver: --emit-extension needs an ES-module emit; this project's 'module' produces CommonJS`);
   }
   const rewriter = layout && specifierRewriter(ts, resolve, layout);
+  /* First among the before-transforms, so it visits the parse tree (its ambient
+   * test asks the checker about original nodes); the specifier rewriter only
+   * replaces specifier literals, which this never reads. */
+  const crossFormat = crossFormatGlobals(ts, parsed.options, () => program);
   /* The declaration traversal doubles as the forwarding-edge recorder, and so
    * runs whether or not there is anything to rewrite: what a file republishes
    * through its own interface is a property of its declarations, not of the
@@ -1488,10 +1808,11 @@ export function main(argv: string[]): number {
    * undefined and this transformer observes without changing a node. */
   const declarations =
     graph === undefined ? rewriter : specifierRewriter(ts, resolve, layout, (file, specifier) => graph.forwards(file, specifier));
+  const before = [crossFormat?.transformer, rewriter].filter((entry): entry is TransformerFactory => entry !== undefined);
   const transformers =
-    rewriter === undefined && declarations === undefined
+    before.length === 0 && declarations === undefined
       ? undefined
-      : { ...(rewriter ? { before: [rewriter] } : {}), ...(declarations ? { afterDeclarations: [declarations] } : {}) };
+      : { ...(before.length > 0 ? { before } : {}), ...(declarations ? { afterDeclarations: [declarations] } : {}) };
   /* Declarations are rewritten on their way out rather than re-read afterwards:
    * the emitter hands each file over here, so nothing incorrect is ever written
    * and the step's output is collected from a tree that was never wrong. */
@@ -1558,12 +1879,15 @@ export function main(argv: string[]): number {
    * carries the project's own option diagnostics, so the config errors overlap
    * it and would otherwise print twice. In wave mode the per-file diagnostics
    * come from the wave itself (a whole-program pass would defeat the point);
-   * the compilation's own — the options, and the globals — are still asked once. */
-  const diagnostics = ts.sortAndDeduplicateDiagnostics([
+   * the compilation's own — the options, and the globals — are still asked once.
+   * Finished through the cross-format rewrite AFTER emit, which is when it has
+   * seen every meta-property it disposed of (the emit above ran the transform). */
+  const collected = [
     ...parsed.errors,
     ...(graph === undefined ? ts.getPreEmitDiagnostics(program) : graph.diagnostics(program)),
     ...emitted.diagnostics,
-  ]);
+  ];
+  const diagnostics = ts.sortAndDeduplicateDiagnostics(crossFormat === undefined ? collected : crossFormat.finishDiagnostics(collected));
   if (diagnostics.length > 0) {
     /* Diagnostics go to stdout, as the CLI writes them. */
     process.stdout.write(renderDiagnostics(ts, diagnostics, host, parsed.options.pretty !== false));

@@ -1097,6 +1097,114 @@ describe("emitting under a renamed extension", () => {
   });
 });
 
+describe("bridging module-system globals across the emit format", () => {
+  /** Compile `sources` under `module`, with the ambient declarations a real
+   * project gets from `@types/node` supplied as a fixture `globals.d.ts`, and
+   * answer what landed in `build/`. */
+  function compileBridged(module: string, sources: Record<string, string>): { status: number; output: string; read: (name: string) => string } {
+    const work = fixture();
+    stage(work.root, [], [], [], undefined, module);
+    const configPath = path.join(work.root, "tsconfig.json");
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    config.include = ["./src/**/*.ts", "./src/**/*.cts", "./src/**/*.mts"];
+    fs.writeFileSync(configPath, JSON.stringify(config));
+    fs.writeFileSync(
+      path.join(work.root, "src", "globals.d.ts"),
+      "declare var __dirname: string;\ndeclare var __filename: string;\n" +
+        "declare var require: { (id: string): unknown; main: unknown; resolve(id: string): string };\n" +
+        "declare var module: { exports: unknown };\n" +
+        "interface ImportMeta { url: string; dirname: string; filename: string; main: boolean; resolve(id: string): string }\n"
+    );
+    for (const [name, text] of Object.entries(sources)) {
+      fs.writeFileSync(path.join(work.root, "src", name), text);
+    }
+    const { status, output } = compile(work.root);
+    return { status, output, read: name => fs.readFileSync(path.join(work.root, "build", name), "utf8") };
+  }
+
+  it("rewrites the path globals to import.meta under an ES-module emit", () => {
+    const { status, output, read } = compileBridged("esnext", {
+      "index.ts": "export const dir = __dirname;\nexport const file = __filename;\nexport const both = { __dirname };\n",
+    });
+    expect(status, output).to.equal(0);
+    const emitted = read("index.js");
+    expect(emitted).to.contain("const dir = import.meta.dirname");
+    expect(emitted).to.contain("const file = import.meta.filename");
+    /* The shorthand's replacement has to carry the property name it implied. */
+    expect(emitted).to.contain("{ __dirname: import.meta.dirname }");
+  });
+
+  it("leaves a typeof guard and a shadowing binding exactly as written", () => {
+    const { status, output, read } = compileBridged("esnext", {
+      "index.ts":
+        'export const guarded = typeof __dirname !== "undefined" ? __dirname : "none";\n' +
+        "export function shadowed(__dirname: string): string { return __dirname; }\n",
+    });
+    expect(status, output).to.equal(0);
+    const emitted = read("index.js");
+    /* The guard keeps its meaning; the arm it protects is rewritten, which is
+     * what makes the guard take its other branch honestly. */
+    expect(emitted).to.contain('typeof __dirname !== "undefined" ? import.meta.dirname : "none"');
+    expect(emitted).to.contain("function shadowed(__dirname) { return __dirname; }");
+  });
+
+  it("errors on CommonJS scaffolding an ES-module emit cannot provide", () => {
+    const { status, output } = compileBridged("esnext", {
+      "index.ts": 'export const fs = require("node:fs");\n',
+    });
+    expect(status).to.not.equal(0);
+    expect(output).to.contain("'require' is not defined in an ES module");
+  });
+
+  it("trusts a file that guards its scaffolding with typeof", () => {
+    const { status, output, read } = compileBridged("esnext", {
+      "index.ts": 'export const main = typeof require !== "undefined" && require.main === module;\n',
+    });
+    expect(status, output).to.equal(0);
+    expect(read("index.js")).to.contain('typeof require !== "undefined" && require.main === module');
+  });
+
+  it("rewrites import.meta to the CommonJS spellings, TS1343 disposed of", () => {
+    const { status, output, read } = compileBridged("commonjs", {
+      "index.ts":
+        "export const u = import.meta.url;\nexport const d = import.meta.dirname;\n" +
+        "export const f = import.meta.filename;\nexport const m = !import.meta.main;\n",
+    });
+    expect(status, output).to.equal(0);
+    const emitted = read("index.js");
+    expect(emitted).to.contain('require("node:url").pathToFileURL(__filename).href');
+    expect(emitted).to.contain("exports.d = __dirname");
+    expect(emitted).to.contain("exports.f = __filename");
+    /* Parenthesized: the access it replaces was a primary expression. */
+    expect(emitted).to.contain("!(require.main === module)");
+    expect(emitted).to.not.contain("import.meta");
+  });
+
+  it("errors usefully on an import.meta member CommonJS cannot express", () => {
+    const { status, output } = compileBridged("commonjs", {
+      "index.ts": 'export const r = import.meta.resolve("x");\n',
+    });
+    expect(status).to.not.equal(0);
+    expect(output).to.contain("'import.meta.resolve' has no CommonJS equivalent");
+    /* Replaced, not doubled: TS1343's advice names the module option, a knob a
+     * fabr project does not own. */
+    expect(output).to.not.contain("TS1343");
+  });
+
+  it("leaves a source that pinned its own format out of the bridge", () => {
+    const { status, output, read } = compileBridged("esnext", {
+      "index.ts": "export const dir = __dirname;\n",
+      "legacy.cts": "export const dir = __dirname;\n",
+    });
+    expect(status, output).to.equal(0);
+    expect(read("index.js")).to.contain("import.meta.dirname");
+    /* Node loads `.cjs` as CommonJS whatever syntax the compile put in it, and
+     * there `__dirname` is defined — so the reference stays as written. */
+    expect(read("legacy.cjs")).to.contain("__dirname");
+    expect(read("legacy.cjs")).to.not.contain("import.meta");
+  });
+});
+
 describe("relativizeBuildRoot", () => {
   it("leaves text naming nothing under the root untouched", () => {
     const text = 'const a = "/elsewhere/src/App.tsx";\n';

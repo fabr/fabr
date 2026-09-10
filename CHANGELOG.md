@@ -27,6 +27,7 @@ TSC=@npm:typescript:5.4.5:tsc becomes TYPESCRIPT=@npm:typescript:5.4.5.
 - Add incremental TSC support.
 - Add js/node_globals flag for bundling w/ node process/Buffer globals.
 - Add postcss for more correct css-module processing.
+- Rewrite __dirname/__filename globals for ESM targets and vice-versa for import.meta in CJS targets.
 
 ## Fabr 0.2.1
 @fabr-build/core:
