@@ -56,12 +56,12 @@ describe("isBareSpecifier", () => {
 });
 
 describe("rewriteStyledImport", () => {
-  it("maps a Sass css-module import to its lowered .module.css", () => {
-    /* The stylesheet itself, not a proxy: esbuild's local-css loader scopes it
-     * and hands the importing JS the class-name map, so nothing needs to be
-     * synthesized in between. */
-    assert.equal(rewriteStyledImport("./Foo.module.scss"), "./Foo.module.css");
-    assert.equal(rewriteStyledImport("../a/Foo.module.sass"), "../a/Foo.module.css");
+  it("maps a Sass css-module import to its lowered .css, marker and all", () => {
+    /* The '.module.' marker means "scope me" and css_compile has already done
+     * so, so its output does not carry it — otherwise every downstream bundler,
+     * this one included, would scope the names a second time. */
+    assert.equal(rewriteStyledImport("./Foo.module.scss"), "./Foo.css");
+    assert.equal(rewriteStyledImport("../a/Foo.module.sass"), "../a/Foo.css");
   });
 
   it("maps a plain Sass import to its compiled .css", () => {
@@ -69,9 +69,11 @@ describe("rewriteStyledImport", () => {
     assert.equal(rewriteStyledImport("./styles.sass"), "./styles.css");
   });
 
-  it("leaves plain .css (incl. an already-lowered .module.css) unchanged", () => {
-    assert.equal(rewriteStyledImport("./Foo.module.css"), "./Foo.module.css");
+  it("leaves plain .css unchanged", () => {
     assert.equal(rewriteStyledImport("./app.css"), "./app.css");
+    /* A `.module.css` is left alone: it is a SOURCE spelling this driver never
+     * lowers, and a third-party package shipping one still means "scope me". */
+    assert.equal(rewriteStyledImport("./Foo.module.css"), "./Foo.module.css");
   });
 
   it("leaves non-styled specifiers unchanged", () => {
@@ -211,7 +213,7 @@ describe("a styled import written as a package subpath", () => {
     fs.writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ name: "styledpkg", version: "1.0.0" }));
     /* What css_compile would have lowered the .scss to; the .scss itself is a
      * source, and never reaches the bundle. */
-    fs.writeFileSync(path.join(pkg, "styles.module.css"), ".styled { color: STYLED_MARKER; }\n");
+    fs.writeFileSync(path.join(pkg, "styles.css"), ".styled { color: STYLED_MARKER; }\n");
     fs.writeFileSync(path.join(work, "entry.mjs"), 'import "styledpkg/styles.module.scss";\nconsole.log("app");\n');
   });
 

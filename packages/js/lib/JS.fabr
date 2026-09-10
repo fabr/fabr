@@ -51,6 +51,20 @@ default ESBUILD = @npm:esbuild:0.28.1;
 default SASS = @npm:sass-embedded:1.100.0;
 
 #
+# The css-modules scoper the css driver runs after Sass, and the postcss host it
+# is a plugin for. postcss-modules IS the reference implementation of the
+# css-modules dialect — every other integration (css-loader, the esbuild postcss
+# plugins) wraps this same `postcss([modules(...)]).process(...)` call — so
+# adopting it is how fabr's scoping stays compatible by construction rather than
+# by chasing a specification that has none. Pinned like any tool; the dialect is
+# the plugin set's, so a differential fixture suite turns an upgrade's dialect
+# change into a test failure rather than a silent re-scoping of everybody's CSS.
+#
+
+default POSTCSS = @npm:postcss:8.5.28;
+default POSTCSS_MODULES = @npm:postcss-modules:9.0.1;
+
+#
 # The bundler `js_bundle` runs (fabr's esbuild driver: reads the rule's
 # options manifest, maps it onto esbuild).
 #
@@ -399,6 +413,16 @@ targetdef js_compile {
     # format's, which occupies the same names. Emitted specifiers are renamed to
     # match, so the compile has to know rather than being renamed afterwards.
     module_extension = STRING;
+    # How an import is named in the emitted code: what it RESOLVED to, paired
+    # with the file the emit must name in its place. Consulted for every import
+    # and taking precedence over the compile's own extension mapping, so a rule
+    # can redirect anything — the built-in `.ts` -> `.js` included.
+    # What needs it is an import of something the compile emits nothing for: a
+    # stylesheet resolves (via allowArbitraryExtensions) to a declaration
+    # `x.module.d.scss.ts`, whose own name cannot say whether the runtime
+    # stand-in is the stylesheet or the JS shim carrying its class map. Set
+    # automatically for any target whose sources include stylesheets.
+    rewrite_imports = REWRITE;
 }
 
 #
@@ -425,19 +449,30 @@ targetdef js_test_run {
 }
 
 #
-# Lower a styled source tree to plain CSS. `srcs` are the styled sources
-# (`.scss`/`.sass`, css-modules `.module.{scss,css}`, plain `.css`); `deps` are
-# scss packages mounted for Sass `@use`/`@import` resolution (the Sass loadPaths
-# analogue of `node_modules`). Lowering is all it does: each source becomes the
-# same name with a `.css` extension, css-modules included (`x.module.scss` →
-# `x.module.css`, left for the bundler to scope). Sass partials (`_foo.scss`) are
-# skipped, per Sass's own directory-compile convention. Composed automatically by
-# `js_bundle` for any styled sources; also declarable directly. Uses `SASS`.
+# Lower a styled source tree to plain CSS, scoping css-modules on the way.
+# `srcs` are the styled sources (`.scss`/`.sass`, css-modules
+# `.module.{scss,css}`, plain `.css`); `deps` are scss packages mounted for Sass
+# `@use`/`@import` resolution (the Sass loadPaths analogue of `node_modules`);
+# `package_name` is the identity scoped class names are derived from (they are a
+# function of the package and the file, never of a bundle).
+#
+# Each source becomes the same name with a `.css` extension. A **css-module**
+# (`x.module.scss`) additionally yields `x.module.css.js` — a JS shim exporting
+# its class-name map, in both the literal and camelCase spellings — and the
+# TypeScript declarations `x.module.d.scss.ts` / `x.module.d.css.ts`, so an
+# `import styles from "./x.module.scss"` both typechecks and resolves to real
+# class names outside a bundle. A plain stylesheet gets a declaration too, so a
+# side-effect import of it typechecks. Sass partials (`_foo.scss`) produce
+# nothing, per Sass's own directory-compile convention.
+#
+# Composed automatically by `js_package`/`js_bundle`/the test pipeline for any
+# styled sources; also declarable directly. Uses `SASS` and `POSTCSS_MODULES`.
 #
 
 targetdef css_compile {
     srcs = FILES;
     deps = FILES;
+    package_name = STRING;
 }
 
 
@@ -480,10 +515,11 @@ js_script @fabr-build/js-tools/bundle-driver {
 }
 
 # The CSS compiler `css_compile` runs (the default `CSS_COMPILER`): Sass
-# lowering, driven by the rule's options manifest.
+# lowering and css-modules scoping, driven by the rule's options manifest.
 js_script @fabr-build/js-tools/css-driver {
     entry = ../cssDriver/css-driver.js;
-    deps = ${SASS} ../pnp/PnPResolver.js ../pnp/PackageExports.js ../pnp/ReadSet.js;
+    deps = ${SASS} ${POSTCSS} ${POSTCSS_MODULES}
+           ../pnp/PnPResolver.js ../pnp/PackageExports.js ../pnp/ReadSet.js;
 }
 
 # The TypeScript driver `js_compile` runs (see TSC_DRIVER): drives the compiler

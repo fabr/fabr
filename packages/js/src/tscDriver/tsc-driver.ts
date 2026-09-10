@@ -401,8 +401,17 @@ export function assertDrivableCompiler(version: string): void {
   );
 }
 
-/** An emitted declaration file, in each of its spellings. */
-const DECLARATION_FILE = /\.d\.[cm]?ts$/;
+/**
+ * A declaration file, in each of TypeScript's spellings: `x.d.ts` and the module
+ * forms, plus 5.0's arbitrary-extension form `x.d.<ext>.ts` — which is how a
+ * non-JS asset is typed (`Card.module.d.scss.ts` declares what importing
+ * `Card.module.scss` yields). Narrower, this driver would take one for an
+ * ordinary `.ts` and claim it emits `Card.module.d.scss.js`.
+ *
+ * JSPackage.ts carries the same rule for the host side; the driver must not
+ * import fabr's modules at runtime, so the two are kept in step by hand.
+ */
+const DECLARATION_FILE = /\.d\.(?:[cm]?ts|[^./]+\.ts)$/;
 
 /** The digest a shape (an interface artifact's content hash) is taken with.
  * Purely this driver's: both sides of the comparison — the staged base output
@@ -871,6 +880,105 @@ interface IEmitLayout {
    *  source lands on moves: a source that pinned its own format (`.mts`, `.cjs`)
    *  already names one and keeps it. See {@link RENAMED_EXTENSION}. */
   jsExtension?: string;
+  /**
+   * What a **non-JS asset** is called in the output tree: rootDir-relative
+   * declaration to the rootDir-relative file the emit must name in its place
+   * (see {@link REWRITES_FLAG}), as ordered RULES — first match wins.
+   *
+   * Needed because the mapping is not derivable. `import styles from
+   * "./x.module.scss"` resolves — via `allowArbitraryExtensions` — to a
+   * declaration `x.module.d.scss.ts`, which is not a file anything can load, and
+   * nothing in its name says whether the runtime stand-in is the stylesheet or a
+   * shim exporting its class map. So the producer states it.
+   *
+   * Rules rather than the pairs resolving them against this compile's sources,
+   * because the document is action key material: as pairs it grows with the
+   * stylesheet count and any one of them appearing rebuilds the whole compile.
+   * They arrive pre-compiled to a regex and a `$n` replacement, so applying them
+   * needs no glob language here — the producer owns that, and this driver only
+   * runs what it was given.
+   */
+  rewrites?: IImportRewrite[];
+  /**
+   * Whether relative specifiers additionally get this compile's emitted
+   * EXTENSION (`./bar` → `./bar.js`). ES-module-only: a CommonJS emit resolves
+   * extensionless specifiers itself.
+   *
+   * Asset renaming is not gated on it — a `require("./x.module.scss")` names a
+   * file no step produces however the module was emitted, and the test pipeline
+   * compiles CommonJS. The two rewrites share this traversal and nothing else.
+   */
+  rewriteExtensions: boolean;
+}
+
+/**
+ * Where this compile's output for an ASSET lands, or undefined if `source` is
+ * not one. See {@link IEmitLayout.rewrites} — the rules are written in
+ * rootDir-relative posix paths, so it is a property of the sources rather than
+ * of where they were staged.
+ */
+function rewrittenPathOf(source: string, layout: IEmitLayout): string | undefined {
+  if (layout.rewrites === undefined || layout.rootDir === undefined) {
+    return undefined;
+  }
+  const relative = path.relative(layout.rootDir, source);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return undefined;
+  }
+  const named = applyImportRewrites(relative.split(path.sep).join("/"), layout.rewrites);
+  return named === undefined ? undefined : path.join(layout.outDir ?? layout.rootDir, renamedIfEmitted(named, layout));
+}
+
+/** One rewrite rule: a regular expression over rootDir-relative posix paths,
+ * and the `$n` replacement producing the name to emit in its place. */
+export interface IImportRewrite {
+  pattern: string;
+  replacement: string;
+}
+
+/**
+ * The name the first matching rule gives `relative`, or undefined where none
+ * matches.
+ *
+ * Deliberately the whole of the interpretation: the rules arrive compiled, so
+ * this needs nothing but `RegExp`. The trailing tidy-up mirrors the producer's
+ * own — an unmatched recursive group substitutes as empty, which can leave a
+ * doubled or edge slash for a path at the tree root.
+ */
+export function applyImportRewrites(relative: string, rules: IImportRewrite[]): string | undefined {
+  for (const rule of rules) {
+    const expression = new RegExp(rule.pattern);
+    if (expression.test(relative)) {
+      return relative
+        .replace(expression, rule.replacement)
+        .replace(/\/{2,}/g, "/")
+        .replace(/^\/+|\/+$/g, "");
+    }
+  }
+  return undefined;
+}
+
+/**
+ * A stand-in name put through this compile's OWN extension rules, where it is
+ * something this compile emits.
+ *
+ * The table's targets are of two kinds and the difference matters under
+ * `--emit-extension`. A css-module's shim is an ordinary `.js` SOURCE of this
+ * compile, so a compile renaming its JavaScript renames the shim too and the
+ * specifier has to follow — otherwise a dual package's ES-module format imports
+ * the CommonJS shim while its own sits beside it unused. The stylesheet is not a
+ * compile output at all (the css step delivers it), so it is kept verbatim. The
+ * same {@link EMITTED_EXTENSION} table decides which is which, so there is no
+ * second rule to keep in step.
+ */
+function renamedIfEmitted(name: string, layout: IEmitLayout): string {
+  const extension = path.extname(name);
+  const mapped = EMITTED_EXTENSION.get(extension);
+  if (mapped === undefined) {
+    return name;
+  }
+  const emitted = mapped === ".js" && layout.jsExtension !== undefined ? layout.jsExtension : mapped;
+  return name.slice(0, -extension.length) + emitted;
 }
 
 /** The runtime extension each source extension emits as; absent means this
@@ -895,6 +1003,13 @@ const EMITTED_EXTENSION = new Map<string, string>([
  * the specifier as written. With no `outDir` the output sits beside its source.
  */
 export function emittedPathOf(source: string, layout: IEmitLayout): string | undefined {
+  /* Before the declaration check, which an asset's declaration would otherwise
+   * fail on: naming a stand-in for something that emits nothing is the whole
+   * point of the table. */
+  const asset = rewrittenPathOf(source, layout);
+  if (asset !== undefined) {
+    return asset;
+  }
   if (DECLARATION_FILE.test(source)) {
     return undefined;
   }
@@ -984,7 +1099,17 @@ function specifierRewriter(
         return undefined;
       }
       const resolved = resolve(specifier, sourceFile.fileName);
-      const target = resolved === undefined ? undefined : emittedPathOf(resolved, layout!);
+      if (resolved === undefined) {
+        return undefined;
+      }
+      /* An asset is renamed whatever the module system — the specifier names a
+       * file no step produces, which `require` gets no more right than `import`.
+       * Anything else is only rewritten where the extension rewrite applies. */
+      const asset = rewrittenPathOf(resolved, layout!);
+      if (asset === undefined && !layout!.rewriteExtensions) {
+        return undefined;
+      }
+      const target = asset ?? emittedPathOf(resolved, layout!);
       if (target === undefined) {
         return undefined;
       }
@@ -1070,14 +1195,24 @@ function specifierRewriter(
 }
 
 /**
- * The layout an ES-module emit is rewritten in, or undefined where no rewrite
- * applies: CommonJS resolves extensionless specifiers itself, `preserve` exists
- * to keep what was written, and `node16`/`nodenext` decide per file from the
- * enclosing package's type — a judgment this driver would have to reproduce
- * rather than read.
+ * The layout this compile's specifiers are rewritten in, or undefined where
+ * neither rewrite applies.
+ *
+ * **Extension** rewriting is ES-module-only: CommonJS resolves extensionless
+ * specifiers itself, `preserve` exists to keep what was written, and
+ * `node16`/`nodenext` decide per file from the enclosing package's type — a
+ * judgment this driver would have to reproduce rather than read. **Asset**
+ * rewriting is not, so a table alone earns a layout.
  */
-function emitLayoutOf(ts: ITypeScript, options: CompilerOptions, root: string, jsExtension?: string): IEmitLayout | undefined {
-  if (!emitsEsModules(ts, options)) {
+function emitLayoutOf(
+  ts: ITypeScript,
+  options: CompilerOptions,
+  root: string,
+  jsExtension?: string,
+  rewrites?: IImportRewrite[]
+): IEmitLayout | undefined {
+  const rewriteExtensions = emitsEsModules(ts, options);
+  if (!rewriteExtensions && rewrites === undefined) {
     return undefined;
   }
   const directory = (value: unknown): string | undefined => (typeof value === "string" ? path.resolve(root, value) : undefined);
@@ -1086,6 +1221,8 @@ function emitLayoutOf(ts: ITypeScript, options: CompilerOptions, root: string, j
     outDir: directory(options.outDir),
     preserveJsx: options.jsx === ts.JsxEmit.Preserve,
     jsExtension,
+    rewrites,
+    rewriteExtensions,
   };
 }
 
@@ -1334,8 +1471,8 @@ export function main(argv: string[]): number {
    * rewriter serves both phases — the JavaScript and the declarations land in
    * the same directory, so they name each other identically. */
   const jsExtension = emitExtensionOf(argv);
-  const layout = emitLayoutOf(ts, parsed.options, root, jsExtension);
-  if (jsExtension !== undefined && layout === undefined) {
+  const layout = emitLayoutOf(ts, parsed.options, root, jsExtension, importRewritesOf(argv, root));
+  if (jsExtension !== undefined && layout?.rewriteExtensions !== true) {
     /* Renaming without rewriting is the exact failure `--emit-extension` refuses
      * `.cjs` for, and it is reachable the other way round too: only an ES-module
      * emit has its specifiers corrected ({@link emitLayoutOf}), so a CommonJS one
@@ -2208,6 +2345,52 @@ function projectOf(argv: string[]): string {
  * find `util.cjs`), which this driver does not do — it rewrites specifiers for
  * an ES-module emit alone.
  */
+/** Where the caller states what each non-JS asset is called in the output tree
+ * — a JSON array of compiled rename rules. See {@link IEmitLayout.rewrites}. */
+const REWRITES_FLAG = "--rewrite-imports";
+
+/**
+ * The asset table this compile was handed, or undefined if it was handed none.
+ *
+ * A file rather than an argument because it is per-source data of no fixed size,
+ * and a *separate* file rather than a tsconfig key because tsc owns that
+ * document — an unknown member there is at best ignored and at worst a
+ * diagnostic. Paths are rootDir-relative on both sides, and the caller writes it
+ * only when there is something in it, so a compile declaring none carries no
+ * trace of the mechanism.
+ */
+function importRewritesOf(argv: string[], root: string): IImportRewrite[] | undefined {
+  const named = argOf(argv, REWRITES_FLAG);
+  if (named === undefined) {
+    return undefined;
+  }
+  const file = path.resolve(root, named);
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (err) {
+    throw new Error(`tsc-driver: cannot read the ${REWRITES_FLAG} rules at '${named}': ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const parsed: unknown = JSON.parse(text);
+  if (!Array.isArray(parsed)) {
+    throw new Error(`tsc-driver: the ${REWRITES_FLAG} rules at '${named}' are not a list`);
+  }
+  return parsed.map((entry, index) => {
+    const rule = entry as { pattern?: unknown; replacement?: unknown };
+    if (typeof rule?.pattern !== "string" || typeof rule?.replacement !== "string") {
+      throw new Error(`tsc-driver: the ${REWRITES_FLAG} rule at index ${index} is not a pattern/replacement pair`);
+    }
+    /* Compiled here rather than at the point of use, so a malformed expression
+     * is reported against the document that carried it. */
+    try {
+      new RegExp(rule.pattern);
+    } catch (err) {
+      throw new Error(`tsc-driver: the ${REWRITES_FLAG} rule at index ${index} is not a valid expression: ${String(err)}`);
+    }
+    return { pattern: rule.pattern, replacement: rule.replacement };
+  });
+}
+
 function emitExtensionOf(argv: string[]): string | undefined {
   const flag = argv.indexOf("--emit-extension");
   if (flag < 0) {

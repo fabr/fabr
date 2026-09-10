@@ -26,6 +26,7 @@ TSC=@npm:typescript:5.4.5:tsc becomes TYPESCRIPT=@npm:typescript:5.4.5.
 - Add support for dual-format js package output.
 - Add incremental TSC support.
 - Add js/node_globals flag for bundling w/ node process/Buffer globals.
+- Add postcss for more correct css-module processing.
 
 ## Fabr 0.2.1
 @fabr-build/core:

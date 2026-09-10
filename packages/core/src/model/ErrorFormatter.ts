@@ -199,17 +199,25 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
        * package — both names have the same origin, keyed on the same path), the
        * two chains are identical: render it once and list both files, rather than
        * repeating the whole breadcrumb per side. */
-      const detailNote = (side: typeof cause.left): IDiagnosticNote[] => (side.detail ? [{ message: `at ${side.detail}` }] : []);
+      /* Only where a chain was rendered: the note places the file WITHIN that
+       * chain, and with no chain to place it in it just restates what the
+       * message already said. */
+      const detailNote = (side: typeof cause.left): IDiagnosticNote[] =>
+        side.detail !== undefined && side.provenance !== undefined ? [{ message: `at ${side.detail}` }] : [];
       const sameSource = cause.left.provenance !== undefined && cause.left.provenance === cause.right.provenance;
+      /* No label passed, so a side with no provenance contributes no note at
+       * all: the fallback would be `from 'X' (no origin information)`, and the
+       * message above already names both sides — repeating them to report an
+       * absence the reader cannot act on is worse than saying nothing. */
       const notes = sameSource
-        ? [...this.chainNotes(cause.left.provenance, cause.left.label, cause.key), ...detailNote(cause.left), ...detailNote(cause.right)]
-        : [cause.left, cause.right].flatMap(side => [
-            ...this.chainNotes(side.provenance, side.label, cause.key),
-            ...detailNote(side),
-          ]);
+        ? [...this.chainNotes(cause.left.provenance, undefined, cause.key), ...detailNote(cause.left), ...detailNote(cause.right)]
+        : [cause.left, cause.right].flatMap(side => [...this.chainNotes(side.provenance, undefined, cause.key), ...detailNote(side)]);
+      /* `help` like every other branch: the two sides say what clashed, and a
+       * producer that knows WHY two names met — and what to do about it — has
+       * nowhere else to put that. */
       return owner
-        ? { message: `Failed to build ${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target), notes }
-        : { message: cause.message, notes };
+        ? { message: `Failed to build ${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target), notes, help: helpOf(cause) }
+        : { message: cause.message, notes, help: helpOf(cause) };
     }
     if (owner && cause instanceof TestsFailedError) {
       /* Tests failed: the target built fine, so report the (pre-rendered)

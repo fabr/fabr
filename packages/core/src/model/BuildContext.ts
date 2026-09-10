@@ -92,7 +92,7 @@ import {
 import { attachHelp, ConflictError, IConflictSide, IConflictSource, toError } from "../core/Errors";
 import { createPipelineAction, stagePipeline } from "../rules/PipelineAction";
 import { closestMatch } from "../support/Suggest";
-import { Name, NameConstraint, RewriteFn, makeRewrite, NamePart, NamePartKind } from "../core/Name";
+import { Name, NameConstraint, NamePart, NamePartKind } from "../core/Name";
 import { globMatcher } from "../support/Glob";
 import { parseName } from "./Parser";
 import { IPrefixMatch, IPropertyEntry } from "./Namespace";
@@ -880,7 +880,7 @@ export class BuildContext {
 
   /**
    * Resolve a property's values to their substituted Names — the shared core of
-   * {@link resolveStringProperty} (which stringifies) and {@link resolveRewrite}
+   * {@link resolveStringProperty} (which stringifies) and the REWRITE readers
    * (which reads the rename template facet). References are NOT resolved: a
    * REWRITE/STRING value is inert, never a collection point.
    */
@@ -1058,21 +1058,7 @@ export class BuildContext {
     );
   }
 
-  /**
-   * Resolve a REWRITE property to a name-mapping function: each value is either
-   * a `sel -> tmpl` rename (selected paths replay into the template) or a bare
-   * constant (every path maps to it). Values are tried in written order,
-   * first match wins; undefined means no value matched (the rule decides what
-   * that means — passthrough, a default, or an error).
-   */
-  public resolveRewrite(
-    prop: IPropertyDecl,
-    target?: ITargetDecl,
-    stack?: IDependencyStack,
-    callerOverrides?: Constraints
-  ): Computable<RewriteFn> {
-    return this.resolveNameProperty(prop, target, stack, callerOverrides).then(makeRewrite);
-  }
+
 
   /**
    * Resolve a single-valued projection property to its substituted Name (see
@@ -2119,8 +2105,6 @@ export abstract class TargetContext {
    * input (for which materialization is the identity). */
   public abstract getFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]>;
 
-  /** Resolve a REWRITE property to its name-mapping function (see
-   * resolveRewrite); the empty rewrite (no such property) maps nothing. */
   /**
    * A FILES property read as CONTAINED: the same sources, marked so a `collect`
    * leaves their projections pending instead of extracting the files. Use it
@@ -2136,7 +2120,19 @@ export abstract class TargetContext {
     return this.getFileProperty(name, overrides).then(sources => new ContainedSources(sources));
   }
 
-  public abstract getRewrite(name: string, overrides?: Constraints): Computable<RewriteFn>;
+  /**
+   * A REWRITE property's values: each a `sel -> tmpl` rename or a bare constant,
+   * in written order. `makeRewrite` turns them into the first-match-wins
+   * mapping function most callers want.
+   *
+   * The rules rather than that function, because a caller may need to TRANSPORT
+   * the rename rather than apply it — handing it to a build step's driver, which
+   * holds no fabr vocabulary but can run what {@link Name.toRenameRule}
+   * compiles. Passing rules keeps such a manifest a fixed size; resolving them
+   * against the sources first would make it one entry per matching file, and put
+   * every one of them in the action's key material.
+   */
+  public abstract getRewriteRules(name: string, overrides?: Constraints): Computable<Name[]>;
 
   /** Resolve a single-valued projection property (a selector + optional `-> tmpl`
    * rename, e.g. `generate`'s `output`) to its substituted Name — the input a
@@ -2732,10 +2728,10 @@ export class DeclaredTargetContext extends TargetContext {
     });
   }
 
-  public getRewrite(name: string, overrides?: Constraints): Computable<RewriteFn> {
+  public getRewriteRules(name: string, overrides?: Constraints): Computable<Name[]> {
     return this.availableFor(name).then(applicable => {
       const prop = mergedDecls(applicable);
-      return prop ? this.context.resolveRewrite(prop, this.target, this.stack, overrides) : (): undefined => undefined;
+      return prop ? this.context.resolveNameProperty(prop, this.target, this.stack, overrides) : [];
     });
   }
 
@@ -2895,11 +2891,23 @@ export class AnonymousTargetContext extends TargetContext {
     return Computable.resolve((Array.isArray(value) ? value : [value]) as SourceRef[]);
   }
 
-  /** Sub-targets take concrete inputs, not REWRITE property declarations, so a
-   * rewrite can only come from the type's declared default. */
-  public getRewrite(name: string, overrides?: Constraints): Computable<RewriteFn> {
-    const decl = this.declaredDefault(name);
-    return decl ? this.context.resolveRewrite(decl, undefined, this.stack, overrides) : Computable.resolve(() => undefined);
+  /**
+   * A sub-target's rewrite input: the caller supplies the already-substituted
+   * `Name`s a written REWRITE property would have resolved to (each a `sel ->
+   * tmpl` rename or a bare constant), else the type's declared default.
+   *
+   * The bag holds Names rather than a name→name map because a rewrite IS a list
+   * of faceted names, which {@link makeRewrite} is what turns into a mapping
+   * function. A caller computing exact pairs states them as literal-to-literal
+   * renames and gets first-match-wins for free.
+   */
+  public getRewriteRules(name: string, overrides?: Constraints): Computable<Name[]> {
+    const value = this.inputs[name];
+    if (value === undefined) {
+      const decl = this.declaredDefault(name);
+      return decl ? this.context.resolveNameProperty(decl, undefined, this.stack, overrides) : Computable.resolve([]);
+    }
+    return Computable.resolve(value instanceof Name ? [value] : (value as Name[]));
   }
 
   /** A sub-target's projection input, if the caller supplied a Name in the bag

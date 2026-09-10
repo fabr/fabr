@@ -42,6 +42,7 @@ import {
   isCanonicalFileName,
   isJsonObject,
   MemoryFile,
+  Name,
   PackageFileSet,
   packageNodeSignature,
   parseJson,
@@ -52,7 +53,7 @@ import {
   TargetContext,
   toJsonObject,
 } from "@fabr-build/core";
-import { compileCssSources } from "./CSSCompile";
+import { compileCssSources, cssImportRewrites, partitionCssOutput } from "./CSSCompile";
 import { type ExportsValue, resolveExports } from "./pnp/PackageExports";
 
 export interface JSTarget {
@@ -428,21 +429,49 @@ export function resolveSourceMode(flags: Flag[]): Record<string, unknown> {
   return overlay;
 }
 
+/**
+ * BUILD_TYPEs that carry source maps: full debugging (`debug`) and
+ * optimized-but-debuggable (`relwithdebinfo`); `release` strips them. The
+ * default BUILD_TYPE is `debug` (STD.fabr), so a plain build is debuggable.
+ *
+ * Shared by the JavaScript and the stylesheet compiles, which have no reason to
+ * disagree about what a debuggable build is — and every reason not to, since a
+ * release package carrying one kind of map and not the other would just look
+ * broken.
+ */
+export function emitsSourceMap(buildType: string | undefined): boolean {
+  return buildType === "debug" || buildType === "relwithdebinfo";
+}
+
 /** The build step a source belongs to — see {@link classifySourceByExt}. */
 export type JsSourceKind = "ts" | "dts" | "js" | "jsx" | "css" | "json" | "copy";
+
+/**
+ * TypeScript's own definition of a declaration filename: `x.d.ts` and the module
+ * spellings, plus TS 5.0's arbitrary-extension form `x.d.<ext>.ts` — which is
+ * how a stylesheet is typed (`Card.module.d.scss.ts` declares what importing
+ * `Card.module.scss` yields), so the narrower `\.d\.[cm]?ts$` would classify one
+ * as an ordinary `.ts` and claim it emits `Card.module.d.scss.js`.
+ *
+ * The tsc driver carries its own copy of this (tsc-driver.ts) because it must
+ * not import fabr's modules at runtime; the two are one rule and move together.
+ */
+const DECLARATION_FILE = /\.d\.(?:[cm]?ts|[^./]+\.ts)$/;
 
 /**
  * Classify a source file by which build step consumes it: `"ts"`/`"js"`/`"jsx"`
  * are compiled by js_compile (tsc emits `.js`/`.d.ts`), `"dts"` is a
  * hand-written declaration (a compile input that emits nothing), `"css"` is a
- * Sass source lowered by css_compile, and `"copy"` is everything no step
+ * stylesheet handled by css_compile, and `"copy"` is everything no step
  * consumes — a runtime resource (`.json`, templates, `.sh`, assets).
  *
  * A kind names the step rather than the extension, so it covers that step's
- * spellings: `ts` has `.tsx`/`.mts`, `js` has `.mjs`/`.cjs`. Two to watch: `css`
- * does NOT hold `.css` (a plain stylesheet needs no lowering, so it is a `copy`
- * resource), and `jsx` is split from `js` because only `ts` and `jsx` *require*
- * the compile ({@link requiresCompile}).
+ * spellings: `ts` has `.tsx`/`.mts`, `js` has `.mjs`/`.cjs`, and `css` holds
+ * plain `.css` alongside Sass — a plain stylesheet needs no lowering, but it
+ * needs the same declaration and the same is-this-a-module judgment as any
+ * other, and one step owning every stylesheet is what keeps those answers from
+ * being given twice. `jsx` is split from `js` because only `ts` and `jsx`
+ * *require* the compile ({@link requiresCompile}).
  *
  * The one place an extension maps to a role — don't test one elsewhere.
  */
@@ -461,7 +490,7 @@ export function classifySourceByExt(path: string): JsSourceKind {
          * must see — e.g. the local picomatch shim) and a shipped *resource*
          * (e.g. the test runner's globals .d.ts, read back from the installed
          * package): it joins both the compile srcs and the copied output. */
-        if (/\.d\.[cm]?ts$/.test(lower)) {
+        if (DECLARATION_FILE.test(lower)) {
           return "dts";
         }
       /* fallthrough */
@@ -475,6 +504,7 @@ export function classifySourceByExt(path: string): JsSourceKind {
         return "jsx";
       case "scss":
       case "sass":
+      case "css":
         return "css";
       /* Like a .d.ts, a `.json` is a source in two roles: a runtime resource
        * that ships verbatim, AND a compile input, because js_compile sets
@@ -629,15 +659,53 @@ export interface ICompileOptions {
    * have to name the renamed siblings.
    */
   moduleExtension?: string;
+  /**
+   * What each imported non-JS asset is called in the output tree — js_compile's
+   * `rewrite_imports` REWRITE, as already-substituted names. Set by {@link compileContents}
+   * from the css step's outputs; a caller composing js_compile directly may state
+   * its own.
+   */
+  rewriteImports?: Name[];
+}
+
+/**
+ * Fold the css step's compile inputs — the css-module shims and the stylesheet
+ * declarations — into a classification, so everything downstream treats them as
+ * the ordinary sources they are. The styled sources themselves are untouched:
+ * they are the css step's input, not the compile's.
+ */
+function withGeneratedSources(classified: IJsSources, generated: FileSet): IJsSources {
+  const added = classifySources(generated);
+  return {
+    ts: FileSet.unionAll(classified.ts, added.ts),
+    js: FileSet.unionAll(classified.js, added.js),
+    dts: FileSet.unionAll(classified.dts, added.dts),
+    jsx: FileSet.unionAll(classified.jsx, added.jsx),
+    css: classified.css,
+    json: FileSet.unionAll(classified.json, added.json),
+    copy: FileSet.unionAll(classified.copy, added.copy),
+  };
 }
 
 /**
  * Build a source tree: classify it, run the steps its contents call for —
- * `js_compile` for the code, `css_compile` for the stylesheets — and return the
- * parts. `deps` serve both: the packages among them mount as the compile's
+ * `css_compile` for the stylesheets, then `js_compile` for the code — and return
+ * the parts. `deps` serve both: the packages among them mount as the compile's
  * node_modules and double as the Sass loadPaths. The parts stay separate because
  * callers place them differently — a test install mounts the compiled tree and
  * the sources at different roots, a package unions the lot.
+ *
+ * **The css step comes first, and the compile consumes it.** A css-module's
+ * class names only exist once Sass has evaluated the stylesheet and the scoper
+ * has renamed them, and the compile has to know both the shape they make (to
+ * typecheck `styles.cardTitle`) and what file to name in the stylesheet's place
+ * (to emit something that resolves). Running the two as siblings is what left
+ * every css-module broken outside a bundle.
+ *
+ * The serialization costs less than it looks: what crosses the edge is the shims
+ * and the declarations, NOT the CSS. Editing a rule inside a class changes
+ * neither, so the compile's action key is unchanged and it is a cache hit — only
+ * a change to a file's exported NAME set rebuilds it.
  */
 export function compileContents(
   context: TargetContext,
@@ -649,31 +717,49 @@ export function compileContents(
   /* The compile still runs for TypeScript/JSX; only the fate of the plain
    * JavaScript changes — it goes in as an input and comes back out untouched. */
   const keepSourceJs = options.transpileJs === false;
-  const compiled = keepSourceJs && !requiresCompile(classified) ? undefined : compileJsSources(context, classified, deps, options);
   const css = compileCssSources(
     context,
     classified.css,
-    deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)
+    deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet),
+    options.packageName
   );
-  return Computable.forAll([compiled ?? Computable.resolve(EMPTY_FILESET), css], (built, lowered) => {
-    /* What the compile actually delivers — `built` minus the JavaScript held
-     * back under keepSourceJs, which the original is delivered in place of. */
-    const emitted = keepSourceJs ? withoutTranspiledJs(built, classified.js) : built;
-    return {
-      sources: classified,
-      compiled: emitted,
-      css: lowered,
-      /* The JavaScript the compiler didn't deliver is delivered here instead, so
-       * the caller receives what it put in either way. JSON is subtracted for the
-       * opposite reason: it is a compile input (resolveJsonModule), and tsc COPIES
-       * every JSON an emitted module imports into outDir — so shipping it here as
-       * well would be the same name from two different files, i.e. a conflict. A
-       * JSON nothing imports is not emitted, and does still ship from here. */
-      passthrough: (keepSourceJs ? FileSet.unionAll(passthroughFiles(classified), classified.js) : passthroughFiles(classified)).minus(
-        emitted
-      ),
-      compileSrcs: compileSrcsOf(classified, deps) ?? EMPTY_FILESET,
-    };
+  return css.then(lowered => {
+    /* The step's output splits by role: the shims and declarations go INTO the
+     * compile, the stylesheets come out of the build as content. */
+    const { compileInputs, content } = partitionCssOutput(lowered);
+    const augmented = withGeneratedSources(classified, compileInputs);
+    const compiled =
+      keepSourceJs && !requiresCompile(augmented)
+        ? undefined
+        : compileJsSources(context, augmented, deps, {
+            ...options,
+            /* The compile's whole knowledge of CSS: rules saying which
+             * declaration shape stands in for which runtime file. Constant, and
+             * passed only where there ARE stylesheets, so a compile without them
+             * is byte-identical to one built before the mechanism existed. */
+            ...(classified.css.isEmpty() ? {} : { rewriteImports: cssImportRewrites() }),
+          });
+    return (compiled ?? Computable.resolve(EMPTY_FILESET)).then(built => {
+      /* What the compile actually delivers — `built` minus the JavaScript held
+       * back under keepSourceJs, which the original is delivered in place of. */
+      const emitted = keepSourceJs ? withoutTranspiledJs(built, augmented.js) : built;
+      return {
+        sources: augmented,
+        compiled: emitted,
+        css: content,
+        /* The JavaScript the compiler didn't deliver is delivered here instead, so
+         * the caller receives what it put in either way. JSON is subtracted for the
+         * opposite reason: it is a compile input (resolveJsonModule), and tsc COPIES
+         * every JSON an emitted module imports into outDir — so shipping it here as
+         * well would be the same name from two different files, i.e. a conflict. A
+         * JSON nothing imports is not emitted, and does still ship from here. */
+        passthrough: (keepSourceJs
+          ? FileSet.unionAll(passthroughFiles(augmented), augmented.js)
+          : passthroughFiles(augmented)
+        ).minus(emitted),
+        compileSrcs: compileSrcsOf(augmented, deps) ?? EMPTY_FILESET,
+      };
+    });
   });
 }
 
@@ -716,6 +802,7 @@ export function compileJsSources(
     deps: mountedDeps(directDeps),
     ...(options.packageName ? { package_name: options.packageName } : {}),
     ...(options.moduleExtension ? { module_extension: options.moduleExtension } : {}),
+    ...(options.rewriteImports?.length ? { rewrite_imports: options.rewriteImports } : {}),
   };
   return context.subTarget("js_compile", inputs, {
     label: "Compiling",

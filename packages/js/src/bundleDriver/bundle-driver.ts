@@ -120,6 +120,10 @@ const CODE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", "
  * than code: a miss on one of these is an external runtime URL, not an error. */
 const ASSET_KINDS = new Set(["url-token"]);
 
+/** The importer kinds written in a STYLESHEET rather than in JavaScript — the
+ * ones whose specifier means a stylesheet and can never mean a JS module. */
+const STYLESHEET_KINDS = new Set(["import-rule", "composes-from", "url-token"]);
+
 /** The package name a bare specifier belongs to (`lodash/fp` → `lodash`,
  * `@scope/pkg/sub` → `@scope/pkg`). */
 export function packageOf(specifier: string): string {
@@ -135,13 +139,36 @@ export function isBareSpecifier(specifier: string): boolean {
 /**
  * The css_compile resolve convention: a styled-source import maps to that
  * source's driver output, which is the same name with the Sass extension
- * lowered to `.css`. A css-module needs no case of its own — `x.module.scss`
- * lands on `x.module.css` by that one rule, which is exactly the name esbuild's
- * local-css loader scopes. Plain `.css` is returned unchanged and left to
+ * lowered to `.css` and — for a css-module — the `.module.` marker dropped,
+ * scoping having consumed it. Plain `.css` is returned unchanged and left to
  * esbuild, so this stays a naming rule, not a CSS transform.
+ *
+ * A **compiled** source never reaches here as `.scss` — the compile rewrote the
+ * specifier onto the css step's output already. What this is still for is code
+ * the compile did not touch: hand-written JavaScript in a bundle's own `srcs`
+ * (which `transpileJs: false` passes through), and vendored code.
  */
 export function rewriteStyledImport(specifier: string): string {
-  return specifier.replace(/\.(scss|sass)$/i, ".css");
+  return specifier.replace(/\.module\.(scss|sass)$/i, ".css").replace(/\.(scss|sass)$/i, ".css");
+}
+
+/**
+ * The JS shim beside a stylesheet, if fabr's css step wrote one — which is how a
+ * value import of a scoped stylesheet finds its class-name map.
+ *
+ * Not a marker in the CSS and not a naming convention the bundle has to be told
+ * about: the shim IS the delivery's own statement that the stylesheet's class
+ * names have been decided and exported, and it travels with the CSS through
+ * every delivery (a package, a test install, a bundle's staged sources).
+ *
+ * Nothing here has to stop esbuild re-scoping fabr's output, because fabr's
+ * output is not marked as a css-module — `x.module.scss` lowers to `x.css`, so
+ * the `local-css` loader never selects it. A dependency shipping raw
+ * `.module.css` has no shim and is scoped by esbuild exactly as before.
+ */
+function scopedShimFor(cssPath: string): string | undefined {
+  const shim = `${cssPath}.js`;
+  return fs.existsSync(shim) ? shim : undefined;
 }
 
 /**
@@ -237,23 +264,15 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
         }
 
         /* Relative/absolute imports are within-variant. A styled-source import
-         * (.scss/.sass) is redirected to its css_compile output (the compiled
-         * .css) — the only CSS knowledge the driver has, a naming rule.
-         * Everything else esbuild resolves (a genuine miss there is a real error). */
+         * (.scss/.sass) is redirected to its css_compile output — the only CSS
+         * knowledge the driver has, a naming rule. Everything else esbuild
+         * resolves (a genuine miss there is a real error). */
         if (!isBareSpecifier(args.path)) {
           const rewritten = rewriteStyledImport(args.path);
           if (rewritten === args.path) {
             return null;
           }
-          const resolved = await build.resolve(rewritten, {
-            kind: args.kind,
-            importer: args.importer,
-            resolveDir: args.resolveDir,
-            pluginData: { fabr: true },
-          });
-          return resolved.errors.length
-            ? { errors: resolved.errors }
-            : { path: resolved.path, external: resolved.external, namespace: resolved.namespace };
+          return redirectStyledImport(build, args, rewritten);
         }
 
         /* A declared dep is externalized by identity: its import survives. */
@@ -309,6 +328,38 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
       });
     },
   };
+}
+
+/**
+ * Point a styled-source import at what the css step produced for it: the JS shim
+ * where the stylesheet is a scoped css-module, else the stylesheet itself.
+ *
+ * The shim step matters because reaching a `.module.css` directly from JavaScript
+ * gets the importer no class-name map — under `loader: "css"` (which is what
+ * pre-scoped CSS must be read as) esbuild exports nothing. Compiled sources never
+ * get here; this is the same correction for the code the compile did not touch.
+ */
+async function redirectStyledImport(
+  build: IPluginBuild,
+  args: IOnResolveArgs,
+  rewritten: string
+): Promise<IOnResolveResult | null> {
+  const resolved = await build.resolve(rewritten, {
+    kind: args.kind,
+    importer: args.importer,
+    resolveDir: args.resolveDir,
+    pluginData: { fabr: true },
+  });
+  if (resolved.errors.length) {
+    return { errors: resolved.errors };
+  }
+  /* Only an import written in JAVASCRIPT wants the shim. A stylesheet's own
+   * `@import`/`composes`/`url()` names the stylesheet, and handing CSS a JS
+   * module in its place would be nonsense — the kinds say which side asked.
+   * A side-effect `import "./x.module.scss"` still goes to the shim, and gets
+   * the stylesheet through the shim's own import of it. */
+  const shim = STYLESHEET_KINDS.has(args.kind) ? undefined : scopedShimFor(resolved.path);
+  return { path: shim ?? resolved.path, external: resolved.external, namespace: resolved.namespace };
 }
 
 /**

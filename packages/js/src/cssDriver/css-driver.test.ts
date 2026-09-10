@@ -26,7 +26,17 @@ import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { IPnpPackageInfo, IPnpSerializedState } from "../PnPManifest";
 import { PnpResolver } from "../pnp/PnPResolver";
-import { isPartial, isSass, packageImporter, plainCssName, SASS_CONDITIONS, sassFailure } from "./css-driver";
+import {
+  relocateSources,
+  sourceMapComment,
+  cssModuleDeclaration,
+  cssModuleShim,
+  isSass,
+  packageImporter,
+  SASS_CONDITIONS,
+  sassFailure,
+  scopeFailure,
+} from "./css-driver";
 
 describe("isSass", () => {
   it("matches .scss/.sass including modules", () => {
@@ -37,17 +47,6 @@ describe("isSass", () => {
   it("rejects plain css", () => {
     assert.equal(isSass("Foo.css"), false);
     assert.equal(isSass("Foo.module.css"), false);
-  });
-});
-
-describe("output name mapping", () => {
-  it("maps a plain sass source to .css", () => {
-    assert.equal(plainCssName("a/Foo.scss"), "a/Foo.css");
-    assert.equal(plainCssName("Foo.sass"), "Foo.css");
-  });
-  it("maps a module source to a .module.css, for esbuild to scope", () => {
-    assert.equal(plainCssName("a/Foo.module.scss"), "a/Foo.module.css");
-    assert.equal(plainCssName("Foo.module.sass"), "Foo.module.css");
   });
 });
 
@@ -66,14 +65,104 @@ describe("sassFailure", () => {
   });
 });
 
-describe("isPartial", () => {
-  it("matches an underscore-prefixed basename at any depth", () => {
-    assert.equal(isPartial("_foo.scss"), true);
-    assert.equal(isPartial("a/b/_foo.scss"), true);
+describe("cssModuleShim", () => {
+  it("imports its own stylesheet by basename and exports the map as a default", () => {
+    const shim = cssModuleShim("a/b/Card.module.css", { card: "card_k3f1c", "header-bar": "header-bar_k3f1c" });
+    /* The specifier is a SIBLING reference: the shim is written beside the css
+     * it belongs to, so its own directory is the only thing it can name. */
+    assert.match(shim, /^import "\.\/Card\.module\.css";$/m);
+    assert.match(shim, /^ {2}"card": "card_k3f1c",$/m);
+    /* A name that is not a TS identifier survives, quoted. */
+    assert.match(shim, /^ {2}"header-bar": "header-bar_k3f1c",$/m);
+    assert.match(shim, /^export default styles;$/m);
   });
-  it("rejects a non-partial under an underscore-prefixed directory", () => {
-    assert.equal(isPartial("foo.scss"), false);
-    assert.equal(isPartial("_dir/foo.scss"), false);
+
+  it("orders its entries canonically, so the same map is the same bytes", () => {
+    const one = cssModuleShim("x.module.css", { b: "b_1", a: "a_1" });
+    const two = cssModuleShim("x.module.css", { a: "a_1", b: "b_1" });
+    assert.equal(one, two);
+  });
+});
+
+describe("cssModuleDeclaration", () => {
+  it("declares a default-export object with quoted keys", () => {
+    const declaration = cssModuleDeclaration({ card: "card_k3f1c", "header-bar": "header-bar_k3f1c" });
+    assert.match(declaration, /^declare const styles: \{$/m);
+    assert.match(declaration, /^ {2}readonly "card": string;$/m);
+    /* Quoted rather than named exports: a class name need not be a valid
+     * identifier, and named exports would force dropping the ones that are not. */
+    assert.match(declaration, /^ {2}readonly "header-bar": string;$/m);
+    assert.match(declaration, /^export default styles;$/m);
+  });
+
+  it("declares an empty module for a plain stylesheet", () => {
+    /* It exports nothing, but the import must still resolve so a side-effect
+     * import typechecks. */
+    assert.equal(cssModuleDeclaration(undefined), "export {};\n");
+  });
+});
+
+describe("relocateSources", () => {
+  /* As the driver calls it for `a/Card.css`: sources staged under `src`, the map
+   * written next to its stylesheet under `out`. */
+  const where = { root: "/work", srcRoot: "src", mapDir: "out/a" };
+  const map = (...sources: string[]): { sources: string[] } => ({ sources });
+
+  it("names the target's own source as the target names it", () => {
+    /* Staging is fabr's word, not the project's — a target whose srcs are
+     * `src:**` calls the file `Card.module.scss`. */
+    const out = relocateSources(map("file:///work/src/a/Card.module.scss"), where);
+    assert.deepEqual(out.sources, ["a/Card.module.scss"]);
+  });
+
+  it("carries no host path, whatever the file was", () => {
+    /* The first design rule: nothing machine-specific may reach an artifact. A
+     * dependency's stylesheet keeps its working-root-relative (and so
+     * content-addressed) path. */
+    const out = relocateSources(map("file:///work/.fabr-tree/abc123/vendor/_mixins.scss"), where);
+    assert.deepEqual(out.sources, [".fabr-tree/abc123/vendor/_mixins.scss"]);
+    assert.equal(JSON.stringify(out).includes("/work"), false);
+  });
+
+  it("names postcss's own input as the lowered stylesheet, where Sass ran", () => {
+    /* Chained, postcss adds an entry for the content it was HANDED — the lowered
+     * CSS — under the name it was told that content came from. Left alone it
+     * would shadow the real source: same name, different content. Sass spells
+     * its sources as file URLs and postcss spells its own as a path, which is
+     * what tells them apart. */
+    const out = relocateSources(
+      map("file:///work/src/a/Card.module.scss", "../../src/a/Card.module.scss"),
+      where,
+      "a/Card.css"
+    );
+    assert.deepEqual(out.sources, ["a/Card.module.scss", "a/Card.css"]);
+  });
+
+  it("leaves an unchained run's own input named as the source it really is", () => {
+    /* A `.module.css` never goes near Sass, so postcss's input IS the source and
+     * must keep its own name. */
+    const out = relocateSources(map("../../src/a/Card.module.css"), where);
+    assert.deepEqual(out.sources, ["a/Card.module.css"]);
+  });
+});
+
+describe("sourceMapComment", () => {
+  it("names the map by basename, since it sits beside the stylesheet", () => {
+    assert.equal(sourceMapComment("a/b/Card.css.map"), "\n/*# sourceMappingURL=Card.css.map */\n");
+  });
+});
+
+describe("scopeFailure", () => {
+  it("attributes a positioned failure to the source file", () => {
+    /* postcss's CssSyntaxError shape: a reason plus 1-based coordinates. */
+    const err = { reason: "Unclosed block", line: 4, column: 2 };
+    assert.equal(scopeFailure("a/Foo.module.scss", err).message, "a/Foo.module.scss:4:2: css-modules: Unclosed block");
+  });
+  it("attributes a positionless failure to the file alone", () => {
+    assert.equal(
+      scopeFailure("a/Foo.module.scss", new Error("plugin blew up")).message,
+      "a/Foo.module.scss: css-modules: plugin blew up"
+    );
   });
 });
 

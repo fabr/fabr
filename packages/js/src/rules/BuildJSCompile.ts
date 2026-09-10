@@ -36,13 +36,14 @@
  * closure — there is no tree to build.
  */
 
-import { Computable, FileSet, MemoryFile, PackageFileSet, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
+import { Computable, FileSet, MemoryFile, Name, PackageFileSet, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
 import {
   esLevelOrder,
   JSTarget,
   parseJSTarget,
   resolveJsxImportSource,
   resolveSourceMode,
+  emitsSourceMap,
   resolveSourceVersion,
   usesDom,
 } from "../JSPackage";
@@ -81,13 +82,6 @@ export function jsxModeFor(buildType: string | undefined): "react-jsx" | "react-
  * transform is emitted — a JSX source's code imports `<jsxImportSource>/jsx-runtime`,
  * so the target must carry that runtime as a dep (auto-detected, see resolveJsxImportSource).
  */
-/** BUILD_TYPEs that carry JS source maps: full debugging (`debug`) and
- * optimized-but-debuggable (`relwithdebinfo`); `release` strips them. The
- * default BUILD_TYPE is `debug` (STD.fabr), so a plain build is debuggable. */
-function emitsSourceMap(buildType: string | undefined): boolean {
-  return buildType === "debug" || buildType === "relwithdebinfo";
-}
-
 /**
  * The `paths` entries that let a package's sources import their own package
  * name (`@scope/pkg/sub` -> `src/sub`). Node resolves an installed package's
@@ -205,6 +199,12 @@ export function makeTsConfig(
        * importable from .ts), but never typecheck them. */
       allowJs: true,
       checkJs: false,
+      /* Let a non-JS import be typed by a `{base}.d.{ext}.ts` declaration beside
+       * it (TS 5.0+) — how `import styles from "./x.module.scss"` gets the real
+       * class-name shape instead of the `any` an ambient `declare module "*.scss"`
+       * would give it. What the emit names in its place is stated separately (the
+       * `rewrite_imports` property); this option only makes the import resolve. */
+      allowArbitraryExtensions: true,
       target: jsTarget.version,
       ...(needsDownlevelIteration(jsTarget.version) ? { downlevelIteration: true } : {}),
       /* `lib` is what the SOURCE may use, `target` what is EMITTED: different
@@ -254,6 +254,45 @@ export function makeTsConfig(
   };
 }
 
+/** Where the {@link importRewrites} document is staged, and what the flag names. */
+const REWRITES_FILE = "rewrite-imports.json";
+
+/** What names it on the driver's command line. Known independently on both
+ * sides, like the bundle driver's manifest name: the driver runs standalone and
+ * the rule must not import it. */
+const REWRITES_FLAG = "--rewrite-imports";
+
+/**
+ * The compile's `rewrite_imports` rules, compiled for a driver holding no fabr
+ * vocabulary: an ordered list of pattern/replacement pairs, first match wins.
+ * Undefined when the property names none, so the flag and the file are both
+ * absent.
+ *
+ * Rules rather than the pairs resolving them against the sources: this document
+ * is staged into the action's `files`, so per-source pairs would put one entry
+ * per stylesheet into the key material and any new stylesheet would rebuild the
+ * whole compile.
+ */
+export function importRewrites(rewrites: Name[]): Array<{ pattern: string; replacement: string }> | undefined {
+  const rules = rewrites.flatMap(name => {
+    const renameTo = name.getRenameTo();
+    if (renameTo === undefined) {
+      return [];
+    }
+    const { pattern, replacement, excludes } = name.toRenameRule(renameTo);
+    if (excludes !== undefined) {
+      /* An aliased selector's base is matched by the pattern but must not be
+       * renamed, and the driver has no way to be told so. Refused rather than
+       * carried without it, which would rename a file that should have been left
+       * alone — and reachable only from a hand-written value, since the rules
+       * fabr generates carry no alias. */
+      throw new Error(`js_compile: a 'rewrite_imports' rule may not use an alias ('${name.toString()}')`);
+    }
+    return [{ pattern, replacement }];
+  });
+  return rules.length === 0 ? undefined : rules;
+}
+
 function compileTypescript(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
@@ -264,8 +303,9 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       context.getFlags("deps"),
       context.getProperty("package_name"),
       context.getProperty("module_extension"),
+      context.getRewriteRules("rewrite_imports"),
     ],
-    ({ srcs: srcSets, deps }, target, driver, buildType, depFlags, packageNameProp, moduleExtensionProp) => {
+    ({ srcs: srcSets, deps }, target, driver, buildType, depFlags, packageNameProp, moduleExtensionProp, rewriteRules) => {
       const jsTarget = parseJSTarget(target);
       if (jsTarget.module === "dual") {
         /* Not a user error: every caller pins a format (js_package builds one
@@ -294,6 +334,11 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
         const lower = name.toLowerCase();
         return lower.endsWith(".tsx") || lower.endsWith(".jsx");
       });
+      /* How an import is named in the emitted code, where a rule redirects it.
+       * Resolved here, against the names actually being compiled, so the driver
+       * is handed a finished table rather than a pattern to apply — and so an
+       * compile declaring none carries no file, no flag, and no change of key. */
+      const rewrites = importRewrites(rewriteRules);
       const build = (jsxImportSource: string): RuleResult => {
         const jsx = jsxImportSource ? { mode: jsxModeFor(buildType), importSource: jsxImportSource } : undefined;
         const tsconfig = makeTsConfig(
@@ -314,6 +359,7 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
            * and the driver requires it from there. One mount, one pin
            * (${TYPESCRIPT}) governing what compiles the sources. */
           [TOOL_DIR]: driver,
+          ...(rewrites ? { [REWRITES_FILE]: MemoryFile.from(JSON.stringify(rewrites)) } : {}),
         };
         /* The tool launches from its own mount (its deps resolve there); cwd is
          * the workspace root, so `include` and dependency resolution alike
@@ -326,11 +372,21 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
          * beside the CommonJS format's. The driver does the renaming, because the
          * specifiers it writes have to name the renamed siblings. */
         const emitExtension = moduleExtension ? ["--emit-extension", moduleExtension] : [];
+        const rewriteFlag = rewrites ? [REWRITES_FLAG, REWRITES_FILE] : [];
         return createNodeExecAction(
           FileSet.layout(workspace),
           deps,
           driver.toCommandLine(
-            [...emitExtension, DEPS_REPORT_FLAG, DEPS_REPORT_FILE, STATE_DIR_FLAG, STATE_DIR, CHANGES_FLAG, CHANGES_FILE],
+            [
+              ...emitExtension,
+              ...rewriteFlag,
+              DEPS_REPORT_FLAG,
+              DEPS_REPORT_FILE,
+              STATE_DIR_FLAG,
+              STATE_DIR,
+              CHANGES_FLAG,
+              CHANGES_FILE,
+            ],
             { base: TOOL_DIR }
           ),
           `${COMPILE_OUT_DIR}:**`,

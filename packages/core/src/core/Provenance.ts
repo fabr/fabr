@@ -40,6 +40,35 @@ export interface IProvenanceStep {
 }
 
 /**
+ * A build step's own contribution to provenance: this content was PRODUCED,
+ * from a named input, by a named step.
+ *
+ * Generic on purpose. Every step that maps input names to output names can have
+ * two inputs land on one output — `x.module.scss` and `x.css` both lowering to
+ * `x.css`, `Foo.ts` and `Foo.js` both emitting `Foo.js` — and the reader's
+ * question is always the same: which inputs, and what turned them into this
+ * name? Without the step recorded, a conflict can only report two paths and
+ * leave the production that brought them together implicit.
+ *
+ * `from` is named as the producing step names it, so it matches what the user
+ * would edit or rename rather than wherever the file was staged.
+ */
+export const DERIVED_PROVENANCE = "derived";
+
+export interface IDerivedStep extends IProvenanceStep {
+  readonly kind: typeof DERIVED_PROVENANCE;
+  /** The input this content was produced from. */
+  readonly from: string;
+  /** The step that produced it, named as a user would recognise it. */
+  readonly by: string;
+}
+
+/** A {@link IDerivedStep} for `from`, produced by `by`. */
+export function derivedFrom(from: string, by: string): IDerivedStep {
+  return { kind: DERIVED_PROVENANCE, from, by };
+}
+
+/**
  * Context supplied when rendering a provenance chain.
  */
 export interface IRenderContext {
@@ -164,3 +193,24 @@ export function locateSource(step: IProvenanceStep | undefined, path: string): s
   return undefined;
 }
 
+registerProvenanceRenderer(DERIVED_PROVENANCE, (step, context): IDiagnosticNote[] => {
+  const derived = step as IDerivedStep;
+  /* The mapping is the point, so it is stated whenever there IS one: a name
+   * that arrived by being renamed reads as a puzzle until the rename is on the
+   * page. Where the step did not rename it, saying so twice would be noise —
+   * it is just an input that happens to be called that.
+   *
+   * Deliberately the step's own name and no verb of its own: "compiled",
+   * "lowered", "copied" belong to whichever step this is, and the step is named
+   * right here for a reader who wants to know which it was. */
+  return [
+    {
+      message:
+        context.path !== undefined && context.path !== derived.from
+          ? `${derived.by} produced '${context.path}' from '${derived.from}'`
+          : `'${derived.from}' is an input of ${derived.by}`,
+    },
+  ];
+});
+
+registerProvenanceDescriber(DERIVED_PROVENANCE, step => (step as IDerivedStep).from);

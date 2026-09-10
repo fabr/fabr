@@ -46,6 +46,7 @@ import {
   RuleResult,
   RunnableFileSet,
   TargetContext,
+  makeRewrite,
 } from "@fabr-build/core";
 import { compileContents, formatJSTarget, JSTarget, parseJSTarget, usesNodeGlobals } from "../JSPackage";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
@@ -295,7 +296,7 @@ function buildWithInputs(
       context.getContainedFileProperty("entry", inputTarget),
       context.getFileProperty("deps", inputTarget),
       context.getGlobalRunnable("JS_BUNDLER"),
-      context.getRewrite("output"),
+      context.getRewriteRules("output").then(makeRewrite),
       context.getMap("defines"),
       bundleFlags(context, inputTarget),
     ],

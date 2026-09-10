@@ -244,6 +244,27 @@ export class Name {
   }
 
   /**
+   * This rename compiled for a consumer that cannot run fabr's glob language: a
+   * regular expression source and a `$n` replacement, needing only `RegExp` and
+   * `String.replace`. {@link makeRenamer} is this plus the application.
+   *
+   * `excludes`, where present, is an input the pattern matches but the rename
+   * must NOT be applied to — an aliased selector's own base, which a trailing
+   * globstar admits. A caller that cannot honour it must refuse the rule rather
+   * than carry it without.
+   */
+  public toRenameRule(renameTo: Name): { pattern: string; replacement: string; excludes?: string } {
+    const selector = this.renderParts(true);
+    /* Unescaped, like the projector's: it is compared against real paths. */
+    const aliasPath = this.aliasAsPath(false);
+    return {
+      pattern: globCaptureRegex(normalizeHead(selector.replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR))).source,
+      replacement: renameTo.toReplacement(),
+      ...(aliasPath !== undefined && !GLOB_METACHAR.test(aliasPath) ? { excludes: aliasPath } : {}),
+    };
+  }
+
+  /**
    * Compile a renamer using this name as the *selector* and `renameTo` as the
    * template: a function mapping a path to its renamed form, or undefined for a
    * non-match (so a caller can drop unselected files). A rename is just a
@@ -264,22 +285,18 @@ export class Name {
      * never carried into them. (A no-op for a colon-free selector — every
      * REWRITE / single-`:` ref; it bites only a multi-`:` reference like
      * `d:sub:*.x -> *.y`.) */
-    const selector = this.renderParts(true);
-    const re = globCaptureRegex(normalizeHead(selector.replaceAll(NAME_LEVEL_SEPARATOR, NAME_COMPONENT_SEPARATOR)));
-    const replacement = renameTo.toReplacement();
-    /* The literal alias path itself is excluded, mirroring makeProjector's
-     * plain arm: `x:** -> tmpl` renames the files *under* x, never x — a
-     * globstar admits its own base, which would otherwise emit the base file
-     * under the template's collapsed (empty-capture) name. Unescaped, like the
-     * projector's: it is compared against real paths. */
-    const aliasPath = this.aliasAsPath(false);
-    const excluded = aliasPath !== undefined && !GLOB_METACHAR.test(aliasPath) ? aliasPath : undefined;
+    const { pattern, replacement, excludes } = this.toRenameRule(renameTo);
+    const re = new RegExp(pattern);
+    /* `x:** -> tmpl` renames the files *under* x, never x, mirroring
+     * makeProjector's plain arm: a globstar admits its own base, which would
+     * otherwise emit the base file under the template's collapsed
+     * (empty-capture) name. */
     /* An unmatched globstar group substitutes as "" (native to `replace`), which
      * can leave a doubled or edge slash (a root-level recursive prefix); fabr
      * names are relative paths, so collapse runs of `/` and trim the ends — this
      * makes a recursive rename structure-preserving at every depth, root too. */
     return (input: string) => {
-      if (!re.test(input) || (excluded !== undefined && path.posix.relative(excluded, input) === "")) {
+      if (!re.test(input) || (excludes !== undefined && path.posix.relative(excludes, input) === "")) {
         return undefined;
       }
       return input.replace(re, replacement).replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "");

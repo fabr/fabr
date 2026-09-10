@@ -19,18 +19,22 @@
 
 /**
  * The css_compile rule: lower a styled source tree to plain CSS, a self-contained
- * target `{ srcs = FILES; deps = FILES }`. `srcs` are the styled sources
- * (.scss/.sass/.module.{scss,css}/.css); `deps` are scss packages mounted for
- * Sass `@use`/`@import` resolution (loadPaths). The compiler is a build *tool*,
+ * target `{ srcs = FILES; deps = FILES; package_name = STRING }`. `srcs` are the
+ * styled sources (.scss/.sass/.module.{scss,css}/.css); `deps` are scss packages
+ * mounted for Sass `@use`/`@import` resolution (loadPaths); `package_name` is the
+ * identity css-module scoped names are derived from. The compiler is a build *tool*,
  * independent of what it lowers, so it is resolved apart as the CSS_COMPILER
  * runnable (fabr's own Sass driver, declared in JS.fabr — the TSC precedent) and
  * mounted under a tool dir (its deps must not collide with — nor be visible to —
  * the styled tree). The driver runs with cwd at the working root and yields the
  * generic `exec` action (output: `out/**`).
  *
- * Lowering is all this does: css-modules lower like any other stylesheet and are
- * scoped downstream by the bundler, which also concatenates/orders/splits the
- * plain CSS produced here via the JS import graph.
+ * Lowering is not all it does: a css-module is **scoped here**, and the step also
+ * emits the JS shim carrying its class-name map plus the TypeScript declarations
+ * that let an import of the stylesheet typecheck — so the names exist before any
+ * compile, and are the same names whether the result is bundled, tested or
+ * shipped. Concatenating/ordering/splitting the plain CSS remains the bundler's,
+ * via the JS import graph.
  */
 
 import {
@@ -44,6 +48,7 @@ import {
   TargetContext,
 } from "@fabr-build/core";
 import { buildCssOptions, CSS_OUTDIR, CSS_SRC_ROOT } from "../CSSCompile";
+import { emitsSourceMap } from "../JSPackage";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
 
 /** Where the CSS toolchain + driver mount — disjoint from the styled tree so the
@@ -55,15 +60,22 @@ function buildCssCompile(context: TargetContext): Computable<RuleResult> {
     [
       context.getFileSetProperties(["srcs", "deps"]),
       context.getGlobalRunnable("CSS_COMPILER"),
+      context.getProperty("package_name"),
+      context.getGlobalString("BUILD_TYPE"),
     ],
-    ({ srcs: srcSets, deps }, compiler): RuleResult => {
+    ({ srcs: srcSets, deps }, compiler, packageNameProp, buildType): RuleResult => {
       const srcs = FileSet.unionAll(...srcSets);
       const fileNames = [...srcs].map(([name]) => name);
       if (fileNames.length === 0) {
         /* No styled sources — nothing to lower. Skip staging/running the driver. */
         return EMPTY_FILESET;
       }
-      const options = buildCssOptions(fileNames);
+      /* The package identity scoped class names are derived from. A target with
+       * none (a bundle's own sources) scopes by path alone, which is still
+       * unique within the one delivery it can appear in. */
+      /* Maps ride the same BUILD_TYPE axis as the JavaScript ones: a release
+       * build carrying one kind and not the other would just look broken. */
+      const options = buildCssOptions(fileNames, packageNameProp?.toString() ?? "", emitsSourceMap(buildType));
       const workspace = {
         [CSS_SRC_ROOT]: srcs,
         [TOOL_DIR]: compiler,

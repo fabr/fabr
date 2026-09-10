@@ -51,7 +51,7 @@ export enum PropertyType {
  * key-role partition means nothing here — the seam where roles are assigned is
  * where a rule builds a BuildAction from resolved values.
  */
-export type SubTargetInput = string | string[] | Name | FileSource | FileSource[];
+export type SubTargetInput = string | string[] | Name | Name[] | FileSource | FileSource[];
 export type SubTargetInputs = Record<string, SubTargetInput>;
 
 /**

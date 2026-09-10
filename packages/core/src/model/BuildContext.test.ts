@@ -40,7 +40,7 @@ import { PublishableFileSet } from "../core/PublishableFileSet";
 import { SyncSource, syncRule } from "../rules/BuildSync";
 import { defaultFilesRule } from "../rules/DefaultFilesRule";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { Name } from "../core/Name";
+import { makeRewrite, Name } from "../core/Name";
 import { renderProvenance } from "../core/Provenance";
 import { ConflictError, toError } from "../core/Errors";
 import { LogFormatter, LogLevel } from "../support/Log";
@@ -190,10 +190,13 @@ registerRule("test_constrained", { FLAVOR: "special" }, () => Computable.resolve
  * can observe the resolved name mapping. */
 let lastRewrite: Array<string | undefined> | undefined;
 registerRule("test_rw", {}, context =>
-  context.getRewrite("out").then(rewrite => {
-    lastRewrite = ["a.entry.js", "b.entry.js", "keep.txt"].map(name => rewrite(name));
-    return EMPTY_FILESET;
-  })
+  context
+    .getRewriteRules("out")
+    .then(makeRewrite)
+    .then(rewrite => {
+      lastRewrite = ["a.entry.js", "b.entry.js", "keep.txt"].map(name => rewrite(name));
+      return EMPTY_FILESET;
+    })
 );
 
 /* Reads a MAP property, so a test can observe the resolved key -> value map
@@ -348,6 +351,21 @@ registerRule("test_composer", {}, context =>
 /* A composer that supplies an EMPTY input bag, so every property the sub-target
  * reads must come from its type's declared defaults. */
 registerRule("test_default_composer", {}, context => context.subTarget("test_sub", {}, { label: "sub" }));
+
+/* A composer that hands its sub-target a REWRITE as already-substituted Names —
+ * the form a rule computing exact pairs produces (js_compile's `assets`). */
+registerRule("test_rw_composer", {}, context =>
+  context.subTarget(
+    "test_rw",
+    {
+      out: [
+        Name.fromLiteral("a.entry.js").withRenameTo(Name.fromLiteral("one.js")),
+        Name.fromLiteral("b.entry.js").withRenameTo(Name.fromLiteral("two.js")),
+      ],
+    },
+    { label: "sub" }
+  )
+);
 
 /* A composer that builds a sub-target whose type has a rule but NO targetdef —
  * used to assert subTarget rejects a type missing from the build vocabulary. */
@@ -1186,6 +1204,19 @@ describe("BuildContext", () => {
         expect(cause).to.be.instanceOf(CircularDependencyError);
         expect((cause as CircularDependencyError).name).to.equal("t");
       }
+    });
+
+    it("Reads a sub-target's REWRITE input from the Names the composer supplied", async () => {
+      /* A rule that has computed exact name pairs states them as literal renames
+       * and gets first-match-wins for free — the same semantics a written
+       * REWRITE property has, since it is the same value one resolves to. */
+      lastRewrite = undefined;
+      await build(
+        "targetdef test_rw { out = REWRITE; }\n" + "targetdef test_rw_composer { }\n" + "test_rw_composer t { }\n"
+      );
+      /* Each literal rename answers its own name, and a name none of them
+       * selects maps to nothing — passthrough, for the rule to decide. */
+      expect(lastRewrite).to.deep.equal(["one.js", "two.js", undefined]);
     });
 
     it("Prefers a sub-target's supplied input over its type's default", async () => {

@@ -561,3 +561,49 @@ describe("Name", () => {
   });
 
 });
+
+describe("toRenameRule", () => {
+  const rule = (selector: string, template: string): { pattern: string; replacement: string; excludes?: string } => {
+    const parse = (text: string): Name => {
+      const build = new NameBuilder();
+      for (const piece of text.split(/(\*\*|\*)/)) {
+        if (piece === "*" || piece === "**") {
+          build.appendGlobMetachars(piece);
+        } else if (piece !== "") {
+          build.appendLiteralString(piece);
+        }
+      }
+      return build.name();
+    };
+    return parse(selector).toRenameRule(parse(template));
+  };
+
+  it("compiles to something applicable with nothing but RegExp", () => {
+    /* The point of the form: a build step's driver holds no fabr vocabulary and
+     * must not learn the glob language, but it can run a regex. */
+    const { pattern, replacement } = rule("**/*.d.scss.ts", "**/*.css");
+    const applied = "a/b/Card.d.scss.ts".replace(new RegExp(pattern), replacement).replace(/\/{2,}/g, "/");
+    expect(applied).to.equal("a/b/Card.css");
+  });
+
+  it("agrees with makeRenamer, which is the same compilation plus the application", () => {
+    const selector = new NameBuilder().appendGlobMetachars("**").appendLiteralString("/").appendGlobMetachars("*").appendLiteralString(".in").name();
+    const template = new NameBuilder().appendGlobMetachars("**").appendLiteralString("/").appendGlobMetachars("*").appendLiteralString(".out").name();
+    const { pattern, replacement } = selector.toRenameRule(template);
+    for (const input of ["x.in", "a/x.in", "a/b/x.in"]) {
+      const direct = input.replace(new RegExp(pattern), replacement).replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "");
+      expect(direct, input).to.equal(selector.makeRenamer(template)(input));
+    }
+  });
+
+  it("reports an aliased selector's base, which a caller must refuse if it cannot honour it", () => {
+    const aliased = new NameBuilder().appendLiteralString("x:").appendGlobMetachars("**").name();
+    const template = new NameBuilder().appendLiteralString("out/").appendGlobMetachars("**").name();
+    expect(aliased.toRenameRule(template).excludes).to.equal("x");
+  });
+
+  it("carries no exclusion for a colon-free selector, which is every REWRITE value", () => {
+    expect(rule("**/*.d.scss.ts", "**/*.css").excludes).to.equal(undefined);
+    expect(rule("*.ts", "*.js").excludes).to.equal(undefined);
+  });
+});

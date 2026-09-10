@@ -46,6 +46,12 @@ function stubContext(flags: Flag[], packageName?: string): TargetContext {
     getGlobalRunnable: (name: string) => Computable.resolve(tools[name]),
     getFlags: () => Computable.resolve(flags),
     getProperty: () => Computable.resolve(packageName === undefined ? undefined : new Property([packageName])),
+    /* No stylesheets among these sources, so nothing to rename — the empty
+     * rewrite, which is what a target declaring none resolves to. */
+    getRewrite: () => Computable.resolve(() => undefined),
+    /* No asset rules: these fixtures have no stylesheets, which is also the
+     * case that must leave the compile byte-identical to a pre-assets one. */
+    getRewriteRules: () => Computable.resolve([]),
     /* Nothing reaches the store here (the stub declares no package deps), so a
      * cache that only knows where its store would be is enough. */
     execution: { buildCache: { storePath: "/store" } },
