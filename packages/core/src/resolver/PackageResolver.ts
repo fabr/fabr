@@ -445,7 +445,7 @@ function attributeResolutionFailure(err: unknown, references: RepositoryRef[], r
  * are the consuming assembler's business (assembleNodeModules), computed
  * from these complete facts at the merge that needs them — which is what
  * lets one delivery's member survive a merge with a sibling delivery
- * unharmed (see DESIGN-package-placement.md).
+ * unharmed.
  *
  * The graph may be cyclic (mutual same-version deps are ordinary npm), so
  * it is constructed through a {@link PackageGraphBuilder}, each instance

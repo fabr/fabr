@@ -293,7 +293,7 @@ function resolveDeps(context: TargetContext): Computable<ResolvedPackageSet> {
          * repository that resolves them. The one non-resolving source a
          * reference can carry today is another catalog — deliberately
          * rejected: each catalog is its own joint resolution, and chaining
-         * would nest one inside another (see RATIONALE.md). */
+         * would nest one inside another. */
         if (!isRepositoryReader(source)) {
           const entry = refs[0].name.toString();
           throw new RequirementResolutionError(

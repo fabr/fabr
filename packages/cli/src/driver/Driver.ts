@@ -153,9 +153,9 @@ export type Operation = (model: BuildModel, execution: ExecutionContext, site: I
 
 /** What a process-takeover verb's evaluation resolves to: the launch to
  *  perform once the evaluation has settled and its cycle closed (`fabr run`'s
- *  interactive program). The takeover owns the process from its invocation —
- *  its chain ends in the exit. */
-export type Takeover = () => Computable<void>;
+ *  interactive program). Resolves the program's own exit status; the harness
+ *  exits with it once the post-run housekeeping (the cache trim) has run. */
+export type Takeover = () => Computable<number>;
 
 /**
  * The CLI entry: dispatch the command to a tiny operation (each closing over
@@ -394,7 +394,7 @@ function runProgram(
     /* One-shot: the launch is not evaluation — it is what happens after the
      * evaluation settles (and its cycle closes), so it is handed back as the
      * run's takeover rather than performed in-chain. */
-    const takeover: Takeover = () => runInteractive(execution.buildCache, runnable, args).then(code => flushAndExit(code));
+    const takeover: Takeover = () => runInteractive(execution.buildCache, runnable, args);
     return takeover;
   });
 }
@@ -412,8 +412,7 @@ function shellTarget(model: BuildModel, options: Options, execution: ExecutionCo
     .then<void | Takeover>(action => {
       /* The shell owns the process once launched — a takeover, like run's
        * program, so the evaluation settles (and its cycle closes) first. */
-      const takeover: Takeover = () =>
-        shellInto(execution.buildCache, options.targets[0], action, execution.log).then(code => flushAndExit(code));
+      const takeover: Takeover = () => shellInto(execution.buildCache, options.targets[0], action, execution.log);
       return takeover;
     });
 }
@@ -560,12 +559,17 @@ async function runWith(options: Options, operation: Operation, watch = false): P
       .evaluate(model => operation(model, execution, site))
       .then(takeover => {
         /* The evaluation has settled and its cycle closed; a takeover verb now
-         * gets the process (its chain owns the exit), anything else is done. */
-        if (takeover) {
-          return takeover();
-        }
-        flushAndExit(0);
+         * gets the process, resolving its program's exit status. */
+        return takeover ? takeover() : Computable.resolve(0);
       })
+      .then(code =>
+        /* The daily cache trim runs at the very end of the run — after a
+         * takeover's child has exited, before the process does. Awaited here
+         * because only the driver can hold the exit for it (the watch-mode
+         * trigger is the facade's own); it never outranks the run's outcome
+         * and skips itself when not due. */
+        fabr.maybeCollectGarbage().then(() => flushAndExit(code))
+      )
       .catch(err => {
         reportFailure(log, err);
         log.log(DIAG_BUILD_FAILED, {});

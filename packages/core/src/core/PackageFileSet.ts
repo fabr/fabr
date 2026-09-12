@@ -29,7 +29,7 @@ import type { RepositoryRef } from "./Repository";
  *
  * `dependencies` is **the instance each of the package's edges binds to** — a
  * fact about the resolution, never a layout decision (layout is the consuming
- * assembler's, see DESIGN-package-placement.md):
+ * assembler's):
  *
  * - A **built** package's edges are its DIRECT dependencies: built deps as
  *   PackageFileSets, external requirements as inert RepositoryRefs that each

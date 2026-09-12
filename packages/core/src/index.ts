@@ -25,6 +25,7 @@
  * set is core + js + fabr; anything beyond that can be built by fabr itself and
  * loaded via a plugin declaration. */
 
+export * from "./Constants";
 export * from "./Fabr";
 export * from "./core/BuildCache";
 export * from "./core/Computable";

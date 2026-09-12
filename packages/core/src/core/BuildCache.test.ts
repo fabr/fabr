@@ -28,7 +28,7 @@ import { ActionContext, BuildCache, IBuildState } from "./BuildCache";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
 import { ActionFileInputs, BuildAction, BuildResult, IBuildActionDefinition, preciseActionKey } from "./BuildAction";
 import { narrowDeps } from "./BuildCache";
-import { DiscoveredDeps, parseRecordedBase } from "./Manifest";
+import { DiscoveredDeps, ISourceIndexRow, parseRecordedBase } from "./Manifest";
 import { Computable } from "./Computable";
 import { readStream } from "./Fetch";
 import { SILENT_REPORT, TaskTracker } from "../support/Execute";
@@ -46,6 +46,21 @@ const UNTRACKED: TaskTracker<FileSet> = run => run(SILENT_REPORT);
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.then(resolve, reject));
+}
+
+/** This host's owner prefix, read back from a cache rather than recomputed —
+ * the naming stays the implementation's business. Probed on a throwaway root:
+ * taking ownership of a tree happens once per process, so doing it on a root
+ * under test would consume the very reclaim some tests are watching for. */
+function hostPrefix(): string {
+  const probe = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-host-probe-"));
+  try {
+    new BuildCache(probe, NULL_LOG);
+    const owner = fs.readdirSync(path.join(probe, "work"))[0];
+    return owner.slice(0, owner.lastIndexOf("-"));
+  } finally {
+    fs.rmSync(probe, { recursive: true, force: true });
+  }
 }
 
 /** A plain step's answer: the files it produced and nothing discovered. */
@@ -1870,11 +1885,12 @@ describe("BuildCache non-immutable fetches", () => {
   it("records no freshness for an immutable fetch, and never refetches", async () => {
     /* Every manifest carries the header, because the file count is a property
      * of the document; what an immutable entry records there is no `expires`,
-     * so the origin's declared lifetime cannot expire it. */
+     * so the origin's declared lifetime cannot expire it. (The class stamp
+     * rides every entry's header regardless — it is no freshness fact.) */
     origin.respond(serve(200, { "cache-control": "max-age=1" }, "one"));
     expect(await fetchDoc()).to.equal("one");
     const manifest = fs.readFileSync(path.join(root, hashString(`fetch:test:1 ${origin.url}`) + ".manifest"), "utf8");
-    expect(manifest.split("\n")[0]).to.equal('!meta {"entries":1}');
+    expect(manifest.split("\n")[0]).to.equal('!meta {"entries":1,"class":"fetch"}');
     clock += 1_000_000_000; /* far past any origin-declared lifetime */
     expect(await fetchDoc()).to.equal("one");
     expect(origin.requests).to.have.lengthOf(1);
@@ -1899,21 +1915,6 @@ describe("BuildCache work tree", () => {
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
   });
-
-  /** This host's owner prefix, read back from a cache rather than recomputed —
-   * the naming stays the implementation's business. Probed on a throwaway root:
-   * taking ownership of a tree happens once per process, so doing it here on the
-   * root under test would consume the very reclaim the test is watching for. */
-  function hostPrefix(): string {
-    const probe = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-worktree-probe-"));
-    try {
-      new BuildCache(probe, NULL_LOG);
-      const owner = fs.readdirSync(path.join(probe, "work"))[0];
-      return owner.slice(0, owner.lastIndexOf("-"));
-    } finally {
-      fs.rmSync(probe, { recursive: true, force: true });
-    }
-  }
 
   /** A pid that certainly no longer exists: a process run to completion. */
   function deadPid(): number {
@@ -2155,4 +2156,231 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
     expect(await toPromise(second)).to.equal(await toPromise(first));
     expect(fs.readdirSync(path.join(root, "tree"))).to.have.lengthOf(1);
   });
+});
+
+/**
+ * The garbage collector: expire → mark → sweep over every store, gated by the
+ * daily stamp and the sole-live-fabr rule. Every test
+ * builds with one instance, ages files with utimes, and collects with a FRESH
+ * instance — mirroring the real shape, where the entries a pass reclaims were
+ * written by earlier sessions (a session's own entries ride its served set and
+ * are always young or freshly touched).
+ */
+describe("BuildCache garbage collection", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-gc-test-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Backdate a path's mtime, making it eligible for the age windows. */
+  function age(target: string, days: number): void {
+    const when = new Date(Date.now() - days * DAY_MS);
+    fs.utimesSync(target, when, when);
+  }
+
+  function manifestOf(key: string): string {
+    return path.join(root, hashString(key) + ".manifest");
+  }
+
+  function blobOf(hash: string): string {
+    return path.join(root, "blob", hash);
+  }
+
+  /** Build one entry and return the blob path behind its single file. */
+  async function makeEntry(cache: BuildCache, key: string, content: string): Promise<string> {
+    const files = await toPromise(cache.getOrCreate(key, () => produced(new FileSet(new Map([["out.txt", MemoryFile.from(content)]])))));
+    const file = await toPromise(files.get("out.txt"));
+    return file!.getAbsPath()!;
+  }
+
+  /** Collect on a fresh instance, clearing the daily stamp first so each call
+   * genuinely runs (the stamp's own behavior has its own test). */
+  async function runGC(options?: import("./BuildCache").ICollectOptions): Promise<void> {
+    fs.rmSync(path.join(root, "gc", "last"), { force: true });
+    await toPromise(new BuildCache(root, NULL_LOG).maybeCollectGarbage(options));
+  }
+
+  async function eventually(check: () => boolean, what: string): Promise<void> {
+    const deadline = Date.now() + 2000;
+    while (!check()) {
+      if (Date.now() > deadline) {
+        throw new Error(`timed out waiting for ${what}`);
+      }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
+
+  it("expires an unused entry and sweeps its blobs, keeping recent ones", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const oldBlob = await makeEntry(cache, "rule:old:1", "old content");
+    const newBlob = await makeEntry(cache, "rule:new:1", "new content");
+    age(manifestOf("rule:old:1"), 40);
+    age(oldBlob, 40);
+    await runGC();
+    expect(fs.existsSync(manifestOf("rule:old:1")), "expired manifest").to.equal(false);
+    expect(fs.existsSync(oldBlob), "its orphaned blob").to.equal(false);
+    expect(fs.existsSync(manifestOf("rule:new:1")), "recent manifest").to.equal(true);
+    expect(fs.existsSync(newBlob), "recent blob").to.equal(true);
+  });
+
+  it("never sweeps a blob a surviving manifest still references", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    /* Same content, two entries: one shared blob. */
+    const blob = await makeEntry(cache, "rule:one:1", "shared");
+    await makeEntry(cache, "rule:two:1", "shared");
+    age(manifestOf("rule:one:1"), 40);
+    age(blob, 40);
+    await runGC();
+    expect(fs.existsSync(manifestOf("rule:one:1"))).to.equal(false);
+    expect(fs.existsSync(manifestOf("rule:two:1"))).to.equal(true);
+    expect(fs.existsSync(blob), "the survivor's blob, however old").to.equal(true);
+  });
+
+  it("roots source-snapshot blobs through the sources index", async () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-gc-proj-"));
+    try {
+      fs.writeFileSync(path.join(project, "PROJECT.fabr"), "");
+      const cache = new BuildCache(root, NULL_LOG);
+      const hash = hashString("const x = 1;\n");
+      await toPromise(cache.ensureBlob(hash, Buffer.from("const x = 1;\n")));
+      const row: ISourceIndexRow = { name: "x.ts", hash, size: 13, mtimeMs: 0, mime: "text/plain" };
+      expect(await toPromise(cache.writeSourceIndex(project, new Map([["x.ts", row]])))).to.equal(true);
+      age(blobOf(hash), 40);
+      await runGC();
+      expect(fs.existsSync(blobOf(hash)), "an index-rooted source blob").to.equal(true);
+      /* Without the record (the degradation tier) the same blob rides the age
+       * threshold alone. */
+      fs.rmSync(path.join(root, "projects"), { recursive: true, force: true });
+      await runGC();
+      expect(fs.existsSync(blobOf(hash))).to.equal(false);
+    } finally {
+      fs.rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  it("spares young unmarked blobs — the grace window's amnesty", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const hash = hashString("crash debris");
+    await toPromise(cache.ensureBlob(hash, Buffer.from("crash debris")));
+    await runGC();
+    expect(fs.existsSync(blobOf(hash))).to.equal(true);
+  });
+
+  it("deletes a manifest referencing a missing blob at mark (self-heal)", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const blob = await makeEntry(cache, "rule:torn:1", "torn entry");
+    fs.rmSync(blob, { force: true });
+    await runGC();
+    expect(fs.existsSync(manifestOf("rule:torn:1"))).to.equal(false);
+  });
+
+  it("deletes an unparseable manifest at mark", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    await makeEntry(cache, "rule:broken:1", "broken entry");
+    fs.chmodSync(manifestOf("rule:broken:1"), 0o644);
+    fs.writeFileSync(manifestOf("rule:broken:1"), "not a manifest at all\n");
+    await runGC();
+    expect(fs.existsSync(manifestOf("rule:broken:1"))).to.equal(false);
+  });
+
+  it("removes unknown root-level names once past grace — retired debris included", async () => {
+    fs.mkdirSync(path.join(root, "depmemo"));
+    fs.writeFileSync(path.join(root, "depmemo", "stale"), "x");
+    age(path.join(root, "depmemo"), 2);
+    fs.mkdirSync(path.join(root, "newstore"));
+    await runGC();
+    expect(fs.existsSync(path.join(root, "depmemo")), "aged unknown store").to.equal(false);
+    expect(fs.existsSync(path.join(root, "newstore")), "a young unknown name rides the grace window").to.equal(true);
+  });
+
+  it("expires stale incremental records, deps records and trees", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const tree = await toPromise(cache.ensureTree(new FileSet(new Map([["a.js", MemoryFile.from("x")]]))));
+    fs.mkdirSync(path.join(root, "incremental", "tk"), { recursive: true });
+    fs.writeFileSync(path.join(root, "incremental", "tk", "inputs"), "rows");
+    fs.mkdirSync(path.join(root, "deps", "anchor"), { recursive: true });
+    fs.writeFileSync(path.join(root, "deps", "anchor", "record"), "rows");
+    age(tree, 40);
+    age(path.join(root, "incremental", "tk"), 40);
+    age(path.join(root, "deps", "anchor", "record"), 40);
+    await runGC();
+    expect(fs.existsSync(tree)).to.equal(false);
+    expect(fs.existsSync(path.join(root, "incremental", "tk"))).to.equal(false);
+    expect(fs.existsSync(path.join(root, "deps", "anchor")), "a then-empty anchor dir goes too").to.equal(false);
+  });
+
+  it("defers while another live fabr holds the store, without stamping", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const blob = await makeEntry(cache, "rule:held:1", "held");
+    age(manifestOf("rule:held:1"), 40);
+    age(blob, 40);
+    /* Our own parent: alive, and not us. */
+    fs.mkdirSync(path.join(root, "work", `${hostPrefix()}-${process.ppid}`), { recursive: true });
+    await runGC();
+    expect(fs.existsSync(manifestOf("rule:held:1")), "nothing deleted under a live sibling").to.equal(true);
+    expect(fs.existsSync(path.join(root, "gc", "last")), "a deferral must not silence the retry").to.equal(false);
+  });
+
+  it("collects at most once per interval — the gc/last stamp", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const blob = await makeEntry(cache, "rule:stamped:1", "stamped");
+    await runGC();
+    expect(fs.existsSync(path.join(root, "gc", "last"))).to.equal(true);
+    age(manifestOf("rule:stamped:1"), 40);
+    age(blob, 40);
+    /* Stamp in place: a second pass is not due, so nothing happens. */
+    await toPromise(new BuildCache(root, NULL_LOG).maybeCollectGarbage());
+    expect(fs.existsSync(manifestOf("rule:stamped:1"))).to.equal(true);
+    /* Stamp cleared ("run it now" is deleting gc/last): the pass runs. */
+    await runGC();
+    expect(fs.existsSync(manifestOf("rule:stamped:1"))).to.equal(false);
+  });
+
+  it("is preempted outright by shouldAbort", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const blob = await makeEntry(cache, "rule:racing:1", "racing");
+    age(manifestOf("rule:racing:1"), 40);
+    age(blob, 40);
+    await runGC({ shouldAbort: () => true });
+    expect(fs.existsSync(manifestOf("rule:racing:1"))).to.equal(true);
+    expect(fs.existsSync(blob)).to.equal(true);
+  });
+
+  it("clears a dead collector's marker at construction", () => {
+    const dead = spawnSync(process.execPath, ["-e", ""]).pid!;
+    const marker = path.join(root, "gc", `running-${hostPrefix()}-${dead}`);
+    fs.mkdirSync(path.join(root, "gc"), { recursive: true });
+    fs.writeFileSync(marker, "");
+    new BuildCache(root, NULL_LOG);
+    expect(fs.existsSync(marker)).to.equal(false);
+  });
+
+  it("stamps the entry's class into the manifest header", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    await makeEntry(cache, "rule:classy:1", "classy");
+    const header = fs.readFileSync(manifestOf("rule:classy:1"), "utf8").split("\n")[0];
+    expect(header).to.contain('"class":"rule"');
+  });
+
+  it("refreshes a hit entry's manifest mtime — the throttled touch", async () => {
+    await makeEntry(new BuildCache(root, NULL_LOG), "rule:touched:1", "touched");
+    const manifest = manifestOf("rule:touched:1");
+    const stale = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    fs.utimesSync(manifest, stale, stale);
+    const reopened = new BuildCache(root, NULL_LOG);
+    await toPromise(
+      reopened.getOrCreate("rule:touched:1", () => {
+        throw new Error("must hit");
+      })
+    );
+    /* The touch is fire-and-forget, so give it a beat. */
+    await eventually(() => Date.now() - fs.statSync(manifest).mtimeMs < 60 * 1000, "the manifest touch");
+  });
+
 });

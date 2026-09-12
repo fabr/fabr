@@ -145,7 +145,7 @@ export function cssShimName(name: string): string {
  * `{base}.{ext}`, tsc looks for `{base}.d.{ext}.ts`.
  *
  * Not the older `{base}.{ext}.d.ts` (the typed-css-modules convention), which
- * ESM resolution disables — see DESIGN-css-modules.md Part 3.
+ * ESM resolution disables.
  */
 export function assetDeclarationName(name: string): string {
   const dot = name.lastIndexOf(".");

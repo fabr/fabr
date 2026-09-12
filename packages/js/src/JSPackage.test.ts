@@ -244,10 +244,10 @@ describe("assembling delivered edge-binding graphs", () => {
   });
 
   it("mounts a root's own divergent edge under the root (the two-mounts shape)", async () => {
-    /* DESIGN-package-placement.md bug 2: the root requires uuid@^8 while its
-     * closure's flat winner is uuid@9 — the pruned encoding emitted both a
-     * winner mount and a root override under one name and conflicted; from
-     * complete bindings it is an ordinary private nest. */
+    /* The second of the two real-tree mis-mount bugs: the root requires
+     * uuid@^8 while its closure's flat winner is uuid@9 — the pruned encoding
+     * emitted both a winner mount and a root override under one name and
+     * conflicted; from complete bindings it is an ordinary private nest. */
     const root = delivered(
       {
         "root@1.0.0": { uuid: "uuid@8.3.2", other: "other@1.0.0" },

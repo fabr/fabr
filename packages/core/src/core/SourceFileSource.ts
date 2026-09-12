@@ -237,7 +237,7 @@ export class SourceFileSource extends FSFileSource {
 
   /*
    * ── Source index ─────────────────────────────────────────────
-   * The project's stat cache (DESIGN-source-index.md): rows pair a file's hash
+   * The project's stat cache: rows pair a file's hash
    * with the stat it was captured under, maintained here — where the hashes are
    * computed — and persisted through the cache's projects registry. Advisory
    * end to end: identical builds with the index present, absent, or damaged.

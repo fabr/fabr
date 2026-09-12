@@ -128,6 +128,32 @@ export function deleteFile(filepath: string): Computable<void> {
   });
 }
 
+/** Set `filepath`'s access and modification times, both to `time`. */
+export function updateFileTime(filepath: string, time: Date): Computable<void> {
+  return Computable.from<void>((resolve, reject) => {
+    fs.utimes(filepath, time, time, err => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+/** Remove `filepath` and everything under it; absence is success. */
+export function deleteTree(filepath: string): Computable<void> {
+  return Computable.from<void>((resolve, reject) => {
+    fs.rm(filepath, { recursive: true, force: true }, err => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
 export function rename(from: string, to: string): Computable<void> {
   return Computable.from<void>((resolve, reject) => {
     fs.rename(from, to, err => {

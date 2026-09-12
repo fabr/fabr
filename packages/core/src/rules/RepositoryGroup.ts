@@ -331,9 +331,8 @@ export class RepositoryGroup<V, C>
  *
  * Routes are read from the declaration's own properties: nothing is reserved
  * (a package may be named anything, including `default`), and a name no route
- * matches is simply not served — never a fall-through to another registry
- * (see DESIGN-repository-group.md). A group with no `*` route is a legitimate
- * closed domain.
+ * matches is simply not served — never a fall-through to another registry.
+ * A group with no `*` route is a legitimate closed domain.
  */
 function createRepositoryGroup(context: TargetContext): Computable<Repository> {
   const groupName = context.name;

@@ -770,9 +770,7 @@ function isPathSpecifier(specifier: string): boolean {
  *
  * So the emitter's answer is mapped back through the same table it bypassed:
  * a path inside a package's location is that package, plus a subpath (an entry
- * IS the package root, so the remainder maps one for one). This is
- * [[DESIGN-js-emit]]'s planned post-emit specifier rewrite, arriving early
- * because manifest resolution needs it now.
+ * IS the package root, so the remainder maps one for one).
  *
  * Anything still naming the pool after that is a fault, not a fallback: an
  * unmapped key or a form this does not know is reported against the file rather

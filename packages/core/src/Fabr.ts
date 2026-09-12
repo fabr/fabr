@@ -17,6 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { PROJECT_FILENAME } from "./Constants";
 import { BuildCache } from "./core/BuildCache";
 import { Computable } from "./core/Computable";
 import { FSFileSource } from "./core/FSFileSource";
@@ -32,9 +33,6 @@ import { SyncSource } from "./rules/BuildSync";
 import { Diagnostic, Log } from "./support/Log";
 
 const DIAG_WATCH_WARNING = Diagnostic.Warn<{ message: string }>("{message}");
-
-/** The build file naming a project's root. */
-export const PROJECT_FILENAME = "PROJECT.fabr";
 
 /** Quiet window (ms) collapsing a burst of filesystem events into one watch
  *  rebuild — long enough to coalesce an editor's save, short enough to feel
@@ -69,12 +67,16 @@ export class Fabr {
   public readonly sourceFileSource: SourceFileSource;
   /** Present when watching; the driver drives shutdown through {@link WatchController.close}. */
   public readonly controller?: WatchController;
+  /** The run's cycle counter — what {@link maybeCollectGarbage}'s preemption
+   *  watches. */
+  private readonly cycle: BuildCycle;
 
   constructor(options: IFabrOptions) {
     const cache = new BuildCache(options.cacheRoot, options.log);
     /* Shared: the controller advances it per applied batch; the execution
      * reads it and emits the cycle boundaries. */
     const cycle = new BuildCycle();
+    this.cycle = cycle;
     /* Watcher errors take the one error-reporting path; notices are
      * infrastructure diagnostics, logged like BuildCache's own. */
     this.controller = options.watch
@@ -91,10 +93,16 @@ export class Fabr {
     /* The source index persists per settled cycle — cycle-end fires even when
      * every recomputed value was identical (a touch without an edit), which is
      * exactly when rows changed but no result did — and drains ungated when
-     * the watch controller closes (the driver awaits close before exit). */
+     * the watch controller closes (the driver awaits close before exit).
+     * Under watch, the daily cache trim rides the same settled moment, after
+     * the record lands; a one-shot run's trim is instead the driver's, which
+     * alone can hold the process exit for it. */
     this.execution.onBuildEvent(event => {
       if (event.kind === "cycle-end") {
-        this.sourceFileSource.persistIndex();
+        const persisted = this.sourceFileSource.persistIndex();
+        if (this.controller) {
+          persisted.then(() => this.maybeCollectGarbage());
+        }
       }
     });
     this.controller?.track(
@@ -110,13 +118,22 @@ export class Fabr {
   public evaluate<T>(operation: (model: BuildModel) => Computable<T>): Computable<T> {
     const evaluation = loadProject(this.execution, PROJECT_FILENAME).then(operation);
     this.execution.observeEvaluation(evaluation);
-    /* The source index persists once the evaluation settles, red or green —
-     * rows captured during a failed build are captures all the same. It rides
-     * the returned chain (not an exit hook — `process.exit` runs no
-     * continuation): the awaited effect means a one-shot driver cannot exit
-     * under the write, and it never rejects, so the operation's own outcome
-     * passes through unchanged. */
     return evaluation.finally(() => this.sourceFileSource.persistIndex());
+  }
+
+  /**
+   * Run the cache's daily trim if it is due (see
+   * {@link BuildCache.maybeCollectGarbage}) — cheap when it is not, and
+   * preempted outright by any new build cycle. The watch-mode trigger is the
+   * facade's own (cycle-end, above); a one-shot driver calls this at the end
+   * of the run — for a takeover verb, after the interactive child exits — and
+   * awaits it, since only the driver can hold the process exit for it.
+   */
+  public maybeCollectGarbage(): Computable<void> {
+    const startedAt = this.cycle.current;
+    return this.execution.buildCache.maybeCollectGarbage({
+      shouldAbort: () => this.cycle.current !== startedAt,
+    });
   }
 }
 

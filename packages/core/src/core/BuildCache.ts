@@ -22,6 +22,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { Readable, Transform } from "stream";
+import { PROJECT_FILENAME } from "../Constants";
 import { Computable } from "./Computable";
 import { HttpStatusError, toError } from "./Errors";
 import { ICacheControl, openUrlStream, reportingProgress } from "./Fetch";
@@ -39,7 +40,10 @@ import {
   readFileBuffer,
   readOnlyPermissions,
   rename,
+  deleteTree,
+  stat,
   symlink,
+  updateFileTime,
   writeFile,
   writeFileAtomic,
 } from "./FSWrapper";
@@ -212,6 +216,51 @@ const META_PREFIX = "!meta ";
  * hex content hash, so the two can never be confused. */
 const LINK_PREFIX = "@link ";
 
+/*
+ * ── GC policy ───────────────────────────────────────────────
+ * Constants for v1 (exposing them is future work); machine policy either way,
+ * deliberately never PROJECT.fabr's — a retention window is a property of this
+ * machine's disk, not of any project.
+ */
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+/** Delete what has not been *used* in this long. 30 days, flat across classes
+ * (the class stamp makes a split a later policy-table change). */
+const GC_MAX_AGE_MS = 30 * DAY_MS;
+/** How long a project's registry records keep rooting its source snapshots
+ * after its last build. */
+const GC_PROJECT_TTL_MS = 90 * DAY_MS;
+/** Nothing whose mtime is within this window is ever deleted, regardless of
+ * policy — the belt for what liveness cannot see. */
+const GC_GRACE_MS = DAY_MS;
+/** Collect at most once per interval — the `gc/last` stamp, written only by a
+ * pass that actually proceeds. */
+const GC_INTERVAL_MS = DAY_MS;
+/** Refresh a recency mtime only when it is over this stale: stat first,
+ * conditional write, so steady-state hits cost one stat and almost never a
+ * write. */
+const TOUCH_THROTTLE_MS = HOUR_MS;
+/** How long a starting process waits out a live collector's pass before
+ * proceeding anyway — a wedged collector must not brick every subsequent
+ * build. Generous, because the wait ends the moment the pass does (the marker
+ * clears), so the cap only ever binds against a genuinely wedged one. */
+const GC_HANDSHAKE_WAIT_MS = 10 * 60_000;
+const GC_LAST_FILE = "last";
+/** A live collection's marker: an empty file named by its owner
+ * (`running-<host>-<pid>`, the work-tree owner pattern) — the name is the
+ * whole content, so placing one is a single atomic creation, two collectors
+ * can never clobber each other's, and each only ever removes its own. */
+const GC_RUNNING_PREFIX = "running-";
+const PROJECT_SOURCES_FILE = "sources";
+/** The store names the current layout claims. A root-level name outside these
+ * and {@link CLAIMED_MANIFEST} is garbage under the one-fabr-version-per-cache
+ * assumption — which covers every retired layout's debris with no blocklist
+ * to maintain. */
+const CLAIMED_STORES = new Set(["blob", "tree", "work", "deps", "incremental", "projects", "gc"]);
+/** An entry manifest's filename: a hashed key plus the suffix. */
+const CLAIMED_MANIFEST = /^[0-9a-f]{64}\.manifest$/;
+
 /**
  * The build cache: entries keyed by an input manifest hash, over a
  * content-addressed blob pool that also backs source snapshots and step outputs.
@@ -236,11 +285,11 @@ export class BuildCache {
    * the installs the interactive verbs stage. See {@link reclaimWorkTree}. */
   private readonly ownWorkRoot: string;
   /** The discovered-deps records: one directory per anchor, one immutable file
-   * per remembered record. Unbounded until the cache GC covers it. */
+   * per remembered record. Aged out by the GC as each stops being touched. */
   private readonly depsRoot: string;
   /** The projects registry: one directory per (host, source root) holding that
    * project's per-machine records — today the source index (see
-   * {@link readSourceIndex}); the cache GC's records join it later. */
+   * {@link readSourceIndex}). */
   private readonly projectsRoot: string;
   /** What the next build of a target key works from: one directory per target
    * key, holding the previous build's input manifest, a link to the entry it
@@ -271,6 +320,22 @@ export class BuildCache {
   private readonly stateGenerations = new Map<string, number>();
   private readonly statesWritten = new Map<string, number>();
 
+  /* The session-served set: every recency coordinate this session exercised,
+   * one member per kind of touch the GC's aging reads. Each set
+   * doubles as the touch throttle's once-per-session guard.
+   * Replayed as touches before a long-lived process collects — the in-memory
+   * graph's value cutoff means a target held Valid never re-demands, so these
+   * are exactly the touches the pass would otherwise not see. Trees are
+   * deliberately absent from the replay: they are only consumed during misses,
+   * which re-`ensureTree` by name. */
+  private readonly servedManifests = new Set<string>();
+  private readonly servedTargetKeys = new Set<string>();
+  private readonly servedDepsRecords = new Set<string>();
+  private readonly servedTrees = new Set<string>();
+  /** The GC's own store: the `last` daily stamp and any live collection's
+   * `running-<host>-<pid>` marker. */
+  private readonly gcRoot: string;
+
   constructor(cachePath: string, log: Log, now: () => number = Date.now) {
     this.root = cachePath;
     this.blobRoot = path.resolve(cachePath, "blob");
@@ -280,9 +345,15 @@ export class BuildCache {
     this.depsRoot = path.resolve(cachePath, "deps");
     this.projectsRoot = path.resolve(cachePath, "projects");
     this.incrementalRoot = path.resolve(cachePath, "incremental");
+    this.gcRoot = path.resolve(cachePath, "gc");
     this.log = log;
     this.now = now;
+    /* Handshake order: register this process's work tree FIRST (the flag a
+     * running collector re-checks), then wait out any live collection — each
+     * side writes its own flag before reading the other's, so whichever way
+     * the race falls, one side yields. */
     this.reclaimWorkTree();
+    this.awaitRunningCollection();
   }
 
   /*
@@ -307,23 +378,19 @@ export class BuildCache {
       return;
     }
     reclaimedRoots.add(this.ownWorkRoot);
-    let owners: string[] = [];
     try {
       fs.mkdirSync(this.workRoot, { recursive: true });
-      owners = fs.readdirSync(this.workRoot);
     } catch {
       /* An unreadable work root is not fatal here — the mkdir below reports it
        * against the build that actually needed a work dir. */
     }
-    for (const owner of owners) {
-      if (path.resolve(this.workRoot, owner) !== this.ownWorkRoot && !isReapable(owner)) {
-        continue;
-      }
-      try {
-        fs.rmSync(path.resolve(this.workRoot, owner), { recursive: true, force: true });
-      } catch {
-        /* Someone else's debris resisting removal is no reason to fail a build. */
-      }
+    this.reapWorkTrees();
+    /* The pid-reuse case: inheriting a dead fabr's pid means inheriting its
+     * debris, which is this process's to clean. */
+    try {
+      fs.rmSync(this.ownWorkRoot, { recursive: true, force: true });
+    } catch {
+      /* Resisting debris is no reason to fail a build. */
     }
     fs.mkdirSync(this.ownWorkRoot, { recursive: true });
     /* One registration covers every transient below it: an orderly exit takes
@@ -421,22 +488,29 @@ export class BuildCache {
           discoverable
         )
       );
+    /* The entry's class — the key text's namespace, stamped into the manifest
+     * header for the GC's per-kind policy and stats. */
+    const cls = keyClass(cacheKey);
     /* The lock separates DISCOVERABLE SETS as well as actions: two demands can
      * share an anchor and differ in their discoverable deps (a superseded watch
      * cycle). In-process only, so it needs any key that tells those apart and
      * has no obligation to match the entry key's format. */
     return this.withLock(discoverable === undefined ? anchorKey : hashString(anchorKey + manifestFileInputs(discoverable)), () => {
       if (options?.force) {
-        return this.createEntry(anchorKey, inContext, options, undefined, action, discoverable);
+        return this.createEntry(anchorKey, inContext, options, undefined, action, discoverable, cls);
       }
       if (discoverable !== undefined) {
-        return this.cacheGetDiscovered(anchorKey, discoverable).then(
-          hit => hit ?? this.createEntry(anchorKey, inContext, options, undefined, action, discoverable)
+        return this.cacheGetDiscovered(anchorKey, discoverable, options?.targetKey).then(
+          hit => hit ?? this.createEntry(anchorKey, inContext, options, undefined, action, discoverable, cls)
         );
       }
-      return this.cacheGet(anchorKey).then(entry =>
-        entry && isFresh(entry, this.now()) ? entry.files : this.createEntry(anchorKey, inContext, options, undefined, action, discoverable)
-      );
+      return this.cacheGet(anchorKey).then(entry => {
+        if (entry && isFresh(entry, this.now())) {
+          this.noteEntryServed(anchorKey, options?.targetKey);
+          return entry.files;
+        }
+        return this.createEntry(anchorKey, inContext, options, undefined, action, discoverable, cls);
+      });
     });
   }
 
@@ -446,11 +520,24 @@ export class BuildCache {
    * makes is probed, then the whole-discoverable key — where a non-reporting
    * run's entry lives, and which needs no record — last.
    */
-  private cacheGetDiscovered(anchorKey: string, discoverable: ActionFileInputs): Computable<FileSet | undefined> {
-    const probe = (record: DiscoveredDeps): Computable<FileSet | undefined> =>
-      this.cacheGet(hashString(preciseActionKey(anchorKey, narrowDeps(discoverable, record)))).then(entry => entry?.files);
+  private cacheGetDiscovered(anchorKey: string, discoverable: ActionFileInputs, targetKey?: string): Computable<FileSet | undefined> {
+    const probe = (record: DiscoveredDeps, recordFile?: string): Computable<FileSet | undefined> => {
+      const preciseKey = hashString(preciseActionKey(anchorKey, narrowDeps(discoverable, record)));
+      return this.cacheGet(preciseKey).then(entry => {
+        if (entry !== undefined) {
+          this.noteEntryServed(preciseKey, targetKey);
+          if (recordFile !== undefined && !this.servedDepsRecords.has(recordFile)) {
+            /* The record that produced the hit is in use — its mtime keeps it
+             * alive exactly as long as the entry it accelerates. */
+            this.servedDepsRecords.add(recordFile);
+            this.touchForRecency(recordFile);
+          }
+        }
+        return entry?.files;
+      });
+    };
     return this.discoveredDepsFiles(anchorKey)
-      .then(files => computableFind(files, file => this.readDiscoveredDepsDoc(file).then(record => record && probe(record))))
+      .then(files => computableFind(files, file => this.readDiscoveredDepsDoc(file).then(record => record && probe(record, file))))
       .then(hit => hit ?? probe(new Map()));
   }
 
@@ -501,6 +588,7 @@ export class BuildCache {
     return this.withLock(key, () =>
       this.cacheGet(key).then(entry => {
         if (entry && isFresh(entry, this.now()) && !options?.forceRevalidate) {
+          this.noteEntryServed(key);
           return entry.files;
         }
         return this.fetch(key, url, process, track, headers, entry, options);
@@ -549,12 +637,15 @@ export class BuildCache {
                 )
               ).then(result => ({ result })),
             undefined,
-            meta
+            meta,
+            undefined,
+            undefined,
+            "fetch"
           );
         }
         /* 304 is only possible for a conditional request, so we hold the entry
          * the validators came from; re-putting refreshes its lifetime in place. */
-        return this.cachePut(key, entry!.files, meta);
+        return this.cachePut(key, entry!.files, meta, "fetch");
       },
       err => {
         if (entry && isTransientFetchError(err)) {
@@ -572,7 +663,7 @@ export class BuildCache {
    * ── Blob pool ───────────────────────────────────────────────
    * One file per distinct content, named by its hash: what every entry's files
    * are backed by, and the one place bytes are written. Immutable and shared —
-   * published by rename, removed only by a future GC.
+   * published by rename, removed only by the GC's sweep.
    */
 
   /**
@@ -742,7 +833,9 @@ export class BuildCache {
    * ── Tree pool ───────────────────────────────────────────────
    * The blob pool one dimension up: one directory per materialized tree, named
    * by the manifest hash of its contents, files hardlinked out of the blob pool.
-   * Immutable, shared, published atomically, reclaimed only by a future GC.
+   * Immutable, shared, published atomically, aged out by the GC — a consumer
+   * re-`ensureTree`s by name per run, which rebuilds anything swept and
+   * touches everything still used.
    */
 
   /** Where {@link ensureTree} publishes, as an absolute path on this machine. */
@@ -779,6 +872,12 @@ export class BuildCache {
     const key = files.toManifestHash();
     const entry = path.resolve(this.treeRoot, key);
     if (fs.existsSync(entry)) {
+      /* The tree dir's mtime is the GC's recency signal for it; the served
+       * guard bounds the refresh to once per tree per session. */
+      if (!this.servedTrees.has(key)) {
+        this.servedTrees.add(key);
+        this.touchForRecency(entry);
+      }
       return Computable.resolve(entry);
     }
     const running = this.inflightTrees.get(key);
@@ -840,10 +939,17 @@ export class BuildCache {
     /** The demanded action, where the demand is one — what a tracking record's
      * inputs part and the discoverable narrowing are derived from. */
     action?: BuildAction,
-    discoverable?: ActionFileInputs
+    discoverable?: ActionFileInputs,
+    /** The entry's class stamp — see {@link storeManifest}. */
+    cls?: string
   ): Computable<FileSet> {
     const { targetKey } = options ?? {};
     const targetDir = this.createWorkDir();
+    /* The miss rewrites the build-state record, but the session still holds it
+     * from here on — the served set is what a long-lived collector replays. */
+    if (targetKey !== undefined) {
+      this.servedTargetKeys.add(targetKey);
+    }
     /* Taken at the miss, not the commit: an attempt superseded while it ran must
      * not move the target key's record backwards on its way out. */
     const attempt = targetKey === undefined ? undefined : this.beginBuildStateAttempt(targetKey);
@@ -872,7 +978,7 @@ export class BuildCache {
            * red run commits nothing and records nothing, which is what keeps
            * every record a green build's, and a crash mid-way costs a redundant
            * run rather than leaving a pointer to nothing. */
-          return this.cachePut(entryKey, produced.result, meta)
+          return this.cachePut(entryKey, produced.result, meta, cls)
             .then(stored => (selection === undefined ? stored : this.recordDiscoveredDeps(key, selection).then(() => stored)))
             .then(stored =>
               targetKey === undefined
@@ -940,7 +1046,8 @@ export class BuildCache {
    * What a run read of its discoverable deps, one directory per anchor holding one
    * immutable content-named file per record. Purely advisory — a torn, stale or
    * missing record costs a probe, never a wrong answer. Written only by a green
-   * run, never rewritten, unbounded until the GC covers it.
+   * run, never rewritten; a record stops being touched when no build makes its
+   * selection anymore, and ages out.
    */
 
   /** Where an anchor's discovered-deps records live: a directory of immutable
@@ -990,26 +1097,31 @@ export class BuildCache {
   /*
    * ── Projects registry ───────────────────────────────────────
    * Per-(host, source root) records: what the cache remembers ABOUT a project,
-   * as opposed to what it holds FOR one. Today that is the source index — a
-   * project's stat cache (see DESIGN-source-index.md); the cache GC's records
-   * join this store later. All advisory: deleting the store costs re-derivation,
-   * never correctness.
+   * as opposed to what it holds FOR one — today the source index, a project's
+   * stat cache. All advisory: deleting the store costs re-derivation, never
+   * correctness.
    */
 
-  /** Where a source root's record lives, plus the identity it is judged by.
+  /** Where a source root's records live, plus the identity they are judged by.
    * The dir name is only a collision-free address (the work tree's owner-naming
-   * pattern applied to a different coordinate); the record's header carries the
+   * pattern applied to a different coordinate); each record's header carries the
    * real path, which is the actual identity. Host-tagged because source paths
    * are host-local facts — a shared cache holds each host's records side by
    * side. */
-  private projectRecord(rootPath: string): { file: string; root: string } {
+  private projectDir(rootPath: string): { dir: string; root: string } {
     let root: string;
     try {
       root = fs.realpathSync(rootPath);
     } catch {
       root = path.resolve(rootPath);
     }
-    return { file: path.resolve(this.projectsRoot, `${hostTag()}-${hashString(root)}`, "sources"), root };
+    return { dir: path.resolve(this.projectsRoot, `${hostTag()}-${hashString(root)}`), root };
+  }
+
+  /** The source-index record within {@link projectDir}. */
+  private projectRecord(rootPath: string): { file: string; root: string } {
+    const { dir, root } = this.projectDir(rootPath);
+    return { file: path.resolve(dir, PROJECT_SOURCES_FILE), root };
   }
 
   /**
@@ -1241,10 +1353,8 @@ export class BuildCache {
         ],
         () => undefined
       )
-        .then(() => {
-          fs.rmSync(dir, { recursive: true, force: true });
-          return rename(staging, dir);
-        })
+        .then(() => deleteTree(dir))
+        .then(() => rename(staging, dir))
         /* A work dir is private (mkdtemp's 0700); a record is ordinary store
          * content and readable like the rest of it. */
         .then(() => fs.chmodSync(dir, 0o755))
@@ -1338,8 +1448,11 @@ export class BuildCache {
    * its manifest) and write the manifest, with the cache-control metadata for
    * a non-immutable entry. Returns the entry's cache-backed view.
    */
-  private cachePut(key: string, files: FileSet, meta?: ICacheControl): Computable<FileSet> {
-    return this.storeContent(files).then(stored => this.storeManifest(this.manifestPath(key), stored, meta));
+  private cachePut(key: string, files: FileSet, meta?: ICacheControl, cls?: string): Computable<FileSet> {
+    /* A commit joins the session-served set; its manifest is freshly written,
+     * so no touch rides with it. */
+    this.servedManifests.add(key);
+    return this.storeContent(files).then(stored => this.storeManifest(this.manifestPath(key), stored, meta, cls));
   }
 
   /**
@@ -1349,7 +1462,10 @@ export class BuildCache {
    *
    * The `!meta` header line is always written and always carries the file count
    * ({@link parseManifest} requires it); a mutable entry's freshness metadata
-   * rides alongside it.
+   * rides alongside it, as does the entry's `class` — the key's namespace
+   * (`rule`/`memo`/`fetch`), stamped for the GC's per-kind policy and stats
+   * (unread in v1; absent on a build-state record's parts, which are no
+   * entries). Readers tolerate the field either way.
    *
    * Rows are the shared dialect ({@link manifestLine}) with this document's own
    * trailing field, the mime — a regular file's content path is implicitly
@@ -1358,8 +1474,8 @@ export class BuildCache {
    * no blob and gets an `@link` line carrying its target inline, which is this
    * document's own line kind.
    */
-  private storeManifest(manifestPath: string, files: FileSet, meta?: ICacheControl): Computable<FileSet> {
-    let manifest = `${META_PREFIX}${JSON.stringify({ entries: files.size, ...meta })}\n`;
+  private storeManifest(manifestPath: string, files: FileSet, meta?: ICacheControl, cls?: string): Computable<FileSet> {
+    let manifest = `${META_PREFIX}${JSON.stringify({ entries: files.size, ...(cls === undefined ? {} : { class: cls }), ...meta })}\n`;
     const backed = new Map<string, IFile>();
     for (const [name, file] of files) {
       if (file instanceof SymlinkFile) {
@@ -1502,6 +1618,470 @@ export class BuildCache {
       meta: expires === undefined ? undefined : { expires, etag, lastModified },
     };
   }
+
+  /*
+   * ── Garbage collection ──────────────────────────────────────
+   * The automatic trim: expire → mark → sweep over every store, run at most
+   * once per {@link GC_INTERVAL_MS} and only as the sole live fabr on the
+   * host. Every store is a memo, so collection is never a correctness hazard
+   * — the one invariant maintained is *a manifest present ⇒ its blobs
+   * present*, held by pass ordering (manifests expire first; blobs are swept
+   * only by reachability from the survivors), so a crash anywhere leaves
+   * nothing inconsistent and an abort is free. Removals are best-effort
+   * throughout: a cleanup failure never outranks the run's own outcome.
+   */
+
+  /**
+   * Run the daily trim if it is due — cheap when it is not (one stat), so a
+   * per-cycle caller costs nothing. When to call is the driver's policy; the
+   * gating (the daily stamp, sole-liveness, the running-collection handshake)
+   * is the cache's. Never rejects.
+   */
+  public maybeCollectGarbage(options?: ICollectOptions): Computable<void> {
+    return Computable.from(resolve => {
+      this.collectGarbage(options?.shouldAbort ?? ((): boolean => false)).then(
+        () => resolve(undefined),
+        () => resolve(undefined)
+      );
+    });
+  }
+
+  private async collectGarbage(shouldAbort: () => boolean): Promise<void> {
+    if (!this.gcDue()) {
+      return;
+    }
+    fs.mkdirSync(this.gcRoot, { recursive: true });
+    /* The handshake's first flag, placed BEFORE judging liveness: a starting
+     * process registers its work tree and then scans for markers, so
+     * whichever way the race falls, one side yields (see
+     * {@link awaitRunningCollection}). */
+    const marker = path.join(this.gcRoot, `${GC_RUNNING_PREFIX}${hostTag()}-${process.pid}`);
+    fs.writeFileSync(marker, "");
+    try {
+      /* A deferral leaves `gc/last` alone — it must not silence a retry that
+       * would succeed an hour later. */
+      if (!this.soleLiveFabr()) {
+        return;
+      }
+      fs.writeFileSync(path.join(this.gcRoot, GC_LAST_FILE), String(this.now()));
+      await this.replayServedTouches();
+      const rootedBlobs = await this.readProjectRecords(shouldAbort);
+      if (shouldAbort()) {
+        return;
+      }
+      await this.expireStores(shouldAbort);
+      if (shouldAbort()) {
+        return;
+      }
+      const reach = await this.markReachable(rootedBlobs, shouldAbort);
+      /* The handshake's re-check, between mark and sweep: a process that
+       * registered after the sole-live judgment is seen here, before anything
+       * irreversible to it happens. */
+      if (reach === undefined || shouldAbort() || !this.soleLiveFabr()) {
+        return;
+      }
+      await this.sweepBlobs(reach.marked, reach.present, shouldAbort);
+    } finally {
+      fs.rmSync(marker, { force: true });
+    }
+  }
+
+  /** Whether the daily trim is due — the `gc/last` stamp is over the interval
+   * old, or has never been written. */
+  private gcDue(): boolean {
+    try {
+      return this.now() - fs.statSync(path.join(this.gcRoot, GC_LAST_FILE)).mtimeMs > GC_INTERVAL_MS;
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * Whether this process is the only live fabr using the store — judged from
+   * the `work/` registry exactly as {@link reclaimWorkTree} judges
+   * reapability. A foreign host's pids mean nothing here, but its recency
+   * does: a foreign work tree newer than the grace window defers the run
+   * entirely. (That deferral is a belt, not a claim — shared-filesystem
+   * caches are out of scope for automatic GC.)
+   */
+  private soleLiveFabr(): boolean {
+    let owners: string[];
+    try {
+      owners = fs.readdirSync(this.workRoot);
+    } catch {
+      return true;
+    }
+    for (const owner of owners) {
+      const dir = path.resolve(this.workRoot, owner);
+      if (dir === this.ownWorkRoot) {
+        continue;
+      }
+      const pid = thisHostPid(owner);
+      if (pid !== undefined) {
+        if (isProcessAlive(pid)) {
+          return false;
+        }
+      } else {
+        try {
+          if (this.now() - fs.statSync(dir).mtimeMs <= GC_GRACE_MS) {
+            return false;
+          }
+        } catch {
+          /* Gone between listing and stat — no liveness signal there. */
+        }
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Wait out a collection already in flight before this process touches the
+   * store: its `ensureBlob`/`presentBlob` fast paths trust blob presence, and
+   * a concurrent sweep is the one thing that could falsify that trust. A
+   * marker's name says whose it is ({@link GC_RUNNING_PREFIX}), so a crashed
+   * pass's marker is stale debris — removed, never waited on; a foreign
+   * host's is unverifiable here (shared-filesystem caches are out of scope)
+   * and never this process's to remove; and this process's own is never
+   * waited on (a second BuildCache over one store — waiting would deadlock
+   * the shared event loop the pass runs on). Synchronous because it guards
+   * construction; the wait is rare (a pass runs seconds, at most daily) and
+   * deadline-bounded, since a wedged collector must not brick every build.
+   */
+  private awaitRunningCollection(): void {
+    /* Real elapsed time, deliberately not the injectable clock: this bounds an
+     * actual wait. */
+    const deadline = Date.now() + GC_HANDSHAKE_WAIT_MS;
+    for (;;) {
+      let live = false;
+      let markers: string[];
+      try {
+        markers = fs.readdirSync(this.gcRoot).filter(name => name.startsWith(GC_RUNNING_PREFIX));
+      } catch {
+        return;
+      }
+      for (const name of markers) {
+        const pid = thisHostPid(name.slice(GC_RUNNING_PREFIX.length));
+        if (pid === undefined || pid === process.pid) {
+          continue;
+        }
+        if (isProcessAlive(pid)) {
+          live = true;
+        } else {
+          fs.rmSync(path.join(this.gcRoot, name), { force: true });
+        }
+      }
+      if (!live || Date.now() > deadline) {
+        return;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
+  }
+
+  /**
+   * Refresh `filepath`'s mtime — the GC's recency signal — where it is over
+   * {@link TOUCH_THROTTLE_MS} stale: stat first, conditional write, so a hit
+   * costs one stat and almost never a write. Fire-and-forget cache policy:
+   * never awaited, never key material, and a failure (a path already gone)
+   * means nothing.
+   */
+  private touchForRecency(filepath: string): void {
+    stat(filepath)
+      .then(st => (this.now() - st.mtimeMs > TOUCH_THROTTLE_MS ? updateFileTime(filepath, new Date(this.now())) : undefined))
+      .catch(() => undefined);
+  }
+
+  /**
+   * Note an entry served from the store: it joins the session-served set,
+   * and its manifest's mtime — the entry's LRU signal —
+   * is refreshed, along with the build-state record of the target key the hit
+   * carried (rewritten only on a miss, so a hit's touch is its only recency
+   * signal). Once per coordinate per session; commits join through
+   * {@link cachePut} instead.
+   */
+  private noteEntryServed(key: string, targetKey?: string): void {
+    if (!this.servedManifests.has(key)) {
+      this.servedManifests.add(key);
+      this.touchForRecency(this.manifestPath(key));
+    }
+    if (targetKey !== undefined && !this.servedTargetKeys.has(targetKey)) {
+      this.servedTargetKeys.add(targetKey);
+      this.touchForRecency(this.buildStatePath(targetKey));
+    }
+  }
+
+  /** Replay the touches the in-memory graph's value cutoff suppressed: a
+   * target held Valid never re-demands its records, so before the pass runs,
+   * every session-served coordinate is refreshed outright. */
+  private async replayServedTouches(): Promise<void> {
+    const when = new Date(this.now());
+    const paths = [
+      ...[...this.servedManifests].map(key => this.manifestPath(key)),
+      ...[...this.servedTargetKeys].map(key => this.buildStatePath(key)),
+      ...this.servedDepsRecords,
+    ];
+    for (const filepath of paths) {
+      await updateFileTime(filepath, when).catch(() => undefined);
+    }
+  }
+
+  /**
+   * The projects registry's contribution to the pass: expire its records
+   * (`sources` past {@link GC_PROJECT_TTL_MS}, unknown record kinds past
+   * grace), then read what survives — a live project's `sources` rows root
+   * its snapshot blobs. A project is live while its recorded root still holds
+   * a PROJECT.fabr — checked only for this host's records; a foreign host's
+   * paths mean nothing here, so its records participate unvalidated until
+   * they age out.
+   */
+  private async readProjectRecords(shouldAbort: () => boolean): Promise<Set<string>> {
+    const rootedBlobs = new Set<string>();
+    const owners = await readdir(this.projectsRoot).catch(() => [] as fs.Dirent[]);
+    for (const owner of owners) {
+      if (shouldAbort()) {
+        break;
+      }
+      const dir = path.resolve(this.projectsRoot, owner.name);
+      if (!owner.isDirectory()) {
+        await this.removeIfPast(dir, 0);
+        continue;
+      }
+      const split = owner.name.lastIndexOf("-");
+      const validated = split >= 0 && owner.name.slice(0, split) === hostTag();
+      const live = (root: string): boolean => !validated || fs.existsSync(path.join(root, PROJECT_FILENAME));
+      for (const record of await readdir(dir).catch(() => [] as fs.Dirent[])) {
+        const file = path.join(dir, record.name);
+        const st = await stat(file).catch(() => undefined);
+        if (st === undefined) {
+          continue;
+        }
+        if (record.name === PROJECT_SOURCES_FILE) {
+          if (this.pastWindow(st.mtimeMs, GC_PROJECT_TTL_MS)) {
+            await deleteFile(file).catch(() => undefined);
+            continue;
+          }
+          const text = await readFile(file).catch(() => undefined);
+          const parsed = text === undefined ? undefined : parseSourceIndex(text);
+          if (parsed !== undefined && live(parsed.meta.root)) {
+            for (const row of parsed.rows.values()) {
+              rootedBlobs.add(row.hash);
+            }
+          }
+        } else {
+          await this.removeIfPast(file, 0);
+        }
+      }
+      try {
+        fs.rmdirSync(dir);
+      } catch {
+        /* Not empty — the normal case. */
+      }
+    }
+    return rootedBlobs;
+  }
+
+  /**
+   * The expire step: delete root manifests past {@link GC_MAX_AGE_MS};
+   * likewise expired incremental
+   * records, discovered-deps records (and then-empty anchors), and tree dirs;
+   * reap dead-pid work trees; and delete every root-level name the layout
+   * doesn't claim — garbage under the one-version assumption, once past
+   * grace.
+   */
+  private async expireStores(shouldAbort: () => boolean): Promise<void> {
+    for (const entry of await readdir(this.root).catch(() => [] as fs.Dirent[])) {
+      if (shouldAbort()) {
+        return;
+      }
+      const file = path.resolve(this.root, entry.name);
+      if (CLAIMED_MANIFEST.test(entry.name) && entry.isFile()) {
+        await this.removeIfPast(file, GC_MAX_AGE_MS);
+      } else if (!CLAIMED_STORES.has(entry.name)) {
+        await this.removeIfPast(file, 0);
+      }
+    }
+    for (const record of await readdir(this.incrementalRoot).catch(() => [] as fs.Dirent[])) {
+      if (shouldAbort()) {
+        return;
+      }
+      await this.removeIfPast(path.resolve(this.incrementalRoot, record.name), GC_MAX_AGE_MS);
+    }
+    for (const anchor of await readdir(this.depsRoot).catch(() => [] as fs.Dirent[])) {
+      if (shouldAbort()) {
+        return;
+      }
+      const anchorDir = path.resolve(this.depsRoot, anchor.name);
+      for (const record of await readdir(anchorDir).catch(() => [] as fs.Dirent[])) {
+        await this.removeIfPast(path.join(anchorDir, record.name), GC_MAX_AGE_MS);
+      }
+      try {
+        fs.rmdirSync(anchorDir);
+      } catch {
+        /* Not empty — records remain. */
+      }
+    }
+    for (const tree of await readdir(this.treeRoot).catch(() => [] as fs.Dirent[])) {
+      if (shouldAbort()) {
+        return;
+      }
+      await this.removeIfPast(path.resolve(this.treeRoot, tree.name), GC_MAX_AGE_MS);
+    }
+    this.reapWorkTrees();
+  }
+
+  /**
+   * The mark step: parse every surviving manifest and collect the blob hashes
+   * the survivors reference, seeded with the live projects' rooted snapshot
+   * blobs. A manifest that fails to parse, or references a blob already
+   * missing, is damage — deleted, {@link readManifest}'s philosophy (kept
+   * unreadable, it would have its blobs swept out from under it).
+   * Surviving incremental records' `state` manifests are real pool claims and mark too;
+   * their `inputs`/`discovered` parts are diff bases, never pool claims, and
+   * the `outputs` link names a root manifest governed by its own aging.
+   *
+   * @return the marked and present blob sets, or undefined when preempted.
+   */
+  private async markReachable(
+    rootedBlobs: ReadonlySet<string>,
+    shouldAbort: () => boolean
+  ): Promise<{ marked: Set<string>; present: Set<string> } | undefined> {
+    const present = new Set<string>();
+    for (const blob of await readdir(this.blobRoot).catch(() => [] as fs.Dirent[])) {
+      if (blob.isFile()) {
+        present.add(blob.name);
+      }
+    }
+    const marked = new Set(rootedBlobs);
+    for (const entry of await readdir(this.root).catch(() => [] as fs.Dirent[])) {
+      if (shouldAbort()) {
+        return undefined;
+      }
+      if (!entry.isFile() || !CLAIMED_MANIFEST.test(entry.name)) {
+        continue;
+      }
+      const file = path.resolve(this.root, entry.name);
+      const hashes = await this.manifestBlobHashes(file);
+      if (hashes === undefined || hashes.some(hash => !present.has(hash))) {
+        await deleteFile(file).catch(() => undefined);
+        continue;
+      }
+      for (const hash of hashes) {
+        marked.add(hash);
+      }
+    }
+    for (const record of await readdir(this.incrementalRoot).catch(() => [] as fs.Dirent[])) {
+      if (shouldAbort()) {
+        return undefined;
+      }
+      const stateFile = path.resolve(this.incrementalRoot, record.name, STATE_STATE_FILE);
+      if (!fs.existsSync(stateFile)) {
+        continue;
+      }
+      const hashes = await this.manifestBlobHashes(stateFile);
+      if (hashes === undefined || hashes.some(hash => !present.has(hash))) {
+        await deleteTree(path.resolve(this.incrementalRoot, record.name)).catch(() => undefined);
+        continue;
+      }
+      for (const hash of hashes) {
+        marked.add(hash);
+      }
+    }
+    return { marked, present };
+  }
+
+  /** The blob hashes one stored manifest references, or undefined for a file
+   * that does not parse as one — which the caller judges as damage AND
+   * deletes; this helper only ever reads. An absent file is an empty claim; a
+   * genuine IO failure rethrows and aborts the pass ({@link readManifest}'s
+   * rule — and sweeping around a manifest that could not be read could take
+   * its blobs). */
+  private async manifestBlobHashes(file: string): Promise<string[] | undefined> {
+    const text = await readFile(file).catch((err: unknown) => {
+      if (isNotFound(err) || isNotDirectoryError(err)) {
+        return undefined;
+      }
+      throw err;
+    });
+    if (text === undefined) {
+      return [];
+    }
+    try {
+      const entry = this.parseManifest(text);
+      return [...entry.files].flatMap(([, held]) => (held instanceof SymlinkFile ? [] : [held.hash]));
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The sweep step: delete blobs that are unmarked AND older than
+   * {@link GC_MAX_AGE_MS} — the age test, not merely the grace window, so
+   * unrooted content a build keeps re-writing (a recordless project's source
+   * snapshots) churns at most once per window. */
+  private async sweepBlobs(marked: ReadonlySet<string>, present: ReadonlySet<string>, shouldAbort: () => boolean): Promise<void> {
+    for (const hash of present) {
+      if (shouldAbort()) {
+        return;
+      }
+      if (!marked.has(hash)) {
+        await this.removeIfPast(path.resolve(this.blobRoot, hash), GC_MAX_AGE_MS);
+      }
+    }
+  }
+
+  /** Delete `filepath` (a file or a whole tree) if its own mtime is past
+   * `windowMs` — and past {@link GC_GRACE_MS} regardless, the belt for what
+   * liveness cannot see. Best-effort. */
+  private async removeIfPast(filepath: string, windowMs: number): Promise<void> {
+    const st = await stat(filepath).catch(() => undefined);
+    if (st !== undefined && this.pastWindow(st.mtimeMs, windowMs)) {
+      await deleteTree(filepath).catch(() => undefined);
+    }
+  }
+
+  /** Whether `mtimeMs` is older than `windowMs` AND older than the grace
+   * window — nothing inside the grace is ever deleted, regardless of policy. */
+  private pastWindow(mtimeMs: number, windowMs: number): boolean {
+    const age = this.now() - mtimeMs;
+    return age > windowMs && age > GC_GRACE_MS;
+  }
+
+  /** Reap the work trees of this host's dead processes — never this process's
+   * own, and never a foreign host's (their pids mean nothing here, and they
+   * are their owners' to reap). */
+  private reapWorkTrees(): void {
+    let owners: string[] = [];
+    try {
+      owners = fs.readdirSync(this.workRoot);
+    } catch {
+      return;
+    }
+    for (const owner of owners) {
+      const dir = path.resolve(this.workRoot, owner);
+      if (dir !== this.ownWorkRoot && isReapable(owner)) {
+        try {
+          fs.rmSync(dir, { recursive: true, force: true });
+        } catch {
+          /* Someone else's debris resisting removal is no reason to fail. */
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Options for {@link BuildCache.maybeCollectGarbage}. When to run is the
+ * caller's policy.
+ */
+export interface ICollectOptions {
+  /** Checked between deletions: a true return preempts the pass outright —
+   * under watch, any new cycle must not race fabr's own sweep. Abort is free
+   * (the crash-safety ordering leaves nothing inconsistent). */
+  shouldAbort?: () => boolean;
+}
+
+/** The namespace of a key text (`rule:` / `memo:` / `fetch:`) — the class its
+ * entry's manifest header is stamped with. */
+function keyClass(cacheKey: string): string | undefined {
+  return /^([a-z]+):/.exec(cacheKey)?.[1];
 }
 
 /**
@@ -1707,17 +2287,25 @@ function hostTag(): string {
   return os.hostname().replace(/[^\w.]/g, "_") || "host";
 }
 
-/** Whether a `work/` subdirectory belongs to a process of THIS host that is
- * gone — the only foreign trees safe to remove. A name we can't read as one of
- * our own is left alone, as is any tree owned by another host (whose pids mean
- * nothing here). */
-function isReapable(owner: string): boolean {
+/** The pid within a `<host>-<pid>` owner name — a work-tree dir or a
+ * collection marker's owner half — when the host is THIS host; undefined for
+ * another host's name (whose pids mean nothing here) or anything
+ * unparseable. */
+function thisHostPid(owner: string): number | undefined {
   const split = owner.lastIndexOf("-");
   if (split < 0 || owner.slice(0, split) !== hostTag()) {
-    return false;
+    return undefined;
   }
   const pid = Number(owner.slice(split + 1));
-  return Number.isInteger(pid) && pid > 0 && !isProcessAlive(pid);
+  return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+/** Whether a `work/` subdirectory belongs to a process of THIS host that is
+ * gone — the only foreign trees safe to remove. A name we can't read as one of
+ * our own is left alone, as is any tree owned by another host. */
+function isReapable(owner: string): boolean {
+  const pid = thisHostPid(owner);
+  return pid !== undefined && !isProcessAlive(pid);
 }
 
 /** Signal 0 probes for existence without delivering anything: EPERM means the
