@@ -88,6 +88,18 @@ export class Fabr {
       : undefined;
     this.sourceFileSource = getSourceFileSource(options.sourceRoot, cache, this.controller);
     this.execution = new ExecutionContext(cache, options.log, this.sourceFileSource, new FSFileSource("/"), cycle);
+    /* The source index persists per settled cycle — cycle-end fires even when
+     * every recomputed value was identical (a touch without an edit), which is
+     * exactly when rows changed but no result did — and drains ungated when
+     * the watch controller closes (the driver awaits close before exit). */
+    this.execution.onBuildEvent(event => {
+      if (event.kind === "cycle-end") {
+        this.sourceFileSource.persistIndex();
+      }
+    });
+    this.controller?.track(
+      () => new Promise<void>(resolve => this.sourceFileSource.persistIndex(true).then(() => resolve(), () => resolve()))
+    );
   }
 
   /**
@@ -98,7 +110,13 @@ export class Fabr {
   public evaluate<T>(operation: (model: BuildModel) => Computable<T>): Computable<T> {
     const evaluation = loadProject(this.execution, PROJECT_FILENAME).then(operation);
     this.execution.observeEvaluation(evaluation);
-    return evaluation;
+    /* The source index persists once the evaluation settles, red or green —
+     * rows captured during a failed build are captures all the same. It rides
+     * the returned chain (not an exit hook — `process.exit` runs no
+     * continuation): the awaited effect means a one-shot driver cannot exit
+     * under the write, and it never rejects, so the operation's own outcome
+     * passes through unchanged. */
+    return evaluation.finally(() => this.sourceFileSource.persistIndex());
   }
 }
 

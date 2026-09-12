@@ -25,6 +25,7 @@ import { WatchController } from "./WatchController";
 import { ComputableSource } from "./Computable";
 import { hashString } from "./FSWrapper";
 import { MemoryFile } from "./MemoryFS";
+import { parseSourceIndex } from "./Manifest";
 import { SourceFileSource } from "./SourceFileSource";
 import { IResolvedWriteBack } from "./WriteBack";
 import { expect } from "chai";
@@ -269,5 +270,164 @@ describe("SourceFileSource", () => {
       expect(src["isExpectedChange"]("src/__snapshots__", true)).to.equal(false);
       expect(src["isExpectedChange"]("src/__snapshots__/a.snap")).to.equal(false);
     });
+  });
+});
+
+describe("SourceFileSource index trust", () => {
+  let sourceRoot: string;
+  let cacheRoot: string;
+
+  beforeEach(() => {
+    sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-srcidx-src-"));
+    cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-srcidx-cache-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(sourceRoot, { recursive: true, force: true });
+    fs.rmSync(cacheRoot, { recursive: true, force: true });
+  });
+
+  /** A source file whose mtime is safely outside the smudge window — floored
+   * to a whole second, which round-trips exactly through every utimes/stat
+   * conversion (sub-ms fractions do not, and a test that re-sets a
+   * stat-derived mtime needs the round-trip exact). */
+  function writeAged(name: string, content: string, ageMs = 10_000): string {
+    const file = path.join(sourceRoot, name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+    const at = new Date(Math.floor((Date.now() - ageMs) / 1000) * 1000);
+    fs.utimesSync(file, at, at);
+    return file;
+  }
+
+  function newSource(): SourceFileSource {
+    return new SourceFileSource(sourceRoot, new BuildCache(cacheRoot, { log: () => undefined }));
+  }
+
+  /** The one record under projects/, as a path. */
+  function recordPath(): string | undefined {
+    const projects = path.join(cacheRoot, "projects");
+    if (!fs.existsSync(projects)) {
+      return undefined;
+    }
+    const owners = fs.readdirSync(projects);
+    return owners.length === 0 ? undefined : path.join(projects, owners[0], "sources");
+  }
+
+  async function ingestAndPersist(source: SourceFileSource, ...names: string[]): Promise<(string | undefined)[]> {
+    const hashes: (string | undefined)[] = [];
+    for (const name of names) {
+      hashes.push((await toPromise(source.ingest(name)))?.hash);
+    }
+    await toPromise(source.persistIndex());
+    return hashes;
+  }
+
+  it("serves a stat-matching row without re-reading (proven by poisoning)", async () => {
+    writeAged("src/a.ts", "export const a = 1;\n");
+    const [realHash] = await ingestAndPersist(newSource(), "src/a.ts");
+
+    /* Swap the recorded hash for one naming different pool content. A trusting
+     * read must surface the poison; a re-hashing read cannot. */
+    const bogus = Buffer.from("poisoned content");
+    const bogusHash = hashString(bogus);
+    fs.mkdirSync(path.join(cacheRoot, "blob"), { recursive: true });
+    fs.writeFileSync(path.join(cacheRoot, "blob", bogusHash), bogus);
+    const record = recordPath()!;
+    fs.writeFileSync(record, fs.readFileSync(record, "utf8").replace(realHash!, bogusHash));
+
+    const trusted = await toPromise(newSource().ingest("src/a.ts"));
+    expect(trusted!.hash).to.equal(bogusHash);
+    expect(await toPromise(trusted!.readString())).to.equal("poisoned content");
+  });
+
+  it("a stat mismatch defeats a poisoned row (the determinism property)", async () => {
+    writeAged("src/a.ts", "export const a = 1;\n");
+    const [realHash] = await ingestAndPersist(newSource(), "src/a.ts");
+
+    const bogus = Buffer.from("poisoned content");
+    const bogusHash = hashString(bogus);
+    fs.writeFileSync(path.join(cacheRoot, "blob", bogusHash), bogus);
+    const record = recordPath()!;
+    fs.writeFileSync(record, fs.readFileSync(record, "utf8").replace(realHash!, bogusHash));
+
+    /* Any stat change — here the mtime — must void the row. */
+    const moved = new Date(Date.now() - 5000);
+    fs.utimesSync(path.join(sourceRoot, "src/a.ts"), moved, moved);
+    const reread = await toPromise(newSource().ingest("src/a.ts"));
+    expect(reread!.hash).to.equal(realHash);
+  });
+
+  it("smudged captures record no row; rested ones do", async () => {
+    writeAged("aged.ts", "aged\n");
+    fs.writeFileSync(path.join(sourceRoot, "fresh.ts"), "fresh\n");
+
+    await ingestAndPersist(newSource(), "aged.ts", "fresh.ts");
+    const parsed = parseSourceIndex(fs.readFileSync(recordPath()!, "utf8"))!;
+    expect(parsed.rows.has("aged.ts")).to.equal(true);
+    expect(parsed.rows.has("fresh.ts")).to.equal(false);
+  });
+
+  it("a swept blob falls back to the full path and restores it", async () => {
+    writeAged("src/a.ts", "export const a = 1;\n");
+    const source = newSource();
+    const first = await toPromise(source.ingest("src/a.ts"));
+    await toPromise(source.persistIndex());
+
+    fs.rmSync(first!.getAbsPath()!, { force: true });
+    const reingested = await toPromise(newSource().ingest("src/a.ts"));
+    expect(reingested!.hash).to.equal(first!.hash);
+    expect(fs.existsSync(first!.getAbsPath()!)).to.equal(true);
+  });
+
+  it("drops a consulted row whose file is gone, carries the unconsulted rest", async () => {
+    writeAged("a.ts", "a\n");
+    writeAged("b.ts", "b\n");
+    await ingestAndPersist(newSource(), "a.ts", "b.ts");
+
+    fs.rmSync(path.join(sourceRoot, "a.ts"));
+    const next = newSource();
+    expect(await toPromise(next.ingest("a.ts"))).to.equal(undefined);
+    await toPromise(next.persistIndex());
+
+    const parsed = parseSourceIndex(fs.readFileSync(recordPath()!, "utf8"))!;
+    expect(parsed.rows.has("a.ts")).to.equal(false);
+    expect(parsed.rows.has("b.ts")).to.equal(true);
+  });
+
+  it("an unchanged run writes nothing (change-gated persist)", async () => {
+    writeAged("a.ts", "a\n");
+    await ingestAndPersist(newSource(), "a.ts");
+    const before = fs.statSync(recordPath()!).mtimeMs;
+
+    await ingestAndPersist(newSource(), "a.ts");
+    expect(fs.statSync(recordPath()!).mtimeMs).to.equal(before);
+  });
+
+  it("confirms write-back expectations on the trusted path too", async () => {
+    /* Same length, different bytes: the write-back below must leave a stat the
+     * recorded row still matches once the mtime is restored. */
+    writeAged("a.snap", "aaaaaaaa");
+    await ingestAndPersist(newSource(), "a.snap");
+    const row = parseSourceIndex(fs.readFileSync(recordPath()!, "utf8"))!.rows.get("a.snap")!;
+
+    const controller = new WatchController(10);
+    let arms = 0;
+    controller.armFlush = (): void => {
+      arms += 1;
+    };
+    const src = new SourceFileSource(sourceRoot, new BuildCache(cacheRoot, { log: () => undefined }), controller);
+    const dest = path.join(sourceRoot, "a.snap");
+    await src.applyWriteBack([{ file: MemoryFile.from("bbbbbbbb"), destination: dest }]);
+    /* Forge the recorded stat back onto the edited file, so the row trusts. */
+    fs.utimesSync(dest, new Date(row.mtimeMs), new Date(row.mtimeMs));
+
+    const served = await toPromise(src.ingest("a.snap"));
+    /* The trusted path served the recorded content... */
+    expect(served!.hash).to.equal(row.hash);
+    /* ...and still judged the expectation: recorded ≠ written-back, so the
+     * expectation is refuted and the flush armed. */
+    expect(src["isExpectedChange"]("a.snap")).to.equal(false);
+    expect(arms).to.equal(1);
   });
 });

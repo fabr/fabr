@@ -135,18 +135,22 @@ export abstract class ComputableSource<T> {
 
   /**
    * Run the given side effect once the receiver settles, either way, passing
-   * the original value or error through unchanged (like Promise.finally).
+   * the original value or error through unchanged (like Promise.finally). An
+   * effect returning a source is awaited before the outcome passes through,
+   * and the effect's own rejection replaces the outcome — both also like
+   * Promise.finally; any other return value is ignored.
    */
-  public finally(onSettled: () => void): Computable<T> {
+  public finally(onSettled: () => unknown): Computable<T> {
+    const after = (complete: () => T): (T | ComputableSource<T>) => {
+      const effect = onSettled();
+      return effect instanceof ComputableSource ? effect.then(complete) : complete();
+    };
     return this.then(
-      value => {
-        onSettled();
-        return value;
-      },
-      err => {
-        onSettled();
-        throw err;
-      }
+      value => after(() => value),
+      err =>
+        after(() => {
+          throw err;
+        })
     );
   }
 

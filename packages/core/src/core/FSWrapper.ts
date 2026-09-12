@@ -98,6 +98,24 @@ export function writeFile(filepath: string, data: string | Buffer, opts?: { excl
   });
 }
 
+/**
+ * Write `content` at `target` atomically: written to `tempPath`, then renamed
+ * into place, replacing any existing file — a crash mid-write can never leave
+ * a truncated document. `tempPath` must be on `target`'s filesystem (the
+ * caller owns temp placement) and never survives a failure; the failure
+ * rethrows, so a best-effort caller layers its own catch. Creates `target`'s
+ * directory as needed.
+ */
+export function writeFileAtomic(target: string, content: string, tempPath: string): Computable<void> {
+  return mkdir(path.dirname(target))
+    .then(() => writeFile(tempPath, content))
+    .then(() => rename(tempPath, target))
+    .catch(err => {
+      deleteFile(tempPath).catch(() => undefined);
+      throw err;
+    });
+}
+
 export function deleteFile(filepath: string): Computable<void> {
   return Computable.from<void>((resolve, reject) => {
     fs.unlink(filepath, err => {

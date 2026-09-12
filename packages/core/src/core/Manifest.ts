@@ -228,6 +228,113 @@ function scanBase(text: string): { rows: IManifestRow[]; absent: string[] } {
   return { rows, absent };
 }
 
+/* ── The source index ─────────────────────────────────────────
+ * A project's stat cache: one row per used source file pairing the file's
+ * content hash (and mime) with the stat it was captured under, so a run whose
+ * stat matches can trust the hash and skip reading the file. Every row was
+ * judged trustworthy AT CAPTURE (the smudge rule — see SourceFileSource);
+ * presence in the document IS that judgement, so the trust check at read-back
+ * is stat equality alone.
+ */
+
+/** One source file's row: the pairing of content identity with the stat it was
+ * captured under. `mtimeMs` keeps `fs.Stats.mtimeMs`'s full float precision —
+ * equality at read-back is exact, against the same field. */
+export interface ISourceIndexRow {
+  readonly name: string;
+  readonly hash: string;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly mime: string;
+}
+
+/** The document's header facts. `root` is the real path of the source tree the
+ * rows describe (also the record's human/GC-facing identity — the directory it
+ * lives under is only an address); `algorithm` names the hash the rows carry;
+ * `writtenAt` is informational and deliberately no part of the trust
+ * protocol. */
+export interface ISourceIndexMeta {
+  readonly root: string;
+  readonly algorithm: string;
+  readonly writtenAt: number;
+}
+
+/** The source-index magic. Bump on any grammar or meaning change: an older
+ * record then reads as absent, costing one re-hash per file. */
+const SOURCE_INDEX_MAGIC = "!source-index 1 ";
+
+/** A source index as bytes: the magic + header, then one
+ * `hash size mtimeMs name mime` row per file in canonical (code-unit) name
+ * order, count sealed in the header like every manifest. */
+export function serializeSourceIndex(meta: ISourceIndexMeta, rows: ReadonlyMap<string, ISourceIndexRow>): string {
+  const lines = [...rows.values()]
+    .sort((a, b) => (a.name < b.name ? -1 : 1))
+    .map(row => `${row.hash} ${row.size} ${row.mtimeMs} ${encodeName(row.name)} ${row.mime}`);
+  const header = { ...meta, rows: rows.size };
+  return [SOURCE_INDEX_MAGIC + JSON.stringify(header), ...lines, ""].join("\n");
+}
+
+/**
+ * Read a source index back, or undefined for anything that is not exactly one
+ * — wrong magic, torn (the header's count catches a truncation that parses
+ * clean), or any malformed row. The record is advisory: damage means re-hashing,
+ * never an error, so leniency is one undefined, not a partial read.
+ */
+export function parseSourceIndex(text: string): { meta: ISourceIndexMeta; rows: Map<string, ISourceIndexRow> } | undefined {
+  if (!text.startsWith(SOURCE_INDEX_MAGIC)) {
+    return undefined;
+  }
+  const lines = text.split("\n");
+  let header: { root?: unknown; algorithm?: unknown; writtenAt?: unknown; rows?: unknown };
+  try {
+    header = JSON.parse(lines[0].substring(SOURCE_INDEX_MAGIC.length)) as typeof header;
+  } catch {
+    return undefined;
+  }
+  const { root, algorithm, writtenAt } = header;
+  if (typeof root !== "string" || typeof algorithm !== "string" || typeof writtenAt !== "number") {
+    return undefined;
+  }
+  const rows = new Map<string, ISourceIndexRow>();
+  for (const line of lines.slice(1)) {
+    if (line.length === 0) {
+      continue;
+    }
+    const row = parseSourceIndexRow(line);
+    if (row === undefined) {
+      return undefined;
+    }
+    rows.set(row.name, row);
+  }
+  return rows.size === header.rows ? { meta: { root, algorithm, writtenAt }, rows } : undefined;
+}
+
+/** One row back, or undefined for a line that is not one — every field must be
+ * non-empty (`Number("")` is 0, so an empty numeric field would otherwise read
+ * as a value). The mime is the rest-of-line after the name, so a mime with a
+ * space cannot corrupt the read. */
+function parseSourceIndexRow(line: string): ISourceIndexRow | undefined {
+  const afterHash = line.indexOf(" ");
+  const afterSize = line.indexOf(" ", afterHash + 1);
+  const afterMtime = line.indexOf(" ", afterSize + 1);
+  const afterName = line.indexOf(" ", afterMtime + 1);
+  if (afterHash < 1 || afterSize <= afterHash + 1 || afterMtime <= afterSize + 1 || afterName <= afterMtime + 1 || afterName + 1 >= line.length) {
+    return undefined;
+  }
+  const size = Number(line.substring(afterHash + 1, afterSize));
+  const mtimeMs = Number(line.substring(afterSize + 1, afterMtime));
+  if (!Number.isFinite(size) || !Number.isFinite(mtimeMs)) {
+    return undefined;
+  }
+  return {
+    hash: line.substring(0, afterHash),
+    size,
+    mtimeMs,
+    name: decodeName(line.substring(afterMtime + 1, afterName)),
+    mime: line.substring(afterName + 1),
+  };
+}
+
 /* ── Options as key material ──────────────────────────────────
  * The non-file half of an action key — no files in it, so it is written down
  * here with the rest of the text.

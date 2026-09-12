@@ -567,6 +567,54 @@ describe("Computable", () => {
     expect(caught).to.deep.equal(["boom"]);
   });
 
+  it("finally awaits an effect that returns a source before passing the outcome through", () => {
+    let effectResolve: (value: undefined) => void = () => {};
+    const values: number[] = [];
+    Computable.resolve(5)
+      .finally(() => Computable.from<undefined>(res => (effectResolve = res)))
+      .then(v => values.push(v));
+    /* Unsettled until the effect settles — the value is not passed through early. */
+    expect(values).to.deep.equal([]);
+    effectResolve(undefined);
+    expect(values).to.deep.equal([5]);
+
+    /* The error path holds the original rejection back the same way. */
+    let errEffectResolve: (value: undefined) => void = () => {};
+    const caught: string[] = [];
+    Computable.reject<number>(new Error("boom"))
+      .finally(() => Computable.from<undefined>(res => (errEffectResolve = res)))
+      .catch(err => caught.push(err.message));
+    expect(caught).to.deep.equal([]);
+    errEffectResolve(undefined);
+    expect(caught).to.deep.equal(["boom"]);
+  });
+
+  it("finally replaces the outcome with the effect's own rejection", () => {
+    const caught: string[] = [];
+    Computable.resolve(5)
+      .finally(() => Computable.reject(new Error("effect failed")))
+      .catch(err => caught.push(err.message));
+    expect(caught).to.deep.equal(["effect failed"]);
+  });
+
+  it("finally replaces the outcome when the effect throws or rejects, on either path", () => {
+    const caught: string[] = [];
+    Computable.resolve(5)
+      .finally(() => {
+        throw new Error("threw on value");
+      })
+      .catch(err => caught.push(err.message));
+    Computable.reject<number>(new Error("original"))
+      .finally(() => {
+        throw new Error("threw on error");
+      })
+      .catch(err => caught.push(err.message));
+    Computable.reject<number>(new Error("original"))
+      .finally(() => Computable.reject(new Error("rejected on error")))
+      .catch(err => caught.push(err.message));
+    expect(caught).to.deep.equal(["threw on value", "threw on error", "rejected on error"]);
+  });
+
   it("restores an errored node without recomputation when inputs revalidate unchanged", () => {
     let resolve: (value: number) => void = () => {};
     const src = Computable.from<number>(res => {

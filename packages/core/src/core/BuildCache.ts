@@ -23,7 +23,7 @@ import * as os from "os";
 import * as path from "path";
 import { Readable, Transform } from "stream";
 import { Computable } from "./Computable";
-import { HttpStatusError } from "./Errors";
+import { HttpStatusError, toError } from "./Errors";
 import { ICacheControl, openUrlStream, reportingProgress } from "./Fetch";
 import { CANONICAL, DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
 
@@ -33,6 +33,7 @@ import {
   hashString,
   isNotDirectoryError,
   isNotFound,
+  mkdir,
   readdir,
   readFile,
   readFileBuffer,
@@ -40,6 +41,7 @@ import {
   rename,
   symlink,
   writeFile,
+  writeFileAtomic,
 } from "./FSWrapper";
 import {
   ActionFileInputs,
@@ -56,14 +58,17 @@ import {
   DiscoveredDeps,
   encodeName,
   IManifestRow,
+  ISourceIndexRow,
   joinDepsPath,
   manifestLine,
   ABSENT_PREFIX,
   parseDiscoveredDeps,
   parseManifestLine,
   parseRecordedBase,
+  parseSourceIndex,
   sealRecordedBase,
   serializeDiscoveredDeps,
+  serializeSourceIndex,
   splitDepsPath,
 } from "./Manifest";
 import { PackageFileSet } from "./PackageFileSet";
@@ -233,6 +238,10 @@ export class BuildCache {
   /** The discovered-deps records: one directory per anchor, one immutable file
    * per remembered record. Unbounded until the cache GC covers it. */
   private readonly depsRoot: string;
+  /** The projects registry: one directory per (host, source root) holding that
+   * project's per-machine records — today the source index (see
+   * {@link readSourceIndex}); the cache GC's records join it later. */
+  private readonly projectsRoot: string;
   /** What the next build of a target key works from: one directory per target
    * key, holding the previous build's input manifest, a link to the entry it
    * produced, and the tool's own kept state (see {@link writeBuildState}). */
@@ -269,6 +278,7 @@ export class BuildCache {
     this.workRoot = path.resolve(cachePath, "work");
     this.ownWorkRoot = path.resolve(this.workRoot, `${hostTag()}-${process.pid}`);
     this.depsRoot = path.resolve(cachePath, "deps");
+    this.projectsRoot = path.resolve(cachePath, "projects");
     this.incrementalRoot = path.resolve(cachePath, "incremental");
     this.log = log;
     this.now = now;
@@ -345,6 +355,18 @@ export class BuildCache {
   private tempPath(what: string): string {
     fs.mkdirSync(this.ownWorkRoot, { recursive: true });
     return path.join(this.ownWorkRoot, `${what}-${this.tempCounter++}`);
+  }
+
+  /** {@link writeFileAtomic} with the temp in this process's work tree — same
+   * filesystem as the store by construction. */
+  private writeFileAtomic(target: string, content: string): Computable<void> {
+    let tmp: string;
+    try {
+      tmp = this.tempPath(path.basename(target));
+    } catch (err) {
+      return Computable.reject(toError(err));
+    }
+    return writeFileAtomic(target, content, tmp);
   }
 
   /**
@@ -687,15 +709,16 @@ export class BuildCache {
       }
       return Computable.resolve(blobPath);
     }
-    fs.mkdirSync(this.blobRoot, { recursive: true });
-    return materialise(blobPath).then(() => {
-      /* Read the freshly-placed mode rather than assuming: a concurrent writer
-       * of the same hash may have won the rename and already set exec, which we
-       * must not clobber (exec stays sticky). */
-      const exec = (fs.statSync(blobPath).mode & 0o111) !== 0 || (readOnlyPermissions(mode) & 0o111) !== 0;
-      fs.chmodSync(blobPath, exec ? 0o555 : 0o444);
-      return blobPath;
-    });
+    return mkdir(this.blobRoot)
+      .then(() => materialise(blobPath))
+      .then(() => {
+        /* Read the freshly-placed mode rather than assuming: a concurrent writer
+         * of the same hash may have won the rename and already set exec, which we
+         * must not clobber (exec stays sticky). */
+        const exec = (fs.statSync(blobPath).mode & 0o111) !== 0 || (readOnlyPermissions(mode) & 0o111) !== 0;
+        fs.chmodSync(blobPath, exec ? 0o555 : 0o444);
+        return blobPath;
+      });
   }
 
   /** Atomically move `from` into place at `blobPath`. If another writer got
@@ -775,7 +798,6 @@ export class BuildCache {
   private materializeTree(entry: string, files: FileSet): Computable<string> {
     /* Before anything exists to clean up. */
     this.assertNothingOwnedElsewhere(entry, files);
-    fs.mkdirSync(this.treeRoot, { recursive: true });
     /* Built in this process's work tree: same filesystem, so the publish is a
      * same-device rename, and its cleanup is inherited from the work root's exit
      * hook and startup sweep. */
@@ -784,7 +806,8 @@ export class BuildCache {
      * storeContent's rename arm is unreachable. Restamp the returned view — it
      * carries no origin, and writeFileSet attributes a case-collision through it. */
     return (
-      this.storeContent(files)
+      mkdir(this.treeRoot)
+        .then(() => this.storeContent(files))
         .then(backed => writeFileSet(temp, files.origin === undefined ? backed : backed.withOrigin(files.origin)))
         .then(() =>
           rename(temp, entry).catch(err => {
@@ -954,27 +977,81 @@ export class BuildCache {
    */
   private recordDiscoveredDeps(anchor: string, selection: DiscoveredDeps): Computable<void> {
     const body = serializeDiscoveredDeps(selection);
-    const dir = this.discoveredDepsDir(anchor);
-    const file = path.join(dir, hashString(body));
-    let tmp: string;
-    try {
-      if (fs.existsSync(file)) {
-        return Computable.resolve(undefined);
-      }
-      fs.mkdirSync(dir, { recursive: true });
-      tmp = this.tempPath("deps");
-    } catch {
-      /* The record is an accelerator: failing to write one costs a redundant run
-       * next time and nothing else, so it must never outrank the build's own
-       * outcome — on this path or the asynchronous one below. */
+    const file = path.join(this.discoveredDepsDir(anchor), hashString(body));
+    if (fs.existsSync(file)) {
       return Computable.resolve(undefined);
     }
-    return writeFile(tmp, body)
-      .then(() => rename(tmp, file))
-      .catch(() => {
-        deleteFile(tmp).catch(() => undefined);
-        return undefined;
-      });
+    /* The record is an accelerator: failing to write one costs a redundant run
+     * next time and nothing else, so it must never outrank the build's own
+     * outcome. */
+    return this.writeFileAtomic(file, body).catch(() => undefined);
+  }
+
+  /*
+   * ── Projects registry ───────────────────────────────────────
+   * Per-(host, source root) records: what the cache remembers ABOUT a project,
+   * as opposed to what it holds FOR one. Today that is the source index — a
+   * project's stat cache (see DESIGN-source-index.md); the cache GC's records
+   * join this store later. All advisory: deleting the store costs re-derivation,
+   * never correctness.
+   */
+
+  /** Where a source root's record lives, plus the identity it is judged by.
+   * The dir name is only a collision-free address (the work tree's owner-naming
+   * pattern applied to a different coordinate); the record's header carries the
+   * real path, which is the actual identity. Host-tagged because source paths
+   * are host-local facts — a shared cache holds each host's records side by
+   * side. */
+  private projectRecord(rootPath: string): { file: string; root: string } {
+    let root: string;
+    try {
+      root = fs.realpathSync(rootPath);
+    } catch {
+      root = path.resolve(rootPath);
+    }
+    return { file: path.resolve(this.projectsRoot, `${hostTag()}-${hashString(root)}`, "sources"), root };
+  }
+
+  /**
+   * The source index recorded for `rootPath`, or undefined where there is
+   * nothing usable to give — absent, torn, another hash algorithm's, or another
+   * root's (an address collision). Advisory: absence costs re-hashing every
+   * source, never an error and never a different build.
+   */
+  public readSourceIndex(rootPath: string): Computable<Map<string, ISourceIndexRow> | undefined> {
+    const { file, root } = this.projectRecord(rootPath);
+    return readFile(file).then(
+      text => {
+        const parsed = parseSourceIndex(text);
+        return parsed !== undefined && parsed.meta.algorithm === HASH_ALGORITHM && parsed.meta.root === root ? parsed.rows : undefined;
+      },
+      () => undefined
+    );
+  }
+
+  /**
+   * Replace `rootPath`'s source index, reporting whether the record landed.
+   * Serialized eagerly — the caller's map may keep changing under a later
+   * cycle — then written temp + rename. Never rejects: the record is an
+   * accelerator, and failing to write one must never outrank the run's own
+   * outcome.
+   */
+  public writeSourceIndex(rootPath: string, rows: ReadonlyMap<string, ISourceIndexRow>): Computable<boolean> {
+    const { file, root } = this.projectRecord(rootPath);
+    const body = serializeSourceIndex({ root, algorithm: HASH_ALGORITHM, writtenAt: this.now() }, rows);
+    return this.writeFileAtomic(file, body).then(
+      () => true,
+      () => false
+    );
+  }
+
+  /** The pool path holding `hash`, or undefined where the pool does not
+   * currently hold that content. The source index's blob-presence gate: the
+   * index sits outside the manifest⇒blobs invariant (it references blobs it
+   * does not guarantee), so presence is checked, never assumed. */
+  public presentBlob(hash: string): string | undefined {
+    const blobPath = path.resolve(this.blobRoot, hash);
+    return fs.existsSync(blobPath) ? blobPath : undefined;
   }
 
   /*
@@ -1131,7 +1208,6 @@ export class BuildCache {
     const dir = this.buildStatePath(targetKey);
     let staging: string;
     try {
-      fs.mkdirSync(this.incrementalRoot, { recursive: true });
       staging = this.createWorkDir("state-");
     } catch {
       return Computable.resolve(undefined);
@@ -1139,6 +1215,9 @@ export class BuildCache {
     return (
       Computable.forAll(
         [
+          /* The record's parent, needed by the rename below; a failure lands in
+           * the best-effort catch like the rest of the assembly. */
+          mkdir(this.incrementalRoot),
           /* The base goes in as the key material it IS — written, not rebuilt,
            * each part sealed with a trailing count so a torn or truncated copy
            * reads as no base rather than as a shorter one. Its rows are
@@ -1293,13 +1372,9 @@ export class BuildCache {
       manifest += manifestLine(name, file.hash, file.mode, file.mime) + "\n";
       backed.set(name, new BuildFile(this.blobRoot, file.hash, name, file.mode, file.mime));
     }
-    /* Write atomically (temp + rename): a crash mid-write must not leave a
-     * truncated manifest that deserialises to a silently-incomplete FileSet. The
-     * same rename replaces an existing manifest on a mutable entry's refresh. */
-    const tmp = this.tempPath("manifest");
-    return writeFile(tmp, manifest)
-      .then(() => rename(tmp, manifestPath))
-      .then(() => new FileSet(backed, undefined, CANONICAL));
+    /* The atomic write replaces an existing manifest on a mutable entry's
+     * refresh. */
+    return this.writeFileAtomic(manifestPath, manifest).then(() => new FileSet(backed, undefined, CANONICAL));
   }
 
   /**

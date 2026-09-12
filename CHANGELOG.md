@@ -12,6 +12,7 @@ version number.
 - General optimizations, especially for cache-hits.
 - Fix package aliases not working in catalogs.
 - Add discovered dependencies + incremental state support.
+- Add source index to reduce startup hashing.
 
 @fabr-build/cli:
 - Live progress display on terminal with progress bars and test status (suppressed with -q)

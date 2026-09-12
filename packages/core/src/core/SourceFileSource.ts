@@ -24,10 +24,28 @@ import { hashString, isDirectoryError, isNotFound, readFileBuffer, stat } from "
 import { BuildCache } from "./BuildCache";
 import { FSFile, FSFileSource, staticPath } from "./FSFileSource";
 import { FileSet, FileSource, IFile } from "./FileSet";
+import { ISourceIndexRow } from "./Manifest";
 import { Name } from "./Name";
 import { WatchController } from "./WatchController";
 import { IResolvedWriteBack, IWriteBackObserver, writeBackFile } from "./WriteBack";
 import { sniffMime } from "../support/Mime";
+
+/**
+ * The smudge window (ms): a capture whose mtime is within this of the pre-read
+ * clock is never recorded in the source index — a write racing the ingest
+ * inside one filesystem-timestamp tick leaves the mtime unchanged, so the
+ * hash↔stat pairing is only provable for a file already at rest. Two full
+ * ticks of the coarsest common granularity (FAT/exFAT stamp at 2s), leaving
+ * margin for that and for modest clock skew on a network mount. A FUTURE
+ * mtime (skew the other way) never records a row — perpetual re-hashing,
+ * never a wrong trust.
+ */
+const SMUDGE_EPSILON_MS = 4000;
+
+/** Minimum gap between index writes under watch — an edit-heavy session
+ * rewrites the record at most this often; the tail is best-effort (a dropped
+ * row just re-hashes next start). One-shot runs write once, ungated. */
+const INDEX_WRITE_INTERVAL_MS = 30_000;
 
 /**
  * FileSource for the local (mutable) source tree. Every source file it hands
@@ -168,22 +186,39 @@ export class SourceFileSource extends FSFileSource {
   }
 
   /**
-   * Read the file once, hash those exact bytes, and ingest them into the blob
-   * store; return an FSFile whose content is read from the immutable blob.
+   * The file as a blob-backed FSFile. A file whose stat matches its source-index
+   * row (and whose blob the pool still holds) is served from the row — no read,
+   * no hash; anything else takes the full path: read the file once, hash those
+   * exact bytes, ingest them into the blob store, and refresh the row.
    */
   public override ingest(filename: string): Computable<FSFile | undefined> {
     const filepath = path.resolve(this.root, filename);
-    return readFileBuffer(filepath)
-      .then(bytes =>
+    return this.loadIndex()
+      .then(rows =>
         stat(filepath).then(fileStat => {
-          const hash = hashString(bytes);
-          this.confirmExpected(filename, hash);
-          return this.cache
-            .ensureBlob(hash, bytes, fileStat.mode)
-            .then(
-              blobPath =>
-                new FSFile(this.root, filename, { size: fileStat.size, mtime: fileStat.mtime, mode: fileStat.mode }, hash, sniffMime(bytes), blobPath)
-            );
+          const fsStat = { size: fileStat.size, mtime: fileStat.mtime, mode: fileStat.mode };
+          const held = rows.get(filename);
+          if (held !== undefined && held.size === fileStat.size && held.mtimeMs === fileStat.mtimeMs) {
+            const blobPath = this.cache.presentBlob(held.hash);
+            if (blobPath !== undefined) {
+              /* Confirmation is unconditional in ingest — which branch served
+               * the hash must not decide whether an echo is judged. */
+              this.confirmExpected(filename, held.hash);
+              return Computable.resolve(new FSFile(this.root, filename, fsStat, held.hash, held.mime, blobPath));
+            }
+          }
+          /* The smudge judgment's clock, sampled before any byte is read —
+           * see recordIndexRow. */
+          const capturedAt = Date.now();
+          return readFileBuffer(filepath).then(bytes => {
+            const hash = hashString(bytes);
+            this.confirmExpected(filename, hash);
+            const mime = sniffMime(bytes);
+            this.recordIndexRow(rows, filename, fileStat.size, fileStat.mtimeMs, capturedAt, hash, mime);
+            return this.cache
+              .ensureBlob(hash, bytes, fileStat.mode)
+              .then(blobPath => new FSFile(this.root, filename, fsStat, hash, mime, blobPath));
+          });
         })
       )
       .catch(err => {
@@ -193,10 +228,107 @@ export class SourceFileSource extends FSFileSource {
          * (and never a sync throw into the watcher callback, as the old statSync
          * could be). Mirrors the base FSFileSource.ingest. */
         if (isNotFound(err) || isDirectoryError(err)) {
+          this.dropIndexRow(filename);
           return undefined;
         }
         throw err;
       });
+  }
+
+  /*
+   * ── Source index ─────────────────────────────────────────────
+   * The project's stat cache (DESIGN-source-index.md): rows pair a file's hash
+   * with the stat it was captured under, maintained here — where the hashes are
+   * computed — and persisted through the cache's projects registry. Advisory
+   * end to end: identical builds with the index present, absent, or damaged.
+   */
+
+  /** This project's rows, shared by every ingest: loaded once, mutated in
+   * place, persisted change-gated (see {@link persistIndex}). */
+  private indexRows?: Map<string, ISourceIndexRow>;
+  private indexLoad?: Computable<Map<string, ISourceIndexRow>>;
+  private indexDirty = false;
+  private indexWrite?: Computable<void>;
+  private lastIndexWrite = 0;
+
+  private loadIndex(): Computable<Map<string, ISourceIndexRow>> {
+    if (this.indexLoad === undefined) {
+      this.indexLoad = this.cache.readSourceIndex(this.root).then(rows => {
+        this.indexRows = rows ?? new Map();
+        return this.indexRows;
+      });
+    }
+    return this.indexLoad;
+  }
+
+  /**
+   * Refresh a row from a full-path capture — unless the capture is smudged:
+   * a row is recorded only when the file's mtime tick had already closed
+   * before the read began, i.e. the mtime is at least {@link SMUDGE_EPSILON_MS}
+   * older than `capturedAt`, the clock as of just before the read. Any write
+   * racing the ingest after that instant lands in a later tick, so it fails
+   * the stat match next run. A smudged file's row (if any) is dropped; the
+   * file re-hashes next run, by which time it is at rest.
+   */
+  private recordIndexRow(
+    rows: Map<string, ISourceIndexRow>,
+    filename: string,
+    size: number,
+    mtimeMs: number,
+    capturedAt: number,
+    hash: string,
+    mime: string
+  ): void {
+    if (capturedAt - mtimeMs < SMUDGE_EPSILON_MS) {
+      if (rows.delete(filename)) {
+        this.indexDirty = true;
+      }
+      return;
+    }
+    const held = rows.get(filename);
+    if (held !== undefined && held.hash === hash && held.size === size && held.mtimeMs === mtimeMs && held.mime === mime) {
+      return;
+    }
+    rows.set(filename, { name: filename, hash, size, mtimeMs, mime });
+    this.indexDirty = true;
+  }
+
+  /** Drop a row whose file is gone. Consulted rows only — unconsulted rows are
+   * carried forward (a partial build must not shed the rest of the tree). */
+  private dropIndexRow(filename: string): void {
+    if (this.indexRows?.delete(filename)) {
+      this.indexDirty = true;
+    }
+  }
+
+  /**
+   * Persist the index if it changed — a run where every consulted file trusted
+   * its row writes nothing. Under watch, gated to at most one write per
+   * {@link INDEX_WRITE_INTERVAL_MS} unless `flush` (the close-time drain); a
+   * skipped write stays dirty for the next opportunity. Writes serialize
+   * behind any still-running one, and a failed write re-marks dirty. Never
+   * rejects: the record is an accelerator, not an outcome.
+   */
+  public persistIndex(flush = false): Computable<void> {
+    if (!this.indexDirty || this.indexRows === undefined) {
+      return this.indexWrite ?? Computable.resolve(undefined);
+    }
+    if (!flush && this.watchController !== undefined && Date.now() - this.lastIndexWrite < INDEX_WRITE_INTERVAL_MS) {
+      return Computable.resolve(undefined);
+    }
+    this.indexDirty = false;
+    this.lastIndexWrite = Date.now();
+    const rows = this.indexRows;
+    const previous = this.indexWrite !== undefined && !this.indexWrite.isSettled ? this.indexWrite : undefined;
+    const write = (previous ?? Computable.resolve(undefined))
+      .then(() => this.cache.writeSourceIndex(this.root, rows))
+      .then(wrote => {
+        if (!wrote) {
+          this.indexDirty = true;
+        }
+      });
+    this.indexWrite = write;
+    return write;
   }
 
   /**
