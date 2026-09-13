@@ -353,14 +353,21 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
         );
         const workspace = {
           [COMPILE_SRC_DIR]: srcs,
-          "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
           /* The driver's own install, compiler included: `typescript` is one of
            * its declared dependencies, so it sits in the install's node_modules
            * and the driver requires it from there. One mount, one pin
            * (${TYPESCRIPT}) governing what compiles the sources. */
           [TOOL_DIR]: driver,
-          ...(rewrites ? { [REWRITES_FILE]: MemoryFile.from(JSON.stringify(rewrites)) } : {}),
         };
+        /* The generated configuration, staged beside the sources but keyed as
+         * config: each distinct tsconfig (a format-pinned test compile, a
+         * release build) is its own target key with its own incremental base,
+         * and a config change never appears in the diff as a file no edge can
+         * bound. */
+        const config = FileSet.layout({
+          "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
+          ...(rewrites ? { [REWRITES_FILE]: MemoryFile.from(JSON.stringify(rewrites)) } : {}),
+        });
         /* The tool launches from its own mount (its deps resolve there); cwd is
          * the workspace root, so `include` and dependency resolution alike
          * resolve against the staged workspace.
@@ -393,6 +400,7 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
           {
             layout: PNP,
             label: "compile",
+            config,
             /* The three locations the argv above names, so the step stages and
              * collects the files the driver was told to use. The compile reads
              * a handful of declaration files out of a whole closure and reports

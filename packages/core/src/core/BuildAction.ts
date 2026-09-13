@@ -27,11 +27,28 @@ import { FileSet } from "./FileSet";
 import { hashString } from "./FSWrapper";
 import { PackageFileSet } from "./PackageFileSet";
 import { RepositoryRef } from "./Repository";
-import { ABSENT_PREFIX, ActionOptions, DiscoveredDeps, encodeName, manifestOptions } from "./Manifest";
+import { ABSENT_PREFIX, DiscoveredDeps, encodeName } from "./Manifest";
+import { Name } from "./Name";
 import type { ActionContext } from "./BuildCache";
 import type { ITargetDecl } from "../model/AST";
 import type { ITaskReport } from "../support/Execute";
 import { compareText } from "../support/Functional";
+
+/**
+ * Configuration handed to a build step — *how* the build is performed, as
+ * against `inputs`, the content it is performed on: argv, patterns, switches, a
+ * `Name` where a step consumes a projection (received live on a miss and
+ * applied with `makeProjector`), and file-shaped configuration (a generated
+ * tsconfig) as a FileSet, staged for the tool to read.
+ *
+ * The whole bag is the configuration half of every key ({@link configDigest}):
+ * a config change starts a fresh target key with its own build-state chain, and
+ * file-shaped members never enter the diff base. Content belongs in `inputs` —
+ * a member here that varies with source content makes every edit a fresh
+ * target key.
+ */
+export type ActionConfigValue = string | string[] | Name | FileSet;
+export type ActionConfig = Record<string, ActionConfigValue>;
 
 /** What a build step's `run` — and so a cache `create` callback — hands back. */
 export interface BuildResult {
@@ -62,7 +79,7 @@ export interface IBuildActionDefinition {
    * discovers which of its inputs it really used, the subset it read.
    *
    * The step receives the whole demanded {@link BuildAction}; its resolved
-   * `inputs`/`options`/`discoverable` bags are what it consumes. `ctx` is what
+   * `inputs`/`config`/`discoverable` bags are what it consumes. `ctx` is what
    * the cache and the execution funnel give it; `report` is where its
    * executions announce output and funnel phases, already resolved against the
    * run's verbosity — a step makes no display decisions of its own beyond
@@ -88,9 +105,9 @@ export class BuildAction {
     /** Per-file material, manifested file-by-file into the action key. Carries
      * no unassembled packages — those belong in {@link discoverable}. */
     public readonly inputs: ActionFileInputs,
-    /** Non-file key material: argv, patterns, switches, projections. All of it
-     * is target-key identity ({@link optionsDigest}). */
-    public readonly options: ActionOptions,
+    /** The step's configuration: all of it is target-key identity
+     * ({@link configDigest}); file-shaped members are staged with the inputs. */
+    public readonly config: ActionConfig,
     /**
      * If present, input files that may or may not be used by the runner; the runner
      * may return a list of files from these inputs that it actually used, to provide
@@ -108,27 +125,38 @@ export class BuildAction {
 
   /** @return a copy carrying the given display label */
   public withLabel(label: string): BuildAction {
-    return new BuildAction(this.step, this.inputs, this.options, this.discoverable, label, this.trackChangedFiles);
+    return new BuildAction(this.step, this.inputs, this.config, this.discoverable, label, this.trackChangedFiles);
   }
 
   /**
-   * The durable cache key of a target's action — *whose build is this*.
-   * Content-free (step id+version, decl identity, options digest), so it
-   * survives every edit and the next build can find its base. A target running
-   * two actions holds two of these, distinguished by their step.
+   * The durable cache key of a target's action — *whose build is this*, the
+   * coordinate a build-state record hangs off. Content-free (step id+version,
+   * decl identity, sub-target label, config digest), so it survives every edit
+   * and the next build can find its base; configuration IS part of it, so each
+   * configuration of one target keeps its own base chain instead of two
+   * alternating builds replacing each other's. A target running two actions
+   * holds two of these, distinguished by their step.
    *
-   * `owner` is the target's declaration; an anonymous sub-target takes its
-   * OWNER's, not its label.
+   * `owner` is the target's declaration — an anonymous sub-target takes its
+   * OWNER's — and `label` is the sub-target's display label (absent for a
+   * declared target or an unlabelled sub-target), which separates the chains
+   * of same-stepped sub-targets whose configs happen to coincide. Renaming a
+   * label abandons its chains: one cold build.
    */
-  public targetKey(owner: ITargetDecl): string {
+  public targetKey(owner: ITargetDecl, label?: string): string {
     return hashString(
-      [`step ${this.step.id}:${this.step.version}`, `target ${declIdentity(owner)}`, `options ${optionsDigest(this)}`].join("\n")
+      [
+        `step ${this.step.id}:${this.step.version}`,
+        `target ${declIdentity(owner)}`,
+        `label ${label ?? ""}`,
+        `config ${configDigest(this)}`,
+      ].join("\n")
     );
   }
 
   /**
    * The key material this action is demanded under: `rule:<id>:<version>`, then
-   * the file-inputs section, then the options section, each under its own header
+   * the file-inputs section, then the config section, each under its own header
    * line with one `name=manifest` line per member, names sorted. Both sections
    * are always rendered, so an empty one cannot alias a shifted one.
    *
@@ -137,14 +165,14 @@ export class BuildAction {
    * {@link preciseActionKey} — never under a bare anchor.
    */
   public actionKey(): string {
-    return `rule:${this.step.id}:${this.step.version}\n# inputs\n${manifestFileInputs(this.inputs)}\n# options\n${manifestOptions(
-      this.options
+    return `rule:${this.step.id}:${this.step.version}\n# inputs\n${manifestFileInputs(this.inputs)}\n# config\n${manifestConfig(
+      this.config
     )}`;
   }
 }
 
 /* The action's reading face: what a build step's `run` uses to take a typed
- * member off the action it received. The option NAMES are each step's own
+ * member off the action it received. The member NAMES are each step's own
  * vocabulary, which is why these know none. */
 
 /** The named per-file input, which must be a single FileSet. */
@@ -156,22 +184,29 @@ export function fileSetInput(action: BuildAction, name: string): FileSet {
   return value;
 }
 
-/** The named option, which must be a list of strings. */
-export function stringListInput(action: BuildAction, name: string): string[] {
-  const value = action.options[name];
+/** The named config member, which must be a list of strings. */
+export function stringListConfig(action: BuildAction, name: string): string[] {
+  const value = action.config[name];
   if (!Array.isArray(value) || value.some(element => typeof element !== "string")) {
-    throw new Error(`Input '${name}' must be a list of strings`);
+    throw new Error(`Config '${name}' must be a list of strings`);
   }
   return value;
 }
 
-/** The named option, which must be a string (or absent, given a fallback). */
-export function stringInput(action: BuildAction, name: string, fallback?: string): string {
-  const value = action.options[name] ?? fallback;
+/** The named config member, which must be a string (or absent, given a fallback). */
+export function stringConfig(action: BuildAction, name: string, fallback?: string): string {
+  const value = action.config[name] ?? fallback;
   if (typeof value !== "string") {
-    throw new Error(`Input '${name}' must be a string`);
+    throw new Error(`Config '${name}' must be a string`);
   }
   return value;
+}
+
+/** The file-shaped members of the action's config, unioned — what an exec step
+ * stages into the work dir beside the inputs. Two members carrying the same
+ * name for different files are the ordinary staging conflict. */
+export function configFiles(action: BuildAction): FileSet {
+  return FileSet.unionAll(...Object.values(action.config).filter((value): value is FileSet => value instanceof FileSet));
 }
 
 /**
@@ -183,14 +218,40 @@ export function declIdentity(decl: ITargetDecl): string {
 }
 
 /**
- * The non-file half of an action's key: the manifest of `options`, whole.
+ * The configuration half of an action's key: the manifest of `config`, whole.
  * Nothing of `inputs` participates, and the discoverable deps are not consulted.
  *
- * Note for rule authors: a whole-closure artifact passed as a string option
- * lands here, making every dependency change a fresh target key.
+ * Note for rule authors: content passed as config lands here, making every
+ * change to it a fresh target key.
  */
-export function optionsDigest(action: BuildAction): string {
-  return hashString(manifestOptions(action.options));
+export function configDigest(action: BuildAction): string {
+  return hashString(manifestConfig(action.config));
+}
+
+/** The config section of an action key: keys in sorted order, one
+ * `name=manifest` line each (a FileSet member's manifest is a multi-line
+ * block, as in the inputs section). */
+export function manifestConfig(config: ActionConfig): string {
+  return Object.keys(config)
+    .sort()
+    .map(name => `${name}=${manifestConfigValue(config[name])}`)
+    .join("\n");
+}
+
+/** One config member as key material. A `Name` manifests by `toGlobString`,
+ * which is lossless where `toString` is not (a quoted `'*'` and a wildcard `*`
+ * render alike, colliding two different projections onto one key). */
+function manifestConfigValue(value: ActionConfigValue): string {
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return "[" + value.map(element => JSON.stringify(element)).join(",") + "]";
+  }
+  if (value instanceof FileSet) {
+    return manifestFileInput(value);
+  }
+  return JSON.stringify(value.toGlobString());
 }
 
 /**

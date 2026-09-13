@@ -240,6 +240,9 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
           return compileContents(context, sources, [...deps, ...testDeps, runnerGlobalsTypes(runner)], {
             packageName: inputs.packageName,
             constraints: Constraints.of({ JS_TARGET: formatJSTarget(testTarget) }),
+            /* A distinct label: the test compile is its own work item (its tree
+             * includes the tests), with its own incremental base. */
+            label: "Compiling tests for",
           }).then(built => {
             if (built.sources.ts.isEmpty() && built.sources.js.isEmpty() && built.sources.jsx.isEmpty()) {
               /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),

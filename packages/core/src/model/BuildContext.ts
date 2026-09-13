@@ -1794,9 +1794,11 @@ export class BuildContext {
    * {@link forcedBuild}.
    */
   public runAction(action: BuildAction, context: TargetContext): Computable<FileSet> {
-    /* An anonymous sub-target takes its declared owner's identity — see
-     * {@link targetKey}, including why the configuration is not part of it. */
-    return this.performAction(action, context.taskDescription(), this.forcedBuild(context), action.targetKey(context.getDeclaredContext().target));
+    /* An anonymous sub-target keys under its declared owner's identity plus its
+     * own label — see {@link BuildAction.targetKey} for what the coordinate
+     * includes and excludes. */
+    const task = context.taskDescription();
+    return this.performAction(action, task, this.forcedBuild(context), action.targetKey(context.getDeclaredContext().target, task.label));
   }
 
   /**

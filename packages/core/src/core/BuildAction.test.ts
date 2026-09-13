@@ -23,8 +23,17 @@ import { EMPTY_FILESET, FileSet } from "./FileSet";
 import { MemoryFile } from "./MemoryFS";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
 import { StringReader } from "../support/StringReader";
-import { ActionFileInputs, BuildAction, declIdentity, IBuildActionDefinition, manifestFileInputs, optionsDigest } from "./BuildAction";
-import { ActionOptions } from "./Manifest";
+import {
+  ActionConfig,
+  ActionFileInputs,
+  BuildAction,
+  configDigest,
+  configFiles,
+  declIdentity,
+  IBuildActionDefinition,
+  manifestFileInputs,
+} from "./BuildAction";
+
 import { DeclKind, ITargetDecl } from "../model/AST";
 import { parseName } from "../model/Parser";
 
@@ -49,12 +58,12 @@ function sources(content: string): FileSet {
 /** The action's input bags, any of them omitted — the test fixture's shorthand. */
 interface ActionParts {
   inputs?: ActionFileInputs;
-  options?: ActionOptions;
+  config?: ActionConfig;
   discoverable?: ActionFileInputs;
 }
 
 function action(parts: ActionParts, step = STEP): BuildAction {
-  return new BuildAction(step, parts.inputs ?? {}, parts.options ?? {}, parts.discoverable, "compile");
+  return new BuildAction(step, parts.inputs ?? {}, parts.config ?? {}, parts.discoverable, "compile");
 }
 
 describe("target-key identity", () => {
@@ -63,8 +72,8 @@ describe("target-key identity", () => {
   it("survives an edit to the sources it is compiling", () => {
     /* A target key names "this compile, across edits", so the build state
      * recorded under it is still the right one to diff the next edit against. */
-    const before = action({ inputs: { srcs: sources("one") }, options: { argv: ["tsc"] } }).targetKey(owner);
-    const after = action({ inputs: { srcs: sources("two") }, options: { argv: ["tsc"] } }).targetKey(owner);
+    const before = action({ inputs: { srcs: sources("one") }, config: { argv: ["tsc"] } }).targetKey(owner);
+    const after = action({ inputs: { srcs: sources("two") }, config: { argv: ["tsc"] } }).targetKey(owner);
     expect(after).to.equal(before);
   });
 
@@ -88,8 +97,8 @@ describe("target-key identity", () => {
      * declaration: they differ in their generated configuration, which is what
      * the digest is for. Sharing one would thrash a single graph into perpetual
      * full compiles. */
-    const esm = action({ inputs: { srcs: sources("one") }, options: { argv: ["tsc", "--emit-extension", ".mjs"] } }).targetKey(owner);
-    const cjs = action({ inputs: { srcs: sources("one") }, options: { argv: ["tsc"] } }).targetKey(owner);
+    const esm = action({ inputs: { srcs: sources("one") }, config: { argv: ["tsc", "--emit-extension", ".mjs"] } }).targetKey(owner);
+    const cjs = action({ inputs: { srcs: sources("one") }, config: { argv: ["tsc"] } }).targetKey(owner);
     expect(esm).to.not.equal(cjs);
   });
 
@@ -106,7 +115,7 @@ describe("target-key identity", () => {
      * already an input — so a `-D` naming the value the shipped default already
      * had produces a bit-identical action and must land on the same one. Keying it
      * apart would put the memo where the next build does not look. */
-    const inputs = { inputs: { srcs: sources("one") }, options: { argv: ["tsc"], strict: "on" } };
+    const inputs = { inputs: { srcs: sources("one") }, config: { argv: ["tsc"], strict: "on" } };
     expect(action(inputs).targetKey(owner)).to.equal(action({ ...inputs }).targetKey(owner));
   });
 
@@ -115,23 +124,45 @@ describe("target-key identity", () => {
      * as a scalar input, and so reaches the key through the digest — which is
      * the read-trace of exactly that. */
     const srcs = { srcs: sources("one") };
-    const key = action({ inputs: srcs, options: { argv: ["tsc"], strict: "on" } }).targetKey(owner);
+    const key = action({ inputs: srcs, config: { argv: ["tsc"], strict: "on" } }).targetKey(owner);
     expect(
-      action({ inputs: srcs, options: { argv: ["tsc"], strict: "off" } }).targetKey(owner),
+      action({ inputs: srcs, config: { argv: ["tsc"], strict: "off" } }).targetKey(owner),
       "a switch the rule read"
     ).to.not.equal(key);
     expect(
-      action({ inputs: srcs, options: { argv: ["tsc", "--target", "es5"], strict: "on" } }).targetKey(owner),
+      action({ inputs: srcs, config: { argv: ["tsc", "--target", "es5"], strict: "on" } }).targetKey(owner),
       "a target the rule read"
     ).to.not.equal(key);
   });
 
-  it("ignores a sub-target's display label", () => {
-    /* A label is text a rule author chose to describe work in progress, not
-     * identity: what distinguishes two compiles of one owner is their inputs. */
+  it("ignores the action's display label, and keys the sub-target label it is given", () => {
+    /* The action's own label is display text; the SUB-TARGET label is part of
+     * the coordinate, separating same-stepped sub-targets of one owner whose
+     * configs coincide (the CJS test compile beside the CJS package compile). */
     const inputs: ActionFileInputs = { srcs: sources("one") };
     const labelled = new BuildAction(STEP, inputs, {}, undefined, "compiling for the browser");
-    expect(labelled.targetKey(owner)).to.equal(new BuildAction(STEP, inputs, {}).targetKey(owner));
+    expect(labelled.targetKey(owner), "the action label").to.equal(new BuildAction(STEP, inputs, {}).targetKey(owner));
+    expect(labelled.targetKey(owner, "Compiling"), "a labelled sub-target").to.not.equal(labelled.targetKey(owner));
+    expect(labelled.targetKey(owner, "Compiling tests for"), "two labels").to.not.equal(labelled.targetKey(owner, "Compiling"));
+    expect(labelled.targetKey(owner, "Compiling"), "the same label").to.equal(labelled.targetKey(owner, "Compiling"));
+  });
+
+  it("separates configurations carried as generated config files", () => {
+    /* The tsconfig case: the document stages for the tool to read, but it is
+     * configuration — each distinct document is its own target key, never a
+     * changed file in the next build's diff. */
+    const tsconfig = (module: string): FileSet =>
+      new FileSet(new Map([["tsconfig.json", MemoryFile.from(`{"module":"${module}"}`)]]));
+    const srcs = { srcs: sources("one") };
+    const cjs = action({ inputs: srcs, config: { argv: ["tsc"], config: tsconfig("commonjs") } }).targetKey(owner);
+    expect(
+      action({ inputs: srcs, config: { argv: ["tsc"], config: tsconfig("esnext") } }).targetKey(owner),
+      "a different document"
+    ).to.not.equal(cjs);
+    expect(
+      action({ inputs: srcs, config: { argv: ["tsc"], config: tsconfig("commonjs") } }).targetKey(owner),
+      "the same document"
+    ).to.equal(cjs);
   });
 
   it("names a declaration by its target and the file it was written in", () => {
@@ -142,17 +173,17 @@ describe("target-key identity", () => {
   });
 });
 
-describe("the options digest", () => {
+describe("the config digest", () => {
   it("holds everything that is not per-file material", () => {
-    const digest = (parts: ActionParts): string => optionsDigest(action(parts));
+    const digest = (parts: ActionParts): string => configDigest(action(parts));
     const srcs = { srcs: sources("one") };
-    const base = { inputs: srcs, options: { argv: ["tsc"], layout: "pnp" } };
-    expect(digest(base), "a string input").to.not.equal(digest({ inputs: srcs, options: { argv: ["tsc"], layout: "flat" } }));
+    const base = { inputs: srcs, config: { argv: ["tsc"], layout: "pnp" } };
+    expect(digest(base), "a string input").to.not.equal(digest({ inputs: srcs, config: { argv: ["tsc"], layout: "flat" } }));
     expect(digest(base), "a string list").to.not.equal(
-      digest({ inputs: srcs, options: { argv: ["tsc", "--strict"], layout: "pnp" } })
+      digest({ inputs: srcs, config: { argv: ["tsc", "--strict"], layout: "pnp" } })
     );
     expect(digest(base), "a projection").to.not.equal(
-      digest({ ...base, options: { ...base.options, output: parseName("build:**") } })
+      digest({ ...base, config: { ...base.config, output: parseName("build:**") } })
     );
   });
 
@@ -165,19 +196,27 @@ describe("the options digest", () => {
      * pure function of `options`. */
     const dep = (content: string): PackageFileSet =>
       new PackageFileSet(new Map([["index.d.ts", MemoryFile.from(content)]]), "left-pad", "1.0.0", []);
-    const base = { inputs: { srcs: sources("one") }, options: { argv: ["tsc"] } };
-    expect(optionsDigest(action(base)), "an edited source").to.equal(
-      optionsDigest(action({ ...base, inputs: { srcs: sources("edited") } }))
+    const base = { inputs: { srcs: sources("one") }, config: { argv: ["tsc"] } };
+    expect(configDigest(action(base)), "an edited source").to.equal(
+      configDigest(action({ ...base, inputs: { srcs: sources("edited") } }))
     );
-    expect(optionsDigest(action(base)), "a list of filesets").to.equal(
-      optionsDigest(action({ ...base, inputs: { ...base.inputs, extra: [sources("a"), sources("b")] } }))
+    expect(configDigest(action(base)), "a list of filesets").to.equal(
+      configDigest(action({ ...base, inputs: { ...base.inputs, extra: [sources("a"), sources("b")] } }))
     );
-    expect(optionsDigest(action(base)), "a package input").to.equal(
-      optionsDigest(action({ ...base, inputs: { ...base.inputs, tools: dep("one") } }))
+    expect(configDigest(action(base)), "a package input").to.equal(
+      configDigest(action({ ...base, inputs: { ...base.inputs, tools: dep("one") } }))
     );
-    expect(optionsDigest(action({ ...base, discoverable: { deps: [dep("one")] } })), "the discoverable deps").to.equal(
-      optionsDigest(action({ ...base, discoverable: { deps: [dep("two")] } }))
+    expect(configDigest(action({ ...base, discoverable: { deps: [dep("one")] } })), "the discoverable deps").to.equal(
+      configDigest(action({ ...base, discoverable: { deps: [dep("two")] } }))
     );
+  });
+
+  it("unions the file-shaped members for staging and nothing else", () => {
+    const tsconfig = new FileSet(new Map([["tsconfig.json", MemoryFile.from("{}")]]));
+    const rewrites = new FileSet(new Map([["rewrites.json", MemoryFile.from("[]")]]));
+    const act = action({ config: { argv: ["tsc"], config: tsconfig, rewrites } });
+    expect([...configFiles(act)].map(([name]) => name).sort()).to.deep.equal(["rewrites.json", "tsconfig.json"]);
+    expect(configFiles(action({ config: { argv: ["tsc"] } })).isEmpty()).to.equal(true);
   });
 });
 
@@ -282,7 +321,7 @@ describe("the action key", () => {
      * member cannot slide from one section to the other and land on the same
      * key text. */
     const asInput = action({ inputs: { files: sources("x") } }).actionKey();
-    const asOption = action({ options: { files: "x" } }).actionKey();
+    const asOption = action({ config: { files: "x" } }).actionKey();
     expect(asInput).to.not.equal(asOption);
   });
 });

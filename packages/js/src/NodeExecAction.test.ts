@@ -256,7 +256,7 @@ describe("createNodeExecAction layouts", () => {
   it("keys the layout, so one arrangement is never served for another", () => {
     const deps = [pkg("left-pad")];
     const key = (layout: typeof PNP | typeof FLAT | typeof SCOPED): unknown =>
-      createNodeExecAction(sources, deps, TOOL, "out:**", { layout }).options.layout;
+      createNodeExecAction(sources, deps, TOOL, "out:**", { layout }).config.layout;
     expect(new Set([key(PNP), key(FLAT), key(SCOPED)]).size).to.equal(3);
   });
 });

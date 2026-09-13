@@ -21,7 +21,7 @@ import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { executePipeline, ITaskReport, StageSpec, StageStreams } from "../support/Execute";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { BuildAction, BuildResult, fileSetInput, stringInput } from "../core/BuildAction";
+import { BuildAction, BuildResult, configFiles, fileSetInput, stringConfig } from "../core/BuildAction";
 import { ActionContext } from "../core/BuildCache";
 
 /**
@@ -34,11 +34,11 @@ import { ActionContext } from "../core/BuildCache";
  * stage specs (see {@link runPipeline}).
  */
 function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
-  const files = fileSetInput(action, "files");
-  const specs: StageSpec[] = JSON.parse(stringInput(action, "spec"));
+  const files = FileSet.unionAll(fileSetInput(action, "files"), configFiles(action));
+  const specs: StageSpec[] = JSON.parse(stringConfig(action, "spec"));
   /* `output` is a projection Name (selector + optional `-> tmpl` rename), or
    * absent for a pure-redirect genrule that collects only its captures. */
-  const output = action.options.output instanceof Name ? action.options.output : undefined;
+  const output = action.config.output instanceof Name ? action.config.output : undefined;
   const stdin = action.inputs.stdin instanceof FileSet ? action.inputs.stdin : undefined;
 
   return ctx

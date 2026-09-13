@@ -30,15 +30,6 @@
  * BuildAction, the narrowing of discoverable inputs in BuildCache.
  */
 
-import type { Name } from "./Name";
-
-/**
- * Non-file key material handed to a build step: argv, patterns, switches, and a
- * `Name` where a step consumes a projection. On a cache miss the step receives
- * the live `Name` and applies it with `makeProjector`.
- */
-export type ActionOptions = Record<string, string | string[] | Name>;
-
 /**
  * A file that a run looked for in its discoverable inputs (successfully or not)
  *
@@ -333,33 +324,6 @@ function parseSourceIndexRow(line: string): ISourceIndexRow | undefined {
     name: decodeName(line.substring(afterMtime + 1, afterName)),
     mime: line.substring(afterName + 1),
   };
-}
-
-/* ── Options as key material ──────────────────────────────────
- * The non-file half of an action key — no files in it, so it is written down
- * here with the rest of the text.
- */
-
-/** The options section of an action key: keys in sorted order, one
- * `name=manifest` line each. */
-export function manifestOptions(options: ActionOptions): string {
-  return Object.keys(options)
-    .sort()
-    .map(name => `${name}=${manifestOption(options[name])}`)
-    .join("\n");
-}
-
-/** One option as key material. A `Name` manifests by `toGlobString`, which is
- * lossless where `toString` is not (a quoted `'*'` and a wildcard `*` render
- * alike, colliding two different projections onto one key). */
-function manifestOption(value: string | string[] | Name): string {
-  if (typeof value === "string") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return "[" + value.map(element => JSON.stringify(element)).join(",") + "]";
-  }
-  return JSON.stringify(value.toGlobString());
 }
 
 /* ── The discovered-deps record ───────────────────────────────

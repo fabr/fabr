@@ -51,7 +51,7 @@ import {
   parseJson,
   RuleRegistration,
   RuleResult,
-  stringListInput,
+  stringListConfig,
   TargetContext,
   TEST_REPORT_FILENAME,
   TestsFailedError,
@@ -81,9 +81,9 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
   const workDir = ctx.workDir;
   const staged = fileSetInput(action, "staged");
   const writable = fileSetInput(action, "writable");
-  const argv = stringListInput(action, "argv");
-  const testFiles = stringListInput(action, "test_files");
-  const outputs = stringListInput(action, "outputs");
+  const argv = stringListConfig(action, "argv");
+  const testFiles = stringListConfig(action, "test_files");
+  const outputs = stringListConfig(action, "outputs");
   /* Tests run with a clean environment (no ambient vars that could alter their
    * output); a test that must spawn a tool references it by an absolute path
    * (e.g. process.execPath), which needs no PATH. The argv's leading command

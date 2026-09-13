@@ -74,7 +74,7 @@ export function shellInto(cache: BuildCache, name: string, action: BuildAction |
  * The leading executable of each is resolved to an absolute path (as the build
  * itself resolves it), so the command runs in the sandbox's clean, PATH-less env. */
 function describeCommands(action: BuildAction): string {
-  const { spec, argv } = action.options;
+  const { spec, argv } = action.config;
   if (typeof spec === "string") {
     const stages = JSON.parse(spec) as Array<{ argv: string[] }>;
     return "  $ " + stages.map(stage => renderArgv(stage.argv)).join(" | ");

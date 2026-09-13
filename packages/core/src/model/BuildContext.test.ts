@@ -322,7 +322,7 @@ const TEST_LEAF_STEP: IBuildActionDefinition = {
   version: 1,
   run: action => {
     leafRuns++;
-    return Computable.resolve({ result: new FileSet(new Map([["out.txt", MemoryFile.from(action.options.data as string)]])) });
+    return Computable.resolve({ result: new FileSet(new Map([["out.txt", MemoryFile.from(action.config.data as string)]])) });
   },
 };
 registerRule("test_parent", {}, context =>
@@ -389,7 +389,7 @@ const TEST_COMPILE_STEP: IBuildActionDefinition = {
   run: action => {
     compileRuns++;
     const pkg = (action.discoverable!.headers as PackageFileSet[])[0];
-    const included = (action.options.includes as string).split(",").filter(name => pkg.getFile(name) !== undefined);
+    const included = (action.config.includes as string).split(",").filter(name => pkg.getFile(name) !== undefined);
     /* The output IS what it read, so reusing the wrong entry shows up as
      * content rather than only as a missing run. */
     return Computable.forAll(

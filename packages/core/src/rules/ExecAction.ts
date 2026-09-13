@@ -22,7 +22,15 @@ import { getResultFileSet, writeFileSet } from "../core/Staging";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { execute, findExecutable, ITaskReport } from "../support/Execute";
-import { BuildAction, BuildResult, fileSetInput, IBuildActionDefinition, stringInput, stringListInput } from "../core/BuildAction";
+import {
+  BuildAction,
+  BuildResult,
+  configFiles,
+  fileSetInput,
+  IBuildActionDefinition,
+  stringConfig,
+  stringListConfig,
+} from "../core/BuildAction";
 
 /**
  * The generic `exec` build action core ships for rules to compose: stage a
@@ -33,20 +41,20 @@ import { BuildAction, BuildResult, fileSetInput, IBuildActionDefinition, stringI
  */
 
 /**
- * The `outputs` option: what the run's work dir is collected by. One pattern is
- * the ordinary case; a LIST is for a step collecting a second thing beside its
- * result — a tool's report about the run — which has to be collected rather
- * than read in place, since collection sweeps away everything it does not
- * select.
+ * The `outputs` config member: what the run's work dir is collected by. One
+ * pattern is the ordinary case; a LIST is for a step collecting a second thing
+ * beside its result — a tool's report about the run — which has to be collected
+ * rather than read in place, since collection sweeps away everything it does
+ * not select.
  */
-export function outputsInput(action: BuildAction): string | string[] {
-  return Array.isArray(action.options.outputs) ? stringListInput(action, "outputs") : stringInput(action, "outputs", "**");
+export function outputsConfig(action: BuildAction): string | string[] {
+  return Array.isArray(action.config.outputs) ? stringListConfig(action, "outputs") : stringConfig(action, "outputs", "**");
 }
 
 function runExec(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
-  const files = fileSetInput(action, "files");
-  const argv = stringListInput(action, "argv");
-  const outputs = outputsInput(action);
+  const files = FileSet.unionAll(fileSetInput(action, "files"), configFiles(action));
+  const argv = stringListConfig(action, "argv");
+  const outputs = outputsConfig(action);
   return (
     ctx
       .admit(report, () => writeFileSet(ctx.workDir, files))
@@ -62,7 +70,7 @@ function runExec(action: BuildAction, ctx: ActionContext, report: ITaskReport): 
 /* The version tracks what the step DOES; a change to the action-key text's
  * shape (see BuildAction.actionKey) already invalidates mechanically and needs
  * no bump here. */
-export const EXEC_ACTION: IBuildActionDefinition = { id: "core:exec", version: 2, run: runExec };
+export const EXEC_ACTION: IBuildActionDefinition = { id: "core:exec", version: 3, run: runExec };
 
 /**
  * @return an action that stages `files`, runs `argv` in the work directory,

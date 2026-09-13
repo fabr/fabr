@@ -666,6 +666,13 @@ export interface ICompileOptions {
    * its own.
    */
   rewriteImports?: Name[];
+  /**
+   * The compile sub-target's display label (default "Compiling"). Also part of
+   * the sub-target's identity — see {@link BuildAction.targetKey} — so the test
+   * pipeline's distinct label keeps its incremental base apart from the package
+   * build's.
+   */
+  label?: string;
 }
 
 /**
@@ -805,7 +812,7 @@ export function compileJsSources(
     ...(options.rewriteImports?.length ? { rewrite_imports: options.rewriteImports } : {}),
   };
   return context.subTarget("js_compile", inputs, {
-    label: "Compiling",
+    label: options.label ?? "Compiling",
     constraints: BUILD_OVERRIDE.with(options.constraints),
   });
 }

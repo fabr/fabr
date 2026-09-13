@@ -22,6 +22,7 @@ import {
   BuildAction,
   Computable,
   BuildResult,
+  configFiles,
   EXEC_ACTION,
   FileSet,
   DiscoveredDeps,
@@ -31,10 +32,10 @@ import {
   IChangedFiles,
   ITaskReport,
   MemoryFile,
-  outputsInput,
+  outputsConfig,
   readJsonFile,
-  stringInput,
-  stringListInput,
+  stringConfig,
+  stringListConfig,
   writeFileSet,
 } from "@fabr-build/core";
 import { assembleNodeModules, assembleScopedNodeModules } from "./JSPackage";
@@ -67,14 +68,13 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
   /* Tracks the exec body this delegates to, plus this step's own layouts; add
    * a `+ N` when what a layout produces changes. A change to the action-key
    * text's shape (see BuildAction.actionKey) already invalidates mechanically
-   * and needs no bump here. +7: the dependency-path vocabulary (flat
-   * spelling, plain indexing), so a record written before it must not
-   * half-match. */
-  version: EXEC_ACTION.version + 7,
+   * and needs no bump here. +8: file-shaped config members stage with the
+   * inputs. */
+  version: EXEC_ACTION.version + 8,
   run: (action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> => {
     const deps = depsInput(action);
-    const files = fileSetInput(action, "files");
-    const depsReportName = stringOption(action, "depsReport");
+    const files = FileSet.unionAll(fileSetInput(action, "files"), configFiles(action));
+    const depsReportName = optionalConfig(action, "depsReport");
     const exec = (staged: FileSet, argv: string[], incremental?: Incremental, handover?: Handover): Computable<BuildResult> =>
       /* An incremental run with a base starts from the last green build's
        * output: the base entry's files are staged under the emit directory —
@@ -99,15 +99,15 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
           )
       )
         .then(() =>
-          EXEC_ACTION.run(new BuildAction(EXEC_ACTION, { files: staged }, { argv, outputs: outputsInput(action) }), ctx, report)
+          EXEC_ACTION.run(new BuildAction(EXEC_ACTION, { files: staged }, { argv, outputs: outputsConfig(action) }), ctx, report)
         )
         .then(result =>
           depsReportName === undefined && incremental === undefined ? result : withBookkeeping(result, depsReportName, incremental)
         );
-    const argv = stringListInput(action, "argv");
-    const layout = stringInput(action, "layout");
+    const argv = stringListConfig(action, "argv");
+    const layout = stringConfig(action, "layout");
     if (layout !== PNP) {
-      const mount = stringInput(action, "mount");
+      const mount = stringConfig(action, "mount");
       const mounted = layout === SCOPED ? assembleScopedNodeModules(deps) : assembleNodeModules(deps);
       return exec(FileSet.unionAll(files, FileSet.layout({ [mount]: mounted })), argv);
     }
@@ -137,8 +137,8 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
             handover
           )
       );
-    const stateDir = stringOption(action, "stateDir");
-    const changes = stringOption(action, "changes");
+    const stateDir = optionalConfig(action, "stateDir");
+    const changes = optionalConfig(action, "changes");
     if (stateDir === undefined && changes === undefined) {
       return execPnP(argv);
     }
@@ -202,6 +202,11 @@ export type NodeLayout = typeof PNP | typeof FLAT | typeof SCOPED;
  * @param self under `pnp` only: the package identity the staged sources
  *   themselves carry, so they can resolve their own name. Its parts are
  *   ordinary inputs, so they key like everything else.
+ * @param config file-shaped configuration the rule generated for the tool
+ *   (a tsconfig, a rewrite table), staged at its names beside `files` but keyed
+ *   as configuration: each distinct config is its own target key, so a config
+ *   change never lands in the diff base. Never content — see
+ *   {@link ActionConfig}.
  * Three of these name LOCATIONS a tool was told about — `depsReport`,
  * `stateDir`, `changes`. The rule composes the argv that tells it, so it names
  * them here too and the step only stages and collects what it was given; no
@@ -231,6 +236,7 @@ export function createNodeExecAction(
     layout?: NodeLayout;
     label?: string;
     self?: { name: string; location: string };
+    config?: FileSet;
     depsReport?: string;
     stateDir?: string;
     changes?: string;
@@ -254,6 +260,7 @@ export function createNodeExecAction(
       mount: options.mount ?? "node_modules",
       layout: options.layout ?? FLAT,
       ...(options.self ? { selfName: options.self.name, selfLocation: options.self.location } : {}),
+      ...(options.config ? { config: options.config } : {}),
       ...(options.depsReport ? { depsReport: options.depsReport } : {}),
       ...(options.stateDir ? { stateDir: options.stateDir } : {}),
       ...(options.changes ? { changes: options.changes } : {}),
@@ -337,11 +344,11 @@ function keptState(state: FileSet): FileSet | undefined {
  * them went stale. */
 type Handover = { staged: FileSet; outputs?: FileSet };
 
-/** One of the optional location options — where the rule told the tool to write
+/** One of the optional location members — where the rule told the tool to write
  * its report, keep its state, or find its change lists (see
  * {@link createNodeExecAction}) — absent unless the rule named one. */
-function stringOption(action: BuildAction, name: string): string | undefined {
-  const value = action.options[name];
+function optionalConfig(action: BuildAction, name: string): string | undefined {
+  const value = action.config[name];
   return typeof value === "string" ? value : undefined;
 }
 
@@ -352,7 +359,7 @@ function stringOption(action: BuildAction, name: string): string | undefined {
  * directory. An entry with no collection directory has nowhere conflict-free to
  * stage a base, so it gets none (a cold compile). */
 function baseOutputLayout(action: BuildAction, outputs: FileSet): FileSet {
-  const pattern = outputsInput(action);
+  const pattern = outputsConfig(action);
   const result = Array.isArray(pattern) ? pattern[pattern.length - 1] : pattern;
   const split = result.indexOf(":");
   const dir = split < 0 ? "" : result.slice(0, split);
@@ -416,8 +423,8 @@ function selectionOf(reads: Iterable<string>): DiscoveredDeps {
 /** The `self` options as the pnp arm reads them back: absent unless the rule
  * gave the sources a package identity. */
 function selfPackage(action: BuildAction): { name: string; location: string } | undefined {
-  const name = action.options.selfName;
-  const location = action.options.selfLocation;
+  const name = action.config.selfName;
+  const location = action.config.selfLocation;
   return typeof name === "string" && typeof location === "string" ? { name, location } : undefined;
 }
 

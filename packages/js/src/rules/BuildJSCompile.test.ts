@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { BuildAction, Computable, FileSet, Flag, MemoryFile, Property, RunnableFileSet, TargetContext } from "@fabr-build/core";
+import { BuildAction, Computable, configFiles, FileSet, Flag, MemoryFile, Property, RunnableFileSet, TargetContext } from "@fabr-build/core";
 import { jsCompileRule, jsxModeFor, makeTsConfig } from "./BuildJSCompile";
 import { parseJSTarget } from "../JSPackage";
 
@@ -65,12 +65,12 @@ async function compileAction(): Promise<BuildAction> {
   return result as BuildAction;
 }
 
-/** Drive the rule and read back the tsconfig.json it stages into the action. */
+/** Drive the rule and read back the tsconfig.json it carries as config. */
 async function generatedTsConfig(flags: Flag[], packageName?: string): Promise<TsConfig> {
   const result = await toPromise(jsCompileRule.evaluate(stubContext(flags, packageName)));
   expect(result).to.be.instanceOf(BuildAction);
-  const files = (result as BuildAction).inputs.files as FileSet;
-  const file = await toPromise(files.get("tsconfig.json"));
+  const config = configFiles(result as BuildAction);
+  const file = await toPromise(config.get("tsconfig.json"));
   return JSON.parse(await toPromise(file!.readString())) as TsConfig;
 }
 
@@ -303,7 +303,7 @@ describe("js_compile toolchain", () => {
    * every `types` entry unfound. What runs is always fabr's driver, over
    * whatever release ${TYPESCRIPT} pins. */
   it("execs the driver, never the pinned compiler's own bin", async () => {
-    const argv = (await compileAction()).options.argv as string[];
+    const argv = (await compileAction()).config.argv as string[];
     expect(argv).to.deep.equal(["node", ".tools/tsc/tscDriver/tsc-driver.js"]);
   });
 
