@@ -36,6 +36,8 @@
     "eslint": "^9.1.1",
     "eslint-config-prettier": "^8.5.0",
     "jest": "^30.4.2",
+    "postcss": "8.5.28",
+    "postcss-modules": "9.0.1",
     "prettier": "^2.5.1",
     "ts-jest": "^29.4.12",
     "ts-node": "^10.9.2",

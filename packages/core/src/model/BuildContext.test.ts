@@ -2027,7 +2027,7 @@ describe("unresolved-name diagnostics", () => {
 });
 
 /* The mechanism behind plugin-declared driver tools (JS.fabr's `js_script
- * @fabr-build/js/css-driver { entry = ../cssDriver/css-driver.js; }`): a decl
+ * @fabr-build/js/postcss-driver { entry = ../cssDriver/postcss-driver.js; }`): a decl
  * written in an absolutely-pathed contributed lib file resolves a relative
  * FILES value against that file's own directory through its own FileSource
  * (the loader's absFileSource — no project-tree containment), and the result

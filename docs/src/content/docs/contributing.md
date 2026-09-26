@@ -17,7 +17,7 @@ Fabr is a Yarn-workspaces monorepo. The bootstrap set is three packages:
   dependency resolver, the build cache, the model/parser, and the generic bootstrap rules
   (`flag`, `script`, `generate`, `serve`, `catalog`, `sync`) plus the `STD.fabr` standard library.
 - **`packages/js`** — all JavaScript-ecosystem support (`js_package`, `js_test`, `js_bundle`,
-  `css_compile`, `js_script`, the npm repository, and fabr's own test runner), loaded as a
+  `sass_compile`, `css_postcss`, `js_script`, the npm repository, and fabr's own test runner), loaded as a
   **plugin**. Fabr itself never refers to it directly — it declares `plugin @fabr-build/js;` in
   `PROJECT.fabr`, exactly as an end user would.
 - **`packages/cli`** — the `fabr` command and its driver (progress rendering, the failure tree,

@@ -19,21 +19,21 @@
 
 import { expect } from "chai";
 import { FileSet, makeRewrite, MemoryFile } from "@fabr-build/core";
-import type { ICssSource } from "./CSSCompile";
 import {
-  assetDeclarationName,
-  buildCssOptions,
+  buildPostcssOptions,
+  buildSassOptions,
   cssImportRewrites,
-  cssDeclarationNames,
   cssScopeCollision,
   cssScopeDigest,
-  cssShimName,
-  cssSourceOutputs,
   CSS_OUTDIR,
   CSS_SRC_ROOT,
   isCssModule,
   loweredCssName,
   partitionCssOutput,
+  postcssSourceOutputs,
+  sassLoweredName,
+  sassSourceOutputs,
+  scopedCssName,
 } from "./CSSCompile";
 
 function fileSet(...names: string[]): FileSet {
@@ -71,29 +71,29 @@ describe("output naming", () => {
     expect(loweredCssName("a/Foo.module.css")).to.equal("a/Foo.css");
   });
 
-  it("names the shim beside the stylesheet it carries the map for", () => {
-    expect(cssShimName("a/Foo.module.scss")).to.equal("a/Foo.css.js");
-    expect(cssShimName("a/Foo.module.css")).to.equal("a/Foo.css.js");
+  it("keeps the '.module' marker through the sass step, whose lowering does not scope", () => {
+    expect(sassLoweredName("a/Foo.module.scss")).to.equal("a/Foo.module.css");
+    expect(sassLoweredName("a/Foo.module.sass")).to.equal("a/Foo.module.css");
+    expect(sassLoweredName("a/Foo.scss")).to.equal("a/Foo.css");
+    /* Identity on plain CSS, which the sass step never transforms. */
+    expect(sassLoweredName("a/Foo.module.css")).to.equal("a/Foo.module.css");
+    expect(sassLoweredName("a/Foo.css")).to.equal("a/Foo.css");
   });
 
-  it("names declarations in TypeScript's arbitrary-extension form", () => {
-    /* `{base}.d.{ext}.ts`, not `{base}.{ext}.d.ts` — the latter is disabled
-     * under ESM resolution. */
-    expect(assetDeclarationName("a/Foo.module.scss")).to.equal("a/Foo.module.d.scss.ts");
-    expect(assetDeclarationName("Foo.css")).to.equal("Foo.d.css.ts");
+  it("consumes the marker at the scoping step, and only there", () => {
+    expect(scopedCssName("a/Foo.module.css")).to.equal("a/Foo.css");
+    expect(scopedCssName("a/Foo.css")).to.equal("a/Foo.css");
+    /* The scoping step's input is always `.css` — a `.module.scss` reaching it
+     * unlowered stays untouched rather than being half-consumed. */
+    expect(scopedCssName("a/Foo.module.scss")).to.equal("a/Foo.module.scss");
   });
 
-  it("gives a module both its own declaration and the lowered twin", () => {
-    /* The source's own name is what the author imports; the lowered name is what
-     * the module's own shim imports. */
-    expect(cssDeclarationNames("a/Foo.module.scss")).to.deep.equal(["a/Foo.module.d.scss.ts", "a/Foo.d.css.ts"]);
-    /* A `.module.css` source still lowers to a different name, so it too needs
-     * both: its own for the author's import, the lowered one for the shim's. */
-    expect(cssDeclarationNames("a/Foo.module.css")).to.deep.equal(["a/Foo.module.d.css.ts", "a/Foo.d.css.ts"]);
-    /* A plain stylesheet is imported for its effect, and nothing imports the
-     * lowered name, so it needs only its own. */
-    expect(cssDeclarationNames("a/Foo.scss")).to.deep.equal(["a/Foo.d.scss.ts"]);
+  it("composes the two steps into the end-to-end name", () => {
+    expect(scopedCssName(sassLoweredName("a/Foo.module.scss"))).to.equal(loweredCssName("a/Foo.module.scss"));
+    expect(scopedCssName(sassLoweredName("a/Foo.scss"))).to.equal(loweredCssName("a/Foo.scss"));
+    expect(scopedCssName(sassLoweredName("a/Foo.module.css"))).to.equal(loweredCssName("a/Foo.module.css"));
   });
+
 });
 
 describe("cssScopeDigest", () => {
@@ -132,7 +132,7 @@ describe("cssScopeDigest", () => {
 });
 
 describe("cssScopeCollision", () => {
-  const source = (path: string, scope: string): ICssSource => ({ path, css: "x.css", scope, declarations: [] });
+  const source = (path: string, scope: string): { path: string; scope?: string } => ({ path, scope });
 
   it("reports two modules that hashed to one scope", () => {
     /* Chance, not misuse — but it has to be loud: identically-named locals in
@@ -142,72 +142,125 @@ describe("cssScopeCollision", () => {
   });
 
   it("ignores plain stylesheets, which have no scope", () => {
-    const plain = { path: "a.scss", css: "a.css", declarations: [] };
-    expect(cssScopeCollision([plain, { ...plain, path: "b.scss" }])).to.equal(undefined);
+    expect(cssScopeCollision([{ path: "a.scss" }, { path: "b.scss" }])).to.equal(undefined);
   });
 });
 
-describe("cssSourceOutputs", () => {
-  it("gives a module a scope, a shim and both declarations", () => {
-    const outputs = cssSourceOutputs("a/Foo.module.scss", "pkg");
-    expect(outputs?.css).to.equal("a/Foo.css");
-    expect(outputs?.shim).to.equal("a/Foo.css.js");
-    expect(outputs?.scope).to.equal(cssScopeDigest("pkg", "a/Foo.module.scss"));
-    expect(outputs?.declarations).to.deep.equal(["a/Foo.module.d.scss.ts", "a/Foo.d.css.ts"]);
+describe("sassSourceOutputs", () => {
+  it("keeps the module marker on the lowered name", () => {
+    expect(sassSourceOutputs("a/Foo.module.scss")?.css).to.equal("a/Foo.module.css");
+  });
+
+  it("gives a plain stylesheet its lowered name", () => {
+    expect(sassSourceOutputs("a/Foo.scss")?.css).to.equal("a/Foo.css");
+  });
+
+  it("names the stylesheet and its map, and nothing else", () => {
+    /* Shims and declarations are named after the stylesheets css_postcss
+     * publishes, so the lowering step emits none — which is what leaves the
+     * `.module.css` intermediate no route into a delivery. */
+    expect(Object.keys(sassSourceOutputs("a/Foo.module.scss", true) ?? {}).sort()).to.deep.equal(["css", "map", "path"]);
   });
 
   it("names a source map only where the build carries them", () => {
-    expect(cssSourceOutputs("a/Foo.module.scss", "pkg")?.map).to.equal(undefined);
-    expect(cssSourceOutputs("a/Foo.module.scss", "pkg", true)?.map).to.equal("a/Foo.css.map");
-    expect(cssSourceOutputs("a/Foo.scss", "pkg", true)?.map).to.equal("a/Foo.css.map");
-  });
-
-  it("names no map for a plain .css, which is copied unchanged", () => {
-    /* Nothing happened for a map to describe, and an identity map naming the
-     * file as its own source would be worse than none. */
-    expect(cssSourceOutputs("a/Foo.css", "pkg", true)?.map).to.equal(undefined);
-  });
-
-  it("gives a plain stylesheet no scope and no shim", () => {
-    const outputs = cssSourceOutputs("a/Foo.scss", "pkg");
-    expect(outputs?.css).to.equal("a/Foo.css");
-    expect(outputs?.scope).to.equal(undefined);
-    expect(outputs?.shim).to.equal(undefined);
+    expect(sassSourceOutputs("a/Foo.module.scss")?.map).to.equal(undefined);
+    expect(sassSourceOutputs("a/Foo.module.scss", true)?.map).to.equal("a/Foo.module.css.map");
+    expect(sassSourceOutputs("a/Foo.scss", true)?.map).to.equal("a/Foo.css.map");
   });
 
   it("names nothing for a Sass partial", () => {
     /* A partial exists to be `@use`d; compiled alone it fails on whatever its
      * importer was supposed to define first. */
-    expect(cssSourceOutputs("a/_shared.scss", "pkg")).to.equal(undefined);
-    expect(cssSourceOutputs("_shared.sass", "pkg")).to.equal(undefined);
+    expect(sassSourceOutputs("a/_shared.scss")).to.equal(undefined);
+    expect(sassSourceOutputs("_shared.sass")).to.equal(undefined);
     /* The underscore has to be on the FILE, not an ancestor directory. */
-    expect(cssSourceOutputs("_dir/Foo.scss", "pkg")).to.not.equal(undefined);
+    expect(sassSourceOutputs("_dir/Foo.scss")).to.not.equal(undefined);
   });
 });
 
-describe("buildCssOptions", () => {
+describe("postcssSourceOutputs", () => {
+  it("gives a module its final name, a scope, a shim and one declaration", () => {
+    const outputs = postcssSourceOutputs("a/Foo.module.css", "pkg");
+    expect(outputs.css).to.equal("a/Foo.css");
+    expect(outputs.shim).to.equal("a/Foo.css.ts");
+    /* The digest input is this step's own input name — the lowered
+     * `.module.css` — so a `.scss` and a `.css` spelling of one module scope
+     * identically, and the step that applies the scope computes it from a name
+     * it sees. */
+    expect(outputs.scope).to.equal(cssScopeDigest("pkg", "a/Foo.module.css"));
+  });
+
+  it("names a module's map only where the build carries them", () => {
+    expect(postcssSourceOutputs("a/Foo.module.css", "pkg").map).to.equal(undefined);
+    expect(postcssSourceOutputs("a/Foo.module.css", "pkg", true).map).to.equal("a/Foo.css.map");
+  });
+
+  it("copies a plain stylesheet through under its own name, carrying a map it arrived with", () => {
+    const bare = postcssSourceOutputs("a/Foo.css", "pkg", true);
+    expect(bare.css).to.equal("a/Foo.css");
+    /* Not a module, so its own output keeps its names and it gets no shim —
+     * but it still carries a scope, for the private copy a css-module
+     * composing from it inlines. */
+    expect(bare.module).to.equal(false);
+    expect(bare.shim).to.equal(undefined);
+    expect(bare.scope).to.equal(cssScopeDigest("pkg", "a/Foo.css"));
+    /* An authored `.css` arrives with no map, and nothing happened for one to
+     * describe. */
+    expect(bare.map).to.equal(undefined);
+    /* A lowered Sass stylesheet arrives with one, and it rides through. */
+    const carried = postcssSourceOutputs("a/Foo.css", "pkg", true, new Set(["a/Foo.css.map"]));
+    expect(carried.map).to.equal("a/Foo.css.map");
+  });
+});
+
+describe("buildSassOptions", () => {
   it("names every source and points at the src root and outdir", () => {
-    const options = buildCssOptions(["a/Foo.module.scss", "b.scss", "c.css"], "pkg");
+    const options = buildSassOptions(["a/Foo.module.scss", "b.scss"]);
     expect(options.srcRoot).to.equal(CSS_SRC_ROOT);
     expect(options.outdir).to.equal(CSS_OUTDIR);
     /* No load paths: a package load is the importer's to answer from the
      * dependency table, and nothing is mounted for one to point at. */
     expect(options.loadPaths).to.deep.equal([]);
-    expect(options.sources.map(source => source.path)).to.deep.equal(["a/Foo.module.scss", "b.scss", "c.css"]);
+    expect(options.sources.map(source => source.path)).to.deep.equal(["a/Foo.module.scss", "b.scss"]);
   });
 
   it("sorts the source list so the options document (and cache key) is deterministic", () => {
     /* The manifest is content-addressed; the same sources in any order must
      * produce an identical document. */
-    const a = buildCssOptions(["z.scss", "a.scss", "m/x.module.scss"], "pkg");
-    const b = buildCssOptions(["m/x.module.scss", "z.scss", "a.scss"], "pkg");
+    const a = buildSassOptions(["z.scss", "a.scss", "m/x.module.scss"]);
+    const b = buildSassOptions(["m/x.module.scss", "z.scss", "a.scss"]);
     expect(a).to.deep.equal(b);
     expect(a.sources.map(source => source.path)).to.deep.equal(["a.scss", "m/x.module.scss", "z.scss"]);
   });
 
   it("drops partials, which produce nothing", () => {
-    const options = buildCssOptions(["_vars.scss", "a.scss"], "pkg");
+    const options = buildSassOptions(["_vars.scss", "a.scss"]);
     expect(options.sources.map(source => source.path)).to.deep.equal(["a.scss"]);
+  });
+
+  it("refuses two sources that would write the same file", () => {
+    /* `x.module.scss` and `x.module.sass` both lower to `x.module.css`.
+     * Nothing downstream would catch it — the driver writes each output with a
+     * plain write, so the second silently replaces the first. */
+    expect(() => buildSassOptions(["a/Foo.module.scss", "a/Foo.module.sass"])).to.throw(/a\/Foo\.module\.css/);
+  });
+
+  it("refuses a non-Sass source, which enters at css_postcss", () => {
+    expect(() => buildSassOptions(["a/Foo.css"])).to.throw(/'a\/Foo\.css' is not a Sass source/);
+  });
+});
+
+describe("buildPostcssOptions", () => {
+  it("names every stylesheet, carrying the maps beside them rather than listing them", () => {
+    const options = buildPostcssOptions(["a/Foo.module.css", "a/Foo.module.css.map", "b.css", "b.css.map"], "pkg", true);
+    expect(options.srcRoot).to.equal(CSS_SRC_ROOT);
+    expect(options.outdir).to.equal(CSS_OUTDIR);
+    expect(options.sources.map(source => source.path)).to.deep.equal(["a/Foo.module.css", "b.css"]);
+    /* A module's carried map is its chain input; a passthrough's rides through
+     * under its own name. */
+    expect(options.sources[0].prev).to.equal("a/Foo.module.css.map");
+    expect(options.sources[0].map).to.equal("a/Foo.css.map");
+    expect(options.sources[1].map).to.equal("b.css.map");
   });
 
   it("explains the clash in terms of the two files, not just that there is one", () => {
@@ -215,11 +268,11 @@ describe("buildCssOptions", () => {
      * collide at all — the answer is the '.module' rule, which they may never
      * have met. */
     try {
-      buildCssOptions(["a/Nav.module.scss", "a/Nav.css"], "pkg");
+      buildPostcssOptions(["a/Nav.module.css", "a/Nav.css"], "pkg");
       expect.fail("expected a conflict");
     } catch (err) {
       const help = (err as { help?: string[] }).help ?? [];
-      expect(help[0]).to.contain("'Nav.module.scss' is a css-module");
+      expect(help[0]).to.contain("'Nav.module.css' is a css-module");
       expect(help[0]).to.contain("'.module' marker");
       expect(help[0]).to.contain("'Nav.css'");
       /* By basename: both always sit in one directory, and the full paths are
@@ -228,19 +281,12 @@ describe("buildCssOptions", () => {
     }
   });
 
-  it("refuses two sources that would write the same file", () => {
-    /* Dropping the '.module' marker makes this reachable: both lower to
-     * `a/Foo.css`. Nothing downstream would catch it — the driver writes each
-     * output with a plain write, so the second silently replaces the first, and
-     * the step's output is collected as ONE tree, never unioned with anything
-     * for FileSet's own conflict check to fire on. */
-    expect(() => buildCssOptions(["a/Foo.module.scss", "a/Foo.scss"], "pkg")).to.throw(/a\/Foo\.css/);
-    /* Same clash written the other way round. */
-    expect(() => buildCssOptions(["a/Foo.module.css", "a/Foo.css"], "pkg")).to.throw(/a\/Foo\.css/);
+  it("allows stylesheets that merely share a stem across directories", () => {
+    expect(() => buildPostcssOptions(["a/Foo.module.css", "b/Foo.css"], "pkg")).to.not.throw();
   });
 
-  it("allows stylesheets that merely share a stem across directories", () => {
-    expect(() => buildCssOptions(["a/Foo.module.scss", "b/Foo.scss"], "pkg")).to.not.throw();
+  it("refuses a Sass source, which enters at sass_compile", () => {
+    expect(() => buildPostcssOptions(["a/Foo.scss"], "pkg")).to.throw(/'a\/Foo\.scss' is a Sass source/);
   });
 });
 
@@ -261,34 +307,36 @@ describe("partitionCssOutput", () => {
 describe("cssImportRewrites", () => {
   const apply = (name: string): string | undefined => makeRewrite(cssImportRewrites())(name);
 
-  it("points a module's own declaration at the shim, and the lowered twin at the stylesheet", () => {
-    /* The two declarations of one stylesheet map to DIFFERENT things: the
-     * source's own to the shim carrying the class map, the twin to the
-     * stylesheet — so the shim's own `import "./x.css"` survives as itself
-     * rather than looping back onto the shim. */
-    expect(apply("a/Foo.module.d.scss.ts")).to.equal("a/Foo.css.js");
-    expect(apply("a/Foo.d.css.ts")).to.equal("a/Foo.css");
+  it("points a module's specifier at the shim, and a plain stylesheet's at the stylesheet", () => {
+    /* The `.scss` and `.css` spellings of a module answer alike, and neither
+     * answers as the plain stylesheet beside them does. */
+    expect(apply("a/Foo.module.scss")).to.equal("a/Foo.css.js");
+    expect(apply("a/Foo.module.css")).to.equal("a/Foo.css.js");
+    expect(apply("a/Foo.scss")).to.equal("a/Foo.css");
   });
 
-  it("points a plain stylesheet's declaration at the stylesheet", () => {
-    expect(apply("a/Foo.d.scss.ts")).to.equal("a/Foo.css");
+  it("leaves a plain .css specifier alone, it already naming the published stylesheet", () => {
+    expect(apply("a/Foo.css")).to.equal(undefined);
+    /* And the shim's own `import "./Foo.css"` therefore cannot loop back onto
+     * the shim. */
+    expect(apply("Foo.css")).to.equal(undefined);
   });
 
   it("puts the module rules first, since a module also matches the plain shape", () => {
-    /* `Foo.module.d.scss.ts` matches `**\/*.d.scss.ts` too — order decides. */
-    expect(apply("Foo.module.d.scss.ts")).to.equal("Foo.css.js");
+    /* `Foo.module.scss` matches `**\/*.scss` too — order decides. */
+    expect(apply("Foo.module.scss")).to.equal("Foo.css.js");
   });
 
   it("applies at the tree root as well as at depth", () => {
     /* `**\/` owns its adjacent slash, so nothing is left with a leading one. */
-    expect(apply("Foo.module.d.scss.ts")).to.equal("Foo.css.js");
-    expect(apply("a/b/c/Foo.module.d.scss.ts")).to.equal("a/b/c/Foo.css.js");
+    expect(apply("Foo.module.scss")).to.equal("Foo.css.js");
+    expect(apply("a/b/c/Foo.module.scss")).to.equal("a/b/c/Foo.css.js");
   });
 
-  it("names nothing for a file that is not an asset declaration", () => {
+  it("names nothing for a specifier that is not a stylesheet", () => {
     expect(apply("a/Foo.ts")).to.equal(undefined);
     expect(apply("a/Foo.d.ts")).to.equal(undefined);
-    expect(apply("a/Foo.css")).to.equal(undefined);
+    expect(apply("a/Foo.json")).to.equal(undefined);
   });
 
   it("is constant, so a stylesheet added or renamed does not move it", () => {
@@ -296,6 +344,6 @@ describe("cssImportRewrites", () => {
      * material, and per-file entries would rebuild the package's whole compile
      * whenever any stylesheet appeared. */
     expect(cssImportRewrites().map(String)).to.deep.equal(cssImportRewrites().map(String));
-    expect(cssImportRewrites()).to.have.lengthOf(6);
+    expect(cssImportRewrites()).to.have.lengthOf(5);
   });
 });

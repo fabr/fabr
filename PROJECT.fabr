@@ -38,6 +38,10 @@ catalog @pkg {
          # version ESBUILD names, since what they check is what THAT esbuild
          # does with a package's export conditions.
          @npm:esbuild:0.28.1
+         # The postcss driver's tests drive the real scoper, pinned to the same
+         # versions POSTCSS/POSTCSS_MODULES name: the css-modules dialect is
+         # the plugin set's, so the one the tests pin must be the one fabr runs.
+         @npm:postcss:8.5.28 @npm:postcss-modules:9.0.1
          # Pulled in transitively by @types/jest, and required only without a
          # lower bound ('*', the DefinitelyTyped house style), so nothing picks
          # a version for them; and two packages @types/jest's closure needs at a
@@ -89,7 +93,7 @@ js_package @fabr-build/js {
   # (each driver itself requires its own from the tool install fabr stages,
   # never from here). The bundler's single-variant rule is a claim about what
   # esbuild does with a package's conditions, so only the real one can hold it.
-  test_deps = chai jest_types tar_stream @pkg:typescript @pkg:esbuild;
+  test_deps = chai jest_types tar_stream @pkg:typescript @pkg:esbuild @pkg:postcss @pkg:postcss-modules;
   metadata = { FABR_METADATA; description = Fabr JS support plugin }
 }
 

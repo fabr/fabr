@@ -57,7 +57,7 @@ describe("isBareSpecifier", () => {
 
 describe("rewriteStyledImport", () => {
   it("maps a Sass css-module import to its lowered .css, marker and all", () => {
-    /* The '.module.' marker means "scope me" and css_compile has already done
+    /* The '.module.' marker means "scope me" and css_postcss has already done
      * so, so its output does not carry it — otherwise every downstream bundler,
      * this one included, would scope the names a second time. */
     assert.equal(rewriteStyledImport("./Foo.module.scss"), "./Foo.css");
@@ -211,7 +211,7 @@ describe("a styled import written as a package subpath", () => {
     const pkg = path.join(work, "node_modules/styledpkg");
     fs.mkdirSync(pkg, { recursive: true });
     fs.writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ name: "styledpkg", version: "1.0.0" }));
-    /* What css_compile would have lowered the .scss to; the .scss itself is a
+    /* What the css pipeline would have lowered the .scss to; the .scss itself is a
      * source, and never reaches the bundle. */
     fs.writeFileSync(path.join(pkg, "styles.css"), ".styled { color: STYLED_MARKER; }\n");
     fs.writeFileSync(path.join(work, "entry.mjs"), 'import "styledpkg/styles.module.scss";\nconsole.log("app");\n');

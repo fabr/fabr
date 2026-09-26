@@ -262,6 +262,12 @@ const REWRITES_FILE = "rewrite-imports.json";
  * the rule must not import it. */
 const REWRITES_FLAG = "--rewrite-imports";
 
+/** Where the `resources` property's names are staged, and what the flag names.
+ * The NAMES, not the files: the compiler only asks whether one is there, so
+ * staging the bytes would key the compile on every stylesheet's content. */
+const RESOURCES_FILE = "resources.json";
+const RESOURCES_FLAG = "--resources";
+
 /**
  * The compile's `rewrite_imports` rules, compiled for a driver holding no fabr
  * vocabulary: an ordered list of pattern/replacement pairs, first match wins.
@@ -296,7 +302,7 @@ export function importRewrites(rewrites: Name[]): Array<{ pattern: string; repla
 function compileTypescript(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
-      context.getFileSetProperties(["srcs", "deps"]),
+      context.getFileSetProperties(["srcs", "deps", "resources"]),
       context.getGlobalString("JS_TARGET"),
       context.getGlobalRunnable("TSC_DRIVER"),
       context.getGlobalString("BUILD_TYPE"),
@@ -305,7 +311,7 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       context.getProperty("module_extension"),
       context.getRewriteRules("rewrite_imports"),
     ],
-    ({ srcs: srcSets, deps }, target, driver, buildType, depFlags, packageNameProp, moduleExtensionProp, rewriteRules) => {
+    ({ srcs: srcSets, deps, resources }, target, driver, buildType, depFlags, packageNameProp, moduleExtensionProp, rewriteRules) => {
       const jsTarget = parseJSTarget(target);
       if (jsTarget.module === "dual") {
         /* Not a user error: every caller pins a format (js_package builds one
@@ -334,11 +340,17 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
         const lower = name.toLowerCase();
         return lower.endsWith(".tsx") || lower.endsWith(".jsx");
       });
-      /* How an import is named in the emitted code, where a rule redirects it.
-       * Resolved here, against the names actually being compiled, so the driver
-       * is handed a finished table rather than a pattern to apply — and so an
-       * compile declaring none carries no file, no flag, and no change of key. */
+      /* Which file an import really names, where a rule redirects it — used by
+       * the driver both to resolve the specifier and to name it in the emitted
+       * code. Resolved here, against the names actually being compiled, so the
+       * driver is handed a finished table rather than a pattern to apply — and
+       * so a compile declaring none carries no file, no flag, and no change of
+       * key. */
       const rewrites = importRewrites(rewriteRules);
+      /* The target's delivered files no step compiles, by NAME — an import of
+       * one resolves as an empty module. Sorted, so the document is a function
+       * of the set and not of the order the sets were unioned. */
+      const resourceNames = [...FileSet.unionAll(...(resources ?? []))].map(([name]) => name).sort();
       const build = (jsxImportSource: string): RuleResult => {
         const jsx = jsxImportSource ? { mode: jsxModeFor(buildType), importSource: jsxImportSource } : undefined;
         const tsconfig = makeTsConfig(
@@ -367,6 +379,7 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
         const config = FileSet.layout({
           "tsconfig.json": new MemoryFile(Buffer.from(JSON.stringify(tsconfig))),
           ...(rewrites ? { [REWRITES_FILE]: MemoryFile.from(JSON.stringify(rewrites)) } : {}),
+          ...(resourceNames.length === 0 ? {} : { [RESOURCES_FILE]: MemoryFile.from(JSON.stringify(resourceNames)) }),
         });
         /* The tool launches from its own mount (its deps resolve there); cwd is
          * the workspace root, so `include` and dependency resolution alike
@@ -380,6 +393,7 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
          * specifiers it writes have to name the renamed siblings. */
         const emitExtension = moduleExtension ? ["--emit-extension", moduleExtension] : [];
         const rewriteFlag = rewrites ? [REWRITES_FLAG, REWRITES_FILE] : [];
+        const resourcesFlag = resourceNames.length === 0 ? [] : [RESOURCES_FLAG, RESOURCES_FILE];
         return createNodeExecAction(
           FileSet.layout(workspace),
           deps,
@@ -387,6 +401,7 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
             [
               ...emitExtension,
               ...rewriteFlag,
+              ...resourcesFlag,
               DEPS_REPORT_FLAG,
               DEPS_REPORT_FILE,
               STATE_DIR_FLAG,

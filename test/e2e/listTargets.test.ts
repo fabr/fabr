@@ -91,18 +91,18 @@ describe("e2e: list-targets", () => {
     const hidden = runFabr(withPlugin, ["list-targets"]);
     expect(hidden.status).to.equal(0);
     expect(hidden.stdout).to.match(/^only\s+flag$/m);
-    expect(hidden.stdout).not.to.match(/css-driver|ts\/nostrict/);
+    expect(hidden.stdout).not.to.match(/postcss-driver|ts\/nostrict/);
     const all = runFabr(withPlugin, ["list-targets", "--all"]);
     expect(all.status).to.equal(0);
     expect(all.stdout).to.match(/^only\s+flag$/m);
     expect(all.stdout).to.match(/^@fabr-build\/js-tools\/bundle-driver\s+js_script$/m);
-    expect(all.stdout).to.match(/^@fabr-build\/js-tools\/css-driver\s+js_script$/m);
+    expect(all.stdout).to.match(/^@fabr-build\/js-tools\/postcss-driver\s+js_script$/m);
   });
 
   it("shows an explicitly-named system target without --all", () => {
-    const result = runFabr(withPlugin, ["list-targets", "@fabr-build/js-tools/css-driver"]);
+    const result = runFabr(withPlugin, ["list-targets", "@fabr-build/js-tools/postcss-driver"]);
     expect(result.status).to.equal(0);
-    expect(result.stdout).to.match(/^@fabr-build\/js-tools\/css-driver\s+js_script$/m);
+    expect(result.stdout).to.match(/^@fabr-build\/js-tools\/postcss-driver\s+js_script$/m);
     expect(result.stdout).not.to.match(/^only/m);
   });
 
@@ -112,7 +112,7 @@ describe("e2e: list-targets", () => {
     const parsed = JSON.parse(result.stdout);
     const own = parsed.targets.find((t: { name: string }) => t.name === "only");
     expect(own.origin).to.equal("project");
-    const driver = parsed.targets.find((t: { name: string }) => t.name === "@fabr-build/js-tools/css-driver");
+    const driver = parsed.targets.find((t: { name: string }) => t.name === "@fabr-build/js-tools/postcss-driver");
     expect(driver.origin).to.equal("system");
   });
 

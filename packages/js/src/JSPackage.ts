@@ -320,6 +320,11 @@ const SOURCE_MODE_OPTIONS: Record<string, Record<string, unknown>> = {
   "ts/no_strict_bind_call_apply": { strictBindCallApply: false },
   "ts/no_use_unknown_in_catch_variables": { useUnknownInCatchVariables: false },
   "ts/no_es_module_interop": { esModuleInterop: false },
+  /* The compile checks side-effect imports wherever the compiler can; this
+   * asks it not to. Written only when the flag is present, so a compiler
+   * predating the option (TypeScript 5.6) never sees the name unless a target
+   * asks for it by hand. */
+  "ts/allow_unchecked_side_effect_imports": { noUncheckedSideEffectImports: false },
   /* Class fields ride along with the legacy decorators tsc still calls
    * experimental: a property decorator installs its accessor on the prototype,
    * and a real class field on the instance (what emit target es2022+ gives)
@@ -449,9 +454,9 @@ export type JsSourceKind = "ts" | "dts" | "js" | "jsx" | "css" | "json" | "copy"
 /**
  * TypeScript's own definition of a declaration filename: `x.d.ts` and the module
  * spellings, plus TS 5.0's arbitrary-extension form `x.d.<ext>.ts` — which is
- * how a stylesheet is typed (`Card.module.d.scss.ts` declares what importing
- * `Card.module.scss` yields), so the narrower `\.d\.[cm]?ts$` would classify one
- * as an ordinary `.ts` and claim it emits `Card.module.d.scss.js`.
+ * how a hand-written asset declaration is spelled (`logo.d.svg.ts` declares what
+ * importing `logo.svg` yields), so the narrower `\.d\.[cm]?ts$` would classify
+ * one as an ordinary `.ts` and claim it emits `logo.d.svg.js`.
  *
  * The tsc driver carries its own copy of this (tsc-driver.ts) because it must
  * not import fabr's modules at runtime; the two are one rule and move together.
@@ -462,8 +467,8 @@ const DECLARATION_FILE = /\.d\.(?:[cm]?ts|[^./]+\.ts)$/;
  * Classify a source file by which build step consumes it: `"ts"`/`"js"`/`"jsx"`
  * are compiled by js_compile (tsc emits `.js`/`.d.ts`), `"dts"` is a
  * hand-written declaration (a compile input that emits nothing), `"css"` is a
- * stylesheet handled by css_compile, and `"copy"` is everything no step
- * consumes — a runtime resource (`.json`, templates, `.sh`, assets).
+ * stylesheet handled by the css pipeline, and `"copy"` is everything no step
+ * consumes — a runtime resource (`.json`, templates, `.sh`, images).
  *
  * A kind names the step rather than the extension, so it covers that step's
  * spellings: `ts` has `.tsx`/`.mts`, `js` has `.mjs`/`.cjs`, and `css` holds
@@ -577,7 +582,7 @@ export function passthroughFiles(sources: IJsSources): FileSet {
 
 /**
  * The runtime *resources* among the given DEP sets — the files no build step
- * emits (`.json`, templates, assets), which a compiled tree therefore drops. A
+ * emits (`.json`, templates, images), which a compiled tree therefore drops. A
  * runnable install must carry them alongside the compiled entry; a package/test
  * build does not (see compileJsSources: source deps are compiled-against, not
  * shipped). Stylesheets count as resources here and are staged verbatim: these
@@ -600,7 +605,7 @@ export interface ICompiledContents {
   sources: IJsSources;
   /** The js_compile output; empty when there was nothing to compile. */
   compiled: FileSet;
-  /** The css_compile output (lowered plain CSS); empty when there were no
+  /** The css pipeline's output (lowered, scoped plain CSS); empty when there were no
    * stylesheets. */
   css: FileSet;
   /** The sources no step consumed, for the caller to place. */
@@ -609,6 +614,11 @@ export interface ICompiledContents {
    * was compiled) — for a caller that mounts the output beside its sources so
    * source maps resolve. See {@link compileSrcsOf}. */
   compileSrcs: FileSet;
+  /** The part of {@link compiled} that came from a source DEP rather than from
+   * this target's own sources. A package subtracts it (a dep is compiled
+   * against, not distributed); a test install keeps it, needing the file on
+   * disk to run. */
+  depOutputs: FileSet;
 }
 
 /**
@@ -623,6 +633,33 @@ function withoutTranspiledJs(compiled: FileSet, js: FileSet): FileSet {
     const source = name.endsWith(".map") ? name.slice(0, -".map".length) : name;
     return emitted.has(source) ? undefined : name;
   });
+}
+
+/** A compiled name with its extension chain removed, so an output can be traced
+ * to the source it came from: `x.js`, `x.d.ts` and `x.js.map` all stem to `x`,
+ * as does the `x.ts` that produced them. */
+function outputStem(name: string): string {
+  return name.replace(/\.(d\.[cm]?ts|[cm]?[jt]sx?)(\.map)?$/i, "");
+}
+
+/**
+ * Whatever the compiler emitted for a **source dep** — a `.ts` a target
+ * compiles against but does not distribute, so its `.js`, its declaration and
+ * their maps are that dep's artifacts and not this target's.
+ *
+ * Reported rather than subtracted, because the answer differs per consumer: a
+ * package must not ship them, while a test install needs them on disk to run.
+ * Matched by stem, the output names differing from the input's; a stem the
+ * target's own sources also claim is left alone.
+ */
+function depDerivedOutputs(compiled: FileSet, sources: IJsSources, directDeps: FileSet[]): FileSet {
+  const own = new Set([...compileInputs(sources)].map(([name]) => outputStem(name)));
+  const stems = new Set(
+    sourceDepsOf(directDeps)
+      .flatMap(set => [...set].map(([name]) => outputStem(name)))
+      .filter(stem => !own.has(stem))
+  );
+  return stems.size === 0 ? EMPTY_FILESET : compiled.remap(name => (stems.has(outputStem(name)) ? name : undefined));
 }
 
 export interface ICompileOptions {
@@ -660,12 +697,19 @@ export interface ICompileOptions {
    */
   moduleExtension?: string;
   /**
-   * What each imported non-JS asset is called in the output tree — js_compile's
+   * What each imported non-JS resource is called in the output tree — js_compile's
    * `rewrite_imports` REWRITE, as already-substituted names. Set by {@link compileContents}
    * from the css step's outputs; a caller composing js_compile directly may state
    * its own.
    */
   rewriteImports?: Name[];
+  /**
+   * The delivered files no step compiles — js_compile's `resources`. An import
+   * of one resolves as an empty module, so it needs no declaration beside it.
+   * Set by {@link compileContents} from the css step's published stylesheets
+   * and the sources nothing consumes.
+   */
+  resources?: FileSet;
   /**
    * The compile sub-target's display label (default "Compiling"). Also part of
    * the sub-target's identity — see {@link BuildAction.targetKey} — so the test
@@ -681,8 +725,7 @@ export interface ICompileOptions {
  * the ordinary sources they are. The styled sources themselves are untouched:
  * they are the css step's input, not the compile's.
  */
-function withGeneratedSources(classified: IJsSources, generated: FileSet): IJsSources {
-  const added = classifySources(generated);
+function withGeneratedSources(classified: IJsSources, added: IJsSources): IJsSources {
   return {
     ts: FileSet.unionAll(classified.ts, added.ts),
     js: FileSet.unionAll(classified.js, added.js),
@@ -696,7 +739,8 @@ function withGeneratedSources(classified: IJsSources, generated: FileSet): IJsSo
 
 /**
  * Build a source tree: classify it, run the steps its contents call for —
- * `css_compile` for the stylesheets, then `js_compile` for the code — and return
+ * the css pipeline (sass_compile, then css_postcss) for the stylesheets, then
+ * `js_compile` for the code — and return
  * the parts. `deps` serve both: the packages among them mount as the compile's
  * node_modules and double as the Sass loadPaths. The parts stay separate because
  * callers place them differently — a test install mounts the compiled tree and
@@ -734,7 +778,8 @@ export function compileContents(
     /* The step's output splits by role: the shims and declarations go INTO the
      * compile, the stylesheets come out of the build as content. */
     const { compileInputs, content } = partitionCssOutput(lowered);
-    const augmented = withGeneratedSources(classified, compileInputs);
+    const generated = classifySources(compileInputs);
+    const augmented = withGeneratedSources(classified, generated);
     const compiled =
       keepSourceJs && !requiresCompile(augmented)
         ? undefined
@@ -745,6 +790,11 @@ export function compileContents(
              * passed only where there ARE stylesheets, so a compile without them
              * is byte-identical to one built before the mechanism existed. */
             ...(classified.css.isEmpty() ? {} : { rewriteImports: cssImportRewrites() }),
+            /* What the target delivers but no step compiles: the published
+             * stylesheets, and the sources nothing consumes (images, fonts,
+             * templates). An import of any of them resolves as an empty
+             * module. */
+            resources: FileSet.unionAll(content, augmented.copy),
           });
     return (compiled ?? Computable.resolve(EMPTY_FILESET)).then(built => {
       /* What the compile actually delivers — `built` minus the JavaScript held
@@ -760,11 +810,19 @@ export function compileContents(
          * every JSON an emitted module imports into outDir — so shipping it here as
          * well would be the same name from two different files, i.e. a conflict. A
          * JSON nothing imports is not emitted, and does still ship from here. */
+        /* The css step's declarations are subtracted: they type the stylesheets
+         * for this compile's own benefit — the shim's side-effect import of the
+         * stylesheet it belongs to — and a consuming package resolves neither.
+         * `passthroughFiles` ships declarations because a HAND-WRITTEN one is
+         * part of a package's surface; a generated one is scaffolding. */
         passthrough: (keepSourceJs
           ? FileSet.unionAll(passthroughFiles(augmented), augmented.js)
           : passthroughFiles(augmented)
-        ).minus(emitted),
+        )
+          .minus(emitted)
+          .minus(generated.dts),
         compileSrcs: compileSrcsOf(augmented, deps) ?? EMPTY_FILESET,
+        depOutputs: depDerivedOutputs(emitted, augmented, deps),
       };
     });
   });
@@ -810,6 +868,7 @@ export function compileJsSources(
     ...(options.packageName ? { package_name: options.packageName } : {}),
     ...(options.moduleExtension ? { module_extension: options.moduleExtension } : {}),
     ...(options.rewriteImports?.length ? { rewrite_imports: options.rewriteImports } : {}),
+    ...(options.resources !== undefined && !options.resources.isEmpty() ? { resources: options.resources } : {}),
   };
   return context.subTarget("js_compile", inputs, {
     label: options.label ?? "Compiling",
@@ -827,8 +886,14 @@ export function compileJsSources(
  * — the test install, so each `.js.map` resolves — needs the same set, not a
  * re-derived approximation of it.
  */
+/** The deps that are plain SOURCE rather than a package or a flag: compiled
+ * against as siblings of the target's own sources, never distributed by it. */
+export function sourceDepsOf(directDeps: FileSet[]): FileSet[] {
+  return directDeps.filter(dep => !(dep instanceof PackageFileSet) && !(dep instanceof Flag));
+}
+
 export function compileSrcsOf(sources: IJsSources, directDeps: FileSet[]): FileSet | undefined {
-  const sourceDeps = directDeps.filter(dep => !(dep instanceof PackageFileSet) && !(dep instanceof Flag));
+  const sourceDeps = sourceDepsOf(directDeps);
   if (sources.ts.isEmpty() && sources.js.isEmpty() && sources.jsx.isEmpty() && sourceDeps.length === 0) {
     return undefined;
   }

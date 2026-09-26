@@ -265,6 +265,10 @@ interface ICompilerHost {
   /** Every file the compiler opens goes through here — sources, declaration
    * files, and the `package.json`s its resolution consults. */
   readFile?: (fileName: string, encoding?: string) => string | undefined;
+  /** How the compiler obtains a source file, which a host may answer for a name
+   * that is on no disk. */
+  getSourceFile(fileName: string, languageVersion: unknown, onError?: unknown, shouldCreate?: boolean): SourceFile | undefined;
+  fileExists(fileName: string): boolean;
   getCanonicalFileName(fileName: string): string;
   getNewLine(): string;
   resolveModuleNameLiterals?: (
@@ -292,6 +296,10 @@ interface ICompilerHost {
 }
 interface ITypeScript {
   version: string;
+  /** Every compiler option this release knows, for asking whether it has one
+   * rather than whether its version implies it. Optional: a compiler that does
+   * not expose the table answers "no" to every such question. */
+  optionDeclarations?: ReadonlyArray<{ name: string }>;
   ModuleKind: { CommonJS: number; ES2015: number; Node16: number; NodeNext: number; Preserve?: number };
   ModuleResolutionKind: { Node10?: number; NodeJs?: number; Node16: number; NodeNext: number; Bundler: number };
   JsxEmit: { Preserve: number };
@@ -458,9 +466,9 @@ export function assertDrivableCompiler(version: string): void {
 /**
  * A declaration file, in each of TypeScript's spellings: `x.d.ts` and the module
  * forms, plus 5.0's arbitrary-extension form `x.d.<ext>.ts` — which is how a
- * non-JS asset is typed (`Card.module.d.scss.ts` declares what importing
- * `Card.module.scss` yields). Narrower, this driver would take one for an
- * ordinary `.ts` and claim it emits `Card.module.d.scss.js`.
+ * hand-written resource declaration is spelled (`logo.d.svg.ts` declares what
+ * importing `logo.svg` yields). Narrower, this driver would take one for an
+ * ordinary `.ts` and claim it emits `logo.d.svg.js`.
  *
  * JSPackage.ts carries the same rule for the host side; the driver must not
  * import fabr's modules at runtime, so the two are kept in step by hand.
@@ -510,9 +518,16 @@ function installResolution(
   options: CompilerOptions,
   resolver: PnpResolver,
   root: string,
-  faults: Set<string>
+  faults: Set<string>,
+  rewrites?: IImportRewrite[],
+  resourceNames?: string[]
 ): void {
   const cache = ts.createModuleResolutionCache(root, name => host.getCanonicalFileName(name), options);
+  /** The compile's source root, which bounds where a rewrite rule applies and
+   * which the declared resource names are relative to. */
+  const sourceRoot = typeof options.rootDir === "string" ? path.resolve(root, options.rootDir) : undefined;
+  const declared: ReadonlySet<string> = new Set((resourceNames ?? []).map(name => path.resolve(sourceRoot ?? root, name)));
+  installResourceFallback(ts, host, declared);
   /**
    * What the package publishes for a specifier — the resolver's answer, with a
    * MALFORMED MANIFEST recorded rather than thrown.
@@ -531,6 +546,9 @@ function installResolution(
       return [];
     }
   };
+  /** The first path the resolver publishes for a specifier — what node would
+   * load, and so the only candidate a resource may be taken from. */
+  const publishedPath = (specifier: string, issuer: string): string | undefined => published(specifier, issuer)[0];
   /** A path the resolver produced, as the compiler sees it. A rooted specifier
    * is resolved by the compiler as a path rather than a package name — which is
    * exactly the "unqualified path" PnP hands back. */
@@ -670,8 +688,25 @@ function installResolution(
     if (split === undefined && !specifier.startsWith("#")) {
       /* Not a name at all: a relative or rooted path, which is the compiler's
        * own business and bounded — it probes where it is told, it does not
-       * search. */
-      return ts.resolveModuleName(specifier, issuer, options, host, cache);
+       * search.
+       *
+       * A rewrite rule first, where one names this specifier: the file it names
+       * was renamed by an earlier step, so what resolution must find is the new
+       * name. The rules select on root-relative names, hence the prefix split;
+       * a rule is refused for a specifier leaving the source root, no step here
+       * having produced what is up there. */
+      const [prefix, selected] = splitRelativePrefix(specifier);
+      const renamed =
+        rewrites === undefined || !withinSourceRoot(specifier, issuer, sourceRoot)
+          ? undefined
+          : applyImportRewrites(selected, rewrites);
+      const target = renamed === undefined ? specifier : prefix + renamed;
+      const answer = ts.resolveModuleName(target, issuer, options, host, cache);
+      /* Nothing named it — but the file may still be there and simply be
+       * something the compiler has no way to read as a module. */
+      return answer.resolvedModule !== undefined
+        ? answer
+        : resourceResolution(host, declared, path.resolve(path.dirname(issuer), target)) ?? answer;
     }
     const key = `${resolver.locatorOf(issuer)}\0${specifier}`;
     const held = answers.get(key);
@@ -690,7 +725,13 @@ function installResolution(
      * import that will execute resolves either way and the compiler reports the
      * missing declarations as it does anywhere else. */
     const published = through(specifier, issuer);
-    const answer = (untyped(published) ? recoverTypings(specifier, split, published, issuer) : undefined) ?? published ?? {};
+    /* A resource a dependency publishes — a stylesheet, an image — resolves as an
+     * empty module, on the same terms as a relative one. Through the resolver
+     * and not the filesystem, so a path the package's `exports` does not
+     * publish stays unresolved however plainly the file sits there. */
+    const resource = published === undefined ? resourceResolution(host, declared, publishedPath(specifier, issuer)) : undefined;
+    const answer =
+      (untyped(published) ? recoverTypings(specifier, split, published, issuer) : undefined) ?? published ?? resource ?? {};
     answers.set(key, answer);
     return answer;
   };
@@ -806,7 +847,7 @@ export function rewriteDeclaration(fileName: string, text: string, resolver: Pnp
  * dev variant is the one that reaches shipped code, ~1400 of them in a real app
  * bundle. That directory is named for the process that made it, so the same
  * inputs emit different bytes on every build: the artifact stops being a
- * function of its cache key, and a content-hashed asset name derived from it
+ * function of its cache key, and a content-hashed resource name derived from it
  * churns for no reason.
  *
  * Applied to every emitted file rather than to the one construct that is known
@@ -933,15 +974,22 @@ interface IEmitLayout {
    *  already names one and keeps it. See {@link RENAMED_EXTENSION}. */
   jsExtension?: string;
   /**
-   * What a **non-JS asset** is called in the output tree: rootDir-relative
-   * declaration to the rootDir-relative file the emit must name in its place
-   * (see {@link REWRITES_FLAG}), as ordered RULES — first match wins.
+   * What an emitted import specifier is named instead: the specifier as written
+   * to the one the emit must name in its place (see {@link REWRITES_FLAG}), as
+   * ordered RULES — first match wins.
    *
-   * Needed because the mapping is not derivable. `import styles from
-   * "./x.module.scss"` resolves — via `allowArbitraryExtensions` — to a
-   * declaration `x.module.d.scss.ts`, which is not a file anything can load, and
-   * nothing in its name says whether the runtime stand-in is the stylesheet or a
-   * shim exporting its class map. So the producer states it.
+   * Generic over specifiers, with no notion of what kind of file is being
+   * named: a rule states a replacement, and which names have rules is the
+   * producer's business. The rules fabr generates today are for stylesheets,
+   * where `import styles from "./x.module.scss"` names a file no step produces
+   * and the name alone cannot say whether the stand-in is the stylesheet or a
+   * shim exporting its class map.
+   *
+   * A selector matches the specifier as WRITTEN, not the file the import
+   * resolves to — two stylesheet spellings reach one declaration shape, so only
+   * the written form separates them. Matched against the specifier minus its
+   * climb prefix ({@link splitRelativePrefix}), and the replacement then goes
+   * through this compile's own extension rule ({@link renamedIfEmitted}).
    *
    * Rules rather than the pairs resolving them against this compile's sources,
    * because the document is action key material: as pairs it grows with the
@@ -956,7 +1004,7 @@ interface IEmitLayout {
    * EXTENSION (`./bar` → `./bar.js`). ES-module-only: a CommonJS emit resolves
    * extensionless specifiers itself.
    *
-   * Asset renaming is not gated on it — a `require("./x.module.scss")` names a
+   * Resource renaming is not gated on it — a `require("./x.module.scss")` names a
    * file no step produces however the module was emitted, and the test pipeline
    * compiles CommonJS. The two rewrites share this traversal and nothing else.
    */
@@ -964,25 +1012,125 @@ interface IEmitLayout {
 }
 
 /**
- * Where this compile's output for an ASSET lands, or undefined if `source` is
- * not one. See {@link IEmitLayout.rewrites} — the rules are written in
- * rootDir-relative posix paths, so it is a property of the sources rather than
- * of where they were staged.
+ * A relative specifier split into its climb prefix and the name the rules
+ * select on — `../a/x.scss` → `["../", "a/x.scss"]`.
+ *
+ * The two notations look alike and are not. A rule's selector is a glob over
+ * names relative to a ROOT, which cannot climb and admits no `.`/`..` segment.
+ * A module specifier is relative to the importing FILE, where the prefix is
+ * what makes it relative at all — without it, `x.scss` is a bare specifier,
+ * i.e. a package.
+ *
+ * The prefix is re-attached to whatever the rule produces, which addresses the
+ * directory the specifier did so long as the rule preserves depth.
  */
-function rewrittenPathOf(source: string, layout: IEmitLayout): string | undefined {
-  if (layout.rewrites === undefined || layout.rootDir === undefined) {
-    return undefined;
-  }
-  const relative = path.relative(layout.rootDir, source);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    return undefined;
-  }
-  const named = applyImportRewrites(relative.split(path.sep).join("/"), layout.rewrites);
-  return named === undefined ? undefined : path.join(layout.outDir ?? layout.rootDir, renamedIfEmitted(named, layout));
+export function splitRelativePrefix(specifier: string): [string, string] {
+  const climb = /^(?:\.\.?\/)+/.exec(specifier);
+  const prefix = climb === null ? "" : climb[0];
+  return [prefix, specifier.substring(prefix.length)];
 }
 
-/** One rewrite rule: a regular expression over rootDir-relative posix paths,
- * and the `$n` replacement producing the name to emit in its place. */
+/**
+ * Whether a relative specifier names something inside this compile's own source
+ * root — the condition for a rewrite rule applying to it. No step of this
+ * compile produced a file above the root, so a renamed twin of one would not
+ * exist.
+ *
+ * Lexical: a relative specifier is a path, so this resolves nothing and touches
+ * no filesystem. A climb of any depth is ordinary (`../../../etc/x.scss` in a
+ * deep tree lands inside the root); what is refused is a climb that leaves.
+ */
+export function withinSourceRoot(specifier: string, issuer: string, rootDir: string | undefined): boolean {
+  if (rootDir === undefined) {
+    return false;
+  }
+  const relative = path.relative(rootDir, path.resolve(path.dirname(issuer), specifier));
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+/**
+ * What a resolved RESOURCE is declared to be: a module exporting nothing, so a
+ * side-effect import of it typechecks and a value import of it does not.
+ */
+const RESOURCE_MODULE = "export {};\n";
+
+/**
+ * What marks a synthesised declaration. The name is on no disk —
+ * {@link installResourceFallback} answers for it — so this only has to be a suffix
+ * nothing else produces: a bare `<resource>.d.ts` would collide with the
+ * declaration tsc emits for a same-stemmed source (a css-module's `x.css.ts`
+ * shim).
+ */
+const RESOURCE_SUFFIX = ".fabr-resource.d.ts";
+
+/** The name the synthesised declaration for `file` takes. */
+function resourceDeclarationOf(file: string): string {
+  return `${file}${RESOURCE_SUFFIX}`;
+}
+
+/** The resource a synthesised declaration stands for, or undefined for an
+ * ordinary name. */
+function resourceDeclared(file: string): string | undefined {
+  return file.endsWith(RESOURCE_SUFFIX) ? file.slice(0, -RESOURCE_SUFFIX.length) : undefined;
+}
+
+/**
+ * Teach the host to serve {@link resourceDeclarationOf} names, which exist only as
+ * resolution answers. All three of its file questions agree, and each defers to
+ * the RESOURCE itself — so a name is readable exactly while the file it stands for
+ * is there, and the compiler's own probing sees what the filesystem does.
+ *
+ * `readFile` is wrapped over whatever is already in place, which includes the
+ * run's read tracking: a synthesised file is not a read, and reporting one
+ * would put a name no filesystem has into the discovered-inputs record.
+ */
+function installResourceFallback(ts: ITypeScript, host: ICompilerHost, declared: ReadonlySet<string>): void {
+  const sourceFile = host.getSourceFile.bind(host);
+  host.getSourceFile = (fileName, languageVersion, onError, shouldCreate) =>
+    resourceDeclared(fileName) !== undefined
+      ? (ts.createSourceFile(fileName, RESOURCE_MODULE, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS) as unknown as SourceFile)
+      : sourceFile(fileName, languageVersion, onError, shouldCreate);
+  const fileExists = host.fileExists.bind(host);
+  host.fileExists = fileName => {
+    const resource = resourceDeclared(fileName);
+    /* The same two ways {@link resourceResolution} admits a file, so the answer a
+     * resolution gave and the answer the compiler gets cannot disagree. */
+    return resource === undefined ? fileExists(fileName) : declared.has(resource) || fileExists(resource);
+  };
+  const readFile = host.readFile;
+  if (readFile !== undefined) {
+    host.readFile = (fileName, encoding) => (resourceDeclared(fileName) !== undefined ? RESOURCE_MODULE : readFile.call(host, fileName, encoding));
+  }
+}
+
+/**
+ * A resource resolution for `file`, or undefined where it is none.
+ *
+ * This is the answer for an import the compiler could resolve no other way: the
+ * file is an artifact nothing declares and no step compiles — a stylesheet, an
+ * image, a `.wasm`. It is reached only after ordinary resolution has failed, so
+ * anything the compiler can type (a `.js` with no declarations included) keeps
+ * its own answer, and an import naming nothing at all stays unresolved.
+ *
+ * Two ways a file qualifies, because the target's own resources and a
+ * dependency's arrive differently. A dependency is MOUNTED, so its files are
+ * there to be asked about. The target's own are not staged for the compile —
+ * the compiler has no use for the bytes — so the step declares them, and
+ * `declared` is that list.
+ */
+function resourceResolution(
+  host: ICompilerHost,
+  declared: ReadonlySet<string>,
+  file: string | undefined
+): IResolvedModuleWithFailedLookupLocations | undefined {
+  if (file === undefined || !(declared.has(file) || host.fileExists(file))) {
+    return undefined;
+  }
+  return { resolvedModule: { resolvedFileName: resourceDeclarationOf(file), extension: ".d.ts", isExternalLibraryImport: false } };
+}
+
+/** One rewrite rule: a regular expression over import specifiers as written,
+ * and the `$n` replacement producing the specifier to emit in its place. */
 export interface IImportRewrite {
   pattern: string;
   replacement: string;
@@ -1055,13 +1203,6 @@ const EMITTED_EXTENSION = new Map<string, string>([
  * the specifier as written. With no `outDir` the output sits beside its source.
  */
 export function emittedPathOf(source: string, layout: IEmitLayout): string | undefined {
-  /* Before the declaration check, which an asset's declaration would otherwise
-   * fail on: naming a stand-in for something that emits nothing is the whole
-   * point of the table. */
-  const asset = rewrittenPathOf(source, layout);
-  if (asset !== undefined) {
-    return asset;
-  }
   if (DECLARATION_FILE.test(source)) {
     return undefined;
   }
@@ -1150,18 +1291,27 @@ function specifierRewriter(
       if (from === undefined || !specifier.startsWith(".")) {
         return undefined;
       }
+      /* Rules run ahead of the extension rule below and apply whatever the
+       * module system: a rule names its replacement outright, where the
+       * extension rule only derives one, and `require` names a renamed file no
+       * more correctly than `import` does. */
+      const [prefix, selected] = splitRelativePrefix(specifier);
+      const matched =
+        layout!.rewrites === undefined || !withinSourceRoot(specifier, sourceFile.fileName, layout!.rootDir)
+          ? undefined
+          : applyImportRewrites(selected, layout!.rewrites);
+      if (matched !== undefined) {
+        const next = prefix + renamedIfEmitted(matched, layout!);
+        return next === specifier ? undefined : ts.factory.createStringLiteral(next);
+      }
+      if (!layout!.rewriteExtensions) {
+        return undefined;
+      }
       const resolved = resolve(specifier, sourceFile.fileName);
       if (resolved === undefined) {
         return undefined;
       }
-      /* An asset is renamed whatever the module system — the specifier names a
-       * file no step produces, which `require` gets no more right than `import`.
-       * Anything else is only rewritten where the extension rewrite applies. */
-      const asset = rewrittenPathOf(resolved, layout!);
-      if (asset === undefined && !layout!.rewriteExtensions) {
-        return undefined;
-      }
-      const target = asset ?? emittedPathOf(resolved, layout!);
+      const target = emittedPathOf(resolved, layout!);
       if (target === undefined) {
         return undefined;
       }
@@ -1515,7 +1665,7 @@ function crossFormatGlobals(ts: ITypeScript, options: CompilerOptions, program: 
  * **Extension** rewriting is ES-module-only: CommonJS resolves extensionless
  * specifiers itself, `preserve` exists to keep what was written, and
  * `node16`/`nodenext` decide per file from the enclosing package's type — a
- * judgment this driver would have to reproduce rather than read. **Asset**
+ * judgment this driver would have to reproduce rather than read. **Resource**
  * rewriting is not, so a table alone earns a layout.
  */
 function emitLayoutOf(
@@ -1678,6 +1828,13 @@ export function main(argv: string[]): number {
   if (parsed.options.moduleResolution === undefined) {
     parsed.options.moduleResolution = resolutionFor(ts, parsed.options);
   }
+  /* Side-effect imports checked where this compiler can (TypeScript 5.6+):
+   * `import "./typo.css"` resolving to nothing is a mistake, and unchecked it
+   * is a silent one. Probed rather than version-tested, and left alone where
+   * the project stated it — the opt-out flag is how a target says no. */
+  if (parsed.options[CHECK_SIDE_EFFECT_IMPORTS] === undefined && supportsOption(ts, CHECK_SIDE_EFFECT_IMPORTS)) {
+    parsed.options[CHECK_SIDE_EFFECT_IMPORTS] = true;
+  }
   const host = ts.createCompilerHost(parsed.options, true);
   const reportPath = depsReportOf(argv);
   /* The directory this driver's own kept files live in, staged in and collected
@@ -1701,8 +1858,15 @@ export function main(argv: string[]): number {
    * with everything else, rather than aborting the compilation the moment one
    * unreadable package is touched. */
   const faults = new Set<string>();
+  /* One table, read once: resolution must find the file the emit will name, so
+   * the two consumers below cannot be given different answers. */
+  const rewrites = importRewritesOf(argv, root);
+  /* Resource resolution rides here rather than standing alone: it answers where
+   * ordinary resolution found nothing, which needs this driver to BE the
+   * resolver. A compile with no manifest leaves resolution to the compiler and
+   * so has no resource fallback either — every compile fabr runs has one. */
   if (resolver) {
-    installResolution(ts, host, parsed.options, resolver, root, faults);
+    installResolution(ts, host, parsed.options, resolver, root, faults, rewrites, resourceNamesOf(argv, root));
   }
   /* Resolution as the compilation does it, for the rewrite to ask what a
    * relative specifier names and for the wave to ask what an edge names. */
@@ -1785,7 +1949,7 @@ export function main(argv: string[]): number {
    * rewriter serves both phases — the JavaScript and the declarations land in
    * the same directory, so they name each other identically. */
   const jsExtension = emitExtensionOf(argv);
-  const layout = emitLayoutOf(ts, parsed.options, root, jsExtension, importRewritesOf(argv, root));
+  const layout = emitLayoutOf(ts, parsed.options, root, jsExtension, rewrites);
   if (jsExtension !== undefined && layout?.rewriteExtensions !== true) {
     /* Renaming without rewriting is the exact failure `--emit-extension` refuses
      * `.cjs` for, and it is reachable the other way round too: only an ES-module
@@ -1964,6 +2128,17 @@ function conditionsOf(ts: ITypeScript, options: CompilerOptions): string[] {
  * A project emitting `node16`/`nodenext` modules must resolve the matching way
  * (TS5110 otherwise), so those answer for themselves.
  */
+/** The option that makes an unresolvable side-effect import an error. Added in
+ * TypeScript 5.6, so a compile may be driven by a compiler without it. */
+export const CHECK_SIDE_EFFECT_IMPORTS = "noUncheckedSideEffectImports";
+
+/** Whether this compiler knows an option, asked of the compiler rather than of
+ * its version. A compiler predating {@link ITypeScript.optionDeclarations}
+ * knows nothing this is used for. */
+export function supportsOption(ts: ITypeScript, name: string): boolean {
+  return ts.optionDeclarations?.some(option => option.name === name) === true;
+}
+
 export function resolutionFor(ts: ITypeScript, options: CompilerOptions): number {
   const kinds = ts.ModuleResolutionKind;
   const module = options.module;
@@ -2646,7 +2821,7 @@ function argOf(argv: string[], flag: string): string | undefined {
   }
   const value = argv[at + 1];
   if (value === undefined) {
-    throw new Error(`tsc-driver: ${flag} needs a file`);
+    throw new Error(`tsc-driver: ${REWRITES_FLAG} needs a file`);
   }
   return value;
 }
@@ -2667,19 +2842,53 @@ function projectOf(argv: string[]): string {
  * find `util.cjs`), which this driver does not do — it rewrites specifiers for
  * an ES-module emit alone.
  */
-/** Where the caller states what each non-JS asset is called in the output tree
- * — a JSON array of compiled rename rules. See {@link IEmitLayout.rewrites}. */
+/** Where the caller states which file a specifier really names — a JSON array
+ * of compiled rename rules, applied BOTH before resolution (what the lookup
+ * must find) and at emit (what the emitted code must say). One document because
+ * it answers one question: which module the specifier means. See
+ * {@link IEmitLayout.rewrites}. */
 const REWRITES_FLAG = "--rewrite-imports";
 
+/** Where the caller names the target's own RESOURCES — the delivered files no step
+ * compiles, which the compiler is not given the bytes of. A JSON array of
+ * rootDir-relative names. See {@link resourceResolution}. */
+const RESOURCES_FLAG = "--resources";
+
 /**
- * The asset table this compile was handed, or undefined if it was handed none.
+ * The resource names this compile was handed, or none where it was handed no
+ * document. Names rather than files: the compiler never reads a resource (only
+ * asks whether it is there), so staging the bytes would put every stylesheet's
+ * CONTENT into the action key and rebuild the compile for a colour change.
+ */
+function resourceNamesOf(argv: string[], root: string): string[] | undefined {
+  const named = argOf(argv, RESOURCES_FLAG);
+  if (named === undefined) {
+    return undefined;
+  }
+  const file = path.resolve(root, named);
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (err) {
+    throw new Error(`tsc-driver: cannot read the ${RESOURCES_FLAG} names at '${named}': ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const parsed: unknown = JSON.parse(text);
+  if (!Array.isArray(parsed) || parsed.some(name => typeof name !== "string")) {
+    throw new Error(`tsc-driver: the ${RESOURCES_FLAG} names at '${named}' are not a list of strings`);
+  }
+  return parsed as string[];
+}
+
+/**
+ * A rename-rule document this compile was handed, or undefined if it was handed
+ * none. `flag` names which — the two documents share a format and differ only in
+ * when the rules apply.
  *
- * A file rather than an argument because it is per-source data of no fixed size,
- * and a *separate* file rather than a tsconfig key because tsc owns that
- * document — an unknown member there is at best ignored and at worst a
- * diagnostic. Paths are rootDir-relative on both sides, and the caller writes it
- * only when there is something in it, so a compile declaring none carries no
- * trace of the mechanism.
+ * A file rather than an argument because it is data of no fixed size, and a
+ * *separate* file rather than a tsconfig key because tsc owns that document — an
+ * unknown member there is at best ignored and at worst a diagnostic. The caller
+ * writes it only when there is something in it, so a compile declaring none
+ * carries no trace of the mechanism.
  */
 function importRewritesOf(argv: string[], root: string): IImportRewrite[] | undefined {
   const named = argOf(argv, REWRITES_FLAG);

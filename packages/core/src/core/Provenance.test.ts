@@ -24,27 +24,27 @@ describe("derived provenance", () => {
   it("states the mapping when the step renamed its input", () => {
     /* Two inputs landing on one output makes no sense to a reader until the
      * production that renamed one of them is on the page. */
-    const step = derivedFrom("a/Card.module.scss", "css_compile");
+    const step = derivedFrom("a/Card.module.scss", "css_postcss");
     expect(renderProvenance(step, { path: "a/Card.css" })).to.deep.equal([
-      { message: "css_compile produced 'a/Card.css' from 'a/Card.module.scss'" },
+      { message: "css_postcss produced 'a/Card.css' from 'a/Card.module.scss'" },
     ]);
   });
 
   it("says only that it is an input when the step renamed nothing", () => {
     /* Restating one name as the source of itself is noise — it is simply an
      * input that happens to be called that. */
-    const step = derivedFrom("a/Card.css", "css_compile");
+    const step = derivedFrom("a/Card.css", "css_postcss");
     expect(renderProvenance(step, { path: "a/Card.css" })).to.deep.equal([
-      { message: "'a/Card.css' is an input of css_compile" },
+      { message: "'a/Card.css' is an input of css_postcss" },
     ]);
   });
 
   it("says the same with no output named at all", () => {
-    const step = derivedFrom("a/Card.css", "css_compile");
-    expect(renderProvenance(step, {})).to.deep.equal([{ message: "'a/Card.css' is an input of css_compile" }]);
+    const step = derivedFrom("a/Card.css", "css_postcss");
+    expect(renderProvenance(step, {})).to.deep.equal([{ message: "'a/Card.css' is an input of css_postcss" }]);
   });
 
   it("describes itself by the input, for one-line attribution", () => {
-    expect(describeProvenance(derivedFrom("a/Card.module.scss", "css_compile"))).to.equal("a/Card.module.scss");
+    expect(describeProvenance(derivedFrom("a/Card.module.scss", "css_postcss"))).to.equal("a/Card.module.scss");
   });
 });

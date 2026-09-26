@@ -36,7 +36,7 @@ default TSC_DRIVER = @fabr-build/js-tools/tsc-driver;
 # 'latest' are not supported as they make the build non-deterministic.)
 #
 
-default TYPESCRIPT = @npm:typescript:5.4.5;
+default TYPESCRIPT = @npm:typescript:5.6.3;
 
 #
 # The esbuild library the bundle driver requires for JS bundling.
@@ -72,11 +72,18 @@ default POSTCSS_MODULES = @npm:postcss-modules:9.0.1;
 default JS_BUNDLER = @fabr-build/js-tools/bundle-driver;
 
 #
-# The CSS compiler `css_compile` runs (fabr's driver: Sass lowering, driven by
-# the rule's manifest).
+# The Sass compiler `sass_compile` runs (fabr's driver: Sass lowering, driven
+# by the rule's manifest).
 #
 
-default CSS_COMPILER = @fabr-build/js-tools/css-driver;
+default SASS_DRIVER = @fabr-build/js-tools/sass-driver;
+
+#
+# The postcss chain `css_postcss` runs (fabr's driver: css-modules scoping and
+# publication, driven by the rule's manifest).
+#
+
+default POSTCSS_DRIVER = @fabr-build/js-tools/postcss-driver;
 
 #
 # The test runner the js test rules run (fabr's own by default). A target
@@ -171,6 +178,11 @@ flag ts/no_use_unknown_in_catch_variables { }
 # Compile with classic CJS interop (`esModuleInterop: false`): for sources written
 # with `import * as x` of callable CJS modules rather than default imports.
 flag ts/no_es_module_interop { }
+# Leave side-effect imports unchecked (`noUncheckedSideEffectImports: false`),
+# so `import "./typo.css"` naming nothing is silent rather than an error. The
+# check is on wherever the compiler supports it (TypeScript 5.6+); this asks
+# for the older behaviour, and names an option an earlier compiler will reject.
+flag ts/allow_unchecked_side_effect_imports { }
 # Compile decorators with the legacy semantics TypeScript used before 5.0
 # (`experimentalDecorators: true`). Class fields keep assignment semantics with
 # it: a real field would shadow the prototype accessor a property decorator
@@ -413,16 +425,12 @@ targetdef js_compile {
     # format's, which occupies the same names. Emitted specifiers are renamed to
     # match, so the compile has to know rather than being renamed afterwards.
     module_extension = STRING;
-    # How an import is named in the emitted code: what it RESOLVED to, paired
-    # with the file the emit must name in its place. Consulted for every import
-    # and taking precedence over the compile's own extension mapping, so a rule
-    # can redirect anything — the built-in `.ts` -> `.js` included.
-    # What needs it is an import of something the compile emits nothing for: a
-    # stylesheet resolves (via allowArbitraryExtensions) to a declaration
-    # `x.module.d.scss.ts`, whose own name cannot say whether the runtime
-    # stand-in is the stylesheet or the JS shim carrying its class map. Set
-    # automatically for any target whose sources include stylesheets.
+    # Rewrite rules from import specifier to target name, applied both for file
+    # resolution and to the emitted import names.
     rewrite_imports = REWRITE;
+    # Additional files that the source files may reference (eg css), for static
+    # checking purposes.
+    resources = FILES;
 }
 
 #
@@ -449,28 +457,46 @@ targetdef js_test_run {
 }
 
 #
-# Lower a styled source tree to plain CSS, scoping css-modules on the way.
-# `srcs` are the styled sources (`.scss`/`.sass`, css-modules
-# `.module.{scss,css}`, plain `.css`); `deps` are scss packages mounted for Sass
-# `@use`/`@import` resolution (the Sass loadPaths analogue of `node_modules`);
-# `package_name` is the identity scoped class names are derived from (they are a
-# function of the package and the file, never of a bundle).
+# Lower a Sass source tree to plain CSS. `srcs` are the Sass sources
+# (`.scss`/`.sass`, modules included); `deps` are scss packages mounted for
+# Sass `@use`/`@import` resolution.
 #
-# Each source becomes the same name with a `.css` extension. A **css-module**
-# (`x.module.scss`) additionally yields `x.module.css.js` — a JS shim exporting
-# its class-name map, in both the literal and camelCase spellings — and the
-# TypeScript declarations `x.module.d.scss.ts` / `x.module.d.css.ts`, so an
-# `import styles from "./x.module.scss"` both typechecks and resolves to real
-# class names outside a bundle. A plain stylesheet gets a declaration too, so a
-# side-effect import of it typechecks. Sass partials (`_foo.scss`) produce
-# nothing, per Sass's own directory-compile convention.
+# Each source becomes the same name with a `.css` extension, the `.module.`
+# marker riding through (`x.module.scss` -> `x.module.css`) for `css_postcss`
+# to consume, with its source map beside it in builds that carry them. Sass
+# partials (`_foo.scss`) produce nothing.
 #
 # Composed automatically by `js_package`/`js_bundle`/the test pipeline for any
-# styled sources; also declarable directly. Uses `SASS` and `POSTCSS_MODULES`.
+# Sass sources; also declarable directly. Uses `SASS`.
 #
 
-targetdef css_compile {
+targetdef sass_compile {
     srcs = FILES;
+    deps = FILES;
+}
+
+#
+# Run the postcss chain over a plain-CSS tree, scoping css-modules. `srcs` are
+# stylesheets — authored `.css`, or a `sass_compile` step's lowered output with
+# its maps beside it; `package_name` is the identity scoped class names are
+# derived from, along with the file.
+#
+# css-modules is the chain's first plugin: a `.module.css` input is scoped and
+# published as `x.css`, the marker consumed, beside `x.css.ts` — a TypeScript
+# shim exporting its class-name map in both the literal and camelCase
+# spellings. Any other stylesheet is copied through unchanged, its map carried
+# beside it. A `composes` reaches any stylesheet of the same target or of a
+# `deps` package.
+#
+# Composed automatically by `js_package`/`js_bundle`/the test pipeline for any
+# styled sources; also declarable directly. Uses `POSTCSS` and
+# `POSTCSS_MODULES`.
+#
+
+targetdef css_postcss {
+    srcs = FILES;
+    # Packages whose stylesheets a `composes` may reach, mounted by name
+    # (`composes: x from 'pkg/base.css'`). Read, never published.
     deps = FILES;
     package_name = STRING;
 }
@@ -495,8 +521,9 @@ default npm_repository @npm {
 #
 # Fabr's own driver scripts, declared as ordinary runnable targets over the
 # compiled entries shipped in this @fabr-build/js installation (entry paths are
-# relative to this file). The `js_bundle` / `css_compile` rules resolve them
-# through the JS_BUNDLER / CSS_COMPILER globals, so an alternative driver
+# relative to this file). The `js_bundle` / `sass_compile` / `css_postcss`
+# rules resolve them through the JS_BUNDLER / SASS_DRIVER / POSTCSS_DRIVER
+# globals, so an alternative driver
 # honoring the same options-manifest contract can be swapped in by overriding
 # the global. (Named under `@fabr-build/js-tools` — our npm scope, but NOT the
 # plugin's own package name: `@fabr-build/js` is a declared target in any
@@ -514,12 +541,21 @@ js_script @fabr-build/js-tools/bundle-driver {
     deps = ${ESBUILD} ../pnp/PnPResolver.js ../pnp/PackageExports.js ../pnp/ReadSet.js;
 }
 
-# The CSS compiler `css_compile` runs (the default `CSS_COMPILER`): Sass
-# lowering and css-modules scoping, driven by the rule's options manifest.
-js_script @fabr-build/js-tools/css-driver {
-    entry = ../cssDriver/css-driver.js;
-    deps = ${SASS} ${POSTCSS} ${POSTCSS_MODULES}
+# The Sass compiler `sass_compile` runs (the default `SASS_DRIVER`): Sass
+# lowering, driven by the rule's options manifest.
+js_script @fabr-build/js-tools/sass-driver {
+    entry = ../cssDriver/sass-driver.js;
+    deps = ${SASS}
+           ../cssDriver/Support.js
            ../pnp/PnPResolver.js ../pnp/PackageExports.js ../pnp/ReadSet.js;
+}
+
+# The postcss chain `css_postcss` runs (the default `POSTCSS_DRIVER`): css-modules
+# scoping and publication, driven by the rule's options manifest. No dependency
+# table: the chain reads nothing outside its staged inputs.
+js_script @fabr-build/js-tools/postcss-driver {
+    entry = ../cssDriver/postcss-driver.js;
+    deps = ${POSTCSS} ${POSTCSS_MODULES} ../cssDriver/Support.js;
 }
 
 # The TypeScript driver `js_compile` runs (see TSC_DRIVER): drives the compiler

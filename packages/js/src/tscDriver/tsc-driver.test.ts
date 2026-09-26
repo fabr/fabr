@@ -41,9 +41,12 @@ import {
   emittedPathOf,
   emittedSpecifier,
   main,
+  CHECK_SIDE_EFFECT_IMPORTS,
   relativizeBuildRoot,
   resolutionFor,
+  supportsOption,
   rewriteDeclaration,
+  withinSourceRoot,
 } from "./tsc-driver";
 
 /** A staged workspace: sources, a tsconfig, a manifest, and a store the
@@ -852,6 +855,21 @@ describe("the tsc driver", () => {
  * repo can only pin one — the branch that matters most is the one for a release
  * this tree does not build against.
  */
+describe("supportsOption", () => {
+  const compiler = (names?: string[]): Parameters<typeof supportsOption>[0] =>
+    ({ version: "0.0.0", optionDeclarations: names?.map(name => ({ name })) } as unknown as Parameters<typeof supportsOption>[0]);
+
+  it("asks the compiler what it has, not what its version implies", () => {
+    expect(supportsOption(compiler(["strict", CHECK_SIDE_EFFECT_IMPORTS]), CHECK_SIDE_EFFECT_IMPORTS)).to.equal(true);
+    expect(supportsOption(compiler(["strict"]), CHECK_SIDE_EFFECT_IMPORTS)).to.equal(false);
+  });
+
+  it("answers no where the compiler exposes no table at all", () => {
+    expect(supportsOption(compiler(undefined), CHECK_SIDE_EFFECT_IMPORTS)).to.equal(false);
+  });
+
+});
+
 describe("resolutionFor", () => {
   const MODULE = {
     None: 0,
@@ -1396,34 +1414,35 @@ describe("emittedPathOf", () => {
      * interpretation and the rule generating them cannot drift apart. */
     const withRewrites = { ...layout, rewrites: importRewrites(cssImportRewrites()) };
 
-    it("names what the rules say, for a declaration that emits nothing of its own", () => {
-      expect(emittedPathOf("/work/src/a/Card.module.d.scss.ts", withRewrites)).to.equal("/work/build/a/Card.css.js");
-      expect(emittedPathOf("/work/src/a/Card.d.css.ts", withRewrites)).to.equal("/work/build/a/Card.css");
-    });
-
-    it("leaves everything the table does not name to the extension rule", () => {
+    it("takes no part in naming an output, the rules keying on specifiers", () => {
+      /* A resource declaration emits nothing, and the rules are consulted by the
+       * specifier transformer rather than here. */
+      expect(emittedPathOf("/work/src/a/Card.d.css.ts", withRewrites)).to.equal(undefined);
       expect(emittedPathOf("/work/src/a/b.ts", withRewrites)).to.equal("/work/build/a/b.js");
-      /* An ordinary declaration still emits nothing — the table is consulted
-       * first, not instead. */
       expect(emittedPathOf("/work/src/b.d.ts", withRewrites)).to.equal(undefined);
     });
+  });
+});
 
-    it("renames a stand-in this compile emits, but not one it does not", () => {
-      /* Under `--emit-extension` the shim is renamed with every other `.js` this
-       * compile emits, so the specifier naming it has to move too — otherwise a
-       * dual package's ES-module format imports the CommonJS shim while its own
-       * sits beside it unused. The stylesheet is not a compile output, so it is
-       * kept verbatim. */
-      const renamed = { ...withRewrites, jsExtension: ".mjs" };
-      expect(emittedPathOf("/work/src/a/Card.module.d.scss.ts", renamed)).to.equal("/work/build/a/Card.css.mjs");
-      expect(emittedPathOf("/work/src/a/Card.d.css.ts", renamed)).to.equal("/work/build/a/Card.css");
-    });
+describe("withinSourceRoot", () => {
+  const root = path.resolve("/work/src");
 
-    it("keys on the rootDir-relative name, so it is a property of the sources", () => {
-      /* The same file staged anywhere else answers the same; a file outside the
-       * root is a dependency and answers nothing. */
-      expect(emittedPathOf("/elsewhere/a/Card.module.d.scss.ts", withRewrites)).to.equal(undefined);
-    });
+  it("admits a specifier naming a file under the root, at any climb depth", () => {
+    expect(withinSourceRoot("./Card.module.scss", path.join(root, "a/Card.ts"), root)).to.equal(true);
+    /* A deep climb that still lands inside is ordinary, not suspicious. */
+    expect(withinSourceRoot("../../../etc/x.scss", path.join(root, "a/b/c/d/Deep.ts"), root)).to.equal(true);
+  });
+
+  it("refuses a specifier that climbs out of the root", () => {
+    /* The depth is not what decides it: this climb is shallower than the
+     * admitted one above, and leaves. */
+    expect(withinSourceRoot("../../outside/x.scss", path.join(root, "a/Card.ts"), root)).to.equal(false);
+    expect(withinSourceRoot("../x.scss", root + "/Card.ts", root)).to.equal(false);
+  });
+
+  it("refuses everything where the root is unstated", () => {
+    /* Without a rootDir there is nothing to be inside of. */
+    expect(withinSourceRoot("./Card.module.scss", path.join(root, "a/Card.ts"), undefined)).to.equal(false);
   });
 });
 
@@ -1530,9 +1549,13 @@ describe("ES-module specifier rewriting", () => {
 describe("import rewriting", () => {
   /**
    * Stage a compile over a css-module exactly as the css step leaves one: the
-   * stylesheet's declaration, the JS shim carrying its class map, a source
-   * importing the stylesheet under the name its author wrote, and the `rewrite_imports`
-   * table saying what each declaration stands in for.
+   * JS shim carrying its class map, a source importing the stylesheet under the
+   * name its author wrote, and the `rewrite_imports` table saying which file
+   * each written specifier really names.
+   *
+   * Nothing stands in for the written names — there is no `Card.module.d.scss.ts`
+   * and no `theme.d.scss.ts` — so the rules have to carry resolution as well as
+   * emit, and the plain stylesheet is typed by the declared `resources` alone.
    */
   function compileAssets(module: string, read = "styles.cardTitle"): { status: number; output: string; js: string; shim: string } {
     const work = fixture();
@@ -1560,10 +1583,6 @@ describe("import rewriting", () => {
     );
     const src = path.join(work.root, "src");
     fs.writeFileSync(
-      path.join(src, "Card.module.d.scss.ts"),
-      'declare const styles: {\n  readonly "card-title": string;\n  readonly cardTitle: string;\n};\nexport default styles;\n'
-    );
-    fs.writeFileSync(
       path.join(src, "Card.d.css.ts"),
       'declare const styles: {\n  readonly "card-title": string;\n  readonly cardTitle: string;\n};\nexport default styles;\n'
     );
@@ -1572,8 +1591,10 @@ describe("import rewriting", () => {
       'import "./Card.css";\nconst styles = { "card-title": "card-title_k3f1c", cardTitle: "card-title_k3f1c" };\nexport default styles;\n'
     );
     /* A PLAIN stylesheet beside the module one: no shim, no class map, imported
-     * for its effect alone — the other half of what the css step produces. */
-    fs.writeFileSync(path.join(src, "theme.d.scss.ts"), "export {};\n");
+     * for its effect alone — the other half of what the css step produces. It
+     * is a delivered file the compile emits nothing for, so it is declared as a
+     * resource and resolves to the synthesized empty module. */
+    fs.writeFileSync(path.join(work.root, "resources.json"), JSON.stringify(["theme.css"]));
     fs.writeFileSync(
       path.join(src, "Card.ts"),
       `import styles from "./Card.module.scss";\nimport "./theme.scss";\nexport const cls = ${read};\n`
@@ -1582,7 +1603,7 @@ describe("import rewriting", () => {
       path.join(work.root, "rewrite-imports.json"),
       JSON.stringify(importRewrites(cssImportRewrites()))
     );
-    const { status, output } = compile(work.root, ["--rewrite-imports", "rewrite-imports.json"]);
+    const { status, output } = compile(work.root, ["--rewrite-imports", "rewrite-imports.json", "--resources", "resources.json"]);
     const read2 = (name: string): string => {
       const at = path.join(work.root, "build", name);
       return fs.existsSync(at) ? fs.readFileSync(at, "utf8") : "";

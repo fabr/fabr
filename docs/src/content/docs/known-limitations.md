@@ -115,12 +115,3 @@ it shuts the program down cleanly.
 
 **Workaround:** stop a watching fabr with Ctrl-C or `SIGTERM` rather than `kill -9`. If a program is
 orphaned, stop it by hand (for a server, finding it by the port it holds is usually easiest).
-
-## A TypeScript source in a package's `deps` is emitted into the package
-
-A target's `deps` can carry plain source files that it compiles against but doesn't distribute. A
-`.d.ts` type-only file emits nothing and is correctly never shipped, but a **`.ts` source file** in
-`deps` is compiled and its resulting `.js` currently ends up in the built **package** output.
-
-**Workaround:** to share compiled TypeScript between targets, declare it as its own package and
-depend on that, rather than adding the raw `.ts` file to `deps`.

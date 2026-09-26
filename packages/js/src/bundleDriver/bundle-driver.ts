@@ -137,7 +137,7 @@ export function isBareSpecifier(specifier: string): boolean {
 }
 
 /**
- * The css_compile resolve convention: a styled-source import maps to that
+ * The css pipeline's resolve convention: a styled-source import maps to that
  * source's driver output, which is the same name with the Sass extension
  * lowered to `.css` and — for a css-module — the `.module.` marker dropped,
  * scoping having consumed it. Plain `.css` is returned unchanged and left to
@@ -264,7 +264,7 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
         }
 
         /* Relative/absolute imports are within-variant. A styled-source import
-         * (.scss/.sass) is redirected to its css_compile output — the only CSS
+         * (.scss/.sass) is redirected to its css pipeline output — the only CSS
          * knowledge the driver has, a naming rule. Everything else esbuild
          * resolves (a genuine miss there is a real error). */
         if (!isBareSpecifier(args.path)) {

@@ -14,10 +14,11 @@
  * details.
  */
 
-/* The CSS driver requires sass-embedded lazily, inside main() — so nothing here
- * needs it, and these run under jest as well as under the fabr test harness.
- * What they pin is the driver's own resolution policy, which follows dart-sass's
- * NodePackageImporter rather than node's rules (see packageImporter). */
+/* The Sass driver requires sass-embedded lazily, inside main() — so nothing
+ * here needs it, and these run under jest as well as under the fabr test
+ * harness. What they pin is the driver's own resolution policy, which follows
+ * dart-sass's NodePackageImporter rather than node's rules (see
+ * packageImporter), and the shape of what it writes beside the lowered CSS. */
 
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -26,29 +27,8 @@ import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { IPnpPackageInfo, IPnpSerializedState } from "../PnPManifest";
 import { PnpResolver } from "../pnp/PnPResolver";
-import {
-  relocateSources,
-  sourceMapComment,
-  cssModuleDeclaration,
-  cssModuleShim,
-  isSass,
-  packageImporter,
-  SASS_CONDITIONS,
-  sassFailure,
-  scopeFailure,
-} from "./css-driver";
-
-describe("isSass", () => {
-  it("matches .scss/.sass including modules", () => {
-    assert.equal(isSass("Foo.scss"), true);
-    assert.equal(isSass("Foo.module.scss"), true);
-    assert.equal(isSass("Foo.sass"), true);
-  });
-  it("rejects plain css", () => {
-    assert.equal(isSass("Foo.css"), false);
-    assert.equal(isSass("Foo.module.css"), false);
-  });
-});
+import { relativeToMap, relocateCssSources, sourceMapComment } from "./Support";
+import { packageImporter, SASS_CONDITIONS, sassFailure, stylesheetManifest } from "./sass-driver";
 
 describe("sassFailure", () => {
   it("attributes a positioned failure 1-based from the exception's 0-based span", () => {
@@ -65,104 +45,33 @@ describe("sassFailure", () => {
   });
 });
 
-describe("cssModuleShim", () => {
-  it("imports its own stylesheet by basename and exports the map as a default", () => {
-    const shim = cssModuleShim("a/b/Card.module.css", { card: "card_k3f1c", "header-bar": "header-bar_k3f1c" });
-    /* The specifier is a SIBLING reference: the shim is written beside the css
-     * it belongs to, so its own directory is the only thing it can name. */
-    assert.match(shim, /^import "\.\/Card\.module\.css";$/m);
-    assert.match(shim, /^ {2}"card": "card_k3f1c",$/m);
-    /* A name that is not a TS identifier survives, quoted. */
-    assert.match(shim, /^ {2}"header-bar": "header-bar_k3f1c",$/m);
-    assert.match(shim, /^export default styles;$/m);
+describe("relativeToMap", () => {
+  it("spells each source the way a consumer of the map resolves it", () => {
+    /* A map is read relative to ITSELF, so a map at `a/Card.css.map` names its
+     * sibling source as `Card.module.scss` — a root-relative name there would
+     * resolve to `a/a/...`. */
+    const out = relativeToMap({ sources: ["a/Card.module.scss", "b/_vars.scss"] }, "a/Card.css.map");
+    assert.deepEqual(out.sources, ["Card.module.scss", "../b/_vars.scss"]);
   });
-
-  it("orders its entries canonically, so the same map is the same bytes", () => {
-    const one = cssModuleShim("x.module.css", { b: "b_1", a: "a_1" });
-    const two = cssModuleShim("x.module.css", { a: "a_1", b: "b_1" });
-    assert.equal(one, two);
+  it("leaves postcss's unattributable placeholder alone", () => {
+    assert.deepEqual(relativeToMap({ sources: ["<no source>"] }, "a/x.css.map").sources, ["<no source>"]);
   });
 });
 
-describe("cssModuleDeclaration", () => {
-  it("declares a default-export object with quoted keys", () => {
-    const declaration = cssModuleDeclaration({ card: "card_k3f1c", "header-bar": "header-bar_k3f1c" });
-    assert.match(declaration, /^declare const styles: \{$/m);
-    assert.match(declaration, /^ {2}readonly "card": string;$/m);
-    /* Quoted rather than named exports: a class name need not be a valid
-     * identifier, and named exports would force dropping the ones that are not. */
-    assert.match(declaration, /^ {2}readonly "header-bar": string;$/m);
-    assert.match(declaration, /^export default styles;$/m);
-  });
-
-  it("declares an empty module for a plain stylesheet", () => {
-    /* It exports nothing, but the import must still resolve so a side-effect
-     * import typechecks. */
-    assert.equal(cssModuleDeclaration(undefined), "export {};\n");
-  });
-});
-
-describe("relocateSources", () => {
-  /* As the driver calls it for `a/Card.css`: sources staged under `src`, the map
-   * written next to its stylesheet under `out`. */
-  const where = { root: "/work", srcRoot: "src", mapDir: "out/a" };
-  const map = (...sources: string[]): { sources: string[] } => ({ sources });
-
-  it("names the target's own source as the target names it", () => {
-    /* Staging is fabr's word, not the project's — a target whose srcs are
-     * `src:**` calls the file `Card.module.scss`. */
-    const out = relocateSources(map("file:///work/src/a/Card.module.scss"), where);
-    assert.deepEqual(out.sources, ["a/Card.module.scss"]);
-  });
-
-  it("carries no host path, whatever the file was", () => {
-    /* The first design rule: nothing machine-specific may reach an artifact. A
-     * dependency's stylesheet keeps its working-root-relative (and so
-     * content-addressed) path. */
-    const out = relocateSources(map("file:///work/.fabr-tree/abc123/vendor/_mixins.scss"), where);
-    assert.deepEqual(out.sources, [".fabr-tree/abc123/vendor/_mixins.scss"]);
-    assert.equal(JSON.stringify(out).includes("/work"), false);
-  });
-
-  it("names postcss's own input as the lowered stylesheet, where Sass ran", () => {
-    /* Chained, postcss adds an entry for the content it was HANDED — the lowered
-     * CSS — under the name it was told that content came from. Left alone it
-     * would shadow the real source: same name, different content. Sass spells
-     * its sources as file URLs and postcss spells its own as a path, which is
-     * what tells them apart. */
-    const out = relocateSources(
-      map("file:///work/src/a/Card.module.scss", "../../src/a/Card.module.scss"),
-      where,
-      "a/Card.css"
-    );
-    assert.deepEqual(out.sources, ["a/Card.module.scss", "a/Card.css"]);
-  });
-
-  it("leaves an unchained run's own input named as the source it really is", () => {
-    /* A `.module.css` never goes near Sass, so postcss's input IS the source and
-     * must keep its own name. */
-    const out = relocateSources(map("../../src/a/Card.module.css"), where);
-    assert.deepEqual(out.sources, ["a/Card.module.css"]);
+describe("a lowered map's sources", () => {
+  it("names them as the target names them, not as the staging layout does", () => {
+    /* Sass reports absolute `file://` URLs. What this step writes is the name
+     * the target uses, so its output is a deliverable tree in its own right
+     * rather than a form only the next step can read. */
+    const map = { sources: ["file:///work/src/a/Card.module.scss", "file:///work/.fabr-tree/abc/vendor/_mixins.scss"] };
+    const out = relocateCssSources(map, { root: "/work", srcRoot: "src", mapDir: "out/a" });
+    assert.deepEqual(out.sources, ["a/Card.module.scss", ".fabr-tree/abc/vendor/_mixins.scss"]);
   });
 });
 
 describe("sourceMapComment", () => {
   it("names the map by basename, since it sits beside the stylesheet", () => {
     assert.equal(sourceMapComment("a/b/Card.css.map"), "\n/*# sourceMappingURL=Card.css.map */\n");
-  });
-});
-
-describe("scopeFailure", () => {
-  it("attributes a positioned failure to the source file", () => {
-    /* postcss's CssSyntaxError shape: a reason plus 1-based coordinates. */
-    const err = { reason: "Unclosed block", line: 4, column: 2 };
-    assert.equal(scopeFailure("a/Foo.module.scss", err).message, "a/Foo.module.scss:4:2: css-modules: Unclosed block");
-  });
-  it("attributes a positionless failure to the file alone", () => {
-    assert.equal(
-      scopeFailure("a/Foo.module.scss", new Error("plugin blew up")).message,
-      "a/Foo.module.scss: css-modules: plugin blew up"
-    );
   });
 });
 
@@ -318,8 +227,8 @@ describe("packageImporter, over packages that publish an exports map", () => {
   });
 
   it("keeps handing back the directory for a package that publishes no map", () => {
-    /* Nothing to say, so nothing said: sass's partial/index/extension search is
-     * what resolves it, exactly as before. */
+    /* Nothing to say, so nothing said: the specifier is handed back untouched
+     * and sass's own partial/index/extension search resolves it. */
     pkg("ref-plain", {});
     const load = importing(["plain", "ref-plain"]);
     assert.equal(load("plain/colours", "theme.scss"), path.join(store, "ref-plain/colours"));
@@ -357,5 +266,9 @@ describe("packageImporter, over packages that publish an exports map", () => {
     /* And they answer for the root alone — a subpath falls to the directory. */
     pkg("ref-sub", { sass: "./src/_lib.scss" });
     assert.equal(importing(["subbed", "ref-sub"])("subbed/other", "theme.scss"), path.join(store, "ref-sub/other"));
+  });
+
+  it("reads no entry from an unreadable manifest", () => {
+    assert.deepEqual(stylesheetManifest(path.join(store, "no-such-package")), { publishes: false, entry: undefined });
   });
 });

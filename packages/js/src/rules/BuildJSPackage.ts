@@ -196,9 +196,14 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
            * identity + carried deps. This runs in resolution on every evaluation
            * (whether the compile sub-target hit or missed), reconstructing the
            * runtime-only identity each time. */
-          const deliver = ({ compiled, css, passthrough }: ICompiledContents, esm?: ICompiledContents): Computable<FileSource> => {
+          const deliver = ({ compiled, css, passthrough, depOutputs }: ICompiledContents, esm?: ICompiledContents): Computable<FileSource> => {
+            /* A source dep is compiled against, not distributed, so what the
+             * compiler emitted for one is dropped here — a package ships its
+             * own artifacts. The test pipeline keeps them, needing the file to
+             * run. */
+            const own = compiled.minus(depOutputs);
             /* Two formats, one tree — see dualFormatOutputs. */
-            const formats = esm ? dualFormatOutputs(compiled, esm.compiled) : [compiled];
+            const formats = esm ? dualFormatOutputs(own, esm.compiled.minus(esm.depOutputs)) : [own];
             /* `resources` ship exactly as given — never compiled, so a prebuilt
              * .js keeps its own level and a hand-written .d.ts is the only
              * declaration for it (no generated one to collide with). Taken from

@@ -37,7 +37,8 @@ import { buildJsPackageRule } from "./rules/BuildJSPackage";
 import { runJsPackageRule } from "./rules/RunJSPackage";
 import { jsCompileRule } from "./rules/BuildJSCompile";
 import { buildJsBundleRule } from "./rules/BuildJSBundle";
-import { buildCssCompileRule } from "./rules/BuildCSSCompile";
+import { buildSassCompileRule } from "./rules/BuildSassCompile";
+import { buildCssPostcssRule } from "./rules/BuildCSSPostcss";
 import { testJsPackageRule } from "./rules/TestJSPackage";
 import { jsTestRule } from "./rules/TestJSTest";
 import { jsTestRunRule } from "./rules/TestJSTestRun";
@@ -70,7 +71,8 @@ export function activate(): PluginContribution {
       runJsPackageRule,
       jsCompileRule,
       buildJsBundleRule,
-      buildCssCompileRule,
+      buildSassCompileRule,
+      buildCssPostcssRule,
       testJsPackageRule,
       jsTestRule,
       jsTestRunRule,
