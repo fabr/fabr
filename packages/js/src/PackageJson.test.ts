@@ -18,9 +18,10 @@
  */
 
 import { expect } from "chai";
-import { FileSet, MemoryFile, PropertyMap, Requirement } from "@fabr-build/core";
+import { FileSet, MemoryFile, Name, PropertyMap, Requirement } from "@fabr-build/core";
 import { createPackageJson, dependencyBlock, dependencyRequirement, optionalPeers, requirementSpec } from "./PackageJson";
 import { JSTarget } from "./JSPackage";
+import { cssImportRewrites } from "./CSSCompile";
 
 const JS_TARGET: JSTarget = { version: "esnext", module: "commonjs", environment: "node" };
 
@@ -49,7 +50,8 @@ async function generate(
 async function generateExports(
   files: string[],
   exports: string[],
-  module: JSTarget["module"] = "commonjs"
+  module: JSTarget["module"] = "commonjs",
+  rewrites: ReadonlyArray<Name> = []
 ): Promise<Record<string, unknown>> {
   const file = createPackageJson({
     files: new FileSet(new Map(files.map(name => [name, MemoryFile.from("")]))),
@@ -60,6 +62,7 @@ async function generateExports(
     jsTarget: { ...JS_TARGET, module },
     metadata: new Map(),
     exports,
+    rewrites,
   });
   return JSON.parse(await file.readString());
 }
@@ -301,13 +304,59 @@ describe("createPackageJson", () => {
     });
   });
 
-  it("rejects an entry point that emits no JavaScript", async () => {
-    for (const source of ["styles.scss", "data.json", "types.d.ts", "missing.ts"]) {
+  it("publishes a css-module entry point as its stylesheet and class-map module", async () => {
+    /* `foo.module.scss` is answered by the compile's rewrite rules: the scoped
+     * stylesheet self-maps (exact match wins the bare subpath), the class-map
+     * module publishes under its delivered spelling with its types. */
+    const pkg = await generateExports(
+      ["index.js", "index.d.ts", "foo.css", "foo.css.js", "foo.css.d.ts"],
+      ["index.ts", "foo.module.scss"],
+      "commonjs",
+      cssImportRewrites()
+    );
+    const exports = pkg.exports as Record<string, unknown>;
+    expect(exports["./foo.css"]).to.equal("./foo.css");
+    expect(exports["./foo.css.js"]).to.deep.equal({ types: "./foo.css.d.ts", default: "./foo.css.js" });
+    expect(exports["."]).to.deep.equal({ types: "./index.d.ts", default: "./index.js" });
+  });
+
+  it("publishes a dual css-module under both formats' delivered spellings", async () => {
+    const files = ["foo.css", ...dualFiles("index", "foo.css")];
+    const pkg = await generateExports(files, ["foo.module.scss"], "dual", cssImportRewrites());
+    const exports = pkg.exports as Record<string, unknown>;
+    const conditions = {
+      import: { types: "./foo.css.d.mts", default: "./foo.css.mjs" },
+      require: { types: "./foo.css.d.ts", default: "./foo.css.js" },
+    };
+    expect(exports["./foo.css"]).to.equal("./foo.css");
+    expect(exports["./foo.css.js"]).to.deep.equal(conditions);
+    expect(exports["./foo.css.mjs"]).to.deep.equal(conditions);
+  });
+
+  it("passes plain stylesheets and other delivered content through as self-mapped subpaths", async () => {
+    /* A plain `.scss` lowers to its `.css`; an asset no step consumes keeps its
+     * own name. Both are reachable only by that name, so they map to itself. */
+    const pkg = await generateExports(
+      ["index.js", "styles.css", "data.json"],
+      ["index.ts", "styles.scss", "data.json"],
+      "commonjs",
+      cssImportRewrites()
+    );
+    const exports = pkg.exports as Record<string, unknown>;
+    expect(exports["./styles.css"]).to.equal("./styles.css");
+    expect(exports["./data.json"]).to.equal("./data.json");
+  });
+
+  it("rejects an entry point nothing importable answers", async () => {
+    /* A sass partial produces nothing; a declaration is published as a module's
+     * `types`, never as a subpath of its own; a source that emitted nothing has
+     * nothing to publish. */
+    for (const source of ["_partial.scss", "types.d.ts", "missing.ts"]) {
       try {
-        await generateExports(["index.js", "styles.css", "data.json", "types.d.ts"], [source]);
+        await generateExports(["index.js", "styles.css", "types.d.ts"], [source], "commonjs", cssImportRewrites());
         expect.fail(`expected '${source}' to be rejected`);
       } catch (err) {
-        expect((err as Error).message).to.match(/named in exports, but produces no JavaScript/);
+        expect((err as Error).message).to.match(/named in exports, but produces nothing importable/);
       }
     }
   });

@@ -157,9 +157,10 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
            * on the compile path too (js codes against core's types), just not
            * delivered. */
           /* Stylesheets in `srcs` are built like any other source, so the
-           * package exports CSS rather than Sass (a `.module.css` still unscoped
-           * — scoping is the bundler's). One meant to be `@use`d BY other
-           * packages belongs in `resources`, which ships it verbatim. */
+           * package ships plain CSS rather than Sass — a css-module as its
+           * scoped stylesheet plus the compiled class-map module. One meant to
+           * be `@use`d BY other packages belongs in `resources`, which ships it
+           * verbatim. */
           /* A dual target is built as TWO compiles, each pinned to a format — one
            * compile emits one module system. The ES-module format additionally
            * emits `.mjs`/`.d.mts`, so the two trees ship together at the package
@@ -196,7 +197,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
            * identity + carried deps. This runs in resolution on every evaluation
            * (whether the compile sub-target hit or missed), reconstructing the
            * runtime-only identity each time. */
-          const deliver = ({ compiled, css, passthrough, depOutputs }: ICompiledContents, esm?: ICompiledContents): Computable<FileSource> => {
+          const deliver = ({ compiled, css, passthrough, depOutputs, rewrites }: ICompiledContents, esm?: ICompiledContents): Computable<FileSource> => {
             /* A source dep is compiled against, not distributed, so what the
              * compiler emitted for one is dropped here — a package ships its
              * own artifacts. The test pipeline keeps them, needing the file to
@@ -226,6 +227,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
                  * emitted counterparts, so an author declares entry points in
                  * the terms they wrote them in, never in fabr's emit layout. */
                 exports: [...exported].map(([sourceName]) => sourceName),
+                rewrites,
               });
               const assembled = FileSet.unionAll(shebanged, new FileSet(new Map([["package.json", packageJson]])));
               return new PackageFileSet(assembled, context.name, version?.toString(), carried);

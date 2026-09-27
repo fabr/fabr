@@ -365,9 +365,18 @@ function conditionsFor(names: ReadonlySet<string>, stem: string, formats: Readon
 
 /**
  * The generated `exports` map: one entry per source the target names in
- * `exports`, published at the subpath its emitted file already sits at —
- * `index.js` at the package root is `.`, anything else is `./` plus its path
- * without the extension.
+ * `exports`, published at the subpath its delivered counterpart already sits at.
+ *
+ * The counterpart is found by replaying the compile's own `rewrite_imports`
+ * rules over the source name — `foo.module.scss` is answered by `foo.css.js`,
+ * exactly as an import of it resolves; identity where no rule matches. A
+ * JavaScript module then publishes under the stem convention (`index.js` at the
+ * package root is `.`, anything else `./` plus its path without the extension);
+ * opaque content — a stylesheet, a JSON resource — is reachable only by its own
+ * name, so it maps to itself. A module whose stem is ALSO a delivered file (a
+ * css-module's class-map `foo.css.js` beside its stylesheet `foo.css`) splits
+ * the two as node's own resolution would: the exact name wins the bare subpath,
+ * and the module publishes under its delivered spellings.
  *
  * So declaring exports **narrows** rather than renames: every subpath is exactly
  * what path resolution reached before there was a map at all, and what the map
@@ -382,19 +391,45 @@ function conditionsFor(names: ReadonlySet<string>, stem: string, formats: Readon
  * (version banners, plugin discovery), so the alternative is an
  * `ERR_PACKAGE_PATH_NOT_EXPORTED` with no remedy available to either side.
  */
-function exportsByConvention(files: FileSet, sources: string[], formats: ReadonlyArray<IExportFormat>): Record<string, unknown> | undefined {
+function exportsByConvention(
+  files: FileSet,
+  sources: string[],
+  formats: ReadonlyArray<IExportFormat>,
+  rewrites: ReadonlyArray<Name>
+): Record<string, unknown> | undefined {
   if (sources.length === 0) {
     return undefined;
   }
   const names = new Set([...files].map(([filename]) => filename));
+  const projections = rewrites.map(rule => rule.makeProjector());
+  const deliveredNameOf = (source: string): string => {
+    for (const project of projections) {
+      const renamed = project(source);
+      if (renamed !== undefined) {
+        return renamed;
+      }
+    }
+    return source;
+  };
   const entries = new Map<string, ExportConditions | string>();
   for (const source of sources) {
-    const stem = emittedStem(source);
+    const delivered = deliveredNameOf(source);
+    const stem = emittedStem(delivered);
     const conditions = stem === undefined ? undefined : conditionsFor(names, stem, formats);
-    if (stem === undefined || conditions === undefined) {
-      throw new Error(`'${source}' is named in exports, but produces no JavaScript in the built package`);
+    if (stem !== undefined && conditions !== undefined) {
+      if (names.has(stem)) {
+        entries.set(`./${stem}`, `./${stem}`);
+        for (const [subpath, target] of spellingSubpaths(names, stem, conditions)) {
+          entries.set(subpath, target);
+        }
+      } else {
+        entries.set(subpathOf(stem), conditions);
+      }
+    } else if (names.has(delivered) && isOpaqueContent(delivered)) {
+      entries.set(`./${delivered}`, `./${delivered}`);
+    } else {
+      throw new Error(`'${source}' is named in exports, but produces nothing importable in the built package`);
     }
-    entries.set(subpathOf(stem), conditions);
   }
   return renderExports(entries);
 }
@@ -593,6 +628,10 @@ export interface IPackageJsonInputs {
    *  target declaring none, which publishes no map — `main`/`types` by convention
    *  and every emitted file reachable, exactly as before. */
   exports?: string[];
+  /** The rewrite rules the compile applied (`ICompiledContents.rewrites`), each
+   *  pairing a source specifier with the delivered file that answers it — how an
+   *  `exports` source is mapped to what it built to. */
+  rewrites?: ReadonlyArray<Name>;
 }
 
 /**
@@ -613,6 +652,7 @@ export function createPackageJson({
   jsTarget,
   metadata,
   exports = [],
+  rewrites = [],
 }: IPackageJsonInputs): MemoryFile {
   /* The identity leads (the conventional reading order — name, then version), so
    * it is placed before the seed and metadata are copied in; a key keeps its
@@ -654,7 +694,7 @@ export function createPackageJson({
    * package needs no map to be reachable, so it gets none. */
   const dual = jsTarget.module === "dual";
   const formats = dual ? DUAL_FORMATS : SINGLE_FORMAT;
-  const exported = exports.length > 0 ? exportsByConvention(files, exports, formats) : dual ? exhaustiveExports(files, formats) : undefined;
+  const exported = exports.length > 0 ? exportsByConvention(files, exports, formats, rewrites) : dual ? exhaustiveExports(files, formats) : undefined;
   if (exported !== undefined) {
     packageJson.exports = exported;
   }

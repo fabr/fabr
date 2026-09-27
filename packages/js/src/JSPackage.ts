@@ -614,6 +614,12 @@ export interface ICompiledContents {
    * was compiled) — for a caller that mounts the output beside its sources so
    * source maps resolve. See {@link compileSrcsOf}. */
   compileSrcs: FileSet;
+  /** The `rewrite_imports` rules this compile ran under — each pairs a source
+   * specifier with the delivered file that answers it (the css pipeline's
+   * stylesheet rules, or a caller's own {@link ICompileOptions.rewriteImports});
+   * empty when none applied. The exports map replays them to name a declared
+   * source's delivered counterpart. */
+  rewrites: Name[];
   /** The part of {@link compiled} that came from a source DEP rather than from
    * this target's own sources. A package subtracts it (a dep is compiled
    * against, not distributed); a test install keeps it, needing the file on
@@ -780,6 +786,7 @@ export function compileContents(
     const { compileInputs, content } = partitionCssOutput(lowered);
     const generated = classifySources(compileInputs);
     const augmented = withGeneratedSources(classified, generated);
+    const rewrites = classified.css.isEmpty() ? options.rewriteImports ?? [] : cssImportRewrites();
     const compiled =
       keepSourceJs && !requiresCompile(augmented)
         ? undefined
@@ -789,7 +796,7 @@ export function compileContents(
              * declaration shape stands in for which runtime file. Constant, and
              * passed only where there ARE stylesheets, so a compile without them
              * is byte-identical to one built before the mechanism existed. */
-            ...(classified.css.isEmpty() ? {} : { rewriteImports: cssImportRewrites() }),
+            ...(classified.css.isEmpty() ? {} : { rewriteImports: rewrites }),
             /* What the target delivers but no step compiles: the published
              * stylesheets, and the sources nothing consumes (images, fonts,
              * templates). An import of any of them resolves as an empty
@@ -804,6 +811,7 @@ export function compileContents(
         sources: augmented,
         compiled: emitted,
         css: content,
+        rewrites,
         /* The JavaScript the compiler didn't deliver is delivered here instead, so
          * the caller receives what it put in either way. JSON is subtracted for the
          * opposite reason: it is a compile input (resolveJsonModule), and tsc COPIES

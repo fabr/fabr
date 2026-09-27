@@ -84,10 +84,29 @@ describe("e2e: js_package exports", () => {
     expect(Object.keys(pkg.exports)).to.deep.equal([".", "./api/v1", "./package.json"]);
   });
 
-  it("rejects an entry point that emits no JavaScript", () => {
-    const result = manifestOf("resources = src:notes.txt; exports = src:notes.txt;");
+  it("publishes delivered non-module content at its own name", () => {
+    /* An asset no step consumes is reachable only under its own name, so its
+     * subpath maps to itself. */
+    const result = manifestOf("resources = src:notes.txt; exports = src:index.ts src:notes.txt;");
+    expect(result.status).to.equal(0);
+    const pkg = JSON.parse(result.stdout);
+    expect((pkg.exports as Record<string, unknown>)["./notes.txt"]).to.equal("./notes.txt");
+  });
+
+  it("rejects an entry point nothing importable answers", () => {
+    /* A hand-written declaration ships, but publishes as a module's `types`,
+     * never as a subpath of its own. */
+    const project = {
+      ...base,
+      "src/decls.d.ts": "declare const d: number;\n",
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        "\njs_package thing { srcs = src:index.ts; exports = src:decls.d.ts; }\n",
+    };
+    const result = runFabr(project, ["-DJS_TARGET=es2020", "cat", "thing:package.json"]);
     expect(result.status).to.not.equal(0);
-    expect(result.stderr).to.contain("'notes.txt' is named in exports, but produces no JavaScript");
+    expect(result.stderr).to.contain("'decls.d.ts' is named in exports, but produces nothing importable");
   });
 
   it("rejects a dependency named as an entry point", () => {
