@@ -17,6 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { displayWidth, stripAnsi } from "@fabr-build/core";
 import { expect } from "chai";
 import { Writable } from "node:stream";
 import { IPaneContent, layoutRow, TerminalStream, truncate } from "./Terminal";
@@ -232,6 +233,25 @@ describe("layoutRow", () => {
     expect(laid.length).to.be.at.most(40);
     expect(laid).to.contain("12% of 5.8 MB  4.1s");
   });
+
+  it("never lays out wider than the terminal when the right column fills it", () => {
+    /* A test-run row's right column is ~40 chars; on a terminal narrower than
+     * that plus the gap the left AND the gap both give way — a single overwide
+     * row wraps and desyncs every erase after it. */
+    const right = "12/40 files · 340 passed, 2 failed  12.3s";
+    for (const width of [24, 40, 42, 43, 80]) {
+      const laid = layoutRow({ left: "  Testing mypkg", right }, width);
+      expect(laid.length, `width ${width}`).to.be.at.most(width);
+    }
+    expect(layoutRow({ left: "x", right: "y".repeat(39) }, 40).length).to.be.at.most(40);
+  });
+
+  it("counts display columns, not code units, for wide characters", () => {
+    /* One CJK char is one code unit but two columns; a row measured in units
+     * paints wider than counted and wraps. */
+    const laid = layoutRow({ left: "  Building 世界世界世界", right: "1.2s" }, 24);
+    expect(displayWidth(stripAnsi(laid))).to.be.at.most(24);
+  });
 });
 
 describe("truncate", () => {
@@ -253,5 +273,13 @@ describe("truncate", () => {
      * color unterminated for the rest of the screen. The row's width is what
      * the erase depends on, so the color is what gives way. */
     expect(truncate("\x1b[1mBuilding a long name\x1b[0m", 8)).to.equal("Buildin…");
+  });
+
+  it("cuts by display columns and never splits a surrogate pair", () => {
+    /* 世 is 2 columns: 5 of them fit in 11 columns with the 1-column ellipsis. */
+    expect(truncate("世界世界世界世界", 11)).to.equal("世界世界世…");
+    /* An emoji is one code POINT of two units; a unit-wise slice would emit a
+     * lone surrogate. */
+    expect(truncate("🎉🎉🎉🎉", 5)).to.equal("🎉🎉…");
   });
 });

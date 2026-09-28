@@ -19,7 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { resolveMVS } from "./MVSResolver";
-import { edgeBinding, nodeId, reachableFrom } from "./ResolutionGraph";
+import { edgeBinding, nodeId, ResolutionGraph } from "./ResolutionGraph";
 import { parseVersion, SEMVER, SemverVersion, versionToString } from "./Semver";
 import { MetadataFetchError, VersionNotFoundError } from "../core/Errors";
 import { RequirementSource, Requirement, MVSResolution, Selected } from "./Types";
@@ -404,8 +404,7 @@ describe("MVSResolver", () => {
   });
 
   it("reports unparseable constraints as errors", () => {
-    /* (Hyphen ranges used to be the specimen here; they parse now, so the
-     * unparseable case is a protocol-prefixed constraint.) */
+    /* A protocol-prefixed constraint is a spec form fabr does not read. */
     const result = resolve(
       { A: "^1.0.0" },
       {
@@ -1366,11 +1365,12 @@ describe("resolved edges", () => {
   for (const [what, roots, data] of cases) {
     it(`walking the edges reaches exactly what reachableFrom marks, for ${what}`, () => {
       const result = resolve(roots, data);
+      const graph = new ResolutionGraph(versionToString, result);
       result.rootBindings.forEach((at, index) => {
         if (at === undefined) {
           return;
         }
-        const walked = reachableFrom(result.edges, [nodeId(SEMVER, result.selections[at].pkg, result.selections[at].version)]);
+        const walked = graph.reachable([nodeId(SEMVER, result.selections[at].pkg, result.selections[at].version)]);
         const marked = new Set(
           result.selections
             .filter(sel => sel.reachableFrom?.includes(index))
@@ -1380,4 +1380,20 @@ describe("resolved edges", () => {
       });
     });
   }
+
+  it("binds but does not traverse an attach-only edge when carving a delivery", () => {
+    /* The catalog-subset case: A optionally peers on R, and both are pinned as
+     * roots. Materializing A alone must not fetch R — but a delivery that does
+     * hold R must still mount it where A sees it, so the edge stays BOUND. */
+    const result = resolve({ A: "^1.0.0", R: "^1.0.0" }, { A: { "1.0.0": { R: "peer? ^1.0.0" } }, R: { "1.0.0": {} } });
+    expect(result.edges.get("A@1.0.0")!.get("R"), "the binding layout reads").to.equal("R@1.0.0");
+    const graph = new ResolutionGraph(versionToString, result);
+    const walked = graph.reachable(["A@1.0.0"]);
+    expect([...walked], "A's subset does not deliver the peer").to.deep.equal(["A@1.0.0"]);
+    /* And the walk agrees with the resolver's own marking, attach edges included. */
+    const marked = result.selections
+      .filter(sel => sel.reachableFrom?.includes(0))
+      .map(sel => nodeId(SEMVER, sel.pkg, sel.version));
+    expect([...walked].sort()).to.deep.equal([...marked].sort());
+  });
 });

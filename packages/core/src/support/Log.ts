@@ -19,6 +19,7 @@
 
 import { FileSource } from "../core/FileSet";
 import { StringReader } from "./StringReader";
+import { getEastAsianWidth, isMark } from "unicode-properties";
 
 export interface ISourcePosition {
   fs: FileSource;
@@ -147,6 +148,55 @@ const ANSI_ESCAPES = /\x1b\[[0-9;?]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g;
 /** Remove ANSI escape sequences, leaving the plain text. */
 export function stripAnsi(text: string): string {
   return text.replaceAll(ANSI_ESCAPES, "");
+}
+
+/* Zero-width outside the mark categories: the joiners and BOM/word-joiner
+ * (all Cf) that ride inside emoji and complex-script sequences. */
+const ZERO_WIDTH = new Set([0x200b, 0x200c, 0x200d, 0x2060, 0xfeff]);
+
+/** Columns one code point occupies on a terminal: 0 for combining marks and
+ *  joiners, 2 for East-Asian Wide/Fullwidth (CJK, emoji), 1 otherwise
+ *  (ambiguous-width included). A ZWJ emoji sequence counts each member. */
+function codePointWidth(cp: number): number {
+  if (cp < 0x300) {
+    return 1;
+  }
+  if (ZERO_WIDTH.has(cp) || isMark(cp)) {
+    return 0;
+  }
+  const eaw = getEastAsianWidth(cp);
+  return eaw === "W" || eaw === "F" ? 2 : 1;
+}
+
+/**
+ * The columns `text` occupies on a terminal — NOT `String.length`, which
+ * counts UTF-16 code units. Expects plain text: strip escapes first
+ * ({@link stripAnsi}).
+ */
+export function displayWidth(text: string): number {
+  let width = 0;
+  for (const ch of text) {
+    width += codePointWidth(ch.codePointAt(0)!);
+  }
+  return width;
+}
+
+/**
+ * The longest prefix of `text` occupying at most `columns` columns: cut at a
+ * code-point boundary with zero-width followers kept beside their base, so a
+ * surrogate pair is never split and a combining mark never orphaned.
+ */
+export function cutToWidth(text: string, columns: number): string {
+  let width = 0;
+  let end = 0;
+  for (const ch of text) {
+    width += codePointWidth(ch.codePointAt(0)!);
+    if (width > columns) {
+      break;
+    }
+    end += ch.length;
+  }
+  return text.slice(0, end);
 }
 
 /* ANSI SGR codes for the block elements (rustc's palette) */

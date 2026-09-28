@@ -22,6 +22,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { Writable } from "stream";
+import { StringDecoder } from "string_decoder";
 import { getSystemErrorMap } from "util";
 import { Computable } from "../core/Computable";
 import { ExecutionError } from "../core/Errors";
@@ -144,9 +145,12 @@ export type TaskTracker<T> = (run: (report: ITaskReport) => Computable<T>) => Co
  */
 export function lineSplitter(emit: (line: string) => void): { push(chunk: Uint8Array): void; flush(): void } {
   let held = "";
+  /* A stateful decoder, not per-chunk toString: a multi-byte UTF-8 sequence
+   * split across two pipe reads must not decode as U+FFFD. */
+  const decoder = new StringDecoder("utf8");
   return {
     push(chunk: Uint8Array): void {
-      held += Buffer.from(chunk).toString("utf8");
+      held += decoder.write(Buffer.from(chunk));
       /* Hold a trailing \r back from the split (see above); it rejoins the
        * remainder so the next chunk (or flush) sees it in context. */
       const splittable = held.endsWith("\r") ? held.slice(0, -1) : held;
@@ -158,6 +162,7 @@ export function lineSplitter(emit: (line: string) => void): { push(chunk: Uint8A
       lines.forEach(emit);
     },
     flush(): void {
+      held += decoder.end();
       if (held.length > 0) {
         /* A held trailing \r was a line ending after all — just one that never
          * got its \n. It terminates the line rather than appearing in it. */

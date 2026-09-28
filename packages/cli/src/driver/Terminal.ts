@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Computable, stripAnsi } from "@fabr-build/core";
+import { Computable, cutToWidth, displayWidth, stripAnsi } from "@fabr-build/core";
 import { Writable } from "node:stream";
 
 /** Cursor up `n` lines, to column 1. */
@@ -437,22 +437,29 @@ const ROW_RIGHT_COLUMN = 52;
  */
 export function layoutRow(row: IPaneRow, width: number): string {
   const right = truncate(row.right, width);
-  if (visibleLength(right) === 0) {
+  const rightWidth = visibleLength(right);
+  if (rightWidth === 0) {
     /* Nothing to hold a column for — and trailing spaces are invisible until
      * they are selected and copied. */
     return truncate(row.left, width);
   }
-  const rightWidth = visibleLength(right);
   const leftRoom = Math.max(0, width - rightWidth - ROW_GAP);
   const left = truncate(row.left, leftRoom);
-  const column = Math.max(ROW_RIGHT_COLUMN, visibleLength(left) + ROW_GAP);
-  const pad = " ".repeat(Math.max(ROW_GAP, Math.min(column, width - rightWidth) - visibleLength(left)));
+  const leftWidth = visibleLength(left);
+  if (leftWidth === 0) {
+    /* The right column has the whole row: any pad would push past `width`
+     * and wrap, desyncing the erase. */
+    return right;
+  }
+  const column = Math.max(ROW_RIGHT_COLUMN, leftWidth + ROW_GAP);
+  const pad = " ".repeat(Math.min(column, width - rightWidth) - leftWidth);
   return left + pad + right;
 }
 
-/** Printable width: escapes occupy no columns. */
+/** Printable columns: escapes occupy none, and width is display columns
+ *  (CJK/emoji count 2), since the erase counts what the terminal drew. */
 function visibleLength(text: string): number {
-  return stripAnsi(text).length;
+  return displayWidth(stripAnsi(text));
 }
 
 /**
@@ -468,11 +475,11 @@ function visibleLength(text: string): number {
  */
 export function truncate(text: string, width: number): string {
   const plain = stripAnsi(text);
-  if (plain.length <= width) {
+  if (displayWidth(plain) <= width) {
     return text;
   }
   if (width <= 0) {
     return "";
   }
-  return (text === plain ? text : plain).slice(0, Math.max(0, width - 1)).trimEnd() + "…";
+  return cutToWidth(plain, width - 1).trimEnd() + "…";
 }

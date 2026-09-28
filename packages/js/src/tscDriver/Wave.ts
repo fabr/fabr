@@ -64,6 +64,11 @@ export interface IWaveHost {
    * tree cannot be incrementally corrected by a full emit (an output whose name
    * nothing current produces would linger), so the host discards it first. */
   expanding(): void;
+  /** Whether this run has become void — {@link fileFor} was asked for an
+   * on-disk project file the program is not holding. Checked after every
+   * member, so a void run stops emitting drafts from a program known to be
+   * incomplete rather than building the rest of the wave on it. */
+  voided(): boolean;
 }
 
 /** What a wave run came to. */
@@ -130,6 +135,11 @@ export function runWave(plan: ICompilePlan, host: IWaveHost): IWaveResult {
     seen.add(name);
     wave.push(name);
     const build = host.fileFor(name);
+    if (host.voided()) {
+      /* Everything already emitted came from a program now known incomplete;
+       * the caller redoes the run rooted at everything, over a fresh tree. */
+      return { wave, fellBack: true };
+    }
     /* Deleted, or a dependency's declaration that changed under us: both are in
      * the wave because their content moved, and neither has an interface
      * artifact of ours to compare — so both expand. */

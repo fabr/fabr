@@ -144,6 +144,18 @@ describe("lineSplitter", () => {
     expect(split(["a\r"])).to.deep.equal(["a"]);
   });
 
+  it("decodes a multi-byte UTF-8 sequence split across chunks", () => {
+    /* Pipe reads fall on byte boundaries, not character ones: a per-chunk
+     * decode turns the halves of one character into two U+FFFDs. */
+    const bytes = Buffer.from("héllo\n", "utf8");
+    const lines: string[] = [];
+    const splitter = lineSplitter((text: string) => lines.push(text));
+    splitter.push(bytes.subarray(0, 2)); /* cuts é's two bytes in half */
+    splitter.push(bytes.subarray(2));
+    splitter.flush();
+    expect(lines).to.deep.equal(["héllo"]);
+  });
+
   it("emits an empty line for a blank line rather than dropping it", () => {
     expect(split(["a\n\nb\n"])).to.deep.equal(["a", "", "b"]);
   });

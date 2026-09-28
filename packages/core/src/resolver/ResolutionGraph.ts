@@ -92,6 +92,10 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
   /** id → position in {@link selections} — the canonical order, reimposable on
    * any id subset without the domain's comparator. */
   private readonly positions = new Map<NodeId, number>();
+  /** id → the dependency names its ATTACH-ONLY requirements bind (optional
+   * peers, minus any name a real requirement also demands). Derived lazily —
+   * only {@link reachable} asks. */
+  private attachOnly: Map<NodeId, Set<DependencyName>> | undefined;
 
   constructor(
     public readonly versionToString: (version: V) => string,
@@ -172,9 +176,32 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
   }
 
   /** The nodes reachable from `seeds` by walking the resolved edges forward —
-   * O(the subset), which is what a delivery is proportional to. */
+   * O(the subset), which is what a delivery is proportional to. Attach-only
+   * edges are bound ({@link edgesOf} — a delivered peer must mount) but never
+   * traversed: an optional peer makes nothing deliverable, so a subset that
+   * does not otherwise reach the peer must not fetch it. */
   public reachable(seeds: Iterable<NodeId>): Set<NodeId> {
-    return reachableFrom(this.edges, seeds);
+    return reachableFrom(this.edges, seeds, id => this.attachOnlyNames(id));
+  }
+
+  /** See {@link attachOnly}. A name both a real requirement and an optional
+   * peer demand stays traversable — the real edge is in effect. */
+  private attachOnlyNames(id: NodeId): ReadonlySet<DependencyName> | undefined {
+    if (this.attachOnly === undefined) {
+      this.attachOnly = new Map();
+      for (const [node, requires] of this.requirements) {
+        const names = new Set(requires.filter(req => req.attachOnly).map(req => req.alias ?? req.pkg));
+        for (const req of requires) {
+          if (req.attachOnly !== true) {
+            names.delete(req.alias ?? req.pkg);
+          }
+        }
+        if (names.size > 0) {
+          this.attachOnly.set(node, names);
+        }
+      }
+    }
+    return this.attachOnly.get(id);
   }
 
   /** The violations declared by one node ({@link ROOT_REQUIRER} for root
@@ -258,7 +285,13 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
  * The two agree by construction: the resolver marked `reachableFrom` by
  * following exactly these bindings (see the walk's own reachability pass).
  */
-export function reachableFrom(edges: ReadonlyMap<NodeId, ReadonlyMap<DependencyName, NodeId>>, seeds: Iterable<NodeId>): Set<NodeId> {
+export function reachableFrom(
+  edges: ReadonlyMap<NodeId, ReadonlyMap<DependencyName, NodeId>>,
+  seeds: Iterable<NodeId>,
+  /** Edge names of a node the walk must NOT follow — its attach-only
+   * bindings, which confer no reachability (see {@link ResolutionGraph.reachable}). */
+  skip?: (id: NodeId) => ReadonlySet<DependencyName> | undefined
+): Set<NodeId> {
   const reached = new Set<NodeId>();
   const pending = [...seeds];
   while (pending.length > 0) {
@@ -267,8 +300,9 @@ export function reachableFrom(edges: ReadonlyMap<NodeId, ReadonlyMap<DependencyN
       continue;
     }
     reached.add(id);
-    for (const target of edges.get(id)?.values() ?? []) {
-      if (!reached.has(target)) {
+    const barred = skip?.(id);
+    for (const [name, target] of edges.get(id) ?? []) {
+      if (!reached.has(target) && barred?.has(name) !== true) {
         pending.push(target);
       }
     }

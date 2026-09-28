@@ -1853,6 +1853,24 @@ export function main(argv: string[]): number {
       return readFile.call(host, file, encoding);
     };
   }
+  /* What the compiler probed and found ABSENT, from the one place every
+   * existence check goes through. Resolution picks among a package's
+   * published candidates by probing them, so a failed probe is a fact the
+   * answer depends on: that file APPEARING moves the resolution, and only a
+   * recorded row can move the key with it. Filtered to the package pool in
+   * readSetOf like every other row — a miss in the sources or the tool's own
+   * install stays the anchor's business. */
+  const missed = new Set<string>();
+  const fileExists = host.fileExists;
+  if (reportPath !== undefined) {
+    host.fileExists = (file: string): boolean => {
+      const found = fileExists.call(host, file);
+      if (!found) {
+        missed.add(file);
+      }
+      return found;
+    };
+  }
   const resolver = PnpResolver.load(root, conditionsOf(ts, parsed.options));
   /* Manifest faults in the DEPENDENCIES: collected while resolving and reported
    * with everything else, rather than aborting the compilation the moment one
@@ -2011,16 +2029,18 @@ export function main(argv: string[]): number {
      * global scope, which only parsing reveals. The other is a bound bug, netted
      * rather than trusted, and reported either way.
      *
-     * Rooting at everything is what makes the rerun terminate as well as what
-     * makes it correct: the guard asks what THIS program is rooted at, so a
-     * program rooted at everything cannot trip it again. Nothing partial is
-     * emitted from an abandoned run.
+     * The rerun is FULL — rooted at everything, waving everything, over a
+     * wiped emit tree (`run`'s `full`) — because the abandoned attempt may
+     * have emitted drafts before the void was detected, and only a full
+     * re-emit is guaranteed to cover every one of them. Rooting at everything
+     * is also what makes it terminate: the guard asks what THIS program is
+     * rooted at, so it cannot trip again.
      *
      * Do not pass `oldProgram`: TypeScript refuses structural reuse outright
      * when the root list differs, which is the whole of what this rebuild
      * does. */
     program = buildProgram(undefined);
-    built = graph.run(program, transformers, writeEmitted);
+    built = graph.run(program, transformers, writeEmitted, true);
     fellBack = true;
   }
   const emitted = built ?? program.emit(undefined, writeEmitted, undefined, false, transformers);
@@ -2030,7 +2050,7 @@ export function main(argv: string[]): number {
   if (reportPath !== undefined && resolver !== undefined) {
     fs.writeFileSync(
       path.resolve(root, reportPath),
-      serializeRunReport(readSetOf(program, opened, resolver), resolver.edges(), graph?.telemetry(fellBack))
+      serializeRunReport(readSetOf(program, opened, missed, resolver), resolver.edges(), graph?.telemetry(fellBack))
     );
   }
   const memo = graph?.memo();
@@ -2189,8 +2209,11 @@ interface IWaveRun {
   resolved(containingFile: string, specifier: string, target: string | undefined): void;
   /** A file the emitter wrote, in its final form. */
   emitted(written: string, isDeclaration: boolean, text: string, byteOrderMark: boolean): void;
-  /** Run the wave, answering what a whole-program emit would have. */
-  run(program: IProgram, transformers: ICustomTransformers | undefined, write: WriteFile): IEmitResult;
+  /** Run the wave, answering what a whole-program emit would have. `full`
+   * discards the plan's bound and the emit tree and waves every project file
+   * — the fallback rerun, whose abandoned first attempt left drafts in the
+   * tree that only a full re-emit over a fresh one is guaranteed to cover. */
+  run(program: IProgram, transformers: ICustomTransformers | undefined, write: WriteFile, full?: boolean): IEmitResult;
   /** Whether this run must be abandoned and redone rooted at every project file
    * — the wave needed a project file this program was not holding. */
   needsFallback(): boolean;
@@ -2380,7 +2403,7 @@ function createWaveRun(
       }
     },
     needsFallback: () => fallback,
-    run: (program, transformers, write) => {
+    run: (program, transformers, write, full = false) => {
       /* A rebuild re-runs this from scratch, so nothing of the abandoned
        * attempt may survive into the report. */
       byName.clear();
@@ -2390,6 +2413,13 @@ function createWaveRun(
       shapes.clear();
       baseShapes.clear();
       fallback = false;
+      if (full) {
+        /* The abandoned attempt emitted drafts from an incomplete program;
+         * a rerun of the same wave would leave any it does not reach. Fresh
+         * tree, every project file — full-compile parity by construction. */
+        wipeEmitTree(root, emitDirectory);
+      }
+      const runPlan = full ? { ...plan, seeds: undefined } : plan;
       for (const file of program.getSourceFiles()) {
         const name = program.isSourceFileDefaultLibrary(file) ? undefined : nodeNameOf(file.fileName);
         if (name !== undefined) {
@@ -2400,13 +2430,14 @@ function createWaveRun(
         byName.has(name) && resolver?.instanceNameOf(byName.get(name)!.fileName) === undefined;
       let emitSkipped = false;
       const emitDiagnostics: Diagnostic[] = [];
-      result = runWave(plan, {
+      result = runWave(runPlan, {
         projectFiles: () => [...byName.keys()].filter(isProject),
         /* What THIS program is rooted at, which is the only form of the question
          * that survives the fallback: the caller re-runs with the same plan
          * against a program rooted at everything, and a guard reading the plan's
          * own bound would answer the same both times (see runWave). */
         isBoundRooted: () => isBoundRooted(),
+        voided: () => fallback,
         /* The wave is becoming every project file: discard the carried base
          * outputs, whose stale members a full emit cannot correct (an output
          * nothing current produces would linger into the entry). */
@@ -2468,7 +2499,7 @@ function createWaveRun(
              * hand-written declaration file, both of whose shape genuinely IS
              * their content. Whether that content moved is exactly what the
              * plan's seeds already say: they are fabr's own hash diff. */
-            return plan.seeds?.has(name) ?? true;
+            return runPlan.seeds?.has(name) ?? true;
           };
         },
       });
@@ -2667,7 +2698,7 @@ function structureDiagnostic(
  * the compiler's libs — is left out here: those are in the step's anchor, and
  * the resolver answering `undefined` for them is exactly that statement.
  */
-function readSetOf(program: IProgram, opened: string[], resolver: PnpResolver): string[] {
+function readSetOf(program: IProgram, opened: string[], missed: ReadonlySet<string>, resolver: PnpResolver): string[] {
   const names = new Set<string>();
   const add = (file: string): void => {
     const name = resolver.pathNameOf(file);
@@ -2679,6 +2710,13 @@ function readSetOf(program: IProgram, opened: string[], resolver: PnpResolver): 
     add(file.fileName);
   }
   for (const file of opened) {
+    add(file);
+  }
+  /* Probed-and-absent files, recorded as the absences they were: replay
+   * resolves each row against the delivery at hand, so a row that was absent
+   * and now names a file moves the key. A row is a path either way — present
+   * and absent spell identically. */
+  for (const file of missed) {
     add(file);
   }
   for (const location of resolver.manifestsConsulted()) {

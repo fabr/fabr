@@ -1710,6 +1710,20 @@ describe("the tsc driver's dependency report", () => {
     expect(read.filter(name => name.includes("src/index.ts"))).to.deep.equal([]);
   });
 
+  it("records a probed-and-absent file, so its appearance can move the key", () => {
+    /* Resolution answers `dep/lib/x` with the directory index only after
+     * probing `lib/x.d.ts` and finding nothing. That absence is a fact the
+     * answer depends on: the file appearing there moves the resolution, and
+     * without a recorded row the old entry would over-hit. */
+    const dep = work.add("dep", { "lib/x/index.d.ts": "export declare const value: number;\n" });
+    stage(work.root, [["dep", dep, [["dep", dep]]]], [["dep", dep]], []);
+    fs.writeFileSync(path.join(work.root, "src/index.ts"), 'import { value } from "dep/lib/x";\nexport const v = value;\n');
+
+    const read = reads();
+    expect(read).to.contain("dep lib/x/index.d.ts");
+    expect(read).to.contain("dep lib/x.d.ts");
+  });
+
   it("names a dependency's own lookups when the dependency resolved through it", () => {
     const inner = work.add("inner", { "index.d.ts": "export declare const value: number;\n" });
     const outer = work.add("outer", {

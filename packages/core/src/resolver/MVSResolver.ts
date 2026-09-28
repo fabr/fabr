@@ -944,6 +944,12 @@ function resolvePhase<V, C>(
         const visitedNodes = new Set<string>();
         const mark = (requirements: Requirement[]): void => {
           for (const req of requirements) {
+            if (req.attachOnly) {
+              /* Bound, never delivering — the reachability walk's own rule
+               * (see followEdge): an optional peer joins a root's subset only
+               * when something in that subset really demands it. */
+              continue;
+            }
             const target = targetsOf(req);
             const selection = target && round.reachable.get(target);
             if (!selection) {
