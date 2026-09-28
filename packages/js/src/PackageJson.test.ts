@@ -272,6 +272,20 @@ describe("createPackageJson", () => {
     });
   });
 
+  it("gives a delivered module priority over its same-named directory index", async () => {
+    /* Mapless resolution loads `lib.js` before `lib/index.js`, so `pkg/lib` is
+     * the FILE's subpath — the wildcards answer it — and an explicit directory
+     * entry, which node would match ahead of any pattern, must not usurp it.
+     * `lib/index` itself stays reachable through the wildcards as `pkg/lib/index`. */
+    const pkg = await generateExports(dualFiles("index", "lib", "lib/index"), [], "dual");
+    const exports = pkg.exports as Record<string, unknown>;
+    expect(Object.keys(exports)).to.not.contain("./lib");
+    expect(exports["./*"]).to.deep.equal({
+      import: { types: "./*.d.mts", default: "./*.mjs" },
+      require: { types: "./*.d.ts", default: "./*.js" },
+    });
+  });
+
   it("publishes a delivered spelling the formats do not name, as itself", async () => {
     /* `foo.ts` and `foo.cts` side by side are two modules sharing a stem: the
      * formats bind `./foo` to the `.ts` pair, so the `.cjs` would go unnamed — and

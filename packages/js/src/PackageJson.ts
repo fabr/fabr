@@ -516,10 +516,12 @@ function coveredByPatterns(names: ReadonlySet<string>, stem: string, conditions:
 
 /**
  * The `exports` map for a **dual** package whose target declares no entry points:
- * every subpath that resolves in a single-format build of the same sources. It
- * exists because a dual package must have a map — conditions are node's only
- * mechanism for choosing a format — while "declared nothing" has to go on meaning
- * "narrowed nothing".
+ * an emulation of what node resolves for these files with NO `exports` field at
+ * all. A dual package must have a map — conditions are node's only mechanism for
+ * choosing a format — while "declared nothing" has to go on meaning "narrowed
+ * nothing", so every subpath a mapless package would serve keeps resolving, to
+ * the same module, with the format chosen by the consumer's condition. Any
+ * subpath question this map answers is judged against that baseline.
  *
  * The regular case is three **wildcards**, one per subpath shape node's own
  * resolution publishes: `pkg/foo` (CommonJS extension search), `pkg/foo.js` (what
@@ -532,8 +534,10 @@ function coveredByPatterns(names: ReadonlySet<string>, stem: string, conditions:
  * ahead of any pattern: the package root (not a subpath a pattern can match), a
  * module whose delivered files are not the plain dual quartet (a format-pinned
  * `.cts`, a `resources` JavaScript with no declaration), `pkg/lib` for a
- * `lib/index` (patterns do no directory indexes), and every non-module file,
- * which resolves to itself.
+ * `lib/index` when nothing delivers a `lib` module (mapless resolution loads the
+ * file before the directory index, so a delivered `lib.js` owns the subpath —
+ * and the wildcards already answer it), and every non-module file, which
+ * resolves to itself.
  *
  * Declarations and source maps get no subpath of their own: nothing imports them
  * by name, and a declaration is already published as its format's `types`.
@@ -569,11 +573,12 @@ function exhaustiveExports(files: FileSet, formats: ReadonlyArray<IExportFormat>
     }
   }
   /* `pkg/lib` for a `lib/index`, as CommonJS directory resolution answers it —
-   * unless the package also has a `lib.js`, which resolution prefers and which
-   * has already claimed the subpath. */
+   * unless the package also delivers a `lib` module, which mapless resolution
+   * loads first and which therefore owns the subpath, whether it answers by
+   * explicit key or through the wildcards. */
   for (const [stem, conditions] of stems) {
     const directory = stem.slice(0, -"/index".length);
-    if (stem.endsWith("/index") && !entries.has(`./${directory}`)) {
+    if (stem.endsWith("/index") && !stems.has(directory) && !entries.has(`./${directory}`)) {
       entries.set(`./${directory}`, conditions);
     }
   }
