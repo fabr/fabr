@@ -321,6 +321,9 @@ export class BuildCache {
   /** Per target key, the last build-state write still in flight: successors
    * chain behind it so swaps land in generation order ({@link writeBuildState}). */
   private readonly pendingStateWrites = new Map<string, Computable<unknown>>();
+  /** Build-state writes currently executing — the {@link storeQuiescent} term
+   * the pending-write map cannot supply (it also holds settled chains). */
+  private activeStateWrites = 0;
 
   /* The session-served set: every recency coordinate this session exercised,
    * one member per kind of touch the GC's aging reads. Each set
@@ -1364,6 +1367,19 @@ export class BuildCache {
     } catch {
       return Computable.resolve(undefined);
     }
+    this.activeStateWrites += 1;
+    return this.finishStateWrite(dir, gen, entryKey, { inputs, discovered, incrementalState }).finally(() => {
+      this.activeStateWrites -= 1;
+    });
+  }
+
+  private finishStateWrite(
+    dir: string,
+    gen: string,
+    entryKey: string,
+    state: { inputs?: string; discovered?: string; incrementalState?: FileSet }
+  ): Computable<void> {
+    const { inputs, discovered, incrementalState } = state;
     return (
       Computable.forAll(
         [
@@ -1701,6 +1717,13 @@ export class BuildCache {
    * only by reachability from the survivors), so a crash anywhere leaves
    * nothing inconsistent and an abort is free. Removals are best-effort
    * throughout: a cleanup failure never outranks the run's own outcome.
+   *
+   * A pass additionally runs only against a QUIESCENT store, and yields to
+   * any work that arrives ({@link storeQuiescent} — checked at start and by
+   * every step): work never waits on housekeeping, so a busy watch session
+   * can starve the trim indefinitely, deliberately. Blob removal is the one
+   * step made atomic against a work-start (see {@link sweepBlobs}) — a
+   * manifest or record deletion racing a reader only ever costs a cold read.
    */
 
   /**
@@ -1722,6 +1745,9 @@ export class BuildCache {
     if (!this.gcDue()) {
       return;
     }
+    /* The caller's reason to stop, OR the store coming back to life: a pass
+     * yields to work at every step boundary. */
+    const abort = (): boolean => shouldAbort() || !this.storeQuiescent();
     fs.mkdirSync(this.gcRoot, { recursive: true });
     /* The handshake's first flag, placed BEFORE judging liveness: a starting
      * process registers its work tree and then scans for markers, so
@@ -1731,31 +1757,43 @@ export class BuildCache {
     fs.writeFileSync(marker, "");
     try {
       /* A deferral leaves `gc/last` alone — it must not silence a retry that
-       * would succeed an hour later. */
-      if (!this.soleLiveFabr()) {
+       * would succeed an hour later. A busy store defers the same way: work
+       * never waits on housekeeping. */
+      if (!this.soleLiveFabr() || !this.storeQuiescent()) {
         return;
       }
       fs.writeFileSync(path.join(this.gcRoot, GC_LAST_FILE), String(this.now()));
       await this.replayServedTouches();
-      const rootedBlobs = await this.readProjectRecords(shouldAbort);
-      if (shouldAbort()) {
+      const rootedBlobs = await this.readProjectRecords(abort);
+      if (abort()) {
         return;
       }
-      await this.expireStores(shouldAbort);
-      if (shouldAbort()) {
+      await this.expireStores(abort);
+      if (abort()) {
         return;
       }
-      const reach = await this.markReachable(rootedBlobs, shouldAbort);
+      const reach = await this.markReachable(rootedBlobs, abort);
       /* The handshake's re-check, between mark and sweep: a process that
        * registered after the sole-live judgment is seen here, before anything
        * irreversible to it happens. */
-      if (reach === undefined || shouldAbort() || !this.soleLiveFabr()) {
+      if (reach === undefined || abort() || !this.soleLiveFabr()) {
         return;
       }
-      await this.sweepBlobs(reach.marked, reach.present, shouldAbort);
+      await this.sweepBlobs(reach.marked, reach.present, abort);
     } finally {
       fs.rmSync(marker, { force: true });
     }
+  }
+
+  /**
+   * No store-mutating work in flight: entry attempts (a superseded straggler
+   * included — it stays inflight until it commits), tree materializations,
+   * and build-state writes. Index writes are deliberately absent: an index
+   * row self-heals through the presentBlob gate, so it needs no protection
+   * from the sweep.
+   */
+  private storeQuiescent(): boolean {
+    return this.inflight.size === 0 && this.inflightTrees.size === 0 && this.activeStateWrites === 0;
   }
 
   /** Whether the daily trim is due — the `gc/last` stamp is over the interval
@@ -2094,17 +2132,40 @@ export class BuildCache {
     }
   }
 
-  /** The sweep step: delete blobs that are unmarked AND older than
+  /** The sweep step: discard blobs that are unmarked AND older than
    * {@link GC_MAX_AGE_MS} — the age test, not merely the grace window, so
    * unrooted content a build keeps re-writing (a recordless project's source
-   * snapshots) churns at most once per window. */
+   * snapshots) churns at most once per window.
+   *
+   * A discard is the abort re-check and a `renameSync` into the process's own
+   * work tree as ONE synchronous step: a work-start is synchronous too
+   * (`inflight.set`), so it lands wholly before the check (the pass aborts)
+   * or wholly after the rename (the pool name is gone, so `ensureBlob`'s
+   * probe misses and writes the content fresh) — never between an
+   * existence probe and the removal. The rename preserves the inode, so a
+   * hardlink staged from the blob a moment earlier keeps working, and the
+   * work tree's own exit/reclaim cleanup deletes the trash — no machinery of
+   * this pass's own. */
   private async sweepBlobs(marked: ReadonlySet<string>, present: ReadonlySet<string>, shouldAbort: () => boolean): Promise<void> {
+    fs.mkdirSync(this.ownWorkRoot, { recursive: true });
     for (const hash of present) {
       if (shouldAbort()) {
         return;
       }
-      if (!marked.has(hash)) {
-        await this.removeIfPast(path.resolve(this.blobRoot, hash), GC_MAX_AGE_MS);
+      if (marked.has(hash)) {
+        continue;
+      }
+      const blobPath = path.resolve(this.blobRoot, hash);
+      const held = await stat(blobPath).catch(() => undefined);
+      if (held === undefined || !this.pastWindow(held.mtimeMs, GC_MAX_AGE_MS)) {
+        continue;
+      }
+      if (!shouldAbort()) {
+        try {
+          fs.renameSync(blobPath, path.join(this.ownWorkRoot, `trash-${hash}`));
+        } catch {
+          /* Already gone — best-effort like every removal. */
+        }
       }
     }
   }

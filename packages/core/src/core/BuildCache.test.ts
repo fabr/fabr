@@ -2411,6 +2411,40 @@ describe("BuildCache garbage collection", () => {
     expect(fs.existsSync(path.join(root, "gc", "last")), "a deferral must not silence the retry").to.equal(false);
   });
 
+  it("defers to in-flight store work, without stamping", async () => {
+    /* The quiescence rule: a pass never runs beside a store writer — here an
+     * entry attempt held open, the shape a superseded straggler has (it stays
+     * inflight until it commits). Work never waits on housekeeping; the pass
+     * yields and, unstamped, retries at the next trigger. */
+    const cache = new BuildCache(root, NULL_LOG);
+    const blob = await makeEntry(cache, "rule:quiet:1", "quiet");
+    age(manifestOf("rule:quiet:1"), 40);
+    age(blob, 40);
+    let release: (() => void) | undefined;
+    const attempt = cache.getOrCreate("rule:open:1", () =>
+      Computable.from<BuildResult>(resolve => {
+        release = () => resolve({ result: new FileSet(new Map([["out.txt", MemoryFile.from("open")]])) });
+      })
+    );
+    fs.rmSync(path.join(root, "gc", "last"), { force: true });
+    await toPromise(cache.maybeCollectGarbage());
+    expect(fs.existsSync(manifestOf("rule:quiet:1")), "nothing deleted beside in-flight work").to.equal(true);
+    expect(fs.existsSync(blob)).to.equal(true);
+    expect(fs.existsSync(path.join(root, "gc", "last")), "a deferral must not silence the retry").to.equal(false);
+
+    /* The attempt's create runs behind the miss probe; wait for it before
+     * settling the attempt. */
+    await eventually(() => release !== undefined, "the attempt's create to run");
+    release!();
+    await toPromise(attempt);
+    /* Quiescent again, the pass runs — on a fresh instance, as every collect
+     * test: this session's own commits ride the served set, whose replay
+     * would freshen the artificially aged manifest right back. */
+    await runGC();
+    expect(fs.existsSync(manifestOf("rule:quiet:1")), "quiescent again, the pass runs").to.equal(false);
+    expect(fs.existsSync(blob)).to.equal(false);
+  });
+
   it("collects at most once per interval — the gc/last stamp", async () => {
     const cache = new BuildCache(root, NULL_LOG);
     const blob = await makeEntry(cache, "rule:stamped:1", "stamped");
