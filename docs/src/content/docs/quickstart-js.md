@@ -108,6 +108,33 @@ js_package mylib {
 }
 ```
 
+## Stylesheets
+
+Stylesheets are ordinary sources: list them in `srcs` and they build with everything else — there is
+no separate target to declare. Sass (`.scss`/`.sass`) is lowered to CSS, and a `.module.` infix makes
+the file a **css-module**, whose class names are scoped so two packages can both define `.card`
+without colliding.
+
+```
+js_package ui {
+  srcs = src:**/*.ts src:**/*.scss;
+}
+```
+
+```ts
+import styles from "./Card.module.scss";  // the scoped class map
+import "./theme.scss";                    // published as theme.css, imported for its effect
+
+element.className = styles.cardTitle;     // "card-title_QpiebDfz"
+```
+
+Write the import as the file is named on disk; fabr rewrites it to whatever ships. A module's class
+map is typed from the classes the stylesheet really defines, so `styles.noSuchClass` is a compile
+error rather than `undefined` at runtime, and both spellings are available (`styles.cardTitle` and
+`styles["card-title"]`). The package ships the compiled `.css`, the class map, and a declaration for
+it; Sass partials (`_vars.scss`) are inputs only and produce nothing of their own. A `composes:` may
+name any stylesheet of the same target, or a plain stylesheet that a package dependency delivers.
+
 ## Testing
 
 For package tests, just add a `tests` property with the sources and (if needed) any additional test dependencies in `test_deps`.
