@@ -253,11 +253,6 @@ const GC_LAST_FILE = "last";
  * can never clobber each other's, and each only ever removes its own. */
 const GC_RUNNING_PREFIX = "running-";
 const PROJECT_SOURCES_FILE = "sources";
-/** The store names the current layout claims. A root-level name outside these
- * and {@link CLAIMED_MANIFEST} is garbage under the one-fabr-version-per-cache
- * assumption — which covers every retired layout's debris with no blocklist
- * to maintain. */
-const CLAIMED_STORES = new Set(["blob", "tree", "work", "deps", "incremental", "projects", "gc"]);
 /** An entry manifest's filename: a hashed key plus the suffix. */
 const CLAIMED_MANIFEST = /^[0-9a-f]{64}\.manifest$/;
 
@@ -1883,9 +1878,9 @@ export class BuildCache {
    * The expire step: delete root manifests past {@link GC_MAX_AGE_MS};
    * likewise expired incremental
    * records, discovered-deps records (and then-empty anchors), and tree dirs;
-   * reap dead-pid work trees; and delete every root-level name the layout
-   * doesn't claim — garbage under the one-version assumption, once past
-   * grace.
+   * and reap dead-pid work trees. A root-level name the layout doesn't
+   * recognize is left alone — another fabr version's store, or a shared
+   * directory's contents, are not this layout's to delete.
    */
   private async expireStores(shouldAbort: () => boolean): Promise<void> {
     for (const entry of await readdir(this.root).catch(() => [] as fs.Dirent[])) {
@@ -1895,8 +1890,6 @@ export class BuildCache {
       const file = path.resolve(this.root, entry.name);
       if (CLAIMED_MANIFEST.test(entry.name) && entry.isFile()) {
         await this.removeIfPast(file, GC_MAX_AGE_MS);
-      } else if (!CLAIMED_STORES.has(entry.name)) {
-        await this.removeIfPast(file, 0);
       }
     }
     for (const record of await readdir(this.incrementalRoot).catch(() => [] as fs.Dirent[])) {

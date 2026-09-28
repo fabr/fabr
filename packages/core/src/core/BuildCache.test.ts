@@ -2308,14 +2308,19 @@ describe("BuildCache garbage collection", () => {
     expect(fs.existsSync(manifestOf("rule:broken:1"))).to.equal(false);
   });
 
-  it("removes unknown root-level names once past grace — retired debris included", async () => {
-    fs.mkdirSync(path.join(root, "depmemo"));
-    fs.writeFileSync(path.join(root, "depmemo", "stale"), "x");
-    age(path.join(root, "depmemo"), 2);
-    fs.mkdirSync(path.join(root, "newstore"));
+  it("leaves unknown root-level names alone, however old", async () => {
+    /* Another fabr version's store, or — under a misconfigured/shared
+     * FABR_CACHE_DIR — data that isn't fabr's at all. Never this layout's to
+     * delete. */
+    fs.mkdirSync(path.join(root, "otherstore"));
+    fs.writeFileSync(path.join(root, "otherstore", "data"), "x");
+    fs.writeFileSync(path.join(root, "loosefile"), "x");
+    age(path.join(root, "otherstore"), 60);
+    age(path.join(root, "otherstore", "data"), 60);
+    age(path.join(root, "loosefile"), 60);
     await runGC();
-    expect(fs.existsSync(path.join(root, "depmemo")), "aged unknown store").to.equal(false);
-    expect(fs.existsSync(path.join(root, "newstore")), "a young unknown name rides the grace window").to.equal(true);
+    expect(fs.existsSync(path.join(root, "otherstore", "data")), "an aged unrecognized store survives").to.equal(true);
+    expect(fs.existsSync(path.join(root, "loosefile")), "an aged unrecognized file survives").to.equal(true);
   });
 
   it("expires stale incremental records, deps records and trees", async () => {
