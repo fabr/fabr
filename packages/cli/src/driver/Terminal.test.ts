@@ -156,6 +156,20 @@ describe("TerminalStream", () => {
       expect(out.take()).to.equal("done\nRunning:\n  Building a    2ms\n");
     });
 
+    it("ignores a zero-length write for the mid-line judgment", () => {
+      const out = new CapturedStream();
+      const terminal = new TerminalStream(out, true);
+      terminal.setPaneSource(() => pane("  Building a    1ms"));
+      out.take();
+
+      /* A drain probe (`write("")`) moves no cursor, so it must not read as a
+       * half-written line and hold the pane down until someone's newline. */
+      out.write("");
+      out.take();
+      terminal.setPaneSource(() => pane("  Building a    2ms"));
+      expect(out.take()).to.contain("2ms");
+    });
+
     it("cuts the pane to what the screen can spare, saying what it dropped", () => {
       const out = new CapturedStream();
       const terminal = new TerminalStream(out, true);

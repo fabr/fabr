@@ -367,6 +367,12 @@ export class RunSupervisor {
    * it, so the next change relaunches. Keyed on the install, so a handler for a
    * superseded one can't clear the live child. */
   private onChildGone(install: Install, err?: Error): void {
+    if (install.child === undefined) {
+      /* `error` and `exit` can both fire for one child; the first delivery was
+       * the event, and a second resume would lift someone else's nested
+       * suspension early. */
+      return;
+    }
     if (err) {
       this.log.log(DIAG_RUN_ERROR, { name: this.name, message: err.message });
     }

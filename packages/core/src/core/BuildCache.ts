@@ -655,8 +655,11 @@ export class BuildCache {
       err => {
         if (entry && isTransientFetchError(err)) {
           /* Stale-if-error (RFC 9111), never silently and only for a transient
-           * failure — a definite 4xx answer propagates instead. */
+           * failure — a definite 4xx answer propagates instead. Served is
+           * served: the recency touch keeps a copy the origin cannot currently
+           * replace from ageing into the very trim that would delete it. */
           this.log.log(DIAG_SERVING_STALE, { url, reason: err instanceof Error ? err.message : String(err) });
+          this.noteEntryServed(key);
           return entry.files;
         }
         throw err;
@@ -2136,16 +2139,7 @@ export class BuildCache {
    * {@link GC_MAX_AGE_MS} — the age test, not merely the grace window, so
    * unrooted content a build keeps re-writing (a recordless project's source
    * snapshots) churns at most once per window.
-   *
-   * A discard is the abort re-check and a `renameSync` into the process's own
-   * work tree as ONE synchronous step: a work-start is synchronous too
-   * (`inflight.set`), so it lands wholly before the check (the pass aborts)
-   * or wholly after the rename (the pool name is gone, so `ensureBlob`'s
-   * probe misses and writes the content fresh) — never between an
-   * existence probe and the removal. The rename preserves the inode, so a
-   * hardlink staged from the blob a moment earlier keeps working, and the
-   * work tree's own exit/reclaim cleanup deletes the trash — no machinery of
-   * this pass's own. */
+   */
   private async sweepBlobs(marked: ReadonlySet<string>, present: ReadonlySet<string>, shouldAbort: () => boolean): Promise<void> {
     fs.mkdirSync(this.ownWorkRoot, { recursive: true });
     for (const hash of present) {

@@ -1796,6 +1796,25 @@ describe("BuildCache non-immutable fetches", () => {
     expect(warnings[0].url).to.equal(origin.url);
   });
 
+  it("counts a stale-if-error serve as served, for the trim's recency", async () => {
+    origin.respond(serve(200, { "cache-control": "max-age=300" }, "one"));
+    await fetchDoc({ immutable: false });
+    /* A fresh instance, so the session-served set holds only what THIS serve
+     * notes (the committing instance's set already holds the key from the
+     * commit itself). */
+    const second = new BuildCache(root, NULL_LOG, () => clock);
+    origin.close();
+    clock += 301_000;
+    expect(
+      await toPromise(
+        second.getOrFetch(origin.url, "test:1", store, UNTRACKED, undefined, { immutable: false }).then(f => f.readFile("doc.txt"))
+      )
+    ).to.equal("one");
+    /* Served is served: the recency touch keeps a copy the origin cannot
+     * currently replace from ageing into the trim that would delete it. */
+    expect(second["servedManifests"].has(hashString(`fetch:test:1 ${origin.url}`))).to.equal(true);
+  });
+
   it("propagates a definite 4xx on revalidation rather than serving stale (auth/not-found)", async () => {
     const warnings: Record<string, unknown>[] = [];
     const logging = new BuildCache(root, { log: (_diagnostic, params) => warnings.push(params) }, () => clock);

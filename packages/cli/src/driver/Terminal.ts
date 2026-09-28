@@ -161,7 +161,13 @@ export class TerminalStream {
       /* A resize invalidates every truncation the pane made, and the erase
        * depends on those truncations having held (a wrapped row occupies two
        * screen lines and would desync the count). Repaint against the new
-       * width immediately rather than waiting for the tick. */
+       * width immediately rather than waiting for the tick.
+       *
+       * Known limit: this first erase counts lines laid out at the OLD width,
+       * so a terminal that reflows on shrink (iTerm2, VTE) can briefly strand
+       * pane fragments; the repaint at the new width heals from there. A
+       * reserved scroll region (DECSTBM) would prevent it but leaves the
+       * user's terminal broken on abnormal exit — the worse failure. */
       this.out.on("resize", () => this.repaint());
       /* Torn down from the shared exit hook (see eraseOnExit) or not at all. */
       eraseOnExit(() => this.erase());
@@ -190,7 +196,11 @@ export class TerminalStream {
       }
       this.erase();
       const accepted = original(chunk as never, encoding as never, callback as never);
-      this.lineStart = endsLine(chunk);
+      /* A zero-length write moves no cursor, so it must not flip the mid-line
+       * judgment (which would hold the pane down until the next newline). */
+      if ((chunk as { length: number }).length !== 0) {
+        this.lineStart = endsLine(chunk);
+      }
       this.paint();
       return accepted;
     };
