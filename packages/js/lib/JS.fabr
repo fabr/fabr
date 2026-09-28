@@ -481,13 +481,6 @@ targetdef sass_compile {
 # its maps beside it; `package_name` is the identity scoped class names are
 # derived from, along with the file.
 #
-# css-modules is the chain's first plugin: a `.module.css` input is scoped and
-# published as `x.css`, the marker consumed, beside `x.css.ts` — a TypeScript
-# shim exporting its class-name map in both the literal and camelCase
-# spellings. Any other stylesheet is copied through unchanged, its map carried
-# beside it. A `composes` reaches any stylesheet of the same target or of a
-# `deps` package.
-#
 # Composed automatically by `js_package`/`js_bundle`/the test pipeline for any
 # styled sources; also declarable directly. Uses `POSTCSS` and
 # `POSTCSS_MODULES`.
