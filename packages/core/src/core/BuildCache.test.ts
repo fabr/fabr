@@ -1982,6 +1982,25 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  /**
+   * What the tree pool holds, absent counting as empty.
+   *
+   * The pool directory is created by the first publish, and `fs.mkdir` runs
+   * its syscall on the thread pool — so whether it exists yet when a
+   * synchronous read runs is not determined by anything the caller can
+   * observe. Both answers mean the same thing here: nothing published.
+   */
+  function poolEntries(): string[] {
+    try {
+      return fs.readdirSync(path.join(root, "tree"));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw err;
+      }
+      return [];
+    }
+  }
+
   /** A FileSet of in-memory files, `name -> content`. */
   function fileset(files: Record<string, string>): FileSet {
     return new FileSet(new Map(Object.entries(files).map(([name, content]) => [name, MemoryFile.from(content)])));
@@ -1999,7 +2018,7 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
 
     /* An equal FileSet is the same entry, served without rebuilding. */
     expect(await toPromise(cache.ensureTree(fileset({ "node_modules/a/index.js": "a" })))).to.equal(entry);
-    expect(fs.readdirSync(path.join(root, "tree"))).to.deep.equal([files.toManifestHash()]);
+    expect(poolEntries()).to.deep.equal([files.toManifestHash()]);
   });
 
   it("holds a tree's files as read-only hardlinks into the blob pool", async () => {
@@ -2079,12 +2098,12 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
      * while the writes are still in flight. */
     const workDirs = fs.readdirSync(path.join(root, "work")).flatMap(owner => fs.readdirSync(path.join(root, "work", owner)));
     expect(workDirs.filter(name => name.startsWith("tree-"))).to.have.lengthOf(1);
-    expect(fs.readdirSync(path.join(root, "tree"))).to.deep.equal([]);
+    expect(poolEntries()).to.deep.equal([]);
 
     const entry = await toPromise(materializing);
     /* And afterwards the pool holds exactly the finished tree, the work dir
      * having been consumed by the publish. */
-    expect(fs.readdirSync(path.join(root, "tree"))).to.deep.equal([files.toManifestHash()]);
+    expect(poolEntries()).to.deep.equal([files.toManifestHash()]);
     expect(fs.readFileSync(path.join(entry, "index.js"), "utf8")).to.equal("x");
   });
 
@@ -2108,7 +2127,7 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
     expect(fs.readFileSync(path.join(entry, "winner.txt"), "utf8")).to.equal("theirs");
     expect(fs.existsSync(path.join(entry, "loser.txt"))).to.equal(false);
     /* Nothing left behind: the discarded temp is gone. */
-    expect(fs.readdirSync(path.join(root, "tree"))).to.deep.equal([files.toManifestHash()]);
+    expect(poolEntries()).to.deep.equal([files.toManifestHash()]);
   });
 
   it("refuses a file that lives outside the cache, rather than taking it either way", () => {
@@ -2127,7 +2146,7 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
     );
     /* And it is refused BEFORE anything exists to clean up. */
     expect(fs.existsSync(elsewhere), "the file is left where its owner put it").to.equal(true);
-    expect(fs.existsSync(path.join(root, "tree")) ? fs.readdirSync(path.join(root, "tree")) : []).to.deep.equal([]);
+    expect(poolEntries()).to.deep.equal([]);
   });
 
   it("leaves no entry (and no debris) when the files fail to materialize", async () => {
@@ -2142,7 +2161,7 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
     await toPromise(cache.ensureTree(broken)).catch((err: Error) => (error = err));
     expect(error).to.not.equal(undefined);
     expect(fs.existsSync(path.join(root, "tree", broken.toManifestHash()))).to.equal(false);
-    expect(fs.readdirSync(path.join(root, "tree"))).to.deep.equal([]);
+    expect(poolEntries()).to.deep.equal([]);
   });
 
   it("joins an in-flight materialization rather than racing itself", async () => {
@@ -2154,7 +2173,7 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
     const second = cache.ensureTree(fileset({ "index.js": "x" }));
     expect(second).to.equal(first);
     expect(await toPromise(second)).to.equal(await toPromise(first));
-    expect(fs.readdirSync(path.join(root, "tree"))).to.have.lengthOf(1);
+    expect(poolEntries()).to.have.lengthOf(1);
   });
 });
 
