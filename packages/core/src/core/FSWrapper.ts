@@ -240,6 +240,19 @@ export function symlink(target: string, filepath: string): Computable<void> {
   });
 }
 
+/** The concrete path `filepath` resolves to, every symlink followed. */
+export function realpath(filepath: string): Computable<string> {
+  return Computable.from<string>((resolve, reject) => {
+    fs.realpath(filepath, (err, resolved) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(resolved);
+      }
+    });
+  });
+}
+
 /** The read-only permission bits for a content-addressed file: 0o444, or 0o555
  * when `mode` is executable. Cache blobs and any file staged to mirror one (a
  * hardlink into the pool, or an in-memory file materialized alongside them) use

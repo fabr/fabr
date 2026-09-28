@@ -1357,7 +1357,9 @@ describe("BuildCache build state", () => {
   };
 
   const recordDir = (targetKey: string): string => path.join(root, "incremental", targetKey);
-  const part = (targetKey: string, name: string): string => path.join(recordDir(targetKey), name);
+  /** The record's LIVE generation directory, resolved as a reader does. */
+  const genDir = (targetKey: string): string => fs.realpathSync(path.join(recordDir(targetKey), "current"));
+  const part = (targetKey: string, name: string): string => path.join(genDir(targetKey), name);
 
   /** An entry in the store as the cache's own machinery makes one, answering
    * the hashed key it lives under — what a record's `outputs` link must
@@ -1406,14 +1408,15 @@ describe("BuildCache build state", () => {
      * action's own key material verbatim, each sealed with the trailing count
      * that refuses a torn copy; `state` is an ordinary entry manifest whose
      * bytes live in the blob pool under the hash its line references;
-     * `outputs` is a relative link to the entry itself. */
+     * `outputs` is a relative link to the entry itself. The four live in a
+     * generation directory addressed by the record's `current` symlink. */
     const targetKey = "target-key-format";
     const key = await record(targetKey);
-    expect(fs.readdirSync(recordDir(targetKey)).sort()).to.deep.equal(["discovered", "inputs", "outputs", "state"]);
+    expect(fs.readdirSync(genDir(targetKey)).sort()).to.deep.equal(["discovered", "inputs", "outputs", "state"]);
     const inputs = fs.readFileSync(part(targetKey, "inputs"), "utf8");
     expect(parseRecordedBase(inputs)?.rows.length, "the key material reads back, sealed").to.equal(2);
     expect(fs.readFileSync(part(targetKey, "state"), "utf8").startsWith("!meta "), "the state is an entry manifest").to.equal(true);
-    expect(fs.readlinkSync(part(targetKey, "outputs"))).to.equal(path.join("..", "..", `${key}.manifest`));
+    expect(fs.readlinkSync(part(targetKey, "outputs"))).to.equal(path.join("..", "..", "..", `${key}.manifest`));
     expect(fs.existsSync(path.join(root, "blob", hashString(Buffer.from(DRIVER_BYTES)))), "the tool's blob is in the pool").to.equal(
       true
     );
@@ -1518,7 +1521,7 @@ describe("BuildCache build state", () => {
         inputs: STATE.inputs,
       })
     );
-    expect(fs.readdirSync(recordDir("key-inputs-only")).sort()).to.deep.equal(["discovered", "inputs", "outputs"]);
+    expect(fs.readdirSync(genDir("key-inputs-only")).sort()).to.deep.equal(["discovered", "inputs", "outputs"]);
     const inputsRead = await readState("key-inputs-only");
     expect(inputsRead?.inputs?.size).to.equal(2);
     expect(inputsRead?.incrementalState, "a part never written reads as absent").to.equal(undefined);
@@ -1529,7 +1532,7 @@ describe("BuildCache build state", () => {
         incrementalState: STATE.incrementalState,
       })
     );
-    expect(fs.readdirSync(recordDir("key-state-only")).sort()).to.deep.equal(["outputs", "state"]);
+    expect(fs.readdirSync(genDir("key-state-only")).sort()).to.deep.equal(["outputs", "state"]);
     const stateRead = await readState("key-state-only");
     expect(stateRead?.inputs).to.equal(undefined);
     expect(stateRead?.incrementalState?.size).to.equal(1);
@@ -1555,7 +1558,7 @@ describe("BuildCache build state", () => {
     const later = await entry("later-entry", { "out.js": "later" });
     await toPromise(cache.writeBuildState(targetKey, cache.beginBuildStateAttempt(targetKey), later, {}));
     expect(fs.readlinkSync(part(targetKey, "outputs")), "still the earlier build's entry").to.equal(
-      path.join("..", "..", `${first}.manifest`)
+      path.join("..", "..", "..", `${first}.manifest`)
     );
     expect((await readState(targetKey))?.inputs?.size).to.equal(2);
   });
@@ -1597,6 +1600,59 @@ describe("BuildCache build state", () => {
     const targetKey = "target-key-atomic";
     await record(targetKey);
     expect(fs.readdirSync(path.join(root, "incremental"))).to.deep.equal([targetKey]);
+  });
+
+  it("a resolved generation stays whole across a concurrent swap (no torn pairing)", async () => {
+    /* The reader's contract: resolve `current` once, and every part read from
+     * the resolved directory belongs to ONE build — a swap publishes a new
+     * generation, it never mutates the old one. */
+    const targetKey = "target-key-swap";
+    await record(targetKey, "swap-first");
+    const resolved = genDir(targetKey);
+    const before = fs.readdirSync(resolved).sort();
+    await toPromise(
+      cache.writeBuildState(targetKey, cache.beginBuildStateAttempt(targetKey), await entry("swap-second", { "out.js": "2" }), STATE)
+    );
+    expect(genDir(targetKey), "current moved to the new generation").to.not.equal(resolved);
+    expect(fs.readdirSync(resolved).sort(), "the superseded generation is untouched (young, so unswept)").to.deep.equal(before);
+    expect(await toPromise((await readState(targetKey))!.outputs.getFile("out.js")!.readString())).to.equal("2");
+  });
+
+  it("sweeps a superseded generation once past grace, sparing young ones", async () => {
+    /* The age guard is the concurrent-writer courtesy: cross-process writes
+     * are unlocked, and reaping an in-assembly generation would cost that
+     * process a cold build where sparing it costs a day of debris. */
+    const targetKey = "target-key-gens";
+    await record(targetKey, "gens-first");
+    const first = genDir(targetKey);
+    const when = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(first, when, when);
+    await toPromise(
+      cache.writeBuildState(targetKey, cache.beginBuildStateAttempt(targetKey), await entry("gens-second", { "out.js": "2" }), STATE)
+    );
+    expect(fs.existsSync(first), "the aged superseded generation is gone").to.equal(false);
+    const second = genDir(targetKey);
+    await toPromise(
+      cache.writeBuildState(targetKey, cache.beginBuildStateAttempt(targetKey), await entry("gens-third", { "out.js": "3" }), STATE)
+    );
+    expect(fs.existsSync(second), "a young superseded generation is spared").to.equal(true);
+  });
+
+  it("reads the retired flat-directory record as no record, and swaps past it", async () => {
+    /* The migration: an older cache's parts sit directly in the record
+     * directory with no `current` to resolve — no record, one cold build. The
+     * next write publishes beside them; the flat `outputs` symlink is swept
+     * at once, the rest once aged. */
+    const targetKey = "target-key-flat";
+    fs.mkdirSync(recordDir(targetKey), { recursive: true });
+    fs.writeFileSync(path.join(recordDir(targetKey), "inputs"), "src/a.ts ffff 644\n# end 1\n");
+    fs.symlinkSync(path.join("..", "..", "gone.manifest"), path.join(recordDir(targetKey), "outputs"));
+    expect(await readState(targetKey)).to.equal(undefined);
+
+    await record(targetKey, "flat-replacement");
+    expect((await readState(targetKey))?.outputs.size).to.equal(1);
+    expect(fs.existsSync(path.join(recordDir(targetKey), "outputs")), "the flat symlink is swept unconditionally").to.equal(false);
+    expect(fs.existsSync(path.join(recordDir(targetKey), "inputs")), "a young flat file waits for the age window").to.equal(true);
   });
 });
 

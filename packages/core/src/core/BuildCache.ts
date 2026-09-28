@@ -39,6 +39,7 @@ import {
   readFile,
   readFileBuffer,
   readOnlyPermissions,
+  realpath,
   rename,
   deleteTree,
   stat,
@@ -202,6 +203,9 @@ export interface ICreateOptions {
  * from the retired one-file form. */
 const STATE_INPUTS_FILE = "inputs";
 const STATE_DISCOVERED_FILE = "discovered";
+/** The symlink addressing a build-state record's live generation directory —
+ * the unit a reader resolves once, and a writer atomically swaps. */
+const STATE_CURRENT_LINK = "current";
 const STATE_OUTPUTS_FILE = "outputs";
 const STATE_STATE_FILE = "state";
 
@@ -314,6 +318,9 @@ export class BuildCache {
    * has been written — see {@link beginBuildStateAttempt}. */
   private readonly stateGenerations = new Map<string, number>();
   private readonly statesWritten = new Map<string, number>();
+  /** Per target key, the last build-state write still in flight: successors
+   * chain behind it so swaps land in generation order ({@link writeBuildState}). */
+  private readonly pendingStateWrites = new Map<string, Computable<unknown>>();
 
   /* The session-served set: every recency coordinate this session exercised,
    * one member per kind of touch the GC's aging reads. Each set
@@ -1163,15 +1170,20 @@ export class BuildCache {
 
   /*
    * ── Incremental state ───────────────────────────────────────
-   * What the next build of a target key works from: a directory per target key
-   * holding three facts about one build — the inputs it was made of, the entry
-   * it produced, and the state its tool wants kept. Unlike every other store
-   * this one is MUTABLE — replaced whole by the newest attempt not overtaken by
-   * a later one (see {@link beginBuildStateAttempt}).
+   * What the next build of a target key works from: three facts about one
+   * build — the inputs it was made of, the entry it produced, and the state
+   * its tool wants kept. Unlike every other store this one is MUTABLE, and its
+   * mutation is a POINTER SWAP: each write assembles a fresh generation
+   * directory under the target key and atomically renames the `current`
+   * symlink onto it, so a reader (which resolves `current` once and reads
+   * every part from the resolved directory) always sees ONE build's parts
+   * together — never one generation's outputs with another's state. A
+   * generation is immutable once published; superseded ones are swept by the
+   * next write ({@link sweepSupersededGenerations}).
    */
 
-  /** Where a target key's build-state record lives: a directory, replaced
-   * whole. */
+  /** Where a target key's build-state record lives: a directory of generation
+   * directories addressed through one `current` symlink. */
   private buildStatePath(targetKey: string): string {
     return path.resolve(this.incrementalRoot, targetKey);
   }
@@ -1192,9 +1204,20 @@ export class BuildCache {
    * Only `outputs` is required. Every other manifest reads as **absent**
    * wherever there is no usable file — never recorded, or recorded and damaged
    * — which a consumer handles the same way: nothing to work from.
+   *
+   * `current` is resolved ONCE and every part read from the resolved
+   * generation, so a concurrent swap cannot pair two builds' parts; no
+   * `current` (never recorded, the retired flat layout, a crash before the
+   * first swap) is simply no record.
    */
   public readBuildState(targetKey: string): Computable<IBuildState | undefined> {
-    const dir = this.buildStatePath(targetKey);
+    return realpath(path.join(this.buildStatePath(targetKey), STATE_CURRENT_LINK)).then(
+      dir => this.readBuildStateParts(dir),
+      () => undefined
+    );
+  }
+
+  private readBuildStateParts(dir: string): Computable<IBuildState | undefined> {
     return Computable.forAll(
       [
         this.readRecordFile(dir, STATE_OUTPUTS_FILE),
@@ -1288,12 +1311,15 @@ export class BuildCache {
    * An attempt with nothing to record leaves any existing record alone: the
    * parts there still describe one real earlier build, so a later run may
    * still work from it. A superseded attempt (an older generation than one
-   * already written) is refused silently, before it touches the filesystem.
+   * already written) is refused silently, before it touches the filesystem;
+   * writes that do proceed chain behind each other, so their swaps land in
+   * generation order.
    *
-   * The record is built in the work tree and renamed into place over the old
-   * one, which must be removed first since `rename(2)` will not replace a
-   * non-empty directory. A crash in that window leaves no record — one cold
-   * build, self-healing, and never a torn pairing of one build's state with
+   * The record is assembled as a fresh generation directory inside the record
+   * and published by atomically renaming the `current` symlink onto it — a
+   * generation is complete before anything can resolve to it, so a crash mid-
+   * assembly leaves the previous record standing and an unreferenced directory
+   * the next write sweeps. Never a torn pairing of one build's state with
    * another's inputs.
    */
   public writeBuildState(
@@ -1302,29 +1328,45 @@ export class BuildCache {
     entryKey: string,
     state: { inputs?: string; discovered?: string; incrementalState?: FileSet }
   ): Computable<void> {
-    const { inputs, discovered, incrementalState } = state;
+    const { inputs, incrementalState } = state;
     if (generation <= (this.statesWritten.get(targetKey) ?? 0)) {
       return Computable.resolve(undefined);
     }
     this.statesWritten.set(targetKey, generation);
-    /* The directory exists only if there is something to record: a lone
+    /* The record exists only if there is something to keep: a lone
      * `outputs` link would say only what the action's own key already says. */
     if (inputs === undefined && isNothing(incrementalState)) {
       return Computable.resolve(undefined);
     }
+    const previous = this.pendingStateWrites.get(targetKey) ?? Computable.resolve(undefined);
+    const write = previous.then(() => this.performStateWrite(targetKey, entryKey, state));
+    this.pendingStateWrites.set(
+      targetKey,
+      write.then(
+        () => undefined,
+        () => undefined
+      )
+    );
+    return write;
+  }
+
+  private performStateWrite(
+    targetKey: string,
+    entryKey: string,
+    state: { inputs?: string; discovered?: string; incrementalState?: FileSet }
+  ): Computable<void> {
+    const { inputs, discovered, incrementalState } = state;
     const dir = this.buildStatePath(targetKey);
-    let staging: string;
+    let gen: string;
     try {
-      staging = this.createWorkDir("state-");
+      fs.mkdirSync(dir, { recursive: true });
+      gen = fs.mkdtempSync(path.join(dir, "g-"));
     } catch {
       return Computable.resolve(undefined);
     }
     return (
       Computable.forAll(
         [
-          /* The record's parent, needed by the rename below; a failure lands in
-           * the best-effort catch like the rest of the assembly. */
-          mkdir(this.incrementalRoot),
           /* The base goes in as the key material it IS — written, not rebuilt,
            * each part sealed with a trailing count so a torn or truncated copy
            * reads as no base rather than as a shorter one. Its rows are
@@ -1335,32 +1377,67 @@ export class BuildCache {
            * base missing the part (see {@link readBuildState}). */
           inputs === undefined
             ? Computable.resolve(undefined)
-            : writeFile(path.join(staging, STATE_INPUTS_FILE), sealRecordedBase(inputs)),
+            : writeFile(path.join(gen, STATE_INPUTS_FILE), sealRecordedBase(inputs)),
           inputs === undefined
             ? Computable.resolve(undefined)
-            : writeFile(path.join(staging, STATE_DISCOVERED_FILE), sealRecordedBase(discovered ?? "")),
+            : writeFile(path.join(gen, STATE_DISCOVERED_FILE), sealRecordedBase(discovered ?? "")),
           isNothing(incrementalState)
             ? Computable.resolve(undefined)
-            : this.storeContent(incrementalState).then(stored => this.storeManifest(path.join(staging, STATE_STATE_FILE), stored)),
-          /* Relative to where the record will LIVE, not to the work dir it is
-           * assembled in. */
-          symlink(path.relative(dir, this.manifestPath(entryKey)), path.join(staging, STATE_OUTPUTS_FILE)),
+            : this.storeContent(incrementalState).then(stored => this.storeManifest(path.join(gen, STATE_STATE_FILE), stored)),
+          /* Relative to the generation directory the link lives in. */
+          symlink(path.relative(gen, this.manifestPath(entryKey)), path.join(gen, STATE_OUTPUTS_FILE)),
         ],
         () => undefined
       )
-        .then(() => deleteTree(dir))
-        .then(() => rename(staging, dir))
-        /* A work dir is private (mkdtemp's 0700); a record is ordinary store
-         * content and readable like the rest of it. */
-        .then(() => fs.chmodSync(dir, 0o755))
+        /* Assembled private (mkdtemp's 0700), opened just before the swap
+         * publishes it — a record is ordinary store content. */
+        .then(() => fs.chmodSync(gen, 0o755))
+        .then(() => {
+          /* The swap: rename a fresh symlink over `current` — atomic, so a
+           * reader resolves the old generation or the new one, never neither. */
+          const tmp = path.join(dir, `.${path.basename(gen)}`);
+          return symlink(path.basename(gen), tmp).then(() => rename(tmp, path.join(dir, STATE_CURRENT_LINK)));
+        })
+        .then(() => this.sweepSupersededGenerations(dir, path.basename(gen)))
         .catch(() => {
           /* Advisory in the same sense the discovered-deps record is: failing to
            * record a target key costs its next build a cold compile, which is
            * exactly what having no record costs. It must never outrank the
            * build's outcome. */
-          this.releaseWorkDir(staging);
+          void deleteTree(gen).catch(() => undefined);
           return undefined;
         })
+    );
+  }
+
+  /**
+   * Remove a record's superseded content: every entry beside the `current`
+   * link and the generation it names. A symlink goes unconditionally (a
+   * superseded swap temp, or the retired flat layout's `outputs`); a file or
+   * directory only once past the grace window — a CONCURRENT process's
+   * in-assembly generation must not be reaped (cross-process writes are
+   * unlocked; reaping would cost it a cold build where sparing costs a day of
+   * debris). Best-effort throughout.
+   */
+  private sweepSupersededGenerations(dir: string, keep: string): Computable<void> {
+    return readdir(dir).then(
+      entries =>
+        Computable.forAll(
+          entries
+            .filter(entry => entry.name !== STATE_CURRENT_LINK && entry.name !== keep)
+            .map(entry => {
+              const target = path.join(dir, entry.name);
+              if (entry.isSymbolicLink()) {
+                return deleteFile(target).catch(() => undefined);
+              }
+              return stat(target).then(
+                st => (this.pastWindow(st.mtimeMs, 0) ? deleteTree(target).catch(() => undefined) : Computable.resolve(undefined)),
+                () => undefined
+              );
+            }),
+          () => undefined
+        ),
+      () => undefined
     );
   }
 
@@ -1965,13 +2042,25 @@ export class BuildCache {
       if (shouldAbort()) {
         return undefined;
       }
-      const stateFile = path.resolve(this.incrementalRoot, record.name, STATE_STATE_FILE);
+      const recordDir = path.resolve(this.incrementalRoot, record.name);
+      /* Resolve `current` once and read from the resolved generation, the
+       * reader's own discipline — a record with no resolvable current (the
+       * retired flat layout, a crash before the first swap) claims nothing
+       * and is left to the expire pass. */
+      const gen = await realpath(path.join(recordDir, STATE_CURRENT_LINK)).then(
+        resolved => resolved,
+        () => undefined
+      );
+      if (gen === undefined) {
+        continue;
+      }
+      const stateFile = path.join(gen, STATE_STATE_FILE);
       if (!fs.existsSync(stateFile)) {
         continue;
       }
       const hashes = await this.manifestBlobHashes(stateFile);
       if (hashes === undefined || hashes.some(hash => !present.has(hash))) {
-        await deleteTree(path.resolve(this.incrementalRoot, record.name)).catch(() => undefined);
+        await deleteTree(recordDir).catch(() => undefined);
         continue;
       }
       for (const hash of hashes) {

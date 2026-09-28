@@ -243,9 +243,11 @@ class Compile {
   }
 
   /** The entry key the record points at, read off the link itself — the durable
-   * form of "which build this record describes". */
+   * form of "which build this record describes". The record's parts live in
+   * the generation directory its `current` symlink names. */
   private baseEntry(): string {
-    const link = fs.readlinkSync(path.join(this.root, "cache", "incremental", TARGET_KEY, "outputs"));
+    const record = path.join(this.root, "cache", "incremental", TARGET_KEY);
+    const link = fs.readlinkSync(path.join(fs.realpathSync(path.join(record, "current")), "outputs"));
     return path.basename(link, ".manifest");
   }
 }

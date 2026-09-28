@@ -754,8 +754,11 @@ function pipelineUnbounded(
            * exited while its producer is still writing, close fabr's read end of
            * whatever feeds this stage — the producer's stdout, and under `2>&1`
            * its stderr too — so the producer's next write fails, rather than
-           * leaving it blocked forever on a pipe nobody drains (a hung pipeline). */
-          if (i > 0) {
+           * leaving it blocked forever on a pipe nobody drains (a hung pipeline).
+           * Under `1>&2` the pipe carries NOTHING from the producer — its streams
+           * feed the diagnostic route, and destroying them would EPIPE a healthy
+           * stage. */
+          if (i > 0 && specs[i - 1].mergedTo !== "err") {
             procs[i - 1].stdout?.destroy();
             if (specs[i - 1].mergedTo === "out") {
               procs[i - 1].stderr?.destroy();

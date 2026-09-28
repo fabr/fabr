@@ -448,7 +448,7 @@ for (const name of ${JSON.stringify(kept)}) {
     const cache = new BuildCache(path.join(root, "cache"), NULL_LOG);
     const first = await keepState([], "1", cache);
     expect(first.state, "nothing kept, so no kept half at all").to.equal(undefined);
-    const record = path.join(root, "cache", "incremental", RECORD_KEY);
+    const record = fs.realpathSync(path.join(root, "cache", "incremental", RECORD_KEY, "current"));
     expect(fs.existsSync(path.join(record, "state")), "and no `state` file in the record").to.equal(false);
     expect(fs.existsSync(path.join(record, "inputs")), "while the input manifest is recorded as ever").to.equal(true);
 
