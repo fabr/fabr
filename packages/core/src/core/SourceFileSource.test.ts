@@ -287,10 +287,9 @@ describe("SourceFileSource index trust", () => {
     fs.rmSync(cacheRoot, { recursive: true, force: true });
   });
 
-  /** A source file whose mtime is safely outside the smudge window — floored
-   * to a whole second, which round-trips exactly through every utimes/stat
-   * conversion (sub-ms fractions do not, and a test that re-sets a
-   * stat-derived mtime needs the round-trip exact). */
+  /** A source file with its mtime floored to a whole second, which round-trips
+   * exactly through every utimes/stat conversion (sub-ms fractions do not, and
+   * a test that re-sets a stat-derived mtime needs the round-trip exact). */
   function writeAged(name: string, content: string, ageMs = 10_000): string {
     const file = path.join(sourceRoot, name);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -323,9 +322,12 @@ describe("SourceFileSource index trust", () => {
     return hashes;
   }
 
-  it("serves a stat-matching row without re-reading (proven by poisoning)", async () => {
+  it("serves a stat-matching VERIFIED row without re-reading (proven by poisoning)", async () => {
     writeAged("src/a.ts", "export const a = 1;\n");
+    /* Two runs: the first records the row unverified, the second's agreeing
+     * capture verifies it. */
     const [realHash] = await ingestAndPersist(newSource(), "src/a.ts");
+    await ingestAndPersist(newSource(), "src/a.ts");
 
     /* Swap the recorded hash for one naming different pool content. A trusting
      * read must surface the poison; a re-hashing read cannot. */
@@ -344,6 +346,7 @@ describe("SourceFileSource index trust", () => {
   it("a stat mismatch defeats a poisoned row (the determinism property)", async () => {
     writeAged("src/a.ts", "export const a = 1;\n");
     const [realHash] = await ingestAndPersist(newSource(), "src/a.ts");
+    await ingestAndPersist(newSource(), "src/a.ts");
 
     const bogus = Buffer.from("poisoned content");
     const bogusHash = hashString(bogus);
@@ -358,14 +361,29 @@ describe("SourceFileSource index trust", () => {
     expect(reread!.hash).to.equal(realHash);
   });
 
-  it("smudged captures record no row; rested ones do", async () => {
-    writeAged("aged.ts", "aged\n");
-    fs.writeFileSync(path.join(sourceRoot, "fresh.ts"), "fresh\n");
+  it("records a first capture unverified; a second run's agreement verifies it", async () => {
+    writeAged("a.ts", "a\n");
+    await ingestAndPersist(newSource(), "a.ts");
+    expect(parseSourceIndex(fs.readFileSync(recordPath()!, "utf8"))!.rows.get("a.ts")!.verified).to.equal(false);
 
-    await ingestAndPersist(newSource(), "aged.ts", "fresh.ts");
-    const parsed = parseSourceIndex(fs.readFileSync(recordPath()!, "utf8"))!;
-    expect(parsed.rows.has("aged.ts")).to.equal(true);
-    expect(parsed.rows.has("fresh.ts")).to.equal(false);
+    await ingestAndPersist(newSource(), "a.ts");
+    expect(parseSourceIndex(fs.readFileSync(recordPath()!, "utf8"))!.rows.get("a.ts")!.verified).to.equal(true);
+  });
+
+  it("re-hashes an unverified row on a stat match, catching a same-tick overwrite", async () => {
+    /* The poison case verification exists for: a second write landing in the
+     * same filesystem-timestamp tick as the hashed one, invisible to the
+     * stat. No clock takes part in catching it. */
+    const file = writeAged("a.ts", "one\n");
+    const recorded = fs.statSync(file).mtime;
+    const [firstHash] = await ingestAndPersist(newSource(), "a.ts");
+
+    /* Same size, same mtime — only the bytes differ. */
+    fs.writeFileSync(file, "two\n");
+    fs.utimesSync(file, recorded, recorded);
+    const reread = await toPromise(newSource().ingest("a.ts"));
+    expect(reread!.hash).to.not.equal(firstHash);
+    expect(await toPromise(reread!.readString()), "the overwrite is served, not the stale row").to.equal("two\n");
   });
 
   it("a swept blob falls back to the full path and restores it", async () => {
@@ -436,6 +454,9 @@ describe("SourceFileSource index trust", () => {
   it("an unchanged run writes nothing (change-gated persist)", async () => {
     writeAged("a.ts", "a\n");
     await ingestAndPersist(newSource(), "a.ts");
+    /* The second run verifies the row, which IS a change; from the third on
+     * there is nothing left to learn. */
+    await ingestAndPersist(newSource(), "a.ts");
     const before = fs.statSync(recordPath()!).mtimeMs;
 
     await ingestAndPersist(newSource(), "a.ts");
@@ -444,8 +465,10 @@ describe("SourceFileSource index trust", () => {
 
   it("confirms write-back expectations on the trusted path too", async () => {
     /* Same length, different bytes: the write-back below must leave a stat the
-     * recorded row still matches once the mtime is restored. */
+     * recorded row still matches once the mtime is restored. Two runs, so the
+     * row is VERIFIED and the trusted path is the one taken. */
     writeAged("a.snap", "aaaaaaaa");
+    await ingestAndPersist(newSource(), "a.snap");
     await ingestAndPersist(newSource(), "a.snap");
     const row = parseSourceIndex(fs.readFileSync(recordPath()!, "utf8"))!.rows.get("a.snap")!;
 

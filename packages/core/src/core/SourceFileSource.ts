@@ -30,18 +30,6 @@ import { WatchController } from "./WatchController";
 import { IResolvedWriteBack, IWriteBackObserver, writeBackFile } from "./WriteBack";
 import { sniffMime } from "../support/Mime";
 
-/**
- * The smudge window (ms): a capture whose mtime is within this of the pre-read
- * clock is never recorded in the source index — a write racing the ingest
- * inside one filesystem-timestamp tick leaves the mtime unchanged, so the
- * hash↔stat pairing is only provable for a file already at rest. Two full
- * ticks of the coarsest common granularity (FAT/exFAT stamp at 2s), leaving
- * margin for that and for modest clock skew on a network mount. A FUTURE
- * mtime (skew the other way) never records a row — perpetual re-hashing,
- * never a wrong trust.
- */
-const SMUDGE_EPSILON_MS = 4000;
-
 /** Minimum gap between index writes under watch — an edit-heavy session
  * rewrites the record at most this often; the tail is best-effort (a dropped
  * row just re-hashes next start). One-shot runs write once, ungated. */
@@ -198,7 +186,11 @@ export class SourceFileSource extends FSFileSource {
         stat(filepath).then(fileStat => {
           const fsStat = { size: fileStat.size, mtime: fileStat.mtime, mode: fileStat.mode };
           const held = rows.get(filename);
-          if (held !== undefined && held.size === fileStat.size && held.mtimeMs === fileStat.mtimeMs) {
+          /* Only a VERIFIED row is served on a stat match: an unverified one
+           * re-hashes here, which is the second capture that verifies it (see
+           * recordIndexRow) — or catches a write that landed in the same
+           * filesystem-timestamp tick as the recorded one. */
+          if (held !== undefined && held.verified && held.size === fileStat.size && held.mtimeMs === fileStat.mtimeMs) {
             const blobPath = this.cache.presentBlob(held.hash);
             if (blobPath !== undefined) {
               /* Confirmation is unconditional in ingest — which branch served
@@ -207,14 +199,11 @@ export class SourceFileSource extends FSFileSource {
               return Computable.resolve(new FSFile(this.root, filename, fsStat, held.hash, held.mime, blobPath));
             }
           }
-          /* The smudge judgment's clock, sampled before any byte is read —
-           * see recordIndexRow. */
-          const capturedAt = Date.now();
           return readFileBuffer(filepath).then(bytes => {
             const hash = hashString(bytes);
             this.confirmExpected(filename, hash);
             const mime = sniffMime(bytes);
-            this.recordIndexRow(rows, filename, fileStat.size, fileStat.mtimeMs, capturedAt, hash, mime);
+            this.recordIndexRow(rows, filename, fileStat.size, fileStat.mtimeMs, hash, mime);
             return this.cache
               .ensureBlob(hash, bytes, fileStat.mode)
               .then(blobPath => new FSFile(this.root, filename, fsStat, hash, mime, blobPath));
@@ -262,34 +251,31 @@ export class SourceFileSource extends FSFileSource {
   }
 
   /**
-   * Refresh a row from a full-path capture — unless the capture is smudged:
-   * a row is recorded only when the file's mtime tick had already closed
-   * before the read began, i.e. the mtime is at least {@link SMUDGE_EPSILON_MS}
-   * older than `capturedAt`, the clock as of just before the read. Any write
-   * racing the ingest after that instant lands in a later tick, so it fails
-   * the stat match next run. A smudged file's row (if any) is dropped; the
-   * file re-hashes next run, by which time it is at rest.
+   * Refresh a row from a full-path capture. A fresh or disagreeing capture
+   * records **unverified**: a write landing in the same filesystem-timestamp
+   * tick as this one is invisible to the stat, so a single capture may not be
+   * trusted. A capture that AGREES with the held row is the second observation
+   * that **verifies** it — from then on a stat match serves the row without
+   * reading (see ingest). No clock takes part: the poison tick is over by the
+   * time any later capture compares against the row.
    */
   private recordIndexRow(
     rows: Map<string, ISourceIndexRow>,
     filename: string,
     size: number,
     mtimeMs: number,
-    capturedAt: number,
     hash: string,
     mime: string
   ): void {
-    if (capturedAt - mtimeMs < SMUDGE_EPSILON_MS) {
-      if (rows.delete(filename)) {
+    const held = rows.get(filename);
+    if (held !== undefined && held.hash === hash && held.size === size && held.mtimeMs === mtimeMs && held.mime === mime) {
+      if (!held.verified) {
+        rows.set(filename, { ...held, verified: true });
         this.indexDirty = true;
       }
       return;
     }
-    const held = rows.get(filename);
-    if (held !== undefined && held.hash === hash && held.size === size && held.mtimeMs === mtimeMs && held.mime === mime) {
-      return;
-    }
-    rows.set(filename, { name: filename, hash, size, mtimeMs, mime });
+    rows.set(filename, { name: filename, hash, size, mtimeMs, mime, verified: false });
     this.indexDirty = true;
   }
 

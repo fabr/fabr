@@ -27,10 +27,10 @@ function rows(...entries: ISourceIndexRow[]): Map<string, ISourceIndexRow> {
 }
 
 describe("source index dialect", () => {
-  it("round-trips rows, including names with spaces and fractional mtimes", () => {
+  it("round-trips rows, including names with spaces, fractional mtimes and both trust marks", () => {
     const written = rows(
-      { name: "src/a.ts", hash: "aa11", size: 120, mtimeMs: 1712345678901.125, mime: "text/plain" },
-      { name: "docs/read me.md", hash: "bb22", size: 0, mtimeMs: 1712345678000, mime: "text/markdown" }
+      { name: "src/a.ts", hash: "aa11", size: 120, mtimeMs: 1712345678901.125, mime: "text/plain", verified: true },
+      { name: "docs/read me.md", hash: "bb22", size: 0, mtimeMs: 1712345678000, mime: "text/markdown", verified: false }
     );
     const parsed = parseSourceIndex(serializeSourceIndex(META, written));
     expect(parsed).to.not.equal(undefined);
@@ -45,19 +45,32 @@ describe("source index dialect", () => {
   });
 
   it("rejects a truncated document via the header count", () => {
-    const text = serializeSourceIndex(META, rows({ name: "a", hash: "aa", size: 1, mtimeMs: 2, mime: "text/plain" }));
+    const text = serializeSourceIndex(META, rows({ name: "a", hash: "aa", size: 1, mtimeMs: 2, mime: "text/plain", verified: true }));
     const torn = text.substring(0, text.lastIndexOf("\n", text.length - 2) + 1);
     expect(parseSourceIndex(torn)).to.equal(undefined);
   });
 
   it("rejects a malformed row", () => {
-    const text = serializeSourceIndex(META, rows({ name: "a", hash: "aa", size: 1, mtimeMs: 2, mime: "text/plain" }));
+    const text = serializeSourceIndex(META, rows({ name: "a", hash: "aa", size: 1, mtimeMs: 2, mime: "text/plain", verified: true }));
     expect(parseSourceIndex(text.replace("aa 1 2", "aa one 2"))).to.equal(undefined);
   });
 
   it("rejects a row with an empty field (Number('') would read as 0)", () => {
-    const text = serializeSourceIndex(META, rows({ name: "a", hash: "aa", size: 1, mtimeMs: 2, mime: "text/plain" }));
+    const text = serializeSourceIndex(META, rows({ name: "a", hash: "aa", size: 1, mtimeMs: 2, mime: "text/plain", verified: true }));
     expect(parseSourceIndex(text.replace("aa 1 2", "aa  2"))).to.equal(undefined);
     expect(parseSourceIndex(text.replace(" text/plain", " "))).to.equal(undefined);
+  });
+
+  it("rejects a row whose trust mark is neither '=' nor '?'", () => {
+    const text = serializeSourceIndex(META, rows({ name: "a", hash: "aa", size: 1, mtimeMs: 2, mime: "text/plain", verified: true }));
+    expect(parseSourceIndex(text.replace(" = ", " ! "))).to.equal(undefined);
+  });
+
+  it("reads the retired unmarked dialect as absent (the magic is the version)", () => {
+    const v1 = serializeSourceIndex(META, rows({ name: "a", hash: "aa", size: 1, mtimeMs: 2, mime: "text/plain", verified: true })).replace(
+      "!source-index 2 ",
+      "!source-index 1 "
+    );
+    expect(parseSourceIndex(v1)).to.equal(undefined);
   });
 });

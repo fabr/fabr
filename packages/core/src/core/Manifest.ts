@@ -222,21 +222,26 @@ function scanBase(text: string): { rows: IManifestRow[]; absent: string[] } {
 /* ── The source index ─────────────────────────────────────────
  * A project's stat cache: one row per used source file pairing the file's
  * content hash (and mime) with the stat it was captured under, so a run whose
- * stat matches can trust the hash and skip reading the file. Every row was
- * judged trustworthy AT CAPTURE (the smudge rule — see SourceFileSource);
- * presence in the document IS that judgement, so the trust check at read-back
- * is stat equality alone.
+ * stat matches can trust the hash and skip reading the file. Trust is earned
+ * by AGREEMENT, not judged at capture: a row is `verified` once a second
+ * capture reproduced it (see SourceFileSource.recordIndexRow), and only a
+ * verified row is served on a stat match — an unverified one re-hashes.
  */
 
 /** One source file's row: the pairing of content identity with the stat it was
  * captured under. `mtimeMs` keeps `fs.Stats.mtimeMs`'s full float precision —
- * equality at read-back is exact, against the same field. */
+ * equality at read-back is exact, against the same field. `verified` is the
+ * trust mark: only a row two captures have agreed on may be served on a stat
+ * match, so a write landing in the same filesystem-timestamp tick as the
+ * hashed one — invisible to the stat — is caught by the next capture, with no
+ * clock in the argument. An unverified row's stat match still re-hashes. */
 export interface ISourceIndexRow {
   readonly name: string;
   readonly hash: string;
   readonly size: number;
   readonly mtimeMs: number;
   readonly mime: string;
+  readonly verified: boolean;
 }
 
 /** The document's header facts. `root` is the real path of the source tree the
@@ -252,15 +257,16 @@ export interface ISourceIndexMeta {
 
 /** The source-index magic. Bump on any grammar or meaning change: an older
  * record then reads as absent, costing one re-hash per file. */
-const SOURCE_INDEX_MAGIC = "!source-index 1 ";
+const SOURCE_INDEX_MAGIC = "!source-index 2 ";
 
 /** A source index as bytes: the magic + header, then one
- * `hash size mtimeMs name mime` row per file in canonical (code-unit) name
- * order, count sealed in the header like every manifest. */
+ * `hash size mtimeMs <trust> name mime` row per file in canonical (code-unit)
+ * name order — `=` a verified row, `?` an unverified one — count sealed in
+ * the header like every manifest. */
 export function serializeSourceIndex(meta: ISourceIndexMeta, rows: ReadonlyMap<string, ISourceIndexRow>): string {
   const lines = [...rows.values()]
     .sort((a, b) => (a.name < b.name ? -1 : 1))
-    .map(row => `${row.hash} ${row.size} ${row.mtimeMs} ${encodeName(row.name)} ${row.mime}`);
+    .map(row => `${row.hash} ${row.size} ${row.mtimeMs} ${row.verified ? "=" : "?"} ${encodeName(row.name)} ${row.mime}`);
   const header = { ...meta, rows: rows.size };
   return [SOURCE_INDEX_MAGIC + JSON.stringify(header), ...lines, ""].join("\n");
 }
@@ -302,26 +308,37 @@ export function parseSourceIndex(text: string): { meta: ISourceIndexMeta; rows: 
 
 /** One row back, or undefined for a line that is not one — every field must be
  * non-empty (`Number("")` is 0, so an empty numeric field would otherwise read
- * as a value). The mime is the rest-of-line after the name, so a mime with a
- * space cannot corrupt the read. */
+ * as a value), and the trust mark must be exactly `=` or `?`. The mime is the
+ * rest-of-line after the name, so a mime with a space cannot corrupt the
+ * read. */
 function parseSourceIndexRow(line: string): ISourceIndexRow | undefined {
   const afterHash = line.indexOf(" ");
   const afterSize = line.indexOf(" ", afterHash + 1);
   const afterMtime = line.indexOf(" ", afterSize + 1);
-  const afterName = line.indexOf(" ", afterMtime + 1);
-  if (afterHash < 1 || afterSize <= afterHash + 1 || afterMtime <= afterSize + 1 || afterName <= afterMtime + 1 || afterName + 1 >= line.length) {
+  const afterTrust = line.indexOf(" ", afterMtime + 1);
+  const afterName = line.indexOf(" ", afterTrust + 1);
+  if (
+    afterHash < 1 ||
+    afterSize <= afterHash + 1 ||
+    afterMtime <= afterSize + 1 ||
+    afterTrust !== afterMtime + 2 ||
+    afterName <= afterTrust + 1 ||
+    afterName + 1 >= line.length
+  ) {
     return undefined;
   }
   const size = Number(line.substring(afterHash + 1, afterSize));
   const mtimeMs = Number(line.substring(afterSize + 1, afterMtime));
-  if (!Number.isFinite(size) || !Number.isFinite(mtimeMs)) {
+  const trust = line.substring(afterMtime + 1, afterTrust);
+  if (!Number.isFinite(size) || !Number.isFinite(mtimeMs) || (trust !== "=" && trust !== "?")) {
     return undefined;
   }
   return {
     hash: line.substring(0, afterHash),
     size,
     mtimeMs,
-    name: decodeName(line.substring(afterMtime + 1, afterName)),
+    verified: trust === "=",
+    name: decodeName(line.substring(afterTrust + 1, afterName)),
     mime: line.substring(afterName + 1),
   };
 }

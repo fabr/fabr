@@ -602,9 +602,13 @@ describe("BuildCache", () => {
     const handle = cache.getTemporaryWriteStream();
     handle.stream.write("partial");
     handle.discard();
-    /* discard() is void — the callers are synchronous error paths — so the removal
-     * completes in the background, after the fd closes. */
-    await new Promise(resolve => setTimeout(resolve, 25));
+    /* discard() is void — the callers are synchronous error paths — so the
+     * removal completes in the background, after the fd closes; polled, since
+     * a loaded machine gives the background no particular schedule. */
+    const deadline = Date.now() + 5000;
+    while (spoolFiles(root).length > 0 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
     expect(spoolFiles(root)).to.deep.equal([]);
   });
 });
@@ -2324,7 +2328,7 @@ describe("BuildCache garbage collection", () => {
       const cache = new BuildCache(root, NULL_LOG);
       const hash = hashString("const x = 1;\n");
       await toPromise(cache.ensureBlob(hash, Buffer.from("const x = 1;\n")));
-      const row: ISourceIndexRow = { name: "x.ts", hash, size: 13, mtimeMs: 0, mime: "text/plain" };
+      const row: ISourceIndexRow = { name: "x.ts", hash, size: 13, mtimeMs: 0, mime: "text/plain", verified: true };
       expect(await toPromise(cache.writeSourceIndex(project, new Map([["x.ts", row]])))).to.equal(true);
       age(blobOf(hash), 40);
       await runGC();
