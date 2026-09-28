@@ -654,6 +654,79 @@ describe("BuildContext", () => {
     }
   });
 
+  it("Reports a guard reading its own property as a cycle instead of overflowing", async () => {
+    /* Judging FOO's guard reads FOO — the property being judged is a stack
+     * frame while its guards resolve, so the loop is the ordinary positioned
+     * cycle error, not a RangeError. */
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "FOO<FOO=x> = y;\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    try {
+      await model.getConfig(Constraints.of({}), execution).getProperty("FOO");
+      expect.fail("expected property FOO to fail");
+    } catch (err) {
+      let cause: Error = err as Error;
+      while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
+        cause = cause.cause;
+      }
+      expect(cause).to.be.instanceOf(CircularDependencyError);
+      expect((cause as CircularDependencyError).name).to.equal("FOO");
+    }
+  });
+
+  it("Reports mutually-guarded properties as a cycle instead of overflowing", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "A<B=1> = x;\nB<A=1> = y;\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    try {
+      await model.getConfig(Constraints.of({}), execution).getProperty("A");
+      expect.fail("expected property A to fail");
+    } catch (err) {
+      let cause: Error = err as Error;
+      while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
+        cause = cause.cause;
+      }
+      expect(cause).to.be.instanceOf(CircularDependencyError);
+      const circular = cause as CircularDependencyError;
+      expect(circular.name).to.equal("A");
+      /* Both use sites — each frame's value is the guarded declaration's key. */
+      expect(circular.cycle.map(site => site.value.value.toString())).to.deep.equal(["B<A=1>", "A<B=1>"]);
+    }
+  });
+
+  it("Reports a transitive guard cycle that closes through an ordinary value", async () => {
+    /* The guard-judgment frame is the stack for everything the guard
+     * transitively demands — here MODE carries no guard at all, and the loop
+     * closes through its VALUE reading FOO back. */
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "FOO<MODE=x> = y;\nMODE = ${FOO};\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    try {
+      await model.getConfig(Constraints.of({}), execution).getProperty("FOO");
+      expect.fail("expected property FOO to fail");
+    } catch (err) {
+      let cause: Error = err as Error;
+      while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
+        cause = cause.cause;
+      }
+      expect(cause).to.be.instanceOf(CircularDependencyError);
+      const circular = cause as CircularDependencyError;
+      expect(circular.name).to.equal("FOO");
+      /* Both hops: MODE's value reading FOO back, and the guarded key that
+       * demanded MODE. */
+      expect(circular.cycle.map(site => site.value.value.toString())).to.deep.equal(["${FOO}", "FOO<MODE=x>"]);
+    }
+  });
+
   it("Lets a target property reference a same-named global (not a cycle)", async () => {
     /* Target properties are not in the `${}` namespace, so `${deps}` inside the
      * target's own `deps` binds to the global — and, not being referenceable, a

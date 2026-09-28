@@ -1203,6 +1203,16 @@ describe("Parser Tests", () => {
       ]);
     });
 
+    it("rejects an unterminated multi-stage substitution", () => {
+      /* With a pipe present the pipeline path parses to the property's own `;`
+       * — which must still be the unterminated error, not a silent success
+       * that consumes the terminator and swallows the next declaration. */
+      const source = "V = `ls | grep x;\ninclude ./foo.fabr;";
+      expect(parseInvalid(source)).to.deep.equal([
+        diagnosticBlock(1, 5, "Invalid command: unterminated command substitution (no closing '`')", "V = `ls | grep x;"),
+      ]);
+    });
+
     it("rejects an empty substitution", () => {
       expect(parseInvalid("V = ``;")).to.deep.equal([
         diagnosticBlock(1, 5, "Invalid command: empty command substitution", "V = ``;"),

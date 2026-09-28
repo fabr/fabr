@@ -519,13 +519,17 @@ export class Name {
    * named `X` and a command written `X` are simply different parts.
    */
   public substitute(resolved: ReadonlyMap<NamePart, string>): Name {
-    /* Note: internally we collapse strings down so that afterwards we can treat it as if
-     * the subst vars were never there.
-     */
+    /* Only adjacent LITERALS coalesce — a substituted part becomes ordinary text
+     * in its neighbours. Any other kind keeps its own part: two adjacent
+     * backrefs (`$1$2`) merged would read as the one backref `$12`. */
     const parts = this.parts.reduce<NamePart[]>((rest, part) => {
       const newPart = isSubstituted(part) ? { kind: NamePartKind.Literal, value: resolved.get(part)! } : part;
-      if (rest.length > 0 && rest[rest.length - 1].kind === newPart.kind) {
-        rest[rest.length - 1] = { kind: newPart.kind, value: rest[rest.length - 1].value + newPart.value };
+      if (
+        rest.length > 0 &&
+        newPart.kind === NamePartKind.Literal &&
+        rest[rest.length - 1].kind === NamePartKind.Literal
+      ) {
+        rest[rest.length - 1] = { kind: NamePartKind.Literal, value: rest[rest.length - 1].value + newPart.value };
       } else {
         rest.push(newPart);
       }

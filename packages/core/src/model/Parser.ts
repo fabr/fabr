@@ -1306,8 +1306,10 @@ export class BuildParser {
   }
 
   /** The pipeline inside a substitution: the first stage's words, then — if an
-   * operator follows — the ordinary {@link parseCommand}, which stops at the
-   * closing backtick like any other terminator. */
+   * operator follows — the ordinary {@link parseCommand}. Whichever path parsed
+   * it, the token it stopped on must be the closing backtick: any other
+   * terminator (the property's own `;`, a `}`, EOF) means the substitution was
+   * never closed, and accepting it would swallow the enclosing declaration. */
   private parseCommandSubstPipeline(open: number): CommandPipeline {
     const words: IValue[] = [];
     while (!this.atCommandOp() && !this.atCommandEnd()) {
@@ -1315,7 +1317,11 @@ export class BuildParser {
     }
     const op = this.tryCommandOp();
     if (op !== undefined) {
-      return this.parseCommand(words, op);
+      const pipeline = this.parseCommand(words, op);
+      if (this.token.type !== TokenType.BACKTICK) {
+        this.commandError("unterminated command substitution (no closing '`')", open);
+      }
+      return pipeline;
     }
     if (this.token.type !== TokenType.BACKTICK) {
       this.commandError("unterminated command substitution (no closing '`')", open);

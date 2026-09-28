@@ -642,7 +642,11 @@ export class BuildContext {
    * filter and never rank, so there is no most-specific tie-break among what
    * comes back.
    */
-  public getAvailableDecls(entry: IPropertyEntry | undefined, stack?: IDependencyStack): Computable<IPropertyDecl[]> {
+  public getAvailableDecls(
+    entry: IPropertyEntry | undefined,
+    stack?: IDependencyStack,
+    owner?: ITargetDecl
+  ): Computable<IPropertyDecl[]> {
     if (!entry) {
       return Computable.resolve([]);
     }
@@ -657,9 +661,29 @@ export class BuildContext {
        * a guard's costs, its property reads included. */
       return Computable.resolve(decls.length > 0 ? decls : defaults);
     }
+    /* The property being judged is a stack frame while its guards read other
+     * properties, so a guard that (transitively) reads its own property is the
+     * ordinary positioned cycle error rather than unbounded recursion. The use
+     * site is the guarded declaration's own key; `owner` (a target body's
+     * property) rides as the frame's target, which keeps the frame out of the
+     * global-property cycle check exactly as every target-property frame is. */
+    const guarded = candidates[0];
+    const frame: IDependencyStack = {
+      property: guarded,
+      target: owner,
+      context: this,
+      value: {
+        kind: DeclKind.NameValue,
+        source: guarded.source,
+        offset: guarded.offset,
+        endOffset: guarded.endOffset ?? guarded.offset,
+        value: guarded.name,
+      },
+      next: stack,
+    };
     try {
       return Computable.forAll(
-        candidates.map(candidate => this.guardAdmits(candidate.name.getConstraints(), stack)),
+        candidates.map(candidate => this.guardAdmits(candidate.name.getConstraints(), frame)),
         (...admitted: boolean[]) => {
           /* An ordinary declaration displaces a `default` one only where it
            * applies, so the tiers are judged in order: the defaults answer
@@ -2703,7 +2727,8 @@ export class DeclaredTargetContext extends TargetContext {
     const declared = this.declaredDefault(name);
     return this.context.getAvailableDecls(
       { kind: DeclKind.Property, decls: this.props.get(name) ?? [], defaults: declared ? [declared] : [] },
-      this.stack
+      this.stack,
+      this.target
     );
   }
 

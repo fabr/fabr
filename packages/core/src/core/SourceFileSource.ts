@@ -319,7 +319,7 @@ export class SourceFileSource extends FSFileSource {
     this.indexDirty = false;
     this.lastIndexWrite = Date.now();
     const rows = this.indexRows;
-    const previous = this.indexWrite !== undefined && !this.indexWrite.isSettled ? this.indexWrite : undefined;
+    const previous = this.indexWrite !== undefined && !this.indexWrite.isSettled() ? this.indexWrite : undefined;
     const write = (previous ?? Computable.resolve(undefined))
       .then(() => this.cache.writeSourceIndex(this.root, rows))
       .then(wrote => {

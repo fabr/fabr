@@ -378,6 +378,83 @@ describe("executePipeline", () => {
     expect(labelled).to.deep.equal([["out", "E"]]);
   });
 
+  it("hands both streams of a mid-pipeline '2>&1' to the pipe, not the sink", async () => {
+    /* Shell semantics: `a 2>&1 | b` points a's stderr at the PIPE, so b reads
+     * both streams and the sink sees nothing of a's directly — only what b in
+     * turn writes. b sorts, because two piped streams interleave at chunk
+     * granularity. */
+    const labelled: Array<[string, string]> = [];
+    await new Promise((resolve, reject) =>
+      executePipeline(
+        LIMIT,
+        [
+          { argv: [NODE, "-e", "process.stdout.write('OUT\\n');process.stderr.write('ERR\\n')"], mergedTo: "out" as const },
+          {
+            argv: [
+              NODE,
+              "-e",
+              "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(d.split('\\n').filter(Boolean).sort().join('\\n')+'\\n'))",
+            ],
+          },
+        ],
+        CWD,
+        memoryOutput,
+        undefined,
+        { ...SILENT_REPORT, output: { line: (text: string, stream: string) => labelled.push([stream, text]) } }
+      ).then(resolve, reject)
+    );
+    expect(labelled).to.deep.equal([
+      ["out", "ERR"],
+      ["out", "OUT"],
+    ]);
+  });
+
+  it("gives the next stage EOF under '1>&2', routing stdout to the diagnostic stream", async () => {
+    /* The mirror: `a 1>&2 | b` sends a's stdout away from the pipe, so b reads
+     * nothing, and both of a's streams reach the sink as diagnostics. */
+    const labelled: Array<[string, string]> = [];
+    await new Promise((resolve, reject) =>
+      executePipeline(
+        LIMIT,
+        [
+          { argv: [NODE, "-e", "process.stdout.write('OUT\\n');process.stderr.write('ERR\\n')"], mergedTo: "err" as const },
+          {
+            argv: [NODE, "-e", "let n=0;process.stdin.on('data',c=>n+=c.length);process.stdin.on('end',()=>process.stdout.write('got '+n+'\\n'))"],
+          },
+        ],
+        CWD,
+        memoryOutput,
+        undefined,
+        { ...SILENT_REPORT, output: { line: (text: string, stream: string) => labelled.push([stream, text]) } }
+      ).then(resolve, reject)
+    );
+    expect(labelled).to.have.length(3);
+    expect(labelled).to.have.deep.members([
+      ["err", "OUT"],
+      ["err", "ERR"],
+      ["out", "got 0"],
+    ]);
+  });
+
+  it("buffers dup'd stdout for the failure report when '1>&2' has no sink", async () => {
+    /* The user dup'd stdout to the diagnostic stream because it IS diagnostic;
+     * on failure it must appear in the report like an un-dup'd stderr would. */
+    const outcomes = await collectSettlements(
+      executePipeline(
+        LIMIT,
+        [{ argv: [NODE, "-e", "process.stdout.write('DIAG-ON-STDOUT\\n');process.exit(3)"], mergedTo: "err" as const }],
+        CWD,
+        memoryOutput,
+        undefined,
+        SILENT_REPORT
+      )
+    );
+    expect(outcomes).to.have.length(1);
+    expect(outcomes[0].ok).to.equal(false);
+    expect(outcomes[0].err?.message).to.include("DIAG-ON-STDOUT");
+    expect(outcomes[0].err?.message).to.include("exited with error code 3");
+  });
+
   it("fails on the first non-zero stage (pipefail), settling exactly once", async () => {
     const outcomes = await collectSettlements(executePipeline(LIMIT, [{ argv: [NODE, "-e", "process.exit(4)"] }], CWD, memoryOutput, undefined, SILENT_REPORT));
     expect(outcomes).to.have.length(1);

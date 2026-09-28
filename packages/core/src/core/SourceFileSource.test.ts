@@ -22,7 +22,7 @@ import * as os from "os";
 import * as path from "path";
 import { BuildCache } from "./BuildCache";
 import { WatchController } from "./WatchController";
-import { ComputableSource } from "./Computable";
+import { Computable, ComputableSource } from "./Computable";
 import { hashString } from "./FSWrapper";
 import { MemoryFile } from "./MemoryFS";
 import { parseSourceIndex } from "./Manifest";
@@ -393,6 +393,44 @@ describe("SourceFileSource index trust", () => {
     const parsed = parseSourceIndex(fs.readFileSync(recordPath()!, "utf8"))!;
     expect(parsed.rows.has("a.ts")).to.equal(false);
     expect(parsed.rows.has("b.ts")).to.equal(true);
+  });
+
+  it("serializes an index write behind a still-running one", async () => {
+    writeAged("a.ts", "a\n");
+    writeAged("b.ts", "b\n");
+    const cache = new BuildCache(cacheRoot, { log: () => undefined });
+    const source = new SourceFileSource(sourceRoot, cache);
+    const real = cache.writeSourceIndex.bind(cache);
+    const events: string[] = [];
+    let releaseFirst!: () => void;
+    let calls = 0;
+    cache.writeSourceIndex = (rootPath, rows) => {
+      const n = ++calls;
+      events.push(`start ${n}`);
+      if (n === 1) {
+        return Computable.from<boolean>(resolve => {
+          releaseFirst = () => {
+            events.push("end 1");
+            resolve(true);
+          };
+        });
+      }
+      return real(rootPath, rows).then(wrote => {
+        events.push(`end ${n}`);
+        return wrote;
+      });
+    };
+
+    await toPromise(source.ingest("a.ts"));
+    source.persistIndex();
+    await toPromise(source.ingest("b.ts"));
+    const second = source.persistIndex();
+    /* The second write must not begin while the first is still in flight — an
+     * overlapping write's rename could land last and regress the index. */
+    expect(events).to.deep.equal(["start 1"]);
+    releaseFirst();
+    await toPromise(second);
+    expect(events).to.deep.equal(["start 1", "end 1", "start 2", "end 2"]);
   });
 
   it("an unchanged run writes nothing (change-gated persist)", async () => {

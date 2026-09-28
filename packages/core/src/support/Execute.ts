@@ -669,7 +669,10 @@ function pipelineUnbounded(
          * final un-redirected stdout with no sink, which is discarded unread. Env
          * stays clean ({}) throughout: captured content must be raw. */
         const stdinCfg = i === 0 ? (stdin ? "pipe" : "ignore") : "pipe";
-        const stdoutCfg = capStdout || !isLast || sink ? "pipe" : "ignore";
+        /* A dup'd stdout always has somewhere to go — the survivor's capture,
+         * sink, pipe, or failure buffer — so a merged stage pipes it whatever
+         * its position. */
+        const stdoutCfg = capStdout || !isLast || sink || spec.mergedTo !== undefined ? "pipe" : "ignore";
         const stderrCfg = "pipe";
         const proc = spawn(argvs[i][0], argvs[i].slice(1), {
           cwd,
@@ -689,6 +692,7 @@ function pipelineUnbounded(
          * signal (pipefail, in finish()); a broken pipe is not our error. */
         proc.stdin?.on("error", () => undefined);
         proc.stdout?.on("error", () => undefined);
+        proc.stderr?.on("error", () => undefined);
         /* Captures stream into store handles (piped with `{ end: false }` — the
          * handle is ended by finalize, not by the source). A dup gives both
          * streams ONE handle, so the shared destination is opened once and both
@@ -697,12 +701,14 @@ function pipelineUnbounded(
         const shared = captureName !== undefined ? capture(captureName) : undefined;
         const lines = stageLines[i];
         if (spec.mergedTo !== undefined) {
-          /* Both streams to the survivor's destination: its capture handle if it
-           * has one, else its default — which for `2>&1` is the pipeline's own
-           * output (so the lines ARE stdout now, labelled as such) and for `1>&2`
-           * the diagnostic sink. With no capture and no sink there is nothing to
-           * merge into, and the bytes are buffered for the failure report exactly
-           * as an un-dup'd stderr would be. */
+          /* Both streams to the survivor's destination. For a `2>&1` that is
+           * stdout's: mid-pipeline the PIPE (both streams feed the next stage —
+           * wired below, nothing attaches here), and on the final stage its
+           * capture handle, else the pipeline's own output (so the lines ARE
+           * stdout now, labelled as such). For a `1>&2` it is stderr's: its
+           * capture, else the diagnostic sink — and the next stage, if any,
+           * reads EOF. With no capture and no sink the bytes are buffered for
+           * the failure report exactly as an un-dup'd stderr would be. */
           const label = spec.mergedTo;
           const merge = (stream: NodeJS.ReadableStream | null): void => {
             if (shared) {
@@ -711,8 +717,10 @@ function pipelineUnbounded(
               stream?.on("data", data => (lines ? lines[label].push(data) : void stderr[i].push(data)));
             }
           };
-          merge(proc.stdout);
-          merge(proc.stderr);
+          if (spec.mergedTo !== "out" || isLast) {
+            merge(proc.stdout);
+            merge(proc.stderr);
+          }
         } else {
           if (shared) {
             proc.stdout?.pipe(shared, { end: false });
@@ -739,10 +747,14 @@ function pipelineUnbounded(
           stageLines[i]?.err.flush();
           /* Propagate a broken pipe upstream (SIGPIPE-equivalent): if this stage
            * exited while its producer is still writing, close fabr's read end of
-           * the producer's stdout so the producer's next write fails, rather than
+           * whatever feeds this stage — the producer's stdout, and under `2>&1`
+           * its stderr too — so the producer's next write fails, rather than
            * leaving it blocked forever on a pipe nobody drains (a hung pipeline). */
           if (i > 0) {
             procs[i - 1].stdout?.destroy();
+            if (specs[i - 1].mergedTo === "out") {
+              procs[i - 1].stderr?.destroy();
+            }
           }
           if (--remaining === 0 && !settled) {
             finish();
@@ -750,9 +762,28 @@ function pipelineUnbounded(
         });
       });
 
-      /* Wire the pipes (previous stdout → next stdin) and feed the head's stdin. */
+      /* Wire the pipes and feed the head's stdin. What a pipe carries follows
+       * the upstream stage's dup: ordinarily its stdout; under `2>&1` BOTH its
+       * streams (each piped without ending the destination, which closes only
+       * once both have); under `1>&2` nothing — stdout went to the diagnostic
+       * stream, so the next stage reads immediate EOF. */
       for (let i = 1; i < procs.length; i++) {
-        procs[i - 1].stdout?.pipe(procs[i].stdin!);
+        const prev = procs[i - 1];
+        const feeds = (
+          specs[i - 1].mergedTo === "err" ? [] : specs[i - 1].mergedTo === "out" ? [prev.stdout, prev.stderr] : [prev.stdout]
+        ).filter((stream): stream is NonNullable<typeof stream> => stream !== null && stream !== undefined);
+        const dest = procs[i].stdin!;
+        if (feeds.length === 1) {
+          feeds[0].pipe(dest);
+        } else if (feeds.length === 0) {
+          dest.end();
+        } else {
+          let open = feeds.length;
+          for (const stream of feeds) {
+            stream.pipe(dest, { end: false });
+            stream.on("end", () => --open === 0 && dest.end());
+          }
+        }
       }
       if (stdin && procs[0].stdin) {
         procs[0].stdin.write(stdin);

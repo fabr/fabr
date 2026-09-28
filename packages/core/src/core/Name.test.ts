@@ -133,6 +133,29 @@ describe("Name", () => {
       expect(resolved.toString()).to.equal("*.expect -> *.42.js");
     });
 
+    it("keeps adjacent backrefs distinct through substitution", () => {
+      /* `$1$2` is two captures side by side; collapsed into one part it would
+       * render as the single reference `$12`. Substituting anywhere in the
+       * name (here, the selector's variable) must not merge them. */
+      const sel = new NameBuilder()
+        .appendSubstVar("DIR")
+        .appendLiteralString("/v")
+        .appendGlobMetachars("*")
+        .appendLiteralString(".")
+        .appendGlobMetachars("*")
+        .appendLiteralString(".tgz")
+        .name();
+      const tmpl = new NameBuilder()
+        .appendSubstVar("1")
+        .appendSubstVar("2")
+        .appendLiteralString(".out")
+        .name()
+        .asRenameTemplate();
+      const resolved = substituted(sel.withRenameTo(tmpl), { DIR: "dist" });
+      const rename = resolved.makeRenamer(resolved.getRenameTo()!);
+      expect(rename("dist/v3.7.tgz")).to.equal("37.out");
+    });
+
     it("compiles a renamer that renames matches and drops non-matches", () => {
       const rename = selector().withRenameTo(template()).makeRenamer(template());
       expect(rename("foo.expect")).to.equal("foo.out");
