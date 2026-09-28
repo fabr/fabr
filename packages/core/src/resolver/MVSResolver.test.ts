@@ -43,9 +43,11 @@ function mockRegistry(data: Record<string, Record<string, Record<string, string>
         Object.entries(deps).map(([dep, constraint]) => {
           /* 'peer? ' is npm's `peerDependenciesMeta: { optional: true }`. */
           if (constraint.startsWith("peer? ")) {
-            return { pkg: dep, constraint: constraint.substring(6), soft: true, attachOnly: true };
+            return { pkg: dep, constraint: constraint.substring(6), provided: "optional" as const };
           }
-          return constraint.startsWith("peer ") ? { pkg: dep, constraint: constraint.substring(5), soft: true } : { pkg: dep, constraint };
+          return constraint.startsWith("peer ")
+            ? { pkg: dep, constraint: constraint.substring(5), provided: "expected" as const }
+            : { pkg: dep, constraint };
         })
       );
     },
@@ -541,7 +543,7 @@ describe("MVSResolver", () => {
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@2.6.0"]);
   });
 
-  it("a soft (peer) requirement attaches to a satisfying selection across majors", () => {
+  it("a provided (peer) requirement attaches to a satisfying selection across majors", () => {
     /* chai-as-promised peers on chai '>= 2.1.2 < 5' while the tree already
      * selects chai@4: attach-first semantics must satisfy the peer against the
      * existing selection, not key the range's floor into a coexisting chai@2
@@ -579,9 +581,9 @@ describe("MVSResolver", () => {
   });
 
   it("an optional peer nothing provides installs nothing and reports nothing", () => {
-    /* The other half of npm's contract, and the reason it cannot simply be a
-     * soft requirement: a soft one installs its minimum as a last resort, an
-     * optional peer installs nothing at all. */
+    /* The other half of npm's contract, and the reason it cannot simply be an
+     * expected-provided requirement: an expected one installs its minimum as a
+     * last resort, an optional peer installs nothing at all. */
     const result = resolve(
       { app: "1.0.0" },
       {
@@ -618,7 +620,7 @@ describe("MVSResolver", () => {
     expect(result.errors).to.deep.equal([]);
   });
 
-  it("a soft requirement whose package nothing selects fires as an ordinary demand", () => {
+  it("an expected-provided requirement whose package nothing selects fires as an ordinary demand", () => {
     /* The R6 crash shape: a plugin consumed alone must get its peer in the
      * closure (npm's auto-install as last resort), at the range's minimum. */
     const result = resolve(
@@ -632,7 +634,7 @@ describe("MVSResolver", () => {
     expect(result.violations).to.deep.equal([]);
   });
 
-  it("an unsatisfiable soft requirement reports a violation against the delivered version", () => {
+  it("an unsatisfiable provided requirement reports a violation against the delivered version", () => {
     const result = resolve(
       { A: "1.0.0" },
       {
@@ -1381,7 +1383,7 @@ describe("resolved edges", () => {
     });
   }
 
-  it("binds but does not traverse an attach-only edge when carving a delivery", () => {
+  it("binds but does not traverse an optional-provided edge when carving a delivery", () => {
     /* The catalog-subset case: A optionally peers on R, and both are pinned as
      * roots. Materializing A alone must not fetch R — but a delivery that does
      * hold R must still mount it where A sees it, so the edge stays BOUND. */

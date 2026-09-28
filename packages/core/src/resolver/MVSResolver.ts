@@ -229,12 +229,12 @@ function resolvePhase<V, C>(
     /* (node, demand) pairs already floor-raised, so a repair is attempted once
      * however often its demand is re-offered (see raiseFloors) */
     const raisedDemands = new Set<string>();
-    /* Soft (peer) requirements deferred to quiescence: each is primarily a
-     * constraint on whatever the tree selects; one whose package the converged
-     * tree doesn't select at all fires as an ordinary demand (auto-install as
-     * last resort). */
-    const softReqs: Array<{ req: Requirement; requiredBy: string }> = [];
-    const softFired = new Set<{ req: Requirement; requiredBy: string }>();
+    /* Expected-provided (peer) requirements deferred to quiescence: each is
+     * primarily a constraint on whatever the tree selects; one whose package
+     * the converged tree doesn't select at all fires as an ordinary demand
+     * (auto-install as last resort). */
+    const providedReqs: Array<{ req: Requirement; requiredBy: string }> = [];
+    const providedFired = new Set<{ req: Requirement; requiredBy: string }>();
     /* Written `?` alternates (attach-last: supply a version to a package the
      * tree requires only floorlessly), and the packages seen floorlessly
      * required — the trigger condition, judged at quiescence. */
@@ -321,15 +321,15 @@ function resolvePhase<V, C>(
         floorlessRequired.add(req.pkg);
         return;
       }
-      if (req.attachOnly) {
-        /* Never a demand, not even the last-resort one a soft requirement
-         * fires: npm does not install an optional peer, and neither does this.
-         * It is still recorded (see nodeRequirements), so it binds if something
-         * else selects the package. */
+      if (req.provided === "optional") {
+        /* Never a demand, not even the last-resort one an expected-provided
+         * requirement fires: npm does not install an optional peer, and
+         * neither does this. It is still recorded (see nodeRequirements), so
+         * it binds if something else selects the package. */
         return;
       }
-      if (req.soft) {
-        softReqs.push({ req, requiredBy });
+      if (req.provided !== undefined) {
+        providedReqs.push({ req, requiredBy });
         return;
       }
       attempt(req, domain.minimumOf(constraint), requiredBy);
@@ -500,11 +500,12 @@ function resolvePhase<V, C>(
 
     /**
      * Quiescence gate: before judging the converged tree, fire any deferred
-     * soft requirement whose package the tree selects nothing for — as an
-     * ordinary demand, stripped of softness — and keep walking. Judged at
-     * quiescence so the outcome is a function of the converged state, not of
-     * visit order (the same discipline as the repair phases); a fired demand
-     * may itself declare more soft requirements, so this repeats until quiet.
+     * expected-provided requirement whose package the tree selects nothing
+     * for — as an ordinary demand, the failed expectation repaired — and keep
+     * walking. Judged at quiescence so the outcome is a function of the
+     * converged state, not of visit order (the same discipline as the repair
+     * phases); a fired demand may itself declare more provided requirements,
+     * so this repeats until quiet.
      */
     const settle = (): void => {
       if (failed) {
@@ -516,13 +517,13 @@ function resolvePhase<V, C>(
        * deterministic answer the requirements alone cannot give. "Selects" is
        * judged over PUBLISHED selections, the same view judgeConverged takes:
        * a phantom occupying the slot is no deliverable answer, so its package
-       * still wants the alternate. (The soft-req guard keeps the full view
+       * still wants the alternate. (The provided-req guard keeps the full view
        * deliberately — a phantom's demand is still a demand, answered by the
        * raise machinery, not by installing the peer.) */
       const publishedPkgs = new Set(
         [...selected.values()].filter(sel => !notPublished.has(nodeId(sel.pkg, sel.version))).map(sel => sel.pkg)
       );
-      const firing = softReqs.filter(entry => !softFired.has(entry) && !selectedPkgs.has(entry.req.pkg));
+      const firing = providedReqs.filter(entry => !providedFired.has(entry) && !selectedPkgs.has(entry.req.pkg));
       const supplying = [...alternateAnswers].filter(
         ([pkg]) => !alternateFired.has(pkg) && floorlessRequired.has(pkg) && !publishedPkgs.has(pkg)
       );
@@ -532,7 +533,7 @@ function resolvePhase<V, C>(
       }
       pending++;
       for (const entry of firing) {
-        softFired.add(entry);
+        providedFired.add(entry);
         enqueue({ pkg: entry.req.pkg, constraint: entry.req.constraint }, entry.requiredBy);
       }
       for (const [pkg, version] of supplying) {
@@ -626,7 +627,7 @@ function resolvePhase<V, C>(
       const neededPhantoms = new Map<string, { pkg: string; version: V; err: VersionNotFoundError }>();
 
       const followEdge = (from: string, req: Requirement): void => {
-        if (req.attachOnly) {
+        if (req.provided === "optional") {
           /* An optional peer attaches to what the tree DELIVERS; it never makes
            * anything deliverable. Walking it here would do exactly that — the
            * walk is what decides reachability, so binding a selection some
@@ -944,7 +945,7 @@ function resolvePhase<V, C>(
         const visitedNodes = new Set<string>();
         const mark = (requirements: Requirement[]): void => {
           for (const req of requirements) {
-            if (req.attachOnly) {
+            if (req.provided === "optional") {
               /* Bound, never delivering — the reachability walk's own rule
                * (see followEdge): an optional peer joins a root's subset only
                * when something in that subset really demands it. */

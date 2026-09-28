@@ -362,13 +362,13 @@ describe("NPM_FORMAT.readContentPackage", () => {
     /* Regular dep kept; optionalDependencies dropped (their platform gates are
      * unprobeable in a manifest read, and optional means absence is tolerated)
      * including the fsevents dependencies-entry it overrides; non-optional peer
-     * kept, soft; an `optional: true` peer kept too, and marked attach-only —
-     * never installed, but a requirement all the same, so the requirer can
-     * reach the package when a consumer does provide it. */
+     * kept as expected-provided; an `optional: true` peer kept too, as
+     * optional-provided — never installed, but a requirement all the same, so
+     * the requirer can reach the package when a consumer does provide it. */
     expect(content.requirements).to.deep.equal([
       { pkg: "xmldom", constraint: "^0.6.0" },
-      { pkg: "react", constraint: ">=16", soft: true },
-      { pkg: "ganache", constraint: "^7.0.0", soft: true, attachOnly: true },
+      { pkg: "react", constraint: ">=16", provided: "expected" },
+      { pkg: "ganache", constraint: "^7.0.0", provided: "optional" },
     ]);
   });
 

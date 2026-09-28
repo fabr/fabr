@@ -131,7 +131,7 @@ export function contentPackageMember<V, C>(
     environmentKey: (): Computable<string> =>
       load().then(({ content }) => {
         const requirements = content.requirements
-          .map(req => JSON.stringify([req.pkg, req.constraint, req.alias ?? "", req.soft ?? false]))
+          .map(req => JSON.stringify([req.pkg, req.constraint, req.alias ?? "", req.provided ?? ""]))
           .sort();
         const hash = createHash("sha256")
           .update([format.versionToString(content.version), ...requirements].join("\n"))

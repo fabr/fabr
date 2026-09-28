@@ -627,7 +627,7 @@ describe("NPMRepository metadata memo", () => {
     expect(requirements).to.be.an("array");
   });
 
-  it("treats peerDependencies as requirements, an optional one attach-only", async () => {
+  it("treats peerDependencies as provided requirements, an optional one binding-only", async () => {
     /* The plugin pattern: the peer joins the joint pin like any requirement
        ("present at a compatible version"); sharing holds by construction in a
        strict closure. An optional-flagged peer ("if present, must match") is
@@ -650,8 +650,8 @@ describe("NPMRepository metadata memo", () => {
     const requirements = await toPromise(repo.getRequirements("plugin", parseVersion("1.0.0")));
     expect(requirements).to.deep.equal([
       { pkg: "lodash", constraint: "^4.0.0" },
-      { pkg: "eslint", constraint: "^9.0.0", soft: true },
-      { pkg: "typescript", constraint: ">=5", soft: true, attachOnly: true },
+      { pkg: "eslint", constraint: "^9.0.0", provided: "expected" },
+      { pkg: "typescript", constraint: ">=5", provided: "optional" },
     ]);
   });
 
@@ -687,7 +687,7 @@ describe("NPMRepository metadata memo", () => {
     const repo = npmRepository(REG, context);
 
     const requirements = await toPromise(repo.getRequirements("odd", parseVersion("1.0.0")));
-    expect(requirements).to.deep.equal([{ pkg: "eslint", constraint: "^9.0.0", soft: true }]);
+    expect(requirements).to.deep.equal([{ pkg: "eslint", constraint: "^9.0.0", provided: "expected" }]);
   });
 
   it("reads an npm: alias dependency as a requirement on the aliased package", async () => {
@@ -1622,7 +1622,7 @@ describe("multi-route domains (repository groups)", () => {
     const repo = groupDomain(context, [["@scope/*", PRIV], ["*", REG]]);
     await toPromise(drive(repo, [new RepositoryRef(repo, Name.fromLiteral("app:1.0.0"))]));
     expect(memoKeys).to.have.lengthOf(1);
-    expect(memoKeys[0]).to.contain("npm:resolve:20");
+    expect(memoKeys[0]).to.contain("npm:resolve:21");
     expect(memoKeys[0]).to.contain(`@scope/*=${PRIV}`);
     expect(memoKeys[0]).to.contain(`*=${REG}`);
   });

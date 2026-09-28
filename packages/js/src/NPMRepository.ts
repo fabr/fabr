@@ -353,20 +353,21 @@ export class NPMRepository
 
   /**
    * RepositoryReader implementation: the requirements of pkg@version are its
-   * declared `dependencies` and (non-optional) `peerDependencies` (the shared
-   * manifest reading, {@link declaredDependencies}), plus the
-   * `optionalDependencies` that are installable on the target. The dominant use
-   * of the latter is os/cpu-gated native binaries (esbuild's @esbuild/<platform>
-   * engine): all variants are listed, and only the target-matching one(s) are
-   * kept. Peers are **soft** (attach-first) requirements:
-   * satisfied by any selection in range whatever its resolution key — a wide
-   * multi-major peer range must not spawn its floor as a coexisting major —
-   * demanding their minimum only when the converged tree selects nothing for
-   * the package. "Shared, one instance" holds by construction in a strict
-   * closure (one version per name, flat mount) — the peer/regular distinction
-   * only exists to work around duplicate-tolerant regular deps, which fabr
-   * doesn't have. A violated peer surfaces as an ordinary violation (strict error, or
-   * a sealed-tool fork — npm's --legacy-peer-deps posture).
+   * declared `dependencies` and `peerDependencies` (the shared manifest
+   * reading, {@link declaredDependencies}), plus the `optionalDependencies`
+   * that are installable on the target. The dominant use of the latter is
+   * os/cpu-gated native binaries (esbuild's @esbuild/<platform> engine): all
+   * variants are listed, and only the target-matching one(s) are kept. Peers
+   * are **provided** requirements (the `provided_deps` relationship — the
+   * consumer's tree supplies them): satisfied by any selection in range
+   * whatever its resolution key — a wide multi-major peer range must not
+   * spawn its floor as a coexisting major — an "expected" one demanding its
+   * minimum only when the converged tree selects nothing for the package, an
+   * "optional" one never. "Shared, one instance" holds by construction in a
+   * strict closure (one version per name, flat mount) — the peer/regular
+   * distinction only exists to work around duplicate-tolerant regular deps,
+   * which fabr doesn't have. A violated peer surfaces as an ordinary violation
+   * (strict error, or a sealed-tool fork — npm's --legacy-peer-deps posture).
    */
   public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
     return this.getVersionMetadata(pkg, versionToString(version)).then(meta => {

@@ -54,26 +54,27 @@ export interface Requirement {
    */
   alias?: DependencyName;
   /**
-   * Attach-first (peer) semantics: primarily a constraint on whatever the tree
-   * selects for `pkg` — satisfied by any selection in range — demanding its
-   * own minimum only when the converged tree selects nothing for the package
-   * at all (npm's peer auto-install as a last resort). This is what keeps a
-   * wide multi-major peer range (chai '>= 2.1.2 < 5') from demanding the
-   * range's floor beside an already-satisfying selection.
-   */
-  soft?: boolean;
-  /**
-   * Attach-ONLY (npm's `peerDependenciesMeta: { optional: true }`): a constraint
-   * on whatever the tree selects for `pkg`, and never a demand for it — where
-   * {@link soft} installs its minimum as a last resort, this installs nothing
-   * ever, and simply does not bind when the package is absent.
+   * The consumer's tree provides this package — the peer relationship, fabr's
+   * `provided_deps` (which npm manifests spell `peerDependencies`, an
+   * "optional" one also listed in `peerDependenciesMeta`). Either way the
+   * requirement is attach-first: primarily a constraint on whatever the tree
+   * selects for `pkg`, satisfied by any selection in range — which is what
+   * keeps a wide multi-major peer range (chai '>= 2.1.2 < 5') from demanding
+   * the range's floor beside an already-satisfying selection. The value is the
+   * strength of the expectation, i.e. what happens when the converged tree
+   * provides nothing:
    *
-   * It is still a requirement, and that is the whole point of recording it: the
-   * requirer must be able to REACH the package when a consumer does provide it
-   * (`zustand` optionally peering on `react`). A hoisted tree gave that away for
-   * free by walking up; a dependency table has to say it.
+   * - `"expected"` — the failed expectation is repaired: the requirement fires
+   *   as an ordinary demand for its own minimum (npm's peer auto-install as a
+   *   last resort).
+   * - `"optional"` — never a demand: nothing is installed, ever, and the edge
+   *   simply does not bind. It is still a requirement, and that is the whole
+   *   point of recording it: the requirer must be able to REACH the package
+   *   when a consumer does provide it (`zustand` optionally peering on
+   *   `react`). A hoisted tree gave that away for free by walking up; a
+   *   dependency table has to say it.
    */
-  attachOnly?: boolean;
+  provided?: "expected" | "optional";
   /**
    * A user-written override marker on the requirement's exact version
    * (`@npm:pkg:1.4.2?` / `@npm:pkg:2.0.0!`; the constraint carries the bare

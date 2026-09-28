@@ -187,9 +187,9 @@ export interface IDependencyDecls {
 
 /**
  * The requirements a manifest declares, npm's reading: `required` is the
- * declared `dependencies` plus the non-optional `peerDependencies` (soft —
- * attach-first requirements, see NPMRepository.getRequirements for the peer
- * doctrine); `optional` is the `optionalDependencies` — which the caller
+ * declared `dependencies` plus the `peerDependencies` (`provided` — the
+ * consumer's tree supplies them; see NPMRepository.getRequirements for the
+ * peer doctrine); `optional` is the `optionalDependencies` — which the caller
  * decides how to gate (their os/cpu conditions live in the *dependency's* own
  * metadata, so this fold cannot judge them). npm's rule: an entry in
  * optionalDependencies overrides the same name in dependencies, so a dep
@@ -210,8 +210,7 @@ export function declaredDependencies(manifest: IDependencyDecls): { required: Re
      * dependency table cannot. */
     .map(([dep, spec]) => ({
       ...dependencyRequirement(dep, spec),
-      soft: true,
-      ...(optionalPeerNames.has(dep) ? { attachOnly: true } : {}),
+      provided: optionalPeerNames.has(dep) ? ("optional" as const) : ("expected" as const),
     }));
   const required = [
     ...[...dependencyBlock(manifest.dependencies)]
