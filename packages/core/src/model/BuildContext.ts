@@ -641,6 +641,12 @@ export class BuildContext {
    * caller falls back exactly as it does for a property never mentioned. Guards
    * filter and never rank, so there is no most-specific tie-break among what
    * comes back.
+   *
+   * Call it on the context the read is performed in: a read under a caller's
+   * override judges on `getContextWithOverrides(overrides)`. Folding the
+   * override into the context is exact for a guard, which has no written
+   * requirement to be layered against, though not for the value, which
+   * therefore still threads the override (see {@link resolvingContextFor}).
    */
   public getAvailableDecls(
     entry: IPropertyEntry | undefined,
@@ -744,7 +750,7 @@ export class BuildContext {
       if (!this.constraints.has(name)) {
         const def = this.model.getDecl(name);
         if (def?.kind === DeclKind.Property) {
-          return this.getAvailableDecls(def, stack).then(applicable =>
+          return this.getContextWithOverrides(callerOverrides).getAvailableDecls(def, stack).then(applicable =>
             this.resolveStringProperty(unmatchedIfAbsent(soleDecl(applicable), name, def), undefined, stack, callerOverrides)
           );
         }
@@ -787,7 +793,7 @@ export class BuildContext {
       const def = this.model.getDecl(name);
       if (!this.constraints.has(name) && def?.kind === DeclKind.Property) {
         this.assertNonCircularProperty(name, stack);
-        return this.getAvailableDecls(def, stack).then(applicable =>
+        return this.getContextWithOverrides(callerOverrides).getAvailableDecls(def, stack).then(applicable =>
           this.resolveFileProperty(unmatchedIfAbsent(mergedDecls(applicable), name, def), undefined, stack, callerOverrides)
         );
       }
@@ -2721,11 +2727,12 @@ export class DeclaredTargetContext extends TargetContext {
    * or when every guard excluded this configuration and the schema declares no
    * default: a guard makes the property unwritten *here*, so what follows is
    * what follows for a target that never mentioned it. Each accessor then says
-   * what it makes of more than one.
+   * what it makes of more than one. A caller's `overrides` are part of the
+   * configuration judged.
    */
-  private availableFor(name: string): Computable<IPropertyDecl[]> {
+  private availableFor(name: string, overrides?: Constraints): Computable<IPropertyDecl[]> {
     const declared = this.declaredDefault(name);
-    return this.context.getAvailableDecls(
+    return this.context.getContextWithOverrides(overrides).getAvailableDecls(
       { kind: DeclKind.Property, decls: this.props.get(name) ?? [], defaults: declared ? [declared] : [] },
       this.stack,
       this.target
@@ -2740,37 +2747,37 @@ export class DeclaredTargetContext extends TargetContext {
    * override through as callerOverrides, so it is applied *last* (winning over
    * any per-reference `<k=v>` requirement) — the uniform ambient < requirement <
    * caller layering, rather than pre-baking the override into ambient (where it
-   * would beat it). */
+   * would beat it). Guards are judged under the override (see availableFor). */
   public getProperty(name: string, overrides?: Constraints): Computable<Property | undefined> {
-    return this.availableFor(name).then(applicable => {
+    return this.availableFor(name, overrides).then(applicable => {
       const prop = soleDecl(applicable);
       return prop ? this.context.resolveStringProperty(prop, this.target, this.stack, overrides) : undefined;
     });
   }
 
   public getFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]> {
-    return this.availableFor(name).then(applicable => {
+    return this.availableFor(name, overrides).then(applicable => {
       const prop = mergedDecls(applicable);
       return prop ? this.context.resolveFileProperty(prop, this.target, this.stack, overrides) : [];
     });
   }
 
   public getRewriteRules(name: string, overrides?: Constraints): Computable<Name[]> {
-    return this.availableFor(name).then(applicable => {
+    return this.availableFor(name, overrides).then(applicable => {
       const prop = mergedDecls(applicable);
       return prop ? this.context.resolveNameProperty(prop, this.target, this.stack, overrides) : [];
     });
   }
 
   public getProjection(name: string, overrides?: Constraints): Computable<Name | undefined> {
-    return this.availableFor(name).then(applicable => {
+    return this.availableFor(name, overrides).then(applicable => {
       const prop = soleDecl(applicable);
       return prop ? this.context.resolveProjection(prop, this.target, this.stack, overrides) : undefined;
     });
   }
 
   public getMap(name: string, overrides?: Constraints): Computable<PropertyMap> {
-    return this.availableFor(name).then(applicable => {
+    return this.availableFor(name, overrides).then(applicable => {
       const prop = soleDecl(applicable);
       return prop ? this.context.resolveMap(prop, this.target, this.stack, overrides) : new Map();
     });

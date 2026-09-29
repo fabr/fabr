@@ -1902,6 +1902,65 @@ describe("BuildContext", () => {
     expect(lastString).to.equal("caller");
   });
 
+  describe("guards judged under a caller's override", () => {
+    /* Each read forces {FLAVOR: caller} against an ambient `FLAVOR = ambient`;
+     * the declaration guarded on the caller's value must be the one selected,
+     * exactly as it is when a written <FLAVOR=caller> requirement reaches it. */
+    const guardedModel = (body: string): ReturnType<typeof toBuildModel> => {
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const input =
+        "targetdef test_override { dep = FILES; }\n" +
+        "targetdef test_globaltool { }\n" +
+        "targetdef test_globalstr { }\n" +
+        "targetdef test_good { deps = FILES; }\n" +
+        "targetdef test_file { content = STRING; }\n" +
+        "default FLAVOR = ambient;\n" +
+        "test_file leaf { content = ${FLAVOR}; }\n" +
+        "test_file wrong { content = wrong; }\n" +
+        body;
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      return model;
+    };
+    const leafContent = (): Computable<string | undefined> => lastDeps!.get("f.txt").then(file => file?.readString());
+
+    it("for a target property", async () => {
+      const model = guardedModel("test_override root { dep<FLAVOR=ambient> = wrong; dep<FLAVOR=caller> = leaf; }\n");
+      lastDeps = undefined;
+      await model.getConfig(Constraints.of({}), execution).getTarget("root");
+      expect(await leafContent()).to.equal("caller");
+    });
+
+    it("for a global FILES property", async () => {
+      const model = guardedModel(
+        "GLOBALTOOL<FLAVOR=ambient> = wrong;\nGLOBALTOOL<FLAVOR=caller> = leaf;\ntest_globaltool root { }\n"
+      );
+      lastDeps = undefined;
+      await model.getConfig(Constraints.of({}), execution).getTarget("root");
+      expect(await leafContent()).to.equal("caller");
+    });
+
+    it("for a global STRING property", async () => {
+      const model = guardedModel(
+        "GLOBALSTR<FLAVOR=ambient> = wrong;\nGLOBALSTR<FLAVOR=caller> = ${FLAVOR};\ntest_globalstr root { }\n"
+      );
+      lastString = undefined;
+      await model.getConfig(Constraints.of({}), execution).getTarget("root");
+      expect(lastString).to.equal("caller");
+    });
+
+    it("agreeing with a written requirement on a reference to the property", async () => {
+      const model = guardedModel(
+        "GLOBALTOOL<FLAVOR=ambient> = wrong;\nGLOBALTOOL<FLAVOR=caller> = leaf;\n" +
+          "test_good root { deps = GLOBALTOOL<FLAVOR=caller>; }\n"
+      );
+      lastDeps = undefined;
+      await model.getConfig(Constraints.of({}), execution).getTarget("root");
+      expect(await leafContent()).to.equal("caller");
+    });
+  });
+
   it("getTargetRef substitutes ${vars} in the target name (build/test parity with cat/ls)", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
