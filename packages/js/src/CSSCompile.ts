@@ -296,7 +296,7 @@ export function compileCssSources(
   const sassSrcs = groups.sass ?? EMPTY_FILESET;
   const lowered = sassSrcs.isEmpty()
     ? Computable.resolve(EMPTY_FILESET)
-    : context.subTarget("sass_compile", { srcs: sassSrcs, deps }, { label: "Lowering styles", constraints: BUILD_OVERRIDE });
+    : context.subTarget("sass_compile", { srcs: sassSrcs, deps }, { label: "Compiling styles", constraints: BUILD_OVERRIDE });
   return lowered.then(sassOut => {
     /* The sass step's whole output is the postcss step's input — it emits
      * stylesheets and their maps and nothing else, so nothing crosses the
@@ -309,7 +309,7 @@ export function compileCssSources(
     return context.subTarget(
       "css_postcss",
       { srcs: inputs, deps, ...(packageName ? { package_name: packageName } : {}) },
-      { label: "Scoping styles", constraints: BUILD_OVERRIDE }
+      { label: "Postprocessing styles", constraints: BUILD_OVERRIDE }
     );
   });
 }
