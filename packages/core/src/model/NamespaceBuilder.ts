@@ -62,10 +62,11 @@ interface NSBuilderNode {
   targetDefs: Map<string, ITargetDefDecl>;
   content: Map<string, BuilderEntry>;
   /** `default` TARGETS only, held aside until the whole file set is in: an
-   * ordinary declaration of the name supersedes one outright, and it may not
-   * have been seen yet. A property needs no such holding area — its two tiers
-   * both live in its entry, because which of them supplies it is not decided
-   * here at all (see {@link IPropertyEntry}). */
+   * ordinary target of the name supersedes one outright, and an ordinary
+   * property keeps it as its fallback — either may not have been seen yet. A
+   * default property needs no such holding area — its two tiers both live in
+   * its entry, because which of them supplies it is not decided here at all
+   * (see {@link IPropertyEntry}). */
   defaultTargets: Map<string, ITargetDecl>;
 }
 
@@ -163,9 +164,12 @@ export class NamespaceBuilder {
    * what must be unique is the key **as written**, guard included, which is what
    * `name.toString()` renders, and an ordinary declaration never collides with a
    * `default` one of the same key (they are different tiers, which is the point
-   * of the tier). Anything else — a repeated key within a tier, an unguarded
-   * redeclaration, two targets, a clash with a namespace — is the duplicate it
-   * looks like.
+   * of the tier). Across kinds the tiers work the same way: an ordinary
+   * declaration supersedes a `default` one of the other kind (a property keeps
+   * a default target as its fallback — see {@link buildNamespace}), while two
+   * `default`s of one name conflict whatever their kinds. Anything else — a
+   * repeated key within a tier, an unguarded redeclaration, two targets, a
+   * clash with a namespace — is the duplicate it looks like.
    */
   private addResolvableDecl(
     node: NSBuilderNode,
@@ -173,18 +177,50 @@ export class NamespaceBuilder {
     decl: IResolvableDecl,
     tier: "decls" | "defaults"
   ): boolean {
+    const existing = node.content.get(simpleName);
     if (decl.kind === DeclKind.Target) {
-      /* A default target is held aside; an ordinary one takes the name. */
-      const index = tier === "defaults" ? node.defaultTargets : node.content;
-      const existing = index.get(simpleName);
-      if (existing) {
+      if (tier === "defaults") {
+        /* Held aside until every file is in (see NSBuilderNode.defaultTargets). A
+         * name that is a namespace is not a target's to take, and a second
+         * `default` of the name — target or property — is a duplicate, not an
+         * override. */
+        const clash =
+          node.defaultTargets.get(simpleName) ??
+          (existing !== undefined && (isBuilderNode(existing) || (existing.kind === DeclKind.Property && existing.defaults.length > 0))
+            ? existing
+            : undefined);
+        if (clash) {
+          this.conflictError(blameFor(clash), decl);
+          return false;
+        }
+        node.defaultTargets.set(simpleName, decl);
+        return true;
+      }
+      /* An ordinary target takes the name, superseding a property that has only
+       * `default` declarations; anything else there is a conflict. */
+      if (existing !== undefined && !(!isBuilderNode(existing) && existing.kind === DeclKind.Property && existing.decls.length === 0)) {
         this.conflictError(blameFor(existing), decl);
         return false;
       }
-      index.set(simpleName, decl);
+      if (existing !== undefined && !isBuilderNode(existing) && existing.kind === DeclKind.Property) {
+        /* Superseded, but declared: validated like any declaration. */
+        existing.defaults.forEach(superseded => this.validateDecl(superseded));
+      }
+      node.content.set(simpleName, decl);
       return true;
     }
-    const existing = node.content.get(simpleName);
+    if (tier === "defaults") {
+      if (existing !== undefined && !isBuilderNode(existing) && existing.kind === DeclKind.Target) {
+        /* An ordinary target supersedes a `default` property outright. */
+        this.validateDecl(decl);
+        return true;
+      }
+      const defaultTarget = node.defaultTargets.get(simpleName);
+      if (defaultTarget) {
+        this.conflictError(defaultTarget, decl);
+        return false;
+      }
+    }
     if (existing && (isBuilderNode(existing) || existing.kind !== DeclKind.Property)) {
       this.conflictError(blameFor(existing), decl);
       return false;
@@ -207,7 +243,7 @@ export class NamespaceBuilder {
   private getNodeFor(root: NSBuilderNode, parts: string[], decl: INamedDecl): NSBuilderNode | undefined {
     let node = root;
     for (const part of parts) {
-      const existing = node.content.get(part);
+      const existing = node.content.get(part) ?? node.defaultTargets.get(part);
       if (existing) {
         if (!isBuilderNode(existing)) {
           /* Is not a namespace but we needed one */
@@ -278,13 +314,18 @@ export class NamespaceBuilder {
     node.content.forEach((child, key) => {
       content.set(key, isBuilderNode(child) ? this.buildNamespace(child) : child);
     });
-    /* The one thing left to decide: a `default` target applies exactly where no
-     * ordinary declaration claimed the name. (A target decl carries no guard, so
-     * "ordinary wins" is knowable here — unlike a property, whose tiers ride
-     * into the namespace for the read to choose between.) */
+    /* The one thing left to decide: where a `default` target applies. Where
+     * nothing else claimed the name, it takes it; an ordinary target supersedes
+     * it outright (a target carries no guard, so that is knowable here); an
+     * ordinary property keeps it as the fallback for configurations none of its
+     * declarations applies to, which only a read can know. A namespace cannot
+     * be here — that is the add-time conflict. */
     node.defaultTargets.forEach((child, key) => {
-      if (!content.has(key)) {
+      const claimant = content.get(key);
+      if (claimant === undefined) {
         content.set(key, child);
+      } else if (!(claimant instanceof Namespace) && claimant.kind === DeclKind.Property) {
+        content.set(key, { ...claimant, fallbackTarget: child });
       }
     });
     const decl = node.self?.kind === DeclKind.Namespace ? node.self : undefined;

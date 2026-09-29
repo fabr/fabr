@@ -1902,6 +1902,72 @@ describe("BuildContext", () => {
     expect(lastString).to.equal("caller");
   });
 
+  describe("a default target beside other declarations of its name", () => {
+    const load = (body: string): { model: ReturnType<typeof toBuildModel>; errors: string[] } => {
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const input =
+        "targetdef test_good { deps = FILES; }\n" +
+        "targetdef test_file { content = STRING; }\n" +
+        "default FLAVOR = plain;\n" +
+        "test_file other { content = overridden; }\n" +
+        body;
+      return { model: toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions), errors };
+    };
+    const built = async (model: ReturnType<typeof toBuildModel>, constraints: Record<string, string>): Promise<string | undefined> => {
+      lastDeps = undefined;
+      await model.getConfig(Constraints.of(constraints), execution).getTarget("root");
+      return lastDeps!.get("f.txt").then(file => file?.readString());
+    };
+
+    it("is the fallback wherever no guarded property declaration applies", async () => {
+      const { model, errors } = load(
+        "default test_file foo { content = fallback; }\nfoo<FLAVOR=special> = other;\ntest_good root { deps = foo; }\n"
+      );
+      expect(errors).to.deep.equal([]);
+      expect(await built(model, {})).to.equal("fallback");
+      expect(await built(model, { FLAVOR: "special" })).to.equal("overridden");
+    });
+
+    it("is superseded by an unguarded property", async () => {
+      const { model, errors } = load("default test_file foo { content = fallback; }\nfoo = other;\ntest_good root { deps = foo; }\n");
+      expect(errors).to.deep.equal([]);
+      expect(await built(model, {})).to.equal("overridden");
+    });
+
+    it("yields to an ordinary target when it is a property, whichever is declared first", async () => {
+      for (const body of [
+        "default foo = other;\ntest_file foo { content = target; }\ntest_good root { deps = foo; }\n",
+        "test_file foo { content = target; }\ndefault foo = other;\ntest_good root { deps = foo; }\n",
+      ]) {
+        const { model, errors } = load(body);
+        expect(errors, body).to.deep.equal([]);
+        expect(await built(model, {}), body).to.equal("target");
+      }
+    });
+
+    it("conflicts with a default of the other kind, and ordinary with ordinary", () => {
+      for (const body of [
+        "default test_file foo { content = fallback; }\ndefault foo = other;\n",
+        "default foo = other;\ndefault test_file foo { content = fallback; }\n",
+        "foo = other;\ntest_file foo { content = target; }\n",
+      ]) {
+        const { errors } = load(body);
+        expect(errors.join("\n"), body).to.match(/conflict|duplicate/i);
+      }
+    });
+
+    it("conflicts with a namespace of its name, whichever is declared first", () => {
+      for (const body of [
+        "default test_file foo { content = fallback; }\ntest_file foo/bar { content = x; }\n",
+        "test_file foo/bar { content = x; }\ndefault test_file foo { content = fallback; }\n",
+      ]) {
+        const { errors } = load(body);
+        expect(errors.join("\n"), body).to.match(/conflict/i);
+      }
+    });
+  });
+
   describe("guards judged under a caller's override", () => {
     /* Each read forces {FLAVOR: caller} against an ambient `FLAVOR = ambient`;
      * the declaration guarded on the caller's value must be the one selected,

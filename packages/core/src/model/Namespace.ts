@@ -31,6 +31,9 @@ export interface IPropertyEntry {
   kind: DeclKind.Property;
   decls: IPropertyDecl[];
   defaults: IPropertyDecl[];
+  /** A `default` TARGET of the same name, which answers wherever none of the
+   * property's declarations applies (its guards exclude the configuration). */
+  fallbackTarget?: ITargetDecl;
 }
 
 type ContentType = Namespace | ITargetDecl | IPropertyEntry;

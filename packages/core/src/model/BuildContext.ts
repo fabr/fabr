@@ -793,9 +793,14 @@ export class BuildContext {
       const def = this.model.getDecl(name);
       if (!this.constraints.has(name) && def?.kind === DeclKind.Property) {
         this.assertNonCircularProperty(name, stack);
-        return this.getContextWithOverrides(callerOverrides).getAvailableDecls(def, stack).then(applicable =>
-          this.resolveFileProperty(unmatchedIfAbsent(mergedDecls(applicable), name, def), undefined, stack, callerOverrides)
-        );
+        return this.getContextWithOverrides(callerOverrides).getAvailableDecls(def, stack).then(applicable => {
+          const merged = mergedDecls(applicable);
+          if (merged === undefined && def.fallbackTarget !== undefined) {
+            /* The fallback is a target, which no written requirement fights. */
+            return this.getContextWithOverrides(callerOverrides).resolveTarget(def.fallbackTarget, stack);
+          }
+          return this.resolveFileProperty(unmatchedIfAbsent(merged, name, def), undefined, stack, callerOverrides);
+        });
       }
       return this.getContextWithOverrides(callerOverrides).getTarget(name, stack);
     }
@@ -825,9 +830,13 @@ export class BuildContext {
          * check is what turns `A = B; B = A;` into a positioned cycle error
          * instead of unbounded recursion. */
         this.assertNonCircularProperty(name, stack);
-        const result = this.getAvailableDecls(def, stack).then(applicable =>
-          this.resolveFileProperty(unmatchedIfAbsent(mergedDecls(applicable), name, def), undefined, stack)
-        );
+        const result = this.getAvailableDecls(def, stack).then(applicable => {
+          const merged = mergedDecls(applicable);
+          if (merged === undefined && def.fallbackTarget !== undefined) {
+            return this.resolveTarget(def.fallbackTarget, stack);
+          }
+          return this.resolveFileProperty(unmatchedIfAbsent(merged, name, def), undefined, stack);
+        });
         this.targetCache.set(name, result);
         return result;
       } else {
