@@ -249,9 +249,10 @@ export interface ICompilePlan {
  * dependency bump — instance names carry the node's reference, so a dependency
  * whose content moved is a delete plus an add — and an instance's surface
  * entry vanishes only with the instance itself, so it carries nothing the
- * vanished files' lines do not.
- */
-/**
+ * vanished files' lines do not. A deleted name that is no file of the graph has
+ * no memo line, so it seeds nothing; what could matter there — the generated
+ * configuration, the tool's mount — never changes by deletion alone.
+ *
  * @param projectFiles the project files on disk, by node name.
  * @param sourceRoot the source root as a node-name prefix (`src`) — which
  *   decides which staged names can be files of the graph — or undefined where

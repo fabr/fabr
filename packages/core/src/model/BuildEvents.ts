@@ -78,9 +78,9 @@ export interface ITaskEvent {
 }
 
 /**
- * Task started - fired when a task first becomes runnable (ie its dependencies are
- * satisfied and it needs to rerun). Initial state may be either "running" if it's
- * starting immediately or "waiting" if it's queued waiting on resources.
+ * Task started - fired when work begins on a task: an action on its cache-miss
+ * path, a fetch, or a resolve. `state` is always "running" here; a task that
+ * then queues for an execution slot reports "waiting" through task-progress.
  */
 export interface ITaskStartEvent extends ITaskEvent {
   kind: "task-start";

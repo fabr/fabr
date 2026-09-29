@@ -31,7 +31,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { IPnpSerializedState, PnpDependencyTarget } from "../PnPManifest";
-import { exportedSubpath, exportsSubpath, type ExportsValue, resolveExportsAll, resolveImports } from "./PackageExports";
+import { exportedSubpath, exportsSubpath, type ExportsValue, resolveExportsAll, resolveImportsAll } from "./PackageExports";
 import { IResolutionEdge, joinDepsPath } from "./ReadSet";
 
 /**
@@ -629,12 +629,20 @@ export class PnpResolver {
    */
   public resolveAll(specifier: string, issuer: string): string[] {
     if (specifier.startsWith("#")) {
-      const found = this.resolveSubpathImport(specifier, issuer);
-      return found === undefined ? [] : [found];
+      return this.resolveSubpathImport(specifier, issuer);
     }
     const split = splitSpecifier(specifier);
     const location = split && this.locationOf(split.name, issuer);
-    return location === undefined || split === undefined ? [] : this.within(location, exportsSubpath(split.subpath));
+    if (location === undefined || split === undefined) {
+      return [];
+    }
+    /* A trailing slash asks for a directory, which only CommonJS loads, and only
+     * from a package with no `exports` (whose keys never end in `/`). An ES-module
+     * world refuses it outright, as node's PACKAGE_RESOLVE does. */
+    if (specifier.endsWith("/") && (this.conditions.has("import") || this.manifestAt(location).exports != null)) {
+      return [];
+    }
+    return this.within(location, exportsSubpath(split.subpath));
   }
 
   /** Where a subpath of the package at `location` may live, honoring its
@@ -656,17 +664,17 @@ export class PnpResolver {
    * that package, or another package's name, which resolves from the same
    * issuer so the redirection sees exactly what the package that wrote it may
    * see. */
-  private resolveSubpathImport(specifier: string, issuer: string): string | undefined {
+  private resolveSubpathImport(specifier: string, issuer: string): string[] {
     const from = this.rows.get(this.locatorOf(issuer));
     const imports = from && this.manifestAt(from.location).imports;
     if (from === undefined || imports === undefined || imports === null) {
-      return undefined;
+      return [];
     }
-    const target = describing(from.location, () => resolveImports(imports, specifier, this.conditions));
-    if (target === undefined) {
-      return undefined;
-    }
-    return target.startsWith("./") ? path.join(from.location, target.slice(2)) : this.resolveSpecifier(target, issuer);
+    const targets = describing(from.location, () => resolveImportsAll(imports, specifier, this.conditions));
+    const found = targets.flatMap(target =>
+      target.startsWith("./") ? [path.join(from.location, target.slice(2))] : this.resolveAll(target, issuer)
+    );
+    return [...new Set(found)];
   }
 
   /** The `exports`/`imports` of the package at `location`, empty for one that

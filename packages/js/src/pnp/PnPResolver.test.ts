@@ -320,6 +320,11 @@ describe("PnpResolver, resolving a specifier in full", () => {
   /** A resolver over `store`, with a row per package named and every name
    * declared by the top level. */
   function resolving(...names: Array<[string, string]>): PnpResolver {
+    return resolvingIn(CONDITIONS, ...names);
+  }
+
+  /** {@link resolving}, in a world satisfying `conditions`. */
+  function resolvingIn(conditions: string[], ...names: Array<[string, string]>): PnpResolver {
     const rows = names.map(([name, reference]): [string, string, Record<string, string>] => [name, reference, { [name]: reference }]);
     const declared = Object.fromEntries(names);
     const state = manifest(rows, declared, declared);
@@ -330,10 +335,28 @@ describe("PnpResolver, resolving a specifier in full", () => {
         info.packageLocation = info.packageLocation.replace("./.fabr-tree/", "./");
       }
     }
-    return new PnpResolver(state, store, CONDITIONS);
+    return new PnpResolver(state, store, conditions);
   }
 
   const from = (): string => path.join(store, "src/index.ts");
+
+  it("answers a trailing-slash directory only as CommonJS does", () => {
+    /* `require("buffer/")` loads the directory of a package with no `exports`;
+     * a package with a map publishes no such subpath, and an ES-module world
+     * refuses the specifier outright. */
+    pkg("ref-plain");
+    pkg("ref-mapped", { exports: { ".": "./index.js", "./*": "./lib/*.js" } });
+    const names: Array<[string, string]> = [
+      ["plain", "ref-plain"],
+      ["mapped", "ref-mapped"],
+    ];
+    const cjs = resolvingIn(["types", "require"], ...names);
+    expect(cjs.resolveAll("plain/", from())).to.deep.equal([path.join(store, "ref-plain")]);
+    expect(cjs.resolveAll("mapped/", from())).to.deep.equal([]);
+    expect(cjs.resolveAll("mapped/sub/", from())).to.deep.equal([]);
+    const esm = resolvingIn(["types", "import"], ...names);
+    expect(esm.resolveAll("plain/", from())).to.deep.equal([]);
+  });
 
   it("hands back the directory for a package that publishes no exports", () => {
     pkg("ref-plain");
@@ -374,6 +397,21 @@ describe("PnpResolver, resolving a specifier in full", () => {
     expect(resolver.resolveSpecifier("#helper", inside)).to.equal(path.join(store, "ref-helper/lib/deep.js"));
     /* And a `#` name means nothing outside the package that declared it. */
     expect(resolver.resolveSpecifier("#state", from())).to.equal(undefined);
+  });
+
+  it("offers every candidate a #specifier names, through a redirection too", () => {
+    /* A `types` key listed after `import`, in the private map and in the map of
+     * the package it redirects to: both stay candidates for a caller asking for
+     * declarations. */
+    pkg("ref-private", { imports: { "#x": { import: "./x.mjs", types: "./x.d.ts" }, "#dep": "helper" } });
+    pkg("ref-helper", { exports: { ".": { import: "./h.mjs", types: "./h.d.ts" } } });
+    const resolver = resolving(["private", "ref-private"], ["helper", "ref-helper"]);
+    const inside = path.join(store, "ref-private/src/app.js");
+    expect(resolver.resolveAll("#x", inside)).to.deep.equal([
+      path.join(store, "ref-private/x.mjs"),
+      path.join(store, "ref-private/x.d.ts"),
+    ]);
+    expect(resolver.resolveAll("#dep", inside)).to.deep.equal([path.join(store, "ref-helper/h.mjs"), path.join(store, "ref-helper/h.d.ts")]);
   });
 
   it("names a file by the subpath its package publishes, not by where it sits", () => {

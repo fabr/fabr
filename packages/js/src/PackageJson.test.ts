@@ -245,6 +245,15 @@ describe("createPackageJson", () => {
     });
   });
 
+  it("publishes no subpath for a shipped declaration of a non-JS module", async () => {
+    /* `logo.d.svg.ts` (TypeScript 5.0's `.d.<ext>.ts`) is a declaration like any
+     * other: nothing imports it by name, so it has no subpath of its own. */
+    const pkg = await generateExports([...dualFiles("index"), "logo.svg", "logo.d.svg.ts"], [], "dual");
+    const exports = pkg.exports as Record<string, unknown>;
+    expect(exports).to.not.have.property("./logo.d.svg.ts");
+    expect(exports["./logo.svg"]).to.equal("./logo.svg");
+  });
+
   it("publishes an exhaustive map for a dual package declaring no entry points", async () => {
     /* A dual package must have a map — conditions are the only way to choose a
      * format — so "declared nothing" has to be spelled out rather than omitted,
@@ -359,6 +368,14 @@ describe("createPackageJson", () => {
     const exports = pkg.exports as Record<string, unknown>;
     expect(exports["./styles.css"]).to.equal("./styles.css");
     expect(exports["./data.json"]).to.equal("./data.json");
+  });
+
+  it("spells a target as the URL-relative path node reads, and the key as written", async () => {
+    /* Node decodes a target, so a `%` in a file name must be escaped for the
+     * target to name that file; a subpath key is matched literally. */
+    const pkg = await generateExports(["index.js", "100%.json"], ["index.ts", "100%.json"], "commonjs");
+    const exports = pkg.exports as Record<string, unknown>;
+    expect(exports["./100%.json"]).to.equal("./100%25.json");
   });
 
   it("rejects an entry point nothing importable answers", async () => {

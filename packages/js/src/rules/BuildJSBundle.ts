@@ -246,11 +246,14 @@ function composeBundle(context: TargetContext, inputs: IBundleInputs): Computabl
       ...looseEntries
     );
     /* Both halves of what the sources may import: `srcs` packages are bundled in,
-     * `deps` are externalized at link time — but the compile needs both. */
+     * `deps` are externalized at link time — but the compile needs both, and the
+     * source-mode flags from either list (see bundleFlags), which it reads from
+     * its deps. */
     /* Compiled for the same target the referenced inputs were built under, not
      * for the ambient one: these loose sources are bundled together with those,
      * and one compile emits one module system whatever the bundle ships as. */
-    return compileContents(context, rootTree, [...srcPackages, ...inputs.deps], {
+    const srcFlags = inputs.srcs.filter((set): set is Flag => set instanceof Flag);
+    return compileContents(context, rootTree, [...srcPackages, ...srcFlags, ...inputs.deps], {
       transpileJs: false,
       constraints: bundleInputTarget(inputs.jsTarget),
     }).then(built => {

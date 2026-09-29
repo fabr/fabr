@@ -461,7 +461,7 @@ export type JsSourceKind = "ts" | "dts" | "js" | "jsx" | "css" | "json" | "copy"
  * The tsc driver carries its own copy of this (tsc-driver.ts) because it must
  * not import fabr's modules at runtime; the two are one rule and move together.
  */
-const DECLARATION_FILE = /\.d\.(?:[cm]?ts|[^./]+\.ts)$/;
+export const DECLARATION_FILE = /\.d\.(?:[cm]?ts|[^./]+\.ts)$/;
 
 /**
  * Classify a source file by which build step consumes it: `"ts"`/`"js"`/`"jsx"`
@@ -786,17 +786,16 @@ export function compileContents(
     const { compileInputs, content } = partitionCssOutput(lowered);
     const generated = classifySources(compileInputs);
     const augmented = withGeneratedSources(classified, generated);
-    const rewrites = classified.css.isEmpty() ? options.rewriteImports ?? [] : cssImportRewrites();
+    /* The caller's rules, plus the css pipeline's where there ARE stylesheets —
+     * which say which declaration shape stands in for which runtime file. A
+     * compile without stylesheets therefore carries no css rules at all. */
+    const rewrites = [...(options.rewriteImports ?? []), ...(classified.css.isEmpty() ? [] : cssImportRewrites())];
     const compiled =
       keepSourceJs && !requiresCompile(augmented)
         ? undefined
         : compileJsSources(context, augmented, deps, {
             ...options,
-            /* The compile's whole knowledge of CSS: rules saying which
-             * declaration shape stands in for which runtime file. Constant, and
-             * passed only where there ARE stylesheets, so a compile without them
-             * is byte-identical to one built before the mechanism existed. */
-            ...(classified.css.isEmpty() ? {} : { rewriteImports: rewrites }),
+            rewriteImports: rewrites,
             /* What the target delivers but no step compiles: the published
              * stylesheets, and the sources nothing consumes (images, fonts,
              * templates). An import of any of them resolves as an empty

@@ -885,8 +885,9 @@ describe("resolutionFor", () => {
     Preserve: 200,
   };
   const RESOLUTION = { Node10: 2, Node16: 3, NodeNext: 99, Bundler: 100 };
+  const TARGET = { ES5: 1, ES2015: 2, ES2020: 7 };
   const compiler = (version: string): Parameters<typeof resolutionFor>[0] =>
-    ({ version, ModuleKind: MODULE, ModuleResolutionKind: RESOLUTION } as unknown as Parameters<typeof resolutionFor>[0]);
+    ({ version, ModuleKind: MODULE, ModuleResolutionKind: RESOLUTION, ScriptTarget: TARGET } as unknown as Parameters<typeof resolutionFor>[0]);
 
   it("gives a CommonJS project node10 before TypeScript 6 and bundler from 6", () => {
     /* The one combination the compilers disagree about: before 6, `bundler`
@@ -927,11 +928,17 @@ describe("resolutionFor", () => {
     expect(resolutionFor(compiler("5.4.5"), { module: MODULE.Preserve })).to.equal(RESOLUTION.Bundler);
   });
 
-  it("treats an unstated module as the CommonJS it may default to", () => {
-    /* The conservative branch: node10 is legal under every compiler, so an
-     * unknown emit cannot be given a pairing the compiler would reject. */
+  it("gives an unstated module the compiler's default for the target", () => {
+    /* CommonJS below ES2015, where the pairing follows the compiler version as
+     * for a stated one; an ES-module emit from ES2015, which pairs with bundler. */
     expect(resolutionFor(compiler("5.4.5"), {})).to.equal(RESOLUTION.Node10);
     expect(resolutionFor(compiler("6.0.3"), {})).to.equal(RESOLUTION.Bundler);
+    expect(resolutionFor(compiler("5.4.5"), { target: TARGET.ES2020 })).to.equal(RESOLUTION.Bundler);
+  });
+
+  it("asks the compiler for the module it emits, where the compiler can say", () => {
+    const asking = { ...compiler("5.4.5"), getEmitModuleKind: () => MODULE.ES2015 } as Parameters<typeof resolutionFor>[0];
+    expect(resolutionFor(asking, {})).to.equal(RESOLUTION.Bundler);
   });
 });
 
@@ -1026,7 +1033,10 @@ describe("emitted output, over where the compile ran", () => {
 describe("emitting under a renamed extension", () => {
   /** Compile an ES-module project holding `sources` under `--emit-extension
    *  .mjs`, with source maps on, and answer what landed in `build/`. */
-  function compileRenamed(sources: Record<string, string>): {
+  function compileRenamed(
+    sources: Record<string, string>,
+    options: Record<string, unknown> = {}
+  ): {
     status: number;
     output: string;
     emitted: string[];
@@ -1037,6 +1047,7 @@ describe("emitting under a renamed extension", () => {
     const configPath = path.join(work.root, "tsconfig.json");
     const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
     config.compilerOptions.sourceMap = true;
+    Object.assign(config.compilerOptions, options);
     config.include = ["./src/**/*.ts", "./src/**/*.mts", "./src/**/*.cts"];
     fs.writeFileSync(configPath, JSON.stringify(config));
     for (const [name, text] of Object.entries(sources)) {
@@ -1076,6 +1087,14 @@ describe("emitting under a renamed extension", () => {
     expect(read("index.mjs")).to.contain("//# sourceMappingURL=index.mjs.map");
     expect(read("index.mjs")).to.not.contain("index.js.map");
     expect(JSON.parse(read("index.mjs.map")).file).to.equal("index.mjs");
+  });
+
+  it("renames a declaration map with its declaration, and repoints both", () => {
+    const { status, output, emitted, read } = compileRenamed({ "index.ts": "export const value = 1;\n" }, { declarationMap: true });
+    expect(status, output).to.equal(0);
+    expect(emitted).to.deep.equal(["index.d.mts", "index.d.mts.map", "index.mjs", "index.mjs.map"]);
+    expect(read("index.d.mts")).to.contain("//# sourceMappingURL=index.d.mts.map");
+    expect(JSON.parse(read("index.d.mts.map")).file).to.equal("index.d.mts");
   });
 
   it("leaves a source that pinned its own module format alone", () => {

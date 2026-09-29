@@ -91,9 +91,7 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
         : ctx.admit(report, () =>
             writeFileSet(
               ctx.workDir,
-              handover.outputs === undefined
-                ? handover.staged
-                : FileSet.unionAll(handover.staged, baseOutputLayout(action, handover.outputs)),
+              handover.outputs === undefined ? handover.staged : FileSet.unionAll(handover.staged, handover.outputs),
               { copy: true }
             )
           )
@@ -161,8 +159,12 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
        * kept files, the change lists) is handed over regardless: it is a
        * tool's own to ignore. */
         const carries = (state?.size ?? 0) > 0;
-        const handover = staged === undefined ? undefined : { staged, outputs: carries ? previous : undefined };
-        return execPnP(argv, { stateDir }, handover);
+        const outputs = carries && previous !== undefined ? baseOutputLayout(action, previous) : undefined;
+        if (staged === undefined || (carries && previous !== undefined && outputs === undefined)) {
+          /* No base, or one whose outputs have nowhere to go: a cold compile. */
+          return execPnP(argv, { stateDir });
+        }
+        return execPnP(argv, { stateDir }, { staged, outputs });
       }
     );
   },
@@ -339,9 +341,9 @@ function keptState(state: FileSet): FileSet | undefined {
 }
 
 /** What a run with a base is given: the files {@link prepareBase} lays at the
- * workspace root, and the previous build's outputs to emit the delta over —
- * absent for a tool that kept no state, which has nothing to tell it which of
- * them went stale. */
+ * workspace root, and the previous build's outputs to emit the delta over, laid
+ * under the emit directory ({@link baseOutputLayout}) — absent for a tool that
+ * kept no state, which has nothing to tell it which of them went stale. */
 type Handover = { staged: FileSet; outputs?: FileSet };
 
 /** One of the optional location members — where the rule told the tool to write
@@ -358,12 +360,12 @@ function optionalConfig(action: BuildAction, name: string): string | undefined {
  * (see {@link collectedWith}); the others are bookkeeping and name no emit
  * directory. An entry with no collection directory has nowhere conflict-free to
  * stage a base, so it gets none (a cold compile). */
-function baseOutputLayout(action: BuildAction, outputs: FileSet): FileSet {
+function baseOutputLayout(action: BuildAction, outputs: FileSet): FileSet | undefined {
   const pattern = outputsConfig(action);
   const result = Array.isArray(pattern) ? pattern[pattern.length - 1] : pattern;
   const split = result.indexOf(":");
   const dir = split < 0 ? "" : result.slice(0, split);
-  return dir === "" ? outputs : FileSet.layout({ [dir]: outputs });
+  return dir === "" ? undefined : FileSet.layout({ [dir]: outputs });
 }
 
 /**

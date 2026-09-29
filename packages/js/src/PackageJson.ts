@@ -43,6 +43,7 @@ import {
   binByConvention,
   CJS_JS_EXTENSION,
   CJS_TYPE_EXTENSION,
+  DECLARATION_FILE,
   ESM_JS_EXTENSION,
   ESM_TYPE_EXTENSION,
   JS_EXTENSION,
@@ -50,6 +51,7 @@ import {
   TYPE_EXTENSION,
 } from "./JSPackage";
 import { NpmPublishIdentity } from "./NPMProtocol";
+import { encodeTargetPath } from "./pnp/PackageExports";
 
 /** Fields fabr computes from the target itself — a `metadata` key naming one is
  *  rejected (it would be silently overridden), and a seed copy is dropped (fabr
@@ -260,9 +262,6 @@ function encodeMap(map: PropertyMap): Record<string, unknown> {
  *  because it matches every world, making anything after it unreachable. */
 type ExportConditions = Map<string, string | ExportConditions>;
 
-/** A TypeScript declaration file, in any of its module flavours. */
-const DECLARATION = /\.d\.[cm]?ts$/;
-
 /** A JavaScript file's extension paired with the declaration beside it. */
 type Spelling = readonly [js: string, types: string];
 
@@ -303,7 +302,7 @@ const DELIVERED_SPELLINGS: ReadonlyArray<string> = [JS_EXTENSION, CJS_JS_EXTENSI
  *  or undefined for a source that emits no module of its own to name a subpath
  *  for: a declaration file, a stylesheet, a JSON resource. */
 function emittedStem(name: string): string | undefined {
-  if (DECLARATION.test(name)) {
+  if (DECLARATION_FILE.test(name)) {
     return undefined;
   }
   return /^(.*)\.[cm]?[jt]sx?$/.exec(name)?.[1];
@@ -314,9 +313,11 @@ function emittedStem(name: string): string | undefined {
 function renderConditions(conditions: ExportConditions): unknown {
   const sole = conditions.size === 1 ? conditions.get("default") : undefined;
   if (typeof sole === "string") {
-    return sole;
+    return encodeTargetPath(sole);
   }
-  return Object.fromEntries([...conditions].map(([condition, value]) => [condition, typeof value === "string" ? value : renderConditions(value)]));
+  return Object.fromEntries(
+    [...conditions].map(([condition, value]) => [condition, typeof value === "string" ? encodeTargetPath(value) : renderConditions(value)])
+  );
 }
 
 /** The conditions one format answers a subpath with — its declarations where the
@@ -468,7 +469,7 @@ function conditionTargets(conditions: ExportConditions, into = new Set<string>()
 /** The stem a delivered JavaScript file sits under, or undefined for anything
  *  that is not one — a declaration, a source map, an asset. */
 function deliveredStem(name: string): string | undefined {
-  if (DECLARATION.test(name)) {
+  if (DECLARATION_FILE.test(name)) {
     return undefined;
   }
   const spelling = DELIVERED_SPELLINGS.find(extension => name.endsWith(extension));
@@ -595,10 +596,12 @@ function exhaustiveExports(files: FileSet, formats: ReadonlyArray<IExportFormat>
  *  (so no format publishes it), and not one of the artifacts nothing ever imports
  *  by name — a declaration, a source map, or the manifest itself. */
 function isOpaqueContent(name: string): boolean {
-  return deliveredStem(name) === undefined && !name.endsWith(".map") && !DECLARATION.test(name) && name !== "package.json";
+  return deliveredStem(name) === undefined && !name.endsWith(".map") && !DECLARATION_FILE.test(name) && name !== "package.json";
 }
 
-/** Render a subpath→conditions table as the manifest's `exports` object.
+/** Render a subpath→conditions table as the manifest's `exports` object, each
+ *  target spelled as the URL-relative path node reads it as (subpath keys are
+ *  matched literally and are written as they are).
  *  Sorted, so the map does not carry a file set's iteration order into the
  *  manifest (its bytes are a cache input). `.` sorts first on its own — it is a
  *  prefix of every other subpath. Explicit subpaths are order-independent to
@@ -607,7 +610,7 @@ function renderExports(entries: Map<string, ExportConditions | string>): Record<
   const map = new Map<string, unknown>(
     [...entries.keys()].sort().map(subpath => {
       const value = entries.get(subpath)!;
-      return [subpath, typeof value === "string" ? value : renderConditions(value)];
+      return [subpath, typeof value === "string" ? encodeTargetPath(value) : renderConditions(value)];
     })
   );
   map.set("./package.json", "./package.json");

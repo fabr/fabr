@@ -300,6 +300,9 @@ interface ITypeScript {
    * rather than whether its version implies it. Optional: a compiler that does
    * not expose the table answers "no" to every such question. */
   optionDeclarations?: ReadonlyArray<{ name: string }>;
+  /** The module kind a compile actually emits, its unstated default applied.
+   * Optional: {@link effectiveModule} falls back to the documented default. */
+  getEmitModuleKind?: (options: CompilerOptions) => number;
   ModuleKind: { CommonJS: number; ES2015: number; Node16: number; NodeNext: number; Preserve?: number };
   ModuleResolutionKind: { Node10?: number; NodeJs?: number; Node16: number; NodeNext: number; Bundler: number };
   JsxEmit: { Preserve: number };
@@ -374,7 +377,7 @@ interface ITypeScript {
     setParentNodes?: boolean,
     scriptKind?: number
   ): ISyntaxNode;
-  ScriptTarget: { Latest: number };
+  ScriptTarget: { Latest: number; ES2015: number };
   ScriptKind: { TS: number };
   /** Whether a file is a module rather than a script — the compiler's own
    * judgment, since "has an import or an export" has more forms than it looks
@@ -1483,7 +1486,7 @@ interface ICrossFormatGlobals {
 function crossFormatGlobals(ts: ITypeScript, options: CompilerOptions, program: () => IProgram): ICrossFormatGlobals | undefined {
   const direction = emitsEsModules(ts, options)
     ? "esm"
-    : options.module === undefined || options.module === ts.ModuleKind.CommonJS
+    : effectiveModule(ts, options) === ts.ModuleKind.CommonJS
       ? "cjs"
       : undefined;
   if (direction === undefined) {
@@ -1705,6 +1708,7 @@ const RENAMED_EXTENSION = new Map<string, ReadonlyArray<readonly [RegExp, string
     ".mjs",
     [
       [/\.d\.ts$/, ".d.mts"],
+      [/\.d\.ts\.map$/, ".d.mts.map"],
       [/\.js\.map$/, ".mjs.map"],
       [/\.js$/, ".mjs"],
     ],
@@ -1713,9 +1717,9 @@ const RENAMED_EXTENSION = new Map<string, ReadonlyArray<readonly [RegExp, string
 
 /**
  * The name an emitted file ships under once the compile's `.js` family is
- * renamed — `index.js` → `index.mjs`, `index.d.ts` → `index.d.mts`,
- * `index.js.map` → `index.mjs.map` — or the name unchanged where the rename does
- * not reach it.
+ * renamed — `index.js` → `index.mjs`, `index.d.ts` → `index.d.mts`, and each
+ * one's `.map` alongside — or the name unchanged where the rename does not
+ * reach it.
  */
 export function renamedOutput(fileName: string, jsExtension: string | undefined): string {
   for (const [pattern, replacement] of (jsExtension === undefined ? undefined : RENAMED_EXTENSION.get(jsExtension)) ?? []) {
@@ -1727,32 +1731,30 @@ export function renamedOutput(fileName: string, jsExtension: string | undefined)
 }
 
 /**
- * Repoint a renamed file's own references to its sibling map: the emitted
- * JavaScript's `//# sourceMappingURL=` comment, and the map's `file` field. Both
- * name the pre-rename spelling, and a map whose `file` disagrees with the
- * artifact is what a debugger fails to line up.
+ * Repoint a renamed file's own references to its sibling map: an emitted
+ * file's `//# sourceMappingURL=` comment (JavaScript and declaration alike), and
+ * a map's `file` field. Both name the pre-rename spelling, and a map whose
+ * `file` disagrees with the artifact is what a debugger fails to line up.
  */
 function retargetSourceMap(fileName: string, text: string, jsExtension: string): string {
-  if (fileName.endsWith(".js.map")) {
+  if (fileName.endsWith(".map")) {
     /* Patched through the parser rather than by pattern: `sourcesContent` embeds
      * whole source files, so a textual match for the `file` field could as
      * easily land inside one of them. */
     const map = JSON.parse(text) as { file?: unknown };
-    if (typeof map.file === "string" && map.file.endsWith(".js")) {
-      map.file = `${map.file.slice(0, -".js".length)}${jsExtension}`;
+    if (typeof map.file === "string") {
+      map.file = renamedOutput(map.file, jsExtension);
     }
     return JSON.stringify(map);
   }
-  if (fileName.endsWith(".js")) {
-    /* Anchored at the end of the file, where the emitter puts the link: the same
-     * text can appear earlier inside a string literal in the compiled source —
-     * likely enough in a build tool, which is the kind of package this compiles. */
-    return text.replace(
-      /(\/\/# sourceMappingURL=[^\n]*)\.js\.map(\s*)$/,
-      (whole, prefix: string, tail: string) => `${prefix}${jsExtension}.map${tail}`
-    );
-  }
-  return text;
+  /* Anchored at the end of the file, where the emitter puts the link: the same
+   * text can appear earlier inside a string literal in the compiled source —
+   * likely enough in a build tool, which is the kind of package this compiles.
+   * An inline (`data:`) map names no file, so it renames to itself. */
+  return text.replace(
+    /(\/\/# sourceMappingURL=)([^\n]*?)(\s*)$/,
+    (whole, prefix: string, target: string, tail: string) => `${prefix}${renamedOutput(target, jsExtension)}${tail}`
+  );
 }
 
 /**
@@ -1777,8 +1779,25 @@ function moduleResolver(
 /** Whether the project emits ES modules: the ES2015..ESNext block, which stops
  * short of `node16`/`nodenext` (per-file) and `preserve` (as written). */
 function emitsEsModules(ts: ITypeScript, options: CompilerOptions): boolean {
-  const module = options.module;
-  return typeof module === "number" && module >= ts.ModuleKind.ES2015 && module < ts.ModuleKind.Node16;
+  const module = effectiveModule(ts, options);
+  return module >= ts.ModuleKind.ES2015 && module < ts.ModuleKind.Node16;
+}
+
+/**
+ * The module kind this compile emits: the stated `module`, else the compiler's
+ * own default for the target (`commonjs` below ES2015, `es2015` from it). Every
+ * reader that decides by module kind asks here, so an unstated `module` means
+ * one thing throughout.
+ */
+function effectiveModule(ts: ITypeScript, options: CompilerOptions): number {
+  if (ts.getEmitModuleKind !== undefined) {
+    return ts.getEmitModuleKind(options);
+  }
+  if (typeof options.module === "number") {
+    return options.module;
+  }
+  const target = typeof options.target === "number" ? options.target : 0;
+  return target >= ts.ScriptTarget.ES2015 ? ts.ModuleKind.ES2015 : ts.ModuleKind.CommonJS;
 }
 
 /** The first specifier in `text` that points inside the tree pool, if any. */
@@ -2124,7 +2143,18 @@ export function main(argv: string[]): number {
  */
 function conditionsOf(ts: ITypeScript, options: CompilerOptions): string[] {
   const custom = Array.isArray(options.customConditions) ? (options.customConditions as string[]) : [];
-  return ["types", options.module === ts.ModuleKind.CommonJS ? "require" : "import", "module-sync", ...custom];
+  return ["types", effectiveModule(ts, options) === ts.ModuleKind.CommonJS ? "require" : "import", "module-sync", ...custom];
+}
+
+/** The option that makes an unresolvable side-effect import an error. Added in
+ * TypeScript 5.6, so a compile may be driven by a compiler without it. */
+export const CHECK_SIDE_EFFECT_IMPORTS = "noUncheckedSideEffectImports";
+
+/** Whether this compiler knows an option, asked of the compiler rather than of
+ * its version. A compiler predating {@link ITypeScript.optionDeclarations}
+ * knows nothing this is used for. */
+export function supportsOption(ts: ITypeScript, name: string): boolean {
+  return ts.optionDeclarations?.some(option => option.name === name) === true;
 }
 
 /**
@@ -2148,20 +2178,9 @@ function conditionsOf(ts: ITypeScript, options: CompilerOptions): string[] {
  * A project emitting `node16`/`nodenext` modules must resolve the matching way
  * (TS5110 otherwise), so those answer for themselves.
  */
-/** The option that makes an unresolvable side-effect import an error. Added in
- * TypeScript 5.6, so a compile may be driven by a compiler without it. */
-export const CHECK_SIDE_EFFECT_IMPORTS = "noUncheckedSideEffectImports";
-
-/** Whether this compiler knows an option, asked of the compiler rather than of
- * its version. A compiler predating {@link ITypeScript.optionDeclarations}
- * knows nothing this is used for. */
-export function supportsOption(ts: ITypeScript, name: string): boolean {
-  return ts.optionDeclarations?.some(option => option.name === name) === true;
-}
-
 export function resolutionFor(ts: ITypeScript, options: CompilerOptions): number {
   const kinds = ts.ModuleResolutionKind;
-  const module = options.module;
+  const module = effectiveModule(ts, options);
   const node10 = kinds.Node10 ?? kinds.NodeJs!;
   /* The node* family resolves its own way or not at all (TS5109/TS5110).
    * `nodenext` tracks node; every other member of the family — `node16`,
@@ -2169,7 +2188,7 @@ export function resolutionFor(ts: ITypeScript, options: CompilerOptions): number
   if (module === ts.ModuleKind.NodeNext) {
     return kinds.NodeNext;
   }
-  if (typeof module === "number" && module >= ts.ModuleKind.Node16 && module < ts.ModuleKind.NodeNext) {
+  if (module >= ts.ModuleKind.Node16 && module < ts.ModuleKind.NodeNext) {
     return kinds.Node16;
   }
   /* `bundler` pairs only with an ES-module or `preserve` emit (TS5095) — plus a
@@ -2179,16 +2198,11 @@ export function resolutionFor(ts: ITypeScript, options: CompilerOptions): number
   if (emitsEsModules(ts, options) || (ts.ModuleKind.Preserve !== undefined && module === ts.ModuleKind.Preserve)) {
     return kinds.Bundler;
   }
-  /* An unstated `module` is treated as the CommonJS it may well default to:
-   * `node10` is legal under every compiler, so the conservative branch can only
-   * cost resolution fidelity this driver supplies anyway. */
-  const commonjs = module === undefined || module === ts.ModuleKind.CommonJS;
+  const commonjs = module === ts.ModuleKind.CommonJS;
   const legacy = Number(ts.version.split(".")[0]) < 6;
   return commonjs && !legacy ? kinds.Bundler : node10;
 }
 
-/** The project to compile: `--project <path>`/`-p <path>` as the CLI spells it,
- * else `tsconfig.json` in the working directory. */
 /**
  * The wave, bound to this run: what the driver records while it compiles, and
  * what it reports afterwards.
@@ -2853,27 +2867,18 @@ function argOf(argv: string[], flag: string): string | undefined {
   }
   const value = argv[at + 1];
   if (value === undefined) {
-    throw new Error(`tsc-driver: ${REWRITES_FLAG} needs a file`);
+    throw new Error(`tsc-driver: ${flag} needs a value`);
   }
   return value;
 }
 
+/** The project to compile: `--project <path>`/`-p <path>` as the CLI spells it,
+ * else `tsconfig.json` in the working directory. */
 function projectOf(argv: string[]): string {
   const flag = argv.findIndex(arg => arg === "--project" || arg === "-p");
   return flag >= 0 && argv[flag + 1] !== undefined ? argv[flag + 1] : "tsconfig.json";
 }
 
-/**
- * `--emit-extension <.mjs>`: what this compile's `.js` output is named instead,
- * so its tree can ship beside another compile's without colliding. A driver
- * option rather than a compiler one — tsc picks an output extension from the
- * source's, and has no setting that would move it.
- *
- * Only `.mjs` is spelled ({@link RENAMED_EXTENSION}). `.cjs` would additionally
- * need the CommonJS emit's specifiers rewritten (`require("./util")` does not
- * find `util.cjs`), which this driver does not do — it rewrites specifiers for
- * an ES-module emit alone.
- */
 /** Where the caller states which file a specifier really names — a JSON array
  * of compiled rename rules, applied BOTH before resolution (what the lookup
  * must find) and at emit (what the emitted code must say). One document because
@@ -2954,6 +2959,17 @@ function importRewritesOf(argv: string[], root: string): IImportRewrite[] | unde
   });
 }
 
+/**
+ * `--emit-extension <.mjs>`: what this compile's `.js` output is named instead,
+ * so its tree can ship beside another compile's without colliding. A driver
+ * option rather than a compiler one — tsc picks an output extension from the
+ * source's, and has no setting that would move it.
+ *
+ * Only `.mjs` is spelled ({@link RENAMED_EXTENSION}). `.cjs` would additionally
+ * need the CommonJS emit's specifiers rewritten (`require("./util")` does not
+ * find `util.cjs`), which this driver does not do — it rewrites specifiers for
+ * an ES-module emit alone.
+ */
 function emitExtensionOf(argv: string[]): string | undefined {
   const flag = argv.indexOf("--emit-extension");
   if (flag < 0) {

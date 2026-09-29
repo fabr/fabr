@@ -18,7 +18,15 @@
  */
 
 import { expect } from "chai";
-import { exportedSubpath, type ExportsValue, resolveExports, resolveExportsAll, resolveImports } from "./PackageExports";
+import {
+  encodeTargetPath,
+  exportedSubpath,
+  type ExportsValue,
+  resolveExports,
+  resolveExportsAll,
+  resolveImports,
+  resolveImportsAll,
+} from "./PackageExports";
 
 /** The conditions a typechecking compile satisfies, which is the set every
  * driver-shaped case here is about. */
@@ -193,6 +201,60 @@ describe("resolveExportsAll", () => {
   });
 });
 
+describe("fallback lists", () => {
+  const IMPORT = new Set(["import"]);
+
+  it("skips an entry that refuses while a later one answers", () => {
+    expect(resolveExports({ "./x": [null, "./b.js"] }, "./x", IMPORT)).to.equal("./b.js");
+  });
+
+  it("refuses when every entry refused, so a later condition cannot answer", () => {
+    /* Node returns the last refusal, which the condition map then returns. */
+    expect(resolveExports({ "./x": { import: [null], default: "./b.js" } }, "./x", IMPORT)).to.equal(undefined);
+    expect(resolveExports({ "./x": { import: ["./../escape.js"], default: "./b.js" } }, "./x", IMPORT)).to.equal(undefined);
+    expect(resolveExports({ "./x": { import: [], default: "./b.js" } }, "./x", IMPORT)).to.equal(undefined);
+  });
+
+  it("goes on past a list whose entries merely matched no condition", () => {
+    expect(resolveExports({ "./x": { import: [{ browser: "./c.js" }], default: "./b.js" } }, "./x", IMPORT)).to.equal("./b.js");
+  });
+});
+
+describe("condition keys", () => {
+  it("rejects a numeric key, whose place in the condition order cannot be read", () => {
+    expect(() => resolveExports({ ".": { import: "./a.mjs", "0": "./b.js" } }, ".", TYPES)).to.throw(/numeric property key/);
+  });
+
+  it("leaves numeric subpath keys and file names alone", () => {
+    expect(resolveExports({ "./0": "./0" }, "./0", TYPES)).to.equal("./0");
+    expect(resolveExports({ "./sub/*": "./dir/*" }, "./sub/1", TYPES)).to.equal("./dir/1");
+  });
+});
+
+describe("percent-encoded targets", () => {
+  /* A target is URL-relative: node resolves it against the package's URL and
+   * converts the result to a file path, so escapes decode. */
+  it("names the decoded file", () => {
+    expect(resolveExports({ "./x": "./a%20b.js" }, "./x", TYPES)).to.equal("./a b.js");
+    expect(resolveExports({ "./x": "./a b.js" }, "./x", TYPES)).to.equal("./a b.js");
+  });
+
+  it("refuses what node refuses", () => {
+    /* An encoded `node_modules` segment, a malformed escape, an encoded separator. */
+    expect(resolveExports({ "./x": "./%6Eode_modules/other/index.js" }, "./x", TYPES)).to.equal(undefined);
+    expect(resolveExports({ "./x": "./100%.js" }, "./x", TYPES)).to.equal(undefined);
+    expect(resolveExports({ "./x": "./a%2Fb.js" }, "./x", TYPES)).to.equal(undefined);
+    expect(resolveExports({ "./x/*": "./lib/*" }, "./x/%2e%2e/secret", TYPES)).to.equal(undefined);
+  });
+
+  it("encodes a file name so it decodes back to itself", () => {
+    for (const name of ["100%.js", "a#b.js", "q?.js", "a b.js", "dir/*.js"]) {
+      expect(resolveExports({ "./x": `./${encodeTargetPath(name)}` }, "./x", TYPES)).to.equal(`./${name}`);
+    }
+    expect(encodeTargetPath("dir/*.js")).to.equal("dir/*.js");
+  });
+});
+
 describe("resolveImports", () => {
   it("answers a private specifier from the map, file or redirection alike", () => {
     const imports: ExportsValue = { "#internal": "./src/internal.js", "#dep": "some-package/sub" };
@@ -205,6 +267,13 @@ describe("resolveImports", () => {
   it("picks the condition, and patterns, as exports does", () => {
     expect(resolveImports({ "#env": { node: "./src/node.js", default: "./src/browser.js" } }, "#env", TYPES)).to.equal("./src/node.js");
     expect(resolveImports({ "#lib/*": "./src/lib/*.js" }, "#lib/pad", TYPES)).to.equal("./src/lib/pad.js");
+  });
+
+  it("offers every candidate in preference order, as exports does", () => {
+    /* A `types` key listed after `import` is still a candidate a compiler can
+     * take when the `import` file carries no declarations. */
+    const imports: ExportsValue = { "#x": { import: "./x.mjs", types: "./x.d.ts" } };
+    expect(resolveImportsAll(imports, "#x", TYPES)).to.deep.equal(["./x.mjs", "./x.d.ts"]);
   });
 
   it("declines anything that is not a private specifier", () => {

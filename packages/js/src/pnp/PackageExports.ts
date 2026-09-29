@@ -101,16 +101,28 @@ export function resolveExportsAll(exports: ExportsValue, subpath: string, condit
  * exactly as node tells them apart.
  */
 export function resolveImports(imports: ExportsValue, specifier: string, conditions: ReadonlySet<string>): string | undefined {
+  return resolveImportsAll(imports, specifier, conditions)[0];
+}
+
+/**
+ * Every target the `imports` entry for `specifier` names, in the order the
+ * package prefers them — the {@link resolveExportsAll} walk, for the same
+ * reason: a compiler asking for declarations may need a candidate a condition
+ * listed later.
+ */
+export function resolveImportsAll(imports: ExportsValue, specifier: string, conditions: ReadonlySet<string>): string[] {
   /* `#` alone names nothing. `#/x` is refused by the written specification and
    * accepted by node, and node is what decides whether the import will load. */
   if (!specifier.startsWith("#") || specifier === "#" || !isMap(imports)) {
-    return undefined;
+    return [];
   }
   const matched = matchSubpath(new Map(Object.entries(imports)), specifier);
   if (matched === undefined) {
-    return undefined;
+    return [];
   }
-  return resolveTarget(matched.target, matched.wildcard, conditions, true);
+  const found: string[] = [];
+  collectTargets(matched.target, matched.wildcard, conditions, true, found);
+  return [...new Set(found)];
 }
 
 /**
@@ -267,30 +279,6 @@ function compareKeys(key: string, other: string): number {
 }
 
 /**
- * A matched entry's target, with the wildcard substituted: the string itself, or
- * the first of a fallback list that resolves, or the first matching condition's.
- *
- * `null` and `undefined` are different answers and the difference is
- * load-bearing: `undefined` means "this candidate did not resolve, try the
- * next", `null` means the package blocked the subpath and no later candidate may
- * override it.
- *
- * @param external whether a target naming another package is allowed — true for
- * `imports` (whose whole point is redirecting a name elsewhere) and false for
- * `exports`, where a package may only publish its own files.
- */
-function resolveTarget(
-  target: ExportsValue,
-  wildcard: string | undefined,
-  conditions: ReadonlySet<string>,
-  external: boolean
-): string | undefined {
-  const found: string[] = [];
-  collectTargets(target, wildcard, conditions, external, found);
-  return found[0];
-}
-
-/**
  * Append every file a matched entry can name, in preference order, and answer
  * whether the package REFUSED the subpath.
  *
@@ -304,11 +292,17 @@ function resolveTarget(
  *   the package), is a refusal. Node throws for the second and returns null for
  *   the first; both stop the walk here, since what a package has taken away a
  *   later condition may not give back.
- * - A FALLBACK LIST absorbs both. An entry that refuses is skipped and the next
- *   is tried, and the list's own caller never learns of it — which is why
- *   `[null, "./b.js"]` resolves to `./b.js` rather than to nothing.
+ * - A FALLBACK LIST absorbs a refusal while any entry answers: an entry that
+ *   refuses is skipped and the next is tried, which is why `[null, "./b.js"]`
+ *   resolves to `./b.js`. A list where something refused and nothing answered
+ *   is itself a refusal, as is an empty list; one whose entries merely matched
+ *   no condition is not, and the walk goes on past it.
  * - A CONDITION MAP propagates a refusal, so a `null` under one condition is not
  *   undone by a `default` listed after it.
+ *
+ * @param external whether a target naming another package is allowed — true for
+ * `imports` (whose whole point is redirecting a name elsewhere) and false for
+ * `exports`, where a package may only publish its own files.
  */
 function collectTargets(
   target: ExportsValue,
@@ -329,19 +323,27 @@ function collectTargets(
     return true;
   }
   if (Array.isArray(target)) {
+    const before = found.length;
+    let refused = target.length === 0;
     for (const entry of target) {
-      collectTargets(entry, wildcard, conditions, external, found);
+      refused = !collectTargets(entry, wildcard, conditions, external, found) || refused;
     }
-    return true;
+    return found.length > before || !refused;
   }
   return matchingConditions(target, conditions).every(value => collectTargets(value, wildcard, conditions, external, found));
 }
 
 /** A condition map's values in the order it lists them, keeping only those this
- * world satisfies. `default` is satisfied by every world. */
+ * world satisfies. `default` is satisfied by every world. A key that is an array
+ * index is an invalid map: JavaScript enumerates such keys first whatever order
+ * the manifest wrote, so the order conditions are tried in cannot be read. */
 function matchingConditions(target: ExportsValue, conditions: ReadonlySet<string>): ExportsValue[] {
   if (!isMap(target)) {
     return [];
+  }
+  const index = Object.keys(target).find(isArrayIndex);
+  if (index !== undefined) {
+    throw new Error(`invalid "exports"/"imports": condition key '${index}' is a numeric property key`);
   }
   return Object.entries(target)
     .filter(([condition]) => condition === "default" || conditions.has(condition))
@@ -361,13 +363,14 @@ function expandTarget(target: string, wildcard: string | undefined, external: bo
   /* The wildcard comes from the SPECIFIER, so it is checked in its own right
    * and not merely as part of the result — a target that does not use it would
    * otherwise let any subpath through unexamined. */
-  if (wildcard !== undefined && hasInvalidSegment(wildcard)) {
+  if (wildcard !== undefined && hasInvalidSegment(decodeTargetPath(wildcard))) {
     return undefined;
   }
   const expanded = wildcard === undefined ? target : target.replaceAll("*", wildcard);
   if (expanded.startsWith("./")) {
     /* Past the leading `./`, which is the one `.` segment every target has. */
-    return hasInvalidSegment(expanded.slice(2)) ? undefined : expanded;
+    const file = decodeTargetPath(expanded.slice(2));
+    return file === undefined || hasInvalidSegment(file) ? undefined : `./${file}`;
   }
   /* A bare specifier is a redirection, which only `imports` may do; a rooted or
    * upward path is neither that nor a file of this package, so it is refused
@@ -376,20 +379,51 @@ function expandTarget(target: string, wildcard: string | undefined, external: bo
 }
 
 /**
- * Whether a path holds a segment no target may contain — an upward step, a
- * self-reference, or a `node_modules` hop out of the package.
- *
- * Spelled as loosely as node spells it, and for the same reason: the segment
- * this is guarding against arrives from the specifier, so it is only worth
- * refusing if every way of writing it is refused. A backslash separates on
- * Windows, `%2e` is a `.` once anything resolves the path as a URL, and a
+ * Whether a DECODED path holds a segment no target may contain — an upward
+ * step, a self-reference, or a `node_modules` hop out of the package — or is
+ * undefined (not decodable at all). A backslash separates on Windows, and a
  * case-insensitive filesystem reaches `node_modules` through `NODE_MODULES`.
  */
-function hasInvalidSegment(path: string): boolean {
-  return path
-    .split(/[/\\]/)
-    .some(segment => {
-      const plain = segment.toLowerCase().replaceAll("%2e", ".");
+function hasInvalidSegment(path: string | undefined): boolean {
+  return (
+    path === undefined ||
+    path.split(/[/\\]/).some(segment => {
+      const plain = segment.toLowerCase();
       return plain === "." || plain === ".." || plain === "node_modules";
-    });
+    })
+  );
+}
+
+/**
+ * A target path as the file it names. Targets are URL-relative — node resolves
+ * one against the package's URL and converts the result to a path — so
+ * `a%20b.js` names `a b.js`. Undefined for what node refuses: a malformed
+ * escape, or an encoded separator (`%2F`, `%5C`), which would smuggle a segment
+ * past the checks.
+ */
+function decodeTargetPath(path: string): string | undefined {
+  if (/%2f|%5c/i.test(path)) {
+    return undefined;
+  }
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A package-relative file name spelled as a target, the inverse of
+ * {@link decodeTargetPath}: the characters URL resolution would read otherwise
+ * — `%` (an escape), `#` (a fragment), `?` (a query) — are escaped; everything
+ * else, `*` and `/` included, is written as it is.
+ */
+export function encodeTargetPath(path: string): string {
+  return path.replace(/[%#?]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
+}
+
+/** Whether a key is an array index (ECMA-262 §6.1.7): a canonical non-negative
+ * integer below 2³² − 1. */
+function isArrayIndex(key: string): boolean {
+  return /^(0|[1-9]\d*)$/.test(key) && Number(key) < 4294967295;
 }
