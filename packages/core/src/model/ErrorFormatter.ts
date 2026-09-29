@@ -22,8 +22,8 @@ import { chainSteps, IProvenanceStep, renderProvenance } from "../core/Provenanc
 import { RepositoryRef } from "../core/Repository";
 import { Diagnostic, IDiagnosticDetail, IDiagnosticNote, ISourceSpan, Log } from "../support/Log";
 import { declName, declPosn } from "./AST";
-import { constraintText, describeUseSite, IModelRefStep, MODEL_REF_PROVENANCE } from "./BuildContext";
-import { AMBIENT_CONSTRAINT_KEYS, BUILD_OPERATION, preferredOperation } from "./Constraints";
+import { constraintText, describeUseSite, IModelRefStep, MODEL_REF_PROVENANCE, substitutionNotes } from "./BuildContext";
+import { AMBIENT_CONSTRAINT_KEYS, BUILD_OPERATION, preferredOperation, shownConstraints } from "./Constraints";
 import {
   BuildFilesInvalidError,
   CircularDependencyError,
@@ -268,9 +268,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   private describeNoRule(cause: NoRuleFoundError): IDiagnostic {
     const operation = cause.constraints.get(BUILD_OPERATION) ?? "build";
     const verb = NO_RULE_VERBS.get(operation) ?? `perform '${operation}' on`;
-    const overrides = [...cause.constraints]
-      .filter(([key]) => !this.ambientConstraintKeys.has(key))
-      .map(([key, value]) => `${key}=${value}`);
+    const overrides = shownConstraints(cause.constraints, this.ambientConstraintKeys).map(([key, value]) => `${key}=${value}`);
     const suffix = overrides.length > 0 ? ` (${overrides.join(", ")})` : "";
     return {
       message: `Cannot ${verb} '${cause.target.name}': no rule matches target type '${cause.target.type}'${suffix}`,
@@ -302,7 +300,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       message: `${cause.message} - required by ${describeUseSite(head.property, head.target)}`,
       loc: declPosn(head.value),
       label: constraintText(head, { elideConstraintKeys: this.ambientConstraintKeys }),
-      notes: [...this.chainNotes(chain.parent), ...this.refNotes(rest)],
+      notes: [...substitutionNotes(head), ...this.chainNotes(chain.parent), ...this.refNotes(rest)],
       help,
     };
   }
@@ -379,6 +377,28 @@ function describeCauses(causes: Error[]): string {
 }
 
 const DEFAULT_FORMATTER: ErrorFormatter = new DiagnosticErrorFormatter();
+
+/**
+ * One line saying why `err` happened, for a mark beside the work that failed
+ * (the failure report stays the full account): the innermost cause's message,
+ * or for a failed command its exit status; several failures by the first and a
+ * count. Undefined for an error with nothing to say.
+ */
+export function errorSummary(err: Error): string | undefined {
+  if (err instanceof MultiError) {
+    const first = err.errors.length > 0 ? errorSummary(err.errors[0]) : undefined;
+    return first !== undefined && err.errors.length > 1 ? `${first} (and ${err.errors.length - 1} more)` : first;
+  }
+  if (err instanceof DependencyFailedError || err instanceof ReferenceFailedError || err instanceof RequirementResolutionError) {
+    return errorSummary(err.cause);
+  }
+  const lines = err.message
+    .split("\n")
+    .map(line => line.trim())
+    .filter(line => line !== "");
+  /* A command's failure reads `$ command`, its output, then how it ended. */
+  return err instanceof ExecutionError ? lines.at(-1) : lines[0];
+}
 
 /** Report a failed evaluation through `log`, rendered by the default
  *  {@link DiagnosticErrorFormatter} — the one error-reporting path, shared by

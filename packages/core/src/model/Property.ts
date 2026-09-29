@@ -17,10 +17,16 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import type { IPropertyDecl } from "./AST";
+
 export class Property {
   private values: string[];
-  constructor(values: string[]) {
+  /** The declaration that answered, where one did (a value given as a
+   *  constraint has none). Runtime-only: for saying where a value came from. */
+  public readonly origin?: IPropertyDecl;
+  constructor(values: string[], origin?: IPropertyDecl) {
     this.values = values;
+    this.origin = origin;
   }
 
   public toString(): string {

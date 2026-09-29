@@ -18,15 +18,16 @@
  */
 
 import {
-  AMBIENT_CONSTRAINT_KEYS,
   BUILD_OPERATION,
   BuildEvent,
   BuildListener,
   Constraints,
   declName,
   Diagnostic,
+  errorSummary,
   IFetchTask,
   Log,
+  shownConstraints,
   TaskDescription,
   TaskProgress,
   TaskState,
@@ -34,8 +35,8 @@ import {
 import { IPaneContent, IPaneRow, TerminalStream } from "./Terminal";
 
 const DIAG_TASK_START = Diagnostic.Info<{ what: string; chain: string }>("{what}{chain}");
-const DIAG_TASK_DONE = Diagnostic.Info<{ mark: string; what: string; chain: string; duration: string }>(
-  "{mark} {what}{chain} {duration}"
+const DIAG_TASK_DONE = Diagnostic.Info<{ mark: string; what: string; chain: string; duration: string; reason: string }>(
+  "{mark} {what}{chain} {duration}{reason}"
 );
 const DIAG_STEP_OUTPUT = Diagnostic.Info<{ prefix: string; line: string }>("{prefix} {line}");
 const DIAG_BUILD_COMPLETE = Diagnostic.Info<{ targets: string }>("Built {targets}");
@@ -224,6 +225,7 @@ export class ProgressReporter {
              * pane there was no start line to have carried it. */
             chain: this.announceStart ? "" : context(event.task),
             duration: this.style(SGR_DIM, `(${formatDuration(this.now() - started.started)})`),
+            reason: failureReason(event.error),
           });
         }
         break;
@@ -426,12 +428,19 @@ function attribution(task: TaskDescription): string {
   }
 }
 
+/** `: <why>` for a failed task's completion line, or "" when its error says
+ * nothing on one line. */
+function failureReason(error: Error | undefined): string {
+  const summary = error === undefined ? undefined : errorSummary(error);
+  return summary === undefined ? "" : `: ${summary}`;
+}
+
 /**
  * @return a ` [k=v, ...]` annotation of the explicit constraints a target is
  * building under (the ambient keys elided), or "" when there are none — so a
  * default build shows none.
  */
 function renderConstraints(constraints: Constraints): string {
-  const shown = [...constraints].filter(([key]) => !AMBIENT_CONSTRAINT_KEYS.has(key));
+  const shown = shownConstraints(constraints);
   return shown.length > 0 ? ` [${shown.map(([key, value]) => key + "=" + value).join(", ")}]` : "";
 }

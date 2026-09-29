@@ -20,6 +20,7 @@
 import { availableParallelism } from "os";
 import { BuildCache } from "../core/BuildCache";
 import { Computable, ComputableHandle, ComputableSource, ComputableState } from "../core/Computable";
+import { toError } from "../core/Errors";
 import { FileSource } from "../core/FileSet";
 import { activityCounter, ITaskReport } from "../support/Execute";
 import { Log } from "../support/Log";
@@ -273,14 +274,15 @@ export class ExecutionContext {
       },
     };
     this.emit({ kind: "task-start", id, task, state });
-    const end = (failed: boolean): void => this.emit({ kind: "task-end", id, task, failed });
+    const end = (failed: boolean, error?: unknown): void =>
+      this.emit({ kind: "task-end", id, task, failed, ...(failed ? { error: toError(error) } : {}) });
     /* A synchronous throw must still end the task, or the start dangles (a
      * phantom "running" row for the rest of a watch session). */
     let chain: Computable<T>;
     try {
       chain = run(report);
     } catch (err) {
-      end(true);
+      end(true, err);
       throw err;
     }
     return chain.then(
@@ -289,7 +291,7 @@ export class ExecutionContext {
         return result;
       },
       err => {
-        end(true);
+        end(true, err);
         throw err;
       }
     );

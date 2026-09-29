@@ -115,6 +115,9 @@ export interface ITaskOutputEvent extends ITaskEvent {
 export interface ITaskEndEvent extends ITaskEvent {
   kind: "task-end";
   failed: boolean;
+  /** The error that ended a failed task — for a mark beside the task to say
+   *  why. The failure itself is reported by rejection, not by this event. */
+  error?: Error;
 }
 
 /**

@@ -78,6 +78,15 @@ describe("ProgressReporter", () => {
     expect(lines[1]).to.equal("info:✗ Building //pkg (40ms)");
   });
 
+  it("says why a failed task failed, in one line", () => {
+    const { lines, reporter, tick } = report();
+    const task = building("//pkg");
+    send(reporter, { kind: "task-start", id: 1, task, state: "running" });
+    tick(40);
+    send(reporter, { kind: "task-end", id: 1, task, failed: true, error: new Error("NPM package x@1.0.0 not found\nmore detail") });
+    expect(lines[1]).to.equal("info:✗ Building //pkg (40ms): NPM package x@1.0.0 not found");
+  });
+
   it("uses a sub-target's label as the verb", () => {
     const { lines, reporter } = report();
     send(reporter, { kind: "task-start", id: 1, task: building("//pkg", "Compiling"), state: "running" });

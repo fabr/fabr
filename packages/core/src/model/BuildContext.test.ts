@@ -788,6 +788,36 @@ describe("BuildContext", () => {
     }
   });
 
+  it("Says where a substituted reference got its value", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_file { content = STRING; }\n" +
+      "test_file c1 { content = one; }\n" +
+      "test_file c2 { content = two; }\n" +
+      "FIRST = c1;\n" +
+      "test_good a { deps = ${FIRST} c2; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    try {
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      expect.fail("expected target a to fail");
+    } catch (err) {
+      const conflict = (err as DependencyFailedError).cause as ConflictError;
+      const rendered = renderProvenance(conflict.left.provenance, { path: "f.txt" });
+      expect(rendered[0].message).to.equal("from '${FIRST}' (a deps)");
+      /* The note after it points at the value FIRST was given, where it was
+       * given — the line to change when that value is what is wrong. */
+      expect(rendered[1].message).to.equal("FIRST is 'c1'");
+      const loc = rendered[1].loc!;
+      const pos = loc.reader.resolvePosition(loc.offset)!;
+      expect(pos.lineText).to.equal("FIRST = c1;");
+      expect(loc.endOffset! - loc.offset).to.equal(2);
+    }
+  });
+
   it("Attributes a conflict raised mid-resolution to the written value that caused it", async () => {
     /* A projection into a multi-source property (`x:f.txt`) unions two producers
      * that both emit `f.txt` — the conflict is raised inside the value's own

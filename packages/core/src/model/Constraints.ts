@@ -63,6 +63,18 @@ export function preferredOperation(operations: string[]): string | undefined {
 export const TARGET = "TARGET";
 
 /**
+ * The entries of `constraints` worth showing a reader: all but the `ambient`
+ * keys, and but a TARGET equal to HOST — the host-native default, which running
+ * a tool pins explicitly, so that it would otherwise read as a choice.
+ */
+export function shownConstraints(
+  constraints: Iterable<[string, string]> & { get(key: string): string | undefined },
+  ambient: ReadonlySet<string> = AMBIENT_CONSTRAINT_KEYS
+): Array<[string, string]> {
+  return [...constraints].filter(([key, value]) => !ambient.has(key) && !(key === TARGET && value === constraints.get(HOST)));
+}
+
+/**
  * What a test run does when actual output diverges from a recorded expectation:
  * `check` (fail — the default, declared in STD.fabr) or `update` (rewrite the
  * record and offer it back to the source tree). `fabr test -u` sets it. Not a

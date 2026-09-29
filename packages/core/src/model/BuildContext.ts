@@ -52,7 +52,7 @@ import {
 } from "../core/Provenance";
 import { BuildAction, BuildResult } from "../core/BuildAction";
 import { IRuleDefinition, RepositoryProvider, SubTargetInputs } from "../rules/Types";
-import { Constraints, HOST, RUN_OVERRIDE, TARGET } from "./Constraints";
+import { Constraints, HOST, RUN_OVERRIDE, shownConstraints, TARGET } from "./Constraints";
 import { IFetchReport, ITargetBuildTask, TaskDescription } from "./BuildEvents";
 import { ExecutionContext } from "./ExecutionContext";
 import { ITargetOrigin, TARGET_PROVENANCE } from "./Target";
@@ -177,6 +177,16 @@ export interface IModelRefStep extends IProvenanceStep {
    * a global/default property) — the "required by <target> <property>" facts */
   property: IPropertyDecl;
   target?: ITargetDecl;
+  /** The `${...}` the written value substituted, with what each gave. */
+  substitutions?: readonly ISubstitution[];
+}
+
+/** One `${NAME}` substituted into a written value: the text it gave, and the
+ *  declaration that answered it (none for a value given as a constraint). */
+export interface ISubstitution {
+  name: string;
+  value: string;
+  origin?: IPropertyDecl;
 }
 
 registerProvenanceRenderer(MODEL_REF_PROVENANCE, (step, context) => renderModelRef(step as IModelRefStep, context));
@@ -197,7 +207,19 @@ function renderModelRef(step: IModelRefStep, context: IRenderContext): IDiagnost
       loc: declPosn(step.value),
       label: constraintText(step, context),
     },
+    ...substitutionNotes(step),
   ];
+}
+
+/** Where each `${NAME}` in a reference got its value — the line to edit (or
+ *  override) when the value is what is wrong. */
+export function substitutionNotes(step: IModelRefStep): IDiagnosticNote[] {
+  return (step.substitutions ?? []).flatMap(({ name, value, origin }) => {
+    const values = origin?.values ?? [];
+    return origin === undefined || values.length === 0
+      ? []
+      : [{ message: `${name} is '${value}'`, loc: { ...declPosn(values[0]), endOffset: values[values.length - 1].endOffset } }];
+  });
 }
 
 /** "required by <target> <property>" without the leading verb: the use-site
@@ -216,8 +238,8 @@ export function describeUseSite(property: IPropertyDecl, target: ITargetDecl | u
  */
 export function constraintText(step: IModelRefStep, context: IRenderContext): string | undefined {
   const deeper = findNextModelRef(step.parent);
-  const entries = [...step.constraints].filter(
-    ([key, value]) => !context.elideConstraintKeys?.has(key) && (deeper ? deeper.constraints.get(key) !== value : true)
+  const entries = shownConstraints(step.constraints, context.elideConstraintKeys ?? new Set()).filter(([key, value]) =>
+    deeper ? deeper.constraints.get(key) !== value : true
   );
   if (entries.length === 0) {
     return undefined;
@@ -945,7 +967,10 @@ export class BuildContext {
     callerOverrides?: Constraints
   ): Computable<Property> {
     return this.resolveNameProperty(prop, target, stack, callerOverrides).then(
-      names => new Property(names.map(name => name.toString()))
+      names => new Property(
+        names.map(name => name.toString()),
+        prop
+      )
     );
   }
 
@@ -1145,14 +1170,14 @@ export class BuildContext {
     /* A value written as `ref<k=v>` resolves under this context overridden by its
      * requirement, so the referenced target builds under those constraints and the
      * model-ref step (stamped by that context) records them. */
-    return this.resolvingContextFor(name, options?.callerOverrides, stack).then(({ context, reference }) => {
+    return this.resolvingContextFor(name, options?.callerOverrides, stack).then(({ context, reference, substitutions }) => {
       const resolved = context.resolveFileSource(reference, relativeTo, stack);
       if (!provenance) {
         return resolved.then(result => result.sources);
       }
       const { value, property, target } = provenance;
       return resolved
-        .then(result => result.sources.map(source => context.withModelRef(source, value, property, target)))
+        .then(result => result.sources.map(source => context.withModelRef(source, value, property, target, substitutions)))
         .catch(err => {
           /* A referenced target's failure crossing this written reference (it
            * failed to build, or no rule matched it): record the use site, so the
@@ -1192,10 +1217,10 @@ export class BuildContext {
     name: Name,
     callerOverrides?: Constraints,
     stack?: IDependencyStack
-  ): Computable<{ context: BuildContext; reference: Name }> {
-    return this.substituteNameVars(name, stack).then(substituted => {
+  ): Computable<{ context: BuildContext; reference: Name; substitutions: ISubstitution[] }> {
+    return this.substituteTraced(name, stack).then(({ name: substituted, substitutions }) => {
       if (!substituted.hasConstraints()) {
-        return { context: this.getContextWithOverrides(callerOverrides), reference: substituted };
+        return { context: this.getContextWithOverrides(callerOverrides), reference: substituted, substitutions };
       }
       const required: Record<string, string> = Object.create(null);
       for (const [key, value] of substituted.getConstraints()) {
@@ -1203,16 +1228,29 @@ export class BuildContext {
       }
       /* Caller override last, so it wins on a shared key. */
       const merged = Constraints.of(required).with(callerOverrides);
-      return { context: this.getContextWithOverrides(merged), reference: substituted.withConstraints([]) };
+      return { context: this.getContextWithOverrides(merged), reference: substituted.withConstraints([]), substitutions };
     });
   }
 
-  private modelRefStep(value: INameValue, property: IPropertyDecl, target?: ITargetDecl): IModelRefStep {
-    return { kind: MODEL_REF_PROVENANCE, value, constraints: this.constraints, property, target };
+  private modelRefStep(value: INameValue, property: IPropertyDecl, target?: ITargetDecl, substitutions?: readonly ISubstitution[]): IModelRefStep {
+    return {
+      kind: MODEL_REF_PROVENANCE,
+      value,
+      constraints: this.constraints,
+      property,
+      target,
+      ...(substitutions !== undefined && substitutions.length > 0 ? { substitutions } : {}),
+    };
   }
 
-  private withModelRef(source: SourceRef, value: INameValue, property: IPropertyDecl, target?: ITargetDecl): SourceRef {
-    const step = this.modelRefStep(value, property, target);
+  private withModelRef(
+    source: SourceRef,
+    value: INameValue,
+    property: IPropertyDecl,
+    target?: ITargetDecl,
+    substitutions?: readonly ISubstitution[]
+  ): SourceRef {
+    const step = this.modelRefStep(value, property, target, substitutions);
     if (source instanceof FileSet || source instanceof RepositoryRef) {
       return source.withStep(step);
     }
@@ -1445,13 +1483,22 @@ export class BuildContext {
    * and replacement treat them identically.
    */
   public substituteNameVars(name: Name, stack?: IDependencyStack): Computable<Name> {
+    return this.substituteTraced(name, stack).then(({ name: substituted }) => substituted);
+  }
+
+  /** {@link substituteNameVars}, also answering what each `${NAME}` gave and
+   *  where that came from. */
+  private substituteTraced(name: Name, stack?: IDependencyStack): Computable<{ name: Name; substitutions: ISubstitution[] }> {
     const parts = name.getSubstitutions();
     if (parts.length === 0) {
-      return Computable.resolve(name);
+      return Computable.resolve({ name, substitutions: [] });
     }
     return Computable.forAll(
       parts.map(part => this.substitutedText(part, stack)),
-      (...texts: string[]) => name.substitute(new Map(parts.map((part, i) => [part, texts[i]])))
+      (...texts: Array<{ text: string; substitution?: ISubstitution }>) => ({
+        name: name.substitute(new Map(parts.map((part, i) => [part, texts[i].text]))),
+        substitutions: texts.flatMap(({ substitution }) => (substitution === undefined ? [] : [substitution])),
+      })
     );
   }
 
@@ -1459,10 +1506,13 @@ export class BuildContext {
    * Two identically-written commands run once between them — not by being
    * deduplicated here, but because they key the same action, which the build
    * cache already serves from one in-flight attempt. */
-  private substitutedText(part: NamePart, stack?: IDependencyStack): Computable<string> {
+  private substitutedText(part: NamePart, stack?: IDependencyStack): Computable<{ text: string; substitution?: ISubstitution }> {
     return part.kind === NamePartKind.CommandSubst
-      ? this.runCommandSubst(part, stack)
-      : this.getProperty(part.value, stack).then(prop => prop.toString());
+      ? this.runCommandSubst(part, stack).then(text => ({ text }))
+      : this.getProperty(part.value, stack).then(prop => ({
+          text: prop.toString(),
+          substitution: { name: part.value, value: prop.toString(), origin: prop.origin },
+        }));
   }
 
   /**

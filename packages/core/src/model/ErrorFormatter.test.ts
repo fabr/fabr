@@ -24,7 +24,7 @@ import { IDiagnosticNote, Log } from "../support/Log";
 import { parseName } from "./Parser";
 import { BUILD_OPERATION, Constraints } from "./Constraints";
 import { CircularDependencyError, DependencyFailedError, NoRuleFoundError, ReferenceFailedError } from "./Errors";
-import { DiagnosticErrorFormatter } from "./ErrorFormatter";
+import { DiagnosticErrorFormatter, errorSummary } from "./ErrorFormatter";
 
 /** A stand-in for the driver-injected host facts, and the keys a report elides. */
 const HOST_TRIPLE = "arm64-apple-macosx15.0";
@@ -66,6 +66,24 @@ function capture(err: Error, ambient?: ReadonlySet<string>): Captured[] {
   new DiagnosticErrorFormatter(ambient).report(log, err);
   return out;
 }
+
+describe("errorSummary", () => {
+  it("takes the first line of a plain error", () => {
+    expect(errorSummary(new Error("package not found\n  detail"))).to.equal("package not found");
+  });
+
+  it("takes how a failed command ended, not the command", () => {
+    expect(errorSummary(new ExecutionError("$ tsc -p .\nsrc/a.ts: error\nexited with error code 2"))).to.equal("exited with error code 2");
+  });
+
+  it("looks through a dependency failure to its cause", () => {
+    expect(errorSummary(new DependencyFailedError(targetDecl("base"), new Error("the cause")))).to.equal("the cause");
+  });
+
+  it("names the first of several failures and counts the rest", () => {
+    expect(errorSummary(MultiError.of([new Error("one"), new Error("two"), new Error("three")]))).to.equal("one (and 2 more)");
+  });
+});
 
 describe("DiagnosticErrorFormatter", () => {
   it("anchors a self-reference at the written name, pointing at the declaration it reached", () => {
