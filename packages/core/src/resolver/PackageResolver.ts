@@ -33,7 +33,6 @@ import { Name } from "../core/Name";
 import { PackageFileSet, PackageGraphBuilder } from "../core/PackageFileSet";
 import {
   isRepositoryReader,
-  MaterializeOptions,
   RefSource,
   RepositoryReader,
   ResolutionContext,
@@ -44,18 +43,12 @@ import {
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { PackageFormat } from "./PackageFormat";
 import { resolveMVS } from "./MVSResolver";
-import {
-  allSanctioned,
-  canonicalRequirements,
-  collectSanctions,
-  requirementKey,
-  satisfiedByAnySelection,
-  writtenVersions,
-} from "./Overrides";
+import { canonicalRequirements, collectSanctions, requirementKey, satisfiedByAnySelection, writtenVersions } from "./Overrides";
 import { deserializeResolutionDoc, IResolutionDoc, serializeResolutionDoc } from "./ResolutionDoc";
-import { coexistingVersions, ResolutionGraph } from "./ResolutionGraph";
+import { ResolutionGraph } from "./ResolutionGraph";
 import { IResolutionOrigin, PACKAGE_RESOLUTION_PROVENANCE } from "./ResolutionProvenance";
-import { completeRepairSet, conflictError, RefRenderer, suggestSanctions, SuggestSources, unrepairableError } from "./ResolutionReport";
+import type { IDeliveryFacts } from "./StrictCollection";
+import { completeRepairSet, RefRenderer, SuggestSources, unrepairableError } from "./ResolutionReport";
 import { IRequirementEdge, MVSResolution, Requirement, ROOT_REQUIRER, Selected } from "./Types";
 
 const RESOLUTION_FILE = "resolution.json";
@@ -246,28 +239,23 @@ export function resolvePackages<V, C>(
  * operation (captured in the resolution) decides the shape: run → each root
  * becomes a runnable, otherwise the plain packages.
  *
- * Enforcement of resolution repairs happens here, per delivery: a
- * **permissive** delivery (`options.resolutionMode`, or run — a runnable is
- * a sealed install by invariant) accepts the repaired closure, whose fork
- * selections the layout nests privately under their requirers; a strict
- * (linked) delivery with any repair in its reachable closure fails with the
- * repairs and their remedies. A violation nothing in the resolution
- * satisfies has no repairing fork and fails in EVERY mode — no delivery can
- * honor the constraint.
+ * A violation nothing in the resolution satisfies has no repairing fork and
+ * fails here, in EVERY mode — no delivery can honor the constraint. Whether a
+ * repaired closure is ACCEPTABLE is not this delivery's question: a strict
+ * (linked) consumer is judged over everything it uses together, at its
+ * collection point (StrictCollection), from the facts each delivery
+ * records on its packages' provenance; a permissive one (a sealed install)
+ * nests the repairs privately.
  */
 export function materializePackages<V, C>(
   context: ResolutionContext,
   registry: RepositoryReader<V, C>,
   references: RepositoryRef[],
-  resolution: Resolution,
-  options?: MaterializeOptions
+  resolution: Resolution
 ): Computable<(PackageFileSet | undefined)[]> {
   const { format } = registry;
   const resolved = resolution as DomainResolution<V>;
   const { rootIndex, alternates, graph } = resolved;
-  /* Permissiveness is the CONSUMER's judgment, passed in: a sealed install (every
-   * run-op rule, a catalog's run delivery) says so explicitly. */
-  const permissive = options?.resolutionMode === "permissive";
   const requirements = references.map(reference => format.parseRequirement(reference.name));
   /* An alternate (`?`) reference demands nothing and delivers nothing of its
    * own — the sanctioned fork arrives nested inside the canonical closure. */
@@ -317,45 +305,36 @@ export function materializePackages<V, C>(
     ...[...reachableIds].flatMap(id => graph.violationsOf(id)),
   ];
   const root = [...requestedKeys].sort().join(", ");
-  /* The sanction rule is a set comparison: every version of a package this
-   * delivery ships must be explicitly written — as a `?`, or as an exact
+  /* The sanction rule is a set comparison: every version of a package the
+   * consumer ships must be explicitly written — as a `?`, or as an exact
    * unmarked pin (the catalog form). See resolver/Overrides. */
   const written = writtenVersions(format, alternates, demanded);
   const refText = refTextFor(references, registry);
-  /* Judge the repairs first: the verdict is decided by the resolution alone
-   * (no content, and — since the resolution carries its own edges — no
-   * metadata), so a closure that cannot be delivered says so before anything
-   * is downloaded. Rejects rather than throws — materialize may be entered
-   * synchronously, outside any chain that would capture a throw. A failing
-   * strict delivery computes its fix suggestions (registry reads) before
-   * rejecting. */
+  const facts: IDeliveryFacts<V, C> = {
+    domain: format,
+    graph,
+    needed,
+    requested: requirements,
+    written,
+    roots: [...requestedKeys].sort(),
+    refText,
+    sources: () => suggestSourcesFor(context, registry, repositoryAlias(references)),
+  };
+  /* Judged before anything is downloaded: the verdict is decided by the
+   * resolution alone. Rejects rather than throws — materialize may be entered
+   * synchronously, outside any chain that would capture a throw. */
   const judgeRepairs = (): Computable<void> => {
-    /* A violated edge with NO repairing fork — nothing published
-     * satisfies it — cannot be accepted in ANY mode, so it is judged
-     * first: the strict error's remedies would be false advice for it. */
     /* Only selections of the violated package can satisfy it, so the question
      * is asked of that package's candidates rather than of every selection. */
     const unrepaired = scopedViolations.filter(
       violation => !satisfiedByAnySelection(format, graph.selectionsOf(violation.pkg), violation)
     );
-    if (unrepaired.length > 0) {
-      return Computable.reject(unrepairableError(root, unrepaired, graph, refText));
-    }
-    if (!permissive) {
-      const outstanding = scopedViolations.filter(violation => !allSanctioned(format, needed, written, violation.pkg));
-      const duplicates = coexistingVersions(needed).filter(([pkg]) => !allSanctioned(format, needed, written, pkg));
-      if (outstanding.length > 0 || duplicates.length > 0) {
-        return suggestSanctions(outstanding, graph, needed, requirements, suggestSourcesFor(context, registry, repositoryAlias(references))).then(suggestion => {
-          throw conflictError(root, outstanding, duplicates, needed, graph, refText, written, suggestion);
-        });
-      }
-    }
-    return Computable.resolve(undefined);
+    return unrepaired.length > 0 ? Computable.reject(unrepairableError(root, unrepaired, graph, refText)) : Computable.resolve(undefined);
   };
   return judgeRepairs()
     .then(() => {
-      /* Sealed (or fully sanctioned): the forks repairing the reachable
-       * violations are already in `needed`, nested by the layout plan. One
+      /* The forks repairing the reachable violations are already in `needed`,
+       * nested by the layout plan where the consumer accepts them. One
        * fetch per member — ids are distinct by construction, and an alias
        * binding two edges to one version is one id (one tarball, shared). */
       const toFetch = new Map(needed.map(sel => [graph.id(sel), sel] as const));
@@ -376,7 +355,7 @@ export function materializePackages<V, C>(
               /* Can't happen: a root requirement is always reachable from itself */
               throw new Error(`Resolution of ${requirementKey(req)} does not contain its own root package`);
             }
-            return buildClosure(registry, req, bound, graph, packages);
+            return buildClosure(registry, req, bound, graph, packages, facts as IDeliveryFacts);
           });
           /* Assembled, not shaped: what a package BECOMES on delivery (mounted
            * as-is, launched as a runnable, or reduced to its own files) is the
@@ -463,10 +442,11 @@ function buildClosure<V, C>(
   req: Requirement,
   root: Selected<V>,
   graph: ResolutionGraph<V>,
-  packages: Map<string, PackageFileSet>
+  packages: Map<string, PackageFileSet>,
+  delivery: IDeliveryFacts
 ): PackageFileSet {
   const rootId = graph.id(root);
-  const origin = resolutionOrigin(registry.format, req, graph.selections);
+  const origin = resolutionOrigin(registry.format, req, graph.selections, delivery);
   /* A worklist over the graph, in the builder's own two-phase shape: discover
    * each delivered (name, id) instance from the root, then wire its edges once
    * its targets exist. Discovery IS the membership walk — everything reached
@@ -504,12 +484,18 @@ function buildClosure<V, C>(
  * selections that answer "why is this package here / why this version". It
  * carries no registry identity — "who provided this" is answered by following
  * the chain to the written reference and the declaration it names. */
-function resolutionOrigin<V, C>(format: PackageFormat<V, C>, req: Requirement, selections: Selected<V>[]): IResolutionOrigin<V> {
+function resolutionOrigin<V, C>(
+  format: PackageFormat<V, C>,
+  req: Requirement,
+  selections: Selected<V>[],
+  delivery?: IDeliveryFacts
+): IResolutionOrigin<V> {
   return {
     kind: PACKAGE_RESOLUTION_PROVENANCE,
     root: req,
     selections,
     versionToString: format.versionToString,
+    ...(delivery === undefined ? {} : { delivery }),
   };
 }
 

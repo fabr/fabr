@@ -48,7 +48,6 @@ import {
   MaterializeOptions,
   RepositoryRef,
   ResolutionContext,
-  resolveAndMaterialize,
   materializeAll,
   conflictError,
   ROOT_REQUIRER,
@@ -390,9 +389,10 @@ function npmRepository(url: string, context: TargetContext): NPMRepository {
   machineryContexts.set(repo, context);
   return repo;
 }
-/** resolveAndMaterialize through the context the repository was built with. */
+/** The references delivered through a collection point — which judges them —
+ * in the context the repository was built with. */
 function drive(repo: object & { getRepositoryRef?: unknown }, refs: RepositoryRef[], options?: MaterializeOptions): Computable<FileSet[]> {
-  return resolveAndMaterialize(machineryContexts.get(repo)! as unknown as ResolutionContext, repo as never, refs, options);
+  return materializeAll(machineryContexts.get(repo)! as unknown as ResolutionContext, refs, options) as Computable<FileSet[]>;
 }
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {
@@ -1375,6 +1375,10 @@ describe("override markers", () => {
       [`${REG}/C/2.0.0`]: metadataFor("C", "2.0.0", {}, { dist: tarballDist("c2") }),
       [`${REG}/C/3.0.0`]: metadataFor("C", "3.0.0", {}, { dist: tarballDist("c3") }),
       [`${REG}/C`]: new FileSet(new Map([["versions.json", MemoryFile.from(JSON.stringify(["1.5.0", "2.0.0", "3.0.0"]))]])),
+      /* Each delivery fetches what it ships; the collection point judges after. */
+      [`${REG}/tarball/d.tgz`]: packageTarball(),
+      [`${REG}/tarball/c1.tgz`]: packageTarball(),
+      [`${REG}/tarball/c2.tgz`]: packageTarball(),
     };
     const repo = npmRepository(REG, fakeContext("build", disjoint, []));
     const err = await rejection(() => toPromise(drive(repo, refsFor(repo, ["D:1.0.0", 'C:">=2.0.0"']))));

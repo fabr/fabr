@@ -32,6 +32,7 @@ import type { ITaskReport } from "../support/Execute";
 /* Value imports used only inside function bodies (the resolution-layer
  * dispatch below), so the module cycle with the resolver is init-safe:
  * neither module touches the other's bindings at load time. */
+import { checkStrictCollection } from "../resolver/StrictCollection";
 import { materializePackages, resolvePackages } from "../resolver/PackageResolver";
 
 /**
@@ -127,9 +128,8 @@ export interface RepositoryLookup {
    * remains here is a repository whose delivery is genuinely per-reference —
    * a catalog's pinned-member lookup.
    * Projections and provenance carried by the reference are applied by the
-   * caller (see materializeAll); `options.resolutionMode` is the
-   * delivery-shape judgment of resolution repairs (see MaterializeOptions),
-   * for a repository (the catalog) whose members carry resolved closures.
+   * caller (see materializeAll), which also judges what it was delivered (see
+   * MaterializeOptions).
    */
   deliver(reference: RepositoryRef, options?: MaterializeOptions): Computable<FileSet>;
 
@@ -290,8 +290,10 @@ export type ClosureThunk = () => Computable<PackageFileSet | undefined>;
  * into a sealed program that is executed, not linked against (a
  * runnable-definer's install, a run delivery) — repairs are accepted and the
  * install nests npm-style. **"strict"** (the default): the closure is linked
- * into the consumer's own module graph — any repair in the delivered closure
- * is an error (with its remedy suggested). The mode is structural — a fact
+ * into the consumer's own module graph — so over everything the collection
+ * point was delivered, from every source, a package shipped at more than one
+ * version is an error (with its remedy suggested) unless each version is
+ * sanctioned. The mode is structural — a fact
  * about what the consuming rule does with the delivery, set by rule code at
  * its collection point — deliberately not a constraint (no grammar surface).
  */
@@ -366,7 +368,7 @@ export function resolveAndMaterialize(
    * repository. A registry additionally gets a thunk for its resolved closure —
    * ONE joint resolution for the batch, forced only by the references whose
    * delivery actually needs it (see ClosureThunk). */
-  const closures = isRepositoryReader(source) ? assembleClosures(context, source, references, options) : undefined;
+  const closures = isRepositoryReader(source) ? assembleClosures(context, source, references) : undefined;
   return Computable.forAll(
     references.map((reference, index) =>
       source.deliver(reference, options, closures && (() => closures().then(assembled => assembled[index])))
@@ -384,14 +386,13 @@ export function resolveAndMaterialize(
 function assembleClosures<V, C>(
   context: ResolutionContext,
   source: RepositoryReader<V, C>,
-  references: RepositoryRef[],
-  options?: MaterializeOptions
+  references: RepositoryRef[]
 ): () => Computable<(PackageFileSet | undefined)[]> {
   let started: Computable<(PackageFileSet | undefined)[]> | undefined;
   return () => {
     if (!started) {
       started = resolvePackages(context, source, references).then(resolution =>
-        materializePackages(context, source, references, resolution, options)
+        materializePackages(context, source, references, resolution)
       );
     }
     return started;
@@ -617,6 +618,14 @@ export type SourceRef = FileSource | Repository | RepositoryRef | FileSetRef;
 export type Materialized = FileSource | Repository | FileSetRef;
 
 /**
+ * A strict collection point's check of what it was delivered (see
+ * StrictCollection); a permissive one — a sealed install — accepts it.
+ */
+function checkedCollection(finished: ReadonlyMap<RepositoryRef, unknown>, options?: MaterializeOptions): Computable<void> {
+  return options?.resolutionMode === "permissive" ? Computable.resolve(undefined) : checkStrictCollection(finished);
+}
+
+/**
  * Shallow counterpart to {@link materializeAll} for the CLI verb entry points
  * (`fabr ls`/`cat`/`run` via `resolveName`): resolve only the top-level
  * references the name itself denotes — never the dependency closure a delivered
@@ -649,7 +658,7 @@ export function materializeShallow(
       batches.forEach(([, refs], batchIndex) =>
         refs.forEach((ref, index) => finished.set(ref, ref.deliveredAs(results[batchIndex][index])))
       );
-      return finish(finished);
+      return checkedCollection(finished, options).then(() => finish(finished));
     }
   );
 }
@@ -704,7 +713,7 @@ export function materializeAll(context: ResolutionContext, sources: SourceRef[],
       batches.forEach(([, refs], batchIndex) =>
         refs.forEach((ref, index) => finished.set(ref, ref.deliveredAs(results[batchIndex][index])))
       );
-      return finish(finished);
+      return checkedCollection(finished, options).then(() => finish(finished));
     }
   );
 }

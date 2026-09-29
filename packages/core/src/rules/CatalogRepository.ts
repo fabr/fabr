@@ -24,7 +24,6 @@ import { RunnableFileSet } from "../core/RunnableFileSet";
 import {
   groupByRepository,
   isRepositoryReader,
-  MaterializeOptions,
   Repository,
   RepositoryPublishRef,
   RepositoryLookup,
@@ -98,20 +97,16 @@ export class CatalogRepository implements Repository, RepositoryLookup {
    * joint pin, never a fresh selection. Under `run` the member is made
    * runnable via its source's format, keeping that same closure.
    *
-   * The catalog resolves once (forced build) but is judged per delivery: the
-   * consumer's `options.resolutionMode` — and run delivery, permissive by the
-   * sealed-runnable invariant — is forwarded to the member materialization,
-   * so one pinned tree can serve a permissive tool member (repairs nested)
-   * and a strict linked member (repairs erroring) side by side.
+   * The catalog resolves once (forced build); whether what a consumer takes
+   * from it is acceptable is judged at that consumer's collection point, over
+   * everything it uses together — so one pinned tree can serve a sealed tool
+   * member (repairs nested) and a strict linked member side by side.
    */
-  public deliver(reference: RepositoryRef, options?: MaterializeOptions): Computable<FileSet> {
+  public deliver(reference: RepositoryRef): Computable<FileSet> {
     return this.context.getGlobalString(BUILD_OPERATION).then(operation =>
       this.pinned.then(table => {
         const member = this.memberOf(reference, table);
-        /* Run delivery is permissive by the sealed-runnable invariant; otherwise
-         * the consumer's judgment. */
-        const mode = operation === "run" ? ({ resolutionMode: "permissive" } as MaterializeOptions) : options;
-        return this.materializeMember(reference, member, mode).then(pkg =>
+        return this.materializeMember(reference, member).then(pkg =>
           operation === "run" ? this.toRunnable(reference.name.getLiteralPrefix(), member, pkg) : Computable.resolve<FileSet>(pkg)
         );
       })
@@ -143,11 +138,11 @@ export class CatalogRepository implements Repository, RepositoryLookup {
    * carries its own edges; what must nest privately is decided by the
    * consumer's merge, not by batch shape). A local entry is already built.
    */
-  private materializeMember(reference: RepositoryRef, member: CatalogMember, options?: MaterializeOptions): Computable<PackageFileSet> {
+  private materializeMember(reference: RepositoryRef, member: CatalogMember): Computable<PackageFileSet> {
     if (member.kind === "local") {
       return Computable.resolve(member.pkg);
     }
-    return materializePackages(this.context, member.source, [member.reference], member.resolution, options)
+    return materializePackages(this.context, member.source, [member.reference], member.resolution)
       .then(([base]) => {
         if (base === undefined) {
           throw new Error(`internal: catalog member '${reference.name.toString()}' resolved to no package`);

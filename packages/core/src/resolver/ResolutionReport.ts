@@ -165,8 +165,9 @@ function explainDuplicate<V>(
  * raised floor is the constraint's plain meaning when its literal minimum was
  * never published, acceptable in every delivery mode.)
  *
- * `selections` is the delivered closure, read for the provenance edges that
- * explain each repair; `written` (the user's `?`/pin set, when any exists for
+ * `needed` is what the delivery ships; `graph` explains each repair — one
+ * resolution's, or several combined where a collection point's deliveries
+ * came from more than one; `written` (the user's `?`/pin set, when any exists for
  * a violated package) drives the partial-sanction set-mismatch note; the
  * suggester's pasteable repair set arrives pre-rendered as `suggestion` and
  * becomes the help.
@@ -176,7 +177,7 @@ export function conflictError<V>(
   violations: Violation<V>[],
   duplicates: Array<[string, V[]]>,
   needed: readonly Selected<V>[],
-  graph: ResolutionGraph<V>,
+  graph: Pick<ResolutionGraph<V>, "versionToString" | "explainer">,
   refText: RefRenderer,
   written?: ReadonlyMap<string, ReadonlySet<string>>,
   suggestion?: string[]
@@ -305,7 +306,7 @@ function sanctionLine<V, C>(
 /** Shape suggested entries as `help:` lines: one compact line for a single
  * entry, else one multi-line block entry (the `help:` prefix lands only on
  * its lead line, so the group copies cleanly), commentary separate. */
-function asHelp(entries: string[]): string[] {
+export function sanctionHelp(entries: string[]): string[] {
   if (entries.length === 0) {
     return [];
   }
@@ -380,7 +381,7 @@ export function suggestSanctions<V, C>(
     }
     return versions;
   };
-  const sanctionsOnly = (): string[] => asHelp(conflicted.flatMap(pkg => sanctionLine(sources, tree.selections, written, pkg)));
+  const sanctionsOnly = (): string[] => sanctionHelp(conflicted.flatMap(pkg => sanctionLine(sources, tree.selections, written, pkg)));
   const singleFix = (pkg: string): Computable<V | undefined> => {
     const constraints = constraintsOn(pkg);
     const principal = tree.selections.find(sel => sel.pkg === pkg && sel.fork === undefined);
@@ -419,7 +420,7 @@ export function suggestSanctions<V, C>(
         const sanctionLines = conflicted
           .filter(pkg => !pins.some(pin => pin.pkg === pkg))
           .flatMap(pkg => sanctionLine(sources, tree.selections, written, pkg));
-        return asHelp([...pinLines, ...sanctionLines]);
+        return sanctionHelp([...pinLines, ...sanctionLines]);
       },
       () => sanctionsOnly()
     );

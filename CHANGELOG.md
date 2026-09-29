@@ -14,6 +14,7 @@ version number.
 - Add discovered dependencies + incremental state support.
 - Add source index to reduce startup hashing.
 - Add first cut of cache garbage collection (30-day)
+- Fix strict resolution checking to apply at the collection point.
 
 @fabr-build/cli:
 - Live progress display on terminal with progress bars and test status (suppressed with -q)

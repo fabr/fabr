@@ -18,6 +18,7 @@
  */
 
 import { IProvenanceStep, registerProvenanceRenderer } from "../core/Provenance";
+import type { IDeliveryFacts } from "./StrictCollection";
 import { resolutionExplainer } from "./ResolutionGraph";
 import { Requirement, ROOT_REQUIRER, Selected } from "./Types";
 
@@ -39,6 +40,8 @@ export interface IResolutionOrigin<V> extends IProvenanceStep {
   root: Requirement;
   selections: Selected<V>[];
   versionToString(version: V): string;
+  /** What the delivery ships, for its collection point to judge. */
+  delivery?: IDeliveryFacts;
 }
 
 /**

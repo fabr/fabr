@@ -184,3 +184,18 @@ export function satisfiedByAnySelection<V, C>(
   }
   return selections.some(sel => sel.pkg === violation.pkg && domain.satisfies(sel.version, constraint));
 }
+
+/**
+ * Whether any of `selections` is a version of the violated package that fails
+ * the violated constraint — the violation as it stands among these selections
+ * rather than against the resolution's principal.
+ */
+export function violatedAmong<V, C>(domain: VersionDomain<V, C>, selections: readonly Selected<V>[], violation: Violation<V>): boolean {
+  let constraint: C;
+  try {
+    constraint = domain.parseConstraint(violation.constraint);
+  } catch {
+    return true;
+  }
+  return selections.some(sel => sel.pkg === violation.pkg && !domain.satisfies(sel.version, constraint));
+}

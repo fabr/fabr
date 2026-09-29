@@ -137,6 +137,10 @@ describe("CatalogRepository (through the model)", () => {
     return repo;
   }
 
+  /** What each `pkg@version` requires, for a test that needs a transitive
+   * graph; anything unlisted requires nothing. */
+  const requirementTable = new Map<string, Requirement[]>();
+
   class BackingRepo implements Repository, RepositoryReader<SemverVersion, SemverConstraint> {
     public readonly format = CAT_FORMAT;
     /** Every requirement read — how a test proves the WHOLE catalog was
@@ -144,6 +148,8 @@ describe("CatalogRepository (through the model)", () => {
      * were fetched. */
     public readonly requested: string[] = [];
     public readonly materialized: string[] = [];
+    /** Every fetch as `pkg@version`. */
+    public readonly fetched: string[] = [];
 
     constructor(public readonly identity: string) {}
 
@@ -167,13 +173,14 @@ describe("CatalogRepository (through the model)", () => {
         return closure ? closure().then((pkg: PackageFileSet | undefined) => pkg ?? EMPTY_FILESET) : Computable.resolve<FileSet>(EMPTY_FILESET);
       }
 
-    public getRequirements(pkg: string, _version: SemverVersion): Computable<Requirement[]> {
+    public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
       this.requested.push(pkg);
-      return Computable.resolve([]);
+      return Computable.resolve(requirementTable.get(`${pkg}@${versionToString(version)}`) ?? []);
     }
 
     public fetch(pkg: string, version: SemverVersion): Computable<PackageFileSet> {
       this.materialized.push(pkg);
+      this.fetched.push(`${pkg}@${versionToString(version)}`);
       return Computable.resolve(new PackageFileSet(new Map([[`${pkg}/data.txt`, contentOf(pkg)]]), pkg, versionToString(version)));
     }
   }
@@ -253,6 +260,7 @@ describe("CatalogRepository (through the model)", () => {
 
   function build(source: string): BuildModel {
     backings.clear();
+    requirementTable.clear();
     ran.length = 0;
     lastDeps = undefined;
     lastDepSets = [];
@@ -278,6 +286,78 @@ describe("CatalogRepository (through the model)", () => {
     expect([...repo.requested].sort()).to.deep.equal(["bar", "foo"]);
     /* ...but ONLY foo was ever fetched — bar, pinned yet unreferenced, is not. */
     expect(repo.materialized).to.deep.equal(["foo"]);
+  });
+
+  describe("judging a strict subset by what it ships", () => {
+    /* `a` needs x ^2; `b` reaches x ^1 through `y`. Jointly x's principal is
+     * 2.0.0 and y's edge is repaired by a second selection, x@1.0.0. */
+    const source =
+      "package_repo @backing { }\n" +
+      "catalog @cat { deps = @backing:a @backing:b; }\n" +
+      "test_deps only_b { deps = @cat:b; }\n" +
+      "test_deps both { deps = @cat:a @cat:b; }\n";
+    const graph = (): void => {
+      requirementTable.set("a@1.0.0", [{ pkg: "x", constraint: "^2.0.0" }]);
+      requirementTable.set("b@1.0.0", [{ pkg: "y", constraint: "1.0.0" }]);
+      requirementTable.set("y@1.0.0", [{ pkg: "x", constraint: "^1.0.0" }]);
+    };
+
+    it("delivers a subset that reaches only the version satisfying it", async () => {
+      /* b's closure holds x@1.0.0 alone — an ordinary one-version install; the
+       * principal x@2.0.0 is a's, and b's delivery does not reach it. */
+      const model = build(source);
+      graph();
+      await model.getConfig(Constraints.of({}), execution).getTarget("only_b");
+      expect([...backings.get("@backing")!.fetched].sort()).to.deep.equal(["b@1.0.0", "x@1.0.0", "y@1.0.0"]);
+    });
+
+    it("still refuses a delivery that ships both versions together", async () => {
+      const model = build(source);
+      graph();
+      let message = "";
+      try {
+        await model.getConfig(Constraints.of({}), execution).getTarget("both");
+      } catch (err) {
+        for (let current: unknown = err; current instanceof Error; current = (current as { cause?: unknown }).cause) {
+          message = current.message;
+        }
+      }
+      expect(message).to.contain("x@2.0.0 does not satisfy '^1.0.0' required by y@1.0.0");
+      /* Explained as fully as one delivery's conflict: the winner's path and the
+       * losing requirement's, each through the delivery that ships it. */
+      expect(message).to.contain("2.0.0 selected by: a@1.0.0 -> x@2.0.0 (^2.0.0)");
+      expect(message).to.contain("'^1.0.0' required via: b@1.0.0 -> y@1.0.0 (1.0.0)");
+    });
+
+    it("refuses a catalog member and a direct reference shipping two versions together", async () => {
+      /* Two resolutions, each consistent on its own: the catalog pins x@1.0.0
+       * for b; the direct reference asks x@2.0.0. Used together, they ship two
+       * versions — judged over the consumer's whole collection point, and
+       * explained through each resolution in turn. */
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @cat { deps = @backing:b; }\n" +
+          "test_deps mixed { deps = @cat:b @backing:x:2.0.0; }\n"
+      );
+      graph();
+      let message = "";
+      let help = "";
+      try {
+        await model.getConfig(Constraints.of({}), execution).getTarget("mixed");
+      } catch (err) {
+        for (let current: unknown = err; current instanceof Error; current = (current as { cause?: unknown }).cause) {
+          message = current.message;
+          help = String((current as { help?: unknown }).help ?? help);
+        }
+      }
+      expect(message).to.contain("requires multiple versions of x (1.0.0, 2.0.0)");
+      expect(message).to.contain("1.0.0 required via: b@1.0.0 -> y@1.0.0");
+      expect(message).to.contain("2.0.0 required directly ('2.0.0')");
+      /* The direct reference's exact pin already sanctions 2.0.0; the remedy
+       * completes the set. */
+      expect(help).to.contain("@backing:x:1.0.0?");
+      expect(help).to.not.contain("@backing:x:2.0.0?");
+    });
   });
 
   it("delivers each named member once, every delivery a subset of the ONE pinned resolution", async () => {
