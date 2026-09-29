@@ -95,10 +95,10 @@ export function jsxModeFor(buildType: string | undefined): "react-jsx" | "react-
  * Targets are relative (TS requires that without a baseUrl) and extensionless,
  * so tsc applies its usual extension search.
  *
- * Not what resolves a self-reference any more — the manifest's self row does
- * that, before any `paths` lookup happens. It stays for the DECLARATION
- * EMITTER, which consults `paths` when synthesizing a specifier for a type it
- * cannot otherwise name; that is not resolution, and nothing else supplies it.
+ * Not what resolves a self-reference — the manifest's self row does that,
+ * before any `paths` lookup happens. It serves the DECLARATION EMITTER, which
+ * consults `paths` when synthesizing a specifier for a type it cannot otherwise
+ * name.
  */
 function selfReferencePaths(packageName: string): Record<string, string[]> {
   return { [packageName]: ["./src/index"], [`${packageName}/*`]: ["./src/*"] };
@@ -275,7 +275,7 @@ const RESOURCES_FLAG = "--resources";
  * absent.
  *
  * Rules rather than the pairs resolving them against the sources: this document
- * is staged into the action's `files`, so per-source pairs would put one entry
+ * rides the action's `config`, so per-source pairs would put one entry
  * per stylesheet into the key material and any new stylesheet would rebuild the
  * whole compile.
  */
@@ -342,10 +342,9 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       });
       /* Which file an import really names, where a rule redirects it — used by
        * the driver both to resolve the specifier and to name it in the emitted
-       * code. Resolved here, against the names actually being compiled, so the
-       * driver is handed a finished table rather than a pattern to apply — and
-       * so a compile declaring none carries no file, no flag, and no change of
-       * key. */
+       * code. The driver is handed the rules as patterns and applies them
+       * itself; a compile declaring none carries no file, no flag, and no
+       * change of key. */
       const rewrites = importRewrites(rewriteRules);
       /* The target's delivered files no step compiles, by NAME — an import of
        * one resolves as an empty module. Sorted, so the document is a function

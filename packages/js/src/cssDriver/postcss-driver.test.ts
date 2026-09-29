@@ -147,8 +147,8 @@ describe("the compose hooks", () => {
   });
 
   it("maps a Sass-spelled compose specifier to the lowered input beside the importer", () => {
-    /* The same source-name → lowered-name rule the sass step's delegating
-     * declarations encode. */
+    /* The same source-name → lowered-name rule the sass step names its
+     * outputs by. */
     assert.equal(
       resolveComposePath(table, options.srcRoot, "./two.module.scss", "/work/src/a/one.module.css", options.depsDir),
       path.resolve("/work/src/a/two.module.css")

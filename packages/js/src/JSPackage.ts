@@ -367,15 +367,7 @@ export function esLevelOrder(version: string): number {
  * compile, and whether `fabr test` runs the suite under jsdom or plain node.
  */
 export function usesDom(flags: Flag[]): boolean {
-  const seen = new Set<Flag>();
-  const walk = (flag: Flag): boolean => {
-    if (seen.has(flag)) {
-      return false;
-    }
-    seen.add(flag);
-    return flag.name === "dom" || flag.provides.some(walk);
-  };
-  return flags.some(walk);
+  return flagClosure(flags).some(flag => flag.name === "dom");
 }
 
 /**
@@ -386,31 +378,14 @@ export function usesDom(flags: Flag[]): boolean {
  * supplies them.
  */
 export function usesNodeGlobals(flags: Flag[]): boolean {
-  const seen = new Set<Flag>();
-  const walk = (flag: Flag): boolean => {
-    if (seen.has(flag)) {
-      return false;
-    }
-    seen.add(flag);
-    return flag.name === "js/node_globals" || flag.provides.some(walk);
-  };
-  return flags.some(walk);
+  return flagClosure(flags).some(flag => flag.name === "js/node_globals");
 }
 
 export function resolveSourceVersion(flags: Flag[]): string | undefined {
-  let highest: string | undefined;
-  const seen = new Set<Flag>();
-  const walk = (flag: Flag): void => {
-    if (seen.has(flag)) {
-      return;
-    }
-    seen.add(flag);
-    if (ES_VERSION.test(flag.name) && (highest === undefined || esLevelOrder(flag.name) > esLevelOrder(highest))) {
-      highest = flag.name;
-    }
-    flag.provides.forEach(walk);
-  };
-  flags.forEach(walk);
+  const highest = flagClosure(flags)
+    .map(flag => flag.name)
+    .filter(name => ES_VERSION.test(name))
+    .reduce<string | undefined>((best, name) => (best === undefined || esLevelOrder(name) > esLevelOrder(best) ? name : best), undefined);
   return highest === undefined ? undefined : canonicalEsLevel(highest);
 }
 
@@ -420,18 +395,24 @@ export function resolveSourceVersion(flags: Flag[]): string | undefined {
  * empty result means the default (strict) tsconfig stands unchanged.
  */
 export function resolveSourceMode(flags: Flag[]): Record<string, unknown> {
-  const overlay: Record<string, unknown> = {};
+  return Object.assign({}, ...flagClosure(flags).map(flag => SOURCE_MODE_OPTIONS[flag.name]));
+}
+
+/**
+ * Every flag the given ones reach through `provides`, each once, in pre-order
+ * — a flag before what it provides, and the given flags in their own order — so
+ * a reader folding them in sequence sees "later wins" as written.
+ */
+function flagClosure(flags: Flag[]): Flag[] {
   const seen = new Set<Flag>();
-  const walk = (flag: Flag): void => {
+  const walk = (flag: Flag): Flag[] => {
     if (seen.has(flag)) {
-      return;
+      return [];
     }
     seen.add(flag);
-    Object.assign(overlay, SOURCE_MODE_OPTIONS[flag.name]);
-    flag.provides.forEach(walk);
+    return [flag, ...flag.provides.flatMap(walk)];
   };
-  flags.forEach(walk);
-  return overlay;
+  return flags.flatMap(walk);
 }
 
 /**
@@ -756,13 +737,11 @@ function withGeneratedSources(classified: IJsSources, added: IJsSources): IJsSou
  * class names only exist once Sass has evaluated the stylesheet and the scoper
  * has renamed them, and the compile has to know both the shape they make (to
  * typecheck `styles.cardTitle`) and what file to name in the stylesheet's place
- * (to emit something that resolves). Running the two as siblings is what left
- * every css-module broken outside a bundle.
+ * (to emit something that resolves).
  *
- * The serialization costs less than it looks: what crosses the edge is the shims
- * and the declarations, NOT the CSS. Editing a rule inside a class changes
- * neither, so the compile's action key is unchanged and it is a cache hit — only
- * a change to a file's exported NAME set rebuilds it.
+ * What crosses the edge is the shims and the declarations, NOT the CSS: editing
+ * a rule inside a class leaves the compile's action key unchanged, and only a
+ * change to a file's exported NAME set rebuilds it.
  */
 export function compileContents(
   context: TargetContext,
@@ -787,8 +766,7 @@ export function compileContents(
     const generated = classifySources(compileInputs);
     const augmented = withGeneratedSources(classified, generated);
     /* The caller's rules, plus the css pipeline's where there ARE stylesheets —
-     * which say which declaration shape stands in for which runtime file. A
-     * compile without stylesheets therefore carries no css rules at all. */
+     * which say which declaration shape stands in for which runtime file. */
     const rewrites = [...(options.rewriteImports ?? []), ...(classified.css.isEmpty() ? [] : cssImportRewrites())];
     const compiled =
       keepSourceJs && !requiresCompile(augmented)
@@ -1068,7 +1046,10 @@ interface PlannedNest {
 }
 
 /**
- * {@link planPositions} with the instances mounted at their positions.
+ * Every instance mounted at its position in a normalized node_modules tree —
+ * the single source of placement for the assemblers. Placement derived anywhere
+ * else could let two mounts of the same graph disagree. A nested instance may
+ * occupy several positions.
  *
  * A position is described by its **bindings** — the flat winners overridden by
  * each enclosing mount's divergences, kept canonical so equal bindings mean an
@@ -1076,21 +1057,6 @@ interface PlannedNest {
  * ({@link unrepresentableCycle}): the closure has no finite layout.
  */
 function mountWinners(top: Map<string, string>, byNode: Map<string, PackageFileSet>, pathOf: (name: string) => string): FileSet[] {
-  return planPositions(top, byNode, pathOf).map(({ pkg, at }) => pkg.mountedAt(at));
-}
-
-/**
- * Where every instance sits in a normalized node_modules tree — the single
- * source of placement for the assemblers. Placement derived anywhere else
- * could let two mounts of the same graph disagree.
- *
- * Returns a list, not a map: a nested instance can occupy several positions.
- */
-export function planPositions(
-  top: Map<string, string>,
-  byNode: Map<string, PackageFileSet>,
-  pathOf: (name: string) => string
-): Array<{ pkg: PackageFileSet; at: string }> {
   const signature = (node: string, bindings: Map<string, string>): string =>
     [node, ...[...bindings].sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, to]) => `${name}=${to}`)].join("\n");
   /** Completed subtrees, and the positions on the current planning path (in
@@ -1136,9 +1102,9 @@ export function planPositions(
     return result;
   };
 
-  const placed: Array<{ pkg: PackageFileSet; at: string }> = [];
+  const placed: FileSet[] = [];
   const emit = (node: PlannedNest, atPath: string): void => {
-    placed.push({ pkg: node.pkg, at: atPath });
+    placed.push(node.pkg.mountedAt(atPath));
     for (const [name, override] of node.overrides) {
       emit(override, `${atPath}/node_modules/${name}`);
     }

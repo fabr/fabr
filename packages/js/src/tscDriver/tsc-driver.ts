@@ -26,9 +26,8 @@
  * Usage: `node tsc-driver.js` in the staged workspace (cwd), exactly as the
  * `tsc` bin would be run. With no `.pnp.data.json` beside the tsconfig it
  * resolves through the filesystem like the stock compiler — no fabr rule stages
- * a workspace without one any more, but the fallback costs nothing and is what
- * keeps this a drop-in for an ordinary tsconfig (and what the stub-compiler
- * test fixtures run through).
+ * a workspace without one, but that keeps this a drop-in for an ordinary
+ * tsconfig (and is what the stub-compiler test fixtures run through).
  *
  * Like the bundle driver, this file runs in the *build* process, not in fabr:
  * it `require`s typescript from its own staged install and must not depend on
@@ -741,10 +740,10 @@ function installResolution(
   host.resolveModuleNameLiterals = (literals, containingFile) => literals.map(literal => resolveModule(literal.text, containingFile));
   /* A project may REPLACE one of the compiler's built-in libraries by depending
    * on `@typescript/lib-<name>` — a package the compiler looks for in
-   * node_modules, i.e. somewhere that no longer exists. Same table, same
-   * question, so the declared override is honored exactly as it was under a
-   * tree; without this the compiler silently falls back to its bundled lib and
-   * the difference surfaces as type errors in the project's own code. */
+   * node_modules, which the PnP workspace does not have, so it is answered from
+   * the same table as any other lookup. Without this the compiler silently
+   * falls back to its bundled lib and the difference surfaces as type errors in
+   * the project's own code. */
   host.resolveLibrary = (libraryName, resolveFrom, libraryOptions) => {
     const target = published(libraryName, path.join(root, "tsconfig.json"))[0];
     return target === undefined

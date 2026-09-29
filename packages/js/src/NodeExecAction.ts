@@ -433,7 +433,7 @@ function selfPackage(action: BuildAction): { name: string; location: string } | 
 /** What the run's work dir is collected by, given the emit pattern and which
  * pieces of bookkeeping this action asked for. The emit pattern is last, which
  * {@link baseOutputLayout} relies on; a run collecting nothing but its output
- * keeps the plain single pattern it always had. */
+ * is collected by the emit pattern alone. */
 function collectedWith(outputs: string, depsReport: string | undefined, stateDir: string | undefined): string | string[] {
   const bookkeeping = [...(depsReport ? [depsReport] : []), ...(stateDir ? [`${stateDir}/**`] : [])];
   return bookkeeping.length === 0 ? outputs : [...bookkeeping, outputs];

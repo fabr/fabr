@@ -42,11 +42,6 @@ export function nodeId<V, C>(domain: VersionDomain<V, C>, pkg: PackageName, vers
   return `${pkg}@${domain.versionToString(version)}`;
 }
 
-/** {@link nodeId} of a selection. */
-export function selectionId<V, C>(domain: VersionDomain<V, C>, selection: Selected<V>): NodeId {
-  return nodeId(domain, selection.pkg, selection.version);
-}
-
 /** The data of a finished resolution — what {@link ResolutionGraph} is
  * constructed over: the deserialized form of the persisted resolution doc
  * (see ResolutionDoc), one field for one doc section. */

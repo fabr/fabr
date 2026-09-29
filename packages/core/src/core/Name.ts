@@ -30,7 +30,8 @@ export enum NamePartKind {
    */
   Backref,
   /**
-   * A backtick `cmd args` `` command substitution: 
+   * A backtick `` `cmd args` `` command substitution: the part's text is the
+   * command's normalized stdout.
    */
   CommandSubst,
 }
@@ -50,7 +51,7 @@ export interface NamePart {
   value: string;
   /**
    * A command substitution's parsed pipeline — attached by the parser and read
-   * back by the model to resolve the part. 
+   * back by the model to resolve the part.
    */
   command?: CommandPipeline;
 }

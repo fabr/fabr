@@ -45,20 +45,14 @@ default TYPESCRIPT = @npm:typescript:5.6.3;
 default ESBUILD = @npm:esbuild:0.28.1;
 
 #
-# The Sass compiler the css driver requires. sass-embedded by default.
+# The Sass compiler the Sass driver (SASS_DRIVER) requires.
 #
 
 default SASS = @npm:sass-embedded:1.100.0;
 
 #
-# The css-modules scoper the css driver runs after Sass, and the postcss host it
-# is a plugin for. postcss-modules IS the reference implementation of the
-# css-modules dialect — every other integration (css-loader, the esbuild postcss
-# plugins) wraps this same `postcss([modules(...)]).process(...)` call — so
-# adopting it is how fabr's scoping stays compatible by construction rather than
-# by chasing a specification that has none. Pinned like any tool; the dialect is
-# the plugin set's, so a differential fixture suite turns an upgrade's dialect
-# change into a test failure rather than a silent re-scoping of everybody's CSS.
+# The postcss host and its css-modules scoping plugin, which the postcss driver
+# (POSTCSS_DRIVER) requires.
 #
 
 default POSTCSS = @npm:postcss:8.5.28;
@@ -104,13 +98,8 @@ default JS_TEST_RUNNER = @fabr-build/js-tools/test-runner;
 default JEST = @npm:jest:30.3.0;
 
 #
-# The transform the jest runner hoists `jest.mock` calls with. swc rather than
-# jest's own babel plugin on two measured grounds: the babel plugin also
-# VALIDATES a mock factory's free variables and rejects correct code that other
-# jest transformers accept (18 of 40 files in a real suite), and a test file
-# gets its own process, so the transform's first-call cost is paid per file and
-# never amortised — ~124ms with babel against ~8.5ms with swc. Native, so it
-# rides the same os/cpu platform gating as esbuild and lightningcss.
+# The transform the jest runner hoists `jest.mock` calls with. Native, so it is
+# platform-gated like esbuild.
 #
 
 default SWC = @npm:@swc/core:1.15.43;
@@ -554,8 +543,8 @@ js_script @fabr-build/js-tools/postcss-driver {
 # The TypeScript driver `js_compile` runs (see TSC_DRIVER): drives the compiler
 # through its API, resolving modules from the build's dependency manifest rather
 # than from a node_modules tree. It depends on the compiler PACKAGE, exactly as
-# the bundle and css drivers depend on theirs — the API is what it drives, so
-# the `tsc` bin would mean nothing to it — and ${TYPESCRIPT} is therefore the
+# the bundle, Sass and postcss drivers depend on theirs — the API is what it
+# drives, so the `tsc` bin would mean nothing to it — and ${TYPESCRIPT} is the
 # one pin governing what compiles your code. Run in the staged workspace exactly
 # as the `tsc` bin is, and with no manifest present it resolves through the
 # filesystem like the bin does — so it is a drop-in for either layout.

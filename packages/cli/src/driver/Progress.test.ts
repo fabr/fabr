@@ -111,7 +111,7 @@ describe("ProgressReporter", () => {
       kind: "task-start",
       id: 2,
       state: "running",
-      task: { kind: "fetch", url: "https://example.test/x.tgz", target: target("@npm"), resource: "package", role: "content" },
+      task: { kind: "fetch", url: "https://example.test/x.tgz", resource: "package", role: "content" },
     });
     expect(lines).to.deep.equal([
       "info:Resolving //app dependencies from @npm",
@@ -246,7 +246,7 @@ describe("ProgressReporter", () => {
 
     it("shows a download's progress against its declared size", () => {
       const { reporter, rows } = paned();
-      const task: TaskDescription = { kind: "fetch", url: "https://example.test/x.tgz", target: target("@npm"), resource: "package", role: "content" };
+      const task: TaskDescription = { kind: "fetch", url: "https://example.test/x.tgz", resource: "package", role: "content" };
       send(reporter, { kind: "task-start", id: 1, task, state: "running" });
       send(reporter, { kind: "task-progress", id: 1, task, state: "running", progress: { measure: "bytes", done: 4_200_000, total: 12_000_000 } });
       expect(rows()).to.deep.equal(["  Fetching package https://example.test/x.tgz|[███▌      ] 35% of 12.0 MB  0ms"]);
@@ -283,7 +283,7 @@ describe("ProgressReporter", () => {
 
     it("shows bare bytes for a download whose size the origin never declared", () => {
       const { reporter, rows } = paned();
-      const task: TaskDescription = { kind: "fetch", url: "https://example.test/x.tgz", target: target("@npm"), resource: "package", role: "content" };
+      const task: TaskDescription = { kind: "fetch", url: "https://example.test/x.tgz", resource: "package", role: "content" };
       send(reporter, { kind: "task-start", id: 1, task, state: "running" });
       send(reporter, { kind: "task-progress", id: 1, task, state: "running", progress: { measure: "bytes", done: 4_200_000 } });
       expect(rows()).to.deep.equal(["  Fetching package https://example.test/x.tgz|4.2 MB  0ms"]);
@@ -296,7 +296,6 @@ describe("ProgressReporter", () => {
       const task: TaskDescription = {
         kind: "fetch",
         url: "https://example.test/meta",
-        target: target("@npm"),
         resource: "metadata",
         role: "index",
       };
@@ -330,7 +329,7 @@ describe("ProgressReporter", () => {
       const { reporter, rows } = paned();
       /* Only task blocked on the funnel is counted away. A fetch is bounded by
        * its own connection pool and takes no slot at all; it is not waiting. */
-      const task: TaskDescription = { kind: "fetch", url: "https://example.test/x.tgz", target: target("@npm"), resource: "package", role: "content" };
+      const task: TaskDescription = { kind: "fetch", url: "https://example.test/x.tgz", resource: "package", role: "content" };
       send(reporter, { kind: "task-start", id: 1, task, state: "running" });
       expect(rows()).to.deep.equal(["  Fetching package https://example.test/x.tgz|0ms"]);
     });

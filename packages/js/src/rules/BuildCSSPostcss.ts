@@ -68,7 +68,7 @@ function buildCssPostcss(context: TargetContext): Computable<RuleResult> {
        * unique within the one delivery it can appear in. */
       /* Only a PACKAGE is composable: its stylesheets mount under a name a
        * specifier can spell. A loose content dep has no such name. */
-      const packages = (deps ?? []).filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+      const packages = deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
       const options = buildPostcssOptions(fileNames, packageNameProp?.toString() ?? "", emitsSourceMap(buildType), packages);
       const workspace = {
         [CSS_SRC_ROOT]: srcs,
@@ -76,7 +76,7 @@ function buildCssPostcss(context: TargetContext): Computable<RuleResult> {
         "postcss-manifest.json": MemoryFile.from(JSON.stringify(options)),
       };
       const argv = compiler.toCommandLine(["--manifest=postcss-manifest.json"], { base: CSS_TOOL_DIR });
-      return createNodeExecAction(FileSet.layout(workspace), deps ?? [], argv, `${CSS_OUTDIR}:**`, {
+      return createNodeExecAction(FileSet.layout(workspace), deps, argv, `${CSS_OUTDIR}:**`, {
         label: "postcss",
         layout: FLAT,
         mount: CSS_DEPS_DIR,

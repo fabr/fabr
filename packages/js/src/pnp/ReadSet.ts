@@ -47,13 +47,13 @@
  * nothing else.
  */
 
-/** Where a driver writes its report, relative to the staged working directory
- * (the step reads it back from there). Not collected as output — the compile
- * collects its `build` tree alone. */
+/** Where a driver writes its report, relative to the staged working directory.
+ * The action collects it beside the emit (`NodeExecAction`'s `collectedWith`)
+ * and the step reads it from the result. */
 export const DEPS_REPORT_FILE = ".fabr-deps.json";
 
 /** How a step asks for one: `--deps-report <file>`. A driver given no such flag
- * reports nothing and is keyed as it always was. */
+ * reports nothing, and its entry is keyed on the whole deps input. */
 export const DEPS_REPORT_FLAG = "--deps-report";
 
 /**

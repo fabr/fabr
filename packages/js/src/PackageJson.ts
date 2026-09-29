@@ -633,7 +633,7 @@ export interface IPackageJsonInputs {
   metadata: PropertyMap;
   /** The sources named in `exports`, by the name they compile under. Empty for a
    *  target declaring none, which publishes no map — `main`/`types` by convention
-   *  and every emitted file reachable, exactly as before. */
+   *  and every emitted file reachable. */
   exports?: string[];
   /** The rewrite rules the compile applied (`ICompiledContents.rewrites`), each
    *  pairing a source specifier with the delivered file that answers it — how an

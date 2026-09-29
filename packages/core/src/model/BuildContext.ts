@@ -17,11 +17,10 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import * as path from "path";
 import { Readable } from "stream";
 import { ActionContext, FetchOptions, ICreateOptions, IFetchContext } from "../core/BuildCache";
 import { Computable, ComputableSource } from "../core/Computable";
-import { ITaskReport, StageSpec, StageStreams } from "../support/Execute";
+import { ITaskReport, StageStreams } from "../support/Execute";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { FSFileSource } from "../core/FSFileSource";
 import {
@@ -304,24 +303,6 @@ function captureStages(stages: ResolvedCommandStage[]): ResolvedCommandStage[] {
  */
 function normalizeCommandOutput(text: string): string {
   return text.trim().replace(/\s+/g, " ");
-}
-
-/**
- * How a pipeline with no written form describes itself — a rule passing resolved
- * stages to {@link BuildContext.captureOutput} wrote no command text for it.
- * Each stage renders as its entry's basename plus its arguments (`tsc --version`)
- * rather than the whole staged argv, which carries an absolute path through the
- * cache's work tree and would say nothing a reader wants.
- */
-function describeArgv(specs: StageSpec[], stages: ResolvedCommandStage[]): string {
-  return specs
-    .map((spec, i) => {
-      /* The entry is the argv element the stage's own args follow — everything
-       * before it is the launcher (`node`, an interpreter). */
-      const entry = spec.argv[spec.argv.length - stages[i].args.length - 1];
-      return [entry === undefined ? spec.argv[0] : path.basename(entry), ...stages[i].args].join(" ");
-    })
-    .join(" | ");
 }
 
 interface IDependencyStack {
@@ -1097,8 +1078,6 @@ export class BuildContext {
     );
   }
 
-
-
   /**
    * Resolve a single-valued projection property to its substituted Name (see
    * {@link TargetContext.getProjection}). A projection is one selector; more than
@@ -1508,12 +1487,11 @@ export class BuildContext {
   }
 
   /**
-   * Substitute a parsed pipeline's names and run it for its output — the
-   * `` `cmd` `` half of {@link captureOutput}, which is where a rule holding
-   * already-resolved stages enters instead. `written` names the command in
-   * errors and in the work item it reports as.
+   * Substitute a parsed pipeline's names and run it for its output (see
+   * {@link captureOutput}). `written` names the command in errors and in the
+   * work item it reports as.
    */
-  public runResolvedCommand(
+  private runResolvedCommand(
     substituted: IResolvedCommandStage[],
     written: string,
     stack?: IDependencyStack
@@ -1532,16 +1510,16 @@ export class BuildContext {
    *
    * The action belongs to no target (see {@link runOwnAction}) and stages no
    * `srcs`: the pipeline's inputs are whatever its own stages carry.
-   * `written` labels the work; without one it is derived from the staged argv.
+   * `written` labels the work.
    */
-  public captureOutput(stages: ResolvedCommandStage[], written?: string): Computable<string> {
+  private captureOutput(stages: ResolvedCommandStage[], written: string): Computable<string> {
     if (stages.length === 0) {
       return Computable.resolve("");
     }
     const captured = captureStages(stages);
     const { files, specs } = stagePipeline(captured, EMPTY_FILESET);
     const action = createPipelineAction(files, specs, captured[0].stdin, undefined);
-    return this.runOwnAction(action, { kind: "command-subst", command: written ?? describeArgv(specs, captured) })
+    return this.runOwnAction(action, { kind: "command-subst", command: written })
       .then(output => output.get(SUBST_CAPTURE))
       .then(file => (file ? file.readString() : ""))
       .then(normalizeCommandOutput);
@@ -2233,28 +2211,6 @@ export abstract class TargetContext {
    * resolution surface a rule needs — substitution + the chase happen underneath
    * ({@link getCommandStages}).
    */
-  /**
-   * Run a command and return its **stdout as text**, trimmed and
-   * whitespace-collapsed exactly as a `` `cmd` `` substitution is — for a rule
-   * that needs a tool to *tell* it something (a version, a set of flags) rather
-   * than to produce files.
-   *
-   * Takes an **already-resolved** command, in either of two forms: a pipeline as
-   * {@link getCommandProperty} yields one, or — the common case — a single
-   * runnable the rule already holds (`getGlobalRunnable("TSC")`) plus its
-   * arguments. Both skip re-resolving a tool the rule has in hand, which would
-   * otherwise materialize the same reference again at a second collection point.
-   *
-   * The result is keyed and cached like any other action (staged runnable
-   * manifest + argv), so the same command asked for here and written as a
-   * substitution hits one entry.
-   */
-  public getCommandOutput(cmd: ResolvedCommandStage[]): Computable<string>;
-  public getCommandOutput(cmd: RunnableFileSet, ...args: string[]): Computable<string>;
-  public getCommandOutput(cmd: ResolvedCommandStage[] | RunnableFileSet, ...args: string[]): Computable<string> {
-    return this.context.captureOutput(Array.isArray(cmd) ? cmd : [{ runnable: cmd, args }]);
-  }
-
   public getCommandProperty(name: string, srcs: FileSet): Computable<ResolvedCommandPipeline> {
     return this.getCommandStages(name).then(stages =>
       Computable.forAll(
@@ -2441,7 +2397,7 @@ export abstract class TargetContext {
       url,
       tag,
       process,
-      run => this.runTask({ kind: "fetch", url, target: this.getDeclaredContext().target, ...report }, run),
+      run => this.runTask({ kind: "fetch", url, ...report }, run),
       headers,
       options
     );
@@ -3004,5 +2960,3 @@ export class AnonymousTargetContext extends TargetContext {
     };
   }
 }
-
-

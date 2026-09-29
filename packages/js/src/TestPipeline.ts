@@ -430,8 +430,7 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
      * The invocation carries neither the report name nor the test files: the
      * step invokes the runner once PER FILE (the contract permits any partition
      * of the files), appending a per-invocation report name and the file — so
-     * each execution is admitted separately by the machine-wide process funnel
-     * and a wide suite no longer multiplies fabr's parallelism by the runner's. */
+     * each execution is admitted separately by the machine-wide process funnel. */
     const argv = run.runner.toCommandLine(
       [
         `--env=${run.needsDom ? "jsdom" : "node"}`,

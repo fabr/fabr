@@ -23,10 +23,9 @@
  * sources (.scss/.sass, modules included — the `.module.` marker rides through
  * to the output name, since lowering is not scoping); `deps` are scss packages
  * mounted for Sass `@use`/`@import` resolution. Beside each stylesheet the step
- * writes its source map (when the build carries them) and a declaration under
- * the source's own name, so the author's import typechecks; scoping, shims and
- * the token-shaped declarations are the css_postcss step's, which consumes this
- * step's output. The compiler is a build *tool*, independent of what it lowers,
+ * writes its source map (when the build carries them) and nothing else;
+ * scoping and shims are the css_postcss step's, which consumes this step's
+ * output. The compiler is a build *tool*, independent of what it lowers,
  * so it is resolved apart as the SASS_DRIVER runnable (fabr's own Sass
  * driver, declared in JS.fabr — the TSC precedent) and mounted under a tool dir
  * (its deps must not collide with — nor be visible to — the styled tree). The

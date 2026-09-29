@@ -309,7 +309,6 @@ export function preciseActionKey(anchor: string, used: INarrowedDeps): string {
   return [anchor, narrowedSections(used)].join("\n");
 }
 
-
 /** The per-input sections of {@link preciseActionKey}: that input's manifest,
  * then its absent paths. Sorts both the input names and each input's absences,
  * so the text is a function of what it was handed and not of arrival order. */

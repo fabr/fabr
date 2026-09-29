@@ -170,8 +170,6 @@ export interface IRepositoryResolveTask {
 export interface IFetchTask {
   kind: "fetch";
   url: string;
-  /** The target (usually a repository) on whose behalf the fetch happens. */
-  target: ITargetDecl;
   /** A human noun for what is being fetched (e.g. "metadata", "package", a
    *  file's path); the URL alone is opaque. */
   resource: string;

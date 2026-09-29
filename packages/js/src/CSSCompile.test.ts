@@ -179,7 +179,7 @@ describe("sassSourceOutputs", () => {
 });
 
 describe("postcssSourceOutputs", () => {
-  it("gives a module its final name, a scope, a shim and one declaration", () => {
+  it("gives a module its final name, a scope and a shim", () => {
     const outputs = postcssSourceOutputs("a/Foo.module.css", "pkg");
     expect(outputs.css).to.equal("a/Foo.css");
     expect(outputs.shim).to.equal("a/Foo.css.ts");

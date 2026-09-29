@@ -164,7 +164,7 @@ export function rewriteStyledImport(specifier: string): string {
  * Nothing here has to stop esbuild re-scoping fabr's output, because fabr's
  * output is not marked as a css-module — `x.module.scss` lowers to `x.css`, so
  * the `local-css` loader never selects it. A dependency shipping raw
- * `.module.css` has no shim and is scoped by esbuild exactly as before.
+ * `.module.css` has no shim and is scoped by esbuild's `local-css` loader.
  */
 function scopedShimFor(cssPath: string): string | undefined {
   const shim = `${cssPath}.js`;

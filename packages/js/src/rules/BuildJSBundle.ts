@@ -161,12 +161,6 @@ function stageBundle(
   });
 }
 
-/** Where a bundled package's files are staged, which an entry path inside one
- * must agree with: its tree under the pool mount. */
-function mountOf(pkg: PackageFileSet): string {
-  return treeMountOf(pkg);
-}
-
 /** An entry that is a projection over a package is CONTAINED: the package mounts
  * like any other bundled input and the entry is located inside it, so its
  * relative imports resolve among its siblings and its self-references are
@@ -237,7 +231,7 @@ function composeBundle(context: TargetContext, inputs: IBundleInputs): Computabl
   const containedSources = containedEntries.flatMap(ref =>
     /* ref.locate (not source.locate) so a literal entry naming nothing in the
      * package is the written-reference error, not a silently-missing entry. */
-    [...ref.locate()].map(([path, name]) => ({ path: `${mountOf(ref.source)}/${path}`, name }))
+    [...ref.locate()].map(([path, name]) => ({ path: `${treeMountOf(ref.source)}/${path}`, name }))
   );
 
   return context.manifestAll(looseSources).then(looseEntries => {

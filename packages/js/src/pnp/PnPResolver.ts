@@ -82,6 +82,19 @@ export function splitSpecifier(specifier: string): { name: string; subpath: stri
   return { name: segments.slice(0, depth).join("/"), subpath: segments.slice(depth).join("/") };
 }
 
+/** A row as the location index holds it: the directory it occupies (with a
+ * trailing separator, so a prefix test cannot match a sibling whose name starts
+ * the same), and what the store-facing queries need to judge it by. `reference`
+ * is the row's PnP reference — the half of the instance name the path does not
+ * carry. */
+interface ILocationEntry {
+  prefix: string;
+  locator: LocatorKey;
+  name: string | null;
+  stored: boolean;
+  reference?: string;
+}
+
 /**
  * The manifest, ready to answer resolutions.
  *
@@ -98,33 +111,18 @@ export function splitSpecifier(specifier: string): { name: string; subpath: stri
  * threading the set through every call would only invite two lookups in one
  * process to disagree about which files a package has.
  */
-/** A row as the location index holds it: the directory it occupies (with a
- * trailing separator, so a prefix test cannot match a sibling whose name starts
- * the same), and what the store-facing queries need to judge it by. `reference`
- * is the row's PnP reference — the half of the instance name the path does not
- * carry. */
-interface ILocationEntry {
-  prefix: string;
-  locator: LocatorKey;
-  name: string | null;
-  stored: boolean;
-  reference?: string;
-}
-
 export class PnpResolver {
-  /** Rows by locator, and their locations longest-first so a prefix match picks
-   * the innermost package. */
+  /** Rows by locator. */
   private readonly rows = new Map<LocatorKey, IPnpRow>();
-  /** Rows by location prefix. `stored` marks a row that is a materialized
-   * package (PnP's `HARD`) rather than a place in this build (`SOFT`: the
-   * top-level sources, and the self row that names them as a package) — the
-   * distinction the store-facing queries below turn on. */
+  /** Rows by location prefix, longest-first so a prefix match picks the
+   * innermost package. `stored` marks a row that is a materialized package
+   * (PnP's `HARD`) rather than a place in this build (`SOFT`: the top-level
+   * sources, and the self row that names them as a package) — the distinction
+   * the store-facing queries below turn on. */
   private readonly byLocation: ILocationEntry[] = [];
   /** The same entries keyed by the directory they name, each list in
-   * `byLocation`'s order. This is the index behind every which-package-holds-
-   * this-path question ({@link innermostAt}): a compile asks hundreds of
-   * thousands of times over a table of a few thousand rows, so a scan per
-   * question is O(files x packages) and dominates an incremental compile. */
+   * `byLocation`'s order: the index behind every which-package-holds-this-path
+   * question ({@link innermostAt}). */
   private readonly byDirectory = new Map<string, ILocationEntry[]>();
   /** {@link treeRoots}, derived once. The table is fixed after construction, so
    * every answer this resolver gives is a pure function of it. */
@@ -285,13 +283,11 @@ export class PnpResolver {
    * The innermost entry containing `target` that `admits` accepts — the one
    * primitive under every containing-package question here.
    *
-   * Answers by walking the path UPWARD rather than by scanning the table: an
-   * entry contains `target` exactly when its directory is `target` or an
-   * ancestor of it, so the walk meets the candidates innermost-first and stops
-   * at the first acceptable one. That is the same answer the longest-prefix-
-   * first scan gave — including its continuing outward where the innermost
-   * directory holds nothing the caller accepts (a store path inside the
-   * sources' own tree) — at O(depth) rather than O(table).
+   * Walks the path upward through {@link byDirectory}: an entry contains
+   * `target` exactly when its directory is `target` or an ancestor of it, so
+   * the walk meets the candidates innermost-first and stops at the first
+   * acceptable one, continuing outward past a directory that holds nothing the
+   * caller accepts (a store path inside the sources' own tree).
    */
   private innermostAt(target: string, admits: (entry: ILocationEntry) => boolean): ILocationEntry | undefined {
     let at = target;

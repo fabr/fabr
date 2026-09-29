@@ -121,9 +121,11 @@ export function runWave(plan: ICompilePlan, host: IWaveHost): IWaveResult {
   }
   const wave: string[] = [];
   const seen = new Set<string>();
-  const pending = everything || expanded !== undefined ? host.projectFiles() : [...plan.seeds!];
-  const forwarders = reverseEdges(plan.memo, host, "forwarding");
-  const users = reverseEdges(plan.memo, host, "use");
+  const whole = everything || expanded !== undefined;
+  const pending = whole ? host.projectFiles() : [...plan.seeds!];
+  /* Only a bounded wave follows edges; a whole-project one never reads them. */
+  const forwarders = whole ? new Map<string, string[]>() : reverseEdges(plan.memo, host, "forwarding");
+  const users = whole ? new Map<string, string[]>() : reverseEdges(plan.memo, host, "use");
   /* An index cursor rather than shift(): BFS order is wanted (the telemetry
    * reports the wave in growth order), and shift() is O(n) per dequeue —
    * quadratic over a whole-project expansion. */
@@ -144,7 +146,7 @@ export function runWave(plan: ICompilePlan, host: IWaveHost): IWaveResult {
      * the wave because their content moved, and neither has an interface
      * artifact of ours to compare — so both expand. */
     const changesInterface = build === undefined ? true : build();
-    if (everything || expanded !== undefined || !changesInterface) {
+    if (whole || !changesInterface) {
       continue;
     }
     /* The conduits — everything that republishes this file's interface — and

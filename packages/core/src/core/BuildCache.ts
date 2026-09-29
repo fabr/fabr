@@ -199,8 +199,7 @@ export interface ICreateOptions {
  * non-discoverable rows) and `discovered` what it tried to ACCESS — rows at
  * the paths taken, plus the paths that found nothing. The two are one diff
  * base recorded as two facts, written together: `discovered` is present —
- * possibly empty — whenever `inputs` is, which is also what tells this layout
- * from the retired one-file form. */
+ * possibly empty — whenever `inputs` is. */
 const STATE_INPUTS_FILE = "inputs";
 const STATE_DISCOVERED_FILE = "discovered";
 /** The symlink addressing a build-state record's live generation directory —
@@ -1196,8 +1195,8 @@ export class BuildCache {
 
   /**
    * The build state recorded for `targetKey`, or undefined where there is
-   * nothing usable to build on. Damage of any kind — no directory, an old-format
-   * file in its place, an unparseable manifest, a dangling `outputs` link, an
+   * nothing usable to build on. Damage of any kind — no directory, a file in
+   * its place, an unparseable manifest, a dangling `outputs` link, an
    * entry or a state file whose blob has been reclaimed — costs the caller a
    * cold build, never an error.
    *
@@ -1213,8 +1212,8 @@ export class BuildCache {
    *
    * `current` is resolved ONCE and every part read from the resolved
    * generation, so a concurrent swap cannot pair two builds' parts; no
-   * `current` (never recorded, the retired flat layout, a crash before the
-   * first swap) is simply no record.
+   * `current` (never recorded, a crash before the first swap, or a record in
+   * the old one-file layout) is simply no record — one cold build.
    */
   public readBuildState(targetKey: string): Computable<IBuildState | undefined> {
     return realpath(path.join(this.buildStatePath(targetKey), STATE_CURRENT_LINK)).then(
@@ -1248,10 +1247,7 @@ export class BuildCache {
         }
         /* The base is BOTH parts or neither: a diff over one half would report
          * its changes as the whole of what moved, which is how a lost deletion
-         * on the other half rides into the entry. Requiring `discovered` is
-         * also the migration: the retired one-file layout has no such part and
-         * so reads as no base at all, never as a base whose dep rows sit in
-         * `inputs` masquerading as staged names. */
+         * on the other half rides into the entry. */
         const inputs = inputsText === undefined ? undefined : parseRecordedBase(inputsText);
         const discovered = discoveredText === undefined ? undefined : parseRecordedBase(discoveredText);
         return {
@@ -1280,8 +1276,8 @@ export class BuildCache {
   }
 
   /** A record part read as its own text — the base is key material, not an
-   * entry manifest. Absent where there is no file to read (never recorded, the
-   * retired single-FILE layout, mid-replacement), and damage is the parser's
+   * entry manifest. Absent where there is no file to read (never recorded,
+   * mid-replacement, ENOTDIR), and damage is the parser's
    * judgement; a genuine IO failure rethrows exactly as {@link readManifest}'s
    * does — a broken cache must be visible, not silently cold forever. */
   private readRecordText(dir: string, name: string): Computable<string | undefined> {
@@ -1341,7 +1337,7 @@ export class BuildCache {
     this.statesWritten.set(targetKey, generation);
     /* The record exists only if there is something to keep: a lone
      * `outputs` link would say only what the action's own key already says. */
-    if (inputs === undefined && isNothing(incrementalState)) {
+    if (inputs === undefined && withContent(incrementalState) === undefined) {
       return Computable.resolve(undefined);
     }
     const previous = this.pendingStateWrites.get(targetKey) ?? Computable.resolve(undefined);
@@ -1382,7 +1378,8 @@ export class BuildCache {
     entryKey: string,
     state: { inputs?: string; discovered?: string; incrementalState?: FileSet }
   ): Computable<void> {
-    const { inputs, discovered, incrementalState } = state;
+    const { inputs, discovered } = state;
+    const incrementalState = withContent(state.incrementalState);
     return (
       Computable.forAll(
         [
@@ -1400,7 +1397,7 @@ export class BuildCache {
           inputs === undefined
             ? Computable.resolve(undefined)
             : writeFile(path.join(gen, STATE_DISCOVERED_FILE), sealRecordedBase(discovered ?? "")),
-          isNothing(incrementalState)
+          incrementalState === undefined
             ? Computable.resolve(undefined)
             : this.storeContent(incrementalState).then(stored => this.storeManifest(path.join(gen, STATE_STATE_FILE), stored)),
           /* Relative to the generation directory the link lives in. */
@@ -1432,7 +1429,7 @@ export class BuildCache {
   /**
    * Remove a record's superseded content: every entry beside the `current`
    * link and the generation it names. A symlink goes unconditionally (a
-   * superseded swap temp, or the retired flat layout's `outputs`); a file or
+   * superseded swap temp, or any other stray link); a file or
    * directory only once past the grace window — a CONCURRENT process's
    * in-assembly generation must not be reaped (cross-process writes are
    * unlocked; reaping would cost it a cold build where sparing costs a day of
@@ -1464,7 +1461,7 @@ export class BuildCache {
    * One file of a build-state record, or undefined where the record has nothing
    * usable to give under that name — never written, evicted (the `outputs`
    * link's ENOENT), a record directory that is not there or is caught
-   * mid-replacement, an old-format record FILE in its place (ENOTDIR), or a
+   * mid-replacement, a file in its place (ENOTDIR), or a
    * damaged manifest. A genuine IO failure still surfaces
    * ({@link readManifest}).
    */
@@ -1509,8 +1506,8 @@ export class BuildCache {
    * visible, not silently cold forever.
    *
    * ENOTDIR counts as "no manifest here" beside ENOENT: a path component that
-   * is a file (a build-state record in the retired single-FILE layout) means
-   * nothing can be read below it, which is a cold build like any other absence.
+   * is a file means nothing can be read below it, which is a cold build like
+   * any other absence.
    * It is judged here, not by a caller downstream, because a rethrown fs error
    * does not reliably carry its `code` back out.
    */
@@ -2085,9 +2082,8 @@ export class BuildCache {
       }
       const recordDir = path.resolve(this.incrementalRoot, record.name);
       /* Resolve `current` once and read from the resolved generation, the
-       * reader's own discipline — a record with no resolvable current (the
-       * retired flat layout, a crash before the first swap) claims nothing
-       * and is left to the expire pass. */
+       * reader's own discipline — a record with no resolvable current claims
+       * nothing and is left to the expire pass. */
       const gen = await realpath(path.join(recordDir, STATE_CURRENT_LINK)).then(
         resolved => resolved,
         () => undefined
@@ -2296,7 +2292,7 @@ export class ActionContext {
    * step's tool reports its reads in and is handed changes in.
    *
    * Undefined where there is nothing to compare against — a first build, a
-   * damaged or old-format record, a forced build — in which case everything is
+   * damaged record, a forced build — in which case everything is
    * new and the step's tool starts cold. How the answer is computed (what the
    * record holds, which accesses were tracked) is the cache's own business.
    */
@@ -2350,9 +2346,10 @@ export class ActionContext {
  * Module-private implementation below this point.
  */
 
-/** Whether a recorded half says nothing — absent and empty are one answer. */
-function isNothing(files: FileSet | undefined): files is undefined {
-  return files === undefined || files.size === 0;
+/** A recorded half, or undefined where it says nothing — absent and empty are
+ * one answer. */
+function withContent(files: FileSet | undefined): FileSet | undefined {
+  return files === undefined || files.size === 0 ? undefined : files;
 }
 
 /** What a demand that named no funnel admits work through: everything, at once.
