@@ -2368,7 +2368,24 @@ describe("contributed-lib-relative FILES", () => {
          * and there is no ranking to break the tie — so it is an error naming
          * both guards. */
         expect(err).to.be.instanceOf(DependencyFailedError);
-        expect((err as DependencyFailedError).cause.message).to.contain("but takes a single value");
+        const message = (err as DependencyFailedError).cause.message;
+        expect(message).to.contain("but takes a single value");
+        /* Named by the property alone, each declaration by its own guard. */
+        expect(message).to.contain("'content' is declared for this configuration by 2 declarations (<FLAVOR=lin*> and <FLAVOR=*ux>)");
+      }
+    });
+
+    it("names an unguarded declaration as such when it is one of the ambiguous pair", async () => {
+      const input = GUARD_DEFS + "test_file t { content = one; content<FLAVOR=lin*> = two; }\n";
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      try {
+        await model.getConfig(Constraints.of({ FLAVOR: "linux" }), execution).getTarget("t");
+        expect.fail("expected target t to fail");
+      } catch (err) {
+        expect((err as DependencyFailedError).cause.message).to.contain("(unguarded and <FLAVOR=lin*>)");
       }
     });
 

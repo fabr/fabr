@@ -44,7 +44,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { PnpResolver } from "../pnp/PnPResolver";
+import { PNP_DATA_FILE, PnpResolver } from "../pnp/PnPResolver";
 import type { IBundleOptions } from "../JSBundle";
 
 /* Minimal structural typing for the slice of esbuild's API we use — esbuild is
@@ -387,15 +387,6 @@ async function resolveSingleVariant(
   }
   return undefined;
 }
-
-/** Translate the fabr options document into esbuild's BuildOptions. */
-/**
- * Yarn's standard manifest name, which fabr writes beside the bundle's options
- * when dependencies are presented as a table (see PnPManifest.PNP_DATA_FILE —
- * an ecosystem constant both sides know independently, since driver code must
- * not import fabr's own modules at runtime).
- */
-const PNP_DATA_FILE = ".pnp.data.json";
 
 /** Whether an `exports` map names either of the conditions the importer's kind
  * selects, anywhere within it. A map that never mentions them answers the same

@@ -1455,7 +1455,13 @@ describe("Parser Tests", () => {
     it("rejects a key guarded by both an enclosing block and the declaration", () => {
       const errors = parseInvalid("library l {\n  <TARGET=*-linux-*> {\n    srcs<TARGET=*-apple-*> = kqueue.c;\n  }\n}");
       expect(errors).to.have.lengthOf(1);
-      expect(errors[0]).to.contain("Constraint 'TARGET' is guarded on twice");
+      expect(errors[0]).to.contain("Constraint 'TARGET' is guarded on twice — by an enclosing block and by this declaration");
+    });
+
+    it("rejects a key guarded by both an enclosing block and a nested one", () => {
+      const errors = parseInvalid("library l {\n  <TARGET=*-linux-*> {\n    <TARGET=*-apple-*> {\n      srcs = kqueue.c;\n    }\n  }\n}");
+      expect(errors).to.have.lengthOf(1);
+      expect(errors[0]).to.contain("Constraint 'TARGET' is guarded on twice — by an enclosing block and by this block");
     });
 
     it("does not distribute a guard block into a map value", () => {

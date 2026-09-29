@@ -56,11 +56,6 @@ import {
  * nothing about this machine. */
 export const TREE_MOUNT = ".fabr-tree";
 
-/** The manifest's file name, as PnP-aware tools look for it. Yarn's standard,
- * so the driver that reads it knows the same constant independently rather than
- * importing across the process boundary (see pnp/PnPResolver.ts). */
-export const PNP_DATA_FILE = ".pnp.data.json";
-
 /**
  * A dependency's target as PnP spells it: a bare reference when the name the
  * requirer uses is the depended-on package's own, a `[name, reference]` tuple

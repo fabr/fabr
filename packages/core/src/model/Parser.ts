@@ -429,9 +429,9 @@ const DIAG_SPACED_GUARD = new Diagnostic<{ loc: ISourcePosition; help: string[] 
   LogLevel.Error,
   "A constraint guard must abut the property name"
 );
-const DIAG_GUARD_CONFLICT = new Diagnostic<{ key: string; loc: ISourcePosition }>(
+const DIAG_GUARD_CONFLICT = new Diagnostic<{ key: string; site: string; loc: ISourcePosition }>(
   LogLevel.Error,
-  "Constraint '{key}' is guarded on twice — by an enclosing block and by this declaration"
+  "Constraint '{key}' is guarded on twice — by an enclosing block and by {site}"
 );
 const DIAG_INVALID_COMMAND = new Diagnostic<{ detail: string; loc: ISourcePosition }>(
   LogLevel.Error,
@@ -1753,7 +1753,7 @@ export class BuildParser {
        * key selects nothing — it IS the name. */
       this.renameTemplateError("a property key cannot carry a rename", nameOffset);
     }
-    const name = this.blockGuard ? key.withConstraints(this.mergeGuards(key.getConstraints(), nameOffset)) : key;
+    const name = this.blockGuard ? key.withConstraints(this.mergeGuards(key.getConstraints(), nameOffset, "this declaration")) : key;
     this.consumeToken(TokenType.EQUALS);
     const base = {
       kind: DeclKind.Property as const,
@@ -1772,14 +1772,15 @@ export class BuildParser {
    */
   private blockGuard?: readonly NameConstraint[];
 
-  /** An inner declaration's own guard conjoined with the enclosing block's. A key
-   * guarded by both is an error: the two would have to agree, and if they do the
-   * inner one says nothing. */
-  private mergeGuards(own: readonly NameConstraint[], offset: number): readonly NameConstraint[] {
+  /** An inner declaration's or block's own guard (`site` names which, for the
+   * error) conjoined with the enclosing block's. A key guarded by both is an
+   * error: the two would have to agree, and if they do the inner one says
+   * nothing. */
+  private mergeGuards(own: readonly NameConstraint[], offset: number, site: string): readonly NameConstraint[] {
     const block = this.blockGuard ?? [];
     for (const [key] of own) {
       if (block.some(([blockKey]) => blockKey === key)) {
-        this.log.log(DIAG_GUARD_CONFLICT, { key, loc: { ...this.source, offset } });
+        this.log.log(DIAG_GUARD_CONFLICT, { key, site, loc: { ...this.source, offset } });
         throw new Error(PARSE_ERROR);
       }
     }
@@ -1922,7 +1923,7 @@ export class BuildParser {
     this.nextToken(); /* consume '<' */
     const guard = this.parseConstraintList(undefined, "guard");
     const outerGuard = this.blockGuard;
-    this.blockGuard = outerGuard ? this.mergeGuards(guard, at) : guard;
+    this.blockGuard = outerGuard ? this.mergeGuards(guard, at, "this block") : guard;
     this.blockDepth++;
     try {
       this.consumeToken(TokenType.LBRACE);

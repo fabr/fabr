@@ -29,6 +29,21 @@ import { fileURLToPath } from "node:url";
 
 /** The slice of a source map the drivers read: the source list they rewrite,
  * and the embedded contents kept aligned with it. */
+/** Whether a name is a Sass source (the ones the driver compiles; a plain
+ * `.css` passes through). */
+export function isSassSource(name: string): boolean {
+  return /\.(scss|sass)$/i.test(name);
+}
+
+/**
+ * The name a Sass source takes when the *sass step* lowers it: the extension
+ * becomes `.css`, the `.module.` marker rides through — the marker means
+ * "scope me", and lowering does not scope. Identity on a plain `.css`.
+ */
+export function sassLoweredName(name: string): string {
+  return name.replace(/\.(scss|sass)$/i, ".css");
+}
+
 export interface IRawSourceMap {
   sources: string[];
   sourcesContent?: Array<string | null>;

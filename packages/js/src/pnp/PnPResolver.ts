@@ -34,12 +34,8 @@ import type { IPnpSerializedState, PnpDependencyTarget } from "../PnPManifest";
 import { exportedSubpath, exportsSubpath, type ExportsValue, resolveExportsAll, resolveImportsAll } from "./PackageExports";
 import { IResolutionEdge, joinDepsPath } from "./ReadSet";
 
-/**
- * The manifest's file name. Yarn's standard, known independently on both sides
- * of the process boundary (fabr writes it as `PnPManifest.PNP_DATA_FILE`):
- * driver code must not import fabr's own modules at runtime, and an ecosystem
- * constant is not a fabr decision to share.
- */
+/** The manifest's file name, as PnP-aware tools look for it (Yarn's standard):
+ * the name fabr stages its manifest under, and what the drivers load. */
 export const PNP_DATA_FILE = ".pnp.data.json";
 
 /** A package as the table records it: where its files are, and every name it

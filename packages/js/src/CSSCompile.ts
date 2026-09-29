@@ -52,6 +52,7 @@ import {
   PackageFileSet,
   TargetContext,
 } from "@fabr-build/core";
+import { isSassSource, sassLoweredName } from "./cssDriver/Support";
 
 /** Where the drivers write, and the rules collect, the compiled CSS from. */
 export const CSS_OUTDIR = "out";
@@ -156,12 +157,6 @@ export interface IPostcssOptions {
   outdir: string;
 }
 
-/** Whether a name is a Sass source (the ones the driver compiles; a plain
- * `.css` passes through). */
-export function isSassSource(name: string): boolean {
-  return /\.(scss|sass)$/i.test(name);
-}
-
 /** Whether a styled source is a Sass PARTIAL (`_foo.scss`) — included by another
  * stylesheet rather than compiled in its own right, so it produces nothing. */
 export function isSassPartial(name: string): boolean {
@@ -172,15 +167,6 @@ export function isSassPartial(name: string): boolean {
  * local names are scoped and exported to the importing JavaScript. */
 export function isCssModule(name: string): boolean {
   return /\.module\.(css|scss|sass)$/i.test(name);
-}
-
-/**
- * The name a Sass source takes when the *sass step* lowers it: the extension
- * becomes `.css`, the `.module.` marker rides through — the marker means
- * "scope me", and lowering does not scope. Identity on a plain `.css`.
- */
-export function sassLoweredName(name: string): string {
-  return name.replace(/\.(scss|sass)$/i, ".css");
 }
 
 /**

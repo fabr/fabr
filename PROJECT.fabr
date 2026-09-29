@@ -8,7 +8,7 @@ FABR_METADATA = {
   license = GPL-3.0-or-later;
   homepage = https://fabr.build/;
   engines = {
-    node = ">=20";
+    node = ">=22.19.0";
   }
   author = {
     name = Nathan Keynes;

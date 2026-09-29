@@ -2036,10 +2036,8 @@ function soleDecl(applicable: IPropertyDecl[]): IPropertyDecl | undefined {
 /** One declaration's guard as it was written (`<TARGET=*-linux-*, BUILD_TYPE=release>`),
  * for a message that has to say which declarations it is talking about. */
 function guardText(decl: IPropertyDecl): string {
-  return `<${decl.name
-    .getConstraints()
-    .map(([key, value]) => `${key}=${value.toString()}`)
-    .join(", ")}>`;
+  const guard = decl.name.getConstraints();
+  return guard.length === 0 ? "unguarded" : `<${guard.map(([key, value]) => `${key}=${value.toString()}`).join(", ")}>`;
 }
 
 /**
@@ -2066,8 +2064,10 @@ function unmatchedIfAbsent(selected: IPropertyDecl | undefined, name: string, en
 function ambiguousDeclsError(chosen: IPropertyDecl[]): Error {
   const guards = chosen.map(guardText).join(" and ");
   return attachHelp(
-    new Error(`'${chosen[0].name}' is declared for this configuration by ${chosen.length} guards (${guards}), but takes a single value`),
-    "guards are never ranked against each other, so make them disjoint — a fallback belongs in the targetdef's `default`"
+    new Error(
+      `'${chosen[0].name.toBaseString()}' is declared for this configuration by ${chosen.length} declarations (${guards}), but takes a single value`
+    ),
+    "guards are never ranked against each other, so make them disjoint — a fallback belongs in a `default` (the targetdef's, or a `default` global)"
   );
 }
 

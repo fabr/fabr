@@ -39,7 +39,8 @@ import {
   writeFileSet,
 } from "@fabr-build/core";
 import { assembleNodeModules, assembleScopedNodeModules } from "./JSPackage";
-import { PNP_DATA_FILE, pnpManifestOf, TREE_MOUNT } from "./PnPManifest";
+import { pnpManifestOf, TREE_MOUNT } from "./PnPManifest";
+import { PNP_DATA_FILE } from "./pnp/PnPResolver";
 import { IChangeLists, splitDepsPath, toRunReport } from "./pnp/ReadSet";
 
 /**

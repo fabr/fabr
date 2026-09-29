@@ -65,6 +65,7 @@ import {
   parseManifestPath,
   relativeToMap,
   relocateCssSources,
+  sassLoweredName,
   sourceMapComment,
   withoutAnnotations,
   writeOut,
@@ -190,14 +191,13 @@ export function scopedNameOf(table: ScopeTable, srcRoot: string, local: string, 
 /**
  * Resolve a compose specifier (`composes: x from '<specifier>'`) to the staged
  * input it names: a specifier written against a Sass source maps to the
- * lowered input beside the importer — the same source-name → lowered-name rule
- * the resolve rules encode (mirrored by hand: this driver must not depend on
- * core at runtime). The mapped path must be a stylesheet of this compilation;
+ * lowered input beside the importer ({@link sassLoweredName}, the rule the
+ * resolve rules encode). The mapped path must be a stylesheet of this compilation;
  * anything else — a Sass partial, another package's file — is refused with the
  * specifier and the importer named, never a bare ENOENT.
  */
 export function resolveComposePath(table: ScopeTable, srcRoot: string, file: string, importer: string, depsDir: string): string {
-  const lowered = file.replace(/\.(scss|sass)$/i, ".css");
+  const lowered = sassLoweredName(file);
   /* A relative specifier names a sibling of the importer; anything else names
    * a package, which is mounted under the deps dir by its own name. */
   const resolved = lowered.startsWith(".")
