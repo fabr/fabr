@@ -45,6 +45,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { PNP_DATA_FILE, PnpResolver } from "../pnp/PnPResolver";
+import { resolveVirtual } from "../pnp/VirtualPath";
 import type { IBundleOptions } from "../JSBundle";
 
 /* Minimal structural typing for the slice of esbuild's API we use — esbuild is
@@ -232,7 +233,7 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
     }
     let matters = true;
     try {
-      const json = JSON.parse(fs.readFileSync(path.join(location, "package.json"), "utf8")) as { exports?: unknown };
+      const json = JSON.parse(fs.readFileSync(path.join(resolveVirtual(location), "package.json"), "utf8")) as { exports?: unknown };
       matters = json.exports !== undefined && json.exports !== null && mentionsKind(json.exports);
     } catch {
       /* Unreadable: assume it matters. */
@@ -324,7 +325,7 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
         if (CODE_EXTENSIONS.has(path.extname(args.path).toLowerCase())) {
           return null;
         }
-        return { contents: new Uint8Array(await fs.promises.readFile(args.path)), loader: "file" };
+        return { contents: new Uint8Array(await fs.promises.readFile(resolveVirtual(args.path))), loader: "file" };
       });
     },
   };
@@ -403,11 +404,12 @@ export function mentionsKind(exports: unknown): boolean {
   );
 }
 
-/** The pooled tree a staged path belongs to — `.fabr-tree/<hash>`, which under a
+/** The pooled tree a staged path belongs to — `.fabr-tree/<hash>`, or its
+ * virtual location `.fabr-tree/__virtual__/<variant>/<n>/<hash>`, which under a
  * manifest IS the importing package — or the path itself if it lies outside the
  * pool (the workspace's own sources, staged at the bundle root). */
 export function treeOf(dir: string | undefined): string {
-  const match = /^(.*\.fabr-tree\/[^/]+)/.exec(dir ?? "");
+  const match = /^(.*\.fabr-tree\/(?:__virtual__\/[^/]+\/[^/]+\/)?[^/]+)/.exec(dir ?? "");
   return match ? match[1] : (dir ?? "");
 }
 

@@ -14,21 +14,23 @@
  * details.
  */
 
-/* The Sass driver requires sass-embedded lazily, inside main() — so nothing
- * here needs it, and these run under jest as well as under the fabr test
- * harness. What they pin is the driver's own resolution policy, which follows
- * dart-sass's NodePackageImporter rather than node's rules (see
- * packageImporter), and the shape of what it writes beside the lowered CSS. */
+/* The unit tests pin the shape of what the driver writes beside the lowered
+ * CSS. The driver tests run its real main(): the REAL compiler (sass-embedded)
+ * and the real importer (@fabr-build/sass-pnp-importer), resolving through the
+ * driver's own PnpResolver over a manifest fabr itself writes — the importer's
+ * own package tests cover it against Yarn's runtime; these cover it against
+ * fabr's. */
 
 import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import type { IPnpPackageInfo, IPnpSerializedState } from "../PnPManifest";
-import { PnpResolver } from "../pnp/PnPResolver";
+import { FileSet, IFile, MemoryFile, PackageFileSet } from "@fabr-build/core";
+import type { ISassOptions } from "../CSSCompile";
+import { PNP_DATA_FILE } from "../pnp/PnPResolver";
+import { pnpManifestOf, TREE_MOUNT, treeMountOf } from "../PnPManifest";
 import { relativeToMap, relocateCssSources, sourceMapComment } from "./Support";
-import { packageImporter, SASS_CONDITIONS, sassFailure, stylesheetManifest } from "./sass-driver";
+import { main, sassFailure } from "./sass-driver";
 
 describe("sassFailure", () => {
   it("attributes a positioned failure 1-based from the exception's 0-based span", () => {
@@ -75,200 +77,102 @@ describe("sourceMapComment", () => {
   });
 });
 
-describe("packageImporter", () => {
-  const root = path.resolve("/workspace");
-  const entry = (reference: string, dependencies: Record<string, string>): [string, IPnpPackageInfo] => [
-    reference,
-    {
-      packageLocation: `./.fabr-tree/${reference}/`,
-      packageDependencies: Object.entries(dependencies),
-      linkType: "HARD",
-    },
-  ];
-  /* Two deliveries of one design-system: the compilation's own, and the older
-   * one `@shorthand/common` was resolved against — the case a table exists for. */
-  const state: IPnpSerializedState = {
-    __info: [],
-    dependencyTreeRoots: [],
-    enableTopLevelFallback: true,
-    ignorePatternData: null,
-    fallbackExclusionList: [],
-    fallbackPool: [["@shorthand/fonts", "ref-fonts"]],
-    packageRegistryData: [
-      [
-        null,
-        [
-          [
-            null,
-            {
-              packageLocation: "./",
-              packageDependencies: [
-                ["@shorthand/design-system", "ref-new"],
-                ["@shorthand/common", "ref-common"],
-                ["@shorthand/fonts", "ref-fonts"],
-              ],
-              linkType: "SOFT",
-            },
-          ],
-        ],
-      ],
-      ["@shorthand/design-system", [entry("ref-new", {}), entry("ref-old", {})]],
-      ["@shorthand/common", [entry("ref-common", { "@shorthand/design-system": "ref-old" })]],
-      ["@shorthand/fonts", [entry("ref-fonts", {})]],
-    ],
-  };
-  const importer = packageImporter(new PnpResolver(state, root, SASS_CONDITIONS));
-  /** A load written in `file`, as Sass reports it. */
-  const load = (url: string, file: string): string | null => {
-    const found = importer.findFileUrl(url, { containingUrl: pathToFileURL(path.resolve(root, file)), fromImport: false });
-    return found === null ? null : fileURLToPath(found);
-  };
 
-  it("resolves a package load to its directory, leaving the file part to sass", () => {
-    /* A directory, not a file: `_colours.scss`, `colours/_index.scss` and the
-     * extension search are sass's own business below this point. */
-    assert.equal(
-      load("@shorthand/design-system/colours", "src/theme.scss"),
-      path.join(root, ".fabr-tree/ref-new/colours")
-    );
-    /* A package named with no subpath resolves to the package root. */
-    assert.equal(load("@shorthand/fonts", "src/theme.scss"), path.join(root, ".fabr-tree/ref-fonts"));
-  });
-
-  it("answers from the row of the package the load is WRITTEN IN, not the top level", () => {
-    /* The whole point of a table: a stylesheet inside a dependency sees what
-     * that dependency was resolved against, even where the compilation itself
-     * resolved the same name differently. */
-    assert.equal(
-      load("@shorthand/design-system/colours", ".fabr-tree/ref-common/mixins.scss"),
-      path.join(root, ".fabr-tree/ref-old/colours")
-    );
-  });
-
-  it("falls back to the declared surface for a name the asking package never declared", () => {
-    /* `@shorthand/common` declares no fonts; the compilation does. Same
-     * forgiveness the type sidecars get, and scoped the same way. */
-    assert.equal(
-      load("@shorthand/fonts/body", ".fabr-tree/ref-common/mixins.scss"),
-      path.join(root, ".fabr-tree/ref-fonts/body")
-    );
-  });
-
-  it("declines a bare name that is no package, leaving sass to resolve it", () => {
-    /* `@use "variables"` resolves beside the importing file (or under a load
-     * path) — sass's own rule, which this must not pre-empt. */
-    assert.equal(load("variables", "src/theme.scss"), null);
-    assert.equal(load("utilities/spacing", "src/theme.scss"), null);
-    /* Nor is anything answerable when sass cannot say where the load came from. */
-    assert.equal(importer.findFileUrl("@shorthand/fonts", { containingUrl: null, fromImport: false }), null);
-  });
-
-  it("refuses a webpack-style '~' load, naming the fix", () => {
-    /* `~` is a bundler convention, not a sass one: accepting it would make
-     * stylesheets that build only under fabr. */
-    assert.throws(
-      () => load("~@shorthand/design-system/colours", "src/theme.scss"),
-      /uses the webpack '~' prefix.*write the package name directly \('@shorthand\/design-system\/colours'\)/
-    );
-  });
-});
-
-describe("packageImporter, over packages that publish an exports map", () => {
-  let store: string;
+describe("the Sass driver, resolving package loads through fabr's table", () => {
+  let root: string;
 
   beforeEach(() => {
-    store = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-cssexports-"));
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-sassdriver-")));
   });
 
   afterEach(() => {
-    fs.rmSync(store, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+    process.exitCode = undefined;
   });
 
-  /** A package in the store, with the manifest the case is about. */
-  function pkg(reference: string, manifest: Record<string, unknown>): void {
-    fs.mkdirSync(path.join(store, reference), { recursive: true });
-    fs.writeFileSync(path.join(store, reference, "package.json"), JSON.stringify({ name: reference, version: "1.0.0", ...manifest }));
+  const files = (entries: Record<string, string>): Map<string, IFile> =>
+    new Map(Object.entries(entries).map(([name, text]) => [name, MemoryFile.from(text)]));
+  const pkg = (name: string, version: string, entries: Record<string, string>, deps: PackageFileSet[] = []): PackageFileSet =>
+    new PackageFileSet(files({ "package.json": JSON.stringify({ name, version }), ...entries }), name, version, deps);
+
+  /**
+   * Stage a workspace as the step does — the pool mounted as one link, each
+   * content's tree once, the manifest beside the sources — then lower `source`
+   * and answer the CSS and its map's sources.
+   */
+  async function lower(deps: PackageFileSet[], source: string): Promise<{ css: string; sources: string[] }> {
+    const manifest = pnpManifestOf(deps);
+    const store = path.join(root, "store");
+    fs.mkdirSync(store);
+    fs.symlinkSync(store, path.join(root, TREE_MOUNT));
+    for (const each of manifest.packages) {
+      for (const [name, file] of each as FileSet) {
+        const target = path.join(store, path.basename(treeMountOf(each)), name);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, (file as MemoryFile).getBuffer().value as Buffer);
+      }
+    }
+    fs.writeFileSync(path.join(root, PNP_DATA_FILE), manifest.toFile().getBuffer().value as Buffer);
+    fs.mkdirSync(path.join(root, "src"));
+    fs.writeFileSync(path.join(root, "src", "app.scss"), source);
+    const options: ISassOptions = { sources: [{ path: "app.scss", css: "app.css", map: "app.css.map" }], srcRoot: "src", loadPaths: [], outdir: "out" };
+    fs.writeFileSync(path.join(root, "options.json"), JSON.stringify(options));
+    const cwd = process.cwd();
+    try {
+      process.chdir(root);
+      await main(["--manifest=options.json"]);
+    } finally {
+      process.chdir(cwd);
+    }
+    const map = JSON.parse(fs.readFileSync(path.join(root, "out", "app.css.map"), "utf8")) as { sources: string[] };
+    return { css: fs.readFileSync(path.join(root, "out", "app.css"), "utf8"), sources: map.sources };
   }
 
-  /** An importer over the store, with a row for each name given. */
-  function importing(...names: Array<[string, string]>): (url: string, file: string) => string | null {
-    const declared = Object.entries(Object.fromEntries(names));
-    const state: IPnpSerializedState = {
-      __info: [],
-      dependencyTreeRoots: [],
-      enableTopLevelFallback: true,
-      ignorePatternData: null,
-      fallbackExclusionList: [],
-      fallbackPool: declared,
-      packageRegistryData: [
-        [null, [[null, { packageLocation: "./", packageDependencies: declared, linkType: "SOFT" }]]],
-        ...names.map(([name, reference]): [string, Array<[string, IPnpPackageInfo]>] => [
-          name,
-          [[reference, { packageLocation: `./${reference}/`, packageDependencies: declared, linkType: "HARD" }]],
-        ]),
-      ],
-    };
-    const importer = packageImporter(new PnpResolver(state, store, SASS_CONDITIONS));
-    return (url, file) => {
-      const found = importer.findFileUrl(url, { containingUrl: pathToFileURL(path.resolve(store, file)), fromImport: false });
-      return found === null ? null : fileURLToPath(found);
-    };
-  }
-
-  it("takes the sass face of a package that publishes several", () => {
-    /* A design system shipping both compiled CSS and its Sass sources names them
-     * apart by condition — and a stylesheet wants the sources, or `@use` has
-     * nothing to work with. */
-    pkg("ref-ds", {
-      exports: { "./colours": { sass: "./src/_colours.scss", style: "./dist/colours.css", default: "./dist/colours.css" } },
+  it("resolves a package's own loads from the wiring that loaded it", async () => {
+    /* `theme` is one content wired two ways — each binding `tokens` to a
+     * different package — so the manifest locates each wiring virtually over
+     * one tree. Its nested `@use "tokens"` must resolve per wiring. */
+    const theme = files({
+      "package.json": JSON.stringify({ name: "theme", version: "1.0.0" }),
+      "_index.scss": '@forward "./parts/palette";\n',
+      "parts/_palette.scss": '@use "tokens";\n.palette-#{tokens.$value} { v: tokens.$value; }\n',
     });
-    const load = importing(["@shorthand/design-system", "ref-ds"]);
-    assert.equal(load("@shorthand/design-system/colours", "theme.scss"), path.join(store, "ref-ds/src/_colours.scss"));
+    const tokens = (value: string, version: string): PackageFileSet => pkg("tokens", version, { "_index.scss": `$value: "${value}";\n` });
+    const left = pkg("left", "1.0.0", { "_index.scss": '@forward "theme";\n' }, [
+      new PackageFileSet(theme, "theme", "1.0.0", [tokens("one", "1.0.0")]),
+    ]);
+    const right = pkg("right", "1.0.0", { "_index.scss": '@forward "theme";\n' }, [
+      new PackageFileSet(theme, "theme", "1.0.0", [tokens("two", "2.0.0")]),
+    ]);
+    const { css } = await lower([left, right], '@use "left";\n@use "right";\n');
+    assert.match(css, /v: "one"/);
+    assert.match(css, /v: "two"/);
   });
 
-  it("keeps handing back the directory for a package that publishes no map", () => {
-    /* Nothing to say, so nothing said: the specifier is handed back untouched
-     * and sass's own partial/index/extension search resolves it. */
-    pkg("ref-plain", {});
-    const load = importing(["plain", "ref-plain"]);
-    assert.equal(load("plain/colours", "theme.scss"), path.join(store, "ref-plain/colours"));
+  it("takes the stylesheet a package's exports map publishes under the sass condition", async () => {
+    const design = pkg("design", "1.0.0", {
+      "package.json": JSON.stringify({ name: "design", version: "1.0.0", exports: { ".": { sass: "./scss/_main.scss", default: "./index.js" } } }),
+      "scss/_main.scss": ".design { v: main; }\n",
+      "index.js": "",
+    });
+    const { css } = await lower([design], '@use "design";\n');
+    assert.match(css, /\.design/);
   });
 
-  it("falls through to the directory for a load the map does not publish", () => {
-    /* dart-sass's own NodePackageImporter treats a map as a first choice, not a
-       gate: a load it does not publish goes to the ordinary directory search.
-       `exports` encapsulates a package's JavaScript — Sass never agreed to
-       that, and enforcing it here stops stylesheets that compile under plain
-       Sass. */
-    pkg("ref-ds", { exports: { "./colours": "./src/_colours.scss" } });
-    const load = importing(["@shorthand/design-system", "ref-ds"]);
-    assert.equal(load("@shorthand/design-system/internal", "theme.scss"), path.join(store, "ref-ds/internal"));
-  });
-
-  it("takes the package's legacy stylesheet fields for a root the map leaves out", () => {
-    /* The `sass`/`style` fields are the stylesheet counterpart of `types`/`main`
-       — consulted for the ROOT only, since a field describes one entry point,
-       and `sass` ahead of `style`. */
-    pkg("ref-fields", { sass: "./src/_lib.scss", style: "./dist/lib.css" });
-    assert.equal(importing(["fields", "ref-fields"])("fields", "theme.scss"), path.join(store, "ref-fields/src/_lib.scss"));
-
-    pkg("ref-style", { style: "./dist/lib.css" });
-    assert.equal(importing(["styled", "ref-style"])("styled", "theme.scss"), path.join(store, "ref-style/dist/lib.css"));
-
-    /* A map that publishes the root wins over them. */
-    pkg("ref-both", { sass: "./src/_lib.scss", exports: { ".": { sass: "./exp/root.scss" } } });
-    assert.equal(importing(["both", "ref-both"])("both", "theme.scss"), path.join(store, "ref-both/exp/root.scss"));
-
-    /* A map that publishes only a SUBPATH leaves the root to them. */
-    pkg("ref-closed", { sass: "./src/_lib.scss", exports: { "./other": { sass: "./exp/o.scss" } } });
-    assert.equal(importing(["closed", "ref-closed"])("closed", "theme.scss"), path.join(store, "ref-closed/src/_lib.scss"));
-
-    /* And they answer for the root alone — a subpath falls to the directory. */
-    pkg("ref-sub", { sass: "./src/_lib.scss" });
-    assert.equal(importing(["subbed", "ref-sub"])("subbed/other", "theme.scss"), path.join(store, "ref-sub/other"));
-  });
-
-  it("reads no entry from an unreadable manifest", () => {
-    assert.deepEqual(stylesheetManifest(path.join(store, "no-such-package")), { publishes: false, entry: undefined });
+  it("names the real files in the map, never a virtual location", async () => {
+    const shared = files({ "package.json": "{}", "_index.scss": '@use "dep";\n.shared { v: dep.$v; }\n' });
+    const dep = (version: string): PackageFileSet => pkg("dep", version, { "_index.scss": `$v: "${version}";\n` });
+    const a = pkg("a", "1.0.0", { "_index.scss": '@forward "shared";\n' }, [new PackageFileSet(shared, "shared", "1.0.0", [dep("1.0.0")])]);
+    const b = pkg("b", "1.0.0", { "_index.scss": '@forward "shared";\n' }, [new PackageFileSet(shared, "shared", "1.0.0", [dep("2.0.0")])]);
+    const { sources } = await lower([a, b], '@use "a";\n@use "b";\n.app { v: 1; }\n');
+    assert.ok(sources.includes("app.scss"), `the source itself is named as the target names it: ${sources.join(", ")}`);
+    assert.ok(
+      sources.every(source => !source.includes("__virtual__")),
+      `no virtual location reaches the map: ${sources.join(", ")}`
+    );
+    assert.ok(
+      sources.some(source => source.startsWith(`${TREE_MOUNT}/`) && source.endsWith("/_index.scss")),
+      `a package's file is named by its tree: ${sources.join(", ")}`
+    );
   });
 });

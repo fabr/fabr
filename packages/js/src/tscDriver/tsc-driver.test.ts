@@ -831,6 +831,55 @@ describe("the tsc driver", () => {
     expect(output).to.contain("TS5110");
   });
 
+  it("resolves each wiring of one package through its own virtual location", () => {
+    /* One physical `shared` tree, two rows over it at two PnP virtual
+     * locations, each binding `dep` to a different package. The consumer only
+     * type-checks if each wiring's `dep` is its own. (The two deps differ in
+     * version, as two different contents of one name must: the compiler merges
+     * files of one `name@version` regardless of where they are.) */
+    const shared = work.add("shared", { "index.d.ts": 'export { v as value } from "dep";\n' });
+    const one = work.add("dep", { "index.d.ts": 'export declare const v: "one";\n' });
+    const two = work.add("dep", { "index.d.ts": 'export declare const v: "two";\n' }, { version: "2.0.0" });
+    const left = work.add("left", { "index.d.ts": 'export { value } from "shared";\n' });
+    const right = work.add("right", { "index.d.ts": 'export { value } from "shared";\n' });
+    const declared: Array<[string, PnpDependencyTarget]> = [
+      ["left", left],
+      ["right", right],
+    ];
+    stage(
+      work.root,
+      [
+        ["shared", "wired-one", [["dep", one]]],
+        ["shared", "wired-two", [["dep", two]]],
+        ["dep", one, []],
+        ["dep", two, []],
+        ["left", left, [["shared", "wired-one"]]],
+        ["right", right, [["shared", "wired-two"]]],
+      ],
+      declared,
+      declared
+    );
+    const manifestPath = path.join(work.root, ".pnp.data.json");
+    const state = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as IPnpSerializedState;
+    for (const [name, references] of state.packageRegistryData) {
+      for (const [reference, info] of references) {
+        if (name === "shared") {
+          const variant = reference === "wired-one" ? "0000000000000001" : "0000000000000002";
+          info.packageLocation = `./.fabr-tree/__virtual__/${variant}/0/${shared}/`;
+        }
+      }
+    }
+    fs.writeFileSync(manifestPath, JSON.stringify(state, undefined, 2));
+    fs.writeFileSync(
+      path.join(work.root, "src/index.ts"),
+      'import { value as a } from "left";\nimport { value as b } from "right";\nexport const both: ["one", "two"] = [a, b];\n'
+    );
+
+    const { status, output } = compile(work.root);
+    expect(output).to.equal("");
+    expect(status).to.equal(0);
+  });
+
   it("compiles without a manifest at all, resolving through the filesystem", () => {
     /* The classic layout runs through this same driver: no table, no overrides,
      * ordinary compiler behaviour — which is what keeps one compiler for both. */

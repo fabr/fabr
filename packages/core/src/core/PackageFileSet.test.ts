@@ -145,6 +145,17 @@ describe("packageNodeSignature", () => {
  * is sound only if two instances sharing an id agree on everything an
  * assembler can read off them — the invariant this check enforces. */
 describe("assertSamePackageNode", () => {
+  /** The `help:` line a thrown conflict carries. */
+  function helpOf(run: () => void): string {
+    try {
+      run();
+    } catch (err) {
+      const help = (err as { help?: string | string[] }).help;
+      return Array.isArray(help) ? help.join("\n") : (help ?? "");
+    }
+    return "";
+  }
+
   function files(tag: string): Map<string, IFile> {
     return new Map([["index.js", MemoryFile.from(`// ${tag}`)]]);
   }
@@ -160,12 +171,24 @@ describe("assertSamePackageNode", () => {
     const a = new PackageFileSet(files("built debug"), "p", "1.0.0");
     const b = new PackageFileSet(files("built release"), "p", "1.0.0");
     expect(() => assertSamePackageNode(a, b)).to.throw(ConflictError, "p@1.0.0");
+    const help = helpOf(() => assertSamePackageNode(a, b));
+    expect(help).to.contain("two different packages both claim to be 'p@1.0.0'");
   });
 
   it("rejects two edge bindings under one id, contents equal", () => {
     const a = new PackageFileSet(files("p"), "p", "1.0.0", [new PackageFileSet(files("q1"), "q", "1.0.0")]);
     const b = new PackageFileSet(files("p"), "p", "1.0.0", [new PackageFileSet(files("q2"), "q", "2.0.0")]);
     expect(() => assertSamePackageNode(a, b)).to.throw(ConflictError);
+    /* Named by what differs, never by a signature or a content hash. */
+    const help = helpOf(() => assertSamePackageNode(a, b));
+    expect(help).to.contain("'p@1.0.0' is delivered twice with different dependencies (q@1.0.0 against q@2.0.0)");
+    expect(help).to.not.match(/[0-9a-f]{32}/);
+  });
+
+  it("names a dependency present on one side only", () => {
+    const a = new PackageFileSet(files("p"), "p", "1.0.0", [new PackageFileSet(files("q"), "q", "1.0.0")]);
+    const b = new PackageFileSet(files("p"), "p", "1.0.0");
+    expect(helpOf(() => assertSamePackageNode(a, b))).to.contain("(q@1.0.0 on one side only)");
   });
 
   it("rejects a nested-override instance against a plain one", () => {

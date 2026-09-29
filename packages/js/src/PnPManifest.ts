@@ -46,10 +46,12 @@ import {
   hashString,
   MemoryFile,
   PACKAGE_RESOLUTION_PROVENANCE,
+  nodeNaming,
   packageNodeSignature,
   PackageFileSet,
   reachablePackages,
 } from "@fabr-build/core";
+import { virtualLocation } from "./pnp/VirtualPath";
 
 /** Where the tree pool is mounted in the staged workspace — one symlink per
  * action, so every location in the manifest is relative and its bytes say
@@ -69,6 +71,7 @@ export interface IPnpPackageInfo {
   packageLocation: string;
   packageDependencies: Array<[string, PnpDependencyTarget]>;
   linkType: "HARD" | "SOFT";
+  packagePeers?: string[];
   discardFromLookup?: boolean;
 }
 
@@ -105,8 +108,12 @@ const SELF_REFERENCE = "self";
  * content entries before anything reads it. */
 export interface IPnpManifest {
   readonly state: IPnpSerializedState;
-  /** Every package with a row, deduplicated by instance. */
+  /** Every package with a row, one instance per row. */
   readonly packages: ReadonlyArray<PackageFileSet>;
+  /** Where a package's row locates it, relative to the working directory:
+   * {@link treeMountOf}, or — for one of several wirings of the same content in
+   * this manifest — a virtual location over that tree, one per wiring. */
+  mountOf(pkg: PackageFileSet): string;
   /** The manifest as the file to stage. */
   toFile(): MemoryFile;
 }
@@ -138,25 +145,25 @@ const INFO = [
  */
 export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage): IPnpManifest {
   const roots = directDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+  const referenceIn = referencesOf(roots);
   const packages: PackageFileSet[] = [];
   const seen = new Set<string>();
   for (const pkg of reachablePackages(roots)) {
-    /* One row per (name, reference). Two delivered INSTANCES can carry one
-     * identity — a graph is a set of nodes, not of objects — and by
-     * {@link assertSamePackageNode} they are then the same node, so the second
-     * would be a duplicate row rather than a distinct one. */
-    const key = `${pkg.packageName}\0${referenceOf(pkg)}`;
+    /* One row per (name, reference). Two delivered INSTANCES of one node are one
+     * row; one package wired two ways is two nodes, so two rows. */
+    const key = `${pkg.packageName}\0${referenceIn(pkg)}`;
     if (!seen.has(key)) {
       seen.add(key);
       packages.push(pkg);
     }
   }
+  const mountOf = locations(packages, referenceIn);
   /* ONE dependency table, used by both rows that stand for the sources: the
    * anonymous top-level and, where the sources are a package, the self row.
    * They must agree — a source file matches the self row (its location is the
    * longer prefix), so a difference would silently change what the sources can
    * resolve — so they are derived rather than written twice. */
-  const topLevel = dependencyList(roots);
+  const topLevel = dependencyList(roots, referenceIn);
   /* The pool is the top level's own table: a phantom import is answered by
    * exactly what the consumer declared, so the pool's membership is the direct
    * members themselves — which a read set can name by plain indexing
@@ -171,10 +178,10 @@ export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage): IPnpM
    * surface the pool would otherwise have answered for it. */
   const rows = new Map<string, Array<[string, IPnpPackageInfo]>>();
   for (const pkg of packages) {
-    const reference = referenceOf(pkg);
+    const reference = referenceIn(pkg);
     const existing = rows.get(pkg.packageName) ?? [];
     rows.set(pkg.packageName, existing);
-    existing.push([reference, packageInfo(pkg, reference, barred.has(pkg) ? topLevel : [])]);
+    existing.push([reference, packageInfo(pkg, reference, mountOf(pkg), referenceIn, barred.has(pkg) ? topLevel : [])]);
   }
   const selfRow = self && selfPackageRow(self, topLevel);
   const state: IPnpSerializedState = {
@@ -187,7 +194,7 @@ export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage): IPnpM
     dependencyTreeRoots: [],
     enableTopLevelFallback: true,
     ignorePatternData: null,
-    fallbackExclusionList: exclusionList(excluded),
+    fallbackExclusionList: exclusionList(excluded, referenceIn),
     fallbackPool: pool,
     packageRegistryData: [
       [null, [[null, { packageLocation: "./", packageDependencies: topLevel, linkType: "SOFT" }]]],
@@ -200,7 +207,53 @@ export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage): IPnpM
         ]),
     ],
   };
-  return { state, packages, toFile: () => MemoryFile.from(serialize(state)) };
+  return { state, packages, mountOf, toFile: () => MemoryFile.from(serialize(state)) };
+}
+
+/**
+ * Row references for one manifest's installation: {@link referenceOf} wherever
+ * a package id is wired one way, and a distinct reference per wiring where an
+ * id is wired several ways ({@link nodeNaming}).
+ */
+function referencesOf(roots: ReadonlyArray<PackageFileSet>): (pkg: PackageFileSet) => string {
+  const naming = nodeNaming(roots);
+  const memo = new Map<PackageFileSet, string>();
+  return pkg => {
+    let reference = memo.get(pkg);
+    if (reference === undefined) {
+      reference = hashString(naming(pkg));
+      memo.set(pkg, reference);
+    }
+    return reference;
+  };
+}
+
+/**
+ * Where each row's files live. A row's location is its content's tree, shared
+ * by every row of that content — the same package under two names — so long as
+ * they bind the same dependencies. Content wired more than one way in this
+ * manifest gets a virtual location per wiring instead ({@link virtualLocation}),
+ * every wiring alike: a location is what tells the resolver which row a file
+ * belongs to, so two wirings cannot share one, and none may own the bare tree.
+ */
+function locations(
+  packages: ReadonlyArray<PackageFileSet>,
+  referenceIn: (pkg: PackageFileSet) => string
+): (pkg: PackageFileSet) => string {
+  const wiring = (pkg: PackageFileSet): string =>
+    dependencyList(pkg.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet), referenceIn)
+      .map(([name, reference]) => `${name}=${reference}`)
+      .join(",");
+  const wiringsByContent = new Map<string, Set<string>>();
+  for (const pkg of packages) {
+    const held = wiringsByContent.get(pkg.toManifestHash()) ?? new Set<string>();
+    held.add(wiring(pkg));
+    wiringsByContent.set(pkg.toManifestHash(), held);
+  }
+  return pkg =>
+    (wiringsByContent.get(pkg.toManifestHash())?.size ?? 0) > 1
+      ? virtualLocation(treeMountOf(pkg), hashString(wiring(pkg)).slice(0, 16))
+      : treeMountOf(pkg);
 }
 
 /**
@@ -287,11 +340,13 @@ export function referenceOf(pkg: PackageFileSet): string {
 function packageInfo(
   pkg: PackageFileSet,
   reference: string,
+  location: string,
+  referenceIn: (pkg: PackageFileSet) => string,
   supplied: ReadonlyArray<[string, PnpDependencyTarget]> = []
 ): IPnpPackageInfo {
   const own = new Map<string, PnpDependencyTarget>([
     [pkg.packageName, reference],
-    ...dependencyList(pkg.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)),
+    ...dependencyList(pkg.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet), referenceIn),
   ]);
   for (const [name, target] of supplied) {
     if (!own.has(name)) {
@@ -299,7 +354,7 @@ function packageInfo(
     }
   }
   return {
-    packageLocation: `./${treeMountOf(pkg)}/`,
+    packageLocation: `./${location}/`,
     packageDependencies: [...own].sort(byText(([name]) => name)),
     linkType: "HARD",
   };
@@ -320,12 +375,12 @@ function isResolved(pkg: PackageFileSet): boolean {
 
 /** The packages barred from the fallback pool, in PnP's `[name, [references]]`
  * shape and sorted for byte-stability. */
-function exclusionList(excluded: ReadonlyArray<PackageFileSet>): Array<[string, string[]]> {
+function exclusionList(excluded: ReadonlyArray<PackageFileSet>, referenceIn: (pkg: PackageFileSet) => string): Array<[string, string[]]> {
   const byName = new Map<string, string[]>();
   for (const pkg of excluded) {
     const held = byName.get(pkg.packageName) ?? [];
     byName.set(pkg.packageName, held);
-    const reference = referenceOf(pkg);
+    const reference = referenceIn(pkg);
     if (!held.includes(reference)) {
       held.push(reference);
     }
@@ -336,11 +391,14 @@ function exclusionList(excluded: ReadonlyArray<PackageFileSet>): Array<[string, 
 /** Edges as PnP dependency entries, sorted and deduplicated by name (a graph
  * cannot bind one name twice at one node; a repeat would be a delivery bug, and
  * taking the first keeps the table well-formed rather than ambiguous). */
-function dependencyList(deps: ReadonlyArray<PackageFileSet>): Array<[string, PnpDependencyTarget]> {
+function dependencyList(
+  deps: ReadonlyArray<PackageFileSet>,
+  referenceIn: (pkg: PackageFileSet) => string
+): Array<[string, PnpDependencyTarget]> {
   const entries = new Map<string, PnpDependencyTarget>();
   for (const dep of deps) {
     if (!entries.has(dep.packageName)) {
-      entries.set(dep.packageName, referenceOf(dep));
+      entries.set(dep.packageName, referenceIn(dep));
     }
   }
   return [...entries].sort(byText(([name]) => name));

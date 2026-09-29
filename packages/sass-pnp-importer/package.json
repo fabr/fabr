@@ -1,0 +1,9 @@
+{
+  "name": "@fabr-build/sass-pnp-importer",
+  "version": "0.1.0",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "homepage": "https://github.com/fabr/fabr",
+  "main": "build/index.js",
+  "types": "build/index.d.ts"
+}

@@ -21,9 +21,11 @@ import { expect } from "chai";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import type { IPnpPackageInfo, IPnpSerializedState } from "../PnPManifest";
+import { FileSet, IFile, MemoryFile, PackageFileSet } from "@fabr-build/core";
+import { type IPnpPackageInfo, type IPnpSerializedState, pnpManifestOf, treeMountOf } from "../PnPManifest";
 import type { ExportsValue } from "./PackageExports";
 import { PnpResolver, splitSpecifier, typesPackageName } from "./PnPResolver";
+import { realpathKeepingVirtual } from "./VirtualPath";
 
 const ROOT = path.resolve("/workspace");
 
@@ -434,5 +436,70 @@ describe("PnpResolver, resolving a specifier in full", () => {
     pkg("ref-broken", { exports: { ".": "./index.js", import: "./esm.js" } });
     const resolver = resolving(["broken", "ref-broken"]);
     expect(() => resolver.resolveSpecifier("broken", from())).to.throw(/ref-broken.package.json: .*cannot be mixed/);
+  });
+});
+
+describe("PnpResolver over one package wired two ways", () => {
+  /* The manifest gives each wiring of `shared` its own virtual location over
+   * one physical tree; a file reached through each must resolve `dep` through
+   * its own row. */
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pnpvariant-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const files = (tag: string): Map<string, IFile> =>
+    new Map([
+      ["index.js", MemoryFile.from(`// ${tag}`)],
+      ["package.json", MemoryFile.from(JSON.stringify({ name: tag.split("@")[0] }))],
+    ]);
+  const pkg = (name: string, version: string, deps: PackageFileSet[] = []): PackageFileSet =>
+    new PackageFileSet(files(`${name}@${version}`), name, version, deps);
+
+  /** The shared content wired two ways, its manifest materialized as the step
+   * does: one physical tree per content, whatever its rows' locations. */
+  const staged = (): { left: PackageFileSet; right: PackageFileSet; manifest: ReturnType<typeof pnpManifestOf> } => {
+    const content = files("shared@1.0.0");
+    const left = new PackageFileSet(content, "shared", "1.0.0", [pkg("dep", "1.0.0")]);
+    const right = new PackageFileSet(content, "shared", "1.0.0", [pkg("dep", "2.0.0")]);
+    const manifest = pnpManifestOf([pkg("left", "1.0.0", [left]), pkg("right", "1.0.0", [right])]);
+    for (const each of manifest.packages) {
+      const dir = path.join(root, treeMountOf(each));
+      fs.mkdirSync(dir, { recursive: true });
+      for (const [name] of each as FileSet) {
+        fs.writeFileSync(path.join(dir, name), "");
+      }
+    }
+    return { left, right, manifest };
+  };
+
+  it("answers each wiring's lookups from that wiring's own table", () => {
+    const { left, right, manifest } = staged();
+    const resolver = new PnpResolver(manifest.state, root, ["types", "require"]);
+    const inside = (which: PackageFileSet): string => path.join(root, manifest.mountOf(which), "index.js");
+    expect(manifest.mountOf(left)).to.not.equal(manifest.mountOf(right));
+    expect(resolver.locationOf("dep", inside(left))).to.equal(path.join(root, manifest.mountOf(left.dependencies[0] as PackageFileSet)));
+    expect(resolver.locationOf("dep", inside(right))).to.equal(path.join(root, manifest.mountOf(right.dependencies[0] as PackageFileSet)));
+  });
+
+  it("keeps a virtual location virtual under realpath", () => {
+    const { left, manifest } = staged();
+    const resolver = new PnpResolver(manifest.state, root, ["types", "require"]);
+    const real = path.join(realpathKeepingVirtual(path.join(root, manifest.mountOf(left))), "index.js");
+    expect(real).to.include("/__virtual__/");
+    expect(resolver.locationOf("dep", real)).to.equal(path.join(root, manifest.mountOf(left.dependencies[0] as PackageFileSet)));
+  });
+
+  it("refuses the physical tree no row owns", () => {
+    const { left, manifest } = staged();
+    const resolver = new PnpResolver(manifest.state, root, ["types", "require"]);
+    const physical = path.join(root, treeMountOf(left), "index.js");
+    expect(() => resolver.locationOf("dep", physical)).to.throw(/the manifest locates virtually/);
+    expect(() => resolver.pathNameOf(physical)).to.throw(/the manifest locates virtually/);
   });
 });

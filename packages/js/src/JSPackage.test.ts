@@ -440,13 +440,35 @@ describe("assembling delivered edge-binding graphs", () => {
     delivered({ "rootB@1.0.0": { p: "p@1.0.0" }, "p@1.0.0": { x: "x@2.0.0" }, "x@2.0.0": {} }, "rootB@1.0.0"),
   ];
 
-  it("rejects an INSTALL of two batches disagreeing about one packageId", () => {
-    /* A tree gives a package one directory and so one environment, so two
-     * different nodes claiming one name@version cannot both be installed —
-     * whichever mounted second would be settled by traversal order rather than
-     * by any decision. The refusal belongs to physical assembly, not to the
-     * planner, which is happy to hold this shape (see below). */
-    expect(() => assembleNodeModules(disagreeingBatches())).to.throw(ConflictError, /p@1\.0\.0/);
+  it("installs one package wired two ways as two copies, as npm nests", async () => {
+    /* p@1.0.0 depends on x@1 in one batch and x@2 in the other: one package,
+     * two nodes. One copy is hoisted, the other nests under the root that
+     * requires it, and each copy sees its own x — both of whose versions are in
+     * the install. */
+    const install = assembleNodeModules(disagreeingBatches());
+    const names = [...install].map(([name]) => name).sort();
+    expect(names.filter(name => name.endsWith("p/index.js"))).to.have.lengthOf(2);
+    const xs: string[] = [];
+    for (const name of names.filter(entry => entry.endsWith("x/index.js"))) {
+      xs.push(await install.readFile(name));
+    }
+    expect(xs.sort()).to.deep.equal(["// x@1.0.0", "// x@2.0.0"]);
+  });
+
+  it("is deterministic about which wiring of one package is hoisted", () => {
+    const layout = (batches: PackageFileSet[]): string[] => [...assembleNodeModules(batches)].map(([name]) => name).sort();
+    expect(layout(disagreeingBatches().reverse())).to.deep.equal(layout(disagreeingBatches()));
+  });
+
+  it("still refuses two packages of different content under one packageId", () => {
+    const one = delivered({ "rootA@1.0.0": { p: "p@1.0.0" } }, "rootA@1.0.0");
+    const other = new PackageGraphBuilder();
+    const root = other.node(new Map<string, IFile>([["index.js", MemoryFile.from("// rootB@1.0.0")]]), "rootB", "1.0.0");
+    const p = other.node(new Map<string, IFile>([["index.js", MemoryFile.from("// a different p")]]), "p", "1.0.0");
+    other.wire(root, [p]);
+    other.wire(p, []);
+    other.seal();
+    expect(() => assembleNodeModules([one, root])).to.throw(ConflictError, /p/);
   });
 
   it("still NAMES the same delivery, because references need no tree", () => {

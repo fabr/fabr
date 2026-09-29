@@ -50,7 +50,7 @@ import {
 } from "@fabr-build/core";
 import { compileContents, formatJSTarget, JSTarget, parseJSTarget, usesNodeGlobals } from "../JSPackage";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
-import { treeMountOf } from "../PnPManifest";
+import { pnpManifestOf } from "../PnPManifest";
 import {
   buildBundleOptions,
   BUNDLE_OUTDIR,
@@ -228,10 +228,12 @@ function composeBundle(context: TargetContext, inputs: IBundleInputs): Computabl
 
   /* A contained entry keeps its place inside its mount; a loose one is wherever
    * the build put it, so it is looked up rather than guessed — hence after. */
+  /* Where the bundle's manifest (over exactly these packages) places each. */
+  const layout = containedEntries.length === 0 ? undefined : pnpManifestOf(srcPackages);
   const containedSources = containedEntries.flatMap(ref =>
     /* ref.locate (not source.locate) so a literal entry naming nothing in the
      * package is the written-reference error, not a silently-missing entry. */
-    [...ref.locate()].map(([path, name]) => ({ path: `${treeMountOf(ref.source)}/${path}`, name }))
+    [...ref.locate()].map(([path, name]) => ({ path: `${layout!.mountOf(ref.source)}/${path}`, name }))
   );
 
   return context.manifestAll(looseSources).then(looseEntries => {

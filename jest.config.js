@@ -41,6 +41,7 @@ module.exports = {
   moduleNameMapper: {
     "^@fabr-build/core$": "<rootDir>/packages/core/src/index.ts",
     "^@fabr-build/js$": "<rootDir>/packages/js/src/index.ts",
+    "^@fabr-build/sass-pnp-importer$": "<rootDir>/packages/sass-pnp-importer/src/index.ts",
   },
   transform: {
     "^.+\\.ts$": ["ts-jest", { tsconfig: "tsconfig.base.json" }],

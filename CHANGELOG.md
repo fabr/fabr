@@ -32,6 +32,7 @@ TSC=@npm:typescript:5.4.5:tsc becomes TYPESCRIPT=@npm:typescript:5.4.5.
 - Add postcss for more correct css-module processing.
 - Rewrite __dirname/__filename globals for ESM targets and vice-versa for import.meta in CJS targets.
 - Split `css_compile` into separate `sass_compile` (lowering) + `css_postcss` steps.
+- Add sass-pnp-importer
 
 ## Fabr 0.2.1
 @fabr-build/core:

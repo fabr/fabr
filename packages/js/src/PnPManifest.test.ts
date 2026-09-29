@@ -29,7 +29,9 @@ import {
   PackageGraphBuilder,
 } from "@fabr-build/core";
 import { packageNodeSignature } from "@fabr-build/core";
-import { IPnpPackageInfo, pnpManifestOf, PnpDependencyTarget, treeMountOf } from "./PnPManifest";
+import * as path from "path";
+import { IPnpPackageInfo, pnpManifestOf, PnpDependencyTarget, TREE_MOUNT, treeMountOf } from "./PnPManifest";
+import { resolveVirtual } from "./pnp/VirtualPath";
 
 /** A package as a REPOSITORY delivered it — carrying a resolution provenance,
  * which is what marks it as something this build did not produce and therefore
@@ -101,23 +103,50 @@ describe("pnpManifestOf", () => {
     const rows = [...rowsOf(manifest, "plugin")];
     expect(rows).to.have.lengthOf(2);
     expect(rows[0][0]).to.not.equal(rows[1][0]);
-    /* Same bytes, so one directory — the location is content, the row is not. */
-    expect(rows[0][1].packageLocation).to.equal(rows[1][1].packageLocation);
     expect(dependencyOf(rows[0][1], "core")).to.not.equal(dependencyOf(rows[1][1], "core"));
   });
 
-  it("gives the same content under two environments distinct references sharing one location", () => {
-    /* Two deliveries of one package differing only in what they resolve: PnP's
-     * virtual instances, content-addressed — the fork costs table rows, not a
-     * second tree on disk. */
+  it("gives each wiring of one content its own virtual location over the content's tree", () => {
+    /* A location is how the resolver tells which row a file belongs to, so two
+     * wirings of one content in one directory could not be told apart — each
+     * gets a PnP virtual location resolving to the one tree, and neither owns
+     * the tree itself. */
     const content = new Map<string, IFile>([["index.js", MemoryFile.from("// shared")]]);
     const left = new PackageFileSet(content, "shared", "1.0.0", [pkg("dep", "1.0.0")]);
     const right = new PackageFileSet(content, "shared", "1.0.0", [pkg("dep", "2.0.0")]);
     const manifest = pnpManifestOf([pkg("left", "1.0.0", [left]), pkg("right", "1.0.0", [right])]);
     const rows = [...rowsOf(manifest, "shared").values()];
     expect(rows).to.have.lengthOf(2);
-    expect(rows[0].packageLocation).to.equal(rows[1].packageLocation);
+    expect(rows[0].packageLocation).to.not.equal(rows[1].packageLocation);
+    const tree = `/root/${treeMountOf(left)}/`;
+    for (const row of rows) {
+      expect(row.packageLocation).to.match(new RegExp(`^\\./${TREE_MOUNT}/__virtual__/[0-9a-f]{16}/0/`));
+      expect(resolveVirtual(path.posix.join("/root", row.packageLocation))).to.equal(tree);
+    }
     expect(dependencyOf(rows[0], "dep")).to.not.equal(dependencyOf(rows[1], "dep"));
+  });
+
+  it("tells apart wirings that differ only below their direct dependencies", () => {
+    /* shared@1 → mid@1 in both deliveries; the two mids differ only in which
+     * leaf they bind. The id-level line of shared is the same for both, so only
+     * structural identity sees two nodes — and each shared must resolve mid to
+     * its own mid. */
+    const shared = new Map<string, IFile>([["index.js", MemoryFile.from("// shared")]]);
+    const mid = new Map<string, IFile>([["index.js", MemoryFile.from("// mid")]]);
+    const left = new PackageFileSet(shared, "shared", "1.0.0", [new PackageFileSet(mid, "mid", "1.0.0", [pkg("leaf", "1.0.0")])]);
+    const right = new PackageFileSet(shared, "shared", "1.0.0", [new PackageFileSet(mid, "mid", "1.0.0", [pkg("leaf", "2.0.0")])]);
+    const manifest = pnpManifestOf([pkg("left", "1.0.0", [left]), pkg("right", "1.0.0", [right])]);
+    const rows = [...rowsOf(manifest, "shared").values()];
+    expect(rows).to.have.lengthOf(2);
+    expect(dependencyOf(rows[0], "mid")).to.not.equal(dependencyOf(rows[1], "mid"));
+    expect(rows[0].packageLocation).to.not.equal(rows[1].packageLocation);
+  });
+
+  it("keeps one location for one wiring of a content, whatever it is called", () => {
+    const real = pkg("stream-browserify", "3.0.0");
+    const manifest = pnpManifestOf([real, pkg("user", "1.0.0", [real.withPackageName("stream")])]);
+    expect(manifest.mountOf(real)).to.equal(treeMountOf(real));
+    expect(manifest.mountOf(real.withPackageName("stream"))).to.equal(treeMountOf(real));
   });
 
   it("mounts an aliased package under the name its requirer knows it by", () => {

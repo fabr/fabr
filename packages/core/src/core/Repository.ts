@@ -21,7 +21,7 @@ import { Computable } from "./Computable";
 import { attachHelp, RequirementResolutionError, toError } from "./Errors";
 import { FileSetRef, IProjection } from "./FileSetRef";
 import { FileSet, FileSource } from "./FileSet";
-import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
+import { PackageFileSet, PackageGraphBuilder, packageNodeSignature, reachablePackages } from "./PackageFileSet";
 import { chainSteps, IProvenanceStep } from "./Provenance";
 import { Name } from "./Name";
 import type { PublishableFileSet } from "./PublishableFileSet";
@@ -587,7 +587,14 @@ function restampPackage(pkg: PackageFileSet, steps: ReadonlyArray<IProvenanceSte
   const restamp = (source: PackageFileSet): PackageFileSet => {
     let copy = restamped.get(source);
     if (!copy) {
-      copy = builder.node(source, source.packageName, source.version, chainSteps(steps, source.origin), source.isNestedOverride);
+      copy = builder.node(
+        source,
+        source.packageName,
+        source.version,
+        chainSteps(steps, source.origin),
+        source.isNestedOverride,
+        source.optionalPeers
+      );
       restamped.set(source, copy);
       builder.wire(
         copy,
@@ -699,7 +706,7 @@ export function materializeAll(context: ResolutionContext, sources: SourceRef[],
       }
     });
     builder.seal();
-    return resolved;
+    return bindOptionalPeers(resolved);
   };
   if (references.length === 0) {
     /* No references present, so nothing to resolve */
@@ -716,6 +723,68 @@ export function materializeAll(context: ResolutionContext, sources: SourceRef[],
       return checkedCollection(finished, options).then(() => finish(finished));
     }
   );
+}
+
+/**
+ * The installation `sources` make up, with every delivered package's optional
+ * peers ({@link PackageFileSet.optionalPeers}) bound wherever the installation
+ * holds the peer — an instance of that name at the version the requirer's
+ * resolution chose. An absent peer stays unbound, as an installation without
+ * it leaves it. This is what makes a package delivered by two collections that
+ * disagree only about an optional peer one node here: the binding is decided
+ * once, by the installation, rather than by whichever subset delivered it.
+ *
+ * The sources come back unchanged where there is nothing to bind; otherwise
+ * the reachable package graph is rebuilt with the bindings as ordinary edges.
+ * Where several instances hold one name and version, the one with the lowest
+ * node signature is bound, so the choice does not follow input order.
+ */
+export function bindOptionalPeers(sources: Materialized[]): Materialized[] {
+  const roots = sources.flatMap(source =>
+    source instanceof PackageFileSet ? [source] : source instanceof FileSetRef && source.source instanceof PackageFileSet ? [source.source] : []
+  );
+  const packages = reachablePackages(roots);
+  const present = new Map<string, { pkg: PackageFileSet; signature: string }>();
+  for (const pkg of packages) {
+    const key = `${pkg.packageName}@${pkg.version}`;
+    const signature = packageNodeSignature(pkg);
+    const held = present.get(key);
+    if (held === undefined || signature < held.signature) {
+      present.set(key, { pkg, signature });
+    }
+  }
+  const boundPeers = (pkg: PackageFileSet): PackageFileSet[] =>
+    [...pkg.optionalPeers].flatMap(([name, version]) => {
+      const target = pkg.getDependency(name) === undefined ? present.get(`${name}@${version}`) : undefined;
+      return target === undefined ? [] : [target.pkg];
+    });
+  if (!packages.some(pkg => boundPeers(pkg).length > 0)) {
+    return sources;
+  }
+  const builder = new PackageGraphBuilder();
+  const copies = new Map<PackageFileSet, PackageFileSet>();
+  const copy = (pkg: PackageFileSet): PackageFileSet => {
+    let result = copies.get(pkg);
+    if (!result) {
+      result = builder.node(pkg, pkg.packageName, pkg.version, pkg.origin, pkg.isNestedOverride, pkg.optionalPeers);
+      copies.set(pkg, result);
+      builder.wire(
+        result,
+        [...pkg.dependencies, ...boundPeers(pkg)].map(dep => (dep instanceof PackageFileSet ? copy(dep) : dep))
+      );
+    }
+    return result;
+  };
+  const bound = sources.map((source): Materialized => {
+    if (source instanceof PackageFileSet) {
+      return copy(source);
+    } else if (source instanceof FileSetRef && source.source instanceof PackageFileSet) {
+      return new FileSetRef(copy(source.source), source.projections, source.miss);
+    }
+    return source;
+  });
+  builder.seal();
+  return bound;
 }
 
 /**
@@ -852,7 +921,7 @@ function rebuildPackage(
   }
   let result = rebuilt.get(pkg);
   if (!result) {
-    result = builder.node(pkg, pkg.packageName, pkg.version, pkg.origin, pkg.isNestedOverride);
+    result = builder.node(pkg, pkg.packageName, pkg.version, pkg.origin, pkg.isNestedOverride, pkg.optionalPeers);
     rebuilt.set(pkg, result);
     builder.wire(
       result,

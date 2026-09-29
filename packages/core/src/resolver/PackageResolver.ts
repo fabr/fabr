@@ -452,8 +452,11 @@ function buildClosure<V, C>(
    * its targets exist. Discovery IS the membership walk — everything reached
    * from the root is delivered, and an edge leading outside the fetched batch
    * (a gated optional pruned from the walk, hence not in `packages`) is simply
-   * not carried. An instance exists per (name, id): an aliased edge binds a
-   * restamped instance carrying the requirer's name for the package. */
+   * not carried. An optional peer is never wired here — whether the peer is
+   * present is the installation's fact, not this delivery's — but recorded as
+   * the instance's `optionalPeers`, for the collection point to bind. An
+   * instance exists per (name, id): an aliased edge binds a restamped instance
+   * carrying the requirer's name for the package. */
   const builder = new PackageGraphBuilder();
   const instances = new Map<string, PackageFileSet>();
   const pending: Array<[string, PackageFileSet]> = [];
@@ -462,18 +465,35 @@ function buildClosure<V, C>(
     let node = instances.get(key);
     if (!node) {
       const files = packages.get(id)!;
-      node = builder.node(files, name, files.version, origin, graph.isFork(id));
+      node = builder.node(files, name, files.version, origin, graph.isFork(id), optionalPeersOf(id));
       instances.set(key, node);
       pending.push([id, node]);
     }
     return node;
   };
+  const optionalPeersOf = (id: string): ReadonlyMap<string, string> | undefined => {
+    const names = graph.optionalProvidedNames(id);
+    if (names === undefined) {
+      return undefined;
+    }
+    const peers = new Map<string, string>();
+    for (const [depName, toId] of graph.edgesOf(id)) {
+      const target = names.has(depName) ? graph.node(toId) : undefined;
+      if (target !== undefined) {
+        peers.set(depName, graph.versionToString(target.version));
+      }
+    }
+    return peers;
+  };
   const delivered = instance(root.pkg, rootId);
   while (pending.length > 0) {
     const [id, node] = pending.pop()!;
+    const optional = graph.optionalProvidedNames(id);
     builder.wire(
       node,
-      [...graph.edgesOf(id)].filter(([, toId]) => packages.has(toId)).map(([depName, toId]) => instance(depName, toId))
+      [...graph.edgesOf(id)]
+        .filter(([depName, toId]) => optional?.has(depName) !== true && packages.has(toId))
+        .map(([depName, toId]) => instance(depName, toId))
     );
   }
   builder.seal();

@@ -19,6 +19,7 @@
 
 import { attachHelp, ConflictError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
+import { hashString } from "./FSWrapper";
 import { IProvenanceStep } from "./Provenance";
 /* Type-only: RepositoryRef values are only ever constructed/inspected on the
  * Repository side; carrying the type here must not create a module cycle. */
@@ -52,6 +53,8 @@ import type { RepositoryRef } from "./Repository";
  * Content derivations (find/remap/minus/...) deliberately return plain
  * FileSets: once you reach inside a package, the result is just files.
  */
+const NO_OPTIONAL_PEERS: ReadonlyMap<string, string> = new Map();
+
 export class PackageFileSet extends FileSet {
   constructor(
     files: Iterable<[string, IFile]>,
@@ -68,7 +71,16 @@ export class PackageFileSet extends FileSet {
      * conflict on an unflagged same-name duplicate, which is two deliveries
      * disagreeing rather than one delivery's sanctioned divergence.
      */
-    public readonly isNestedOverride: boolean = false
+    public readonly isNestedOverride: boolean = false,
+    /**
+     * The package's **optional peers** — dependencies it uses if its
+     * installation has them and never pulls in itself — by the name it requires
+     * each under, mapped to the version its resolution chose. Never wired by a
+     * delivery: whether one is present is a fact about the installation, so the
+     * collection point binds it there ({@link bindOptionalPeers}), and a
+     * binding becomes an ordinary edge in `dependencies`.
+     */
+    public readonly optionalPeers: ReadonlyMap<string, string> = NO_OPTIONAL_PEERS
   ) {
     /* An existing FileSet passes straight through — the base shares its content
      * (already canonical) rather than copying and rechecking every name, which
@@ -91,7 +103,7 @@ export class PackageFileSet extends FileSet {
   }
 
   public withOrigin(origin: IProvenanceStep): PackageFileSet {
-    return new PackageFileSet(this, this.packageName, this.version, this.dependencies, origin, this.isNestedOverride);
+    return new PackageFileSet(this, this.packageName, this.version, this.dependencies, origin, this.isNestedOverride, this.optionalPeers);
   }
 
   /**
@@ -103,7 +115,7 @@ export class PackageFileSet extends FileSet {
    * but the mount point alone.
    */
   public withPackageName(packageName: string): PackageFileSet {
-    return new PackageFileSet(this, packageName, this.version, this.dependencies, this.origin, this.isNestedOverride);
+    return new PackageFileSet(this, packageName, this.version, this.dependencies, this.origin, this.isNestedOverride, this.optionalPeers);
   }
 
   public getDependency(name: string): PackageFileSet | RepositoryRef | undefined {
@@ -145,13 +157,10 @@ export function reachablePackages(sets: ReadonlyArray<FileSet>): PackageFileSet[
 }
 
 /**
- * One graph node as the pnp reference and the layout planner name it: identity,
- * content hash, edge targets by id, override flag — everything an assembler's
- * outcome can depend on. Naming
- * edges by id is sound because two instances sharing an id must agree on this
- * whole line — the invariant the assemblers check at their merge
- * ({@link assertSamePackageNode}) — so inductively an id names one node,
- * however many instances carry it.
+ * One graph node's id-level line: identity, content hash, edge targets by id,
+ * override flag. It names a node exactly when no id in its installation is
+ * wired two ways — the common case, and what {@link nodeNaming} answers with
+ * wherever that holds.
  */
 export function packageNodeSignature(pkg: PackageFileSet): string {
   const edges = pkg.dependencies
@@ -159,6 +168,55 @@ export function packageNodeSignature(pkg: PackageFileSet): string {
     .map(dep => dep.packageId)
     .sort();
   return `${pkg.packageId} ${pkg.toManifestHash()} [${edges.join(",")}]${pkg.isNestedOverride ? " nested" : ""}`;
+}
+
+/**
+ * The node names of one installation — the graph reachable from `sets` — as a
+ * function of an instance: two instances get one name exactly when they are
+ * the same package wired the same way all the way down (cycles included), so
+ * an installation may hold one `packageId` wired several ways and each wiring
+ * is its own node, as npm nests and Yarn virtualizes.
+ *
+ * Computed by partition refinement: instances start grouped by their own label
+ * (id, content, override flag) and a group splits wherever members' children,
+ * by the name each is required under, fall in different groups — to the fixed
+ * point, which is structural equality. Where an id ends in one group the name
+ * is the id-level {@link packageNodeSignature}; an id wired several ways adds
+ * a suffix that tells its wirings apart. Names are meaningful only within the
+ * installation they were computed for.
+ */
+export function nodeNaming(sets: ReadonlyArray<FileSet>): (pkg: PackageFileSet) => string {
+  const packages = reachablePackages(sets);
+  const children = (pkg: PackageFileSet): PackageFileSet[] =>
+    pkg.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+  let color = new Map(packages.map(pkg => [pkg, `${pkg.packageId} ${pkg.toManifestHash()}${pkg.isNestedOverride ? " nested" : ""}`]));
+  let groups = new Set(color.values()).size;
+  for (;;) {
+    const refined = new Map(
+      packages.map(pkg => [
+        pkg,
+        hashString(`${color.get(pkg)}|${children(pkg).map(dep => `${dep.packageName}=${color.get(dep)}`).sort().join(",")}`),
+      ])
+    );
+    const refinedGroups = new Set(refined.values()).size;
+    if (refinedGroups === groups) {
+      break;
+    }
+    color = refined;
+    groups = refinedGroups;
+  }
+  /* An id is split when its instances ended in more than one group. */
+  const groupsById = new Map<string, Set<string>>();
+  for (const pkg of packages) {
+    const held = groupsById.get(pkg.packageId) ?? new Set<string>();
+    held.add(color.get(pkg)!);
+    groupsById.set(pkg.packageId, held);
+  }
+  return pkg => {
+    const line = packageNodeSignature(pkg);
+    const group = color.get(pkg);
+    return group !== undefined && groupsById.get(pkg.packageId)!.size > 1 ? `${line} ~${hashString(group).slice(0, 16)}` : line;
+  };
 }
 
 /**
@@ -171,21 +229,72 @@ export function packageNodeSignature(pkg: PackageFileSet): string {
  * than a pick.
  */
 export function assertSamePackageNode(held: PackageFileSet, arrived: PackageFileSet): void {
-  const heldSignature = packageNodeSignature(held);
-  const arrivedSignature = packageNodeSignature(arrived);
-  if (heldSignature !== arrivedSignature) {
-    throw attachHelp(
-      new ConflictError(
-        "packages",
-        held.packageId,
-        { provenance: held.origin, detail: heldSignature },
-        { provenance: arrived.origin, detail: arrivedSignature }
-      ),
-      `two different packages are being delivered as '${held.packageId}' in one closure — ` +
-        "they cannot merge into one installation; give them distinct identities (version the target, " +
-        "or align the two sources on one content)"
+  if (packageNodeSignature(held) !== packageNodeSignature(arrived)) {
+    throw packageConflict(held, arrived);
+  }
+}
+
+/**
+ * The error for two instances under one {@link PackageFileSet.packageId} that
+ * are not one node, said in the terms that tell a reader what to do. Different
+ * CONTENT is two packages claiming one identity. Same content wired to
+ * different dependencies is one package delivered twice, and the dependency
+ * that differs is the thing to look at: a version divergence below it, or a
+ * private override on one side only.
+ */
+export function packageConflict(held: PackageFileSet, arrived: PackageFileSet): Error {
+  const side = (pkg: PackageFileSet, detail: string): { provenance?: IProvenanceStep; detail: string } => ({
+    provenance: pkg.origin,
+    detail,
+  });
+  if (held.toManifestHash() !== arrived.toManifestHash()) {
+    return attachHelp(
+      new ConflictError("packages", held.packageName, side(held, held.packageId), side(arrived, `${arrived.packageId}, different content`)),
+      `two different packages both claim to be '${held.packageId}' — one installation holds one package per ` +
+        "name and version; give them distinct versions, or align the two sources on one package"
     );
   }
+  const differing = dependencyDifference(held, arrived);
+  return attachHelp(
+    new ConflictError("packages", held.packageName, side(held, dependencyText(held)), side(arrived, dependencyText(arrived))),
+    `'${held.packageId}' is delivered twice with different dependencies (${differing}), and this installation ` +
+      "holds one copy of it — align the dependency that differs"
+  );
+}
+
+/** `name@version`, and what it depends on, for a conflict's side. */
+function dependencyText(pkg: PackageFileSet): string {
+  const deps = packageDependencyIds(pkg);
+  const override = pkg.isNestedOverride ? " (a private override)" : "";
+  return `${pkg.packageId}${override} depending on ${deps.length === 0 ? "nothing" : deps.join(", ")}`;
+}
+
+/** What differs between two instances' dependencies, by the name each is
+ * required under. */
+function dependencyDifference(a: PackageFileSet, b: PackageFileSet): string {
+  const byName = (pkg: PackageFileSet): Map<string, string> =>
+    new Map(pkg.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet).map(dep => [dep.packageName, dep.packageId]));
+  const left = byName(a);
+  const right = byName(b);
+  const names = [...new Set([...left.keys(), ...right.keys()])].sort();
+  const differences = names.flatMap(name => {
+    const [x, y] = [left.get(name), right.get(name)];
+    if (x === y) {
+      return [];
+    }
+    return [x === undefined ? `${y} on one side only` : y === undefined ? `${x} on one side only` : `${x} against ${y}`];
+  });
+  if (a.isNestedOverride !== b.isNestedOverride) {
+    differences.push("a private override on one side only");
+  }
+  return differences.join("; ") || "the same dependencies, bound to different copies of them";
+}
+
+function packageDependencyIds(pkg: PackageFileSet): string[] {
+  return pkg.dependencies
+    .filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)
+    .map(dep => dep.packageId)
+    .sort();
 }
 
 /**
@@ -214,7 +323,8 @@ export class PackageGraphBuilder {
     packageName: string,
     version?: string,
     origin?: IProvenanceStep,
-    isNestedOverride?: boolean
+    isNestedOverride?: boolean,
+    optionalPeers?: ReadonlyMap<string, string>
   ): PackageFileSet {
     if (this.sealed) {
       throw new Error("PackageGraphBuilder is sealed");
@@ -222,7 +332,7 @@ export class PackageGraphBuilder {
     /* The constructor stores the dependencies array by reference, which is
      * exactly what lets the builder fill it in after construction. */
     const dependencies: Array<PackageFileSet | RepositoryRef> = [];
-    const pkg = new PackageFileSet(files, packageName, version, dependencies, origin, isNestedOverride ?? false);
+    const pkg = new PackageFileSet(files, packageName, version, dependencies, origin, isNestedOverride ?? false, optionalPeers);
     this.pending.set(pkg, dependencies);
     return pkg;
   }

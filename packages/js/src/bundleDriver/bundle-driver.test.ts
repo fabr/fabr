@@ -28,6 +28,10 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
+import { FileSet, IFile, MemoryFile, PackageFileSet } from "@fabr-build/core";
+import { PNP_DATA_FILE } from "../pnp/PnPResolver";
+import { pnpManifestOf, treeMountOf } from "../PnPManifest";
 import { isBareSpecifier, main, packageOf, rewriteStyledImport, treeOf, unresolvedHelp } from "./bundle-driver";
 
 describe("packageOf", () => {
@@ -250,10 +254,104 @@ describe("a styled import written as a package subpath", () => {
   });
 });
 
+describe("one package wired two ways, bundled by real esbuild through its virtual locations", () => {
+  /* `shared` is one content, depended on by `left` and `right`, whose two
+   * wirings bind `dep` to different packages. The manifest gives each wiring a
+   * virtual location over one physical tree; esbuild reads them natively. */
+  let work: string;
+
+  beforeEach(() => {
+    work = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-virtualbundle-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(work, { recursive: true, force: true });
+    process.exitCode = undefined;
+  });
+
+  const content = (name: string, version: string, body: string): Map<string, IFile> =>
+    new Map([
+      ["package.json", MemoryFile.from(JSON.stringify({ name, version }))],
+      ["index.js", MemoryFile.from(body)],
+    ]);
+
+  /** The graph's manifest, staged as the step stages it: one physical tree per
+   * content in a store the workspace's pool mount links to. */
+  function stage(): { left: PackageFileSet; right: PackageFileSet; manifest: ReturnType<typeof pnpManifestOf> } {
+    const dep = (version: string): PackageFileSet =>
+      new PackageFileSet(content("dep", version, `module.exports = { v: "dep${version}" };\n`), "dep", version, []);
+    const shared = content("shared", "1.0.0", 'module.exports = require("dep");\n');
+    const left = new PackageFileSet(content("left", "1.0.0", 'module.exports = require("shared");\n'), "left", "1.0.0", [
+      new PackageFileSet(shared, "shared", "1.0.0", [dep("1.0.0")]),
+    ]);
+    const right = new PackageFileSet(content("right", "1.0.0", 'module.exports = require("shared");\n'), "right", "1.0.0", [
+      new PackageFileSet(shared, "shared", "1.0.0", [dep("2.0.0")]),
+    ]);
+    const manifest = pnpManifestOf([left, right]);
+    const store = path.join(work, "store");
+    for (const pkg of manifest.packages) {
+      const tree = path.join(store, path.basename(treeMountOf(pkg)));
+      fs.mkdirSync(tree, { recursive: true });
+      for (const [name, file] of pkg as FileSet) {
+        fs.writeFileSync(path.join(tree, name), (file as MemoryFile).getBuffer().value as Buffer);
+      }
+    }
+    fs.symlinkSync(store, path.join(work, ".fabr-tree"));
+    fs.writeFileSync(path.join(work, PNP_DATA_FILE), manifest.toFile().getBuffer().value as Buffer);
+    return { left, right, manifest };
+  }
+
+  /** Bundle `entry` and run the result, answering what it printed. */
+  async function bundleAndRun(entry: string): Promise<string> {
+    const options = {
+      entries: [{ in: entry, out: "bundle" }],
+      external: [],
+      platform: "node",
+      format: "cjs",
+      target: "es2021",
+      minify: false,
+      sourcemap: false,
+      outdir: "out",
+    };
+    fs.writeFileSync(path.join(work, "options.json"), JSON.stringify(options));
+    const cwd = process.cwd();
+    try {
+      process.chdir(work);
+      await main(["--options=options.json"]);
+    } finally {
+      process.chdir(cwd);
+    }
+    assert.equal(process.exitCode ?? 0, 0, "the bundle should have succeeded");
+    return execFileSync(process.execPath, [path.join(work, "out", "bundle.js")], { encoding: "utf8" }).trim();
+  }
+
+  it("resolves each wiring's dependency through its own row", async () => {
+    stage();
+    fs.writeFileSync(
+      path.join(work, "entry.js"),
+      'console.log(JSON.stringify([require("left").v, require("right").v]));\n'
+    );
+    assert.equal(await bundleAndRun("entry.js"), JSON.stringify(["dep1.0.0", "dep2.0.0"]));
+  });
+
+  it("takes an entry point at a virtual location as that wiring", async () => {
+    const { right, manifest } = stage();
+    const wiring = right.dependencies[0] as PackageFileSet;
+    fs.writeFileSync(path.join(work, "entry.js"), "");
+    assert.equal(await bundleAndRun(`${manifest.mountOf(wiring)}/index.js`), "");
+    const bundled = fs.readFileSync(path.join(work, "out", "bundle.js"), "utf8");
+    assert.ok(bundled.includes("dep2.0.0") && !bundled.includes("dep1.0.0"), "the entry should bind its own wiring's dep");
+  });
+});
+
 describe("treeOf", () => {
   it("answers the pooled tree a staged path belongs to", () => {
     assert.equal(treeOf(".fabr-tree/abc123/lib/deep/sub"), ".fabr-tree/abc123");
     assert.equal(treeOf("/work/w-1/.fabr-tree/abc123"), "/work/w-1/.fabr-tree/abc123");
+    assert.equal(
+      treeOf("/work/w-1/.fabr-tree/__virtual__/0123456789abcdef/0/abc123/lib"),
+      "/work/w-1/.fabr-tree/__virtual__/0123456789abcdef/0/abc123"
+    );
   });
 
   it("leaves a path outside the pool as it is", () => {

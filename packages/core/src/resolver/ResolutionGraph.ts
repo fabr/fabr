@@ -179,9 +179,10 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
     return reachableFrom(this.edges, seeds, id => this.optionalProvidedNames(id));
   }
 
-  /** See {@link optionalProvided}. A name both a real requirement and an
-   * optional peer demand stays traversable — the real edge is in effect. */
-  private optionalProvidedNames(id: NodeId): ReadonlySet<DependencyName> | undefined {
+  /** The names a node requires only as an optional peer (see {@link
+   * optionalProvided}). A name both a real requirement and an optional peer
+   * demand is not one — the real edge is in effect. */
+  public optionalProvidedNames(id: NodeId): ReadonlySet<DependencyName> | undefined {
     if (this.optionalProvided === undefined) {
       this.optionalProvided = new Map();
       for (const [node, requires] of this.requirements) {

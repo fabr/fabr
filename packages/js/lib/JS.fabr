@@ -51,6 +51,13 @@ default ESBUILD = @npm:esbuild:0.28.1;
 default SASS = @npm:sass-embedded:1.100.0;
 
 #
+# The importer the Sass driver (SASS_DRIVER) resolves package stylesheets
+# through. Released with fabr, at fabr's version.
+#
+
+default SASS_PNP_IMPORTER = @npm:@fabr-build/sass-pnp-importer:0.3.0;
+
+#
 # The postcss host and its css-modules scoping plugin, which the postcss driver
 # (POSTCSS_DRIVER) requires.
 #
@@ -520,16 +527,16 @@ default npm_repository @npm {
 # swapped in by overriding the global.
 js_script @fabr-build/js-tools/bundle-driver {
     entry = ../bundleDriver/bundle-driver.js;
-    deps = ${ESBUILD} ../pnp/PnPResolver.js ../pnp/PackageExports.js ../pnp/ReadSet.js;
+    deps = ${ESBUILD} ../pnp/PnPResolver.js ../pnp/PnPApi.js ../pnp/VirtualPath.js ../pnp/PackageExports.js ../pnp/ReadSet.js;
 }
 
 # The Sass compiler `sass_compile` runs (the default `SASS_DRIVER`): Sass
 # lowering, driven by the rule's options manifest.
 js_script @fabr-build/js-tools/sass-driver {
     entry = ../cssDriver/sass-driver.js;
-    deps = ${SASS}
+    deps = ${SASS} ${SASS_PNP_IMPORTER}
            ../cssDriver/Support.js
-           ../pnp/PnPResolver.js ../pnp/PackageExports.js ../pnp/ReadSet.js;
+           ../pnp/PnPResolver.js ../pnp/PnPApi.js ../pnp/VirtualPath.js ../pnp/PackageExports.js ../pnp/ReadSet.js;
 }
 
 # The postcss chain `css_postcss` runs (the default `POSTCSS_DRIVER`): css-modules
@@ -550,7 +557,7 @@ js_script @fabr-build/js-tools/postcss-driver {
 # filesystem like the bin does — so it is a drop-in for either layout.
 js_script @fabr-build/js-tools/tsc-driver {
     entry = ../tscDriver/tsc-driver.js;
-    deps = ../pnp/PnPResolver.js ../pnp/PackageExports.js ../pnp/ReadSet.js
+    deps = ../pnp/PnPResolver.js ../pnp/PnPApi.js ../pnp/VirtualPath.js ../pnp/PackageExports.js ../pnp/ReadSet.js
            ../tscDriver/Planning.js ../tscDriver/Wave.js ${TYPESCRIPT};
 }
 

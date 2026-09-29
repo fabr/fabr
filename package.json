@@ -15,7 +15,7 @@
     "test": "jest",
     "lint": "eslint packages test",
     "fabr": "node packages/cli/build/index.js",
-    "bootstrap": "yarn build && rm -Rf bootstrap && mkdir -p bootstrap/node_modules/@fabr-build && yarn fabr cp @fabr-build/core @fabr-build/js @fabr-build/cli bootstrap/node_modules/@fabr-build && node bootstrap/node_modules/@fabr-build/cli/bin/fabr.js test @fabr-build/core @fabr-build/js @fabr-build/cli e2e_tests",
+    "bootstrap": "yarn build && rm -Rf bootstrap && mkdir -p bootstrap/node_modules/@fabr-build && yarn fabr cp @fabr-build/core @fabr-build/js @fabr-build/cli bootstrap/node_modules/@fabr-build && node bootstrap/node_modules/@fabr-build/cli/bin/fabr.js test @fabr-build/core @fabr-build/js @fabr-build/sass-pnp-importer @fabr-build/cli e2e_tests",
     "dist": "yarn build && yarn test && yarn lint"
   },
   "resolutions": {
@@ -29,6 +29,8 @@
     "@types/node": "22.15.3",
     "@types/tar-stream": "^3.1.3",
     "@types/unicode-properties": "^1.3.0",
+    "@yarnpkg/fslib": "3.1.5",
+    "@yarnpkg/pnp": "4.1.7",
     "chai": "^4.3.6",
     "chai-as-promised": "^7.1.1",
     "chai-subset": "^1.6.0",
@@ -39,6 +41,7 @@
     "postcss": "8.5.28",
     "postcss-modules": "9.0.1",
     "prettier": "^2.5.1",
+    "sass-embedded": "1.100.0",
     "ts-jest": "^29.4.12",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5",

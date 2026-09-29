@@ -29,10 +29,23 @@
  */
 
 import * as fs from "node:fs";
+import Module, { isBuiltin } from "node:module";
 import * as path from "node:path";
 import type { IPnpSerializedState, PnpDependencyTarget } from "../PnPManifest";
-import { exportedSubpath, exportsSubpath, type ExportsValue, resolveExportsAll, resolveImportsAll } from "./PackageExports";
+import { exportedSubpath, exportsSubpath, type ExportsValue, resolveExportsAll, resolveImports, resolveImportsAll } from "./PackageExports";
+import {
+  type IPackageInformation,
+  type IPhysicalPackageLocator,
+  type IPnpApi,
+  type IResolveToUnqualifiedOptions,
+  type IResolveUnqualifiedOptions,
+  type ITopLevelPackageLocator,
+  type PackageLocator,
+  pnpError,
+  type ResolveRequestOptions,
+} from "./PnPApi";
 import { IResolutionEdge, joinDepsPath } from "./ReadSet";
+import { realpathKeepingVirtual, resolveVirtual } from "./VirtualPath";
 
 /** The manifest's file name, as PnP-aware tools look for it (Yarn's standard):
  * the name fabr stages its manifest under, and what the drivers load. */
@@ -107,7 +120,18 @@ interface ILocationEntry {
  * threading the set through every call would only invite two lookups in one
  * process to disagree about which files a package has.
  */
-export class PnpResolver {
+export class PnpResolver implements IPnpApi {
+  public readonly VERSIONS = { std: 3, resolveVirtual: 1, getAllLocators: 1 };
+  public readonly topLevel: ITopLevelPackageLocator = { name: null, reference: null };
+  /** The directory the manifest's relative locations resolve against. */
+  private readonly root: string;
+  /** The manifest's rows as written, for the {@link IPnpApi} surface: name →
+   * reference → information. */
+  private readonly registry = new Map<string | null, Map<string | null, IPackageInformation>>();
+  private readonly dependencyTreeRoots: IPhysicalPackageLocator[];
+  private readonly topLevelFallback: boolean;
+  private readonly fallbackPool = new Map<string, PnpDependencyTarget>();
+  private readonly fallbackExclusions = new Map<string, Set<string>>();
   /** Rows by locator. */
   private readonly rows = new Map<LocatorKey, IPnpRow>();
   /** Rows by location prefix, longest-first so a prefix match picks the
@@ -120,6 +144,9 @@ export class PnpResolver {
    * `byLocation`'s order: the index behind every which-package-holds-this-path
    * question ({@link innermostAt}). */
   private readonly byDirectory = new Map<string, ILocationEntry[]>();
+  /** The physical directories behind every virtual location, in both
+   * spellings — where no row is located (see {@link owning}). */
+  private readonly virtualized: string[] = [];
   /** {@link treeRoots}, derived once. The table is fixed after construction, so
    * every answer this resolver gives is a pure function of it. */
   private cachedTreeRoots: ReadonlyArray<string> | undefined;
@@ -131,7 +158,7 @@ export class PnpResolver {
   /** {@link routes}, derived once — the table is fixed after construction. */
   private cachedRoutes: Map<LocatorKey, string[]> | undefined;
   private readonly fallback = new Map<string, string>();
-  private readonly topLevel: LocatorKey;
+  private readonly topLevelKey: LocatorKey;
   /** The rows that stand for the SOURCES rather than for a delivered package —
    * PnP's `SOFT` link type, which is the top-level row and the self row naming
    * the same files as a package. They are the one thing in the table this build
@@ -170,10 +197,31 @@ export class PnpResolver {
    * `default` is always satisfied and need not be given.
    */
   constructor(state: IPnpSerializedState, root: string, conditions: Iterable<string>) {
+    if (state.ignorePatternData !== null && state.ignorePatternData !== undefined) {
+      throw pnpError("UNSUPPORTED", "pnp: a manifest with an ignore pattern is not supported");
+    }
     this.conditions = new Set(conditions);
-    this.topLevel = locatorKey(null, null);
+    this.root = root;
+    this.topLevelKey = locatorKey(null, null);
+    this.dependencyTreeRoots = state.dependencyTreeRoots.map(({ name, reference }) => ({ name, reference }));
+    this.topLevelFallback = state.enableTopLevelFallback;
+    for (const [name, target] of state.fallbackPool) {
+      this.fallbackPool.set(name, target);
+    }
+    for (const [name, references] of state.fallbackExclusionList) {
+      this.fallbackExclusions.set(name, new Set(references));
+    }
     for (const [name, references] of state.packageRegistryData) {
+      const store = this.registry.get(name) ?? new Map<string | null, IPackageInformation>();
+      this.registry.set(name, store);
       for (const [reference, info] of references) {
+        store.set(reference === null ? null : String(reference), {
+          packageLocation: path.join(root, info.packageLocation),
+          packageDependencies: new Map(info.packageDependencies),
+          packagePeers: new Set(info.packagePeers ?? []),
+          linkType: info.linkType,
+          discardFromLookup: info.discardFromLookup ?? false,
+        });
         const key = locatorKey(name, reference);
         const location = path.resolve(root, info.packageLocation);
         this.rows.set(key, { location, dependencies: dependencyMap(info.packageDependencies) });
@@ -192,6 +240,10 @@ export class PnpResolver {
           const real = realpathOf(location);
           if (real !== location) {
             this.byLocation.push({ prefix: withSeparator(real), locator: key, name, stored, reference: held });
+          }
+          const physical = resolveVirtual(location);
+          if (physical !== location) {
+            this.virtualized.push(withSeparator(physical), withSeparator(realpathOf(physical)));
           }
         }
       }
@@ -219,7 +271,9 @@ export class PnpResolver {
       const at = entry.prefix.slice(0, -1);
       const held = this.byDirectory.get(at) ?? [];
       this.byDirectory.set(at, held);
-      held.push(entry);
+      /* Rows sharing a location answer for it LAST-registered first, as the
+       * PnP runtime's own location map does. */
+      held.unshift(entry);
     }
     this.mergeSharedLocations();
   }
@@ -230,16 +284,12 @@ export class PnpResolver {
    * Several rows CAN share one: the same content resolved under two names (an
    * alias beside the real package) is one directory, and a file inside it
    * cannot say which row it belongs to — the location→row map is not injective,
-   * which is the one place this design still meets the couples-environment-to-
-   * location problem. Merging is the honest answer for the case that occurs:
-   * such rows are the same package, so they differ only in the name each
-   * resolves itself by, and inside the shared directory both names should work.
-   * Own bindings win; the manifest's rows are sorted, so the result is
-   * deterministic. (Rows that share a location AND disagree on a dependency —
-   * only possible across two deliveries of one content with different
-   * environments — resolve to whichever row sorts first. Yarn buys injectivity
-   * with virtual paths; fabr does not, and duplicating an entry per environment
-   * is precisely what the table exists to avoid.)
+   * Merging is the honest answer: the manifest gives rows of one content a
+   * shared location only where they bind the same dependencies (a content
+   * wired two ways gets a virtual location per wiring), so they differ only in
+   * the name each resolves itself by, and inside the shared directory both
+   * names should work. Own bindings win; the manifest's rows are sorted, so the
+   * result is deterministic.
    */
   private mergeSharedLocations(): void {
     const byLocation = new Map<string, LocatorKey[]>();
@@ -302,6 +352,20 @@ export class PnpResolver {
   }
 
   /**
+   * `found`, the entry answering for `target` — refused when `target` lies in
+   * the physical tree of content the manifest locates only virtually. Such a
+   * path is a leak of the tree's physical spelling, and answering it would
+   * silently pick the wrong row (or none).
+   */
+  private owning(target: string, found: ILocationEntry | undefined): ILocationEntry | undefined {
+    const inside = withSeparator(target);
+    if (this.virtualized.some(tree => inside.startsWith(tree))) {
+      throw new Error(`pnp: '${target}' is the physical path of a package the manifest locates virtually; no package is located there`);
+    }
+    return found;
+  }
+
+  /**
    * Which package a file belongs to: the row whose location is its longest
    * containing prefix, else the top-level package (the sources being compiled,
    * whose location is the root itself).
@@ -317,7 +381,7 @@ export class PnpResolver {
     if (known !== undefined) {
       return known;
     }
-    const locator = this.innermostAt(directory, () => true)?.locator ?? this.topLevel;
+    const locator = this.owning(directory, this.innermostAt(directory, () => true))?.locator ?? this.topLevelKey;
     this.locatorByDirectory.set(directory, locator);
     return locator;
   }
@@ -347,7 +411,7 @@ export class PnpResolver {
     /* The walk starts at the path itself, so a path that IS a package root —
      * the commonest one the declaration emitter writes — matches its own
      * location rather than only its parent's. */
-    const innermost = this.innermostAt(target, entry => entry.stored && entry.name !== null);
+    const innermost = this.owning(target, this.innermostAt(target, entry => entry.stored && entry.name !== null));
     if (innermost === undefined) {
       return undefined;
     }
@@ -390,7 +454,11 @@ export class PnpResolver {
     /* Derived once: something reads this per file, and rebuilding the set each
      * time cost 1.5s of a full-program run. */
     this.cachedTreeRoots ??= [
-      ...new Set(this.byLocation.filter(entry => entry.stored).map(entry => withSeparator(path.dirname(entry.prefix)))),
+      ...new Set(
+        this.byLocation
+          .filter(entry => entry.stored)
+          .map(entry => withSeparator(path.dirname(resolveVirtual(entry.prefix.slice(0, -1)))))
+      ),
     ];
     return this.cachedTreeRoots;
   }
@@ -476,7 +544,7 @@ export class PnpResolver {
     if (known !== undefined || this.instanceNames.has(target)) {
       return known;
     }
-    const innermost = this.innermostAt(target, entry => entry.stored && entry.name !== null);
+    const innermost = this.owning(target, this.innermostAt(target, entry => entry.stored && entry.name !== null));
     const name = innermost?.reference === undefined ? undefined : instanceName(innermost, target);
     this.instanceNames.set(target, name);
     return name;
@@ -503,7 +571,7 @@ export class PnpResolver {
     if (known !== undefined || this.pathNames.has(target)) {
       return known;
     }
-    const innermost = this.innermostAt(target, entry => entry.stored && entry.name !== null);
+    const innermost = this.owning(target, this.innermostAt(target, entry => entry.stored && entry.name !== null));
     const route = innermost === undefined ? undefined : this.routes().get(innermost.locator);
     const relative = innermost === undefined ? "" : path.relative(innermost.prefix, target).split(path.sep).join("/");
     const name = route === undefined ? undefined : joinDepsPath([...route, ...(relative === "" ? [] : [relative])]);
@@ -564,7 +632,7 @@ export class PnpResolver {
       return this.cachedRoutes;
     }
     const routes = new Map<LocatorKey, string[]>();
-    let frontier = [...(this.rows.get(this.topLevel)?.dependencies ?? [])].map(([name, locator]) => ({ locator, route: [name] }));
+    let frontier = [...(this.rows.get(this.topLevelKey)?.dependencies ?? [])].map(([name, locator]) => ({ locator, route: [name] }));
     while (frontier.length > 0) {
       const next: Array<{ locator: LocatorKey; route: string[] }> = [];
       for (const { locator, route } of frontier) {
@@ -686,6 +754,270 @@ export class PnpResolver {
     this.manifests.set(location, read);
     return read;
   }
+
+  /* ---- The PnP runtime API ({@link IPnpApi}), answered as Yarn's runtime
+   * answers it. ---- */
+
+  public getLocator(name: string, referencish: string | [string, string]): IPhysicalPackageLocator {
+    return Array.isArray(referencish) ? { name: referencish[0], reference: referencish[1] } : { name, reference: referencish };
+  }
+
+  public getDependencyTreeRoots(): IPhysicalPackageLocator[] {
+    return [...this.dependencyTreeRoots];
+  }
+
+  public getAllLocators(): IPhysicalPackageLocator[] {
+    return [...this.registry].flatMap(([name, store]) =>
+      name === null ? [] : [...store.keys()].flatMap(reference => (reference === null ? [] : [{ name, reference }]))
+    );
+  }
+
+  public getPackageInformation(locator: PackageLocator): IPackageInformation | null {
+    return this.registry.get(locator.name)?.get(locator.reference) ?? null;
+  }
+
+  /** The package whose location is `location`'s innermost containing one, or
+   * null for a path outside the table. Also answers for a location's realpath
+   * spelling. */
+  public findPackageLocator(location: string): PackageLocator | null {
+    const target = path.resolve(location);
+    const entry = this.owning(target, this.innermostAt(target, () => true));
+    if (entry === undefined) {
+      return null;
+    }
+    const split = entry.locator.indexOf("\0");
+    const name = entry.locator.slice(0, split);
+    return entry.name === null ? this.topLevel : { name, reference: entry.locator.slice(split + 1) };
+  }
+
+  public resolveVirtual(file: string): string | null {
+    const physical = resolveVirtual(file);
+    return physical === file ? null : physical;
+  }
+
+  public resolveToUnqualified(request: string, issuer: string | null, opts: IResolveToUnqualifiedOptions = {}): string | null {
+    const considerBuiltins = opts.considerBuiltins ?? true;
+    if (request.startsWith("#")) {
+      throw new Error("resolveToUnqualified can not handle private import mappings");
+    }
+    if (request === "pnpapi") {
+      throw pnpError("UNSUPPORTED", "pnp: fabr's manifests have no runtime module to resolve 'pnpapi' to", { request });
+    }
+    if (considerBuiltins && isBuiltin(request)) {
+      return null;
+    }
+    const named = PACKAGE_REQUEST.exec(request);
+    if (named === null) {
+      if (path.isAbsolute(request)) {
+        return path.normalize(request);
+      }
+      const from = requireIssuer(request, issuer);
+      return path.normalize(path.join(from.endsWith("/") ? path.resolve(from) : path.dirname(path.resolve(from)), request));
+    }
+    const from = requireIssuer(request, issuer);
+    const [, dependencyName, subpath] = named;
+    const issuerLocator = this.findPackageLocator(from);
+    if (issuerLocator === null) {
+      throw pnpError("BUILTIN_NODE_RESOLUTION_FAILED", `pnp: '${from}' is outside the dependency tree`, { request, issuer: from });
+    }
+    const issuerInformation = this.informationOf(issuerLocator);
+    let bound = issuerInformation.packageDependencies.get(dependencyName);
+    let fallback: PnpDependencyTarget = null;
+    if (bound === undefined || bound === null) {
+      const excluded = issuerLocator.name !== null && this.fallbackExclusions.get(issuerLocator.name)?.has(issuerLocator.reference);
+      if (issuerLocator.name !== null && !excluded && this.topLevelFallback) {
+        const fromTop = this.informationOf(this.topLevel).packageDependencies.get(dependencyName);
+        if (fromTop !== undefined && fromTop !== null) {
+          bound = fromTop;
+        } else {
+          fallback = this.fallbackPool.get(dependencyName) ?? null;
+        }
+      }
+    }
+    if (bound === undefined || bound === null) {
+      if (fallback === null) {
+        const who = issuerLocator.name === null ? "your application" : issuerLocator.name;
+        throw bound === null
+          ? pnpError("MISSING_PEER_DEPENDENCY", `pnp: ${who} tried to access ${dependencyName} (a peer dependency), which nothing provides`, {
+              request,
+              issuer: from,
+              dependencyName,
+            })
+          : pnpError("UNDECLARED_DEPENDENCY", `pnp: ${who} tried to access ${dependencyName}, but it isn't declared in its dependencies`, {
+              request,
+              issuer: from,
+              dependencyName,
+            });
+      }
+      bound = fallback;
+    }
+    const dependency = this.getLocator(dependencyName, bound);
+    const location = this.informationOf(dependency).packageLocation;
+    if (!location) {
+      throw pnpError("MISSING_DEPENDENCY", `pnp: ${dependency.name}@${dependency.reference} has no location`, { request, issuer: from });
+    }
+    return path.normalize(subpath ? path.join(location, subpath) : location);
+  }
+
+  public resolveUnqualified(unqualified: string, opts: IResolveUnqualifiedOptions = {}): string {
+    const extensions = opts.extensions ?? Object.keys((Module as unknown as { _extensions: Record<string, unknown> })._extensions);
+    const candidates: string[] = [];
+    const found = qualify(unqualified, candidates, extensions);
+    if (found === null) {
+      throw pnpError(
+        "QUALIFIED_PATH_RESOLUTION_FAILED",
+        `pnp: none of these could be accessed: ${candidates.join(", ")}`,
+        { unqualifiedPath: unqualified, extensions }
+      );
+    }
+    return path.normalize(found);
+  }
+
+  public resolveRequest(request: string, issuer: string | null, opts: ResolveRequestOptions = {}): string | null {
+    const conditions = opts.conditions ?? DEFAULT_CONDITIONS;
+    if (request.startsWith("#")) {
+      return this.resolvePrivateRequest(request, requireIssuer(request, issuer), conditions, opts);
+    }
+    const unqualified = this.resolveToUnqualified(request, issuer, opts);
+    if (unqualified === null) {
+      return null;
+    }
+    const remapped = opts.considerBuiltins === false || !isBuiltin(request) ? this.applyExports(request, unqualified, conditions) : unqualified;
+    return this.resolveUnqualified(remapped, { extensions: opts.extensions });
+  }
+
+  /** A locator's information, which the table must hold. */
+  private informationOf(locator: PackageLocator): IPackageInformation {
+    const information = this.getPackageInformation(locator);
+    if (information === null) {
+      throw pnpError("INTERNAL", `pnp: no entry for ${locator.name ?? "<top level>"}@${locator.reference ?? ""}`);
+    }
+    return information;
+  }
+
+  /** `unqualified` through its package's `exports` map, where the request
+   * names a package that has one; any other path unchanged. */
+  private applyExports(request: string, unqualified: string, conditions: ReadonlySet<string>): string {
+    if (STRICT_REQUEST.test(request)) {
+      return unqualified;
+    }
+    const owner = this.findPackageLocator(path.join(unqualified, "internal.js"));
+    if (owner === null) {
+      throw pnpError("INTERNAL", `pnp: no package holds '${unqualified}'`);
+    }
+    const location = this.informationOf(owner).packageLocation;
+    const exports = readManifest(location).exports;
+    if (exports === undefined || exports === null) {
+      return unqualified;
+    }
+    const relative = path.relative(location, unqualified).split(path.sep).join("/");
+    const subpath = relative === "" ? "." : `./${relative}`;
+    let target: string[];
+    try {
+      target = resolveExportsAll(exports, subpath, conditions);
+    } catch (err: unknown) {
+      throw pnpError("EXPORTS_RESOLUTION_FAILED", err instanceof Error ? err.message : String(err), { subpath }, "ERR_INVALID_PACKAGE_CONFIG");
+    }
+    if (target.length === 0) {
+      throw pnpError(
+        "EXPORTS_RESOLUTION_FAILED",
+        `pnp: ${subpath} is not exported by ${path.join(location, "package.json")}`,
+        { subpath },
+        "ERR_PACKAGE_PATH_NOT_EXPORTED"
+      );
+    }
+    return path.join(location, target[0].slice(2));
+  }
+
+  /** A `#name` request through the issuing package's `imports` map. */
+  private resolvePrivateRequest(request: string, issuer: string, conditions: ReadonlySet<string>, opts: ResolveRequestOptions): string | null {
+    const owner = this.findPackageLocator(issuer);
+    const location = owner === null ? undefined : this.getPackageInformation(owner)?.packageLocation;
+    const imports = location === undefined ? undefined : readManifest(location).imports;
+    const target = imports === undefined || imports === null ? undefined : resolveImports(imports, request, conditions);
+    if (target === undefined || location === undefined) {
+      throw Object.assign(new Error(`pnp: '${request}' is not defined by the imports of the package holding '${issuer}'`), {
+        code: "ERR_PACKAGE_IMPORT_NOT_DEFINED",
+      });
+    }
+    if (target.startsWith("./")) {
+      return this.resolveUnqualified(path.join(location, target.slice(2)), { extensions: opts.extensions });
+    }
+    if (target.startsWith("#")) {
+      throw new Error("Mapping from one private import to another isn't allowed");
+    }
+    return this.resolveRequest(target, issuer, opts);
+  }
+}
+
+/** The conditions a {@link PnpResolver.resolveRequest} satisfies when its
+ * caller names none: node's CommonJS world. */
+const DEFAULT_CONDITIONS: ReadonlySet<string> = new Set(["node", "require"]);
+
+/** A request naming a package: its name (optionally `node:`-prefixed, scoped),
+ * then any subpath. Anything else is a path. */
+const PACKAGE_REQUEST = /^(?![a-zA-Z]:[\\/]|\\\\|\.{0,2}(?:\/|$))((?:node:)?(?:@[^/]+\/)?[^/]+)\/*(.*|)$/;
+
+/** A request that is explicitly a path. */
+const STRICT_REQUEST = /^(\/|\.{1,2}(\/|$))/;
+
+/** The issuer a non-absolute request needs. */
+function requireIssuer(request: string, issuer: string | null): string {
+  if (!issuer) {
+    throw pnpError("API_ERROR", "pnp: an issuer is required when the request is neither a builtin nor absolute", { request });
+  }
+  return issuer;
+}
+
+/**
+ * Node's file resolution for an unqualified path: the file itself, a
+ * directory's `main`, the path with each extension, a directory's `index` with
+ * each. Filesystem questions go to the physical path; the answer keeps the
+ * name it was asked by.
+ */
+function qualify(unqualified: string, candidates: string[], extensions: string[]): string | null {
+  candidates.push(unqualified);
+  let stat: fs.Stats | undefined;
+  try {
+    stat = fs.statSync(resolveVirtual(unqualified));
+  } catch {
+    stat = undefined;
+  }
+  if (stat !== undefined && !stat.isDirectory()) {
+    return realpathKeepingVirtual(unqualified);
+  }
+  if (stat?.isDirectory() === true) {
+    let main: unknown;
+    try {
+      main = (JSON.parse(fs.readFileSync(path.join(resolveVirtual(unqualified), "package.json"), "utf8")) as { main?: unknown }).main;
+    } catch {
+      main = undefined;
+    }
+    const next = typeof main === "string" && main !== "" ? path.resolve(unqualified, main) : undefined;
+    if (next !== undefined && next !== unqualified) {
+      const found = qualify(next, candidates, extensions);
+      if (found !== null) {
+        return found;
+      }
+    }
+  }
+  for (const extension of extensions) {
+    const candidate = `${unqualified}${extension}`;
+    candidates.push(candidate);
+    if (fs.existsSync(resolveVirtual(candidate))) {
+      return candidate;
+    }
+  }
+  if (stat?.isDirectory() === true) {
+    for (const extension of extensions) {
+      const candidate = path.join(unqualified, `index${extension}`);
+      candidates.push(candidate);
+      if (fs.existsSync(resolveVirtual(candidate))) {
+        return candidate;
+      }
+    }
+  }
+  return null;
 }
 
 /** As much of a `package.json` as resolution reads: what the package publishes,
@@ -701,7 +1033,7 @@ interface IPackageManifest {
  * compile that merely has the package in its table. */
 function readManifest(location: string): IPackageManifest {
   try {
-    const json = JSON.parse(fs.readFileSync(path.join(location, "package.json"), "utf8")) as IPackageManifest;
+    const json = JSON.parse(fs.readFileSync(path.join(resolveVirtual(location), "package.json"), "utf8")) as IPackageManifest;
     return { exports: json.exports, imports: json.imports };
   } catch {
     return {};
@@ -743,11 +1075,12 @@ function targetKey(name: string, target: PnpDependencyTarget): LocatorKey | unde
   return Array.isArray(target) ? locatorKey(target[0], target[1]) : locatorKey(name, target);
 }
 
-/** The location with every symlink in it resolved, or the location itself when
- * it cannot be read (a row for a package this compilation never materializes). */
+/** The location with every symlink in it resolved — a virtual location staying
+ * virtual — or the location itself when it cannot be read (a row for a package
+ * this compilation never materializes). */
 function realpathOf(location: string): string {
   try {
-    return fs.realpathSync(location);
+    return realpathKeepingVirtual(location);
   } catch {
     return location;
   }

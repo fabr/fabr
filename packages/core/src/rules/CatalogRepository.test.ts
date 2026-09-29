@@ -19,7 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
-import { PackageFileSet } from "../core/PackageFileSet";
+import { PackageFileSet, packageNodeSignature, reachablePackages } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { CatalogRepository, catalogRepositoryRegistration } from "./CatalogRepository";
 import { Repository, RepositoryRef,
@@ -120,6 +120,7 @@ describe("CatalogRepository (through the model)", () => {
       return Computable.resolve(RunnableFileSet.forEntry(pkg, `${pkg.packageName}/data.txt`, [], "node"));
     },
   };
+
 
   /* One backing registry per declared `package_repo` target, resolvable by name
    * so a test can inspect the exact instance the catalog used. */
@@ -357,6 +358,47 @@ describe("CatalogRepository (through the model)", () => {
        * completes the set. */
       expect(help).to.contain("@backing:x:1.0.0?");
       expect(help).to.not.contain("@backing:x:2.0.0?");
+    });
+  });
+
+  describe("an optional peer, across members delivered apart", () => {
+    /* langsmith's `openai` is an optional peer: classic's closure holds openai,
+     * anthropic's does not. Each member is delivered as its own subset, so
+     * whether langsmith is bound to openai is decided by the installation that
+     * consumes them, not by which subset delivered it. */
+    const graph = (): void => {
+      requirementTable.set("anthropic@1.0.0", [{ pkg: "langsmith", constraint: "1.0.0" }]);
+      requirementTable.set("classic@1.0.0", [
+        { pkg: "langsmith", constraint: "1.0.0" },
+        { pkg: "openai", constraint: "1.0.0" },
+      ]);
+      requirementTable.set("langsmith@1.0.0", [{ pkg: "openai", constraint: "1.0.0", provided: "optional" }]);
+    };
+    const catalog = "package_repo @backing { }\ncatalog @cat { deps = @backing:anthropic @backing:classic; }\n";
+    const langsmiths = (): PackageFileSet[] =>
+      reachablePackages(lastDepSets).filter(pkg => pkg.packageName === "langsmith");
+
+    it("binds the peer in an installation that holds it, making the two deliveries one node", async () => {
+      const model = build(catalog + "test_deps a { deps = @cat:anthropic @cat:classic; }\n");
+      graph();
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const found = langsmiths();
+      expect(found.length, "langsmith reached through both members").to.be.greaterThan(0);
+      for (const pkg of found) {
+        expect(pkg.getDependency("openai"), "bound to the installation's openai").to.not.equal(undefined);
+      }
+      expect(new Set(found.map(packageNodeSignature)).size, "one node").to.equal(1);
+    });
+
+    it("leaves the peer unbound, and unfetched, in an installation without it", async () => {
+      const model = build(catalog + "test_deps a { deps = @cat:anthropic; }\n");
+      graph();
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const found = langsmiths();
+      expect(found).to.have.lengthOf(1);
+      expect(found[0].getDependency("openai")).to.equal(undefined);
+      expect(found[0].optionalPeers.get("openai")).to.equal("1.0.0");
+      expect(backings.get("@backing")!.materialized).to.not.include("openai");
     });
   });
 

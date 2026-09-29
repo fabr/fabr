@@ -40,6 +40,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { PnpResolver, splitSpecifier, typesPackageName } from "../pnp/PnPResolver";
+import { isVirtual, realpathKeepingVirtual, resolveVirtual } from "../pnp/VirtualPath";
 import { CHANGES_FLAG, DEPS_REPORT_FLAG, IChangeLists, joinDepsPath, STATE_DIR_FLAG, toChangeLists } from "../pnp/ReadSet";
 import {
   DriverMemo,
@@ -268,6 +269,9 @@ interface ICompilerHost {
    * that is on no disk. */
   getSourceFile(fileName: string, languageVersion: unknown, onError?: unknown, shouldCreate?: boolean): SourceFile | undefined;
   fileExists(fileName: string): boolean;
+  directoryExists?: (directoryName: string) => boolean;
+  getDirectories?: (path: string) => string[];
+  realpath?: (path: string) => string;
   getCanonicalFileName(fileName: string): string;
   getNewLine(): string;
   resolveModuleNameLiterals?: (
@@ -563,8 +567,21 @@ function installResolution(
      * driver handed the compiler, not the specifier the program actually wrote:
      * an `exports` map naming a `.d.ts` outright would otherwise look like a
      * source file importing one by extension, which the checker treats as an
-     * error in the importing code — code that wrote a bare package name. */
-    return { resolvedModule: { ...resolved.resolvedModule, isExternalLibraryImport: true, resolvedUsingTsExtension: undefined } };
+     * error in the importing code — code that wrote a bare package name.
+     *
+     * `packageId` is dropped at a virtual location: the compiler redirects every
+     * file of a `name@version` it has already loaded to the first copy, and a
+     * virtual location is one WIRING of a package whose other wirings share its
+     * name and version — the redirect would resolve them all through one. */
+    const { packageId, ...module } = resolved.resolvedModule;
+    return {
+      resolvedModule: {
+        ...module,
+        ...(isVirtual(module.resolvedFileName) ? {} : { packageId }),
+        isExternalLibraryImport: true,
+        resolvedUsingTsExtension: undefined,
+      },
+    };
   };
   /** Whether a resolution came back with no typings — the trigger for every
    * recovery below, and for the `@types` lookup that has always followed. */
@@ -1800,6 +1817,31 @@ function effectiveModule(ts: ITypeScript, options: CompilerOptions): number {
 }
 
 /** The first specifier in `text` that points inside the tree pool, if any. */
+/**
+ * Let the compiler reach packages through PnP virtual locations: every
+ * filesystem question is asked of the physical path, while the names the
+ * compiler holds — and `realpath`'s answers — stay virtual, since the virtual
+ * path is what tells the resolver which row a file belongs to. Installed before
+ * anything else wraps the host, so whatever records reads records the virtual
+ * names.
+ */
+function readThroughVirtualPaths(host: ICompilerHost): void {
+  const { readFile, fileExists, directoryExists, getDirectories, realpath } = host;
+  if (readFile !== undefined) {
+    host.readFile = (file, encoding) => readFile.call(host, resolveVirtual(file), encoding);
+  }
+  host.fileExists = file => fileExists.call(host, resolveVirtual(file));
+  if (directoryExists !== undefined) {
+    host.directoryExists = directory => directoryExists.call(host, resolveVirtual(directory));
+  }
+  if (getDirectories !== undefined) {
+    host.getDirectories = directory => getDirectories.call(host, resolveVirtual(directory));
+  }
+  if (realpath !== undefined) {
+    host.realpath = file => realpathKeepingVirtual(file, real => realpath.call(host, real));
+  }
+}
+
 function treeReferenceIn(text: string, from: string, treeRoots: ReadonlyArray<string>): string | undefined {
   for (const [, , , specifier] of text.matchAll(QUOTED_SPECIFIER)) {
     const target = isPathSpecifier(specifier) ? path.resolve(from, specifier) + path.sep : undefined;
@@ -1854,6 +1896,7 @@ export function main(argv: string[]): number {
     parsed.options[CHECK_SIDE_EFFECT_IMPORTS] = true;
   }
   const host = ts.createCompilerHost(parsed.options, true);
+  readThroughVirtualPaths(host);
   const reportPath = depsReportOf(argv);
   /* The directory this driver's own kept files live in, staged in and collected
    * out again by the caller. Naming it is what asks for incremental mode. */

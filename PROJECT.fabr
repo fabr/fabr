@@ -34,6 +34,7 @@ catalog @pkg {
          @npm:unicode-properties:1.3.1 @npm:@types/unicode-properties:1.3.0
          @npm:tar-stream:3.1.7 @npm:@types/tar-stream:3.1.3
          @npm:@napi-rs/lzma:1.5.1
+
          # The bundle driver's tests drive the real bundler; pinned to the same
          # version ESBUILD names, since what they check is what THAT esbuild
          # does with a package's export conditions.
@@ -42,6 +43,20 @@ catalog @pkg {
          # versions POSTCSS/POSTCSS_MODULES name: the css-modules dialect is
          # the plugin set's, so the one the tests pin must be the one fabr runs.
          @npm:postcss:8.5.28 @npm:postcss-modules:9.0.1
+         # The PnP resolver's conformance suite runs Yarn's own runtime as its
+         # oracle. The js and Sass-importer tests use it beside our own
+         # @types/node, and it requires 18 (with its undici-types) — '?'
+         # sanctions the coexistence (our 22.15.3 is pinned above).
+         @npm:@yarnpkg/pnp:4.1.7 @npm:@yarnpkg/fslib:3.1.5
+         @npm:@types/node:18.19.124?
+         @npm:undici-types:6.21.0? @npm:undici-types:5.26.4?
+         # The Sass importer's tests drive the real compiler, pinned to the
+         # version SASS names. Those tests use it beside @types/jest and fslib,
+         # whose closures need other supports-color and tslib versions ('?'
+         # sanctions the coexistence).
+         @npm:sass-embedded:1.100.0
+         @npm:supports-color:8.1.1? @npm:supports-color:7.1.0?
+         @npm:tslib:2.4.0? @npm:tslib:2.1.0?
          # Pulled in transitively by @types/jest, and required only without a
          # lower bound ('*', the DefinitelyTyped house style), so nothing picks
          # a version for them; and two packages @types/jest's closure needs at a
@@ -56,6 +71,9 @@ TYPESCRIPT = @pkg:typescript;
 # driver's tests assert what THIS esbuild does with a package's conditions, so
 # the one they run must be the one fabr runs.
 ESBUILD = @pkg:esbuild;
+# The Sass driver's importer, built here rather than fetched: this project is
+# where it comes from.
+SASS_PNP_IMPORTER = @fabr-build/sass-pnp-importer;
 JS_TARGET = es2021-commonjs;
 
 # Run fabr's own tests through the jest-compatibility runner. They use none of
@@ -93,8 +111,24 @@ js_package @fabr-build/js {
   # (each driver itself requires its own from the tool install fabr stages,
   # never from here). The bundler's single-variant rule is a claim about what
   # esbuild does with a package's conditions, so only the real one can hold it.
-  test_deps = chai jest_types tar_stream @pkg:typescript @pkg:esbuild @pkg:postcss @pkg:postcss-modules;
+  # @yarnpkg/pnp: the PnP resolver is checked against Yarn's own runtime.
+  # sass-embedded + the importer: the Sass driver's tests lower real stylesheets.
+  test_deps = chai jest_types tar_stream @pkg:typescript @pkg:esbuild @pkg:postcss @pkg:postcss-modules
+              @pkg:@yarnpkg/pnp @pkg:@yarnpkg/fslib @pkg:sass-embedded @fabr-build/sass-pnp-importer;
   metadata = { FABR_METADATA; description = Fabr JS support plugin }
+}
+
+js_package @fabr-build/sass-pnp-importer {
+  srcs = packages/sass-pnp-importer/src:**/*.ts packages/sass-pnp-importer:README.md COPYING -> LICENSE;
+  exports = packages/sass-pnp-importer/src:index.ts;
+  tests = packages/sass-pnp-importer/src:**/*.test.ts;
+  deps = @pkg:@types/node;
+  test_deps = chai jest_types @pkg:sass-embedded @pkg:@yarnpkg/pnp @pkg:@yarnpkg/fslib;
+  metadata = {
+    FABR_METADATA;
+    keywords = sass sass-importer pnp plug-n-play yarn;
+    description = "A Sass importer resolving package stylesheets through a Plug'n'Play dependency table";
+  }
 }
 
 js_package @fabr-build/cli {
@@ -116,4 +150,7 @@ sync release {
   @npm:@fabr-build/cli:${FABR_VERSION} = @fabr-build/cli;
   @npm:@fabr-build/core:${FABR_VERSION} = @fabr-build/core;
   @npm:@fabr-build/js:${FABR_VERSION} = @fabr-build/js;
+  @npm:@fabr-build/sass-pnp-importer:${FABR_VERSION} = @fabr-build/sass-pnp-importer;
 }
+
+all = @fabr-build/core @fabr-build/js @fabr-build/cli @fabr-build/sass-pnp-importer;
