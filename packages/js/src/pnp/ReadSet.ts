@@ -35,8 +35,9 @@
  * Two rows state a lookup wherever one cannot: every resolution contributes
  * its access path ending at the answering package's manifest (pinning that
  * edge's binding, since a shared instance's files ride ONE canonical route),
- * and a fallback resolution adds the pool's answer pinned at the winning
- * instance's own canonical route. Every path indexes PLAINLY through the
+ * and a lookup the requirer's own edges did not answer adds the top-level
+ * lookup that decided it (`<name> package.json` — the pool is the top level's
+ * table), whether it found anything or not. Every path indexes PLAINLY through the
  * delivered graph — head a direct member, hops the requirer's own edges — so
  * replay is a walk, never a resolution; whatever ecosystem rule produced an
  * answer (the pool) is the reporter's to convert.

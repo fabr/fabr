@@ -419,10 +419,10 @@ export class PnpResolver {
     const instance = this.sources.has(locator) ? undefined : instanceOfLocator(locator);
     /* The pool answers for a package that arrived from a repository, whose
      * undeclared imports are the ecosystem's to fix and not this build's. It
-     * does not answer for anything this project produced — the sources, and the
-     * packages the manifest excludes — because there the declared surface is
-     * what this project wrote down, and an import missing from it is a bug with
-     * an author. */
+     * does not answer for the sources, whose declared surface is what this
+     * project wrote down, so an import missing from it is a bug with an author;
+     * nor for the packages the manifest excludes, whose rows carry that surface
+     * themselves. */
     const barred = this.sources.has(locator) || this.excluded.has(locator);
     const own = from?.dependencies.get(name);
     const bound = own ?? (barred ? undefined : this.fallback.get(name));

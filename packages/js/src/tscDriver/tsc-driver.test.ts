@@ -1756,18 +1756,15 @@ describe("the tsc driver's dependency report", () => {
     expect(read).to.contain("outer inner index.d.ts");
   });
 
-  it("states a fallback resolution as two rows: the failing access path and the answer at its route", () => {
+  it("states a fallback resolution as two rows: the failing access path and the top-level lookup", () => {
     /* The phantom-import case: `postprocessing` needs typings it never
-     * declared, and the pool answers with an instance nothing at the top
-     * level binds. The access path finds nothing (the requirer binds no such
-     * name), and the answer is pinned at the winner's own canonical route —
-     * a plain-indexing path, so a different answer moves the key with no pool
-     * rule anywhere in replay. */
+     * declared, and the pool — the top level's own table — answers with the
+     * consumer's direct dep. The access path finds nothing (the requirer binds
+     * no such name), and the answer is the top-level lookup `<name>
+     * package.json`: a plain index of the direct members, so a different
+     * answer moves the key with no pool rule anywhere in replay. */
     const sidecar = work.add("@types/three", { "index.d.ts": "export declare class Widget { spin(): void }\n" });
     const untyped = work.add("three", { "index.js": "module.exports = {};\n" });
-    const carrier = work.add("carrier", {
-      "index.d.ts": 'import { Widget } from "@types/three";\nexport declare const held: Widget;\n',
-    });
     const phantom = work.add("postprocessing", {
       "index.d.ts": 'import { Widget } from "three";\nexport declare function make(): Widget;\n',
     });
@@ -1775,8 +1772,7 @@ describe("the tsc driver's dependency report", () => {
       work.root,
       [
         /* postprocessing declares `three` and NOT its types, so the sidecar can
-         * only come from the pool — where it sits as a transitive, reachable
-         * only through `carrier`. */
+         * only come from the pool. */
         [
           "postprocessing",
           phantom,
@@ -1786,22 +1782,18 @@ describe("the tsc driver's dependency report", () => {
           ],
         ],
         ["three", untyped, [["three", untyped]]],
-        [
-          "carrier",
-          carrier,
-          [
-            ["carrier", carrier],
-            ["@types/three", sidecar],
-          ],
-        ],
         ["@types/three", sidecar, [["@types/three", sidecar]]],
       ],
       [
         ["postprocessing", phantom],
         ["three", untyped],
-        ["carrier", carrier],
+        ["@types/three", sidecar],
       ],
-      [["@types/three", sidecar]]
+      [
+        ["postprocessing", phantom],
+        ["three", untyped],
+        ["@types/three", sidecar],
+      ]
     );
     fs.writeFileSync(
       path.join(work.root, "src/index.ts"),
@@ -1809,7 +1801,28 @@ describe("the tsc driver's dependency report", () => {
     );
     const read = reads();
     expect(read, "the access path, which found nothing").to.contain("postprocessing @types/three package.json");
-    expect(read, "and the answer, at the winner's canonical route").to.contain("carrier @types/three package.json");
+    expect(read, "and the top-level lookup that answered it").to.contain("@types/three package.json");
+  });
+
+  it("states a phantom import nothing answers as the top-level lookup that found nothing", () => {
+    /* The answer APPEARING case: `postprocessing`'s typings name `three`,
+     * which neither it nor the consumer declares. The top-level lookup is
+     * recorded although it found nothing, so declaring `three` later moves the
+     * key. (This compile is red; the report is read regardless.) */
+    const phantom = work.add("postprocessing", {
+      "index.d.ts": 'import type { Widget } from "three";\nexport declare function make(): Widget;\n',
+    });
+    stage(
+      work.root,
+      [["postprocessing", phantom, [["postprocessing", phantom]]]],
+      [["postprocessing", phantom]],
+      [["postprocessing", phantom]]
+    );
+    fs.writeFileSync(path.join(work.root, "src/index.ts"), 'import { make } from "postprocessing";\nexport const made = make;\n');
+    compile(work.root, ["--deps-report", ".fabr-deps.json"]);
+    const read = (JSON.parse(fs.readFileSync(path.join(work.root, ".fabr-deps.json"), "utf8")) as { reads: string[] }).reads;
+    expect(read, "the access path").to.contain("postprocessing three package.json");
+    expect(read, "and the top-level lookup").to.contain("three package.json");
   });
 
   it("names a read of a coexisting version by the route that reached it", () => {

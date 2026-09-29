@@ -70,7 +70,7 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
    * text's shape (see BuildAction.actionKey) already invalidates mechanically
    * and needs no bump here. +8: file-shaped config members stage with the
    * inputs. */
-  version: EXEC_ACTION.version + 8,
+  version: EXEC_ACTION.version + 9,
   run: (action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> => {
     const deps = depsInput(action);
     const files = FileSet.unionAll(fileSetInput(action, "files"), configFiles(action));

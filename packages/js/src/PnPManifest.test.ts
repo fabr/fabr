@@ -29,7 +29,7 @@ import {
   PackageGraphBuilder,
 } from "@fabr-build/core";
 import { packageNodeSignature } from "@fabr-build/core";
-import { IPnpPackageInfo, pnpManifestOf, PnpDependencyTarget, referenceOf, treeMountOf } from "./PnPManifest";
+import { IPnpPackageInfo, pnpManifestOf, PnpDependencyTarget, treeMountOf } from "./PnPManifest";
 
 /** A package as a REPOSITORY delivered it — carrying a resolution provenance,
  * which is what marks it as something this build did not produce and therefore
@@ -155,24 +155,22 @@ describe("pnpManifestOf", () => {
     expect(manifest.packages.map(pkg => pkg.packageName)).to.deep.equal(["left-pad"]);
   });
 
-  it("pools the whole closure, not just the declared surface", () => {
+  it("pools the declared direct deps, never a transitive package", () => {
     /* The `reactcss` shape: a delivered package importing something it never
-       declared. It works under every other package manager because everything
-       is hoisted where everyone can see it, and no build can fix the package,
-       so the pool carries the closure rather than the declared roots. */
+       declared resolves when the consumer declares that name itself — and only
+       then, so the remedy for the failure is adding the dep. */
     const deep = pkg("deep");
-    const manifest = pnpManifestOf([pkg("top", "1.0.0", [pkg("middle", "1.0.0", [deep])])]);
+    const manifest = pnpManifestOf([pkg("top", "1.0.0", [pkg("middle", "1.0.0", [deep])]), pkg("peer")]);
     const pooled = manifest.state.fallbackPool.map(([name]) => name);
-    expect(pooled).to.deep.equal(["deep", "middle", "top"]);
+    expect(pooled).to.deep.equal(["peer", "top"]);
   });
 
   it("still supplies a barred package with what the project declared", () => {
-    /* The regression this guards: a node-builtin shim is named once for the
-       whole bundle (`@dep:path-browserify -> path`) and is meant to answer for
-       every package in it — including first-party ones, which is where the
-       imports of `path` actually are. Barring those packages from the pool must
-       not take the project's own supplies away with it, so the declared surface
-       is written into their rows instead. */
+    /* A node-builtin shim is named once for the whole bundle
+       (`@dep:path-browserify -> path`) and is meant to answer for every package
+       in it — including first-party ones, which is where the imports of `path`
+       actually are. A package barred from the pool carries the declared surface
+       in its own row instead. */
     const shim = pkg("path");
     const ours = built("@shorthand/appcore", "1.0.0", [pkg("lodash")]);
     const manifest = pnpManifestOf([ours, shim, pkg("three")]);
@@ -186,42 +184,19 @@ describe("pnpManifestOf", () => {
     const wider = pnpManifestOf([deep]);
     const otherRow = [...rowsOf(wider, "@shorthand/other").values()][0]!;
     expect(otherRow.packageDependencies.map(([name]) => name)).to.deep.equal(["@shorthand/other", "outer"]);
-    expect(wider.state.fallbackPool.map(([name]) => name)).to.contain("buried");
-  });
-
-  it("pools only the hoist-visible copies, never a sealed nest's override", () => {
-    /* A phantom import answered from inside a sealed nest would be depending
-       on something the delivery deliberately holds sealed away — a hoisted
-       install answers with the hoisted copy or not at all. Both instances
-       still get ROWS (they are resolvable through their requirers); only the
-       pool is restricted. */
-    const nested = new PackageFileSet(
-      new Map<string, IFile>([["index.js", MemoryFile.from("// dup@1")]]),
-      "dup",
-      "1.0.0",
-      [],
-      undefined,
-      true
-    );
-    const flat = pkg("dup", "2.0.0");
-    const manifest = pnpManifestOf([flat, pkg("requirer", "1.0.0", [nested])]);
-    const dupEntries = manifest.state.fallbackPool.filter(([name]) => name === "dup");
-    expect(dupEntries, "one entry: the flat instance").to.have.lengthOf(1);
-    expect(dupEntries[0][1], "bound to the hoist-visible copy").to.equal(referenceOf(flat));
-    expect(rowsOf(manifest, "dup").size, "while both instances keep their rows").to.equal(2);
+    expect(wider.state.fallbackPool.map(([name]) => name)).to.not.contain("buried");
   });
 
   it("bars the packages this project built from the pool", () => {
-    /* The strictness that still pays. A package fabr produced is one whose
-       undeclared import is a bug with an author here, and whose `.js` sources
-       are transpiled without ever being typechecked — so nothing else would
-       catch it. Packages that came from a repository keep the pool. */
+    /* A package fabr produced does not read the pool (its row carries the
+       declared surface instead — see above); packages that came from a
+       repository do. */
     const ours = built("@shorthand/ui", "1.0.0", [pkg("react")]);
     const manifest = pnpManifestOf([ours, pkg("chalk")]);
     expect(manifest.state.fallbackExclusionList.map(([name]) => name)).to.deep.equal(["@shorthand/ui"]);
-    /* Everything is still POOLED — the exclusion says who may not read the
-       pool, never what is in it, so an excluded package is still reachable. */
-    expect(manifest.state.fallbackPool.map(([name]) => name)).to.deep.equal(["@shorthand/ui", "chalk", "react"]);
+    /* The exclusion says who may not read the pool, never what is in it: an
+       excluded direct dep is still pooled. */
+    expect(manifest.state.fallbackPool.map(([name]) => name)).to.deep.equal(["@shorthand/ui", "chalk"]);
   });
 
   it("is byte-stable: the same graph in any order yields the same manifest", async () => {
@@ -256,10 +231,6 @@ describe("pnpManifestOf", () => {
   "ignorePatternData": null,
   "fallbackExclusionList": [],
   "fallbackPool": [
-    [
-      "ansi-styles",
-      ${JSON.stringify(references[0])}
-    ],
     [
       "chalk",
       ${JSON.stringify(references[1])}

@@ -2734,20 +2734,14 @@ function readSetOf(program: IProgram, opened: string[], missed: ReadonlySet<stri
     if (at !== undefined) {
       names.add(joinDepsPath([...at, edge.name, "package.json"]));
     }
-    /* A fallback resolution is TWO rows: the access path above — which finds
-     * nothing, the requirer not binding the name — and the ANSWER, pinned at
-     * the winning instance's own canonical route. That is a plain-indexing
-     * path (the cache replays, it never resolves a pool), and with the pool
-     * restricted to the delivery's one hoist-visible copy it covers the
-     * winner being edited, replaced or removed — its recorded rows die with
-     * it. The one change it cannot state is an answer APPEARING where nothing
-     * answered before, which requires the base build to have been green with
-     * the import unresolved. */
-    if (edge.via === "fallback") {
-      const answered = resolver.routeOf(edge.to);
-      if (answered !== undefined) {
-        names.add(joinDepsPath([...answered, "package.json"]));
-      }
+    /* A lookup the requirer's own edges did not answer — through the fallback
+     * pool, or not at all — is decided by the top level's table, which IS the
+     * pool (and the surface a barred package's row carries): the direct member
+     * of that name, or none. So it is a second row, `<name> package.json`, a
+     * plain index of the direct members, and it moves when that member is
+     * edited, replaced, removed, or appears where nothing answered before. */
+    if (edge.via !== "own") {
+      names.add(joinDepsPath([edge.name, "package.json"]));
     }
   }
   return [...names];
