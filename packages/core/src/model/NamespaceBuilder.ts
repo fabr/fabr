@@ -59,6 +59,9 @@ type BuilderEntry = NSBuilderNode | ITargetDecl | IPropertyEntry;
 
 interface NSBuilderNode {
   self?: INamedDecl;
+  /** The declaration of this namespace that answers names nothing under it
+   * declares (see RepositoryRegistration.declaresNamespace). */
+  fallback?: ITargetDecl;
   targetDefs: Map<string, ITargetDefDecl>;
   content: Map<string, BuilderEntry>;
   /** `default` TARGETS only, held aside until the whole file set is in: an
@@ -92,10 +95,13 @@ function blameFor(entry: BuilderEntry): INamedDecl | NSBuilderNode {
 export class NamespaceBuilder {
   private log: Log;
   private root: NSBuilderNode;
+  /** The target types whose declaration declares a namespace with a fallback. */
+  private readonly namespaceTypes: ReadonlySet<string>;
 
-  constructor(log: Log) {
+  constructor(log: Log, namespaceTypes: ReadonlySet<string> = new Set()) {
     this.log = log;
     this.root = newBuilderNode();
+    this.namespaceTypes = namespaceTypes;
   }
 
   public addNamespaceDecl(decl: INamespaceDecl, root: NSBuilderNode = this.root): boolean {
@@ -178,6 +184,9 @@ export class NamespaceBuilder {
     tier: "decls" | "defaults"
   ): boolean {
     const existing = node.content.get(simpleName);
+    if (decl.kind === DeclKind.Target && tier === "decls" && this.namespaceTypes.has(decl.type)) {
+      return this.addNamespaceFallback(node, simpleName, decl);
+    }
     if (decl.kind === DeclKind.Target) {
       if (tier === "defaults") {
         /* Held aside until every file is in (see NSBuilderNode.defaultTargets). A
@@ -236,6 +245,27 @@ export class NamespaceBuilder {
     return true;
   }
 
+  /**
+   * Add a declaration that declares the namespace `simpleName` names, as that
+   * namespace's fallback. It merges with a namespace other declarations imply;
+   * anything else of the name — a target, a property, a second fallback — is a
+   * conflict.
+   */
+  private addNamespaceFallback(node: NSBuilderNode, simpleName: string, decl: ITargetDecl): boolean {
+    const existing = node.content.get(simpleName) ?? node.defaultTargets.get(simpleName);
+    if (existing === undefined) {
+      node.content.set(simpleName, { ...newBuilderNode(decl), fallback: decl });
+      return true;
+    }
+    if (!isBuilderNode(existing) || existing.fallback !== undefined) {
+      this.conflictError(isBuilderNode(existing) ? existing.fallback! : blameFor(existing), decl);
+      return false;
+    }
+    existing.fallback = decl;
+    existing.self = decl;
+    return true;
+  }
+
   public toNamespace(): Namespace {
     return this.buildNamespace(this.root);
   }
@@ -273,6 +303,9 @@ export class NamespaceBuilder {
         this.validateEntry(child);
       }
     });
+    if (node.fallback !== undefined) {
+      this.validateDecl(node.fallback);
+    }
     /* Default targets live apart from `content` but are validated the same way:
      * declared ⇒ validated, whether or not anything ends up taking it. (A
      * default *property* is inside its entry, so the walk above covers it.) */
@@ -329,7 +362,7 @@ export class NamespaceBuilder {
       }
     });
     const decl = node.self?.kind === DeclKind.Namespace ? node.self : undefined;
-    return new Namespace(content, node.targetDefs, decl);
+    return new Namespace(content, node.targetDefs, decl, node.fallback);
   }
 
   private conflictError(decl: INamedDecl | NSBuilderNode, newDecl: INamedDecl): void {

@@ -11,5 +11,8 @@
   },
   "devDependencies": {
     "@fabr-build/core": "0.1.0"
+  },
+  "dependencies": {
+    "@fabr-build/sass-pnp-importer": "0.1.0"
   }
 }

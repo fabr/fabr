@@ -63,10 +63,15 @@ export class Namespace {
   /* If it's an explicit namespace, keep it here; leave undefined for implicit ones */
   private decl?: INamespaceDecl;
 
-  constructor(content: Map<string, ContentType>, targetDefs: Map<string, ITargetDefDecl>, decl?: INamespaceDecl) {
+  /** The declaration answering names under this namespace that nothing
+   *  declares — and the name of the namespace itself, as a target. */
+  private fallback?: ITargetDecl;
+
+  constructor(content: Map<string, ContentType>, targetDefs: Map<string, ITargetDefDecl>, decl?: INamespaceDecl, fallback?: ITargetDecl) {
     this.content = content;
     this.decl = decl;
     this.targetDefs = targetDefs;
+    this.fallback = fallback;
   }
 
   /**
@@ -114,6 +119,9 @@ export class Namespace {
     for (const [key, item] of this.content) {
       const qualified = prefix === "" ? key : prefix + NAME_COMPONENT_SEPARATOR + key;
       if (item instanceof Namespace) {
+        if (item.fallback !== undefined) {
+          result.push({ name: qualified, decl: item.fallback });
+        }
         result.push(...item.getTargets(qualified));
       } else if (item.kind === DeclKind.Target) {
         result.push({ name: qualified, decl: item });
@@ -160,23 +168,28 @@ export class Namespace {
     const parts = literalPrefix.split(/[:/]/);
     let node: Namespace = this;
 
+    const matchAt = (decl: ITargetDecl | IPropertyEntry, count: number): IPrefixMatch => {
+      const matched = parts.slice(0, count).join(NAME_COMPONENT_SEPARATOR);
+      const matchPrefix = literalPrefix.substring(0, matched.length + 1);
+      const rest = name.substring(matched.length + 1);
+      const colonIdx = matchPrefix.lastIndexOf(":");
+      const retainedPrefix = colonIdx === -1 ? matchPrefix : matchPrefix.substring(colonIdx + 1);
+      return { decl, name: matched, retainedPrefix, rest };
+    };
+
     for (let idx = 0; idx < parts.length; idx++) {
       const next = node.content.get(parts[idx]);
       if (next instanceof Namespace) {
         node = next;
+      } else if (next?.kind === DeclKind.Target || next?.kind === DeclKind.Property) {
+        return matchAt(next, idx + 1);
       } else {
-        if (next?.kind === DeclKind.Target || next?.kind === DeclKind.Property) {
-          const matched = parts.slice(0, idx + 1).join(NAME_COMPONENT_SEPARATOR);
-          const matchPrefix = literalPrefix.substring(0, matched.length + 1);
-          const rest = name.substring(matched.length + 1);
-          const colonIdx = matchPrefix.lastIndexOf(":");
-          const retainedPrefix = colonIdx === -1 ? matchPrefix : matchPrefix.substring(colonIdx + 1);
-          return { decl: next, name: matched, retainedPrefix, rest };
-        } else {
-          return undefined;
-        }
+        /* Nothing declared here: the namespace's fallback answers, if it has one. */
+        return next === undefined && node.fallback !== undefined ? matchAt(node.fallback, idx) : undefined;
       }
     }
+    /* The name IS a namespace: its fallback is what it names as a target. */
+    return node.fallback !== undefined ? matchAt(node.fallback, parts.length) : undefined;
   }
 
   /**
@@ -200,7 +213,7 @@ export class Namespace {
     const targetName = parts.pop()!; /* Array must contain at least 1 element */
     const item = this.getNamespacePrefix(parts)?.content.get(targetName);
     if (item instanceof Namespace) {
-      return item.decl;
+      return item.decl ?? item.fallback;
     } else {
       return item;
     }

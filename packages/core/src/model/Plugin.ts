@@ -21,10 +21,11 @@ import * as fs from "fs";
 import * as path from "path";
 
 import { IPluginDecl } from "./AST";
+import { CORE_PACKAGE } from "../Constants";
+import { INSTALLED_FROM } from "../rules/FabrHome";
 import { PluginContribution } from "../rules/Types";
 
 /** The package a plugin must share with its host, never load a second copy of. */
-const CORE_PACKAGE = "@fabr-build/core";
 
 /**
  * The shape a plugin package's entry point must export: `activate` is a pure
@@ -101,7 +102,7 @@ function checkSharesHostCore(name: string, entry: string): void {
 export function activatePlugin(decl: IPluginDecl): PluginContribution {
   let entry: string;
   try {
-    entry = require.resolve(decl.name);
+    entry = require.resolve(decl.name, { paths: [INSTALLED_FROM] });
   } catch {
     throw new Error(`Plugin '${decl.name}' is not installed (plugins are resolved from the fabr installation)`);
   }

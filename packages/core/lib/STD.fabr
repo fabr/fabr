@@ -165,6 +165,20 @@ targetdef repository_group {
 }
 
 #
+# A `fabr_home` repository is where fabr itself is installed: its plugins and the
+# tools they ship, found by node's module resolution the way plugins are. A
+# declaration declares the namespace of its name, so a name under it that the
+# project does not declare resolves to the installed package of that name —
+# `@fabr-build/js-drivers`, or `@fabr-build/js-drivers:cssDriver/driver.js` to
+# project into it. A project declaring the name builds it instead. No version is
+# chosen: the installation fixes each one.
+#
+targetdef fabr_home {
+}
+
+fabr_home @fabr-build { }
+
+#
 # A `flag` yields file content directly, with no build step. Its main use is as
 # a named switch that a target lists in its `deps` to opt into some behaviour
 # (the `ts/*` source-mode flags are instances of this type); `provides` may also

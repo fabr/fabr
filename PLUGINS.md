@@ -21,6 +21,13 @@ plugin @fabr-build/js;
   fabr host (for `@fabr-build/*` packages, they ship with the fabr installation). There is currently no
   option to build a plugin from source as part of the build that uses it. A plugin that cannot be
   resolved is an error.
+- Packages installed with fabr are reachable from `.fabr` files too, as `@fabr-build/<package>`:
+  STD.fabr declares `fabr_home @fabr-build { }`, a repository that declares the `@fabr-build`
+  namespace, so a name under it that the project does not declare resolves to the package of that
+  name where fabr is installed (found the way plugins are), with its installed dependencies —
+  `@fabr-build/<package>:<path>` projects into it. A plugin ships a tool this way by depending on
+  it in its `package.json` and naming it in its `.fabr` files; a project declaring the name (as
+  fabr's own does) builds it from source instead.
 - The only explicit `include` is a **path-relative** one — `include ./shared.fabr;`, resolved
   relative to the including file — for project-local shared `.fabr` files. There is no system include
   search path. The path may glob (`include ./rules/*.fabr;`), naming every file that matches.

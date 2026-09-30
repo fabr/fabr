@@ -52,10 +52,10 @@ default SASS = @npm:sass-embedded:1.100.0;
 
 #
 # The importer the Sass driver (SASS_DRIVER) resolves package stylesheets
-# through. Released with fabr, at fabr's version.
+# through. Installed with fabr.
 #
 
-default SASS_PNP_IMPORTER = @npm:@fabr-build/sass-pnp-importer:0.3.0;
+default SASS_PNP_IMPORTER = @fabr-build/sass-pnp-importer;
 
 #
 # The postcss host and its css-modules scoping plugin, which the postcss driver

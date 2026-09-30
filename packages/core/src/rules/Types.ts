@@ -118,6 +118,14 @@ export interface RuleRegistration {
 export interface RepositoryRegistration {
   type: string;
   provider: RepositoryProvider;
+  /**
+   * A declaration of this type declares the NAMESPACE of its name, with the
+   * repository as its fallback: a name under it that nothing declares resolves
+   * through the repository. It merges with the namespace other declarations
+   * imply (`fabr_home @fabr-build` beside `js_package @fabr-build/core`), where
+   * an ordinary target of the namespace's name would conflict.
+   */
+  declaresNamespace?: boolean;
 }
 
 /**
