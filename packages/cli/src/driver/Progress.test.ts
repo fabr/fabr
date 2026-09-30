@@ -20,6 +20,7 @@
 import { expect } from "chai";
 import {
   BuildEvent,
+  CommandFailedError,
   Constraints,
   ITargetBuildTask,
   ITargetDecl,
@@ -232,6 +233,46 @@ describe("ProgressReporter", () => {
       tick(1200);
       send(reporter, { kind: "task-end", id: 1, task, failed: false });
       expect(lines).to.deep.equal(["info:✓ Building //pkg (1.2s)"]);
+    });
+
+    it("holds a step's output until it ends, logging it as one block under its completion line", () => {
+      const { lines, reporter } = paned();
+      const a = building("//a", "Compiling");
+      const b = building("//b", "Compiling");
+      send(reporter, { kind: "task-start", id: 1, task: a, state: "running" });
+      send(reporter, { kind: "task-start", id: 2, task: b, state: "running" });
+      send(reporter, { kind: "task-output", id: 1, task: a, line: "a: one", stream: "out" });
+      send(reporter, { kind: "task-output", id: 2, task: b, line: "b: one", stream: "err" });
+      send(reporter, { kind: "task-output", id: 1, task: a, line: "a: two", stream: "err" });
+      expect(lines).to.deep.equal([]);
+      send(reporter, { kind: "task-end", id: 2, task: b, failed: false });
+      send(reporter, { kind: "task-end", id: 1, task: a, failed: false });
+      expect(lines).to.deep.equal([
+        "info:✓ Compiling //b (0ms)",
+        "info://b err| b: one",
+        "info:✓ Compiling //a (0ms)",
+        "info://a out| a: one",
+        "info://a err| a: two",
+      ]);
+    });
+
+    it("drops a failed command's held output — its error reports it in context", () => {
+      const { lines, reporter } = paned();
+      const task = building("//pkg", "Compiling");
+      send(reporter, { kind: "task-start", id: 1, task, state: "running" });
+      send(reporter, { kind: "task-output", id: 1, task, line: "error TS2322", stream: "out" });
+      const error = new CommandFailedError("$ tsc", [{ stream: "out", text: "error TS2322" }], "exited with error code 2");
+      send(reporter, { kind: "task-end", id: 1, task, failed: true, error });
+      expect(lines).to.deep.equal(["info:✗ Compiling //pkg (0ms): exited with error code 2"]);
+    });
+
+    it("logs held output under a failure whose error does not carry it", () => {
+      const { lines, reporter } = paned();
+      const task = building("//pkg", "Compiling");
+      send(reporter, { kind: "task-start", id: 1, task, state: "running" });
+      send(reporter, { kind: "task-output", id: 1, task, line: "warning", stream: "err" });
+      send(reporter, { kind: "task-end", id: 1, task, failed: true, error: new Error("no outputs matched") });
+      expect(lines).to.deep.equal(["info:✗ Compiling //pkg (0ms): no outputs matched", "info://pkg err| warning"]);
     });
 
     it("moves the context onto the completion line, there being no start line to carry it", () => {

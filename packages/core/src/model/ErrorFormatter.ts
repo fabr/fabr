@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { ConflictError, ExecutionError, MultiError, RequirementResolutionError, TestsFailedError } from "../core/Errors";
+import { CommandFailedError, ConflictError, ExecutionError, MultiError, RequirementResolutionError, TestsFailedError } from "../core/Errors";
 import { chainSteps, IProvenanceStep, renderProvenance } from "../core/Provenance";
 import { RepositoryRef } from "../core/Repository";
 import { Diagnostic, IDiagnosticDetail, IDiagnosticNote, ISourceSpan, Log } from "../support/Log";
@@ -308,7 +308,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   /** Execution failures of one target, as a single diagnostic; an anonymous
    * sub-target (label set) reports with its verb ("Compiling X failed"). */
   private describeExecution(err: DependencyFailedError, causes: Error[]): IDiagnostic {
-    const detail = describeCauses(causes);
+    const detail = describeCauses(causes, declName(err.target));
     const message = err.label
       ? `${err.label} ${err.target.name} failed:\n${detail}`
       : `Failed to build ${err.target.name}: ${detail}`;
@@ -366,14 +366,24 @@ function trailKey(trail: IDiagnosticNote[]): string {
 }
 
 /**
- * Format the execution errors of a target as a single message: one error
+ * Format the execution errors of target `owner` as a single message: one error
  * inline, several as an indented list.
  */
-function describeCauses(causes: Error[]): string {
+function describeCauses(causes: Error[], owner: string): string {
   if (causes.length === 1) {
-    return causes[0].message;
+    return describeCause(causes[0], owner);
   }
-  return `${causes.length} errors:\n` + causes.map(cause => "  " + cause.message.split("\n").join("\n  ")).join("\n");
+  return `${causes.length} errors:\n` + causes.map(cause => "  " + describeCause(cause, owner).split("\n").join("\n  ")).join("\n");
+}
+
+/** An execution error's text — a failed command's output attributed to its
+ *  target and stream (`app out| …`), exactly as the live stream shows it. */
+function describeCause(cause: Error, owner: string): string {
+  if (!(cause instanceof CommandFailedError)) {
+    return cause.message;
+  }
+  const output = cause.output.map(line => `${owner} ${line.stream}| ${line.text}`);
+  return [cause.commandLine, ...output, cause.outcome].join("\n");
 }
 
 const DEFAULT_FORMATTER: ErrorFormatter = new DiagnosticErrorFormatter();
@@ -397,6 +407,9 @@ export function errorSummary(err: Error): string | undefined {
     .map(line => line.trim())
     .filter(line => line !== "");
   /* A command's failure reads `$ command`, its output, then how it ended. */
+  if (err instanceof CommandFailedError) {
+    return err.outcome;
+  }
   return err instanceof ExecutionError ? lines.at(-1) : lines[0];
 }
 

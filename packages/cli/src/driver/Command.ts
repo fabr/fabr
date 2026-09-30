@@ -67,8 +67,9 @@ interface CommandSpec {
    * `--quiet` is recorded as `-q`), used both for the synopsis and to *reject* a
    * flag applied to a command it means nothing for (`fabr cat --json`). The
    * universal options (`-D`, `-h`/`--help`, `-v`/`--version`) are always allowed
-   * and are not listed here. `-q` is accepted by every command that runs build
-   * steps but omitted from the synopses (like `-D`) to keep them focused; `-f`
+   * and are not listed here. `-q` and `--no-progress` are accepted by every
+   * command that runs build steps but omitted from the synopses (like `-D`) to
+   * keep them focused; `-f`
    * is validated the same way but omitted from the help text entirely (see
    * {@link Options.force}). */
   accepts: string[];
@@ -80,14 +81,14 @@ interface CommandSpec {
 }
 
 const COMMAND_SPECS: CommandSpec[] = [
-  { name: "build", synopsis: "[-w] <targets>", summary: "Build the given targets (the default command)", accepts: ["-w", "-q", "-f"] },
-  { name: "test", synopsis: "[-w] [-u] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "-q", "-f"] },
-  { name: "run", synopsis: "[-w] <target> [args…]", summary: "Execute a target, forwarding trailing args to it", accepts: ["-w", "-q", "-f"] },
-  { name: "shell", synopsis: "<target>", summary: "Stage a target's build sandbox and open a shell in it (debugging)", accepts: ["-q"], singleTarget: true },
-  { name: "ls", synopsis: "[-l] <names>", summary: "Build the given targets and list their contents", accepts: ["-l", "-q"] },
-  { name: "cat", synopsis: "<names>", summary: "Build a target and write its matching files to stdout", accepts: ["-q"] },
-  { name: "cp", synopsis: "<sources…> <dest>", summary: "Build targets and copy their files to a destination directory", accepts: ["-q"] },
-  { name: "sync", synopsis: "<target>", summary: "Build and publish a sync target to its destination coordinates", accepts: ["-q"] },
+  { name: "build", synopsis: "[-w] <targets>", summary: "Build the given targets (the default command)", accepts: ["-w", "-q", "--no-progress", "-f"] },
+  { name: "test", synopsis: "[-w] [-u] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "-q", "--no-progress", "-f"] },
+  { name: "run", synopsis: "[-w] <target> [args…]", summary: "Execute a target, forwarding trailing args to it", accepts: ["-w", "-q", "--no-progress", "-f"] },
+  { name: "shell", synopsis: "<target>", summary: "Stage a target's build sandbox and open a shell in it (debugging)", accepts: ["-q", "--no-progress"], singleTarget: true },
+  { name: "ls", synopsis: "[-l] <names>", summary: "Build the given targets and list their contents", accepts: ["-l", "-q", "--no-progress"] },
+  { name: "cat", synopsis: "<names>", summary: "Build a target and write its matching files to stdout", accepts: ["-q", "--no-progress"] },
+  { name: "cp", synopsis: "<sources…> <dest>", summary: "Build targets and copy their files to a destination directory", accepts: ["-q", "--no-progress"] },
+  { name: "sync", synopsis: "<target>", summary: "Build and publish a sync target to its destination coordinates", accepts: ["-q", "--no-progress"] },
   {
     name: "list-targets",
     synopsis: "[-l] [--all] [--json] [names]",
@@ -136,6 +137,10 @@ export interface Options {
    * build steps run (`-q`/`--quiet`), as well as the live progress display.
    */
   quiet: boolean;
+  /** Show the live progress display when stderr is a terminal; false
+   *  (`--no-progress`) logs as without one, streaming step output as it
+   *  arrives. */
+  progress: boolean;
   /**
    * Rebuild the named targets even when their outputs are already cached
    * (`-f`/`--force`) — a development aid for timing a build step, undocumented
@@ -208,6 +213,7 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  --json            Emit JSON (the list-* verbs)\n" +
       "  --all             Include system-contributed targets (list-targets)\n" +
       "  -q, --quiet       Suppress live output: subcommand output and the progress display\n" +
+      "  --no-progress     No progress display; subcommand output streams as it arrives\n" +
       "  --                End of options: following arguments are targets, even if they start with '-'\n" +
       "  -h, --help        Print this help and exit\n" +
       "  -v, --version     Print the fabr version and exit\n"
@@ -254,6 +260,9 @@ function applyOption(arg: string, options: Options, seenFlags: SeenFlag[]): void
   } else if (arg === "-q" || arg === "--quiet") {
     options.quiet = true;
     seenFlags.push({ raw: arg, flag: "-q" });
+  } else if (arg === "--no-progress") {
+    options.progress = false;
+    seenFlags.push({ raw: arg, flag: arg });
   } else if (arg === "-f" || arg === "--force") {
     options.force = true;
     seenFlags.push({ raw: arg, flag: "-f" });
@@ -295,6 +304,7 @@ export function parseCommandLine(args: string[]): Options {
     json: false,
     all: false,
     quiet: false,
+    progress: true,
     force: false,
     targets: [],
     properties: new Map(),
@@ -405,10 +415,11 @@ export function completeCommandLine(options: Options, operationsOf: (target: str
       (operation === "test" ? plan.test : plan.build).push(arg);
     }
   }
-  /* The inferable commands are build/test/run, which accept -w, -q and -f; a flag
-   * meaningful only to some other command needs that command written out. */
+  /* The inferable commands are build/test/run, which accept -w, -q,
+   * --no-progress and -f; a flag meaningful only to some other command needs
+   * that command written out. */
   for (const { raw, flag } of seenFlags) {
-    if (flag !== "-w" && flag !== "-q" && flag !== "-f") {
+    if (flag !== "-w" && flag !== "-q" && flag !== "--no-progress" && flag !== "-f") {
       usageError(`Option '${raw}' is not valid without a command`);
     }
   }

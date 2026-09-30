@@ -23,6 +23,7 @@ import * as os from "os";
 import * as path from "path";
 import { PassThrough } from "stream";
 import { Computable } from "../core/Computable";
+import { CommandFailedError } from "../core/Errors";
 import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { TaskState } from "../model/BuildEvents";
@@ -209,14 +210,14 @@ describe("execute", () => {
   const REASON_SCRIPT = "console.error('x'.repeat(9)); process.exit(2)";
   const REASON = "xxxxxxxxx";
 
-  it("keeps a streamed failure's message to the command and outcome, output having already been delivered", async () => {
+  it("reports a streamed failure's output in its message too, between the command and the outcome", async () => {
     const lines: string[] = [];
     const outcomes = await collectSettlements(
       execute(LIMIT, NODE, ["-e", REASON_SCRIPT], process.cwd(), {}, { ...SILENT_REPORT, output: { line: (text: string) => lines.push(text) } })
     );
     expect(lines).to.deep.equal([REASON]);
-    expect(outcomes[0].err?.message).to.include("exited with error code 2");
-    expect(outcomes[0].err?.message).to.not.include(REASON);
+    expect(outcomes[0].err?.message).to.match(new RegExp(`^\\$ .*\n${REASON}\nexited with error code 2$`));
+    expect((outcomes[0].err as CommandFailedError).output).to.deep.equal([{ stream: "err", text: REASON }]);
   });
 
   it("keeps each stream's lines its own, never splicing a partial line onto the other's", async () => {
@@ -465,6 +466,14 @@ describe("executePipeline", () => {
     expect(outcomes[0].ok).to.equal(false);
     expect(outcomes[0].err?.message).to.include("DIAG-ON-STDOUT");
     expect(outcomes[0].err?.message).to.include("exited with error code 3");
+  });
+
+  it("reports a failed stage's shown output in its message, with or without a sink", async () => {
+    const stage = { argv: [NODE, "-e", "console.log('STAGE-OUT');console.error('STAGE-ERR');process.exit(3)"] };
+    for (const output of [undefined, { line: () => undefined }]) {
+      const outcomes = await collectSettlements(executePipeline(LIMIT, [stage], CWD, memoryOutput, undefined, { ...SILENT_REPORT, output }));
+      expect(outcomes[0].err?.message).to.include("STAGE-OUT").and.include("STAGE-ERR").and.include("exited with error code 3");
+    }
   });
 
   it("fails on the first non-zero stage (pipefail), settling exactly once", async () => {

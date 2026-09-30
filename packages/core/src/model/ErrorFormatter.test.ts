@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { ConflictError, ExecutionError, MultiError } from "../core/Errors";
+import { CommandFailedError, ConflictError, ExecutionError, MultiError } from "../core/Errors";
 import { registerProvenanceRenderer } from "../core/Provenance";
 import { IDiagnosticNote, Log } from "../support/Log";
 import { parseName } from "./Parser";
@@ -141,6 +141,19 @@ describe("DiagnosticErrorFormatter", () => {
 
     const requiredBy = (coreDiag?.notes ?? []).filter(n => n.message.startsWith("required by"));
     expect(requiredBy.map(n => n.message)).to.deep.equal(["required by fabr deps"]);
+  });
+
+  it("attributes a failed command's output to its target and stream, between the command and its outcome", () => {
+    const output = [
+      { stream: "out" as const, text: "src/a.ts: error TS2322" },
+      { stream: "err" as const, text: "warning" },
+    ];
+    const failure = new DependencyFailedError(targetDecl("app"), new CommandFailedError("$ tsc", output, "exited with error code 2"));
+    const [diagnostic] = capture(failure);
+    expect(diagnostic.message).to.equal(
+      "Failed to build app: $ tsc\napp out| src/a.ts: error TS2322\napp err| warning\nexited with error code 2"
+    );
+    expect(errorSummary(failure)).to.equal("exited with error code 2");
   });
 
   it("keeps a distinct trail per root when a shared failure is requested two ways", () => {

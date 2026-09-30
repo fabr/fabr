@@ -24,6 +24,7 @@ import {
   Constraints,
   declName,
   Diagnostic,
+  CommandFailedError,
   errorSummary,
   IFetchTask,
   Log,
@@ -96,13 +97,21 @@ export function formatBytes(bytes: number): string {
   return unit === 0 ? `${size} B` : `${size.toFixed(1)} ${BYTE_UNITS[unit]}`;
 }
 
+/** One line of a step's output, as it will be logged. */
+interface IOutputLine {
+  prefix: string;
+  line: string;
+}
+
 /** A task in flight: what it is, when we first heard of it, what it is
- *  doing, and how far along it has last said it is. */
+ *  doing, how far along it has last said it is, and — with a pane — the output
+ *  it is holding until it ends. */
 interface IRunningTask {
   task: TaskDescription;
   started: number;
   state: TaskState;
   progress?: TaskProgress;
+  held: IOutputLine[];
 }
 
 /**
@@ -132,6 +141,15 @@ export class ProgressReporter {
    * only ever produce less.
    */
   private readonly announceStart: boolean;
+  /**
+   * Whether a step's output is held until the step ends rather than logged as
+   * it arrives: with a pane, what is running is on screen, and output logged
+   * live from several steps at once would interleave. A step that succeeds has
+   * its output logged as one block under its completion line; one that failed
+   * running a command has it in its error (a CommandFailedError), reported
+   * in context there.
+   */
+  private readonly holdOutput: boolean;
   /** Whether cycle-end events render the status marker ("Built X" / "Already
    *  up to date") — the driver's per-verb policy. */
   private readonly markers: boolean;
@@ -145,6 +163,7 @@ export class ProgressReporter {
     this.now = options.now ?? ((): number => Date.now());
     this.style = options.color ? (code, text) => `\x1b[${code}m${text}\x1b[0m` : (_code, text) => text;
     this.announceStart = !(this.terminal?.hasPane ?? false) && !options.quiet;
+    this.holdOutput = this.terminal?.hasPane ?? false;
     this.markers = options.markers ?? true;
     /* The pane is *pulled*: its rows carry elapsed times and download sizes,
      * which advance with the clock rather than with events, so it must be
@@ -159,7 +178,7 @@ export class ProgressReporter {
   private onBuildEvent(event: BuildEvent): void {
     switch (event.kind) {
       case "task-start":
-        this.running.set(event.id, { task: event.task, started: this.now(), state: event.state });
+        this.running.set(event.id, { task: event.task, started: this.now(), state: event.state, held: [] });
         if (this.announceStart && !incidental(event.task)) {
           this.log.log(DIAG_TASK_START, { what: describe(event.task), chain: context(event.task) });
         }
@@ -182,18 +201,22 @@ export class ProgressReporter {
         break;
       }
 
-      case "task-output":
+      case "task-output": {
         /* One output line, prefixed with the target it came from and the stream
          * it arrived on. The prefix is attribution, not presentation, so it
-         * applies with or without a pane. Both streams are named, symmetrically:
-         * tools disagree about which one a diagnostic belongs on (tsc writes its
+         * applies held or not. Both streams are named, symmetrically: tools
+         * disagree about which one a diagnostic belongs on (tsc writes its
          * errors to stdout), so marking only `err` would imply a severity the
          * stream does not carry. */
-        this.log.log(DIAG_STEP_OUTPUT, {
-          prefix: this.style(SGR_DIM, `${attribution(event.task)} ${event.stream}|`),
-          line: event.line,
-        });
+        const output = { prefix: this.style(SGR_DIM, `${attribution(event.task)} ${event.stream}|`), line: event.line };
+        const running = this.holdOutput ? this.running.get(event.id) : undefined;
+        if (running) {
+          running.held.push(output);
+        } else {
+          this.log.log(DIAG_STEP_OUTPUT, output);
+        }
         return;
+      }
 
       case "cycle-start":
         /* A boundary, not task: nothing to draw — the pane already shows what
@@ -227,6 +250,9 @@ export class ProgressReporter {
             duration: this.style(SGR_DIM, `(${formatDuration(this.now() - started.started)})`),
             reason: failureReason(event.error),
           });
+        }
+        if (started && !(event.error instanceof CommandFailedError)) {
+          started.held.forEach(output => this.log.log(DIAG_STEP_OUTPUT, output));
         }
         break;
       }

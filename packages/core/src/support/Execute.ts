@@ -25,7 +25,7 @@ import { Writable } from "stream";
 import { StringDecoder } from "string_decoder";
 import { getSystemErrorMap } from "util";
 import { Computable } from "../core/Computable";
-import { ExecutionError } from "../core/Errors";
+import { CommandFailedError, ExecutionError, ICommandOutputLine } from "../core/Errors";
 import { FileSet, IFile } from "../core/FileSet";
 import { Semaphore } from "./Semaphore";
 import type { TaskProgress, TaskState } from "../model/BuildEvents";
@@ -40,8 +40,8 @@ import type { TaskProgress, TaskState } from "../model/BuildEvents";
 export type OutputStream = "out" | "err";
 
 /**
- * Where a running process's output goes, one complete line at a time — the
- * live alternative to capturing it and reporting it only on failure. A step is
+ * Where a running process's output goes, one complete line at a time, as it
+ * arrives — beside the copy kept for a failure's own report. A step is
  * given one by the framework, and it is the *driver* that implements it, which
  * is what keeps attribution (prefixing each line with the target it came from)
  * a rendering decision rather than something the execution layer has to know.
@@ -112,7 +112,7 @@ export function activityCounter(onState: (state: TaskState) => void): (phase: Ex
  * reaches the cache key, the command, or the outcome.
  */
 export interface ITaskReport {
-  /** Where output goes, line by line; absent ⇒ captured, shown only on failure
+  /** Where output goes, line by line; absent ⇒ shown only inside a failure
    *  — the one optional channel, its absence being the display decision. */
   output?: IOutputSink;
   /** Where each execution's funnel phases go. */
@@ -399,10 +399,9 @@ const DETACHED = GROUPS_SUPPORTED ? { detached: true } : {};
 /**
  * Ask tools to keep their color/formatting: set unconditionally so a step's
  * environment stays deterministic — never conditioned on the driver's terminal
- * (a step's inputs, and thus its cache key, must not depend on it). When output
- * is captured (quiet), the driver strips the codes at render time if its own
- * output isn't a TTY; when inherited (live), the child writes straight to fabr's
- * stderr and the codes stand as-is. A caller's own env entries win.
+ * (a step's inputs, and thus its cache key, must not depend on it). The driver
+ * strips the codes at render time when its own output isn't a TTY. A caller's
+ * own env entries win.
  */
 const FORCE_COLOR_ENV = { FORCE_COLOR: "1", CLICOLOR_FORCE: "1" };
 
@@ -457,18 +456,15 @@ function executeUnbounded(cmd: string, args: string[], cwd: string, env: Record<
     /* stdin from /dev/null ("ignore"), not the default open pipe: a build step is
      * non-interactive, so a tool that reads stdin must get EOF at once rather than
      * blocking forever on input the parent never sends. Both output streams are
-     * always PIPED — fabr is the pump either way — and the two modes differ only
-     * in what it does with the bytes: with a `sink` they are split into lines and
-     * forwarded live (so the driver can attribute each line to this step and keep
-     * its own terminal display coherent); without one they are captured and shown
-     * only if the step fails (`-q`). Nothing is ever inherited: a child writing
-     * straight to fd 2 could not be attributed, and would scribble through
-     * whatever the driver is painting. Everything lands on *stderr*, never
-     * stdout: fabr's stdout is reserved for its own data (cat/ls), and a genrule
-     * runs during those too. The environment (color forced) is the same either
-     * way — deterministic, and both a captured and a streamed failure read well
-     * on a TTY. */
-    const output: Uint8Array[] = [];
+     * always PIPED — fabr is the pump — and always kept, merged in arrival order,
+     * for a failure to report in context; with a `sink` they are also split into
+     * lines and forwarded as they arrive (so the driver can attribute each line
+     * to this step and decide when to show it). Nothing is ever inherited: a
+     * child writing straight to fd 2 could not be attributed, and would scribble
+     * through whatever the driver is painting. The environment (color forced) is
+     * the same whether or not there is a sink — a step's inputs must not depend
+     * on how it is displayed. */
+    const output: ICommandOutputLine[] = [];
     const stdio: Array<"ignore" | "pipe" | number> = ["ignore", "pipe", "pipe"];
     const proc = spawn(cmd, args, { cwd, env: { ...FORCE_COLOR_ENV, ...env }, stdio, windowsHide: true, ...DETACHED });
     trackGroup(proc.pid);
@@ -483,37 +479,29 @@ function executeUnbounded(cmd: string, args: string[], cwd: string, env: Record<
     });
     /* A splitter per stream (see lineSplitter): stdout and stderr are
      * independent, so a shared one splices an unfinished line on one onto the
-     * next line of the other. Captured mode keeps them merged in arrival order
-     * — those bytes are replayed verbatim in a failure report, where the
-     * interleaving as it happened is what reads correctly. */
-    const streams = sink && {
-      out: lineSplitter(text => sink.line(text, "out")),
-      err: lineSplitter(text => sink.line(text, "err")),
-    };
-    const consume =
-      (stream: OutputStream) =>
-      (data: Uint8Array): void =>
-        streams ? streams[stream].push(data) : void output.push(data);
-    proc.stdout?.on("data", consume("out"));
-    proc.stderr?.on("data", consume("err"));
+     * next line of the other. The kept lines stay in arrival order — a failure
+     * report replays them, where the interleaving as it happened is what reads
+     * correctly. */
+    const streams = showLines(output, sink);
+    proc.stdout?.on("data", (data: Uint8Array) => streams.out.push(data));
+    proc.stderr?.on("data", (data: Uint8Array) => streams.err.push(data));
     /* Failure to spawn at all (e.g. missing executable) is reported through
      * the 'error' event; without a handler it would crash the process. */
     proc.on("error", err => {
       reject(new ExecutionError(`${line}\nunable to execute: ${systemErrorText(err)}`));
     });
-    /* Failures report the command line, then (captured only) the output, then
-     * how it ended; streamed output has already reached the terminal live. */
+    /* Failures report the command line, then the output, then how it ended. */
     proc.on("close", (code, signal) => {
       /* Whatever the tool left unterminated is still its output, and a tool
        * that dies mid-line is exactly when it matters most. */
-      streams?.out.flush();
-      streams?.err.flush();
+      streams.out.flush();
+      streams.err.flush();
       const how = signal ? `terminated by signal ${signal}` : code !== 0 ? `exited with error code ${code}` : undefined;
       const deliver = (): void => {
         if (how === undefined) {
           resolve();
         } else {
-          reject(new ExecutionError(streams ? `${line}\n${how}` : withOutput(line, output, how)));
+          reject(new CommandFailedError(line, output, how));
         }
       };
       /* Report only once the group is gone, so whoever reclaims the work dir on this
@@ -612,19 +600,14 @@ function pipelineUnbounded(
       }
     }
     const procs: ChildProcess[] = [];
-    /* Un-redirected stderr only — a stage that captures stderr sends it to a
-     * handle, so there is nothing here to report on that stage's failure. */
-    const stderr: Uint8Array[][] = specs.map(() => []);
+    /* What each stage showed — its un-redirected streams, merged in arrival
+     * order — kept for that stage's failure report. A stream captured to a
+     * handle or feeding the next stage is not shown, so is not kept. */
+    const shown: ICommandOutputLine[][] = specs.map(() => []);
     /* A line splitter per stage AND per stream (feeding the shared sink), so
      * neither two stages writing at once nor one stage's two streams can splice
-     * their partial lines together. Absent ⇒ buffering instead. */
-    const stageLines = specs.map(
-      () =>
-        sink && {
-          out: lineSplitter(text => sink.line(text, "out")),
-          err: lineSplitter(text => sink.line(text, "err")),
-        }
-    );
+     * their partial lines together. */
+    const stageLines = shown.map(lines => showLines(lines, sink));
     const exit: Array<number | string | undefined> = specs.map(() => undefined);
     let settled = false;
     let remaining = specs.length;
@@ -669,20 +652,14 @@ function pipelineUnbounded(
         const capStdout = spec.stdout !== undefined || (spec.mergedTo === "err" && spec.stderr !== undefined);
         /* stdin: first stage from supplied bytes (else EOF); a later stage reads the
          * previous stage's stdout (wired below). Every stream fabr looks at is
-         * PIPED — captured as content, feeding the next stage, streamed to the
-         * sink, or buffered to report on failure. The one stream nobody wants is a
-         * final un-redirected stdout with no sink, which is discarded unread. Env
+         * PIPED — captured as content, feeding the next stage, or shown (kept
+         * for the failure report, and streamed to the sink if there is one). Env
          * stays clean ({}) throughout: captured content must be raw. */
         const stdinCfg = i === 0 ? (stdin ? "pipe" : "ignore") : "pipe";
-        /* A dup'd stdout always has somewhere to go — the survivor's capture,
-         * sink, pipe, or failure buffer — so a merged stage pipes it whatever
-         * its position. */
-        const stdoutCfg = capStdout || !isLast || sink || spec.mergedTo !== undefined ? "pipe" : "ignore";
-        const stderrCfg = "pipe";
         const proc = spawn(argvs[i][0], argvs[i].slice(1), {
           cwd,
           env: {},
-          stdio: [stdinCfg, stdoutCfg, stderrCfg],
+          stdio: [stdinCfg, "pipe", "pipe"],
           windowsHide: true,
           ...DETACHED,
         });
@@ -704,22 +681,23 @@ function pipelineUnbounded(
          * are piped into it, chunk-interleaved. */
         const captureName = spec.mergedTo === "err" ? spec.stderr : spec.stdout;
         const shared = captureName !== undefined ? capture(captureName) : undefined;
-        const lines = stageLines[i];
+        const show =
+          (stream: OutputStream) =>
+          (data: Uint8Array): void =>
+            stageLines[i][stream].push(data);
         if (spec.mergedTo !== undefined) {
           /* Both streams to the survivor's destination. For a `2>&1` that is
            * stdout's: mid-pipeline the PIPE (both streams feed the next stage —
            * wired below, nothing attaches here), and on the final stage its
            * capture handle, else the pipeline's own output (so the lines ARE
            * stdout now, labelled as such). For a `1>&2` it is stderr's: its
-           * capture, else the diagnostic sink — and the next stage, if any,
-           * reads EOF. With no capture and no sink the bytes are buffered for
-           * the failure report exactly as an un-dup'd stderr would be. */
+           * capture, else shown — and the next stage, if any, reads EOF. */
           const label = spec.mergedTo;
           const merge = (stream: NodeJS.ReadableStream | null): void => {
             if (shared) {
               stream?.pipe(shared, { end: false });
             } else {
-              stream?.on("data", data => (lines ? lines[label].push(data) : void stderr[i].push(data)));
+              stream?.on("data", show(label));
             }
           };
           if (spec.mergedTo !== "out" || isLast) {
@@ -733,23 +711,20 @@ function pipelineUnbounded(
           if (spec.stderr !== undefined) {
             proc.stderr?.pipe(capture(spec.stderr), { end: false });
           } else {
-            /* Un-redirected stderr: the user's own stream — streamed live to the
-             * sink, or buffered (small) to report on this stage's failure. */
-            proc.stderr?.on("data", data => (lines ? lines.err.push(data) : void stderr[i].push(data)));
+            proc.stderr?.on("data", show("err"));
           }
         }
-        /* A final un-redirected stdout is the pipeline's own output: with a sink
-         * it streams live like stderr; without one it was never piped at all. A
-         * dup already routed both streams above — including stdout — so this must
-         * not attach a second reader and count it twice. */
-        if (isLast && !capStdout && sink && spec.mergedTo === undefined) {
-          proc.stdout?.on("data", data => stageLines[i]?.out.push(data));
+        /* A final un-redirected stdout is the pipeline's own output, shown like
+         * stderr. A dup already routed both streams above — including stdout —
+         * so this must not attach a second reader and count it twice. */
+        if (isLast && !capStdout && spec.mergedTo === undefined) {
+          proc.stdout?.on("data", show("out"));
         }
         proc.on("error", e => fail(new ExecutionError(`${stageCommandLine(spec)}\nunable to execute: ${systemErrorText(e)}`)));
         proc.on("close", (code, signal) => {
           exit[i] = signal ?? code ?? 0;
-          stageLines[i]?.out.flush();
-          stageLines[i]?.err.flush();
+          stageLines[i].out.flush();
+          stageLines[i].err.flush();
           /* Propagate a broken pipe upstream (SIGPIPE-equivalent): if this stage
            * exited while its producer is still writing, close fabr's read end of
            * whatever feeds this stage — the producer's stdout, and under `2>&1`
@@ -807,10 +782,10 @@ function pipelineUnbounded(
       for (let i = 0; i < specs.length; i++) {
         const status = exit[i];
         if (typeof status === "string") {
-          return fail(new ExecutionError(withOutput(stageCommandLine(specs[i]), stderr[i], `terminated by signal ${status}`)));
+          return fail(new CommandFailedError(stageCommandLine(specs[i]), shown[i], `terminated by signal ${status}`));
         }
         if (typeof status === "number" && status !== 0) {
-          return fail(new ExecutionError(withOutput(stageCommandLine(specs[i]), stderr[i], `exited with error code ${status}`)));
+          return fail(new CommandFailedError(stageCommandLine(specs[i]), shown[i], `exited with error code ${status}`));
         }
       }
       settled = true;
@@ -1008,7 +983,15 @@ function quoteArg(arg: string): string {
   return arg.length > 0 && !/[\s'"$\\`*?[\]{}()<>|&;#~!]/.test(arg) ? arg : `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
-function withOutput(commandLine: string, output: Uint8Array[], result: string): string {
-  const text = Buffer.concat(output).toString().trimEnd();
-  return text.length > 0 ? `${commandLine}\n${text}\n${result}` : `${commandLine}\n${result}`;
+/**
+ * A line splitter per stream, each keeping its lines in `into` (shared, so in
+ * arrival order) and forwarding them to `sink` when there is one.
+ */
+function showLines(into: ICommandOutputLine[], sink: IOutputSink | undefined): Record<OutputStream, ReturnType<typeof lineSplitter>> {
+  const splitter = (stream: OutputStream): ReturnType<typeof lineSplitter> =>
+    lineSplitter(text => {
+      into.push({ stream, text });
+      sink?.line(text, stream);
+    });
+  return { out: splitter("out"), err: splitter("err") };
 }

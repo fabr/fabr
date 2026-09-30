@@ -475,8 +475,10 @@ async function runWith(options: Options, operation: Operation, watch = false): P
    * who just silenced the build's own tools wants left running. So quiet drops
    * the pane as well as the streamed output — and (see ProgressReporter) does
    * NOT get the start lines back in its place, which is the one thing that
-   * would make asking for quiet produce more output than not asking. */
-  const terminal = new TerminalStream(process.stderr, process.stderr.isTTY === true && !options.quiet);
+   * would make asking for quiet produce more output than not asking.
+   * `--no-progress` drops only the pane: the log is then exactly what it is
+   * without a tty. */
+  const terminal = new TerminalStream(process.stderr, process.stderr.isTTY === true && !options.quiet && options.progress);
   const log = new LogFormatter(LogLevel.Info, line => terminal.write(line), color);
   /* Published for the code that hands the terminal over rather than writes to
    * it (a prompt, an interactive child) — see withTerminalSuspended. */
@@ -509,7 +511,7 @@ async function runWith(options: Options, operation: Operation, watch = false): P
     };
     /* Build events become the log's start/completion lines, the pane, and the
      * prefixed step-output lines. Under -q the subscription asks for no output
-     * events, so steps capture and show output only on failure. */
+     * events, so steps show output only inside a failure. */
     const progress = new ProgressReporter(log, {
       terminal,
       color,

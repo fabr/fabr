@@ -154,7 +154,8 @@ Emit the whole build vocabulary — types, properties, and flags — as one JSON
 | `-DPROP=VALUE` | Force property `PROP` to `VALUE` for this run (overrides the build script and any default). |
 | `-w` | Watch mode: rebuild — and, for `run`, restage/relaunch when sources change. |
 | `-u`, `--update` | (`test`) Update the recorded test expectations — snapshots — from the run, writing the changed ones back into your source tree. |
-| `-q`, `--quiet` | Suppress the live subcommand output otherwise streamed as steps run; a *failed* step still shows its captured output. |
+| `-q`, `--quiet` | Suppress subcommand output and the progress display; a *failed* step still shows its output in its error. |
+| `--no-progress` | No progress display, even on a terminal: subcommand output streams as it arrives, as it does when stderr is not a terminal. With the display, a step's output is held until the step ends and logged as one block beneath its completion line — or, if it failed, shown in its error. |
 | `-l` | Long listing: hash + size per file (`ls`), or source location (`list-*`). |
 | `--json` | Emit JSON (the `list-*` verbs). |
 | `--all` | Include internal targets in `list-targets`. |

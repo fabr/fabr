@@ -28,6 +28,7 @@ import { STATUS_CODES } from "node:http";
 
 import { describeProvenance, IProvenanceStep } from "./Provenance";
 import { RepositoryRef } from "./Repository";
+import type { OutputStream } from "../support/Execute";
 
 /**
  * Coerce an arbitrary thrown value to an Error.
@@ -127,6 +128,28 @@ export class IntegrityError extends Error {
  * grouped under the target rather than as individual diagnostics.
  */
 export class ExecutionError extends Error {}
+
+/** One line of a command's output, and the stream it arrived on. */
+export interface ICommandOutputLine {
+  stream: OutputStream;
+  text: string;
+}
+
+/**
+ * A command that ran and failed: its command line (`$ cmd args…`), everything
+ * it showed, in arrival order, and how it ended ("exited with error code 2").
+ * The message renders the three plainly; a reporter that knows whose command it
+ * was renders the output lines attributed, as the live stream does.
+ */
+export class CommandFailedError extends ExecutionError {
+  constructor(
+    public readonly commandLine: string,
+    public readonly output: readonly ICommandOutputLine[],
+    public readonly outcome: string
+  ) {
+    super([commandLine, ...output.map(line => line.text), outcome].join("\n"));
+  }
+}
 
 /**
  * A test run completed mechanically but some tests failed — as distinct from

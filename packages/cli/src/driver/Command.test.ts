@@ -77,6 +77,7 @@ describe("Command", () => {
       json: false,
       all: false,
       quiet: false,
+      progress: true,
       force: false,
       targets: [],
       deferred: ["foo"],
@@ -92,6 +93,7 @@ describe("Command", () => {
       json: false,
       all: false,
       quiet: false,
+      progress: true,
       force: false,
       targets: ["foo", "bar"],
       properties: new Map(),
@@ -111,6 +113,7 @@ describe("Command", () => {
       json: false,
       all: false,
       quiet: false,
+      progress: true,
       force: false,
       targets: ["foo"],
       properties: new Map([["x", "1"]]),
@@ -125,6 +128,7 @@ describe("Command", () => {
       json: false,
       all: false,
       quiet: false,
+      progress: true,
       force: false,
       targets: ["foo", "bar"],
       properties: new Map(),
@@ -228,6 +232,12 @@ describe("Command", () => {
     expect(capture(["list-targets", "--quiet"]).err.join("\n")).to.match(
       /Option '--quiet' is not valid for the 'list-targets' command/
     );
+  });
+
+  it("turns the progress display off with --no-progress, for any command that runs build steps", () => {
+    expect(parseCommandLine(["node", "fabr", "build", "--no-progress", "foo"]).progress).to.equal(false);
+    expect(parseCommandLine(["node", "fabr", "cat", "--no-progress", "foo"]).progress).to.equal(false);
+    expect(capture(["list-targets", "--no-progress"]).err.join("\n")).to.match(/Option '--no-progress' is not valid/);
   });
 
   it("treats arguments after -- as targets, even dash-prefixed ones", () => {
