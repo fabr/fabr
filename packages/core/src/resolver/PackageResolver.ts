@@ -136,12 +136,13 @@ interface DomainResolution<V> extends Resolution {
   /** The loaded resolution itself. */
   readonly graph: ResolutionGraph<V>;
   /**
-   * The `?` sanctions written in this collection's references: pkg → the exact
-   * versions whose forks a strict delivery may accept (nested). Judgment-time
-   * data carried OUTSIDE the persisted doc (the resolution outcome does not
-   * depend on it, so neither does the memo key).
+   * The versions written as sanctioned in this collection's references — a
+   * `?`, or an exact pin: pkg → versions. Every delivery cut from the
+   * resolution is judged against all of them, whichever members it names.
+   * Judgment-time data carried OUTSIDE the persisted doc (the resolution
+   * outcome does not depend on it, so neither does the memo key).
    */
-  readonly alternates: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly written: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /*
@@ -226,8 +227,13 @@ export function resolvePackages<V, C>(
      * nothing of its own). */
     const { roots: rootReqs, keys: rootKeys } = canonicalRequirements(requirements);
     const rootIndex = new Map<string, number>(rootKeys.map((key, index) => [key, index]));
+    const written = writtenVersions(
+      format,
+      alternates,
+      requirements.filter(req => req.override !== "alternate")
+    );
     return getJointResolution(context, registry, repositoryAlias(references), rootReqs, rootKeys)
-      .then(graph => ({ roots, rootIndex, alternates, graph }) satisfies DomainResolution<V>)
+      .then(graph => ({ roots, rootIndex, written, graph }) satisfies DomainResolution<V>)
       .catch(err => attributeResolutionFailure(err, references, requirements));
   });
 }
@@ -255,7 +261,7 @@ export function materializePackages<V, C>(
 ): Computable<(PackageFileSet | undefined)[]> {
   const { format } = registry;
   const resolved = resolution as DomainResolution<V>;
-  const { rootIndex, alternates, graph } = resolved;
+  const { rootIndex, written, graph } = resolved;
   const requirements = references.map(reference => format.parseRequirement(reference.name));
   /* An alternate (`?`) reference demands nothing and delivers nothing of its
    * own — the sanctioned fork arrives nested inside the canonical closure. */
@@ -305,10 +311,6 @@ export function materializePackages<V, C>(
     ...[...reachableIds].flatMap(id => graph.violationsOf(id)),
   ];
   const root = [...requestedKeys].sort().join(", ");
-  /* The sanction rule is a set comparison: every version of a package the
-   * consumer ships must be explicitly written — as a `?`, or as an exact
-   * unmarked pin (the catalog form). See resolver/Overrides. */
-  const written = writtenVersions(format, alternates, demanded);
   const refText = refTextFor(references, registry);
   const facts: IDeliveryFacts<V, C> = {
     domain: format,

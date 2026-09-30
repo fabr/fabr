@@ -18,9 +18,11 @@
  */
 
 import { expect } from "chai";
-import { CommandFailedError, ConflictError, ExecutionError, MultiError } from "../core/Errors";
+import { CommandFailedError, ConflictError, ExecutionError, MultiError, RequirementResolutionError } from "../core/Errors";
+import { RefSource, RepositoryRef } from "../core/Repository";
 import { registerProvenanceRenderer } from "../core/Provenance";
 import { IDiagnosticNote, Log } from "../support/Log";
+import { IModelRefStep, MODEL_REF_PROVENANCE } from "./BuildContext";
 import { parseName } from "./Parser";
 import { BUILD_OPERATION, Constraints } from "./Constraints";
 import { CircularDependencyError, DependencyFailedError, NoRuleFoundError, ReferenceFailedError } from "./Errors";
@@ -154,6 +156,37 @@ describe("DiagnosticErrorFormatter", () => {
       "Failed to build app: $ tsc\napp out| src/a.ts: error TS2322\napp err| warning\nexited with error code 2"
     );
     expect(errorSummary(failure)).to.equal("exited with error code 2");
+  });
+
+  describe("a requirement that failed to resolve", () => {
+    /** A reference written in `target`'s `deps`, as the model stamps it. */
+    function writtenRef(written: string, target: TargetDecl): RepositoryRef {
+      const step: IModelRefStep = {
+        kind: MODEL_REF_PROVENANCE,
+        value: value(written),
+        constraints: Constraints.of({}),
+        property: propertyDecl("deps"),
+        target,
+      };
+      return new RepositoryRef(undefined as unknown as RefSource, parseName(written)).withStep(step);
+    }
+
+    it("anchors at the reference when the failing target wrote it", () => {
+      const app = targetDecl("app");
+      const failure = new DependencyFailedError(app, new RequirementResolutionError([writtenRef("@dep:x", app)], new Error("Unable to resolve x")));
+      expect(capture(failure)[0].message).to.equal("Unable to resolve x - required by app deps");
+    });
+
+    it("names the failing target when the reference was carried in from a dependency", () => {
+      /* api's collection point judges the requirement engine's package carries:
+       * the failure is api's, and engine's reference is where it was written. */
+      const api = targetDecl("api");
+      const engine = targetDecl("engine");
+      const failure = new DependencyFailedError(api, new RequirementResolutionError([writtenRef("@dep:x", engine)], new Error("Unable to resolve x")));
+      const [diagnostic] = capture(failure);
+      expect(diagnostic.message).to.equal("Failed to build api: Unable to resolve x");
+      expect(diagnostic.notes?.map(note => note.message)).to.deep.equal(["from '@dep:x' (engine deps)"]);
+    });
   });
 
   it("keeps a distinct trail per root when a shared failure is requested two ways", () => {

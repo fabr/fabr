@@ -31,7 +31,7 @@
 import { Computable } from "../core/Computable";
 import { attachHelp, ResolutionWalkError } from "../core/Errors";
 import { nodeId, ResolutionExplainer, ResolutionGraph } from "./ResolutionGraph";
-import { canonicalExactVersion, canonicalRequirements } from "./Overrides";
+import { canonicalRequirements } from "./Overrides";
 import { IResolutionError, MVSResolution, Requirement, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
 
 /** Render a reference as the repository's users write it — `@npm:pkg:1.4.2?`
@@ -327,8 +327,9 @@ export function sanctionHelp(entries: string[]): string[] {
  * constraint (only reachable for disjunctive ranges: for convex ranges the
  * violation is the proof no such version exists) — verified by one
  * re-resolution with the candidate pins added; otherwise the **`?` sanction
- * lines matching the resolution's actual forks**, correct by construction
- * since the forks demonstrably repair every violated edge. If the
+ * lines completing what the consumer ships** (`needed`) against what is
+ * already `written`, correct by construction since the forks demonstrably
+ * repair every violated edge. If the
  * verification resolution still shows conflicts, every pin is demoted to its
  * sanction lines — the always-safe suggestion. Runs only on the failure path;
  * degrades to the sanction lines when the registry is unreachable.
@@ -338,6 +339,7 @@ export function suggestSanctions<V, C>(
   tree: ResolvedTree<V>,
   needed: readonly Selected<V>[],
   demanded: readonly Requirement[],
+  written: ReadonlyMap<string, ReadonlySet<string>>,
   sources: SuggestSources<V, C>
 ): Computable<string[]> {
   const { domain } = sources;
@@ -368,20 +370,10 @@ export function suggestSanctions<V, C>(
   };
   /* '?' sanctions only — resolution-pure: a sanction is no dependency (no
    * floor, no mount), so pasting it into a deps list adds nothing to the
-   * consumer's dependency surface. The whole coexisting set must be written,
-   * so the line completes it against what is already there. */
-  const written = (pkg: string): ReadonlySet<string> => {
-    const versions = new Set<string>();
-    for (const req of demanded) {
-      const exact = canonicalExactVersion(domain, req.constraint);
-      if (req.pkg === pkg && (req.override === "alternate" || exact !== undefined)) {
-        /* Canonical form: sanctionLine filters against versionToString. */
-        versions.add(exact ?? req.constraint);
-      }
-    }
-    return versions;
-  };
-  const sanctionsOnly = (): string[] => sanctionHelp(conflicted.flatMap(pkg => sanctionLine(sources, tree.selections, written, pkg)));
+   * consumer's dependency surface. Every version shipped must be written, so
+   * the line completes what ships against what is already there. */
+  const writtenOf = (pkg: string): ReadonlySet<string> => written.get(pkg) ?? new Set();
+  const sanctionsOnly = (): string[] => sanctionHelp(conflicted.flatMap(pkg => sanctionLine(sources, needed, writtenOf, pkg)));
   const singleFix = (pkg: string): Computable<V | undefined> => {
     const constraints = constraintsOn(pkg);
     const principal = tree.selections.find(sel => sel.pkg === pkg && sel.fork === undefined);
@@ -419,7 +411,7 @@ export function suggestSanctions<V, C>(
         );
         const sanctionLines = conflicted
           .filter(pkg => !pins.some(pin => pin.pkg === pkg))
-          .flatMap(pkg => sanctionLine(sources, tree.selections, written, pkg));
+          .flatMap(pkg => sanctionLine(sources, needed, writtenOf, pkg));
         return sanctionHelp([...pinLines, ...sanctionLines]);
       },
       () => sanctionsOnly()

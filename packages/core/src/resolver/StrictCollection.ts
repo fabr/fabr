@@ -198,7 +198,7 @@ function checkDomain<V, C>(
    * answers its own requirers. */
   const suggestion =
     graphs.length === 1
-      ? suggestSanctions(outstanding, graphs[0], needed, members.flatMap(facts => facts.requested), members[0].sources())
+      ? suggestSanctions(outstanding, graphs[0], needed, members.flatMap(facts => facts.requested), written, members[0].sources())
       : Computable.resolve(sanctionHelp(conflictedSanctions(outstanding, duplicates, shipped, written, domain, refText)));
   return suggestion.then(help => {
     const error = conflictError(root, outstanding, duplicates, needed, explaining, refText, written, help);

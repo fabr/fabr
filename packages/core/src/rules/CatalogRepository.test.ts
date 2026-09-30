@@ -26,6 +26,7 @@ import { Repository, RepositoryRef,
   MaterializeOptions,
   ClosureThunk,
 } from "../core/Repository";
+import { splitOverrideMarker } from "../resolver/Overrides";
 import { Requirement } from "../resolver/Types";
 import { ConflictError, RequirementResolutionError } from "../core/Errors";
 import { MemoryFile } from "../core/MemoryFS";
@@ -105,9 +106,11 @@ describe("CatalogRepository (through the model)", () => {
     parseRequirement: (name: Name) => {
       const written = name.toBaseString();
       const colon = written.lastIndexOf(":");
-      return colon === -1
-        ? { pkg: written, constraint: "1.0.0" }
-        : { pkg: written.substring(0, colon), constraint: written.substring(colon + 1) };
+      if (colon === -1) {
+        return { pkg: written, constraint: "1.0.0" };
+      }
+      const { text, override } = splitOverrideMarker(written.substring(colon + 1));
+      return { pkg: written.substring(0, colon), constraint: text, ...(override ? { override } : {}) };
     },
     parsePublishCoordinate: () => {
       throw new Error("not used");
@@ -328,6 +331,50 @@ describe("CatalogRepository (through the model)", () => {
        * losing requirement's, each through the delivery that ships it. */
       expect(message).to.contain("2.0.0 selected by: a@1.0.0 -> x@2.0.0 (^2.0.0)");
       expect(message).to.contain("'^1.0.0' required via: b@1.0.0 -> y@1.0.0 (1.0.0)");
+    });
+
+    /** The deepest message and help a failed build of `name` carries. */
+    async function failure(model: BuildModel, name: string): Promise<{ message: string; help: string }> {
+      let message = "";
+      let help = "";
+      try {
+        await model.getConfig(Constraints.of({}), execution).getTarget(name);
+      } catch (err) {
+        for (let current: unknown = err; current instanceof Error; current = (current as { cause?: unknown }).cause) {
+          message = current.message;
+          help = String((current as { help?: unknown }).help ?? help);
+        }
+      }
+      return { message, help };
+    }
+
+    it("counts the catalog's exact pin as written for a subset that does not name it", async () => {
+      /* x is pinned at 2.0.0 and 1.0.0 is sanctioned, both in the catalog;
+       * `both` names neither, yet ships both versions — each written. */
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @cat { deps = @backing:a @backing:b @backing:x:2.0.0 @backing:x:1.0.0?; }\n" +
+          "test_deps both { deps = @cat:a @cat:b; }\n"
+      );
+      graph();
+      await model.getConfig(Constraints.of({}), execution).getTarget("both");
+      expect([...backings.get("@backing")!.fetched].sort()).to.include.members(["x@1.0.0", "x@2.0.0"]);
+    });
+
+    it("suggests only the versions shipped and not yet written", async () => {
+      /* c raises x's principal to 3.0.0, which `both` never reaches: it ships
+       * x@2.0.0 (for a) and x@1.0.0 (for y), and 1.0.0 is already sanctioned. */
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @cat { deps = @backing:a @backing:b @backing:c @backing:x:1.0.0?; }\n" +
+          "test_deps both { deps = @cat:a @cat:b; }\n"
+      );
+      graph();
+      requirementTable.set("c@1.0.0", [{ pkg: "x", constraint: "^3.0.0" }]);
+      const { help } = await failure(model, "both");
+      expect(help).to.contain("@backing:x:2.0.0?");
+      expect(help).to.not.contain("@backing:x:1.0.0?");
+      expect(help).to.not.contain("@backing:x:3.0.0?");
     });
 
     it("refuses a catalog member and a direct reference shipping two versions together", async () => {

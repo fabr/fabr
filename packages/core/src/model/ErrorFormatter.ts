@@ -285,11 +285,19 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
    * references follow as notes. Without a written use site (a CLI name), it
    * anchors like any other cause.
    */
+  /**
+   * A requirement that failed to resolve, anchored at the reference behind it
+   * when that reference was written in the failing target itself; otherwise —
+   * a reference carried in from a dependency, or none written at all — at the
+   * failing target, with every culprit reference as a note saying where it was
+   * written.
+   */
   private describeRequirement(cause: RequirementResolutionError, owner: DependencyFailedError | undefined): IDiagnostic {
     const help = helpOf(cause) ?? helpOf(cause.cause);
     const [first, ...rest] = cause.refs;
     const chain = first ? chainSteps(first.steps, undefined) : undefined;
-    if (chain?.kind !== MODEL_REF_PROVENANCE) {
+    const written = chain?.kind === MODEL_REF_PROVENANCE && (owner === undefined || (chain as IModelRefStep).target === owner.target);
+    if (!written) {
       const anchor = owner
         ? { message: `Failed to build ${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target) }
         : { message: cause.message };
