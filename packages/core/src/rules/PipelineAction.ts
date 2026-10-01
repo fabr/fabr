@@ -16,7 +16,7 @@
 
 import { getResultFileSet, writeFileSet } from "../core/Staging";
 import { Computable } from "../core/Computable";
-import { attachHelp } from "../core/Errors";
+import { attachHelp, ConflictError } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { executePipeline, ITaskReport, StageSpec, StageStreams } from "../support/Execute";
@@ -28,10 +28,11 @@ import { ActionContext } from "../core/BuildCache";
  * The `command-pipeline` build action: stage the combined install (each stage's
  * runnable under its own subdir, plus the shared `srcs` at the root), run the
  * stages as a pipeline (stdout→stdin wired, first stage fed the `stdin` file if
- * present), and collect the result — the redirect captures (streamed straight to
- * the content store, each named content) unioned with the `output` glob over
- * files the tools wrote. One cacheable unit, keyed by the staged content + the
- * stage specs (see {@link runPipeline}).
+ * present), and collect the result: the redirect captures (streamed straight to
+ * the content store, each named content) where there is no `output`, else what
+ * `output` selects from the captures and the files the tools wrote together. One
+ * cacheable unit, keyed by the staged content + the stage specs (see
+ * {@link runPipeline}).
  */
 function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const files = FileSet.unionAll(fileSetInput(action, "files"), configFiles(action));
@@ -46,28 +47,48 @@ function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskRepor
     .then(() => stdinBytes(stdin))
     .then(bytes => executePipeline(ctx.processLimit, specs, ctx.workDir, () => ctx.createOutput(), bytes, report))
     .then(captured =>
-      /* Plus any files the tools wrote, when an `output` projection is given (a
-       * pure redirect genrule omits it and collects only the captures). A given
-       * `output` that matches nothing is an error, not a silent empty success:
-       * the command ran but produced none of the files the target declares it
-       * collects — almost always a wrong selector or a tool that wrote
-       * elsewhere. (A pure-redirect genrule has no output and skips this; its
-       * captures are the output.) */
+      /* A given `output` selects from everything the command produced — a
+       * redirect names a file in the sandbox as surely as a tool writing one
+       * does — through the one projector, so its `dir:` strip and `-> tmpl`
+       * rename apply to both alike; a redirect it does not select is not
+       * collected, and one named like a selected written file is a conflict.
+       * Selecting nothing is an error, not a silent empty success: almost always
+       * a wrong selector or a tool that wrote elsewhere. */
       output === undefined
         ? Computable.resolve(captured)
         : ctx
             .admit(report, () => getResultFileSet(ctx.workDir, output))
             .then(written => {
-              if (written.isEmpty()) {
+              const collected = FileSet.unionAll(written, selectedCaptures(captured, written, output));
+              if (collected.isEmpty()) {
                 throw attachHelp(
                   new Error(`the command produced no files matching output pattern '${output.toString()}'`),
                   `check the output pattern, or that the command writes its output where '${output.toString()}' looks`
                 );
               }
-              return FileSet.unionAll(written, captured);
+              return collected;
             })
     )
     .then(result => ({ result }));
+}
+
+/** The redirect captures `output` selects, under the names it gives them. A
+ * capture selected under the name of a selected written file is a conflict,
+ * reported with each side named as the command produced it. */
+function selectedCaptures(captured: FileSet, written: FileSet, output: Name): FileSet {
+  const project = output.makeProjector();
+  for (const [redirect] of captured) {
+    const name = project(redirect);
+    if (name !== undefined && written.getFile(name) !== undefined) {
+      throw new ConflictError(
+        "collected files",
+        name,
+        { provenance: undefined, detail: "a file the command wrote" },
+        { provenance: undefined, detail: `the redirect "> ${redirect}"` }
+      );
+    }
+  }
+  return captured.rename(project);
 }
 
 /** @return the first (only) file's bytes of a single-file stdin fileset, or
@@ -84,8 +105,9 @@ function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | undefined> 
  * cached empty success — bump so entries cached green under v1 re-run.
  * v3: the stage spec's stream members changed shape (`both` → `stdout` +
  * `mergeErr`), and the spec is serialized into the key, so v2 entries would key
- * differently for the same command. */
-export const PIPELINE_ACTION = { id: "core:command-pipeline", version: 3, run: runPipeline };
+ * differently for the same command.
+ * v4: a given `output` selects the captures too. */
+export const PIPELINE_ACTION = { id: "core:command-pipeline", version: 4, run: runPipeline };
 
 /** One stage as {@link stagePipeline} needs it: the runnable to launch plus its
  * argv and stream destinations. Structurally the model's `ResolvedCommandStage`,

@@ -31,8 +31,8 @@
  * stdout→stdin; `> name` / `2> name` / `&> name` capture a stream as content
  * named `name`; `< source` streams a single-file reference to the first stage's
  * stdin. `srcs` are the input files staged at the sandbox root; `output` (a
- * `dir:glob`) collects files the tools *wrote*, unioned with the redirect
- * captures — omit it for a pure-redirect genrule.
+ * `dir:glob` projection) selects what is collected, from the files the tools
+ * wrote and the redirect captures alike — without it, the captures are collected.
  */
 
 import { ResolvedCommandPipeline, TargetContext } from "../model/BuildContext";

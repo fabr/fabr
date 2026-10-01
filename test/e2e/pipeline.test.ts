@@ -187,6 +187,39 @@ describe("e2e: generate command pipelines", () => {
     expect(result.stderr).to.match(/help:/);
   });
 
+  /* A tool that both writes a file and prints to stdout, for `output` choosing
+   * between a written file and a redirect. */
+  const BOTH = "plugin @fabr-build/js;\njs_script both { entry = src:both.js; }\n";
+  const BOTH_FILES = { "src/both.js": "require('fs').writeFileSync('made.txt','written\\n');\nprocess.stdout.write('printed\\n');\n" };
+
+  it("selects a redirect with 'output', renamed like a written file", () => {
+    const result = runFabr(
+      { "PROJECT.fabr": TOOLS + "generate g { run = emit > out.txt; output = *.txt -> dist/*.txt; }\n", ...TOOL_FILES },
+      ["cat", "g:dist/out.txt"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal("hello\n");
+  });
+
+  it("collects only what 'output' selects, leaving out a redirect it does not", () => {
+    const result = runFabr({ "PROJECT.fabr": BOTH + "generate g { run = both > log.txt; output = made.txt; }\n", ...BOTH_FILES }, [
+      "ls",
+      "g",
+    ]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout.trim().split("\n")).to.deep.equal(["made.txt"]);
+  });
+
+  it("reports a redirect named like a written file 'output' selects as a conflict", () => {
+    const result = runFabr({ "PROJECT.fabr": BOTH + "generate g { run = both > made.txt; output = made.txt; }\n", ...BOTH_FILES }, [
+      "build",
+      "g",
+    ]);
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.contain("made.txt");
+    expect(result.stderr).to.match(/conflict/i);
+  });
+
   it("streams a successful command's output to stderr by default, suppressed with -q", () => {
     /* A successful step's un-redirected output is shown live on fabr's stderr, and
      * -q silences it. Each run uses a DISTINCT marker so both are genuine cache

@@ -50,9 +50,9 @@ targetdef catalog {
 # glob expanded over `srcs`. `|` pipes stdout to the next stage's stdin; `> name`
 # / `2> name` / `&> name` capture stdout / stderr / both as content named `name`;
 # `< source` streams a single-file reference to the first stage's stdin. `srcs`
-# are input files staged at the sandbox root; `output` (a `dir:glob`) collects
-# files the tools wrote, unioned with the redirect captures (omit it for a pure
-# redirect genrule). Example:
+# are input files staged at the sandbox root; `output` (a `dir:glob`, optionally
+# `-> tmpl`) selects what is collected, from the files the tools wrote and the
+# redirect captures alike; without it, the redirect captures are collected. Example:
 #
 #     generate docs { run = list_targetdefs --json | gendoc > reference.md; }
 #

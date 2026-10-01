@@ -381,6 +381,11 @@ rather than the last one quietly winning.
 A stream that is not redirected is reported by fabr as the target's output, and is shown if the
 command fails.
 
+In a `generate` target, the files the redirections capture are the result. If the target also sets
+`output`, that selects the result instead, choosing among the captured files and any files the
+commands wrote, so a capture `output` doesn't match is left out. A captured file and a written file
+that end up with the same name are reported as a conflict.
+
 
 ### Guarded properties
 
