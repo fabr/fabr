@@ -44,6 +44,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { SourceMap } from "node:module";
 import { PNP_DATA_FILE, PnpResolver } from "../pnp/PnPResolver";
 import { resolveVirtual } from "../pnp/VirtualPath";
 import type { IBundleOptions } from "../JSBundle";
@@ -52,8 +53,19 @@ import type { IBundleOptions } from "../JSBundle";
  * fetched at build time rather than depended on, so its own types are not
  * available to compile this file (it is a test dependency, which is a different
  * thing); these mirror the documented shapes. */
+interface ILocation {
+  file: string;
+  namespace?: string;
+  line: number;
+  column: number;
+  length?: number;
+  lineText?: string;
+  suggestion?: string;
+}
 interface IMessage {
   text: string;
+  location?: ILocation | null;
+  notes?: Array<{ text: string; location?: ILocation | null }>;
 }
 interface IOnResolveArgs {
   path: string;
@@ -106,6 +118,7 @@ interface IBuildResult {
 }
 interface IEsbuild {
   build(options: Record<string, unknown>): Promise<IBuildResult>;
+  formatMessages(messages: IMessage[], options: { kind: "error" | "warning"; color?: boolean }): Promise<string[]>;
 }
 
 /* The extensions esbuild loads natively as code/text — everything else that
@@ -504,17 +517,142 @@ export async function main(argv: string[]): Promise<void> {
   /* What the resolver plugin declined; esbuild decides which of them are fatal
    * (see the plugin's fallback), and only those get fabr's guidance. */
   const unresolved = new Set<string>();
-  let result: IBuildResult;
+  let errors: IMessage[];
   try {
-    result = await esbuild.build(toEsbuildOptions(options, unresolved));
+    errors = (await esbuild.build(toEsbuildOptions(options, unresolved))).errors;
   } catch (err) {
-    throw new Error(unresolvedHelp(err instanceof Error ? err.message : String(err), unresolved));
-  }
-  if (result.errors.length) {
-    for (const error of result.errors) {
-      process.stderr.write(`${unresolvedHelp(error.text, unresolved)}\n`);
+    const failure = (err as { errors?: unknown }).errors;
+    if (!Array.isArray(failure) || failure.length === 0) {
+      throw new Error(unresolvedHelp(err instanceof Error ? err.message : String(err), unresolved));
     }
+    errors = failure as IMessage[];
+  }
+  if (errors.length) {
+    const resolver = usesManifest() ? PnpResolver.load(process.cwd(), []) : undefined;
+    const rendered = await esbuild.formatMessages(readableMessages(errors, process.cwd(), resolver), { kind: "error", color: false });
+    process.stderr.write(unresolvedHelp(rendered.join(""), unresolved).replace(/\n*$/, "\n"));
     process.exitCode = 1;
+  }
+}
+
+/**
+ * esbuild's messages with every location made readable: moved through the
+ * file's own source map, where it carries one, to the line that was written
+ * (esbuild's diagnostics name the file it parsed, though its output map
+ * follows input maps), and named by the package it lies in — `ms@2.1.3/index.js`
+ * — rather than by its place in the tree pool. A location outside any stored
+ * package (the bundle's own sources) keeps its workspace path. A note located
+ * in the PnP data file is dropped: the table is fabr's own staging, and
+ * {@link unresolvedHelp} says what it would, in the terms of the build file.
+ */
+export function readableMessages(messages: IMessage[], cwd: string, resolver: PnpResolver | undefined): IMessage[] {
+  const names = new PackageNames(resolver);
+  const readable = (location: ILocation | null | undefined): ILocation | null | undefined => {
+    /* esbuild spells the file namespace as "" in a message's location. */
+    if (!location || (location.namespace !== undefined && location.namespace !== "" && location.namespace !== "file")) {
+      return location;
+    }
+    const at = originalLocation(path.resolve(cwd, location.file), location) ?? { ...location, file: path.resolve(cwd, location.file) };
+    return { ...at, file: names.display(at.file, cwd) };
+  };
+  return messages.map(message => ({
+    ...message,
+    location: readable(message.location),
+    ...(message.notes
+      ? {
+          notes: message.notes
+            .filter(note => note.location?.file !== PNP_DATA_FILE)
+            .map(note => ({ ...note, location: readable(note.location) })),
+        }
+      : {}),
+  }));
+}
+
+/**
+ * Where `location` in `file` came from, by the source map the file names
+ * (`//# sourceMappingURL=`, a sibling file or an inline `data:` URL), with the
+ * original line's text where the map embeds the source; undefined where there
+ * is no map or it maps nothing there. `file` is absolute; so is the answer.
+ */
+function originalLocation(file: string, location: ILocation): ILocation | undefined {
+  let text: string;
+  try {
+    text = fs.readFileSync(resolveVirtual(file), "utf8");
+  } catch {
+    return undefined;
+  }
+  const reference = /\/[/*][#@] sourceMappingURL=([^\s*]+)[\s*/]*$/.exec(text.trimEnd())?.[1];
+  if (reference === undefined) {
+    return undefined;
+  }
+  let payload: { sources?: unknown; sourceRoot?: unknown; sourcesContent?: unknown };
+  let mapDir = path.dirname(file);
+  try {
+    const inline = /^data:application\/json[^,]*;base64,(.*)$/.exec(reference);
+    if (inline) {
+      payload = JSON.parse(Buffer.from(inline[1], "base64").toString("utf8")) as typeof payload;
+    } else {
+      const mapFile = path.resolve(mapDir, decodeURIComponent(reference));
+      mapDir = path.dirname(mapFile);
+      payload = JSON.parse(fs.readFileSync(resolveVirtual(mapFile), "utf8")) as typeof payload;
+    }
+  } catch {
+    return undefined;
+  }
+  let origin: { fileName?: string; lineNumber?: number; columnNumber?: number };
+  try {
+    origin = new SourceMap(payload as ConstructorParameters<typeof SourceMap>[0]).findOrigin(location.line, location.column + 1);
+  } catch {
+    return undefined;
+  }
+  if (origin.fileName === undefined || origin.lineNumber === undefined || /^[a-z][a-z0-9+.-]*:/i.test(origin.fileName)) {
+    return undefined;
+  }
+  const sources = Array.isArray(payload.sources) ? payload.sources : [];
+  const content = Array.isArray(payload.sourcesContent) ? payload.sourcesContent[sources.indexOf(origin.fileName)] : undefined;
+  const lineText = typeof content === "string" ? content.split(/\r?\n/)[origin.lineNumber - 1] : undefined;
+  const root = typeof payload.sourceRoot === "string" ? payload.sourceRoot : "";
+  return {
+    file: path.resolve(mapDir, root, origin.fileName),
+    line: origin.lineNumber,
+    column: Math.max(0, (origin.columnNumber ?? 1) - 1),
+    ...(lineText === undefined ? { lineText: "" } : { lineText, ...(location.length ? { length: location.length } : {}) }),
+  };
+}
+
+/** Display names for files, by the stored package each lies in: its name and
+ * version, then the path within it. */
+class PackageNames {
+  private readonly versions = new Map<string, string>();
+
+  constructor(private readonly resolver: PnpResolver | undefined) {}
+
+  public display(file: string, cwd: string): string {
+    const locator = this.resolver?.findPackageLocator(file);
+    const info = locator && locator.name !== null ? this.resolver!.getPackageInformation(locator) : null;
+    if (!locator || locator.name === null || !info || info.linkType === "SOFT") {
+      return path.relative(cwd, file);
+    }
+    const root = info.packageLocation;
+    /* A map may name its source above the package — fabr's compile names each
+     * one beside its output directory — so the climb is dropped, leaving the
+     * path the package's author wrote it under. */
+    const within = path.relative(root, file).split(path.sep).filter(part => part !== "..");
+    return `${locator.name}@${this.versionOf(root)}/${within.join("/")}`;
+  }
+
+  private versionOf(root: string): string {
+    let version = this.versions.get(root);
+    if (version === undefined) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(path.join(resolveVirtual(root), "package.json"), "utf8")) as { version?: unknown };
+        version = typeof manifest.version === "string" ? manifest.version : "?";
+      } catch {
+        version = "?";
+      }
+      this.versions.set(root, version);
+    }
+    return version;
   }
 }
 

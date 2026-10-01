@@ -344,6 +344,94 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
   });
 });
 
+describe("bundle errors, over real esbuild", () => {
+  /* esbuild reports a location by its staged path — a tree-pool hash — and in
+   * the file it parsed, not the one that was written. */
+  let work: string;
+
+  beforeEach(() => {
+    work = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-bundleerrors-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(work, { recursive: true, force: true });
+    process.exitCode = undefined;
+  });
+
+  /** Stage `packages` as the step does, bundle `entry.js`, and answer stderr. */
+  async function bundleErrors(packages: PackageFileSet[], entry: string): Promise<string> {
+    const manifest = pnpManifestOf(packages);
+    const store = path.join(work, "store");
+    for (const pkg of manifest.packages) {
+      const tree = path.join(store, path.basename(treeMountOf(pkg)));
+      for (const [name, file] of pkg as FileSet) {
+        fs.mkdirSync(path.dirname(path.join(tree, name)), { recursive: true });
+        fs.writeFileSync(path.join(tree, name), (file as MemoryFile).getBuffer().value as Buffer);
+      }
+    }
+    fs.symlinkSync(store, path.join(work, ".fabr-tree"));
+    fs.writeFileSync(path.join(work, PNP_DATA_FILE), manifest.toFile().getBuffer().value as Buffer);
+    fs.writeFileSync(path.join(work, "entry.js"), entry);
+    fs.writeFileSync(
+      path.join(work, "options.json"),
+      JSON.stringify({ entries: [{ in: "entry.js", out: "bundle" }], external: [], platform: "node", format: "cjs", target: "es2021", minify: false, sourcemap: false, outdir: "out" })
+    );
+    const written: string[] = [];
+    const write = process.stderr.write.bind(process.stderr);
+    const cwd = process.cwd();
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      process.chdir(work);
+      await main(["--options=options.json"]);
+    } finally {
+      process.chdir(cwd);
+      process.stderr.write = write;
+    }
+    assert.equal(process.exitCode, 1, "the bundle should have failed");
+    return written.join("");
+  }
+
+  const pkg = (name: string, version: string, files: Record<string, string>): PackageFileSet =>
+    new PackageFileSet(
+      new Map<string, IFile>([
+        ["package.json", MemoryFile.from(JSON.stringify({ name, version, main: Object.keys(files)[0] }))],
+        ...Object.entries(files).map(([file, body]): [string, IFile] => [file, MemoryFile.from(body)]),
+      ]),
+      name,
+      version,
+      []
+    );
+
+  it("names a location by its package and version, not its place in the tree pool", async () => {
+    const out = await bundleErrors([pkg("plain", "2.0.0", { "index.js": 'module.exports = require("missing-a");\n' })], 'require("plain");\n');
+    assert.match(out, /plain@2\.0\.0\/index\.js:1:\d+/);
+    assert.ok(!out.includes(".fabr-tree"), out);
+    assert.ok(!out.includes(PNP_DATA_FILE), out);
+    assert.match(out, /fabr: 'missing-a' is neither bundled/);
+  });
+
+  it("reports a compiled file's error at the line its source map says was written", async () => {
+    const source = '// widget\nimport { thing } from "missing-b";\nexport const value = thing;\n';
+    const compiled = '"use strict";\nconst missing_b_1 = require("missing-b");\nexports.value = missing_b_1.thing;\n//# sourceMappingURL=widget.js.map\n';
+    /* Line 2 of the output is line 2 of the source; everything else unmapped. */
+    const map = JSON.stringify({ version: 3, file: "widget.js", sources: ["../src/widget.ts"], sourcesContent: [source], names: [], mappings: ";AACA" });
+    const out = await bundleErrors(
+      [pkg("typed", "1.0.0", { "dist/widget.js": compiled, "dist/widget.js.map": map })],
+      'require("typed");\n'
+    );
+    assert.match(out, /typed@1\.0\.0\/src\/widget\.ts:2:\d+/);
+    assert.ok(out.includes('import { thing } from "missing-b"'), out);
+  });
+
+  it("keeps the workspace path of the bundle's own sources", async () => {
+    const out = await bundleErrors([pkg("plain", "2.0.0", { "index.js": "" })], 'require("missing-c");\n');
+    assert.match(out, /entry\.js:1:\d+/);
+  });
+});
+
 describe("treeOf", () => {
   it("answers the pooled tree a staged path belongs to", () => {
     assert.equal(treeOf(".fabr-tree/abc123/lib/deep/sub"), ".fabr-tree/abc123");
