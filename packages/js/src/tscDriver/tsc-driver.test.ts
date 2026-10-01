@@ -1881,7 +1881,11 @@ describe("import rewriting", () => {
   function compileAssets(
     module: string,
     read = "styles.cardTitle",
-    stylesheet = "./Card.module.scss"
+    stylesheet = "./Card.module.scss",
+    /* The module as the css step writes it — TypeScript, `Card.css.ts`, with the
+     * lowered `Card.css` one of the target's resources — rather than a
+     * hand-written JS module typed by a declaration. */
+    generatedShim = false
   ): { status: number; output: string; js: string; shim: string } {
     const work = fixture();
     stage(work.root, [], [], [], { name: "mylib", location: "./src/" }, module);
@@ -1907,20 +1911,27 @@ describe("import rewriting", () => {
       })
     );
     const src = path.join(work.root, "src");
-    fs.writeFileSync(
-      path.join(src, "Card.d.css.ts"),
-      'declare const styles: {\n  readonly "card-title": string;\n  readonly cardTitle: string;\n};\nexport default styles;\n'
-    );
-    fs.writeFileSync(
-      path.join(src, "Card.css.js"),
-      'import "./Card.css";\nconst styles = { "card-title": "card-title_k3f1c", cardTitle: "card-title_k3f1c" };\nexport default styles;\n'
-    );
+    if (generatedShim) {
+      fs.writeFileSync(
+        path.join(src, "Card.css.ts"),
+        'import "./Card.css";\nconst styles = { "card-title": "card-title_k3f1c", cardTitle: "card-title_k3f1c" } as const;\nexport default styles;\n'
+      );
+    } else {
+      fs.writeFileSync(
+        path.join(src, "Card.d.css.ts"),
+        'declare const styles: {\n  readonly "card-title": string;\n  readonly cardTitle: string;\n};\nexport default styles;\n'
+      );
+      fs.writeFileSync(
+        path.join(src, "Card.css.js"),
+        'import "./Card.css";\nconst styles = { "card-title": "card-title_k3f1c", cardTitle: "card-title_k3f1c" };\nexport default styles;\n'
+      );
+    }
     /* A PLAIN stylesheet beside the module one: no shim, no class map, imported
      * for its effect alone — the other half of what the css step produces. It
      * is a delivered file the compile emits nothing for, so it is declared as a
      * resource: the compiler never resolves it, and its side-effect import is
      * accepted because the file is there. */
-    fs.writeFileSync(path.join(work.root, "resources.json"), JSON.stringify(["theme.css"]));
+    fs.writeFileSync(path.join(work.root, "resources.json"), JSON.stringify(generatedShim ? ["theme.css", "Card.css"] : ["theme.css"]));
     fs.writeFileSync(
       path.join(src, "Card.ts"),
       `import styles from "${stylesheet}";\nimport "./theme.scss";\nexport const cls = ${read};\n`
@@ -1964,6 +1975,17 @@ describe("import rewriting", () => {
     const cjs = compileAssets("commonjs", "styles.cardTitle", "mylib/Card.module.scss");
     expect(cjs.status, cjs.output).to.equal(0);
     expect(cjs.js).to.contain('require("./Card.css.js")');
+  });
+
+  it("leaves a generated shim's stylesheet import naming the stylesheet, under ES modules", () => {
+    /* The compiler resolves `./Card.css` by appending `.ts` — to the shim
+     * itself — but at runtime the specifier names the stylesheet exactly, and
+     * an extension rewrite would make the shim import itself. */
+    const { status, output, js, shim } = compileAssets("esnext", "styles.cardTitle", "./Card.module.scss", true);
+    expect(status, output).to.equal(0);
+    expect(js).to.contain('from "./Card.css.js"');
+    expect(shim).to.contain('import "./Card.css";');
+    expect(shim).to.not.contain("Card.css.js");
   });
 
   it("leaves the shim's own stylesheet import naming the stylesheet", () => {

@@ -1049,6 +1049,7 @@ function installResolution(
     finishDiagnostics,
     packageSpecifier: (specifier, containingFile) => completedSpecifiers.get(`${resolver.locatorOf(containingFile)}\0${specifier}`),
     ownSpecifier: ownRelative,
+    exists: file => declared.has(file) || host.fileExists(file),
   };
 }
 
@@ -1059,6 +1060,7 @@ interface IInstalledResolution {
   finishDiagnostics(diagnostics: readonly Diagnostic[]): readonly Diagnostic[];
   packageSpecifier(specifier: string, containingFile: string): string | undefined;
   ownSpecifier(specifier: string, containingFile: string): string | undefined;
+  exists(file: string): boolean;
 }
 
 /** What an extensionless `exports` target is completed with, in order: a
@@ -1398,6 +1400,9 @@ interface IEmitLayout {
    * written as (`mylib/a/x` → `../a/x`), whatever the module system; the
    * relative rewrites then apply to it as to any other. */
   ownSpecifier?: (specifier: string, containingFile: string) => string | undefined;
+  /** Whether a file is there for the output to load — on disk, or one of the
+   * target's own resources, which are not staged for the compile. */
+  exists?: (file: string) => boolean;
 }
 
 /**
@@ -1626,6 +1631,13 @@ function specifierRewriter(
         return undefined;
       }
       const resolved = resolve(specifier, sourceFile.fileName);
+      /* A specifier naming a file exactly loads that file at runtime, whatever
+       * the compiler resolved it to: `./x.css` beside an `x.css.ts` names the
+       * stylesheet, though the compiler, appending `.ts`, finds the module. */
+      const named = path.resolve(path.dirname(sourceFile.fileName), specifier);
+      if (resolved !== undefined && path.resolve(resolved) !== named && layout!.exists?.(named)) {
+        return undefined;
+      }
       const target = resolved === undefined ? undefined : emittedPathOf(resolved, layout!);
       return target === undefined ? undefined : emittedSpecifier(from!, target);
     };
@@ -1932,7 +1944,8 @@ function emitLayoutOf(
   jsExtension?: string,
   rewrites?: IImportRewrite[],
   packageSpecifier?: (specifier: string, containingFile: string) => string | undefined,
-  ownSpecifier?: (specifier: string, containingFile: string) => string | undefined
+  ownSpecifier?: (specifier: string, containingFile: string) => string | undefined,
+  exists?: (file: string) => boolean
 ): IEmitLayout | undefined {
   const rewriteExtensions = emitsEsModules(ts, options);
   if (!rewriteExtensions && rewrites === undefined && packageSpecifier === undefined && ownSpecifier === undefined) {
@@ -1948,6 +1961,7 @@ function emitLayoutOf(
     rewriteExtensions,
     packageSpecifier,
     ownSpecifier,
+    exists,
   };
 }
 
@@ -2269,7 +2283,7 @@ export function main(argv: string[]): number {
    * rewriter serves both phases — the JavaScript and the declarations land in
    * the same directory, so they name each other identically. */
   const jsExtension = emitExtensionOf(argv);
-  const layout = emitLayoutOf(ts, parsed.options, root, jsExtension, rewrites, installed?.packageSpecifier, installed?.ownSpecifier);
+  const layout = emitLayoutOf(ts, parsed.options, root, jsExtension, rewrites, installed?.packageSpecifier, installed?.ownSpecifier, installed?.exists);
   if (jsExtension !== undefined && layout?.rewriteExtensions !== true) {
     /* Renaming without rewriting is the exact failure `--emit-extension` refuses
      * `.cjs` for, and it is reachable the other way round too: only an ES-module
