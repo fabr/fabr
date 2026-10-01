@@ -39,6 +39,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { IConditionSet } from "../pnp/PackageExports";
 import { PnpResolver, splitSpecifier, typesPackageName } from "../pnp/PnPResolver";
 import { isVirtual, realpathKeepingVirtual, resolveVirtual } from "../pnp/VirtualPath";
 import { CHANGES_FLAG, DEPS_REPORT_FLAG, IChangeLists, joinDepsPath, STATE_DIR_FLAG, toChangeLists } from "../pnp/ReadSet";
@@ -87,7 +88,10 @@ interface IStringLiteralLike {
 }
 interface IFileReference {
   fileName: string;
+  resolutionMode?: number;
 }
+/** A bare specifier split into its package name and subpath. */
+type ISplitSpecifier = NonNullable<ReturnType<typeof splitSpecifier>>;
 interface IParsedCommandLine {
   options: CompilerOptions;
   fileNames: string[];
@@ -306,7 +310,14 @@ interface ITypeScript {
   /** The module kind a compile actually emits, its unstated default applied.
    * Optional: {@link effectiveModule} falls back to the documented default. */
   getEmitModuleKind?: (options: CompilerOptions) => number;
-  ModuleKind: { CommonJS: number; ES2015: number; Node16: number; NodeNext: number; Preserve?: number };
+  ModuleKind: { CommonJS: number; ES2015: number; ESNext: number; Node16: number; NodeNext: number; Preserve?: number };
+  /** The resolution mode an import is written for (its `resolution-mode`
+   * attribute, or what its syntax implies where that decides); the
+   * compiler-options parameter arrived in TypeScript 5.3. */
+  getModeForUsageLocation?(file: unknown, usage: unknown, options?: CompilerOptions): number | undefined;
+  /** The compiler's own version-range matcher — not in its declared API, so
+   * optional: without it only the `*` range is known to apply. */
+  VersionRange?: { tryParse(text: string): { test(version: string): boolean } | undefined };
   ModuleResolutionKind: { Node10?: number; NodeJs?: number; Node16: number; NodeNext: number; Bundler: number };
   JsxEmit: { Preserve: number };
   SyntaxKind: { ImportKeyword: number };
@@ -524,33 +535,63 @@ function installResolution(
   options: CompilerOptions,
   resolver: PnpResolver,
   root: string,
-  faults: Set<string>,
   rewrites?: IImportRewrite[],
   resourceNames?: string[]
-): void {
+): IInstalledResolution {
   const cache = ts.createModuleResolutionCache(root, name => host.getCanonicalFileName(name), options);
   /** The compile's source root, which bounds where a rewrite rule applies and
    * which the declared resource names are relative to. */
   const sourceRoot = typeof options.rootDir === "string" ? path.resolve(root, options.rootDir) : undefined;
   const declared: ReadonlySet<string> = new Set((resourceNames ?? []).map(name => path.resolve(sourceRoot ?? root, name)));
-  installResourceFallback(ts, host, declared);
-  /**
-   * What the package publishes for a specifier — the resolver's answer, with a
-   * MALFORMED MANIFEST recorded rather than thrown.
-   *
-   * A dependency whose `exports` map cannot be read is a fault in that package,
-   * and one package's mistake must not cost the compilation every other
-   * diagnostic it was about to report. So the name resolves to nothing, the
-   * compiler says so where the import is written, and the underlying reason is
-   * reported once alongside the diagnostics (see {@link main}).
-   */
-  const published = (specifier: string, issuer: string): string[] => {
-    try {
-      return resolver.resolveAll(specifier, issuer);
-    } catch (err: unknown) {
-      faults.add(err instanceof Error ? err.message : String(err));
-      return [];
+  /** The module system an import is written for when it doesn't say: the
+   * output's. */
+  const defaultMode = effectiveModule(ts, options) === ts.ModuleKind.CommonJS ? ts.ModuleKind.CommonJS : ts.ModuleKind.ESNext;
+  /* The conditions an import written for `mode` satisfies, including the
+   * versioned `types@<range>` keys the running compiler's version admits. */
+  const conditionSets = new Map<number, IConditionSet>();
+  const conditionsFor = (mode: number): IConditionSet => {
+    let set = conditionSets.get(mode);
+    if (set === undefined) {
+      const plain = new Set(conditionsOf(ts, options, mode));
+      set = { has: condition => plain.has(condition) || (plain.has("types") && versionedTypesKeyApplies(ts, condition)) };
+      conditionSets.set(mode, set);
     }
+    return set;
+  };
+  /* Package specifiers written without the extension their `exports` target
+   * needs, by importing package and specifier: what the emit names instead. */
+  const completedSpecifiers = new Map<string, string>();
+  /**
+   * What the package publishes for a specifier: the resolver's candidates, in
+   * the package's own order.
+   *
+   * An `exports` target names a file exactly — node, bundlers and the compiler
+   * add no extension to one — so a target written without one
+   * (`"./src/*": "./src/*"` asked for `pkg/src/utils`) names nothing. It is
+   * completed instead, as a relative import is: to the file beside it with a
+   * runtime extension, or the `index` file of the directory it names, provided
+   * the specifier spelled that way resolves through the same map to that same
+   * file — which is then what the emit writes ({@link IEmitLayout.packageSpecifier}).
+   * A target no such spelling reaches stays a candidate for nothing.
+   */
+  const published = (specifier: string, issuer: string, conditions: IConditionSet = conditionsFor(defaultMode)): string[] => {
+    const candidates = resolver.resolveAll(specifier, issuer, conditions);
+    const split = splitSpecifier(specifier);
+    if (split === undefined || !resolver.hasExportsMap(split.name, issuer)) {
+      return candidates;
+    }
+    return candidates.flatMap(candidate => {
+      if (path.extname(candidate) !== "" || host.fileExists(candidate)) {
+        return [candidate];
+      }
+      const file = RUNTIME_SUFFIXES.map(suffix => candidate + suffix).find(found => host.fileExists(found));
+      const spelled = file === undefined ? undefined : specifier + file.slice(candidate.length);
+      if (file === undefined || spelled === undefined || !resolver.resolveAll(spelled, issuer, conditions).includes(file)) {
+        return [];
+      }
+      completedSpecifiers.set(`${resolver.locatorOf(issuer)}\0${specifier}`, spelled);
+      return [file];
+    });
   };
   /** The first path the resolver publishes for a specifier — what node would
    * load, and so the only candidate a resource may be taken from. */
@@ -583,6 +624,23 @@ function installResolution(
       },
     };
   };
+  /** The first of a package's published `targets` that carries declarations,
+   * walked in the package's own order — how the compiler reads a map whose
+   * `types` key follows `import`/`require`. For a lookup that loads nothing
+   * (a type reference, a library), so no condition gates the others. */
+  const typedAmong = (
+    targets: readonly string[],
+    issuer: string,
+    resolveOptions: CompilerOptions
+  ): IResolvedModuleWithFailedLookupLocations | undefined => {
+    for (const target of targets) {
+      const resolved = ts.resolveModuleName(target, issuer, resolveOptions, host, cache);
+      if (resolved.resolvedModule && !UNTYPED.test(resolved.resolvedModule.resolvedFileName)) {
+        return resolved;
+      }
+    }
+    return undefined;
+  };
   /** Whether a resolution came back with no typings — the trigger for every
    * recovery below, and for the `@types` lookup that has always followed. */
   const untyped = (found: IResolvedModuleWithFailedLookupLocations | undefined): boolean =>
@@ -604,8 +662,26 @@ function installResolution(
    * The first candidate is what node would load, so it stays the answer when
    * none of them declares anything, and the recoveries take it from there.
    */
-  const through = (specifier: string, issuer: string): IResolvedModuleWithFailedLookupLocations | undefined => {
-    const candidates = published(specifier, issuer);
+  const through = (
+    specifier: string,
+    issuer: string,
+    conditions: IConditionSet,
+    loads: boolean
+  ): IResolvedModuleWithFailedLookupLocations | undefined => {
+    const candidates = published(specifier, issuer, conditions);
+    if (!loads) {
+      /* Nothing loads, so no condition gates the others: the first candidate
+       * that carries declarations, else the first that resolves at all. */
+      let first: IResolvedModuleWithFailedLookupLocations | undefined;
+      for (const candidate of candidates) {
+        const found = asModule(candidate, issuer);
+        if (found !== undefined && !untyped(found)) {
+          return found;
+        }
+        first ??= found;
+      }
+      return first;
+    }
     /* Node's own choice is the first, and it gates the rest: if the file it
      * names is not there, the import does not load, and a later candidate
      * answering would compile something that cannot run. */
@@ -640,13 +716,15 @@ function installResolution(
    */
   const recoverTypings = (
     specifier: string,
-    split: { name: string; subpath: string } | undefined,
+    split: ISplitSpecifier | undefined,
     published: IResolvedModuleWithFailedLookupLocations | undefined,
-    issuer: string
+    issuer: string,
+    conditions: IConditionSet,
+    loads: boolean
   ): IResolvedModuleWithFailedLookupLocations | undefined => {
     const probes: Array<() => IResolvedModuleWithFailedLookupLocations | undefined> = [];
     if (published !== undefined) {
-      probes.push(() => siblingTypings(specifier, issuer));
+      probes.push(() => siblingTypings(specifier, issuer, conditions));
       /* `types`/`main` describe the package's MAIN entry and nothing else, so
        * they answer for the bare name alone — a subpath they say nothing about
        * would otherwise be typed by whatever the root happens to be. */
@@ -668,11 +746,14 @@ function installResolution(
      *   shape for an API that is no npm package (`@types/aws-lambda`) or one a
      *   project types without installing. Nothing can fail to load here,
      *   because nothing loads.
+     *
+     * An import that loads nothing (`import type`) is the second case whatever
+     * the package publishes.
      */
     const declared = split !== undefined && resolver.locationOf(split.name, issuer) !== undefined;
-    if (split !== undefined && (published !== undefined || !declared)) {
+    if (split !== undefined && (published !== undefined || !declared || !loads)) {
       const sidecar = typesPackageName(split.name);
-      probes.push(() => through(split.subpath ? `${sidecar}/${split.subpath}` : sidecar, issuer));
+      probes.push(() => through(split.subpath ? `${sidecar}/${split.subpath}` : sidecar, issuer, conditions, loads));
     }
     for (const probe of probes) {
       const found = probe();
@@ -686,8 +767,8 @@ function installResolution(
    * name — `index.d.ts` next to `index.cjs`, where the strict rule admits only
    * `index.d.cts`. Asking the compiler for the `.js` spelling is what puts the
    * untagged declaration extensions back in its candidate list. */
-  const siblingTypings = (specifier: string, issuer: string): IResolvedModuleWithFailedLookupLocations | undefined => {
-    const target = published(specifier, issuer)[0];
+  const siblingTypings = (specifier: string, issuer: string, conditions: IConditionSet): IResolvedModuleWithFailedLookupLocations | undefined => {
+    const target = published(specifier, issuer, conditions)[0];
     return target === undefined || !FORMAT_TAGGED.test(target) ? undefined : asModule(target.replace(FORMAT_TAGGED, ".js"), issuer);
   };
   /** The package's own `types`/`main`, reached by handing the compiler the
@@ -697,12 +778,103 @@ function installResolution(
     const location = resolver.locationOf(name, issuer);
     return location === undefined ? undefined : asModule(location, issuer);
   };
+  /**
+   * Where a package's `typesVersions` sends a subpath import, for a package
+   * with no `exports` map (which would otherwise decide alone): the compiler
+   * applies it when it finds a package in `node_modules`, but never when handed
+   * a path, which is how a subpath reaches it here.
+   */
+  const typesVersionsTargets = (split: ISplitSpecifier, issuer: string): string[] => {
+    const location = split.subpath === "" ? undefined : resolver.locationOf(split.name, issuer);
+    const text = location === undefined ? undefined : host.readFile?.(path.join(location, "package.json"));
+    if (location === undefined || text === undefined) {
+      return [];
+    }
+    let manifest: unknown;
+    try {
+      manifest = JSON.parse(text);
+    } catch {
+      return [];
+    }
+    if (!isRecord(manifest) || (manifest.exports !== undefined && manifest.exports !== null)) {
+      return [];
+    }
+    const paths = selectedTypesVersion(ts, manifest.typesVersions);
+    return paths === undefined ? [] : typesVersionsSubstitutions(paths, split.subpath).map(target => path.join(location, target));
+  };
+  /** A relative specifier as resolution must look for it: a rewrite rule
+   * first, where one names it — the file it names was renamed by an earlier
+   * step. The rules select on root-relative names, hence the prefix split; a
+   * rule is refused for a specifier leaving the source root, no step here
+   * having produced what is up there. */
+  const rewritten = (specifier: string, issuer: string): string => {
+    const [prefix, selected] = splitRelativePrefix(specifier);
+    const renamed =
+      rewrites === undefined || !withinSourceRoot(specifier, issuer, sourceRoot) ? undefined : applyImportRewrites(selected, rewrites);
+    return renamed === undefined ? specifier : prefix + renamed;
+  };
+  /**
+   * The file an import names when that file is a RESOURCE the compiler cannot
+   * read as a module — a stylesheet, an image, a `.wasm` — and it is there:
+   * for a relative import, beside the importer (after the rewrite rules); for a
+   * package subpath, the file the package's `exports` publishes (so a path it
+   * does not publish is never one, however plainly it sits there). The
+   * target's own resources are not staged for the compile, so the step names
+   * them (`declared`); a dependency's are mounted, so they are asked about.
+   */
+  const resourceFile = (specifier: string, issuer: string): string | undefined => {
+    const name = splitSpecifier(specifier) !== undefined || specifier.startsWith("#");
+    const file = name ? publishedPath(specifier, issuer) : path.resolve(path.dirname(issuer), rewritten(specifier, issuer));
+    return file !== undefined && (declared.has(file) || host.fileExists(file)) ? file : undefined;
+  };
+  /* Side-effect imports of existing resources, by importing file and
+   * specifier: the imports whose "cannot find module" the finisher drops. */
+  const presentResources = new Set<string>();
+  /**
+   * Whether an import the compiler left unresolved certainly names a file that
+   * is not there: a relative path with an extension (one without, a bundler may
+   * complete), or a path into a DELIVERED package that the package does not
+   * publish or whose published file is missing. A bare name of no package is
+   * not judged — `declare module "virtual:*"` is how a bundler plugin's virtual
+   * modules are typed — nor is the compile's own package reached by its name,
+   * whose stylesheets and other generated files are not staged for the compile
+   * but stood in for downstream.
+   */
+  const certainlyMissing = (specifier: string, issuer: string): boolean => {
+    const split = splitSpecifier(specifier);
+    if (split === undefined) {
+      if (specifier.startsWith("#") || path.extname(specifier) === "") {
+        return false;
+      }
+      const file = path.resolve(path.dirname(issuer), rewritten(specifier, issuer));
+      return !declared.has(file) && !host.fileExists(file);
+    }
+    const location = split.subpath === "" ? undefined : resolver.locationOf(split.name, issuer);
+    if (location === undefined || resolver.instanceNameOf(path.join(location, "package.json")) === undefined) {
+      return false;
+    }
+    const file = publishedPath(specifier, issuer);
+    return file === undefined || !host.fileExists(file);
+  };
+  /* A target that turned the side-effect check off (`ts/allow_unchecked_side_effect_imports`)
+   * has its side-effect imports left alone here too. */
+  const sideEffectsUnchecked = options[CHECK_SIDE_EFFECT_IMPORTS] === false;
+  /* Imports that load and certainly name a missing file, by importing file and
+   * specifier, with where the specifier is written: reported by the finisher
+   * wherever the compiler reported nothing — a `declare module` pattern let it
+   * through, or (before TypeScript 5.6) side-effect imports go unchecked. */
+  const missingFiles = new Map<string, { file: SourceFile; start: number; length: number; specifier: string }>();
   /* One answer per (asking package, specifier). A name means the same thing to
    * every file of one package — that is what the table says — so the file part
    * is probed once rather than once per import site: a compile asks tens of
    * thousands of times and holds hundreds of distinct answers. */
   const answers = new Map<string, IResolvedModuleWithFailedLookupLocations>();
-  const resolveModule = (specifier: string, issuer: string): IResolvedModuleWithFailedLookupLocations => {
+  const resolveModule = (
+    specifier: string,
+    issuer: string,
+    mode = defaultMode,
+    loads = true
+  ): IResolvedModuleWithFailedLookupLocations => {
     const split = splitSpecifier(specifier);
     if (split === undefined && !specifier.startsWith("#")) {
       /* Not a name at all: a relative or rooted path, which is the compiler's
@@ -714,20 +886,9 @@ function installResolution(
        * name. The rules select on root-relative names, hence the prefix split;
        * a rule is refused for a specifier leaving the source root, no step here
        * having produced what is up there. */
-      const [prefix, selected] = splitRelativePrefix(specifier);
-      const renamed =
-        rewrites === undefined || !withinSourceRoot(specifier, issuer, sourceRoot)
-          ? undefined
-          : applyImportRewrites(selected, rewrites);
-      const target = renamed === undefined ? specifier : prefix + renamed;
-      const answer = ts.resolveModuleName(target, issuer, options, host, cache);
-      /* Nothing named it — but the file may still be there and simply be
-       * something the compiler has no way to read as a module. */
-      return answer.resolvedModule !== undefined
-        ? answer
-        : resourceResolution(host, declared, path.resolve(path.dirname(issuer), target)) ?? answer;
+      return ts.resolveModuleName(rewritten(specifier, issuer), issuer, options, host, cache);
     }
-    const key = `${resolver.locatorOf(issuer)}\0${specifier}`;
+    const key = `${resolver.locatorOf(issuer)}\0${specifier}\0${mode}\0${String(loads)}`;
     const held = answers.get(key);
     if (held !== undefined) {
       return held;
@@ -743,30 +904,45 @@ function installResolution(
      * published implementation with none keeps its place as the fallback, so an
      * import that will execute resolves either way and the compiler reports the
      * missing declarations as it does anywhere else. */
-    const published = through(specifier, issuer);
-    /* A resource a dependency publishes — a stylesheet, an image — resolves as an
-     * empty module, on the same terms as a relative one. Through the resolver
-     * and not the filesystem, so a path the package's `exports` does not
-     * publish stays unresolved however plainly the file sits there. */
-    const resource = published === undefined ? resourceResolution(host, declared, publishedPath(specifier, issuer)) : undefined;
-    const answer =
-      (untyped(published) ? recoverTypings(specifier, split, published, issuer) : undefined) ?? published ?? resource ?? {};
+    const conditions = conditionsFor(mode);
+    const versioned = split === undefined ? undefined : typedAmong(typesVersionsTargets(split, issuer), issuer, options);
+    const published = versioned ?? through(specifier, issuer, conditions, loads);
+    const answer = (untyped(published) ? recoverTypings(specifier, split, published, issuer, conditions, loads) : undefined) ?? published ?? {};
     answers.set(key, answer);
     return answer;
   };
-  host.resolveModuleNameLiterals = (literals, containingFile) => literals.map(literal => resolveModule(literal.text, containingFile));
+  host.resolveModuleNameLiterals = (literals, containingFile, _redirected, _options, containingSourceFile) =>
+    literals.map(literal => {
+      const answer = resolveModule(
+        literal.text,
+        containingFile,
+        ts.getModeForUsageLocation?.(containingSourceFile, literal, options) ?? defaultMode,
+        loadsAtRuntime(ts, literal, containingSourceFile)
+      );
+      if (answer.resolvedModule === undefined && isSideEffectImport(ts, literal) && resourceFile(literal.text, containingFile) !== undefined) {
+        presentResources.add(`${containingFile}\0${literal.text}`);
+      }
+      if (
+        answer.resolvedModule === undefined &&
+        containingSourceFile !== undefined &&
+        loadsAtRuntime(ts, literal, containingSourceFile) &&
+        !(sideEffectsUnchecked && isSideEffectImport(ts, literal)) &&
+        certainlyMissing(literal.text, containingFile)
+      ) {
+        const node = literal as IStringLiteralLike & { getStart(file: unknown): number; end: number };
+        const start = node.getStart(containingSourceFile);
+        missingFiles.set(`${containingFile}\0${literal.text}`, { file: containingSourceFile, start, length: node.end - start, specifier: literal.text });
+      }
+      return answer;
+    });
   /* A project may REPLACE one of the compiler's built-in libraries by depending
    * on `@typescript/lib-<name>` — a package the compiler looks for in
    * node_modules, which the PnP workspace does not have, so it is answered from
    * the same table as any other lookup. Without this the compiler silently
    * falls back to its bundled lib and the difference surfaces as type errors in
    * the project's own code. */
-  host.resolveLibrary = (libraryName, resolveFrom, libraryOptions) => {
-    const target = published(libraryName, path.join(root, "tsconfig.json"))[0];
-    return target === undefined
-      ? { resolvedModule: undefined }
-      : ts.resolveModuleName(target, resolveFrom, libraryOptions, host, cache);
-  };
+  host.resolveLibrary = (libraryName, resolveFrom, libraryOptions) =>
+    typedAmong(published(libraryName, path.join(root, "tsconfig.json")), resolveFrom, libraryOptions) ?? { resolvedModule: undefined };
   host.resolveTypeReferenceDirectiveReferences = (directives, containingFile) =>
     directives.map(directive => {
       const name = typeof directive === "string" ? directive : directive.fileName;
@@ -786,9 +962,10 @@ function installResolution(
          * only when it declares nothing does the referencing package's own
          * binding answer. */
         const issuer = containingFile || root;
-        const target = published(candidate, root)[0] ?? published(candidate, issuer)[0];
-        const resolved = target === undefined ? undefined : ts.resolveModuleName(target, issuer, options, host, cache);
-        if (resolved?.resolvedModule && !UNTYPED.test(resolved.resolvedModule.resolvedFileName)) {
+        const conditions = conditionsFor((typeof directive === "string" ? undefined : directive.resolutionMode) ?? defaultMode);
+        const fromRoot = published(candidate, root, conditions);
+        const resolved = typedAmong(fromRoot.length > 0 ? fromRoot : published(candidate, issuer, conditions), issuer, options);
+        if (resolved?.resolvedModule) {
           return {
             resolvedTypeReferenceDirective: {
               primary: true,
@@ -800,6 +977,162 @@ function installResolution(
       }
       return {};
     });
+  /* A side-effect import of a resource is checked only under
+   * `noUncheckedSideEffectImports`, where the compiler reports one it cannot
+   * resolve at its specifier — as every resource is, the compiler reading none
+   * as a module. That report is dropped where the file is there, so the check
+   * still catches a missing one; nothing else about the import changes, and a
+   * `declare module` pattern applies to it as it would anywhere. */
+  const withoutPresentResources = (diagnostics: readonly Diagnostic[]): readonly Diagnostic[] =>
+    diagnostics.filter(diagnostic => {
+      const info = diagnostic as IDiagnosticInfo & { length?: number };
+      const text = (info.file as { text?: string } | undefined)?.text;
+      if (!MODULE_NOT_FOUND.has(info.code) || text === undefined || info.start === undefined || info.length === undefined) {
+        return true;
+      }
+      const specifier = text.slice(info.start + 1, info.start + info.length - 1);
+      return !presentResources.has(`${(info.file as ISourceFileInfo).fileName}\0${specifier}`);
+    });
+  /* An import of a missing file the compiler let through — a `declare module`
+   * pattern types it, or the compiler does not check side-effect imports — but
+   * nothing will load. Reported only where the compiler reported nothing at the
+   * same specifier, so never twice. */
+  const finishDiagnostics = (diagnostics: readonly Diagnostic[]): readonly Diagnostic[] => {
+    const kept = withoutPresentResources(diagnostics);
+    const reportedAt = new Set(
+      kept.map(diagnostic => {
+        const info = diagnostic as IDiagnosticInfo;
+        return `${(info.file as ISourceFileInfo | undefined)?.fileName ?? ""}\0${String(info.start)}`;
+      })
+    );
+    const added = [...missingFiles.values()]
+      .filter(missing => !reportedAt.has(`${(missing.file as unknown as ISourceFileInfo).fileName}\0${String(missing.start)}`))
+      .map(
+        missing =>
+          ({
+            file: missing.file,
+            start: missing.start,
+            length: missing.length,
+            messageText: `Cannot find file '${missing.specifier}'.`,
+            category: ts.DiagnosticCategory.Error,
+            code: MISSING_FILE_ERROR,
+          }) as unknown as Diagnostic
+      );
+    return added.length === 0 ? kept : [...kept, ...added];
+  };
+  return {
+    finishDiagnostics,
+    packageSpecifier: (specifier, containingFile) => completedSpecifiers.get(`${resolver.locatorOf(containingFile)}\0${specifier}`),
+  };
+}
+
+/** What installing resolution hands back to the compile: the diagnostic
+ * finisher, and the package specifiers the emit must write completed. */
+interface IInstalledResolution {
+  finishDiagnostics(diagnostics: readonly Diagnostic[]): readonly Diagnostic[];
+  packageSpecifier(specifier: string, containingFile: string): string | undefined;
+}
+
+/** What an extensionless `exports` target is completed with, in order: a
+ * runtime file beside it, else the `index` of the directory it names. */
+const RUNTIME_SUFFIXES = [".js", ".mjs", ".cjs", "/index.js", "/index.mjs", "/index.cjs"];
+
+/** The code of the driver's own report of an import of a missing file — outside
+ * every range the compiler assigns. */
+const MISSING_FILE_ERROR = 79001;
+
+/** The compiler's "cannot find module" reports, as its lookup of a module
+ * specifier makes them. */
+const MODULE_NOT_FOUND = new Set([2307, 2792]);
+
+/** Whether `literal` is the specifier of an import that binds nothing
+ * (`import "./theme.css"`). */
+function isSideEffectImport(ts: ITypeScript, literal: IStringLiteralLike): boolean {
+  const parent = (literal as { parent?: INode }).parent;
+  return parent !== undefined && ts.isImportDeclaration(parent) && (parent as IImportDeclarationNode).importClause === undefined;
+}
+
+/** Whether the import `literal` names loads anything at runtime: not a
+ * declaration file's, nor an `import type`/`export type`, nor an `import("…")`
+ * type — the runtime's refusals apply only to what runs. */
+function loadsAtRuntime(ts: ITypeScript, literal: IStringLiteralLike, file: SourceFile | undefined): boolean {
+  if ((file as { isDeclarationFile?: boolean } | undefined)?.isDeclarationFile === true) {
+    return false;
+  }
+  const parent = (literal as { parent?: INode }).parent;
+  if (parent === undefined) {
+    return true;
+  }
+  if (ts.isImportDeclaration(parent)) {
+    return (parent as IImportDeclarationNode & { importClause?: { isTypeOnly?: boolean } }).importClause?.isTypeOnly !== true;
+  }
+  if (ts.isExportDeclaration(parent)) {
+    return !(parent as IExportDeclarationNode).isTypeOnly;
+  }
+  return !ts.isLiteralTypeNode(parent);
+}
+
+/** Whether the running compiler satisfies a version range, as it judges
+ * `typesVersions` keys; without its matcher, only `*` is known to. */
+function compilerSatisfies(ts: ITypeScript, range: string): boolean {
+  const parsed = ts.VersionRange?.tryParse(range);
+  return parsed === undefined ? range.trim() === "*" : parsed.test(ts.version);
+}
+
+/** Whether an `exports` condition key is a versioned `types@<range>` key the
+ * running compiler satisfies — the compiler's own rule for such keys. */
+function versionedTypesKeyApplies(ts: ITypeScript, condition: string): boolean {
+  return condition.startsWith("types@") && compilerSatisfies(ts, condition.slice("types@".length));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The `typesVersions` path map the running compiler selects — the first entry
+ * whose version range it satisfies — or undefined when none applies or the
+ * field is not a map. */
+function selectedTypesVersion(ts: ITypeScript, typesVersions: unknown): Map<string, string[]> | undefined {
+  if (!isRecord(typesVersions)) {
+    return undefined;
+  }
+  for (const [range, paths] of Object.entries(typesVersions)) {
+    if (compilerSatisfies(ts, range)) {
+      return isRecord(paths)
+        ? new Map(
+            Object.entries(paths).map(([pattern, substitutions]): [string, string[]] => [
+              pattern,
+              Array.isArray(substitutions) ? substitutions.filter((sub): sub is string => typeof sub === "string") : [],
+            ])
+          )
+        : undefined;
+    }
+  }
+  return undefined;
+}
+
+/** The substitutions a `typesVersions` path map gives `subpath`, matched as the
+ * compiler matches `paths`: an exact key, else the single-`*` pattern with the
+ * longest prefix, its capture filling each substitution's `*`. */
+function typesVersionsSubstitutions(paths: ReadonlyMap<string, string[]>, subpath: string): string[] {
+  const exact = paths.get(subpath);
+  if (exact !== undefined) {
+    return exact;
+  }
+  let best: { prefix: number; captured: string; substitutions: string[] } | undefined;
+  for (const [pattern, substitutions] of paths) {
+    const star = pattern.indexOf("*");
+    if (star < 0 || pattern.indexOf("*", star + 1) >= 0) {
+      continue;
+    }
+    const prefix = pattern.slice(0, star);
+    const suffix = pattern.slice(star + 1);
+    const fits = subpath.length >= prefix.length + suffix.length && subpath.startsWith(prefix) && subpath.endsWith(suffix);
+    if (fits && (best === undefined || prefix.length > best.prefix)) {
+      best = { prefix: prefix.length, captured: subpath.slice(prefix.length, subpath.length - suffix.length), substitutions };
+    }
+  }
+  return best === undefined ? [] : best.substitutions.map(substitution => substitution.replace("*", best.captured));
 }
 
 /* Every quoted specifier a declaration file can carry a path in: the synthesized
@@ -1028,6 +1361,11 @@ interface IEmitLayout {
    * compiles CommonJS. The two rewrites share this traversal and nothing else.
    */
   rewriteExtensions: boolean;
+  /** What a package specifier the resolution completed is written as instead
+   * (`three/src/math/MathUtils` → `three/src/math/MathUtils.js`), whatever the
+   * module system: an `exports` target names a file exactly, for `require` as
+   * for `import`. */
+  packageSpecifier?: (specifier: string, containingFile: string) => string | undefined;
 }
 
 /**
@@ -1065,87 +1403,6 @@ export function withinSourceRoot(specifier: string, issuer: string, rootDir: str
   }
   const relative = path.relative(rootDir, path.resolve(path.dirname(issuer), specifier));
   return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
-}
-
-/**
- * What a resolved RESOURCE is declared to be: a module exporting nothing, so a
- * side-effect import of it typechecks and a value import of it does not.
- */
-const RESOURCE_MODULE = "export {};\n";
-
-/**
- * What marks a synthesised declaration. The name is on no disk —
- * {@link installResourceFallback} answers for it — so this only has to be a suffix
- * nothing else produces: a bare `<resource>.d.ts` would collide with the
- * declaration tsc emits for a same-stemmed source (a css-module's `x.css.ts`
- * shim).
- */
-const RESOURCE_SUFFIX = ".fabr-resource.d.ts";
-
-/** The name the synthesised declaration for `file` takes. */
-function resourceDeclarationOf(file: string): string {
-  return `${file}${RESOURCE_SUFFIX}`;
-}
-
-/** The resource a synthesised declaration stands for, or undefined for an
- * ordinary name. */
-function resourceDeclared(file: string): string | undefined {
-  return file.endsWith(RESOURCE_SUFFIX) ? file.slice(0, -RESOURCE_SUFFIX.length) : undefined;
-}
-
-/**
- * Teach the host to serve {@link resourceDeclarationOf} names, which exist only as
- * resolution answers. All three of its file questions agree, and each defers to
- * the RESOURCE itself — so a name is readable exactly while the file it stands for
- * is there, and the compiler's own probing sees what the filesystem does.
- *
- * `readFile` is wrapped over whatever is already in place, which includes the
- * run's read tracking: a synthesised file is not a read, and reporting one
- * would put a name no filesystem has into the discovered-inputs record.
- */
-function installResourceFallback(ts: ITypeScript, host: ICompilerHost, declared: ReadonlySet<string>): void {
-  const sourceFile = host.getSourceFile.bind(host);
-  host.getSourceFile = (fileName, languageVersion, onError, shouldCreate) =>
-    resourceDeclared(fileName) !== undefined
-      ? (ts.createSourceFile(fileName, RESOURCE_MODULE, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS) as unknown as SourceFile)
-      : sourceFile(fileName, languageVersion, onError, shouldCreate);
-  const fileExists = host.fileExists.bind(host);
-  host.fileExists = fileName => {
-    const resource = resourceDeclared(fileName);
-    /* The same two ways {@link resourceResolution} admits a file, so the answer a
-     * resolution gave and the answer the compiler gets cannot disagree. */
-    return resource === undefined ? fileExists(fileName) : declared.has(resource) || fileExists(resource);
-  };
-  const readFile = host.readFile;
-  if (readFile !== undefined) {
-    host.readFile = (fileName, encoding) => (resourceDeclared(fileName) !== undefined ? RESOURCE_MODULE : readFile.call(host, fileName, encoding));
-  }
-}
-
-/**
- * A resource resolution for `file`, or undefined where it is none.
- *
- * This is the answer for an import the compiler could resolve no other way: the
- * file is an artifact nothing declares and no step compiles — a stylesheet, an
- * image, a `.wasm`. It is reached only after ordinary resolution has failed, so
- * anything the compiler can type (a `.js` with no declarations included) keeps
- * its own answer, and an import naming nothing at all stays unresolved.
- *
- * Two ways a file qualifies, because the target's own resources and a
- * dependency's arrive differently. A dependency is MOUNTED, so its files are
- * there to be asked about. The target's own are not staged for the compile —
- * the compiler has no use for the bytes — so the step declares them, and
- * `declared` is that list.
- */
-function resourceResolution(
-  host: ICompilerHost,
-  declared: ReadonlySet<string>,
-  file: string | undefined
-): IResolvedModuleWithFailedLookupLocations | undefined {
-  if (file === undefined || !(declared.has(file) || host.fileExists(file))) {
-    return undefined;
-  }
-  return { resolvedModule: { resolvedFileName: resourceDeclarationOf(file), extension: ".d.ts", isExternalLibraryImport: false } };
 }
 
 /** One rewrite rule: a regular expression over import specifiers as written,
@@ -1307,6 +1564,10 @@ function specifierRewriter(
        * rewritable, but a declaration that imports one forwards that package's
        * interface to everyone who consumes it. */
       observe?.(sourceFile.fileName, specifier);
+      if (from !== undefined && !specifier.startsWith(".")) {
+        const completed = layout!.packageSpecifier?.(specifier, sourceFile.fileName);
+        return completed === undefined ? undefined : ts.factory.createStringLiteral(completed);
+      }
       if (from === undefined || !specifier.startsWith(".")) {
         return undefined;
       }
@@ -1415,14 +1676,12 @@ function specifierRewriter(
   };
 }
 
-/** The globals a CommonJS module has and an ES module does not: the two with an
- * `import.meta` spelling to rewrite to, and the scaffolding without one, whose
- * references are errors under an ES-module emit. */
+/** The CommonJS globals with an `import.meta` spelling to rewrite to under an
+ * ES-module emit. */
 const CJS_PATH_GLOBALS = new Set(["__dirname", "__filename"]);
-const CJS_SCAFFOLDING = new Set(["require", "module", "exports"]);
 
 /** How each `import.meta` member is spelled in CommonJS; a member absent here
- * has no CommonJS equivalent and errors instead. */
+ * is left as written, with the checker's own diagnostic on it. */
 const CJS_META_MEMBERS = new Map<string, (f: ITypeScript["factory"]) => INode>([
   ["dirname", f => f.createIdentifier("__dirname")],
   ["filename", f => f.createIdentifier("__filename")],
@@ -1456,20 +1715,10 @@ const CJS_META_MEMBERS = new Map<string, (f: ITypeScript["factory"]) => INode>([
  * error, dropped where the rewrite replaced the meta-property it is about. */
 const IMPORT_META_MODULE_ERROR = 1343;
 
-/** The code the driver's own cross-format diagnostics carry — outside every
- * range the compiler assigns. */
-const CROSS_FORMAT_ERROR = 79000;
-
-/** A file that guards any of the CommonJS globals with `typeof` chose its
- * spellings knowing both formats, so its scaffolding references are presumed
- * runtime-guarded and not errored (the rewrites still apply — they are correct
- * either way). */
-const FORMAT_AWARE = /typeof[\s(]+(require|module|exports|__dirname|__filename)\b/;
-
 interface ICrossFormatGlobals {
   transformer: TransformerFactory;
   /** The run's diagnostics, finished: the checker's TS1343s on meta-properties
-   * the rewrite disposed of are dropped, the driver's own errors appended. */
+   * the rewrite replaced are dropped. */
   finishDiagnostics(diagnostics: readonly Diagnostic[]): readonly Diagnostic[];
 }
 
@@ -1481,16 +1730,14 @@ interface ICrossFormatGlobals {
  * allows it, so a CommonJS-shaped source emitted as ES modules (or the reverse
  * — one half of a `dual` package) typechecks clean and throws `ReferenceError`
  * at runtime. Under an ES-module emit, `__dirname`/`__filename` become
- * `import.meta.dirname`/`.filename` (node ≥20.11), and a reference to
- * `require`/`module`/`exports` — which no expression can substitute (`require`
- * needs a hoisted `createRequire`) — is an error naming the fix. Under a
- * CommonJS emit, `import.meta` members are rewritten per {@link CJS_META_MEMBERS}
- * and any other use of `import.meta` errors with advice that survives fabr's
- * generated tsconfig (TS1343's "change the module option" names a knob the
- * project does not own).
+ * `import.meta.dirname`/`.filename` (node ≥20.11); under a CommonJS emit,
+ * `import.meta` members are rewritten per {@link CJS_META_MEMBERS}. The bridge
+ * only rewrites: anything without a rewrite (`require`/`module`/`exports` under
+ * an ES-module emit, an unmapped `import.meta` under a CommonJS one) is left
+ * exactly as the compiler has it, diagnostics included.
  *
  * Only a reference resolving to an AMBIENT declaration (every declaration in a
- * `.d.ts`) is rewritten or errored — a file shadowing `__dirname` with its own
+ * `.d.ts`) is rewritten — a file shadowing `__dirname` with its own
  * binding keeps it — and a direct `typeof` operand is left alone: rewriting
  * `typeof __dirname` would flip what the guard detects. Scripts are skipped
  * (no module format to bridge), and so are `node16`/`nodenext`/`preserve`
@@ -1509,32 +1756,12 @@ function crossFormatGlobals(ts: ITypeScript, options: CompilerOptions, program: 
     return undefined;
   }
   const f = ts.factory;
-  /* Meta-property starts this rewrite disposed of (rewritten or errored), per
-   * file — the span the checker reports TS1343 at, so the two match up. */
+  /* Meta-property starts this rewrite replaced, per file — the span the
+   * checker reports TS1343 at, so the two match up. */
   const disposed = new Map<string, Set<number>>();
-  const reported: Diagnostic[] = [];
-  const error = (sourceFile: ISourceFileNode, node: INode, message: string): void => {
-    const positioned = node as IPositionedNode;
-    const start = positioned.getStart(sourceFile);
-    reported.push({
-      file: sourceFile,
-      start,
-      length: positioned.end - start,
-      messageText: message,
-      category: ts.DiagnosticCategory.Error,
-      code: CROSS_FORMAT_ERROR,
-    } as Diagnostic);
-  };
-  const scaffoldingError = (name: string): string =>
-    name === "require"
-      ? "'require' is not defined in an ES module; use an import, or construct one with 'node:module'.createRequire"
-      : name === "module"
-        ? "'module' is not defined in an ES module; for a main-module check, test 'import.meta.main' instead"
-        : "'exports' is not defined in an ES module; use export declarations";
 
   const esmTransform = (context: unknown, sourceFile: ISourceFileNode): INode => {
     const checker = program().getTypeChecker();
-    const aware = FORMAT_AWARE.test(sourceFile.text);
     /** Whether `node` is a value reference resolving to the ambient global —
      * every declaration in a declaration file — rather than to a binding of the
      * source's own, or to some property that happens to share the name. */
@@ -1570,7 +1797,7 @@ function crossFormatGlobals(ts: ITypeScript, options: CompilerOptions, program: 
         const operand = (node as ITypeOfExpressionNode).expression;
         if (ts.isIdentifier(operand)) {
           const name = (operand as IIdentifierNode).text;
-          if (CJS_PATH_GLOBALS.has(name) || CJS_SCAFFOLDING.has(name)) {
+          if (CJS_PATH_GLOBALS.has(name)) {
             return node;
           }
         }
@@ -1583,18 +1810,12 @@ function crossFormatGlobals(ts: ITypeScript, options: CompilerOptions, program: 
         if (CJS_PATH_GLOBALS.has(name.text) && ambientReference(name)) {
           return f.createPropertyAssignment(f.createIdentifier(name.text), metaAccess(name.text));
         }
-        if (CJS_SCAFFOLDING.has(name.text) && !aware && ambientReference(name)) {
-          error(sourceFile, name, scaffoldingError(name.text));
-        }
         return node;
       }
       if (ts.isIdentifier(node)) {
         const name = (node as IIdentifierNode).text;
         if (CJS_PATH_GLOBALS.has(name) && ambientReference(node as IIdentifierNode)) {
           return metaAccess(name);
-        }
-        if (CJS_SCAFFOLDING.has(name) && !aware && ambientReference(node as IIdentifierNode)) {
-          error(sourceFile, node, scaffoldingError(name));
         }
         return node;
       }
@@ -1614,31 +1835,19 @@ function crossFormatGlobals(ts: ITypeScript, options: CompilerOptions, program: 
     const visit = (node: INode): INode => {
       if (ts.isPropertyAccessExpression(node) && isImportMeta((node as IPropertyAccessNode).expression)) {
         const access = node as IPropertyAccessNode;
-        dispose(access.expression);
         const member = ts.isIdentifier(access.name) ? (access.name as IIdentifierNode).text : undefined;
         const replacement = member === undefined ? undefined : CJS_META_MEMBERS.get(member)?.(f);
         if (replacement !== undefined) {
+          dispose(access.expression);
           return replacement;
         }
-        error(
-          sourceFile,
-          node,
-          `'import.meta.${member ?? ""}' has no CommonJS equivalent; guard it behind a runtime check, or emit this source as ES modules only`
-        );
-        return node;
-      }
-      if (isImportMeta(node)) {
-        /* Bare, or under an element access: nothing to bind a member rewrite to. */
-        dispose(node);
-        error(sourceFile, node, "'import.meta' has no CommonJS equivalent; guard it behind a runtime check, or emit this source as ES modules only");
-        return node;
       }
       return ts.visitEachChild(node, visit, context);
     };
     return ts.visitNode(sourceFile, visit);
   };
 
-  const scan = direction === "esm" ? [...CJS_PATH_GLOBALS, ...CJS_SCAFFOLDING] : ["import.meta"];
+  const scan = direction === "esm" ? [...CJS_PATH_GLOBALS] : ["import.meta"];
   /* A source that pinned its own module format lands in an emitted file node
    * loads as that format whatever the project's `module` says (`legacy.cts`
    * emits into `legacy.cjs`), and there the OTHER direction's globals are the
@@ -1664,16 +1873,14 @@ function crossFormatGlobals(ts: ITypeScript, options: CompilerOptions, program: 
       }
       return direction === "esm" ? esmTransform(context, sourceFile) : cjsTransform(context, sourceFile);
     },
-    finishDiagnostics: diagnostics => [
-      ...diagnostics.filter(diagnostic => {
+    finishDiagnostics: diagnostics =>
+      diagnostics.filter(diagnostic => {
         const info = diagnostic as IDiagnosticInfo;
         if (info.code !== IMPORT_META_MODULE_ERROR || info.file === undefined || info.start === undefined) {
           return true;
         }
         return disposed.get((info.file as ISourceFileInfo).fileName)?.has(info.start) !== true;
       }),
-      ...reported,
-    ],
   };
 }
 
@@ -1692,10 +1899,11 @@ function emitLayoutOf(
   options: CompilerOptions,
   root: string,
   jsExtension?: string,
-  rewrites?: IImportRewrite[]
+  rewrites?: IImportRewrite[],
+  packageSpecifier?: (specifier: string, containingFile: string) => string | undefined
 ): IEmitLayout | undefined {
   const rewriteExtensions = emitsEsModules(ts, options);
-  if (!rewriteExtensions && rewrites === undefined) {
+  if (!rewriteExtensions && rewrites === undefined && packageSpecifier === undefined) {
     return undefined;
   }
   const directory = (value: unknown): string | undefined => (typeof value === "string" ? path.resolve(root, value) : undefined);
@@ -1706,6 +1914,7 @@ function emitLayoutOf(
     jsExtension,
     rewrites,
     rewriteExtensions,
+    packageSpecifier,
   };
 }
 
@@ -1932,11 +2141,10 @@ export function main(argv: string[]): number {
       return found;
     };
   }
-  const resolver = PnpResolver.load(root, conditionsOf(ts, parsed.options));
-  /* Manifest faults in the DEPENDENCIES: collected while resolving and reported
-   * with everything else, rather than aborting the compilation the moment one
-   * unreadable package is touched. */
-  const faults = new Set<string>();
+  /* A dependency's invalid `exports` map is read as the compiler reads it: a
+   * fault in that package, which its runtime reports and the compile has no
+   * cause to (docs `reference/typescript.md`). */
+  const resolver = PnpResolver.load(root, conditionsOf(ts, parsed.options), { validateExports: false });
   /* One table, read once: resolution must find the file the emit will name, so
    * the two consumers below cannot be given different answers. */
   const rewrites = importRewritesOf(argv, root);
@@ -1944,9 +2152,9 @@ export function main(argv: string[]): number {
    * ordinary resolution found nothing, which needs this driver to BE the
    * resolver. A compile with no manifest leaves resolution to the compiler and
    * so has no resource fallback either — every compile fabr runs has one. */
-  if (resolver) {
-    installResolution(ts, host, parsed.options, resolver, root, faults, rewrites, resourceNamesOf(argv, root));
-  }
+  const installed = resolver
+    ? installResolution(ts, host, parsed.options, resolver, root, rewrites, resourceNamesOf(argv, root))
+    : undefined;
   /* Resolution as the compilation does it, for the rewrite to ask what a
    * relative specifier names and for the wave to ask what an edge names. */
   const resolve = moduleResolver(ts, host, parsed.options, root);
@@ -2028,7 +2236,7 @@ export function main(argv: string[]): number {
    * rewriter serves both phases — the JavaScript and the declarations land in
    * the same directory, so they name each other identically. */
   const jsExtension = emitExtensionOf(argv);
-  const layout = emitLayoutOf(ts, parsed.options, root, jsExtension, rewrites);
+  const layout = emitLayoutOf(ts, parsed.options, root, jsExtension, rewrites, installed?.packageSpecifier);
   if (jsExtension !== undefined && layout?.rewriteExtensions !== true) {
     /* Renaming without rewriting is the exact failure `--emit-extension` refuses
      * `.cjs` for, and it is reachable the other way round too: only an ES-module
@@ -2130,18 +2338,13 @@ export function main(argv: string[]): number {
     ...(graph === undefined ? ts.getPreEmitDiagnostics(program) : graph.diagnostics(program)),
     ...emitted.diagnostics,
   ];
-  const diagnostics = ts.sortAndDeduplicateDiagnostics(crossFormat === undefined ? collected : crossFormat.finishDiagnostics(collected));
+  const bridged = crossFormat === undefined ? collected : crossFormat.finishDiagnostics(collected);
+  const diagnostics = ts.sortAndDeduplicateDiagnostics(installed === undefined ? bridged : installed.finishDiagnostics(bridged));
   if (diagnostics.length > 0) {
     /* Diagnostics go to stdout, as the CLI writes them. */
     process.stdout.write(renderDiagnostics(ts, diagnostics, host, parsed.options.pretty !== false));
   }
-  /* After the diagnostics, because they name the imports that failed and this
-   * names why: a package whose manifest could not be read is the cause of
-   * however many "cannot find module" lines precede it. */
-  for (const fault of faults) {
-    process.stdout.write(`error: ${fault}\n`);
-  }
-  if (diagnostics.length === 0 && faults.size === 0) {
+  if (diagnostics.length === 0) {
     return EXIT_OK;
   }
   return emitted.emitSkipped ? EXIT_ERRORS_NO_OUTPUT : EXIT_ERRORS;
@@ -2167,7 +2370,8 @@ export function main(argv: string[]): number {
  * Deliberately absent, in both cases because the condition would assert
  * something this compilation does not know:
  *
- * - The OTHER module system's condition. A package publishing only `import`
+ * - The OTHER module system's condition, unless an import asks for it (its
+ *   `resolution-mode`, passed as `mode`). A package publishing only `import`
  *   genuinely cannot be required (node answers ERR_PACKAGE_PATH_NOT_EXPORTED,
  *   `module-sync` being the supported way to say otherwise), so resolving it
  *   here would compile an import that cannot load.
@@ -2183,9 +2387,10 @@ export function main(argv: string[]): number {
  * channel for a project asserting a fact about itself, which is the one place
  * a platform condition can honestly come from.
  */
-function conditionsOf(ts: ITypeScript, options: CompilerOptions): string[] {
+function conditionsOf(ts: ITypeScript, options: CompilerOptions, mode?: number): string[] {
   const custom = Array.isArray(options.customConditions) ? (options.customConditions as string[]) : [];
-  return ["types", effectiveModule(ts, options) === ts.ModuleKind.CommonJS ? "require" : "import", "module-sync", ...custom];
+  const commonjs = mode === undefined ? effectiveModule(ts, options) === ts.ModuleKind.CommonJS : mode === ts.ModuleKind.CommonJS;
+  return ["types", commonjs ? "require" : "import", "module-sync", ...custom];
 }
 
 /** The option that makes an unresolvable side-effect import an error. Added in
@@ -2930,7 +3135,7 @@ const REWRITES_FLAG = "--rewrite-imports";
 
 /** Where the caller names the target's own RESOURCES — the delivered files no step
  * compiles, which the compiler is not given the bytes of. A JSON array of
- * rootDir-relative names. See {@link resourceResolution}. */
+ * rootDir-relative names. See {@link installResolution}. */
 const RESOURCES_FLAG = "--resources";
 
 /**

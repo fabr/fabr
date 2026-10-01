@@ -32,7 +32,7 @@ import * as fs from "node:fs";
 import Module, { isBuiltin } from "node:module";
 import * as path from "node:path";
 import type { IPnpSerializedState, PnpDependencyTarget } from "../PnPManifest";
-import { exportedSubpath, exportsSubpath, type ExportsValue, resolveExportsAll, resolveImports, resolveImportsAll } from "./PackageExports";
+import { exportedSubpath, exportsSubpath, type ExportsValue, type IConditionSet, resolveExportsAll, resolveImports, resolveImportsAll } from "./PackageExports";
 import {
   type IPackageInformation,
   type IPhysicalPackageLocator,
@@ -181,6 +181,9 @@ export class PnpResolver implements IPnpApi {
   private readonly manifests = new Map<string, IPackageManifest>();
   /** The world this resolver answers for — see the class comment. */
   private readonly conditions: ReadonlySet<string>;
+  /** Whether an invalid `exports`/`imports` map is refused, as node refuses
+   * it, or read as the TypeScript compiler reads it. */
+  private readonly validate: boolean;
   /** The package locations whose `package.json` this resolver has read — see
    * {@link manifestsConsulted}. */
   private readonly consultedManifests = new Set<string>();
@@ -196,11 +199,12 @@ export class PnpResolver implements IPnpApi {
    * `types`/`import` for a compiler, `sass` for a stylesheet compiler.
    * `default` is always satisfied and need not be given.
    */
-  constructor(state: IPnpSerializedState, root: string, conditions: Iterable<string>) {
+  constructor(state: IPnpSerializedState, root: string, conditions: Iterable<string>, options: IPnpResolverOptions = {}) {
     if (state.ignorePatternData !== null && state.ignorePatternData !== undefined) {
       throw pnpError("UNSUPPORTED", "pnp: a manifest with an ignore pattern is not supported");
     }
     this.conditions = new Set(conditions);
+    this.validate = options.validateExports ?? true;
     this.root = root;
     this.topLevelKey = locatorKey(null, null);
     this.dependencyTreeRoots = state.dependencyTreeRoots.map(({ name, reference }) => ({ name, reference }));
@@ -317,12 +321,12 @@ export class PnpResolver implements IPnpApi {
   /** Load `.pnp.data.json` from `root`, or undefined if this compilation has no
    * manifest (the classic node_modules layout, where the compiler resolves for
    * itself). */
-  public static load(root: string, conditions: Iterable<string>): PnpResolver | undefined {
+  public static load(root: string, conditions: Iterable<string>, options: IPnpResolverOptions = {}): PnpResolver | undefined {
     const manifest = path.join(root, PNP_DATA_FILE);
     if (!fs.existsSync(manifest)) {
       return undefined;
     }
-    return new PnpResolver(JSON.parse(fs.readFileSync(manifest, "utf8")) as IPnpSerializedState, root, conditions);
+    return new PnpResolver(JSON.parse(fs.readFileSync(manifest, "utf8")) as IPnpSerializedState, root, conditions, options);
   }
 
   /**
@@ -437,7 +441,7 @@ export class PnpResolver implements IPnpApi {
     const published =
       exports === undefined || exports === null
         ? undefined
-        : describing(location, () => exportedSubpath(exports, exportsSubpath(file), this.conditions));
+        : describing(location, () => exportedSubpath(exports, exportsSubpath(file), this.conditions, this.validate));
     if (published === undefined) {
       return file;
     }
@@ -686,29 +690,33 @@ export class PnpResolver implements IPnpApi {
    * Resolvability is not affected: an empty list here is exactly an undefined
    * {@link resolveSpecifier}, and every entry comes from a condition this
    * resolver's world already satisfies.
+   *
+   * `conditions` replaces the resolver's own for this one lookup: an import
+   * written for the other module system (TypeScript's `resolution-mode`), or a
+   * caller with its own rule for some condition keys.
    */
-  public resolveAll(specifier: string, issuer: string): string[] {
+  public resolveAll(specifier: string, issuer: string, conditions: IConditionSet = this.conditions): string[] {
     if (specifier.startsWith("#")) {
-      return this.resolveSubpathImport(specifier, issuer);
+      return this.resolveSubpathImport(specifier, issuer, conditions);
     }
     const split = splitSpecifier(specifier);
     const location = split && this.locationOf(split.name, issuer);
     if (location === undefined || split === undefined) {
       return [];
     }
-    /* A trailing slash asks for a directory, which only CommonJS loads, and only
-     * from a package with no `exports` (whose keys never end in `/`). An ES-module
-     * world refuses it outright, as node's PACKAGE_RESOLVE does. */
-    if (specifier.endsWith("/") && (this.conditions.has("import") || this.manifestAt(location).exports != null)) {
+    /* A trailing slash on a subpath asks for a directory, which a package with
+     * `exports` never publishes (its keys never end in `/`). On the bare name
+     * (`pkg/`) it names the package itself. */
+    if (specifier.endsWith("/") && split.subpath !== "" && this.manifestAt(location).exports != null) {
       return [];
     }
-    return this.within(location, exportsSubpath(split.subpath));
+    return this.within(location, exportsSubpath(split.subpath), conditions);
   }
 
   /** Where a subpath of the package at `location` may live, honoring its
    * `exports` map when it has one. A package that publishes no map offers one
    * answer, the path itself, for the caller to probe. */
-  private within(location: string, subpath: string): string[] {
+  private within(location: string, subpath: string, conditions: IConditionSet): string[] {
     const exports = this.manifestAt(location).exports;
     /* `null` is not a map that publishes nothing — node reads it as no map at
      * all and falls back to `main`, so a package spelling it that way must stay
@@ -716,25 +724,53 @@ export class PnpResolver implements IPnpApi {
     if (exports === undefined || exports === null) {
       return [subpath === "." ? location : path.join(location, subpath.slice(2))];
     }
-    const targets = describing(location, () => resolveExportsAll(exports, subpath, this.conditions));
+    const targets = describing(location, () => resolveExportsAll(exports, subpath, conditions, this.validate));
     return targets.map(target => path.join(location, target.slice(2)));
+  }
+
+  /** Whether the package `name` resolves to from `issuer` publishes an `exports`
+   * map — which, when it does, alone decides what can be loaded from it, each
+   * target naming a file exactly. */
+  public hasExportsMap(name: string, issuer: string): boolean {
+    const location = this.locationOf(name, issuer);
+    return location !== undefined && this.manifestAt(location).exports != null;
   }
 
   /** A `#name` specifier through the issuing package's `imports` map — a file of
    * that package, or another package's name, which resolves from the same
    * issuer so the redirection sees exactly what the package that wrote it may
    * see. */
-  private resolveSubpathImport(specifier: string, issuer: string): string[] {
-    const from = this.rows.get(this.locatorOf(issuer));
-    const imports = from && this.manifestAt(from.location).imports;
-    if (from === undefined || imports === undefined || imports === null) {
+  private resolveSubpathImport(specifier: string, issuer: string, conditions: IConditionSet): string[] {
+    const scope = this.scopeOf(issuer);
+    const imports = scope && this.manifestAt(scope).imports;
+    if (scope === undefined || imports === undefined || imports === null) {
       return [];
     }
-    const targets = describing(from.location, () => resolveImportsAll(imports, specifier, this.conditions));
+    const targets = describing(scope, () => resolveImportsAll(imports, specifier, conditions, this.validate));
     const found = targets.flatMap(target =>
-      target.startsWith("./") ? [path.join(from.location, target.slice(2))] : this.resolveAll(target, issuer)
+      target.startsWith("./") ? [path.join(scope, target.slice(2))] : this.resolveAll(target, issuer, conditions)
     );
     return [...new Set(found)];
+  }
+
+  /**
+   * The package scope of `file`, as node, Yarn and the compiler find it: the
+   * nearest directory above it holding a `package.json` — which may sit inside
+   * a package (a nested `dist/package.json`) or above its row (the sources' own
+   * `package.json` at the workspace root) — searched no higher than the
+   * workspace root. An issuer ending in `/` names a directory, whose own
+   * `package.json` counts.
+   */
+  private scopeOf(file: string): string | undefined {
+    const root = path.resolve(this.root);
+    for (let dir = file.endsWith("/") ? path.resolve(file) : path.dirname(path.resolve(file)); ; dir = path.dirname(dir)) {
+      if (fs.existsSync(path.join(resolveVirtual(dir), "package.json"))) {
+        return dir;
+      }
+      if (dir === root || !dir.startsWith(root + path.sep)) {
+        return undefined;
+      }
+    }
   }
 
   /** The `exports`/`imports` of the package at `location`, empty for one that
@@ -914,7 +950,7 @@ export class PnpResolver implements IPnpApi {
     const subpath = relative === "" ? "." : `./${relative}`;
     let target: string[];
     try {
-      target = resolveExportsAll(exports, subpath, conditions);
+      target = resolveExportsAll(exports, subpath, conditions, this.validate);
     } catch (err: unknown) {
       throw pnpError("EXPORTS_RESOLUTION_FAILED", err instanceof Error ? err.message : String(err), { subpath }, "ERR_INVALID_PACKAGE_CONFIG");
     }
@@ -931,10 +967,9 @@ export class PnpResolver implements IPnpApi {
 
   /** A `#name` request through the issuing package's `imports` map. */
   private resolvePrivateRequest(request: string, issuer: string, conditions: ReadonlySet<string>, opts: ResolveRequestOptions): string | null {
-    const owner = this.findPackageLocator(issuer);
-    const location = owner === null ? undefined : this.getPackageInformation(owner)?.packageLocation;
+    const location = this.scopeOf(issuer);
     const imports = location === undefined ? undefined : readManifest(location).imports;
-    const target = imports === undefined || imports === null ? undefined : resolveImports(imports, request, conditions);
+    const target = imports === undefined || imports === null ? undefined : resolveImports(imports, request, conditions, this.validate);
     if (target === undefined || location === undefined) {
       throw Object.assign(new Error(`pnp: '${request}' is not defined by the imports of the package holding '${issuer}'`), {
         code: "ERR_PACKAGE_IMPORT_NOT_DEFINED",
@@ -1018,6 +1053,14 @@ function qualify(unqualified: string, candidates: string[], extensions: string[]
     }
   }
   return null;
+}
+
+/** How a resolver judges what it reads. */
+export interface IPnpResolverOptions {
+  /** False to read an invalid `exports`/`imports` map as the TypeScript compiler
+   * does rather than refuse it as node does — for a resolver answering a
+   * compile, where such a package is a fault only its runtime reports. */
+  validateExports?: boolean;
 }
 
 /** As much of a `package.json` as resolution reads: what the package publishes,

@@ -237,7 +237,16 @@ function queriesFor(both: IPair): IQuery[] {
     const pool = `${path.join(root, TREE_MOUNT)}/`;
     issuers.push(...issuers.filter(issuer => issuer.startsWith(pool)).map(issuer => real + issuer.slice(pool.length)));
   }
-  const requests = [...names].flatMap(name => [name, `${name}/lib/a`, `${name}/lib/a.js`, `${name}/sub`, `${name}/missing`, `${name}/package.json`]);
+  const requests = [...names].flatMap(name => [
+    name,
+    `${name}/`,
+    `${name}/lib/`,
+    `${name}/lib/a`,
+    `${name}/lib/a.js`,
+    `${name}/sub`,
+    `${name}/missing`,
+    `${name}/package.json`,
+  ]);
   requests.push("fs", "node:fs", "./lib/a", "../x", "/abs/x", "#internal", "#dep", "#missing");
   const requestOptions: ResolveRequestOptions[] = [
     {},
@@ -436,6 +445,9 @@ describe("PnpResolver conforms to Yarn's PnP runtime", () => {
         {},
         fields
       );
+      /* A nested package.json scopes the files below it: `#internal` from
+       * `lib/deep/x.js` is answered by `lib/`'s map, not the package root's. */
+      fs.writeFileSync(path.join(root, "pkgs/importing/lib/package.json"), JSON.stringify({ imports: { "#internal": "./deep/x.js" } }));
       expectConformant(pair(root, state));
     });
   });

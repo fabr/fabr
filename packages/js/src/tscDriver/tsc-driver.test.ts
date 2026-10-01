@@ -363,6 +363,27 @@ describe("the tsc driver", () => {
     expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("the trailing types key");
   });
 
+  it("finds a type reference's declarations behind a trailing types key", () => {
+    /* `/// <reference types>` loads nothing, so no condition gates the others:
+     * the package's candidates are walked until one declares something, as the
+     * compiler does. */
+    const client = work.add(
+      "client",
+      {
+        "client.js": "module.exports = {};\n",
+        "client.mjs": "export {};\n",
+        "client.d.ts": "declare const referencedGlobal: 'from the trailing types key';\n",
+      },
+      { exports: { "./client": { import: "./client.mjs", require: "./client.js", types: "./client.d.ts" } } }
+    );
+    stage(work.root, [["client", client, [["client", client]]]], [["client", client]], []);
+    fs.writeFileSync(work.root + "/src/index.ts", '/// <reference types="client/client" />\nexport const which = referencedGlobal;\n');
+
+    const { status, output } = compile(work.root);
+    expect(status, output).to.equal(0);
+    expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("from the trailing types key");
+  });
+
   it("prefers the declarations beside the format it resolved over a trailing types key", () => {
     /* The same map, but the implementations have their own declarations. Those
      * are this compilation's — the two formats of a dual package need not describe
@@ -703,27 +724,234 @@ describe("the tsc driver", () => {
     expect(output).to.contain("Cannot find module 'closed/sub'");
   });
 
-  it("reports an unreadable dependency manifest without losing the other diagnostics", () => {
-    /* One package's mistake is not the compilation's: the import that touched it
-     * fails where it is written, every other diagnostic still arrives, and the
-     * reason is stated once. */
-    const broken = work.add(
-      "broken",
-      { "index.js": "module.exports = {};\n" },
-      { exports: { ".": "./index.js", import: "./esm.js" } }
+  it("lets the sidecar type an unpublished subpath for an import that loads nothing", () => {
+    /* `import type` is erased: the runtime never asks the package for the
+     * subpath, so the refusal above does not apply and the compiler's own
+     * `@types` fallback stands. */
+    const closed = work.add("closed", { "index.js": "module.exports = {};\n" }, { exports: { ".": "./index.js" } });
+    const sidecar = work.add("@types/closed", { "sub.d.ts": "export type Marker = 'from the sidecar';\n" });
+    stage(
+      work.root,
+      [
+        ["closed", closed, [["closed", closed]]],
+        ["@types/closed", sidecar, [["@types/closed", sidecar]]],
+      ],
+      [
+        ["closed", closed],
+        ["@types/closed", sidecar],
+      ],
+      []
     );
-    stage(work.root, [["broken", broken, [["broken", broken]]]], [["broken", broken]], []);
+    fs.writeFileSync(work.root + "/src/index.ts", 'import type { Marker } from "closed/sub";\nexport const which: Marker = "from the sidecar";\n');
+
+    const { status, output } = compile(work.root);
+    expect(status, output).to.equal(0);
+  });
+
+  it("applies a package's typesVersions to a subpath import", () => {
+    const tv = work.add(
+      "tv",
+      { "index.js": "", "sub.js": "", "types/index.d.ts": "export {};\n", "types/sub.d.ts": "export declare const s: 'from typesVersions';\n" },
+      { main: "index.js", typesVersions: { "*": { "*": ["types/*"] } } }
+    );
+    stage(work.root, [["tv", tv, [["tv", tv]]]], [["tv", tv]], []);
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { s } from "tv/sub";\nexport const which = s;\n');
+
+    const { status, output } = compile(work.root);
+    expect(status, output).to.equal(0);
+    expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("from typesVersions");
+  });
+
+  it("selects the typesVersions entry whose range the compiler satisfies", () => {
+    /* Entries are tried in order; `<3.0` does not admit this compiler, `>=4.0`
+     * does, so its map is the one applied. */
+    const tv = work.add(
+      "ranged",
+      {
+        "sub.js": "",
+        "old/sub.d.ts": "export declare const s: 'from the <3.0 entry';\n",
+        "ts4/sub.d.ts": "export declare const s: 'from the >=4.0 entry';\n",
+      },
+      { typesVersions: { "<3.0": { "*": ["old/*"] }, ">=4.0": { "*": ["ts4/*"] } } }
+    );
+    stage(work.root, [["ranged", tv, [["ranged", tv]]]], [["ranged", tv]], []);
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { s } from "ranged/sub";\nexport const which = s;\n');
+
+    const { status, output } = compile(work.root);
+    expect(status, output).to.equal(0);
+    expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("from the >=4.0 entry");
+  });
+
+  it("skips a versioned types condition the compiler does not satisfy", () => {
+    const versioned = work.add(
+      "skipped",
+      {
+        "index.js": "module.exports = {};\n",
+        "old/index.d.ts": "export declare const v: 'from types@<3.0';\n",
+        "index.d.ts": "export declare const v: 'from types';\n",
+      },
+      { exports: { ".": { "types@<3.0": "./old/index.d.ts", types: "./index.d.ts", default: "./index.js" } } }
+    );
+    stage(work.root, [["skipped", versioned, [["skipped", versioned]]]], [["skipped", versioned]], []);
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { v } from "skipped";\nexport const which = v;\n');
+
+    const { status, output } = compile(work.root);
+    expect(status, output).to.equal(0);
+    expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain('"from types"');
+  });
+
+  it("selects a versioned types condition the compiler satisfies", () => {
+    const versioned = work.add(
+      "versioned",
+      { "index.js": "module.exports = {};\n", "v/index.d.ts": "export declare const v: 'from types@>=4.0';\n" },
+      { exports: { ".": { "types@>=4.0": "./v/index.d.ts", default: "./index.js" } } }
+    );
+    stage(work.root, [["versioned", versioned, [["versioned", versioned]]]], [["versioned", versioned]], []);
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { v } from "versioned";\nexport const which = v;\n');
+
+    const { status, output } = compile(work.root);
+    expect(status, output).to.equal(0);
+    expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("from types@>=4.0");
+  });
+
+  it("honours an import's resolution-mode attribute", () => {
+    /* An ES-module compile would take the `import` declarations; the attribute
+     * asks for the `require` ones. */
+    const modal = work.add(
+      "modal",
+      { "esm.d.ts": "export type Which = 'import';\n", "cjs.d.ts": "export type Which = 'require';\n", "index.js": "" },
+      { exports: { ".": { import: { types: "./esm.d.ts", default: "./index.js" }, require: { types: "./cjs.d.ts", default: "./index.js" } } } }
+    );
+    stage(work.root, [["modal", modal, [["modal", modal]]]], [["modal", modal]], [], undefined, "esnext");
     fs.writeFileSync(
       work.root + "/src/index.ts",
-      'import { marker } from "broken";\nexport const which: number = marker;\nexport const other: number = "not a number";\n'
+      'import type { Which } from "modal" with { "resolution-mode": "require" };\nexport const which: Which = "require";\n'
     );
 
     const { status, output } = compile(work.root);
+    expect(status, output).to.equal(0);
+  });
+
+  it("reports an import of a missing file that a declare module pattern would let through", () => {
+    stage(work.root, [], [], []);
+    fs.writeFileSync(work.root + "/src/decl.d.ts", 'declare module "*.css";\ndeclare module "*.svg" { const src: string; export default src; }\n');
+    fs.writeFileSync(work.root + "/src/present.css", "body{}");
+    fs.writeFileSync(work.root + "/src/logo.svg", "<svg/>");
+    fs.writeFileSync(
+      work.root + "/src/index.ts",
+      [
+        'import "./present.css";',
+        'import "./missing.css";',
+        'import logo from "./logo.svg";',
+        'import gone from "./gone.svg";',
+        'import type {} from "./typed-only.svg";',
+        'import "./extensionless";',
+        "export const urls = [logo, gone];",
+        "",
+      ].join("\n")
+    );
+    /* `./extensionless` stays the compiler's: with no extension, a bundler may
+     * complete it. Patterns cover it for this test. */
+    fs.appendFileSync(work.root + "/src/decl.d.ts", 'declare module "*extensionless";\n');
+
+    const { status, output } = compile(work.root);
     expect(status).to.not.equal(0);
-    expect(output).to.contain("cannot be mixed");
-    expect(output).to.contain("broken");
-    /* The unrelated error in the project's own code still reported. */
-    expect(output).to.contain("not assignable to type 'number'");
+    expect(output).to.contain("Cannot find file './missing.css'");
+    expect(output).to.contain("Cannot find file './gone.svg'");
+    expect(output).to.not.contain("present.css");
+    expect(output).to.not.contain("logo.svg");
+    expect(output).to.not.contain("typed-only.svg");
+    expect(output).to.not.contain("extensionless");
+  });
+
+  it("resolves through a trailing-slash folder key, as tsc does", () => {
+    /* Not in the exports specification (node removed it in v17), but tsc and
+     * esbuild still honor it — a compatibility allowance. */
+    const folder = work.add(
+      "folder",
+      { "src/features/a.js": "exports.v = 1;\n", "src/features/a.d.ts": "export declare const v: 'through the folder key';\n" },
+      { exports: { "./features/": "./src/features/" } }
+    );
+    stage(work.root, [["folder", folder, [["folder", folder]]]], [["folder", folder]], []);
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { v } from "folder/features/a.js";\nexport const which = v;\n');
+
+    const { status, output } = compile(work.root);
+    expect(status, output).to.equal(0);
+    expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("through the folder key");
+  });
+
+  it("completes an exports target written without an extension", () => {
+    const open = work.add(
+      "open",
+      { "src/math/utils.js": "exports.clamp = () => 0;\n", "src/math/utils.d.ts": "export declare function clamp(): 'extensionless target';\n" },
+      { exports: { "./src/*": "./src/*" } }
+    );
+    stage(work.root, [["open", open, [["open", open]]]], [["open", open]], []);
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { clamp } from "open/src/math/utils";\nexport const which = clamp();\n');
+
+    const { status, output } = compile(work.root);
+    expect(status, output).to.equal(0);
+    expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("extensionless target");
+    /* The emit names the file the map reaches, which `require` needs as much as
+     * `import` does. */
+    expect(fs.readFileSync(path.join(work.root, "build/index.js"), "utf8")).to.contain('require("open/src/math/utils.js")');
+  });
+
+  it("completes an extensionless exports target in ES-module output too", () => {
+    const open = work.add(
+      "open",
+      { "src/math/utils.js": "export const clamp = () => 0;\n", "src/math/utils.d.ts": "export declare function clamp(): number;\n" },
+      { exports: { "./src/*": "./src/*" } }
+    );
+    stage(work.root, [["open", open, [["open", open]]]], [["open", open]], [], undefined, "esnext");
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { clamp } from "open/src/math/utils";\nexport const which = clamp();\n');
+
+    const { status, output } = compile(work.root);
+    expect(status, output).to.equal(0);
+    expect(fs.readFileSync(path.join(work.root, "build/index.js"), "utf8")).to.contain('from "open/src/math/utils.js"');
+  });
+
+  it("leaves an extensionless exports target unresolved where the completed spelling reaches another file", () => {
+    /* `pkg/src/utils.js` is blocked by its own key, so the completion cannot be
+     * written, and the import stays as unresolvable as it is everywhere else. */
+    const blocked = work.add(
+      "blocked",
+      { "src/utils.js": "exports.clamp = () => 0;\n", "src/utils.d.ts": "export declare function clamp(): number;\n" },
+      { exports: { "./src/*": "./src/*", "./src/*.js": null } }
+    );
+    stage(work.root, [["blocked", blocked, [["blocked", blocked]]]], [["blocked", blocked]], []);
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { clamp } from "blocked/src/utils";\nexport const which = clamp();\n');
+
+    const { status, output } = compile(work.root);
+    expect(status).to.not.equal(0);
+    expect(output).to.contain("Cannot find module 'blocked/src/utils'");
+  });
+
+  it("reads an invalid exports map as the compiler does", () => {
+    /* Subpath keys mixed with condition keys: node refuses the whole package,
+     * and its runtime says so; the compile reads it as tsc does — the "." entry
+     * answers for the package itself, and no other subpath resolves. */
+    const broken = work.add(
+      "broken",
+      {
+        "index.js": "module.exports = {};\n",
+        "index.d.ts": "export declare const marker: 'through the dot entry';\n",
+        "sub.js": "module.exports = {};\n",
+        "sub.d.ts": "export declare const sub: string;\n",
+      },
+      { exports: { ".": "./index.js", import: "./esm.js", "./sub": "./sub.js" } }
+    );
+    stage(work.root, [["broken", broken, [["broken", broken]]]], [["broken", broken]], []);
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { marker } from "broken";\nexport const which = marker;\n');
+
+    const { status, output } = compile(work.root);
+    expect(status, output).to.equal(0);
+    expect(fs.readFileSync(path.join(work.root, "build/index.d.ts"), "utf8")).to.contain("through the dot entry");
+
+    fs.writeFileSync(work.root + "/src/index.ts", 'import { sub } from "broken/sub";\nexport const which = sub;\n');
+    const subpath = compile(work.root);
+    expect(subpath.status).to.not.equal(0);
+    expect(subpath.output).to.contain("Cannot find module 'broken/sub'");
   });
 
   it("keys a resolution by the package that asked, not by the specifier alone", () => {
@@ -1234,20 +1462,15 @@ describe("bridging module-system globals across the emit format", () => {
     expect(emitted).to.contain("function shadowed(__dirname) { return __dirname; }");
   });
 
-  it("errors on CommonJS scaffolding an ES-module emit cannot provide", () => {
-    const { status, output } = compileBridged("esnext", {
-      "index.ts": 'export const fs = require("node:fs");\n',
-    });
-    expect(status).to.not.equal(0);
-    expect(output).to.contain("'require' is not defined in an ES module");
-  });
-
-  it("trusts a file that guards its scaffolding with typeof", () => {
+  it("passes CommonJS scaffolding through an ES-module emit as the compiler does", () => {
+    /* No rewrite exists for it, so the bridge adds nothing: a bundler resolves
+     * it, and anything else meets it exactly as stock tsc would emit it. */
     const { status, output, read } = compileBridged("esnext", {
-      "index.ts": 'export const main = typeof require !== "undefined" && require.main === module;\n',
+      "index.ts": 'export const fs = require("node:fs");\nexport const main = require.main === module;\n',
     });
     expect(status, output).to.equal(0);
-    expect(read("index.js")).to.contain('typeof require !== "undefined" && require.main === module');
+    expect(read("index.js")).to.contain('require("node:fs")');
+    expect(read("index.js")).to.contain("require.main === module");
   });
 
   it("rewrites import.meta to the CommonJS spellings, TS1343 disposed of", () => {
@@ -1266,15 +1489,12 @@ describe("bridging module-system globals across the emit format", () => {
     expect(emitted).to.not.contain("import.meta");
   });
 
-  it("errors usefully on an import.meta member CommonJS cannot express", () => {
+  it("leaves an import.meta member CommonJS cannot express to the compiler's own diagnostic", () => {
     const { status, output } = compileBridged("commonjs", {
       "index.ts": 'export const r = import.meta.resolve("x");\n',
     });
     expect(status).to.not.equal(0);
-    expect(output).to.contain("'import.meta.resolve' has no CommonJS equivalent");
-    /* Replaced, not doubled: TS1343's advice names the module option, a knob a
-     * fabr project does not own. */
-    expect(output).to.not.contain("TS1343");
+    expect(output).to.contain("TS1343");
   });
 
   it("leaves a source that pinned its own format out of the bridge", () => {
@@ -1548,6 +1768,7 @@ describe("ES-module specifier rewriting", () => {
       'import { b } from "./bar";\n' +
         'import { make } from "./shape";\n' +
         'export * from "./dir";\n' +
+        'export { d as slashed } from "./dir/";\n' +
         'export type { X } from "./types";\n' +
         'import "./side";\n' +
         'const lazy = (): Promise<unknown> => import("./bar.js");\n' +
@@ -1571,6 +1792,8 @@ describe("ES-module specifier rewriting", () => {
     /* A directory resolves to its index — the case an extension append gets
      * wrong, and the reason this is driven by resolution. */
     expect(js).to.contain('from "./dir/index.js"');
+    /* So does a directory named with a trailing slash. */
+    expect(js).to.contain('export { d as slashed } from "./dir/index.js"');
     /* A side-effect import carries no binding but still has to load. */
     expect(js).to.contain('import "./side.js"');
     expect(js).to.contain('import("./bar.js")');
@@ -1661,7 +1884,8 @@ describe("import rewriting", () => {
     /* A PLAIN stylesheet beside the module one: no shim, no class map, imported
      * for its effect alone — the other half of what the css step produces. It
      * is a delivered file the compile emits nothing for, so it is declared as a
-     * resource and resolves to the synthesized empty module. */
+     * resource: the compiler never resolves it, and its side-effect import is
+     * accepted because the file is there. */
     fs.writeFileSync(path.join(work.root, "resources.json"), JSON.stringify(["theme.css"]));
     fs.writeFileSync(
       path.join(src, "Card.ts"),

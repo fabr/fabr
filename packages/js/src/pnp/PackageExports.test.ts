@@ -116,15 +116,25 @@ describe("resolveExports", () => {
     expect(resolveExports({ "./*": "./src/*" }, "./node_modules/evil", TYPES)).to.equal(undefined);
   });
 
-  it("does not honor a deprecated trailing-slash key, even against itself", () => {
-    /* Node dropped these in v17 and tsc resolves them in no mode, so a package
-     * relying on one neither loads nor typechecks anywhere else — resolving it
-     * here would compile something that cannot run. Node refuses the bare key
-     * too, which is why the exact-match path excludes it rather than only the
-     * subpaths below it. */
+  it("does not honor a trailing-slash folder key, even against itself", () => {
+    /* Not a form the specification has (node removed it in v17). Node refuses
+     * the bare key too, which is why the exact-match path excludes it rather
+     * than only the subpaths below it. */
     const exports: ExportsValue = { "./features/": "./src/features/" };
     expect(resolveExports(exports, "./features/a/b.js", TYPES)).to.equal(undefined);
     expect(resolveExports(exports, "./features/", TYPES)).to.equal(undefined);
+  });
+
+  it("honors a folder key when not validating, as the TypeScript compiler and esbuild do", () => {
+    const exports: ExportsValue = { "./features/": "./src/features/", "./features/special/*": "./special/*.js" };
+    expect(resolveExports(exports, "./features/a/b.js", TYPES, false)).to.equal("./src/features/a/b.js");
+    /* Ordered among the pattern keys by length: the longer prefix wins. */
+    expect(resolveExports(exports, "./features/special/x", TYPES, false)).to.equal("./special/x.js");
+    /* The key alone names nothing, and a target that is not a directory takes no remainder. */
+    expect(resolveExports(exports, "./features/", TYPES, false)).to.equal(undefined);
+    expect(resolveExports({ "./features/": "./src/features.js" }, "./features/a.js", TYPES, false)).to.equal(undefined);
+    /* The remainder is checked like a wildcard's capture. */
+    expect(resolveExports(exports, "./features/../escape.js", TYPES, false)).to.equal(undefined);
   });
 
   it("leaves a `*` in a non-pattern key's target as the character it is", () => {
@@ -168,6 +178,14 @@ describe("resolveExports", () => {
 
   it("reports a map that mixes subpath keys with condition keys", () => {
     expect(() => resolveExports({ ".": "./index.js", import: "./esm.js" }, ".", TYPES)).to.throw(/cannot be mixed/);
+  });
+
+  it("reads a mixed map as the TypeScript compiler does when not validating", () => {
+    /* Its "." entry answers for the package itself; no other subpath resolves. */
+    const mixed = { ".": "./index.js", import: "./esm.js", "./sub": "./sub.js" };
+    expect(resolveExports(mixed, ".", TYPES, false)).to.equal("./index.js");
+    expect(resolveExports(mixed, "./sub", TYPES, false)).to.equal(undefined);
+    expect(resolveExports({ import: "./esm.js", "./sub": "./sub.js" }, ".", TYPES, false)).to.equal(undefined);
   });
 });
 
@@ -223,6 +241,12 @@ describe("fallback lists", () => {
 describe("condition keys", () => {
   it("rejects a numeric key, whose place in the condition order cannot be read", () => {
     expect(() => resolveExports({ ".": { import: "./a.mjs", "0": "./b.js" } }, ".", TYPES)).to.throw(/numeric property key/);
+  });
+
+  it("reads a map with a numeric key in JavaScript's order when not validating", () => {
+    /* No refusal: the keys are taken as JavaScript enumerates them (the numeric
+     * one first), as the compiler takes them, and the first matching one wins. */
+    expect(resolveExports({ ".": { import: "./a.mjs", "0": "./b.js", types: "./c.d.ts" } }, ".", TYPES, false)).to.equal("./a.mjs");
   });
 
   it("leaves numeric subpath keys and file names alone", () => {

@@ -342,10 +342,11 @@ describe("PnpResolver, resolving a specifier in full", () => {
 
   const from = (): string => path.join(store, "src/index.ts");
 
-  it("answers a trailing-slash directory only as CommonJS does", () => {
-    /* `require("buffer/")` loads the directory of a package with no `exports`;
-     * a package with a map publishes no such subpath, and an ES-module world
-     * refuses the specifier outright. */
+  it("answers a trailing-slash directory for a package with no exports, whatever the conditions", () => {
+    /* `require("buffer/")` loads the directory of a package with no `exports`,
+     * and so do Yarn's runtime and a `bundler`-resolution compile under the
+     * `import` condition; a package with a map publishes no directory subpath,
+     * though `mapped/` still names the package itself. */
     pkg("ref-plain");
     pkg("ref-mapped", { exports: { ".": "./index.js", "./*": "./lib/*.js" } });
     const names: Array<[string, string]> = [
@@ -354,10 +355,12 @@ describe("PnpResolver, resolving a specifier in full", () => {
     ];
     const cjs = resolvingIn(["types", "require"], ...names);
     expect(cjs.resolveAll("plain/", from())).to.deep.equal([path.join(store, "ref-plain")]);
-    expect(cjs.resolveAll("mapped/", from())).to.deep.equal([]);
+    expect(cjs.resolveAll("mapped/", from())).to.deep.equal([path.join(store, "ref-mapped/index.js")]);
     expect(cjs.resolveAll("mapped/sub/", from())).to.deep.equal([]);
     const esm = resolvingIn(["types", "import"], ...names);
-    expect(esm.resolveAll("plain/", from())).to.deep.equal([]);
+    expect(esm.resolveAll("plain/", from())).to.deep.equal([path.join(store, "ref-plain")]);
+    expect(esm.resolveAll("mapped/", from())).to.deep.equal([path.join(store, "ref-mapped/index.js")]);
+    expect(esm.resolveAll("mapped/sub/", from())).to.deep.equal([]);
   });
 
   it("hands back the directory for a package that publishes no exports", () => {
@@ -399,6 +402,30 @@ describe("PnpResolver, resolving a specifier in full", () => {
     expect(resolver.resolveSpecifier("#helper", inside)).to.equal(path.join(store, "ref-helper/lib/deep.js"));
     /* And a `#` name means nothing outside the package that declared it. */
     expect(resolver.resolveSpecifier("#state", from())).to.equal(undefined);
+  });
+
+  it("answers a #specifier from the nearest package.json, as node does", () => {
+    /* A nested `package.json` inside the package scopes the files below it. */
+    pkg("ref-private", { imports: { "#x": "./outer.js" } });
+    fs.mkdirSync(path.join(store, "ref-private/dist"), { recursive: true });
+    fs.writeFileSync(path.join(store, "ref-private/dist/package.json"), JSON.stringify({ imports: { "#x": "./inner.js" } }));
+    const resolver = resolving(["private", "ref-private"]);
+    expect(resolver.resolveSpecifier("#x", path.join(store, "ref-private/dist/i.js"))).to.equal(path.join(store, "ref-private/dist/inner.js"));
+    expect(resolver.resolveSpecifier("#x", path.join(store, "ref-private/lib/i.js"))).to.equal(path.join(store, "ref-private/outer.js"));
+  });
+
+  it("answers a #specifier for files above any package row from the workspace's own package.json", () => {
+    /* The sources' own row sits at `./src/`; their `package.json` is the
+     * workspace root's. */
+    fs.writeFileSync(path.join(store, "package.json"), JSON.stringify({ imports: { "#y": "./src/y.js" } }));
+    const resolver = resolving();
+    expect(resolver.resolveSpecifier("#y", from())).to.equal(path.join(store, "src/y.js"));
+  });
+
+  it("answers the bare name with a trailing slash as the package itself, exports or not", () => {
+    pkg("ref-mapped", { exports: { ".": "./index.js" } });
+    const resolver = resolving(["mapped", "ref-mapped"]);
+    expect(resolver.resolveAll("mapped/", from())).to.deep.equal([path.join(store, "ref-mapped/index.js")]);
   });
 
   it("offers every candidate a #specifier names, through a redirection too", () => {

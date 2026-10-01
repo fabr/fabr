@@ -30,15 +30,17 @@
  * answers with a package-relative path. Everything filesystem-shaped (finding
  * the manifest, extension probing, the read) stays with the caller.
  *
- * Deprecated trailing-slash keys (`"./features/": "./src/features/"`) are NOT
- * honored: node dropped them in v17 and TypeScript resolves them in no mode, so
- * a package relying on one neither loads nor typechecks anywhere else — and
- * resolving it here would compile something that cannot run.
+ * Trailing-slash "folder" keys (`"./features/": "./src/features/"`) are not part
+ * of the specification — node removed them in v17 — and are not honored, unless
+ * the caller passes `validate: false`, which honors them as the TypeScript
+ * compiler and esbuild still do (see {@link matchSubpath}).
  *
  * One deviation from node: an invalid map is answered with "no resolution"
- * rather than a thrown error, except for the one shape that is unambiguously a
+ * rather than a thrown error, except for the two shapes that are unambiguously a
  * mistake in the package rather than in the specifier (subpath keys mixed with
- * condition keys), which is reported.
+ * condition keys; a numeric condition key), which are reported — unless the
+ * caller passes `validate: false`, which reads them as the TypeScript compiler
+ * does instead (see {@link subpathMap}, {@link matchingConditions}).
  */
 
 /** An `exports`/`imports` entry: a target path, an ordered fallback list, a
@@ -53,6 +55,15 @@ export function exportsSubpath(rest: string): string {
 }
 
 /**
+ * The conditions a resolution satisfies, asked one key at a time. A plain
+ * `Set<string>` is one; a caller with its own rule for some keys (TypeScript's
+ * versioned `types@<range>` keys) supplies its own `has`.
+ */
+export interface IConditionSet {
+  has(condition: string): boolean;
+}
+
+/**
  * The package-relative path `subpath` names, or undefined when the package does
  * not expose it. A package with no `exports` field at all has nothing to say and
  * is not this function's business — the caller resolves those against the
@@ -62,8 +73,8 @@ export function exportsSubpath(rest: string): string {
  * which condition wins, which is what lets a package state its own priorities
  * (`types` before `import` before `default`). `default` always matches.
  */
-export function resolveExports(exports: ExportsValue, subpath: string, conditions: ReadonlySet<string>): string | undefined {
-  return resolveExportsAll(exports, subpath, conditions)[0];
+export function resolveExports(exports: ExportsValue, subpath: string, conditions: IConditionSet, validate = true): string | undefined {
+  return resolveExportsAll(exports, subpath, conditions, validate)[0];
 }
 
 /**
@@ -82,14 +93,14 @@ export function resolveExports(exports: ExportsValue, subpath: string, condition
  * this world already satisfies, so a package with nothing to offer here still
  * has nothing.
  */
-export function resolveExportsAll(exports: ExportsValue, subpath: string, conditions: ReadonlySet<string>): string[] {
-  const map = subpathMap(exports);
-  const matched = matchSubpath(map, subpath);
+export function resolveExportsAll(exports: ExportsValue, subpath: string, conditions: IConditionSet, validate = true): string[] {
+  const map = subpathMap(exports, validate);
+  const matched = matchSubpath(map, subpath, !validate);
   if (matched === undefined) {
     return [];
   }
   const found: string[] = [];
-  collectTargets(matched.target, matched.wildcard, conditions, false, found);
+  collectTargets(matched.target, matched.wildcard, conditions, false, found, validate, matched.folder === true);
   return [...new Set(found)];
 }
 
@@ -100,8 +111,8 @@ export function resolveExportsAll(exports: ExportsValue, subpath: string, condit
  * other name, through the table. The two are told apart by the `./` prefix,
  * exactly as node tells them apart.
  */
-export function resolveImports(imports: ExportsValue, specifier: string, conditions: ReadonlySet<string>): string | undefined {
-  return resolveImportsAll(imports, specifier, conditions)[0];
+export function resolveImports(imports: ExportsValue, specifier: string, conditions: IConditionSet, validate = true): string | undefined {
+  return resolveImportsAll(imports, specifier, conditions, validate)[0];
 }
 
 /**
@@ -110,7 +121,7 @@ export function resolveImports(imports: ExportsValue, specifier: string, conditi
  * reason: a compiler asking for declarations may need a candidate a condition
  * listed later.
  */
-export function resolveImportsAll(imports: ExportsValue, specifier: string, conditions: ReadonlySet<string>): string[] {
+export function resolveImportsAll(imports: ExportsValue, specifier: string, conditions: IConditionSet, validate = true): string[] {
   /* `#` alone names nothing. `#/x` is refused by the written specification and
    * accepted by node, and node is what decides whether the import will load. */
   if (!specifier.startsWith("#") || specifier === "#" || !isMap(imports)) {
@@ -121,7 +132,7 @@ export function resolveImportsAll(imports: ExportsValue, specifier: string, cond
     return [];
   }
   const found: string[] = [];
-  collectTargets(matched.target, matched.wildcard, conditions, true, found);
+  collectTargets(matched.target, matched.wildcard, conditions, true, found, validate, false);
   return [...new Set(found)];
 }
 
@@ -147,8 +158,8 @@ export function resolveImportsAll(imports: ExportsValue, specifier: string, cond
  * Keys are tried most-specific first, so among the names that do round-trip the
  * answer is the tightest one, and deterministic.
  */
-export function exportedSubpath(exports: ExportsValue, file: string, conditions: ReadonlySet<string>): string | undefined {
-  const map = subpathMap(exports);
+export function exportedSubpath(exports: ExportsValue, file: string, conditions: IConditionSet, validate = true): string | undefined {
+  const map = subpathMap(exports, validate);
   for (const key of [...map.keys()].sort(compareKeys)) {
     /* Every target the key can name, unexpanded — `wildcard: undefined` leaves
      * a pattern's `*` in place, which is exactly the shape to match the file
@@ -156,13 +167,13 @@ export function exportedSubpath(exports: ExportsValue, file: string, conditions:
      * is. All of them, not the first: the file may be named by a condition the
      * package lists after the one that answers a forward lookup. */
     const targets: string[] = [];
-    collectTargets(map.get(key)!, undefined, conditions, false, targets);
+    collectTargets(map.get(key)!, undefined, conditions, false, targets, validate, false);
     for (const candidate of targets.map(target => nameFor(key, target, file))) {
       /* Against every file the name publishes, not merely the first: a package
        * may name its declarations under a condition it lists after the
        * implementation, and that name still reaches them — the consumer's
        * compiler walks the same candidates. */
-      if (candidate !== undefined && resolveExportsAll(exports, candidate, conditions).includes(file)) {
+      if (candidate !== undefined && resolveExportsAll(exports, candidate, conditions, validate).includes(file)) {
         return candidate;
       }
     }
@@ -191,16 +202,21 @@ function isMap(value: ExportsValue): value is { readonly [key: string]: ExportsV
  * (or which is not a map at all) is sugar for the main entry: `"exports":
  * "./index.js"` and `"exports": { "import": … }` both describe `.` alone.
  *
- * Mixing the two is the one shape reported rather than declined: no reading of
- * it can be what the author meant, and answering "not exported" would send the
- * consumer looking for a mistake in their own import.
+ * Mixing the two is reported rather than declined: no reading of it can be what
+ * the author meant, and answering "not exported" would send the consumer
+ * looking for a mistake in their own import. Unvalidated, it is read as the
+ * TypeScript compiler reads it: its `"."` entry answers for the package itself,
+ * and no other subpath resolves.
  */
-function subpathMap(exports: ExportsValue): Map<string, ExportsValue> {
+function subpathMap(exports: ExportsValue, validate: boolean): Map<string, ExportsValue> {
   if (isMap(exports)) {
     const keys = Object.keys(exports);
     const subpaths = keys.filter(key => key.startsWith("."));
     if (keys.length > 0 && subpaths.length === keys.length) {
       return new Map(Object.entries(exports));
+    }
+    if (subpaths.length > 0 && !validate) {
+      return "." in exports ? new Map([[".", exports["."]]]) : new Map();
     }
     if (subpaths.length > 0) {
       throw new Error(
@@ -218,13 +234,17 @@ function subpathMap(exports: ExportsValue): Map<string, ExportsValue> {
 interface IMatch {
   readonly target: ExportsValue;
   readonly wildcard: string | undefined;
+  /** Matched by a folder key: `wildcard` is the remainder, appended to a target
+   * that names a directory rather than substituted for a `*`. */
+  readonly folder?: boolean;
 }
 
 /** The entry that answers `subpath`: its exact key if there is one, else the
- * most specific pattern key that covers it. A key that is neither — the
- * deprecated trailing-slash form — matches nothing, not even itself, so a
- * package relying on one is as unresolvable here as under node and under tsc. */
-function matchSubpath(map: ReadonlyMap<string, ExportsValue>, subpath: string): IMatch | undefined {
+ * most specific pattern key that covers it. A trailing-slash folder key is
+ * neither, and matches nothing, not even itself, as the specification has it —
+ * unless `folders`, when it covers every subpath beneath it, ordered among the
+ * pattern keys by its length as the TypeScript compiler orders it. */
+function matchSubpath(map: ReadonlyMap<string, ExportsValue>, subpath: string, folders = false): IMatch | undefined {
   const exact = map.get(subpath);
   if (exact !== undefined && !subpath.includes("*") && !subpath.endsWith("/")) {
     return { target: exact, wildcard: undefined };
@@ -235,6 +255,11 @@ function matchSubpath(map: ReadonlyMap<string, ExportsValue>, subpath: string): 
      * already offered above, so letting it through here would re-admit the
      * spellings that guard exists to refuse. */
     if (!key.includes("*")) {
+      if (folders && key.endsWith("/") && subpath.length > key.length && subpath.startsWith(key)) {
+        if (best === undefined || compareKeys(key, best.key) < 0) {
+          best = { target, wildcard: subpath.slice(key.length), key, folder: true };
+        }
+      }
       continue;
     }
     const wildcard = matchPattern(key, subpath);
@@ -307,15 +332,17 @@ function compareKeys(key: string, other: string): number {
 function collectTargets(
   target: ExportsValue,
   wildcard: string | undefined,
-  conditions: ReadonlySet<string>,
+  conditions: IConditionSet,
   external: boolean,
-  found: string[]
+  found: string[],
+  validate: boolean,
+  folder: boolean
 ): boolean {
   if (target === null) {
     return false;
   }
   if (typeof target === "string") {
-    const expanded = expandTarget(target, wildcard, external);
+    const expanded = expandTarget(target, wildcard, external, folder);
     if (expanded === undefined) {
       return false;
     }
@@ -326,22 +353,26 @@ function collectTargets(
     const before = found.length;
     let refused = target.length === 0;
     for (const entry of target) {
-      refused = !collectTargets(entry, wildcard, conditions, external, found) || refused;
+      refused = !collectTargets(entry, wildcard, conditions, external, found, validate, folder) || refused;
     }
     return found.length > before || !refused;
   }
-  return matchingConditions(target, conditions).every(value => collectTargets(value, wildcard, conditions, external, found));
+  return matchingConditions(target, conditions, validate).every(value =>
+    collectTargets(value, wildcard, conditions, external, found, validate, folder)
+  );
 }
 
 /** A condition map's values in the order it lists them, keeping only those this
  * world satisfies. `default` is satisfied by every world. A key that is an array
  * index is an invalid map: JavaScript enumerates such keys first whatever order
- * the manifest wrote, so the order conditions are tried in cannot be read. */
-function matchingConditions(target: ExportsValue, conditions: ReadonlySet<string>): ExportsValue[] {
+ * the manifest wrote, so the order conditions are tried in cannot be read.
+ * Unvalidated, the keys are taken in the order JavaScript gives them, as the
+ * TypeScript compiler takes them. */
+function matchingConditions(target: ExportsValue, conditions: IConditionSet, validate: boolean): ExportsValue[] {
   if (!isMap(target)) {
     return [];
   }
-  const index = Object.keys(target).find(isArrayIndex);
+  const index = validate ? Object.keys(target).find(isArrayIndex) : undefined;
   if (index !== undefined) {
     throw new Error(`invalid "exports"/"imports": condition key '${index}' is a numeric property key`);
   }
@@ -359,14 +390,17 @@ function matchingConditions(target: ExportsValue, conditions: ReadonlySet<string
  * literal character of a filename, not a placeholder, so `{".": "./a*b.js"}`
  * names the file `a*b.js`.
  */
-function expandTarget(target: string, wildcard: string | undefined, external: boolean): string | undefined {
+function expandTarget(target: string, wildcard: string | undefined, external: boolean, folder = false): string | undefined {
   /* The wildcard comes from the SPECIFIER, so it is checked in its own right
    * and not merely as part of the result — a target that does not use it would
    * otherwise let any subpath through unexamined. */
   if (wildcard !== undefined && hasInvalidSegment(decodeTargetPath(wildcard))) {
     return undefined;
   }
-  const expanded = wildcard === undefined ? target : target.replaceAll("*", wildcard);
+  if (folder && !target.endsWith("/")) {
+    return undefined;
+  }
+  const expanded = wildcard === undefined ? target : folder ? target + wildcard : target.replaceAll("*", wildcard);
   if (expanded.startsWith("./")) {
     /* Past the leading `./`, which is the one `.` segment every target has. */
     const file = decodeTargetPath(expanded.slice(2));
