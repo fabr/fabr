@@ -802,6 +802,26 @@ function installResolution(
     const paths = selectedTypesVersion(ts, manifest.typesVersions);
     return paths === undefined ? [] : typesVersionsSubstitutions(paths, split.subpath).map(target => path.join(location, target));
   };
+  /**
+   * An import of this compile's own package by name, as the relative specifier
+   * naming the same path from `issuer` — `mylib/a/x.module.scss` from `b/c.ts`
+   * is `../a/x.module.scss` — or undefined for any other specifier.
+   *
+   * Mapped from the NAME, never by resolving it: a stylesheet is not staged for
+   * the compile, so its import resolves only once a rewrite rule has renamed it,
+   * and the rules apply to the relative form this produces. A bare own name
+   * names the source directory itself.
+   */
+  const ownRelative = (specifier: string, issuer: string): string | undefined => {
+    const split = splitSpecifier(specifier);
+    const location = split === undefined ? undefined : resolver.sourceLocationOf(split.name, issuer);
+    if (split === undefined || location === undefined) {
+      return undefined;
+    }
+    const relative = path.relative(path.dirname(issuer), path.join(location, split.subpath)).split(path.sep).join("/");
+    const spelled = relative === "" ? "." : relative.startsWith("../") || relative === ".." ? relative : `./${relative}`;
+    return split.subpath === "" || split.subpath.endsWith("/") ? `${spelled}/` : spelled;
+  };
   /** A relative specifier as resolution must look for it: a rewrite rule
    * first, where one names it — the file it names was renamed by an earlier
    * step. The rules select on root-relative names, hence the prefix split; a
@@ -822,7 +842,8 @@ function installResolution(
    * target's own resources are not staged for the compile, so the step names
    * them (`declared`); a dependency's are mounted, so they are asked about.
    */
-  const resourceFile = (specifier: string, issuer: string): string | undefined => {
+  const resourceFile = (written: string, issuer: string): string | undefined => {
+    const specifier = ownRelative(written, issuer) ?? written;
     const name = splitSpecifier(specifier) !== undefined || specifier.startsWith("#");
     const file = name ? publishedPath(specifier, issuer) : path.resolve(path.dirname(issuer), rewritten(specifier, issuer));
     return file !== undefined && (declared.has(file) || host.fileExists(file)) ? file : undefined;
@@ -836,11 +857,11 @@ function installResolution(
    * complete), or a path into a DELIVERED package that the package does not
    * publish or whose published file is missing. A bare name of no package is
    * not judged — `declare module "virtual:*"` is how a bundler plugin's virtual
-   * modules are typed — nor is the compile's own package reached by its name,
-   * whose stylesheets and other generated files are not staged for the compile
-   * but stood in for downstream.
+   * modules are typed. An import of the compile's own package by name is judged
+   * as the relative path it names.
    */
-  const certainlyMissing = (specifier: string, issuer: string): boolean => {
+  const certainlyMissing = (written: string, issuer: string): boolean => {
+    const specifier = ownRelative(written, issuer) ?? written;
     const split = splitSpecifier(specifier);
     if (split === undefined) {
       if (specifier.startsWith("#") || path.extname(specifier) === "") {
@@ -875,6 +896,10 @@ function installResolution(
     mode = defaultMode,
     loads = true
   ): IResolvedModuleWithFailedLookupLocations => {
+    const own = ownRelative(specifier, issuer);
+    if (own !== undefined) {
+      return ts.resolveModuleName(rewritten(own, issuer), issuer, options, host, cache);
+    }
     const split = splitSpecifier(specifier);
     if (split === undefined && !specifier.startsWith("#")) {
       /* Not a name at all: a relative or rooted path, which is the compiler's
@@ -1023,14 +1048,17 @@ function installResolution(
   return {
     finishDiagnostics,
     packageSpecifier: (specifier, containingFile) => completedSpecifiers.get(`${resolver.locatorOf(containingFile)}\0${specifier}`),
+    ownSpecifier: ownRelative,
   };
 }
 
 /** What installing resolution hands back to the compile: the diagnostic
- * finisher, and the package specifiers the emit must write completed. */
+ * finisher, the package specifiers the emit must write completed, and the
+ * relative form of an import of the compile's own package. */
 interface IInstalledResolution {
   finishDiagnostics(diagnostics: readonly Diagnostic[]): readonly Diagnostic[];
   packageSpecifier(specifier: string, containingFile: string): string | undefined;
+  ownSpecifier(specifier: string, containingFile: string): string | undefined;
 }
 
 /** What an extensionless `exports` target is completed with, in order: a
@@ -1366,6 +1394,10 @@ interface IEmitLayout {
    * module system: an `exports` target names a file exactly, for `require` as
    * for `import`. */
   packageSpecifier?: (specifier: string, containingFile: string) => string | undefined;
+  /** The relative specifier an import of this compile's own package by name is
+   * written as (`mylib/a/x` → `../a/x`), whatever the module system; the
+   * relative rewrites then apply to it as to any other. */
+  ownSpecifier?: (specifier: string, containingFile: string) => string | undefined;
 }
 
 /**
@@ -1559,18 +1591,25 @@ function specifierRewriter(
       if (node === undefined || !ts.isStringLiteral(node)) {
         return undefined;
       }
-      const specifier = (node as IStringLiteralNode).text;
+      const written = (node as IStringLiteralNode).text;
       /* Before the relative-specifier filter below: a bare name is not
        * rewritable, but a declaration that imports one forwards that package's
        * interface to everyone who consumes it. */
-      observe?.(sourceFile.fileName, specifier);
-      if (from !== undefined && !specifier.startsWith(".")) {
+      observe?.(sourceFile.fileName, written);
+      if (from === undefined) {
+        return undefined;
+      }
+      const specifier = layout!.ownSpecifier?.(written, sourceFile.fileName) ?? written;
+      if (!specifier.startsWith(".")) {
         const completed = layout!.packageSpecifier?.(specifier, sourceFile.fileName);
         return completed === undefined ? undefined : ts.factory.createStringLiteral(completed);
       }
-      if (from === undefined || !specifier.startsWith(".")) {
-        return undefined;
-      }
+      const next = relativeSpecifier(specifier) ?? specifier;
+      return next === written ? undefined : ts.factory.createStringLiteral(next);
+    };
+    /** What a relative specifier is written as in the output, or undefined to
+     * keep it as it is. */
+    const relativeSpecifier = (specifier: string): string | undefined => {
       /* Rules run ahead of the extension rule below and apply whatever the
        * module system: a rule names its replacement outright, where the
        * extension rule only derives one, and `require` names a renamed file no
@@ -1581,22 +1620,14 @@ function specifierRewriter(
           ? undefined
           : applyImportRewrites(selected, layout!.rewrites);
       if (matched !== undefined) {
-        const next = prefix + renamedIfEmitted(matched, layout!);
-        return next === specifier ? undefined : ts.factory.createStringLiteral(next);
+        return prefix + renamedIfEmitted(matched, layout!);
       }
       if (!layout!.rewriteExtensions) {
         return undefined;
       }
       const resolved = resolve(specifier, sourceFile.fileName);
-      if (resolved === undefined) {
-        return undefined;
-      }
-      const target = emittedPathOf(resolved, layout!);
-      if (target === undefined) {
-        return undefined;
-      }
-      const next = emittedSpecifier(from, target);
-      return next === specifier ? undefined : ts.factory.createStringLiteral(next);
+      const target = resolved === undefined ? undefined : emittedPathOf(resolved, layout!);
+      return target === undefined ? undefined : emittedSpecifier(from!, target);
     };
     /* One matcher per form that can hold a module specifier: rebuilt node, or
      * undefined for "not mine, or nothing to change". */
@@ -1900,10 +1931,11 @@ function emitLayoutOf(
   root: string,
   jsExtension?: string,
   rewrites?: IImportRewrite[],
-  packageSpecifier?: (specifier: string, containingFile: string) => string | undefined
+  packageSpecifier?: (specifier: string, containingFile: string) => string | undefined,
+  ownSpecifier?: (specifier: string, containingFile: string) => string | undefined
 ): IEmitLayout | undefined {
   const rewriteExtensions = emitsEsModules(ts, options);
-  if (!rewriteExtensions && rewrites === undefined && packageSpecifier === undefined) {
+  if (!rewriteExtensions && rewrites === undefined && packageSpecifier === undefined && ownSpecifier === undefined) {
     return undefined;
   }
   const directory = (value: unknown): string | undefined => (typeof value === "string" ? path.resolve(root, value) : undefined);
@@ -1915,6 +1947,7 @@ function emitLayoutOf(
     rewrites,
     rewriteExtensions,
     packageSpecifier,
+    ownSpecifier,
   };
 }
 
@@ -2236,7 +2269,7 @@ export function main(argv: string[]): number {
    * rewriter serves both phases — the JavaScript and the declarations land in
    * the same directory, so they name each other identically. */
   const jsExtension = emitExtensionOf(argv);
-  const layout = emitLayoutOf(ts, parsed.options, root, jsExtension, rewrites, installed?.packageSpecifier);
+  const layout = emitLayoutOf(ts, parsed.options, root, jsExtension, rewrites, installed?.packageSpecifier, installed?.ownSpecifier);
   if (jsExtension !== undefined && layout?.rewriteExtensions !== true) {
     /* Renaming without rewriting is the exact failure `--emit-extension` refuses
      * `.cjs` for, and it is reachable the other way round too: only an ES-module

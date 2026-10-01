@@ -509,6 +509,17 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
+   * The directory of this build's own sources that `name` names from `issuer` —
+   * the self row, which names them as a package — or undefined where `name`
+   * binds to anything else, or to nothing. Records no edge: the sources are no
+   * dependency (see {@link edges}).
+   */
+  public sourceLocationOf(name: string, issuer: string): string | undefined {
+    const bound = this.rows.get(this.locatorOf(issuer))?.dependencies.get(name);
+    return bound !== undefined && this.sources.has(bound) ? this.rows.get(bound)?.location : undefined;
+  }
+
+  /**
    * Every resolution this run performed — the edges the step chains into walks
    * (see {@link IResolutionEdge}).
    *

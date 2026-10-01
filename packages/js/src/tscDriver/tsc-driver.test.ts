@@ -589,6 +589,36 @@ describe("the tsc driver", () => {
     expect(fs.existsSync(path.join(work.root, "build/app.js"))).to.equal(true);
   });
 
+  it("writes an import of the sources' own package as the relative path it names", () => {
+    /* Node honours a package importing itself by name only through its own
+     * `exports` map, so the output names the file relatively — with the
+     * extension an ES module needs, and climbing from a nested importer. */
+    fs.mkdirSync(path.join(work.root, "src/util"), { recursive: true });
+    fs.writeFileSync(path.join(work.root, "src/index.ts"), "export const value = 1;\n");
+    fs.writeFileSync(path.join(work.root, "src/util/pad.ts"), "export const pad = (x: string): string => x;\n");
+    fs.writeFileSync(
+      path.join(work.root, "src/app.ts"),
+      'import { value } from "mylib";\nimport { pad } from "mylib/util/pad";\nexport const both = pad(String(value));\n'
+    );
+    fs.writeFileSync(path.join(work.root, "src/util/deep.ts"), 'import { value } from "mylib";\nexport const again = value;\n');
+
+    stage(work.root, [], [], [], { name: "mylib", location: "./src/" }, "esnext");
+    const esm = compile(work.root);
+    expect(esm.status, esm.output).to.equal(0);
+    const app = fs.readFileSync(path.join(work.root, "build/app.js"), "utf8");
+    expect(app).to.contain('from "./index.js"');
+    expect(app).to.contain('from "./util/pad.js"');
+    expect(fs.readFileSync(path.join(work.root, "build/util/deep.js"), "utf8")).to.contain('from "../index.js"');
+
+    stage(work.root, [], [], [], { name: "mylib", location: "./src/" }, "commonjs");
+    const cjs = compile(work.root);
+    expect(cjs.status, cjs.output).to.equal(0);
+    const required = fs.readFileSync(path.join(work.root, "build/app.js"), "utf8");
+    expect(required).to.contain('require("./")');
+    expect(required).to.contain('require("./util/pad")');
+    expect(required).to.not.contain('"mylib');
+  });
+
   it("reports an undeclared package as the compiler would", () => {
     stage(work.root, [], [], []);
     fs.writeFileSync(path.join(work.root, "src/index.ts"), 'import { x } from "nowhere";\nexport const y = x;\n');
@@ -1848,9 +1878,13 @@ describe("import rewriting", () => {
    * and no `theme.d.scss.ts` — so the rules have to carry resolution as well as
    * emit, and the plain stylesheet is typed by the declared `resources` alone.
    */
-  function compileAssets(module: string, read = "styles.cardTitle"): { status: number; output: string; js: string; shim: string } {
+  function compileAssets(
+    module: string,
+    read = "styles.cardTitle",
+    stylesheet = "./Card.module.scss"
+  ): { status: number; output: string; js: string; shim: string } {
     const work = fixture();
-    stage(work.root, [], [], [], undefined, module);
+    stage(work.root, [], [], [], { name: "mylib", location: "./src/" }, module);
     /* Its own project: the shared one states neither allowArbitraryExtensions
      * (without which the import does not resolve at all) nor `.js` inputs. */
     fs.writeFileSync(
@@ -1889,7 +1923,7 @@ describe("import rewriting", () => {
     fs.writeFileSync(path.join(work.root, "resources.json"), JSON.stringify(["theme.css"]));
     fs.writeFileSync(
       path.join(src, "Card.ts"),
-      `import styles from "./Card.module.scss";\nimport "./theme.scss";\nexport const cls = ${read};\n`
+      `import styles from "${stylesheet}";\nimport "./theme.scss";\nexport const cls = ${read};\n`
     );
     fs.writeFileSync(
       path.join(work.root, "rewrite-imports.json"),
@@ -1918,6 +1952,18 @@ describe("import rewriting", () => {
     expect(status, output).to.equal(0);
     expect(js).to.contain('from "./Card.css.js"');
     expect(js).to.not.contain(".module.scss");
+  });
+
+  it("names the shim for a stylesheet imported by the package's own name", () => {
+    /* The own-package import becomes the relative path it names first, and the
+     * stylesheet rules then apply to that as to any relative import. */
+    const esm = compileAssets("esnext", "styles.cardTitle", "mylib/Card.module.scss");
+    expect(esm.status, esm.output).to.equal(0);
+    expect(esm.js).to.contain('from "./Card.css.js"');
+    expect(esm.js).to.not.contain("mylib");
+    const cjs = compileAssets("commonjs", "styles.cardTitle", "mylib/Card.module.scss");
+    expect(cjs.status, cjs.output).to.equal(0);
+    expect(cjs.js).to.contain('require("./Card.css.js")');
   });
 
   it("leaves the shim's own stylesheet import naming the stylesheet", () => {
