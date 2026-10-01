@@ -98,8 +98,23 @@ js_package @fabr-build/core {
   metadata = { FABR_METADATA; description = Fabr core }
 }
 
+# The curated npm package-extension list (Yarn's, which pnpm also applies) as
+# the JSON @fabr-build/js ships in lib/. The `?` versions complete the closure of
+# the list's required peer, @yarnpkg/core, which peer installation brings in
+# although the list's module never loads it.
+js_script package_extensions_json {
+  entry = scripts:package-extensions-json.js;
+  deps = @npm:@yarnpkg/extensions:2.0.7
+         @npm:@types/http-cache-semantics:4.2.0? @npm:@types/keyv:4.2.0? @npm:@types/node:26.6.3?
+         @npm:mimic-response:1.0.0? @npm:mimic-response:3.1.0?;
+}
+
+generate package_extensions {
+  run = package_extensions_json > package-extensions.json;
+}
+
 js_package @fabr-build/js {
-  srcs = packages/js/src:**/*.ts packages/js:lib/** README.md COPYING -> LICENSE;
+  srcs = packages/js/src:**/*.ts packages/js:lib/** package_extensions:** -> lib/** README.md COPYING -> LICENSE;
   exports = packages/js/src:index.ts;
   tests = packages/js/src:**/*.test.ts;
   # The Sass importer is no import of the plugin's: it rides along so installing

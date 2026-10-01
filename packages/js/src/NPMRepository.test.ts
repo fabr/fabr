@@ -62,6 +62,7 @@ import {
   versionToString,
 } from "@fabr-build/core";
 import { NPMRepository } from "./NPMRepository";
+import { NO_PACKAGE_EXTENSIONS, PackageExtensions, toPackageExtensions } from "./PackageExtensions";
 import { assembleNodeModules } from "./JSPackage";
 import {
   matchesTargetPlatform,
@@ -384,8 +385,8 @@ function fakeContext(operation: string, served: Record<string, FileSet | Error>,
 /** The machinery context each repository's references are driven with — the
  * consuming side and the repository share one fake context in these tests. */
 const machineryContexts = new WeakMap<object, TargetContext>();
-function npmRepository(url: string, context: TargetContext): NPMRepository {
-  const repo = new NPMRepository(url, context);
+function npmRepository(url: string, context: TargetContext, extensions = NO_PACKAGE_EXTENSIONS): NPMRepository {
+  const repo = new NPMRepository(url, context, null, extensions);
   machineryContexts.set(repo, context);
   return repo;
 }
@@ -451,6 +452,45 @@ describe("cyclic dependency closures through resolve + materialize", () => {
       "pong/package.json",
       "pong/pong.marker",
     ]);
+  });
+});
+
+describe("NPMRepository package extensions", () => {
+  const tarball = (pkg: string): Record<string, unknown> => ({
+    dist: { tarball: `${REG}/tarball/${pkg}.tgz`, integrity: "", shasum: "", signatures: [] },
+  });
+  /* `css` requires `react` without declaring it — the `reactcss` shape. */
+  const served = {
+    [`${REG}/widget/1.0.0`]: metadataFor("widget", "1.0.0", { css: "^1.0.0" }, tarball("widget")),
+    [`${REG}/css/1.0.0`]: metadataFor("css", "1.0.0", {}, tarball("css")),
+    [`${REG}/react/18.0.0`]: metadataFor("react", "18.0.0", {}, tarball("react")),
+    [`${REG}/tarball/widget.tgz`]: packageTarball("widget.marker"),
+    [`${REG}/tarball/css.tgz`]: packageTarball("css.marker"),
+    [`${REG}/tarball/react.tgz`]: packageTarball("react.marker"),
+  };
+  const repair = new PackageExtensions(toPackageExtensions([["css@*", { peerDependencies: { react: "*" } }]]), "repair");
+
+  async function cssOf(extensions: PackageExtensions): Promise<PackageFileSet> {
+    const repo = npmRepository(REG, fakeContext("build", served, []), extensions);
+    const refs = [new RepositoryRef(repo, Name.fromLiteral("widget:1.0.0")), new RepositoryRef(repo, Name.fromLiteral("react:18.0.0"))];
+    const [widget] = await toPromise(drive(repo, refs));
+    return (widget as PackageFileSet).dependencies[0] as PackageFileSet;
+  }
+
+  it("gives a package the peer an extension declares, bound to the consumer's selection", async () => {
+    const css = await cssOf(repair);
+    expect(css.packageName).to.equal("css");
+    expect(css.dependencies.map(dep => (dep as PackageFileSet).packageName)).to.deep.equal(["react"]);
+  });
+
+  it("leaves the package as published without one", async () => {
+    expect((await cssOf(NO_PACKAGE_EXTENSIONS)).dependencies).to.deep.equal([]);
+  });
+
+  it("folds the list into the resolution memo key", async () => {
+    const key = (extensions: PackageExtensions): Promise<string> =>
+      toPromise(npmRepository(REG, fakeContext("build", served, []), extensions).environmentKey());
+    expect(await key(repair)).to.not.equal(await key(NO_PACKAGE_EXTENSIONS));
   });
 });
 
@@ -1583,7 +1623,7 @@ describe("multi-route domains (repository groups)", () => {
       if ("error" in parsed) {
         throw new Error(parsed.error);
       }
-      return { key: parsed, member: new NPMRepository(url, context) };
+      return { key: parsed, member: new NPMRepository(url, context, null, NO_PACKAGE_EXTENSIONS) };
     });
     const group = new RepositoryGroup(context, NPM_FORMAT, table);
     machineryContexts.set(group, context);

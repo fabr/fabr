@@ -79,6 +79,7 @@ import {
   verifyTarballStream,
 } from "./NPMProtocol";
 import { declaredDependencies, memberDependencies, rewriteManifest, unresolvableDependencies } from "./PackageJson";
+import { installedPackageExtensions, PackageExtensions } from "./PackageExtensions";
 import { NPMAuth } from "./NPMAuth";
 import { makeNpmRunnable } from "./JSPackage";
 import { jsPluginContext } from "./JSPluginContext";
@@ -135,12 +136,16 @@ export class NPMRepository
   private readonly access: PublishAccess;
   /* In-process memo over the persistent metadata cache, keyed by "pkg/version" */
   private readonly metadataCache: Map<string, Computable<INPMPackageMetadata>>;
+  /** The repairs applied to every manifest this registry serves; the shipped
+   * list unless a caller supplies one. */
+  private readonly extensions: () => PackageExtensions;
 
-  constructor(url: string, context: TargetContext, access: PublishAccess = null) {
+  constructor(url: string, context: TargetContext, access: PublishAccess = null, extensions?: PackageExtensions) {
     this.url = url.replace(/\/+$/, "");
     this.context = context;
     this.access = access;
     this.metadataCache = new Map();
+    this.extensions = extensions === undefined ? installedPackageExtensions : () => extensions;
   }
 
   /** The registry's stable identity — its url — for the resolution memo key. */
@@ -313,11 +318,13 @@ export class NPMRepository
 
   /**
    * What an npm resolution is computed *for* beyond its roots: the target
-   * platform, which gates which optional deps exist — an input to the graph,
-   * not only to delivery, so the domain folds it into the resolution memo key.
+   * platform, which gates which optional deps exist, and the package
+   * extensions, which add requirements — inputs to the graph, not only to
+   * delivery, so the domain folds them into the resolution memo key.
    */
   public environmentKey(): Computable<string> {
-    return this.targetPlatform().then(target => `${target.os ?? "?"}-${target.cpu ?? "?"}-${target.libc ?? "?"}`);
+    const extensions = this.extensions().digest;
+    return this.targetPlatform().then(target => `${target.os ?? "?"}-${target.cpu ?? "?"}-${target.libc ?? "?"} ext:${extensions}`);
   }
 
   /**
@@ -371,7 +378,8 @@ export class NPMRepository
    */
   public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
     return this.getVersionMetadata(pkg, versionToString(version)).then(meta => {
-      const { required, optional } = declaredDependencies(meta);
+      /* Read with this registry's package extensions applied. */
+      const { required, optional } = declaredDependencies(this.extensions().extend(pkg, version, meta));
       if (optional.length === 0) {
         return Computable.resolve(required);
       }

@@ -1455,6 +1455,11 @@
   resolved "https://registry.yarnpkg.com/@unrs/resolver-binding-win32-x64-msvc/-/resolver-binding-win32-x64-msvc-1.12.2.tgz#72da0da48d72b1e87831b9c0308931d3f4669027"
   integrity sha512-nAB74NfSNKknqQ1RrYj6uz8FcXEomu/MATJZxh/x+BArzN2U3JbOYC0APYzUIGhVY3m5hRxA8VPNdPBoG8txlA==
 
+"@yarnpkg/extensions@2.0.7":
+  version "2.0.7"
+  resolved "https://registry.yarnpkg.com/@yarnpkg/extensions/-/extensions-2.0.7.tgz#8884d7926914d4e38b71c347d9f42b2e47d9d59f"
+  integrity sha512-W4NK2qnraaHzZlGdeNVJdDYJzG6ZIpkrfBum7S2xyhgQb3WA3Jz4RaKpqFol1P3Y7/xFZuivmITAObSHKym8Kw==
+
 "@yarnpkg/fslib@3.1.5", "@yarnpkg/fslib@^3.1.5":
   version "3.1.5"
   resolved "https://registry.yarnpkg.com/@yarnpkg/fslib/-/fslib-3.1.5.tgz#e06924ab0bb312abe4e1e23a462cd481c446741e"

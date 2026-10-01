@@ -32,6 +32,7 @@ import {
   verifyTarballStream,
 } from "./NPMProtocol";
 import { OtpChallenge } from "./NPMAuth";
+import { NO_PACKAGE_EXTENSIONS, useInstalledPackageExtensions } from "./PackageExtensions";
 
 describe("parseMetadataResponse", () => {
   function doc(overrides: Record<string, unknown>): Buffer {
@@ -333,6 +334,9 @@ describe("publishToRegistry second factor", () => {
 });
 
 describe("NPM_FORMAT.readContentPackage", () => {
+  /* The format reads with the installation's list, which a source tree lacks. */
+  beforeEach(() => useInstalledPackageExtensions(NO_PACKAGE_EXTENSIONS));
+
   function packageFiles(manifest: Record<string, unknown>): FileSet {
     return new FileSet(new Map([["package.json", MemoryFile.from(JSON.stringify(manifest))]]));
   }

@@ -23,10 +23,13 @@
  *   - lib/ .fabr libraries: the system include path resolves lib/ next to the
  *     package entry point (see packageLibDir), never from the source tree;
  *   - hand-authored .d.ts under src/: the fabr build's `srcs = **\/*.ts` glob
- *     passes them through, but tsc never copies .d.ts *inputs* to outDir. */
+ *     passes them through, but tsc never copies .d.ts *inputs* to outDir;
+ *   - js's generated lib/package-extensions.json (the `package_extensions`
+ *     target in the fabr build), written by the same script. */
 
 const fs = require("fs");
 const path = require("path");
+const { packageExtensionsJson } = require("./package-extensions-json");
 
 for (const pkg of ["core", "js"]) {
   const pkgDir = path.join(__dirname, "..", "packages", pkg);
@@ -35,6 +38,9 @@ for (const pkg of ["core", "js"]) {
   if (fs.existsSync(lib)) {
     fs.rmSync(libDest, { recursive: true, force: true });
     fs.cpSync(lib, libDest, { recursive: true });
+  }
+  if (pkg === "js") {
+    fs.writeFileSync(path.join(libDest, "package-extensions.json"), packageExtensionsJson());
   }
 
   const srcRoot = path.join(pkgDir, "src");

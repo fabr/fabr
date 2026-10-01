@@ -54,6 +54,7 @@ import {
 import { otpChallengeOf, OtpProvider } from "./NPMAuth";
 import { makeNpmRunnable } from "./JSPackage";
 import { declaredDependencies } from "./PackageJson";
+import { installedPackageExtensions } from "./PackageExtensions";
 import * as crypto from "node:crypto";
 import { Transform } from "node:stream";
 
@@ -551,7 +552,8 @@ const PACKAGE_JSON = "package.json";
  * of npm's contribution to a `repository_group` content route: the
  * `package.json` at the content root supplies the identity, version and
  * requirements (the shared {@link declaredDependencies} fold — regular deps
- * plus non-optional peers). `optionalDependencies` are dropped: their os/cpu
+ * plus non-optional peers — over the manifest with the package extensions
+ * applied). `optionalDependencies` are dropped: their os/cpu
  * gates live in each *dependency's* own metadata — with whatever registry that
  * name routes to, which a manifest read cannot ask — and npm's optional
  * contract is exactly that absence is tolerated.
@@ -575,10 +577,12 @@ function readNpmContentPackage(files: FileSet): Computable<IContentPackage<Semve
         "a content-served package needs a version to take part in version selection — declare one in the manifest"
       );
     }
+    const name = typeof manifest.name === "string" ? manifest.name : undefined;
+    const version = parseVersion(manifest.version);
     return {
-      name: typeof manifest.name === "string" ? manifest.name : undefined,
-      version: parseVersion(manifest.version),
-      requirements: declaredDependencies(manifest).required,
+      name,
+      version,
+      requirements: declaredDependencies(installedPackageExtensions().extend(name, version, manifest)).required,
     };
   });
 }
