@@ -64,8 +64,8 @@ import {
 } from "@fabr-build/core";
 import { posix } from "path";
 import { COMPILE_OUT_DIR, COMPILE_SRC_DIR } from "./rules/BuildJSCompile";
+import { assembleNodeModules } from "./NodeModules";
 import {
-  assembleNodeModules,
   compileContents,
   formatJSTarget,
   PinnedJSTarget,

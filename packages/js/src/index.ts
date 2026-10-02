@@ -47,8 +47,8 @@ import { npmRepositoryRegistration } from "./NPMRepository";
 
 /* The compile pipeline helpers, for other js rules to build on (in-tree only:
  * cross-plugin extension isn't supported yet — see PLUGINS.md) */
+export { assembleNodeModules } from "./NodeModules";
 export {
-  assembleNodeModules,
   classifySources,
   compileJsSources,
   IJsSources,

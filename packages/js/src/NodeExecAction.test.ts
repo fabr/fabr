@@ -38,7 +38,7 @@ import {
   manifestFileInputs,
   reachablePackages,
 } from "@fabr-build/core";
-import { assembleNodeModules } from "./JSPackage";
+import { assembleNodeModules } from "./NodeModules";
 import { createNodeExecAction, NODE_EXEC_ACTION, NODE_MODULES, PNP } from "./NodeExecAction";
 import { pnpManifestOf, referenceOf } from "./PnPManifest";
 import {

@@ -46,8 +46,8 @@ import {
   RunnableFileSet,
   TargetContext,
 } from "@fabr-build/core";
+import { assembleNodeModules } from "../NodeModules";
 import {
-  assembleNodeModules,
   classifySourceByExt,
   compileContents,
   formatJSTarget,

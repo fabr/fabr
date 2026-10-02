@@ -64,7 +64,7 @@ import {
 } from "@fabr-build/core";
 import { NPMRepository } from "./NPMRepository";
 import { NO_PACKAGE_EXTENSIONS, PackageExtensions, toPackageExtensions } from "./PackageExtensions";
-import { assembleNodeModules } from "./JSPackage";
+import { assembleNodeModules } from "./NodeModules";
 import {
   matchesTargetPlatform,
   NPM_FORMAT,
