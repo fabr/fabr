@@ -768,6 +768,7 @@ describe("ResolutionGraph.assertNoAliasCollisions", () => {
       selections: [...batch.values()],
       violations: [],
       coerced: [],
+      shared: [],
       raises: [],
       requirements: new Map(),
       edges: new Map(Object.entries(edges).map(([id, deps]) => [id, new Map(Object.entries(deps))])),
@@ -1544,6 +1545,7 @@ describe("conflictError (the strict repair report)", () => {
       selections: list,
       violations: [],
       coerced: [],
+      shared: [],
       raises: [],
       requirements: new Map(),
       edges: new Map(),
@@ -1666,7 +1668,7 @@ describe("multi-route domains (repository groups)", () => {
     const repo = groupDomain(context, [["@scope/*", PRIV], ["*", REG]]);
     await toPromise(drive(repo, [new RepositoryRef(repo, Name.fromLiteral("app:1.0.0"))]));
     expect(memoKeys).to.have.lengthOf(1);
-    expect(memoKeys[0]).to.contain("npm:resolve:21");
+    expect(memoKeys[0]).to.contain(NPM_FORMAT.resolutionTag);
     expect(memoKeys[0]).to.contain(`@scope/*=${PRIV}`);
     expect(memoKeys[0]).to.contain(`*=${REG}`);
   });

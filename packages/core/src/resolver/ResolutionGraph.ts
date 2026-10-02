@@ -49,6 +49,7 @@ export interface IResolutionData<V> {
   readonly selections: Selected<V>[];
   readonly violations: Violation<V>[];
   readonly coerced: Violation<V>[];
+  readonly shared: Violation<V>[];
   readonly raises: RaisedFloor<V>[];
   readonly requirements: Map<NodeId, Requirement[]>;
   readonly edges: Map<NodeId, Map<DependencyName, NodeId>>;
@@ -76,6 +77,7 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
   public readonly selections: Selected<V>[];
   public readonly violations: Violation<V>[];
   public readonly coerced: Violation<V>[];
+  public readonly shared: Violation<V>[];
   public readonly raises: RaisedFloor<V>[];
   public readonly requirements: Map<string, Requirement[]>;
   public readonly edges: Map<string, Map<string, string>>;
@@ -99,6 +101,7 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
     this.selections = data.selections;
     this.violations = data.violations;
     this.coerced = data.coerced;
+    this.shared = data.shared;
     this.raises = data.raises;
     this.requirements = data.requirements;
     this.edges = data.edges;
@@ -198,6 +201,20 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
       }
     }
     return this.optionalProvided.get(id);
+  }
+
+  /** The names a node requires only as provided, whatever the strength — the
+   * edges its consumer binds. A name a real requirement also demands is not
+   * one. */
+  public providedNames(id: NodeId): ReadonlySet<DependencyName> {
+    const requires = this.requirements.get(id) ?? [];
+    const names = new Set(requires.filter(req => req.provided !== undefined).map(req => req.alias ?? req.pkg));
+    for (const req of requires) {
+      if (req.provided === undefined) {
+        names.delete(req.alias ?? req.pkg);
+      }
+    }
+    return names;
   }
 
   /** The violations declared by one node ({@link ROOT_REQUIRER} for root
@@ -323,7 +340,9 @@ function highestOf<V, C>(domain: VersionDomain<V, C>, selections: readonly Selec
  * gratuitous), else the highest satisfying fork (the fork packing repaired
  * this edge into), else the principal, else the highest candidate — so a
  * jointly-unsatisfiable edge nothing repairs still binds what is actually
- * delivered, and reports as a violation. A floorless constraint has no floor
+ * delivered, and reports as a violation. A provided edge binds the principal
+ * whatever it satisfies: no fork serves one, and its consumer may rebind it
+ * (see bindProvided). A floorless constraint has no floor
  * to fail and any cap it has is what `satisfies` checks, and a provided (peer)
  * edge is satisfied by whatever the tree provides in range — the same rule
  * answers both, with no case of their own. Undefined when the constraint is
@@ -346,7 +365,7 @@ export function edgeBinding<V, C>(
   }
   const candidates = selections.filter(sel => sel.pkg === req.pkg);
   const principal = candidates.find(sel => !sel.fork);
-  if (principal && domain.satisfies(principal.version, constraint)) {
+  if (principal && (req.provided !== undefined || domain.satisfies(principal.version, constraint))) {
     return principal;
   }
   const satisfying = highestOf(
@@ -395,6 +414,7 @@ export function resolutionExplainer<V>(
     selections: [...selections],
     violations: [],
     coerced: [],
+    shared: [],
     raises: [],
     requirements: new Map(),
     edges: new Map(),

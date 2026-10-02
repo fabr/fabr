@@ -215,6 +215,12 @@ export interface MVSResolution<V> {
    * fork is packed for them and no delivery refuses them).
    */
   coerced: Violation<V>[];
+  /**
+   * Provided requirement edges the selection they bind does not satisfy, in a
+   * domain that {@link VersionDomain.providedMismatch tolerates} that: data,
+   * never judged — no delivery refuses them, and only the one selection ships.
+   */
+  shared: Violation<V>[];
   raises: RaisedFloor<V>[];
   /**
    * The declared requirements of each selected node ({@link nodeId} → its
@@ -318,6 +324,15 @@ export interface VersionDomain<V, C> {
    * list) and is reported as an error whose remedy is an explicit requirement.
    */
   isFloorless(constraint: C): boolean;
+
+  /**
+   * What a provided requirement outside the range of the selection it binds
+   * comes to. It is never repaired by a fork — a private copy is the opposite
+   * of provided — so the mismatch is either `"tolerate"`d (bound anyway and
+   * recorded as {@link MVSResolution.shared}) or `"refuse"`d (a violation). An
+   * ecosystem with provided requirements states which; absent refuses.
+   */
+  readonly providedMismatch?: "tolerate" | "refuse";
 
   /**
    * @return true if the version fully satisfies the constraint (including any

@@ -570,6 +570,7 @@ function resolvePhase<V, C>(
       reachable: Map<Selected<V>, Selected<V>>;
       violations: Violation<V>[];
       coerced: Violation<V>[];
+      shared: Violation<V>[];
       unsatisfied: PackEdge[];
       errors: Map<string, IResolutionError>;
     }
@@ -611,6 +612,7 @@ function resolvePhase<V, C>(
       const errors = new Map<string, IResolutionError>();
       const violations: Violation<V>[] = [];
       const coerced: Violation<V>[] = [];
+      const shared: Violation<V>[] = [];
       const unsatisfied: PackEdge[] = [];
       /* Reachable selections, each annotated (as a copy) with how it was
        * first reached; keyed by the underlying selection instance */
@@ -681,9 +683,14 @@ function resolvePhase<V, C>(
          * repair record; strict mode reports the violation). A FORCED
          * package's unsatisfied edges are instead COERCED — the force
          * suppresses the conflict by design, so they are recorded as data and
-         * never packed into forks. The packing input is stricter than the
-         * violation judgment: an edge no current selection satisfies at all. */
+         * never packed into forks. A provided edge is never packed either: it
+         * binds the principal, and a mismatch is data where the domain
+         * tolerates one and a violation where it does not. The packing input
+         * is stricter than the violation judgment: an edge no current
+         * selection satisfies at all. */
         const forcedPkg = forced.has(req.pkg);
+        const providedEdge = req.provided !== undefined;
+        const tolerated = providedEdge && domain.providedMismatch === "tolerate";
         const principal = candidates.find(sel => !sel.fork);
         const bound = edgeBinding(domain, candidates, req)!;
         /* Judged against the flat winner when there is one; a package whose
@@ -692,9 +699,14 @@ function resolvePhase<V, C>(
          * still record, or an unsatisfiable delivery would look clean. */
         const judged = principal ?? bound;
         if (!domain.satisfies(judged.version, constraint)) {
-          (forcedPkg ? coerced : violations).push({ pkg: req.pkg, constraint: req.constraint, requiredBy: from, selected: judged.version });
+          (forcedPkg ? coerced : tolerated ? shared : violations).push({
+            pkg: req.pkg,
+            constraint: req.constraint,
+            requiredBy: from,
+            selected: judged.version,
+          });
         }
-        if (!forcedPkg && !domain.satisfies(bound.version, constraint)) {
+        if (!forcedPkg && !providedEdge && !domain.satisfies(bound.version, constraint)) {
           unsatisfied.push({ req, requiredBy: from, constraint });
         }
         if (!reachable.has(bound)) {
@@ -737,7 +749,7 @@ function resolvePhase<V, C>(
         );
         return undefined;
       }
-      return { selectionsByPkg, reachable, violations, coerced, unsatisfied, errors };
+      return { selectionsByPkg, reachable, violations, coerced, shared, unsatisfied, errors };
     };
 
     /** What one packing pass did: demanded new metadata / requested raises
@@ -1106,6 +1118,7 @@ function resolvePhase<V, C>(
         errors: [...round.errors.values()],
         violations,
         coerced: round.coerced,
+        shared: round.shared,
         raises,
         requirements,
         edges,

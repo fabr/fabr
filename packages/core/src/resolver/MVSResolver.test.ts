@@ -20,9 +20,9 @@
 import { Computable } from "../core/Computable";
 import { resolveMVS } from "./MVSResolver";
 import { edgeBinding, nodeId, ResolutionGraph } from "./ResolutionGraph";
-import { parseVersion, SEMVER, SemverVersion, versionToString } from "./Semver";
+import { parseVersion, SEMVER, SemverConstraint, SemverVersion, versionToString } from "./Semver";
 import { MetadataFetchError, VersionNotFoundError } from "../core/Errors";
-import { RequirementSource, Requirement, MVSResolution, Selected } from "./Types";
+import { RequirementSource, Requirement, MVSResolution, Selected, VersionDomain } from "./Types";
 import { expect } from "chai";
 
 /**
@@ -83,10 +83,11 @@ function rootRequirements(roots: Record<string, string>): Requirement[] {
 function resolve(
   roots: Record<string, string>,
   data: Record<string, Record<string, Record<string, string>>>,
-  raisable = false
+  raisable = false,
+  domain: VersionDomain<SemverVersion, SemverConstraint> = SEMVER
 ): MVSResolution<SemverVersion> {
   let result: MVSResolution<SemverVersion> | undefined;
-  resolveMVS(rootRequirements(roots), SEMVER, mockRegistry(data, raisable)).then(resolution => {
+  resolveMVS(rootRequirements(roots), domain, mockRegistry(data, raisable)).then(resolution => {
     result = resolution;
   });
   /* The mock registry is synchronous, so resolution completes before we get here */
@@ -559,6 +560,31 @@ describe("MVSResolver", () => {
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "chai@4.2.0", "plugin@1.0.0"]);
     expect(result.violations).to.deep.equal([]);
     expect(result.errors).to.deep.equal([]);
+  });
+
+  it("never forks a provided requirement: a mismatch is refused, or tolerated where the domain says so", () => {
+    /* react-sortable-hoc's shape: a peer range the build's selection is outside
+     * of. Either way it binds the one copy the build selected — a private copy
+     * is the opposite of provided — and the domain decides what the mismatch
+     * is: a violation, or data. */
+    const data = {
+      app: { "1.0.0": { react: "18.2.0", hoc: "2.0.0" } },
+      hoc: { "2.0.0": { react: "peer ^16.3.0 || ^17.0.0" } },
+      react: { "18.2.0": {}, "16.3.0": {} },
+    };
+    const refused = resolve({ app: "1.0.0" }, data);
+    expect(selectionStrings(refused)).to.deep.equal(["app@1.0.0", "hoc@2.0.0", "react@18.2.0"]);
+    expect(refused.violations.map(v => [v.pkg, v.requiredBy])).to.deep.equal([["react", "hoc@2.0.0"]]);
+    expect(refused.shared).to.deep.equal([]);
+    expect(refused.edges.get("hoc@2.0.0")?.get("react")).to.equal("react@18.2.0");
+
+    const shared = resolve({ app: "1.0.0" }, data, false, { ...SEMVER, providedMismatch: "tolerate" });
+    expect(selectionStrings(shared)).to.deep.equal(["app@1.0.0", "hoc@2.0.0", "react@18.2.0"]);
+    expect(shared.violations).to.deep.equal([]);
+    expect(shared.shared.map(v => [v.pkg, v.constraint, v.requiredBy, versionToString(v.selected)])).to.deep.equal([
+      ["react", "^16.3.0 || ^17.0.0", "hoc@2.0.0", "18.2.0"],
+    ]);
+    expect(shared.edges.get("hoc@2.0.0")?.get("react")).to.equal("react@18.2.0");
   });
 
   it("an optional peer binds what the tree provides", () => {

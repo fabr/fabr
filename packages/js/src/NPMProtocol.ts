@@ -613,11 +613,14 @@ export function parseNpmPublishCoordinate(ref: Name): NpmPublishIdentity {
  * registry holds this object, and sharing it is what admits registries to one
  * `repository_group` (the homogeneity check is object identity). The
  * resolution tag names the persisted-resolution memo shape; bump it when the
- * resolution computation or the document changes behavior.
+ * resolution computation or the document changes behavior. A peer dependency
+ * shares the build's copy of its package even outside its declared range, as
+ * Yarn and pnpm install it (with a warning) — never a private copy of its own.
  */
 export const NPM_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   ...SEMVER,
-  resolutionTag: "npm:resolve:21",
+  providedMismatch: "tolerate",
+  resolutionTag: "npm:resolve:23",
   splitReference: splitNpmReference,
   parseRequirement: parseNpmRequirement,
   parsePublishCoordinate: parseNpmPublishCoordinate,

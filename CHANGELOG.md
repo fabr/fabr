@@ -35,6 +35,7 @@ TSC=@npm:typescript:5.4.5:tsc becomes TYPESCRIPT=@npm:typescript:5.4.5.
 - Split `css_compile` into separate `sass_compile` (lowering) + `css_postcss` steps.
 - Add sass-pnp-importer
 - Add yarn's package extensions.
+- Fix provided package resolution to avoid forking.
 
 ## Fabr 0.2.1
 @fabr-build/core:

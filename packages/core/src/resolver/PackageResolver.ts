@@ -454,9 +454,10 @@ function buildClosure<V, C>(
    * its targets exist. Discovery IS the membership walk — everything reached
    * from the root is delivered, and an edge leading outside the fetched batch
    * (a gated optional pruned from the walk, hence not in `packages`) is simply
-   * not carried. An optional peer is never wired here — whether the peer is
-   * present is the installation's fact, not this delivery's — but recorded as
-   * the instance's `optionalPeers`, for the collection point to bind. An
+   * not carried. Every provided requirement is recorded on the instance with
+   * what this resolution offers for it, for the collection point to bind; an
+   * expected one's offer is also wired here as the default, an optional one's
+   * never — whether it is present is the installation's fact. An
    * instance exists per (name, id): an aliased edge binds a restamped instance
    * carrying the requirer's name for the package. */
   const builder = new PackageGraphBuilder();
@@ -467,25 +468,25 @@ function buildClosure<V, C>(
     let node = instances.get(key);
     if (!node) {
       const files = packages.get(id)!;
-      node = builder.node(files, name, files.version, origin, graph.isFork(id), optionalPeersOf(id));
+      node = builder.node(files, name, files.version, origin, graph.isFork(id), providedOf(id));
       instances.set(key, node);
       pending.push([id, node]);
     }
     return node;
   };
-  const optionalPeersOf = (id: string): ReadonlyMap<string, string> | undefined => {
-    const names = graph.optionalProvidedNames(id);
-    if (names === undefined) {
+  const providedOf = (id: string): ReadonlyMap<string, string | undefined> | undefined => {
+    const names = graph.providedNames(id);
+    if (names.size === 0) {
       return undefined;
     }
-    const peers = new Map<string, string>();
-    for (const [depName, toId] of graph.edgesOf(id)) {
-      const target = names.has(depName) ? graph.node(toId) : undefined;
-      if (target !== undefined) {
-        peers.set(depName, graph.versionToString(target.version));
-      }
-    }
-    return peers;
+    const edges = graph.edgesOf(id);
+    return new Map(
+      [...names].sort().map((name): [string, string | undefined] => {
+        const toId = edges.get(name);
+        const target = toId === undefined ? undefined : graph.node(toId);
+        return [name, target === undefined ? undefined : graph.versionToString(target.version)];
+      })
+    );
   };
   const delivered = instance(root.pkg, rootId);
   while (pending.length > 0) {

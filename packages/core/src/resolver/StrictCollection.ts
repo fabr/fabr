@@ -80,15 +80,20 @@ export function deliveryFactsOf(pkg: PackageFileSet): IDeliveryFacts | undefined
 /**
  * Judge a strict collection point: `delivered` is each written reference and
  * what it delivered. Rejects with the conflicts — attributed to the references
- * whose deliveries take part — or resolves when there are none.
+ * whose deliveries take part — or resolves when there are none. `dropped`
+ * names what a delivery shipped that the collection does not hold after
+ * binding (see bindProvided); such a version takes no part.
  */
-export function checkStrictCollection(delivered: ReadonlyMap<RepositoryRef, unknown>): Computable<void> {
+export function checkStrictCollection(
+  delivered: ReadonlyMap<RepositoryRef, unknown>,
+  dropped?: (pkg: string, version: string) => boolean
+): Computable<void> {
   const culprits = factsByReference(delivered);
   const byDomain = new Map<VersionDomain<unknown, unknown>, IDeliveryFacts[]>();
   for (const facts of culprits.keys()) {
     byDomain.set(facts.domain, [...(byDomain.get(facts.domain) ?? []), facts]);
   }
-  const judged = [...byDomain.values()].map(group => checkDomain(group, culprits));
+  const judged = [...byDomain.values()].map(group => checkDomain(group, culprits, dropped));
   return Computable.forAll(judged, (...errors: Array<Error | undefined>) => {
     const failures = errors.filter((error): error is Error => error !== undefined);
     if (failures.length > 0) {
@@ -131,16 +136,20 @@ interface IShipped<V> {
 /** The judgment of the deliveries in one domain, as the error it fails with. */
 function checkDomain<V, C>(
   group: IDeliveryFacts<V, C>[],
-  culprits: ReadonlyMap<IDeliveryFacts, ReadonlySet<RepositoryRef>>
+  culprits: ReadonlyMap<IDeliveryFacts, ReadonlySet<RepositoryRef>>,
+  dropped?: (pkg: string, version: string) => boolean
 ): Computable<Error | undefined> {
   const { domain } = group[0];
   /* Everything shipped, one entry per version of each package. */
   const shipped = new Map<string, Map<string, IShipped<V>>>();
   for (const facts of group) {
     for (const selection of facts.needed) {
+      const text = domain.versionToString(selection.version);
+      if (dropped?.(selection.pkg, text) === true) {
+        continue;
+      }
       const versions = shipped.get(selection.pkg) ?? new Map<string, IShipped<V>>();
       shipped.set(selection.pkg, versions);
-      const text = domain.versionToString(selection.version);
       const held = versions.get(text);
       versions.set(text, held === undefined ? { selection, by: [facts] } : { selection: held.selection, by: [...held.by, facts] });
     }

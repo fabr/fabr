@@ -66,6 +66,8 @@ export interface IResolutionDoc {
   violations: IViolationEntry[];
   /** Edges a `!` force override coerced (data — never judged) */
   coerced?: IViolationEntry[];
+  /** Provided edges bound to an out-of-range selection the domain shares (data — never judged) */
+  shared?: IViolationEntry[];
   raises: IRaiseEntry[];
   requirements: IRequirementsEntry[];
   /**
@@ -105,6 +107,7 @@ export function serializeResolutionDoc<V>(
     })),
     violations: result.violations.map(violation),
     coerced: result.coerced.map(violation),
+    shared: result.shared.map(violation),
     raises: result.raises.map(raise => ({
       pkg: raise.pkg,
       constraint: raise.constraint,
@@ -156,6 +159,7 @@ export function deserializeResolutionDoc<V>(
     })),
     violations: (doc.violations ?? []).map(violation),
     coerced: (doc.coerced ?? []).map(violation),
+    shared: (doc.shared ?? []).map(violation),
     raises: (doc.raises ?? []).map(entry => ({
       pkg: entry.pkg,
       constraint: entry.constraint,

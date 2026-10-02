@@ -373,8 +373,9 @@ export class NPMRepository
    * "optional" one never. "Shared, one instance" holds by construction in a
    * strict closure (one version per name, flat mount) — the peer/regular
    * distinction only exists to work around duplicate-tolerant regular deps,
-   * which fabr doesn't have. A violated peer surfaces as an ordinary violation
-   * (strict error, or a sealed-tool fork — npm's --legacy-peer-deps posture).
+   * which fabr doesn't have. A peer the build's selection is outside the range
+   * of binds that selection anyway (the format shares provided requirements):
+   * recorded as data, never repaired by a private copy.
    */
   public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
     return this.getVersionMetadata(pkg, versionToString(version)).then(meta => {

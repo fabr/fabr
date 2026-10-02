@@ -593,7 +593,7 @@ function restampPackage(pkg: PackageFileSet, steps: ReadonlyArray<IProvenanceSte
         source.version,
         chainSteps(steps, source.origin),
         source.isNestedOverride,
-        source.optionalPeers
+        source.provided
       );
       restamped.set(source, copy);
       builder.wire(
@@ -628,8 +628,35 @@ export type Materialized = FileSource | Repository | FileSetRef;
  * A strict collection point's check of what it was delivered (see
  * StrictCollection); a permissive one — a sealed install — accepts it.
  */
-function checkedCollection(finished: ReadonlyMap<RepositoryRef, unknown>, options?: MaterializeOptions): Computable<void> {
-  return options?.resolutionMode === "permissive" ? Computable.resolve(undefined) : checkStrictCollection(finished);
+function checkedCollection(
+  finished: ReadonlyMap<RepositoryRef, unknown>,
+  options?: MaterializeOptions,
+  dropped?: (pkg: string, version: string) => boolean
+): Computable<void> {
+  return options?.resolutionMode === "permissive" ? Computable.resolve(undefined) : checkStrictCollection(finished, dropped);
+}
+
+/**
+ * Which delivered packages binding left out of the installation: a `pkg` at
+ * `version` the collection held before its provided requirements were bound
+ * and holds no longer — an offer its consumer answered with something else.
+ * Undefined where binding changed nothing.
+ */
+function droppedByBinding(before: Materialized[], after: Materialized[]): ((pkg: string, version: string) => boolean) | undefined {
+  if (before === after) {
+    return undefined;
+  }
+  const held = (sources: Materialized[]): Set<string> =>
+    new Set(
+      reachablePackages(
+        sources.flatMap(source =>
+          source instanceof PackageFileSet ? [source] : source instanceof FileSetRef && source.source instanceof PackageFileSet ? [source.source] : []
+        )
+      ).map(pkg => pkg.packageId)
+    );
+  const was = held(before);
+  const is = held(after);
+  return (pkg, version) => was.has(`${pkg}@${version}`) && !is.has(`${pkg}@${version}`);
 }
 
 /**
@@ -686,7 +713,9 @@ export function materializeShallow(
  */
 export function materializeAll(context: ResolutionContext, sources: SourceRef[], options?: MaterializeOptions): Computable<Materialized[]> {
   const references = gatherReferences(sources);
-  const finish = (finished: Map<RepositoryRef, FileSet | FileSetRef>): Materialized[] => {
+  /* The sources with every reference replaced by its delivery, before their
+   * provided requirements are bound. */
+  const delivered = (finished: Map<RepositoryRef, FileSet | FileSetRef>): Materialized[] => {
     const rebuilt = new Map<PackageFileSet, PackageFileSet>();
     const builder = new PackageGraphBuilder();
     const resolved = sources.map((source): Materialized => {
@@ -706,11 +735,11 @@ export function materializeAll(context: ResolutionContext, sources: SourceRef[],
       }
     });
     builder.seal();
-    return bindOptionalPeers(resolved);
+    return resolved;
   };
   if (references.length === 0) {
     /* No references present, so nothing to resolve */
-    return Computable.resolve(finish(new Map()));
+    return Computable.resolve(bindProvided(delivered(new Map())));
   }
   const batches = [...groupByRepository(references).entries()];
   return Computable.forAll(
@@ -720,30 +749,46 @@ export function materializeAll(context: ResolutionContext, sources: SourceRef[],
       batches.forEach(([, refs], batchIndex) =>
         refs.forEach((ref, index) => finished.set(ref, ref.deliveredAs(results[batchIndex][index])))
       );
-      return checkedCollection(finished, options).then(() => finish(finished));
+      /* Judged as bound: an offer the consumer answered with something else
+       * is not in the installation, so it is not a version that ships. */
+      const unbound = delivered(finished);
+      const bound = bindProvided(unbound);
+      return checkedCollection(finished, options, droppedByBinding(unbound, bound)).then(() => bound);
     }
   );
 }
 
 /**
- * The installation `sources` make up, with every delivered package's optional
- * peers ({@link PackageFileSet.optionalPeers}) bound wherever the installation
- * holds the peer — an instance of that name at the version the requirer's
- * resolution chose. An absent peer stays unbound, as an installation without
- * it leaves it. This is what makes a package delivered by two collections that
- * disagree only about an optional peer one node here: the binding is decided
- * once, by the installation, rather than by whichever subset delivered it.
+ * The installation `sources` make up, with every delivered package's provided
+ * requirements ({@link PackageFileSet.provided}) bound by its consumer. Each is
+ * answered by the first of:
  *
- * The sources come back unchanged where there is nothing to bind; otherwise
- * the reachable package graph is rebuilt with the bindings as ordinary edges.
- * Where several instances hold one name and version, the one with the lowest
- * node signature is bound, so the choice does not follow input order.
+ * - what its **dependent** binds for that name — a dependency of the
+ *   dependent's own, or the dependent's own provided binding — and so on up the
+ *   chain of dependents;
+ * - the collection's own **direct member** of that name, which is the top of
+ *   that chain (a renamed member supplies the name it is delivered under);
+ * - what its resolution **offered**: the default the delivery wired, or, where
+ *   it wired none, an instance of the offered version the installation holds;
+ *
+ * and is left unbound otherwise, as an installation without it leaves it. A
+ * binding is an ordinary edge. A package reached through dependents that bind
+ * it differently comes back as one node per binding; one reached the same way
+ * everywhere is one node, so the result is the input's shape wherever nothing
+ * above a package supplies what its resolution did not.
+ *
+ * The sources come back unchanged where no package has a provided requirement.
+ * Where several instances hold one offered name and version, the one with the
+ * lowest node signature is bound, so the choice does not follow input order.
  */
-export function bindOptionalPeers(sources: Materialized[]): Materialized[] {
+export function bindProvided(sources: Materialized[]): Materialized[] {
   const roots = sources.flatMap(source =>
     source instanceof PackageFileSet ? [source] : source instanceof FileSetRef && source.source instanceof PackageFileSet ? [source.source] : []
   );
   const packages = reachablePackages(roots);
+  if (!packages.some(pkg => pkg.provided.size > 0)) {
+    return sources;
+  }
   const present = new Map<string, { pkg: PackageFileSet; signature: string }>();
   for (const pkg of packages) {
     const key = `${pkg.packageName}@${pkg.version}`;
@@ -753,38 +798,112 @@ export function bindOptionalPeers(sources: Materialized[]): Materialized[] {
       present.set(key, { pkg, signature });
     }
   }
-  const boundPeers = (pkg: PackageFileSet): PackageFileSet[] =>
-    [...pkg.optionalPeers].flatMap(([name, version]) => {
-      const target = pkg.getDependency(name) === undefined ? present.get(`${name}@${version}`) : undefined;
-      return target === undefined ? [] : [target.pkg];
-    });
-  if (!packages.some(pkg => boundPeers(pkg).length > 0)) {
-    return sources;
+  const wanted = providedNamesBelow(packages);
+  const ids = new Map<PackageFileSet, number>(packages.map((pkg, index) => [pkg, index]));
+
+  /** What a name is supplied by: the package, and the scope its own provided
+   * requirements are answered in. */
+  interface ISupply {
+    readonly pkg: PackageFileSet;
+    readonly scope: IScope;
   }
-  const builder = new PackageGraphBuilder();
-  const copies = new Map<PackageFileSet, PackageFileSet>();
-  const copy = (pkg: PackageFileSet): PackageFileSet => {
-    let result = copies.get(pkg);
-    if (!result) {
-      result = builder.node(pkg, pkg.packageName, pkg.version, pkg.origin, pkg.isNestedOverride, pkg.optionalPeers);
-      copies.set(pkg, result);
-      builder.wire(
-        result,
-        [...pkg.dependencies, ...boundPeers(pkg)].map(dep => (dep instanceof PackageFileSet ? copy(dep) : dep))
-      );
+  /** One dependent's bindings by name, over its own dependent's. */
+  interface IScope {
+    readonly id: number;
+    readonly parent?: IScope;
+    readonly bindings: Map<string, ISupply>;
+  }
+  const supplied = (scope: IScope | undefined, name: string): ISupply | undefined => {
+    for (let at = scope; at !== undefined; at = at.parent) {
+      const supply = at.bindings.get(name);
+      if (supply !== undefined) {
+        return supply;
+      }
     }
-    return result;
+    return undefined;
   };
-  const bound = sources.map((source): Materialized => {
+  let scopes = 0;
+  const top: IScope = { id: scopes++, bindings: new Map() };
+  for (const root of roots) {
+    top.bindings.set(root.packageName, { pkg: root, scope: top });
+  }
+
+  const builder = new PackageGraphBuilder();
+  const copies = new Map<string, PackageFileSet>();
+  /** `pkg` as its dependent's `scope` wires it: one node per distinct answer to
+   * the names anything below it wants supplied. */
+  const copy = (pkg: PackageFileSet, scope: IScope): PackageFileSet => {
+    const answers = wanted.get(pkg)!.map(name => {
+      const supply = supplied(scope, name);
+      return supply === undefined ? "-" : `${ids.get(supply.pkg)}/${supply.scope.id}`;
+    });
+    const key = `${ids.get(pkg)}:${answers.join(",")}`;
+    const held = copies.get(key);
+    if (held !== undefined) {
+      return held;
+    }
+    const node = builder.node(pkg, pkg.packageName, pkg.version, pkg.origin, pkg.isNestedOverride, pkg.provided);
+    copies.set(key, node);
+    const own: IScope = { id: scopes++, parent: scope, bindings: new Map() };
+    const edges: Array<PackageFileSet | RepositoryRef> = [];
+    const kept: ISupply[] = [];
+    for (const dep of pkg.dependencies) {
+      if (!(dep instanceof PackageFileSet)) {
+        edges.push(dep);
+      } else if (!pkg.provided.has(dep.packageName)) {
+        const supply = { pkg: dep, scope: own };
+        own.bindings.set(dep.packageName, supply);
+        kept.push(supply);
+      }
+    }
+    const bound: ISupply[] = [];
+    for (const [name, offered] of pkg.provided) {
+      const offer = pkg.dependencies.find((dep): dep is PackageFileSet => dep instanceof PackageFileSet && dep.packageName === name);
+      const elsewhere = offer === undefined && offered !== undefined ? present.get(`${name}@${offered}`)?.pkg : undefined;
+      const supply =
+        supplied(scope, name) ??
+        (offer !== undefined ? { pkg: offer, scope: own } : elsewhere !== undefined ? { pkg: elsewhere, scope: top } : undefined);
+      if (supply !== undefined) {
+        own.bindings.set(name, supply);
+        bound.push(supply);
+      }
+    }
+    builder.wire(node, [...edges, ...[...kept, ...bound].map(supply => copy(supply.pkg, supply.scope))]);
+    return node;
+  };
+  const result = sources.map((source): Materialized => {
     if (source instanceof PackageFileSet) {
-      return copy(source);
+      return copy(source, top);
     } else if (source instanceof FileSetRef && source.source instanceof PackageFileSet) {
-      return new FileSetRef(copy(source.source), source.projections, source.miss);
+      return new FileSetRef(copy(source.source, top), source.projections, source.miss);
     }
     return source;
   });
   builder.seal();
-  return bound;
+  return result;
+}
+
+/**
+ * For each package, the provided names anything it reaches asks to be supplied
+ * — the names whose answers decide how its subtree is wired — sorted.
+ */
+function providedNamesBelow(packages: PackageFileSet[]): Map<PackageFileSet, string[]> {
+  const names = new Map(packages.map(pkg => [pkg, new Set(pkg.provided.keys())]));
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const pkg of packages) {
+      const own = names.get(pkg)!;
+      for (const dep of pkg.dependencies) {
+        for (const name of (dep instanceof PackageFileSet && names.get(dep)) || []) {
+          if (!own.has(name)) {
+            own.add(name);
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+  return new Map([...names].map(([pkg, wanted]) => [pkg, [...wanted].sort()]));
 }
 
 /**
@@ -921,7 +1040,7 @@ function rebuildPackage(
   }
   let result = rebuilt.get(pkg);
   if (!result) {
-    result = builder.node(pkg, pkg.packageName, pkg.version, pkg.origin, pkg.isNestedOverride, pkg.optionalPeers);
+    result = builder.node(pkg, pkg.packageName, pkg.version, pkg.origin, pkg.isNestedOverride, pkg.provided);
     rebuilt.set(pkg, result);
     builder.wire(
       result,

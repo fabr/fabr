@@ -53,7 +53,7 @@ import type { RepositoryRef } from "./Repository";
  * Content derivations (find/remap/minus/...) deliberately return plain
  * FileSets: once you reach inside a package, the result is just files.
  */
-const NO_OPTIONAL_PEERS: ReadonlyMap<string, string> = new Map();
+const NOTHING_PROVIDED: ReadonlyMap<string, string | undefined> = new Map();
 
 export class PackageFileSet extends FileSet {
   constructor(
@@ -73,14 +73,16 @@ export class PackageFileSet extends FileSet {
      */
     public readonly isNestedOverride: boolean = false,
     /**
-     * The package's **optional peers** — dependencies it uses if its
-     * installation has them and never pulls in itself — by the name it requires
-     * each under, mapped to the version its resolution chose. Never wired by a
-     * delivery: whether one is present is a fact about the installation, so the
-     * collection point binds it there ({@link bindOptionalPeers}), and a
-     * binding becomes an ordinary edge in `dependencies`.
+     * The package's **provided requirements** — the dependencies something
+     * above it supplies — by the name it requires each under, mapped to the
+     * version its resolution offers for it (undefined where it offers none).
+     * Which package answers one is its consumer's to say, so the collection
+     * point binds each ({@link bindProvided}), and a binding is an ordinary
+     * edge in `dependencies`. A delivery wires its offer for an expected one as
+     * that default; an edge named here is therefore a binding that may be
+     * replaced, never a requirement of the package's own.
      */
-    public readonly optionalPeers: ReadonlyMap<string, string> = NO_OPTIONAL_PEERS
+    public readonly provided: ReadonlyMap<string, string | undefined> = NOTHING_PROVIDED
   ) {
     /* An existing FileSet passes straight through — the base shares its content
      * (already canonical) rather than copying and rechecking every name, which
@@ -103,7 +105,7 @@ export class PackageFileSet extends FileSet {
   }
 
   public withOrigin(origin: IProvenanceStep): PackageFileSet {
-    return new PackageFileSet(this, this.packageName, this.version, this.dependencies, origin, this.isNestedOverride, this.optionalPeers);
+    return new PackageFileSet(this, this.packageName, this.version, this.dependencies, origin, this.isNestedOverride, this.provided);
   }
 
   /**
@@ -115,7 +117,7 @@ export class PackageFileSet extends FileSet {
    * but the mount point alone.
    */
   public withPackageName(packageName: string): PackageFileSet {
-    return new PackageFileSet(this, packageName, this.version, this.dependencies, this.origin, this.isNestedOverride, this.optionalPeers);
+    return new PackageFileSet(this, packageName, this.version, this.dependencies, this.origin, this.isNestedOverride, this.provided);
   }
 
   public getDependency(name: string): PackageFileSet | RepositoryRef | undefined {
@@ -324,7 +326,7 @@ export class PackageGraphBuilder {
     version?: string,
     origin?: IProvenanceStep,
     isNestedOverride?: boolean,
-    optionalPeers?: ReadonlyMap<string, string>
+    provided?: ReadonlyMap<string, string | undefined>
   ): PackageFileSet {
     if (this.sealed) {
       throw new Error("PackageGraphBuilder is sealed");
@@ -332,7 +334,7 @@ export class PackageGraphBuilder {
     /* The constructor stores the dependencies array by reference, which is
      * exactly what lets the builder fill it in after construction. */
     const dependencies: Array<PackageFileSet | RepositoryRef> = [];
-    const pkg = new PackageFileSet(files, packageName, version, dependencies, origin, isNestedOverride ?? false, optionalPeers);
+    const pkg = new PackageFileSet(files, packageName, version, dependencies, origin, isNestedOverride ?? false, provided);
     this.pending.set(pkg, dependencies);
     return pkg;
   }

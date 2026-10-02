@@ -444,8 +444,64 @@ describe("CatalogRepository (through the model)", () => {
       const found = langsmiths();
       expect(found).to.have.lengthOf(1);
       expect(found[0].getDependency("openai")).to.equal(undefined);
-      expect(found[0].optionalPeers.get("openai")).to.equal("1.0.0");
+      expect(found[0].provided.get("openai")).to.equal("1.0.0");
       expect(backings.get("@backing")!.materialized).to.not.include("openai");
+    });
+  });
+
+  describe("a provided requirement, bound by its consumer", () => {
+    /* `tool` needs a `ts` something above it supplies. The catalog holds two —
+     * 2.0.0 under its own name, which is what its resolution offers, and 1.0.0
+     * under an alias. */
+    const catalog =
+      "package_repo @backing { }\ncatalog @cat { deps = @backing:tool @backing:ts:2.0.0 @backing:ts:1.0.0 -> ts1; }\n";
+    const graph = (): void => {
+      requirementTable.set("tool@1.0.0", [{ pkg: "ts", constraint: "*", provided: "expected" }]);
+    };
+    const versionsOf = (name: string): string[] =>
+      [...new Set(reachablePackages(lastDepSets).filter(pkg => pkg.packageName === name).map(pkg => pkg.version!))].sort();
+    const boundBy = (requirer: string, name: string): string[] => [
+      ...new Set(
+        reachablePackages(lastDepSets)
+          .filter(pkg => pkg.packageName === requirer)
+          .map(pkg => (pkg.getDependency(name) as PackageFileSet | undefined)?.version ?? "unbound")
+      ),
+    ];
+
+    it("keeps what the resolution offers where nothing above supplies the name", async () => {
+      const model = build(catalog + "test_deps a { deps = @cat:tool; }\n");
+      graph();
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      expect(boundBy("tool", "ts")).to.deep.equal(["2.0.0"]);
+    });
+
+    it("binds the consuming target's own package of that name, and the offer leaves the installation", async () => {
+      /* A strict collection: were the dropped offer still judged, `ts` would
+       * ship at two versions and this would be refused. */
+      const model = build(catalog + "test_deps a { deps = @cat:tool @cat:ts1 -> ts; }\n");
+      graph();
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      expect(boundBy("tool", "ts")).to.deep.equal(["1.0.0"]);
+      expect(versionsOf("ts")).to.deep.equal(["1.0.0"]);
+    });
+
+    it("binds what the dependent uses over what the build selects", async () => {
+      /* `plugin` needs a `host` supplied; its dependent `suite` pins host 1.0.0
+       * while the catalog's own is 2.0.0. The plugin shares its dependent's. */
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @cat { deps = @backing:suite @backing:host:2.0.0 @backing:host:1.0.0?; }\n" +
+          "test_deps a { deps = @cat:suite @cat:host; }\n"
+      );
+      requirementTable.set("suite@1.0.0", [
+        { pkg: "plugin", constraint: "1.0.0" },
+        { pkg: "host", constraint: "1.0.0" },
+      ]);
+      requirementTable.set("plugin@1.0.0", [{ pkg: "host", constraint: "*", provided: "expected" }]);
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      expect(boundBy("suite", "host")).to.deep.equal(["1.0.0"]);
+      expect(boundBy("plugin", "host")).to.deep.equal(["1.0.0"]);
+      expect(versionsOf("host")).to.deep.equal(["1.0.0", "2.0.0"]);
     });
   });
 
