@@ -38,8 +38,8 @@ import { chainSteps, describeProvenance } from "../core/Provenance";
 import { attachHelp, ConflictError, IConflictSource, RequirementResolutionError, toError } from "../core/Errors";
 import { Name } from "../core/Name";
 import { TargetContext } from "../model/BuildContext";
-import { BUILD_OPERATION, BUILD_OVERRIDE } from "../model/Constraints";
-import { aliasedAs, declaredRequirementFrom, materializePackages, resolvePackages, runnableFrom } from "../resolver/PackageResolver";
+import { BUILD_OPERATION, BUILD_OVERRIDE, FILES_OPERATION } from "../model/Constraints";
+import { aliasedAs, declaredRequirementFrom, fetchPinnedPackage, materializePackages, resolvePackages, runnableFrom } from "../resolver/PackageResolver";
 import { RepositoryRegistration } from "./Types";
 
 /**
@@ -95,7 +95,8 @@ export class CatalogRepository implements Repository, RepositoryLookup {
    * (a member never named is never fetched): the driver materializes the
    * member's reference against the STORED resolution — the subset keeps the
    * joint pin, never a fresh selection. Under `run` the member is made
-   * runnable via its source's format, keeping that same closure.
+   * runnable via its source's format, keeping that same closure; under `files`
+   * the member is delivered alone (see {@link deliverFiles}).
    *
    * The catalog resolves once (forced build); whether what a consumer takes
    * from it is acceptable is judged at that consumer's collection point, over
@@ -105,12 +106,31 @@ export class CatalogRepository implements Repository, RepositoryLookup {
   public deliver(reference: RepositoryRef): Computable<FileSet> {
     return this.context.getGlobalString(BUILD_OPERATION).then(operation =>
       this.pinned.then(table => {
+        if (operation === FILES_OPERATION) {
+          return this.deliverFiles(reference);
+        }
         const member = this.memberOf(reference, table);
         return this.materializeMember(reference, member).then(pkg =>
           operation === "run" ? this.toRunnable(reference.name.getLiteralPrefix(), member, pkg) : Computable.resolve<FileSet>(pkg)
         );
       })
     );
+  }
+
+  /** The named member alone at its pinned version, named as the catalog
+   *  delivers it: its closure is neither fetched nor assembled. */
+  public deliverFiles(reference: RepositoryRef): Computable<FileSet> {
+    return this.pinned.then(table => {
+      const member = this.memberOf(reference, table);
+      if (member.kind === "local") {
+        return Computable.resolve<FileSet>(member.pkg);
+      }
+      return fetchPinnedPackage(member.source, member.reference, member.resolution)
+        .then(files => member.reference.deliveredAs(files) as FileSet)
+        .catch(err => {
+          throw new RequirementResolutionError([reference], toError(err));
+        });
+    });
   }
 
   /** The pinned member a reference names. An unknown one is just a resolution

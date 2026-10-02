@@ -261,6 +261,11 @@ export class RepositoryGroup<V, C>
     return member instanceof Error ? Computable.reject(member) : member.deliver(reference, options, closure);
   }
 
+  public deliverFiles(reference: RepositoryRef): Computable<FileSet> {
+    const member = this.routed(this.format.parseRequirement(reference.name).pkg);
+    return member instanceof Error ? Computable.reject(member) : member.deliverFiles(reference);
+  }
+
   /** Environment keys deduplicated across the members — with a shared format
    * they answer alike, but the memo key must be right even if they differ. */
   public environmentKey(): Computable<string> {

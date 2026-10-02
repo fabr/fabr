@@ -45,6 +45,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
 import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
+import { resolveBarePackage } from "../resolver/PackageResolver";
 import { RepositoryReader, ResolutionContext } from "../core/Repository";
 import { expect } from "chai";
 import { SILENT_REPORT } from "../support/Execute";
@@ -177,6 +178,10 @@ describe("CatalogRepository (through the model)", () => {
         return closure ? closure().then((pkg: PackageFileSet | undefined) => pkg ?? EMPTY_FILESET) : Computable.resolve<FileSet>(EMPTY_FILESET);
       }
 
+      public deliverFiles(reference: RepositoryRef): Computable<FileSet> {
+        return Computable.resolve(undefined).then(() => resolveBarePackage(this, reference));
+      }
+
     public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
       this.requested.push(pkg);
       return Computable.resolve(requirementTable.get(`${pkg}@${versionToString(version)}`) ?? []);
@@ -290,6 +295,35 @@ describe("CatalogRepository (through the model)", () => {
     expect([...repo.requested].sort()).to.deep.equal(["bar", "foo"]);
     /* ...but ONLY foo was ever fetched — bar, pinned yet unreferenced, is not. */
     expect(repo.materialized).to.deep.equal(["foo"]);
+  });
+
+  it("fetches only the member a projection reads from, not its closure", async () => {
+    const model = build(
+      "package_repo @backing { }\n" +
+        "catalog @cat { deps = @backing:foo; }\n" +
+        "test_deps a { deps = @cat:foo:foo/data.txt; }\n"
+    );
+    requirementTable.set("foo@1.0.0", [{ pkg: "bar", constraint: "1.0.0" }]);
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    const repo = backings.get("@backing")!;
+    expect([...lastDeps!].map(([name]) => name)).to.deep.equal(["foo/data.txt"]);
+    /* The catalog pinned foo's whole closure; the projection fetched foo alone. */
+    expect([...repo.requested].sort()).to.deep.equal(["bar", "foo"]);
+    expect(repo.fetched).to.deep.equal(["foo@1.0.0"]);
+  });
+
+  it("delivers a member alone under the files operation", async () => {
+    const model = build(
+      "package_repo @backing { }\n" +
+        "catalog @cat { deps = @backing:foo; }\n" +
+        "test_deps a { deps = @cat:foo; }\n"
+    );
+    requirementTable.set("foo@1.0.0", [{ pkg: "bar", constraint: "1.0.0" }]);
+    await model.getConfig(Constraints.of({ BUILD_OPERATION: "files" }), execution).getTarget("a");
+    const delivered = lastDepSets[0] as PackageFileSet;
+    expect(delivered.packageName).to.equal("foo");
+    expect(delivered.dependencies).to.deep.equal([]);
+    expect(backings.get("@backing")!.fetched).to.deep.equal(["foo@1.0.0"]);
   });
 
   describe("judging a strict subset by what it ships", () => {

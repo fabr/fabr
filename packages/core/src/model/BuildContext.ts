@@ -28,6 +28,7 @@ import {
   Materialized,
   MaterializeOptions,
   RepositoryPublishRef,
+  fileRequests,
   materializeAll,
   materializeLists,
   materializeShallow,
@@ -2368,7 +2369,7 @@ export abstract class TargetContext {
     }
     return this.context
       .resolveFileValue(stdin.name, this.stack, { relativeTo: stdin.ref })
-      .then(sources => materializeLists(this, [sources]))
+      .then(sources => materializeLists(this, [sources], undefined, [true]))
       .then(([resolved]) => this.context.finishDelivered(resolved))
       .then(resolved => {
         const set = FileSet.unionAll(...resolved.filter((source): source is FileSet => source instanceof FileSet));
@@ -2446,7 +2447,7 @@ export abstract class TargetContext {
    * serves, at resolve time.
    */
   public materializeSources(sources: SourceRef[]): Computable<(FileSource | Repository | FileSet)[]> {
-    return materializeAll(this, sources).then(delivered => this.context.finishDelivered(delivered));
+    return materializeAll(this, sources, undefined, fileRequests(sources)).then(delivered => this.context.finishDelivered(delivered));
   }
 
   /**
@@ -2568,7 +2569,12 @@ export abstract class TargetContext {
          * rule commonly wants one contained (`entry`) and the rest extracted. */
         const contained = values.map(value => value instanceof ContainedSources);
         const lists = values.map(value => (value instanceof ContainedSources ? value.sources : value));
-        return materializeLists(this, lists, options).then(partitions => {
+        return materializeLists(
+          this,
+          lists,
+          options,
+          contained.map(kept => !kept)
+        ).then(partitions => {
           /* The delivery machinery returns entities with their projections
            * pending; the context — the driver — finishes the walk here, except
            * for the parts whose consumer reinterprets the pending refs. */

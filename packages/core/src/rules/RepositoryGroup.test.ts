@@ -50,7 +50,7 @@ import { LogFormatter, LogLevel } from "../support/Log";
 import { parseVersion, SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
 import { Requirement, Selected } from "../resolver/Types";
 import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
-import { declaredRequirementOf, vendPackageRef } from "../resolver/PackageResolver";
+import { declaredRequirementOf, resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
 import { bestRoute, parseRouteKey, repositoryGroupRegistration, RouteKey, routeKeyText } from "./RepositoryGroup";
 import { PluginContribution, RuleRegistration } from "./Types";
 
@@ -264,6 +264,10 @@ class FakeRegistry implements Repository, RepositoryReader<SemverVersion, Semver
      * reached under an ordinary build. */
     public deliver(_reference: RepositoryRef, _options?: MaterializeOptions, closure?: ClosureThunk): Computable<FileSet> {
       return closure ? closure().then((pkg: PackageFileSet | undefined) => pkg ?? EMPTY_FILESET) : Computable.resolve<FileSet>(EMPTY_FILESET);
+    }
+
+    public deliverFiles(reference: RepositoryRef): Computable<FileSet> {
+      return Computable.resolve(undefined).then(() => resolveBarePackage(this, reference));
     }
 
   public availableVersions(pkg: string): Computable<SemverVersion[] | undefined> {

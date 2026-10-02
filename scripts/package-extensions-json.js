@@ -22,10 +22,22 @@
  * reads at resolution time. Run as a program it writes the document to stdout
  * (the fabr build's generate step); `copylibs.js` requires it for the devchain
  * build. The module builds its list in code and has no runtime dependencies,
- * so loading it needs nothing installed beside it. */
+ * so the fabr build stages that one file beside this script; the devchain
+ * loads it from the installed package. */
+
+function extensionsModule() {
+  try {
+    return require("./yarnpkg-extensions.js");
+  } catch (err) {
+    if (err.code !== "MODULE_NOT_FOUND") {
+      throw err;
+    }
+    return require("@yarnpkg/extensions");
+  }
+}
 
 function packageExtensionsJson() {
-  const { packageExtensions } = require("@yarnpkg/extensions");
+  const { packageExtensions } = extensionsModule();
   return `${JSON.stringify(packageExtensions, undefined, 1)}\n`;
 }
 

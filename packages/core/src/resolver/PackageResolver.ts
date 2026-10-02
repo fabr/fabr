@@ -573,6 +573,25 @@ export function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, refer
 }
 
 /**
+ * The files of the package a resolution's root is pinned to, with no
+ * dependency closure: the version `resolution` bound `reference` to, fetched
+ * alone. The pinned counterpart of {@link resolveBarePackage}, for a holder of
+ * a stored resolution (a catalog).
+ */
+export function fetchPinnedPackage<V, C>(registry: RepositoryReader<V, C>, reference: RepositoryRef, resolution: Resolution): Computable<FileSet> {
+  const { format } = registry;
+  const { rootIndex, graph } = resolution as DomainResolution<V>;
+  const req = format.parseRequirement(reference.name);
+  const index = rootIndex.get(requirementKey(req));
+  const bound = index === undefined ? undefined : graph.rootBinding(index);
+  if (!bound) {
+    throw new Error(`Resolution does not contain ${requirementKey(req)}`);
+  }
+  const origin = resolutionOrigin(format, req, graph.selections);
+  return registry.fetch(bound.pkg, bound.version).then(pkg => new PackageFileSet(pkg, pkg.packageName, pkg.version, [], origin));
+}
+
+/**
  * What the generic repair suggester needs from the domain (see
  * resolver/ResolutionReport): the written reference form, the registry's
  * version list, and a memoized enrichment-free re-resolve.

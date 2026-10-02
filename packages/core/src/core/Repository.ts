@@ -134,6 +134,13 @@ export interface RepositoryLookup {
   deliver(reference: RepositoryRef, options?: MaterializeOptions): Computable<FileSet>;
 
   /**
+   * The files of what ONE reference names, with no dependency closure — see
+   * {@link RepositoryReader.deliverFiles}. OPTIONAL: where absent,
+   * {@link deliver}'s answer serves.
+   */
+  deliverFiles?(reference: RepositoryRef): Computable<FileSet>;
+
+  /**
    * The requirement `ref` declares — package name + the version constraint as
    * WRITTEN — for a generated manifest (which records what a package *requires*,
    * not what fabr's joint resolution pinned, which a transitive constraint may
@@ -199,6 +206,13 @@ export interface RepositoryReader<V, C> extends RequirementSource<V> {
    * under, so nothing upstream has to carry the operation to reach this point.
    */
   deliver(reference: RepositoryRef, options?: MaterializeOptions, closure?: ClosureThunk): Computable<FileSet>;
+  /**
+   * The files of the package one reference names, with no dependency closure
+   * and no joint resolution: the version is the reference's own lower bound.
+   * What a {@link fileRequests file request} is answered with, whatever
+   * operation this instance was interned under.
+   */
+  deliverFiles(reference: RepositoryRef): Computable<FileSet>;
   /** Fetch one exact package version's content. */
   fetch(pkg: string, version: V): Computable<PackageFileSet>;
   /** The published-version list for repair suggestions; undefined when the
@@ -228,6 +242,7 @@ export function isRepositoryReader(source: unknown): source is RepositoryReader<
     registry !== null &&
     typeof registry.format === "object" &&
     typeof registry.getRequirements === "function" &&
+    typeof registry.deliverFiles === "function" &&
     typeof registry.fetch === "function"
   );
 }
@@ -352,26 +367,53 @@ export interface ResolutionContext {
 export type RefSource = RepositoryLookup | RepositoryReader<unknown, unknown>;
 
 /**
+ * The references among `extracted` that ask for FILES rather than a package: a
+ * projected reference whose consumer extracts the files it selects. Such a
+ * reference names free-floating files — it is no requirement, so it joins no
+ * resolution, pins nothing and brings no closure (see
+ * {@link RepositoryReader.deliverFiles}). A reference also present in `kept` —
+ * sources whose consumer takes the package behind the projection (a runnable's
+ * entry, a contained part) — stays a package request.
+ */
+export function fileRequests(extracted: ReadonlyArray<SourceRef>, kept: ReadonlyArray<SourceRef> = []): ReadonlySet<RepositoryRef> {
+  const packaged = new Set<SourceRef>(kept);
+  return new Set(
+    extracted.filter((source): source is RepositoryRef => source instanceof RepositoryRef && source.projections.length > 0 && !packaged.has(source))
+  );
+}
+
+const NO_FILE_REQUESTS: ReadonlySet<RepositoryRef> = new Set();
+
+/**
  * Resolve + deliver one repository's reference batch — the resolution layer's
  * dispatch: a package registry's references resolve jointly
  * (resolvePackages/materializePackages, the batch machinery); any other
  * repository delivers per reference. Repositories no longer carry batch
- * methods at all — batching IS this layer.
+ * methods at all — batching IS this layer. The references in `files` are
+ * {@link fileRequests file requests}: delivered apart from the batch, as plain
+ * files.
  */
 export function resolveAndMaterialize(
   context: ResolutionContext,
   source: RefSource,
   references: RepositoryRef[],
-  options?: MaterializeOptions
+  options?: MaterializeOptions,
+  files: ReadonlySet<RepositoryRef> = NO_FILE_REQUESTS
 ): Computable<FileSet[]> {
+  const deliverFiles = source.deliverFiles?.bind(source);
+  const asFiles = (reference: RepositoryRef): boolean => deliverFiles !== undefined && files.has(reference);
+  const packaged = references.filter(reference => !asFiles(reference));
+  const position = new Map(packaged.map((reference, index) => [reference, index]));
   /* One shape for both kinds of source: every reference is delivered by its
    * repository. A registry additionally gets a thunk for its resolved closure —
    * ONE joint resolution for the batch, forced only by the references whose
    * delivery actually needs it (see ClosureThunk). */
-  const closures = isRepositoryReader(source) ? assembleClosures(context, source, references) : undefined;
+  const closures = isRepositoryReader(source) && packaged.length > 0 ? assembleClosures(context, source, packaged) : undefined;
   return Computable.forAll(
-    references.map((reference, index) =>
-      source.deliver(reference, options, closures && (() => closures().then(assembled => assembled[index])))
+    references.map(reference =>
+      asFiles(reference)
+        ? attributedTo(reference, () => deliverFiles!(reference).then(delivered => new FileSet(delivered, delivered.origin)))
+        : source.deliver(reference, options, closures && (() => closures().then(assembled => assembled[position.get(reference)!])))
     ),
     (...delivered: FileSet[]) => delivered
   );
@@ -709,9 +751,16 @@ export function materializeShallow(
  * results; packages are re-delivered with their carried references replaced by
  * the resolutions; other sources pass through unchanged. Projections are NOT
  * applied — a projected source comes back as a pending {@link FileSetRef} for
- * the driver to finish (see Materialized).
+ * the driver to finish (see Materialized). The references in `files` are
+ * {@link fileRequests file requests}, delivered as plain files outside the
+ * joint resolution.
  */
-export function materializeAll(context: ResolutionContext, sources: SourceRef[], options?: MaterializeOptions): Computable<Materialized[]> {
+export function materializeAll(
+  context: ResolutionContext,
+  sources: SourceRef[],
+  options?: MaterializeOptions,
+  files?: ReadonlySet<RepositoryRef>
+): Computable<Materialized[]> {
   const references = gatherReferences(sources);
   /* The sources with every reference replaced by its delivery, before their
    * provided requirements are bound. */
@@ -743,7 +792,7 @@ export function materializeAll(context: ResolutionContext, sources: SourceRef[],
   }
   const batches = [...groupByRepository(references).entries()];
   return Computable.forAll(
-    batches.map(([repository, refs]) => resolveAndMaterialize(context, repository, refs, options)),
+    batches.map(([repository, refs]) => resolveAndMaterialize(context, repository, refs, options, files)),
     (...results: FileSet[][]) => {
       const finished = new Map<RepositoryRef, FileSet | FileSetRef>();
       batches.forEach(([, refs], batchIndex) =>
@@ -913,9 +962,26 @@ function providedNamesBelow(packages: PackageFileSet[]): Map<PackageFileSet, str
  * accessors (`collect` / `getFileSetProperties`, and the apart tool resolutions
  * `getGlobalRunnable`/`getRunnableProperty`): each is just this plus its own
  * shaping (filter to FileSet / assert a runnable / key per name).
+ *
+ * `extracted` says, per list, whether its consumer extracts the files a
+ * projection selects (so the list's projected references are
+ * {@link fileRequests file requests}) rather than taking the package behind
+ * it. Absent, no list is extracted.
  */
-export function materializeLists(context: ResolutionContext, lists: SourceRef[][], options?: MaterializeOptions): Computable<Materialized[][]> {
-  return materializeAll(context, lists.flat(), options).then(resolved => {
+export function materializeLists(
+  context: ResolutionContext,
+  lists: SourceRef[][],
+  options?: MaterializeOptions,
+  extracted?: ReadonlyArray<boolean>
+): Computable<Materialized[][]> {
+  const files =
+    extracted === undefined
+      ? undefined
+      : fileRequests(
+          lists.filter((_, index) => extracted[index]).flat(),
+          lists.filter((_, index) => !extracted[index]).flat()
+        );
+  return materializeAll(context, lists.flat(), options, files).then(resolved => {
     const partitioned: Materialized[][] = [];
     let index = 0;
     for (const list of lists) {
@@ -928,25 +994,29 @@ export function materializeLists(context: ResolutionContext, lists: SourceRef[][
 
 /**
  * @return every reference among the sources, plus those carried by packages —
- * recursively through their built-package deps — deduplicated by identity.
+ * recursively through their built-package deps — deduplicated by identity. A
+ * carried reference with projections is left out: it mounts nothing (see
+ * {@link rebuildPackage}), so it has nothing to resolve.
  */
 function gatherReferences(sources: SourceRef[]): RepositoryRef[] {
   const references: RepositoryRef[] = [];
   const visited = new Set<RepositoryRef | PackageFileSet>();
-  const gather = (source: SourceRef | PackageFileSet): void => {
+  const gather = (source: SourceRef | PackageFileSet, carried: boolean): void => {
     if (source instanceof RepositoryRef && !visited.has(source)) {
-      visited.add(source);
-      references.push(source);
+      if (!carried || source.projections.length === 0) {
+        visited.add(source);
+        references.push(source);
+      }
     } else if (source instanceof PackageFileSet && !visited.has(source)) {
       visited.add(source);
-      source.dependencies.forEach(gather);
+      source.dependencies.forEach(dep => gather(dep, true));
     } else if (source instanceof FileSetRef) {
       /* A pending projection's base still carries its refs — they resolve at
        * this collection point like any package's. */
-      gather(source.source);
+      gather(source.source, carried);
     }
   };
-  sources.forEach(gather);
+  sources.forEach(source => gather(source, false));
   return references;
 }
 
@@ -1020,10 +1090,9 @@ function carriesReferences(pkg: PackageFileSet): boolean {
 
 /**
  * Re-deliver a package with its carried references replaced by their
- * resolutions (recursively); a reference that carries projections resolves to
+ * resolutions (recursively); a reference that carries projections names
  * files, not a package — it cannot be mounted, so it drops out of the
- * dependency list *unapplied* (its projected content is never computed just
- * to be discarded). A ref-free package — every delivered external subgraph,
+ * dependency list unresolved. A ref-free package — every delivered external subgraph,
  * which may be cyclic — passes through untouched; what does get rebuilt is
  * copied through the caller's {@link PackageGraphBuilder}, memoized *before*
  * its dependencies wire, so even a ref-carrying cycle rebuilds rather than
@@ -1045,7 +1114,7 @@ function rebuildPackage(
     builder.wire(
       result,
       pkg.dependencies
-        .map(dep => (dep instanceof RepositoryRef ? finished.get(dep)! : rebuildPackage(dep, finished, rebuilt, builder)))
+        .map(dep => (dep instanceof RepositoryRef ? finished.get(dep) : rebuildPackage(dep, finished, rebuilt, builder)))
         .filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)
     );
   }

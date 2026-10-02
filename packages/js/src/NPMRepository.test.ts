@@ -50,6 +50,8 @@ import {
   SymlinkFile,
   ResolutionContext,
   materializeAll,
+  fileRequests,
+  FileSetRef,
   conflictError,
   ROOT_REQUIRER,
   Selected,
@@ -545,6 +547,54 @@ describe("NPMRepository resolveAll under files", () => {
 
     const err = await rejection(() => drive(repo, [ref]));
     expect(err.message).to.match(/without a version lower bound/);
+  });
+});
+
+describe("NPMRepository file requests", () => {
+  const served = {
+    [`${REG}/left-pad/1.2.0`]: metadataFor("left-pad", "1.2.0", { "node-addon-api": "^7.0.0" }),
+    [`${REG}/left-pad/1.3.0`]: metadataFor("left-pad", "1.3.0", {}),
+    [`${REG}/app/1.0.0`]: metadataFor("app", "1.0.0", { "left-pad": "^1.3.0" }),
+    [`${REG}/tarball/1.2.0.tgz`]: packageTarball(),
+    [`${REG}/tarball/1.3.0.tgz`]: packageTarball(),
+    [`${REG}/tarball/1.0.0.tgz`]: packageTarball(),
+  };
+  const collect = (repo: NPMRepository, refs: RepositoryRef[], files = fileRequests(refs)): Promise<unknown[]> =>
+    toPromise(materializeAll(machineryContexts.get(repo)! as unknown as ResolutionContext, refs, undefined, files));
+
+  it("delivers plain files with no resolution, under an ordinary build", async () => {
+    const fetched: string[] = [];
+    /* left-pad@1.2.0's dependency is not served: walking its closure would
+     * reject with 'unexpected fetch'. */
+    const repo = npmRepository(REG, fakeContext("build", served, fetched));
+    const [delivered] = await collect(repo, [repo.getRepositoryRef(parseName("left-pad:1.2.0:index.js"))]);
+
+    expect(delivered).to.be.instanceOf(FileSetRef);
+    const base = (delivered as FileSetRef).source;
+    expect(base).to.not.be.instanceOf(PackageFileSet);
+    expect([...base].map(([name]) => name).sort()).to.deep.equal(["index.js", "package.json"]);
+    expect(fetched).to.deep.equal([`${REG}/left-pad/1.2.0`, `${REG}/tarball/1.2.0.tgz`]);
+  });
+
+  it("pins nothing: it reads its own version beside a package that selects another", async () => {
+    const fetched: string[] = [];
+    const repo = npmRepository(REG, fakeContext("build", served, fetched));
+    const [files, app] = await collect(repo, [
+      repo.getRepositoryRef(parseName("left-pad:1.2.0:index.js")),
+      repo.getRepositoryRef(parseName("app:1.0.0")),
+    ]);
+
+    expect((files as FileSetRef).source).to.not.be.instanceOf(PackageFileSet);
+    expect(fetched).to.include(`${REG}/tarball/1.2.0.tgz`);
+    expect((app as PackageFileSet).dependencies.map(dep => (dep as PackageFileSet).version)).to.deep.equal(["1.3.0"]);
+  });
+
+  it("stays a package request where its consumer keeps the package", async () => {
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const ref = repo.getRepositoryRef(parseName("left-pad:1.3.0:index.js"));
+    const [delivered] = await collect(repo, [ref], fileRequests([], [ref]));
+
+    expect((delivered as FileSetRef).source).to.be.instanceOf(PackageFileSet);
   });
 });
 

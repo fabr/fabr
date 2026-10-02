@@ -115,7 +115,7 @@ export function contentPackageMember<V, C>(
       context.getGlobalString(BUILD_OPERATION).then(operation => {
         /* Files alone: the route's content IS the answer, so no resolution. */
         if (operation === FILES_OPERATION) {
-          return resolveBarePackage(member, reference);
+          return member.deliverFiles(reference);
         }
         if (!closure) {
           return Computable.resolve<FileSet>(EMPTY_FILESET);
@@ -127,6 +127,8 @@ export function contentPackageMember<V, C>(
           return operation === "run" ? format.makeRunnable(pkg) : Computable.resolve<FileSet>(pkg);
         });
       }),
+
+    deliverFiles: (reference): Computable<FileSet> => Computable.resolve(undefined).then(() => resolveBarePackage(member, reference)),
 
     environmentKey: (): Computable<string> =>
       load().then(({ content }) => {

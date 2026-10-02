@@ -99,14 +99,11 @@ js_package @fabr-build/core {
 }
 
 # The curated npm package-extension list (Yarn's, which pnpm also applies) as
-# the JSON @fabr-build/js ships in lib/. The `?` versions complete the closure of
-# the list's required peer, @yarnpkg/core, which peer installation brings in
-# although the list's module never loads it.
+# the JSON @fabr-build/js ships in lib/. The list's module loads nothing else,
+# so the script takes that one file rather than the package.
 js_script package_extensions_json {
   entry = scripts:package-extensions-json.js;
-  deps = @npm:@yarnpkg/extensions:2.0.7
-         @npm:@types/http-cache-semantics:4.2.0? @npm:@types/keyv:4.2.0? @npm:@types/node:26.6.3?
-         @npm:mimic-response:1.0.0? @npm:mimic-response:3.1.0?;
+  deps = @npm:@yarnpkg/extensions:2.0.7:lib/index.js -> yarnpkg-extensions.js;
 }
 
 generate package_extensions {

@@ -342,7 +342,7 @@ export class NPMRepository
        * unsatisfiable still HAS files, so resolving to obtain them would fail a
        * delivery that has no business failing. */
       if (operation === FILES_OPERATION) {
-        return resolveBarePackage(this, reference);
+        return this.deliverFiles(reference);
       }
       if (!closure) {
         return Computable.resolve<FileSet>(EMPTY_FILESET);
@@ -356,6 +356,12 @@ export class NPMRepository
         return operation === "run" ? makeNpmRunnable(pkg) : Computable.resolve<FileSet>(pkg);
       });
     });
+  }
+
+  /** RepositoryReader implementation: the package's own files at the
+   * reference's lower bound, with no closure. */
+  public deliverFiles(reference: RepositoryRef): Computable<FileSet> {
+    return Computable.resolve(undefined).then(() => resolveBarePackage(this, reference));
   }
 
   /**
