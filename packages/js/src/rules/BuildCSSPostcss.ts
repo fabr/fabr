@@ -47,7 +47,7 @@ import {
 } from "@fabr-build/core";
 import { buildPostcssOptions, CSS_DEPS_DIR, CSS_OUTDIR, CSS_SRC_ROOT, CSS_TOOL_DIR } from "../CSSCompile";
 import { emitsSourceMap } from "../JSPackage";
-import { createNodeExecAction, FLAT } from "../NodeExecAction";
+import { createNodeExecAction, NODE_MODULES } from "../NodeExecAction";
 
 function buildCssPostcss(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
@@ -78,7 +78,7 @@ function buildCssPostcss(context: TargetContext): Computable<RuleResult> {
       const argv = compiler.toCommandLine(["--manifest=postcss-manifest.json"], { base: CSS_TOOL_DIR });
       return createNodeExecAction(FileSet.layout(workspace), deps, argv, `${CSS_OUTDIR}:**`, {
         label: "postcss",
-        layout: FLAT,
+        layout: NODE_MODULES,
         mount: CSS_DEPS_DIR,
       });
     }

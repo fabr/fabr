@@ -38,8 +38,8 @@ import {
   manifestFileInputs,
   reachablePackages,
 } from "@fabr-build/core";
-import { assembleNodeModules, assembleScopedNodeModules } from "./JSPackage";
-import { createNodeExecAction, FLAT, NODE_EXEC_ACTION, PNP, SCOPED } from "./NodeExecAction";
+import { assembleNodeModules } from "./JSPackage";
+import { createNodeExecAction, NODE_EXEC_ACTION, NODE_MODULES, PNP } from "./NodeExecAction";
 import { pnpManifestOf, referenceOf } from "./PnPManifest";
 import {
   CHANGES_FILE,
@@ -229,35 +229,54 @@ describe("createNodeExecAction layouts", () => {
     expect(self?.[1][0][1].linkType).to.equal("SOFT");
   });
 
-  it("flat: hoists every package at the mount point", async () => {
+  it("node_modules: links the direct deps at the mount point, the closure behind them", async () => {
     const { observed } = await run(
-      createNodeExecAction(sources, [pkg("left-pad", "1.0.0", [pkg("b4a")])], TOOL, "out:**", { layout: FLAT }),
+      createNodeExecAction(sources, [pkg("left-pad", "1.0.0", [pkg("b4a")])], TOOL, "out:**", { layout: NODE_MODULES }),
       root
     );
-    expect(observed.listing).to.include("node_modules/left-pad/index.js");
-    /* Transitives visible — the permissive arrangement, which is the point of
-     * this one. */
-    expect(observed.listing).to.include("node_modules/b4a/index.js");
+    /* The direct dep is a link to its instance directory; the transitive one is
+     * its sibling there, and not at the top. */
+    expect(observed.listing).to.include("node_modules/left-pad");
+    expect(observed.listing).to.not.include("node_modules/b4a");
+    expect(observed.listing).to.include("node_modules/.fabr/left-pad@1.0.0/node_modules/left-pad/index.js");
+    expect(observed.listing).to.include("node_modules/.fabr/b4a@1.0.0/node_modules/b4a/index.js");
     expect(observed.listing).to.not.include(".pnp.data.json");
   });
 
-  it("scoped: exposes only the direct deps, the closure behind them", async () => {
+  it("node_modules: every requirer of one instance loads the same module", async () => {
+    /* The app and its orm both bind shared@1 while saver binds shared@2: real
+     * node, asked from each, must hand the first two ONE module object. */
+    const code = (name: string, version: string, body: string, deps: PackageFileSet[] = []): PackageFileSet =>
+      new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(body)]]), name, version, deps);
+    const shared1 = code("shared", "1.0.0", "module.exports = { Client: class {}, version: 1 };");
+    const shared2 = code("shared", "2.0.0", "module.exports = { Client: class {}, version: 2 };");
+    const app = code(
+      "app",
+      "1.0.0",
+      'module.exports = { own: require("shared"), orm: require("orm"), saver: require("saver") };',
+      [
+        shared1,
+        code("orm", "1.0.0", 'module.exports = require("shared");', [shared1]),
+        code("saver", "1.0.0", 'module.exports = require("shared");', [shared2]),
+      ]
+    );
+    const tool = `const fs = require("fs"), app = require("app");
+fs.mkdirSync("out", { recursive: true });
+fs.writeFileSync("out/observed.json", JSON.stringify({ listing: [
+  "shared:" + (app.own.Client === app.orm.Client), "versions:" + [app.own.version, app.orm.version, app.saver.version].join(",")
+] }));`;
     const { observed } = await run(
-      createNodeExecAction(sources, [pkg("left-pad", "1.0.0", [pkg("b4a")])], TOOL, "out:**", { layout: SCOPED }),
+      createNodeExecAction(sources, [app], [process.execPath, "-e", tool], "out:**", { layout: NODE_MODULES }),
       root
     );
-    /* The direct dep is a link into the hidden area; the transitive one is not
-     * reachable from the top level at all. */
-    expect(observed.listing).to.include("node_modules/left-pad");
-    expect(observed.listing).to.not.include("node_modules/b4a");
-    expect(observed.listing).to.include("node_modules/.pkgs/node_modules/b4a/index.js");
+    expect(observed.listing).to.deep.equal(["shared:true", "versions:1,1,2"]);
   });
 
   it("keys the layout, so one arrangement is never served for another", () => {
     const deps = [pkg("left-pad")];
-    const key = (layout: typeof PNP | typeof FLAT | typeof SCOPED): unknown =>
+    const key = (layout: typeof PNP | typeof NODE_MODULES): unknown =>
       createNodeExecAction(sources, deps, TOOL, "out:**", { layout }).config.layout;
-    expect(new Set([key(PNP), key(FLAT), key(SCOPED)]).size).to.equal(3);
+    expect(key(PNP)).to.not.equal(key(NODE_MODULES));
   });
 });
 
@@ -308,8 +327,7 @@ describe("the js exec step's build state", () => {
   it("goes unread by a layout that cannot compile incrementally", async () => {
     /* The record is only ever of use to the incremental pnp arm, so no other
      * arm may pay for reading it. */
-    expect(await stateReads({ layout: FLAT }), "flat").to.equal(0);
-    expect(await stateReads({ layout: SCOPED }), "scoped").to.equal(0);
+    expect(await stateReads({ layout: NODE_MODULES }), "node_modules").to.equal(0);
     expect(await stateReads({ layout: PNP }), "pnp, but not incremental").to.equal(0);
   });
 
@@ -899,8 +917,8 @@ describe("a closure with no finite tree encoding", () => {
     expect(manifest.packages.length, "every instance still gets a row").to.be.greaterThan(0);
   });
 
-  it("is refused by both assemblers, which cannot lay it out", () => {
-    expect(() => assembleNodeModules([cycle()]), "flat").to.throw(/Cannot lay out this dependency closure/);
-    expect(() => assembleScopedNodeModules([cycle()]), "scoped").to.throw();
+  it("lays out as a tree too, each generation in a directory of its own", () => {
+    const names = [...assembleNodeModules([cycle()])].map(([name]) => name);
+    expect(names.filter(name => /^\.fabr\/a@[^/]+\/node_modules\/a\/index\.js$/.test(name))).to.have.lengthOf(2);
   });
 });

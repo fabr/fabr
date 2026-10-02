@@ -50,7 +50,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Module } from "node:module";
-import { isCodeUnderTest, jestLibrary } from "./Tools";
+import { isCodeUnderTest, runnerDependency } from "./Tools";
 
 /** The calls jest hoists. A file mentioning none of them needs no transform,
  * which is the overwhelming majority — so this cheap token scan is what keeps
@@ -85,7 +85,7 @@ export function installHoist(root: string): void {
   let swc: ISwc | undefined;
   compiling.prototype._compile = function (content: string, filename: string): unknown {
     if (isCodeUnderTest(root, filename) && HOISTABLE.test(content)) {
-      swc ??= jestLibrary("@swc/core") as ISwc;
+      swc ??= runnerDependency("@swc/core") as ISwc;
       content = hoisted(swc, content, filename);
     }
     return original.call(this, content, filename);

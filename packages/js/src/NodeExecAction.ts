@@ -38,7 +38,7 @@ import {
   stringListConfig,
   writeFileSet,
 } from "@fabr-build/core";
-import { assembleNodeModules, assembleScopedNodeModules } from "./JSPackage";
+import { assembleNodeModules } from "./JSPackage";
 import { pnpManifestOf, TREE_MOUNT } from "./PnPManifest";
 import { PNP_DATA_FILE } from "./pnp/PnPResolver";
 import { IChangeLists, splitDepsPath, toRunReport } from "./pnp/ReadSet";
@@ -47,8 +47,8 @@ import { IChangeLists, splitDepsPath, toRunReport } from "./pnp/ReadSet";
  * The JS ecosystem's build step, and the one place that owns **how a JS tool
  * reaches its dependencies**: make them reachable, then run it — core's generic
  * `exec` with the one thing every JS tool needs in front of it. Which
- * arrangement is the {@link PNP}/{@link FLAT}/{@link SCOPED} choice, and having
- * all three here is the point: one step owns the question, so a rule says which
+ * arrangement is the {@link PNP}/{@link NODE_MODULES} choice, and having
+ * both here is the point: one step owns the question, so a rule says which
  * answer it wants and nothing else.
  *
  * Doing it here rather than in the rule is what makes it free on a cache hit.
@@ -107,7 +107,7 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
     const layout = stringConfig(action, "layout");
     if (layout !== PNP) {
       const mount = stringConfig(action, "mount");
-      const mounted = layout === SCOPED ? assembleScopedNodeModules(deps) : assembleNodeModules(deps);
+      const mounted = assembleNodeModules(deps);
       return exec(FileSet.unionAll(files, FileSet.layout({ [mount]: mounted })), argv);
     }
     /* Nothing is laid out: the packages become trees in the cache's pool, and
@@ -172,27 +172,21 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
 };
 
 /**
- * How a tool reaches its dependencies. Three peers, one choice per rule:
+ * How a tool reaches its dependencies. Two peers, one choice per rule:
  *
  * - `pnp` — no tree at all: each package is materialized once in the cache's
  *   tree pool and a generated PnP table says what resolves to what. The
  *   strictest and by far the cheapest (a step stages only its own sources), and
  *   what every tool fabr can hand a manifest to uses.
- * - `flat` — every package hoisted at the mount point, transitives visible.
- *   What a tool that merely needs its inputs resolvable wants (a runnable
- *   install, a test install), and where the future `resolution/node_modules`
- *   flag will map a tool that must see a real tree.
- * - `scoped` — the consuming sources see only their DIRECT deps, the closure
- *   living in a hidden area they resolve through, so an undeclared transitive
- *   import fails. Strictness for a filesystem-resolving compiler; see
- *   {@link assembleScopedNodeModules} for what that costs and who must pay it.
+ * - `node_modules` — a real tree at the mount point ({@link assembleNodeModules}):
+ *   the direct deps visible at the top, each package resolving its own. What a
+ *   tool that resolves through the filesystem needs.
  */
 export const PNP = "pnp";
-export const FLAT = "flat";
-export const SCOPED = "scoped";
+export const NODE_MODULES = "node_modules";
 
 /** The layout tokens, for a caller that validates one. */
-export type NodeLayout = typeof PNP | typeof FLAT | typeof SCOPED;
+export type NodeLayout = typeof PNP | typeof NODE_MODULES;
 
 /**
  * @param files everything the rule lays out itself — sources, the tool's own
@@ -261,7 +255,7 @@ export function createNodeExecAction(
        * {@link baseOutputLayout} reads back to find where to stage a base. */
       outputs: collectedWith(outputs, options.depsReport, options.stateDir),
       mount: options.mount ?? "node_modules",
-      layout: options.layout ?? FLAT,
+      layout: options.layout ?? NODE_MODULES,
       ...(options.self ? { selfName: options.self.name, selfLocation: options.self.location } : {}),
       ...(options.config ? { config: options.config } : {}),
       ...(options.depsReport ? { depsReport: options.depsReport } : {}),
@@ -275,7 +269,7 @@ export function createNodeExecAction(
      * the whole deps manifest where the tool reports nothing (see
      * {@link depsReport}). Editing a dependency a reporting compile never
      * opened then invalidates nothing; the mount and layout options stay in
-     * the anchor and keep a scoped install apart from a classic one. Keying
+     * the anchor and keep a table install apart from a tree one. Keying
      * needs no tree, so no closure is declined — a cross-generation version
      * cycle, which only PnP can deliver, keys like everything else. */
     { deps },

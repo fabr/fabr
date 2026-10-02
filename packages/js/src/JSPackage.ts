@@ -26,18 +26,18 @@
 import { posix } from "path";
 import {
   packageConflict,
-  attachHelp,
   BUILD_OVERRIDE,
   Constraints,
   SubTargetInputs,
   CANONICAL,
   Computable,
-  compareVersions,
+  compareText,
   ConflictError,
   EMPTY_FILESET,
   FileSet,
   FileSetRef,
   Flag,
+  hashString,
   IFile,
   isCanonicalFileName,
   isJsonObject,
@@ -46,7 +46,6 @@ import {
   PackageFileSet,
   nodeNaming,
   parseJson,
-  parseVersion,
   readJsonFile,
   RunnableFileSet,
   SymlinkFile,
@@ -904,20 +903,6 @@ export function stripPackageJson(files: FileSet): FileSet {
   return files.remap(name => (name === "package.json" ? undefined : name));
 }
 
-/** The diagnostic for a closure with no finite layout (see {@link mountWinners}):
- * name the cycle, and the pin that collapses it. */
-function unrepresentableCycle(cycle: string[]): Error {
-  const names = [...new Set(cycle.map(id => id.substring(0, id.lastIndexOf("@"))))];
-  return attachHelp(
-    new Error(
-      `Cannot lay out this dependency closure: ${cycle.join(" -> ")} requires a different version of each package at every ` +
-        "step, so no nesting satisfies them all — each package would have to be nested inside itself without end"
-    ),
-    `pin ${names.map(name => `'@npm:${name}:<version>'`).join(" or ")} so a single version of it is selected, ` +
-      "which removes the nesting the cycle needs"
-  );
-}
-
 /** What {@link collectPackages} found: the direct roots, every reachable
  * instance, one representative per node, and the loose sets. */
 interface CollectedPackages {
@@ -969,7 +954,7 @@ function collectPackages(sets: FileSet[]): CollectedPackages {
  * Assemblers only: within one installation a `packageId` names one package —
  * two instances under one id with different CONTENT are two packages claiming
  * one identity, which no layout can hold. The same package wired two ways is
- * two nodes, which the planner mounts apart ({@link mountWinners}).
+ * two nodes, each with a directory of its own ({@link assembleNodeModules}).
  */
 function assertOneContentPerId(collected: CollectedPackages): void {
   const byId = new Map<string, PackageFileSet>();
@@ -983,53 +968,6 @@ function assertOneContentPerId(collected: CollectedPackages): void {
   }
 }
 
-/**
- * The flat (hoisted) winner per name, as a node signature: a root always holds
- * its own name; otherwise the highest version. Two *different* roots sharing a
- * name is a conflict rather than a pick — each was directly listed, so each
- * needs its own top-level mount and two cannot have one.
- *
- * Under `strict`, override instances ({@link PackageFileSet.isNestedOverride})
- * never take a flat slot, and two *non*-override instances disagreeing on a
- * name conflict rather than picking a version — that shape is two deliveries
- * resolved apart, where hoisting one hands the other's requirers a version
- * their resolution never chose. Sealed (non-strict) installs keep the
- * permissive highest-wins pick.
- *
- * Conflicts are reported by semantic **id**; the signature is the planner's key
- * and means nothing to a reader.
- */
-function hoistWinners({ roots, all, byNode, nodeOf }: CollectedPackages, strict: boolean): Map<string, string> {
-  const top = new Map<string, string>();
-  for (const root of roots) {
-    const existing = top.get(root.packageName);
-    if (existing !== undefined && existing !== nodeOf(root)) {
-      throw nameConflict(byNode.get(existing)!, root);
-    }
-    top.set(root.packageName, nodeOf(root));
-  }
-  for (const pkg of all) {
-    if (strict && pkg.isNestedOverride) {
-      continue;
-    }
-    const current = top.get(pkg.packageName);
-    if (current === undefined) {
-      top.set(pkg.packageName, nodeOf(pkg));
-    } else if (current !== nodeOf(pkg) && !roots.some(root => nodeOf(root) === current)) {
-      if (strict) {
-        throw nameConflict(byNode.get(current)!, pkg);
-      }
-      /* Higher version wins; one version wired two ways settles on the lower
-       * node name, so the winner does not follow traversal order. */
-      const order = compareVersionText(pkg.version, byNode.get(current)!.version);
-      if (order > 0 || (order === 0 && nodeOf(pkg) < current)) {
-        top.set(pkg.packageName, nodeOf(pkg));
-      }
-    }
-  }
-  return top;
-}
-
 /** Two instances claiming one mount name: two versions of it, or — where the
  * version is the same — the conflict {@link packageConflict} explains. */
 function nameConflict(held: PackageFileSet, arrived: PackageFileSet): Error {
@@ -1039,185 +977,119 @@ function nameConflict(held: PackageFileSet, arrived: PackageFileSet): Error {
   return new ConflictError("packages", held.packageName, { provenance: held.origin, detail: held.packageId }, { provenance: arrived.origin, detail: arrived.packageId });
 }
 
-/** One planned position: the instance mounted there, and the private
- * overrides nested beneath it, keyed by the name they mount under. A shared
- * value — two positions with equal bindings share one plan. */
-interface PlannedNest {
-  pkg: PackageFileSet;
-  overrides: Map<string, PlannedNest>;
-}
+/** The directory, within node_modules, holding one directory per package
+ * instance of an install. A dot-directory, so never a resolvable package name. */
+export const INSTANCE_AREA = ".fabr";
+
+/** The longest instance directory name written in full; a longer one is cut
+ * and told apart by a hash of the whole. */
+const INSTANCE_NAME_LIMIT = 120;
 
 /**
- * Every instance mounted at its position in a normalized node_modules tree —
- * the single source of placement for the assemblers. Placement derived anywhere
- * else could let two mounts of the same graph disagree. A nested instance may
- * occupy several positions.
- *
- * A position is described by its **bindings** — the flat winners overridden by
- * each enclosing mount's divergences, kept canonical so equal bindings mean an
- * identical subtree. Revisiting a position already on the planning path is fatal
- * ({@link unrepresentableCycle}): the closure has no finite layout.
+ * The instance directory name of every node of an installation:
+ * `<name>@<version>` (a scoped name's `/` written `+`), plus a suffix telling
+ * the wirings apart where one package is installed wired several ways.
  */
-function mountWinners(
-  top: Map<string, string>,
-  { byNode, nodeOf }: CollectedPackages,
-  pathOf: (name: string) => string
-): FileSet[] {
-  const signature = (node: string, bindings: Map<string, string>): string =>
-    [node, ...[...bindings].sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, to]) => `${name}=${to}`)].join("\n");
-  /** Completed subtrees, and the positions on the current planning path (in
-   * order, so a repeat can name the cycle it closes). */
-  const planned = new Map<string, PlannedNest>();
-  const path: Array<{ id: string; key: string }> = [];
-
-  const plan = (pkg: PackageFileSet, bindings: Map<string, string>): PlannedNest => {
-    const key = signature(nodeOf(pkg), bindings);
-    const done = planned.get(key);
-    if (done) {
-      return done;
-    }
-    const repeated = path.findIndex(entry => entry.key === key);
-    if (repeated >= 0) {
-      throw unrepresentableCycle([...path.slice(repeated).map(entry => entry.id), pkg.packageId]);
-    }
-    path.push({ id: pkg.packageId, key });
-    const divergent = new Map<string, PackageFileSet>();
-    for (const dep of pkg.dependencies) {
-      if (dep instanceof PackageFileSet && (bindings.get(dep.packageName) ?? top.get(dep.packageName)) !== nodeOf(dep)) {
-        divergent.set(dep.packageName, dep);
-      }
-    }
-    /* Canonical: a divergence landing back on the flat winner binds nothing
-     * new (it still mounts here — it has to, to shadow an intervening
-     * override — but resolves to what the fallback already gives). */
-    const nested = new Map(bindings);
-    for (const [name, dep] of divergent) {
-      if (top.get(name) === nodeOf(dep)) {
-        nested.delete(name);
-      } else {
-        nested.set(name, nodeOf(dep));
-      }
-    }
-    const overrides = new Map<string, PlannedNest>();
-    for (const [name, dep] of divergent) {
-      overrides.set(name, plan(dep, nested));
-    }
-    path.pop();
-    const result: PlannedNest = { pkg, overrides };
-    planned.set(key, result);
-    return result;
-  };
-
-  const placed: FileSet[] = [];
-  const emit = (node: PlannedNest, atPath: string): void => {
-    placed.push(node.pkg.mountedAt(atPath));
-    for (const [name, override] of node.overrides) {
-      emit(override, `${atPath}/node_modules/${name}`);
-    }
-  };
-  for (const [name, node] of top) {
-    emit(plan(byNode.get(node)!, new Map()), pathOf(name));
+function instanceNames({ byNode }: CollectedPackages): Map<string, string> {
+  const wirings = new Map<string, number>();
+  for (const pkg of byNode.values()) {
+    wirings.set(pkg.packageId, (wirings.get(pkg.packageId) ?? 0) + 1);
   }
-  return placed;
+  const names = new Map<string, string>();
+  for (const [node, pkg] of byNode) {
+    const plain = (pkg.version === undefined ? pkg.packageName : `${pkg.packageName}@${pkg.version}`).replace(/\//g, "+");
+    const wired = wirings.get(pkg.packageId)! > 1 ? `${plain}_${hashString(node).slice(0, 12)}` : plain;
+    names.set(
+      node,
+      wired.length > INSTANCE_NAME_LIMIT
+        ? `${wired.slice(0, INSTANCE_NAME_LIMIT - 33)}_${hashString(wired).slice(0, 32)}`
+        : wired
+    );
+  }
+  return names;
+}
+
+/** A relative symlink at `from` naming `to`, both paths within one tree. */
+function linkEntry(from: string, to: string): [string, IFile] {
+  return [from, new SymlinkFile(posix.relative(posix.dirname(from), to))];
 }
 
 /**
- * Lay out the given (materialized) sources as node_modules contents: each
- * package — and, recursively, every package its edges reach — is mounted at
- * its delivered package name (which for an alias is the requirer's name for
- * it); anything that isn't a package passes through unchanged. Per name a
- * deterministic **hoist winner** (a top-level set's package always wins its
- * own name; otherwise the highest version) mounts flat at
- * `node_modules/<name>`, and every dependency edge binding elsewhere nests
- * privately under its requirer — {@link mountWinners}, deciding the layout
- * here, at the merge, from the complete edge bindings the deliveries carry.
- * The sources must have been materialized by the collection point before they
- * get here.
+ * Lay out the given (materialized) sources as node_modules contents, one
+ * directory per package instance — pnpm's layout:
+ *
+ * ```
+ * <name>                                    -> .fabr/<instance>/node_modules/<name>     each package in `sets`
+ * .fabr/<instance>/node_modules/<name>/…                                                the instance's files
+ * .fabr/<instance>/node_modules/<dep>       -> ../../<instance>/node_modules/<dep>      one per dependency edge
+ * .fabr/node_modules/<name>                 -> ../<instance>/node_modules/<name>        one per name in the closure
+ * ```
+ *
+ * An instance is a package wired one way ({@link nodeNaming}), so everything
+ * requiring it loads the one directory, and a `<dep>` is the name its requirer
+ * imports it by (an alias, for an aliased edge). Only the packages in `sets`
+ * are visible from the top; `.fabr/node_modules` is what a package finds when
+ * it imports a name it never declared — one instance per name, the packages in
+ * `sets` excluded, claimed nearest the top first and then by instance name.
+ * Anything in `sets` that isn't a package passes through unchanged. The
+ * sources must have been materialized by the collection point before they get
+ * here.
  */
 export function assembleNodeModules(sets: FileSet[]): FileSet {
   const collected = collectPackages(sets);
   assertOneContentPerId(collected);
-  const top = hoistWinners(collected, false);
-  const mounts = mountWinners(top, collected, name => name);
-  return FileSet.unionAll(...mounts, ...collected.loose);
-}
+  const { roots, byNode, nodeOf } = collected;
+  const instance = instanceNames(collected);
+  const homeOf = (pkg: PackageFileSet, name: string): string => `${INSTANCE_AREA}/${instance.get(nodeOf(pkg))!}/node_modules/${name}`;
+  const dependenciesOf = (pkg: PackageFileSet): PackageFileSet[] =>
+    pkg.dependencies
+      .filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)
+      .sort((a, b) => compareText(a.packageName, b.packageName));
 
-/** Compare two package version strings, semver where parseable (a locally
- * built package may carry none — sorts lowest; unparseable falls back to
- * string comparison). Only a tiebreak for the hoist spot: correctness rides on
- * nesting, not on which version wins the flat mount. */
-function compareVersionText(a: string | undefined, b: string | undefined): number {
-  if (a === undefined || b === undefined) {
-    if (a === b) {
-      return 0;
+  const top = new Map<string, PackageFileSet>();
+  for (const root of roots) {
+    const held = top.get(root.packageName);
+    if (held !== undefined && nodeOf(held) !== nodeOf(root)) {
+      throw nameConflict(held, root);
     }
-    return a === undefined ? -1 : 1;
+    top.set(root.packageName, root);
   }
-  try {
-    return compareVersions(parseVersion(a), parseVersion(b));
-  } catch {
-    if (a === b) {
-      return 0;
-    }
-    return a < b ? -1 : 1;
-  }
-}
 
-/** The install's own hidden area (a dot-dir, so never itself a resolvable
- * package name) holding the full closure; each package's real files live at
- * `<SCOPED_AREA>/<name>`, so they resolve each other as siblings. */
-const SCOPED_AREA = ".pkgs/node_modules";
-
-/**
- * Lay out the given DIRECT sources as node_modules, but scoped so the consuming
- * sources see only the direct deps — not the transitive closure. The full
- * closure's real files go into the install's own hidden area
- * (`.pkgs/node_modules/<name>` per hoist winner, so they resolve each other as
- * siblings); each *direct* package is then exposed at the top of node_modules
- * as a symlink into it. Node/tsc
- * resolve the symlink to its real store path (`preserveSymlinks: false`), so a
- * direct dep resolves *its* imports from there (the whole closure), while a
- * source importing an undeclared transitive dep finds nothing at the top level
- * and fails. A delivery carrying a sanctioned second version of a package (a
- * `?` alternate's fork) nests it under its requirers within that area
- * (`<area>/<requirer>/node_modules/<name>`) — decided by the shared
- * {@link mountWinners} planner from the delivered edge bindings, exactly as
- * the flat layout decides its nests — so node resolution finds the nested
- * copy from the requirer and the flat winner from everywhere else.
- * Non-package sources (loose files) pass through at the top level, as
- * a source may reference them directly. Requires the sources to be materialized.
- */
-export function assembleScopedNodeModules(directSets: FileSet[]): FileSet {
-  const collected = collectPackages(directSets);
-  assertOneContentPerId(collected);
-  /* Strict: override instances nest and never take a flat slot; two
-   * non-override instances disagreeing on a name conflict in hoistWinners
-   * (every collected instance is otherwise mounted — winners flat, overrides
-   * under the parents that list them). */
-  const top = hoistWinners(collected, true);
-  const mounts = mountWinners(top, collected, name => `${SCOPED_AREA}/${name}`);
-  const topLevel: FileSet[] = [];
-  const linked = new Set<string>();
-  for (const set of directSets) {
-    if (set instanceof PackageFileSet) {
-      if (!linked.has(set.packageName)) {
-        linked.add(set.packageName);
-        topLevel.push(new FileSet(new Map([[set.packageName, scopedAreaLink(set.packageName)]])));
+  const links = new Map<string, IFile>();
+  const mounts: FileSet[] = [];
+  for (const pkg of byNode.values()) {
+    mounts.push(pkg.mountedAt(homeOf(pkg, pkg.packageName)));
+    for (const dep of dependenciesOf(pkg)) {
+      if (dep.packageName !== pkg.packageName) {
+        links.set(...linkEntry(homeOf(pkg, dep.packageName), homeOf(dep, dep.packageName)));
       }
-    } else {
-      topLevel.push(set);
     }
   }
-  return FileSet.unionAll(...mounts, ...topLevel);
-}
+  for (const [name, root] of top) {
+    links.set(...linkEntry(name, homeOf(root, name)));
+  }
 
-/** A relative symlink from `node_modules/<name>` to the package's copy in the
- * install's own scoped area. The target is resolved from the link's own
- * directory, so a scoped name (`@x/y`, one directory deep) needs one `../` to
- * climb back to node_modules. */
-function scopedAreaLink(packageName: string): SymlinkFile {
-  const depth = (packageName.match(/\//g) ?? []).length;
-  return new SymlinkFile(`${"../".repeat(depth)}${SCOPED_AREA}/${packageName}`);
+  /* Breadth-first from the top, each level in instance-name order. */
+  const hoisted = new Set(top.keys());
+  const visited = new Set<string>();
+  let level = [...top.values()];
+  while (level.length > 0) {
+    const next: PackageFileSet[] = [];
+    const ordered = level
+      .filter(pkg => !visited.has(nodeOf(pkg)) && visited.add(nodeOf(pkg)))
+      .sort((a, b) => compareText(instance.get(nodeOf(a))!, instance.get(nodeOf(b))!));
+    for (const pkg of ordered) {
+      for (const dep of dependenciesOf(pkg)) {
+        if (!hoisted.has(dep.packageName)) {
+          hoisted.add(dep.packageName);
+          links.set(...linkEntry(`${INSTANCE_AREA}/node_modules/${dep.packageName}`, homeOf(dep, dep.packageName)));
+        }
+        next.push(dep);
+      }
+    }
+    level = next;
+  }
+  return FileSet.unionAll(...mounts, new FileSet(links), ...collected.loose);
 }
 
 /**

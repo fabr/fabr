@@ -52,12 +52,24 @@ const MINIMUM_NODE = [22, 15] as const;
 const fromRunner = createRequire(__filename);
 
 /**
- * Load one of jest's libraries from the runner's own mount. Typed as `unknown`
- * on purpose: these are third-party modules fabr has no type information for,
- * and each caller narrows to the small surface it actually uses.
+ * Load one of the runner's own declared dependencies. Typed as `unknown` on
+ * purpose: these are third-party modules fabr has no type information for, and
+ * each caller narrows to the small surface it actually uses.
+ */
+export function runnerDependency(name: string): unknown {
+  return fromRunner(name);
+}
+
+let fromJest: NodeJS.Require | undefined;
+
+/**
+ * Load one of jest's libraries — a package of the declared `jest`'s closure,
+ * resolved as `jest` itself would resolve it, since the runner declares only
+ * `jest`. `unknown` for the reason {@link runnerDependency} gives.
  */
 export function jestLibrary(name: string): unknown {
-  return fromRunner(name);
+  fromJest ??= createRequire(fromRunner.resolve("jest/package.json"));
+  return fromJest(name);
 }
 
 /**

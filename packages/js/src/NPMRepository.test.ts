@@ -47,6 +47,7 @@ import {
   TargetContext,
   MaterializeOptions,
   RepositoryRef,
+  SymlinkFile,
   ResolutionContext,
   materializeAll,
   conflictError,
@@ -416,7 +417,7 @@ async function rejection(fn: () => unknown): Promise<Error> {
 }
 
 describe("cyclic dependency closures through resolve + materialize", () => {
-  it("delivers a mutual-dependency pair as one shared cyclic graph, and it lays out flat", async () => {
+  it("delivers a mutual-dependency pair as one shared cyclic graph, and it lays out", async () => {
     /* Ordinary npm: two packages requiring each other at one version. The
      * delivered graph carries the cycle explicitly (complete edge bindings),
      * closed over the SAME instances — the production path of everything the
@@ -442,15 +443,21 @@ describe("cyclic dependency closures through resolve + materialize", () => {
     /* The edge back closes on the same instance — a real cycle, not a copy. */
     expect(pong.dependencies[0]).to.equal(ping);
 
-    /* Exactly the reachable members and nothing else, laid out flat. */
+    /* Exactly the reachable members and nothing else: a directory each, a
+     * link per edge, the given package at the top and the other findable
+     * undeclared. */
     const files = new Map(assembleNodeModules([ping]));
     expect([...files.keys()].sort()).to.deep.equal([
-      "ping/index.js",
-      "ping/package.json",
-      "ping/ping.marker",
-      "pong/index.js",
-      "pong/package.json",
-      "pong/pong.marker",
+      ".fabr/node_modules/pong",
+      ".fabr/ping@1.0.0/node_modules/ping/index.js",
+      ".fabr/ping@1.0.0/node_modules/ping/package.json",
+      ".fabr/ping@1.0.0/node_modules/ping/ping.marker",
+      ".fabr/ping@1.0.0/node_modules/pong",
+      ".fabr/pong@1.0.0/node_modules/ping",
+      ".fabr/pong@1.0.0/node_modules/pong/index.js",
+      ".fabr/pong@1.0.0/node_modules/pong/package.json",
+      ".fabr/pong@1.0.0/node_modules/pong/pong.marker",
+      "ping",
     ]);
   });
 });
@@ -1226,12 +1233,11 @@ describe("override markers", () => {
     const a = delivered[0] as PackageFileSet;
     const nested = a.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
     expect(nested.map(dep => `${dep.packageName}@${dep.version}`)).to.contain("C@1.5.0");
-    /* And a layout can represent it: the winner takes the flat slot, the
-     * sanctioned fork nests under its requirer. */
-    const assembled = assembleNodeModules(delivered.filter(set => [...set].length > 0));
-    const names = new Set([...assembled].map(([name]) => name));
-    expect(names.has("C/package.json")).to.equal(true);
-    expect(names.has("A/node_modules/C/package.json")).to.equal(true);
+    /* And a layout holds both, each linked beside the requirer whose edge
+     * binds it. */
+    const assembled = new Map(assembleNodeModules(delivered.filter(set => [...set].length > 0)));
+    expect((assembled.get(".fabr/B@1.2.0/node_modules/C") as SymlinkFile).target).to.equal("../../C@2.5.0/node_modules/C");
+    expect((assembled.get(".fabr/A@1.1.0/node_modules/C") as SymlinkFile).target).to.equal("../../C@1.5.0/node_modules/C");
   });
 
   it("an exact unmarked pin of the principal completes the sanction too (the catalog form)", async () => {
@@ -1262,19 +1268,18 @@ describe("override markers", () => {
     );
     const fork = packages.find(pkg => pkg.packageId === "C@1.5.0");
     expect(fork?.isNestedOverride).to.equal(true);
-    /* Reached only through a built package's carried deps — nothing here is a
-     * root of the assembly, so nothing gets a flat slot by being named. The
-     * fork must nest under its carrier and the principal take the flat slot;
-     * unflagged, the two read as two deliveries disagreeing and conflict. */
+    /* Reached only through a built package's carried deps: the carrier's own
+     * edge binds the fork, and the principal sits in the closure beside it. */
     const carrier = new PackageFileSet(
       new FileSet(new Map([["package.json", MemoryFile.from("{}")]])),
       "P",
       "1.0.0",
       packages
     );
-    const names = new Set([...assembleNodeModules([carrier])].map(([name]) => name));
-    expect(names.has("C/v2.5.0.marker")).to.equal(true);
-    expect(names.has("P/node_modules/C/v1.5.0.marker")).to.equal(true);
+    const assembled = new Map(assembleNodeModules([carrier]));
+    expect(assembled.has(".fabr/C@2.5.0/node_modules/C/v2.5.0.marker")).to.equal(true);
+    expect(assembled.has(".fabr/C@1.5.0/node_modules/C/v1.5.0.marker")).to.equal(true);
+    expect((assembled.get(".fabr/P@1.0.0/node_modules/C") as SymlinkFile).target).to.equal("../../C@1.5.0/node_modules/C");
   });
 
   it("a lone '?' is an incomplete sanction — every shipping version must be written", async () => {
@@ -1397,10 +1402,10 @@ describe("override markers", () => {
     expect([...delivered[1]].length).to.equal(0);
     expect([...delivered[2]].length).to.equal(0);
     const assembled = assembleNodeModules(delivered.filter(set => [...set].length > 0));
-    const names = new Set([...assembled].map(([name]) => name));
-    /* Mounted as an ordinary member of P's closure — nothing of its own was
-     * delivered for it to be mounted FROM. */
-    expect(names.has("T/package.json")).to.equal(true);
+    const names = [...assembled].map(([name]) => name);
+    /* Installed as an ordinary member of P's closure — nothing of its own was
+     * delivered for it to be installed FROM. */
+    expect(names.some(name => /^\.fabr\/T@[^/]+\/node_modules\/T\/package\.json$/.test(name))).to.equal(true);
   });
 
   it("suggests a verified single-version pin where a disjunctive range admits one", async () => {
@@ -1451,7 +1456,7 @@ describe("merged layout across a batch", () => {
   const refsFor = (repo: NPMRepository, names: string[]): RepositoryRef[] =>
     names.map(name => new RepositoryRef(repo, parseName(name)).withRepositoryName("@npm"));
 
-  it("nests a member's private copy the merged layout needs, not only its own delivery's", async () => {
+  it("keeps a member on the version its edge binds across a merge with a sibling delivery", async () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
     const delivered = await toPromise(
       drive(repo, refsFor(repo, ["jsdom:1.0.0", "md:1.0.0", "entities:4.0.0?", "entities:6.0.0?"]))
@@ -1465,10 +1470,15 @@ describe("merged layout across a batch", () => {
     );
     expect(parse5?.dependencies.map(dep => (dep as PackageFileSet).packageId)).to.deep.equal(["entities@4.0.0"]);
     /* And the consumer's one node_modules puts each requirer on the version it
-     * asked for: the batch winner flat, the other nested under parse5. */
-    const names = new Set([...assembleNodeModules(packages)].map(([name]) => name));
-    expect(names.has("entities/v6.marker")).to.equal(true);
-    expect(names.has("parse5/node_modules/entities/v4.marker")).to.equal(true);
+     * asked for. */
+    const assembled = new Map(assembleNodeModules(packages));
+    expect((assembled.get(".fabr/md@1.0.0/node_modules/entities") as SymlinkFile).target).to.equal(
+      "../../entities@6.0.0/node_modules/entities"
+    );
+    expect((assembled.get(".fabr/parse5@1.0.0/node_modules/entities") as SymlinkFile).target).to.equal(
+      "../../entities@4.0.0/node_modules/entities"
+    );
+    expect(assembled.has(".fabr/entities@4.0.0/node_modules/entities/v4.marker")).to.equal(true);
   });
 });
 
@@ -1495,10 +1505,11 @@ describe("package rename", () => {
     expect((delivered as PackageFileSet).packageName).to.equal("stream");
     /* The mount follows the delivered identity, so a source importing 'stream'
      * resolves the shim — while its own closure keeps its real names. */
-    const names = new Set([...assembleNodeModules([delivered as FileSet])].map(([name]) => name));
-    expect(names.has("stream/package.json")).to.equal(true);
-    expect(names.has("readable-stream/package.json")).to.equal(true);
-    expect(names.has("stream-browserify/package.json")).to.equal(false);
+    const names = [...assembleNodeModules([delivered as FileSet])].map(([name]) => name);
+    expect(names).to.include("stream");
+    expect(names.some(name => /\/node_modules\/stream\/package\.json$/.test(name))).to.equal(true);
+    expect(names.some(name => /\/node_modules\/readable-stream\/package\.json$/.test(name))).to.equal(true);
+    expect(names.some(name => name.includes("stream-browserify"))).to.equal(false);
   });
 
   it("is a stamp, not a second requirement: one resolution, one fetch", async () => {

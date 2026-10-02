@@ -196,12 +196,20 @@ export interface IDependencyDecls {
  * listed in both is optional (os/cpu-gated, dropped if the target doesn't
  * match) — @parcel/watcher lists its per-platform native binaries in both. An
  * `optional: true` peer ("if present, must match") is never auto-installed,
- * npm parity; devDependencies stay ignored.
+ * and one named only in `peerDependenciesMeta` is read as `*` (Yarn's and
+ * pnpm's reading; npm ignores it); devDependencies stay ignored.
  */
 export function declaredDependencies(manifest: IDependencyDecls): { required: Requirement[]; optional: Requirement[] } {
   const optionalDeps = dependencyBlock(manifest.optionalDependencies);
   const optionalPeerNames = optionalPeers(manifest.peerDependenciesMeta);
-  const peers = [...dependencyBlock(manifest.peerDependencies)]
+  const dependencies = dependencyBlock(manifest.dependencies);
+  const declaredPeers = dependencyBlock(manifest.peerDependencies);
+  /* An optional peer named only in `peerDependenciesMeta` is one with no
+   * version bound, unless the manifest declares the name as a dependency. */
+  const unboundPeers = [...optionalPeerNames]
+    .filter(dep => !declaredPeers.has(dep) && !dependencies.has(dep))
+    .map(dep => [dep, "*"] as const);
+  const peers = [...declaredPeers, ...unboundPeers]
     .filter(([dep]) => !optionalDeps.has(dep))
     /* An `optional: true` peer is never installed, but it is still a
      * requirement: if the consumer provides the package, the requirer has to be
@@ -213,7 +221,7 @@ export function declaredDependencies(manifest: IDependencyDecls): { required: Re
       provided: optionalPeerNames.has(dep) ? ("optional" as const) : ("expected" as const),
     }));
   const required = [
-    ...[...dependencyBlock(manifest.dependencies)]
+    ...[...dependencies]
       .filter(([dep]) => !optionalDeps.has(dep))
       .map(([dep, spec]) => dependencyRequirement(dep, spec)),
     ...peers,

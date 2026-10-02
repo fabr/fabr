@@ -19,7 +19,14 @@
 
 import { expect } from "chai";
 import { FileSet, MemoryFile, Name, PropertyMap, Requirement } from "@fabr-build/core";
-import { createPackageJson, dependencyBlock, dependencyRequirement, optionalPeers, requirementSpec } from "./PackageJson";
+import {
+  createPackageJson,
+  declaredDependencies,
+  dependencyBlock,
+  dependencyRequirement,
+  optionalPeers,
+  requirementSpec,
+} from "./PackageJson";
 import { JSTarget } from "./JSPackage";
 import { cssImportRewrites } from "./CSSCompile";
 
@@ -503,5 +510,24 @@ describe("optionalPeers", () => {
     expect([...optionalPeers({ react: "optional", chai: null })]).to.deep.equal([]);
     expect([...optionalPeers(["react"])]).to.deep.equal([]);
     expect([...optionalPeers(undefined)]).to.deep.equal([]);
+  });
+});
+
+describe("declaredDependencies", () => {
+  it("reads an optional peer named only in peerDependenciesMeta as an unbound optional peer", () => {
+    const { required } = declaredDependencies({ peerDependenciesMeta: { pg: { optional: true }, mysql2: {} } });
+    expect(required.map(req => [req.pkg, req.constraint, req.provided])).to.deep.equal([["pg", "*", "optional"]]);
+  });
+
+  it("keeps a declared range, and a dependency, over a peerDependenciesMeta entry of the same name", () => {
+    const { required } = declaredDependencies({
+      dependencies: { debug: "^4.0.0" },
+      peerDependencies: { pg: ">=8.0" },
+      peerDependenciesMeta: { pg: { optional: true }, debug: { optional: true } },
+    });
+    expect(required.map(req => [req.pkg, req.constraint, req.provided])).to.deep.equal([
+      ["debug", "^4.0.0", undefined],
+      ["pg", ">=8.0", "optional"],
+    ]);
   });
 });
