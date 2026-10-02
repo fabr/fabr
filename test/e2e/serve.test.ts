@@ -84,6 +84,36 @@ describe("e2e: serve target under fabr run -w", () => {
     }
   });
 
+  it("keeps the one running server across a build-file edit", async () => {
+    /* A build file edited under watch loads a new model, and the run is
+     * evaluated again against it. The program is the run's, not the model's:
+     * the new content is synced into the server already running, rather than a
+     * second server being launched beside it. */
+    const session = startFabrWatch(
+      {
+        "PROJECT.fabr": PROJECT,
+        "src/server.sh": SERVER("SERVER V1"),
+        "content/data.txt": "one",
+        "other/data.txt": "three",
+      },
+      ["run", "-w", "site"]
+    );
+    try {
+      await session.waitFor("SERVER V1 up", { timeoutMs: 60000 });
+      await session.waitFor("CONTENT [one]", { timeoutMs: 60000 });
+      await session.waitFor("Watching for changes", { timeoutMs: 60000 });
+
+      session.write("PROJECT.fabr", PROJECT.replace("files = content:**;", "files = other:**;"));
+      await session.waitFor("Updating site content", { timeoutMs: 60000 });
+      await session.waitFor("CONTENT [three]", { timeoutMs: 60000 });
+      expect(session.stderr).to.not.match(/Restarting/);
+      expect((session.stderr.match(/SERVER V1 up/g) || []).length).to.equal(1);
+    } finally {
+      const code = await session.stop();
+      expect(code).to.equal(0);
+    }
+  });
+
   it("reports the cycle's build against the served target, not 'Already up to date'", async () => {
     /* The docs_serve shape: `files` come through a generate dependency, so the
      * rebuild work happens beneath a *dependency* of the requested target. The

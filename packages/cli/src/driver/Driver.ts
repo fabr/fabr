@@ -188,8 +188,10 @@ export function runFabr(options: Options): Promise<void> {
       );
     case "test":
       return runWith(options, (model, execution, site) => runTest(model, options, execution, site, options.targets), watch);
-    case "run":
-      return runWith(options, (model, execution, site) => runProgram(model, options, execution, site, watch), watch);
+    case "run": {
+      const supervisors = new Supervisors();
+      return runWith(options, (model, execution, site) => runProgram(model, options, execution, site, watch, supervisors), watch);
+    }
     case "shell":
       return runWith(options, (model, execution) => shellTarget(model, options, execution));
     case "sync":
@@ -203,9 +205,35 @@ export function runFabr(options: Options): Promise<void> {
     case "list-all":
       return runWith(options, model => listAll(model));
     default: /* build, or no command at all */
-      return options.deferred
-        ? runWith(options, (model, execution, site) => runInferred(model, options, execution, site, options.mode === Mode.Watch), watch)
-        : runWith(options, (model, execution) => runBuild(model, options, execution, options.targets), watch);
+      if (options.deferred) {
+        const supervisors = new Supervisors();
+        return runWith(
+          options,
+          (model, execution, site) => runInferred(model, options, execution, site, options.mode === Mode.Watch, supervisors),
+          watch
+        );
+      }
+      return runWith(options, (model, execution) => runBuild(model, options, execution, options.targets), watch);
+  }
+}
+
+/**
+ * A watched run's supervisors, by target. They belong to the RUN, not to a
+ * model: an operation is evaluated again for every model load (a build file
+ * edited under watch), and a supervisor made per evaluation would know nothing
+ * of the program the previous one launched — a second copy would start beside
+ * the first instead of replacing it.
+ */
+class Supervisors {
+  private readonly byTarget = new Map<string, RunSupervisor>();
+
+  public of(execution: ExecutionContext, target: string, args: string[]): RunSupervisor {
+    let supervisor = this.byTarget.get(target);
+    if (supervisor === undefined) {
+      supervisor = new RunSupervisor(execution.buildCache, target, args, execution.log);
+      this.byTarget.set(target, supervisor);
+    }
+    return supervisor;
   }
 }
 
@@ -317,7 +345,8 @@ function runInferred(
   options: Options,
   execution: ExecutionContext,
   site: IInvocationSite,
-  watch: boolean
+  watch: boolean,
+  supervisors: Supervisors
 ): Computable<void | Takeover> {
   const plan = completeCommandLine(options, name => operationsOf(model, name));
   const groups: Computable<void>[] = [];
@@ -331,7 +360,8 @@ function runInferred(
   if (!run) {
     return Computable.forAll(groups, () => undefined);
   }
-  const program = (): Computable<void | Takeover> => runProgram(model, options, execution, site, watch, run.target, run.args);
+  const program = (): Computable<void | Takeover> =>
+    runProgram(model, options, execution, site, watch, supervisors, run.target, run.args);
   if (watch) {
     return Computable.forAll([...groups, program()], () => undefined);
   }
@@ -364,12 +394,13 @@ function runProgram(
   execution: ExecutionContext,
   site: IInvocationSite,
   watch: boolean,
+  supervisors: Supervisors,
   target: string = options.targets[0],
   args: string[] = options.runArgs ?? []
 ): Computable<void | Takeover> {
   const config = configFor(model, options, execution, "run");
   markForced(model, options, execution, [target]);
-  const supervisor = watch ? new RunSupervisor(execution.buildCache, target, args, execution.log) : undefined;
+  const supervisor = watch ? supervisors.of(execution, target, args) : undefined;
   /* The name IS the program (`fabr run @npm:http-server:14.1.1`), so its closure
    * is a sealed install — the same judgment a rule's `tool` property makes. */
   return config.resolveName(options.commandLine.refFor(target, site), undefined, PERMISSIVE_RESOLUTION).then<void | Takeover>(sources => {
