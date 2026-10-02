@@ -20,6 +20,7 @@
 import { createGzip } from "zlib";
 import * as tar from "tar-stream";
 import { Computable } from "../core/Computable";
+import { mapComputable } from "./Functional";
 import { FileSet, IFile } from "../core/FileSet";
 import { SymlinkFile } from "../core/SymlinkFile";
 
@@ -89,19 +90,16 @@ export function packToTarball(files: FileSet, options: PackOptions = {}): Comput
    * a hardlink to it, so identical content is packed once. Symlinks are excluded
    * (their "content" is the target text); the sorted order keeps this stable. */
   const firstByHash = new Map<string, string>();
-  return Computable.forAll(
-    entries.map(([name, file]) => {
-      if (hardlinks && !(file instanceof SymlinkFile)) {
-        const linkname = firstByHash.get(file.hash);
-        if (linkname !== undefined) {
-          return Computable.resolve<PackEntry>({ kind: "hardlink", linkname });
-        }
-        firstByHash.set(file.hash, name);
+  return mapComputable(entries, ([name, file]): PackEntry | Computable<PackEntry> => {
+    if (hardlinks && !(file instanceof SymlinkFile)) {
+      const linkname = firstByHash.get(file.hash);
+      if (linkname !== undefined) {
+        return { kind: "hardlink", linkname };
       }
-      return entryContent(file);
-    }),
-    (...contents: PackEntry[]) => contents
-  ).then(
+      firstByHash.set(file.hash, name);
+    }
+    return entryContent(file);
+  }).then(
     contents =>
       Computable.from<Buffer>((resolve, reject) => {
         const pack = tar.pack();

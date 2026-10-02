@@ -24,6 +24,7 @@ import * as path from "path";
 import * as tar from "tar-stream";
 import type { IOutputHandle } from "./Execute";
 import { Computable } from "../core/Computable";
+import { mapComputable } from "./Functional";
 import { FileSet, IFile } from "../core/FileSet";
 import { SymlinkFile } from "../core/SymlinkFile";
 import { MIME_GZIP, MIME_TAR, MIME_XZ, MIME_ZIP, SNIFF_LENGTH, sniffMime } from "./Mime";
@@ -152,7 +153,7 @@ export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): 
           });
           extract.on("finish", () => {
             resolve(
-              Computable.forAll(files, (...f) => {
+              mapComputable(files, file => file).then(f => {
                 const fileMap = new Map<string, IFile>();
                 f.forEach(([name, file]) => fileMap.set(name, file));
                 return new FileSet(fileMap);

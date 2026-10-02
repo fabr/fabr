@@ -17,6 +17,8 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { Computable, ComputableSource } from "../core/Computable";
+
 /**
  * Map each item and keep only the defined results — `map` then drop `undefined`
  * in one pass. The typed primitive for the map-and-filter idiom, so the result
@@ -55,4 +57,78 @@ export function mapObject<K extends string | symbol | number, V, U>(input: Recor
  */
 export function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** How many of {@link mapComputable}'s operations run at once by default. */
+export const DEFAULT_MAX_CONCURRENCY = 16;
+
+/**
+ * Run a one-shot operation on each of `items`, at most `maxConcurrency` at a
+ * time, yielding the results in `items` order. `items` is iterated as the
+ * operations start: `fn` is called when an item's turn comes, so an operation
+ * that starts on construction starts then; a source it returns is consumed
+ * once, and a later change to it is not followed.
+ *
+ * A failure stops further items from starting; once the operations already in
+ * flight have settled, the result rejects with the first error.
+ *
+ * Any list whose length follows the data (files, archive members) goes through
+ * this rather than {@link Computable.forAll}, which takes one argument per
+ * input.
+ */
+export function mapComputable<T, U>(
+  items: Iterable<T>,
+  fn: (item: T, index: number) => U | ComputableSource<U>,
+  maxConcurrency = DEFAULT_MAX_CONCURRENCY
+): Computable<U[]> {
+  return Computable.from<U[]>((resolve, reject) => {
+    const results: U[] = [];
+    const iterator = items[Symbol.iterator]();
+    let inFlight = 0;
+    let stopped = false;
+    let failure: Error | undefined;
+    let pumping = false;
+    /* Start items up to the cap, and settle once none remain and none are in
+     * flight. An operation that completes as it starts calls back in here while
+     * the loop is still running, which the guard leaves to that loop. */
+    function pump(): void {
+      if (pumping) {
+        return;
+      }
+      pumping = true;
+      while (!stopped && inFlight < maxConcurrency) {
+        const step = iterator.next();
+        if (step.done) {
+          stopped = true;
+          break;
+        }
+        const index = results.length++;
+        inFlight++;
+        Computable.resolve(step.value)
+          .then(item => fn(item, index))
+          .once(
+            value => {
+              results[index] = value;
+              inFlight--;
+              pump();
+            },
+            err => {
+              failure ??= err;
+              stopped = true;
+              inFlight--;
+              pump();
+            }
+          );
+      }
+      pumping = false;
+      if (stopped && inFlight === 0) {
+        if (failure === undefined) {
+          resolve(results);
+        } else {
+          reject(failure);
+        }
+      }
+    }
+    pump();
+  });
 }

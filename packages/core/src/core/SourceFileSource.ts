@@ -29,6 +29,7 @@ import { Name } from "./Name";
 import { WatchController } from "./WatchController";
 import { IResolvedWriteBack, IWriteBackObserver, writeBackFile } from "./WriteBack";
 import { sniffMime } from "../support/Mime";
+import { mapComputable } from "../support/Functional";
 
 /** Minimum gap between index writes under watch — an edit-heavy session
  * rewrites the record at most this often; the tail is best-effort (a dropped
@@ -122,10 +123,7 @@ export class SourceFileSource extends FSFileSource {
     /* Resolved once: `root` may be a symlinked form (macOS /var -> /private/var)
      * and containment is judged against the real path. */
     const realRoot = fs.realpathSync(path.resolve(this.root));
-    return Computable.forAll(
-      writes.map(write => this.writeOne(write, realRoot)),
-      (...results) => results
-    );
+    return mapComputable(writes, write => this.writeOne(write, realRoot));
   }
 
   private writeOne(write: IResolvedWriteBack, realRoot: string): Computable<string> {

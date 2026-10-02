@@ -24,6 +24,7 @@ import {
   BuildModel,
   buildOperation,
   Computable,
+  mapComputable,
   ComputableHandle,
   declPosn,
   Diagnostic,
@@ -765,7 +766,9 @@ function catTarget(options: Options, results: SourceRef[][]): Computable<void> {
       throw matchedNoFiles(options.targets[i]);
     }
     for (const set of sets) {
-      files.push(...[...set].sort(([a], [b]) => a.localeCompare(b)).map(([, file]) => file));
+      for (const [, file] of [...set].sort(([a], [b]) => a.localeCompare(b))) {
+        files.push(file);
+      }
     }
   });
   /* Stream each file's contents to stdout in that order, one at a time — reading
@@ -773,10 +776,7 @@ function catTarget(options: Options, results: SourceRef[][]): Computable<void> {
    * in memory at once (`cat` may dump large artifacts). The write callback fires
    * once the chunk has been handled by the stream, so resolving from it honors a
    * slow consumer's backpressure rather than queueing everything ahead. */
-  return files.reduce<Computable<void>>(
-    (prev, file) => prev.then(() => file.getBuffer()).then(buffer => writeStdout(Uint8Array.from(buffer))),
-    Computable.resolve(undefined)
-  );
+  return mapComputable(files, file => file.getBuffer().then(buffer => writeStdout(Uint8Array.from(buffer))), 1).then(() => undefined);
 }
 
 /** Write `bytes` to stdout, resolving from the write callback so a slow (or
@@ -1202,15 +1202,10 @@ function renderListing(files: FileSet, longListing: boolean): Computable<string[
   if (!longListing) {
     return Computable.resolve(entries.map(([name]) => name));
   }
-  return Computable.forAll(
-    entries.map(([, file]) => file.getBuffer()),
-    (...buffers) => {
-      const width = Math.max(1, ...buffers.map(buffer => String(buffer.byteLength).length));
-      return entries.map(
-        ([name, file], i) => `${file.hash.substring(0, 12)} ${String(buffers[i].byteLength).padStart(width)} ${name}`
-      );
-    }
-  );
+  return mapComputable(entries, ([, file]) => file.getBuffer().then(buffer => buffer.byteLength)).then(sizes => {
+    const width = sizes.reduce((widest, size) => Math.max(widest, String(size).length), 1);
+    return entries.map(([name, file], i) => `${file.hash.substring(0, 12)} ${String(sizes[i]).padStart(width)} ${name}`);
+  });
 }
 
 /**

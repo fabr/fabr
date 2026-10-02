@@ -30,6 +30,7 @@ import {
   SubTargetInputs,
   CANONICAL,
   Computable,
+  mapComputable,
   ConflictError,
   EMPTY_FILESET,
   FileSet,
@@ -960,23 +961,19 @@ export function withBinShebangs(contents: FileSet): Computable<FileSet> {
   if (binPaths.length === 0) {
     return Computable.resolve(contents);
   }
-  return Computable.forAll(
-    binPaths.map(path =>
-      files
-        .get(path)!
-        .readString()
-        .then(text => [path, text] as const)
-    ),
-    (...loaded) => {
-      for (const [path, text] of loaded) {
+  return mapComputable(binPaths, path =>
+    files
+      .get(path)!
+      .readString()
+      .then(text => {
         /* A bundled shell script carries its own `#!`; only a bare bin needs ours. */
         if (!text.startsWith("#!")) {
           files.set(path, MemoryFile.from(NODE_SHEBANG + text));
         }
-      }
-      /* Names are unchanged — only the shebang'd bins' identities differ. */
-      return new FileSet(files, undefined, CANONICAL);
-    }
+      })
+  ).then(
+    /* Names are unchanged — only the shebang'd bins' identities differ. */
+    () => new FileSet(files, undefined, CANONICAL)
   );
 }
 

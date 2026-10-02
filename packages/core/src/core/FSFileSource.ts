@@ -23,6 +23,7 @@ import * as path from "node:path";
 import { Name } from "./Name";
 
 import { Computable, ComputableSource, ComputableState } from "./Computable";
+import { mapComputable } from "../support/Functional";
 import { DEFAULT_FILE_MODE, FileSet, IFile, FileSource } from "./FileSet";
 import { hashFile, isDirectoryError, isNotFound, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
 import { toError } from "./Errors";
@@ -815,13 +816,10 @@ function walk(root: string, dir: string, project: Projector): Computable<string[
 /** Keep the symlinks that resolve to regular files (a dangling link, or one to a
  * directory, is not a file and drops out — exactly as `ingest` would judge it). */
 function resolveLinks(root: string, names: string[], links: string[]): Computable<string[]> {
-  return Computable.forAll(
-    links.map(rel =>
-      stat(path.resolve(root, rel)).then(
-        fileStat => (fileStat.isFile() ? rel : undefined),
-        () => undefined
-      )
-    ),
-    (...resolved: (string | undefined)[]) => [...names, ...resolved.filter((rel): rel is string => rel !== undefined)]
-  );
+  return mapComputable(links, rel =>
+    stat(path.resolve(root, rel)).then(
+      fileStat => (fileStat.isFile() ? rel : undefined),
+      () => undefined
+    )
+  ).then(resolved => names.concat(resolved.filter((rel): rel is string => rel !== undefined)));
 }

@@ -78,7 +78,7 @@ import {
 } from "./Manifest";
 import { PackageFileSet } from "./PackageFileSet";
 import { RepositoryRef } from "./Repository";
-import { mapObject, select } from "../support/Functional";
+import { mapComputable, mapObject, select } from "../support/Functional";
 import { registerTempTree, removeTempTree, writeFileSet } from "./Staging";
 import { CacheLink, SymlinkFile } from "./SymlinkFile";
 import { computableFind } from "./WorkList";
@@ -1438,21 +1438,19 @@ export class BuildCache {
   private sweepSupersededGenerations(dir: string, keep: string): Computable<void> {
     return readdir(dir).then(
       entries =>
-        Computable.forAll(
-          entries
-            .filter(entry => entry.name !== STATE_CURRENT_LINK && entry.name !== keep)
-            .map(entry => {
-              const target = path.join(dir, entry.name);
-              if (entry.isSymbolicLink()) {
-                return deleteFile(target).catch(() => undefined);
-              }
-              return stat(target).then(
-                st => (this.pastWindow(st.mtimeMs, 0) ? deleteTree(target).catch(() => undefined) : Computable.resolve(undefined)),
-                () => undefined
-              );
-            }),
-          () => undefined
-        ),
+        mapComputable(
+          entries.filter(entry => entry.name !== STATE_CURRENT_LINK && entry.name !== keep),
+          entry => {
+            const target = path.join(dir, entry.name);
+            if (entry.isSymbolicLink()) {
+              return deleteFile(target).catch(() => undefined);
+            }
+            return stat(target).then(
+              st => (this.pastWindow(st.mtimeMs, 0) ? deleteTree(target).catch(() => undefined) : undefined),
+              () => undefined
+            );
+          }
+        ).then(() => undefined),
       () => undefined
     );
   }
@@ -1604,35 +1602,27 @@ export class BuildCache {
    * blob-backed BuildFiles. The work dir can be discarded afterwards.
    */
   private storeContent(files: FileSet): Computable<FileSet> {
-    const map = new Map<string, IFile>();
-    const ops: Computable<void>[] = [];
-    for (const [name, file] of files) {
+    return mapComputable(files, ([name, file]): [string, IFile] | Computable<[string, IFile]> => {
       if (file instanceof SymlinkFile) {
         /* A symlink carries its target inline in the manifest, not a blob, so it
          * passes through unchanged. */
-        map.set(name, file);
-        continue;
+        return [name, file];
       }
       if (file instanceof BuildFile && file.getAbsPath() === path.resolve(this.blobRoot, file.hash)) {
         /* Already one of our blobs (a re-put entry, or content shared with
          * another entry): nothing to ingest, not even an existence probe. */
-        map.set(name, file.name === name ? file : new BuildFile(this.blobRoot, file.hash, name, file.mode, file.mime));
-        continue;
+        return [name, file.name === name ? file : new BuildFile(this.blobRoot, file.hash, name, file.mode, file.mime)];
       }
       const abspath = file.getAbsPath();
       const stored =
         abspath === undefined
           ? file.getBuffer().then(buffer => this.ensureBlob(file.hash, buffer, file.mode))
           : this.ingestFile(file.hash, abspath, file.mode);
-      ops.push(stored.then(() => undefined));
       /* The mime carries over from the incoming file — classified wherever its
        * bytes were first read (hashing, streaming) — so the rename-ingest arm
        * stays a rename: the store never re-reads content to classify it. */
-      map.set(name, new BuildFile(this.blobRoot, file.hash, name, file.mode, file.mime));
-    }
-    return ops.length === 0
-      ? Computable.resolve(new FileSet(map, undefined, CANONICAL))
-      : Computable.forAll(ops, () => new FileSet(map, undefined, CANONICAL));
+      return stored.then((): [string, IFile] => [name, new BuildFile(this.blobRoot, file.hash, name, file.mode, file.mime)]);
+    }).then(entries => new FileSet(new Map(entries), undefined, CANONICAL));
   }
 
   /**

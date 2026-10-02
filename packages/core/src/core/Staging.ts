@@ -31,6 +31,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { Computable } from "./Computable";
+import { mapComputable } from "../support/Functional";
 import { ConflictError, ExecutionError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
 import { FSFile } from "./FSFileSource";
@@ -151,16 +152,12 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
    * additionally reads the real path of one), hence a barrier and not a
    * per-file dependency. */
   const staged = [...files].map(([name, file]) => contained(root, name, file));
-  return Computable.forAll(
-    [...new Set(staged.map(entry => entry.dirname))].map(dir => mkdir(dir)),
-    () => undefined
-  ).then(() => writeStaged(staged));
+  return mapComputable(new Set(staged.map(entry => entry.dirname)), dir => mkdir(dir)).then(() => writeStaged(staged));
 
-  /* Deferred until the directories exist: an operation below STARTS when it is
-   * constructed, so building them in the loop above would race the mkdirs. */
+  /* Deferred until the directories exist: the symlink arm reads its parent's
+   * real path. */
   function writeStaged(entries: typeof staged): Computable<void> {
-    const operations: Computable<void>[] = [];
-    for (const { name, file, targetName, dirname } of entries) {
+    return mapComputable(entries, ({ name, file, targetName, dirname }) => {
       const filepath = file.getAbsPath();
       if (file instanceof CacheLink) {
         /* The one licensed escape from the staged tree, and it is per-CLASS, not
@@ -171,8 +168,9 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
          * checked the target stays inside the cache. The trust boundary is
          * therefore the cache's own space — exactly the space the staged
          * hardlinks already point into. */
-        operations.push(stage(symlink(cacheTargetOf(file), targetName), name));
-      } else if (file instanceof SymlinkFile) {
+        return stage(symlink(cacheTargetOf(file), targetName), name);
+      }
+      if (file instanceof SymlinkFile) {
         /* Security: a symlink whose target escapes the staged tree (via `..`, an
          * absolute path, or a symlinked parent component) could point at — or,
          * written-through, clobber — files outside it. Resolve the target against
@@ -181,39 +179,33 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
          * real root. */
         realRoot ??= fs.realpathSync(path.resolve(targetDir));
         const resolved = path.resolve(fs.realpathSync(dirname), file.target);
-        if (resolved === realRoot || resolved.startsWith(realRoot + path.sep)) {
-          operations.push(stage(symlink(file.target, targetName), name));
-        }
-      } else if (filepath) {
+        const inside = resolved === realRoot || resolved.startsWith(realRoot + path.sep);
+        return inside ? stage(symlink(file.target, targetName), name) : undefined;
+      }
+      if (filepath) {
         /* A hardlink shares the read-only cache blob's mode (0o444/0o555). A copy
          * (`fabr cp`) is durable user space, so reapply the file's real mode —
          * restoring writability and the exact original bits the blob dropped. */
-        operations.push(
-          stage(
-            options?.copy
-              ? copyFile(filepath, targetName).then(() => fs.chmodSync(targetName, file.mode & 0o7777))
-              : hardlink(filepath, targetName),
-            name
-          )
-        );
-      } else {
-        /* An in-memory file mirrors what a blob-backed file gets in the same
-         * context: a copy (`fabr cp`) exports at its real mode (writable, durable
-         * user space), while a staged file matches the read-only 0o444/0o555 of the
-         * hardlinked blobs beside it (exec-if-executable, so a generated tool runs). */
-        const mode = options?.copy ? file.mode & 0o7777 : readOnlyPermissions(file.mode);
-        operations.push(
-          stage(
-            file
-              .getBuffer()
-              .then(buffer => writeFile(targetName, buffer, { exclusive: !options?.copy }))
-              .then(() => fs.chmodSync(targetName, mode)),
-            name
-          )
+        return stage(
+          options?.copy
+            ? copyFile(filepath, targetName).then(() => fs.chmodSync(targetName, file.mode & 0o7777))
+            : hardlink(filepath, targetName),
+          name
         );
       }
-    }
-    return Computable.forAll(operations, () => {});
+      /* An in-memory file mirrors what a blob-backed file gets in the same
+       * context: a copy (`fabr cp`) exports at its real mode (writable, durable
+       * user space), while a staged file matches the read-only 0o444/0o555 of the
+       * hardlinked blobs beside it (exec-if-executable, so a generated tool runs). */
+      const mode = options?.copy ? file.mode & 0o7777 : readOnlyPermissions(file.mode);
+      return stage(
+        file
+          .getBuffer()
+          .then(buffer => writeFile(targetName, buffer, { exclusive: !options?.copy }))
+          .then(() => fs.chmodSync(targetName, mode)),
+        name
+      );
+    }).then(() => undefined);
   }
 }
 
@@ -289,60 +281,51 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
   /* The parents of everything about to be written, created as one concurrent
    * batch ahead of the writes — same reasoning as writeFileSet, on a smaller
    * scale (only the changed files are written here). */
-  return Computable.forAll(
-    [...new Set(changed.map(entry => entry.dirname))].map(dir => mkdir(dir)),
-    () => undefined
-  ).then(() => applySync());
+  return mapComputable(new Set(changed.map(entry => entry.dirname)), dir => mkdir(dir)).then(() => applySync());
 
-  /* Deferred until the directories exist, since a write starts as it is
-   * constructed and the symlink arm reads its parent's real path. */
+  /* Deferred until the directories exist, since the symlink guard reads a
+   * parent's real path. */
   function applySync(): Computable<{ written: number; removed: number }> {
-    const writes = [];
-    for (const { file, targetName, dirname } of changed) {
+    /* Same containment guard as writeFileSet: a symlink whose target escapes
+     * the staged tree is silently not staged. */
+    const written = changed.filter(({ file, dirname }) => {
+      if (!(file instanceof SymlinkFile) || file instanceof CacheLink) {
+        return true;
+      }
+      realRoot ??= fs.realpathSync(root);
+      const resolved = path.resolve(fs.realpathSync(dirname), file.target);
+      return resolved === realRoot || resolved.startsWith(realRoot + path.sep);
+    });
+    const writes = mapComputable(written, ({ file, targetName }) => {
       const temp = `${targetName}.fabr-sync-${process.pid}-${tempCounter++}`;
       const filepath = file.getAbsPath();
       if (file instanceof CacheLink) {
-        writes.push(stageWrite(temp, targetName, symlink(cacheTargetOf(file), temp)));
-      } else if (file instanceof SymlinkFile) {
-        /* Same containment guard as writeFileSet: a target escaping the staged
-         * tree is silently not staged. */
-        realRoot ??= fs.realpathSync(root);
-        const resolved = path.resolve(fs.realpathSync(dirname), file.target);
-        if (resolved !== realRoot && !resolved.startsWith(realRoot + path.sep)) {
-          continue;
-        }
-        writes.push(stageWrite(temp, targetName, symlink(file.target, temp)));
-      } else if (filepath) {
-        writes.push(stageWrite(temp, targetName, hardlink(filepath, temp)));
-      } else {
-        /* A served install is nominally hardlink output, so an in-memory file
-         * matches the read-only 0o444/0o555 of the blobs beside it; chmod the temp
-         * before the atomic rename so it never appears at the wrong mode. */
-        writes.push(
-          stageWrite(
-            temp,
-            targetName,
-            file
-              .getBuffer()
-              .then(buffer => writeFile(temp, buffer))
-              .then(() => fs.chmodSync(temp, readOnlyPermissions(file.mode)))
-          )
-        );
+        return stageWrite(temp, targetName, symlink(cacheTargetOf(file), temp));
       }
-    }
-    /* Unlink the gone files (concurrent with the writes — disjoint names), and note
-     * their parent directories as prune candidates for after everything settles. */
-    const removals = [];
-    const prunable = new Set<string>();
-    for (const { targetName, dirname } of gone) {
-      removals.push(asExecutionError(deleteFile(targetName)));
-      prunable.add(dirname);
-    }
-    const written = writes.length;
-    const removed = removals.length;
-    return Computable.forAll([...writes, ...removals], () => {})
-      .then(() => pruneEmptyDirs(root, prunable))
-      .then(() => ({ written, removed }));
+      if (file instanceof SymlinkFile) {
+        return stageWrite(temp, targetName, symlink(file.target, temp));
+      }
+      if (filepath) {
+        return stageWrite(temp, targetName, hardlink(filepath, temp));
+      }
+      /* A served install is nominally hardlink output, so an in-memory file
+       * matches the read-only 0o444/0o555 of the blobs beside it; chmod the temp
+       * before the atomic rename so it never appears at the wrong mode. */
+      return stageWrite(
+        temp,
+        targetName,
+        file
+          .getBuffer()
+          .then(buffer => writeFile(temp, buffer))
+          .then(() => fs.chmodSync(temp, readOnlyPermissions(file.mode)))
+      );
+    });
+    /* Unlink the gone files (concurrent with the writes — disjoint names); their
+     * parent directories are the prune candidates for after everything settles. */
+    const removals = mapComputable(gone, ({ targetName }) => asExecutionError(deleteFile(targetName)));
+    return Computable.forAll([writes, removals], () => undefined)
+      .then(() => pruneEmptyDirs(root, new Set(gone.map(entry => entry.dirname))))
+      .then(() => ({ written: written.length, removed: gone.length }));
   }
 }
 
@@ -415,7 +398,9 @@ export function getResultFileSet(targetDir: string, output: Name | string | Read
   const result = new Map<string, IFile>();
   /* Source path each output name came from, for a rename-collision message. */
   const source = new Map<string, string>();
-  const ops: Computable<void>[] = [];
+  /* Every non-directory entry of the tree, with the name it is collected under
+   * (none: it is dropped). */
+  const found: Array<{ abspath: string; rel: string; name: string | undefined }> = [];
 
   /* Walk without following symlinks (walkTree recurses real dirs only): the work
    * dir may contain symlinks — a scoped node_modules links its direct deps into a
@@ -424,14 +409,17 @@ export function getResultFileSet(targetDir: string, output: Name | string | Read
    * link itself, never its target. Directories are neither collected nor deleted;
    * the emptied work dir is discarded by the caller. */
   return walkTree(targetDir, (entry, abspath) => {
-    if (entry.isDirectory()) {
-      return;
+    if (!entry.isDirectory()) {
+      const rel = path.relative(targetDir, abspath);
+      found.push({ abspath, rel, name: entry.isFile() ? project(rel) : undefined });
     }
-    const rel = path.relative(targetDir, abspath);
-    const name = entry.isFile() ? project(rel) : undefined;
-    if (name !== undefined) {
-      ops.push(
-        hashFile(abspath).then(({ hash, mime }) => {
+  })
+    .then(() =>
+      mapComputable(found, ({ abspath, rel, name }) => {
+        if (name === undefined) {
+          return asExecutionError(deleteFile(abspath));
+        }
+        return hashFile(abspath).then(({ hash, mime }) => {
           /* A work-dir output is path-backed (content at its on-disk rel, not at
            * a blob hash), so it can't be a BuildFile — storeContent then ingests
            * it into the pool by rename. The FileSet key is the *projected* name;
@@ -448,12 +436,10 @@ export function getResultFileSet(targetDir: string, output: Name | string | Read
           }
           result.set(name, file);
           source.set(name, rel);
-        })
-      );
-    } else {
-      ops.push(asExecutionError(deleteFile(abspath)));
-    }
-  }).then(() => Computable.forAll(ops, () => new FileSet(result)));
+        });
+      })
+    )
+    .then(() => new FileSet(result));
 }
 
 /**

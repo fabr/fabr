@@ -23,6 +23,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import { Computable } from "./Computable";
+import { mapComputable } from "../support/Functional";
 import { sniffMime } from "../support/Mime";
 
 export const HASH_ALGORITHM = "sha256";
@@ -194,14 +195,11 @@ export function walkTree(
 ): Computable<void> {
   return readdir(dir).then(
     entries =>
-      Computable.forAll(
-        entries.map(entry => {
-          const abs = path.join(dir, entry.name);
-          onEntry(entry, abs);
-          return entry.isDirectory() && !skipDir(entry, abs) ? walkTree(abs, onEntry, skipDir) : Computable.resolve<void>(undefined);
-        }),
-        () => undefined
-      ),
+      mapComputable(entries, entry => {
+        const abs = path.join(dir, entry.name);
+        onEntry(entry, abs);
+        return entry.isDirectory() && !skipDir(entry, abs) ? walkTree(abs, onEntry, skipDir) : undefined;
+      }).then(() => undefined),
     /* An unreadable directory contributes nothing. */
     () => undefined
   );

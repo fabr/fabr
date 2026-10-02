@@ -21,6 +21,7 @@ import {
   ActionContext,
   BuildAction,
   Computable,
+  mapComputable,
   BuildResult,
   configFiles,
   EXEC_ACTION,
@@ -117,24 +118,22 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
      * next miss that needs it rather than on every evaluation. */
     const manifest = pnpManifestOf(deps, selfPackage(action));
     const execPnP = (argv: string[], incremental?: Incremental, handover?: Handover): Computable<BuildResult> =>
-      Computable.forAll(
-        manifest.packages.map(pkg => ctx.ensureTree(pkg)),
-        (...trees: string[]) =>
-          exec(
-            FileSet.unionAll(
-              files,
-              FileSet.layout({
-                [PNP_DATA_FILE]: manifest.toFile(),
-                /* The pool itself, mounted once: the manifest addresses trees by
-                 * name, so one mount serves every row, and a table with no rows
-                 * needs no mount at all. */
-                ...(trees.length > 0 ? { [TREE_MOUNT]: ctx.treePool } : {}),
-              })
-            ),
-            argv,
-            incremental,
-            handover
-          )
+      mapComputable(manifest.packages, pkg => ctx.ensureTree(pkg)).then(trees =>
+        exec(
+          FileSet.unionAll(
+            files,
+            FileSet.layout({
+              [PNP_DATA_FILE]: manifest.toFile(),
+              /* The pool itself, mounted once: the manifest addresses trees by
+               * name, so one mount serves every row, and a table with no rows
+               * needs no mount at all. */
+              ...(trees.length > 0 ? { [TREE_MOUNT]: ctx.treePool } : {}),
+            })
+          ),
+          argv,
+          incremental,
+          handover
+        )
       );
     const stateDir = optionalConfig(action, "stateDir");
     const changes = optionalConfig(action, "changes");

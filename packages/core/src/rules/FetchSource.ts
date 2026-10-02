@@ -27,6 +27,7 @@ import { IProvenanceStep, registerProvenanceDescriber, registerProvenanceRendere
 import { ExpectedDigest, isIntegrity, parseIntegrity, verifyingStream } from "../support/Integrity";
 import { TargetContext } from "../model/BuildContext";
 import { RepositoryRegistration } from "./Types";
+import { mapComputable } from "../support/Functional";
 
 /**
  * A `fetch` table is a declared set of downloads — a name, a URL, and the
@@ -94,9 +95,8 @@ class FetchSource implements FileSource {
     if (matched.length === 0) {
       return reachable ? Computable.resolve(EMPTY_FILESET) : Computable.reject(this.unknownDownload(name));
     }
-    return Computable.forAll(
-      matched.map(({ path, as, member }) => this.download(path, member).then(file => this.delivered(as, file, path, member))),
-      (...sets: FileSet[]) => FileSet.unionAll(...sets)
+    return mapComputable(matched, ({ path, as, member }) => this.download(path, member).then(file => this.delivered(as, file, path, member))).then(
+      sets => FileSet.unionAll(...sets)
     );
   }
 
