@@ -59,6 +59,7 @@ import {
   toTestReport,
   writeFileSet,
   TaskProgress,
+  toEnvironment,
 } from "@fabr-build/core";
 
 /**
@@ -84,9 +85,16 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
   const argv = stringListConfig(action, "argv");
   const testFiles = stringListConfig(action, "test_files");
   const outputs = stringListConfig(action, "outputs");
-  /* Tests run with a clean environment (no ambient vars that could alter their
-   * output); a test that must spawn a tool references it by an absolute path
-   * (e.g. process.execPath), which needs no PATH. The argv's leading command
+  /* Each variable as `NAME=value`: a name holds no `=`, so the first one splits it. */
+  const env = Object.fromEntries(
+    (Array.isArray(action.config.env) ? action.config.env : []).map((entry): [string, string] => {
+      const at = entry.indexOf("=");
+      return [entry.slice(0, at), entry.slice(at + 1)];
+    })
+  );
+  /* Tests run with only the environment their target declares (no ambient vars
+   * that could alter their output); a test that must spawn a tool references it
+   * by an absolute path (e.g. process.execPath), which needs no PATH. The argv's leading command
    * (the runner's interpreter) is PATH-resolved here, at run time. */
   /* One admission for the whole installation — the two writes are halves of
    * staging it, not separate pieces of work — and given back before any test
@@ -104,7 +112,7 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
          * other execution in the build. A red file must not abort its
          * siblings (the report must be complete), so an invocation NEVER
          * rejects here; its outcome is judged as data below. */
-        testFiles.map((file, index) => runOneFile(ctx, report, argv, file, index).then(run => tally.add(run))),
+        testFiles.map((file, index) => runOneFile(ctx, report, argv, env, file, index).then(run => tally.add(run))),
         (...runs) => concludeRun(workDir, runs)
       );
     })
@@ -160,7 +168,14 @@ function invocationReport(index: number): string {
   return `${TEST_REPORT_FILENAME}.${index}`;
 }
 
-function runOneFile(ctx: ActionContext, taskReport: ITaskReport, argv: string[], file: string, index: number): Computable<IFileRun> {
+function runOneFile(
+  ctx: ActionContext,
+  taskReport: ITaskReport,
+  argv: string[],
+  env: Record<string, string>,
+  file: string,
+  index: number
+): Computable<IFileRun> {
   const reportName = invocationReport(index);
   const invocation = [...argv.slice(1), `--report=${reportName}`, file];
   /* Always captured (never streamed), as the one-invocation step always was:
@@ -170,7 +185,7 @@ function runOneFile(ctx: ActionContext, taskReport: ITaskReport, argv: string[],
    * take slots of the machine's funnel like any others, and a run waiting for
    * one must not look like a run in progress. */
   const report = { ...taskReport, output: undefined };
-  return execute(ctx.processLimit, findExecutable(argv[0]), invocation, join(ctx.workDir, COMPILE_OUT_DIR), {}, report)
+  return execute(ctx.processLimit, findExecutable(argv[0]), invocation, join(ctx.workDir, COMPILE_OUT_DIR), env, report)
     .then(
       () => undefined,
       (err: Error) => err
@@ -250,8 +265,9 @@ function evaluateTestRun(context: TargetContext): Computable<RuleResult> {
       context.getRequiredProperty("argv"),
       context.getRequiredProperty("test_files"),
       context.getRequiredProperty("outputs"),
+      context.getMap("env").then(toEnvironment),
     ],
-    ({ staged, writable }, argv, testFiles, outputs) =>
+    ({ staged, writable }, argv, testFiles, outputs, env) =>
       new BuildAction(
         JS_TEST_STEP,
         {
@@ -262,6 +278,7 @@ function evaluateTestRun(context: TargetContext): Computable<RuleResult> {
           argv: argv.getValues(),
           test_files: testFiles.getValues(),
           outputs: outputs.getValues(),
+          ...(env.size > 0 ? { env: [...env].map(([name, value]) => `${name}=${value}`) } : {}),
         }
       )
   );

@@ -22,7 +22,7 @@ import type { BuildAction } from "../core/BuildAction";
 import { FileSource } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { Repository } from "../core/Repository";
-import { TargetContext } from "../model/BuildContext";
+import { CommandValue, PropertyMap, TargetContext } from "../model/BuildContext";
 
 export enum PropertyType {
   String,
@@ -51,7 +51,7 @@ export enum PropertyType {
  * key-role partition means nothing here — the seam where roles are assigned is
  * where a rule builds a BuildAction from resolved values.
  */
-export type SubTargetInput = string | string[] | Name | Name[] | FileSource | FileSource[];
+export type SubTargetInput = string | string[] | Name | Name[] | FileSource | FileSource[] | PropertyMap | CommandValue;
 export type SubTargetInputs = Record<string, SubTargetInput>;
 
 /**

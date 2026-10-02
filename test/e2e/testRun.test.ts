@@ -86,6 +86,50 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(result.stderr).to.contain("1 test passed");
   });
 
+  it("runs the tests with the declared environment, and nothing else", () => {
+    /* One fixture, both targetdefs: a js_package's `test_env` and a js_test's
+     * `env`. Nothing of fabr's own environment arrives. */
+    const test = (expected: string): string =>
+      'const assert = require("node:assert");\n' +
+      'describe("env", () => { it("sees its target\'s variables only", () => {\n' +
+      `  assert.equal(process.env.GREETING, "${expected}");\n` +
+      '  assert.equal(process.env.NODE_OPTIONS, "--max-old-space-size=512 --no-warnings");\n' +
+      '  assert.equal(process.env.PATH, undefined);\n' +
+      "}); });\n";
+    const files = {
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        "\njs_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n" +
+        "  test_env = { GREETING = hello; NODE_OPTIONS = \"--max-old-space-size=512 --no-warnings\"; }\n}\n" +
+        "js_test standalone {\n  tests = it:**/*.test.ts;\n" +
+        "  env = { GREETING = howdy; NODE_OPTIONS = \"--max-old-space-size=512 --no-warnings\"; }\n}\n",
+      "src/thing.test.ts": test("hello"),
+      "it/alone.test.ts": test("howdy"),
+    };
+    const result = runFabr(files, ["-DJS_TARGET=es2020", "test", "thing", "standalone"]);
+    expect(result.stderr).to.contain("thing: 1 test passed");
+    expect(result.stderr).to.contain("standalone: 1 test passed");
+    expect(result.status).to.equal(0);
+  });
+
+  it("reports an invalid environment variable name at its entry", () => {
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_test standalone {\n  tests = it:**/*.test.ts;\n  env = { 'A=B' = x; }\n}\n",
+        "it/alone.test.ts": 'describe("x", () => { it("y", () => {}); });\n',
+      },
+      ["-DJS_TARGET=es2020", "test", "standalone"]
+    );
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.contain("'A=B' is not a valid environment variable name");
+  });
+
   it("stages a non-package resource dep at the install root for a test to read", () => {
     /* J3: a loose resource dep (a .json tsc reads but never emits) must be carried
      * into the test install at the root — next to the compiled tests — while

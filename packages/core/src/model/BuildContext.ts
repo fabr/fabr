@@ -405,6 +405,18 @@ interface IResolvedCommandStage {
 }
 
 /**
+ * A COMMAND property's value as read: its stages with variables substituted
+ * and every name still carrying where it was written, not yet resolved against
+ * any sources. Opaque to a rule — read with {@link TargetContext.getCommand},
+ * and handed to a sub-target as the input its own
+ * {@link TargetContext.getCommandProperty} resolves.
+ */
+export class CommandValue {
+  /** @internal */
+  constructor(public readonly stages: ReadonlyArray<IResolvedCommandStage>) {}
+}
+
+/**
  * One fully-resolved pipeline stage a `generate` rule consumes (see
  * {@link TargetContext.getCommandProperty}): its command resolved to a
  * `runnable`, `args` globbed over `srcs`, `stdin` to a single-file set, and the
@@ -2290,6 +2302,12 @@ export abstract class TargetContext {
    * form is {@link getCommandProperty}. Empty if absent; declared targets only. */
   protected abstract getCommandStages(name: string): Computable<IResolvedCommandStage[]>;
 
+  /** A COMMAND property's value, to pass on to a sub-target. A rule that runs
+   * the command itself reads {@link getCommandProperty} instead. */
+  public getCommand(name: string): Computable<CommandValue> {
+    return this.getCommandStages(name).then(stages => new CommandValue(stages));
+  }
+
   /**
    * The fully-resolved pipeline of a COMMAND property, ready for a `generate`
    * rule: each stage's command resolved to a runnable, its args globbed over
@@ -2955,11 +2973,15 @@ export class AnonymousTargetContext extends TargetContext {
    * served to position errors — which for a sub-target belong to its declared
    * owner (see `failure`). */
 
-  /** A sub-target has no declaration body of its own, so a command can only come
-   * from the type's declared default. */
+  /** A sub-target's command input: the {@link CommandValue} the caller
+   * supplies, else the type's declared default. */
   protected getCommandStages(name: string): Computable<IResolvedCommandStage[]> {
-    const decl = this.declaredDefault(name);
-    return decl ? this.context.resolveCommand(decl, undefined, this.stack) : Computable.resolve([]);
+    const value = this.inputs[name];
+    if (value === undefined) {
+      const decl = this.declaredDefault(name);
+      return decl ? this.context.resolveCommand(decl, undefined, this.stack) : Computable.resolve([]);
+    }
+    return Computable.resolve(value instanceof CommandValue ? [...value.stages] : []);
   }
 
   public getProperty(name: string, overrides?: Constraints): Computable<Property | undefined> {
@@ -3014,11 +3036,16 @@ export class AnonymousTargetContext extends TargetContext {
     return Computable.resolve(value instanceof Name ? value : undefined);
   }
 
-  /** Sub-targets take concrete inputs, not MAP property declarations, so a map
-   * can only come from the type's declared default. */
+  /** A sub-target's map input: the resolved map the caller supplies — entry
+   * origins and all, when it is one a declared target read — else the type's
+   * declared default. */
   public getMap(name: string, overrides?: Constraints): Computable<PropertyMap> {
-    const decl = this.declaredDefault(name);
-    return decl ? this.context.resolveMap(decl, undefined, this.stack, overrides) : Computable.resolve(new Map());
+    const value = this.inputs[name];
+    if (value === undefined) {
+      const decl = this.declaredDefault(name);
+      return decl ? this.context.resolveMap(decl, undefined, this.stack, overrides) : Computable.resolve(new Map());
+    }
+    return Computable.resolve(value instanceof Map ? value : new Map());
   }
 
   public getDeclaredContext(): DeclaredTargetContext {

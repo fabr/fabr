@@ -293,6 +293,9 @@ targetdef js_package {
     # Files the tests need at runtime, staged verbatim: neither compiled nor
     # shipped as package content.
     test_resources = FILES;
+    # Environment variables the test processes run with; they run with no
+    # others.
+    test_env = MAP;
     # The runner `fabr test` runs these tests under; defaults to the
     # JS_TEST_RUNNER global. Any runnable honoring the runner contract will do —
     # in practice, fabr's own runner or one of its compatibility flavours (see
@@ -354,6 +357,9 @@ targetdef js_test {
     # Files the tests need at runtime, staged verbatim (see js_package's
     # test_resources — unprefixed here, since everything in a js_test is tests).
     resources = FILES;
+    # Environment variables the test processes run with; they run with no
+    # others.
+    env = MAP;
     # Recorded expectations the tests compare against (see js_package).
     expectations = FILES;
     # A source named `setupTests` (.ts/.js) at the ROOT of this target's source
@@ -450,6 +456,8 @@ targetdef js_test_run {
     argv = REQUIRED STRING;
     test_files = REQUIRED STRING;
     outputs = REQUIRED STRING;
+    # The environment variables each invocation runs with.
+    env = MAP;
 }
 
 #

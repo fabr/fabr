@@ -51,6 +51,7 @@ import {
   IFile,
   IWriteBackCandidate,
   PackageFileSet,
+  PropertyMap,
   RunnableFileSet,
   parseName,
   TargetContext,
@@ -150,6 +151,9 @@ export interface ITestInputs {
   testResourceSources: SourceRef[];
   /** Recorded expectations the tests compare against (see `expectations`). */
   expectationSources: SourceRef[];
+  /** The environment variables the test processes run with — their whole
+   * environment — as the target's map declares them. */
+  env: PropertyMap;
   /** The package name a js_package[test]'s sources may import themselves by; a
    * standalone js_test has no package identity and leaves it unset. */
   packageName?: string;
@@ -271,6 +275,7 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
               needsDom: usesDom([...deps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
               testResources: FileSet.unionAll(...testResources),
               expectations: FileSet.unionAll(...expectationSets),
+              env: inputs.env,
               packageName: inputs.packageName,
               update: expectations === UPDATE_EXPECTATIONS,
             });
@@ -366,6 +371,8 @@ interface ITestRun {
   /** The declared recorded expectations — staged beside the compiled tests, and
    * the only inputs an update run may rewrite. */
   expectations: FileSet;
+  /** The environment variables the test processes run with. */
+  env: PropertyMap;
   /** The package the sources may import themselves by, if any — see selfMount. */
   packageName?: string;
   update: boolean;
@@ -474,6 +481,7 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
         argv,
         test_files: testFiles,
         outputs,
+        env: run.env,
       })
       .then(result => reshapeTestResult(result, run.tests, records));
   });

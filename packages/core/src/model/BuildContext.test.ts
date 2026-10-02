@@ -392,6 +392,26 @@ registerRule("test_rw_composer", {}, context =>
   )
 );
 
+/* A composer that hands its sub-target the MAP it read, as it read it. */
+registerRule("test_map_composer", {}, context =>
+  context.getMap("defines").then(defines => context.subTarget("test_map", { defines }, { label: "sub" }))
+);
+
+/* A sub-target that resolves its COMMAND against sources of its own, and a
+ * composer that hands it the command as it read it. */
+let lastCommand: Array<{ args: string[]; stdout?: string }> | undefined;
+registerRule("test_cmd", {}, context =>
+  context
+    .getCommandProperty("run", new FileSet(new Map([["a.txt", MemoryFile.from("a")], ["b.txt", MemoryFile.from("b")], ["c.md", MemoryFile.from("c")]])))
+    .then(stages => {
+      lastCommand = stages.map(stage => ({ args: stage.args, stdout: stage.stdout }));
+      return EMPTY_FILESET;
+    })
+);
+registerRule("test_cmd_composer", {}, context =>
+  context.getCommand("run").then(run => context.subTarget("test_cmd", { run }, { label: "sub" }))
+);
+
 /* A composer that builds a sub-target whose type has a rule but NO targetdef —
  * used to assert subTarget rejects a type missing from the build vocabulary. */
 registerRule("test_orphan_sub", {}, context =>
@@ -1345,6 +1365,38 @@ describe("BuildContext", () => {
       /* Each literal rename answers its own name, and a name none of them
        * selects maps to nothing — passthrough, for the rule to decide. */
       expect(lastRewrite).to.deep.equal(["one.js", "two.js", undefined]);
+    });
+
+    it("Reads a sub-target's MAP input from the map the composer supplied", async () => {
+      /* A sub-target takes what any target takes: the composer passes on the
+       * map it resolved, and the sub-rule reads it with the same accessor. */
+      lastMap = undefined;
+      await build(
+        "targetdef test_map { defines = MAP; }\n" +
+          "targetdef test_map_composer { defines = MAP; }\n" +
+          "test_map_composer t { defines = { MODE = fast; FLAGS = a b; } }\n"
+      );
+      expect([...lastMap!]).to.deep.equal([
+        ["MODE", ["fast"]],
+        ["FLAGS", ["a", "b"]],
+      ]);
+    });
+
+    it("Reads a sub-target's COMMAND input from the command the composer supplied", async () => {
+      /* The composer passes the command on unresolved, so the sub-target's own
+       * read resolves the tool and expands the glob over ITS sources. */
+      lastCommand = undefined;
+      await build(
+        "targetdef test_tool_repo { }\n" +
+          "targetdef test_cmd { run = COMMAND; }\n" +
+          "targetdef test_cmd_composer { run = COMMAND; }\n" +
+          "test_tool_repo tools { }\n" +
+          "test_cmd_composer t { run = tools:fmt --check *.txt | tools:count > report; }\n"
+      );
+      expect(lastCommand).to.deep.equal([
+        { args: ["--check", "a.txt", "b.txt"], stdout: undefined },
+        { args: [], stdout: "report" },
+      ]);
     });
 
     it("Prefers a sub-target's supplied input over its type's default", async () => {
