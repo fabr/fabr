@@ -54,6 +54,8 @@ import { SymlinkFile } from "./SymlinkFile";
  * wins). `RunnableFileSet.forEntry` builds the common single definite-entry
  * runnable (a `js_script`/`script`), as a one-symlink surface.
  */
+const NO_ENV: ReadonlyMap<string, string> = new Map();
+
 export class RunnableFileSet extends FileSet {
   constructor(
     files: Iterable<[string, IFile]>,
@@ -73,6 +75,9 @@ export class RunnableFileSet extends FileSet {
      * persona; the entry is anchored at the install) — or `install` — the staged install
      * root (the app persona: a served program's world is its own content). */
     public readonly launchCwd: "caller" | "install" = "caller",
+    /** Environment variables the program is launched with, over whatever
+     * environment its launcher gives it. */
+    public readonly env: ReadonlyMap<string, string> = NO_ENV,
     origin?: IProvenanceStep
   ) {
     super(files instanceof FileSet ? files : new Map(files), origin ?? (files instanceof FileSet ? files.origin : undefined));
@@ -90,13 +95,13 @@ export class RunnableFileSet extends FileSet {
   }
 
   public withOrigin(origin: IProvenanceStep): RunnableFileSet {
-    return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, this.served, this.launchCwd, origin);
+    return new RunnableFileSet(this, this.args, this.interpreter, this.root, this.surface, this.served, this.launchCwd, this.env, origin);
   }
 
   /** This runnable offering a different launch surface — how a projection is
    * applied ({@link selectEntry}), the install and everything else unchanged. */
   public withSurface(surface: FileSet): RunnableFileSet {
-    return new RunnableFileSet(this, this.args, this.interpreter, this.root, surface, this.served, this.launchCwd, this.origin);
+    return new RunnableFileSet(this, this.args, this.interpreter, this.root, surface, this.served, this.launchCwd, this.env, this.origin);
   }
 
   /**
@@ -104,10 +109,25 @@ export class RunnableFileSet extends FileSet {
    * `serve` rule's assembly: same launch surface/interpreter/root, `extraArgs`
    * appended to the fixed args, `served` recorded as the hot content partition,
    * and the launch cwd anchored at the install root (a served program's world
-   * is its staged install, not the caller's directory).
+   * is its staged install, not the caller's directory). `env` adds to the
+   * variables it is launched with.
    */
-  public withServedContent(install: FileSet, served: FileSet, extraArgs: string[]): RunnableFileSet {
-    return new RunnableFileSet(install, [...this.args, ...extraArgs], this.interpreter, this.root, this.surface, served, "install");
+  public withServedContent(
+    install: FileSet,
+    served: FileSet,
+    extraArgs: string[],
+    env: ReadonlyMap<string, string> = NO_ENV
+  ): RunnableFileSet {
+    return new RunnableFileSet(
+      install,
+      [...this.args, ...extraArgs],
+      this.interpreter,
+      this.root,
+      this.surface,
+      served,
+      "install",
+      new Map([...this.env, ...env])
+    );
   }
 
   /**

@@ -27,10 +27,10 @@
  * stock static server serves it with no path argument), and `files` as the
  * hot-swappable `served` partition — under `fabr run -w` a content-only change
  * is synced into the running server's staging area in place, while a program
- * change (tool/deps/args) restarts it. It does not itself execute.
+ * change (tool/deps/args/env) restarts it. It does not itself execute.
  */
 
-import { TargetContext } from "../model/BuildContext";
+import { TargetContext, toEnvironment } from "../model/BuildContext";
 import { BUILD_OPERATION, BUILD_OVERRIDE } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
@@ -47,8 +47,9 @@ function defineServeRunnable(context: TargetContext): Computable<RuleResult> {
       context.getFileProperty("deps", BUILD_OVERRIDE),
       context.getFileProperty("files", BUILD_OVERRIDE),
       context.getProperty("args"),
+      context.getMap("env").then(toEnvironment),
     ],
-    (tool, depSources, fileSources, args) =>
+    (tool, depSources, fileSources, args, env) =>
       /* THE collection point: deps and files materialize jointly, so any
        * carried external requirements resolve with the target's own pins. The
        * install is a sealed program, so resolution repairs are accepted (as
@@ -58,7 +59,7 @@ function defineServeRunnable(context: TargetContext): Computable<RuleResult> {
         /* A same-name collision between content and program is the ordinary
          * two-sided conflict, raised here by the union. */
         const install = FileSet.unionAll(tool, ...deps, served);
-        return tool.withServedContent(install, served, args ? args.getValues() : []);
+        return tool.withServedContent(install, served, args ? args.getValues() : [], env);
       })
   );
 }

@@ -556,8 +556,8 @@ interface Capture {
  * Run a pipeline of stages as concurrent child processes in `cwd`, stdout→stdin
  * wired between consecutive stages, the head fed `stdin` (if any), and stream
  * each captured redirect straight into the content store via `createOutput`.
- * Clean environment (no FORCE_COLOR — captured content must be the tool's raw
- * bytes, not ANSI). Fails on the first stage to exit non-zero or by signal
+ * The stages' environment is `env` and nothing else (no FORCE_COLOR — captured
+ * content must be the tool's raw bytes, not ANSI). Fails on the first stage to exit non-zero or by signal
  * (pipefail): a redirected stderr is the *user's* stream, so only an
  * un-redirected stage's stderr is buffered (small) to report on failure. On
  * success resolves a FileSet of the captured content, each file named by its
@@ -574,9 +574,10 @@ export function executePipeline(
   cwd: string,
   createOutput: () => IOutputHandle,
   stdin: Uint8Array | undefined,
-  report: ITaskReport
+  report: ITaskReport,
+  env: ReadonlyMap<string, string> = new Map()
 ): Computable<FileSet> {
-  return admitted(limit, report, () => pipelineUnbounded(specs, cwd, createOutput, stdin, report.output));
+  return admitted(limit, report, () => pipelineUnbounded(specs, cwd, createOutput, stdin, report.output, env));
 }
 
 function pipelineUnbounded(
@@ -584,7 +585,8 @@ function pipelineUnbounded(
   cwd: string,
   createOutput: () => IOutputHandle,
   stdin: Uint8Array | undefined,
-  sink: IOutputSink | undefined
+  sink: IOutputSink | undefined,
+  env: ReadonlyMap<string, string>
 ): Computable<FileSet> {
   const captures: Capture[] = [];
   return Computable.fromOnce<void>((resolve, reject) => {
@@ -653,12 +655,13 @@ function pipelineUnbounded(
         /* stdin: first stage from supplied bytes (else EOF); a later stage reads the
          * previous stage's stdout (wired below). Every stream fabr looks at is
          * PIPED — captured as content, feeding the next stage, or shown (kept
-         * for the failure report, and streamed to the sink if there is one). Env
-         * stays clean ({}) throughout: captured content must be raw. */
+         * for the failure report, and streamed to the sink if there is one). The
+         * environment is the given variables and nothing else: captured content
+         * must be the tool's raw bytes, whatever fabr itself was run under. */
         const stdinCfg = i === 0 ? (stdin ? "pipe" : "ignore") : "pipe";
         const proc = spawn(argvs[i][0], argvs[i].slice(1), {
           cwd,
-          env: {},
+          env: Object.fromEntries(env),
           stdio: [stdinCfg, "pipe", "pipe"],
           windowsHide: true,
           ...DETACHED,
@@ -936,8 +939,9 @@ export function executeInteractive(
  * caller that must manage its lifecycle — kill it, restart it, watch for its
  * exit — rather than merely await it. This is the supervised counterpart of
  * {@link executeInteractive} (the one-shot form that resolves on exit); it backs
- * `fabr run -w`, where a source change relaunches the program. All process
- * spawning stays centralized here.
+ * `fabr run -w`, where a source change relaunches the program. `cwd` and `env`
+ * are as for {@link executeInteractive}. All process spawning stays centralized
+ * here.
  *
  * Spawned **detached**, so the child leads its own process group: a launched
  * program that forks its own workers (every real dev server does) puts them in
@@ -948,8 +952,8 @@ export function executeInteractive(
  * child — only fabr receives it, and the supervisor forwards it to the group,
  * which is exactly the supervision we want.
  */
-export function spawnInteractive(cmd: string, args: string[], cwd?: string): ChildProcess {
-  return spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd, detached: true });
+export function spawnInteractive(cmd: string, args: string[], cwd?: string, env?: Record<string, string>): ChildProcess {
+  return spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd, env, detached: true });
 }
 
 /**

@@ -41,11 +41,18 @@ function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskRepor
    * absent for a pure-redirect genrule that collects only its captures. */
   const output = action.config.output instanceof Name ? action.config.output : undefined;
   const stdin = action.inputs.stdin instanceof FileSet ? action.inputs.stdin : undefined;
+  /* Each variable as `NAME=value`: a name holds no `=`, so the first one splits it. */
+  const env = new Map(
+    (Array.isArray(action.config.env) ? action.config.env : []).map((entry): [string, string] => {
+      const at = entry.indexOf("=");
+      return [entry.slice(0, at), entry.slice(at + 1)];
+    })
+  );
 
   return ctx
     .admit(report, () => writeFileSet(ctx.workDir, files))
     .then(() => stdinBytes(stdin))
-    .then(bytes => executePipeline(ctx.processLimit, specs, ctx.workDir, () => ctx.createOutput(), bytes, report))
+    .then(bytes => executePipeline(ctx.processLimit, specs, ctx.workDir, () => ctx.createOutput(), bytes, report, env))
     .then(captured =>
       /* A given `output` selects from everything the command produced — a
        * redirect names a file in the sandbox as surely as a tool writing one
@@ -147,19 +154,21 @@ export function stagePipeline(stages: ReadonlyArray<RunnableStage>, srcs: FileSe
 }
 
 /** @return a command-pipeline action from the resolved per-stage specs, the
- * combined staged fileset, an optional single-file stdin, and the `output`
- * projection (absent to collect only the redirect captures). */
+ * combined staged fileset, an optional single-file stdin, the `output`
+ * projection (absent to collect only the redirect captures), and the
+ * variables every stage runs with (its whole environment). */
 export function createPipelineAction(
   files: FileSet,
   specs: StageSpec[],
   stdin: FileSet | undefined,
   output: Name | undefined,
-  label?: string
+  label?: string,
+  env: ReadonlyMap<string, string> = new Map()
 ): BuildAction {
   return new BuildAction(
     PIPELINE_ACTION,
     { files, ...(stdin ? { stdin } : {}) },
-    { spec: JSON.stringify(specs), ...(output ? { output } : {}) },
+    { spec: JSON.stringify(specs), ...(output ? { output } : {}), ...(env.size > 0 ? { env: [...env].map(([name, value]) => `${name}=${value}`) } : {}) },
     undefined,
     label
   );

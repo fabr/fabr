@@ -35,7 +35,7 @@
  * wrote and the redirect captures alike — without it, the captures are collected.
  */
 
-import { ResolvedCommandPipeline, TargetContext } from "../model/BuildContext";
+import { ResolvedCommandPipeline, TargetContext, toEnvironment } from "../model/BuildContext";
 import { BUILD_OPERATION } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
@@ -45,14 +45,14 @@ import { RuleRegistration, RuleResult } from "./Types";
 
 function generate(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
-    [context.getFileSetProperties(["srcs"]), context.getProjection("output")],
-    ({ srcs: srcSets }, output: Name | undefined) => {
+    [context.getFileSetProperties(["srcs"]), context.getProjection("output"), context.getMap("env").then(toEnvironment)],
+    ({ srcs: srcSets }, output: Name | undefined, env) => {
       const srcs = FileSet.unionAll(...srcSets);
       return context.getCommandProperty("run", srcs).then(stages => {
         if (stages.length === 0) {
           return Computable.reject<RuleResult>(new Error("a 'generate' target requires a 'run' command"));
         }
-        return assemblePipeline(srcs, stages, output);
+        return assemblePipeline(srcs, stages, output, env);
       });
     }
   );
@@ -60,9 +60,14 @@ function generate(context: TargetContext): Computable<RuleResult> {
 
 /** Stage the install (see {@link stagePipeline}, shared with command
  * substitution) and yield the pipeline action. */
-function assemblePipeline(srcs: FileSet, stages: ResolvedCommandPipeline, output: Name | undefined): RuleResult {
+function assemblePipeline(
+  srcs: FileSet,
+  stages: ResolvedCommandPipeline,
+  output: Name | undefined,
+  env: ReadonlyMap<string, string>
+): RuleResult {
   const { files, specs } = stagePipeline(stages, srcs);
-  return createPipelineAction(files, specs, stages[0].stdin, output, "generate");
+  return createPipelineAction(files, specs, stages[0].stdin, output, "generate", env);
 }
 
 export const generateRule: RuleRegistration = { type: "generate", constraints: { [BUILD_OPERATION]: "build" }, evaluate: generate };

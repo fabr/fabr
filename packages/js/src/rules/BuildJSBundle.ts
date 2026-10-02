@@ -39,6 +39,7 @@ import {
   FileSet,
   FileSetRef,
   Flag,
+  mapEntryError,
   MemoryFile,
   PackageFileSet,
   RewriteFn,
@@ -318,7 +319,7 @@ function buildWithInputs(
         /* A map scalar is a string list; a sub-map / list of sub-maps is not code text.
          * `every` with a type-predicate narrows `value` to string[] for the join below. */
         if (!Array.isArray(value) || !value.every((entry): entry is string => typeof entry === "string")) {
-          throw new TypeError(`defines value '${key}' must be a scalar string (a define is esbuild code text)`);
+          throw mapEntryError(defineMap, key, `defines value '${key}' must be a scalar string (a define is esbuild code text)`);
         }
         defines[key] = value.join(" ");
       }

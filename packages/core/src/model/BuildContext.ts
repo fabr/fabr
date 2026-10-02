@@ -130,6 +130,42 @@ export function mapEntryOrigin(map: PropertyMap, key: string): MapEntryOrigin | 
   return MAP_ORIGINS.get(map)?.get(key);
 }
 
+/**
+ * An error about one entry of a resolved map, positioned at the entry as it was
+ * written — even one that arrived through a shared map, whose splice and
+ * reference hops are then named in the message. A hand-built map has no
+ * origins, so its error carries no position.
+ */
+export function mapEntryError(map: PropertyMap, key: string, message: string): Error {
+  const origin = mapEntryOrigin(map, key);
+  if (!origin) {
+    return new Error(message);
+  }
+  const via = origin.via.map(hop => ` (via '${("ref" in hop ? hop.ref : hop.value).toString()}')`).join("");
+  return new NameResolutionError(Name.fromLiteral(key), declPosn(origin.entry), undefined, message + via);
+}
+
+/**
+ * A map of environment variables — names to strings, in name order. A value is
+ * its words joined by a space (`NODE_OPTIONS = --a --b;`); a name that could
+ * not be a variable, or a nested map for a value, is refused at the entry that
+ * wrote it.
+ */
+export function toEnvironment(map: PropertyMap): ReadonlyMap<string, string> {
+  const variables = new Map<string, string>();
+  for (const name of [...map.keys()].sort()) {
+    const value = map.get(name)!;
+    if (name === "" || name.includes("=") || name.includes("\0")) {
+      throw mapEntryError(map, name, `'${name}' is not a valid environment variable name`);
+    }
+    if (!Array.isArray(value) || !value.every((word): word is string => typeof word === "string")) {
+      throw mapEntryError(map, name, `environment variable '${name}' must be a string`);
+    }
+    variables.set(name, value.join(" "));
+  }
+  return variables;
+}
+
 function recordMapOrigin(map: PropertyMap, key: string, origin: MapEntryOrigin): void {
   let origins = MAP_ORIGINS.get(map);
   if (!origins) {

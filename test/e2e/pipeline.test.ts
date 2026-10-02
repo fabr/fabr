@@ -187,6 +187,40 @@ describe("e2e: generate command pipelines", () => {
     expect(result.stderr).to.match(/help:/);
   });
 
+  it("runs the commands with the 'env' variables, and no others", () => {
+    /* A build step's environment is what the target states: its own variables
+     * arrive, and nothing of the shell fabr was started from does. */
+    const result = runFabr(
+      {
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\njs_script show { entry = src:show.js; }\n" +
+          "generate g { run = show > out.txt; env = { GREETING = hello there; LEVEL = 3; } }\n",
+        "src/show.js":
+          "process.stdout.write([process.env.GREETING, process.env.LEVEL, String(process.env.HOME), String(process.env.PATH)].join('|'));\n",
+      },
+      ["cat", "g:out.txt"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal("hello there|3|undefined|undefined");
+  });
+
+  it("reports an invalid 'env' entry at the entry, not at the target", () => {
+    const result = runFabr(
+      {
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\njs_script show { entry = src:show.js; }\n" +
+          "generate g {\n  run = show > out.txt;\n  env = {\n    OK = fine;\n    '=' = bad;\n  }\n}\n",
+        "src/show.js": "process.stdout.write('x');\n",
+      },
+      ["build", "g"]
+    );
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.contain("'=' is not a valid environment variable name");
+    /* Line 7 is the entry itself; the target is declared on line 3. */
+    expect(result.stderr).to.match(/PROJECT\.fabr:7:\d+/);
+    expect(result.stderr).to.not.match(/PROJECT\.fabr:3:\d+/);
+  });
+
   /* A tool that both writes a file and prints to stdout, for `output` choosing
    * between a written file and a redirect. */
   const BOTH = "plugin @fabr-build/js;\njs_script both { entry = src:both.js; }\n";

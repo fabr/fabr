@@ -28,13 +28,11 @@
  */
 
 import {
-  declPosn,
   FileSet,
   isJsonObject,
-  mapEntryOrigin,
+  mapEntryError,
   MemoryFile,
   Name,
-  NameResolutionError,
   PropertyMap,
   PropertyMapValue,
   Requirement,
@@ -227,13 +225,7 @@ export function declaredDependencies(manifest: IDependencyDecls): { required: Re
  *  origin to the written entry — even one that arrived through a shared map — with
  *  any splice/reference hops named in the message. */
 function rejectedMetadataKey(key: string, metadata: PropertyMap, reason: string): Error {
-  const message = `metadata key '${key}' ${reason}`;
-  const origin = mapEntryOrigin(metadata, key);
-  if (!origin) {
-    return new Error(message);
-  }
-  const via = origin.via.map(hop => ` (via '${("ref" in hop ? hop.ref : hop.value).toString()}')`).join("");
-  return new NameResolutionError(Name.fromLiteral(key), declPosn(origin.entry), undefined, message + via);
+  return mapEntryError(metadata, key, `metadata key '${key}' ${reason}`);
 }
 
 /** Encode a resolved metadata value as its package.json JSON shape: a scalar

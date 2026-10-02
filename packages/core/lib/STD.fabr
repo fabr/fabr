@@ -52,7 +52,8 @@ targetdef catalog {
 # `< source` streams a single-file reference to the first stage's stdin. `srcs`
 # are input files staged at the sandbox root; `output` (a `dir:glob`, optionally
 # `-> tmpl`) selects what is collected, from the files the tools wrote and the
-# redirect captures alike; without it, the redirect captures are collected. Example:
+# redirect captures alike; without it, the redirect captures are collected. The
+# commands run with no environment variables but those in `env`. Example:
 #
 #     generate docs { run = list_targetdefs --json | gendoc > reference.md; }
 #
@@ -60,6 +61,8 @@ targetdef generate {
     srcs = FILES;
     run = REQUIRED COMMAND;
     output = STRING;
+    # Environment variables the commands run with, by name: their whole environment.
+    env = MAP;
 }
 
 #
@@ -88,13 +91,16 @@ targetdef script {
 # e.g. a stock static server serves `files` with no path argument. Under
 # `fabr run -w`, a change to `files` is synced into the running server's
 # staging area in place; only a change to the program itself (`tool`, `deps`,
-# `args`) restarts it. It yields a runnable, it does not itself execute.
+# `args`, `env`) restarts it. It yields a runnable, it does not itself execute.
 #
 targetdef serve {
     tool = REQUIRED FILES;
     deps = FILES;
     args = STRING;
     files = FILES;
+    # Environment variables the program is launched with, by name, over the
+    # environment `fabr run` was itself started in.
+    env = MAP;
 }
 
 #

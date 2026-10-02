@@ -114,6 +114,33 @@ describe("e2e: serve target under fabr run -w", () => {
     }
   });
 
+  it("launches the server with its 'env' over the inherited environment, and restarts when 'env' changes", async () => {
+    /* The server reports a declared variable and whether it still has the PATH
+     * `fabr run` itself was started with. */
+    const server =
+      'echo "GREETING [$GREETING] PATH [${PATH:+inherited}]" >&2\n' + "while true; do sleep 0.2; done\n";
+    const project = (greeting: string): string =>
+      "script server { entry = src:server.sh; }\n" +
+      `serve site { tool = server; files = content:**; env = { GREETING = ${greeting}; } }\n`;
+    const session = startFabrWatch(
+      { "PROJECT.fabr": project("hello there"), "src/server.sh": server, "content/data.txt": "one" },
+      ["run", "-w", "site"]
+    );
+    try {
+      await session.waitFor("GREETING [hello there] PATH [inherited]", { timeoutMs: 60000 });
+      await session.waitFor("Watching for changes", { timeoutMs: 60000 });
+
+      /* The variables are part of the program: changing one is a restart, not a
+       * content sync. */
+      session.write("PROJECT.fabr", project("goodbye"));
+      await session.waitFor("Restarting site", { timeoutMs: 60000 });
+      await session.waitFor("GREETING [goodbye] PATH [inherited]", { timeoutMs: 60000 });
+    } finally {
+      const code = await session.stop();
+      expect(code).to.equal(0);
+    }
+  });
+
   it("reports the cycle's build against the served target, not 'Already up to date'", async () => {
     /* The docs_serve shape: `files` come through a generate dependency, so the
      * rebuild work happens beneath a *dependency* of the requested target. The

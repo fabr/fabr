@@ -57,12 +57,28 @@ Under `-w`, fabr distinguishes two kinds of change and reacts to each as cheaply
   place** — no restart. Fabr reports `Updating site content (N files)`, and the server's own file
   watcher picks up the change. This keeps a live-reload dev server fast: editing served content never
   bounces the process.
-- **A change to the program itself** — `tool`, `deps`, or `args` — **restarts** the server, since the
-  running install is no longer the right one.
+- **A change to the program itself** — `tool`, `deps`, `args` or `env` — **restarts** the server, since
+  the running install is no longer the right one.
 
 Unlike a plain `fabr run` (which launches in *your* current directory), a `serve` target launches
 with its working directory at its own staged install, so a stock static file server serves `files`
 with no path wrangling.
+
+To set environment variables for the server, give the target an `env` map. The server starts with
+the environment you ran `fabr` in, with these variables added, and a variable set here wins over
+one of the same name from your shell:
+
+```
+serve site {
+  tool  = site_server;
+  files = mysite;
+  env   = { NODE_ENV = development; PORT = 8080; }
+}
+```
+
+A [`generate`](/reference/standard-rules/#generate) target takes `env` too, with one difference: its
+commands are build steps and start with no environment at all, so the `env` variables are the only
+ones they see.
 
 Fabr's own documentation site is built and previewed exactly this way — a [`generate`](/reference/standard-rules/#generate)
 target produces the static site, and a `serve` target runs `http-server` over it under `fabr run -w`.

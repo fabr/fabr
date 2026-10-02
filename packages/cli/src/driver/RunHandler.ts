@@ -57,7 +57,9 @@ export function runInteractive(cache: BuildCache, runnable: RunnableFileSet, cal
   return writeFileSet(dir, runnable)
     /* The program owns the terminal while it runs (it inherits fabr's stdio),
      * so fabr's own display steps aside for the duration. */
-    .then(() => withTerminalSuspended(() => executeInteractive(findExecutable(argv[0]), argv.slice(1), launchDir(runnable, dir))))
+    .then(() =>
+      withTerminalSuspended(() => executeInteractive(findExecutable(argv[0]), argv.slice(1), launchDir(runnable, dir), launchEnv(runnable)))
+    )
     /* Remove the staged install whichever way the run ends — a staging or launch
      * failure must not leak the work dir (only the success path did before). */
     .finally(() => cache.releaseWorkDir(dir));
@@ -76,6 +78,16 @@ function launchDir(runnable: RunnableFileSet, dir: string): string | undefined {
   return runnable.launchCwd === "install" ? dir : undefined;
 }
 
+/** The launch environment override: this process's own with the runnable's
+ * variables over it, or none (inherit it as it is) where the runnable has none. */
+function launchEnv(runnable: RunnableFileSet): Record<string, string> | undefined {
+  if (runnable.env.size === 0) {
+    return undefined;
+  }
+  const inherited = Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined);
+  return Object.fromEntries([...inherited, ...runnable.env]);
+}
+
 /** How long a gracefully-stopped child (a restart) has to exit on SIGTERM before
  * its group is SIGKILLed — long enough for a server to close its listeners and
  * free its port, short enough not to stall the relaunch. */
@@ -87,7 +99,7 @@ const DIAG_RUN_ERROR = Diagnostic.Error<{ name: string; message: string }>("Fail
 
 /**
  * One staged install of the program: the directory it was written to, the
- * `programKey` (program manifest + launch argv) identifying *which* program it
+ * `programKey` (program manifest, launch argv and variables) identifying *which* program it
  * is, the `served` partition currently written into it (a content sync advances
  * this), and the child running it once launched.
  *
@@ -179,7 +191,8 @@ export class RunSupervisor {
   public update(runnable: RunnableFileSet): Computable<void> {
     /* Key on the install-relative argv (no anchor), identical across staged
      * dirs — so an args/entry-only change relaunches, a mere restage doesn't. */
-    const programKey = `${runnable.programManifest()}\n$ ${runnable.toCommandLine(this.callerArgs).join("\0")}`;
+    const variables = [...runnable.env].map(([name, value]) => `${name}=${value}`).join("\0");
+    const programKey = `${runnable.programManifest()}\n$ ${runnable.toCommandLine(this.callerArgs).join("\0")}\n${variables}`;
     if (programKey === this.target?.programKey) {
       return this.updateContent(runnable);
     }
@@ -271,7 +284,7 @@ export class RunSupervisor {
       if (wasRunning) {
         this.log.log(DIAG_RESTART, { name: this.name });
       }
-      const child = spawnInteractive(findExecutable(argv[0]), argv.slice(1), launchDir(runnable, install.dir));
+      const child = spawnInteractive(findExecutable(argv[0]), argv.slice(1), launchDir(runnable, install.dir), launchEnv(runnable));
       /* The supervised program owns the terminal from here until it exits —
        * which outlives the build that launched it, so the hand-over is bracketed
        * by the child's own lifetime rather than by a chain. Rebuild diagnostics
