@@ -36,7 +36,7 @@
  * closure — there is no tree to build.
  */
 
-import { Computable, FileSet, MemoryFile, Name, PackageFileSet, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
+import { Computable, FileSet, MemoryFile, Name, PackageFileSet, RuleDefinition, RuleResult, TargetContext } from "@fabr-build/core";
 import {
   esLevelOrder,
   JSTarget,
@@ -439,4 +439,4 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-export const jsCompileRule: RuleRegistration = { type: "js_compile", constraints: {}, evaluate: compileTypescript };
+export const jsCompileRule: RuleDefinition = { type: "js_compile", properties: {}, evaluate: compileTypescript };

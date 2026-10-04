@@ -39,7 +39,7 @@ import { ExecutionContext } from "../model/ExecutionContext";
 import { parseBuildString } from "../model/Parser";
 import { toBuildModel } from "../model/Sema";
 import { LogFormatter, LogLevel } from "../support/Log";
-import { PluginContribution, RuleRegistration } from "./Types";
+import { PluginContribution, RuleDefinition } from "./Types";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -215,9 +215,9 @@ describe("CatalogRepository (through the model)", () => {
   /* What a manifest would record of those deps (collectDeclaredRequirements —
    * the declaration, not what resolution pinned). */
   let lastDeclared: (Requirement | undefined)[] = [];
-  const depsRule: RuleRegistration = {
+  const depsRule: RuleDefinition = {
     type: "test_deps",
-    constraints: {},
+    properties: {},
     evaluate: (context: TargetContext) =>
       context.getFileProperty("deps").then(sources =>
         Computable.forAll(
@@ -232,9 +232,9 @@ describe("CatalogRepository (through the model)", () => {
       ),
   };
   let lastTool: FileSet | undefined;
-  const runRule: RuleRegistration = {
+  const runRule: RuleDefinition = {
     type: "test_run",
-    constraints: {},
+    properties: {},
     evaluate: (context: TargetContext) =>
       context.getFileSetProperties(["tool"], RUN_OVERRIDE).then(({ tool }) => {
         lastTool = FileSet.unionAll(...tool);

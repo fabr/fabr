@@ -21,7 +21,7 @@ import { TargetContext } from "../model/BuildContext";
 import { BUILD_OPERATION, BUILD_OVERRIDE, FILES_OPERATION } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { isFileSource } from "../core/Repository";
-import { RuleRegistration, RuleResult } from "./Types";
+import { RuleDefinition, RuleResult } from "./Types";
 
 /**
  * The generic `files` rule: registered as a default (all-types) rule, so it is
@@ -51,4 +51,4 @@ function deliverFiles(context: TargetContext): Computable<RuleResult> {
 }
 
 /* No `type` → a default (all-types) rule. */
-export const defaultFilesRule: RuleRegistration = { constraints: { [BUILD_OPERATION]: FILES_OPERATION }, evaluate: deliverFiles };
+export const defaultFilesRule: RuleDefinition = { properties: { [BUILD_OPERATION]: FILES_OPERATION }, evaluate: deliverFiles };

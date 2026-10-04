@@ -34,7 +34,7 @@ import { BUILD_OPERATION, BUILD_OVERRIDE } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { RuleRegistration, RuleResult } from "./Types";
+import { RuleDefinition, RuleResult } from "./Types";
 
 function defineScriptRunnable(context: TargetContext): Computable<RuleResult> {
   /* deps/entry are ordinary build content — resolve them under build, not the
@@ -69,8 +69,8 @@ function defineScriptRunnable(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-export const scriptRunRule: RuleRegistration = {
+export const scriptRunRule: RuleDefinition = {
   type: "script",
-  constraints: { [BUILD_OPERATION]: "run" },
+  properties: { [BUILD_OPERATION]: "run" },
   evaluate: defineScriptRunnable,
 };

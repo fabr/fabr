@@ -52,7 +52,7 @@ import {
   registerProvenanceRenderer,
 } from "../core/Provenance";
 import { BuildAction, BuildResult } from "../core/BuildAction";
-import { IRuleDefinition, RepositoryProvider, SubTargetInputs } from "../rules/Types";
+import { RuleDefinition, RepositoryProvider, SubTargetInputs } from "../rules/Types";
 import { Constraints, HOST, RUN_OVERRIDE, shownConstraints, TARGET } from "./Constraints";
 import { IFetchReport, ITargetBuildTask, TaskDescription } from "./BuildEvents";
 import { ExecutionContext } from "./ExecutionContext";
@@ -303,7 +303,8 @@ interface IBuildModel {
   getProperties(): { name: string; decl: IPropertyDecl }[];
   /** The model's registry: rule selection and repository providers ride the
    * model (built per load from core + active plugins), not a global. */
-  getTargetRule(type: string, constraints: Constraints): IRuleDefinition | undefined;
+  getTargetRules(type: string): RuleDefinition[];
+  getDefaultRules(): RuleDefinition[];
   /** The operations a type has a rule for — what a target of it can be asked
    * to do, which is what makes an unsupported request explainable. */
   getOperations(type: string): string[];
@@ -312,7 +313,8 @@ interface IBuildModel {
 
 /** The use site recorded on a dependency-stack node, when one exists. */
 function useSiteOf(stack: IDependencyStack | undefined): IUseSite | undefined {
-  return stack ? { value: stack.value, property: stack.property, target: stack.target } : undefined;
+  const frame = useFrameOf(stack);
+  return frame ? { value: frame.value, property: frame.property, target: frame.target } : undefined;
 }
 
 /** The content name a substitution's stdout is captured under. Internal to the
@@ -364,12 +366,50 @@ function normalizeCommandOutput(text: string): string {
   return text.trim().replace(/\s+/g, " ");
 }
 
-interface IDependencyStack {
+/** A written value being resolved: `value` in `property`, which is `target`'s
+ * own property, or a global's where there is no `target`. */
+interface IUseFrame {
   target?: ITargetDecl;
   property: IPropertyDecl;
   context: BuildContext;
   value: INameValue;
   next?: IDependencyStack;
+}
+
+/** A target whose rule is being selected and evaluated: everything below it on
+ * the stack is read on its behalf, whether or not through one of its own
+ * properties (a global its rule reads, a key its rule is selected on). */
+interface IEvaluationFrame {
+  evaluating: ITargetDecl;
+  context: BuildContext;
+  next?: IDependencyStack;
+}
+
+/**
+ * The chain of demand that led to what is being resolved, nearest first: the
+ * written values being resolved ({@link IUseFrame}) and the targets being
+ * evaluated ({@link IEvaluationFrame}). A name is circular when it is requested
+ * with itself already on the stack, in the same context.
+ */
+type IDependencyStack = IUseFrame | IEvaluationFrame;
+
+function isEvaluation(frame: IDependencyStack): frame is IEvaluationFrame {
+  return "evaluating" in frame;
+}
+
+/** The nearest written value on the stack — the one being resolved. */
+function useFrameOf(stack: IDependencyStack | undefined): IUseFrame | undefined {
+  let node = stack;
+  while (node && isEvaluation(node)) {
+    node = node.next;
+  }
+  return node;
+}
+
+/** The target a frame puts on the stack, if any: the one being evaluated, or
+ * the owner of the property being resolved. */
+function targetOf(frame: IDependencyStack): ITargetDecl | undefined {
+  return isEvaluation(frame) ? frame.evaluating : frame.target;
 }
 
 /**
@@ -478,7 +518,7 @@ export class BuildContext {
   public readonly execution: ExecutionContext;
   protected readonly constraints: Constraints;
   private readonly model: IBuildModel;
-  private propCache: Map<string, Computable<Property>>;
+  private propCache: Map<string, Computable<Property | undefined>>;
   private targetCache: Map<string, Computable<SourceRef[]>>;
 
   constructor(model: IBuildModel, constraints: Constraints, execution: ExecutionContext) {
@@ -672,11 +712,57 @@ export class BuildContext {
       return Computable.resolve(true);
     }
     return Computable.forAll(
-      guard.map(([key, pattern]) =>
-        this.substituteNameVars(pattern, stack).then(substituted =>
-          this.getProperty(key, stack).then(value => globMatcher(substituted.toGlobString())(value.toString()))
-        )
-      ),
+      guard.map(([key, pattern]) => this.getProperty(key, stack).then(value => this.patternAdmits(pattern, value, stack))),
+      (...admitted: boolean[]) => admitted.every(match => match)
+    );
+  }
+
+  /** Whether a guard's `pattern` matches the property `value` it is written
+   * against — the one comparison every guard makes. */
+  private patternAdmits(pattern: Name, value: Property, stack?: IDependencyStack): Computable<boolean> {
+    return this.substituteNameVars(pattern, stack).then(substituted => globMatcher(substituted.toGlobString())(value.toString()));
+  }
+
+  /**
+   * The rule that builds `target`, a target of `type`, in this configuration,
+   * or undefined if none applies. A rule applies where both its guards admit —
+   * its `properties` judged against the configuration, its `targetProperties`
+   * against the target's own — and the most specific applicable rule is
+   * selected (see {@link mostSpecificRule}). The type's own rules are preferred:
+   * the default (all-types) rules are consulted only where none of those
+   * applies.
+   *
+   * These are guards as a declaration's are ({@link guardAdmits}), except that a
+   * key with no value here makes the rule inapplicable rather than being an
+   * error. A selection that fails is the target's failure.
+   */
+  private selectRule(type: string, target: TargetContext): Computable<RuleDefinition | undefined> {
+    const among = (candidates: RuleDefinition[], ruleSet: string): Computable<RuleDefinition | undefined> =>
+      Computable.forAll(
+        candidates.map(rule => this.ruleAdmits(rule, target)),
+        (...admitted: boolean[]) => mostSpecificRule(candidates.filter((_, i) => admitted[i]), ruleSet)
+      );
+    try {
+      return among(this.model.getTargetRules(type), `'${type}'`)
+        .then(rule => rule ?? among(this.model.getDefaultRules(), "default"))
+        .catch(err => {
+          throw target.failure(err);
+        });
+    } catch (err) {
+      /* A read that fails where it is built, not where it settles (a cycle). */
+      return Computable.reject(target.failure(toError(err)));
+    }
+  }
+
+  private ruleAdmits(rule: RuleDefinition, target: TargetContext): Computable<boolean> {
+    const stack = target.stack;
+    const admits = (pattern: Name, value: Property | undefined): Computable<boolean> =>
+      value === undefined ? Computable.resolve(false) : this.patternAdmits(pattern, value, stack);
+    return Computable.forAll(
+      [
+        ...guardOf(rule.properties).map(([key, pattern]) => this.getOptionalProperty(key, stack).then(value => admits(pattern, value))),
+        ...guardOf(rule.targetProperties).map(([key, pattern]) => target.getProperty(key).then(value => admits(pattern, value))),
+      ],
       (...admitted: boolean[]) => admitted.every(match => match)
     );
   }
@@ -726,7 +812,7 @@ export class BuildContext {
      * property) rides as the frame's target, which keeps the frame out of the
      * global-property cycle check exactly as every target-property frame is. */
     const guarded = candidates[0];
-    const frame: IDependencyStack = {
+    const frame: IUseFrame = {
       property: guarded,
       target: owner,
       context: this,
@@ -765,9 +851,8 @@ export class BuildContext {
    * the given hints (a nearest-match suggestion etc.) as its `help:` line.
    */
   private unresolvedNameError(name: string, stack: IDependencyStack | undefined, reason: string, hints: string[]): Error {
-    const err = stack
-      ? new NameResolutionError(Name.fromLiteral(name), declPosn(stack.value), useSiteOf(stack), reason)
-      : new Error(reason);
+    const frame = useFrameOf(stack);
+    const err = frame ? new NameResolutionError(Name.fromLiteral(name), declPosn(frame.value), useSiteOf(frame), reason) : new Error(reason);
     return withHints(err, hints);
   }
 
@@ -792,8 +877,8 @@ export class BuildContext {
   }
 
   public getProperty(name: string, stack?: IDependencyStack, callerOverrides?: Constraints): Computable<Property> {
-    this.assertNonCircularProperty(name, stack);
     if (callerOverrides) {
+      this.assertNonCircularProperty(name, stack);
       /* Mirror getTarget's override path: a caller's explicit override outranks a
        * `<k=v>` requirement on the property's value (ambient < requirement < caller), so
        * for a declared property it threads into the SAME value resolution rather than
@@ -809,28 +894,50 @@ export class BuildContext {
       }
       return this.getContextWithOverrides(callerOverrides).getProperty(name, stack);
     }
-    const cached = this.propCache.get(name);
-    if (cached) {
-      /* Already seen */
-      return cached;
-    }
     const def = this.model.getDecl(name);
-    if (!def || def.kind !== DeclKind.Property) {
+    const entry = def?.kind === DeclKind.Property ? def : undefined;
+    if (!entry && !this.propCache.has(name)) {
       const reason = def
         ? `'${name}' names a ${def.kind === DeclKind.Target ? "target" : "namespace"}, not a property`
         : `Unknown property '${name}'`;
       const nearest = def ? undefined : closestMatch(name, this.model.getProperties().map(prop => prop.name));
       throw this.unresolvedNameError(name, stack, reason, nearest ? [`did you mean '${nearest}'?`] : []);
     }
-    const result = this.getAvailableDecls(def, stack).then(applicable =>
-      this.resolveStringProperty(unmatchedIfAbsent(soleDecl(applicable), name, def), undefined, stack)
-    );
+    return this.getOptionalProperty(name, stack).then(value => {
+      if (value === undefined) {
+        /* Only a declared property can be without a value: a name a constraint
+         * supplies always has one. */
+        throw entry ? unmatchedError(name, entry) : new Error(`'${name}' has no value`);
+      }
+      return value;
+    });
+  }
+
+  /**
+   * {@link getProperty}, but undefined where `name` has no value in this
+   * configuration: nothing declares it as a property (and no constraint
+   * supplies it), or no declaration of it applies here.
+   */
+  public getOptionalProperty(name: string, stack?: IDependencyStack): Computable<Property | undefined> {
+    this.assertNonCircularProperty(name, stack);
+    const cached = this.propCache.get(name);
+    if (cached) {
+      /* Already seen */
+      return cached;
+    }
+    const def = this.model.getDecl(name);
+    if (def?.kind !== DeclKind.Property) {
+      return Computable.resolve(undefined);
+    }
+    const result = this.getAvailableDecls(def, stack).then(applicable => {
+      const decl = soleDecl(applicable);
+      return decl ? this.resolveStringProperty(decl, undefined, stack) : undefined;
+    });
     this.propCache.set(name, result);
     return result;
   }
 
   public getTarget(name: string, stack?: IDependencyStack, callerOverrides?: Constraints): Computable<SourceRef[]> {
-    this.assertNonCircularTarget(name, stack);
     if (callerOverrides) {
       /* A caller's explicit override must outrank a `<k=v>` requirement written on
        * a property's value (ambient < requirement < caller override — see
@@ -856,6 +963,10 @@ export class BuildContext {
       }
       return this.getContextWithOverrides(callerOverrides).getTarget(name, stack);
     }
+    /* Judged in the context the target is resolved in — hence after the override
+     * hop above, which a target reaching ITSELF under another configuration
+     * takes with its own evaluation on the stack. */
+    this.assertNonCircularTarget(name, stack);
     const cached = this.targetCache.get(name);
     if (cached) {
       /* Already seen */
@@ -899,7 +1010,7 @@ export class BuildContext {
            * take. */
           hints.push("'build' and 'test' take whole target names; a ':' projection into a target's files applies to ls, cat, and run");
         }
-        hints.push(...this.unknownNameHints(name, !stack));
+        hints.push(...this.unknownNameHints(name, !useFrameOf(stack)));
         throw this.unresolvedNameError(name, stack, `Unknown name '${name}'`, hints);
       }
     }
@@ -1407,7 +1518,7 @@ export class BuildContext {
                * nothing is no more an error than the glob matching nothing. */
               const miss =
                 relativeTo && !substName.hasGlob()
-                  ? (): Error => new NameResolutionError(substName, declPosn(stack?.value ?? relativeTo), useSiteOf(stack))
+                  ? (): Error => new NameResolutionError(substName, declPosn(useFrameOf(stack)?.value ?? relativeTo), useSiteOf(stack))
                   : undefined;
               for (const source of t) {
                 if (source instanceof RepositoryRef || source instanceof FileSetRef) {
@@ -1496,10 +1607,11 @@ export class BuildContext {
             ? undefined
             : (): Error => {
                 const written = substName.toString();
-                const reason = stack ? undefined : `Unknown name '${written}'`;
+                const frame = useFrameOf(stack);
+                const reason = frame ? undefined : `Unknown name '${written}'`;
                 return withHints(
-                  new NameResolutionError(substName, declPosn(stack?.value ?? relativeTo), useSiteOf(stack), reason),
-                  this.unknownNameHints(written, !stack)
+                  new NameResolutionError(substName, declPosn(frame?.value ?? relativeTo), useSiteOf(stack), reason),
+                  this.unknownNameHints(written, !frame)
                 );
               };
           /* Express the pattern in the source's own root-relative namespace up
@@ -1579,8 +1691,9 @@ export class BuildContext {
     if (pipeline === undefined || pipeline.length === 0) {
       return Computable.reject(new Error(`Malformed command substitution '${part.value}'`));
     }
+    const written = useFrameOf(stack);
     return Computable.forAll(
-      pipeline.map(stage => this.resolveCommandStage(stage, stack?.property, stack?.target, stack)),
+      pipeline.map(stage => this.resolveCommandStage(stage, written?.property, written?.target, stack)),
       (...substituted: IResolvedCommandStage[]) => substituted
     ).then(substituted => this.runResolvedCommand(substituted, part.value, stack));
   }
@@ -1715,7 +1828,7 @@ export class BuildContext {
      * map reference uses); else it is a plain `cmd args…` single stage. */
     if (names.length === 1) {
       const value = names[0];
-      const info: IDependencyStack = { property: prop, target, context: this, value, next: stack };
+      const info: IUseFrame = { property: prop, target, context: this, value, next: stack };
       const nextSeen = new Set(seen).add(prop);
       return this.referencedProperty(value.value, info).then(({ prop: ref }) =>
         ref ? this.getCommandPipeline(ref, undefined, stack, nextSeen) : Computable.resolve<CommandPipeline>([{ command: value, args: [] }])
@@ -1779,11 +1892,13 @@ export class BuildContext {
         }
       );
     }
-    const rule = this.model.getTargetRule(target.type, this.constraints);
-    if (!rule) {
-      throw new NoRuleFoundError(target, this.constraints, this.model.getOperations(target.type));
-    }
-    return this.evaluateTarget(new DeclaredTargetContext(target, targetDef, this, stack), rule);
+    const context = new DeclaredTargetContext(target, targetDef, this, { evaluating: target, context: this, next: stack });
+    return this.selectRule(target.type, context).then(rule => {
+      if (!rule) {
+        throw new NoRuleFoundError(target, this.constraints, this.model.getOperations(target.type));
+      }
+      return this.evaluateTarget(context, rule);
+    });
   }
 
   /**
@@ -1810,17 +1925,18 @@ export class BuildContext {
     if (!targetDef) {
       throw new Error("Targetdef '" + def.type + "' not found"); /* Can't happen due to earlier checks */
     }
-    const rule = this.model.getTargetRule(def.type, this.constraints);
-    if (!rule) {
-      throw new NoRuleFoundError(def, this.constraints, this.model.getOperations(def.type));
-    }
-    const context = new DeclaredTargetContext(def, targetDef, this, stack);
-    return rule
-      .evaluate(context)
-      .then(result => (result instanceof BuildAction ? result : undefined))
-      .catch(err => {
-        throw context.failure(err);
-      });
+    const context = new DeclaredTargetContext(def, targetDef, this, { evaluating: def, context: this, next: stack });
+    return this.selectRule(def.type, context).then(rule => {
+      if (!rule) {
+        throw new NoRuleFoundError(def, this.constraints, this.model.getOperations(def.type));
+      }
+      return rule
+        .evaluate(context)
+        .then(result => (result instanceof BuildAction ? result : undefined))
+        .catch(err => {
+          throw context.failure(err);
+        });
+    });
   }
 
   /**
@@ -1833,7 +1949,7 @@ export class BuildContext {
    * source, each stamped. No reporting happens here — the model layer doesn't
    * log; the driver renders the failure tree.
    */
-  private evaluateTarget(context: TargetContext, rule: IRuleDefinition): Computable<SourceRef[]> {
+  private evaluateTarget(context: TargetContext, rule: RuleDefinition): Computable<SourceRef[]> {
     return rule
       .evaluate(context)
       .then(result => (result instanceof BuildAction ? this.runAction(result, context) : result))
@@ -1853,8 +1969,9 @@ export class BuildContext {
    * (compile → run, object → link): "a <type> of these inputs, however the
    * system of rules builds one". It is an ordinary target: same evaluation
    * core, same rule selection (under the owner's constraints, with explicit
-   * overrides available), same result contract — the delegate's sources, as
-   * evaluated, unrestricted — its own context (bag-backed), provenance and
+   * overrides available, and judged against the inputs it is given), same
+   * result contract — the delegate's sources, as evaluated, unrestricted — its
+   * own context (bag-backed), provenance and
    * error boundary. It differs from a declared target only in having no
    * namespace entry and in receiving its inputs directly.
    */
@@ -1875,10 +1992,6 @@ export class BuildContext {
     if (!targetDef) {
       throw new Error(`Internal error: sub-target type '${type}' has no registered targetdef`);
     }
-    const rule = this.model.getTargetRule(type, buildContext.constraints);
-    if (!rule) {
-      throw new Error(`No rule found for anonymous target type '${type}'`);
-    }
     const context = new AnonymousTargetContext(
       buildContext,
       targetDef,
@@ -1887,7 +2000,12 @@ export class BuildContext {
       options?.label,
       owner.stack
     );
-    return buildContext.evaluateTarget(context, rule);
+    return buildContext.selectRule(type, context).then(rule => {
+      if (!rule) {
+        throw new Error(`No rule found for anonymous target type '${type}'`);
+      }
+      return buildContext.evaluateTarget(context, rule);
+    });
   }
 
   /**
@@ -1966,7 +2084,8 @@ export class BuildContext {
   private findTargetInStack(target: string, stack?: IDependencyStack): IDependencyStack | undefined {
     let node = stack;
     while (node) {
-      if (node.target && declName(node.target) === target && node.context === this) {
+      const onStack = targetOf(node);
+      if (onStack && declName(onStack) === target && node.context === this) {
         return node;
       }
       node = node.next;
@@ -1979,7 +2098,7 @@ export class BuildContext {
   private findPropertyInStack(property: string, stack?: IDependencyStack): IDependencyStack | undefined {
     let node = stack;
     while (node) {
-      if (node.property.name.toBaseString() === property && node.target === undefined && node.context === this) {
+      if (!isEvaluation(node) && node.target === undefined && node.context === this && node.property.name.toBaseString() === property) {
         return node;
       }
       node = node.next;
@@ -1989,14 +2108,14 @@ export class BuildContext {
   private assertNonCircularProperty(property: string, stack?: IDependencyStack): void {
     const entry = this.findPropertyInStack(property, stack);
     if (entry) {
-      throw new CircularDependencyError(property, cycleFrom(stack, entry));
+      throw new CircularDependencyError(property, cycleFrom(stack, entry), undefined);
     }
   }
 
   private assertNonCircularTarget(target: string, stack?: IDependencyStack): void {
     const entry = this.findTargetInStack(target, stack);
     if (entry) {
-      throw new CircularDependencyError(target, cycleFrom(stack, entry));
+      throw new CircularDependencyError(target, cycleFrom(stack, entry), targetOf(entry));
     }
   }
 }
@@ -2004,13 +2123,16 @@ export class BuildContext {
 /**
  * The cycle's use sites, closing reference (the head of the stack, which named
  * an already-resolving name) first through to the entry that re-entered it. A
- * self-reference closes on the stack head itself, giving one site.
+ * self-reference closes on the stack head itself, giving one site. An entry
+ * that is a target's evaluation contributes no site of its own.
  */
 function cycleFrom(stack: IDependencyStack | undefined, entry: IDependencyStack): IUseSite[] {
   const sites: IUseSite[] = [];
   let node = stack;
   while (node) {
-    sites.push({ value: node.value, property: node.property, target: node.target });
+    if (!isEvaluation(node)) {
+      sites.push({ value: node.value, property: node.property, target: node.target });
+    }
     if (node === entry) {
       break;
     }
@@ -2027,8 +2149,9 @@ function cycleFrom(stack: IDependencyStack | undefined, entry: IDependencyStack)
 function requestingTargets(target: ITargetDecl, stack?: IDependencyStack): ITargetDecl[] {
   const result: ITargetDecl[] = [];
   for (let node = stack; node; node = node.next) {
-    if (node.target && node.target !== target && !result.includes(node.target)) {
-      result.push(node.target);
+    const requester = targetOf(node);
+    if (requester && requester !== target && !result.includes(requester)) {
+      result.push(requester);
     }
   }
   return result;
@@ -2139,6 +2262,54 @@ function guardText(decl: IPropertyDecl): string {
   return guard.length === 0 ? "unguarded" : `<${guard.map(([key, value]) => `${key}=${value.toString()}`).join(", ")}>`;
 }
 
+/** A rule's guard record as a guard: each pattern parsed. */
+function guardOf(record: Record<string, string> | undefined): NameConstraint[] {
+  return Object.entries(record ?? {}).map(([key, pattern]): NameConstraint => [key, rulePattern(pattern)]);
+}
+
+/** Parsed once per distinct pattern: a rule's guards are read on every
+ * selection. */
+const rulePatterns = new Map<string, Name>();
+function rulePattern(written: string): Name {
+  let pattern = rulePatterns.get(written);
+  if (pattern === undefined) {
+    pattern = parseName(written);
+    rulePatterns.set(written, pattern);
+  }
+  return pattern;
+}
+
+/**
+ * The rule to select among those whose guards admit a target: the one naming
+ * the most keys, over both of its guards, a rule naming none being the
+ * wildcard. Undefined if `applicable` is empty; two equally specific rules are
+ * an error. `ruleSet` names the candidates in that error.
+ */
+function mostSpecificRule(applicable: RuleDefinition[], ruleSet: string): RuleDefinition | undefined {
+  if (applicable.length === 0) {
+    return undefined;
+  }
+  const specificity = (rule: RuleDefinition): number => guardOf(rule.properties).length + guardOf(rule.targetProperties).length;
+  let best = applicable[0];
+  let tiedAt: RuleDefinition | undefined;
+  for (const rule of applicable.slice(1)) {
+    if (specificity(rule) > specificity(best)) {
+      best = rule;
+      tiedAt = undefined;
+    } else if (specificity(rule) === specificity(best)) {
+      tiedAt = rule;
+    }
+  }
+  if (tiedAt) {
+    /* Two equally-specific rules both apply — the selection would be an arbitrary
+     * registration-order accident, so reject it rather than silently pick one. */
+    const show = (rule: RuleDefinition): string =>
+      `{${[...guardOf(rule.properties), ...guardOf(rule.targetProperties)].map(([key, pattern]) => `${key}=${pattern.toString()}`).join(", ")}}`;
+    throw new Error(`Ambiguous ${ruleSet} rule selection: ${show(best)} and ${show(tiedAt)} are equally specific`);
+  }
+  return best;
+}
+
 /**
  * The selected declaration, or a hard error if every guard excluded this
  * configuration. A *global* has no default tier to fall back to (unlike a
@@ -2150,8 +2321,14 @@ function unmatchedIfAbsent(selected: IPropertyDecl | undefined, name: string, en
   if (selected) {
     return selected;
   }
+  throw unmatchedError(name, entry);
+}
+
+/** The error for a property that is declared, but under no guard that admits
+ * this configuration. */
+function unmatchedError(name: string, entry: IPropertyEntry): Error {
   const guards = [...entry.decls, ...entry.defaults].map(guardText);
-  throw attachHelp(
+  return attachHelp(
     new Error(`'${name}' is declared, but no declaration of it applies to this configuration`),
     `it is declared under ${guards.join(", ")} — add an unguarded declaration, or a 'default ${name} = …;'`
   );

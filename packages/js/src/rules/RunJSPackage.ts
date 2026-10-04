@@ -31,7 +31,7 @@ import {
   BUILD_OVERRIDE,
   Computable,
   PackageFileSet,
-  RuleRegistration,
+  RuleDefinition,
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
@@ -53,8 +53,8 @@ function runJsPackage(context: TargetContext): Computable<RuleResult> {
   });
 }
 
-export const runJsPackageRule: RuleRegistration = {
+export const runJsPackageRule: RuleDefinition = {
   type: "js_package",
-  constraints: { [BUILD_OPERATION]: "run" },
+  properties: { [BUILD_OPERATION]: "run" },
   evaluate: runJsPackage,
 };

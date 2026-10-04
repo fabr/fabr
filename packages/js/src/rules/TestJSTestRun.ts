@@ -49,7 +49,7 @@ import {
   mergeTestReports,
   MultiError,
   parseJson,
-  RuleRegistration,
+  RuleDefinition,
   RuleResult,
   stringListConfig,
   TargetContext,
@@ -284,4 +284,4 @@ function evaluateTestRun(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-export const jsTestRunRule: RuleRegistration = { type: "js_test_run", constraints: {}, evaluate: evaluateTestRun };
+export const jsTestRunRule: RuleDefinition = { type: "js_test_run", properties: {}, evaluate: evaluateTestRun };

@@ -17,6 +17,12 @@ version number.
 - Fix strict resolution checking to apply at the collection point.
 - Fix build file reloading orphaning running processes.
 - Add env property to generate + serve targets.
+- Fix rule selection ignoring `default` and declared globals (only explicit overrides counted).
+- Add `targetProperties` to rule registrations, selecting a rule on the target's own properties.
+- Fix a dependency cycle through something a rule reads (a tool global naming a target that
+needs the reader) hanging the build instead of being reported.
+- "required by" chains now name the target whose rule read a global (a tool setting), in start
+lines and in error notes; they used to stop at the global.
 
 @fabr-build/cli:
 - Live progress display on terminal with progress bars and test status (suppressed with -q)

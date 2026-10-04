@@ -24,7 +24,7 @@
  * compiles as a sibling but is never run.
  */
 
-import { BUILD_OPERATION, BUILD_OVERRIDE, Computable, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
+import { BUILD_OPERATION, BUILD_OVERRIDE, Computable, RuleDefinition, RuleResult, TargetContext } from "@fabr-build/core";
 import { compileAndRunTests } from "../TestPipeline";
 
 function runJsTest(context: TargetContext): Computable<RuleResult> {
@@ -51,4 +51,4 @@ function runJsTest(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-export const jsTestRule: RuleRegistration = { type: "js_test", constraints: { [BUILD_OPERATION]: "test" }, evaluate: runJsTest };
+export const jsTestRule: RuleDefinition = { type: "js_test", properties: { [BUILD_OPERATION]: "test" }, evaluate: runJsTest };

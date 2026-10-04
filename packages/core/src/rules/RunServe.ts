@@ -34,7 +34,7 @@ import { TargetContext, toEnvironment } from "../model/BuildContext";
 import { BUILD_OPERATION, BUILD_OVERRIDE } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
-import { RuleRegistration, RuleResult } from "./Types";
+import { RuleDefinition, RuleResult } from "./Types";
 
 function defineServeRunnable(context: TargetContext): Computable<RuleResult> {
   /* deps/files are ordinary build content — resolve them under build, not the
@@ -64,8 +64,8 @@ function defineServeRunnable(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-export const serveRunRule: RuleRegistration = {
+export const serveRunRule: RuleDefinition = {
   type: "serve",
-  constraints: { [BUILD_OPERATION]: "run" },
+  properties: { [BUILD_OPERATION]: "run" },
   evaluate: defineServeRunnable,
 };

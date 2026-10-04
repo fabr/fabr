@@ -41,7 +41,7 @@ import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { createPipelineAction, stagePipeline } from "./PipelineAction";
-import { RuleRegistration, RuleResult } from "./Types";
+import { RuleDefinition, RuleResult } from "./Types";
 
 function generate(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
@@ -70,4 +70,4 @@ function assemblePipeline(
   return createPipelineAction(files, specs, stages[0].stdin, output, "generate", env);
 }
 
-export const generateRule: RuleRegistration = { type: "generate", constraints: { [BUILD_OPERATION]: "build" }, evaluate: generate };
+export const generateRule: RuleDefinition = { type: "generate", properties: { [BUILD_OPERATION]: "build" }, evaluate: generate };

@@ -20,7 +20,7 @@
 import { TargetContext } from "../model/BuildContext";
 import { Computable } from "../core/Computable";
 import { FileSource } from "../core/FileSet";
-import { RuleRegistration } from "./Types";
+import { RuleDefinition } from "./Types";
 import { Flag } from "../core/Flag";
 
 /**
@@ -34,4 +34,4 @@ export function createFlag(context: TargetContext): Computable<FileSource> {
   return context.getFlags("provides").then(provides => new Flag(name, provides));
 }
 
-export const flagRule: RuleRegistration = { type: "flag", constraints: {}, evaluate: createFlag };
+export const flagRule: RuleDefinition = { type: "flag", properties: {}, evaluate: createFlag };

@@ -33,7 +33,7 @@ import {
   PackageFileSet,
   readJsonFile,
   RepositoryRef,
-  RuleRegistration,
+  RuleDefinition,
   RuleResult,
   TargetContext,
   toJsonObject,
@@ -246,8 +246,8 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-export const buildJsPackageRule: RuleRegistration = {
+export const buildJsPackageRule: RuleDefinition = {
   type: "js_package",
-  constraints: { [BUILD_OPERATION]: "build" },
+  properties: { [BUILD_OPERATION]: "build" },
   evaluate: buildJsPackage,
 };

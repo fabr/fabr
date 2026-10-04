@@ -158,10 +158,14 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       /* Mechanical failures of the target's execution report as one group */
       const execution = causes.filter(cause => cause instanceof ExecutionError);
       for (const cause of causes.filter(cause => !(cause instanceof ExecutionError))) {
-        /* A dependency reached without a written reference (a rule resolving
-         * a target directly) gets a hop against the requiring declaration; an
-         * anonymous sub-target (label set) is part of its declared target. */
-        const direct = cause instanceof DependencyFailedError && !cause.label;
+        /* A dependency reached without a written reference of the target's own
+         * gets a hop against the requiring declaration: a rule resolving a
+         * target directly, or the target reaching it through a GLOBAL — one its
+         * rule read, or one a property of its named — where the reference
+         * crossed is the global's own value and says nothing of who wanted it.
+         * An anonymous sub-target (label set) is part of its declared target. */
+        const direct =
+          (cause instanceof DependencyFailedError && !cause.label) || (cause instanceof ReferenceFailedError && cause.target === undefined);
         const hops = direct ? [...trail, { message: `required by ${declName(err.target)}`, loc: declPosn(err.target) }] : trail;
         this.walk(report, cause, hops, err, direct ? (root ?? declName(err.target)) : root);
       }
@@ -247,7 +251,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
     }
     const written = closing.value.value.toString();
     const shadowed = written !== cause.name;
-    const reached = cause.cycle[cause.cycle.length - 1].target;
+    const reached = cause.entered;
     const notes =
       rest.length > 0
         ? rest.map(site => ({ message: `required by ${describeUseSite(site.property, site.target)}`, loc: declPosn(site.value) }))

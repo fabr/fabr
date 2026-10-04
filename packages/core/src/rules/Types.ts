@@ -69,26 +69,6 @@ export type SubTargetInputs = Record<string, SubTargetInput>;
 export type RuleResult = FileSource | FileSource[] | BuildAction;
 
 /**
- * A rule: the knowledge of how to build targets of a type. A single evaluate
- * function — always run, per evaluation, as the in-memory Computable graph
- * (property/global lookups, materialization, layout, generated-file
- * computation, and composing sub-targets via `context.subTarget`) — that
- * yields a RuleResult. Evaluation is given no work directory and never executes
- * tools; all execution happens inside the build steps of the BuildActions
- * it (and the sub-targets it builds) yield. A rule cannot tell whether it is
- * building a declared or an anonymous target: it reads its properties through
- * the same `context` accessors either way (for an anonymous target they are
- * served from the caller-supplied inputs).
- */
-export interface IRuleDefinition {
-  /** The constraint *pattern* this rule matches: selected when every key here
-   * equals the ambient config's value (see BuildModel.selectMostSpecific). A plain
-   * record — a developer-authored match pattern, not a user-keyed build config. */
-  constraints: Record<string, string>;
-  evaluate: (context: TargetContext) => Computable<RuleResult>;
-}
-
-/**
  * Repositories are not rule-built targets: a provider lazily constructs the
  * instance for a declaration, per BuildContext (its configuration resolves
  * under that context's constraints). What it constructs is the declaration's
@@ -99,19 +79,46 @@ export interface IRuleDefinition {
 export type RepositoryProvider = (context: TargetContext) => Computable<Repository | FileSource>;
 
 /**
- * A rule contributed to a build (by core or a plugin): the knowledge of how to
- * build targets of a `type` under some constraints. Omit `type` for a *default*
+ * A rule: the knowledge of how to build targets of a `type` where its guards
+ * admit, contributed to a build by core or a plugin. Omit `type` for a *default*
  * rule — the type-dimension wildcard, selected for any target type that has no
  * more specific rule of its own. The BuildModel indexes these into its rule
  * tables; a future language surface for defining rules would contribute the same
  * shape.
+ *
+ * A rule is selected as a guarded declaration is: every pattern must match the
+ * value of the property it names (a glob, as in `srcs<TARGET=*-linux-*>`), and
+ * the configuration is read as properties, so a `default` or a declared global
+ * counts the same as a `-D`. Two things differ from a property's guard: a key
+ * with no value here — nothing declares it, or no declaration of it applies —
+ * makes the rule inapplicable rather than being an error; and among the rules
+ * that apply, the one naming the most keys (over both records) is selected, two
+ * equally specific ones being an error.
  */
-export interface RuleRegistration {
+export interface RuleDefinition {
   /** Target type this rule builds; omitted → a default (all-types) rule. */
   type?: string;
-  /** The constraint match pattern (a plain record — see {@link IRuleDefinition}). */
-  constraints: Record<string, string>;
-  evaluate: IRuleDefinition["evaluate"];
+  /** The guard over the build configuration: property name → pattern
+   * (`{ [BUILD_OPERATION]: "test" }`). A plain record — a developer-authored
+   * match pattern, not a user-keyed build config. */
+  properties: Record<string, string>;
+  /** The guard over the TARGET's own STRING properties: property name →
+   * pattern. A property the target does not set makes the rule inapplicable.
+   * For a rule with a `type`, each key must be a STRING property of that
+   * type's targetdef. */
+  targetProperties?: Record<string, string>;
+  /**
+   * The rule body — always run, per evaluation, as the in-memory Computable
+   * graph (property/global lookups, materialization, layout, generated-file
+   * computation, and composing sub-targets via `context.subTarget`). It is given
+   * no work directory and never executes tools; all execution happens inside
+   * the build steps of the BuildActions it (and the sub-targets it builds)
+   * yield. It cannot tell whether it is building a declared or an anonymous
+   * target: it reads its properties through the same `context` accessors either
+   * way (for an anonymous target they are served from the caller-supplied
+   * inputs).
+   */
+  evaluate: (context: TargetContext) => Computable<RuleResult>;
 }
 
 /** A repository type contributed to a build. */
@@ -139,7 +146,7 @@ export interface RepositoryRegistration {
  * `rules` and `repositories` are tracked by the {@link BuildModel}.
  */
 export interface PluginContribution {
-  rules?: RuleRegistration[];
+  rules?: RuleDefinition[];
   repositories?: RepositoryRegistration[];
   includes?: string[];
 }

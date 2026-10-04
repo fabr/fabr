@@ -27,7 +27,7 @@ import { Name, NAME_COMPONENT_SEPARATOR, NAME_LEVEL_SEPARATOR } from "../core/Na
 import { attachHelp, toError } from "../core/Errors";
 import { declPosn, IPropertyDecl } from "../model/AST";
 import { DependencyFailedError, NameResolutionError } from "../model/Errors";
-import { RuleRegistration, RuleResult } from "./Types";
+import { RuleDefinition, RuleResult } from "./Types";
 
 interface Member {
   /** The vended publish ref this member is assigned — destination + validated name. */
@@ -365,8 +365,8 @@ function validateMember(context: TargetContext, prop: { key: Name; decl: IProper
  * files view could skip, and the generic files rule (a build passthrough)
  * serves it — which is what makes `fabr cat release/@npm/x/1.0.0/package.json`
  * and the same reference written in a build script name the same thing. */
-export const syncRule: RuleRegistration = {
+export const syncRule: RuleDefinition = {
   type: "sync",
-  constraints: { [BUILD_OPERATION]: "build" },
+  properties: { [BUILD_OPERATION]: "build" },
   evaluate: syncPackages,
 };

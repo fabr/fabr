@@ -43,7 +43,7 @@ import {
   MemoryFile,
   PackageFileSet,
   RewriteFn,
-  RuleRegistration,
+  RuleDefinition,
   RuleResult,
   RunnableFileSet,
   TargetContext,
@@ -348,8 +348,8 @@ function buildWithInputs(
   );
 }
 
-export const buildJsBundleRule: RuleRegistration = {
+export const buildJsBundleRule: RuleDefinition = {
   type: "js_bundle",
-  constraints: { [BUILD_OPERATION]: "build" },
+  properties: { [BUILD_OPERATION]: "build" },
   evaluate: buildJsBundle,
 };

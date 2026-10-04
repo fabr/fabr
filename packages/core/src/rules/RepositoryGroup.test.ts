@@ -52,7 +52,7 @@ import { Requirement, Selected } from "../resolver/Types";
 import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
 import { declaredRequirementOf, resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
 import { bestRoute, parseRouteKey, repositoryGroupRegistration, RouteKey, routeKeyText } from "./RepositoryGroup";
-import { PluginContribution, RuleRegistration } from "./Types";
+import { PluginContribution, RuleDefinition } from "./Types";
 
 function key(text: string): RouteKey {
   const parsed = parseRouteKey(text);
@@ -322,9 +322,9 @@ describe("repository_group (through the model)", () => {
   }
 
   let lastDepSets: FileSet[] = [];
-  const depsRule: RuleRegistration = {
+  const depsRule: RuleDefinition = {
     type: "test_deps",
-    constraints: {},
+    properties: {},
     evaluate: (context: TargetContext) =>
       context.getFileSetProperties(["deps"]).then(({ deps }) => {
         lastDepSets = deps;

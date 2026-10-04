@@ -33,7 +33,7 @@
  * (output: `out/**`).
  */
 
-import { BUILD_OPERATION, Computable, EMPTY_FILESET, FileSet, MemoryFile, RuleRegistration, RuleResult, TargetContext } from "@fabr-build/core";
+import { BUILD_OPERATION, Computable, EMPTY_FILESET, FileSet, MemoryFile, RuleDefinition, RuleResult, TargetContext } from "@fabr-build/core";
 import { buildSassOptions, CSS_OUTDIR, CSS_SRC_ROOT, CSS_TOOL_DIR } from "../CSSCompile";
 import { emitsSourceMap } from "../JSPackage";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
@@ -68,8 +68,8 @@ function buildSassCompile(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-export const buildSassCompileRule: RuleRegistration = {
+export const buildSassCompileRule: RuleDefinition = {
   type: "sass_compile",
-  constraints: { [BUILD_OPERATION]: "build" },
+  properties: { [BUILD_OPERATION]: "build" },
   evaluate: buildSassCompile,
 };

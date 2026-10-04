@@ -41,7 +41,7 @@ import {
   FileSet,
   MemoryFile,
   PackageFileSet,
-  RuleRegistration,
+  RuleDefinition,
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
@@ -85,8 +85,8 @@ function buildCssPostcss(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-export const buildCssPostcssRule: RuleRegistration = {
+export const buildCssPostcssRule: RuleDefinition = {
   type: "css_postcss",
-  constraints: { [BUILD_OPERATION]: "build" },
+  properties: { [BUILD_OPERATION]: "build" },
   evaluate: buildCssPostcss,
 };

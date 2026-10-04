@@ -45,7 +45,7 @@ import { packageLibFile, PluginContribution } from "@fabr-build/core";
 export function activate(): PluginContribution {
   return {
     rules: [
-      { type: "my_thing", constraints: { BUILD_OPERATION: "build" }, evaluate: buildMyThing },
+      { type: "my_thing", properties: { BUILD_OPERATION: "build" }, evaluate: buildMyThing },
     ],
     repositories: [{ type: "my_repository", provider: createMyRepository }],
     includes: [packageLibFile("@my/plugin", "MYTHING.fabr")],
@@ -65,13 +65,27 @@ export function activate(): PluginContribution {
   locates the file beside the package's resolved entry point, i.e. within the *built* package
   content, never a source tree. The `lib/` directory must therefore be packaged alongside the
   compiled code.
-- `rules` — each `{ type?, constraints, evaluate }` contributes the implementation of a target
-  type; omit `type` for a **default (all-types) rule**. The *schema* for a declared type (its
-  `targetdef`) lives in the plugin's `.fabr` library files, not in code. Rule selection picks the
-  rule whose constraints most specifically match the active configuration (`{}` is a wildcard); the
-  `BUILD_OPERATION` constraint carries the build verb (`fabr test x` ≡ `x[BUILD_OPERATION=test]`),
-  and an operation-specific rule must explicitly request `BUILD_OPERATION: "build"` for its
-  dependencies, since constraints otherwise propagate.
+- `rules` — each `{ type?, properties, targetProperties?, evaluate }` contributes the
+  implementation of a target type; omit `type` for a **default (all-types) rule**. The *schema* for
+  a declared type (its `targetdef`) lives in the plugin's `.fabr` library files, not in code.
+
+  A rule is selected by two **guards**, each a record of property name → pattern:
+  - `properties` is judged against the build configuration. It is read as properties, exactly as a
+    guard on a declaration is (`srcs<TARGET=*-linux-*>`): a `default`, a declared global and a
+    `-D` override all count, and a pattern is a glob. `{}` is a wildcard.
+  - `targetProperties` is judged against the target's own STRING properties, so one type can have
+    different rules for different targets (`{ framework: "vitest" }`). For a rule with a `type`,
+    each key must be a STRING property of that type's targetdef, checked when the plugin loads.
+
+  A key with no value makes the rule inapplicable, not an error: a configuration property nothing
+  declares (or that no declaration supplies in this configuration), or a target property the
+  target does not set. Among the rules that apply, the one naming the most keys across both
+  records is selected; two equally specific rules are an error. A type's own rules are preferred,
+  and the default rules are consulted only where none of those applies.
+
+  The `BUILD_OPERATION` property carries the build verb (`fabr test x` ≡
+  `x[BUILD_OPERATION=test]`), and an operation-specific rule must explicitly request
+  `BUILD_OPERATION: "build"` for its dependencies, since constraints otherwise propagate.
 
   `evaluate(context: TargetContext)` is the rule body: read the target's properties and globals,
   materialize dependencies, compute layouts and generated files, and compose sub-targets — all

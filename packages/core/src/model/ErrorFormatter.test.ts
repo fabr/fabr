@@ -94,7 +94,7 @@ describe("DiagnosticErrorFormatter", () => {
      * reference; the declaration it reached (which may be in another file) is
      * the evidence, and the remedy is the './' spelling that reaches the path. */
     const base = targetDecl("base");
-    const circular = new CircularDependencyError("base", [{ value: value("base:*.ts"), property: propertyDecl("srcs"), target: base }]);
+    const circular = new CircularDependencyError("base", [{ value: value("base:*.ts"), property: propertyDecl("srcs"), target: base }], base);
     const [diag] = capture(new DependencyFailedError(base, circular));
 
     expect(diag.message).to.equal("Circular dependency: 'base' depends on itself");
@@ -108,10 +108,11 @@ describe("DiagnosticErrorFormatter", () => {
     const one = targetDecl("one");
     const two = targetDecl("two");
     const deps = propertyDecl("deps");
-    const circular = new CircularDependencyError("one", [
+    const cycle = [
       { value: value("one"), property: deps, target: two },
       { value: value("two"), property: deps, target: one },
-    ]);
+    ];
+    const circular = new CircularDependencyError("one", cycle, one);
     const twoFailure = new DependencyFailedError(two, circular);
     const oneFailure = new DependencyFailedError(one, new ReferenceFailedError(value("two"), deps, one, twoFailure));
 
@@ -119,6 +120,30 @@ describe("DiagnosticErrorFormatter", () => {
     expect(diag.message).to.equal("Circular dependency: 'one' depends on itself");
     expect((diag.notes ?? []).map(note => note.message)).to.deep.equal(["required by one deps"]);
     expect(diag.help ?? []).to.deep.equal([]);
+  });
+
+  it("says which target read a global, where the failure crossed the global's value", () => {
+    /* `thing`'s rule read RUNNER, whose value names the target that failed. The
+     * reference crossed is the global's own, which says nothing of who read it. */
+    const thing = targetDecl("thing");
+    const runner = targetDecl("my_runner");
+    const runnerFailure = new DependencyFailedError(runner, new Error("boom"));
+    const failure = new DependencyFailedError(thing, new ReferenceFailedError(value("my_runner"), propertyDecl("RUNNER"), undefined, runnerFailure));
+
+    const [diag] = capture(failure);
+    expect(diag.message).to.equal("Failed to build my_runner: boom");
+    expect((diag.notes ?? []).map(note => note.message)).to.deep.equal(["required by RUNNER", "required by thing"]);
+  });
+
+  it("points a cycle entered through a global at the target it re-entered", () => {
+    /* `TOOL = t;` read by t's own rule: the one written site is the global's, so
+     * the declaration the name reached comes from the cycle itself. */
+    const target = targetDecl("t");
+    const circular = new CircularDependencyError("t", [{ value: value("t"), property: propertyDecl("TOOL"), target: undefined }], target);
+    const [diag] = capture(new DependencyFailedError(target, circular));
+
+    expect(diag.message).to.equal("Circular dependency: 't' depends on itself");
+    expect((diag.notes ?? []).map(note => note.message)).to.deep.equal(["'t' is declared here"]);
   });
 
   it("shows one 'required by' trail per requesting root, not every path to it", () => {

@@ -17,53 +17,14 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { DeclKind, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl } from "./AST";
+import { DeclKind, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl, PropertyType } from "./AST";
 import { IPrefixMatch, IPropertyEntry, Namespace } from "./Namespace";
 import { BuildContext } from "./BuildContext";
 import { BUILD_OPERATION, Constraints } from "./Constraints";
 import { ExecutionContext } from "./ExecutionContext";
 import { Name } from "../core/Name";
 import { parseName } from "./Parser";
-import { IRuleDefinition, PluginContribution, RepositoryProvider } from "../rules/Types";
-
-/**
- * The most specific rule among `candidates` matching the given configuration:
- * every constraint the rule declares must match (by value), and the most
- * specific match (most constraints) wins; a rule with no constraints acts as a
- * wildcard. Returns undefined if none match.
- */
-function selectMostSpecific(
-  candidates: IRuleDefinition[],
-  constraints: Constraints,
-  ruleSet: string
-): IRuleDefinition | undefined {
-  const matching = candidates.filter(candidate =>
-    Object.entries(candidate.constraints).every(([key, value]) => constraints.get(key) === value)
-  );
-  if (matching.length === 0) {
-    return undefined;
-  }
-  let best = matching[0];
-  let bestCount = Object.keys(best.constraints).length;
-  let tiedAt: IRuleDefinition | undefined;
-  for (let i = 1; i < matching.length; i++) {
-    const count = Object.keys(matching[i].constraints).length;
-    if (count > bestCount) {
-      best = matching[i];
-      bestCount = count;
-      tiedAt = undefined;
-    } else if (count === bestCount) {
-      tiedAt = matching[i];
-    }
-  }
-  if (tiedAt) {
-    /* Two equally-specific rules both match — the selection would be an arbitrary
-     * registration-order accident, so reject it rather than silently pick one. */
-    const show = (rule: IRuleDefinition): string => `{${Object.entries(rule.constraints).map(([k, v]) => `${k}=${v}`).join(", ")}}`;
-    throw new Error(`Ambiguous ${ruleSet} rule selection: ${show(best)} and ${show(tiedAt)} are equally specific`);
-  }
-  return best;
-}
+import { RuleDefinition, PluginContribution, RepositoryProvider } from "../rules/Types";
 
 /**
  * Build model holds the generalized model-as-it-is-written in the build files.
@@ -81,20 +42,20 @@ export class BuildModel {
    * knowledge, on the same footing as targets/properties — and a future language
    * surface for defining rules would add to these same tables.
    */
-  private readonly targetRules: Map<string, IRuleDefinition[]> = new Map();
-  private readonly defaultRules: IRuleDefinition[] = [];
+  private readonly targetRules: Map<string, RuleDefinition[]> = new Map();
+  private readonly defaultRules: RuleDefinition[] = [];
   private readonly repositories: Map<string, RepositoryProvider> = new Map();
 
   constructor(root: Namespace, contributions: PluginContribution[]) {
     this.root = root;
     for (const contribution of contributions) {
       for (const rule of contribution.rules ?? []) {
-        const definition: IRuleDefinition = { constraints: rule.constraints, evaluate: rule.evaluate };
         if (rule.type === undefined) {
-          this.defaultRules.push(definition);
+          this.defaultRules.push(rule);
         } else {
+          this.assertTargetProperties(rule.type, rule);
           const rules = this.targetRules.get(rule.type) ?? [];
-          rules.push(definition);
+          rules.push(rule);
           this.targetRules.set(rule.type, rules);
         }
       }
@@ -111,17 +72,31 @@ export class BuildModel {
   }
 
   /**
-   * Select the rule for the given target type under the given configuration.
-   * A type-specific rule is preferred over a default (all-types) rule — the type
-   * dimension dominates the constraint dimension — so the default rules are only
-   * consulted when no type-specific rule matches. Uniform for declared and
-   * anonymous targets.
+   * A type-specific rule may guard only on what its type declares: each of its
+   * `targetProperties` must be a STRING property of the type's targetdef. A type
+   * with no targetdef has no schema to check against.
    */
-  public getTargetRule(type: string, constraints: Constraints): IRuleDefinition | undefined {
-    return (
-      selectMostSpecific(this.targetRules.get(type) ?? [], constraints, `'${type}'`) ??
-      selectMostSpecific(this.defaultRules, constraints, "default")
-    );
+  private assertTargetProperties(type: string, rule: RuleDefinition): void {
+    const schema = this.root.getTargetDef(type)?.properties;
+    if (!schema) {
+      return;
+    }
+    for (const key of Object.keys(rule.targetProperties ?? {})) {
+      if ((schema.get(key) ?? schema.get("*"))?.type !== PropertyType.String) {
+        throw new Error(`A rule for '${type}' selects on its property '${key}', which '${type}' does not declare as a STRING`);
+      }
+    }
+  }
+
+  /** The rules registered for `type` — the candidates selection tries first. */
+  public getTargetRules(type: string): RuleDefinition[] {
+    return this.targetRules.get(type) ?? [];
+  }
+
+  /** The default (all-types) rules, consulted where no rule of the target's
+   * own type applies. */
+  public getDefaultRules(): RuleDefinition[] {
+    return this.defaultRules;
   }
 
   public getRepositoryProvider(type: string): RepositoryProvider | undefined {
@@ -167,7 +142,7 @@ export class BuildModel {
   public getOperations(type: string): string[] {
     const ops = new Set<string>();
     for (const rule of this.targetRules.get(type) ?? []) {
-      ops.add(rule.constraints[BUILD_OPERATION] ?? "*");
+      ops.add(rule.properties[BUILD_OPERATION] ?? "*");
     }
     return [...ops].sort();
   }

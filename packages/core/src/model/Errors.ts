@@ -90,7 +90,10 @@ export interface IUseSite {
 export class CircularDependencyError extends Error {
   constructor(
     public readonly name: string,
-    public readonly cycle: ReadonlyArray<IUseSite>
+    public readonly cycle: ReadonlyArray<IUseSite>,
+    /** The declaration the cycle re-entered, where `name` is a target's (a
+     * property's cycle re-enters no target). */
+    public readonly entered: ITargetDecl | undefined
   ) {
     super(`Circular dependency: '${name}' depends on itself`);
   }

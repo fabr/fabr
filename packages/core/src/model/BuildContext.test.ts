@@ -46,7 +46,7 @@ import { ConflictError, toError } from "../core/Errors";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { BuildAction, IBuildActionDefinition } from "../core/BuildAction";
 import { DiscoveredDeps } from "../core/Manifest";
-import { PluginContribution, RepositoryProvider, RepositoryRegistration, RuleRegistration } from "../rules/Types";
+import { PluginContribution, RepositoryProvider, RepositoryRegistration, RuleDefinition } from "../rules/Types";
 import { FSFileSource } from "../core/FSFileSource";
 import { scriptRunRule } from "../rules/RunScript";
 import { BuildContext, mapEntryOrigin, PropertyMap, PropertyMapValue } from "./BuildContext";
@@ -85,10 +85,10 @@ function writtenOnCommandLine(name: string): INameValue {
  * and build a per-test registry passed to toBuildModel. `registerRule` /
  * `registerRepositoryProvider` are kept as local shims so the registrations
  * below read unchanged. */
-const testRules: RuleRegistration[] = [];
+const testRules: RuleDefinition[] = [];
 const testRepos: RepositoryRegistration[] = [];
-function registerRule(type: string, constraints: Record<string, string>, evaluate: RuleRegistration["evaluate"]): void {
-  testRules.push({ type, constraints, evaluate });
+function registerRule(type: string, properties: Record<string, string>, evaluate: RuleDefinition["evaluate"]): void {
+  testRules.push({ type, properties, evaluate });
 }
 function registerRepositoryProvider(type: string, provider: RepositoryProvider): void {
   testRepos.push({ type, provider });
@@ -469,6 +469,26 @@ registerRule("test_members", {}, context =>
   })
 );
 
+/* Read a GLOBAL on the target's behalf — `TOOL` as files, or `MODE` as a string
+ * where the target sets `mode` — after an asynchronous step where it sets
+ * `wait`. By then the target's own evaluation is in the target cache, which is
+ * what a request re-entering it finds. */
+registerRule("test_reads_global", {}, context =>
+  Computable.forAll([context.getString("wait"), context.getString("mode")], (wait, mode) =>
+    (wait ? Computable.from<void>(resolve => setTimeout(resolve, 5)) : Computable.resolve(undefined))
+      .then((): Computable<unknown> => (mode ? context.getGlobalString("MODE") : context.getGlobalFileProperty("TOOL")))
+      .then(() => EMPTY_FILESET)
+  )
+);
+
+/* Records who its task says required it. */
+let lastRequiredBy: string[] = [];
+registerRule("test_describes", {}, context => {
+  const task = context.taskDescription();
+  lastRequiredBy = task.kind === "target-build" ? task.requiredBy.map(declName) : [];
+  return Computable.resolve(EMPTY_FILESET);
+});
+
 const testContributions: PluginContribution[] = [{ rules: testRules, repositories: testRepos }];
 
 async function testGetProperty(input: string, prop: string, constraints?: Record<string, string>): Promise<string[]> {
@@ -649,6 +669,78 @@ describe("BuildContext", () => {
         )
       ).to.deep.equal(["one deps = two<BUILD_OPERATION=run>", "two deps = one"]);
     }
+  });
+
+  describe("a cycle entered through something a target's rule reads", () => {
+    /* The target is not on the stack through one of its own properties here, so
+     * only its evaluation's own frame can close the cycle — and it must, however
+     * the timing falls: a re-entry that arrives after the evaluation was cached
+     * would otherwise join it and never settle. */
+    /* (Under `run`, test_good reaches itself under `build`, so the loops below
+     * close in the build configuration: on `u`, by the global naming it.) */
+    const DEFS = "targetdef test_reads_global { wait = STRING; mode = STRING; }\ntargetdef test_good { deps = FILES; }\n";
+
+    async function cycleOf(input: string, name: string): Promise<CircularDependencyError> {
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", DEFS + input, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      const failure = await Promise.race([
+        Promise.resolve(model.getConfig(Constraints.of({ BUILD_OPERATION: "run" }), execution).getTarget(name)).then(
+          () => new Error("built"),
+          (err: Error) => err
+        ),
+        new Promise<Error>(resolve => setTimeout(() => resolve(new Error("never settled")), 2000)),
+      ]);
+      let cause = failure;
+      while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
+        cause = cause.cause;
+      }
+      expect(cause, cause.message).to.be.instanceOf(CircularDependencyError);
+      return cause as CircularDependencyError;
+    }
+    const sites = (circular: CircularDependencyError): string[] =>
+      circular.cycle.map(site => `${site.target ? declName(site.target) + " " : ""}${site.property.name.toBaseString()} = ${site.value.value.toString()}`);
+
+    for (const wait of ["", " wait = yes;"]) {
+      const timing = wait ? "after an asynchronous step" : "immediately";
+
+      it(`names a FILES global that names the target reading it (${timing})`, async () => {
+        const circular = await cycleOf(`TOOL = t;\ntest_reads_global t {${wait} }\n`, "t");
+        expect(circular.name).to.equal("t");
+        expect(sites(circular)).to.deep.equal(["TOOL = t"]);
+      });
+
+      it(`names a FILES global naming a target that depends on the one reading it (${timing})`, async () => {
+        const circular = await cycleOf(`TOOL = u;\ntest_good u { deps = t; }\ntest_reads_global t {${wait} }\n`, "t");
+        expect(sites(circular)).to.deep.equal(["TOOL = u", "u deps = t"]);
+      });
+
+      it(`names a string global whose command needs the target reading it (${timing})`, async () => {
+        const circular = await cycleOf(`MODE = \`u\`;\ntest_good u { deps = t; }\ntest_reads_global t { mode = yes;${wait} }\n`, "t");
+        expect(sites(circular)).to.deep.equal(["MODE = `u`", "u deps = t"]);
+      });
+    }
+
+    it("says which target the cycle re-entered, where no property of its own did", async () => {
+      const circular = await cycleOf("TOOL = t;\ntest_reads_global t { wait = yes; }\n", "t");
+      expect(circular.entered && declName(circular.entered)).to.equal("t");
+    });
+  });
+
+  it("Names the target whose rule read a global as the requirer of what the global names", async () => {
+    /* No property of `t` names `u` — its rule reads TOOL — so only t's own
+     * evaluation on the stack says who wanted it. */
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "targetdef test_reads_global { wait = STRING; mode = STRING; }\ntargetdef test_describes { }\ntargetdef test_good { deps = FILES; }\n" +
+      "TOOL = u;\ntest_describes u { }\ntest_reads_global t { }\ntest_good top { deps = t; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+
+    await model.getConfig(Constraints.of({}), execution).getTarget("top");
+    expect(lastRequiredBy).to.deep.equal(["t", "top"]);
   });
 
   it("Reports a cycle between global FILES properties instead of overflowing", async () => {
@@ -2633,5 +2725,267 @@ describe("a namespace declared by a repository", () => {
     /* Without the flag a repository is an ordinary target of its name, which a
      * namespace of that name conflicts with. */
     expect(load("test_plain_ns_repo @ns { }\ntest_package @ns/tool { }\n").errors.join("\n")).to.match(/conflicts with/);
+  });
+});
+
+describe("Rule selection", () => {
+  /** The rule that last ran, identified by its evaluate function. */
+  let lastRan: RuleDefinition["evaluate"] | undefined;
+  function recording(): RuleDefinition["evaluate"] {
+    const evaluate: RuleDefinition["evaluate"] = () => {
+      lastRan = evaluate;
+      return Computable.resolve(EMPTY_FILESET);
+    };
+    return evaluate;
+  }
+
+  const wildcardRule = recording();
+  const testRule = recording();
+  const specificTestRule = recording();
+  const defaultRule = recording();
+  const overrideRule = recording();
+
+  /**
+   * A model over the given build-file text and rules. Each type a rule is
+   * registered for, and each of `types`, is declared (unless `input` declares it)
+   * and given a target `a_<type>` for {@link selected} to build.
+   */
+  function modelOf(input: string, rules: RuleDefinition[], types: string[] = []): ReturnType<typeof toBuildModel> {
+    const errors: string[] = [];
+    const log = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const subjects = [...new Set([...rules.flatMap(rule => (rule.type === undefined ? [] : [rule.type])), ...types])]
+      .map(type => `${input.includes(`targetdef ${type} `) ? "" : `targetdef ${type} { }\n`}${type} a_${type} { }\n`)
+      .join("");
+    const built = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input + subjects, log)], log, [{ rules }]);
+    expect(errors).to.deep.equal([]);
+    return built;
+  }
+
+  /** The evaluate function of the rule selected for a target of `type` under
+   * `config`, or undefined if none applies. */
+  async function selected(from: ReturnType<typeof toBuildModel>, type: string, config: Record<string, string> = {}): Promise<unknown> {
+    lastRan = undefined;
+    try {
+      await from.getConfig(Constraints.of(config), execution).getTarget(`a_${type}`);
+    } catch (err) {
+      if (err instanceof NoRuleFoundError) {
+        return undefined;
+      }
+      throw err instanceof DependencyFailedError ? err.cause : err;
+    }
+    return lastRan;
+  }
+
+  const model = modelOf(
+    "",
+    [
+      { type: "reg_test", properties: {}, evaluate: wildcardRule },
+      { type: "reg_test", properties: { BUILD_OPERATION: "test" }, evaluate: testRule },
+      /* A type with only operation-specific rules (no {} catch-all), so an
+       * operation it doesn't cover falls through to the default rule. */
+      { type: "reg_specific", properties: { BUILD_OPERATION: "test" }, evaluate: specificTestRule },
+      /* A type-specific rule matching the same operation as the default rule, to
+       * prove the type-specific one is preferred. */
+      { type: "reg_override", properties: { BUILD_OPERATION: "reg_default" }, evaluate: overrideRule },
+      { properties: { BUILD_OPERATION: "reg_default" }, evaluate: defaultRule },
+    ],
+    ["no_such_type", "some_other_type"]
+  );
+
+  it("selects the most specific matching rule", async () => {
+    expect(await selected(model, "reg_test")).to.equal(wildcardRule);
+    expect(await selected(model, "reg_test", { BUILD_OPERATION: "build" })).to.equal(wildcardRule);
+    expect(await selected(model, "reg_test", { BUILD_OPERATION: "test" })).to.equal(testRule);
+    /* Unrelated constraints don't disturb selection */
+    expect(await selected(model, "reg_test", { BUILD_OPERATION: "test", arch: "armv7" })).to.equal(testRule);
+  });
+
+  it("selects nothing when no rule matches", async () => {
+    expect(await selected(model, "no_such_type")).to.equal(undefined);
+  });
+
+  it("falls back to a default rule for any type when no type-specific rule matches", async () => {
+    /* A type with no rules at all: the default rule applies */
+    expect(await selected(model, "some_other_type", { BUILD_OPERATION: "reg_default" })).to.equal(defaultRule);
+    /* A type that HAS rules, but none matching this operation: still falls back */
+    expect(await selected(model, "reg_specific", { BUILD_OPERATION: "reg_default" })).to.equal(defaultRule);
+  });
+
+  it("lets a type's own {} wildcard shadow the default rule", async () => {
+    /* reg_test's {} rule is type-specific, so it matches every operation and the
+     * default is never reached — the type dimension dominates. */
+    expect(await selected(model, "reg_test", { BUILD_OPERATION: "reg_default" })).to.equal(wildcardRule);
+  });
+
+  it("prefers a type-specific rule over a default rule matching the same operation", async () => {
+    expect(await selected(model, "reg_override", { BUILD_OPERATION: "reg_default" })).to.equal(overrideRule);
+  });
+
+  it("errors on an ambiguous (equally-specific) rule tie rather than picking first-registered", async () => {
+    const tied = modelOf("", [
+      { type: "amb", properties: { BUILD_OPERATION: "test" }, evaluate: testRule },
+      { type: "amb", properties: { arch: "armv7" }, evaluate: specificTestRule },
+    ]);
+    /* Both rules have one key and both match, so neither is more specific. */
+    await expect(selected(tied, "amb", { BUILD_OPERATION: "test", arch: "armv7" })).to.be.rejectedWith(/Ambiguous 'amb' rule selection/);
+    /* But a config satisfying only one of them selects cleanly. */
+    expect(await selected(tied, "amb", { BUILD_OPERATION: "test" })).to.equal(testRule);
+  });
+
+  describe("reads the configuration as properties", () => {
+    const rules: RuleDefinition[] = [
+      { type: "typed", properties: {}, evaluate: wildcardRule },
+      { type: "typed", properties: { MODE: "fast" }, evaluate: testRule },
+    ];
+
+    it("matches a `default` nothing overrides", async () => {
+      expect(await selected(modelOf("default MODE = fast;\n", rules), "typed")).to.equal(testRule);
+    });
+
+    it("matches a declared global, over the default", async () => {
+      const declared = modelOf("default MODE = slow;\nMODE = fast;\n", rules);
+      expect(await selected(declared, "typed")).to.equal(testRule);
+    });
+
+    it("matches an override of what is declared", async () => {
+      const declared = modelOf("default MODE = fast;\n", rules);
+      expect(await selected(declared, "typed", { MODE: "slow" })).to.equal(wildcardRule);
+      expect(await selected(modelOf("default MODE = slow;\n", rules), "typed", { MODE: "fast" })).to.equal(testRule);
+    });
+
+    it("matches by pattern, as a guard does", async () => {
+      const globbed = modelOf("default PLATFORM = x86_64-linux-gnu;\n", [
+        { type: "typed", properties: {}, evaluate: wildcardRule },
+        { type: "typed", properties: { PLATFORM: "*-linux-*" }, evaluate: testRule },
+      ]);
+      expect(await selected(globbed, "typed")).to.equal(testRule);
+      expect(await selected(globbed, "typed", { PLATFORM: "arm64-darwin" })).to.equal(wildcardRule);
+    });
+
+    it("skips a rule keyed on a name nothing declares", async () => {
+      expect(await selected(modelOf("", rules), "typed")).to.equal(wildcardRule);
+      /* A target of that name is not a property either. */
+      expect(await selected(modelOf("targetdef typed { }\ntyped MODE { }\n", rules), "typed")).to.equal(wildcardRule);
+    });
+
+    it("skips a rule keyed on a property no declaration supplies here", async () => {
+      const guarded = modelOf("default FLAVOUR = plain;\nMODE<FLAVOUR=spicy> = fast;\n", rules);
+      expect(await selected(guarded, "typed")).to.equal(wildcardRule);
+      expect(await selected(guarded, "typed", { FLAVOUR: "spicy" })).to.equal(testRule);
+    });
+
+    it("fails on a key that cannot be read, rather than skipping its rule", async () => {
+      const broken = modelOf("MODE = ${UNDECLARED};\n", rules);
+      await expect(selected(broken, "typed")).to.be.rejectedWith(/UNDECLARED/);
+    });
+  });
+
+  it("reports a cycle through a key whose value needs a target selected on it", async () => {
+    /* `u` settles asynchronously, so by the time it asks for `t` again, t's own
+     * evaluation — waiting on MODE, which is waiting on u — is already cached. */
+    const cyclic = modelOf("targetdef typed { }\ntargetdef mid { deps = FILES; }\nMODE = `u`;\nmid u { deps = t; }\ntyped t { }\n", [
+      { type: "typed", properties: {}, evaluate: wildcardRule },
+      { type: "typed", properties: { MODE: "fast" }, evaluate: testRule },
+      {
+        type: "mid",
+        properties: {},
+        evaluate: context =>
+          Computable.from<void>(resolve => setTimeout(resolve, 5))
+            .then(() => context.getFileSetProperties(["deps"]))
+            .then(() => EMPTY_FILESET),
+      },
+    ]);
+    const outcome = await Promise.race([
+      Promise.resolve(cyclic.getConfig(Constraints.of({ BUILD_OPERATION: "run" }), execution).getTarget("t")).then(
+        () => "built",
+        (err: Error) => {
+          let cause = err;
+          while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
+            cause = cause.cause;
+          }
+          return cause.message;
+        }
+      ),
+      new Promise<string>(resolve => setTimeout(() => resolve("never settled"), 2000)),
+    ]);
+    expect(outcome).to.equal("Circular dependency: 't' depends on itself");
+  });
+
+  describe("on the target's own properties", () => {
+    let ran: string[] = [];
+    const record = (name: string): RuleDefinition["evaluate"] => () => {
+      ran.push(name);
+      return Computable.resolve(EMPTY_FILESET);
+    };
+    const rules: RuleDefinition[] = [
+      { type: "typed", properties: {}, evaluate: record("wildcard") },
+      { type: "typed", properties: {}, targetProperties: { flavour: "van*" }, evaluate: record("vanilla") },
+      { type: "typed", properties: { MODE: "fast" }, evaluate: record("fast") },
+      { type: "typed", properties: { MODE: "fast" }, targetProperties: { flavour: "van*" }, evaluate: record("fast vanilla") },
+      /* Builds an anonymous `typed` of the flavour it is given. */
+      { type: "outer", properties: {}, evaluate: context => context.getString("inner").then(inner => context.subTarget("typed", inner ? { flavour: inner } : {})) },
+    ];
+    const DEFS = "targetdef typed { flavour = STRING; srcs = FILES; }\ntargetdef outer { inner = STRING; }\n";
+
+    async function build(input: string, name: string, config: Record<string, string> = {}): Promise<string[]> {
+      ran = [];
+      await modelOf(DEFS + input, rules).getConfig(Constraints.of(config), execution).getTarget(name);
+      return ran;
+    }
+
+    it("selects the rule whose pattern the target's property matches", async () => {
+      expect(await build("typed t { flavour = vanilla; }\n", "t")).to.deep.equal(["vanilla"]);
+      expect(await build("typed t { flavour = chocolate; }\n", "t")).to.deep.equal(["wildcard"]);
+    });
+
+    it("skips such a rule for a target that does not set the property", async () => {
+      expect(await build("typed t { }\n", "t")).to.deep.equal(["wildcard"]);
+    });
+
+    it("reads the property as the target resolves it", async () => {
+      expect(await build("KIND = vanilla;\ntyped t { flavour = ${KIND}; }\n", "t")).to.deep.equal(["vanilla"]);
+      const guarded = "default MODE = slow;\ntyped t { flavour<MODE=fast> = vanilla; }\n";
+      expect(await build(guarded, "t")).to.deep.equal(["wildcard"]);
+    });
+
+    it("counts both guards' keys when ranking", async () => {
+      const input = "default MODE = slow;\ntyped t { flavour = vanilla; }\n";
+      expect(await build(input, "t", { MODE: "fast" })).to.deep.equal(["fast vanilla"]);
+      expect(await build("default MODE = slow;\ntyped t { }\n", "t", { MODE: "fast" })).to.deep.equal(["fast"]);
+    });
+
+    it("judges an anonymous target against the inputs it is given", async () => {
+      expect(await build("outer o { inner = vanilla; }\n", "o")).to.deep.equal(["vanilla"]);
+      expect(await build("outer o { }\n", "o")).to.deep.equal(["wildcard"]);
+    });
+
+    it("reports a property that cannot be read against the target", async () => {
+      await expect(build("typed t { flavour = ${UNDECLARED}; }\n", "t")).to.be.rejectedWith(DependencyFailedError);
+    });
+
+    it("still reports no rule where none applies", async () => {
+      const only = modelOf(DEFS + "typed t { flavour = chocolate; }\n", [rules[1]]);
+      await expect(only.getConfig(Constraints.of({}), execution).getTarget("t")).to.be.rejectedWith(NoRuleFoundError);
+    });
+
+    it("rejects a rule selecting on a property its type does not declare as a STRING", () => {
+      const keyed = (key: string): RuleDefinition[] => [{ type: "typed", properties: {}, targetProperties: { [key]: "x" }, evaluate: wildcardRule }];
+      expect(() => modelOf(DEFS, keyed("colour"))).to.throw(/selects on its property 'colour', which 'typed' does not declare as a STRING/);
+      expect(() => modelOf(DEFS, keyed("srcs"))).to.throw(/'srcs'/);
+    });
+  });
+});
+
+describe("BuildModel repository registration", () => {
+  const provider = (): never => {
+    throw new Error("unused");
+  };
+  it("rejects a duplicate repository type across contributions", () => {
+    expect(() =>
+      toBuildModel([], testLog, [
+        { repositories: [{ type: "dup", provider }] },
+        { repositories: [{ type: "dup", provider }] },
+      ])
+    ).to.throw(/Duplicate repository type 'dup'/);
   });
 });

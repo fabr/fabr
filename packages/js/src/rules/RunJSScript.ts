@@ -41,7 +41,7 @@ import {
   FileSet,
   FileSetRef,
   PackageFileSet,
-  RuleRegistration,
+  RuleDefinition,
   RuleResult,
   RunnableFileSet,
   TargetContext,
@@ -157,8 +157,8 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-export const jsScriptRule: RuleRegistration = {
+export const jsScriptRule: RuleDefinition = {
   type: "js_script",
-  constraints: { [BUILD_OPERATION]: "run" },
+  properties: { [BUILD_OPERATION]: "run" },
   evaluate: defineJsRunnable,
 };
