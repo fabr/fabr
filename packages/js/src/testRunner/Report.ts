@@ -97,6 +97,106 @@ export function sourcePathOf(compiled: string): string | undefined {
   return undefined;
 }
 
+/** The directory a test file's recorded snapshots live in, beside it. */
+const SNAPSHOT_DIR = "__snapshots__";
+export const SNAPSHOT_EXT = ".snap";
+
+/**
+ * Where the compiled test file `testPath` keeps its recorded snapshots:
+ * `__snapshots__/<source file name>.snap` beside it, the source being the one
+ * its `.js.map` names. Without a map it is an existing record matching the
+ * test by **stem**, and failing that one named for the compiled file.
+ */
+export function snapshotPathOf(testPath: string): string {
+  const dir = path.join(path.dirname(testPath), SNAPSHOT_DIR);
+  const source = sourcePathOf(testPath);
+  if (source !== undefined) {
+    return path.join(dir, path.basename(source) + SNAPSHOT_EXT);
+  }
+  const stem = stemOf(path.basename(testPath));
+  const existing = readdir(dir).find(name => name.endsWith(SNAPSHOT_EXT) && stemOf(name.slice(0, -SNAPSHOT_EXT.length)) === stem);
+  return path.join(dir, existing ?? path.basename(testPath) + SNAPSHOT_EXT);
+}
+
+/** A file's name with its final extension removed. */
+function stemOf(name: string): string {
+  return name.replace(/\.[^.]+$/, "");
+}
+
+function readdir(dir: string): string[] {
+  try {
+    return fs.readdirSync(dir);
+  } catch {
+    /* No records for this file yet — the ordinary first-run case. */
+    return [];
+  }
+}
+
+/** How a failure reads in the report: its one-line `message`, and a `trace`
+ * where the message cannot carry the diagnosis. */
+export interface IFailureDescription {
+  message: string;
+  trace?: string;
+}
+
+/** The frame every failure of node:test's snapshot assertion carries. */
+const SNAPSHOT_FRAME = "(node:internal/test_runner/snapshot:";
+
+/** node's advice for a missing record: a flag of the `node` command line,
+ * which nobody running `fabr test` can pass. */
+const NODE_UPDATE_ADVICE = /\s*Missing snapshots can be generated[^.]*\./;
+
+/**
+ * A failure of node:test's `t.assert.snapshot`, described in fabr's terms —
+ * the remedy is `fabr test -u`, and a mismatch is a line diff of the recorded
+ * value against the actual one — or undefined if `cause` is any other failure.
+ */
+export function describeSnapshotFailure(cause: Error): IFailureDescription | undefined {
+  if (!cause.stack?.includes(SNAPSHOT_FRAME)) {
+    return undefined;
+  }
+  const { actual, expected, code, cause: reason } = cause as Error & { actual?: unknown; expected?: unknown; code?: string; cause?: { code?: string } };
+  if (typeof actual === "string" && typeof expected === "string") {
+    return {
+      message: "The value does not match its recorded snapshot. Run 'fabr test -u' to record the new value.",
+      trace: `- recorded\n+ actual\n\n${lineDiff(expected.trim().split("\n"), actual.trim().split("\n")).join("\n")}`,
+    };
+  }
+  /* No record file, or (with no underlying reason) no entry for this test in it. */
+  if (code === "ERR_INVALID_STATE" && (reason === undefined || reason.code === "ENOENT")) {
+    return { message: "This test has no recorded snapshot. Run 'fabr test -u' to record one." };
+  }
+  return { message: cause.message.replace(NODE_UPDATE_ADVICE, " Run 'fabr test -u' to record them again.") };
+}
+
+/** A line diff of `before` against `after`: common lines indented, the rest
+ * marked `-` (only in `before`) or `+` (only in `after`). */
+function lineDiff(before: string[], after: string[]): string[] {
+  /* common[i][j]: the longest common subsequence of before[i..] and after[j..]. */
+  const common = before.map(() => new Array<number>(after.length + 1).fill(0));
+  common.push(new Array<number>(after.length + 1).fill(0));
+  for (let i = before.length - 1; i >= 0; i--) {
+    for (let j = after.length - 1; j >= 0; j--) {
+      common[i][j] = before[i] === after[j] ? common[i + 1][j + 1] + 1 : Math.max(common[i + 1][j], common[i][j + 1]);
+    }
+  }
+  const lines: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < before.length || j < after.length) {
+    if (i < before.length && j < after.length && before[i] === after[j]) {
+      lines.push(`  ${before[i]}`);
+      i++;
+      j++;
+    } else if (j >= after.length || (i < before.length && common[i + 1][j] >= common[i][j + 1])) {
+      lines.push(`- ${before[i++]}`);
+    } else {
+      lines.push(`+ ${after[j++]}`);
+    }
+  }
+  return lines;
+}
+
 
 /** The report filename, relative to the test working directory (= core's TEST_REPORT_FILENAME) */
 export const TEST_REPORT_FILENAME = "ctrf-report.json";

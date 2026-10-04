@@ -24,9 +24,13 @@
  * by test-globals.d.ts. Assertion libraries are not provided here — tests
  * import them explicitly from their test_deps. Tests that import describe/it
  * from node:test directly are unaffected (their imports shadow the globals).
+ *
+ * Also places node:test's recorded snapshots (`t.assert.snapshot`) where fabr
+ * collects them — see snapshotPathOf.
  */
 
 import * as nodeTest from "node:test";
+import { snapshotPathOf } from "./Report";
 
 const globals = globalThis as Record<string, unknown>;
 
@@ -39,3 +43,8 @@ globals.beforeEach ??= nodeTest.beforeEach;
 globals.afterEach ??= nodeTest.afterEach;
 globals.beforeAll ??= nodeTest.before;
 globals.afterAll ??= nodeTest.after;
+
+/* Absent before node 22.3, where there are no snapshot assertions to place. */
+(nodeTest as { snapshot?: { setResolveSnapshotPath(fn: (testPath: string | undefined) => string | undefined): void } }).snapshot?.setResolveSnapshotPath(
+  testPath => (testPath === undefined ? undefined : snapshotPathOf(testPath))
+);

@@ -162,6 +162,27 @@ describe("greet", () => {
 });
 ```
 
+Snapshot assertions are `node:test`'s own, `t.assert.snapshot(value)`, and need Node 23.4 or later.
+Records are kept in `__snapshots__/<test file>.snap` beside the test. Declare them as the target's
+`test_expectations`; `fabr test -u` records or refreshes them and writes them back to your source
+tree:
+
+```
+js_package mylib {
+  srcs = src:**/*.ts;
+  tests = src:**/*.test.ts;
+  test_expectations = src:**/__snapshots__/*.snap;
+}
+```
+
+```ts
+import type { TestContext } from "node:test";
+
+it("renders the greeting", (t: TestContext) => {
+  t.assert.snapshot(render("world"));
+});
+```
+
 ### Running a jest-flavoured suite
 
 If your tests are written against jest, first extend the catalog with the members the layer needs.
@@ -189,16 +210,17 @@ on — and declare the globals' types:
 JS_TEST_RUNNER = @fabr-build/js-tools/jest-runner;   # or per target: test_runner = …;
 
 js_package mylib {
-  srcs = src:**/*.ts src:**/__snapshots__/*.snap;
+  srcs = src:**/*.ts;
   tests = src:**/*.test.ts;
+  test_expectations = src:**/__snapshots__/*.snap;
   test_deps = @pkg:@types/jest @pkg:jsdom;           # jsdom only if your tests need a DOM
 }
 ```
 
 `jest.mock`, `jest.fn`, `expect`, `.each`, fake timers and snapshots all work, using jest's own
-libraries. Snapshot files are ordinary sources, so list them in `srcs` (above); `fabr test -u`
-refreshes them and writes them back. See [known limitations](/known-limitations/) for what the
-layer does not cover yet.
+libraries. Declare snapshot files as the target's `test_expectations` (above), not as `srcs`;
+`fabr test -u` refreshes them and writes them back. See [known limitations](/known-limitations/)
+for what the layer does not cover yet.
 
 Run them:
 

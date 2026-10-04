@@ -47,8 +47,6 @@ ship: fabr's own, built on Node's `node:test`, and a jest compatibility layer (s
 - **Vitest is not supported.** Its API is unavailable and there is no compatibility layer for it.
 - **Custom jest plugins and extensions are not supported.** The compatibility layer does not load
   custom test environments, transformers, reporters, resolvers or runners.
-- **The native runner has no snapshot assertions.** `fabr test -u` against it says so rather than
-  quietly doing nothing; snapshot-based suites need the jest layer.
 
 ## npm resolution uses MVS and can differ from npm/yarn
 

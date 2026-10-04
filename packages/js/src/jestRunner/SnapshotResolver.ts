@@ -41,26 +41,12 @@
  * and is how runner.ts already reaches Report.
  */
 
-import * as fs from "node:fs";
 import * as path from "node:path";
-import { sourcePathOf } from "../testRunner/Report";
-
-/** Jest's fixed snapshot directory, beside the test file. */
-const SNAPSHOT_DIR = "__snapshots__";
-const SNAPSHOT_EXT = ".snap";
+import { SNAPSHOT_EXT, snapshotPathOf } from "../testRunner/Report";
 
 /** The record for `testPath`, named for the SOURCE it was compiled from. */
 export function resolveSnapshotPath(testPath: string): string {
-  const dir = path.join(path.dirname(testPath), SNAPSHOT_DIR);
-  const source = sourcePathOf(testPath);
-  if (source !== undefined) {
-    return path.join(dir, path.basename(source) + SNAPSHOT_EXT);
-  }
-  /* No map to say what the source was called: an existing record still
-   * identifies itself by stem, and a new one can only take the compiled name. */
-  const stem = stemOf(path.basename(testPath));
-  const existing = readdir(dir).find(name => name.endsWith(SNAPSHOT_EXT) && stemOf(name.slice(0, -SNAPSHOT_EXT.length)) === stem);
-  return path.join(dir, existing ?? path.basename(testPath) + SNAPSHOT_EXT);
+  return snapshotPathOf(testPath);
 }
 
 /** The inverse, which jest uses for its consistency check. The compiled name is
@@ -74,20 +60,6 @@ export function resolveTestPath(snapshotPath: string): string {
  * It must therefore round-trip exactly, so it names a file with no record on
  * disk — the compiled-name branch, which is the invertible one. */
 export const testPathForConsistencyCheck = path.join("consistency", "check.test.js");
-
-/** A file's name with its final extension removed. */
-function stemOf(name: string): string {
-  return name.replace(/\.[^.]+$/, "");
-}
-
-function readdir(dir: string): string[] {
-  try {
-    return fs.readdirSync(dir);
-  } catch {
-    /* No records for this file yet — the ordinary first-run case. */
-    return [];
-  }
-}
 
 /* jest reads a custom resolver as `interopRequireDefault(module).default`, so
  * the three members have to be reachable as a default export, not only as named

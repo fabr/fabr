@@ -34,7 +34,10 @@
  */
 
 import * as path from "node:path";
-import { IRunnerOptions, parseRunnerArgs, runTestFiles } from "./RunTests";
+import { atLeastNode, IRunnerOptions, parseRunnerArgs, runTestFiles } from "./RunTests";
+
+/** node:test's snapshot assertions are stable, and need no flag, from here. */
+const SNAPSHOT_NODE = [23, 4] as const;
 
 /**
  * Environments this flavour provides. It runs tests in the node process it is
@@ -54,10 +57,10 @@ function requireSupportedEnvironment(options: IRunnerOptions): void {
 export function main(argv: string[]): void {
   const options = parseRunnerArgs(argv);
   requireSupportedEnvironment(options);
-  if (options.update) {
-    /* Nothing in this flavour records expectations yet, so `fabr test -u` would
-     * silently do nothing. Better to say so. */
-    throw new Error("The fabr test runner does not support recorded snapshots yet, so there is nothing to update");
+  if (options.update && !atLeastNode(SNAPSHOT_NODE[0], SNAPSHOT_NODE[1])) {
+    throw new Error(
+      `Recorded snapshots need node ${SNAPSHOT_NODE.join(".")} or later (this is ${process.versions.node}), so there is nothing to update`
+    );
   }
   /* Each test file runs in its own child process; the test-globals shim
    * (describe/it/...) is preloaded into each. */

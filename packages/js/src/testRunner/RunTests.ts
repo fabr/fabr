@@ -29,7 +29,15 @@ import { run } from "node:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ITestResult } from "@fabr-build/core";
-import { buildReport, formatTestFailures, formatTestSummary, reportPathOf, TEST_REPORT_FILENAME } from "./Report";
+import {
+  buildReport,
+  describeSnapshotFailure,
+  formatTestFailures,
+  formatTestSummary,
+  IFailureDescription,
+  reportPathOf,
+  TEST_REPORT_FILENAME,
+} from "./Report";
 
 /**
  * The fields we consume from node:test's test:pass / test:fail event data,
@@ -134,6 +142,7 @@ function record(results: ITestResult[], event: ITestEvent, kind: "pass" | "fail"
     status = "pending";
   }
   const filePath = event.file ? reportPathOf(event.file) : undefined;
+  const failure = kind === "fail" ? describeError(event.details.error) : undefined;
   results.push({
     /* node:test names a whole-file failure by the file's ABSOLUTE path, which
      * here is inside a transient work directory — meaningless to the reader and
@@ -142,8 +151,8 @@ function record(results: ITestResult[], event: ITestEvent, kind: "pass" | "fail"
     filePath,
     status,
     duration: event.details.duration_ms ?? 0,
-    message: kind === "fail" ? describeError(event.details.error) : undefined,
-    trace: kind === "fail" ? fileFailureDetail(event, stderr) : undefined,
+    message: failure?.message,
+    trace: failure === undefined ? undefined : fileFailureDetail(event, stderr) ?? failure.trace,
   });
 }
 
@@ -170,7 +179,8 @@ function isFileFailure(event: ITestEvent): boolean {
  * What a failure should say.
  *
  * A failed TEST arrives wrapped in an ERR_TEST_FAILURE whose `cause` is the
- * assertion error — the interesting part, unwrapped here.
+ * assertion error — the interesting part, unwrapped here; a failed snapshot
+ * assertion is described in fabr's terms (see describeSnapshotFailure).
  *
  * A failed FILE — one that threw while loading, so none of its tests ever
  * registered — has no diagnosis to offer here at all: its `cause` is the bare
@@ -178,16 +188,16 @@ function isFileFailure(event: ITestEvent): boolean {
  * actually died of went to the child's stderr; see fileFailureDetail, which
  * supplies it as the result's `trace`.
  */
-function describeError(error: (Error & { cause?: unknown }) | undefined): string {
+function describeError(error: (Error & { cause?: unknown }) | undefined): IFailureDescription {
   if (!error) {
-    return "failed";
+    return { message: "failed" };
   }
   const cause = error.cause;
   /* An Error cause is the assertion failure itself, and says everything. */
   if (cause instanceof Error) {
-    return cause.message;
+    return describeSnapshotFailure(cause) ?? { message: cause.message };
   }
-  return cause !== undefined ? String(cause) : error.message;
+  return { message: cause !== undefined ? String(cause) : error.message };
 }
 
 function finish(results: ITestResult[], reportPath: string, start: number): void {
@@ -234,12 +244,13 @@ export function atLeastNode(major: number, minor: number): boolean {
  * whole environment (module patches, DOM globals) would contaminate arbitrary
  * helper processes the tests spawn. `execArgv` needs node 22.10; older hosts
  * keep the inherited-environment route rather than silently running with no
- * preload at all.
+ * preload at all. `update` has node:test rewrite its recorded snapshots rather
+ * than check them — a flag NODE_OPTIONS refuses, so it rides `execArgv` only.
  */
-function preloadOptions(preloads: string[]): { execArgv?: string[] } {
+function preloadOptions(preloads: string[], update: boolean): { execArgv?: string[] } {
   const args = preloads.flatMap(preload => ["--require", preload]);
   if (atLeastNode(22, 10)) {
-    return { execArgv: args };
+    return { execArgv: [...args, ...(update ? ["--test-update-snapshots"] : [])] };
   }
   process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, ...args.map(arg => JSON.stringify(arg))].filter(Boolean).join(" ");
   return {};
@@ -269,7 +280,7 @@ export function runTestFiles(options: IRunnerOptions, preloads: string[]): void 
      * (describe/it, and whatever else a flavour installs) must already be
      * there. That is jest's `setupFilesAfterEnv` ordering, and here it is the
      * only one available — there is nothing to run before the globals. */
-    ...preloadOptions([...preloads, ...options.setup.map(entry => resolveSetup(entry))]),
+    ...preloadOptions([...preloads, ...options.setup.map(entry => resolveSetup(entry))], options.update),
     ...forceExitOption(),
   });
   /* Before the outcome handlers, so a file's output is already captured by the

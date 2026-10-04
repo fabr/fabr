@@ -181,6 +181,56 @@ function reportOf(failed) {
    * changes), and the point of the second half of this test is that suppressing
    * it is not the same as calling the file up to date: a later real edit must
    * still pick the refreshed record up. */
+  describe("fabr's own runner", () => {
+    /* node:test's snapshot assertions are stable from 23.4; on an older host
+     * the runner refuses -u, which is not what these exercise. */
+    const [major, minor] = process.versions.node.split(".").map(Number);
+    const snapshots = major > 23 || (major === 23 && minor >= 4) ? it : it.skip;
+
+    const native = (value: string, extra: Record<string, string> = {}): Record<string, string> => ({
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        "js_package thing {\n" +
+        "  srcs = src:**/*.ts;\n" +
+        "  tests = src:**/*.test.ts;\n" +
+        "  test_expectations = src:**/__snapshots__/*.snap;\n" +
+        "}\n",
+      "src/thing.test.ts": `it("records a value", t => { t.assert.snapshot({ value: ${JSON.stringify(value)} }); });\n`,
+      ...extra,
+    });
+    const recorded = (value: string): string => `exports[\`records a value 1\`] = \`\n{\n  "value": "${value}"\n}\n\`;\n`;
+
+    snapshots("records a snapshot under -u, named for the source file", () => {
+      const result = runFabr(native("one"), ["-DJS_TARGET=es2020", "test", "-u", "thing"], [SNAP]);
+      expect(result.status).to.equal(0);
+      expect(result.files?.[SNAP]).to.equal(recorded("one"));
+      expect(result.stderr).to.contain(`Updated ${SNAP}`);
+    });
+
+    snapshots("passes against a matching record", () => {
+      const result = runFabr(native("one", { [SNAP]: recorded("one") }), ["-DJS_TARGET=es2020", "test", "thing"]);
+      expect(result.status).to.equal(0);
+      expect(result.stderr).to.contain("1 test passed");
+    });
+
+    snapshots("reports a mismatch as a diff, naming fabr's own remedy", () => {
+      const result = runFabr(native("two", { [SNAP]: recorded("one") }), ["-DJS_TARGET=es2020", "test", "thing"]);
+      expect(result.status).to.not.equal(0);
+      expect(result.stderr).to.contain("does not match its recorded snapshot. Run 'fabr test -u'");
+      expect(result.stderr).to.contain('-   "value": "one"');
+      expect(result.stderr).to.contain('+   "value": "two"');
+    });
+
+    snapshots("names fabr's flag, not node's, when nothing is recorded", () => {
+      const result = runFabr(native("one"), ["-DJS_TARGET=es2020", "test", "thing"]);
+      expect(result.status).to.not.equal(0);
+      expect(result.stderr).to.contain("no recorded snapshot. Run 'fabr test -u'");
+      expect(result.stderr).to.not.contain("--test-update-snapshots");
+    });
+  });
+
   describe("under watch", () => {
     it("does not re-test because of its own write-back, but still re-tests on a real change", async () => {
       const session = startFabrWatch(project("one"), ["-DJS_TARGET=es2020", "test", "-u", "-w", "thing"]);

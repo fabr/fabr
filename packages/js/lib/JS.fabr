@@ -570,7 +570,9 @@ js_script @fabr-build/js-tools/tsc-driver {
 }
 
 # Fabr's own test runner ('fabr test' / js_test / js_package tests): wraps
-# node:test, preloads the describe/it globals, and writes the CTRF report. Its
+# node:test, preloads the describe/it globals, and writes the CTRF report.
+# Snapshot assertions are node:test's own (`t.assert.snapshot`, node 23.4+),
+# recorded as `__snapshots__/<test file>.snap` beside the test. Its
 # test-globals.d.ts rides in the install — the test rules mount it into the
 # test compile as ambient types, so a swapped runner carries its own globals
 # typings. A replacement must honor the runner contract: invoked in the staged
