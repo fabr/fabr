@@ -222,6 +222,29 @@ libraries. Declare snapshot files as the target's `test_expectations` (above), n
 `fabr test -u` refreshes them and writes them back. See [known limitations](/known-limitations/)
 for what the layer does not cover yet.
 
+### Running a vitest suite
+
+If your tests are written against vitest, select it as the framework and add vitest itself to the
+test dependencies. Fabr runs the vitest you declare (4.1 or later); `@types/deep-eql` is required
+by its type dependencies without a version, so it needs an explicit pin:
+
+```
+JS_TEST_FRAMEWORK = vitest;               # or per target: test_framework = vitest;
+
+js_package mylib {
+  srcs = src:**/*.ts;
+  tests = src:**/*.test.ts;
+  test_expectations = src:**/__snapshots__/*.snap;
+  test_deps = @npm:vitest:5.0.3 @npm:@types/deep-eql:4.0.2?;
+}
+```
+
+`vi.mock`, `expect`, snapshots (`fabr test -u` updates them), a `setupTests` file and the
+`// @vitest-environment` comment all work; add `jsdom` to `test_deps` and the `dom` flag to `deps`
+for DOM tests. Fabr compiles the tests itself and vitest loads them through Node, so no
+`vitest.config` is read and Vite's own import handling is not available — see
+[known limitations](/known-limitations/).
+
 Run them:
 
 ```sh

@@ -88,7 +88,7 @@ default POSTCSS_DRIVER = @fabr-build/js-tools/postcss-driver;
 
 #
 # The test framework a project's tests are written for: `node` (fabr's own
-# runner, over node:test) or `jest` (the jest-compatibility runner). A target
+# runner, over node:test), `jest` (the jest-compatibility runner) or `vitest`. A target
 # overrides it for itself with its `test_framework` property (`framework` on a
 # js_test).
 #
@@ -103,6 +103,7 @@ default JS_TEST_FRAMEWORK = node;
 
 default JS_NODE_TEST_RUNNER = @fabr-build/js-tools/test-runner;
 default JS_JEST_RUNNER = @fabr-build/js-tools/jest-runner;
+default JS_VITEST_RUNNER = @fabr-build/js-tools/vitest-runner;
 
 #
 # The jest release the jest-compatibility runner takes its libraries from.
@@ -306,7 +307,7 @@ targetdef js_package {
     # Environment variables the test processes run with; they run with no
     # others.
     test_env = MAP;
-    # The test framework the tests are written for: `node` or `jest`.
+    # The test framework the tests are written for: `node`, `jest` or `vitest`.
     test_framework = STRING default ${JS_TEST_FRAMEWORK};
     version = STRING;
     # Descriptive package.json fields (description, license, author, homepage,
@@ -614,4 +615,19 @@ js_script @fabr-build/js-tools/jest-runner {
            ../jestRunner/Failures.js ../jestRunner/Hoist.js ../jestRunner/JestObject.js ../jestRunner/Registry.js
            ../jestRunner/RuntimeFacade.js ../jestRunner/SnapshotResolver.js ../jestRunner/Tools.js
            ../testRunner/Report.js ../testRunner/RunTests.js;
+}
+
+# Fabr's test runner for VITEST (`JS_TEST_FRAMEWORK = vitest;`): it runs the
+# target's own vitest — declared among its `test_deps`, 4.1 or later — over the
+# compiled tests, which this framework compiles as ES modules. Vitest loads
+# them through node's own module loader, so Vite's transforms (plugins,
+# aliases, `import.meta.env`) do not apply.
+#
+# It carries its own package.json: the tests it runs are ES modules, so the
+# installation they share says `"type": "module"`, and this one says how the
+# runner itself was built.
+js_script @fabr-build/js-tools/vitest-runner {
+    entry = ../vitestRunner/runner.js;
+    deps = ../vitestRunner/VitestRun.js ../testRunner/Report.js ../testRunner/RunTests.js
+           vitest-runner.package.json -> package.json;
 }

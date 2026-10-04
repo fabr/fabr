@@ -46,6 +46,7 @@ TSC=@npm:typescript:5.4.5:tsc becomes TYPESCRIPT=@npm:typescript:5.4.5.
 - Add yarn's package extensions.
 - Fix provided package resolution to avoid forking.
 - Node_modules (when used) now follows pnpm tree conventions
+- Add vitest as a supported test framework (`JS_TEST_FRAMEWORK = vitest`)
 - Add support for Jest environment docblock declarations.
 - Add snapshot assertions (`t.assert.snapshot`) to the native test runner, updated with `fabr test -u`.
 

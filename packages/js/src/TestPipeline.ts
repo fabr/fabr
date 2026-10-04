@@ -147,13 +147,15 @@ export interface ITestFramework {
 /**
  * The test frameworks, by the name a target selects one with.
  *
- * Both compile to CommonJS: call-time `require` is what makes module
- * substitution (a runner's mocking layer) observable at all, and it is the seam
- * such a layer intercepts.
+ * `node` and `jest` compile to CommonJS: call-time `require` is what makes
+ * module substitution (the jest layer's mocking) observable at all, and it is
+ * the seam such a layer intercepts. Vitest is itself an ES-module graph that a
+ * CommonJS test cannot `require`, and does its own hoisting over ES modules.
  */
 export const TEST_FRAMEWORKS: ReadonlyMap<string, ITestFramework> = new Map([
   ["node", { runner: "JS_NODE_TEST_RUNNER", module: "commonjs" }],
   ["jest", { runner: "JS_JEST_RUNNER", module: "commonjs" }],
+  ["vitest", { runner: "JS_VITEST_RUNNER", module: "esm" }],
 ]);
 
 export interface ITestInputs {
