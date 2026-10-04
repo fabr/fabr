@@ -122,8 +122,10 @@ function jestVersion(): string | undefined {
  * test process is spawned. Only `jsdom` can fail: it comes from the target's
  * own dependencies, and saying which dependency is missing (and why it is
  * wanted) is far more use than a test child dying during its preload.
+ * `fromDocblock` says the environment was a test file's own `@jest-environment`
+ * choice rather than the invocation's.
  */
-export function requireEnvironment(env: string): void {
+export function requireEnvironment(env: string, fromDocblock = false): void {
   if (env === "node") {
     return;
   }
@@ -132,8 +134,11 @@ export function requireEnvironment(env: string): void {
   }
   if (userModule("jsdom") === undefined) {
     throw new Error(
-      "These tests need a DOM environment (the target is built for the browser), but 'jsdom' is not among its dependencies.\n" +
-        "Add it to the target's test_deps (e.g. test_deps = @npm:jsdom:26.1.0;), or build the target for node."
+      fromDocblock
+        ? "This test file asks for a DOM environment (its @jest-environment docblock), but 'jsdom' is not among the target's dependencies.\n" +
+          "Add it to the target's test_deps (e.g. test_deps = @npm:jsdom:26.1.0;)."
+        : "These tests need a DOM environment (the target is built for the browser), but 'jsdom' is not among its dependencies.\n" +
+          "Add it to the target's test_deps (e.g. test_deps = @npm:jsdom:26.1.0;), or build the target for node."
     );
   }
 }

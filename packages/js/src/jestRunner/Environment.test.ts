@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { inheritedMethods } from "./Environment";
+import { environmentFor, inheritedMethods } from "./Environment";
 
 /* installJsdom itself needs a real jsdom, which fabr's own tests do not carry
  * (it comes from the TARGET's test_deps); what is testable here is the part
@@ -65,5 +65,51 @@ describe("inheritedMethods", () => {
     const window = windowLike();
     window.matchMedia = () => undefined;
     expect(inheritedMethods(window as never)).to.not.contain("matchMedia");
+  });
+});
+
+describe("environmentFor", () => {
+  it("is the invocation's environment for a file with no pragma", () => {
+    expect(environmentFor({}, "jsdom")).to.deep.equal({ env: "jsdom", options: {} });
+    expect(environmentFor({ other: "x" }, "node")).to.deep.equal({ env: "node", options: {} });
+  });
+
+  it("takes the file's pragma over the invocation's environment", () => {
+    expect(environmentFor({ "jest-environment": "node" }, "jsdom").env).to.equal("node");
+    expect(environmentFor({ "jest-environment": "jsdom" }, "node").env).to.equal("jsdom");
+  });
+
+  it("accepts jest's package names for the two environments", () => {
+    expect(environmentFor({ "jest-environment": "jest-environment-jsdom" }, "node").env).to.equal("jsdom");
+    expect(environmentFor({ "jest-environment": "jest-environment-node" }, "jsdom").env).to.equal("node");
+  });
+
+  it("rejects a pragma written twice, as jest does", () => {
+    expect(() => environmentFor({ "jest-environment": ["node", "jsdom"] }, "node")).to.throw(
+      TypeError,
+      'You can only define a single test environment through docblocks, got "node, jsdom"'
+    );
+  });
+
+  it("rejects an environment this runner does not provide", () => {
+    expect(() => environmentFor({ "jest-environment": "./my-environment.js" }, "node")).to.throw(
+      /Unsupported test environment '\.\/my-environment\.js'/
+    );
+  });
+
+  it("parses the environment options, with or without an environment pragma", () => {
+    const options = '{"url": "https://example.test/"}';
+    expect(environmentFor({ "jest-environment-options": options }, "jsdom")).to.deep.equal({
+      env: "jsdom",
+      options: { url: "https://example.test/" },
+    });
+    expect(environmentFor({ "jest-environment": "jsdom", "jest-environment-options": options }, "node").options).to.deep.equal({
+      url: "https://example.test/",
+    });
+  });
+
+  it("ignores environment options written twice, and fails on ones that are not JSON", () => {
+    expect(environmentFor({ "jest-environment-options": ["{}", "{}"] }, "node").options).to.deep.equal({});
+    expect(() => environmentFor({ "jest-environment-options": "{url:" }, "node")).to.throw(SyntaxError);
   });
 });

@@ -45,11 +45,8 @@ ship: fabr's own, built on Node's `node:test`, and a jest compatibility layer (s
   drives jest-circus with jest's own libraries — so their behaviour is jest's, but none of jest's
   orchestrator runs.
 - **Vitest is not supported.** Its API is unavailable and there is no compatibility layer for it.
-- **The per-file `@jest-environment` docblock is not honoured.** The environment is chosen per
-  *target*, from the `dom` source flag among its `deps`/`test_deps`, so a suite mixing node-only and
-  DOM tests either runs all of them under jsdom or splits into a target each. Expected to be
-  fixable: the jest runner already forks a process per test file, and picks its environment per
-  invocation.
+- **Custom jest plugins and extensions are not supported.** The compatibility layer does not load
+  custom test environments, transformers, reporters, resolvers or runners.
 - **The native runner has no snapshot assertions.** `fabr test -u` against it says so rather than
   quietly doing nothing; snapshot-based suites need the jest layer.
 

@@ -32,8 +32,10 @@
  * reports the file as failed using the stderr it captured.
  */
 
+import * as fs from "node:fs";
 import { inspect } from "node:util";
-import { installJsdom } from "./Environment";
+import { sourcePathOf } from "../testRunner/Report";
+import { DocblockPragmas, environmentFor, IFileEnvironment, installJsdom } from "./Environment";
 import { installHoist } from "./Hoist";
 import { IFakeTimers, IMocker, makeJestObject } from "./JestObject";
 import { ILoaderModule, installSeams, MockRegistry } from "./Registry";
@@ -88,9 +90,10 @@ type TestFramework = (
 ) => Promise<{ testResults: CircusResult[]; testExecError?: { message?: string } }>;
 
 export async function runTestFile(request: IChildRequest): Promise<IChildResult> {
-  requireEnvironment(request.env);
-  if (request.env === "jsdom") {
-    installJsdom();
+  const environment = fileEnvironment(request);
+  requireEnvironment(environment.env, environment.env !== request.env);
+  if (environment.env === "jsdom") {
+    installJsdom(environment.options);
   }
 
   const { globalConfig, projectConfig } = await makeJestConfig(request);
@@ -144,6 +147,24 @@ export async function runTestFile(request: IChildRequest): Promise<IChildResult>
     })),
     execError: result.testExecError?.message,
   };
+}
+
+interface IDocblockModule {
+  extract(contents: string): string;
+  parse(docblock: string): DocblockPragmas;
+}
+
+/**
+ * The environment this file runs in — `request.env` unless the file's leading
+ * docblock says otherwise (see environmentFor). The docblock is read from the
+ * SOURCE the test was compiled from, as jest reads it, falling back to the
+ * compiled file where the source is not staged.
+ */
+function fileEnvironment(request: IChildRequest): IFileEnvironment {
+  const docblock = jestLibrary("jest-docblock") as IDocblockModule;
+  const source = sourcePathOf(request.testFile);
+  const text = fs.readFileSync(source !== undefined && fs.existsSync(source) ? source : request.testFile, "utf8");
+  return environmentFor(docblock.parse(docblock.extract(text)), request.env);
 }
 
 /** `@jest/globals`' exports besides `jest` itself: the framework surface circus

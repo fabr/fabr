@@ -46,6 +46,49 @@ interface IJsdom {
 
 interface IJsdomModule {
   JSDOM: new (html: string, options: unknown) => IJsdom;
+  ResourceLoader: new (options: { userAgent: string }) => unknown;
+}
+
+/** A test file's docblock pragmas, as `jest-docblock` parses them: a pragma
+ * written more than once is an array. */
+export type DocblockPragmas = Record<string, string | string[]>;
+
+/** The environment one test file runs in. */
+export interface IFileEnvironment {
+  env: string;
+  /** The file's `@jest-environment-options`, if it wrote any. */
+  options: Record<string, unknown>;
+}
+
+const ENVIRONMENT_PACKAGE_PREFIX = "jest-environment-";
+
+/**
+ * The environment a test file runs in: its `@jest-environment` pragma if it
+ * has one, else `fallback` (the invocation's `--env`), with its
+ * `@jest-environment-options` parsed as JSON.
+ *
+ * The pragma names `node` or `jsdom`, bare or by jest's package name
+ * (`jest-environment-jsdom`). Any other environment is an error: this runner
+ * hosts no environment modules. A pragma written twice is jest's own error.
+ */
+export function environmentFor(pragmas: DocblockPragmas, fallback: string): IFileEnvironment {
+  const written = pragmas["jest-environment"];
+  if (Array.isArray(written)) {
+    throw new TypeError(`You can only define a single test environment through docblocks, got "${written.join(", ")}"`);
+  }
+  const rawOptions = pragmas["jest-environment-options"];
+  const options = typeof rawOptions === "string" ? (JSON.parse(rawOptions) as Record<string, unknown>) : {};
+  if (!written) {
+    return { env: fallback, options };
+  }
+  const env = written.startsWith(ENVIRONMENT_PACKAGE_PREFIX) ? written.slice(ENVIRONMENT_PACKAGE_PREFIX.length) : written;
+  if (env !== "node" && env !== "jsdom") {
+    throw new Error(
+      `Unsupported test environment '${written}' in a @jest-environment docblock — this runner provides 'node' and 'jsdom', ` +
+        "and does not load custom environment modules."
+    );
+  }
+  return { env, options };
 }
 
 /**
@@ -158,17 +201,25 @@ export function inheritedMethods(window: IJsdomWindow): string[] {
  * jsdom's own window object stays behind it: the copied properties are its
  * closures, and the inherited methods are bound to it, so everything still
  * operates on the one real DOM.
+ *
+ * `options` are jest's `testEnvironmentOptions` for jsdom, applied as
+ * `jest-environment-jsdom` applies them: `html` is the document, `userAgent`
+ * the resource loader's, and all of them are passed to the `JSDOM` constructor
+ * over the defaults.
  */
-export function installJsdom(): void {
+export function installJsdom(options: Record<string, unknown> = {}): void {
   /* The runner has already checked that jsdom is installed (see
    * requireEnvironment), where the failure can be reported properly. */
   const jsdom = userModule("jsdom") as IJsdomModule | undefined;
   if (jsdom?.JSDOM === undefined) {
     throw new Error("'jsdom' is not installed in this test environment");
   }
-  const dom = new jsdom.JSDOM("<!doctype html><html><head></head><body></body></html>", {
+  const { html, userAgent } = options;
+  const dom = new jsdom.JSDOM(typeof html === "string" ? html : "<!doctype html><html><head></head><body></body></html>", {
     url: "http://localhost/",
     pretendToBeVisual: true,
+    resources: typeof userAgent === "string" ? new jsdom.ResourceLoader({ userAgent }) : undefined,
+    ...options,
   });
   const globals = globalThis as unknown as Record<string, unknown>;
   const window = dom.window;

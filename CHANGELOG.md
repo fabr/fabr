@@ -39,6 +39,7 @@ TSC=@npm:typescript:5.4.5:tsc becomes TYPESCRIPT=@npm:typescript:5.4.5.
 - Add yarn's package extensions.
 - Fix provided package resolution to avoid forking.
 - Node_modules (when used) now follows pnpm tree conventions
+- Add support for Jest environment docblock declarations.
 
 ## Fabr 0.2.1
 @fabr-build/core:
