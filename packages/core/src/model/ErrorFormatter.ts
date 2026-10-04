@@ -28,10 +28,12 @@ import {
   BuildFilesInvalidError,
   CircularDependencyError,
   DependencyFailedError,
+  IJudgedKey,
   NameResolutionError,
   NoRuleFoundError,
   ReferenceFailedError,
 } from "./Errors";
+import { compareText } from "../support/Functional";
 
 /** All failures render through one template: describe() produces the final
  * message, and the structured detail (span, label, notes, help) rides along. */
@@ -277,7 +279,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
     return {
       message: `Cannot ${verb} '${cause.target.name}': no rule matches target type '${cause.target.type}'${suffix}`,
       loc: declPosn(cause.target),
-      help: supportedOperationsHelp(cause),
+      help: noRuleHelp(cause),
     };
   }
 
@@ -348,13 +350,36 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
  * itself pick (`fabr docs_serve` infers the same verb, so the two agree). No
  * help for a type with no rules at all — there is nothing to redirect to.
  */
-function supportedOperationsHelp(cause: NoRuleFoundError): string[] | undefined {
-  const preferred = preferredOperation(cause.operations);
-  if (!preferred) {
-    return undefined;
+/**
+ * What a target with no applicable rule could have matched. Where its type has
+ * rules for the operation asked of it, those rules are listed, each with what
+ * it requires and (in parentheses) what this target has where that differs;
+ * where it has none, the operations the type does support are the remedy.
+ */
+function noRuleHelp(cause: NoRuleFoundError): string[] | undefined {
+  const type = cause.target.type;
+  const isOperation = (key: IJudgedKey): boolean => !key.own && key.key === BUILD_OPERATION;
+  const forOperation = cause.candidates.filter(keys => keys.every(key => !isOperation(key) || key.matched));
+  if (forOperation.length === 0) {
+    const operations = [...new Set(cause.candidates.map(keys => keys.find(isOperation)?.pattern ?? "*"))].sort();
+    const preferred = preferredOperation(operations);
+    const supported = operations.map(operation => `'${operation}'`).join(", ");
+    return preferred ? [`'${type}' targets support ${supported} — try 'fabr ${preferred} ${cause.target.name}'`] : undefined;
   }
-  const supported = cause.operations.map(operation => `'${operation}'`).join(", ");
-  return [`'${cause.target.type}' targets support ${supported} — try 'fabr ${preferred} ${cause.target.name}'`];
+  const operation = cause.candidates.flat().find(isOperation)?.value ?? cause.constraints.get(BUILD_OPERATION) ?? "build";
+  const name = (key: IJudgedKey): string => (key.own ? `target.${key.key}` : key.key);
+  const rows = forOperation
+    .map(keys => keys.filter(key => !isOperation(key)))
+    .map(keys => ({
+      requires: keys.map(key => `${name(key)} = ${key.pattern}`).join(", "),
+      has: keys
+        .filter(key => !key.matched)
+        .map(key => (key.value === undefined ? `${name(key)} is unset` : `${name(key)} = ${key.value}`))
+        .join(", "),
+    }))
+    .sort((a, b) => compareText(a.requires, b.requires));
+  const width = Math.max(...rows.map(row => row.requires.length));
+  return [`Available ${operation} rules for ${type}:\n${rows.map(row => `  ${row.requires.padEnd(width)}  (${row.has})`).join("\n")}`];
 }
 
 function helpOf(err: Error): string[] | undefined {

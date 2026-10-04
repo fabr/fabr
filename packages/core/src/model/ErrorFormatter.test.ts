@@ -25,7 +25,7 @@ import { IDiagnosticNote, Log } from "../support/Log";
 import { IModelRefStep, MODEL_REF_PROVENANCE } from "./BuildContext";
 import { parseName } from "./Parser";
 import { BUILD_OPERATION, Constraints } from "./Constraints";
-import { CircularDependencyError, DependencyFailedError, NoRuleFoundError, ReferenceFailedError } from "./Errors";
+import { CircularDependencyError, DependencyFailedError, IJudgedKey, NoRuleFoundError, ReferenceFailedError } from "./Errors";
 import { DiagnosticErrorFormatter, errorSummary } from "./ErrorFormatter";
 
 /** A stand-in for the driver-injected host facts, and the keys a report elides. */
@@ -273,6 +273,37 @@ describe("DiagnosticErrorFormatter", () => {
     const err = new NoRuleFoundError(targetDecl("tool", "js_script"), Constraints.of({ [BUILD_OPERATION]: "build", HOST: HOST_TRIPLE }));
     const [diag] = capture(err);
     expect(diag.message).to.equal("Cannot build 'tool': no rule matches target type 'js_script'");
+  });
+
+  describe("a no-rule failure's help", () => {
+    const operation = (pattern: string, value: string): IJudgedKey => ({ key: BUILD_OPERATION, own: false, pattern, value, matched: pattern === value });
+    const own = (key: string, pattern: string, value: string | undefined): IJudgedKey => ({ key, own: true, pattern, value, matched: pattern === value });
+
+    it("suggests an operation the type does support, where the one asked for has no rule", () => {
+      const err = new NoRuleFoundError(targetDecl("tool", "js_script"), Constraints.of({ [BUILD_OPERATION]: "build" }), [[operation("run", "build")]]);
+      expect(capture(err)[0].help).to.deep.equal(["'js_script' targets support 'run' — try 'fabr run tool'"]);
+    });
+
+    it("lists the operation's rules, each with what it requires and what the target has instead", () => {
+      const candidates = [
+        [operation("build", "test")],
+        [operation("test", "test"), own("test_framework", "node", "jset")],
+        [operation("test", "test"), own("test_framework", "jest", "jset")],
+      ];
+      const err = new NoRuleFoundError(targetDecl("lib"), Constraints.of({ [BUILD_OPERATION]: "test" }), candidates);
+      expect(capture(err)[0].help).to.deep.equal([
+        "Available test rules for js_package:\n" +
+          "  target.test_framework = jest  (target.test_framework = jset)\n" +
+          "  target.test_framework = node  (target.test_framework = jset)",
+      ]);
+    });
+
+    it("shows only the keys that differ, an unset one as such, and configuration keys by their bare name", () => {
+      const mode: IJudgedKey = { key: "MODE", own: false, pattern: "fast", value: "fast", matched: true };
+      const candidates = [[operation("test", "test"), mode, own("kind", "x", undefined)]];
+      const err = new NoRuleFoundError(targetDecl("lib"), Constraints.of({ [BUILD_OPERATION]: "test" }), candidates);
+      expect(capture(err)[0].help).to.deep.equal(["Available test rules for js_package:\n  MODE = fast, target.kind = x  (target.kind is unset)"]);
+    });
   });
 
   it("annotates a no-rule failure with the explicit constraints only", () => {

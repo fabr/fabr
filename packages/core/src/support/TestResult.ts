@@ -172,8 +172,8 @@ export function mergeTestReports(reports: ITestReport[]): ITestReport {
 }
 
 /**
- * Convert a parsed document to a report. The runner that wrote it is swappable
- * (`JS_TEST_RUNNER`), so this is third-party JSON, and this is the one place it
+ * Convert a parsed document to a report. The runner that wrote it is
+ * replaceable, so this is third-party JSON, and this is the one place it
  * becomes an {@link ITestReport} — every consumer downstream relies on the
  * shape it was handed. Anything unrecognizable throws (attributed to the report
  * file by `readJsonFile`): a corrupt report is a real problem, never a silently

@@ -78,7 +78,7 @@ JS_TARGET = es2021-commonjs;
 # they are worth running under it: the layer has to carry an ordinary suite
 # unchanged before it can claim to carry a jest one. (`yarn test` runs the same
 # files under real jest, so the two agree by construction.)
-JS_TEST_RUNNER = @fabr-build/js-tools/jest-runner;
+JS_TEST_FRAMEWORK = jest;
 
 # The describe/it/expect globals' types. The jest runner ships no ambient
 # globals of its own — these would collide with them — so a target using it

@@ -23,8 +23,10 @@
  * runnable installation, and run the runner over the compiled test files,
  * reporting through the test report contract defined by @fabr-build/core.
  *
- * The runner is the target's `test_runner` (defaulting to the `JS_TEST_RUNNER`
- * global — fabr's own runner, or the jest-compatibility flavour), executed
+ * What differs between test frameworks is an {@link ITestFramework}: which
+ * runner runs the tests, and the module format it loads them as. Each framework
+ * has its own rule per test target type, selected on the target's framework
+ * property, and each rule passes its framework here. The runner executes
  * standalone inside the test working directory. The runner contract:
  *
  *     <runner> --report=<file> --env=<node|jsdom> [--update-snapshots]
@@ -122,7 +124,7 @@ const SETUP_STEM = "setupTests";
  * The runner's ambient globals types, extracted from its resolved install (a
  * test-globals.d.ts anywhere among its files) and mounted as the synthetic
  * @types package the test compile auto-includes; empty when the runner ships
- * none. Part of the runner contract, so a swapped JS_TEST_RUNNER carries its
+ * none. Part of the runner contract, so a replaced runner carries its
  * own globals typings with it rather than inheriting fabr's — and, equally,
  * a runner typed by an ordinary `@types` package the target declares (the jest
  * flavour, typed by `@types/jest`) ships none, since two sets of ambient
@@ -132,6 +134,27 @@ function runnerGlobalsTypes(runner: FileSet): FileSet {
   const found = [...runner].find(([name]) => name === GLOBALS_TYPES_FILE || name.endsWith("/" + GLOBALS_TYPES_FILE));
   return found ? FileSet.layout({ [GLOBALS_TYPES_MOUNT]: found[1] }) : EMPTY_FILESET;
 }
+
+/** How one test framework's suites are built and run. */
+export interface ITestFramework {
+  /** The global naming the runner (a runnable honouring the runner contract). */
+  runner: string;
+  /** The module format the runner loads test files as, which the tests are
+   * therefore compiled to — whatever the package itself is built as. */
+  module: PinnedJSTarget["module"];
+}
+
+/**
+ * The test frameworks, by the name a target selects one with.
+ *
+ * Both compile to CommonJS: call-time `require` is what makes module
+ * substitution (a runner's mocking layer) observable at all, and it is the seam
+ * such a layer intercepts.
+ */
+export const TEST_FRAMEWORKS: ReadonlyMap<string, ITestFramework> = new Map([
+  ["node", { runner: "JS_NODE_TEST_RUNNER", module: "commonjs" }],
+  ["jest", { runner: "JS_JEST_RUNNER", module: "commonjs" }],
+]);
 
 export interface ITestInputs {
   /** The as-written source and test sources: they join the same collection point
@@ -173,7 +196,7 @@ export interface ITestInputs {
  * lot. The runner and the compile toolchain are not among them: they are
  * *tools*, independent of what they test/compile, and resolve apart.
  */
-export function compileAndRunTests(context: TargetContext, inputs: ITestInputs): Computable<RuleResult> {
+export function compileAndRunTests(context: TargetContext, framework: ITestFramework, inputs: ITestInputs): Computable<RuleResult> {
   const jsTarget = parseJSTarget(inputs.target);
   if (inputs.testRefs.length === 0) {
     /* No `tests` at all: trivially green, and nothing is resolved for it — a
@@ -210,9 +233,9 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
       const testStems = new Set([...tests].map(([name]) => stripExtension(name)));
       /* The runner is a *tool*, independent of what it tests, so it resolves
        * apart (the TSC precedent — its pins don't co-resolve with the tests'
-       * deps); `test_runner` defaults to the JS_TEST_RUNNER global. */
+       * deps). */
       return Computable.forAll(
-        [context.getRunnableProperty("test_runner", "JS_TEST_RUNNER"), context.getGlobalString(TEST_EXPECTATIONS)],
+        [context.getGlobalRunnable(framework.runner), context.getGlobalString(TEST_EXPECTATIONS)],
         (runner, expectations): Computable<RuleResult> => {
           /* The test compile may import the package's deps, the test_deps, and the
            * runner globals directly (all passed to compileJsSources). The runtime
@@ -226,14 +249,12 @@ export function compileAndRunTests(context: TargetContext, inputs: ITestInputs):
           const runtimeModules = assembleNodeModules(packages);
           const resources = resourceFiles(allDeps.filter(dep => !(dep instanceof PackageFileSet)));
 
-          /* Tests always compile and run as CommonJS, whatever the package
-           * itself is built as: call-time `require` is what makes module
-           * substitution (a runner's mocking layer) observable at all, and it
-           * is the seam such a layer intercepts. Component-wise — the ES
+          /* Tests compile to the format their framework's runner loads,
+           * whatever the package itself is built as. Component-wise — the ES
            * version and the environment are the target's own and are kept. */
-          const testTarget: PinnedJSTarget = { ...jsTarget, module: "commonjs" };
+          const testTarget: PinnedJSTarget = { ...jsTarget, module: framework.module };
           /* Set unconditionally, including when the target already emits
-           * commonjs: the override is then a different SPELLING of the same
+           * that format: the override is then a different SPELLING of the same
            * target (`es2020` formats back as `es2020-commonjs-node`), which
            * parses identically, yields an identical tsconfig, and so shares the
            * one compile by cache key. Guarding it would trade that no-op for a

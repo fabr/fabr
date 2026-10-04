@@ -25,9 +25,9 @@
  */
 
 import { BUILD_OPERATION, BUILD_OVERRIDE, Computable, RuleDefinition, RuleResult, TargetContext } from "@fabr-build/core";
-import { compileAndRunTests } from "../TestPipeline";
+import { compileAndRunTests, ITestFramework, TEST_FRAMEWORKS } from "../TestPipeline";
 
-function runJsTest(context: TargetContext): Computable<RuleResult> {
+function runJsTest(context: TargetContext, framework: ITestFramework): Computable<RuleResult> {
   return Computable.forAll(
     [
       context.getFileProperty("tests", BUILD_OVERRIDE),
@@ -38,7 +38,7 @@ function runJsTest(context: TargetContext): Computable<RuleResult> {
       context.getMap("env"),
     ],
     (testRefs, target, depSources, testResourceSources, expectationSources, env) =>
-      compileAndRunTests(context, {
+      compileAndRunTests(context, framework, {
         sourceRefs: [],
         testRefs,
         target,
@@ -51,4 +51,10 @@ function runJsTest(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-export const jsTestRule: RuleDefinition = { type: "js_test", properties: { [BUILD_OPERATION]: "test" }, evaluate: runJsTest };
+/** One rule per test framework, selected on the target's `framework`. */
+export const jsTestRules: RuleDefinition[] = [...TEST_FRAMEWORKS].map(([name, framework]) => ({
+  type: "js_test",
+  properties: { [BUILD_OPERATION]: "test" },
+  targetProperties: { framework: name },
+  evaluate: context => runJsTest(context, framework),
+}));

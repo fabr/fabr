@@ -87,12 +87,22 @@ default SASS_DRIVER = @fabr-build/js-tools/sass-driver;
 default POSTCSS_DRIVER = @fabr-build/js-tools/postcss-driver;
 
 #
-# The test runner the js test rules run (fabr's own by default). A target
-# overrides it for itself with its `test_runner` property; set this to switch a
-# whole project (e.g. to the jest-compatibility runner below).
+# The test framework a project's tests are written for: `node` (fabr's own
+# runner, over node:test) or `jest` (the jest-compatibility runner). A target
+# overrides it for itself with its `test_framework` property (`framework` on a
+# js_test).
 #
 
-default JS_TEST_RUNNER = @fabr-build/js-tools/test-runner;
+default JS_TEST_FRAMEWORK = node;
+
+#
+# The runner behind each test framework. Each must honor the runner contract:
+# invoked in the staged test install as `<runner> --report=<file> <test
+# files...>`, exit status red on failure, report written as CTRF.
+#
+
+default JS_NODE_TEST_RUNNER = @fabr-build/js-tools/test-runner;
+default JS_JEST_RUNNER = @fabr-build/js-tools/jest-runner;
 
 #
 # The jest release the jest-compatibility runner takes its libraries from.
@@ -296,11 +306,8 @@ targetdef js_package {
     # Environment variables the test processes run with; they run with no
     # others.
     test_env = MAP;
-    # The runner `fabr test` runs these tests under; defaults to the
-    # JS_TEST_RUNNER global. Any runnable honoring the runner contract will do —
-    # in practice, fabr's own runner or one of its compatibility flavours (see
-    # the jest runner in the driver-tools section).
-    test_runner = FILES;
+    # The test framework the tests are written for: `node` or `jest`.
+    test_framework = STRING default ${JS_TEST_FRAMEWORK};
     version = STRING;
     # Descriptive package.json fields (description, license, author, homepage,
     # ...), overlaid onto the generated manifest. A value is a string, a nested
@@ -352,8 +359,9 @@ targetdef js_test {
     # before every test.
     tests = FILES;
     deps = FILES;
-    # The runner these tests run under; defaults to the JS_TEST_RUNNER global.
-    test_runner = FILES;
+    # The test framework the tests are written for (see js_package's
+    # test_framework).
+    framework = STRING default ${JS_TEST_FRAMEWORK};
     # Files the tests need at runtime, staged verbatim (see js_package's
     # test_resources — unprefixed here, since everything in a js_test is tests).
     resources = FILES;
@@ -574,10 +582,8 @@ js_script @fabr-build/js-tools/tsc-driver {
 # Snapshot assertions are node:test's own (`t.assert.snapshot`, node 23.4+),
 # recorded as `__snapshots__/<test file>.snap` beside the test. Its
 # test-globals.d.ts rides in the install — the test rules mount it into the
-# test compile as ambient types, so a swapped runner carries its own globals
-# typings. A replacement must honor the runner contract: invoked in the staged
-# test install as `<runner> --report=<file> <test files...>`, exit status red
-# on failure, report written as CTRF.
+# test compile as ambient types, so a replacement (JS_NODE_TEST_RUNNER) carries
+# its own globals typings.
 js_script @fabr-build/js-tools/test-runner {
     entry = ../testRunner/runner.js;
     deps = ../testRunner/Report.js ../testRunner/globals.js ../testRunner/RunTests.js ../testRunner/test-globals.d.ts;
@@ -592,9 +598,8 @@ js_script @fabr-build/js-tools/test-runner {
 # actually calls, so modules load through node and `require(esm)` keeps working
 # — the capability jest's own vm-based loader lacks.
 #
-# Select it per target (`test_runner = @fabr-build/js-tools/jest-runner;`) or
-# project-wide (`JS_TEST_RUNNER = @fabr-build/js-tools/jest-runner;`). A target
-# using it should declare `@npm:@types/jest` among its `test_deps` for the
+# Select it per target (`test_framework = jest;`) or project-wide
+# (`JS_TEST_FRAMEWORK = jest;`). A target using it should declare `@npm:@types/jest` among its `test_deps` for the
 # describe/it/expect/jest globals' types — this runner deliberately ships no
 # ambient globals of its own, which would collide with them.
 #

@@ -491,6 +491,16 @@ registerRule("test_describes", {}, context => {
 
 const testContributions: PluginContribution[] = [{ rules: testRules, repositories: testRepos }];
 
+/** `outcome`, or `otherwise` if it has not settled within two seconds — so a
+ * build that never settles fails its test rather than hanging the suite. */
+function settledOr<T>(outcome: Promise<T>, otherwise: T): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const expiry = new Promise<T>(resolve => {
+    timer = setTimeout(() => resolve(otherwise), 2000);
+  });
+  return Promise.race([outcome, expiry]).finally(() => clearTimeout(timer));
+}
+
 async function testGetProperty(input: string, prop: string, constraints?: Record<string, string>): Promise<string[]> {
   const errors: string[] = [];
   const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
@@ -685,13 +695,13 @@ describe("BuildContext", () => {
       const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
       const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", DEFS + input, logger)], logger, testContributions);
       expect(errors).to.deep.equal([]);
-      const failure = await Promise.race([
+      const failure = await settledOr(
         Promise.resolve(model.getConfig(Constraints.of({ BUILD_OPERATION: "run" }), execution).getTarget(name)).then(
           () => new Error("built"),
           (err: Error) => err
         ),
-        new Promise<Error>(resolve => setTimeout(() => resolve(new Error("never settled")), 2000)),
-      ]);
+        new Error("never settled")
+      );
       let cause = failure;
       while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
         cause = cause.cause;
@@ -2895,7 +2905,7 @@ describe("Rule selection", () => {
             .then(() => EMPTY_FILESET),
       },
     ]);
-    const outcome = await Promise.race([
+    const outcome = await settledOr(
       Promise.resolve(cyclic.getConfig(Constraints.of({ BUILD_OPERATION: "run" }), execution).getTarget("t")).then(
         () => "built",
         (err: Error) => {
@@ -2906,8 +2916,8 @@ describe("Rule selection", () => {
           return cause.message;
         }
       ),
-      new Promise<string>(resolve => setTimeout(() => resolve("never settled"), 2000)),
-    ]);
+      "never settled"
+    );
     expect(outcome).to.equal("Circular dependency: 't' depends on itself");
   });
 
@@ -2963,9 +2973,14 @@ describe("Rule selection", () => {
       await expect(build("typed t { flavour = ${UNDECLARED}; }\n", "t")).to.be.rejectedWith(DependencyFailedError);
     });
 
-    it("still reports no rule where none applies", async () => {
+    it("reports no rule where none applies, with how each rule was judged", async () => {
       const only = modelOf(DEFS + "typed t { flavour = chocolate; }\n", [rules[1]]);
-      await expect(only.getConfig(Constraints.of({}), execution).getTarget("t")).to.be.rejectedWith(NoRuleFoundError);
+      const failure = (await only.getConfig(Constraints.of({}), execution).getTarget("t").then(
+        () => undefined,
+        (err: Error) => err
+      )) as NoRuleFoundError;
+      expect(failure).to.be.instanceOf(NoRuleFoundError);
+      expect(failure.candidates).to.deep.equal([[{ key: "flavour", own: true, pattern: "van*", value: "chocolate", matched: false }]]);
     });
 
     it("rejects a rule selecting on a property its type does not declare as a STRING", () => {

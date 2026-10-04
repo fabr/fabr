@@ -87,6 +87,8 @@ function reportOf(failed) {
       STUB_TSC_CONFIG +
       globals +
       "js_script fixture_runner { deps = runner:**; entry = runner:run.js; }\n" +
+      /* The runner behind the default (`node`) framework. */
+      "JS_NODE_TEST_RUNNER = fixture_runner;\n" +
       "js_package thing {\n" +
       "  srcs = src:**/*.ts;\n" +
       "  tests = src:**/*.test.ts;\n" +
@@ -94,7 +96,7 @@ function reportOf(failed) {
        * compare against and the only inputs -u may rewrite — never package
        * content, which is what listing them as sources made them. */
       "  test_expectations = src:**/__snapshots__/*.snap;\n" +
-      "  test_runner = fixture_runner;\n" +
+
       "}\n",
     "runner/run.js": RUNNER,
     "src/thing.test.ts": `exports.value = ${JSON.stringify(value)};\n`,
@@ -103,9 +105,9 @@ function reportOf(failed) {
 
   const SNAP = "src/__snapshots__/thing.test.ts.snap";
 
-  it("selects the target's own test_runner", () => {
-    /* The `test_runner` property, not the JS_TEST_RUNNER global: if it were
-     * ignored, fabr's own runner would run the file and report no tests. */
+  it("runs the runner its framework's global names", () => {
+    /* JS_NODE_TEST_RUNNER, replaced by the fixture: were it ignored, fabr's own
+     * runner would run the file and report no tests. */
     const result = runFabr(project("one", { [SNAP]: "recorded: one\n" }), ["-DJS_TARGET=es2020", "test", "thing"]);
     expect(result.status).to.equal(0);
     expect(result.stderr).to.contain("1 test passed");

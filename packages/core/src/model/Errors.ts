@@ -130,18 +130,32 @@ export class NameResolutionError extends Error {
  * reference it crosses (ReferenceFailedError), which attributes each actual
  * demand path rather than the first demander's.
  *
- * `operations` are the ones the type *does* have a rule for: what was asked of
- * the target isn't among them, so they are the remedy (a `serve` target asked
- * to build supports `run`). Empty for a type with no type-specific rule at all.
+ * `candidates` are the type's own rules, none of which applied, each as the
+ * keys of its guards were judged for this target — so the report can say what
+ * the type does support and what this target has instead. Empty for a type
+ * with no rule of its own.
  */
 export class NoRuleFoundError extends Error {
   constructor(
     public readonly target: ITargetDecl,
     public readonly constraints: Constraints,
-    public readonly operations: string[] = []
+    public readonly candidates: ReadonlyArray<readonly IJudgedKey[]> = []
   ) {
     super(`No rule matches target '${target.name}' of type '${target.type}'`);
   }
+}
+
+/** One key of a rule's guard, as it was judged for a target. */
+export interface IJudgedKey {
+  /** The property the key names: the target's own where `own`, else the
+   * configuration's. */
+  key: string;
+  own: boolean;
+  /** The pattern the rule requires of it. */
+  pattern: string;
+  /** What it read as, or undefined where it has no value. */
+  value: string | undefined;
+  matched: boolean;
 }
 
 /**

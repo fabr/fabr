@@ -49,7 +49,7 @@ function requireSupportedEnvironment(options: IRunnerOptions): void {
   if (options.env !== "node") {
     throw new Error(
       `The fabr test runner provides no '${options.env}' environment — it runs tests directly in node.\n` +
-        "Use a runner that supplies one (test_runner = @fabr-build/js-tools/jest-runner), or build the target for node."
+        "Use a framework whose runner supplies one (JS_TEST_FRAMEWORK = jest), or build the target for node."
     );
   }
 }

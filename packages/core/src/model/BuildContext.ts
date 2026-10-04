@@ -86,6 +86,7 @@ import {
   DependencyFailedError,
   IUseSite,
   NameResolutionError,
+  IJudgedKey,
   NoRuleFoundError,
   ReferenceFailedError,
 } from "./Errors";
@@ -305,9 +306,6 @@ interface IBuildModel {
    * model (built per load from core + active plugins), not a global. */
   getTargetRules(type: string): RuleDefinition[];
   getDefaultRules(): RuleDefinition[];
-  /** The operations a type has a rule for — what a target of it can be asked
-   * to do, which is what makes an unsupported request explainable. */
-  getOperations(type: string): string[];
   getRepositoryProvider(type: string): RepositoryProvider | undefined;
 }
 
@@ -734,17 +732,28 @@ export class BuildContext {
    *
    * These are guards as a declaration's are ({@link guardAdmits}), except that a
    * key with no value here makes the rule inapplicable rather than being an
-   * error. A selection that fails is the target's failure.
+   * error. A selection that fails is the target's failure. How each of the
+   * type's own rules was judged comes back with it, for saying why none applied.
    */
-  private selectRule(type: string, target: TargetContext): Computable<RuleDefinition | undefined> {
-    const among = (candidates: RuleDefinition[], ruleSet: string): Computable<RuleDefinition | undefined> =>
+  private selectRule(type: string, target: TargetContext): Computable<IRuleSelection> {
+    const judge = (rules: RuleDefinition[]): Computable<IJudgedKey[][]> =>
       Computable.forAll(
-        candidates.map(rule => this.ruleAdmits(rule, target)),
-        (...admitted: boolean[]) => mostSpecificRule(candidates.filter((_, i) => admitted[i]), ruleSet)
+        rules.map(rule => this.judgeRule(rule, target)),
+        (...judged: IJudgedKey[][]) => judged
       );
+    const pick = (rules: RuleDefinition[], judged: IJudgedKey[][], ruleSet: string): RuleDefinition | undefined =>
+      mostSpecificRule(
+        rules.filter((_, i) => judged[i].every(key => key.matched)),
+        ruleSet
+      );
+    const own = this.model.getTargetRules(type);
+    const defaults = this.model.getDefaultRules();
     try {
-      return among(this.model.getTargetRules(type), `'${type}'`)
-        .then(rule => rule ?? among(this.model.getDefaultRules(), "default"))
+      return judge(own)
+        .then(candidates => {
+          const rule = pick(own, candidates, `'${type}'`);
+          return rule ? { rule, candidates } : judge(defaults).then(judged => ({ rule: pick(defaults, judged, "default"), candidates }));
+        })
         .catch(err => {
           throw target.failure(err);
         });
@@ -754,16 +763,24 @@ export class BuildContext {
     }
   }
 
-  private ruleAdmits(rule: RuleDefinition, target: TargetContext): Computable<boolean> {
+  /** How each key of `rule`'s guards reads for `target`: the rule applies where
+   * every one matched. A key with no value does not match. */
+  private judgeRule(rule: RuleDefinition, target: TargetContext): Computable<IJudgedKey[]> {
     const stack = target.stack;
-    const admits = (pattern: Name, value: Property | undefined): Computable<boolean> =>
-      value === undefined ? Computable.resolve(false) : this.patternAdmits(pattern, value, stack);
+    const judge = (key: string, own: boolean, pattern: Name, value: Property | undefined): Computable<IJudgedKey> =>
+      (value === undefined ? Computable.resolve(false) : this.patternAdmits(pattern, value, stack)).then(matched => ({
+        key,
+        own,
+        pattern: pattern.toString(),
+        value: value?.toString(),
+        matched,
+      }));
     return Computable.forAll(
       [
-        ...guardOf(rule.properties).map(([key, pattern]) => this.getOptionalProperty(key, stack).then(value => admits(pattern, value))),
-        ...guardOf(rule.targetProperties).map(([key, pattern]) => target.getProperty(key).then(value => admits(pattern, value))),
+        ...guardOf(rule.properties).map(([key, pattern]) => this.getOptionalProperty(key, stack).then(value => judge(key, false, pattern, value))),
+        ...guardOf(rule.targetProperties).map(([key, pattern]) => target.getProperty(key).then(value => judge(key, true, pattern, value))),
       ],
-      (...admitted: boolean[]) => admitted.every(match => match)
+      (...judged: IJudgedKey[]) => judged
     );
   }
 
@@ -1893,9 +1910,9 @@ export class BuildContext {
       );
     }
     const context = new DeclaredTargetContext(target, targetDef, this, { evaluating: target, context: this, next: stack });
-    return this.selectRule(target.type, context).then(rule => {
+    return this.selectRule(target.type, context).then(({ rule, candidates }) => {
       if (!rule) {
-        throw new NoRuleFoundError(target, this.constraints, this.model.getOperations(target.type));
+        throw new NoRuleFoundError(target, this.constraints, candidates);
       }
       return this.evaluateTarget(context, rule);
     });
@@ -1926,9 +1943,9 @@ export class BuildContext {
       throw new Error("Targetdef '" + def.type + "' not found"); /* Can't happen due to earlier checks */
     }
     const context = new DeclaredTargetContext(def, targetDef, this, { evaluating: def, context: this, next: stack });
-    return this.selectRule(def.type, context).then(rule => {
+    return this.selectRule(def.type, context).then(({ rule, candidates }) => {
       if (!rule) {
-        throw new NoRuleFoundError(def, this.constraints, this.model.getOperations(def.type));
+        throw new NoRuleFoundError(def, this.constraints, candidates);
       }
       return rule
         .evaluate(context)
@@ -2000,7 +2017,7 @@ export class BuildContext {
       options?.label,
       owner.stack
     );
-    return buildContext.selectRule(type, context).then(rule => {
+    return buildContext.selectRule(type, context).then(({ rule }) => {
       if (!rule) {
         throw new Error(`No rule found for anonymous target type '${type}'`);
       }
@@ -2260,6 +2277,13 @@ function soleDecl(applicable: IPropertyDecl[]): IPropertyDecl | undefined {
 function guardText(decl: IPropertyDecl): string {
   const guard = decl.name.getConstraints();
   return guard.length === 0 ? "unguarded" : `<${guard.map(([key, value]) => `${key}=${value.toString()}`).join(", ")}>`;
+}
+
+/** The outcome of selecting a rule for a target: the rule, if one applies, and
+ * how each rule of the target's own type was judged. */
+interface IRuleSelection {
+  rule: RuleDefinition | undefined;
+  candidates: IJudgedKey[][];
 }
 
 /** A rule's guard record as a guard: each pattern parsed. */
@@ -2915,17 +2939,9 @@ export abstract class TargetContext {
    * cross-build — a build-time tool executes on this machine), and asserted to be a
    * RunnableFileSet. The caller launches it via `toCommandLine`. The host-pinning is
    * internal by design: a consumer resolving a tool to run it needn't restate it.
-   *
-   * `fallbackGlobal` names the project-wide default to use when the target
-   * declares none (`test_runner`, else `JS_TEST_RUNNER`) — the per-target
-   * override of a project-wide tool choice, which the targetdef schema has no
-   * way to express (it types properties, it does not value them).
    */
-  public getRunnableProperty(name: string, fallbackGlobal?: string): Computable<RunnableFileSet> {
+  public getRunnableProperty(name: string): Computable<RunnableFileSet> {
     return this.getFileProperty(name, this.runOverrides()).then(sources => {
-      if (sources.length === 0 && fallbackGlobal !== undefined) {
-        return this.getGlobalRunnable(fallbackGlobal);
-      }
       return materializeLists(this, [sources], PERMISSIVE_RESOLUTION)
         .then(([resolved]) => this.context.finishDelivered(resolved))
         .then(resolved => asRunnable(resolved, name));

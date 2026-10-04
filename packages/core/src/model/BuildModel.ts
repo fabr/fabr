@@ -140,11 +140,7 @@ export class BuildModel {
    * rules are excluded: they apply everywhere and so say nothing about a
    * particular type. */
   public getOperations(type: string): string[] {
-    const ops = new Set<string>();
-    for (const rule of this.targetRules.get(type) ?? []) {
-      ops.add(rule.properties[BUILD_OPERATION] ?? "*");
-    }
-    return [...ops].sort();
+    return [...new Set(this.getTargetRules(type).map(rule => rule.properties[BUILD_OPERATION] ?? "*"))].sort();
   }
 
   /**

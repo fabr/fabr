@@ -30,6 +30,7 @@ lines and in error notes; they used to stop at the global.
 @fabr-build/js:
 - BREAKING: TSC property has changed to TYPESCRIPT without the bin;
 TSC=@npm:typescript:5.4.5:tsc becomes TYPESCRIPT=@npm:typescript:5.4.5.
+- BREAKING: the test runner is chosen by a test_framework / framework property instead of test_runner. 
 - Add Yarn PnP resolution support, enabled currently for our owned tools.
 - Rewrite module-specifiers for ESM targets where required.
 - `js_bundle` now requests ESM format inputs regardless of target.

@@ -203,11 +203,11 @@ catalog @pkg {
 }
 ```
 
-Then select the jest-compatibility runner — the same fabr runner with a jest environment layered
-on — and declare the globals' types:
+Then select jest as the test framework — which runs the tests under fabr's jest-compatibility
+runner — and declare the globals' types:
 
 ```
-JS_TEST_RUNNER = @fabr-build/js-tools/jest-runner;   # or per target: test_runner = …;
+JS_TEST_FRAMEWORK = jest;                 # or per target: test_framework = jest;
 
 js_package mylib {
   srcs = src:**/*.ts;

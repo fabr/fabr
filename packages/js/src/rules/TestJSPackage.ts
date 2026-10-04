@@ -24,9 +24,9 @@
  */
 
 import { BUILD_OPERATION, BUILD_OVERRIDE, Computable, RuleDefinition, RuleResult, TargetContext } from "@fabr-build/core";
-import { compileAndRunTests } from "../TestPipeline";
+import { compileAndRunTests, ITestFramework, TEST_FRAMEWORKS } from "../TestPipeline";
 
-function testJsPackage(context: TargetContext): Computable<RuleResult> {
+function testJsPackage(context: TargetContext, framework: ITestFramework): Computable<RuleResult> {
   return Computable.forAll(
     [
       context.getFileProperty("srcs", BUILD_OVERRIDE),
@@ -43,7 +43,7 @@ function testJsPackage(context: TargetContext): Computable<RuleResult> {
       /* A test install is self-contained — there is no fabr host to supply the
        * provided (peer) deps — so they are just more `deps` here: compiled and
        * installed identically, with no manifest to distinguish them. */
-      compileAndRunTests(context, {
+      compileAndRunTests(context, framework, {
         sourceRefs,
         testRefs,
         target,
@@ -57,8 +57,10 @@ function testJsPackage(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-export const testJsPackageRule: RuleDefinition = {
+/** One rule per test framework, selected on the package's `test_framework`. */
+export const testJsPackageRules: RuleDefinition[] = [...TEST_FRAMEWORKS].map(([name, framework]) => ({
   type: "js_package",
   properties: { [BUILD_OPERATION]: "test" },
-  evaluate: testJsPackage,
-};
+  targetProperties: { test_framework: name },
+  evaluate: context => testJsPackage(context, framework),
+}));

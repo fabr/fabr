@@ -40,8 +40,8 @@ output.
 ship: fabr's own, built on Node's `node:test`, and a jest compatibility layer (see
 [the JS quickstart](/quickstart-js/) for choosing between them). What that rules out today:
 
-- **Jest's own CLI cannot be the runner.** It does not satisfy the contract, so `test_runner`
-  cannot point at jest. Jest-flavoured suites run through the compatibility layer instead, which
+- **Jest's own CLI cannot be the runner.** It does not satisfy the contract. Jest suites
+  (`JS_TEST_FRAMEWORK = jest`) run through the compatibility layer instead, which
   drives jest-circus with jest's own libraries — so their behaviour is jest's, but none of jest's
   orchestrator runs.
 - **Vitest is not supported.** Its API is unavailable and there is no compatibility layer for it.

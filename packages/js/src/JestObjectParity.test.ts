@@ -23,7 +23,7 @@
  *
  * This file is DUAL-RUN, and that is the whole device: under `yarn jest` the
  * `jest` global is REAL jest, so the member list below is audited against
- * ground truth; under `fabr test` (JS_TEST_RUNNER = the jest flavour) the same
+ * ground truth; under `fabr test` (JS_TEST_FRAMEWORK = jest) the same
  * assertions run against fabr's object. Neither side can drift silently: a
  * member real jest drops or renames fails the jest side when the devchain
  * pin moves, and a member the layer loses fails the fabr side. The list is

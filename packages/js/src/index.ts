@@ -39,8 +39,8 @@ import { jsCompileRule } from "./rules/BuildJSCompile";
 import { buildJsBundleRule } from "./rules/BuildJSBundle";
 import { buildSassCompileRule } from "./rules/BuildSassCompile";
 import { buildCssPostcssRule } from "./rules/BuildCSSPostcss";
-import { testJsPackageRule } from "./rules/TestJSPackage";
-import { jsTestRule } from "./rules/TestJSTest";
+import { testJsPackageRules } from "./rules/TestJSPackage";
+import { jsTestRules } from "./rules/TestJSTest";
 import { jsTestRunRule } from "./rules/TestJSTestRun";
 import { jsScriptRule } from "./rules/RunJSScript";
 import { npmRepositoryRegistration } from "./NPMRepository";
@@ -73,8 +73,8 @@ export function activate(): PluginContribution {
       buildJsBundleRule,
       buildSassCompileRule,
       buildCssPostcssRule,
-      testJsPackageRule,
-      jsTestRule,
+      ...testJsPackageRules,
+      ...jsTestRules,
       jsTestRunRule,
       jsScriptRule,
     ],
