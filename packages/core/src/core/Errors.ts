@@ -34,25 +34,58 @@ import type { OutputStream } from "../support/Execute";
  * Coerce an arbitrary thrown value to an Error.
  */
 export function toError(err: unknown): Error {
-  return err instanceof Error ? err : new Error(String(err));
+  return err instanceof Error ? err : new FabrError(String(err));
 }
 
 /**
- * Attach remedy text to an error, to be rendered as `help:` line(s) when the
- * error is reported (the message states the problem; the help suggests the
- * fix — a list renders one `help:` line per entry, for a multi-line remedy
- * like a pasteable override set). Carried as a plain optional property so any
- * typed error can bear one.
+ * The base of fabr's errors: one that may carry remedy text, rendered as
+ * `help:` line(s) when the error is reported — the message states the problem,
+ * the help suggests the fix. `help` holds one entry per `help:` line (several
+ * for a multi-line remedy like a pasteable override set), and is empty where
+ * there is none. `cause` is the error this one was raised in response to,
+ * where there is one. An error wrapping another holds no copy of its help:
+ * read the help for a failure with {@link helpOf}.
  */
-export function attachHelp<T extends Error>(err: T, help: string | string[]): T {
-  return Object.assign(err, { help });
+export class FabrError extends Error {
+  public help: string[];
+  public readonly cause?: Error;
+
+  constructor(message: string, cause?: Error) {
+    super(message);
+    this.help = [];
+    if (cause !== undefined) {
+      this.cause = cause;
+    }
+  }
+
+  /**
+   * Set this error's help, replacing any it has, and return the same error —
+   * for a remedy known only to a caller of the code that raised it.
+   */
+  public withHelp(help: string | string[]): this {
+    this.help = Array.isArray(help) ? help : [help];
+    return this;
+  }
+}
+
+/**
+ * The help for a failure: that of the nearest error along `err`'s chain of
+ * causes, itself included, that carries any; empty when none does.
+ */
+export function helpOf(err: Error): string[] {
+  for (let current: Error | undefined = err; current instanceof FabrError; current = current.cause) {
+    if (current.help.length > 0) {
+      return current.help;
+    }
+  }
+  return [];
 }
 
 /**
  * Aggregate of multiple independent errors (e.g. several dependencies of a
  * computation failing), flattened into a single list.
  */
-export class MultiError extends Error {
+export class MultiError extends FabrError {
   public readonly errors: ReadonlyArray<Error>;
 
   private constructor(errors: Error[]) {
@@ -79,7 +112,7 @@ export class MultiError extends Error {
       }
     }
     if (distinct.size === 0) {
-      throw new Error("MultiError.of() requires at least one error");
+      throw new FabrError("MultiError.of() requires at least one error");
     }
     const flat = [...distinct];
     return flat.length === 1 ? flat[0] : new MultiError(flat);
@@ -94,7 +127,7 @@ export class MultiError extends Error {
  * response's own: HTTP/2 has no reason phrase and the client doesn't surface
  * one over HTTP/1 either, so the alternative is the bare number.
  */
-export class HttpStatusError extends Error {
+export class HttpStatusError extends FabrError {
   constructor(
     public readonly statusCode: number,
     public readonly url: string
@@ -110,7 +143,7 @@ export class HttpStatusError extends Error {
  * `process` callback, the entry is never cached). `algorithm` names the digest
  * compared (`sha512`, `sha1`, …); `expected`/`actual` are its encoded values.
  */
-export class IntegrityError extends Error {
+export class IntegrityError extends FabrError {
   constructor(
     public readonly url: string,
     public readonly algorithm: string,
@@ -127,7 +160,7 @@ export class IntegrityError extends Error {
  * resolution failure. Multiple execution errors from one target are reported
  * grouped under the target rather than as individual diagnostics.
  */
-export class ExecutionError extends Error {}
+export class ExecutionError extends FabrError {}
 
 /** One line of a command's output, and the stream it arrived on. */
 export interface ICommandOutputLine {
@@ -157,7 +190,7 @@ export class CommandFailedError extends ExecutionError {
  * this with a pre-rendered summary ("N of M tests failed: ..."), which the
  * driver reports against the target under test rather than as a build failure.
  */
-export class TestsFailedError extends Error {
+export class TestsFailedError extends FabrError {
   /** Number of failing tests */
   public readonly failed: number;
   /** Total number of tests that ran */
@@ -193,7 +226,7 @@ export interface IConflictSide extends IConflictSource {
  * versions of one package, so a package-name collision here is genuinely
  * distinct sources, not a version disagreement.
  */
-export class ConflictError extends Error {
+export class ConflictError extends FabrError {
   public readonly left: IConflictSide;
   public readonly right: IConflictSide;
 
@@ -229,15 +262,17 @@ function describeSide(source: IConflictSource): IConflictSide {
  * attribute the failure to the written reference(s) whose requirement pulled
  * the package in.
  */
-export class MetadataFetchError extends Error {
+export class MetadataFetchError extends FabrError {
+  declare public readonly cause: Error;
+
   constructor(
     public readonly packageName: string,
     public readonly version: string,
     public readonly requirerPath: ReadonlyArray<string>,
     public readonly rootName: string,
-    public readonly cause: Error
+    cause: Error
   ) {
-    super(requirerPath.length > 0 ? `${cause.message} (required by ${requirerPath.join(" < ")})` : cause.message);
+    super(requirerPath.length > 0 ? `${cause.message} (required by ${requirerPath.join(" < ")})` : cause.message, cause);
   }
 }
 
@@ -248,7 +283,7 @@ export class MetadataFetchError extends Error {
  * repository can map every failure back to the written reference(s) requiring
  * that root (the walk-errors analogue of MetadataFetchError's rootName).
  */
-export class ResolutionWalkError extends Error {
+export class ResolutionWalkError extends FabrError {
   constructor(
     public readonly failures: ReadonlyArray<{
       message: string;
@@ -269,7 +304,7 @@ export class ResolutionWalkError extends Error {
  * resolver can attempt the floor-raise repair (an unpublished declared floor)
  * rather than treating it as an unreachable registry.
  */
-export class VersionNotFoundError extends Error {
+export class VersionNotFoundError extends FabrError {
   constructor(
     public readonly packageName: string,
     public readonly version: string,
@@ -286,12 +321,14 @@ export class VersionNotFoundError extends Error {
  * The refs' carried provenance (model-ref steps) is what lets the driver point
  * back at the written requirement rather than only at the consuming target.
  */
-export class RequirementResolutionError extends Error {
+export class RequirementResolutionError extends FabrError {
+  declare public readonly cause: Error;
+
   constructor(
     public readonly refs: ReadonlyArray<RepositoryRef>,
-    public readonly cause: Error
+    cause: Error
   ) {
-    super(cause.message);
+    super(cause.message, cause);
   }
 }
 

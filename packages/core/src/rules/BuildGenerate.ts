@@ -42,6 +42,7 @@ import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { createPipelineAction, stagePipeline } from "./PipelineAction";
 import { RuleDefinition, RuleResult } from "./Types";
+import { FabrError } from "../core/Errors";
 
 function generate(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
@@ -50,7 +51,7 @@ function generate(context: TargetContext): Computable<RuleResult> {
       const srcs = FileSet.unionAll(...srcSets);
       return context.getCommandProperty("run", srcs).then(stages => {
         if (stages.length === 0) {
-          return Computable.reject<RuleResult>(new Error("a 'generate' target requires a 'run' command"));
+          return Computable.reject<RuleResult>(new FabrError("a 'generate' target requires a 'run' command"));
         }
         return assemblePipeline(srcs, stages, output, env);
       });

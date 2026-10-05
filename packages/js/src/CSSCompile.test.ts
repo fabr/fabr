@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { FileSet, makeRewrite, MemoryFile } from "@fabr-build/core";
+import { FabrError, FileSet, makeRewrite, MemoryFile } from "@fabr-build/core";
 import {
   buildPostcssOptions,
   buildSassOptions,
@@ -271,7 +271,7 @@ describe("buildPostcssOptions", () => {
       buildPostcssOptions(["a/Nav.module.css", "a/Nav.css"], "pkg");
       expect.fail("expected a conflict");
     } catch (err) {
-      const help = (err as { help?: string[] }).help ?? [];
+      const help = (err as FabrError).help;
       expect(help[0]).to.contain("'Nav.module.css' is a css-module");
       expect(help[0]).to.contain("'.module' marker");
       expect(help[0]).to.contain("'Nav.css'");

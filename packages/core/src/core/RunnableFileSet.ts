@@ -23,6 +23,7 @@ import { FileSetRef, IProjection } from "./FileSetRef";
 import { IProvenanceStep } from "./Provenance";
 import type { Repository } from "./Repository";
 import { SymlinkFile } from "./SymlinkFile";
+import { FabrError } from "./Errors";
 
 /**
  * A FileSet that is *runnable*: the assembled, ready-to-launch install of a
@@ -276,9 +277,9 @@ export class RunnableFileSet extends FileSet {
     const declaresBin = [...this.surface].some(([, file]) => file instanceof SymlinkFile);
     if (!projected && !declaresBin) {
       const hint = labels.length ? ` (e.g. <ref>:${labels[0]})` : "";
-      return new Error(`${this.describe()} is not runnable: it declares no bin — name a file to run${hint}`);
+      return new FabrError(`${this.describe()} is not runnable: it declares no bin — name a file to run${hint}`);
     }
-    return new Error(
+    return new FabrError(
       `${this.describe()} has ${labels.length} candidate entries (${labels.join(", ")}) — name one (e.g. <ref>:${labels[0]})`
     );
   }

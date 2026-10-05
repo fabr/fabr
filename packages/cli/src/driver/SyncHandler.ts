@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Computable, Diagnostic, ExecutionContext, PublishableFileSet, toError } from "@fabr-build/core";
+import { Computable, Diagnostic, ExecutionContext, FabrError, PublishableFileSet, toError } from "@fabr-build/core";
 
 const DIAG_PUBLISHED = Diagnostic.Info<{ destination: string }>("Published {destination}");
 const DIAG_ALREADY_SYNCED = Diagnostic.Info<{ destination: string }>("{destination} is already synced");
@@ -70,7 +70,7 @@ export function publishSync(execution: ExecutionContext, members: ReadonlyArray<
   }
   return chain.then(() => {
     if (failures > 0) {
-      throw new Error(`sync failed: ${failures} of ${members.length} member(s) not published`);
+      throw new FabrError(`sync failed: ${failures} of ${members.length} member(s) not published`);
     }
   });
 }

@@ -23,7 +23,7 @@ import type { IProjection } from "./FileSetRef";
 import { Computable, ComputableSource } from "./Computable";
 import { IDiagnosticNote } from "../support/Log";
 import { IProvenanceStep, registerProvenanceLocator, registerProvenanceRenderer, renderProvenance, locateSource } from "./Provenance";
-import { ConflictError } from "./Errors";
+import { ConflictError, FabrError } from "./Errors";
 import { canonicalFileName, isCanonicalFileName } from "../support/Paths";
 import { hashString } from "./FSWrapper";
 import { manifestLine } from "./Manifest";
@@ -301,7 +301,7 @@ export class FileSet implements FileSource {
    */
   readFile(filepath: string, encoding?: BufferEncoding): Computable<string> {
     const file = this.content.get(filepath);
-    return file ? file.readString(encoding) : Computable.reject(new Error(`File not found: ${filepath}`));
+    return file ? file.readString(encoding) : Computable.reject(new FabrError(`File not found: ${filepath}`));
   }
 
   /**

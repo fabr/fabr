@@ -36,7 +36,7 @@
  * closure — there is no tree to build.
  */
 
-import { Computable, FileSet, MemoryFile, Name, PackageFileSet, RuleDefinition, RuleResult, TargetContext } from "@fabr-build/core";
+import { Computable, FabrError, FileSet, MemoryFile, Name, PackageFileSet, RuleDefinition, RuleResult, TargetContext } from "@fabr-build/core";
 import {
   esLevelOrder,
   JSTarget,
@@ -292,7 +292,7 @@ export function importRewrites(rewrites: Name[]): Array<{ pattern: string; repla
        * carried without it, which would rename a file that should have been left
        * alone — and reachable only from a hand-written value, since the rules
        * fabr generates carry no alias. */
-      throw new Error(`js_compile: a 'rewrite_imports' rule may not use an alias ('${name.toString()}')`);
+      throw new FabrError(`js_compile: a 'rewrite_imports' rule may not use an alias ('${name.toString()}')`);
     }
     return [{ pattern, replacement }];
   });
@@ -318,7 +318,7 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
          * compile per format, the test and bundle paths force theirs), so this can
          * only be a rule that forgot to. Silently picking one would emit half a
          * package under the wrong name. */
-        throw new Error("js_compile cannot emit a dual target: its caller must pin a module format");
+        throw new FabrError("js_compile cannot emit a dual target: its caller must pin a module format");
       }
       const packageName = packageNameProp?.toString();
       const moduleExtension = moduleExtensionProp?.toString();

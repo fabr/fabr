@@ -21,6 +21,7 @@ import {
   ActionContext,
   BuildAction,
   Computable,
+  FabrError,
   mapComputable,
   BuildResult,
   configFiles,
@@ -438,7 +439,7 @@ function collectedWith(outputs: string, depsReport: string | undefined, stateDir
 function depsInput(action: BuildAction): FileSet[] {
   const value = action.discoverable?.deps;
   if (!Array.isArray(value)) {
-    throw new Error(`Input 'deps' must be a list of filesets`);
+    throw new FabrError(`Input 'deps' must be a list of filesets`);
   }
   return value;
 }

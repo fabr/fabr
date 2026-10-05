@@ -42,7 +42,7 @@ import { defaultFilesRule } from "../rules/DefaultFilesRule";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { makeRewrite, Name } from "../core/Name";
 import { renderProvenance } from "../core/Provenance";
-import { ConflictError, toError } from "../core/Errors";
+import { ConflictError, FabrError, toError } from "../core/Errors";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { BuildAction, IBuildActionDefinition } from "../core/BuildAction";
 import { DiscoveredDeps } from "../core/Manifest";
@@ -2367,9 +2367,9 @@ describe("unresolved-name diagnostics", () => {
       await context.getProperty("BAR");
       expect.fail("expected a rejection");
     } catch (e) {
-      const err = e as NameResolutionError & { help?: string };
+      const err = e as NameResolutionError;
       expect(err.message).to.contain("Unknown property 'FOOO'");
-      expect(err.help).to.contain("did you mean 'FOO'?");
+      expect(err.help.join("\n")).to.contain("did you mean 'FOO'?");
       expect(err).to.be.instanceOf(NameResolutionError);
       expect(err.position.offset).to.be.greaterThan(0);
     }
@@ -2388,10 +2388,10 @@ describe("unresolved-name diagnostics", () => {
       context.getTarget("mytargt");
       expect.fail("expected a throw");
     } catch (e) {
-      const err = e as Error & { help?: string };
+      const err = e as FabrError;
       expect(err.message).to.contain("Unknown name 'mytargt'");
-      expect(err.help).to.contain("did you mean 'mytarget'?");
-      expect(err.help).to.contain("fabr list-targets");
+      expect(err.help.join("\n")).to.contain("did you mean 'mytarget'?");
+      expect(err.help.join("\n")).to.contain("fabr list-targets");
     }
   });
 
@@ -2402,24 +2402,24 @@ describe("unresolved-name diagnostics", () => {
      * suggestion versus 'Unknown target' without the property candidates). */
     const input = "targetdef test_file { content = STRING; }\ntest_file mytarget { content = x; }\n";
     const context = modelOf(input).getConfig(Constraints.of({}), execution);
-    const failures: Array<Error & { help?: string }> = [];
+    const failures: FabrError[] = [];
     try {
       context.getTarget("mytargt");
       expect.fail("expected a throw");
     } catch (e) {
-      failures.push(e as Error & { help?: string });
+      failures.push(e as FabrError);
     }
     try {
       /* The projection is what routes this one down the resolveName path. */
       await context.resolveName(writtenOnCommandLine("mytargt:build/x.js"));
       expect.fail("expected a rejection");
     } catch (e) {
-      failures.push(e as Error & { help?: string });
+      failures.push(e as FabrError);
     }
 
     expect(failures.map(err => err.message)).to.deep.equal(["Unknown name 'mytargt'", "Unknown name 'mytargt:build/x.js'"]);
     for (const err of failures) {
-      expect(err.help).to.contain("did you mean 'mytarget'?");
+      expect(err.help.join("\n")).to.contain("did you mean 'mytarget'?");
     }
   });
 
@@ -2430,7 +2430,7 @@ describe("unresolved-name diagnostics", () => {
       context.getTarget("mytarget:build/x.js");
       expect.fail("expected a throw");
     } catch (e) {
-      expect((e as { help?: string }).help).to.contain("whole target names");
+      expect((e as FabrError).help.join("\n")).to.contain("whole target names");
     }
   });
 });

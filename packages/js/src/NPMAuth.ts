@@ -38,9 +38,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import {
-  attachHelp,
   Computable,
   ExecutionContext,
+  FabrError,
   HttpResponse,
   parseJson,
   sendRequest,
@@ -231,8 +231,9 @@ export class NPMAuth {
     interaction: UserInteraction | undefined
   ): Computable<AcquiredOtp> {
     if (!interaction) {
-      throw attachHelp(
-        new Error(`publishing to ${registryUrl} requires a second factor (2FA), and this run has no terminal to authenticate on`),
+      throw new FabrError(
+        `publishing to ${registryUrl} requires a second factor (2FA), and this run has no terminal to authenticate on`
+      ).withHelp(
         `re-run from an interactive terminal to authenticate with your passkey or one-time password, ` +
           `or supply a credential that publishes unattended (a granular access token in .npmrc, or trusted publishing from CI)`
       );
@@ -289,7 +290,7 @@ function toWebAuthUrls(json: unknown): { authUrl: string; doneUrl: string } {
   const doc = toJsonObject(json);
   const { authUrl, doneUrl } = doc;
   if (!isHttpUrl(authUrl) || !isHttpUrl(doneUrl)) {
-    throw new Error("no web-auth ceremony URLs");
+    throw new FabrError("no web-auth ceremony URLs");
   }
   return { authUrl, doneUrl };
 }
@@ -357,7 +358,7 @@ function delay(ms: number): Computable<void> {
 function toWebAuthToken(json: unknown): string {
   const token = toJsonObject(json).token;
   if (typeof token !== "string" || token.length === 0) {
-    throw new Error("missing token");
+    throw new FabrError("missing token");
   }
   return token;
 }
@@ -385,11 +386,11 @@ export function pollWebAuthToken(
         const retryAfter = Number(response.headers["retry-after"]) * 1000;
         const wait = retryAfter > 0 ? retryAfter : WEB_AUTH_POLL_MS;
         if (Date.now() + wait > deadline) {
-          throw new Error(`browser authentication was not completed within ${Math.round(timeoutMs / 1000)}s`);
+          throw new FabrError(`browser authentication was not completed within ${Math.round(timeoutMs / 1000)}s`);
         }
         return delay(wait).then(poll);
       }
-      throw new Error(
+      throw new FabrError(
         `browser authentication at ${doneUrl} failed (${response.statusCode}): ${response.body.toString("utf8")}`
       );
     });

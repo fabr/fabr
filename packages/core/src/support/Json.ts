@@ -18,7 +18,7 @@
  */
 
 import { Computable } from "../core/Computable";
-import { toError } from "../core/Errors";
+import { FabrError, toError } from "../core/Errors";
 import type { IFile } from "../core/FileSet";
 
 /**
@@ -67,19 +67,19 @@ export function parseJson<T>(text: string | Buffer, what: string, convert: JsonC
   try {
     parsed = JSON.parse(typeof text === "string" ? text : text.toString("utf8"));
   } catch (err) {
-    throw new Error(`Invalid JSON in ${what}: ${toError(err).message}`);
+    throw new FabrError(`Invalid JSON in ${what}: ${toError(err).message}`);
   }
   try {
     return convert(parsed);
   } catch (err) {
-    throw new Error(`Invalid ${what}: ${toError(err).message}`);
+    throw new FabrError(`Invalid ${what}: ${toError(err).message}`);
   }
 }
 
 /** The converter for a document nothing further is claimed about. */
 export function toJsonObject(json: unknown): Record<string, unknown> {
   if (!isJsonObject(json)) {
-    throw new Error("expected a JSON object");
+    throw new FabrError("expected a JSON object");
   }
   return json;
 }

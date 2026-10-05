@@ -26,7 +26,7 @@ import { Computable, ComputableSource, ComputableState } from "./Computable";
 import { mapComputable } from "../support/Functional";
 import { DEFAULT_FILE_MODE, FileSet, IFile, FileSource } from "./FileSet";
 import { hashFile, isDirectoryError, isNotFound, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
-import { toError } from "./Errors";
+import { FabrError, toError } from "./Errors";
 import { IProvenanceStep, registerProvenanceLocator, registerProvenanceRenderer } from "./Provenance";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
 
@@ -586,7 +586,7 @@ export const FS = {
       if (fs.existsSync(dirname)) {
         resolve(new FSFileSource(dirname));
       } else {
-        reject(new Error("No such path"));
+        reject(new FabrError("No such path"));
       }
     });
   },

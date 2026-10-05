@@ -18,6 +18,7 @@
  */
 
 import * as path from "path";
+import { FabrError } from "../core/Errors";
 
 /** Characters that are never part of a valid name, whatever the path structure. */
 // eslint-disable-next-line no-control-regex
@@ -40,7 +41,7 @@ const DEL = 0x7f;
  */
 export function canonicalFileName(name: string): string {
   if (JUNK_CHARACTER.test(name)) {
-    throw new Error(`Invalid file name ${JSON.stringify(name)}: '\\' and control characters are not allowed`);
+    throw new FabrError(`Invalid file name ${JSON.stringify(name)}: '\\' and control characters are not allowed`);
   }
   let result = path.posix.normalize(name).replace(/^\/+/, "");
   while (result.startsWith("../")) {
@@ -48,7 +49,7 @@ export function canonicalFileName(name: string): string {
   }
   result = result.replace(/\/+$/, "");
   if (result === "" || result === "." || result === "..") {
-    throw new Error(`Invalid file name '${name}': names no path`);
+    throw new FabrError(`Invalid file name '${name}': names no path`);
   }
   return result;
 }

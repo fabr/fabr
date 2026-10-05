@@ -36,7 +36,7 @@ import {
 import { FileSetRef } from "../core/FileSetRef";
 import { Requirement } from "../resolver/Types";
 import { chainSteps, describeProvenance } from "../core/Provenance";
-import { attachHelp, ConflictError, IConflictSource, RequirementResolutionError, toError } from "../core/Errors";
+import { ConflictError, FabrError, IConflictSource, RequirementResolutionError, toError } from "../core/Errors";
 import { Name } from "../core/Name";
 import { TargetContext } from "../model/BuildContext";
 import { BUILD_OPERATION, BUILD_OVERRIDE, FILES_OPERATION } from "../model/Constraints";
@@ -117,7 +117,7 @@ export class CatalogRepository implements Repository, RepositoryLookup {
         return materializeCollection(this.context, catalog.collection, [entry])
           .then(({ delivered: [pkg] }) => {
             if (!(pkg instanceof PackageFileSet)) {
-              throw new Error(`internal: catalog member '${reference.toString()}' resolved to no package`);
+              throw new FabrError(`internal: catalog member '${reference.toString()}' resolved to no package`);
             }
             return operation === "run" ? this.toRunnable(reference.name, entry, pkg) : Computable.resolve<FileSet>(pkg);
           })
@@ -140,7 +140,7 @@ export class CatalogRepository implements Repository, RepositoryLookup {
       const resolution = catalog.collection.resolutions.get(source);
       if (!isRepositoryReader(source) || resolution === undefined) {
         /* resolveCatalog admits only entries a registry resolves. */
-        throw new Error(`internal: catalog member '${reference.toString()}' has no resolution`);
+        throw new FabrError(`internal: catalog member '${reference.toString()}' has no resolution`);
       }
       return resolution()
         .then(resolved => fetchPinnedPackage(source, entry, resolved))
@@ -160,8 +160,7 @@ export class CatalogRepository implements Repository, RepositoryLookup {
     if (!entry) {
       throw new RequirementResolutionError(
         [reference],
-        attachHelp(
-          new Error(`Catalog ${this.catalogName} has no member '${name}'`),
+        new FabrError(`Catalog ${this.catalogName} has no member '${name}'`).withHelp(
           entries.size > 0 ? `it pins: ${[...entries.keys()].sort().join(", ")}` : "the catalog pins nothing"
         )
       );
@@ -171,12 +170,9 @@ export class CatalogRepository implements Repository, RepositoryLookup {
 
   private toRunnable(name: string, entry: CatalogEntry, pkg: PackageFileSet): Computable<RunnableFileSet> {
     if (entry instanceof PackageFileSet) {
-      throw attachHelp(
-        new Error(
-          `Catalog ${this.catalogName} member '${name}' is a locally-built target, which the catalog cannot deliver as a runnable`
-        ),
-        "run the target directly rather than through the catalog"
-      );
+      throw new FabrError(
+        `Catalog ${this.catalogName} member '${name}' is a locally-built target, which the catalog cannot deliver as a runnable`
+      ).withHelp("run the target directly rather than through the catalog");
     }
     return runnableFrom(entry.source, pkg);
   }
@@ -219,7 +215,7 @@ export class CatalogRepository implements Repository, RepositoryLookup {
 
   /** A catalog pins versions for reading; it is not a place content goes. */
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    throw new Error(`a catalog is not a publish destination (cannot sync to '${name.toString()}')`);
+    throw new FabrError(`a catalog is not a publish destination (cannot sync to '${name.toString()}')`);
   }
 }
 
@@ -259,8 +255,7 @@ function resolveCatalog(context: TargetContext): Computable<ResolvedCatalog> {
      * external requirement (`@npm:pkg:1.0.0:lib/*`, a projected reference) or
      * a built target (`mylib:build/*`, a projection-pending local entry). */
     const projectsInto = (what: string): Error =>
-      attachHelp(
-        new Error(`Catalog entry ${what} projects into a package`),
+      new FabrError(`Catalog entry ${what} projects into a package`).withHelp(
         "a catalog pins whole packages — project at the point of use instead (`@catalog:pkg:path`)"
       );
     const projected = references.find(reference => reference.projections.length > 0);
@@ -277,8 +272,7 @@ function resolveCatalog(context: TargetContext): Computable<ResolvedCatalog> {
      * leave the catalog quietly empty of the entry. */
     const inert = sources.find(source => !(source instanceof RepositoryRef) && !(source instanceof FileSet));
     if (inert) {
-      throw attachHelp(
-        new Error(`Catalog ${context.name} has an entry that names no packages`),
+      throw new FabrError(`Catalog ${context.name} has an entry that names no packages`).withHelp(
         "each entry must name specific packages — an external requirement (`@npm:pkg:1.2.3`) or a built package target; a bare repository reference pins nothing"
       );
     }
@@ -292,12 +286,10 @@ function resolveCatalog(context: TargetContext): Computable<ResolvedCatalog> {
       throw new RequirementResolutionError(
         references.filter(reference => reference.source === unresolvable.source),
         unresolvable.source instanceof CatalogRepository
-          ? attachHelp(
-              new Error(`Catalog entry '${entry}' is a member of another catalog`),
+          ? new FabrError(`Catalog entry '${entry}' is a member of another catalog`).withHelp(
               "a catalog cannot pin another catalog's members — pin the package directly here, or reference the other catalog's member at the point of use"
             )
-          : attachHelp(
-              new Error(`Catalog entry '${entry}' comes from a repository that does not resolve package versions`),
+          : new FabrError(`Catalog entry '${entry}' comes from a repository that does not resolve package versions`).withHelp(
               "a catalog pins versions of registry packages; reference the repository's content directly instead"
             )
       );
@@ -307,10 +299,9 @@ function resolveCatalog(context: TargetContext): Computable<ResolvedCatalog> {
       .map(content => {
         if (!(content instanceof PackageFileSet)) {
           const from = describeProvenance(content.origin);
-          throw attachHelp(
-            new Error(`Catalog ${context.name} has an entry that does not resolve to a package${from ? ` (${from})` : ""}`),
-            "every catalog entry must be a package — an @npm requirement or a built package target"
-          );
+          throw new FabrError(
+            `Catalog ${context.name} has an entry that does not resolve to a package${from ? ` (${from})` : ""}`
+          ).withHelp("every catalog entry must be a package — an @npm requirement or a built package target");
         }
         return content;
       });

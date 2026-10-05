@@ -43,6 +43,7 @@ import { writeFile } from "./FSWrapper";
 import { stageWrite } from "./Staging";
 import { IProvenanceStep } from "./Provenance";
 import type { SourceRef } from "./Repository";
+import { FabrError } from "./Errors";
 
 /**
  * One offered write, as the rule that produced it can honestly state it: the
@@ -198,7 +199,7 @@ function missingAncestors(dir: string, realRoot: string): string[] {
 function assertContained(destination: string, realRoot: string): void {
   const real = path.join(realParent(path.dirname(destination)), path.basename(destination));
   if (!real.startsWith(realRoot + path.sep)) {
-    throw new Error(`Refusing to write '${destination}': it is outside the project directory '${realRoot}'`);
+    throw new FabrError(`Refusing to write '${destination}': it is outside the project directory '${realRoot}'`);
   }
 }
 

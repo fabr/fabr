@@ -48,6 +48,7 @@ import {
   Computable,
   Constraints,
   EMPTY_FILESET,
+  FabrError,
   SymlinkFile,
   FileSet,
   IFile,
@@ -274,7 +275,7 @@ export function compileAndRunTests(context: TargetContext, framework: ITestFrame
             if (built.sources.ts.isEmpty() && built.sources.js.isEmpty() && built.sources.jsx.isEmpty()) {
               /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
                * so there is nothing to run — a loud failure, not a silent green. */
-              throw new Error("Test target declares test files but none is a compilable source");
+              throw new FabrError("Test target declares test files but none is a compilable source");
             }
             return planTestRun(context, {
               compiled: Computable.resolve(built.compiled),
@@ -368,7 +369,7 @@ export function selectCompiledSetupFile(compiled: FileSet): string | undefined {
     .filter(name => /\.[cm]?js$/.test(name) && stripExtension(name) === SETUP_STEM)
     .sort();
   if (matches.length > 1) {
-    throw new Error(`Test target has more than one ${SETUP_STEM} script (${matches.join(", ")}); it may only have one`);
+    throw new FabrError(`Test target has more than one ${SETUP_STEM} script (${matches.join(", ")}); it may only have one`);
   }
   return matches[0];
 }
@@ -424,7 +425,7 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
     const testFiles = selectCompiledTestFiles(compiledTree, run.testStems);
     const setupFile = selectCompiledSetupFile(compiledTree);
     if (testFiles.length === 0) {
-      throw new Error("Test target declares test files but none produced a runnable .js output");
+      throw new FabrError("Test target declares test files but none produced a runnable .js output");
     }
     const packageJson = moduleTypeFile(run.testTarget.module, { name: "fabr-test", private: true });
     /* Everything the compiled code sees as a sibling: its own output, the

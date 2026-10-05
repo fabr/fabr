@@ -38,13 +38,13 @@
 
 import { createHash } from "node:crypto";
 import {
-  attachHelp,
   BUILD_OVERRIDE,
   derivedFrom,
   describeProvenance,
   Computable,
   ConflictError,
   EMPTY_FILESET,
+  FabrError,
   FileSet,
   Name,
   NameBuilder,
@@ -339,11 +339,11 @@ function assertCssOutputsDisjoint(fileNames: string[], packageName: string): voi
     .filter((source): source is IPostcssSource => source !== undefined);
   const conflict = cssOutputConflict(sources, "css_postcss");
   if (conflict !== undefined) {
-    throw attachHelp(conflict, outputConflictHelp(conflict));
+    throw conflict.withHelp(outputConflictHelp(conflict));
   }
   const collision = cssScopeCollision(sources);
   if (collision !== undefined) {
-    throw attachHelp(collision, SCOPE_COLLISION_HELP);
+    throw collision.withHelp(SCOPE_COLLISION_HELP);
   }
 }
 
@@ -449,7 +449,7 @@ function outputConflictHelp(conflict: ConflictError): string[] {
 export function buildSassOptions(fileNames: string[], sourceMaps = false): ISassOptions {
   const stray = fileNames.find(name => !isSassSource(name));
   if (stray !== undefined) {
-    throw new Error(`'${stray}' is not a Sass source — plain CSS enters at css_postcss`);
+    throw new FabrError(`'${stray}' is not a Sass source — plain CSS enters at css_postcss`);
   }
   const sources = [...fileNames]
     .sort()
@@ -457,7 +457,7 @@ export function buildSassOptions(fileNames: string[], sourceMaps = false): ISass
     .filter((source): source is ISassSource => source !== undefined);
   const conflict = cssOutputConflict(sources, "sass_compile");
   if (conflict !== undefined) {
-    throw attachHelp(conflict, outputConflictHelp(conflict));
+    throw conflict.withHelp(outputConflictHelp(conflict));
   }
   return {
     sources,
@@ -484,18 +484,18 @@ export function buildPostcssOptions(
 ): IPostcssOptions {
   const stray = fileNames.find(isSassSource);
   if (stray !== undefined) {
-    throw new Error(`'${stray}' is a Sass source — it enters at sass_compile, which lowers it to plain CSS`);
+    throw new FabrError(`'${stray}' is a Sass source — it enters at sass_compile, which lowers it to plain CSS`);
   }
   const names = [...fileNames].sort();
   const carriedMaps: ReadonlySet<string> = new Set(names.filter(name => name.endsWith(".map")));
   const sources = names.filter(name => !name.endsWith(".map")).map(name => postcssSourceOutputs(name, packageName, sourceMaps, carriedMaps));
   const conflict = cssOutputConflict(sources, "css_postcss");
   if (conflict !== undefined) {
-    throw attachHelp(conflict, outputConflictHelp(conflict));
+    throw conflict.withHelp(outputConflictHelp(conflict));
   }
   const collision = cssScopeCollision(sources);
   if (collision !== undefined) {
-    throw attachHelp(collision, SCOPE_COLLISION_HELP);
+    throw collision.withHelp(SCOPE_COLLISION_HELP);
   }
   return { sources, composable: composableStylesheets(deps), srcRoot: CSS_SRC_ROOT, depsDir: CSS_DEPS_DIR, outdir: CSS_OUTDIR };
 }

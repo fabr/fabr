@@ -24,7 +24,7 @@ import * as path from "path";
 import { Readable, Transform } from "stream";
 import { PROJECT_FILENAME } from "../Constants";
 import { Computable } from "./Computable";
-import { HttpStatusError, toError } from "./Errors";
+import { FabrError, HttpStatusError, toError } from "./Errors";
 import { ICacheControl, openUrlStream, reportingProgress } from "./Fetch";
 import { CANONICAL, DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
 
@@ -1589,7 +1589,7 @@ export class BuildCache {
     for (const [name, file] of files) {
       const abspath = file.getAbsPath();
       if (abspath !== undefined && !(file instanceof SymlinkFile) && abspath !== path.resolve(this.blobRoot, file.hash)) {
-        throw new Error(
+        throw new FabrError(
           `Internal error: cannot materialize the tree '${entry}' from '${name}', which lives outside the cache at '${abspath}'`
         );
       }
@@ -1646,7 +1646,7 @@ export class BuildCache {
     const result = new Map();
     const end = data.length;
     if (!data.startsWith(META_PREFIX)) {
-      throw new Error("Malformed cache manifest: no header line");
+      throw new FabrError("Malformed cache manifest: no header line");
     }
     const eol = data.indexOf("\n");
     const header = JSON.parse(data.substring(META_PREFIX.length, eol < 0 ? end : eol)) as {
@@ -1671,7 +1671,7 @@ export class BuildCache {
         const rest = line.substring(LINK_PREFIX.length);
         const gap = rest.indexOf(" ");
         if (gap < 0) {
-          throw new Error(`Malformed cache manifest link line: '${line}'`);
+          throw new FabrError(`Malformed cache manifest link line: '${line}'`);
         }
         result.set(decodeName(rest.substring(gap + 1)), new SymlinkFile(decodeName(rest.substring(0, gap))));
         continue;
@@ -1680,12 +1680,12 @@ export class BuildCache {
        * required, so a mime-less (pre-mime) line is malformed like any other. */
       const entry = parseManifestLine(line);
       if (entry === undefined || entry.extra === undefined) {
-        throw new Error(`Malformed cache manifest line: '${line}'`);
+        throw new FabrError(`Malformed cache manifest line: '${line}'`);
       }
       result.set(entry.name, new BuildFile(this.blobRoot, entry.hash, entry.name, entry.mode, entry.extra));
     }
     if (header.entries !== result.size) {
-      throw new Error(`Malformed cache manifest: header claims ${String(header.entries)} entries, read ${result.size}`);
+      throw new FabrError(`Malformed cache manifest: header claims ${String(header.entries)} entries, read ${result.size}`);
     }
     const { expires, etag, lastModified } = header;
     /* A manifest is fabr's own memo of a canonical FileSet — its names were

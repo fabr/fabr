@@ -24,7 +24,7 @@ import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { RepositoryPublishRef, RepositoryWriter, SourceRef } from "../core/Repository";
 import { PublishableFileSet } from "../core/PublishableFileSet";
 import { Name, NAME_COMPONENT_SEPARATOR, NAME_LEVEL_SEPARATOR } from "../core/Name";
-import { attachHelp, toError } from "../core/Errors";
+import { FabrError, toError } from "../core/Errors";
 import { declPosn, IPropertyDecl } from "../model/AST";
 import { DependencyFailedError, NameResolutionError } from "../model/Errors";
 import { RuleDefinition, RuleResult } from "./Types";
@@ -262,8 +262,7 @@ export class SyncSource implements FileSource {
 
   private unknownMember(name: Name): Error {
     const declared = [...this.table.keys()].sort();
-    return attachHelp(
-      new Error(`${this.context.name} has no member matching '${name.toString()}'`),
+    return new FabrError(`${this.context.name} has no member matching '${name.toString()}'`).withHelp(
       declared.length > 0 ? `it declares: ${declared.join(", ")}` : "it declares no members"
     );
   }

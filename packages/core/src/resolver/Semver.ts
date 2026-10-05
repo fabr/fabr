@@ -18,6 +18,7 @@
  */
 
 import { VersionDomain } from "./Types";
+import { FabrError } from "../core/Errors";
 
 /**
  * npm-flavoured semver, supporting the constraint forms that appear in practice
@@ -81,7 +82,7 @@ const ZERO_VERSION: SemverVersion = { major: 0, minor: 0, patch: 0, prerelease: 
 export function parseVersion(text: string): SemverVersion {
   const m = VERSION_RE.exec(text.trim());
   if (!m) {
-    throw new Error(`Invalid semver version '${text}'`);
+    throw new FabrError(`Invalid semver version '${text}'`);
   }
   return {
     major: Number(m[1]),
@@ -134,7 +135,7 @@ function comparePrerelease(a: ReadonlyArray<string | number>, b: ReadonlyArray<s
 function parsePartial(text: string): IPartialVersion {
   const m = PARTIAL_RE.exec(text);
   if (!m) {
-    throw new Error(`Invalid semver range component '${text}'`);
+    throw new FabrError(`Invalid semver range component '${text}'`);
   }
   const component = (value: string | undefined): number | undefined =>
     value === undefined || /[xX*]/.test(value) ? undefined : Number(value);
@@ -246,7 +247,7 @@ function parseComparator(token: string): IRange {
       return { min: lower, minInclusive: true, max: implied, maxInclusive: false };
     }
     default:
-      throw new Error(`Unsupported semver operator '${op}'`);
+      throw new FabrError(`Unsupported semver operator '${op}'`);
   }
 }
 
@@ -315,11 +316,11 @@ function parseRange(text: string): IRange {
   const ranges: IRange[] = [];
   for (let idx = 0; idx < tokens.length; idx++) {
     if (tokens[idx] === "-") {
-      throw new Error(`Invalid hyphen range in '${text.trim()}' (expected '<version> - <version>')`);
+      throw new FabrError(`Invalid hyphen range in '${text.trim()}' (expected '<version> - <version>')`);
     }
     if (tokens[idx + 1] === "-") {
       if (idx + 2 >= tokens.length) {
-        throw new Error(`Invalid hyphen range in '${text.trim()}' (expected '<version> - <version>')`);
+        throw new FabrError(`Invalid hyphen range in '${text.trim()}' (expected '<version> - <version>')`);
       }
       ranges.push(hyphenRange(tokens[idx], tokens[idx + 2]));
       idx += 2;

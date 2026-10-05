@@ -30,6 +30,7 @@ import {
   BUILD_OPERATION,
   BUILD_OVERRIDE,
   Computable,
+  FabrError,
   PackageFileSet,
   RuleDefinition,
   RuleResult,
@@ -42,7 +43,7 @@ function runJsPackage(context: TargetContext): Computable<RuleResult> {
   return context.getSelfWithOverrides(BUILD_OVERRIDE).then((buildResult): Computable<RuleResult> => {
     const built = buildResult.find((s): s is PackageFileSet => s instanceof PackageFileSet);
     if (!built) {
-      throw new Error("internal: js_package[build] did not yield a package");
+      throw new FabrError("internal: js_package[build] did not yield a package");
     }
     /* Resolve the package's carried deps at this collection point (a carried
      * @types dep needing @types/node is satisfied by the package's own explicit

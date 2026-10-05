@@ -29,7 +29,7 @@
 
 import * as path from "node:path";
 import { Computable } from "../core/Computable";
-import { toError } from "../core/Errors";
+import { FabrError, toError } from "../core/Errors";
 import { FileSet, FileSource, IFile } from "../core/FileSet";
 import { Name, NamePartKind } from "../core/Name";
 import { PackageFileSet, PackageGraphBuilder } from "../core/PackageFileSet";
@@ -67,7 +67,7 @@ interface IInstalledManifest {
 function toInstalledManifest(json: unknown): IInstalledManifest {
   const manifest = toJsonObject(json);
   if (manifest.version !== undefined && typeof manifest.version !== "string") {
-    throw new Error("'version' is not a string");
+    throw new FabrError("'version' is not a string");
   }
   const names = (field: string): string[] => {
     const block = manifest[field];
@@ -91,7 +91,7 @@ function locate(name: string, from: string): string | undefined {
       return undefined;
     }
     throw code === "ERR_PACKAGE_PATH_NOT_EXPORTED"
-      ? new Error(`${name} does not publish its package.json (its "exports" leaves it out), so it cannot be read as installed`)
+      ? new FabrError(`${name} does not publish its package.json (its "exports" leaves it out), so it cannot be read as installed`)
       : err;
   }
 }
@@ -108,7 +108,7 @@ function readInstalled(files: FileSource, directory: string): Computable<{ manif
     [files.find(everything), files.get(path.join(directory, "package.json"))],
     (tree: FileSet, manifest: IFile | undefined) => {
       if (manifest === undefined) {
-        throw new Error(`${directory} has no package.json`);
+        throw new FabrError(`${directory} has no package.json`);
       }
       return readJsonFile(manifest, toInstalledManifest).then(read => ({
         manifest: read,
@@ -141,7 +141,7 @@ function installedPackage(files: FileSource, name: string, directory: string): C
       for (const [dep, optional] of [...manifest.required.map(dep => [dep, false] as const), ...manifest.optional.map(dep => [dep, true] as const)]) {
         const depDir = locate(dep, pkgDir);
         if (depDir === undefined && !optional) {
-          throw new Error(`${pkgName} requires ${dep}, which is not installed with fabr (looked from ${pkgDir})`);
+          throw new FabrError(`${pkgName} requires ${dep}, which is not installed with fabr (looked from ${pkgDir})`);
         }
         if (depDir !== undefined && !deps.some(([held]) => held === dep)) {
           deps.push([dep, depDir]);
@@ -197,7 +197,7 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    throw new Error(`fabr's installation is not a publish destination (cannot sync to '${name.toString()}')`);
+    throw new FabrError(`fabr's installation is not a publish destination (cannot sync to '${name.toString()}')`);
   }
 
   public deliver(reference: RepositoryRef): Computable<FileSet> {
@@ -205,7 +205,7 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
     try {
       const directory = locate(name, this.resolveFrom);
       if (directory === undefined) {
-        throw new Error(`${name} is not installed with fabr (looked from ${this.resolveFrom})`);
+        throw new FabrError(`${name} is not installed with fabr (looked from ${this.resolveFrom})`);
       }
       return installedPackage(this.files, name, directory);
     } catch (err) {

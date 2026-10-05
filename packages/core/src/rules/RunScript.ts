@@ -35,6 +35,7 @@ import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { RuleDefinition, RuleResult } from "./Types";
+import { FabrError } from "../core/Errors";
 
 function defineScriptRunnable(context: TargetContext): Computable<RuleResult> {
   /* deps/entry are ordinary build content — resolve them under build, not the
@@ -57,7 +58,7 @@ function defineScriptRunnable(context: TargetContext): Computable<RuleResult> {
         const entrySet = FileSet.unionAll(...entry);
         const names = [...entrySet].map(([name]) => name);
         if (names.length !== 1) {
-          throw new Error(
+          throw new FabrError(
             names.length === 0
               ? "script 'entry' resolved to no file — name the script file itself"
               : `script 'entry' resolved to ${names.length} files (${names.slice(0, 5).join(", ")}) — name exactly one`

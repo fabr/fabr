@@ -24,6 +24,7 @@ import { IPluginDecl } from "./AST";
 import { CORE_PACKAGE } from "../Constants";
 import { INSTALLED_FROM } from "../rules/FabrHome";
 import { PluginContribution } from "../rules/Types";
+import { FabrError } from "../core/Errors";
 
 /** The package a plugin must share with its host, never load a second copy of. */
 
@@ -63,7 +64,7 @@ export function duplicateCoreError(name: string, hostCore?: string, pluginCore?:
   if (hostCore === undefined || pluginCore === undefined || hostCore === pluginCore) {
     return undefined;
   }
-  return new Error(
+  return new FabrError(
     `Plugin '${name}' would load its own copy of ${CORE_PACKAGE} (${pluginCore}) instead of ` +
       `the host's (${hostCore}); a plugin must share the host's core. Install the plugin as a ` +
       `dependency of the fabr CLI rather than as a package in its own right (globally, that is ` +
@@ -104,13 +105,13 @@ export function activatePlugin(decl: IPluginDecl): PluginContribution {
   try {
     entry = require.resolve(decl.name, { paths: [INSTALLED_FROM] });
   } catch {
-    throw new Error(`Plugin '${decl.name}' is not installed (plugins are resolved from the fabr installation)`);
+    throw new FabrError(`Plugin '${decl.name}' is not installed (plugins are resolved from the fabr installation)`);
   }
   checkSharesHostCore(decl.name, entry);
   /* eslint-disable-next-line @typescript-eslint/no-var-requires */
   const plugin = require(entry) as IFabrPluginModule;
   if (typeof plugin.activate !== "function") {
-    throw new Error(`Plugin '${decl.name}' does not export an activate() function`);
+    throw new FabrError(`Plugin '${decl.name}' does not export an activate() function`);
   }
   return plugin.activate() ?? {};
 }

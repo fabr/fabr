@@ -27,6 +27,7 @@ import {
   BUILD_OPERATION,
   Computable,
   Constraints,
+  FabrError,
   FileSet,
   FileSetRef,
   FileSource,
@@ -62,10 +63,10 @@ import { createPackageJson } from "../PackageJson";
 function asExportSource(source: FileSet | FileSetRef): FileSet {
   const base = source instanceof FileSetRef ? source.source : source;
   if (base instanceof PackageFileSet) {
-    throw new Error(`exports names this package's own source files: '${base.packageName}' is a dependency`);
+    throw new FabrError(`exports names this package's own source files: '${base.packageName}' is a dependency`);
   }
   if (base instanceof Flag) {
-    throw new Error(`exports names this package's own source files: '${base.name}' is a flag`);
+    throw new FabrError(`exports names this package's own source files: '${base.name}' is a flag`);
   }
   return source instanceof FileSetRef ? source.select() : source;
 }

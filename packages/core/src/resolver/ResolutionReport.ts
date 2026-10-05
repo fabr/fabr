@@ -29,7 +29,7 @@
  */
 
 import { Computable } from "../core/Computable";
-import { attachHelp, ResolutionWalkError } from "../core/Errors";
+import { FabrError, ResolutionWalkError } from "../core/Errors";
 import { nodeId, ResolutionExplainer, ResolutionGraph } from "./ResolutionGraph";
 import { canonicalRequirements, requiredAs, versionConstraintText } from "./Requirement";
 import {
@@ -255,7 +255,7 @@ export function conflictError<V>(
     suggestion !== undefined && suggestion.length > 0
       ? suggestion
       : ["pin a single version satisfying every requirement, or write '?' overrides naming each version to ship"];
-  return attachHelp(new Error(`Unable to resolve ${root}:\n  ${lines.join("\n  ")}`), help);
+  return new FabrError(`Unable to resolve ${root}:\n  ${lines.join("\n  ")}`).withHelp(help);
 }
 
 /**
@@ -286,7 +286,7 @@ export function unrepairableError<V>(
     "correct the requirement, or pin its requirer to a version whose requirement is satisfiable",
     `if the constraint is wrong (an over-tight pin), force the delivered version — '!' overrides every requirement on the package: ${forceLines.join(" ")}`,
   ];
-  return attachHelp(new Error(`Unable to resolve ${root}:\n  ${lines.join("\n  ")}`), help);
+  return new FabrError(`Unable to resolve ${root}:\n  ${lines.join("\n  ")}`).withHelp(help);
 }
 
 /** The latest suggestion-eligible version, per the domain's stability rule. */

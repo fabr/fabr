@@ -21,6 +21,7 @@ import * as path from "path";
 import { Computable } from "./Computable";
 import { hashString } from "./FSWrapper";
 import { IFile } from "./FileSet";
+import { FabrError } from "./Errors";
 
 /**
  * A symbolic link within a FileSet: an IFile that names another path (its
@@ -139,7 +140,7 @@ export class CacheLink extends SymlinkFile {
 function containedCachePath(relpath: string): string {
   const normalized = path.posix.normalize(relpath);
   if (path.isAbsolute(relpath) || path.posix.isAbsolute(relpath) || normalized === ".." || normalized.startsWith("../")) {
-    throw new Error(`Internal error: a cache link must name a path inside the cache, not '${relpath}'`);
+    throw new FabrError(`Internal error: a cache link must name a path inside the cache, not '${relpath}'`);
   }
   return normalized;
 }

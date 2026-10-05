@@ -19,6 +19,7 @@
 
 import {
   BUILD_OPERATION,
+  FabrError,
   FILES_OPERATION,
   BuildContext,
   BuildModel,
@@ -415,7 +416,7 @@ function runProgram(
       const files = FileSet.unionAll(...sources.filter((s): s is FileSet => s instanceof FileSet));
       throw files.isEmpty()
         ? matchedNoFiles(target)
-        : new Error(`'${target}' is not runnable (it has no BUILD_OPERATION=run result)`);
+        : new FabrError(`'${target}' is not runnable (it has no BUILD_OPERATION=run result)`);
     }
     if (supervisor) {
       /* The supervisor's reaction is inside the observed chain, so the watch
@@ -476,7 +477,7 @@ function membersOf(sources: SourceRef[], name: string): Computable<PublishableFi
   const releases = sources.filter((source): source is SyncSource => source instanceof SyncSource);
   const carriers = sources.filter((source): source is PublishableFileSet => source instanceof PublishableFileSet);
   if (releases.length === 0 && carriers.length === 0) {
-    throw new Error(`'${name}' is not a sync target`);
+    throw new FabrError(`'${name}' is not a sync target`);
   }
   return Computable.forAll(
     releases.map(release => release.members()),
@@ -898,7 +899,7 @@ function selectorBase(selector: Name, names: string[]): string {
  * way however it was named.
  */
 function matchedNoFiles(name: string): Error {
-  return new Error(`'${name}' matched no files`);
+  return new FabrError(`'${name}' matched no files`);
 }
 
 /**
@@ -955,7 +956,7 @@ function listDeclaredTargets(model: BuildModel, options: Options, execution: Exe
     .sort((a, b) => a.name.localeCompare(b.name));
   const missing = [...wanted].filter(name => !targets.some(target => target.name === name));
   if (missing.length > 0) {
-    throw new Error(`No such target: ${missing.join(", ")}`);
+    throw new FabrError(`No such target: ${missing.join(", ")}`);
   }
   if (options.json) {
     const json = targets.map(({ name, decl }) => ({
@@ -1027,7 +1028,7 @@ function listTargetDefs(model: BuildModel, options: Options): Computable<void> {
    * report every name that matched no targetdef. */
   const missing = [...wanted].filter(name => !defs.some(def => def.name === name));
   if (missing.length > 0) {
-    throw new Error(`No such target type: ${missing.join(", ")}`);
+    throw new FabrError(`No such target type: ${missing.join(", ")}`);
   }
   if (options.json) {
     console.log(JSON.stringify({ targetdefs: defs.map(def => targetDefJson(model, def)) }, undefined, 2));

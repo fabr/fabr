@@ -25,6 +25,7 @@
  */
 
 import { INameValue, IPropertyDecl, ITargetDecl } from "./AST";
+import { FabrError } from "../core/Errors";
 import { Name } from "../core/Name";
 import { ISourceSpan } from "../support/Log";
 import type { Constraints } from "./Constraints";
@@ -35,9 +36,9 @@ import type { Constraints } from "./Constraints";
  * reports the failure (the driver) can attribute each cause to its target
  * exactly once and render dependants' failures tersely.
  */
-export class DependencyFailedError extends Error {
+export class DependencyFailedError extends FabrError {
   public readonly target: ITargetDecl;
-  public readonly cause: Error;
+  declare public readonly cause: Error;
   /**
    * Set when the failure is an anonymous sub-target's build step: the action
    * verb (e.g. "Compiling"). `target` is then the *declared* target it
@@ -47,9 +48,8 @@ export class DependencyFailedError extends Error {
   public readonly label?: string;
 
   constructor(target: ITargetDecl, cause: Error, label?: string) {
-    super(`dependency '${target.name}' failed`);
+    super(`dependency '${target.name}' failed`, cause);
     this.target = target;
-    this.cause = cause;
     this.label = label;
   }
 }
@@ -65,7 +65,7 @@ export class DependencyFailedError extends Error {
  * rejection leaves the previous model resident: the reload's new (broken) model
  * never supersedes it.
  */
-export class BuildFilesInvalidError extends Error {
+export class BuildFilesInvalidError extends FabrError {
   constructor(public readonly errorCount: number) {
     super(`build files contain ${errorCount} error${errorCount === 1 ? "" : "s"}`);
   }
@@ -87,7 +87,7 @@ export interface IUseSite {
  * single-element case. The written reference, not the declaration it re-enters,
  * is what the user got wrong, so the report anchors there.
  */
-export class CircularDependencyError extends Error {
+export class CircularDependencyError extends FabrError {
   constructor(
     public readonly name: string,
     public readonly cycle: ReadonlyArray<IUseSite>,
@@ -109,7 +109,7 @@ export class CircularDependencyError extends Error {
  * coordinate that names no repository, names no publish target, or carries a bad
  * version — passes it as `reason` for the message.
  */
-export class NameResolutionError extends Error {
+export class NameResolutionError extends FabrError {
   public readonly position: ISourceSpan;
   /** Where the name was written (property + owning target), when known */
   public readonly useSite?: IUseSite;
@@ -135,7 +135,7 @@ export class NameResolutionError extends Error {
  * the type does support and what this target has instead. Empty for a type
  * with no rule of its own.
  */
-export class NoRuleFoundError extends Error {
+export class NoRuleFoundError extends FabrError {
   constructor(
     public readonly target: ITargetDecl,
     public readonly constraints: Constraints,
@@ -167,13 +167,15 @@ export interface IJudgedKey {
  * rule matched it) — an error intrinsic to the current resolution carries its
  * own attribution and passes through unwrapped.
  */
-export class ReferenceFailedError extends Error {
+export class ReferenceFailedError extends FabrError {
+  declare public readonly cause: DependencyFailedError | NoRuleFoundError;
+
   constructor(
     public readonly value: INameValue,
     public readonly property: IPropertyDecl,
     public readonly target: ITargetDecl | undefined,
-    public readonly cause: DependencyFailedError | NoRuleFoundError
+    cause: DependencyFailedError | NoRuleFoundError
   ) {
-    super(cause.message);
+    super(cause.message, cause);
   }
 }

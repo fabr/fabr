@@ -19,7 +19,7 @@
 
 import { expect } from "chai";
 import { MemoryFile } from "./MemoryFS";
-import { ConflictError } from "./Errors";
+import { ConflictError, FabrError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
 import {
   assertSamePackageNode,
@@ -149,8 +149,7 @@ describe("assertSamePackageNode", () => {
     try {
       run();
     } catch (err) {
-      const help = (err as { help?: string | string[] }).help;
-      return Array.isArray(help) ? help.join("\n") : (help ?? "");
+      return (err as FabrError).help.join("\n");
     }
     return "";
   }

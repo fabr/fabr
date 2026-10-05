@@ -33,6 +33,7 @@ import type { ActionContext } from "./BuildCache";
 import type { ITargetDecl } from "../model/AST";
 import type { ITaskReport } from "../support/Execute";
 import { compareText } from "../support/Functional";
+import { FabrError } from "./Errors";
 
 /**
  * Configuration handed to a build step — *how* the build is performed, as
@@ -179,7 +180,7 @@ export class BuildAction {
 export function fileSetInput(action: BuildAction, name: string): FileSet {
   const value = action.inputs[name];
   if (!(value instanceof FileSet)) {
-    throw new Error(`Input '${name}' must be a fileset`);
+    throw new FabrError(`Input '${name}' must be a fileset`);
   }
   return value;
 }
@@ -188,7 +189,7 @@ export function fileSetInput(action: BuildAction, name: string): FileSet {
 export function stringListConfig(action: BuildAction, name: string): string[] {
   const value = action.config[name];
   if (!Array.isArray(value) || value.some(element => typeof element !== "string")) {
-    throw new Error(`Config '${name}' must be a list of strings`);
+    throw new FabrError(`Config '${name}' must be a list of strings`);
   }
   return value;
 }
@@ -197,7 +198,7 @@ export function stringListConfig(action: BuildAction, name: string): string[] {
 export function stringConfig(action: BuildAction, name: string, fallback?: string): string {
   const value = action.config[name] ?? fallback;
   if (typeof value !== "string") {
-    throw new Error(`Config '${name}' must be a string`);
+    throw new FabrError(`Config '${name}' must be a string`);
   }
   return value;
 }

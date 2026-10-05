@@ -27,8 +27,8 @@
  */
 
 import {
-  attachHelp,
   Computable,
+  FabrError,
   FileSet,
   HttpResponse,
   ExpectedDigest,
@@ -276,7 +276,7 @@ export function toPublishAccess(value: string | undefined): PublishAccess {
   } else if (value === "public") {
     return value;
   }
-  throw new Error(`invalid access value ${JSON.stringify(value)} (expected "public" or "private"/"restricted")`);
+  throw new FabrError(`invalid access value ${JSON.stringify(value)} (expected "public" or "private"/"restricted")`);
 }
 
 /**
@@ -358,14 +358,13 @@ export function publishToRegistry(
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       const detail = response.body.toString("utf8");
-      const error = new Error(`publishing ${name}@${version} to ${registryUrl} failed (${response.statusCode}): ${detail}`);
+      const error = new FabrError(`publishing ${name}@${version} to ${registryUrl} failed (${response.statusCode}): ${detail}`);
       /* npmjs's refusal of a restricted scoped publish ("You must sign up for
        * private packages") — restricted is paid, and reaches here only from a
        * repository declared (or defaulted by the registry) that way; the usual
        * remedy is publishing to a public-access repository, not a paid plan. */
       if (detail.includes("private packages")) {
-        attachHelp(
-          error,
+        error.withHelp(
           `restricted (private) packages are a paid npmjs feature; to publish publicly instead, use an ` +
             `npm_repository declared with 'access = public;' (the default @npm)`
         );
@@ -409,7 +408,7 @@ export function parseMetadataResponse(data: string | Buffer, key: string): INPMP
  * or the reason it is unusable (attributed to the response by the caller). */
 function toVersionMetadata(json: unknown): INPMPackageMetadata {
   if (!isJsonObject(json)) {
-    throw new Error("expected a JSON object");
+    throw new FabrError("expected a JSON object");
   }
   if (isVersionMetadata(json)) {
     /* The document's `name` is what fabr stamps as the delivered package's
@@ -421,14 +420,14 @@ function toVersionMetadata(json: unknown): INPMPackageMetadata {
      * resolves to a document whose own `name` passes through this same check
      * before it can become an identity. */
     if (!isCanonicalFileName(json.name)) {
-      throw new Error(`package name ${JSON.stringify(json.name)} is not usable as an identity`);
+      throw new FabrError(`package name ${JSON.stringify(json.name)} is not usable as an identity`);
     }
     return json;
   }
   if ("versions" in json) {
-    throw new Error("a package document, not a single version (wrong URL?)");
+    throw new FabrError("a package document, not a single version (wrong URL?)");
   }
-  throw new Error("not a package version document");
+  throw new FabrError("not a package version document");
 }
 
 /** Whether a body is a single-version metadata document — `name` + `version` +
@@ -524,21 +523,21 @@ function npmIdentity(written: string): Requirement {
  */
 export function validateNpmRequirement({ name: pkg, versionConstraint: constraint, override }: Requirement): void {
   if (constraint === undefined) {
-    throw new Error(`Missing version in package reference '${pkg}' (expected '<name>:<version-or-range>')`);
+    throw new FabrError(`Missing version in package reference '${pkg}' (expected '<name>:<version-or-range>')`);
   }
   if (override !== undefined) {
     if (SEMVER.exactVersion?.(constraint) === undefined) {
       const marker = markerOf(override);
-      throw attachHelp(
-        new Error(`'${constraint}${marker}' is not a valid override for '${pkg}': the '${marker}' marker needs an exact version`),
+      throw new FabrError(
+        `'${constraint}${marker}' is not a valid override for '${pkg}': the '${marker}' marker needs an exact version`
+      ).withHelp(
         "markers sanction one concrete version: '@npm:pkg:1.4.2?' permits a nested alternate, '@npm:pkg:2.0.0!' forces the version"
       );
     }
     return;
   }
   if (!isSemverConstraint(constraint)) {
-    throw attachHelp(
-      new Error(`'${constraint}' is not a valid version constraint for '${pkg}'`),
+    throw new FabrError(`'${constraint}' is not a valid version constraint for '${pkg}'`).withHelp(
       "dist-tags such as 'latest' are not supported: pin a version or range instead"
     );
   }
@@ -562,8 +561,7 @@ function readNpmContentPackage(files: FileSet): Computable<IContentPackage<Semve
   const manifestFile = files.getFile(PACKAGE_JSON);
   if (!manifestFile) {
     return Computable.reject(
-      attachHelp(
-        new Error(`no ${PACKAGE_JSON} at the content root`),
+      new FabrError(`no ${PACKAGE_JSON} at the content root`).withHelp(
         "the content must be the package's own root: project into an archive with ':*:**' " +
           "(a git/npm tarball wraps the package in one root directory), or into a directory with ':**'"
       )
@@ -572,8 +570,7 @@ function readNpmContentPackage(files: FileSet): Computable<IContentPackage<Semve
   return manifestFile.readString().then(text => {
     const manifest = parseJson(text, PACKAGE_JSON, toJsonObject);
     if (typeof manifest.version !== "string") {
-      throw attachHelp(
-        new Error(`${PACKAGE_JSON} declares no version`),
+      throw new FabrError(`${PACKAGE_JSON} declares no version`).withHelp(
         "a content-served package needs a version to take part in version selection — declare one in the manifest"
       );
     }
@@ -595,13 +592,13 @@ export function parseNpmPublishCoordinate(ref: Name): NpmPublishIdentity {
   const split = splitWrittenNameVersion(ref.toBaseString());
   if (!split) {
     const literal = ref.toString();
-    throw new Error(`publish coordinate '${literal}' must name a version (e.g. ${literal}:1.0.0)`);
+    throw new FabrError(`publish coordinate '${literal}' must name a version (e.g. ${literal}:1.0.0)`);
   }
   const { identifier: name, version } = split;
   try {
     parseVersion(version);
   } catch {
-    throw new Error(`publish coordinate '${name}' must pin an exact version, got '${version}'`);
+    throw new FabrError(`publish coordinate '${name}' must pin an exact version, got '${version}'`);
   }
   return { name, version };
 }

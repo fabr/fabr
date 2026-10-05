@@ -19,7 +19,7 @@
 
 import crypto from "crypto";
 import { Computable, ComputableSource } from "../core/Computable";
-import { attachHelp, IntegrityError, toError } from "../core/Errors";
+import { FabrError, IntegrityError, toError } from "../core/Errors";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { HASH_ALGORITHM } from "../core/FSWrapper";
 import { Name } from "../core/Name";
@@ -124,8 +124,7 @@ class FetchSource implements FileSource {
   }
 
   private unknownDownload(name: Name): Error {
-    return attachHelp(
-      new Error(`${this.declaredName} has no download matching '${name.toString()}'`),
+    return new FabrError(`${this.declaredName} has no download matching '${name.toString()}'`).withHelp(
       this.members.size > 0 ? `it declares: ${[...this.members.keys()].sort().join(", ")}` : "it declares no downloads"
     );
   }
@@ -175,7 +174,7 @@ class FetchSource implements FileSource {
          * this one too. */
         const file = files.getSingleFile();
         if (!file) {
-          throw new Error(`download '${path}' in ${this.declaredName} did not produce a file`);
+          throw new FabrError(`download '${path}' in ${this.declaredName} did not produce a file`);
         }
         return verifiedAgainst(file, member.digest, member.url);
       });
@@ -218,7 +217,7 @@ const FETCH_TAG = "fetch:1";
 function streamed(stream: NodeJS.ReadableStream): Computable<void> {
   return Computable.from<void>((resolve, reject) => {
     stream.on("end", () => resolve(undefined));
-    stream.on("error", err => reject(err instanceof Error ? err : new Error(String(err))));
+    stream.on("error", err => reject(err instanceof Error ? err : new FabrError(String(err))));
   });
 }
 
@@ -296,12 +295,9 @@ function rejectShadowedMembers(declaredName: string, paths: string[]): void {
   const sorted = [...paths].sort();
   for (let i = 1; i < sorted.length; i++) {
     if (sorted[i].startsWith(sorted[i - 1] + "/")) {
-      throw attachHelp(
-        new Error(
-          `download '${sorted[i - 1]}' in ${declaredName} conflicts with '${sorted[i]}': a member may not be a path prefix of another member`
-        ),
-        "a reference to the deeper name would be ambiguous with a projection into the shorter one — rename one of them"
-      );
+      throw new FabrError(
+        `download '${sorted[i - 1]}' in ${declaredName} conflicts with '${sorted[i]}': a member may not be a path prefix of another member`
+      ).withHelp("a reference to the deeper name would be ambiguous with a projection into the shorter one — rename one of them");
     }
   }
 }
@@ -315,14 +311,12 @@ function readMember(declaredName: string, memberName: string, value: string): Fe
   const urls = values.filter(entry => !isIntegrity(entry));
   const where = `download '${memberName}' in ${declaredName}`;
   if (urls.length !== 1) {
-    throw attachHelp(
-      new Error(`${where} names ${urls.length === 0 ? "no URL" : `${urls.length} URLs`}`),
+    throw new FabrError(`${where} names ${urls.length === 0 ? "no URL" : `${urls.length} URLs`}`).withHelp(
       "write exactly one URL and one integrity digest, in either order"
     );
   }
   if (integrity.length !== 1) {
-    throw attachHelp(
-      new Error(`${where} states ${integrity.length === 0 ? "no integrity digest" : "several integrity digests"}`),
+    throw new FabrError(`${where} states ${integrity.length === 0 ? "no integrity digest" : "several integrity digests"}`).withHelp(
       'a URL is not immutable on its own, so every download must state one digest, e.g. "sha256-<base64>"'
     );
   }
@@ -330,7 +324,7 @@ function readMember(declaredName: string, memberName: string, value: string): Fe
   if (!digest) {
     /* isIntegrity matched, so the algorithm is one we know — unreachable unless
      * the two disagree. */
-    throw new Error(`${where} has an unreadable integrity digest '${integrity[0]}'`);
+    throw new FabrError(`${where} has an unreadable integrity digest '${integrity[0]}'`);
   }
   return { url: urls[0], digest };
 }

@@ -25,6 +25,7 @@ import { ExecutionContext } from "./ExecutionContext";
 import { Name } from "../core/Name";
 import { parseName } from "./Parser";
 import { RuleDefinition, PluginContribution, RepositoryProvider } from "../rules/Types";
+import { FabrError } from "../core/Errors";
 
 /**
  * Build model holds the generalized model-as-it-is-written in the build files.
@@ -64,7 +65,7 @@ export class BuildModel {
          * claiming the same type is a plugin conflict, not a silent last-wins
          * override — reject it. */
         if (this.repositories.has(repository.type)) {
-          throw new Error(`Duplicate repository type '${repository.type}' registered by more than one plugin`);
+          throw new FabrError(`Duplicate repository type '${repository.type}' registered by more than one plugin`);
         }
         this.repositories.set(repository.type, repository.provider);
       }
@@ -83,7 +84,7 @@ export class BuildModel {
     }
     for (const key of Object.keys(rule.targetProperties ?? {})) {
       if ((schema.get(key) ?? schema.get("*"))?.type !== PropertyType.String) {
-        throw new Error(`A rule for '${type}' selects on its property '${key}', which '${type}' does not declare as a STRING`);
+        throw new FabrError(`A rule for '${type}' selects on its property '${key}', which '${type}' does not declare as a STRING`);
       }
     }
   }

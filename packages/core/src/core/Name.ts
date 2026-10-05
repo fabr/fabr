@@ -20,6 +20,7 @@
 import * as path from "path";
 import { globCaptureRegex, globMatcher, globPrefixRegex } from "../support/Glob";
 import type { CommandPipeline } from "../model/AST";
+import { FabrError } from "./Errors";
 
 export enum NamePartKind {
   Literal,
@@ -592,7 +593,7 @@ export class Name {
       }
       if (parts.length === 0 && start > offset) {
         if (part.kind !== NamePartKind.Literal) {
-          throw new Error(`internal: '${this.toString()}' cannot be split inside a pattern (at offset ${start})`);
+          throw new FabrError(`internal: '${this.toString()}' cannot be split inside a pattern (at offset ${start})`);
         }
         parts.push({ kind: NamePartKind.Literal, value: part.value.substring(start - offset) });
       } else {

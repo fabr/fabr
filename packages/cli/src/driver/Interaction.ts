@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Computable, Diagnostic, Log, UserInteraction } from "@fabr-build/core";
+import { Computable, Diagnostic, FabrError, Log, UserInteraction } from "@fabr-build/core";
 import { spawn } from "node:child_process";
 import * as readline from "node:readline";
 import { withTerminalSuspended } from "./Terminal";
@@ -67,7 +67,7 @@ export class TerminalInteraction implements UserInteraction {
       /* Ctrl-D (input closed with no answer) must settle the chain, not hang it. */
       rl.on("close", () => {
         if (!answered) {
-          reject(new Error("input closed before the question was answered"));
+          reject(new FabrError("input closed before the question was answered"));
         }
       });
     });

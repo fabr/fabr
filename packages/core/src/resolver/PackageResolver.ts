@@ -19,7 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import {
-  attachHelp,
+  FabrError,
   MetadataFetchError,
   MultiError,
   RequirementResolutionError,
@@ -138,7 +138,7 @@ export function runnableFrom(source: RefSource, pkg: PackageFileSet): Computable
   if (isRepositoryReader(source)) {
     return source.format.makeRunnable(pkg);
   }
-  return Computable.reject(new Error(`'${pkg.packageName}' was delivered by a repository that cannot make it runnable`));
+  return Computable.reject(new FabrError(`'${pkg.packageName}' was delivered by a repository that cannot make it runnable`));
 }
 
 /**
@@ -248,7 +248,7 @@ export function resolvePackages<V, C>(
     const alternates = collectSanctions(format, requirements, (pkg, message): never => {
       throw new RequirementResolutionError(
         references.filter((_, index) => requiredAs(requirements[index]) === pkg),
-        new Error(message)
+        new FabrError(message)
       );
     });
     /* A root is named as it is DELIVERED — the written rename when the reference
@@ -404,7 +404,7 @@ export function materializePackages<V, C>(
             }
             if (!bound) {
               /* Can't happen: a root requirement is always reachable from itself */
-              throw new Error(`Resolution of ${requirementKey(req)} does not contain its own root package`);
+              throw new FabrError(`Resolution of ${requirementKey(req)} does not contain its own root package`);
             }
             return buildClosure(registry, req, bound, graph, packages, facts as IDeliveryFacts);
           });
@@ -464,9 +464,8 @@ function attributeResolutionFailure(err: unknown, references: RepositoryRef[], r
     throw MultiError.of(
       err.failures.map(failure => {
         const culpable = culpableFor(failure.rootName);
-        const cause = new Error(failure.message);
-        const wrapped = culpable.length > 0 ? new RequirementResolutionError(culpable, cause) : cause;
-        return failure.help ? attachHelp(wrapped, failure.help) : wrapped;
+        const cause = new FabrError(failure.message).withHelp(failure.help ?? []);
+        return culpable.length > 0 ? new RequirementResolutionError(culpable, cause) : cause;
       })
     );
   }
@@ -604,7 +603,7 @@ export function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, refer
   const stated = req.versionConstraint;
   const constraint = constraintOf(format, stated);
   if (stated === undefined || format.isFloorless(constraint)) {
-    throw new Error(
+    throw new FabrError(
       `Cannot resolve the files of '${req.name}' without a version lower bound (${versionConstraintText(stated)}): ` +
         "pin a version or range to project into a package"
     );
@@ -633,8 +632,7 @@ export function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, refer
           : Computable.resolve<V | undefined>(undefined);
         return raise.then(raised => {
           throw raised
-            ? attachHelp(
-                err,
+            ? err.withHelp(
                 `the lowest published version satisfying '${stated}' is ${format.versionToString(raised)} — ` +
                   `pin '${req.name}:${format.versionToString(raised)}' (a build resolves this automatically via a floor raise)`
               )
@@ -658,7 +656,7 @@ export function fetchPinnedPackage<V, C>(registry: RepositoryReader<V, C>, refer
   const index = rootIndex.get(requirementKey(req));
   const bound = index === undefined ? undefined : graph.rootBinding(index);
   if (!bound) {
-    throw new Error(`Resolution does not contain ${requirementKey(req)}`);
+    throw new FabrError(`Resolution does not contain ${requirementKey(req)}`);
   }
   const origin = resolutionOrigin(format, req, graph.selections);
   return registry

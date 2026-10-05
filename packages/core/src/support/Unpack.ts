@@ -28,6 +28,7 @@ import { mapComputable } from "./Functional";
 import { FileSet, IFile } from "../core/FileSet";
 import { SymlinkFile } from "../core/SymlinkFile";
 import { MIME_GZIP, MIME_TAR, MIME_XZ, MIME_ZIP, SNIFF_LENGTH, sniffMime } from "./Mime";
+import { FabrError } from "../core/Errors";
 
 /* Cap on nested compression layers: a real package is a single gzip layer over
  * a tar (`.tgz`), so anything beyond a small bound is a malformed or hostile
@@ -67,7 +68,7 @@ export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): 
       switch (sniffMime(data)) {
         case MIME_GZIP: {
           if (++depth > MAX_COMPRESSION_LAYERS) {
-            reject(new Error(`Archive nests more than ${MAX_COMPRESSION_LAYERS} compression layers`));
+            reject(new FabrError(`Archive nests more than ${MAX_COMPRESSION_LAYERS} compression layers`));
             return null;
           }
           const zip = createUnzip();
@@ -79,7 +80,7 @@ export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): 
            * layer like gzip's, re-sniffed the same way and counted against the
            * same bound. */
           if (++depth > MAX_COMPRESSION_LAYERS) {
-            reject(new Error(`Archive nests more than ${MAX_COMPRESSION_LAYERS} compression layers`));
+            reject(new FabrError(`Archive nests more than ${MAX_COMPRESSION_LAYERS} compression layers`));
             return null;
           }
           const xz = createDecompressStream();
@@ -163,10 +164,10 @@ export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): 
           return extract;
         }
         case MIME_ZIP:
-          reject(new Error("ZIP archives are not supported (expected a gzip-compressed tarball)"));
+          reject(new FabrError("ZIP archives are not supported (expected a gzip-compressed tarball)"));
           return null;
         default:
-          reject(new Error("Unsupported archive file (expected a gzip-compressed tarball)"));
+          reject(new FabrError("Unsupported archive file (expected a gzip-compressed tarball)"));
           return null;
       }
     }

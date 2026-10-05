@@ -22,6 +22,7 @@ import { BUILD_OPERATION, BUILD_OVERRIDE, FILES_OPERATION } from "../model/Const
 import { Computable } from "../core/Computable";
 import { isFileSource } from "../core/Repository";
 import { RuleDefinition, RuleResult } from "./Types";
+import { FabrError } from "../core/Errors";
 
 /**
  * The generic `files` rule: registered as a default (all-types) rule, so it is
@@ -44,7 +45,7 @@ function deliverFiles(context: TargetContext): Computable<RuleResult> {
   return context.getSelfWithOverrides(BUILD_OVERRIDE).then(sources => {
     const files = sources.filter(isFileSource);
     if (files.length === 0) {
-      throw new Error(`internal: building '${context.name}' under files did not yield file content`);
+      throw new FabrError(`internal: building '${context.name}' under files did not yield file content`);
     }
     return files;
   });

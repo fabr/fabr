@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { CommandFailedError, ConflictError, ExecutionError, MultiError, RequirementResolutionError, TestsFailedError } from "../core/Errors";
+import { CommandFailedError, ConflictError, ExecutionError, helpOf, MultiError, RequirementResolutionError, TestsFailedError } from "../core/Errors";
 import { chainSteps, IProvenanceStep, renderProvenance } from "../core/Provenance";
 import { RepositoryRef } from "../core/Repository";
 import { Diagnostic, IDiagnosticDetail, IDiagnosticNote, ISourceSpan, Log } from "../support/Log";
@@ -299,7 +299,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
    * written.
    */
   private describeRequirement(cause: RequirementResolutionError, owner: DependencyFailedError | undefined): IDiagnostic {
-    const help = helpOf(cause) ?? helpOf(cause.cause);
+    const help = helpOf(cause);
     const [first, ...rest] = cause.refs;
     const chain = first ? chainSteps(first.steps, undefined) : undefined;
     const written = chain?.kind === MODEL_REF_PROVENANCE && (owner === undefined || (chain as IModelRefStep).target === owner.target);
@@ -380,14 +380,6 @@ function noRuleHelp(cause: NoRuleFoundError): string[] | undefined {
     .sort((a, b) => compareText(a.requires, b.requires));
   const width = Math.max(...rows.map(row => row.requires.length));
   return [`Available ${operation} rules for ${type}:\n${rows.map(row => `  ${row.requires.padEnd(width)}  (${row.has})`).join("\n")}`];
-}
-
-function helpOf(err: Error): string[] | undefined {
-  const help = (err as { help?: string | string[] }).help;
-  if (help === undefined || help.length === 0) {
-    return undefined;
-  }
-  return Array.isArray(help) ? help : [help];
 }
 
 function spanKey(loc: ISourceSpan | undefined): string {

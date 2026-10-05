@@ -44,6 +44,7 @@ import { repositoryGroupRegistration } from "../rules/RepositoryGroup";
 import { fabrHomeRegistration } from "../rules/FabrHome";
 import { computableWorkList } from "../core/WorkList";
 import { select } from "../support/Functional";
+import { FabrError } from "../core/Errors";
 
 /** An `include`d file could not be found on disk, positioned at the offending
  * `include` decl so the report underlines it (with a `-->` back to the file that
@@ -315,7 +316,7 @@ export function loadProject(
          * names nothing at all. A seed/plugin-lib file has no include site — that
          * stays a hard error (no project, or a broken installed plugin). */
         if (!includeSites.has(file)) {
-          throw new Error("File not found: " + file);
+          throw new FabrError("File not found: " + file);
         }
         return { value: { decls: NO_DECLS, plugins: [], parseErrors: 0 }, next: [] };
       }

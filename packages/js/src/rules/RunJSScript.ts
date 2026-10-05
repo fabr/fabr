@@ -38,6 +38,7 @@ import {
   BUILD_OVERRIDE,
   Computable,
   Constraints,
+  FabrError,
   FileSet,
   FileSetRef,
   PackageFileSet,
@@ -99,12 +100,12 @@ function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
            * TypeScript entry is compiled first (see below). */
           return context.manifestAll(entry).then(entrySets => {
             if (entrySets.some(set => set instanceof PackageFileSet)) {
-              throw new Error("js_script 'entry' must be a single file or a single package — further packages belong in 'deps'");
+              throw new FabrError("js_script 'entry' must be a single file or a single package — further packages belong in 'deps'");
             }
             const entrySet = FileSet.unionAll(...entrySets);
             const names = [...entrySet].map(([name]) => name);
             if (names.length !== 1) {
-              throw new Error(
+              throw new FabrError(
                 names.length === 0
                   ? "js_script 'entry' resolved to no file — name the script file (or a package) itself"
                   : `js_script 'entry' resolved to ${names.length} files (${names.slice(0, 5).join(", ")}) — name exactly one`

@@ -18,7 +18,7 @@
  */
 
 import { Computable } from "../core/Computable";
-import { MetadataFetchError, toError, VersionNotFoundError } from "../core/Errors";
+import { FabrError, MetadataFetchError, toError, VersionNotFoundError } from "../core/Errors";
 import { constraintOf, requiredAs, versionConstraintText } from "./Requirement";
 import { edgeBinding, nodeId as idOf } from "./ResolutionGraph";
 import {
@@ -154,7 +154,7 @@ class RepairsRequired extends Error {
  * floor, so it is never raised or violated, and never reaches a caller of this. */
 function statedConstraint(req: Requirement): string {
   if (req.versionConstraint === undefined) {
-    throw new Error(`internal: '${req.name}' states no version, so has no floor to raise`);
+    throw new FabrError(`internal: '${req.name}' states no version, so has no floor to raise`);
   }
   return req.versionConstraint;
 }

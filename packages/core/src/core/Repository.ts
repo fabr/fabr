@@ -18,7 +18,7 @@
  */
 
 import { Computable } from "./Computable";
-import { attachHelp, RequirementResolutionError, toError } from "./Errors";
+import { FabrError, RequirementResolutionError, toError } from "./Errors";
 import { FileSetRef, IProjection } from "./FileSetRef";
 import { FileSet, FileSource } from "./FileSet";
 import {
@@ -504,7 +504,7 @@ export function materializeCollection(
   for (const { reference } of gatherReferences(sources)) {
     const request = resolved.requests.get(reference);
     if (request === undefined) {
-      return Computable.reject(new Error(`internal: '${reference.toString()}' was not resolved with the sources it is delivered among`));
+      return Computable.reject(new FabrError(`internal: '${reference.toString()}' was not resolved with the sources it is delivered among`));
     }
     requests.push(request);
   }
@@ -750,8 +750,7 @@ export function renamedDelivery(source: SourceRef, renameTo: string, written: st
   if (source instanceof RepositoryRef && source.projections.length === 0) {
     return source.withRenameTo(renameTo);
   }
-  throw attachHelp(
-    new Error(`'${written}' does not deliver a package, so there is no name for '-> ' to rename`),
+  throw new FabrError(`'${written}' does not deliver a package, so there is no name for '-> ' to rename`).withHelp(
     "a rename on a reference that delivers files must name what it selects ('ref:pattern -> template')"
   );
 }

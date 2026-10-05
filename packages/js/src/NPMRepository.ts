@@ -19,6 +19,7 @@
 
 import {
   EMPTY_FILESET,
+  FabrError,
   FILES_OPERATION,
   resolveBarePackage,
   MaterializeOptions,
@@ -103,7 +104,7 @@ function uniqueAssignments(assignments: readonly NpmPublishIdentity[]): Map<stri
  *  wrong URL), and says nothing about what is published. */
 function toPublishedVersions(json: unknown): string[] {
   if (!isJsonObject(json) || !isJsonObject(json.versions)) {
-    throw new Error("no versions");
+    throw new FabrError("no versions");
   }
   return Object.keys(json.versions);
 }
@@ -235,13 +236,13 @@ export class NPMRepository
     const { content } = member;
     return content.get("package.json").then(manifestFile => {
       if (!manifestFile) {
-        throw new Error(`cannot publish ${identity.name}: the built package has no package.json`);
+        throw new FabrError(`cannot publish ${identity.name}: the built package has no package.json`);
       }
       return readJsonFile(manifestFile, toJsonObject).then(built => {
         const manifest = rewriteManifest(built, identity, memberVersions);
         const dangling = unresolvableDependencies(manifest);
         if (dangling.length > 0) {
-          throw new Error(
+          throw new FabrError(
             `cannot publish ${identity.name}: no version to record for ${dangling
               .map(dep => `'${dep}'`)
               .join(", ")} — a dependency built here must be published by this sync (at a single version) for its ` +
@@ -287,7 +288,7 @@ export class NPMRepository
     const manifestFile = artifact.get("package.json");
     return Computable.forAll([tgzFile, manifestFile, this.npmAuth()], (tgz, manifest, auth) => {
       if (!tgz || !manifest) {
-        throw new Error(`internal error: publish artifact for ${name}@${version} is missing its tarball or manifest`);
+        throw new FabrError(`internal error: publish artifact for ${name}@${version} is missing its tarball or manifest`);
       }
       return Computable.forAll([tgz.getBuffer(), manifest.readString()], (data, manifestJson) => ({ data, manifestJson, auth }));
     }).then(({ data, manifestJson, auth }) =>
@@ -418,7 +419,7 @@ export class NPMRepository
           for (const { sel, meta } of entries) {
             const reason = unsupportedPlatformReason(meta, target);
             if (reason) {
-              throw new Error(
+              throw new FabrError(
                 `${sel.name}@${versionToString(sel.version)} is not supported for the target platform (${reason}), ` +
                   `required by ${sel.reachedVia?.requiredBy ?? "a direct requirement"}`
               );
@@ -618,7 +619,7 @@ export class NPMRepository
                * streams: a mismatch throws before the entry commits, so tampered
                * or truncated-but-valid content never enters the immutable cache. */
               const { hashing, verify } = verifyTarballStream(meta.dist, meta.dist.tarball);
-              content.on("error", err => hashing.destroy(err instanceof Error ? err : new Error(String(err))));
+              content.on("error", err => hashing.destroy(err instanceof Error ? err : new FabrError(String(err))));
               content.pipe(hashing);
               return unpackStream(hashing, createOutput).then(files => {
                 verify();

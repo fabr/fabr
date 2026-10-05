@@ -16,7 +16,7 @@
 
 import { getResultFileSet, writeFileSet } from "../core/Staging";
 import { Computable } from "../core/Computable";
-import { attachHelp, ConflictError } from "../core/Errors";
+import { ConflictError, FabrError } from "../core/Errors";
 import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { executePipeline, ITaskReport, StageSpec, StageStreams } from "../support/Execute";
@@ -68,8 +68,7 @@ function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskRepor
             .then(written => {
               const collected = FileSet.unionAll(written, selectedCaptures(captured, written, output));
               if (collected.isEmpty()) {
-                throw attachHelp(
-                  new Error(`the command produced no files matching output pattern '${output.toString()}'`),
+                throw new FabrError(`the command produced no files matching output pattern '${output.toString()}'`).withHelp(
                   `check the output pattern, or that the command writes its output where '${output.toString()}' looks`
                 );
               }

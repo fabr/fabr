@@ -54,6 +54,7 @@ import {
   materializeAll,
   fileRequests,
   FileSetRef,
+  helpOf,
   conflictError,
   ROOT_REQUIRER,
   PackageIdentity,
@@ -421,8 +422,7 @@ function toPromise<T>(computable: Computable<T>): Promise<T> {
 
 /** The error's help lines joined — remedies now ride `help`, not the message. */
 function helpText(err: Error): string {
-  const help = (err as { help?: string | string[] }).help;
-  return Array.isArray(help) ? help.join("\n") : (help ?? "");
+  return helpOf(err).join("\n");
 }
 
 async function rejection(fn: () => unknown): Promise<Error> {

@@ -27,6 +27,7 @@
 
 import * as fs from "fs";
 import {
+  FabrError,
   hashString,
   isJsonObject,
   packageLibFile,
@@ -119,32 +120,32 @@ export const NO_PACKAGE_EXTENSIONS = new PackageExtensions([], "none");
  */
 export function toPackageExtensions(json: unknown): IPackageExtension[] {
   if (!Array.isArray(json)) {
-    throw new Error("expected an array of [selector, extension] pairs");
+    throw new FabrError("expected an array of [selector, extension] pairs");
   }
   return json.map((entry: unknown) => {
     if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || !isJsonObject(entry[1])) {
-      throw new Error(`expected a [selector, extension] pair, got ${JSON.stringify(entry)}`);
+      throw new FabrError(`expected a [selector, extension] pair, got ${JSON.stringify(entry)}`);
     }
     const [selector, data] = entry as [string, Record<string, unknown>];
     /* A scoped name starts with its own `@`, so the range separator is the last one. */
     const at = selector.lastIndexOf("@");
     if (at <= 0 || at === selector.length - 1) {
-      throw new Error(`'${selector}' is not a name@range selector`);
+      throw new FabrError(`'${selector}' is not a name@range selector`);
     }
     for (const field of Object.keys(data)) {
       if (!EXTENSION_FIELDS.has(field)) {
-        throw new Error(`'${selector}' extends unknown field '${field}'`);
+        throw new FabrError(`'${selector}' extends unknown field '${field}'`);
       }
     }
     let range: SemverConstraint;
     try {
       range = parseConstraint(selector.substring(at + 1));
     } catch (err) {
-      throw new Error(`'${selector}' has an invalid range: ${(err as Error).message}`);
+      throw new FabrError(`'${selector}' has an invalid range: ${(err as Error).message}`);
     }
     const peerMeta = data.peerDependenciesMeta ?? {};
     if (!isJsonObject(peerMeta)) {
-      throw new Error(`'${selector}' has a malformed peerDependenciesMeta`);
+      throw new FabrError(`'${selector}' has a malformed peerDependenciesMeta`);
     }
     return {
       name: selector.substring(0, at),

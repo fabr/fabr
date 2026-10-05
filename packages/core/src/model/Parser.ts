@@ -44,6 +44,7 @@ import {
 import { Diagnostic, ISourcePosition, Log, LogLevel } from "../support/Log";
 import { Name, NameBuilder, NameConstraint } from "../core/Name";
 import { EMPTY_FILESET, FileSource } from "../core/FileSet";
+import { FabrError } from "../core/Errors";
 
 /**
  * The three name tiers form a widening ladder, classified purely by the
@@ -1208,7 +1209,7 @@ export class BuildParser {
 
   private commandError(detail: string, offset: number): never {
     this.log.log(DIAG_INVALID_COMMAND, { detail, loc: { ...this.source, offset } });
-    throw new Error(PARSE_ERROR);
+    throw new FabrError(PARSE_ERROR);
   }
 
   /**
@@ -1600,7 +1601,7 @@ export class BuildParser {
    * template itself having already been consumed. */
   private renameTemplateError(detail: string, at: number = this.token.start): never {
     this.log.log(DIAG_RENAME_TEMPLATE, { detail, loc: { ...this.source, offset: at } });
-    throw new Error(PARSE_ERROR);
+    throw new FabrError(PARSE_ERROR);
   }
 
   /** Reported at the outermost unclosed extglob leader (`at` is its offset), so
@@ -1610,7 +1611,7 @@ export class BuildParser {
       leader: this.reader.substring(at, at + 2),
       loc: { ...this.source, offset: at },
     });
-    throw new Error(PARSE_ERROR);
+    throw new FabrError(PARSE_ERROR);
   }
 
   /**
@@ -1691,7 +1692,7 @@ export class BuildParser {
 
   private duplicateConstraintError(key: string, offset: number): never {
     this.log.log(DIAG_DUP_CONSTRAINT, { key, loc: { ...this.source, offset } });
-    throw new Error(PARSE_ERROR);
+    throw new FabrError(PARSE_ERROR);
   }
 
   /** A pattern where a use-position requirement wants an exact value — nearly
@@ -1703,7 +1704,7 @@ export class BuildParser {
       loc: { ...this.source, offset },
       help: [`did you mean a guard on the property — '<property><${key}=…> = <value>'?`],
     });
-    throw new Error(PARSE_ERROR);
+    throw new FabrError(PARSE_ERROR);
   }
 
   /**
@@ -1730,7 +1731,7 @@ export class BuildParser {
         loc: { ...this.source, offset: this.token.start },
         help: ["write it against the name, as 'srcs<TARGET=*-linux-*> = …'"],
       });
-      throw new Error(PARSE_ERROR);
+      throw new FabrError(PARSE_ERROR);
     }
     return key;
   }
@@ -1781,7 +1782,7 @@ export class BuildParser {
     for (const [key] of own) {
       if (block.some(([blockKey]) => blockKey === key)) {
         this.log.log(DIAG_GUARD_CONFLICT, { key, site, loc: { ...this.source, offset } });
-        throw new Error(PARSE_ERROR);
+        throw new FabrError(PARSE_ERROR);
       }
     }
     return [...block, ...own];
@@ -1890,7 +1891,7 @@ export class BuildParser {
   private parseMapBlock(): IMapItemDecl[] {
     if (this.blockDepth >= MAX_BLOCK_DEPTH) {
       this.log.log(DIAG_NESTING_TOO_DEEP, { loc: { ...this.source, offset: this.token.start } });
-      throw new Error(PARSE_ERROR);
+      throw new FabrError(PARSE_ERROR);
     }
     this.blockDepth++;
     /* A map block is a VALUE, not a body of declarations: an enclosing guard
@@ -1917,7 +1918,7 @@ export class BuildParser {
   private parseGuardBlock(): IPropertyDecl[] {
     if (this.blockDepth >= MAX_BLOCK_DEPTH) {
       this.log.log(DIAG_NESTING_TOO_DEEP, { loc: { ...this.source, offset: this.token.start } });
-      throw new Error(PARSE_ERROR);
+      throw new FabrError(PARSE_ERROR);
     }
     const at = this.token.start;
     this.nextToken(); /* consume '<' */
@@ -2271,7 +2272,7 @@ export class BuildParser {
       actual: TOKEN_NAME_MAP[this.token.type],
       expected,
     });
-    throw new Error(PARSE_ERROR);
+    throw new FabrError(PARSE_ERROR);
   }
 
   private unexpectedEndOfFile(expected: string, offset: number = this.token.start): never {
@@ -2279,22 +2280,22 @@ export class BuildParser {
       loc: { ...this.source, offset },
       expected,
     });
-    throw new Error(PARSE_ERROR);
+    throw new FabrError(PARSE_ERROR);
   }
 
   private invalidIncludeName(detail: string): never {
     this.log.log(DIAG_INVALID_INCLUDE, { detail, loc: { ...this.source, offset: this.token.start } });
-    throw new Error(PARSE_ERROR);
+    throw new FabrError(PARSE_ERROR);
   }
 
   private absoluteIncludeName(): never {
     this.log.log(DIAG_ABSOLUTE_INCLUDE, { loc: { ...this.source, offset: this.token.start } });
-    throw new Error(PARSE_ERROR);
+    throw new FabrError(PARSE_ERROR);
   }
 
   private invalidPluginName(): never {
     this.log.log(DIAG_INVALID_PLUGIN, { loc: { ...this.source, offset: this.token.start } });
-    throw new Error(PARSE_ERROR);
+    throw new FabrError(PARSE_ERROR);
   }
 
   /**
@@ -2413,5 +2414,5 @@ export function parseName(contents: string): Name {
       throw err;
     }
   }
-  throw new Error(`Invalid name '${contents}': ${messages.join("; ")}`);
+  throw new FabrError(`Invalid name '${contents}': ${messages.join("; ")}`);
 }

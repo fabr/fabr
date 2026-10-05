@@ -19,7 +19,7 @@
 
 import { createHash } from "node:crypto";
 import { Computable } from "../core/Computable";
-import { attachHelp, toError, VersionNotFoundError } from "../core/Errors";
+import { FabrError, toError, VersionNotFoundError } from "../core/Errors";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { SourceRef } from "../core/Repository";
@@ -70,15 +70,6 @@ export function contentPackageMember<V, C>(
   /* Where this route was declared, for error attribution. */
   const site = `content route '${name}' in ${context.name}`;
 
-  /* Re-position a content/manifest error at the declaring route, keeping any
-   * attached help (help is a plain assigned property, so it survives copy). */
-  const positioned = (err: unknown): Error => {
-    const cause = toError(err);
-    const help = (cause as { help?: string | string[] }).help;
-    const wrapped = new Error(`${site}: ${cause.message}`);
-    return help ? attachHelp(wrapped, help) : wrapped;
-  };
-
   let loaded: Computable<{ files: FileSet; content: IContentPackage<V> }> | undefined;
   const load = (): Computable<{ files: FileSet; content: IContentPackage<V> }> =>
     (loaded ??= context
@@ -86,12 +77,11 @@ export function contentPackageMember<V, C>(
       .then(delivered => {
         const files = delivered[0];
         if (!(files instanceof FileSet)) {
-          throw new Error(`did not deliver file content`);
+          throw new FabrError(`did not deliver file content`);
         }
         return format.readContentPackage(files).then(content => {
           if (content.name !== undefined && content.name !== name) {
-            throw attachHelp(
-              new Error(`serves a package that names itself '${content.name}' in its manifest`),
+            throw new FabrError(`serves a package that names itself '${content.name}' in its manifest`).withHelp(
               "the route key and the manifest name must agree — rename the route to the package's real name"
             );
           }
@@ -99,7 +89,9 @@ export function contentPackageMember<V, C>(
         });
       })
       .catch(err => {
-        throw positioned(err);
+        /* Re-position a content/manifest error at the declaring route. */
+        const cause = toError(err);
+        throw new FabrError(`${site}: ${cause.message}`, cause);
       }));
 
   const member: RepositoryReader<V, C> = {

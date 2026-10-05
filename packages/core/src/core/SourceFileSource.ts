@@ -30,6 +30,7 @@ import { WatchController } from "./WatchController";
 import { IResolvedWriteBack, IWriteBackObserver, writeBackFile } from "./WriteBack";
 import { sniffMime } from "../support/Mime";
 import { mapComputable } from "../support/Functional";
+import { FabrError } from "./Errors";
 
 /** Minimum gap between index writes under watch — an edit-heavy session
  * rewrites the record at most this often; the tail is best-effort (a dropped
@@ -153,7 +154,7 @@ export class SourceFileSource extends FSFileSource {
 
   public override get(name: string): ComputableSource<IFile | undefined> {
     if (!this.contains(name)) {
-      return Computable.reject(new Error(`'${name}' is outside the source tree`));
+      return Computable.reject(new FabrError(`'${name}' is outside the source tree`));
     }
     return super.get(name);
   }
@@ -166,7 +167,7 @@ export class SourceFileSource extends FSFileSource {
      * not slip past it. The glob remainder never moves the walk base, so it
      * plays no part. */
     if (!this.contains(staticPath(name))) {
-      return Computable.reject(new Error(`'${name.toString()}' is outside the source tree`));
+      return Computable.reject(new FabrError(`'${name.toString()}' is outside the source tree`));
     }
     return super.find(name, prefix);
   }

@@ -31,7 +31,7 @@
  */
 
 import { Computable } from "../core/Computable";
-import { attachHelp, MultiError, RequirementResolutionError } from "../core/Errors";
+import { MultiError, RequirementResolutionError } from "../core/Errors";
 import { FileSetRef } from "../core/FileSetRef";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { IProvenanceStep } from "../core/Provenance";
@@ -214,14 +214,9 @@ function checkDomain<V, C>(
     const error = conflictError(root, outstanding, duplicates, needed, explaining, refText, written, help);
     const references = [...new Set(members.flatMap(facts => [...(culprits.get(facts as IDeliveryFacts) ?? [])]))];
     return Computable.resolve<Error | undefined>(
-      references.length > 0 ? attachHelp(new RequirementResolutionError(references, error), help.length > 0 ? help : helpOf(error)) : error
+      references.length > 0 ? new RequirementResolutionError(references, error) : error
     );
   });
-}
-
-/** The help an error carries. */
-function helpOf(error: Error): string | string[] {
-  return (error as { help?: string | string[] }).help ?? [];
 }
 
 /** The `?` lines completing each conflicted package's sanction: every version

@@ -19,6 +19,7 @@
 
 import type { FileSet, FileSource } from "./FileSet";
 import { Name } from "./Name";
+import { FabrError } from "./Errors";
 
 /**
  * One narrowing step of a reference: the pattern to match (against the names
@@ -77,7 +78,7 @@ export class FileSourceRef {
      * least one, and the applier (BuildContext.manifest) folds from the first.
      * Enforced here so a violation fails at construction, not as a stray base. */
     if (projections.length === 0) {
-      throw new Error("internal: a FileSetRef must carry at least one projection");
+      throw new FabrError("internal: a FileSetRef must carry at least one projection");
     }
   }
 

@@ -21,7 +21,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import * as fsPromises from "fs/promises";
-import { HOST, hostTriple, PROJECT_FILENAME } from "@fabr-build/core";
+import { FabrError, HOST, hostTriple, PROJECT_FILENAME } from "@fabr-build/core";
 
 export const BUILD_CACHE_ENV = "FABR_CACHE_DIR";
 
@@ -42,7 +42,7 @@ export async function getSourceRoot(): Promise<string> {
       if (parent === dir) {
         /* Reached the filesystem root without finding a project marker: report
          * the actual situation, not the raw `access` ENOENT on `/PROJECT.fabr`. */
-        throw new Error(
+        throw new FabrError(
           `No ${PROJECT_FILENAME} found in ${process.cwd()} or any parent directory — is this a fabr project?`
         );
       } else {

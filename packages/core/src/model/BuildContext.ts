@@ -90,7 +90,7 @@ import {
   NoRuleFoundError,
   ReferenceFailedError,
 } from "./Errors";
-import { attachHelp, ConflictError, IConflictSide, IConflictSource, toError } from "../core/Errors";
+import { ConflictError, FabrError, IConflictSide, IConflictSource, toError } from "../core/Errors";
 import { createPipelineAction, stagePipeline } from "../rules/PipelineAction";
 import { closestMatch } from "../support/Suggest";
 import { Name, NameConstraint, NamePart, NamePartKind } from "../core/Name";
@@ -141,7 +141,7 @@ export function mapEntryOrigin(map: PropertyMap, key: string): MapEntryOrigin | 
 export function mapEntryError(map: PropertyMap, key: string, message: string): Error {
   const origin = mapEntryOrigin(map, key);
   if (!origin) {
-    return new Error(message);
+    return new FabrError(message);
   }
   const via = origin.via.map(hop => ` (via '${("ref" in hop ? hop.ref : hop.value).toString()}')`).join("");
   return new NameResolutionError(Name.fromLiteral(key), declPosn(origin.entry), undefined, message + via);
@@ -194,8 +194,8 @@ interface IResolvedFileSource {
 }
 
 /** Attach a name's remedies to its error as the `help:` line, if there are any. */
-function withHints<T extends Error>(err: T, hints: string[]): T {
-  return hints.length > 0 ? attachHelp(err, hints.join("; ")) : err;
+function withHints<T extends FabrError>(err: T, hints: string[]): T {
+  return hints.length > 0 ? err.withHelp(hints.join("; ")) : err;
 }
 
 export const MODEL_REF_PROVENANCE = "model-ref";
@@ -869,7 +869,9 @@ export class BuildContext {
    */
   private unresolvedNameError(name: string, stack: IDependencyStack | undefined, reason: string, hints: string[]): Error {
     const frame = useFrameOf(stack);
-    const err = frame ? new NameResolutionError(Name.fromLiteral(name), declPosn(frame.value), useSiteOf(frame), reason) : new Error(reason);
+    const err = frame
+      ? new NameResolutionError(Name.fromLiteral(name), declPosn(frame.value), useSiteOf(frame), reason)
+      : new FabrError(reason);
     return withHints(err, hints);
   }
 
@@ -924,7 +926,7 @@ export class BuildContext {
       if (value === undefined) {
         /* Only a declared property can be without a value: a name a constraint
          * supplies always has one. */
-        throw entry ? unmatchedError(name, entry) : new Error(`'${name}' has no value`);
+        throw entry ? unmatchedError(name, entry) : new FabrError(`'${name}' has no value`);
       }
       return value;
     });
@@ -1182,7 +1184,7 @@ export class BuildContext {
     callerOverrides?: Constraints
   ): Computable<PropertyMap> {
     if (seen.has(prop)) {
-      return Computable.reject(new Error(`Circular map reference at '${prop.name}'`));
+      return Computable.reject(new FabrError(`Circular map reference at '${prop.name}'`));
     }
     const nextSeen = new Set(seen).add(prop);
     if (hasMapValue(prop)) {
@@ -1190,7 +1192,7 @@ export class BuildContext {
        * re-checked here for shared globals, which never pass a targetdef). */
       if (prop.values.length > 1) {
         return Computable.reject(
-          new Error(`'${prop.name}' must be a single \`{ ... }\` block or bare reference(s), not a mix`)
+          new FabrError(`'${prop.name}' must be a single \`{ ... }\` block or bare reference(s), not a mix`)
         );
       }
       const block = prop.values[0];
@@ -1227,7 +1229,7 @@ export class BuildContext {
   ): Computable<PropertyMap> {
     return this.referencedProperty(name, info).then(({ prop, name: substituted }) => {
       if (!prop) {
-        throw new Error(`'${substituted.toString()}' does not name a map property`);
+        throw new FabrError(`'${substituted.toString()}' does not name a map property`);
       }
       return this.resolveMapDecl(prop, undefined, stack, seen, callerOverrides);
     });
@@ -1258,7 +1260,7 @@ export class BuildContext {
           return this.resolveStringProperty(item, target, stack, callerOverrides).then(prop => prop.getValues());
         }
         if (blocks.length < item.values.length) {
-          return Computable.reject(new Error(`map value '${item.name}' is either strings or maps, not a mix`));
+          return Computable.reject(new FabrError(`map value '${item.name}' is either strings or maps, not a mix`));
         }
         return Computable.forAll(
           blocks.map(value => this.resolveMapBlock(value.entries, target, stack, seen, callerOverrides)),
@@ -1293,7 +1295,7 @@ export class BuildContext {
   ): Computable<Name | undefined> {
     return this.resolveNameProperty(prop, target, stack, callerOverrides).then(names => {
       if (names.length > 1) {
-        throw new Error(`property '${prop.name}' is a projection and takes a single value (found ${names.length})`);
+        throw new FabrError(`property '${prop.name}' is a projection and takes a single value (found ${names.length})`);
       }
       return names[0];
     });
@@ -1706,7 +1708,7 @@ export class BuildContext {
   private runCommandSubst(part: NamePart, stack?: IDependencyStack): Computable<string> {
     const pipeline = part.command;
     if (pipeline === undefined || pipeline.length === 0) {
-      return Computable.reject(new Error(`Malformed command substitution '${part.value}'`));
+      return Computable.reject(new FabrError(`Malformed command substitution '${part.value}'`));
     }
     const written = useFrameOf(stack);
     return Computable.forAll(
@@ -1759,7 +1761,7 @@ export class BuildContext {
    * stage — there is nothing for an arg to glob over and none is expanded. */
   private resolveSubstStage(stage: IResolvedCommandStage, written: string, stack?: IDependencyStack): Computable<ResolvedCommandStage> {
     if (stage.stdin !== undefined) {
-      return Computable.reject(new Error(`'< ' is not available in a command substitution (in \`${written}\`)`));
+      return Computable.reject(new FabrError(`'< ' is not available in a command substitution (in \`${written}\`)`));
     }
     return this.resolveFileValue(stage.command.name, stack, {
       relativeTo: stage.command.ref,
@@ -1830,7 +1832,7 @@ export class BuildContext {
     seen: Set<IPropertyDecl>
   ): Computable<CommandPipeline> {
     if (seen.has(prop)) {
-      return Computable.reject(new Error(`Circular command reference at '${prop.name}'`));
+      return Computable.reject(new FabrError(`Circular command reference at '${prop.name}'`));
     }
     const commandValue = prop.values.find(isCommandValue);
     if (commandValue !== undefined) {
@@ -1895,7 +1897,7 @@ export class BuildContext {
   private resolveTarget(target: ITargetDecl, stack?: IDependencyStack): Computable<SourceRef[]> {
     const targetDef = this.model.getTargetDef(target.type);
     if (!targetDef) {
-      throw new Error("Targetdef '" + target.type + "' not found"); /* Can't happen due to earlier checks */
+      throw new FabrError("Targetdef '" + target.type + "' not found"); /* Can't happen due to earlier checks */
     }
     /* Repositories are not rule-built targets: the provider constructs the
      * instance lazily, interned per context via the target cache. No build
@@ -1936,11 +1938,11 @@ export class BuildContext {
   private resolveActionForShellDecl(name: string, stack?: IDependencyStack): Computable<BuildAction | undefined> {
     const def = this.model.getDecl(name);
     if (def?.kind !== DeclKind.Target) {
-      throw new Error(`'${name}' is not a target that runs a command`);
+      throw new FabrError(`'${name}' is not a target that runs a command`);
     }
     const targetDef = this.model.getTargetDef(def.type);
     if (!targetDef) {
-      throw new Error("Targetdef '" + def.type + "' not found"); /* Can't happen due to earlier checks */
+      throw new FabrError("Targetdef '" + def.type + "' not found"); /* Can't happen due to earlier checks */
     }
     const context = new DeclaredTargetContext(def, targetDef, this, { evaluating: def, context: this, next: stack });
     return this.selectRule(def.type, context).then(({ rule, candidates }) => {
@@ -2007,7 +2009,7 @@ export class BuildContext {
      * no decl), so the rule is checked here too rather than downstream. */
     const targetDef = this.model.getTargetDef(type);
     if (!targetDef) {
-      throw new Error(`Internal error: sub-target type '${type}' has no registered targetdef`);
+      throw new FabrError(`Internal error: sub-target type '${type}' has no registered targetdef`);
     }
     const context = new AnonymousTargetContext(
       buildContext,
@@ -2019,7 +2021,7 @@ export class BuildContext {
     );
     return buildContext.selectRule(type, context).then(({ rule }) => {
       if (!rule) {
-        throw new Error(`No rule found for anonymous target type '${type}'`);
+        throw new FabrError(`No rule found for anonymous target type '${type}'`);
       }
       return buildContext.evaluateTarget(context, rule);
     });
@@ -2199,7 +2201,7 @@ function asRunnable(sources: ReadonlyArray<FileSource | Repository | FileSetRef>
       return runnable;
     }
   }
-  throw new Error(`'${name}' must name a runnable (its BUILD_OPERATION=run result)`);
+  throw new FabrError(`'${name}' must name a runnable (its BUILD_OPERATION=run result)`);
 }
 
 /**
@@ -2210,18 +2212,16 @@ function asRunnable(sources: ReadonlyArray<FileSource | Repository | FileSetRef>
  * contributing no files). The help line teaches the one sanctioned idiom.
  */
 function mapInWrongContextError(prop: IPropertyDecl, context: string): Error {
-  return attachHelp(
-    new Error(`'${prop.name}' is a map and cannot be used as ${context}`),
+  return new FabrError(`'${prop.name}' is a map and cannot be used as ${context}`).withHelp(
     `a map is referenced by bare name from a MAP property (\`metadata = ${prop.name};\`); ` +
       `it cannot be \${...}-interpolated or read as files`
   );
 }
 
 function commandInWrongContextError(prop: IPropertyDecl): Error {
-  return attachHelp(
-    new Error(`'${prop.name}' contains a pipeline operator ('|', '<', '>', '2>', '&>'), which is only valid in a COMMAND property`),
-    "quote it to use the character literally (e.g. `'|'`)"
-  );
+  return new FabrError(
+    `'${prop.name}' contains a pipeline operator ('|', '<', '>', '2>', '&>'), which is only valid in a COMMAND property`
+  ).withHelp("quote it to use the character literally (e.g. `'|'`)");
 }
 
 /** The rejection for a non-name value where a name/reference was required — a map
@@ -2329,7 +2329,7 @@ function mostSpecificRule(applicable: RuleDefinition[], ruleSet: string): RuleDe
      * registration-order accident, so reject it rather than silently pick one. */
     const show = (rule: RuleDefinition): string =>
       `{${[...guardOf(rule.properties), ...guardOf(rule.targetProperties)].map(([key, pattern]) => `${key}=${pattern.toString()}`).join(", ")}}`;
-    throw new Error(`Ambiguous ${ruleSet} rule selection: ${show(best)} and ${show(tiedAt)} are equally specific`);
+    throw new FabrError(`Ambiguous ${ruleSet} rule selection: ${show(best)} and ${show(tiedAt)} are equally specific`);
   }
   return best;
 }
@@ -2352,8 +2352,7 @@ function unmatchedIfAbsent(selected: IPropertyDecl | undefined, name: string, en
  * this configuration. */
 function unmatchedError(name: string, entry: IPropertyEntry): Error {
   const guards = [...entry.decls, ...entry.defaults].map(guardText);
-  return attachHelp(
-    new Error(`'${name}' is declared, but no declaration of it applies to this configuration`),
+  return new FabrError(`'${name}' is declared, but no declaration of it applies to this configuration`).withHelp(
     `it is declared under ${guards.join(", ")} — add an unguarded declaration, or a 'default ${name} = …;'`
   );
 }
@@ -2363,10 +2362,9 @@ function unmatchedError(name: string, entry: IPropertyEntry): Error {
  * targetdef's `default`), and neither is more wrong than the other. */
 function ambiguousDeclsError(chosen: IPropertyDecl[]): Error {
   const guards = chosen.map(guardText).join(" and ");
-  return attachHelp(
-    new Error(
-      `'${chosen[0].name.toBaseString()}' is declared for this configuration by ${chosen.length} declarations (${guards}), but takes a single value`
-    ),
+  return new FabrError(
+    `'${chosen[0].name.toBaseString()}' is declared for this configuration by ${chosen.length} declarations (${guards}), but takes a single value`
+  ).withHelp(
     "guards are never ranked against each other, so make them disjoint — a fallback belongs in a `default` (the targetdef's, or a `default` global)"
   );
 }
@@ -2605,12 +2603,12 @@ export abstract class TargetContext {
   public resolvePublishRef(name: Name): Computable<RepositoryPublishRef> {
     const match = this.context.getPrefixTargetIfExists(name, this.stack);
     if (!match) {
-      return Computable.reject(new Error(`'${name.toString()}' does not name a repository`));
+      return Computable.reject(new FabrError(`'${name.toString()}' does not name a repository`));
     }
     return match.target.then(sources => {
       const repository = sources.find((source): source is Repository => isRepository(source));
       if (!repository) {
-        throw new Error(`'${name.toString()}' does not name a repository`);
+        throw new FabrError(`'${name.toString()}' does not name a repository`);
       }
       return repository.getRepositoryPublishRef(match.rest).withRepositoryName(match.name);
     });
@@ -2619,7 +2617,7 @@ export abstract class TargetContext {
   public getRequiredProperty(name: string, overrides?: Constraints): Computable<Property> {
     return this.getProperty(name, overrides).then(prop => {
       if (!prop) {
-        throw new Error("Missing required property " + name);
+        throw new FabrError("Missing required property " + name);
       }
       return prop;
     });
@@ -2855,7 +2853,7 @@ export abstract class TargetContext {
       if (result.length === 1 && result[0] instanceof FileSet) {
         return result[0];
       }
-      throw new Error(`Anonymous target type '${type}' did not produce a single file content`);
+      throw new FabrError(`Anonymous target type '${type}' did not produce a single file content`);
     });
   }
 

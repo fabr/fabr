@@ -18,7 +18,7 @@
  */
 
 import { Computable } from "../core/Computable";
-import { attachHelp } from "../core/Errors";
+import { FabrError } from "../core/Errors";
 import { Name } from "../core/Name";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { FileSet } from "../core/FileSet";
@@ -198,17 +198,15 @@ export class RepositoryGroup<V, C>
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
     const member = this.memberFor(name.getLiteralPathPrefix());
     if (!member) {
-      throw attachHelp(
-        new Error(`${this.groupName} has no route serving publish coordinate '${name.toString()}'`),
+      throw new FabrError(`${this.groupName} has no route serving publish coordinate '${name.toString()}'`).withHelp(
         `its routes are: ${this.routes.map(route => routeKeyText(route.key)).join(", ")}`
       );
     }
     const destination = member as Partial<Repository>;
     if (typeof destination.getRepositoryPublishRef !== "function") {
-      throw attachHelp(
-        new Error(`publish coordinate '${name.toString()}' routes to a member of ${this.groupName} that is not a publish destination`),
-        "a content route serves declared files and cannot be published to — route the name to a registry to publish it"
-      );
+      throw new FabrError(
+        `publish coordinate '${name.toString()}' routes to a member of ${this.groupName} that is not a publish destination`
+      ).withHelp("a content route serves declared files and cannot be published to — route the name to a registry to publish it");
     }
     return destination.getRepositoryPublishRef(name);
   }
@@ -230,7 +228,7 @@ export class RepositoryGroup<V, C>
     if (member) {
       return member;
     }
-    return new Error(
+    return new FabrError(
       `${this.groupName} has no route serving '${pkg}' (its routes are: ${this.routes
         .map(route => routeKeyText(route.key))
         .join(", ")})`
@@ -357,8 +355,7 @@ function createRepositoryGroup(context: TargetContext): Computable<Repository> {
           const text = member.key.toGlobString();
           const key = parseRouteKey(text);
           if ("error" in key) {
-            throw attachHelp(
-              new Error(`route '${member.decl.name.toBaseString()}' in ${groupName}: ${key.error}`),
+            throw new FabrError(`route '${member.decl.name.toBaseString()}' in ${groupName}: ${key.error}`).withHelp(
               "a route key is a literal package name (`lodash`), a literal with a trailing '*' (`@fortawesome/*`, `acme-*`), " +
                 "or the catch-all `*`"
             );
@@ -366,8 +363,7 @@ function createRepositoryGroup(context: TargetContext): Computable<Repository> {
           return { name: member.decl.name.toBaseString(), key };
         });
         if (routes.length === 0) {
-          throw attachHelp(
-            new Error(`${groupName} declares no routes`),
+          throw new FabrError(`${groupName} declares no routes`).withHelp(
             "declare at least one route (`<name-prefix> = <repository>;`), e.g. `* = @npm;`"
           );
         }
@@ -379,8 +375,7 @@ function createRepositoryGroup(context: TargetContext): Computable<Repository> {
           const text = routeKeyText(route.key);
           const existing = canonical.get(text);
           if (existing !== undefined) {
-            throw attachHelp(
-              new Error(`routes '${existing}' and '${route.name}' in ${groupName} are the same key ('${text}')`),
+            throw new FabrError(`routes '${existing}' and '${route.name}' in ${groupName} are the same key ('${text}')`).withHelp(
               "':' and '/' are equivalent name-component separators in a route key — remove one of the two routes"
             );
           }
@@ -396,21 +391,17 @@ function createRepositoryGroup(context: TargetContext): Computable<Repository> {
          * group must have at least one registry route to define it. */
         const anchor = classified.findIndex(value => "registry" in value);
         if (anchor === -1) {
-          throw attachHelp(
-            new Error(`${groupName} has no registry route — content routes borrow their package ecosystem from one`),
+          throw new FabrError(`${groupName} has no registry route — content routes borrow their package ecosystem from one`).withHelp(
             "declare at least one route naming a registry (e.g. `* = @npm;`) alongside the content routes"
           );
         }
         const format = (classified[anchor] as RegistryRoute).registry.format;
         const foreign = classified.findIndex(value => "registry" in value && value.registry.format !== format);
         if (foreign > anchor) {
-          throw attachHelp(
-            new Error(
-              `route '${routes[foreign].name}' in ${groupName} names a repository speaking a different package format than ` +
-                `route '${routes[anchor].name}'`
-            ),
-            "one group resolves one ecosystem's names jointly — declare a separate group (or repository) per ecosystem"
-          );
+          throw new FabrError(
+            `route '${routes[foreign].name}' in ${groupName} names a repository speaking a different package format than ` +
+              `route '${routes[anchor].name}'`
+          ).withHelp("one group resolves one ecosystem's names jointly — declare a separate group (or repository) per ecosystem");
         }
         const table: Route<unknown, unknown>[] = routes.map((route, index) => {
           const value = classified[index];
@@ -420,8 +411,7 @@ function createRepositoryGroup(context: TargetContext): Computable<Repository> {
           /* A content route serves exactly ONE declared package — the name that
            * is its key — so a prefix cannot mean anything for it. */
           if (route.key.prefix) {
-            throw attachHelp(
-              new Error(`route '${route.name}' in ${groupName} maps a name prefix to package content`),
+            throw new FabrError(`route '${route.name}' in ${groupName} maps a name prefix to package content`).withHelp(
               "a content route serves exactly one package, so its key must be the package's literal name (`amperize = ./vendor/amperize;`)"
             );
           }
@@ -457,11 +447,10 @@ function routeValue(groupName: string, routeName: string, sources: readonly Sour
   const repositories = sources.filter(isRepository);
   if (repositories.length === 0) {
     if (sources.length !== 1) {
-      throw attachHelp(
-        new Error(
-          `route '${routeName}' in ${groupName} must name a registry or one package's content` +
-            (sources.length === 0 ? " (its value resolves to nothing)" : ` (its value resolves to ${sources.length} sources)`)
-        ),
+      throw new FabrError(
+        `route '${routeName}' in ${groupName} must name a registry or one package's content` +
+          (sources.length === 0 ? " (its value resolves to nothing)" : ` (its value resolves to ${sources.length} sources)`)
+      ).withHelp(
         "a route's value is a reference to a declared registry (`@fortawesome/* = @fa;`) or the content of the one package " +
           "the key names (`amperize = @dl:amperize.tgz:*:**;`)"
       );
@@ -469,21 +458,17 @@ function routeValue(groupName: string, routeName: string, sources: readonly Sour
     return { content: sources[0] };
   }
   if (repositories.length > 1 || sources.length !== 1) {
-    throw attachHelp(
-      new Error(
-        `route '${routeName}' in ${groupName} must name exactly one repository` +
-          (repositories.length > 1 ? ` (it names ${repositories.length})` : " (its value carries more than the repository)")
-      ),
-      "a route's value is a reference to a declared registry, e.g. `@fortawesome/* = @fa;`"
-    );
+    throw new FabrError(
+      `route '${routeName}' in ${groupName} must name exactly one repository` +
+        (repositories.length > 1 ? ` (it names ${repositories.length})` : " (its value carries more than the repository)")
+    ).withHelp("a route's value is a reference to a declared registry, e.g. `@fortawesome/* = @fa;`");
   }
   const member = repositories[0];
   if (!isRepositoryReader(member) || member instanceof RepositoryGroup) {
-    throw attachHelp(
-      new Error(
-        `route '${routeName}' in ${groupName} does not name a package registry` +
-          (member instanceof RepositoryGroup ? " (it names another repository group)" : "")
-      ),
+    throw new FabrError(
+      `route '${routeName}' in ${groupName} does not name a package registry` +
+        (member instanceof RepositoryGroup ? " (it names another repository group)" : "")
+    ).withHelp(
       member instanceof RepositoryGroup
         ? "routes name registries directly (an npm_repository), never another group — flatten the routes into one group"
         : "a route's value must be a registry declaration such as an npm_repository (a fetch or catalog repository does not resolve package names)"

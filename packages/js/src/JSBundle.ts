@@ -29,7 +29,7 @@
  * and must not depend on core at runtime).
  */
 
-import { FileSet, PackageFileSet, RewriteFn } from "@fabr-build/core";
+import { FabrError, FileSet, PackageFileSet, RewriteFn } from "@fabr-build/core";
 import { JSTarget, soleModuleFormat } from "./JSPackage";
 
 /** Where esbuild writes and the rule collects the bundle output from. */
@@ -179,7 +179,7 @@ export function computeBundleEntries(entries: IBundleEntrySource[], rewrite: Rew
     const compiled = compiledName(name);
     const output = rewrite(compiled) ?? compiled;
     if (!output.endsWith(".js")) {
-      throw new Error(
+      throw new FabrError(
         `js_bundle output '${output}' (from entry '${name}') must end in '.js' — rename it with an 'output' rewrite (output = <selector> -> <name>.js;)`
       );
     }

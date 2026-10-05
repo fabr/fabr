@@ -28,7 +28,7 @@ import { Repository, RepositoryRef,
 } from "../core/Repository";
 import { splitOverrideMarker } from "../resolver/Requirement";
 import { Requirement } from "../resolver/Types";
-import { ConflictError, RequirementResolutionError } from "../core/Errors";
+import { ConflictError, FabrError, RequirementResolutionError } from "../core/Errors";
 import { CircularDependencyError } from "../model/Errors";
 import { MemoryFile } from "../core/MemoryFS";
 import { BuildCache } from "../core/BuildCache";
@@ -402,7 +402,7 @@ describe("CatalogRepository (through the model)", () => {
       } catch (err) {
         for (let current: unknown = err; current instanceof Error; current = (current as { cause?: unknown }).cause) {
           message = current.message;
-          help = String((current as { help?: unknown }).help ?? help);
+          help = current instanceof FabrError && current.help.length > 0 ? current.help.join("\n") : help;
         }
       }
       return { message, help };
@@ -455,7 +455,7 @@ describe("CatalogRepository (through the model)", () => {
       } catch (err) {
         for (let current: unknown = err; current instanceof Error; current = (current as { cause?: unknown }).cause) {
           message = current.message;
-          help = String((current as { help?: unknown }).help ?? help);
+          help = current instanceof FabrError && current.help.length > 0 ? current.help.join("\n") : help;
         }
       }
       expect(message).to.contain("requires multiple versions of x (1.0.0, 2.0.0)");

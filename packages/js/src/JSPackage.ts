@@ -27,6 +27,7 @@ import { posix } from "path";
 import {
   BUILD_OVERRIDE,
   Constraints,
+  FabrError,
   SubTargetInputs,
   CANONICAL,
   Computable,
@@ -168,16 +169,16 @@ export function canonicalEsLevel(version: string): string {
 export function parseJSTarget(target: string): JSTarget {
   const [version, module = "commonjs", environment = "node", ...rest] = target.split("-");
   if (rest.length > 0) {
-    throw new Error(`Malformed JS target '${target}': expected '<esversion>[-commonjs|-esm|-dual][-node|-browser]'`);
+    throw new FabrError(`Malformed JS target '${target}': expected '<esversion>[-commonjs|-esm|-dual][-node|-browser]'`);
   }
   if (!ES_VERSION.test(version)) {
-    throw new Error(`Malformed JS target '${target}': '${version}' is not an ECMAScript version (es5, es2018, esnext)`);
+    throw new FabrError(`Malformed JS target '${target}': '${version}' is not an ECMAScript version (es5, es2018, esnext)`);
   }
   if (module !== "commonjs" && module !== "esm" && module !== "dual") {
-    throw new Error(`Malformed JS target '${target}': module must be 'commonjs', 'esm' or 'dual', not '${module}'`);
+    throw new FabrError(`Malformed JS target '${target}': module must be 'commonjs', 'esm' or 'dual', not '${module}'`);
   }
   if (environment !== "node" && environment !== "browser") {
-    throw new Error(`Malformed JS target '${target}': environment must be 'node' or 'browser', not '${environment}'`);
+    throw new FabrError(`Malformed JS target '${target}': environment must be 'node' or 'browser', not '${environment}'`);
   }
   return { version: canonicalEsLevel(version), module, environment };
 }
@@ -279,10 +280,10 @@ export function resolveJsxImportSource(directDeps: FileSet[]): Computable<string
     (...found) => {
       const providers = found.filter((name): name is string => name !== undefined);
       if (providers.length === 0) {
-        throw new Error("No JSX runtime specified in dependencies, and is needed to compile TSX files");
+        throw new FabrError("No JSX runtime specified in dependencies, and is needed to compile TSX files");
       }
       if (providers.length > 1) {
-        throw new Error(`Multiple JSX runtimes in dependencies (${providers.join(", ")}); a target may depend on at most one`);
+        throw new FabrError(`Multiple JSX runtimes in dependencies (${providers.join(", ")}); a target may depend on at most one`);
       }
       return providers[0];
     }
@@ -1042,7 +1043,7 @@ export function makeNpmRunnable(
      * FileSet, which a ref is deliberately not. */
     const selected = runnable.selectEntry(entry.projections);
     if (!selected) {
-      throw new Error(`entry projection matched no bin or file of ${pkg.packageId} — nothing to launch`);
+      throw new FabrError(`entry projection matched no bin or file of ${pkg.packageId} — nothing to launch`);
     }
     return Computable.resolve(selected);
   });
@@ -1070,14 +1071,14 @@ export function makeNpmRunnable(
 function binEntry(packageName: string, command: string, target: unknown): [string, string] {
   const cleanCommand = posix.basename(command);
   if (!isCanonicalFileName(cleanCommand)) {
-    throw new Error(`Package '${packageName}' declares an invalid bin name ${JSON.stringify(command)}`);
+    throw new FabrError(`Package '${packageName}' declares an invalid bin name ${JSON.stringify(command)}`);
   }
   /* The target is whatever JSON the package published: a non-string one is as
    * invalid as an out-of-package path and reports the same way, rather than as
    * a TypeError out of the path normalizer. */
   const cleanTarget = typeof target === "string" ? posix.normalize(target) : undefined;
   if (cleanTarget === undefined || !isCanonicalFileName(cleanTarget)) {
-    throw new Error(`Package '${packageName}' declares an invalid bin target ${JSON.stringify(target)} for '${cleanCommand}'`);
+    throw new FabrError(`Package '${packageName}' declares an invalid bin target ${JSON.stringify(target)} for '${cleanCommand}'`);
   }
   return [cleanCommand, cleanTarget];
 }

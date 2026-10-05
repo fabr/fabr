@@ -36,6 +36,7 @@ import {
   BUILD_OPERATION,
   Computable,
   Constraints,
+  FabrError,
   FileSet,
   FileSetRef,
   Flag,
@@ -138,7 +139,7 @@ function stageBundle(
 ): RuleResult {
   const { jsTarget, buildType, rewrite, defines, nodeGlobals, srcs, deps, bundler } = inputs;
   if (entrySources.length === 0) {
-    throw new Error("js_bundle 'entry' resolved to no files — name at least one source to bundle");
+    throw new FabrError("js_bundle 'entry' resolved to no files — name at least one source to bundle");
   }
   const entries = computeBundleEntries(entrySources, rewrite);
   const external = computeExternalNames(srcs, deps);
@@ -186,7 +187,7 @@ function stagedEntry(staged: FileSet, name: string): string {
   const stem = stemOf(name);
   const match = [...staged].find(([staged]) => stemOf(staged) === stem && /\.[cm]?js$/i.test(staged));
   if (match === undefined) {
-    throw new Error(`js_bundle entry '${name}' produced no JavaScript to bundle`);
+    throw new FabrError(`js_bundle entry '${name}' produced no JavaScript to bundle`);
   }
   return match[0];
 }

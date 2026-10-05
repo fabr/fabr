@@ -28,6 +28,7 @@
  */
 
 import {
+  FabrError,
   FileSet,
   isJsonObject,
   mapEntryError,
@@ -429,7 +430,7 @@ function exportsByConvention(
     } else if (names.has(delivered) && isOpaqueContent(delivered)) {
       entries.set(`./${delivered}`, `./${delivered}`);
     } else {
-      throw new Error(`'${source}' is named in exports, but produces nothing importable in the built package`);
+      throw new FabrError(`'${source}' is named in exports, but produces nothing importable in the built package`);
     }
   }
   return renderExports(entries);

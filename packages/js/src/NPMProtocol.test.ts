@@ -22,7 +22,7 @@ import * as crypto from "node:crypto";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
-import { Computable, FileSet, IntegrityError, MemoryFile, versionToString } from "@fabr-build/core";
+import { Computable, FabrError, FileSet, IntegrityError, MemoryFile, versionToString } from "@fabr-build/core";
 import {
   expectedTarballDigest,
   NPM_FORMAT,
@@ -208,7 +208,7 @@ describe("publishToRegistry access", () => {
       let thrown: unknown;
       await publishToRegistry(server.url, IDENTITY, TARBALL, {}, {}).catch(err => (thrown = err));
       expect((thrown as Error).message).to.match(/failed \(402\)/);
-      expect((thrown as { help?: string }).help).to.match(/access = public/);
+      expect((thrown as FabrError).help.join("\n")).to.match(/access = public/);
     } finally {
       server.close();
     }
@@ -381,7 +381,7 @@ describe("NPM_FORMAT.readContentPackage", () => {
     const files = new FileSet(new Map([["amperize-main/package.json", MemoryFile.from(JSON.stringify(MANIFEST))]]));
     const err = await failure(NPM_FORMAT.readContentPackage(files));
     expect(err.message).to.contain("no package.json at the content root");
-    expect((err as { help?: string }).help).to.contain(":*:**");
+    expect((err as FabrError).help.join("\n")).to.contain(":*:**");
   });
 
   it("rejects a manifest with no version", async () => {

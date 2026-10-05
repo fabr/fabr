@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { attachHelp, ConflictError } from "./Errors";
+import { ConflictError, FabrError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
 import { hashString } from "./FSWrapper";
 import { IProvenanceStep } from "./Provenance";
@@ -268,15 +268,23 @@ export function packageConflict(held: PackageFileSet, arrived: PackageFileSet): 
     detail,
   });
   if (held.toManifestHash() !== arrived.toManifestHash()) {
-    return attachHelp(
-      new ConflictError("packages", held.packageName, side(held, held.packageId), side(arrived, `${arrived.packageId}, different content`)),
+    return new ConflictError(
+      "packages",
+      held.packageName,
+      side(held, held.packageId),
+      side(arrived, `${arrived.packageId}, different content`)
+    ).withHelp(
       `two different packages both claim to be '${held.packageId}' — one installation holds one package per ` +
         "name and version; give them distinct versions, or align the two sources on one package"
     );
   }
   const differing = dependencyDifference(held, arrived);
-  return attachHelp(
-    new ConflictError("packages", held.packageName, side(held, dependencyText(held)), side(arrived, dependencyText(arrived))),
+  return new ConflictError(
+    "packages",
+    held.packageName,
+    side(held, dependencyText(held)),
+    side(arrived, dependencyText(arrived))
+  ).withHelp(
     `'${held.packageId}' is delivered twice with different dependencies (${differing}), and this installation ` +
       "holds one copy of it — align the dependency that differs"
   );
@@ -339,7 +347,7 @@ export class PackageGraphBuilder {
   /** Create a node with empty (unwired) dependency and provided lists. */
   public node(files: Iterable<[string, IFile]>, packageName: string, version?: string, origin?: IProvenanceStep): PackageFileSet {
     if (this.sealed) {
-      throw new Error("PackageGraphBuilder is sealed");
+      throw new FabrError("PackageGraphBuilder is sealed");
     }
     /* The constructor stores both arrays by reference, which is exactly what
      * lets the builder fill them in after construction. */
@@ -359,10 +367,10 @@ export class PackageGraphBuilder {
   ): void {
     const lists = this.pending.get(pkg);
     if (lists === undefined) {
-      throw new Error(this.sealed ? "PackageGraphBuilder is sealed" : "not an unwired node of this builder");
+      throw new FabrError(this.sealed ? "PackageGraphBuilder is sealed" : "not an unwired node of this builder");
     }
     if (this.wired.has(pkg)) {
-      throw new Error(`${pkg.packageId} is already wired`);
+      throw new FabrError(`${pkg.packageId} is already wired`);
     }
     this.wired.add(pkg);
     lists.dependencies.push(...dependencies);

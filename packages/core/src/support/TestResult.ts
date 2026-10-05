@@ -21,6 +21,7 @@ import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import type { SourceRef } from "../core/Repository";
 import { isJsonObject, readJsonFile } from "./Json";
+import { FabrError } from "../core/Errors";
 
 /**
  * The structured test report: the contract between a test rule and its
@@ -148,7 +149,7 @@ const SUMMARY_COUNTERS = ["tests", "passed", "failed", "pending", "skipped", "ot
  */
 export function mergeTestReports(reports: ITestReport[]): ITestReport {
   if (reports.length === 0) {
-    throw new Error("mergeTestReports: no reports to merge");
+    throw new FabrError("mergeTestReports: no reports to merge");
   }
   const parts = reports.map(report => report.results);
   const summaries = parts.map(part => part.summary);
@@ -181,7 +182,7 @@ export function mergeTestReports(reports: ITestReport[]): ITestReport {
  */
 export function toTestReport(json: unknown): ITestReport {
   if (!isCtrfReport(json)) {
-    throw new Error("not a recognizable CTRF report");
+    throw new FabrError("not a recognizable CTRF report");
   }
   return json;
 }

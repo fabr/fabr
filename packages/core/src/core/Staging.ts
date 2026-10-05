@@ -32,7 +32,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { Computable } from "./Computable";
 import { mapComputable } from "../support/Functional";
-import { ConflictError, ExecutionError } from "./Errors";
+import { ConflictError, ExecutionError, FabrError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
 import { FSFile } from "./FSFileSource";
 import { copyFile, deleteFile, hardlink, hashFile, mkdir, readOnlyPermissions, rename, symlink, walkTree, writeFile } from "./FSWrapper";
@@ -241,7 +241,7 @@ function contained(root: string, name: string, file: IFile): { name: string; fil
  * filesystem damage, so containment is asserted here regardless of producer. */
 function assertContained(root: string, targetName: string, name: string): void {
   if (targetName !== root && !targetName.startsWith(root + path.sep)) {
-    throw new Error(`Internal error: file name '${name}' resolves outside the staging directory '${root}'`);
+    throw new FabrError(`Internal error: file name '${name}' resolves outside the staging directory '${root}'`);
   }
 }
 

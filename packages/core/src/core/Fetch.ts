@@ -22,7 +22,7 @@ import { URL } from "url";
 import { Readable, Transform } from "stream";
 import { EnvHttpProxyAgent, interceptors, request as httpRequest } from "undici";
 import { Computable } from "./Computable";
-import { HttpStatusError } from "./Errors";
+import { FabrError, HttpStatusError } from "./Errors";
 
 /** Bounded redirect following npmjs serves tarballs directly, but GitHub
  * Packages, Artifactory, and most corporate mirrors 302 to blob storage. */
@@ -79,7 +79,7 @@ const dispatcher = new EnvHttpProxyAgent({
  * error; fabr only ever fetches over http/https. */
 function unsupportedProtocol(urlstring: string): Error | undefined {
   const protocol = new URL(urlstring).protocol;
-  return protocol === "https:" || protocol === "http:" ? undefined : new Error("Unsupported protocol: " + protocol);
+  return protocol === "https:" || protocol === "http:" ? undefined : new FabrError("Unsupported protocol: " + protocol);
 }
 
 export function fetchUrl(urlstring: string): Computable<Buffer> {
@@ -196,7 +196,7 @@ export function reportingProgress(stream: Readable, report: (bytes: number) => v
       done(null, chunk);
     },
   });
-  stream.on("error", err => counter.destroy(err instanceof Error ? err : new Error(String(err))));
+  stream.on("error", err => counter.destroy(err instanceof Error ? err : new FabrError(String(err))));
   return stream.pipe(counter);
 }
 
