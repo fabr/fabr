@@ -160,7 +160,7 @@ function linkEntry(from: string, to: string): [string, IFile] {
  *
  * An instance is a package wired one way ({@link nodeNaming}), so everything
  * requiring it loads the one directory, and a `<dep>` is the name its requirer
- * imports it by (an alias, for an aliased edge). Only the packages in `sets`
+ * imports it by (the rename, for a renamed edge). Only the packages in `sets`
  * are visible from the top; `.fabr/node_modules` is what a package finds when
  * it imports a name it never declared — one instance per name, the packages in
  * `sets` excluded, claimed nearest the top first and then by instance name.

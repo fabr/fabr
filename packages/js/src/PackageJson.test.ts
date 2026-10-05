@@ -135,9 +135,9 @@ describe("createPackageJson", () => {
 
   it("emits declared requirements as dependencies, keeping a name that shadows an Object member", async () => {
     const pkg = await generate(undefined, new Map(), [
-      { pkg: "lodash", constraint: "^4.0.0" },
+      { name: "lodash", versionConstraint: "^4.0.0" },
       undefined, // a dep with no external requirement (a built co-member)
-      { pkg: "__proto__", constraint: "^1.0.0" },
+      { name: "__proto__", versionConstraint: "^1.0.0" },
     ]);
     const dependencies = pkg.dependencies as Record<string, string>;
     expect(dependencies.lodash).to.equal("^4.0.0");
@@ -151,8 +151,8 @@ describe("createPackageJson", () => {
     /* Two versions of one package, told apart by a written rename: the manifest
      * has to state both, each keyed by the name our own code requires. */
     const pkg = await generate(undefined, new Map(), [
-      { pkg: "typescript", constraint: "5.4.5" },
-      { pkg: "typescript", constraint: "6.0.0-beta", alias: "typescript-6" },
+      { name: "typescript", versionConstraint: "5.4.5" },
+      { name: "typescript", versionConstraint: "6.0.0-beta", renameTo: "typescript-6" },
     ]);
     expect(pkg.dependencies).to.deep.equal({
       typescript: "5.4.5",
@@ -161,7 +161,7 @@ describe("createPackageJson", () => {
   });
 
   it("emits provided_deps requirements as peerDependencies, omitting the block when empty", async () => {
-    const provided: Requirement[] = [{ pkg: "@fabr-build/core", constraint: "^0.1.0" }];
+    const provided: Requirement[] = [{ name: "@fabr-build/core", versionConstraint: "^0.1.0" }];
     const file = createPackageJson({
       files: new FileSet(new Map()),
       name: "pkg",
@@ -427,57 +427,57 @@ describe("dependencyBlock", () => {
 
 describe("dependencyRequirement", () => {
   it("reads an ordinary entry as a requirement on the entry's own name", () => {
-    expect(dependencyRequirement("lodash", "^4.0.0")).to.deep.equal({ pkg: "lodash", constraint: "^4.0.0" });
+    expect(dependencyRequirement("lodash", "^4.0.0")).to.deep.equal({ name: "lodash", versionConstraint: "^4.0.0" });
   });
 
   it("reads an npm: alias as a requirement on the aliased package", () => {
     /* @isaacs/cliui's shape: the constraint applies to wrap-ansi, and the
      * entry name is what cliui's own code requires. */
     expect(dependencyRequirement("wrap-ansi-cjs", "npm:wrap-ansi@^7.0.0")).to.deep.equal({
-      pkg: "wrap-ansi",
-      constraint: "^7.0.0",
-      alias: "wrap-ansi-cjs",
+      name: "wrap-ansi",
+      versionConstraint: "^7.0.0",
+      renameTo: "wrap-ansi-cjs",
     });
   });
 
   it("reads an alias to a scoped package (the scope's @ is not the separator)", () => {
     expect(dependencyRequirement("types", "npm:@types/node@^20.1.0")).to.deep.equal({
-      pkg: "@types/node",
-      constraint: "^20.1.0",
-      alias: "types",
+      name: "@types/node",
+      versionConstraint: "^20.1.0",
+      renameTo: "types",
     });
     expect(dependencyRequirement("types", "npm:@types/node")).to.deep.equal({
-      pkg: "@types/node",
-      constraint: "*",
-      alias: "types",
+      name: "@types/node",
+      versionConstraint: "*",
+      renameTo: "types",
     });
   });
 
   it("reads a versionless alias as unconstrained", () => {
-    expect(dependencyRequirement("wa", "npm:wrap-ansi")).to.deep.equal({ pkg: "wrap-ansi", constraint: "*", alias: "wa" });
-    expect(dependencyRequirement("wa", "npm:wrap-ansi@")).to.deep.equal({ pkg: "wrap-ansi", constraint: "*", alias: "wa" });
+    expect(dependencyRequirement("wa", "npm:wrap-ansi")).to.deep.equal({ name: "wrap-ansi", versionConstraint: "*", renameTo: "wa" });
+    expect(dependencyRequirement("wa", "npm:wrap-ansi@")).to.deep.equal({ name: "wrap-ansi", versionConstraint: "*", renameTo: "wa" });
   });
 
   it("carries no alias when it renames nothing", () => {
-    expect(dependencyRequirement("wrap-ansi", "npm:wrap-ansi@^7.0.0")).to.deep.equal({ pkg: "wrap-ansi", constraint: "^7.0.0" });
+    expect(dependencyRequirement("wrap-ansi", "npm:wrap-ansi@^7.0.0")).to.deep.equal({ name: "wrap-ansi", versionConstraint: "^7.0.0" });
   });
 
   it("leaves a spec form it doesn't understand alone", () => {
     /* Rejected downstream as the unparseable constraint it is, rather than
      * mistaken for something fabr can resolve. */
-    expect(dependencyRequirement("local", "file:../local")).to.deep.equal({ pkg: "local", constraint: "file:../local" });
+    expect(dependencyRequirement("local", "file:../local")).to.deep.equal({ name: "local", versionConstraint: "file:../local" });
   });
 });
 
 describe("requirementSpec", () => {
   it("states an ordinary requirement under the package's own name", () => {
-    expect(requirementSpec({ pkg: "lodash", constraint: "^4.0.0" })).to.deep.equal({ name: "lodash", spec: "^4.0.0" });
+    expect(requirementSpec({ name: "lodash", versionConstraint: "^4.0.0" })).to.deep.equal({ name: "lodash", spec: "^4.0.0" });
   });
 
   it("states an aliased requirement in npm's alias form, keyed by the local name", () => {
     /* The entry name is what the shipped code imports — recording `typescript`
      * would install the package where nothing looks for it. */
-    expect(requirementSpec({ pkg: "typescript", constraint: "6.0.0-beta", alias: "typescript-6" })).to.deep.equal({
+    expect(requirementSpec({ name: "typescript", versionConstraint: "6.0.0-beta", renameTo: "typescript-6" })).to.deep.equal({
       name: "typescript-6",
       spec: "npm:typescript@6.0.0-beta",
     });
@@ -494,7 +494,7 @@ describe("requirementSpec", () => {
   });
 
   it("states an alias to the package's own name plainly (it renames nothing)", () => {
-    expect(requirementSpec({ pkg: "wrap-ansi", constraint: "^7.0.0", alias: "wrap-ansi" })).to.deep.equal({
+    expect(requirementSpec({ name: "wrap-ansi", versionConstraint: "^7.0.0", renameTo: "wrap-ansi" })).to.deep.equal({
       name: "wrap-ansi",
       spec: "^7.0.0",
     });
@@ -516,7 +516,7 @@ describe("optionalPeers", () => {
 describe("declaredDependencies", () => {
   it("reads an optional peer named only in peerDependenciesMeta as an unbound optional peer", () => {
     const { required } = declaredDependencies({ peerDependenciesMeta: { pg: { optional: true }, mysql2: {} } });
-    expect(required.map(req => [req.pkg, req.constraint, req.provided])).to.deep.equal([["pg", "*", "optional"]]);
+    expect(required.map(req => [req.name, req.versionConstraint, req.provided])).to.deep.equal([["pg", "*", "optional"]]);
   });
 
   it("keeps a declared range, and a dependency, over a peerDependenciesMeta entry of the same name", () => {
@@ -525,7 +525,7 @@ describe("declaredDependencies", () => {
       peerDependencies: { pg: ">=8.0" },
       peerDependenciesMeta: { pg: { optional: true }, debug: { optional: true } },
     });
-    expect(required.map(req => [req.pkg, req.constraint, req.provided])).to.deep.equal([
+    expect(required.map(req => [req.name, req.versionConstraint, req.provided])).to.deep.equal([
       ["debug", "^4.0.0", undefined],
       ["pg", ">=8.0", "optional"],
     ]);

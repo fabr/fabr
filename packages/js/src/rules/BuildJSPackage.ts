@@ -31,6 +31,7 @@ import {
   FileSetRef,
   FileSource,
   PackageFileSet,
+  ProvidedDependency,
   readJsonFile,
   RepositoryRef,
   RuleDefinition,
@@ -181,15 +182,19 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
           /* The package's DIRECT deps as written (built packages as packages,
            * external requirements as inert references, resolved fresh at each
            * consuming collection point) — carried on the delivered package.
-           * `provided_deps` are carried too: a carried dep is a reference the
-           * consumer re-resolves and flat-mounts (never bundled into this package),
-           * and flatten + per-name uniqueness already collapses it to the single
-           * shared instance the peer contract wants. Provided differs from a plain
-           * dep only in the manifest (peerDependencies, below) and in strict-
-           * singleton resolution enforcement (deferred). */
-          const carried = [...depSources, ...providedSources].filter(
+           * `provided_deps` are carried apart, as its provided requirements:
+           * the consumer's collection point binds each to what the consumer
+           * uses under that name. */
+          const carried = depSources.filter(
             (source): source is PackageFileSet | RepositoryRef =>
               source instanceof PackageFileSet || source instanceof RepositoryRef
+          );
+          /* A built package already in hand is also wired as an edge; an
+           * external one is answered by whatever its reference resolves to at
+           * the consumer's collection point. */
+          const offered = providedSources.filter((source): source is PackageFileSet => source instanceof PackageFileSet);
+          const providedCarried = providedSources.flatMap((source): Array<ProvidedDependency> =>
+            source instanceof PackageFileSet || source instanceof RepositoryRef ? [{ provided: "expected", target: source }] : []
           );
 
           /* Delivery shape: add the generated package.json (in memory — its
@@ -230,7 +235,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
                 rewrites,
               });
               const assembled = FileSet.unionAll(shebanged, new FileSet(new Map([["package.json", packageJson]])));
-              return new PackageFileSet(assembled, context.name, version?.toString(), carried);
+              return new PackageFileSet(assembled, context.name, version?.toString(), [...carried, ...offered], undefined, providedCarried);
             });
           };
 

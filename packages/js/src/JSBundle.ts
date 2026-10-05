@@ -29,7 +29,7 @@
  * and must not depend on core at runtime).
  */
 
-import { FileSet, PackageFileSet, RepositoryRef, RewriteFn } from "@fabr-build/core";
+import { FileSet, PackageFileSet, RewriteFn } from "@fabr-build/core";
 import { JSTarget, soleModuleFormat } from "./JSPackage";
 
 /** Where esbuild writes and the rule collects the bundle output from. */
@@ -102,7 +102,7 @@ export function collectClosureNames(roots: FileSet[]): Set<string> {
       if (dep instanceof PackageFileSet) {
         visit(dep);
       } else {
-        names.add(refPackageName(dep));
+        names.add(dep.name);
       }
     }
   };
@@ -161,14 +161,6 @@ function srcLevel(name: string, direct: Set<string>, all: Set<string>): number {
     return 2;
   }
   return all.has(name) ? 1 : 0;
-}
-
-/** The package name of an inert external requirement — its reference with the
- * trailing `:version` constraint stripped (`@types/node:20.12.7` → `@types/node`). */
-function refPackageName(ref: RepositoryRef): string {
-  const requirement = ref.name.toString();
-  const idx = requirement.lastIndexOf(":");
-  return idx > 0 ? requirement.substring(0, idx) : requirement;
 }
 
 /**

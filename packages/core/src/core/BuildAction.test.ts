@@ -222,10 +222,10 @@ describe("the config digest", () => {
 
 describe("the key fold over package inputs", () => {
   /** a → b, as a delivery would carry it. */
-  function graph(bTag: string, nested = false): { a: PackageFileSet; b: PackageFileSet } {
+  function graph(bTag: string): { a: PackageFileSet; b: PackageFileSet } {
     const builder = new PackageGraphBuilder();
     const a = builder.node(new Map([["index.js", MemoryFile.from("// a")]]), "a", "1.0.0");
-    const b = builder.node(new Map([["index.js", MemoryFile.from(`// ${bTag}`)]]), "b", "1.0.0", undefined, nested);
+    const b = builder.node(new Map([["index.js", MemoryFile.from(`// ${bTag}`)]]), "b", "1.0.0");
     builder.wire(a, [b]);
     builder.wire(b, []);
     builder.seal();
@@ -246,10 +246,9 @@ describe("the key fold over package inputs", () => {
     expect(keyOf([graph("b").a])).to.not.equal(keyOf([graph("b changed").a]));
   });
 
-  it("turns over when an edge is rebound or a delivery nests, contents unchanged", () => {
+  it("turns over when an edge is rebound, contents unchanged", () => {
     const unbound = new PackageFileSet(new Map([["index.js", MemoryFile.from("// a")]]), "a", "1.0.0");
     expect(keyOf([unbound]), "a dropped edge is a different graph").to.not.equal(keyOf([graph("b").a]));
-    expect(keyOf([graph("b").a]), "a nested-override delivery too").to.not.equal(keyOf([graph("b", true).a]));
   });
 
   it("DOES distinguish direct from transitive — what a package is reached by is what a mount sees", () => {

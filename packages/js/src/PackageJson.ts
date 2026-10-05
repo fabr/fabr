@@ -130,7 +130,7 @@ export function dependencyBlock(block: unknown): Map<string, string> {
  */
 export function dependencyRequirement(name: string, spec: string): Requirement {
   if (!spec.startsWith(ALIAS_PREFIX)) {
-    return { pkg: name, constraint: spec };
+    return { name: name, versionConstraint: spec };
   }
   const target = spec.substring(ALIAS_PREFIX.length);
   /* Scoped names start with their own `@`, so the version separator is the
@@ -139,10 +139,10 @@ export function dependencyRequirement(name: string, spec: string): Requirement {
   const pkg = separator > 0 ? target.substring(0, separator) : target;
   const constraint = separator > 0 ? target.substring(separator + 1) : "";
   return {
-    pkg,
-    constraint: constraint === "" ? "*" : constraint,
+    name: pkg,
+    versionConstraint: constraint === "" ? "*" : constraint,
     /* An alias to the package's own name renames nothing */
-    ...(pkg === name ? {} : { alias: name }),
+    ...(pkg === name ? {} : { renameTo: name }),
   };
 }
 
@@ -155,7 +155,8 @@ export function dependencyRequirement(name: string, spec: string): Requirement {
  * install it where nothing looks for it.
  */
 export function requirementSpec(requirement: Requirement): { name: string; spec: string } {
-  const { pkg, constraint, alias } = requirement;
+  /* npm's spelling of a requirement that states no version. */
+  const { name: pkg, versionConstraint: constraint = "*", renameTo: alias } = requirement;
   return alias === undefined || alias === pkg
     ? { name: pkg, spec: constraint }
     : { name: alias, spec: `${ALIAS_PREFIX}${pkg}@${constraint}` };

@@ -227,7 +227,7 @@ class TestRepo implements Repository, RepositoryLookup {
 
   /* No sub-package grammar: the whole name is the requirement, nothing projects. */
   public getRepositoryRef(name: Name): RepositoryRef {
-    return new RepositoryRef(this, name);
+    return RepositoryRef.written(this, name);
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
@@ -270,7 +270,7 @@ class TestNamespaceRepo implements Repository, RepositoryLookup {
   constructor(private readonly namespace: string) {}
 
   public getRepositoryRef(name: Name): RepositoryRef {
-    return new RepositoryRef(this, name);
+    return RepositoryRef.written(this, name);
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
@@ -278,7 +278,7 @@ class TestNamespaceRepo implements Repository, RepositoryLookup {
   }
 
   public deliver(reference: RepositoryRef): Computable<FileSet> {
-    const name = `${this.namespace}/${reference.name.getLiteralPrefix()}`;
+    const name = `${this.namespace}/${reference.name}`;
     return Computable.resolve(new PackageFileSet(new Map([["from-fallback", MemoryFile.from("")]]), name, "1.0.0"));
   }
 }
@@ -298,7 +298,9 @@ const packagedMembers: string[] = [];
  * exercising the sync rules. */
 class TestPubRepo extends TestRepo implements RepositoryWriter {
   public override getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    return new RepositoryPublishRef(this, name);
+    const written = name.toBaseString();
+    const colon = written.lastIndexOf(":");
+    return new RepositoryPublishRef(this, { name: written.substring(0, colon), version: written.substring(colon + 1) });
   }
 
   public package(members: PublishMember[]): Computable<PublishableFileSet[]> {

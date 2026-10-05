@@ -133,11 +133,10 @@ describe("packageNodeSignature", () => {
     expect(line, "the line covers this node only, not the edge target's content").to.not.contain(b.toManifestHash());
   });
 
-  it("distinguishes an edge rebinding and a nested-override delivery, contents unchanged", () => {
-    const leaf = (nested: boolean): PackageFileSet => new PackageFileSet(files("p"), "p", "1.0.0", [], undefined, nested);
+  it("distinguishes an edge rebinding, contents unchanged", () => {
+    const leaf = new PackageFileSet(files("p"), "p", "1.0.0");
     const bound = new PackageFileSet(files("p"), "p", "1.0.0", [new PackageFileSet(files("d"), "d", "1.0.0")]);
-    expect(packageNodeSignature(leaf(false)), "an edge is part of the node").to.not.equal(packageNodeSignature(bound));
-    expect(packageNodeSignature(leaf(false)), "so is the placement flag").to.not.equal(packageNodeSignature(leaf(true)));
+    expect(packageNodeSignature(leaf), "an edge is part of the node").to.not.equal(packageNodeSignature(bound));
   });
 });
 
@@ -189,11 +188,5 @@ describe("assertSamePackageNode", () => {
     const a = new PackageFileSet(files("p"), "p", "1.0.0", [new PackageFileSet(files("q"), "q", "1.0.0")]);
     const b = new PackageFileSet(files("p"), "p", "1.0.0");
     expect(helpOf(() => assertSamePackageNode(a, b))).to.contain("(q@1.0.0 on one side only)");
-  });
-
-  it("rejects a nested-override instance against a plain one", () => {
-    const a = new PackageFileSet(files("p"), "p", "1.0.0");
-    const b = new PackageFileSet(files("p"), "p", "1.0.0", [], undefined, true);
-    expect(() => assertSamePackageNode(a, b)).to.throw(ConflictError);
   });
 });

@@ -231,10 +231,10 @@ function describeSide(source: IConflictSource): IConflictSide {
  */
 export class MetadataFetchError extends Error {
   constructor(
-    public readonly pkg: string,
+    public readonly packageName: string,
     public readonly version: string,
     public readonly requirerPath: ReadonlyArray<string>,
-    public readonly rootPkg: string,
+    public readonly rootName: string,
     public readonly cause: Error
   ) {
     super(requirerPath.length > 0 ? `${cause.message} (required by ${requirerPath.join(" < ")})` : cause.message);
@@ -246,11 +246,18 @@ export class MetadataFetchError extends Error {
  * registry metadata, an unconstrained-only requirement), each attributed to
  * the root package whose subtree contains it — carried structured so the
  * repository can map every failure back to the written reference(s) requiring
- * that root (the walk-errors analogue of MetadataFetchError's rootPkg).
+ * that root (the walk-errors analogue of MetadataFetchError's rootName).
  */
 export class ResolutionWalkError extends Error {
   constructor(
-    public readonly failures: ReadonlyArray<{ message: string; rootPkg: string; pkg?: string; requiredBy?: string; help?: string[] }>
+    public readonly failures: ReadonlyArray<{
+      message: string;
+      rootName: string;
+      name?: string;
+      publishedName?: string;
+      requiredBy?: string;
+      help?: string[];
+    }>
   ) {
     super(failures.map(failure => failure.message).join("\n"));
   }
@@ -264,7 +271,7 @@ export class ResolutionWalkError extends Error {
  */
 export class VersionNotFoundError extends Error {
   constructor(
-    public readonly pkg: string,
+    public readonly packageName: string,
     public readonly version: string,
     message: string
   ) {

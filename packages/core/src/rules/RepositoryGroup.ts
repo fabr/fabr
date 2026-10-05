@@ -257,12 +257,12 @@ export class RepositoryGroup<V, C>
    * shape is not uniform across members, since a content route's package is its
    * own (see contentPackageMember), not this group's format's. */
   public deliver(reference: RepositoryRef, options?: MaterializeOptions, closure?: ClosureThunk): Computable<FileSet> {
-    const member = this.routed(this.format.parseRequirement(reference.name).pkg);
+    const member = this.routed(reference.name);
     return member instanceof Error ? Computable.reject(member) : member.deliver(reference, options, closure);
   }
 
   public deliverFiles(reference: RepositoryRef): Computable<FileSet> {
-    const member = this.routed(this.format.parseRequirement(reference.name).pkg);
+    const member = this.routed(reference.name);
     return member instanceof Error ? Computable.reject(member) : member.deliverFiles(reference);
   }
 
@@ -280,7 +280,7 @@ export class RepositoryGroup<V, C>
   public validateSelections(selections: Selected<V>[]): Computable<void> {
     const slices = new Map<RepositoryReader<V, C>, Selected<V>[]>();
     for (const sel of selections) {
-      const member = this.routed(sel.pkg);
+      const member = this.routed(sel.publishedName ?? sel.name);
       if (member instanceof Error) {
         /* Can't happen normally: every selection was reached through routed
          * metadata. Guards a route table edited between memo misses. */

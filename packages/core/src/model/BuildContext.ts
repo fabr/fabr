@@ -43,7 +43,7 @@ import { FileSetRef, FileSourceRef } from "../core/FileSetRef";
 import { RunnableFileSet, toRunnable } from "../core/RunnableFileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { Requirement } from "../resolver/Types";
-import { declaredRequirementFrom } from "../resolver/PackageResolver";
+import { declaredRequirement } from "../resolver/PackageResolver";
 import { Flag } from "../core/Flag";
 import {
   IProvenanceStep,
@@ -1506,7 +1506,7 @@ export class BuildContext {
              * reference delivers: the package rename, the same rule a delivered
              * external one goes through — applied now rather than at a
              * collection point, a built package being in hand already. */
-            const renameTo = substName.getRenameTo();
+            const renameTo = substName.getRenameTo()?.toString();
             return target.then(sources => ({
               sources: renameTo
                 ? sources.map(source => renamedDelivery(source, renameTo, substName.toString()))
@@ -2371,19 +2371,6 @@ function ambiguousDeclsError(chosen: IPropertyDecl[]): Error {
   );
 }
 
-/** The requirement one dep source declares (see {@link TargetContext.collectDeclaredRequirements}). */
-function declaredRequirementOf(source: SourceRef): Computable<Requirement | undefined> {
-  if (source instanceof RepositoryRef) {
-    return declaredRequirementFrom(source.source, source);
-  }
-  if (source instanceof PackageFileSet) {
-    /* A built-package dep is versionless until publish, contributing `*` (rewritten at sync). */
-    return Computable.resolve({ pkg: source.packageName, constraint: source.version ?? "*" });
-  }
-  /* A plain source dep (a compile input, not a package) carries no identity. */
-  return Computable.resolve(undefined);
-}
-
 export abstract class TargetContext {
   public readonly context: BuildContext;
   public readonly stack?: IDependencyStack;
@@ -2844,7 +2831,7 @@ export abstract class TargetContext {
    * parallel to `sources`, undefined where a source declares nothing to record.
    */
   public collectDeclaredRequirements(sources: SourceRef[]): Computable<(Requirement | undefined)[]> {
-    return Computable.forAll(sources.map(declaredRequirementOf), (...requirements) => requirements);
+    return Computable.forAll(sources.map(declaredRequirement), (...requirements) => requirements);
   }
 
   /**

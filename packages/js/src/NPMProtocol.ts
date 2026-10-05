@@ -35,6 +35,7 @@ import {
   IProjection,
   isCanonicalFileName,
   isJsonObject,
+  markerOf,
   Name,
   IContentPackage,
   NpmPlatform,
@@ -202,11 +203,8 @@ export function unsupportedPlatformReason(meta: PlatformGates, target: NpmPlatfo
 }
 
 /**
- * A parsed npm publish address: the package name + exact version an
- * `name:version` coordinate assigns. Purely local currency — a coordinate
- * travels as its written {@link Name} (core's RepositoryRef/RepositoryPublishRef) and each
- * consumer re-parses it here (see {@link splitNameVersion}), the same way the
- * read side re-parses reference names per phase.
+ * An npm publish address: the package name + exact version a `name:version`
+ * coordinate assigns.
  */
 export interface NpmPublishIdentity {
   readonly name: string;
@@ -467,24 +465,18 @@ export function isSemverConstraint(text: string): boolean {
 }
 
 /**
- * Split an npm `name:version` identity on its **last** colon into the package
+ * Split a written npm `name:version` on its **last** colon into the package
  * name and the version tail (a constraint on a read, an exact version on a
  * publish — the caller validates which). Returns undefined when there is no
  * version (no colon, or a leading one), so the caller reports that in its own
- * terms. Operates on the literal path prefix, so a trailing glob/projection is
- * ignored. Shared by requirement parsing (read) and coordinate parsing (publish).
+ * terms. Shared by reference identities (read) and publish coordinates.
  */
-export function splitNameVersion(name: Name): { identifier: string; version: string } | undefined {
-  /* A sole trailing glob is folded back into the written text: past the last
-   * ':' of a requirement a pattern has no meaning, so the lexer's glob reading
-   * of `pkg:1.4.2?` (the override marker) or `pkg:1.14.*` (an x-range) is
-   * reversed here — the one place that knows the tail is a version. */
-  const prefix = name.getLiteralWithGlobTail() ?? name.getLiteralPathPrefix();
-  const idx = prefix.lastIndexOf(":");
+function splitWrittenNameVersion(written: string): { identifier: string; version: string } | undefined {
+  const idx = written.lastIndexOf(":");
   if (idx <= 0) {
     return undefined;
   }
-  return { identifier: prefix.substring(0, idx), version: prefix.substring(idx + 1) };
+  return { identifier: written.substring(0, idx), version: written.substring(idx + 1) };
 }
 
 /**
@@ -495,45 +487,54 @@ export function splitNameVersion(name: Name): { identifier: string; version: str
  * projection, named per the written-name rule (`:` strips, `/` retains). A pure
  * parse — no resolution (the split behind NPMRepository.getRepositoryRef).
  */
-export function splitNpmReference(name: Name): { requirement: Name; projection?: IProjection } {
-  const lit = name.getLiteralPrefix();
-  const firstColon = lit.indexOf(":");
-  if (firstColon === -1) {
-    return { requirement: name }; // no version — parseRequirement reports it
-  }
-  const nextColon = lit.indexOf(":", firstColon + 1);
-  const nextSlash = lit.indexOf("/", firstColon + 1);
+export function splitNpmReference(name: Name): Requirement & { projection?: IProjection } {
+  /* Read over the whole written text rather than its literal prefix: a version
+   * slot has no pattern meaning, so what the lexer read there as a glob
+   * (`pkg:1.4.2?`, `pkg:1.14.*`) is version text, whatever follows it. */
+  const written = name.toBaseString();
+  const firstColon = written.indexOf(":");
+  const nextColon = firstColon === -1 ? -1 : written.indexOf(":", firstColon + 1);
+  const nextSlash = firstColon === -1 ? -1 : written.indexOf("/", firstColon + 1);
   const boundary = nextColon === -1 ? nextSlash : nextSlash === -1 ? nextColon : Math.min(nextColon, nextSlash);
   if (boundary === -1) {
-    return { requirement: name }; // identity runs to the end; no projection
+    /* The identity runs to the end: no projection (and no version is
+     * validateRequirement's to report). */
+    return npmIdentity(written);
   }
-  const prefix = lit[boundary] === "/" ? lit.substring(0, boundary) + "/" : "";
-  return { requirement: Name.fromLiteral(lit.substring(0, boundary)), projection: { pattern: name.substring(boundary + 1), prefix } };
+  const prefix = written[boundary] === "/" ? written.substring(0, boundary) + "/" : "";
+  return { ...npmIdentity(written.substring(0, boundary)), projection: { pattern: name.substring(boundary + 1), prefix } };
+}
+
+/** An identity's written `name:version` as its parts: the package, the version
+ * or range after the last colon, and the override marker written on that. */
+function npmIdentity(written: string): Requirement {
+  const split = splitWrittenNameVersion(written);
+  if (!split) {
+    return { name: written, versionConstraint: undefined };
+  }
+  const { text: version, override } = splitOverrideMarker(split.version);
+  return { name: split.identifier, versionConstraint: version, ...(override === undefined ? {} : { override }) };
 }
 
 /**
- * The requirement an npm reference identity declares, read off its own
- * `name:version` — the version slot may carry an override marker (a trailing
- * `?` permits a nested alternate, `!` forces the version), exact versions only
- * (a ranged override would reintroduce registry-time nondeterminism).
+ * Check an npm reference identity: it must state a version, and a valid one.
+ * An override marker (`?` permits a nested alternate, `!` forces the version)
+ * needs an exact version: a ranged override would reintroduce registry-time
+ * nondeterminism.
  */
-export function parseNpmRequirement(name: Name): Requirement {
-  const split = splitNameVersion(name);
-  if (!split) {
-    throw new Error(
-      `Missing version in package reference '${name.getLiteralPathPrefix()}' (expected '<name>:<version-or-range>')`
-    );
+export function validateNpmRequirement({ name: pkg, versionConstraint: constraint, override }: Requirement): void {
+  if (constraint === undefined) {
+    throw new Error(`Missing version in package reference '${pkg}' (expected '<name>:<version-or-range>')`);
   }
-  const { identifier: pkg, version: written } = split;
-  const { text: constraint, override } = splitOverrideMarker(written);
   if (override !== undefined) {
     if (SEMVER.exactVersion?.(constraint) === undefined) {
+      const marker = markerOf(override);
       throw attachHelp(
-        new Error(`'${written}' is not a valid override for '${pkg}': the '${written.at(-1)}' marker needs an exact version`),
+        new Error(`'${constraint}${marker}' is not a valid override for '${pkg}': the '${marker}' marker needs an exact version`),
         "markers sanction one concrete version: '@npm:pkg:1.4.2?' permits a nested alternate, '@npm:pkg:2.0.0!' forces the version"
       );
     }
-    return { pkg, constraint, override };
+    return;
   }
   if (!isSemverConstraint(constraint)) {
     throw attachHelp(
@@ -541,7 +542,6 @@ export function parseNpmRequirement(name: Name): Requirement {
       "dist-tags such as 'latest' are not supported: pin a version or range instead"
     );
   }
-  return { pkg, constraint };
 }
 
 const PACKAGE_JSON = "package.json";
@@ -588,13 +588,11 @@ function readNpmContentPackage(files: FileSet): Computable<IContentPackage<Semve
 }
 
 /**
- * The name + exact version an npm publish coordinate assigns, re-parsed from
- * the written name (an address is carried as its Name; each consumer parses
- * afresh, as the read side does with reference names). A coordinate pins an
- * exact version, unlike a read requirement's range.
+ * The name + exact version a written npm publish coordinate assigns. A
+ * coordinate pins an exact version, unlike a read requirement's range.
  */
 export function parseNpmPublishCoordinate(ref: Name): NpmPublishIdentity {
-  const split = splitNameVersion(ref);
+  const split = splitWrittenNameVersion(ref.toBaseString());
   if (!split) {
     const literal = ref.toString();
     throw new Error(`publish coordinate '${literal}' must name a version (e.g. ${literal}:1.0.0)`);
@@ -620,9 +618,9 @@ export function parseNpmPublishCoordinate(ref: Name): NpmPublishIdentity {
 export const NPM_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   ...SEMVER,
   providedMismatch: "tolerate",
-  resolutionTag: "npm:resolve:24",
+  resolutionTag: "npm:resolve:30",
   splitReference: splitNpmReference,
-  parseRequirement: parseNpmRequirement,
+  validateRequirement: validateNpmRequirement,
   parsePublishCoordinate: parseNpmPublishCoordinate,
   readContentPackage: readNpmContentPackage,
   makeRunnable: makeNpmRunnable,

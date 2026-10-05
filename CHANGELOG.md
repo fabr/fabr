@@ -23,6 +23,7 @@ version number.
 needs the reader) hanging the build instead of being reported.
 - "required by" chains now name the target whose rule read a global (a tool setting), in start
 lines and in error notes; they used to stop at the global.
+- Fix local packages added to a catalog.
 
 @fabr-build/cli:
 - Live progress display on terminal with progress bars and test status (suppressed with -q)

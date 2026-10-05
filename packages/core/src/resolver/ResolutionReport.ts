@@ -31,12 +31,36 @@
 import { Computable } from "../core/Computable";
 import { attachHelp, ResolutionWalkError } from "../core/Errors";
 import { nodeId, ResolutionExplainer, ResolutionGraph } from "./ResolutionGraph";
-import { canonicalRequirements } from "./Overrides";
-import { IResolutionError, MVSResolution, Requirement, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
+import { canonicalRequirements, requiredAs, versionConstraintText } from "./Requirement";
+import {
+  IRequirementEdge,
+  IResolutionError,
+  MVSResolution,
+  PackageIdentity,
+  ROOT_REQUIRER,
+  Requirement,
+  Selected,
+  VersionDomain,
+  Violation,
+} from "./Types";
 
-/** Render a reference as the repository's users write it — `@npm:pkg:1.4.2?`
- * — so a suggestion pastes verbatim into a deps list. */
-export type RefRenderer = (pkg: string, versionText: string, marker?: "?" | "!") => string;
+/** Render a reference to a package as the repository's users write it —
+ * `@npm:pkg:1.4.2?`, `@npm:pkg:1.4.2 -> name` — so a suggestion pastes
+ * verbatim into a deps list. */
+export type RefRenderer = (pkg: PackageIdentity, versionText: string, marker?: "?" | "!") => string;
+
+/** A requirement on `pkg` at exactly `version`. */
+function requirementAt(pkg: PackageIdentity, version: string): Requirement {
+  return pkg.publishedName === undefined
+    ? { name: pkg.name, versionConstraint: version }
+    : { name: pkg.publishedName, versionConstraint: version, renameTo: pkg.name };
+}
+
+/** The selected package named `name` among `selections`, by name alone where
+ * none is selected. */
+function identityOf<V>(selections: readonly Selected<V>[], name: string): PackageIdentity {
+  return selections.find(sel => sel.name === name) ?? { name };
+}
 
 /** The subset of a resolution the reporting and suggestion machinery reads —
  * satisfied by {@link MVSResolution} and by a repository's deserialized doc. */
@@ -51,7 +75,7 @@ export type ResolvedTree<V> = Pick<MVSResolution<V>, "selections" | "violations"
 export interface SuggestSources<V, C> {
   domain: VersionDomain<V, C>;
   refText: RefRenderer;
-  availableVersions(pkg: string): Computable<V[] | undefined>;
+  availableVersions(pkg: PackageIdentity): Computable<V[] | undefined>;
   resolve(roots: Requirement[]): Computable<ResolvedTree<V>>;
 }
 
@@ -70,7 +94,7 @@ export function groupViolations<V>(
 ): Array<{ first: Violation<V>; others: string[] }> {
   const groups = new Map<string, { first: Violation<V>; others: string[] }>();
   for (const violation of violations) {
-    const key = `${violation.pkg}\n${violation.constraint}\n${versionToString(violation.selected)}`;
+    const key = `${violation.name}\n${violation.versionConstraint}\n${versionToString(violation.selected)}`;
     const group = groups.get(key);
     if (group) {
       group.others.push(violation.requiredBy);
@@ -106,14 +130,14 @@ function explainViolation<V>(
   versionToString: (version: V) => string
 ): string[] {
   const { find, pathTo } = explainer;
-  const selection = find(`${violation.pkg}@${versionToString(violation.selected)}`);
+  const selection = find(`${violation.name}@${versionToString(violation.selected)}`);
   const selected = versionToString(violation.selected);
   const lines = selection?.selectedBy ? [`  ${selected} selected by: ${winnerOf(selection, selection.selectedBy, explainer)}`] : [];
   /* Only where there is a path to add: the requirer is already named on the
    * violation line, so repeating it alone would say nothing. */
   const requirer = violation.requiredBy === ROOT_REQUIRER ? undefined : find(violation.requiredBy);
   if (requirer !== undefined) {
-    lines.push(`  '${violation.constraint}' required via: ${pathTo(requirer).join(" -> ")}`);
+    lines.push(`  '${violation.versionConstraint}' required via: ${pathTo(requirer).join(" -> ")}`);
   }
   return lines;
 }
@@ -122,18 +146,18 @@ function explainViolation<V>(
  * root down to it. */
 function winnerOf<V>(
   selection: Selected<V>,
-  winner: { requiredBy: string; constraint: string },
+  winner: IRequirementEdge,
   explainer: ResolutionExplainer<V>
 ): string {
   if (winner.requiredBy === ROOT_REQUIRER) {
-    return `the requested '${winner.constraint}'`;
+    return `the requested ${versionConstraintText(winner.versionConstraint)}`;
   }
   const winnerNode = explainer.find(winner.requiredBy);
   if (!winnerNode) {
     /* The winning requirement was declared by a version itself since superseded */
-    return `${winner.requiredBy} requiring '${winner.constraint}' (since superseded)`;
+    return `${winner.requiredBy} requiring ${versionConstraintText(winner.versionConstraint)} (since superseded)`;
   }
-  const chosen = `${explainer.id(selection)} (${winner.constraint})`;
+  const chosen = `${explainer.id(selection)} (${winner.versionConstraint ?? "any version"})`;
   return [...explainer.pathTo(winnerNode), chosen].join(" -> ");
 }
 
@@ -152,7 +176,7 @@ function explainDuplicate<V>(
       return [];
     }
     return via.requiredBy === ROOT_REQUIRER
-      ? [`  ${versionToString(version)} required directly ('${via.constraint}')`]
+      ? [`  ${versionToString(version)} required directly ('${via.versionConstraint}')`]
       : [`  ${versionToString(version)} required via: ${explainer.pathTo(selection).join(" -> ")}`];
   });
 }
@@ -189,27 +213,27 @@ export function conflictError<V>(
    * sanction is judged against. */
   const explainer = graph.explainer();
   const lines: string[] = [];
-  const violatedPkgs = new Set(violations.map(violation => violation.pkg));
+  const violatedPkgs = new Set(violations.map(violation => violation.name));
   const sanctionNoted = new Set<string>();
   for (const { first, others } of groupViolations(violations, versionToString)) {
     const moreRequirers = others.length > 0 ? ` (and ${others.length} more)` : "";
     lines.push(
-      `${first.pkg}@${versionToString(first.selected)} does not satisfy '${first.constraint}' ` +
+      `${first.name}@${versionToString(first.selected)} does not satisfy '${first.versionConstraint}' ` +
         `required by ${first.requiredBy}${moreRequirers}`,
       ...explainViolation(first, explainer, versionToString),
-      ...alsoRequiredBy(first.constraint, others)
+      ...alsoRequiredBy(first.versionConstraint, others)
     );
     /* A partial sanction is a set mismatch, called out where the conflict is
      * reported: the versions this delivery needs vs the versions written. */
-    const declared = written?.get(first.pkg);
-    if (declared && declared.size > 0 && !sanctionNoted.has(first.pkg)) {
-      sanctionNoted.add(first.pkg);
-      const shipped = needed.filter(sel => sel.pkg === first.pkg).map(sel => versionToString(sel.version));
+    const declared = written?.get(first.name);
+    if (declared && declared.size > 0 && !sanctionNoted.has(first.name)) {
+      sanctionNoted.add(first.name);
+      const shipped = needed.filter(sel => sel.name === first.name).map(sel => versionToString(sel.version));
       const missing = shipped.filter(version => !declared.has(version));
       if (missing.length > 0) {
         lines.push(
-          `  required ${first.pkg} versions: ${shipped.join(", ")} — allowed: ${[...declared].join(", ")}; ` +
-            `add ${missing.map(version => refText(first.pkg, version, "?")).join(", ")}`
+          `  required ${first.name} versions: ${shipped.join(", ")} — allowed: ${[...declared].join(", ")}; ` +
+            `add ${missing.map(version => refText(identityOf(needed, first.name), version, "?")).join(", ")}`
         );
       }
     }
@@ -251,12 +275,12 @@ export function unrepairableError<V>(
   const explainer = graph.explainer();
   const groups = groupViolations(violations, versionToString);
   const lines = groups.flatMap(({ first, others }) => [
-    `no published version of ${first.pkg} satisfies '${first.constraint}' required by ${first.requiredBy}`,
+    `no published version of ${first.name} satisfies '${first.versionConstraint}' required by ${first.requiredBy}`,
     ...explainViolation(first, explainer, versionToString),
-    ...alsoRequiredBy(first.constraint, others),
+    ...alsoRequiredBy(first.versionConstraint, others),
   ]);
-  const forceLines = [...new Map(groups.map(({ first }) => [first.pkg, first])).values()].map(violation =>
-    refText(violation.pkg, versionToString(violation.selected), "!")
+  const forceLines = [...new Map(groups.map(({ first }) => [first.name, first])).values()].map(violation =>
+    refText(identityOf(graph.selections, violation.name), versionToString(violation.selected), "!")
   );
   const help = [
     "correct the requirement, or pin its requirer to a version whose requirement is satisfiable",
@@ -266,7 +290,7 @@ export function unrepairableError<V>(
 }
 
 /** The latest suggestion-eligible version, per the domain's stability rule. */
-function latestStable<V, C>(sources: SuggestSources<V, C>, pkg: string): Computable<V | undefined> {
+function latestStable<V, C>(sources: SuggestSources<V, C>, pkg: PackageIdentity): Computable<V | undefined> {
   const { domain } = sources;
   return sources.availableVersions(pkg).then(
     versions =>
@@ -284,12 +308,12 @@ function latestStable<V, C>(sources: SuggestSources<V, C>, pkg: string): Computa
 function sanctionLine<V, C>(
   sources: SuggestSources<V, C>,
   selections: readonly Selected<V>[],
-  written: (pkg: string) => ReadonlySet<string>,
+  written: (name: string) => ReadonlySet<string>,
   pkg: string
 ): string[] {
   const { domain } = sources;
-  const principal = selections.find(sel => sel.pkg === pkg && sel.fork === undefined);
-  const forks = selections.filter(sel => sel.pkg === pkg && sel.fork !== undefined);
+  const principal = selections.find(sel => sel.name === pkg && sel.fork === undefined);
+  const forks = selections.filter(sel => sel.name === pkg && sel.fork !== undefined);
   /* Principal optional: a package can survive as forks alone (its pool winner
    * was a pruned phantom and several forks remain). */
   if (forks.length === 0) {
@@ -297,9 +321,8 @@ function sanctionLine<V, C>(
   }
   const already = written(pkg);
   const entries = [...(principal ? [principal] : []), ...forks]
-    .map(sel => domain.versionToString(sel.version))
-    .filter(version => !already.has(version))
-    .map(version => sources.refText(pkg, version, "?"));
+    .filter(sel => !already.has(domain.versionToString(sel.version)))
+    .map(sel => sources.refText(sel, domain.versionToString(sel.version), "?"));
   return entries.length > 0 ? [entries.join(" ")] : [];
 }
 
@@ -343,18 +366,20 @@ export function suggestSanctions<V, C>(
   sources: SuggestSources<V, C>
 ): Computable<string[]> {
   const { domain } = sources;
-  const conflicted = [...new Set(outstanding.map(violation => violation.pkg))];
+  const conflicted = [...new Set(outstanding.map(violation => violation.name))];
   /* Every constraint in scope on the package: the root demands plus each
    * delivered node's declared edges (a pin must satisfy the already-happy
    * requirers too). */
   const constraintsOn = (pkg: string): C[] => {
     /* Override requirements are permissions/substitutions, not constraints a
      * pin must satisfy. */
-    const texts = new Set(demanded.filter(req => req.pkg === pkg && req.override === undefined).map(req => req.constraint));
+    const texts = new Set(
+      demanded.flatMap(req => (requiredAs(req) === pkg && req.override === undefined && req.versionConstraint !== undefined ? [req.versionConstraint] : []))
+    );
     for (const sel of needed) {
-      for (const req of tree.requirements.get(nodeId(domain, sel.pkg, sel.version)) ?? []) {
-        if (req.pkg === pkg) {
-          texts.add(req.constraint);
+      for (const req of tree.requirements.get(nodeId(domain, sel.name, sel.version)) ?? []) {
+        if (requiredAs(req) === pkg && req.versionConstraint !== undefined) {
+          texts.add(req.versionConstraint);
         }
       }
     }
@@ -376,10 +401,13 @@ export function suggestSanctions<V, C>(
   const sanctionsOnly = (): string[] => sanctionHelp(conflicted.flatMap(pkg => sanctionLine(sources, needed, writtenOf, pkg)));
   const singleFix = (pkg: string): Computable<V | undefined> => {
     const constraints = constraintsOn(pkg);
-    const principal = tree.selections.find(sel => sel.pkg === pkg && sel.fork === undefined);
-    return sources.availableVersions(pkg).then(
+    const principal = tree.selections.find(sel => sel.name === pkg && sel.fork === undefined);
+    if (!principal) {
+      return Computable.resolve(undefined);
+    }
+    return sources.availableVersions(principal).then(
       versions => {
-        if (!versions || !principal) {
+        if (!versions) {
           return undefined;
         }
         return versions
@@ -392,7 +420,7 @@ export function suggestSanctions<V, C>(
   return Computable.forAll(conflicted.map(singleFix), (...fixes: Array<V | undefined>) => {
     const pins = conflicted.flatMap((pkg, index) => {
       const fix = fixes[index];
-      return fix !== undefined ? [{ pkg, version: fix }] : [];
+      return fix !== undefined ? [{ pkg: identityOf(tree.selections, pkg), version: fix }] : [];
     });
     if (pins.length === 0) {
       return Computable.resolve(sanctionsOnly());
@@ -400,17 +428,17 @@ export function suggestSanctions<V, C>(
     /* Verify the pins by one re-resolution (a pin is just a root floor). Any
      * remaining conflict demotes the whole set to the construction-verified
      * sanction lines rather than presenting an unverified promise. */
-    const pinReqs: Requirement[] = pins.map(pin => ({ pkg: pin.pkg, constraint: domain.versionToString(pin.version) }));
+    const pinReqs: Requirement[] = pins.map(pin => requirementAt(pin.pkg, domain.versionToString(pin.version)));
     return sources.resolve(canonicalRequirements([...demanded, ...pinReqs]).roots).then(
       verify => {
         if (verify.violations.length > 0) {
           return sanctionsOnly();
         }
         const pinLines = pins.map(
-          pin => `${sources.refText(pin.pkg, domain.versionToString(pin.version))} (satisfies every requirement on ${pin.pkg})`
+          pin => `${sources.refText(pin.pkg, domain.versionToString(pin.version))} (satisfies every requirement on ${pin.pkg.name})`
         );
         const sanctionLines = conflicted
-          .filter(pkg => !pins.some(pin => pin.pkg === pkg))
+          .filter(pkg => !pins.some(pin => pin.pkg.name === pkg))
           .flatMap(pkg => sanctionLine(sources, needed, writtenOf, pkg));
         return sanctionHelp([...pinLines, ...sanctionLines]);
       },
@@ -437,29 +465,36 @@ export function completeRepairSet<V, C>(
   sources: SuggestSources<V, C>
 ): Computable<IResolutionError[]> {
   const { domain } = sources;
-  const others = errors.filter(error => error.pkg === undefined);
+  const others = errors.filter(error => error.name === undefined);
   if (errors.length === others.length) {
     return Computable.resolve(others);
   }
   const supplies = new Map<string, V>();
   const requirersOf = new Map<string, Set<string>>();
-  const recordFloorless = (failures: ReadonlyArray<{ pkg?: string; requiredBy?: string }>): string[] => {
+  /* Each floorless-required package, as a reference to it is written. */
+  const identities = new Map<string, PackageIdentity>();
+  const identity = (pkg: string): PackageIdentity => identities.get(pkg) ?? { name: pkg };
+  const recordFloorless = (failures: ReadonlyArray<{ name?: string; publishedName?: string; requiredBy?: string }>): string[] => {
     const fresh: string[] = [];
     for (const failure of failures) {
-      if (failure.pkg === undefined) {
+      if (failure.name === undefined) {
         continue;
       }
-      const requirers = requirersOf.get(failure.pkg) ?? new Set();
-      requirersOf.set(failure.pkg, requirers.add(failure.requiredBy ?? "a requirement"));
-      if (!supplies.has(failure.pkg) && !fresh.includes(failure.pkg)) {
-        fresh.push(failure.pkg);
+      identities.set(failure.name, {
+        name: failure.name,
+        ...(failure.publishedName === undefined ? {} : { publishedName: failure.publishedName }),
+      });
+      const requirers = requirersOf.get(failure.name) ?? new Set();
+      requirersOf.set(failure.name, requirers.add(failure.requiredBy ?? "a requirement"));
+      if (!supplies.has(failure.name) && !fresh.includes(failure.name)) {
+        fresh.push(failure.name);
       }
     }
     return fresh;
   };
   const supply = (fresh: string[], round: number): Computable<ResolvedTree<V> | undefined> =>
     Computable.forAll(
-      fresh.map(pkg => latestStable(sources, pkg)),
+      fresh.map(pkg => latestStable(sources, identity(pkg))),
       (...latest: Array<V | undefined>) => {
         fresh.forEach((pkg, index) => {
           const version = latest[index];
@@ -471,8 +506,7 @@ export function completeRepairSet<V, C>(
           return Computable.resolve<ResolvedTree<V> | undefined>(undefined);
         }
         const supplyReqs: Requirement[] = [...supplies].map(([pkg, version]) => ({
-          pkg,
-          constraint: domain.versionToString(version),
+          ...requirementAt(identity(pkg), domain.versionToString(version)),
           override: "alternate",
         }));
         return sources.resolve(canonicalRequirements([...roots, ...supplyReqs]).roots).then(
@@ -499,12 +533,12 @@ export function completeRepairSet<V, C>(
     const conflicts = new Set<string>();
     if (completed !== undefined) {
       for (const violation of completed.violations) {
-        conflicts.add(violation.pkg);
-        const versions = suggest.get(violation.pkg) ?? new Set();
-        for (const sel of completed.selections.filter(sel => sel.pkg === violation.pkg)) {
+        conflicts.add(violation.name);
+        const versions = suggest.get(violation.name) ?? new Set();
+        for (const sel of completed.selections.filter(sel => sel.name === violation.name)) {
           versions.add(domain.versionToString(sel.version));
         }
-        suggest.set(violation.pkg, versions);
+        suggest.set(violation.name, versions);
       }
     }
     const detailLines = [...requirersOf.keys()].sort().map(pkg => {
@@ -522,13 +556,13 @@ export function completeRepairSet<V, C>(
             `completing the resolution with those versions also hits ${conflicts.size} version conflict(s), sanctioned by the list below:`,
             ...groupViolations(completed.violations, domain.versionToString).map(({ first, others }) => {
               const more = others.length > 0 ? ` (and ${others.length} more)` : "";
-              return `  ${first.pkg}@${domain.versionToString(first.selected)} does not satisfy '${first.constraint}' required by ${first.requiredBy}${more}`;
+              return `  ${first.name}@${domain.versionToString(first.selected)} does not satisfy '${first.versionConstraint}' required by ${first.requiredBy}${more}`;
             }),
           ]
         : [];
     const entries = [...suggest.keys()]
       .sort()
-      .map(pkg => [...suggest.get(pkg)!].map(version => sources.refText(pkg, version, "?")).join(" "));
+      .map(pkg => [...suggest.get(pkg)!].map(version => sources.refText(identity(pkg), version, "?")).join(" "));
     /* ONE help entry for the pasteable block (the `help:` prefix lands only
      * on its lead line, so the group copies cleanly), commentary separate. */
     const help =
@@ -542,7 +576,7 @@ export function completeRepairSet<V, C>(
       message:
         `the following packages are required only without a version lower bound ('*'), ` +
         `so no version is selectable — name one explicitly:\n${[...detailLines, ...conflictNote].join("\n")}`,
-      rootPkg: errors.find(error => error.pkg !== undefined)!.rootPkg,
+      rootName: errors.find(error => error.name !== undefined)!.rootName,
       help,
     };
     return [combined, ...others];

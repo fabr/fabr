@@ -40,14 +40,21 @@ function mockRegistry(data: Record<string, Record<string, Record<string, string>
         throw new VersionNotFoundError(pkg, versionToString(version), `${pkg}@${versionToString(version)} not found in mock registry`);
       }
       return Computable.resolve(
-        Object.entries(deps).map(([dep, constraint]) => {
+        Object.entries(deps).map(([written, constraint]): Requirement => {
+          /* `real -> name` is a requirement on `real`, renamed. */
+          const [dep, renameTo] = written.split(" -> ");
+          const renamed = renameTo === undefined ? {} : { renameTo };
           /* 'peer? ' is npm's `peerDependenciesMeta: { optional: true }`. */
           if (constraint.startsWith("peer? ")) {
-            return { pkg: dep, constraint: constraint.substring(6), provided: "optional" as const };
+            return { name: dep, versionConstraint: constraint.substring(6), provided: "optional", ...renamed };
+          }
+          /* An empty string is a requirement that states no version. */
+          if (constraint === "") {
+            return { name: dep, versionConstraint: undefined, ...renamed };
           }
           return constraint.startsWith("peer ")
-            ? { pkg: dep, constraint: constraint.substring(5), provided: "expected" as const }
-            : { pkg: dep, constraint };
+            ? { name: dep, versionConstraint: constraint.substring(5), provided: "expected", ...renamed }
+            : { name: dep, versionConstraint: constraint, ...renamed };
         })
       );
     },
@@ -69,14 +76,19 @@ function mockRegistry(data: Record<string, Record<string, Record<string, string>
  * override, a trailing '?' an alternate (the resolver's override inputs;
  * parsing markers off written references is the repository's job). */
 function rootRequirements(roots: Record<string, string>): Requirement[] {
-  return Object.entries(roots).map(([pkg, constraint]) => {
+  return Object.entries(roots).map(([written, constraint]) => {
+    /* `real -> name` is a requirement on `real`, renamed. */
+    const [pkg, renameTo] = written.split(" -> ");
+    if (renameTo !== undefined) {
+      return { name: pkg, versionConstraint: constraint, renameTo };
+    }
     if (constraint.endsWith("!")) {
-      return { pkg, constraint: constraint.slice(0, -1), override: "force" as const };
+      return { name: pkg, versionConstraint: constraint.slice(0, -1), override: "force" as const };
     }
     if (constraint.endsWith("?")) {
-      return { pkg, constraint: constraint.slice(0, -1), override: "alternate" as const };
+      return { name: pkg, versionConstraint: constraint.slice(0, -1), override: "alternate" as const };
     }
-    return { pkg, constraint };
+    return { name: pkg, versionConstraint: constraint };
   });
 }
 
@@ -176,7 +188,7 @@ function resolveError(
 }
 
 function selectionStrings(resolution: MVSResolution<SemverVersion>): string[] {
-  return resolution.selections.map(sel => `${sel.pkg}@${versionToString(sel.version)}`);
+  return resolution.selections.map(sel => `${sel.name}@${versionToString(sel.version)}`);
 }
 
 describe("MVSResolver", () => {
@@ -250,7 +262,29 @@ describe("MVSResolver", () => {
     expect(selectionStrings(result)).to.deep.equal(["A@1.1.0", "B@1.0.0"]);
     expect(result.errors).to.deep.equal([]);
     /* Both roots reach A */
-    expect(result.selections.find(sel => sel.pkg === "A")?.reachableFrom).to.deep.equal([0, 1]);
+    expect(result.selections.find(sel => sel.name === "A")?.reachableFrom).to.deep.equal([0, 1]);
+  });
+
+  it("binds a requirement that states no version to whatever else selects the package", () => {
+    const result = resolve(
+      { A: "1.0.0", B: "2.3.0" },
+      {
+        A: { "1.0.0": { B: "" } },
+        B: { "2.3.0": {} },
+      }
+    );
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@2.3.0"]);
+    expect(result.errors).to.deep.equal([]);
+    expect(result.violations).to.deep.equal([]);
+    expect(result.edges.get("A@1.0.0")?.get("B")).to.equal("B@2.3.0");
+  });
+
+  it("reports a requirement that states no version, where nothing selects the package", () => {
+    const result = resolve({ A: "1.0.0" }, { A: { "1.0.0": { B: "" } } });
+    expect(selectionStrings(result)).to.deep.equal(["A@1.0.0"]);
+    expect(result.errors.map(error => error.message)).to.deep.equal([
+      "'B' is required by A@1.0.0 without a version lower bound (any version), and no versioned requirement for it exists — add one explicitly",
+    ]);
   });
 
   it("reports floorless requirements that nothing selects", () => {
@@ -265,8 +299,8 @@ describe("MVSResolver", () => {
       {
         message:
           "'B' is required by A@1.0.0 without a version lower bound ('*'), and no versioned requirement for it exists — add one explicitly",
-        rootPkg: "A",
-        pkg: "B",
+        rootName: "A",
+        name: "B",
         requiredBy: "A@1.0.0",
       },
     ]);
@@ -299,14 +333,14 @@ describe("MVSResolver", () => {
     );
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@5.0.0"]);
     expect(result.violations).to.have.lengthOf(1);
-    expect(result.violations[0].pkg).to.equal("B");
-    expect(result.violations[0].constraint).to.equal("<4.1.0");
+    expect(result.violations[0].name).to.equal("B");
+    expect(result.violations[0].versionConstraint).to.equal("<4.1.0");
   });
 
   it("an upper-bound-only requirement nothing selects is the ordinary add-a-pin error", () => {
     const result = resolve({ A: "1.0.0" }, { A: { "1.0.0": { B: "<4.1.0" } } });
     expect(result.errors).to.have.lengthOf(1);
-    expect(result.errors[0].pkg).to.equal("B");
+    expect(result.errors[0].name).to.equal("B");
     expect(result.errors[0].message).to.contain("without a version lower bound ('<4.1.0')");
   });
 
@@ -335,7 +369,7 @@ describe("MVSResolver", () => {
       }
     );
     expect(selectionStrings(result)).to.deep.equal(["B@1.0.0", "C@1.0.0", "D@1.0.0", "D@2.0.0"]);
-    const [d1, d2] = result.selections.filter(sel => sel.pkg === "D");
+    const [d1, d2] = result.selections.filter(sel => sel.name === "D");
     expect(d1.fork).to.equal(1);
     expect(d2.fork).to.be.undefined;
     expect(result.violations).to.have.lengthOf(1);
@@ -359,8 +393,8 @@ describe("MVSResolver", () => {
     expect(result.selections[0].fork).to.equal(1);
     expect(result.errors).to.deep.equal([]);
     expect(result.violations).to.have.lengthOf(1);
-    expect(result.violations[0].pkg).to.equal("D");
-    expect(result.violations[0].constraint).to.equal("~1.1.0");
+    expect(result.violations[0].name).to.equal("D");
+    expect(result.violations[0].versionConstraint).to.equal("~1.1.0");
     expect(result.violations[0].requiredBy).to.equal("(root)");
     expect(versionToString(result.violations[0].selected)).to.equal("1.3.0");
   });
@@ -369,9 +403,9 @@ describe("MVSResolver", () => {
     const err = resolveError({ A: "1.2.3" }, {});
     expect(err).to.be.instanceOf(MetadataFetchError);
     const failure = err as MetadataFetchError;
-    expect(failure.pkg).to.equal("A");
+    expect(failure.packageName).to.equal("A");
     expect(failure.version).to.equal("1.2.3");
-    expect(failure.rootPkg).to.equal("A");
+    expect(failure.rootName).to.equal("A");
     expect(failure.requirerPath).to.deep.equal([]);
     expect(failure.message).to.equal("A@1.2.3 not found in mock registry");
   });
@@ -388,8 +422,8 @@ describe("MVSResolver", () => {
     );
     expect(err).to.be.instanceOf(MetadataFetchError);
     const failure = err as MetadataFetchError;
-    expect(failure.pkg).to.equal("C");
-    expect(failure.rootPkg).to.equal("@s/A");
+    expect(failure.packageName).to.equal("C");
+    expect(failure.rootName).to.equal("@s/A");
     expect(failure.requirerPath).to.deep.equal(["B@1.2.0", "@s/A@1.0.0"]);
     expect(failure.message).to.equal("C@2.1.0 not found in mock registry (required by B@1.2.0 < @s/A@1.0.0)");
   });
@@ -421,7 +455,7 @@ describe("MVSResolver", () => {
      * subtree contains it (for written-reference attribution). */
     expect(result.errors[0].message).to.contain("'B: workspace:*'");
     expect(result.errors[0].message).to.contain("required by A@1.0.0");
-    expect(result.errors[0].rootPkg).to.equal("A");
+    expect(result.errors[0].rootName).to.equal("A");
   });
 
   it("resolves an empty root set", () => {
@@ -439,7 +473,7 @@ describe("MVSResolver", () => {
         D: { "1.0.0": {} },
       }
     );
-    const get = (pkg: string): Selected<SemverVersion> => result.selections.find(sel => sel.pkg === pkg)!;
+    const get = (pkg: string): Selected<SemverVersion> => result.selections.find(sel => sel.name === pkg)!;
     expect(get("B").reachableFrom).to.deep.equal([0]);
     expect(get("C").reachableFrom).to.deep.equal([1]);
     expect(get("D").reachableFrom).to.deep.equal([0]);
@@ -454,7 +488,7 @@ describe("MVSResolver", () => {
         D: { "1.1.0": {}, "1.3.0": {} },
       }
     );
-    const d = result.selections.find(sel => sel.pkg === "D")!;
+    const d = result.selections.find(sel => sel.name === "D")!;
     expect(d.reachableFrom?.slice().sort()).to.deep.equal([0, 1]);
   });
 
@@ -467,14 +501,14 @@ describe("MVSResolver", () => {
         D: { "1.1.0": {}, "1.3.0": {} },
       }
     );
-    const b = result.selections.find(sel => sel.pkg === "B")!;
-    expect(b.reachedVia).to.deep.equal({ requiredBy: "(root)", constraint: "^1.0.0" });
-    expect(b.selectedBy).to.deep.equal({ requiredBy: "(root)", constraint: "^1.0.0" });
+    const b = result.selections.find(sel => sel.name === "B")!;
+    expect(b.reachedVia).to.deep.equal({ requiredBy: "(root)", versionConstraint: "^1.0.0" });
+    expect(b.selectedBy).to.deep.equal({ requiredBy: "(root)", versionConstraint: "^1.0.0" });
 
     /* D is first reached through B, but its version was raised by C's requirement */
-    const d = result.selections.find(sel => sel.pkg === "D")!;
-    expect(d.reachedVia).to.deep.equal({ requiredBy: "B@1.0.0", constraint: "^1.1.0" });
-    expect(d.selectedBy).to.deep.equal({ requiredBy: "C@1.0.0", constraint: "^1.3.0" });
+    const d = result.selections.find(sel => sel.name === "D")!;
+    expect(d.reachedVia).to.deep.equal({ requiredBy: "B@1.0.0", versionConstraint: "^1.1.0" });
+    expect(d.selectedBy).to.deep.equal({ requiredBy: "C@1.0.0", versionConstraint: "^1.3.0" });
   });
 
   it("raises an unpublished floor to the lowest published satisfying version", () => {
@@ -491,8 +525,8 @@ describe("MVSResolver", () => {
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@1.6.0"]);
     expect(result.errors).to.deep.equal([]);
     expect(result.raises).to.have.lengthOf(1);
-    expect(result.raises[0].pkg).to.equal("B");
-    expect(result.raises[0].constraint).to.equal("^1.0.0");
+    expect(result.raises[0].name).to.equal("B");
+    expect(result.raises[0].versionConstraint).to.equal("^1.0.0");
     expect(versionToString(result.raises[0].declared)).to.equal("1.0.0");
     expect(versionToString(result.raises[0].raised)).to.equal("1.6.0");
     expect(result.raises[0].requiredBy).to.equal("A@1.0.0");
@@ -574,14 +608,14 @@ describe("MVSResolver", () => {
     };
     const refused = resolve({ app: "1.0.0" }, data);
     expect(selectionStrings(refused)).to.deep.equal(["app@1.0.0", "hoc@2.0.0", "react@18.2.0"]);
-    expect(refused.violations.map(v => [v.pkg, v.requiredBy])).to.deep.equal([["react", "hoc@2.0.0"]]);
+    expect(refused.violations.map(v => [v.name, v.requiredBy])).to.deep.equal([["react", "hoc@2.0.0"]]);
     expect(refused.shared).to.deep.equal([]);
     expect(refused.edges.get("hoc@2.0.0")?.get("react")).to.equal("react@18.2.0");
 
     const shared = resolve({ app: "1.0.0" }, data, false, { ...SEMVER, providedMismatch: "tolerate" });
     expect(selectionStrings(shared)).to.deep.equal(["app@1.0.0", "hoc@2.0.0", "react@18.2.0"]);
     expect(shared.violations).to.deep.equal([]);
-    expect(shared.shared.map(v => [v.pkg, v.constraint, v.requiredBy, versionToString(v.selected)])).to.deep.equal([
+    expect(shared.shared.map(v => [v.name, v.versionConstraint, v.requiredBy, versionToString(v.selected)])).to.deep.equal([
       ["react", "^16.3.0 || ^17.0.0", "hoc@2.0.0", "18.2.0"],
     ]);
     expect(shared.edges.get("hoc@2.0.0")?.get("react")).to.equal("react@18.2.0");
@@ -671,8 +705,8 @@ describe("MVSResolver", () => {
     );
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "chai@5.0.0", "plugin@1.0.0"]);
     expect(result.violations).to.have.lengthOf(1);
-    expect(result.violations[0].pkg).to.equal("chai");
-    expect(result.violations[0].constraint).to.equal("<5");
+    expect(result.violations[0].name).to.equal("chai");
+    expect(result.violations[0].versionConstraint).to.equal("<5");
     expect(result.violations[0].requiredBy).to.equal("plugin@1.0.0");
   });
 
@@ -693,22 +727,26 @@ describe("MVSResolver", () => {
       true
     );
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@2.0.9", "C@2.6.0", "D@1.0.1"]);
-    const cs = result.selections.filter(sel => sel.pkg === "C");
+    const cs = result.selections.filter(sel => sel.name === "C");
     expect(cs[0].fork).to.equal(1);
     expect(cs[1].fork).to.be.undefined;
-    expect(result.raises.map(raise => `${raise.pkg}@${versionToString(raise.raised)}`)).to.deep.equal(["C@2.0.9", "D@1.0.1"]);
+    expect(result.raises.map(raise => `${raise.name}@${versionToString(raise.raised)}`)).to.deep.equal(["C@2.0.9", "D@1.0.1"]);
   });
 
   it("fails when nothing published satisfies an unpublished floor", () => {
     let error: Error | undefined;
-    resolveMVS([{ pkg: "A", constraint: "1.0.0" }], SEMVER, mockRegistry({ A: { "1.0.0": { B: "^2.0.0" } }, B: { "1.6.0": {} } }, true)).then(
+    resolveMVS(
+      [{ name: "A", versionConstraint: "1.0.0" }],
+      SEMVER,
+      mockRegistry({ A: { "1.0.0": { B: "^2.0.0" } }, B: { "1.6.0": {} } }, true)
+    ).then(
       () => undefined,
       err => {
         error = err as Error;
       }
     );
     expect(error).to.be.instanceOf(MetadataFetchError);
-    expect((error as MetadataFetchError).pkg).to.equal("B");
+    expect((error as MetadataFetchError).packageName).to.equal("B");
   });
 
   it("raises an unpublished floor across majors to the first published satisfier", () => {
@@ -723,7 +761,7 @@ describe("MVSResolver", () => {
     expect(result.errors).to.deep.equal([]);
     expect(result.violations).to.deep.equal([]);
     expect(result.raises).to.have.lengthOf(1);
-    expect(result.raises[0].pkg).to.equal("B");
+    expect(result.raises[0].name).to.equal("B");
     expect(versionToString(result.raises[0].declared)).to.equal("1.2.3");
     expect(versionToString(result.raises[0].raised)).to.equal("2.0.0");
   });
@@ -768,7 +806,7 @@ describe("MVSResolver", () => {
     const registry = mockRegistry({ A: { "1.0.0": { B: "^2.0.0" } }, B: { "1.6.0": {} } }, true);
     registry.lowestAvailable = (): Computable<SemverVersion | undefined> => Computable.reject(new Error("registry unreachable"));
     let error: Error | undefined;
-    resolveMVS([{ pkg: "A", constraint: "1.0.0" }], SEMVER, registry).then(
+    resolveMVS([{ name: "A", versionConstraint: "1.0.0" }], SEMVER, registry).then(
       () => undefined,
       err => {
         error = err as Error;
@@ -776,8 +814,8 @@ describe("MVSResolver", () => {
     );
     expect(error).to.be.instanceOf(MetadataFetchError);
     const failure = error as MetadataFetchError;
-    expect(failure.pkg).to.equal("B");
-    expect(failure.rootPkg).to.equal("A");
+    expect(failure.packageName).to.equal("B");
+    expect(failure.rootName).to.equal("A");
     expect(failure.message).to.equal("registry unreachable (required by A@1.0.0)");
   });
 
@@ -790,7 +828,7 @@ describe("MVSResolver", () => {
       }
     );
     expect(err).to.be.instanceOf(MetadataFetchError);
-    expect((err as MetadataFetchError).pkg).to.equal("B");
+    expect((err as MetadataFetchError).packageName).to.equal("B");
   });
 
   it("expands a demanded version that loses its slot, whatever the arrival order", () => {
@@ -842,11 +880,11 @@ describe("MVSResolver", () => {
       "H@1.5.0",
     ]);
     const forks = result.selections.filter(sel => sel.fork !== undefined);
-    expect(forks.map(sel => `${sel.pkg}@${versionToString(sel.version)}`)).to.deep.equal(["D@1.0.0", "G@1.0.0", "H@1.0.0"]);
+    expect(forks.map(sel => `${sel.name}@${versionToString(sel.version)}`)).to.deep.equal(["D@1.0.0", "G@1.0.0", "H@1.0.0"]);
     /* Violations in reachability order: the root-violated edge first, then the
      * principal D@2's pin, then the fork D@1's — each judged against the
      * principal of its target. */
-    expect(result.violations.map(violation => `${violation.requiredBy} -> ${violation.pkg}`)).to.deep.equal([
+    expect(result.violations.map(violation => `${violation.requiredBy} -> ${violation.name}`)).to.deep.equal([
       "B@1.0.0 -> D",
       "D@2.0.0 -> H",
       "D@1.0.0 -> G",
@@ -865,7 +903,10 @@ describe("MVSResolver", () => {
         D: { "1.2.0": {} },
       }
     );
-    expect(result.selections.find(sel => sel.pkg === "D")?.selectedBy).to.deep.equal({ requiredBy: "A@1.0.0", constraint: "^1.2.0" });
+    expect(result.selections.find(sel => sel.name === "D")?.selectedBy).to.deep.equal({
+      requiredBy: "A@1.0.0",
+      versionConstraint: "^1.2.0",
+    });
   });
 
   it("raises a floor demanded after the unpublished answer landed", () => {
@@ -885,7 +926,7 @@ describe("MVSResolver", () => {
     );
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@2.6.0", "Z@1.0.0"]);
     expect(result.raises).to.have.lengthOf(1);
-    expect(result.raises[0].constraint).to.equal("^2.0.5");
+    expect(result.raises[0].versionConstraint).to.equal("^2.0.5");
     expect(versionToString(result.raises[0].raised)).to.equal("2.6.0");
     /* A's ~2.0.5 is unsatisfiable by anything published — reported as the
      * ordinary upper-bound violation against what was delivered, not a failure */
@@ -910,7 +951,7 @@ describe("MVSResolver", () => {
     /* With R, G is raised — and F is still 1.5.0. */
     const repaired = resolve({ P: "1.0.0", Q: "1.0.0", R: "1.0.0" }, data, true);
     expect(selectionStrings(repaired)).to.deep.equal(["F@1.5.0", "G@2.4.0", "P@1.0.0", "Q@1.0.0", "R@1.0.0"]);
-    expect(repaired.raises.map(raise => `${raise.pkg}@${versionToString(raise.raised)}`)).to.deep.equal(["G@2.4.0"]);
+    expect(repaired.raises.map(raise => `${raise.name}@${versionToString(raise.raised)}`)).to.deep.equal(["G@2.4.0"]);
   });
 
   it("repairs a floor that only a previous repair exposed", () => {
@@ -928,7 +969,7 @@ describe("MVSResolver", () => {
       true
     );
     expect(selectionStrings(result)).to.deep.equal(["H@1.4.0", "K@3.7.0", "S@1.0.0"]);
-    expect(result.raises.map(raise => `${raise.pkg}@${versionToString(raise.raised)}`)).to.deep.equal(["H@1.4.0", "K@3.7.0"]);
+    expect(result.raises.map(raise => `${raise.name}@${versionToString(raise.raised)}`)).to.deep.equal(["H@1.4.0", "K@3.7.0"]);
   });
 
   it("fetches each demanded version's metadata exactly once", () => {
@@ -952,7 +993,14 @@ describe("MVSResolver", () => {
       },
     };
     let result: MVSResolution<SemverVersion> | undefined;
-    resolveMVS([{ pkg: "B", constraint: "1.0.0" }, { pkg: "C", constraint: "1.0.0" }], SEMVER, registry).then(resolution => {
+    resolveMVS(
+      [
+        { name: "B", versionConstraint: "1.0.0" },
+        { name: "C", versionConstraint: "1.0.0" },
+      ],
+      SEMVER,
+      registry
+    ).then(resolution => {
       result = resolution;
     });
     expect(result).to.not.equal(undefined);
@@ -994,21 +1042,21 @@ describe("MVSResolver", () => {
     const registry: RequirementSource<SemverVersion> = {
       getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
         if (pkg === "A") {
-          return Computable.resolve([{ pkg: "B", constraint: "^1.0.0" }]);
+          return Computable.resolve([{ name: "B", versionConstraint: "^1.0.0" }]);
         }
         throw new VersionNotFoundError(pkg, versionToString(version), `${pkg}@${versionToString(version)} not found`);
       },
       lowestAvailable: (): Computable<SemverVersion | undefined> => Computable.resolve(parseVersion("1.6.0")),
     };
     let error: Error | undefined;
-    resolveMVS([{ pkg: "A", constraint: "1.0.0" }], SEMVER, registry).then(
+    resolveMVS([{ name: "A", versionConstraint: "1.0.0" }], SEMVER, registry).then(
       () => undefined,
       err => {
         error = err as Error;
       }
     );
     expect(error).to.be.instanceOf(MetadataFetchError);
-    expect((error as MetadataFetchError).pkg).to.equal("B");
+    expect((error as MetadataFetchError).packageName).to.equal("B");
   });
 
   it("keeps a version raised by a superseded requirement, and says so", () => {
@@ -1024,9 +1072,9 @@ describe("MVSResolver", () => {
       }
     );
     expect(selectionStrings(result)).to.deep.equal(["A@1.2.0", "AUP@1.0.0", "D@1.5.0"]);
-    const d = result.selections.find(sel => sel.pkg === "D")!;
-    expect(d.selectedBy).to.deep.equal({ requiredBy: "A@1.0.0", constraint: "^1.5.0" });
-    expect(d.reachedVia).to.deep.equal({ requiredBy: "A@1.2.0", constraint: "^1.1.0" });
+    const d = result.selections.find(sel => sel.name === "D")!;
+    expect(d.selectedBy).to.deep.equal({ requiredBy: "A@1.0.0", versionConstraint: "^1.5.0" });
+    expect(d.reachedVia).to.deep.equal({ requiredBy: "A@1.2.0", versionConstraint: "^1.1.0" });
     /* The winning node is not among the final selections */
     expect(selectionStrings(result)).to.not.contain("A@1.0.0");
   });
@@ -1046,14 +1094,14 @@ describe("fork packing", () => {
       }
     );
     expect(selectionStrings(result)).to.deep.equal(["M@2.0.28", "M@2.12.2", "X@1.0.0", "Y@1.0.0"]);
-    const [fork, principal] = result.selections.filter(sel => sel.pkg === "M");
+    const [fork, principal] = result.selections.filter(sel => sel.name === "M");
     expect(fork.fork).to.equal(1);
     expect(principal.fork).to.be.undefined;
     expect(result.violations).to.have.lengthOf(1);
-    expect(result.violations[0].constraint).to.equal("2.0.28");
+    expect(result.violations[0].versionConstraint).to.equal("2.0.28");
     /* The fork records the requirement whose floor selected it */
-    expect(fork.selectedBy).to.deep.equal({ requiredBy: "X@1.0.0", constraint: "2.0.28" });
-    expect(fork.reachedVia).to.deep.equal({ requiredBy: "X@1.0.0", constraint: "2.0.28" });
+    expect(fork.selectedBy).to.deep.equal({ requiredBy: "X@1.0.0", versionConstraint: "2.0.28" });
+    expect(fork.reachedVia).to.deep.equal({ requiredBy: "X@1.0.0", versionConstraint: "2.0.28" });
   });
 
   it("shares a fork between identical violated edges and forks recursively", () => {
@@ -1084,8 +1132,8 @@ describe("fork packing", () => {
       "R@1.0.0",
     ]);
     const forks = result.selections.filter(sel => sel.fork !== undefined);
-    expect(forks.map(sel => `${sel.pkg}@${versionToString(sel.version)}`)).to.deep.equal(["P@1.0.0", "Q@1.0.0"]);
-    expect(result.violations.map(violation => `${violation.requiredBy} -> ${violation.pkg}`)).to.deep.equal([
+    expect(forks.map(sel => `${sel.name}@${versionToString(sel.version)}`)).to.deep.equal(["P@1.0.0", "Q@1.0.0"]);
+    expect(result.violations.map(violation => `${violation.requiredBy} -> ${violation.name}`)).to.deep.equal([
       "A@1.0.0 -> P",
       "B@1.0.0 -> P",
       "P@1.0.0 -> Q",
@@ -1141,7 +1189,7 @@ describe("fork packing", () => {
     );
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "B@2.6.2"]);
     expect(result.violations).to.have.lengthOf(1);
-    expect(result.violations[0].constraint).to.equal("1.9.9");
+    expect(result.violations[0].versionConstraint).to.equal("1.9.9");
   });
 
   it("a floorless edge in a fork's subtree is answered by the delivery's pin", () => {
@@ -1172,10 +1220,10 @@ describe("fork packing", () => {
       }
     );
     expect(result.errors).to.have.lengthOf(1);
-    expect(result.errors[0].pkg).to.equal("T");
+    expect(result.errors[0].name).to.equal("T");
     /* Attributed through the first-reacher chain to the root whose subtree
      * demanded the erring node (X exact-pinned the fork) */
-    expect(result.errors[0].rootPkg).to.equal("X");
+    expect(result.errors[0].rootName).to.equal("X");
   });
 });
 
@@ -1195,7 +1243,7 @@ describe("force overrides", () => {
     expect(result.violations).to.deep.equal([]);
     expect(result.selections.every(sel => sel.fork === undefined)).to.equal(true);
     expect(result.coerced).to.have.lengthOf(1);
-    expect(result.coerced[0]).to.deep.include({ pkg: "C", constraint: "^3.0.0", requiredBy: "A@1.0.0" });
+    expect(result.coerced[0]).to.deep.include({ name: "C", versionConstraint: "^3.0.0", requiredBy: "A@1.0.0" });
     expect(versionToString(result.coerced[0].selected)).to.equal("2.0.0");
   });
 
@@ -1209,7 +1257,9 @@ describe("force overrides", () => {
     );
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@2.0.0"]);
     expect(result.violations).to.deep.equal([]);
-    expect(result.coerced.map(edge => `${edge.requiredBy} -> ${edge.pkg}:${edge.constraint}`)).to.deep.equal(["A@1.0.0 -> C:1.4.0"]);
+    expect(result.coerced.map(edge => `${edge.requiredBy} -> ${edge.name}:${edge.versionConstraint}`)).to.deep.equal([
+      "A@1.0.0 -> C:1.4.0",
+    ]);
   });
 
   it("a satisfied requirement on a forced package is not coerced", () => {
@@ -1247,7 +1297,7 @@ describe("force overrides", () => {
       true
     );
     expect(err).to.be.instanceOf(MetadataFetchError);
-    expect((err as MetadataFetchError).pkg).to.equal("C");
+    expect((err as MetadataFetchError).packageName).to.equal("C");
   });
 
   it("an alternate supplies the version for a floorless-only requirement (attach-last)", () => {
@@ -1262,7 +1312,10 @@ describe("force overrides", () => {
     );
     expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "T@26.0.0"]);
     expect(result.errors).to.deep.equal([]);
-    expect(result.selections.find(sel => sel.pkg === "T")?.selectedBy).to.deep.equal({ requiredBy: "(root)", constraint: "26.0.0" });
+    expect(result.selections.find(sel => sel.name === "T")?.selectedBy).to.deep.equal({
+      requiredBy: "(root)",
+      versionConstraint: "26.0.0",
+    });
   });
 
   it("an alternate still answers when the package's only selection is a phantom", () => {
@@ -1281,7 +1334,10 @@ describe("force overrides", () => {
     );
     expect(selectionStrings(result)).to.deep.equal(["B@1.0.0", "C@2.0.0", "T@1.0.0"]);
     expect(result.errors).to.deep.equal([]);
-    expect(result.selections.find(sel => sel.pkg === "T")?.selectedBy).to.deep.equal({ requiredBy: "(root)", constraint: "1.0.0" });
+    expect(result.selections.find(sel => sel.name === "T")?.selectedBy).to.deep.equal({
+      requiredBy: "(root)",
+      versionConstraint: "1.0.0",
+    });
   });
 
   it("an alternate stays inert when a floored requirement selects the package", () => {
@@ -1328,16 +1384,16 @@ describe("resolved edges", () => {
   function recomputed(result: MVSResolution<SemverVersion>): Map<string, Map<string, string>> {
     const edges = new Map<string, Map<string, string>>();
     for (const sel of result.selections) {
-      const id = nodeId(SEMVER, sel.pkg, sel.version);
+      const id = nodeId(SEMVER, sel.name, sel.version);
       const from = new Map<string, string>();
       for (const req of result.requirements.get(id) ?? []) {
-        const name = req.alias ?? req.pkg;
+        const name = req.renameTo ?? req.name;
         if (from.has(name)) {
           continue;
         }
         const target = edgeBinding(SEMVER, result.selections, req);
         if (target) {
-          from.set(name, nodeId(SEMVER, target.pkg, target.version));
+          from.set(name, nodeId(SEMVER, target.name, target.version));
         }
       }
       edges.set(id, from);
@@ -1381,7 +1437,89 @@ describe("resolved edges", () => {
     });
   }
 
-  it("names an aliased edge by the requirer's name for it", () => {
+  describe("a renamed requirement", () => {
+    const semver = { semver: { "6.3.1": {}, "7.5.0": {}, "7.6.0": {} } };
+
+    it("is selected apart from the package it is a copy of", () => {
+      /* One version per name, and the name is the one after renaming: the
+       * renamed requirement keeps its own minimum. */
+      const result = resolve({ semver: "7.6.0", "semver -> semver-old": "^7.5.0" }, semver);
+      expect(selectionStrings(result).sort()).to.deep.equal(["semver-old@7.5.0", "semver@7.6.0"]);
+      expect(result.violations).to.deep.equal([]);
+      expect(result.selections.every(sel => sel.fork === undefined)).to.equal(true);
+      /* The registry's name for it rides the selection, for fetching alone. */
+      expect(result.selections.map(sel => [sel.name, sel.publishedName])).to.deep.equal([
+        ["semver", undefined],
+        ["semver-old", "semver"],
+      ]);
+    });
+
+    it("reports a name required as two different packages", () => {
+      /* One name is one package: whichever requirer's reading wins the slot,
+       * the other's edge is in effect and names a different package. */
+      const result = resolve(
+        { A: "1.0.0", B: "1.0.0" },
+        {
+          A: { "1.0.0": { "left-pad -> pad": "1.0.0" } },
+          B: { "1.0.0": { "right-pad -> pad": "1.0.0" } },
+          "left-pad": { "1.0.0": {} },
+          "right-pad": { "1.0.0": {} },
+        }
+      );
+      expect(result.errors.map(error => error.message)).to.deep.equal([
+        "'pad' is required as two different packages: 'left-pad' (by A@1.0.0) and 'right-pad' (by B@1.0.0)",
+      ]);
+      /* Two roots on one name, likewise. */
+      const roots = resolve({ "left-pad -> pad": "1.0.0", "right-pad -> pad": "1.0.0" }, { "left-pad": { "1.0.0": {} }, "right-pad": { "1.0.0": {} } });
+      expect(roots.errors.map(error => error.message)).to.deep.equal([
+        "'pad' is required as two different packages: 'left-pad' (by (root)) and 'right-pad' (by (root))",
+      ]);
+    });
+
+    it("does not conflict with another version of that package", () => {
+      const result = resolve({ semver: "7.6.0", "semver -> semver6": "^6.0.0" }, { semver: { "6.0.0": {}, "7.6.0": {} } });
+      expect(selectionStrings(result).sort()).to.deep.equal(["semver6@6.0.0", "semver@7.6.0"]);
+      expect(result.violations).to.deep.equal([]);
+      expect(result.selections.every(sel => sel.fork === undefined)).to.equal(true);
+    });
+
+    it("is reached, and marked reachable, through a requirer that renames it", () => {
+      /* A's `wrap-ansi-cjs` is a requirement on wrap-ansi, selected under its
+       * resultant name: the root reaches it and everything below it, read in
+       * either direction (the edges forward, `reachableFrom` back). */
+      const result = resolve(
+        { A: "1.0.0" },
+        {
+          A: { "1.0.0": { "wrap-ansi -> wrap-ansi-cjs": "^7.0.0" } },
+          "wrap-ansi": { "7.0.0": { "ansi-styles": "^4.0.0" } },
+          "ansi-styles": { "4.0.0": {} },
+        }
+      );
+      expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "ansi-styles@4.0.0", "wrap-ansi-cjs@7.0.0"]);
+      expect(result.edges.get("A@1.0.0")?.get("wrap-ansi-cjs")).to.equal("wrap-ansi-cjs@7.0.0");
+      expect(result.selections.map(sel => sel.reachableFrom)).to.deep.equal([[0], [0], [0]]);
+    });
+
+    it("still selects one version for everything requiring it under that name", () => {
+      const result = resolve({ "semver -> semver7": "^7.5.0", A: "1.0.0" }, { ...semver, A: { "1.0.0": {} } });
+      const again = resolveMVSSync([
+        { name: "semver", versionConstraint: "^7.5.0", renameTo: "semver7" },
+        { name: "semver", versionConstraint: "^7.6.0", renameTo: "semver7" },
+      ]);
+      expect(selectionStrings(result)).to.contain("semver7@7.5.0");
+      expect(selectionStrings(again)).to.deep.equal(["semver7@7.6.0"]);
+    });
+
+    function resolveMVSSync(roots: Requirement[]): MVSResolution<SemverVersion> {
+      let result: MVSResolution<SemverVersion> | undefined;
+      resolveMVS(roots, SEMVER, mockRegistry(semver)).then(resolution => {
+        result = resolution;
+      });
+      return result!;
+    }
+  });
+
+  it("names an edge by the requirer's name for it", () => {
     const result = resolve({ A: "^1.0.0" }, { A: { "1.0.0": { B: "^1.0.0" } }, B: { "1.0.0": {} } });
     expect([...result.edges.get("A@1.0.0")!.keys()]).to.deep.equal(["B"]);
   });
@@ -1398,11 +1536,9 @@ describe("resolved edges", () => {
         if (at === undefined) {
           return;
         }
-        const walked = graph.reachable([nodeId(SEMVER, result.selections[at].pkg, result.selections[at].version)]);
+        const walked = graph.reachable([nodeId(SEMVER, result.selections[at].name, result.selections[at].version)]);
         const marked = new Set(
-          result.selections
-            .filter(sel => sel.reachableFrom?.includes(index))
-            .map(sel => nodeId(SEMVER, sel.pkg, sel.version))
+          result.selections.filter(sel => sel.reachableFrom?.includes(index)).map(sel => nodeId(SEMVER, sel.name, sel.version))
         );
         expect([...walked].sort()).to.deep.equal([...marked].sort());
       });
@@ -1419,9 +1555,7 @@ describe("resolved edges", () => {
     const walked = graph.reachable(["A@1.0.0"]);
     expect([...walked], "A's subset does not deliver the peer").to.deep.equal(["A@1.0.0"]);
     /* And the walk agrees with the resolver's own marking, attach edges included. */
-    const marked = result.selections
-      .filter(sel => sel.reachableFrom?.includes(0))
-      .map(sel => nodeId(SEMVER, sel.pkg, sel.version));
+    const marked = result.selections.filter(sel => sel.reachableFrom?.includes(0)).map(sel => nodeId(SEMVER, sel.name, sel.version));
     expect([...walked].sort()).to.deep.equal([...marked].sort());
   });
 });

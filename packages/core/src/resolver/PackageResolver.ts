@@ -30,26 +30,37 @@ import {
 import { FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { Name } from "../core/Name";
-import { PackageFileSet, PackageGraphBuilder } from "../core/PackageFileSet";
+import { PackageFileSet, PackageGraphBuilder, ProvidedDependency } from "../core/PackageFileSet";
 import {
   isRepositoryReader,
+  PackageRequest,
   RefSource,
   RepositoryReader,
   ResolutionContext,
   RepositoryRef,
   Resolution,
   ResolvedRoot,
+  SourceRef,
 } from "../core/Repository";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { PackageFormat } from "./PackageFormat";
 import { resolveMVS } from "./MVSResolver";
-import { canonicalRequirements, collectSanctions, requirementKey, satisfiedByAnySelection, writtenVersions } from "./Overrides";
+import { collectSanctions, satisfiedByAnySelection, writtenVersions } from "./Overrides";
+import {
+  canonicalRequirements,
+  constraintOf,
+  requiredAs,
+  requirementKey,
+  versionConstraintText,
+  violationKey,
+  violationKeys,
+} from "./Requirement";
 import { deserializeResolutionDoc, IResolutionDoc, serializeResolutionDoc } from "./ResolutionDoc";
 import { ResolutionGraph } from "./ResolutionGraph";
 import { IResolutionOrigin, PACKAGE_RESOLUTION_PROVENANCE } from "./ResolutionProvenance";
 import type { IDeliveryFacts } from "./StrictCollection";
 import { completeRepairSet, RefRenderer, SuggestSources, unrepairableError } from "./ResolutionReport";
-import { IRequirementEdge, MVSResolution, Requirement, ROOT_REQUIRER, Selected } from "./Types";
+import { IRequirementEdge, MVSResolution, PackageIdentity, Requirement, ROOT_REQUIRER, Selected } from "./Types";
 
 const RESOLUTION_FILE = "resolution.json";
 
@@ -62,52 +73,59 @@ const RESOLUTION_FILE = "resolution.json";
  * written against one repository resolves in one joint batch.
  */
 export function vendPackageRef<V, C>(source: RefSource, format: PackageFormat<V, C>, name: Name): RepositoryRef {
-  const { requirement, projection } = format.splitReference(name);
-  const ref = new RepositoryRef(source, requirement);
-  return projection ? ref.find(projection.pattern, projection.prefix) : ref;
-}
-
-/** The requirement a reference declares, read straight off its own `name:version`
- *  — the full requirement parse, so a manifest records the declared constraint
- *  with any override marker stripped (a marker is resolution advice, never part
- *  of the constraint), and a versionless or malformed reference rejects with
- *  the same message resolution gives it. */
-export function declaredRequirementOf<V, C>(format: PackageFormat<V, C>, ref: RepositoryRef): Computable<Requirement | undefined> {
-  try {
-    return Computable.resolve(format.parseRequirement(ref.name));
-  } catch (err) {
-    return Computable.reject(toError(err));
-  }
+  const { projection, ...identity } = format.splitReference(name);
+  /* A rename written on the identity is the package's; one written after a
+   * projection rides the projection, and renames the files it selects. */
+  return projection
+    ? new RepositoryRef(source, identity).find(projection.pattern, projection.prefix)
+    : new RepositoryRef(source, { ...identity, renameTo: name.getRenameTo()?.toString() });
 }
 
 /**
- * The declared requirement of `ref` as its SOURCE answers it — the dispatch
- * behind RepositoryLookup's optional `declaredRequirement`: a package
- * registry's answer is pure written-form parsing, taken from its format; a
- * repository with its own member table (a catalog) implements the method; a
- * repository with nothing to record implements neither, which IS the answer.
+ * The requirement that depending on `source` declares — what a generated
+ * manifest records, as opposed to what a joint resolution pinned:
+ *
+ * - a built package is versionless until it is published, so it declares its
+ *   own version, or none;
+ * - a reference into a registry declares what it states, validated by the
+ *   registry's format — so a versionless or malformed one rejects with the
+ *   message resolution gives it;
+ * - a reference into a repository with its own member table (a catalog) is
+ *   answered by that repository, and one with nothing to record declares
+ *   nothing;
+ * - anything else — plain content, a compile input — has no package identity
+ *   to record.
+ *
+ * A rename written on the reference is the name its requirer knows the package
+ * by, and outranks what the repository says it is known as.
  */
-export function declaredRequirementFrom(source: RefSource, ref: RepositoryRef): Computable<Requirement | undefined> {
-  const declared = isRepositoryReader(source)
-    ? declaredRequirementOf(source.format, ref)
-    : (source.declaredRequirement?.(ref) ?? Computable.resolve(undefined));
-  /* A rename written HERE is the name this requirer knows the package by (its
-   * own code imports it under that name), so it is recorded as the requirement's
-   * alias — the fact belongs to the written reference, which is why it is read
-   * here rather than inside a format's identity parse. A source answering for
-   * itself (a catalog, whose member address is a name of its own) has already
-   * said what it is known by; only a rename at the use site outranks that. */
-  return declared.then(requirement => (requirement === undefined ? undefined : aliasedAs(requirement, ref.name.getRenameTo()?.toString())));
+export function declaredRequirement(source: SourceRef): Computable<Requirement | undefined> {
+  if (source instanceof PackageFileSet) {
+    return Computable.resolve({ name: source.packageName, versionConstraint: source.version });
+  }
+  if (!(source instanceof RepositoryRef)) {
+    return Computable.resolve(undefined);
+  }
+  const repository = source.source;
+  let declared: Computable<Requirement | undefined>;
+  try {
+    declared = isRepositoryReader(repository)
+      ? Computable.resolve(requirementOf(repository.format, source))
+      : (repository.declaredRequirement?.(source) ?? Computable.resolve(undefined));
+  } catch (err) {
+    return Computable.reject(toError(err));
+  }
+  return declared.then(requirement => (requirement === undefined ? undefined : knownAs(requirement, source.renameTo)));
 }
 
 /**
  * A declared requirement as known by `name` — the local name its requirer
- * imports it under, recorded as {@link Requirement.alias} so a generated
+ * imports it under, recorded as {@link Requirement.renameTo} so a generated
  * manifest can state it (npm: `"typescript-6": "npm:typescript@6.0.0-beta"`).
  * A name matching the package's own renames nothing, and neither does none.
  */
-export function aliasedAs(requirement: Requirement, name: string | undefined): Requirement {
-  return name === undefined || name === requirement.pkg ? requirement : { ...requirement, alias: name };
+export function knownAs(requirement: Requirement, name: string | undefined): Requirement {
+  return name === undefined || name === requirement.name ? requirement : { ...requirement, renameTo: name };
 }
 
 /**
@@ -166,6 +184,31 @@ interface DomainResolution<V> extends Resolution {
  */
 
 /**
+ * The requirement a request makes as a root of its batch. One wanted as
+ * provided binds what the batch selects for its name, and demands its own
+ * minimum only where the batch selects nothing.
+ */
+function rootRequirement<V, C>(format: PackageFormat<V, C>, request: PackageRequest): Requirement {
+  const requirement = requirementOf(format, request.reference);
+  return request.as === "provided" ? { ...requirement, provided: "expected" } : requirement;
+}
+
+/**
+ * The requirement a reference states, once its repository's format accepts
+ * it: the package, the version constraint, any override marker, and the name
+ * it is to be delivered under — a renamed package being one of its own.
+ */
+export function requirementOf<V, C>(format: PackageFormat<V, C>, reference: Requirement): Requirement {
+  format.validateRequirement(reference);
+  return {
+    name: reference.name,
+    versionConstraint: reference.versionConstraint,
+    ...(reference.override === undefined ? {} : { override: reference.override }),
+    ...(reference.renameTo === undefined || reference.renameTo === reference.name ? {} : { renameTo: reference.renameTo }),
+  };
+}
+
+/**
  * Phase 1 — resolve a batch of references jointly (one minimal-version-selection
  * over all root requirements, so shared packages agree on a version and user
  * overrides dominate per max-of-minimums) WITHOUT fetching. Returns the
@@ -179,9 +222,10 @@ interface DomainResolution<V> extends Resolution {
 export function resolvePackages<V, C>(
   context: ResolutionContext,
   registry: RepositoryReader<V, C>,
-  references: RepositoryRef[]
+  requests: ReadonlyArray<PackageRequest>
 ): Computable<Resolution> {
   const { format } = registry;
+  const references = requests.map(request => request.reference);
   /* No operation here, by construction: a resolution is a function of the
    * requirements alone, and what varies by operation is the SHAPE of the
    * delivery, decided by the repository in its own `deliver`. That is also why
@@ -189,11 +233,11 @@ export function resolvePackages<V, C>(
    * one resolution, and the field only existed to be carried back out to
    * materialize. */
   return Computable.resolve(undefined).then(() => {
-    const requirements = references.map(reference => {
+    const requirements = requests.map(request => {
       try {
-        return format.parseRequirement(reference.name);
+        return rootRequirement(format, request);
       } catch (err) {
-        throw new RequirementResolutionError([reference], toError(err));
+        throw new RequirementResolutionError([request.reference], toError(err));
       }
     });
     /* Alternates (`?`) are judgment-time sanctions, not demands: they join
@@ -203,7 +247,7 @@ export function resolvePackages<V, C>(
      * attributed to the written references that carry them. */
     const alternates = collectSanctions(format, requirements, (pkg, message): never => {
       throw new RequirementResolutionError(
-        references.filter((_, index) => requirements[index].pkg === pkg),
+        references.filter((_, index) => requiredAs(requirements[index]) === pkg),
         new Error(message)
       );
     });
@@ -216,7 +260,7 @@ export function resolvePackages<V, C>(
     const roots: ResolvedRoot[] = references.flatMap((reference, index) =>
       requirements[index].override === "alternate"
         ? []
-        : [{ reference, name: reference.name.getRenameTo()?.toString() ?? requirements[index].pkg }]
+        : [{ reference, name: reference.deliveredName }]
     );
     /* Canonicalize the roots so the resolution (and its memo key, and the
      * reachableFrom indices) are independent of reference order. Alternates
@@ -232,7 +276,7 @@ export function resolvePackages<V, C>(
       alternates,
       requirements.filter(req => req.override !== "alternate")
     );
-    return getJointResolution(context, registry, repositoryAlias(references), rootReqs, rootKeys)
+    return getJointResolution(context, registry, repositoryNameOf(references), rootReqs, rootKeys)
       .then(graph => ({ roots, rootIndex, written, graph }) satisfies DomainResolution<V>)
       .catch(err => attributeResolutionFailure(err, references, requirements));
   });
@@ -256,17 +300,19 @@ export function resolvePackages<V, C>(
 export function materializePackages<V, C>(
   context: ResolutionContext,
   registry: RepositoryReader<V, C>,
-  references: RepositoryRef[],
+  requests: ReadonlyArray<PackageRequest>,
   resolution: Resolution
 ): Computable<(PackageFileSet | undefined)[]> {
   const { format } = registry;
+  const references = requests.map(request => request.reference);
   const resolved = resolution as DomainResolution<V>;
   const { rootIndex, written, graph } = resolved;
-  const requirements = references.map(reference => format.parseRequirement(reference.name));
+  const requirements = requests.map(request => rootRequirement(format, request));
   /* An alternate (`?`) reference demands nothing and delivers nothing of its
    * own — the sanctioned fork arrives nested inside the canonical closure. */
   const demanded = requirements.filter(req => req.override !== "alternate");
   const requestedKeys = new Set(demanded.map(requirementKey));
+  const violable = violationKeys(demanded);
   /* What a root requirement BINDS to — normally the principal, but a violated
    * root requirement is answered by its fork. The resolution decided this when
    * it was computed, scoped to what that root reaches, so another root's fork
@@ -307,7 +353,7 @@ export function materializePackages<V, C>(
     /* A violation carries no marker, so its key can only match an unmarked
      * requested root — right by construction: a forced root surfaces as
      * `coerced`, and an alternate is never demanded. */
-    ...graph.violationsOf(ROOT_REQUIRER).filter(violation => requestedKeys.has(requirementKey(violation))),
+    ...graph.violationsOf(ROOT_REQUIRER).filter(violation => violable.has(violationKey(violation))),
     ...[...reachableIds].flatMap(id => graph.violationsOf(id)),
   ];
   const root = [...requestedKeys].sort().join(", ");
@@ -320,7 +366,7 @@ export function materializePackages<V, C>(
     written,
     roots: [...requestedKeys].sort(),
     refText,
-    sources: () => suggestSourcesFor(context, registry, repositoryAlias(references)),
+    sources: () => suggestSourcesFor(context, registry, repositoryNameOf(references)),
   };
   /* Judged before anything is downloaded: the verdict is decided by the
    * resolution alone. Rejects rather than throws — materialize may be entered
@@ -329,7 +375,7 @@ export function materializePackages<V, C>(
     /* Only selections of the violated package can satisfy it, so the question
      * is asked of that package's candidates rather than of every selection. */
     const unrepaired = scopedViolations.filter(
-      violation => !satisfiedByAnySelection(format, graph.selectionsOf(violation.pkg), violation)
+      violation => !satisfiedByAnySelection(format, graph.selectionsOf(violation.name), violation)
     );
     return unrepaired.length > 0 ? Computable.reject(unrepairableError(root, unrepaired, graph, refText)) : Computable.resolve(undefined);
   };
@@ -337,15 +383,14 @@ export function materializePackages<V, C>(
     .then(() => {
       /* The forks repairing the reachable violations are already in `needed`,
        * nested by the layout plan where the consumer accepts them. One
-       * fetch per member — ids are distinct by construction, and an alias
-       * binding two edges to one version is one id (one tarball, shared). */
+       * fetch per member — ids are distinct by construction. */
       const toFetch = new Map(needed.map(sel => [graph.id(sel), sel] as const));
       const fetchIds = [...toFetch.keys()];
-      /* Judged over the whole batch, since the consumer merges its
-       * deliveries into one layout. */
-      graph.assertNoAliasCollisions(toFetch);
       return Computable.forAll(
-        fetchIds.map(id => registry.fetch(toFetch.get(id)!.pkg, toFetch.get(id)!.version)),
+        fetchIds.map(id => {
+          const sel = toFetch.get(id)!;
+          return registry.fetch(sel.publishedName ?? sel.name, sel.version);
+        }),
         (...fetched: PackageFileSet[]) => {
           const packages = new Map<string, PackageFileSet>(fetchIds.map((id, k) => [id, fetched[k]]));
           const assembled = requirements.map(req => {
@@ -353,6 +398,10 @@ export function materializePackages<V, C>(
               return undefined;
             }
             const bound = bindingOf(req);
+            if (!bound && req.provided !== undefined) {
+              /* Nothing this resolution selects answers it: it offers nothing. */
+              return undefined;
+            }
             if (!bound) {
               /* Can't happen: a root requirement is always reachable from itself */
               throw new Error(`Resolution of ${requirementKey(req)} does not contain its own root package`);
@@ -370,18 +419,25 @@ export function materializePackages<V, C>(
 }
 
 /** The written form of a reference into this domain, for pasteable
- * suggestions — rendered with the alias the references were written against
+ * suggestions — rendered with the repository name the references were written against
  * (a suggestion must read exactly as the user would write it here; the
  * registry's own identity — a url — is the fallback when no reference
  * carries one, e.g. programmatic use). */
 function refTextFor(references: RepositoryRef[], registry: { identity: string }): RefRenderer {
-  const name = repositoryAlias(references) ?? registry.identity;
-  return (pkg, versionText, marker) => `${name}:${pkg}:${versionText}${marker ?? ""}`;
+  const name = repositoryNameOf(references) ?? registry.identity;
+  return (pkg, versionText, marker) => writtenReference(name, pkg, versionText, marker);
 }
 
-/** The declared alias the batch's references were written against (they share
+/** A selected package at a version as a reference to it would be written
+ * against the repository named `repository`, renamed where it is. */
+function writtenReference(repository: string, pkg: PackageIdentity, versionText: string, marker?: "?" | "!"): string {
+  const written = `${repository}:${pkg.publishedName ?? pkg.name}:${versionText}${marker ?? ""}`;
+  return pkg.publishedName === undefined ? written : `${written} -> ${pkg.name}`;
+}
+
+/** The declared repository name the batch's references were written against (they share
  * a source, so the first stamped one speaks for the batch). */
-function repositoryAlias(references: RepositoryRef[]): string | undefined {
+function repositoryNameOf(references: RepositoryRef[]): string | undefined {
   return references.find(reference => reference.repositoryName !== undefined)?.repositoryName;
 }
 
@@ -393,9 +449,9 @@ function repositoryAlias(references: RepositoryRef[]): string | undefined {
  * requirement as written.
  */
 function attributeResolutionFailure(err: unknown, references: RepositoryRef[], requirements: Requirement[]): never {
-  const culpableFor = (rootPkg: string): RepositoryRef[] => references.filter((_, index) => requirements[index].pkg === rootPkg);
+  const culpableFor = (rootPkg: string): RepositoryRef[] => references.filter((_, index) => requiredAs(requirements[index]) === rootPkg);
   if (err instanceof MetadataFetchError) {
-    const culpable = culpableFor(err.rootPkg);
+    const culpable = culpableFor(err.rootName);
     if (culpable.length > 0) {
       throw new RequirementResolutionError(culpable, err);
     }
@@ -407,7 +463,7 @@ function attributeResolutionFailure(err: unknown, references: RepositoryRef[], r
      * MultiError unwraps a sole failure. */
     throw MultiError.of(
       err.failures.map(failure => {
-        const culpable = culpableFor(failure.rootPkg);
+        const culpable = culpableFor(failure.rootName);
         const cause = new Error(failure.message);
         const wrapped = culpable.length > 0 ? new RequirementResolutionError(culpable, cause) : cause;
         return failure.help ? attachHelp(wrapped, failure.help) : wrapped;
@@ -430,14 +486,10 @@ function attributeResolutionFailure(err: unknown, references: RepositoryRef[], r
  *
  * The graph may be cyclic (mutual same-version deps are ordinary npm), so
  * it is constructed through a {@link PackageGraphBuilder}, each instance
- * memoized before its edges wire. An instance exists per (name, selection):
- * an aliased edge binds a restamped instance carrying the requirer's name
- * for the package — `wrap-ansi` delivered as `wrap-ansi-cjs` IS a package
- * of that name as far as any install is concerned, content shared. A fork
- * selection's instances are flagged {@link PackageFileSet.isNestedOverride}
- * wherever they appear — including as a delivered root, since a root
- * answered by a fork must not claim a flat slot in a merged store (only the
- * resolution can say so; position cannot).
+ * memoized before its edges wire. An instance exists per selection, and a
+ * renamed package is a selection of its own — `wrap-ansi` delivered as
+ * `wrap-ansi-cjs` IS a package of that name as far as any install is
+ * concerned, content shared.
  */
 function buildClosure<V, C>(
   registry: RepositoryReader<V, C>,
@@ -457,38 +509,50 @@ function buildClosure<V, C>(
    * not carried. Every provided requirement is recorded on the instance with
    * what this resolution offers for it, for the collection point to bind; an
    * expected one's offer is also wired here as the default, an optional one's
-   * never — whether it is present is the installation's fact. An
-   * instance exists per (name, id): an aliased edge binds a restamped instance
-   * carrying the requirer's name for the package. */
+   * never — whether it is present is the installation's fact. */
   const builder = new PackageGraphBuilder();
   const instances = new Map<string, PackageFileSet>();
   const pending: Array<[string, PackageFileSet]> = [];
-  const instance = (name: string, id: string): PackageFileSet => {
-    const key = `${name}\n${id}`;
-    let node = instances.get(key);
+  /* A selection is delivered under the name it is installed as, which for a
+   * renamed one is not the name its content was fetched under. */
+  const instance = (id: string): PackageFileSet => {
+    let node = instances.get(id);
     if (!node) {
       const files = packages.get(id)!;
-      node = builder.node(files, name, files.version, origin, graph.isFork(id), providedOf(id));
-      instances.set(key, node);
+      node = builder.node(files, graph.node(id)!.name, files.version, origin);
+      instances.set(id, node);
       pending.push([id, node]);
     }
     return node;
   };
-  const providedOf = (id: string): ReadonlyMap<string, string | undefined> | undefined => {
-    const names = graph.providedNames(id);
-    if (names.size === 0) {
-      return undefined;
-    }
+  /* A node's provided requirements. One this delivery wires holds the
+   * instance wired. Any other — an optional one, or one whose answer is
+   * outside the fetched batch — holds a reference instead: to what this
+   * resolution selected for it, or, where it selected nothing, to what the
+   * package declared. */
+  const providedOf = (id: string): Array<ProvidedDependency> => {
     const edges = graph.edgesOf(id);
-    return new Map(
-      [...names].sort().map((name): [string, string | undefined] => {
-        const toId = edges.get(name);
-        const target = toId === undefined ? undefined : graph.node(toId);
-        return [name, target === undefined ? undefined : graph.versionToString(target.version)];
-      })
-    );
+    const optionalNames = graph.optionalProvidedNames(id);
+    return [...graph.providedNames(id)].sort().map((name): ProvidedDependency => {
+      const toId = edges.get(name);
+      const optional = optionalNames?.has(name) === true;
+      if (!optional && toId !== undefined && packages.has(toId)) {
+        return { provided: "expected", target: instance(toId) };
+      }
+      const selected = toId === undefined ? undefined : graph.node(toId);
+      const declared = graph.requirements.get(id)?.find(req => req.provided !== undefined && (req.renameTo ?? req.name) === name);
+      const pkg = selected === undefined ? (declared?.name ?? name) : (selected.publishedName ?? selected.name);
+      return {
+        provided: optional ? "optional" : "expected",
+        target: new RepositoryRef(registry, {
+          name: pkg,
+          versionConstraint: selected === undefined ? declared?.versionConstraint : graph.versionToString(selected.version),
+          renameTo: name === pkg ? undefined : name,
+        }),
+      };
+    });
   };
-  const delivered = instance(root.pkg, rootId);
+  const delivered = instance(rootId);
   while (pending.length > 0) {
     const [id, node] = pending.pop()!;
     const optional = graph.optionalProvidedNames(id);
@@ -496,7 +560,8 @@ function buildClosure<V, C>(
       node,
       [...graph.edgesOf(id)]
         .filter(([depName, toId]) => optional?.has(depName) !== true && packages.has(toId))
-        .map(([depName, toId]) => instance(depName, toId))
+        .map(([, toId]) => instance(toId)),
+      providedOf(id)
     );
   }
   builder.seal();
@@ -535,20 +600,28 @@ function resolutionOrigin<V, C>(
  */
 export function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, reference: RepositoryRef): Computable<FileSet> {
   const { format } = registry;
-  const req = format.parseRequirement(reference.name);
-  const constraint = format.parseConstraint(req.constraint);
-  if (format.isFloorless(constraint)) {
+  const req = requirementOf(format, reference);
+  const stated = req.versionConstraint;
+  const constraint = constraintOf(format, stated);
+  if (stated === undefined || format.isFloorless(constraint)) {
     throw new Error(
-      `Cannot resolve the files of '${req.pkg}' without a version lower bound ('${req.constraint}'): ` +
+      `Cannot resolve the files of '${req.name}' without a version lower bound (${versionConstraintText(stated)}): ` +
         "pin a version or range to project into a package"
     );
   }
   const version = format.minimumOf(constraint);
-  const edge: IRequirementEdge = { requiredBy: ROOT_REQUIRER, constraint: req.constraint };
-  const selection: Selected<V> = { pkg: req.pkg, version, selectedBy: edge, reachedVia: edge, reachableFrom: [0] };
+  const edge: IRequirementEdge = { requiredBy: ROOT_REQUIRER, versionConstraint: req.versionConstraint };
+  const selection: Selected<V> = {
+    name: requiredAs(req),
+    ...(requiredAs(req) === req.name ? {} : { publishedName: req.name }),
+    version,
+    selectedBy: edge,
+    reachedVia: edge,
+    reachableFrom: [0],
+  };
   const origin = resolutionOrigin(format, req, [selection]);
   return registry
-    .fetch(req.pkg, version)
+    .fetch(req.name, version)
     .then(pkg => new PackageFileSet(pkg, pkg.packageName, pkg.version, [], origin))
     .catch(err => {
       /* The written minimum was never published. The joint (build/test) path
@@ -556,14 +629,14 @@ export function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, refer
        * design, but the error should name the raise the build would take. */
       if (err instanceof VersionNotFoundError) {
         const raise = registry.lowestAvailable
-          ? registry.lowestAvailable(req.pkg, req.constraint)
+          ? registry.lowestAvailable(req.name, stated)
           : Computable.resolve<V | undefined>(undefined);
         return raise.then(raised => {
           throw raised
             ? attachHelp(
                 err,
-                `the lowest published version satisfying '${req.constraint}' is ${format.versionToString(raised)} — ` +
-                  `pin '${req.pkg}:${format.versionToString(raised)}' (a build resolves this automatically via a floor raise)`
+                `the lowest published version satisfying '${stated}' is ${format.versionToString(raised)} — ` +
+                  `pin '${req.name}:${format.versionToString(raised)}' (a build resolves this automatically via a floor raise)`
               )
             : err;
         });
@@ -581,14 +654,16 @@ export function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, refer
 export function fetchPinnedPackage<V, C>(registry: RepositoryReader<V, C>, reference: RepositoryRef, resolution: Resolution): Computable<FileSet> {
   const { format } = registry;
   const { rootIndex, graph } = resolution as DomainResolution<V>;
-  const req = format.parseRequirement(reference.name);
+  const req = requirementOf(format, reference);
   const index = rootIndex.get(requirementKey(req));
   const bound = index === undefined ? undefined : graph.rootBinding(index);
   if (!bound) {
     throw new Error(`Resolution does not contain ${requirementKey(req)}`);
   }
   const origin = resolutionOrigin(format, req, graph.selections);
-  return registry.fetch(bound.pkg, bound.version).then(pkg => new PackageFileSet(pkg, pkg.packageName, pkg.version, [], origin));
+  return registry
+    .fetch(bound.publishedName ?? bound.name, bound.version)
+    .then(pkg => new PackageFileSet(pkg, pkg.packageName, pkg.version, [], origin));
 }
 
 /**
@@ -596,16 +671,16 @@ export function fetchPinnedPackage<V, C>(registry: RepositoryReader<V, C>, refer
  * resolver/ResolutionReport): the written reference form, the registry's
  * version list, and a memoized enrichment-free re-resolve.
  */
-function suggestSourcesFor<V, C>(context: ResolutionContext, registry: RepositoryReader<V, C>, alias: string | undefined): SuggestSources<V, C> {
+function suggestSourcesFor<V, C>(context: ResolutionContext, registry: RepositoryReader<V, C>, repositoryName: string | undefined): SuggestSources<V, C> {
   return {
     domain: registry.format,
-    refText: (pkg, versionText, marker) => `${alias ?? registry.identity}:${pkg}:${versionText}${marker ?? ""}`,
-    availableVersions: pkg => registry.availableVersions?.(pkg) ?? Computable.resolve(undefined),
+    refText: (pkg, versionText, marker) => writtenReference(repositoryName ?? registry.identity, pkg, versionText, marker),
+    availableVersions: pkg => registry.availableVersions?.(pkg.publishedName ?? pkg.name) ?? Computable.resolve(undefined),
     resolve: roots =>
       getJointResolution(
         context,
         registry,
-        alias,
+        repositoryName,
         roots,
         roots.map(req => requirementKey(req)),
         false
@@ -635,7 +710,7 @@ function suggestSourcesFor<V, C>(context: ResolutionContext, registry: Repositor
 function getJointResolution<V, C>(
   context: ResolutionContext,
   registry: RepositoryReader<V, C>,
-  alias: string | undefined,
+  repositoryName: string | undefined,
   roots: Requirement[],
   rootKeys: string[],
   enrich = true
@@ -652,7 +727,7 @@ function getJointResolution<V, C>(
          * tracked, so the metadata reads it fans out are attributable to a
          * resolution still in flight rather than appearing on their own. */
         context.runTask(
-          { kind: "repository-resolve", repository: alias ?? registry.identity, consumer: context.name, requirements: rootKeys },
+          { kind: "repository-resolve", repository: repositoryName ?? registry.identity, consumer: context.name, requirements: rootKeys },
           () =>
             resolveMVS(roots, format, registry).then(result => {
               /* Hard errors (unparseable constraints, unconstrained-only
@@ -665,7 +740,7 @@ function getJointResolution<V, C>(
                 if (!enrich) {
                   throw new ResolutionWalkError(result.errors);
                 }
-                return completeRepairSet(result.errors, roots, suggestSourcesFor(context, registry, alias)).then(failures => {
+                return completeRepairSet(result.errors, roots, suggestSourcesFor(context, registry, repositoryName)).then(failures => {
                   throw new ResolutionWalkError(failures);
                 });
               }

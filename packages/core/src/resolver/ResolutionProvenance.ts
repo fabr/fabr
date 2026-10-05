@@ -22,6 +22,11 @@ import type { IDeliveryFacts } from "./StrictCollection";
 import { resolutionExplainer } from "./ResolutionGraph";
 import { Requirement, ROOT_REQUIRER, Selected } from "./Types";
 
+/** A root requirement as it was written: the package, and the version it states. */
+function written(root: Requirement): string {
+  return root.versionConstraint === undefined ? root.name : `${root.name}:${root.versionConstraint}`;
+}
+
 export const PACKAGE_RESOLUTION_PROVENANCE = "package-resolution";
 
 /**
@@ -55,7 +60,7 @@ export interface IResolutionOrigin<V> extends IProvenanceStep {
 function owningSelection<V>(selections: Selected<V>[], path: string): Selected<V> | undefined {
   let best: Selected<V> | undefined;
   for (const sel of selections) {
-    if ((path === sel.pkg || path.startsWith(sel.pkg + "/")) && sel.pkg.length > (best ? best.pkg.length : -1)) {
+    if ((path === sel.name || path.startsWith(sel.name + "/")) && sel.name.length > (best ? best.name.length : -1)) {
       best = sel;
     }
   }
@@ -72,32 +77,31 @@ function owningSelection<V>(selections: Selected<V>[], path: string): Selected<V
 export function explainResolutionPath<V>(origin: IResolutionOrigin<V>, path: string): string[] {
   const selection = owningSelection(origin.selections, path);
   if (!selection) {
-    return [`'${path}' is not owned by a package in the resolution of ${origin.root.pkg}:${origin.root.constraint}`];
+    return [`'${path}' is not owned by a package in the resolution of ${written(origin.root)}`];
   }
   const { id, find, pathTo } = resolutionExplainer(origin.selections, origin.versionToString);
 
   const winner = selection.selectedBy;
   if (!winner || winner.requiredBy === ROOT_REQUIRER) {
     /* Directly required by the root requirement */
-    return [`${id(selection)} (${winner?.constraint ?? origin.root.constraint})`];
+    return [`${id(selection)} (${winner?.versionConstraint ?? origin.root.versionConstraint})`];
   }
   const winnerNode = find(winner.requiredBy);
   if (winnerNode) {
-    return [[...pathTo(winnerNode), `${id(selection)} (${winner.constraint})`].join(" -> ")];
+    return [[...pathTo(winnerNode), `${id(selection)} (${winner.versionConstraint ?? "any version"})`].join(" -> ")];
   }
   /* The winning requirement was declared by a version that was itself
    * superseded; fall back to the reachability path and note the raise. */
   return [
     pathTo(selection).join(" -> "),
-    `version ${origin.versionToString(selection.version)} raised by ${winner.requiredBy} requiring ${winner.constraint} (since superseded)`,
+    `version ${origin.versionToString(selection.version)} raised by ${winner.requiredBy} requiring ${
+      winner.versionConstraint ?? "any version"
+    } (since superseded)`,
   ];
 }
 
 registerProvenanceRenderer(PACKAGE_RESOLUTION_PROVENANCE, (step, context) => {
   const origin = step as IResolutionOrigin<unknown>;
-  const lines =
-    context.path === undefined
-      ? [`resolved from ${origin.root.pkg}:${origin.root.constraint}`]
-      : explainResolutionPath(origin, context.path);
+  const lines = context.path === undefined ? [`resolved from ${written(origin.root)}`] : explainResolutionPath(origin, context.path);
   return lines.map(message => ({ message }));
 });

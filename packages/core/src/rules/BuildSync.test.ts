@@ -18,7 +18,6 @@
  */
 
 import { expect } from "chai";
-import { Name } from "../core/Name";
 import { PublishableFileSet } from "../core/PublishableFileSet";
 import { RepositoryPublishRef, RepositoryWriter } from "../core/Repository";
 import { publishOrder } from "./BuildSync";
@@ -28,7 +27,7 @@ import { publishOrder } from "./BuildSync";
 const DEST = {} as RepositoryWriter;
 
 function carrier(name: string, version: string, dependsOn: string[] = [], destination = DEST): PublishableFileSet {
-  const coordinate = new RepositoryPublishRef(destination, Name.fromLiteral(`${name}:${version}`));
+  const coordinate = new RepositoryPublishRef(destination, { name, version });
   return new PublishableFileSet(new Map(), coordinate, name, dependsOn);
 }
 

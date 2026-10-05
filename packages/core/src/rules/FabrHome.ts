@@ -192,8 +192,8 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
     const literal = name.getLiteralPrefix();
     const colon = literal.indexOf(":");
     return colon === -1
-      ? new RepositoryRef(this, name)
-      : new RepositoryRef(this, Name.fromLiteral(literal.substring(0, colon))).find(name.substring(colon + 1));
+      ? RepositoryRef.written(this, name)
+      : new RepositoryRef(this, { name: literal.substring(0, colon), versionConstraint: undefined }).find(name.substring(colon + 1));
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
@@ -201,7 +201,7 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
   }
 
   public deliver(reference: RepositoryRef): Computable<FileSet> {
-    const name = `${this.namespace}/${reference.name.getLiteralPrefix()}`;
+    const name = `${this.namespace}/${reference.name}`;
     try {
       const directory = locate(name, this.resolveFrom);
       if (directory === undefined) {

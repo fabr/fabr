@@ -36,7 +36,8 @@ import { FileSetRef } from "../core/FileSetRef";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { IProvenanceStep } from "../core/Provenance";
 import type { RepositoryRef } from "../core/Repository";
-import { requirementKey, violatedAmong } from "./Overrides";
+import { violatedAmong } from "./Overrides";
+import { violationKey, violationKeys } from "./Requirement";
 import { ResolutionExplainer, ResolutionGraph } from "./ResolutionGraph";
 import { PACKAGE_RESOLUTION_PROVENANCE, type IResolutionOrigin } from "./ResolutionProvenance";
 import { conflictError, RefRenderer, sanctionHelp, suggestSanctions, SuggestSources } from "./ResolutionReport";
@@ -86,7 +87,7 @@ export function deliveryFactsOf(pkg: PackageFileSet): IDeliveryFacts | undefined
  */
 export function checkStrictCollection(
   delivered: ReadonlyMap<RepositoryRef, unknown>,
-  dropped?: (pkg: string, version: string) => boolean
+  dropped?: (name: string, version: string) => boolean
 ): Computable<void> {
   const culprits = factsByReference(delivered);
   const byDomain = new Map<VersionDomain<unknown, unknown>, IDeliveryFacts[]>();
@@ -137,7 +138,7 @@ interface IShipped<V> {
 function checkDomain<V, C>(
   group: IDeliveryFacts<V, C>[],
   culprits: ReadonlyMap<IDeliveryFacts, ReadonlySet<RepositoryRef>>,
-  dropped?: (pkg: string, version: string) => boolean
+  dropped?: (name: string, version: string) => boolean
 ): Computable<Error | undefined> {
   const { domain } = group[0];
   /* Everything shipped, one entry per version of each package. */
@@ -145,11 +146,11 @@ function checkDomain<V, C>(
   for (const facts of group) {
     for (const selection of facts.needed) {
       const text = domain.versionToString(selection.version);
-      if (dropped?.(selection.pkg, text) === true) {
+      if (dropped?.(selection.name, text) === true) {
         continue;
       }
-      const versions = shipped.get(selection.pkg) ?? new Map<string, IShipped<V>>();
-      shipped.set(selection.pkg, versions);
+      const versions = shipped.get(selection.name) ?? new Map<string, IShipped<V>>();
+      shipped.set(selection.name, versions);
       const held = versions.get(text);
       versions.set(text, held === undefined ? { selection, by: [facts] } : { selection: held.selection, by: [...held.by, facts] });
     }
@@ -167,13 +168,13 @@ function checkDomain<V, C>(
    * roots, and the requirers it ships — that a version shipped here fails. */
   const violations = new Map<Violation<V>, IDeliveryFacts<V>>();
   for (const facts of group) {
-    const requested = new Set(facts.requested.map(requirementKey));
+    const requested = violationKeys(facts.requested);
     const recorded = [
-      ...facts.graph.violationsOf(ROOT_REQUIRER).filter(violation => requested.has(requirementKey(violation))),
+      ...facts.graph.violationsOf(ROOT_REQUIRER).filter(violation => requested.has(violationKey(violation))),
       ...facts.needed.flatMap(selection => facts.graph.violationsOf(facts.graph.id(selection))),
     ];
     for (const violation of recorded) {
-      if (!violations.has(violation) && !sanctioned(violation.pkg) && violatedAmong(domain, shippedOf(violation.pkg), violation)) {
+      if (!violations.has(violation) && !sanctioned(violation.name) && violatedAmong(domain, shippedOf(violation.name), violation)) {
         violations.set(violation, facts);
       }
     }
@@ -233,14 +234,13 @@ function conflictedSanctions<V>(
   domain: VersionDomain<V, unknown>,
   refText: RefRenderer
 ): string[] {
-  const conflicted = [...new Set([...outstanding.map(violation => violation.pkg), ...duplicates.map(([pkg]) => pkg)])].sort();
+  const conflicted = [...new Set([...outstanding.map(violation => violation.name), ...duplicates.map(([pkg]) => pkg)])].sort();
   return conflicted.flatMap(pkg => {
     const entries = [...(shipped.get(pkg)?.values() ?? [])]
-      .map(entry => entry.selection.version)
-      .sort((a, b) => domain.compare(a, b))
-      .map(version => domain.versionToString(version))
-      .filter(version => written.get(pkg)?.has(version) !== true)
-      .map(version => refText(pkg, version, "?"));
+      .map(entry => entry.selection)
+      .sort((a, b) => domain.compare(a.version, b.version))
+      .filter(sel => written.get(pkg)?.has(domain.versionToString(sel.version)) !== true)
+      .map(sel => refText(sel, domain.versionToString(sel.version), "?"));
     return entries.length > 0 ? [entries.join(" ")] : [];
   });
 }

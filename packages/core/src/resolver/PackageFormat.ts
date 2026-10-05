@@ -66,14 +66,14 @@ export interface PackageFormat<V, C> extends VersionDomain<V, C> {
    * domain resolves) and whatever remains as a projection *into* the resolved
    * content — the split behind vendPackageRef.
    */
-  splitReference(name: Name): { requirement: Name; projection?: IProjection };
-  /** The requirement a reference identity declares (constraint syntax
-   * validated, any override marker parsed off); throws with help attached on
-   * a malformed or versionless one. */
-  parseRequirement(name: Name): Requirement;
+  splitReference(name: Name): Requirement & { projection?: IProjection };
+  /** Check that a reference identity is one this format can resolve: throws,
+   * with help attached, on a malformed version or a versionless reference the
+   * format does not allow. */
+  validateRequirement(reference: Requirement): void;
   /**
    * The name + exact version a publish coordinate assigns — the write-side
-   * dual of {@link parseRequirement} (a coordinate pins an exact version where
+   * dual of {@link splitReference} (a coordinate pins an exact version where
    * a requirement declares a range). Throws, positioned in the coordinate's
    * own terms, on a malformed one — called at vend time so a bad address
    * fails fast.

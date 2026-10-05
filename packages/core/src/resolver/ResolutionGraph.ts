@@ -29,7 +29,7 @@
  * obliged to agree is how they stop agreeing.
  */
 
-import { attachHelp, ConflictError } from "../core/Errors";
+import { constraintOf, requiredAs } from "./Requirement";
 import { DependencyName, NodeId, PackageName, RaisedFloor, Requirement, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
 
 /**
@@ -110,11 +110,11 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
       const id = this.id(selection);
       this.byId.set(id, selection);
       this.positions.set(id, this.positions.size);
-      const candidates = this.byPkg.get(selection.pkg);
+      const candidates = this.byPkg.get(selection.name);
       if (candidates) {
         candidates.push(selection);
       } else {
-        this.byPkg.set(selection.pkg, [selection]);
+        this.byPkg.set(selection.name, [selection]);
       }
     }
     for (const violation of data.violations) {
@@ -129,7 +129,7 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
 
   /** {@link nodeId} of a selection. */
   public id(selection: Selected<V>): NodeId {
-    return `${selection.pkg}@${this.versionToString(selection.version)}`;
+    return `${selection.name}@${this.versionToString(selection.version)}`;
   }
 
   /** The selection an id names, if the resolution holds one. */
@@ -153,12 +153,6 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
     return this.byPkg.get(pkg) ?? NONE;
   }
 
-  /** Whether an id names a **fork** — a sanctioned second (third, …) version
-   * of a package, deliverable only nested under its requirers. */
-  public isFork(id: NodeId): boolean {
-    return this.byId.get(id)?.fork !== undefined;
-  }
-
   /** The selection a canonical root (by index) binds to — decided when the
    * resolution was computed, scoped to what that root reaches, so a fork
    * packed for another root's violated edge cannot answer here. */
@@ -168,7 +162,7 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
   }
 
   /** A node's resolved edges: dependency name (the *requirer's* name for it —
-   * an alias for an aliased dependency) → the id of the selection it binds to. */
+   * the rename, for a renamed dependency) → the id of the selection it binds to. */
   public edgesOf(id: NodeId): ReadonlyMap<DependencyName, NodeId> {
     return this.edges.get(id) ?? NO_EDGES;
   }
@@ -189,10 +183,10 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
     if (this.optionalProvided === undefined) {
       this.optionalProvided = new Map();
       for (const [node, requires] of this.requirements) {
-        const names = new Set(requires.filter(req => req.provided === "optional").map(req => req.alias ?? req.pkg));
+        const names = new Set(requires.filter(req => req.provided === "optional").map(req => requiredAs(req)));
         for (const req of requires) {
           if (req.provided !== "optional") {
-            names.delete(req.alias ?? req.pkg);
+            names.delete(requiredAs(req));
           }
         }
         if (names.size > 0) {
@@ -208,10 +202,10 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
    * one. */
   public providedNames(id: NodeId): ReadonlySet<DependencyName> {
     const requires = this.requirements.get(id) ?? [];
-    const names = new Set(requires.filter(req => req.provided !== undefined).map(req => req.alias ?? req.pkg));
+    const names = new Set(requires.filter(req => req.provided !== undefined).map(req => requiredAs(req)));
     for (const req of requires) {
       if (req.provided === undefined) {
-        names.delete(req.alias ?? req.pkg);
+        names.delete(requiredAs(req));
       }
     }
     return names;
@@ -241,7 +235,7 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
         chain.unshift(this.id(current));
         break;
       }
-      chain.unshift(`${this.id(current)} (${via.constraint})`);
+      chain.unshift(`${this.id(current)} (${via.versionConstraint})`);
       current = this.byId.get(via.requiredBy);
     }
     return chain;
@@ -251,38 +245,6 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
    * the narrow explain-only face provenance rendering consumes. */
   public explainer(): ResolutionExplainer<V> {
     return { id: sel => this.id(sel), find: id => this.node(id), pathTo: node => this.pathTo(node) };
-  }
-
-  /**
-   * Assert that no dependency name among `members` (a delivery batch, keyed by
-   * id) binds two *different packages*: such an alias cannot install both
-   * under that name anywhere the two co-mount, and one of them would silently
-   * lose its imports — a conflict, never a pick. Judged over the whole batch,
-   * since the consumer's collection point merges the batch's deliveries into
-   * one layout; driven by `members`, so a delivery pays for its own slice, not
-   * for the resolution. It takes an alias to reach: ordinary edges name their
-   * own package.
-   */
-  public assertNoAliasCollisions(members: ReadonlyMap<NodeId, Selected<V>>): void {
-    const held = new Map<DependencyName, Selected<V>>();
-    for (const fromId of members.keys()) {
-      for (const [name, toId] of this.edgesOf(fromId)) {
-        const selection = members.get(toId);
-        if (!selection) {
-          continue;
-        }
-        const current = held.get(name);
-        if (current === undefined) {
-          held.set(name, selection);
-        } else if (current.pkg !== selection.pkg) {
-          throw attachHelp(
-            new ConflictError("packages", name, { detail: this.id(current) }, { detail: this.id(selection) }),
-            `'${name}' is a dependency alias (npm:…) for two different packages in one closure, which cannot both be installed ` +
-              "under that name — pin one of the requirers to a version that does not alias it"
-          );
-        }
-      }
-    }
   }
 }
 
@@ -359,11 +321,12 @@ export function edgeBinding<V, C>(
 ): Selected<V> | undefined {
   let constraint: C;
   try {
-    constraint = domain.parseConstraint(req.constraint);
+    constraint = constraintOf(domain, req.versionConstraint);
   } catch {
     return undefined;
   }
-  const candidates = selections.filter(sel => sel.pkg === req.pkg);
+  const name = requiredAs(req);
+  const candidates = selections.filter(sel => sel.name === name);
   const principal = candidates.find(sel => !sel.fork);
   if (principal && (req.provided !== undefined || domain.satisfies(principal.version, constraint))) {
     return principal;
@@ -429,7 +392,7 @@ export function resolutionExplainer<V>(
 export function coexistingVersions<V>(selections: readonly Selected<V>[]): Array<[string, V[]]> {
   const byPkg = new Map<string, V[]>();
   for (const sel of selections) {
-    byPkg.set(sel.pkg, [...(byPkg.get(sel.pkg) ?? []), sel.version]);
+    byPkg.set(sel.name, [...(byPkg.get(sel.name) ?? []), sel.version]);
   }
   return [...byPkg].filter(([, versions]) => versions.length > 1);
 }

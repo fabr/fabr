@@ -22,7 +22,9 @@ import { IRequirementEdge, MVSResolution, Requirement, Selected, Violation } fro
 
 /** Serialized form of one selection in a persisted resolution document */
 interface IResolutionEntry {
-  pkg: string;
+  name: string;
+  /** See resolver Selected.publishedName; absent where it is `name` */
+  publishedName?: string;
   version: string;
   selectedBy?: IRequirementEdge;
   reachedVia?: IRequirementEdge;
@@ -32,16 +34,16 @@ interface IResolutionEntry {
 
 /** Serialized upper-bound violation (see resolver Violation) */
 interface IViolationEntry {
-  pkg: string;
-  constraint: string;
+  name: string;
+  versionConstraint: string;
   requiredBy: string;
   selected: string;
 }
 
 /** Serialized floor raise (see resolver RaisedFloor) */
 interface IRaiseEntry {
-  pkg: string;
-  constraint: string;
+  name: string;
+  versionConstraint: string;
   declared: string;
   raised: string;
   requiredBy: string;
@@ -89,8 +91,8 @@ export function serializeResolutionDoc<V>(
   versionToString: (version: V) => string
 ): IResolutionDoc {
   const violation = (entry: Violation<V>): IViolationEntry => ({
-    pkg: entry.pkg,
-    constraint: entry.constraint,
+    name: entry.name,
+    versionConstraint: entry.versionConstraint,
     requiredBy: entry.requiredBy,
     selected: versionToString(entry.selected),
   });
@@ -99,7 +101,8 @@ export function serializeResolutionDoc<V>(
   return {
     roots,
     selections: result.selections.map(sel => ({
-      pkg: sel.pkg,
+      name: sel.name,
+      ...(sel.publishedName === undefined ? {} : { publishedName: sel.publishedName }),
       version: versionToString(sel.version),
       selectedBy: sel.selectedBy,
       reachedVia: sel.reachedVia,
@@ -109,8 +112,8 @@ export function serializeResolutionDoc<V>(
     coerced: result.coerced.map(violation),
     shared: result.shared.map(violation),
     raises: result.raises.map(raise => ({
-      pkg: raise.pkg,
-      constraint: raise.constraint,
+      name: raise.name,
+      versionConstraint: raise.versionConstraint,
       declared: versionToString(raise.declared),
       raised: versionToString(raise.raised),
       requiredBy: raise.requiredBy,
@@ -129,7 +132,7 @@ export function serializeResolutionDoc<V>(
  * (the resolver's own {@link nodeId}, restated here to keep this module free of
  * the domain). */
 function nodeKey<V>(selection: Selected<V>, versionToString: (version: V) => string): string {
-  return `${selection.pkg}@${versionToString(selection.version)}`;
+  return `${selection.name}@${versionToString(selection.version)}`;
 }
 
 /** Deserialize a resolution document into the loaded resolution — a
@@ -142,16 +145,17 @@ export function deserializeResolutionDoc<V>(
   const parseVersion = (text: string): V => domain.parseVersion(text);
   /* Edge targets are positional (see IResolutionDoc.edges); the ids they mean
    * are read straight off the serialized selections, no version parsing. */
-  const ids = doc.selections.map(entry => `${entry.pkg}@${entry.version}`);
+  const ids = doc.selections.map(entry => `${entry.name}@${entry.version}`);
   const violation = (entry: IViolationEntry): Violation<V> => ({
-    pkg: entry.pkg,
-    constraint: entry.constraint,
+    name: entry.name,
+    versionConstraint: entry.versionConstraint,
     requiredBy: entry.requiredBy,
     selected: parseVersion(entry.selected),
   });
   return new ResolutionGraph(version => domain.versionToString(version), {
     selections: doc.selections.map(entry => ({
-      pkg: entry.pkg,
+      name: entry.name,
+      ...(entry.publishedName === undefined ? {} : { publishedName: entry.publishedName }),
       version: parseVersion(entry.version),
       selectedBy: entry.selectedBy,
       reachedVia: entry.reachedVia,
@@ -161,8 +165,8 @@ export function deserializeResolutionDoc<V>(
     coerced: (doc.coerced ?? []).map(violation),
     shared: (doc.shared ?? []).map(violation),
     raises: (doc.raises ?? []).map(entry => ({
-      pkg: entry.pkg,
-      constraint: entry.constraint,
+      name: entry.name,
+      versionConstraint: entry.versionConstraint,
       declared: parseVersion(entry.declared),
       raised: parseVersion(entry.raised),
       requiredBy: entry.requiredBy,

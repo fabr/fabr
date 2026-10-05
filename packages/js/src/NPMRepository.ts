@@ -63,6 +63,7 @@ import {
   vendPackageRef,
   VersionNotFoundError,
   versionToString,
+  constraintOf,
 } from "@fabr-build/core";
 import {
   INPMPackageMetadata,
@@ -158,8 +159,7 @@ export class NPMRepository
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    this.format.parsePublishCoordinate(name); /* validate the address shape up front */
-    return new RepositoryPublishRef(this, name);
+    return new RepositoryPublishRef(this, this.format.parsePublishCoordinate(name));
   }
 
   /* The run's registry-auth authority (the combined project + user `.npmrc`,
@@ -205,20 +205,19 @@ export class NPMRepository
   public package(members: PublishMember[], release: readonly RepositoryPublishRef[]): Computable<PublishableFileSet[]> {
     /* The npm-shaped slice of the release: coordinates addressed to ANY npm
      * destination (so a cross-registry npm twin participates in the rewrite),
-     * their identities re-parsed from the written name. A destination is npm
+     * each with the name and version it assigns. A destination is npm
      * iff its repository SPEAKS npm — format identity, which homogeneity
      * makes answer for every coordinate in the repository, whichever registry
      * a group routes it to. An address in some other ecosystem's namespace (a
      * file path, say) has no name/version and is ignored. */
     const npmRelease = release
-      .filter(coordinate => isRepositoryReader(coordinate.source) && coordinate.source.format === NPM_FORMAT)
-      .map(coordinate => this.format.parsePublishCoordinate(coordinate.name));
+      .filter(coordinate => isRepositoryReader(coordinate.source) && coordinate.source.format === NPM_FORMAT);
     /* Later entries win the merge: own-batch assignments over release-wide. (A
      * name can't be batch-unique but release-ambiguous *and missing* from the
      * batch map — own coordinates are a subset of the release's.) */
     const memberVersions = new Map([
       ...uniqueAssignments(npmRelease),
-      ...uniqueAssignments(members.map(member => this.format.parsePublishCoordinate(member.destination.name))),
+      ...uniqueAssignments(members.map(member => member.destination)),
     ]);
     const memberNames = new Set(npmRelease.map(identity => identity.name));
     return Computable.forAll(
@@ -232,7 +231,7 @@ export class NPMRepository
     memberVersions: ReadonlyMap<string, string>,
     memberNames: ReadonlySet<string>
   ): Computable<PublishableFileSet> {
-    const identity = this.format.parsePublishCoordinate(member.destination.name);
+    const identity = member.destination;
     const { content } = member;
     return content.get("package.json").then(manifestFile => {
       if (!manifestFile) {
@@ -283,8 +282,7 @@ export class NPMRepository
    * authentication — from the environment or the per-registry `.npmrc`.
    */
   public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
-    const identity = this.format.parsePublishCoordinate(artifact.destination.name);
-    const { name, version } = identity;
+    const { name, version } = artifact.destination;
     const tgzFile = artifact.get(tarballBasename(name, version));
     const manifestFile = artifact.get("package.json");
     return Computable.forAll([tgzFile, manifestFile, this.npmAuth()], (tgz, manifest, auth) => {
@@ -295,7 +293,7 @@ export class NPMRepository
     }).then(({ data, manifestJson, auth }) =>
       publishToRegistry(
         this.url,
-        identity,
+        { name, version },
         data,
         JSON.parse(manifestJson),
         auth.getHeadersFor(this.url),
@@ -415,13 +413,13 @@ export class NPMRepository
   public validateSelections(selections: Selected<SemverVersion>[]): Computable<void> {
     return this.targetPlatform().then(target =>
       Computable.forAll(
-        selections.map(sel => this.getVersionMetadata(sel.pkg, versionToString(sel.version)).then(meta => ({ sel, meta }))),
+        selections.map(sel => this.getVersionMetadata(sel.publishedName ?? sel.name, versionToString(sel.version)).then(meta => ({ sel, meta }))),
         (...entries) => {
           for (const { sel, meta } of entries) {
             const reason = unsupportedPlatformReason(meta, target);
             if (reason) {
               throw new Error(
-                `${sel.pkg}@${versionToString(sel.version)} is not supported for the target platform (${reason}), ` +
+                `${sel.name}@${versionToString(sel.version)} is not supported for the target platform (${reason}), ` +
                   `required by ${sel.reachedVia?.requiredBy ?? "a direct requirement"}`
               );
             }
@@ -532,7 +530,7 @@ export class NPMRepository
   private keepIfTargetMatches(req: Requirement, target: NpmPlatform): Computable<Requirement | undefined> {
     let probeVersion: string;
     try {
-      const constraint = SEMVER.parseConstraint(req.constraint);
+      const constraint = constraintOf(SEMVER, req.versionConstraint);
       if (SEMVER.isFloorless(constraint)) {
         return Computable.resolve(undefined);
       }
@@ -544,7 +542,7 @@ export class NPMRepository
      * (malformed gates in a fetched document) is as non-fatal as one that could
      * not be fetched, and a handler passed to then() does not see the success
      * callback's own throw. */
-    return this.getVersionMetadata(req.pkg, probeVersion)
+    return this.getVersionMetadata(req.name, probeVersion)
       .then(meta => (matchesTargetPlatform(meta, target) ? req : undefined))
       .catch(() => undefined);
   }

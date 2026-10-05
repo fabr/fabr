@@ -97,10 +97,10 @@ async function imported(files: Map<string, IFile>, ...names: string[]): Promise<
 
 describe("assembling delivered edge-binding graphs", () => {
   /** A delivered closure from a literal `id -> {name: id}` graph — complete
-   * edge bindings, cycles allowed — built the way NPMRepository.buildClosure
-   * builds one: an instance per (name, selection) wired through the graph
-   * builder, an aliased edge restamped with the requirer's name for it. */
-  function delivered(edges: Record<string, Record<string, string>>, rootId: string, forks: string[] = []): PackageFileSet {
+   * edge bindings, cycles allowed — built the way the resolution layer's
+   * buildClosure builds one: an instance per selection wired through the
+   * graph builder, named as it is installed. */
+  function delivered(edges: Record<string, Record<string, string>>, rootId: string): PackageFileSet {
     const builder = new PackageGraphBuilder();
     const instances = new Map<string, PackageFileSet>();
     const instance = (name: string, id: string): PackageFileSet => {
@@ -110,9 +110,7 @@ describe("assembling delivered edge-binding graphs", () => {
         node = builder.node(
           new Map<string, IFile>([["index.js", MemoryFile.from(`// ${id}`)]]),
           name,
-          id.substring(id.lastIndexOf("@") + 1),
-          undefined,
-          forks.includes(id)
+          id.substring(id.lastIndexOf("@") + 1)
         );
         instances.set(key, node);
         builder.wire(

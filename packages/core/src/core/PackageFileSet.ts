@@ -24,6 +24,41 @@ import { IProvenanceStep } from "./Provenance";
 /* Type-only: RepositoryRef values are only ever constructed/inspected on the
  * Repository side; carrying the type here must not create a module cycle. */
 import type { RepositoryRef } from "./Repository";
+import type { Requirement } from "../resolver/Types";
+
+/**
+ * One of a package's **provided requirements** — a dependency something above
+ * it supplies. Which package answers one is its consumer's to say (see
+ * bindProvided), so it is recorded apart from the package's own edges.
+ *
+ * `target` is what answers it where nothing above does: a package, or a
+ * reference to one.
+ *
+ * `provided` is how strongly it is expected, in a requirement's own terms
+ * (see Requirement.provided):
+ *
+ * - an `"expected"` reference is resolved at the collection point the package
+ *   reaches, and becomes the package it was delivered as;
+ * - an `"optional"` one is never installed on the package's behalf, so its
+ *   reference is never resolved: it binds only where the installation already
+ *   holds a package that answers it.
+ *
+ * A package target is also one of the package's edges, until the consumer
+ * binds something else in its place.
+ */
+export interface ProvidedDependency {
+  readonly provided: NonNullable<Requirement["provided"]>;
+  readonly target: PackageFileSet | RepositoryRef;
+}
+
+/** The name a provided requirement is required under: its package's, or the
+ * one its reference delivers as. */
+export function providedName(entry: ProvidedDependency): string {
+  const target = entry.target;
+  return target instanceof PackageFileSet ? target.packageName : target.deliveredName;
+}
+
+const NOTHING_PROVIDED: ReadonlyArray<ProvidedDependency> = Object.freeze([]);
 
 /**
  * A FileSet that is a package; adds package name, version, and dependencies.
@@ -46,15 +81,13 @@ import type { RepositoryRef } from "./Repository";
  *   walkers must be cycle-safe; hoisting and private nesting are computed by
  *   the assembler from these complete facts, not read out of the structure.
  *
- * An edge's *name* is the delivered instance's `packageName`: an aliased
+ * An edge's *name* is the delivered instance's `packageName`: a renamed
  * dependency is a restamped instance carrying the name its requirer knows it
  * by, so nothing downstream needs a separate edge-name slot.
  *
  * Content derivations (find/remap/minus/...) deliberately return plain
  * FileSets: once you reach inside a package, the result is just files.
  */
-const NOTHING_PROVIDED: ReadonlyMap<string, string | undefined> = new Map();
-
 export class PackageFileSet extends FileSet {
   constructor(
     files: Iterable<[string, IFile]>,
@@ -63,26 +96,12 @@ export class PackageFileSet extends FileSet {
     public readonly dependencies: ReadonlyArray<PackageFileSet | RepositoryRef> = [],
     origin?: IProvenanceStep,
     /**
-     * True for an instance delivered as a **private override** — a second
-     * version of its package the resolution sanctioned, valid only nested
-     * under the requirers that list it, never as a flat mount. Runtime-only
-     * layout knowledge (like provenance, reconstructed every evaluation —
-     * never serialized): an assembler nests a flagged instance and would
-     * conflict on an unflagged same-name duplicate, which is two deliveries
-     * disagreeing rather than one delivery's sanctioned divergence.
+     * The package's {@link ProvidedDependency provided requirements}. The
+     * collection point binds each ({@link bindProvided}), and a binding is an
+     * ordinary edge in `dependencies`. An edge named here is therefore a
+     * binding that may be replaced, never a requirement of the package's own.
      */
-    public readonly isNestedOverride: boolean = false,
-    /**
-     * The package's **provided requirements** — the dependencies something
-     * above it supplies — by the name it requires each under, mapped to the
-     * version its resolution offers for it (undefined where it offers none).
-     * Which package answers one is its consumer's to say, so the collection
-     * point binds each ({@link bindProvided}), and a binding is an ordinary
-     * edge in `dependencies`. A delivery wires its offer for an expected one as
-     * that default; an edge named here is therefore a binding that may be
-     * replaced, never a requirement of the package's own.
-     */
-    public readonly provided: ReadonlyMap<string, string | undefined> = NOTHING_PROVIDED
+    public readonly provided: ReadonlyArray<ProvidedDependency> = NOTHING_PROVIDED
   ) {
     /* An existing FileSet passes straight through — the base shares its content
      * (already canonical) rather than copying and rechecking every name, which
@@ -105,7 +124,7 @@ export class PackageFileSet extends FileSet {
   }
 
   public withOrigin(origin: IProvenanceStep): PackageFileSet {
-    return new PackageFileSet(this, this.packageName, this.version, this.dependencies, origin, this.isNestedOverride, this.provided);
+    return new PackageFileSet(this, this.packageName, this.version, this.dependencies, origin, this.provided);
   }
 
   /**
@@ -117,7 +136,7 @@ export class PackageFileSet extends FileSet {
    * but the mount point alone.
    */
   public withPackageName(packageName: string): PackageFileSet {
-    return new PackageFileSet(this, packageName, this.version, this.dependencies, this.origin, this.isNestedOverride, this.provided);
+    return new PackageFileSet(this, packageName, this.version, this.dependencies, this.origin, this.provided);
   }
 
   public getDependency(name: string): PackageFileSet | RepositoryRef | undefined {
@@ -169,7 +188,7 @@ export function packageNodeSignature(pkg: PackageFileSet): string {
     .filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)
     .map(dep => dep.packageId)
     .sort();
-  return `${pkg.packageId} ${pkg.toManifestHash()} [${edges.join(",")}]${pkg.isNestedOverride ? " nested" : ""}`;
+  return `${pkg.packageId} ${pkg.toManifestHash()} [${edges.join(",")}]`;
 }
 
 /**
@@ -191,7 +210,7 @@ export function nodeNaming(sets: ReadonlyArray<FileSet>): (pkg: PackageFileSet) 
   const packages = reachablePackages(sets);
   const children = (pkg: PackageFileSet): PackageFileSet[] =>
     pkg.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
-  let color = new Map(packages.map(pkg => [pkg, `${pkg.packageId} ${pkg.toManifestHash()}${pkg.isNestedOverride ? " nested" : ""}`]));
+  let color = new Map(packages.map(pkg => [pkg, `${pkg.packageId} ${pkg.toManifestHash()}`]));
   let groups = new Set(color.values()).size;
   for (;;) {
     const refined = new Map(
@@ -241,8 +260,7 @@ export function assertSamePackageNode(held: PackageFileSet, arrived: PackageFile
  * are not one node, said in the terms that tell a reader what to do. Different
  * CONTENT is two packages claiming one identity. Same content wired to
  * different dependencies is one package delivered twice, and the dependency
- * that differs is the thing to look at: a version divergence below it, or a
- * private override on one side only.
+ * that differs is the thing to look at: a version divergence below it.
  */
 export function packageConflict(held: PackageFileSet, arrived: PackageFileSet): Error {
   const side = (pkg: PackageFileSet, detail: string): { provenance?: IProvenanceStep; detail: string } => ({
@@ -267,8 +285,7 @@ export function packageConflict(held: PackageFileSet, arrived: PackageFileSet): 
 /** `name@version`, and what it depends on, for a conflict's side. */
 function dependencyText(pkg: PackageFileSet): string {
   const deps = packageDependencyIds(pkg);
-  const override = pkg.isNestedOverride ? " (a private override)" : "";
-  return `${pkg.packageId}${override} depending on ${deps.length === 0 ? "nothing" : deps.join(", ")}`;
+  return `${pkg.packageId} depending on ${deps.length === 0 ? "nothing" : deps.join(", ")}`;
 }
 
 /** What differs between two instances' dependencies, by the name each is
@@ -286,9 +303,6 @@ function dependencyDifference(a: PackageFileSet, b: PackageFileSet): string {
     }
     return [x === undefined ? `${y} on one side only` : y === undefined ? `${x} on one side only` : `${x} against ${y}`];
   });
-  if (a.isNestedOverride !== b.isNestedOverride) {
-    differences.push("a private override on one side only");
-  }
   return differences.join("; ") || "the same dependencies, bound to different copies of them";
 }
 
@@ -315,48 +329,51 @@ function packageDependencyIds(pkg: PackageFileSet): string[] {
  * fine (a leaf simply has no dependencies). The builder is single-use.
  */
 export class PackageGraphBuilder {
-  private readonly pending = new Map<PackageFileSet, Array<PackageFileSet | RepositoryRef>>();
+  private readonly pending = new Map<
+    PackageFileSet,
+    { dependencies: Array<PackageFileSet | RepositoryRef>; provided: Array<ProvidedDependency> }
+  >();
   private readonly wired = new Set<PackageFileSet>();
   private sealed = false;
 
-  /** Create a node with an empty (unwired) dependency list. */
-  public node(
-    files: Iterable<[string, IFile]>,
-    packageName: string,
-    version?: string,
-    origin?: IProvenanceStep,
-    isNestedOverride?: boolean,
-    provided?: ReadonlyMap<string, string | undefined>
-  ): PackageFileSet {
+  /** Create a node with empty (unwired) dependency and provided lists. */
+  public node(files: Iterable<[string, IFile]>, packageName: string, version?: string, origin?: IProvenanceStep): PackageFileSet {
     if (this.sealed) {
       throw new Error("PackageGraphBuilder is sealed");
     }
-    /* The constructor stores the dependencies array by reference, which is
-     * exactly what lets the builder fill it in after construction. */
+    /* The constructor stores both arrays by reference, which is exactly what
+     * lets the builder fill them in after construction. */
     const dependencies: Array<PackageFileSet | RepositoryRef> = [];
-    const pkg = new PackageFileSet(files, packageName, version, dependencies, origin, isNestedOverride ?? false, provided);
-    this.pending.set(pkg, dependencies);
+    const provided: Array<ProvidedDependency> = [];
+    const pkg = new PackageFileSet(files, packageName, version, dependencies, origin, provided);
+    this.pending.set(pkg, { dependencies, provided });
     return pkg;
   }
 
-  /** Wire a node's dependencies (once — an empty wiring counts), to nodes of
-   * this or any graph. */
-  public wire(pkg: PackageFileSet, dependencies: ReadonlyArray<PackageFileSet | RepositoryRef>): void {
-    const list = this.pending.get(pkg);
-    if (list === undefined) {
+  /** Wire a node's dependencies and provided requirements (once — an empty
+   * wiring counts), to nodes of this or any graph. */
+  public wire(
+    pkg: PackageFileSet,
+    dependencies: ReadonlyArray<PackageFileSet | RepositoryRef>,
+    provided: ReadonlyArray<ProvidedDependency> = []
+  ): void {
+    const lists = this.pending.get(pkg);
+    if (lists === undefined) {
       throw new Error(this.sealed ? "PackageGraphBuilder is sealed" : "not an unwired node of this builder");
     }
     if (this.wired.has(pkg)) {
       throw new Error(`${pkg.packageId} is already wired`);
     }
     this.wired.add(pkg);
-    list.push(...dependencies);
+    lists.dependencies.push(...dependencies);
+    lists.provided.push(...provided);
   }
 
-  /** Freeze every node's dependency list; the graph is now immutable. */
+  /** Freeze every node's lists; the graph is now immutable. */
   public seal(): void {
-    for (const list of this.pending.values()) {
-      Object.freeze(list);
+    for (const { dependencies, provided } of this.pending.values()) {
+      Object.freeze(dependencies);
+      Object.freeze(provided);
     }
     this.pending.clear();
     this.wired.clear();

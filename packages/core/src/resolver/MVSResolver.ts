@@ -19,6 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { MetadataFetchError, toError, VersionNotFoundError } from "../core/Errors";
+import { constraintOf, requiredAs, versionConstraintText } from "./Requirement";
 import { edgeBinding, nodeId as idOf } from "./ResolutionGraph";
 import {
   IRequirementEdge,
@@ -149,8 +150,18 @@ class RepairsRequired extends Error {
   }
 }
 
+/** The constraint a floored requirement states. One that states none has no
+ * floor, so it is never raised or violated, and never reaches a caller of this. */
+function statedConstraint(req: Requirement): string {
+  if (req.versionConstraint === undefined) {
+    throw new Error(`internal: '${req.name}' states no version, so has no floor to raise`);
+  }
+  return req.versionConstraint;
+}
+
 /** Lexicographic order on strings, for the canonical orderings a persisted
  * resolution needs (its lists must not carry the walk's arrival order). */
+
 function compareText(a: string, b: string): number {
   if (a < b) {
     return -1;
@@ -165,6 +176,13 @@ interface Demand {
   requiredBy: string;
 }
 
+/** The name a requirement's package is published under, where the requirement
+ * renames it — the one field of a selection the walk takes from the
+ * requirement rather than the slot. */
+function publishedBy(req: Requirement): { publishedName?: string } {
+  return requiredAs(req) === req.name ? {} : { publishedName: req.name };
+}
+
 function resolvePhase<V, C>(
   roots: Requirement[],
   domain: VersionDomain<V, C>,
@@ -174,6 +192,8 @@ function resolvePhase<V, C>(
    * walk, so it is repair-free. */
   repairable: ReadonlySet<string>
 ): Computable<MVSResolution<V>> {
+  /* The walk knows a package by the name it is required as (its slot); the
+   * registry is asked for it by the name it is published under. */
   return Computable.from((resolve, reject) => {
     /* Forced packages (a `!` root override): every requirement on the package
      * is substituted with exactly this version — npm-`overrides` semantics.
@@ -182,9 +202,9 @@ function resolvePhase<V, C>(
      * first. */
     const forced = new Map<string, V>();
     for (const root of roots) {
-      if (root.override === "force" && !forced.has(root.pkg)) {
+      if (root.override === "force" && !forced.has(requiredAs(root))) {
         try {
-          forced.set(root.pkg, domain.minimumOf(domain.parseConstraint(root.constraint)));
+          forced.set(requiredAs(root), domain.minimumOf(constraintOf(domain, root.versionConstraint)));
         } catch {
           /* Unparseable force constraint: reported by followEdge as usual */
         }
@@ -238,7 +258,7 @@ function resolvePhase<V, C>(
     /* Written `?` alternates (attach-last: supply a version to a package the
      * tree requires only floorlessly), and the packages seen floorlessly
      * required — the trigger condition, judged at quiescence. */
-    const alternateAnswers = new Map<string, V>();
+    const alternateAnswers = new Map<string, { version: V; publishedName?: string }>();
     const alternateFired = new Set<string>();
     const floorlessRequired = new Set<string>();
 
@@ -272,7 +292,7 @@ function resolvePhase<V, C>(
     const enqueue = (req: Requirement, requiredBy: string): void => {
       let constraint: C;
       try {
-        constraint = domain.parseConstraint(req.constraint);
+        constraint = constraintOf(domain, req.versionConstraint);
       } catch {
         /* An unparseable constraint is reported at the reachability walk
          * (followEdge), not here: the fixpoint walk visits superseded/pruned
@@ -290,13 +310,13 @@ function resolvePhase<V, C>(
          * one (fired at quiescence, like the other convergence repairs).
          * Recorded here; never an ordinary demand. */
         const version = domain.minimumOf(constraint);
-        const current = alternateAnswers.get(req.pkg);
-        if (current === undefined || domain.compare(version, current) > 0) {
-          alternateAnswers.set(req.pkg, version);
+        const current = alternateAnswers.get(requiredAs(req));
+        if (current === undefined || domain.compare(version, current.version) > 0) {
+          alternateAnswers.set(requiredAs(req), { version, ...publishedBy(req) });
         }
         return;
       }
-      const forcedVersion = forced.get(req.pkg);
+      const forcedVersion = forced.get(requiredAs(req));
       if (forcedVersion !== undefined) {
         /* Substitution: whatever this requirement asked for, the forced
          * version is what it gets — its own floor is never offered (nor its
@@ -307,7 +327,7 @@ function resolvePhase<V, C>(
         if (req.override === "force") {
           attempt(req, forcedVersion, requiredBy);
         } else {
-          visit(req.pkg, forcedVersion, requiredBy, req);
+          visit(requiredAs(req), forcedVersion, requiredBy, req);
         }
         return;
       }
@@ -318,7 +338,7 @@ function resolvePhase<V, C>(
          * any upper bound is still violation-checked; a floorless-only package
          * is an error there — unless a written alternate supplies the version,
          * for which the package is remembered here). */
-        floorlessRequired.add(req.pkg);
+        floorlessRequired.add(requiredAs(req));
         return;
       }
       if (req.provided === "optional") {
@@ -338,7 +358,7 @@ function resolvePhase<V, C>(
     /** Canonical order on requirement edges, for breaking a tie between two
      * requirements demanding the same winning floor: `selectedBy` must be a
      * function of the requirement set, not of which fetch landed first. */
-    const edgeOrder = (edge: IRequirementEdge): string => `${edge.requiredBy}\n${edge.constraint}`;
+    const edgeOrder = (edge: IRequirementEdge): string => `${edge.requiredBy}\n${edge.versionConstraint}`;
 
     /** Offer `version` as a lower bound for the package (a requirement's
      * declared minimum, or its raised floor): it is selected iff it beats the
@@ -347,13 +367,14 @@ function resolvePhase<V, C>(
      * the Go MVS note above; `visit` dedups, so each pkg@version is fetched
      * once). */
     const attempt = (req: Requirement, version: V, requiredBy: string): void => {
-      const current = selected.get(req.pkg);
-      const edge: IRequirementEdge = { requiredBy, constraint: req.constraint };
+      const name = requiredAs(req);
+      const current = selected.get(name);
+      const edge: IRequirementEdge = { requiredBy, versionConstraint: req.versionConstraint };
       const order = current === undefined ? 1 : domain.compare(version, current.version);
       if (order > 0 || (order === 0 && current!.selectedBy !== undefined && edgeOrder(edge) < edgeOrder(current!.selectedBy))) {
-        selected.set(req.pkg, { pkg: req.pkg, version, selectedBy: edge });
+        selected.set(name, { name, ...publishedBy(req), version, selectedBy: edge });
       }
-      visit(req.pkg, version, requiredBy, req);
+      visit(name, version, requiredBy, req);
     };
 
     /**
@@ -379,7 +400,7 @@ function resolvePhase<V, C>(
        * again). Termination is otherwise by the finite demand set. */
       const id = nodeId(pkg, version);
       const fresh = demands.filter(demand => {
-        const signature = `${id}\n${demand.requiredBy}\n${demand.req.constraint}`;
+        const signature = `${id}\n${demand.requiredBy}\n${demand.req.versionConstraint}`;
         if (raisedDemands.has(signature)) {
           return false;
         }
@@ -393,7 +414,7 @@ function resolvePhase<V, C>(
        * the target being built. */
       Computable.forAll(
         fresh.map(demand =>
-          registry.lowestAvailable!(pkg, demand.req.constraint).then(raised => {
+          registry.lowestAvailable!(demand.req.name, statedConstraint(demand.req)).then(raised => {
             /* Nothing published satisfies the constraint at all: the demand
              * contributes nothing further and its phantom stays the slot
              * winner, reported at convergence (terminal, since this node is
@@ -407,7 +428,13 @@ function resolvePhase<V, C>(
              * major it lives in (npm: '>=5' where the 5.x line was never
              * published raises into major 6); edges bind by satisfaction, so
              * the moved demand cannot vanish from the delivered closure. */
-            candidateRaises.push({ pkg, constraint: demand.req.constraint, declared: version, raised, requiredBy: demand.requiredBy });
+            candidateRaises.push({
+              name: pkg,
+              versionConstraint: statedConstraint(demand.req),
+              declared: version,
+              raised,
+              requiredBy: demand.requiredBy,
+            });
             attempt(demand.req, raised, demand.requiredBy);
           })
         ),
@@ -483,7 +510,7 @@ function resolvePhase<V, C>(
         }
       };
       try {
-        registry.getRequirements(pkg, version).then(requirements => {
+        registry.getRequirements(req.name, version).then(requirements => {
           nodeRequirements.set(id, requirements);
           for (const req of requirements) {
             enqueue(req, id);
@@ -511,7 +538,7 @@ function resolvePhase<V, C>(
       if (failed) {
         return;
       }
-      const selectedPkgs = new Set([...selected.values()].map(sel => sel.pkg));
+      const selectedPkgs = new Set([...selected.values()].map(sel => sel.name));
       /* Attach-last alternates: a package the converged tree requires only
        * floorlessly (nothing selects it) takes its written `?` version — the
        * deterministic answer the requirements alone cannot give. "Selects" is
@@ -521,9 +548,9 @@ function resolvePhase<V, C>(
        * deliberately — a phantom's demand is still a demand, answered by the
        * raise machinery, not by installing the peer.) */
       const publishedPkgs = new Set(
-        [...selected.values()].filter(sel => !notPublished.has(nodeId(sel.pkg, sel.version))).map(sel => sel.pkg)
+        [...selected.values()].filter(sel => !notPublished.has(nodeId(sel.name, sel.version))).map(sel => sel.name)
       );
-      const firing = providedReqs.filter(entry => !providedFired.has(entry) && !selectedPkgs.has(entry.req.pkg));
+      const firing = providedReqs.filter(entry => !providedFired.has(entry) && !selectedPkgs.has(requiredAs(entry.req)));
       const supplying = [...alternateAnswers].filter(
         ([pkg]) => !alternateFired.has(pkg) && floorlessRequired.has(pkg) && !publishedPkgs.has(pkg)
       );
@@ -534,9 +561,9 @@ function resolvePhase<V, C>(
       pending++;
       for (const entry of firing) {
         providedFired.add(entry);
-        enqueue({ pkg: entry.req.pkg, constraint: entry.req.constraint }, entry.requiredBy);
+        enqueue({ ...entry.req, provided: undefined }, entry.requiredBy);
       }
-      for (const [pkg, version] of supplying) {
+      for (const [pkg, { version, publishedName }] of supplying) {
         alternateFired.add(pkg);
         /* A phantom in the slot (an unpublished floor from a superseded
          * demand) must not out-floor the supplied answer — evict it so the
@@ -544,10 +571,16 @@ function resolvePhase<V, C>(
          * genuinely needed the phantom still fails at convergence: it now
          * judges against the supplied version and violates. */
         const current = selected.get(pkg);
-        if (current && notPublished.has(nodeId(current.pkg, current.version))) {
+        if (current && notPublished.has(nodeId(current.name, current.version))) {
           selected.delete(pkg);
         }
-        attempt({ pkg, constraint: domain.versionToString(version) }, version, ROOT_REQUIRER);
+        attempt(
+          publishedName === undefined
+            ? { name: pkg, versionConstraint: domain.versionToString(version) }
+            : { name: publishedName, versionConstraint: domain.versionToString(version), renameTo: pkg },
+          version,
+          ROOT_REQUIRER
+        );
       }
       if (--pending === 0) {
         settle();
@@ -594,10 +627,10 @@ function resolvePhase<V, C>(
        * from the roots and each node's declared requirement order. */
       const selectionsByPkg = new Map<string, Selected<V>[]>();
       for (const selection of selected.values()) {
-        if (notPublished.has(nodeId(selection.pkg, selection.version))) {
+        if (notPublished.has(nodeId(selection.name, selection.version))) {
           continue;
         }
-        selectionsByPkg.set(selection.pkg, [selection]);
+        selectionsByPkg.set(selection.name, [selection]);
       }
       for (const [pkg, packed] of forks) {
         /* A principal CAN go phantom after its forks were created — a fork
@@ -626,7 +659,7 @@ function resolvePhase<V, C>(
        * selection exists at all, whose slot winner the registry never
        * published. The proof the tree is unresolvable without repair: unarmed
        * ones become the next walk's repairable set, armed ones are terminal. */
-      const neededPhantoms = new Map<string, { pkg: string; version: V; err: VersionNotFoundError }>();
+      const neededPhantoms = new Map<string, { name: string; version: V; err: VersionNotFoundError }>();
 
       const followEdge = (from: string, req: Requirement): void => {
         if (req.provided === "optional") {
@@ -640,23 +673,24 @@ function resolvePhase<V, C>(
            * finalize), so a peer the tree does deliver is still bound. */
           return;
         }
+        const name = requiredAs(req);
         let constraint: C;
         try {
-          constraint = domain.parseConstraint(req.constraint);
+          constraint = constraintOf(domain, req.versionConstraint);
         } catch (err) {
           /* An unparseable constraint on an edge that is actually in effect
            * (reachable through selected versions): report it here, where
            * pruning has already dropped superseded/unreachable requirements. */
-          const message = `${toError(err).message} in requirement '${req.pkg}: ${req.constraint}' (required by ${from})`;
-          errors.set(message, { message, rootPkg: rootPkgOf(from, req.pkg) });
+          const message = `${toError(err).message} in requirement '${name}: ${req.versionConstraint}' (required by ${from})`;
+          errors.set(message, { message, rootName: rootPkgOf(from, name) });
           return;
         }
-        const candidates = selectionsByPkg.get(req.pkg) ?? [];
+        const candidates = selectionsByPkg.get(name) ?? [];
         if (candidates.length === 0 && domain.isFloorless(constraint)) {
           const message =
-            `'${req.pkg}' is required by ${from} without a version lower bound ('${req.constraint}'),` +
+            `'${name}' is required by ${from} without a version lower bound (${versionConstraintText(req.versionConstraint)}),` +
             ` and no versioned requirement for it exists — add one explicitly`;
-          errors.set(message, { message, rootPkg: rootPkgOf(from, req.pkg), pkg: req.pkg, requiredBy: from });
+          errors.set(message, { message, rootName: rootPkgOf(from, name), name, ...publishedBy(req), requiredBy: from });
           return;
         }
         if (candidates.length === 0) {
@@ -667,15 +701,17 @@ function resolvePhase<V, C>(
            * Record it for the convergence judgment; anything else is a real
            * internal error, reported rather than dropped — a resolution that
            * lost a dependency must never look complete. */
-          const winner = selected.get(req.pkg);
-          const winnerId = winner && nodeId(winner.pkg, winner.version);
+          const winner = selected.get(name);
+          const winnerId = winner && nodeId(winner.name, winner.version);
           const phantomErr = winnerId !== undefined ? notPublished.get(winnerId) : undefined;
           if (winner && winnerId !== undefined && phantomErr) {
-            neededPhantoms.set(winnerId, { pkg: winner.pkg, version: winner.version, err: phantomErr });
+            neededPhantoms.set(winnerId, { name: winner.name, version: winner.version, err: phantomErr });
             return;
           }
-          const message = `internal error: requirement '${req.pkg}: ${req.constraint}' (required by ${from}) matches no selection`;
-          errors.set(message, { message, rootPkg: rootPkgOf(from, req.pkg) });
+          const message = `internal error: requirement '${name}: ${
+            req.versionConstraint ?? "any version"
+          }' (required by ${from}) matches no selection`;
+          errors.set(message, { message, rootName: rootPkgOf(from, name) });
           return;
         }
         /* A violation is judged against the PRINCIPAL — what a flat delivery
@@ -688,11 +724,22 @@ function resolvePhase<V, C>(
          * tolerates one and a violation where it does not. The packing input
          * is stricter than the violation judgment: an edge no current
          * selection satisfies at all. */
-        const forcedPkg = forced.has(req.pkg);
+        const forcedPkg = forced.has(name);
         const providedEdge = req.provided !== undefined;
         const tolerated = providedEdge && domain.providedMismatch === "tolerate";
         const principal = candidates.find(sel => !sel.fork);
         const bound = edgeBinding(domain, candidates, req)!;
+        /* One name is one package: a requirement that renames some other
+         * package to a name the tree already selects is a conflict, not a
+         * version to choose between. */
+        const held = bound.publishedName ?? bound.name;
+        if (held !== req.name) {
+          const message =
+            `'${name}' is required as two different packages: '${held}' (by ${bound.selectedBy?.requiredBy ?? "a requirement"})` +
+            ` and '${req.name}' (by ${from})`;
+          errors.set(message, { message, rootName: rootPkgOf(from, name) });
+          return;
+        }
         /* Judged against the flat winner when there is one; a package whose
          * principal went phantom (candidates are forks alone) is judged
          * against what actually ships — an edge satisfied by neither must
@@ -700,8 +747,8 @@ function resolvePhase<V, C>(
         const judged = principal ?? bound;
         if (!domain.satisfies(judged.version, constraint)) {
           (forcedPkg ? coerced : tolerated ? shared : violations).push({
-            pkg: req.pkg,
-            constraint: req.constraint,
+            name,
+            versionConstraint: statedConstraint(req),
             requiredBy: from,
             selected: judged.version,
           });
@@ -710,8 +757,8 @@ function resolvePhase<V, C>(
           unsatisfied.push({ req, requiredBy: from, constraint });
         }
         if (!reachable.has(bound)) {
-          reachable.set(bound, { ...bound, reachedVia: { requiredBy: from, constraint: req.constraint } });
-          const id = nodeId(bound.pkg, bound.version);
+          reachable.set(bound, { ...bound, reachedVia: { requiredBy: from, versionConstraint: req.versionConstraint } });
+          const id = nodeId(bound.name, bound.version);
           if (!visited.has(id)) {
             visited.add(id);
             queue.push({ from: id, requirements: nodeRequirements.get(id) ?? [] });
@@ -740,12 +787,12 @@ function resolvePhase<V, C>(
         const needed = [...neededPhantoms.entries()].sort(([a], [b]) => compareText(a, b));
         /* A forced package's phantom is terminal outright — the user pinned
          * the version, so arming a raise for it would be a pointless rerun. */
-        const unarmed = needed.filter(([id, info]) => !repairable.has(id) && !forced.has(info.pkg)).map(([id]) => id);
+        const unarmed = needed.filter(([id, info]) => !repairable.has(id) && !forced.has(info.name)).map(([id]) => id);
         const [id, info] = needed[0];
         fail(
           registry.lowestAvailable && unarmed.length > 0
             ? new RepairsRequired(unarmed)
-            : annotate(id, info.pkg, info.version, info.err)
+            : annotate(id, info.name, info.version, info.err)
         );
         return undefined;
       }
@@ -778,7 +825,7 @@ function resolvePhase<V, C>(
      */
     const packForks = (unsatisfied: PackEdge[]): PackStep => {
       const step: PackStep = { asyncWork: false, progressed: false };
-      const edgeSig = (edge: PackEdge): string => `${edge.req.pkg}\n${edge.req.constraint}`;
+      const edgeSig = (edge: PackEdge): string => `${requiredAs(edge.req)}\n${edge.req.versionConstraint}`;
       /* Canonical packing order; identical (pkg, constraint) edges collapse
        * (satisfaction does not depend on the requirer — keep the first, whose
        * requiredBy is canonical, for attribution). */
@@ -787,7 +834,9 @@ function resolvePhase<V, C>(
         .filter(edge => !unrepairable.has(edgeSig(edge)))
         .sort(
           (a, b) =>
-            compareText(a.req.pkg, b.req.pkg) || compareText(a.req.constraint, b.req.constraint) || compareText(a.requiredBy, b.requiredBy)
+            compareText(requiredAs(a.req), requiredAs(b.req)) ||
+            compareText(a.req.versionConstraint ?? "", b.req.versionConstraint ?? "") ||
+            compareText(a.requiredBy, b.requiredBy)
         )
         .filter(edge => {
           const sig = edgeSig(edge);
@@ -813,7 +862,7 @@ function resolvePhase<V, C>(
         }
         forkRaises.set(sig, "pending");
         pending++;
-        registry.lowestAvailable(pkg, constraint)
+        registry.lowestAvailable(provokedBy.req.name, constraint)
           .then(raised => {
             forkRaises.set(sig, raised ?? null);
             if (--pending === 0) {
@@ -834,12 +883,13 @@ function resolvePhase<V, C>(
        * a 404 on it is terminal for the edge, not a second raise (the hook
        * would only repeat the same offer). */
       const forkAt = (candidate: V, declared: V | undefined, floorEdge: PackEdge): void => {
-        const id = nodeId(floorEdge.req.pkg, candidate);
+        const name = requiredAs(floorEdge.req);
+        const id = nodeId(name, candidate);
         if (!nodeDemands.has(id)) {
           /* A raised candidate nothing yet demanded: expand it; the fork is
            * created next round, when its metadata (hence subtree) is known. */
           step.asyncWork = true;
-          visit(floorEdge.req.pkg, candidate, floorEdge.requiredBy, floorEdge.req);
+          visit(name, candidate, floorEdge.requiredBy, floorEdge.req);
           return;
         }
         if (notPublished.has(id)) {
@@ -851,7 +901,7 @@ function resolvePhase<V, C>(
             return;
           }
           /* The class floor itself was never published: raise it. */
-          const answer = raiseAnswer(floorEdge.req.pkg, floorEdge.req.constraint, floorEdge);
+          const answer = raiseAnswer(name, statedConstraint(floorEdge.req), floorEdge);
           if (answer === "pending") {
             step.asyncWork = true;
             return;
@@ -864,8 +914,8 @@ function resolvePhase<V, C>(
             return;
           }
           candidateRaises.push({
-            pkg: floorEdge.req.pkg,
-            constraint: floorEdge.req.constraint,
+            name,
+            versionConstraint: statedConstraint(floorEdge.req),
             declared,
             raised: answer,
             requiredBy: floorEdge.requiredBy,
@@ -873,12 +923,13 @@ function resolvePhase<V, C>(
           forkAt(answer, undefined, floorEdge);
           return;
         }
-        const packed = forks.get(floorEdge.req.pkg) ?? [];
-        forks.set(floorEdge.req.pkg, packed);
+        const packed = forks.get(name) ?? [];
+        forks.set(name, packed);
         packed.push({
-          pkg: floorEdge.req.pkg,
+          name,
+          ...publishedBy(floorEdge.req),
           version: candidate,
-          selectedBy: { requiredBy: floorEdge.requiredBy, constraint: floorEdge.req.constraint },
+          selectedBy: { requiredBy: floorEdge.requiredBy, versionConstraint: floorEdge.req.versionConstraint },
           fork: packed.length + 1,
         });
         step.progressed = true;
@@ -894,7 +945,7 @@ function resolvePhase<V, C>(
       }
       const classesByPkg = new Map<string, NewClass[]>();
       for (const edge of edges) {
-        const pkg = edge.req.pkg;
+        const pkg = requiredAs(edge.req);
         /* A fork created earlier in this very pass may already cover it */
         if ((forks.get(pkg) ?? []).some(fork => domain.satisfies(fork.version, edge.constraint))) {
           continue;
@@ -903,7 +954,7 @@ function resolvePhase<V, C>(
           /* No floor to propose: the raise hook picks the lowest published
            * satisfier (its own singleton class — a capped floorless range is
            * rare enough not to share). */
-          const answer = raiseAnswer(pkg, edge.req.constraint, edge);
+          const answer = raiseAnswer(pkg, statedConstraint(edge.req), edge);
           if (answer === "pending") {
             step.asyncWork = true;
           } else if (answer === null) {
@@ -947,7 +998,7 @@ function resolvePhase<V, C>(
       /* Mark, for each root, which selections it (transitively) reaches,
        * following the same bindings reachability followed. */
       const targetsOf = (req: Requirement): Selected<V> | undefined =>
-        edgeBinding(domain, round.selectionsByPkg.get(req.pkg) ?? [], req);
+        edgeBinding(domain, round.selectionsByPkg.get(requiredAs(req)) ?? [], req);
       roots.forEach((root, rootIndex) => {
         if (root.override === "alternate") {
           /* Never requested as a delivery of its own; the supplied selection
@@ -972,7 +1023,7 @@ function resolvePhase<V, C>(
             if (!from.includes(rootIndex)) {
               from.push(rootIndex);
             }
-            const id = nodeId(selection.pkg, selection.version);
+            const id = nodeId(selection.name, selection.version);
             if (!visitedNodes.has(id)) {
               visitedNodes.add(id);
               mark(nodeRequirements.get(id) ?? []);
@@ -983,8 +1034,8 @@ function resolvePhase<V, C>(
       });
 
       const selections = [...round.reachable.values()].sort((a, b) => {
-        if (a.pkg !== b.pkg) {
-          return a.pkg < b.pkg ? -1 : 1;
+        if (a.name !== b.name) {
+          return a.name < b.name ? -1 : 1;
         }
         return domain.compare(a.version, b.version);
       });
@@ -998,7 +1049,7 @@ function resolvePhase<V, C>(
        * them: that is a real divergence.) */
       const perPkg = new Map<string, Selected<V>[]>();
       for (const selection of selections) {
-        perPkg.set(selection.pkg, [...(perPkg.get(selection.pkg) ?? []), selection]);
+        perPkg.set(selection.name, [...(perPkg.get(selection.name) ?? []), selection]);
       }
       const promoted = new Map<string, V>();
       for (const [pkg, group] of perPkg) {
@@ -1012,12 +1063,12 @@ function resolvePhase<V, C>(
        * range beside the repaired ones) remains a violation — re-pointed at
        * the version actually shipping, not the pruned phantom. */
       const violations = round.violations.flatMap(violation => {
-        const promotedVersion = promoted.get(violation.pkg);
+        const promotedVersion = promoted.get(violation.name);
         if (promotedVersion === undefined) {
           return [violation];
         }
         try {
-          return domain.satisfies(promotedVersion, domain.parseConstraint(violation.constraint))
+          return domain.satisfies(promotedVersion, domain.parseConstraint(violation.versionConstraint))
             ? []
             : [{ ...violation, selected: promotedVersion }];
         } catch {
@@ -1030,8 +1081,8 @@ function resolvePhase<V, C>(
       const forkCount = new Map<string, number>();
       for (const selection of selections) {
         if (selection.fork !== undefined) {
-          const next = (forkCount.get(selection.pkg) ?? 0) + 1;
-          forkCount.set(selection.pkg, next);
+          const next = (forkCount.get(selection.name) ?? 0) + 1;
+          forkCount.set(selection.name, next);
           selection.fork = next;
         }
       }
@@ -1043,11 +1094,14 @@ function resolvePhase<V, C>(
        * (they are pushed as the registry answers). */
       const raiseKeys = new Set<string>();
       const ordered = [...candidateRaises].sort(
-        (a, b) => compareText(a.pkg, b.pkg) || compareText(a.constraint, b.constraint) || compareText(a.requiredBy, b.requiredBy)
+        (a, b) =>
+          compareText(a.name, b.name) ||
+          compareText(a.versionConstraint, b.versionConstraint) ||
+          compareText(a.requiredBy, b.requiredBy)
       );
       const raises = ordered.filter(raise => {
-        const winner = selections.some(sel => sel.pkg === raise.pkg && domain.compare(sel.version, raise.raised) === 0);
-        const dedup = `${raise.pkg}\n${raise.constraint}`;
+        const winner = selections.some(sel => sel.name === raise.name && domain.compare(sel.version, raise.raised) === 0);
+        const dedup = `${raise.name}\n${raise.versionConstraint}`;
         if (!winner || raiseKeys.has(dedup)) {
           return false;
         }
@@ -1060,7 +1114,7 @@ function resolvePhase<V, C>(
        * their subtrees, exactly as the reachability walk dropped them). */
       const requirements = new Map<string, Requirement[]>(
         selections.map(sel => {
-          const id = nodeId(sel.pkg, sel.version);
+          const id = nodeId(sel.name, sel.version);
           return [id, nodeRequirements.get(id) ?? []];
         })
       );
@@ -1071,11 +1125,11 @@ function resolvePhase<V, C>(
        * resolution, which this is still becoming. */
       const candidates = new Map<string, Selected<V>[]>();
       for (const selection of selections) {
-        const held = candidates.get(selection.pkg);
+        const held = candidates.get(selection.name);
         if (held) {
           held.push(selection);
         } else {
-          candidates.set(selection.pkg, [selection]);
+          candidates.set(selection.name, [selection]);
         }
       }
       /* Where each of those edges LEADS, resolved once here rather than by
@@ -1085,19 +1139,19 @@ function resolvePhase<V, C>(
       const edges = new Map<string, Map<string, string>>(
         selections.map(sel => {
           const from = new Map<string, string>();
-          for (const req of requirements.get(nodeId(sel.pkg, sel.version)) ?? []) {
+          for (const req of requirements.get(nodeId(sel.name, sel.version)) ?? []) {
             /* The requirer's own name for the edge — first declaration wins, as
              * the layout reads it. */
-            const name = req.alias ?? req.pkg;
+            const name = requiredAs(req);
             if (from.has(name)) {
               continue;
             }
-            const target = edgeBinding(domain, candidates.get(req.pkg) ?? [], req);
+            const target = edgeBinding(domain, candidates.get(name) ?? [], req);
             if (target) {
-              from.set(name, nodeId(target.pkg, target.version));
+              from.set(name, nodeId(target.name, target.version));
             }
           }
-          return [nodeId(sel.pkg, sel.version), from];
+          return [nodeId(sel.name, sel.version), from];
         })
       );
       /* A root binds against what it reaches, not against everything: a fork
@@ -1108,7 +1162,7 @@ function resolvePhase<V, C>(
         if (root.override === "alternate") {
           return undefined;
         }
-        const reachable = (candidates.get(root.pkg) ?? []).filter(sel => sel.reachableFrom?.includes(rootIndex));
+        const reachable = (candidates.get(requiredAs(root)) ?? []).filter(sel => sel.reachableFrom?.includes(rootIndex));
         const bound = edgeBinding(domain, reachable, root);
         const at = bound === undefined ? -1 : selections.indexOf(bound);
         return at < 0 ? undefined : at;

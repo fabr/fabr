@@ -24,7 +24,7 @@ import { Computable } from "../core/Computable";
 export type PackageName = string;
 
 /**
- * The identity of one concrete selected package version — `pkg@version` (the
+ * The identity of one concrete selected package version — `name@version` (the
  * resolver's `nodeId` form): the key every per-node table in a resolution is
  * joined by. A `requiredBy` holds one, or {@link ROOT_REQUIRER} for a root
  * requirement.
@@ -32,53 +32,29 @@ export type PackageName = string;
 export type NodeId = string;
 
 /** The name a requirer resolves a dependency by: normally the dependency's own
- * {@link PackageName}, but the local alias for an aliased requirement
- * ({@link Requirement.alias}) — hence the name a consumer mounts it under. */
+ * {@link PackageName}, but the local name of a renamed requirement
+ * ({@link Requirement.renameTo}) — hence the name a consumer mounts it under. */
 export type DependencyName = string;
 
 /**
- * A single declared dependency: some version of `pkg` satisfying `constraint`,
- * where the constraint syntax is interpreted by the ecosystem's VersionDomain.
+ * A requirement on a package: the package, the versions of it that answer,
+ * any override marker written on that, the name it is to be known by where
+ * that is not the package's own, and whether something else is expected to
+ * supply it.
+ *
+ * It names a package within ONE repository, whose format interprets
+ * `versionConstraint`; a reference ({@link RepositoryRef}) is a requirement
+ * addressed to a named repository.
  */
 export interface Requirement {
-  pkg: PackageName;
-  constraint: string;
+  readonly name: PackageName;
+  /** The version or range wanted, in the syntax of the repository's format.
+   * Absent where what names the package states none: a catalog member, or a
+   * package that has no version. Any version of the package then answers. */
+  readonly versionConstraint: string | undefined;
   /**
-   * The name the requirer knows this dependency by, when that differs from the
-   * package's own name (npm's `"wrap-ansi-cjs": "npm:wrap-ansi@^7.0.0"`,
-   * Cargo's `package =` rename). Purely local: resolution is by `pkg`, so an
-   * aliased requirement participates in the joint selection exactly as an
-   * ordinary one — the alias survives only as the name the requirer's own
-   * imports use, hence as the name a consumer must lay the result out under
-   * (the requirer's code literally `require`s it).
-   */
-  alias?: DependencyName;
-  /**
-   * The consumer's tree provides this package — the peer relationship, fabr's
-   * `provided_deps` (which npm manifests spell `peerDependencies`, an
-   * "optional" one also listed in `peerDependenciesMeta`). Either way the
-   * requirement is attach-first: primarily a constraint on whatever the tree
-   * selects for `pkg`, satisfied by any selection in range — which is what
-   * keeps a wide multi-major peer range (chai '>= 2.1.2 < 5') from demanding
-   * the range's floor beside an already-satisfying selection. The value is the
-   * strength of the expectation, i.e. what happens when the converged tree
-   * provides nothing:
-   *
-   * - `"expected"` — the failed expectation is repaired: the requirement fires
-   *   as an ordinary demand for its own minimum (npm's peer auto-install as a
-   *   last resort).
-   * - `"optional"` — never a demand: nothing is installed, ever, and the edge
-   *   simply does not bind. It is still a requirement, and that is the whole
-   *   point of recording it: the requirer must be able to REACH the package
-   *   when a consumer does provide it (`zustand` optionally peering on
-   *   `react`). A hoisted tree gave that away for free by walking up; a
-   *   dependency table has to say it.
-   */
-  provided?: "expected" | "optional";
-  /**
-   * A user-written override marker on the requirement's exact version
-   * (`@npm:pkg:1.4.2?` / `@npm:pkg:2.0.0!`; the constraint carries the bare
-   * version, the marker rides here):
+   * A user-written override marker on an exact version (`@npm:pkg:1.4.2?` /
+   * `@npm:pkg:2.0.0!`; `version` carries the bare version):
    *
    * - `"force"` (`!`) — full substitution, npm-`overrides` semantics: every
    *   requirement on the package, from any requirer, is replaced by exactly
@@ -94,7 +70,39 @@ export interface Requirement {
    *   {@link requirementKey} carries the marker); the sanction itself is
    *   judged by the consumer at delivery.
    */
-  override?: "alternate" | "force";
+  readonly override?: "alternate" | "force";
+  /**
+   * The name whoever requires the package knows it by, when that differs from
+   * the package's own (`@npm:typescript:6.0.3 -> typescript-6`; npm's
+   * `"wrap-ansi-cjs": "npm:wrap-ansi@^7.0.0"`, Cargo's `package =` rename).
+   * Purely local: a renamed requirement takes part in the joint selection
+   * exactly as an ordinary one, under its resultant name (`requiredAs`): the
+   * renamed package is a package of that name, selected and installed apart
+   * from the one it is a copy of, which only the registry is asked for.
+   */
+  readonly renameTo?: DependencyName;
+  /**
+   * The consumer's tree provides this package — the peer relationship, fabr's
+   * `provided_deps` (which npm manifests spell `peerDependencies`, an
+   * "optional" one also listed in `peerDependenciesMeta`). Either way the
+   * requirement is attach-first: primarily a constraint on whatever the tree
+   * selects for `name`, satisfied by any selection in range — which is what
+   * keeps a wide multi-major peer range (chai '>= 2.1.2 < 5') from demanding
+   * the range's floor beside an already-satisfying selection. The value is the
+   * strength of the expectation, i.e. what happens when the converged tree
+   * provides nothing:
+   *
+   * - `"expected"` — the failed expectation is repaired: the requirement fires
+   *   as an ordinary demand for its own minimum (npm's peer auto-install as a
+   *   last resort).
+   * - `"optional"` — never a demand: nothing is installed, ever, and the edge
+   *   simply does not bind. It is still a requirement, and that is the whole
+   *   point of recording it: the requirer must be able to REACH the package
+   *   when a consumer does provide it (`zustand` optionally peering on
+   *   `react`). A hoisted tree gave that away for free by walking up; a
+   *   dependency table has to say it.
+   */
+  readonly provided?: "expected" | "optional";
 }
 
 /**
@@ -105,12 +113,13 @@ export const ROOT_REQUIRER = "(root)";
 
 /**
  * A requirement edge in the dependency graph, for provenance: the node that
- * declared the requirement ("pkg@version", or ROOT_REQUIRER for a root
+ * declared the requirement ("name@version", or ROOT_REQUIRER for a root
  * requirement) and the constraint it declared.
  */
 export interface IRequirementEdge {
   requiredBy: NodeId;
-  constraint: string;
+  /** The version constraint the requirement states, if it states one. */
+  versionConstraint: string | undefined;
 }
 
 /**
@@ -129,7 +138,14 @@ export interface IRequirementEdge {
  * still deserialize.
  */
 export interface Selected<V> {
-  pkg: PackageName;
+  /** The package's name — the one it is required as (`requiredAs`), hence
+   * installed as; a renamed package is a package of that name. The key of
+   * every per-name table, and what a violation's and a floor raise's `name`
+   * are. */
+  name: PackageName;
+  /** The name the registry publishes the package under, where it is not
+   * `name`: what its requirements and content are fetched by. */
+  publishedName?: PackageName;
   version: V;
   selectedBy?: IRequirementEdge;
   reachedVia?: IRequirementEdge;
@@ -158,9 +174,13 @@ export interface Selected<V> {
   fork?: number;
 }
 
+/** A selected package by name: what a reference to it is written from (see
+ * {@link Selected.name} and {@link Selected.publishedName}). */
+export type PackageIdentity = Pick<Selected<unknown>, "name" | "publishedName">;
+
 /**
  * An upper-bound violation found after selection: `requiredBy` declared
- * `constraint` on `pkg`, and the principal selection of the package does not
+ * `versionConstraint` on `name`, and the principal selection of the package does not
  * satisfy it (jointly-unsatisfiable constraints — an exact transitive pin
  * against a higher floor, or ranges confined to different majors). Reported as
  * data: the consumer decides whether it is an error (a linked delivery) or is
@@ -168,25 +188,25 @@ export interface Selected<V> {
  * tool delivery, which nests the fork privately). A violation no fork repairs
  * — nothing published satisfies its constraint — is undeliverable in every
  * mode; a consumer detects that by checking the selections (no selection of
- * `pkg` satisfies `constraint`).
+ * `name` satisfies `version`).
  */
 export interface Violation<V> {
-  pkg: PackageName;
-  constraint: string;
+  name: PackageName;
+  versionConstraint: string;
   requiredBy: NodeId;
   selected: V;
 }
 
 /**
- * A floor-raise repair: `constraint`'s declared minimum was never published, so
+ * A floor-raise repair: `versionConstraint`'s declared minimum was never published, so
  * the lowest *published* satisfying version was selected in its place (via the
  * registry's {@link RequirementSource.lowestAvailable} hook). Only raises whose
  * raised version made the result are reported — a raise superseded by a higher
  * requirement's floor never shaped it.
  */
 export interface RaisedFloor<V> {
-  pkg: PackageName;
-  constraint: string;
+  name: PackageName;
+  versionConstraint: string;
   declared: V;
   raised: V;
   requiredBy: NodeId;
@@ -209,7 +229,7 @@ export interface MVSResolution<V> {
   violations: Violation<V>[];
   /**
    * Requirement edges a `force` override coerced: `requiredBy` declared
-   * `constraint` on `pkg`, and the forced version (`selected`) does not
+   * `versionConstraint` on `name`, and the forced version (`selected`) does not
    * satisfy it. The force suppresses the conflict by design — these are
    * recorded so the coercion is explainable, never judged as violations (no
    * fork is packed for them and no delivery refuses them).
@@ -235,8 +255,8 @@ export interface MVSResolution<V> {
   /**
    * The **resolved** edges of the selected graph: for each node, the selection
    * each of its requirements binds to, keyed by the name the *requirer* uses
-   * (so an aliased dependency is an edge to the aliased package under the
-   * alias). The companion of {@link MVSResolution.requirements}, which is the
+   * (so a renamed dependency is an edge to the package under the name it is
+   * renamed to). The companion of {@link MVSResolution.requirements}, which is the
    * same edges as *declared* — kept because explaining a resolution needs the
    * constraint text, while laying one out needs only where each edge leads.
    *
@@ -261,7 +281,7 @@ export interface MVSResolution<V> {
 
 /**
  * A hard resolution error, attributed to the root package whose subtree
- * contains it — the errors' analogue of MetadataFetchError's rootPkg, so a
+ * contains it — the errors' analogue of MetadataFetchError's rootName, so a
  * repository can map the failure back to the written reference(s) requiring
  * that root rather than reporting it against the whole collection point.
  */
@@ -269,12 +289,15 @@ export interface IResolutionError {
   message: string;
   /** The root requirement whose subtree reached the error; the erring
    * requirement's own package when it is itself a root. */
-  rootPkg: string;
+  rootName: string;
   /** For a required-only-floorless error: the package that lacks any versioned
    * requirement (the remedy — an explicit requirement — names it). A consumer
    * groups the per-edge errors by this key: one missing pin is one fact,
    * however many requirers hit it. */
-  pkg?: string;
+  name?: string;
+  /** With `name`: the name the registry publishes that package under, where
+   * it is required under another (see {@link Selected.publishedName}). */
+  publishedName?: string;
   /** The node that declared the erring requirement (for the grouped render). */
   requiredBy?: string;
   /** Remedy line(s) a consumer attached (a concrete pin suggestion), rendered
@@ -295,6 +318,12 @@ export interface VersionDomain<V, C> {
    *   domain does not support.
    */
   parseConstraint(text: string): C;
+
+  /**
+   * The constraint of a requirement that states no version: every version
+   * satisfies it, and it is {@link isFloorless floorless}.
+   */
+  readonly unconstrained: C;
 
   /**
    * Total order on versions. Returns negative/zero/positive in the usual manner.
@@ -371,29 +400,29 @@ export interface VersionDomain<V, C> {
 }
 
 /**
- * What the resolution walk reads: the requirements a pkg@version declares, and
+ * What the resolution walk reads: the requirements a name@version declares, and
  * the floor-raise hook — resolveMVS's whole view of a registry (the full
  * registry surface, PackageResolver's `RepositoryReader`, extends this). All
- * answers are expected to be immutable documents (a given pkg@version never
+ * answers are expected to be immutable documents (a given name@version never
  * changes its declared requirements), which is what makes resolution results
  * cacheable.
  */
 export interface RequirementSource<V> {
   /**
-   * @return the requirements declared by pkg@version (e.g. the dependencies
+   * @return the requirements declared by name@version (e.g. the dependencies
    * from its package.json). Rejects with a VersionNotFoundError (core/Errors)
-   * when pkg@version was never published — the signal for the floor-raise
+   * when name@version was never published — the signal for the floor-raise
    * repair, distinguished from transport failures.
    */
-  getRequirements(pkg: string, version: V): Computable<Requirement[]>;
+  getRequirements(name: string, version: V): Computable<Requirement[]>;
 
   /**
-   * Floor-raise hook: the lowest *published* version of `pkg` satisfying
-   * `constraint`, consulted when the constraint's own minimum is not published;
+   * Floor-raise hook: the lowest *published* version of `name` satisfying
+   * `versionConstraint`, consulted when its own minimum is not published;
    * undefined when nothing published satisfies (a genuine failure). Reads a
    * mutable version list, so the result is deterministic only modulo registry
    * append — the one sanctioned relaxation, confined to broken floors. A
    * registry without this hook keeps unpublished floors as hard failures.
    */
-  lowestAvailable?(pkg: string, constraint: string): Computable<V | undefined>;
+  lowestAvailable?(name: string, versionConstraint: string): Computable<V | undefined>;
 }

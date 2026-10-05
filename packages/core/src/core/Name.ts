@@ -555,25 +555,6 @@ export class Name {
   }
 
   /**
-   * The whole name as verbatim text, when it is a literal followed by nothing
-   * but one final glob part — undefined for any other shape (a real pattern
-   * like `src/*.ts?` has interior glob parts and stays one). This is how a
-   * repository's version slot reads a written `pkg:1.4.2?` or `pkg:1.14.*`:
-   * lexically those tails are globs, but a version cannot meaningfully glob,
-   * so the repository folds the text back into the version — the `?` override
-   * marker, or a `*` x-range — instead of losing it to the literal-prefix
-   * split. (A glob anywhere else stays a real pattern; only the position past
-   * the last `:` of a requirement has no pattern meaning to preserve.)
-   */
-  public getLiteralWithGlobTail(): string | undefined {
-    if (this.parts.length !== 2) {
-      return undefined;
-    }
-    const [head, tail] = this.parts;
-    return head.kind === NamePartKind.Literal && tail.kind === NamePartKind.Glob ? head.value + tail.value : undefined;
-  }
-
-  /**
    * @return a new name with the initial literal prefix matching the given value removed,
    * including any trailing '/' character.
    *  e.g. given the Name ("mylib/lib/*") and value "mylib", will yield the Name "lib/*"
@@ -591,24 +572,35 @@ export class Name {
   }
 
   /**
-   * @return the tail of this name from `start` (a suffix of its literal head),
-   * carrying the rename target but NOT the constraints. The sole use is
-   * splitting a reference into target + projection (getPrefixMatch, a
-   * repository's getRepositoryRef): the tail IS the projection, so a `-> tmpl`
-   * rename (final naming) rides onto it, while the constraints stay behind
-   * on the target it constrains (and is consumed at target resolution).
+   * @return the tail of this name from `start` — an offset into its written
+   * text ({@link toBaseString}) that must fall in a literal part, as a `:` or
+   * `/` boundary always does — carrying the rename target but NOT the
+   * constraints. The sole use is splitting a reference into target +
+   * projection (getPrefixMatch, a repository's getRepositoryRef): the tail IS
+   * the projection, so a `-> tmpl` rename (final naming) rides onto it, while
+   * the constraints stay behind on the target it constrains (and is consumed
+   * at target resolution).
    */
   public substring(start: number): Name {
-    const [head, ...parts] = this.parts;
-    if (head.kind === NamePartKind.Literal && (head.value.length >= start || parts.length === 0)) {
-      const rest = head.value.substring(start);
-      if (rest === "") {
-        return new Name(parts, [], this.renameTo);
-      } else {
-        return new Name([{ kind: NamePartKind.Literal, value: rest }, ...parts], [], this.renameTo);
+    const parts: NamePart[] = [];
+    let offset = 0;
+    for (const part of this.parts) {
+      const end = offset + Name.renderPart(part, false).length;
+      if (end <= start) {
+        offset = end;
+        continue;
       }
+      if (parts.length === 0 && start > offset) {
+        if (part.kind !== NamePartKind.Literal) {
+          throw new Error(`internal: '${this.toString()}' cannot be split inside a pattern (at offset ${start})`);
+        }
+        parts.push({ kind: NamePartKind.Literal, value: part.value.substring(start - offset) });
+      } else {
+        parts.push(part);
+      }
+      offset = end;
     }
-    return new Name([head, ...parts], [], this.renameTo);
+    return new Name(parts, [], this.renameTo);
   }
 
   /**
@@ -716,20 +708,23 @@ export class Name {
    * `<...>` / `-> ` facets, which the two public renderings append.
    */
   private renderParts(escape: boolean): string {
-    return this.parts.reduce((result, part) => {
-      switch (part.kind) {
-        case NamePartKind.Literal:
-          return result + (escape ? escapeGlob(part.value) : part.value);
-        case NamePartKind.Glob:
-          return result + part.value;
-        case NamePartKind.VarSubst:
-          return result + "${" + part.value + "}";
-        case NamePartKind.Backref:
-          return result + "$" + part.value;
-        case NamePartKind.CommandSubst:
-          return result + "`" + part.value + "`";
-      }
-    }, "");
+    return this.parts.map(part => Name.renderPart(part, escape)).join("");
+  }
+
+  /** One part as written; a literal's glob characters escaped if `escape`. */
+  private static renderPart(part: NamePart, escape: boolean): string {
+    switch (part.kind) {
+      case NamePartKind.Literal:
+        return escape ? escapeGlob(part.value) : part.value;
+      case NamePartKind.Glob:
+        return part.value;
+      case NamePartKind.VarSubst:
+        return "${" + part.value + "}";
+      case NamePartKind.Backref:
+        return "$" + part.value;
+      case NamePartKind.CommandSubst:
+        return "`" + part.value + "`";
+    }
   }
 
   /** Append the `<k=v>` / `-> tmpl` facets to an already-rendered selector, each

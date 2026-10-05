@@ -37,8 +37,8 @@ import { contentPackageMember } from "./ContentPackage";
 const FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   ...SEMVER,
   resolutionTag: "test:resolve:1",
-  splitReference: (name: Name) => ({ requirement: name }),
-  parseRequirement: () => {
+  splitReference: (name: Name) => ({ name: name.toBaseString(), versionConstraint: undefined }),
+  validateRequirement: () => {
     throw new Error("not used");
   },
   parsePublishCoordinate: () => {
@@ -50,7 +50,7 @@ const FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
       return {
         name: meta.name,
         version: parseVersion(meta.version),
-        requirements: Object.entries(meta.deps ?? {}).map(([pkg, constraint]) => ({ pkg, constraint })),
+        requirements: Object.entries(meta.deps ?? {}).map(([pkg, constraint]) => ({ name: pkg, versionConstraint: constraint })),
       };
     }),
   makeRunnable: (pkg: PackageFileSet) => Computable.reject<RunnableFileSet>(new Error(`cannot run '${pkg.packageName}'`)),
@@ -91,7 +91,7 @@ const MANIFEST = { name: "mylib", version: "1.2.3", deps: { "left-pad": "^1.0.0"
 describe("ContentPackageMember", () => {
   it("answers the declared version's requirements from the manifest", async () => {
     const requirements = await memberFor(packageFiles(MANIFEST)).getRequirements("mylib", parseVersion("1.2.3"));
-    expect(requirements).to.deep.equal([{ pkg: "left-pad", constraint: "^1.0.0" }]);
+    expect(requirements).to.deep.equal([{ name: "left-pad", versionConstraint: "^1.0.0" }]);
   });
 
   it("rejects another version as unpublished — the resolver's raisable signal", async () => {

@@ -18,62 +18,27 @@
  */
 
 /**
- * The user-facing override vocabulary, ecosystem-generic: the `?`/`!` version
- * markers as written (parsing), and the sanction judgment a strict delivery
- * applies against them. A repository contributes only its own reference
- * grammar (where the version slot is) and its `VersionDomain`; everything
- * here is shared by any ecosystem that resolves through the MVS core.
+ * The judgment of a user's **overrides**, ecosystem-generic: what the `?`/`!`
+ * markers on written requirements sanction, and whether a delivery's versions
+ * stay within it. A repository contributes only its `VersionDomain`;
+ * everything here is shared by any ecosystem that resolves through the MVS
+ * core. (The markers' spelling is read in Requirement.ts.)
  */
 
+import { requiredAs } from "./Requirement";
 import { PackageName, Requirement, Selected, VersionDomain, Violation } from "./Types";
-
-/**
- * Split a written version slot's trailing override marker: `1.4.2?` (permitted
- * alternate) / `2.0.0!` (forced version). Pure text — the caller validates the
- * remainder against its domain (markers demand an exact version) and reports
- * in its own reference grammar.
- */
-export function splitOverrideMarker(written: string): { text: string; override?: "alternate" | "force" } {
-  if (written.endsWith("?")) {
-    return { text: written.slice(0, -1), override: "alternate" };
-  }
-  if (written.endsWith("!")) {
-    return { text: written.slice(0, -1), override: "force" };
-  }
-  return { text: written };
-}
-
-/**
- * A requirement's canonical identity, marker included: an override changes
- * what resolution means (a force substitutes outright; an alternate can
- * supply a floorless-only package's version), so the marker is part of the
- * identity — hence of any resolution memo key built from these.
- */
-export function requirementKey(req: Requirement): string {
-  const marker = req.override === "force" ? "!" : req.override === "alternate" ? "?" : "";
-  return `${req.pkg}:${req.constraint}${marker}`;
-}
-
-/**
- * Requirements deduplicated and canonically ordered by {@link requirementKey}
- * — the one root-set form everything downstream shares: a resolution (and its
- * memo key, and the root indices a resolution's `reachableFrom` refers to)
- * must be independent of the order references were written in.
- */
-export function canonicalRequirements(requirements: readonly Requirement[]): { roots: Requirement[]; keys: string[] } {
-  const byKey = new Map<string, Requirement>(requirements.map(req => [requirementKey(req), req]));
-  const keys = [...byKey.keys()].sort();
-  return { roots: keys.map(key => byKey.get(key)!), keys };
-}
 
 /**
  * The canonical (`versionToString`) form of a written exact version, or
  * undefined when the text is a range (or the domain has no exact-version
- * notion). Every sanction set must store this form: {@link allSanctioned}
+ * notion). Every sanction set must store this form: the sanction judgment
  * compares against `versionToString(selection)`, so a non-canonical spelling
  * (`v1.4.2`, `1.4.2+build`) recorded verbatim could never match.
  */
-export function canonicalExactVersion<V, C>(domain: VersionDomain<V, C>, text: string): string | undefined {
+function canonicalExactVersion<V, C>(domain: VersionDomain<V, C>, text: string | undefined): string | undefined {
+  if (text === undefined) {
+    return undefined;
+  }
   const exact = domain.exactVersion?.(text);
   return exact === undefined ? undefined : domain.versionToString(exact);
 }
@@ -100,28 +65,32 @@ export function collectSanctions<V, C>(
 ): Map<PackageName, Set<string>> {
   const alternates = new Map<PackageName, Set<string>>();
   for (const req of requirements) {
-    if (req.override === "alternate") {
-      const versions = alternates.get(req.pkg) ?? new Set();
+    if (req.override === "alternate" && req.versionConstraint !== undefined) {
+      const versions = alternates.get(requiredAs(req)) ?? new Set();
       /* Canonical form: the sanction judgment compares versionToString. */
-      alternates.set(req.pkg, versions.add(canonicalExactVersion(domain, req.constraint) ?? req.constraint));
+      alternates.set(requiredAs(req), versions.add(canonicalExactVersion(domain, req.versionConstraint) ?? req.versionConstraint));
     }
   }
-  const contradicted = requirements.find(req => req.override === "force" && alternates.has(req.pkg));
+  const contradicted = requirements.find(req => req.override === "force" && alternates.has(requiredAs(req)));
   if (contradicted) {
-    fail(contradicted.pkg, `'${contradicted.pkg}' is both forced ('!') and permitted as an alternate ('?') — pick one`);
+    fail(
+      requiredAs(contradicted),
+      `'${requiredAs(contradicted)}' is both forced ('!') and permitted as an alternate ('?') — pick one`
+    );
   }
   /* Two forces at different versions are equally contradictory — the
    * resolver would have to pick one silently. */
   const forcedAt = new Map<PackageName, string>();
   for (const req of requirements) {
-    if (req.override !== "force") {
+    if (req.override !== "force" || req.versionConstraint === undefined) {
       continue;
     }
-    const existing = forcedAt.get(req.pkg);
-    if (existing !== undefined && existing !== req.constraint) {
-      fail(req.pkg, `'${req.pkg}' is forced ('!') at two different versions (${existing}, ${req.constraint}) — pick one`);
+    const name = requiredAs(req);
+    const existing = forcedAt.get(name);
+    if (existing !== undefined && existing !== req.versionConstraint) {
+      fail(name, `'${name}' is forced ('!') at two different versions (${existing}, ${req.versionConstraint}) — pick one`);
     }
-    forcedAt.set(req.pkg, req.constraint);
+    forcedAt.set(name, req.versionConstraint);
   }
   return alternates;
 }
@@ -136,31 +105,14 @@ export function writtenVersions<V, C>(
     written.set(pkg, new Set(versions));
   }
   for (const req of demanded) {
-    const exact = canonicalExactVersion(domain, req.constraint);
+    const exact = canonicalExactVersion(domain, req.versionConstraint);
     if (exact === undefined) {
       continue;
     }
-    const versions = written.get(req.pkg) ?? new Set();
-    written.set(req.pkg, versions.add(exact));
+    const versions = written.get(requiredAs(req)) ?? new Set();
+    written.set(requiredAs(req), versions.add(exact));
   }
   return written;
-}
-
-/**
- * The sanction rule, a pure set comparison: every version of `pkg` in the
- * delivered set must be explicitly written. One `?` alone would implicitly
- * bless coexistence with whatever the rest of the tree resolves to, so drift
- * on ANY side re-errors loudly, with the unallowed version(s) named (see
- * the conflict report).
- */
-export function allSanctioned<V, C>(
-  domain: VersionDomain<V, C>,
-  needed: readonly Selected<V>[],
-  written: ReadonlyMap<string, ReadonlySet<string>>,
-  pkg: string
-): boolean {
-  const allowed = written.get(pkg);
-  return allowed !== undefined && needed.every(sel => sel.pkg !== pkg || allowed.has(domain.versionToString(sel.version)));
 }
 
 /**
@@ -176,13 +128,13 @@ export function satisfiedByAnySelection<V, C>(
 ): boolean {
   let constraint: C;
   try {
-    constraint = domain.parseConstraint(violation.constraint);
+    constraint = domain.parseConstraint(violation.versionConstraint);
   } catch {
     /* Unparseable constraints are hard errors at resolve; a violation's
      * constraint always parsed there. */
     return false;
   }
-  return selections.some(sel => sel.pkg === violation.pkg && domain.satisfies(sel.version, constraint));
+  return selections.some(sel => sel.name === violation.name && domain.satisfies(sel.version, constraint));
 }
 
 /**
@@ -193,9 +145,9 @@ export function satisfiedByAnySelection<V, C>(
 export function violatedAmong<V, C>(domain: VersionDomain<V, C>, selections: readonly Selected<V>[], violation: Violation<V>): boolean {
   let constraint: C;
   try {
-    constraint = domain.parseConstraint(violation.constraint);
+    constraint = domain.parseConstraint(violation.versionConstraint);
   } catch {
     return true;
   }
-  return selections.some(sel => sel.pkg === violation.pkg && !domain.satisfies(sel.version, constraint));
+  return selections.some(sel => sel.name === violation.name && !domain.satisfies(sel.version, constraint));
 }

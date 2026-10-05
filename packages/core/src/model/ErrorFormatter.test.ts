@@ -193,7 +193,7 @@ describe("DiagnosticErrorFormatter", () => {
         property: propertyDecl("deps"),
         target,
       };
-      return new RepositoryRef(undefined as unknown as RefSource, parseName(written)).withStep(step);
+      return RepositoryRef.written(undefined as unknown as RefSource, parseName(written)).withStep(step);
     }
 
     it("anchors at the reference when the failing target wrote it", () => {

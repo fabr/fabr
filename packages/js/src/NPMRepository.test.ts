@@ -24,10 +24,12 @@ import * as tar from "tar-stream";
 import { AddressInfo } from "node:net";
 import { expect } from "chai";
 import {
+  RefSource,
+  Requirement,
+  vendPackageRef,
   BUILD_OPERATION,
   BuildCache,
   Computable,
-  ConflictError,
   ExecutionContext,
   explainResolutionPath,
   FILES_OPERATION,
@@ -54,12 +56,12 @@ import {
   FileSetRef,
   conflictError,
   ROOT_REQUIRER,
+  PackageIdentity,
   Selected,
   SemverVersion,
   ResolutionGraph,
   parseRouteKey,
   RepositoryGroup,
-  SEMVER,
   SemverConstraint,
   TARGET,
   versionToString,
@@ -82,13 +84,10 @@ function selection(
   reachedVia?: IRequirementEdge,
   selectedBy?: IRequirementEdge
 ): Selected<SemverVersion> {
-  return { pkg, version: parseVersion(version), reachedVia, selectedBy: selectedBy ?? reachedVia };
+  return { name: pkg, version: parseVersion(version), reachedVia, selectedBy: selectedBy ?? reachedVia };
 }
 
-function origin(
-  root: { pkg: string; constraint: string },
-  selections: Selected<SemverVersion>[]
-): IResolutionOrigin<SemverVersion> {
+function origin(root: Requirement, selections: Selected<SemverVersion>[]): IResolutionOrigin<SemverVersion> {
   return {
     kind: "package-resolution",
     root,
@@ -97,18 +96,18 @@ function origin(
   };
 }
 
-const ROOT_EDGE = (constraint: string): IRequirementEdge => ({ requiredBy: ROOT_REQUIRER, constraint });
+const ROOT_EDGE = (constraint: string): IRequirementEdge => ({ requiredBy: ROOT_REQUIRER, versionConstraint: constraint });
 
 describe("explainResolutionPath", () => {
-  const chokidarClosure = origin({ pkg: "chokidar", constraint: "3.5.3" }, [
+  const chokidarClosure = origin({ name: "chokidar", versionConstraint: "3.5.3" }, [
     selection("chokidar", "3.5.3", ROOT_EDGE("3.5.3")),
-    selection("anymatch", "3.1.2", { requiredBy: "chokidar@3.5.3", constraint: "~3.1.2" }),
-    selection("readdirp", "3.6.0", { requiredBy: "chokidar@3.5.3", constraint: "~3.6.0" }),
+    selection("anymatch", "3.1.2", { requiredBy: "chokidar@3.5.3", versionConstraint: "~3.1.2" }),
+    selection("readdirp", "3.6.0", { requiredBy: "chokidar@3.5.3", versionConstraint: "~3.6.0" }),
     selection(
       "picomatch",
       "2.2.1",
-      { requiredBy: "anymatch@3.1.2", constraint: "^2.0.4" },
-      { requiredBy: "readdirp@3.6.0", constraint: "^2.2.1" }
+      { requiredBy: "anymatch@3.1.2", versionConstraint: "^2.0.4" },
+      { requiredBy: "readdirp@3.6.0", versionConstraint: "^2.2.1" }
     ),
   ]);
 
@@ -129,20 +128,20 @@ describe("explainResolutionPath", () => {
   });
 
   it("handles scoped package paths", () => {
-    const scoped = origin({ pkg: "@types/picomatch", constraint: "2.3.0" }, [
+    const scoped = origin({ name: "@types/picomatch", versionConstraint: "2.3.0" }, [
       selection("@types/picomatch", "2.3.0", ROOT_EDGE("2.3.0")),
     ]);
     expect(explainResolutionPath(scoped, "@types/picomatch/index.d.ts")).to.deep.equal(["@types/picomatch@2.3.0 (2.3.0)"]);
   });
 
   it("marks a winning requirement from a superseded version", () => {
-    const withSuperseded = origin({ pkg: "A", constraint: "^1.0.0" }, [
+    const withSuperseded = origin({ name: "A", versionConstraint: "^1.0.0" }, [
       selection("A", "1.2.0", ROOT_EDGE("^1.0.0")),
       selection(
         "D",
         "1.5.0",
-        { requiredBy: "A@1.2.0", constraint: "^1.1.0" },
-        { requiredBy: "A@1.0.0", constraint: "^1.5.0" }
+        { requiredBy: "A@1.2.0", versionConstraint: "^1.1.0" },
+        { requiredBy: "A@1.0.0", versionConstraint: "^1.5.0" }
       ),
     ]);
     expect(explainResolutionPath(withSuperseded, "D/index.js")).to.deep.equal([
@@ -160,9 +159,10 @@ describe("explainResolutionPath", () => {
 
 describe("splitNpmReference", () => {
   function split(ref: string): { requirement: string; projection?: { pattern: string; prefix: string } } {
-    const { requirement, projection } = splitNpmReference(Name.fromLiteral(ref));
+    const { projection, ...identity } = splitNpmReference(Name.fromLiteral(ref));
     return {
-      requirement: requirement.getSimpleName() as string,
+      /* The identity as it is written, to read beside the reference it came from. */
+      requirement: new RepositoryRef({} as RefSource, identity).toString(),
       ...(projection ? { projection: { pattern: projection.pattern.getSimpleName() as string, prefix: projection.prefix } } : {}),
     };
   }
@@ -193,16 +193,32 @@ describe("splitNpmReference", () => {
     });
   });
 
+  it("reads a version the lexer saw as a glob, whatever projection follows it", () => {
+    /* `?` (an override marker) and `*` (an x-range) are glob characters, so
+     * the name's literal prefix ends inside the version; the boundary is found
+     * over the written text. */
+    const vend = (written: string): RepositoryRef => vendPackageRef({} as RefSource, NPM_FORMAT, parseName(written));
+    const projectionsOf = (ref: RepositoryRef): string[][] => ref.projections.map(p => [p.pattern.toBaseString(), p.prefix]);
+    expect(vend("tslib:1.14.1?").toString()).to.equal("tslib:1.14.1?");
+    const marked = vend("tslib:1.14.1?:package.json");
+    expect(marked.toString()).to.equal("tslib:1.14.1?");
+    expect(projectionsOf(marked)).to.deep.equal([["package.json", ""]]);
+    const ranged = vend("esbuild:1.14.*/lib/*.js");
+    expect(ranged.toString()).to.equal("esbuild:1.14.*");
+    expect(projectionsOf(ranged)).to.deep.equal([["lib/*.js", "esbuild:1.14.*/"]]);
+  });
+
   it("gives a rename facet to exactly one half — the projection when there is one", () => {
     /* Which half holds the facet is what decides whether `-> ` means a package
      * rename or a file rename, so the split must never hand it to both. */
-    const projected = splitNpmReference(parseName("stream-browserify:3.0.0:lib/*.js -> *.mjs"));
-    expect(projected.requirement.getRenameTo()).to.equal(undefined);
-    expect(projected.projection?.pattern.getRenameTo()?.toString()).to.equal("*.mjs");
+    const vend = (written: string): RepositoryRef => vendPackageRef({} as RefSource, NPM_FORMAT, parseName(written));
+    const projected = vend("stream-browserify:3.0.0:lib/*.js -> *.mjs");
+    expect(projected.renameTo).to.equal(undefined);
+    expect(projected.projections[0].pattern.getRenameTo()?.toString()).to.equal("*.mjs");
 
-    const identity = splitNpmReference(parseName("stream-browserify:3.0.0 -> stream"));
-    expect(identity.projection).to.equal(undefined);
-    expect(identity.requirement.getRenameTo()?.toString()).to.equal("stream");
+    const identity = vend("stream-browserify:3.0.0 -> stream");
+    expect(identity.projections).to.deep.equal([]);
+    expect(identity.renameTo).to.equal("stream");
   });
 });
 
@@ -435,7 +451,7 @@ describe("cyclic dependency closures through resolve + materialize", () => {
       [`${REG}/tarball/pong.tgz`]: packageTarball("pong.marker"),
     };
     const repo = npmRepository(REG, fakeContext("build", served, []));
-    const ref = new RepositoryRef(repo, Name.fromLiteral("ping:1.0.0"));
+    const ref = repo.getRepositoryRef(Name.fromLiteral("ping:1.0.0"));
 
     const [delivered] = await toPromise(drive(repo, [ref]));
     const ping = delivered as PackageFileSet;
@@ -481,7 +497,7 @@ describe("NPMRepository package extensions", () => {
 
   async function cssOf(extensions: PackageExtensions): Promise<PackageFileSet> {
     const repo = npmRepository(REG, fakeContext("build", served, []), extensions);
-    const refs = [new RepositoryRef(repo, Name.fromLiteral("widget:1.0.0")), new RepositoryRef(repo, Name.fromLiteral("react:18.0.0"))];
+    const refs = [repo.getRepositoryRef(Name.fromLiteral("widget:1.0.0")), repo.getRepositoryRef(Name.fromLiteral("react:18.0.0"))];
     const [widget] = await toPromise(drive(repo, refs));
     return (widget as PackageFileSet).dependencies[0] as PackageFileSet;
   }
@@ -513,7 +529,7 @@ describe("NPMRepository resolveAll under files", () => {
       [`${REG}/tarball/2.4.1.tgz`]: packageTarball(),
     };
     const repo = npmRepository(REG, fakeContext(FILES_OPERATION, served, fetched));
-    const ref = new RepositoryRef(repo, Name.fromLiteral("@parcel/watcher:2.4.1"));
+    const ref = repo.getRepositoryRef(Name.fromLiteral("@parcel/watcher:2.4.1"));
 
     const [delivered] = await toPromise(drive(repo, [ref]));
 
@@ -534,7 +550,7 @@ describe("NPMRepository resolveAll under files", () => {
       [`${REG}/tarball/1.2.0.tgz`]: packageTarball(),
     };
     const repo = npmRepository(REG, fakeContext(FILES_OPERATION, served, fetched));
-    const ref = new RepositoryRef(repo, Name.fromLiteral("left-pad:^1.2.0"));
+    const ref = repo.getRepositoryRef(Name.fromLiteral("left-pad:^1.2.0"));
 
     const [delivered] = await toPromise(drive(repo, [ref]));
 
@@ -543,7 +559,7 @@ describe("NPMRepository resolveAll under files", () => {
 
   it("rejects projecting into a floorless version", async () => {
     const repo = npmRepository(REG, fakeContext(FILES_OPERATION, {}, []));
-    const ref = new RepositoryRef(repo, Name.fromLiteral("left-pad:*"));
+    const ref = repo.getRepositoryRef(Name.fromLiteral("left-pad:*"));
 
     const err = await rejection(() => drive(repo, [ref]));
     expect(err.message).to.match(/without a version lower bound/);
@@ -746,9 +762,9 @@ describe("NPMRepository metadata memo", () => {
 
     const requirements = await toPromise(repo.getRequirements("plugin", parseVersion("1.0.0")));
     expect(requirements).to.deep.equal([
-      { pkg: "lodash", constraint: "^4.0.0" },
-      { pkg: "eslint", constraint: "^9.0.0", provided: "expected" },
-      { pkg: "typescript", constraint: ">=5", provided: "optional" },
+      { name: "lodash", versionConstraint: "^4.0.0" },
+      { name: "eslint", versionConstraint: "^9.0.0", provided: "expected" },
+      { name: "typescript", versionConstraint: ">=5", provided: "optional" },
     ]);
   });
 
@@ -784,7 +800,7 @@ describe("NPMRepository metadata memo", () => {
     const repo = npmRepository(REG, context);
 
     const requirements = await toPromise(repo.getRequirements("odd", parseVersion("1.0.0")));
-    expect(requirements).to.deep.equal([{ pkg: "eslint", constraint: "^9.0.0", provided: "expected" }]);
+    expect(requirements).to.deep.equal([{ name: "eslint", versionConstraint: "^9.0.0", provided: "expected" }]);
   });
 
   it("reads an npm: alias dependency as a requirement on the aliased package", async () => {
@@ -802,75 +818,9 @@ describe("NPMRepository metadata memo", () => {
     const requirements = await toPromise(repo.getRequirements("@isaacs/cliui", parseVersion("8.0.2")));
 
     expect(requirements).to.deep.equal([
-      { pkg: "string-width", constraint: "^5.1.2" },
-      { pkg: "wrap-ansi", constraint: "^7.0.0", alias: "wrap-ansi-cjs" },
+      { name: "string-width", versionConstraint: "^5.1.2" },
+      { name: "wrap-ansi", versionConstraint: "^7.0.0", renameTo: "wrap-ansi-cjs" },
     ]);
-  });
-});
-
-describe("ResolutionGraph.assertNoAliasCollisions", () => {
-  /** A closure member, keyed as the id the edges refer to it by. */
-  function members(...ids: string[]): Map<string, Selected<SemverVersion>> {
-    return new Map(
-      ids.map(id => {
-        const at = id.lastIndexOf("@");
-        return [id, { pkg: id.substring(0, at), version: parseVersion(id.substring(at + 1)) }];
-      })
-    );
-  }
-
-  /** A graph holding exactly the batch's selections and edges. */
-  function graphOf(batch: Map<string, Selected<SemverVersion>>, edges: Record<string, Record<string, string>>): ResolutionGraph<SemverVersion> {
-    return new ResolutionGraph(version => SEMVER.versionToString(version), {
-      selections: [...batch.values()],
-      violations: [],
-      coerced: [],
-      shared: [],
-      raises: [],
-      requirements: new Map(),
-      edges: new Map(Object.entries(edges).map(([id, deps]) => [id, new Map(Object.entries(deps))])),
-      rootBindings: [],
-    });
-  }
-
-  it("accepts one name bound to several versions of one package", () => {
-    /* Version divergence is layout's business (nesting), not a collision. */
-    const batch = members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "dep@1.0.0", "dep@2.0.0");
-    graphOf(batch, {
-      "cli@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
-      "a@1.0.0": { dep: "dep@1.0.0" },
-      "b@1.0.0": { dep: "dep@2.0.0" },
-    }).assertNoAliasCollisions(batch);
-  });
-
-  it("accepts an alias sharing the batch with the package's own name", () => {
-    const batch = members("cli@1.0.0", "@isaacs/cliui@8.0.2", "wrap-ansi@8.1.0", "wrap-ansi@7.0.0");
-    graphOf(batch, {
-      "cli@1.0.0": { "@isaacs/cliui": "@isaacs/cliui@8.0.2", "wrap-ansi": "wrap-ansi@8.1.0" },
-      "@isaacs/cliui@8.0.2": { "wrap-ansi-cjs": "wrap-ansi@7.0.0" },
-    }).assertNoAliasCollisions(batch);
-  });
-
-  it("rejects two different packages claiming one install name", () => {
-    /* Only an alias can reach this — an ordinary edge names its own package —
-       and hoisting either would silently break the other's imports. */
-    const batch = members("cli@1.0.0", "a@1.0.0", "b@1.0.0", "left-pad@1.0.0", "right-pad@1.0.0");
-    const graph = graphOf(batch, {
-      "cli@1.0.0": { a: "a@1.0.0", b: "b@1.0.0" },
-      "a@1.0.0": { pad: "left-pad@1.0.0" },
-      "b@1.0.0": { pad: "right-pad@1.0.0" },
-    });
-    const err = (() => {
-      try {
-        graph.assertNoAliasCollisions(batch);
-        return undefined;
-      } catch (thrown) {
-        return thrown as Error & { help?: string };
-      }
-    })();
-    expect(err).to.be.instanceOf(ConflictError);
-    expect(err?.message).to.contain("Conflicting packages for pad");
-    expect(err?.help).to.contain("alias");
   });
 });
 
@@ -1221,7 +1171,7 @@ describe("NPMRepository read authentication", () => {
       REG,
       authCapturingContext(FILES_OPERATION, served, captured, "//registry.example.org/:_authToken=secret-token")
     );
-    const ref = new RepositoryRef(repo, Name.fromLiteral("left-pad:1.2.0"));
+    const ref = repo.getRepositoryRef(Name.fromLiteral("left-pad:1.2.0"));
 
     await toPromise(drive(repo, [ref]));
 
@@ -1240,7 +1190,7 @@ describe("NPMRepository read authentication", () => {
       [`${REG}/tarball/1.2.0.tgz`]: packageTarball(),
     };
     const repo = npmRepository(REG, authCapturingContext(FILES_OPERATION, served, captured));
-    const ref = new RepositoryRef(repo, Name.fromLiteral("left-pad:1.2.0"));
+    const ref = repo.getRepositoryRef(Name.fromLiteral("left-pad:1.2.0"));
 
     await toPromise(drive(repo, [ref]));
 
@@ -1270,7 +1220,7 @@ describe("override markers", () => {
   /* Refs stamped with the alias a build file would have written them under,
    * so suggestions render pasteably (the alias rides the ref now). */
   const refsFor = (repo: NPMRepository, names: string[]): RepositoryRef[] =>
-    names.map(name => new RepositoryRef(repo, parseName(name)).withRepositoryName("@npm"));
+    names.map(name => repo.getRepositoryRef(parseName(name)).withRepositoryName("@npm"));
 
   it("a '?' pair — principal and fork — sanctions the coexistence in a strict delivery", async () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
@@ -1310,22 +1260,11 @@ describe("override markers", () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
     /* The catalog form again, but the unmarked pin names the *fork*: the
      * requirement is answered by C@1.5.0 while the principal stays 2.5.0. */
-    const delivered = await toPromise(
-      drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:1.5.0", "C:2.5.0?"]))
-    );
-    const packages = delivered.filter(
-      (set): set is PackageFileSet => set instanceof PackageFileSet && [...set].length > 0
-    );
-    const fork = packages.find(pkg => pkg.packageId === "C@1.5.0");
-    expect(fork?.isNestedOverride).to.equal(true);
+    const delivered = await toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:1.5.0", "C:2.5.0?"])));
+    const packages = delivered.filter((set): set is PackageFileSet => set instanceof PackageFileSet && [...set].length > 0);
     /* Reached only through a built package's carried deps: the carrier's own
      * edge binds the fork, and the principal sits in the closure beside it. */
-    const carrier = new PackageFileSet(
-      new FileSet(new Map([["package.json", MemoryFile.from("{}")]])),
-      "P",
-      "1.0.0",
-      packages
-    );
+    const carrier = new PackageFileSet(new FileSet(new Map([["package.json", MemoryFile.from("{}")]])), "P", "1.0.0", packages);
     const assembled = new Map(assembleNodeModules([carrier]));
     expect(assembled.has(".fabr/C@2.5.0/node_modules/C/v2.5.0.marker")).to.equal(true);
     expect(assembled.has(".fabr/C@1.5.0/node_modules/C/v1.5.0.marker")).to.equal(true);
@@ -1504,7 +1443,7 @@ describe("merged layout across a batch", () => {
   /* Refs stamped with the alias a build file would have written them under,
    * so suggestions render pasteably (the alias rides the ref now). */
   const refsFor = (repo: NPMRepository, names: string[]): RepositoryRef[] =>
-    names.map(name => new RepositoryRef(repo, parseName(name)).withRepositoryName("@npm"));
+    names.map(name => repo.getRepositoryRef(parseName(name)).withRepositoryName("@npm"));
 
   it("keeps a member on the version its edge binds across a merge with a sibling delivery", async () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
@@ -1562,42 +1501,47 @@ describe("package rename", () => {
     expect(names.some(name => name.includes("stream-browserify"))).to.equal(false);
   });
 
-  it("is a stamp, not a second requirement: one resolution, one fetch", async () => {
-    /* Resolution is by package, so naming the same package twice — once renamed
-     * — pins and fetches it once and differs only in what the two deliveries are
-     * called. */
-    const fetched: string[] = [];
-    const repo = npmRepository(REG, fakeContext("build", served, fetched));
-    const delivered = await toPromise(
+  it("is a package of its own, with the content of the one it renames", async () => {
+    /* One version per name, and the name is the one after renaming: naming a
+     * package twice — once renamed — is two packages, each selected on its own
+     * requirements, which here happen to be the same version. */
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const delivered = (await toPromise(
       materializeAll(machineryContexts.get(repo)! as unknown as ResolutionContext, refsFor(repo, ["stream-browserify:3.0.0", "stream-browserify:3.0.0 -> stream"]))
-    );
-    expect(delivered.map(set => (set as PackageFileSet).packageName)).to.deep.equal(["stream-browserify", "stream"]);
-    expect(fetched.filter(url => url.endsWith("/tarball/3.0.0.tgz"))).to.have.lengthOf(1);
+    )) as PackageFileSet[];
+    expect(delivered.map(set => set.packageName)).to.deep.equal(["stream-browserify", "stream"]);
+    expect(delivered[1].version).to.equal(delivered[0].version);
+    expect(delivered[1].toManifestHash()).to.equal(delivered[0].toManifestHash());
   });
 });
 
-const npmRefText = (pkg: string, version: string, marker?: "?" | "!"): string => `@npm:${pkg}:${version}${marker ?? ""}`;
+const npmRefText = (pkg: PackageIdentity, version: string, marker?: "?" | "!"): string => `@npm:${pkg.publishedName ?? pkg.name}:${version}${marker ?? ""}`;
 
 describe("conflictError (the strict repair report)", () => {
   /* Floor raises are deliberately absent here: a raised floor is the
    * constraint's plain meaning when its literal minimum was never published,
    * accepted in every delivery mode rather than judged by the strict gate. */
-  const violation = { pkg: "C", constraint: "^2.0.0", requiredBy: "A@1.0.0", selected: parseVersion("3.0.0") };
+  const violation = { name: "C", versionConstraint: "^2.0.0", requiredBy: "A@1.0.0", selected: parseVersion("3.0.0") };
   const duplicates: Array<[string, SemverVersion[]]> = [["D", [parseVersion("1.0.0"), parseVersion("2.0.0")]]];
-  const rootEdge = (constraint: string): IRequirementEdge => ({ requiredBy: ROOT_REQUIRER, constraint });
+  const rootEdge = (constraint: string): IRequirementEdge => ({ requiredBy: ROOT_REQUIRER, versionConstraint: constraint });
   const selection = (
     pkg: string,
     version: string,
     reachedVia: IRequirementEdge,
     selectedBy?: IRequirementEdge
-  ): Selected<SemverVersion> => ({ pkg, version: parseVersion(version), reachedVia, selectedBy: selectedBy ?? reachedVia });
+  ): Selected<SemverVersion> => ({ name: pkg, version: parseVersion(version), reachedVia, selectedBy: selectedBy ?? reachedVia });
   /* A@1.0.0 and B@1.0.0 both require C; B's floor won, so A's upper bound is
    * the one violated. D coexists: required by A at 1.0.0 and directly at 2. */
   const selections = [
     selection("A", "1.0.0", rootEdge("^1.0.0")),
     selection("B", "1.0.0", rootEdge("^1.0.0")),
-    selection("C", "3.0.0", { requiredBy: "A@1.0.0", constraint: "^2.0.0" }, { requiredBy: "B@1.0.0", constraint: "^3.0.0" }),
-    selection("D", "1.0.0", { requiredBy: "A@1.0.0", constraint: "^1.0.0" }),
+    selection(
+      "C",
+      "3.0.0",
+      { requiredBy: "A@1.0.0", versionConstraint: "^2.0.0" },
+      { requiredBy: "B@1.0.0", versionConstraint: "^3.0.0" }
+    ),
+    selection("D", "1.0.0", { requiredBy: "A@1.0.0", versionConstraint: "^1.0.0" }),
     selection("D", "2.0.0", rootEdge("^2.0.0")),
   ];
   /** The delivery's graph: the same selections the slice ships, explained. */
@@ -1635,7 +1579,7 @@ describe("conflictError (the strict repair report)", () => {
     /* One stanza, not seven: the violation line appears exactly once */
     expect(err.message.match(/does not satisfy/g)).to.have.lengthOf(1);
     /* A distinct conflict (different selected version) keeps its own entry */
-    const other = { pkg: "C", constraint: "^2.0.0", requiredBy: "B@1.0.0", selected: parseVersion("3.5.0") };
+    const other = { name: "C", versionConstraint: "^2.0.0", requiredBy: "B@1.0.0", selected: parseVersion("3.5.0") };
     const two = conflictError("A:^1.0.0", [violation, other], [], selections, graph, npmRefText);
     expect(two.message.match(/does not satisfy/g)).to.have.lengthOf(2);
   });
@@ -1664,7 +1608,7 @@ describe("conflictError (the strict repair report)", () => {
   /* Provenance edges are optional (resolutions persisted before they existed),
    * so the bare statement of each repair has to stand on its own. */
   it("states the repairs alone when the resolution carries no provenance", () => {
-    const bare = [{ pkg: "C", version: parseVersion("3.0.0") }];
+    const bare = [{ name: "C", version: parseVersion("3.0.0") }];
     const err = conflictError("A:^1.0.0", [violation], duplicates, bare, graphFor(bare), npmRefText);
     expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0' required by A@1.0.0");
     expect(err.message).to.not.contain("selected by:");
@@ -1707,7 +1651,7 @@ describe("multi-route domains (repository groups)", () => {
   it("dispatches transitive metadata and fetches to the routed member", async () => {
     const fetched: string[] = [];
     const repo = groupDomain(fakeContext("build", served, fetched), [["@scope/*", PRIV], ["*", REG]]);
-    const ref = new RepositoryRef(repo, Name.fromLiteral("app:1.0.0"));
+    const ref = repo.getRepositoryRef(Name.fromLiteral("app:1.0.0"));
 
     const [delivered] = await toPromise(drive(repo, [ref]));
     const app = delivered as PackageFileSet;
@@ -1727,7 +1671,7 @@ describe("multi-route domains (repository groups)", () => {
       return memoize(tag, key, fn);
     };
     const repo = groupDomain(context, [["@scope/*", PRIV], ["*", REG]]);
-    await toPromise(drive(repo, [new RepositoryRef(repo, Name.fromLiteral("app:1.0.0"))]));
+    await toPromise(drive(repo, [repo.getRepositoryRef(Name.fromLiteral("app:1.0.0"))]));
     expect(memoKeys).to.have.lengthOf(1);
     expect(memoKeys[0]).to.contain(NPM_FORMAT.resolutionTag);
     expect(memoKeys[0]).to.contain(`@scope/*=${PRIV}`);
@@ -1738,7 +1682,7 @@ describe("multi-route domains (repository groups)", () => {
     /* A closed domain (no catch-all): not an error class of its own — the
      * domain simply does not serve the package. */
     const repo = groupDomain(fakeContext("build", served, []), [["@scope/*", PRIV]]);
-    const err = await rejection(() => toPromise(drive(repo, [new RepositoryRef(repo, Name.fromLiteral("left-pad:1.0.0"))])));
+    const err = await rejection(() => toPromise(drive(repo, [repo.getRepositoryRef(Name.fromLiteral("left-pad:1.0.0"))])));
     expect(err.message).to.contain("has no route serving 'left-pad'");
     expect(err.message).to.contain("@scope/*");
   });
@@ -1755,7 +1699,7 @@ describe("multi-route domains (repository groups)", () => {
       }),
     };
     const repo = groupDomain(fakeContext("build", gated, []), [["@scope/*", PRIV], ["*", REG]]);
-    const err = await rejection(() => toPromise(drive(repo, [new RepositoryRef(repo, Name.fromLiteral("app:1.0.0"))])));
+    const err = await rejection(() => toPromise(drive(repo, [repo.getRepositoryRef(Name.fromLiteral("app:1.0.0"))])));
     expect(err.message).to.contain("@scope/native@1.0.0 is not supported for the target platform");
   });
 

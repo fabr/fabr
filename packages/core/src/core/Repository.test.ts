@@ -32,7 +32,7 @@ import { parseName } from "../model/Parser";
 const SOURCE = {} as unknown as RepositoryLookup;
 
 function ref(written: string): RepositoryRef {
-  return new RepositoryRef(SOURCE, parseName(written));
+  return RepositoryRef.written(SOURCE, parseName(written));
 }
 
 function pkg(name: string, version = "1.0.0", dependencies: PackageFileSet[] = []): PackageFileSet {
@@ -82,14 +82,13 @@ describe("RepositoryRef.deliveredAs", () => {
 describe("renamedDelivery", () => {
   /* The rule itself, shared by both delivery sites — an external package's (via
    * deliveredAs, above) and a built one's (BuildContext.resolveFileSource). */
-  const to = (name: string): ReturnType<typeof parseName> => parseName(name);
 
   it("carries the rename onward when the delivery is still deferred", () => {
     /* A reference that has not been delivered yet cannot be restamped, so the
      * facet rides it — reaching this same rule again at its collection point. */
-    const deferred = renamedDelivery(ref("stream-browserify:3.0.0"), to("stream"), "written");
+    const deferred = renamedDelivery(ref("stream-browserify:3.0.0"), "stream", "written");
     expect(deferred).to.be.instanceOf(RepositoryRef);
-    expect((deferred as RepositoryRef).name.getRenameTo()?.toString()).to.equal("stream");
+    expect((deferred as RepositoryRef).renameTo).to.equal("stream");
     /* And it means the same thing when it lands. */
     const delivered = (deferred as RepositoryRef).deliveredAs(pkg("stream-browserify", "3.0.0"));
     expect((delivered as PackageFileSet).packageName).to.equal("stream");
@@ -99,14 +98,14 @@ describe("renamedDelivery", () => {
     /* Its delivery is files, not a package — the two readings of `-> ` must not
      * both apply to one reference. */
     const projected = ref("pkg:1.0.0").find(parseName("lib/*.js -> *.mjs"));
-    expect(() => renamedDelivery(projected, to("other"), "written")).to.throw(/does not deliver a package/);
+    expect(() => renamedDelivery(projected, "other", "written")).to.throw(/does not deliver a package/);
   });
 });
 
 /** A repository that answers every reference with a one-file package. */
 class StubRepository implements Repository {
   public getRepositoryRef(name: Name): RepositoryRef {
-    return new RepositoryRef(this, name);
+    return RepositoryRef.written(this, name);
   }
 
   public getRepositoryPublishRef(name: Name): never {

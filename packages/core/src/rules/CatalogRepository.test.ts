@@ -26,9 +26,10 @@ import { Repository, RepositoryRef,
   MaterializeOptions,
   ClosureThunk,
 } from "../core/Repository";
-import { splitOverrideMarker } from "../resolver/Overrides";
+import { splitOverrideMarker } from "../resolver/Requirement";
 import { Requirement } from "../resolver/Types";
 import { ConflictError, RequirementResolutionError } from "../core/Errors";
+import { CircularDependencyError } from "../model/Errors";
 import { MemoryFile } from "../core/MemoryFS";
 import { BuildCache } from "../core/BuildCache";
 import { Name } from "../core/Name";
@@ -45,7 +46,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
 import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
-import { resolveBarePackage } from "../resolver/PackageResolver";
+import { resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
 import { RepositoryReader, ResolutionContext } from "../core/Repository";
 import { expect } from "chai";
 import { SILENT_REPORT } from "../support/Execute";
@@ -57,7 +58,11 @@ const TEST_RESOLUTION_CONTEXT: ResolutionContext = {
   memoize: (_tag, _key, create) => create("unused"),
   runTask: (_task, run) => run(SILENT_REPORT),
 };
-const emptyCatalog = new CatalogRepository("@cat", TEST_RESOLUTION_CONTEXT, Computable.resolve(new Map()));
+const emptyCatalog = new CatalogRepository(
+  "@cat",
+  TEST_RESOLUTION_CONTEXT,
+  Computable.resolve({ entries: new Map(), collection: { requests: new Map(), resolutions: new Map() } })
+);
 
 describe("CatalogRepository.getRepositoryRef", () => {
   it("claims a plain alias, no projection", () => {
@@ -103,16 +108,17 @@ describe("CatalogRepository (through the model)", () => {
   const CAT_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
     ...SEMVER,
     resolutionTag: "cattest:resolve:1",
-    splitReference: (name: Name) => ({ requirement: name }),
-    parseRequirement: (name: Name) => {
+    providedMismatch: "tolerate",
+    splitReference: (name: Name) => {
       const written = name.toBaseString();
       const colon = written.lastIndexOf(":");
       if (colon === -1) {
-        return { pkg: written, constraint: "1.0.0" };
+        return { name: written, versionConstraint: "1.0.0" };
       }
       const { text, override } = splitOverrideMarker(written.substring(colon + 1));
-      return { pkg: written.substring(0, colon), constraint: text, ...(override ? { override } : {}) };
+      return { name: written.substring(0, colon), versionConstraint: text, ...(override ? { override } : {}) };
     },
+    validateRequirement: () => undefined,
     parsePublishCoordinate: () => {
       throw new Error("not used");
     },
@@ -159,7 +165,7 @@ describe("CatalogRepository (through the model)", () => {
     constructor(public readonly identity: string) {}
 
     public getRepositoryRef(name: Name): RepositoryRef {
-      return new RepositoryRef(this, name);
+      return vendPackageRef(this, CAT_FORMAT, name);
     }
 
     public getRepositoryPublishRef(name: Name): never {
@@ -241,9 +247,28 @@ describe("CatalogRepository (through the model)", () => {
         return EMPTY_FILESET;
       }),
   };
+  /* A locally built package: named as its target, unversioned, carrying its
+   * `deps` as written — packages as packages, external requirements as inert
+   * references — and its `provided` as provided requirements, as a
+   * package-building rule delivers one. */
+  const packageRule: RuleDefinition = {
+    type: "test_pkg",
+    properties: {},
+    evaluate: (context: TargetContext) =>
+      Computable.forAll([context.getFileProperty("deps"), context.getFileProperty("provided")], (sources, provided) =>
+        new PackageFileSet(
+          new Map([[`${context.name}/data.txt`, contentOf(context.name)]]),
+          context.name,
+          undefined,
+          sources.filter((source): source is PackageFileSet | RepositoryRef => source instanceof PackageFileSet || source instanceof RepositoryRef),
+          undefined,
+          provided.flatMap(source => (source instanceof RepositoryRef ? [{ provided: "expected" as const, target: source }] : []))
+        )
+      ),
+  };
   const contributions: PluginContribution[] = [
     {
-      rules: [depsRule, runRule],
+      rules: [depsRule, runRule, packageRule],
       repositories: [
         { type: "package_repo", provider: (context: TargetContext) => Computable.resolve(backing(context.name)) },
         catalogRepositoryRegistration,
@@ -265,7 +290,8 @@ describe("CatalogRepository (through the model)", () => {
     "targetdef catalog { deps = FILES; }\n" +
     "targetdef package_repo { }\n" +
     "targetdef test_deps { deps = FILES; }\n" +
-    "targetdef test_run { tool = FILES; }\n";
+    "targetdef test_run { tool = FILES; }\n" +
+    "targetdef test_pkg { deps = FILES; provided = FILES; }\n";
 
   function build(source: string): BuildModel {
     backings.clear();
@@ -303,7 +329,7 @@ describe("CatalogRepository (through the model)", () => {
         "catalog @cat { deps = @backing:foo; }\n" +
         "test_deps a { deps = @cat:foo:foo/data.txt; }\n"
     );
-    requirementTable.set("foo@1.0.0", [{ pkg: "bar", constraint: "1.0.0" }]);
+    requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "1.0.0" }]);
     await model.getConfig(Constraints.of({}), execution).getTarget("a");
     const repo = backings.get("@backing")!;
     expect([...lastDeps!].map(([name]) => name)).to.deep.equal(["foo/data.txt"]);
@@ -318,7 +344,7 @@ describe("CatalogRepository (through the model)", () => {
         "catalog @cat { deps = @backing:foo; }\n" +
         "test_deps a { deps = @cat:foo; }\n"
     );
-    requirementTable.set("foo@1.0.0", [{ pkg: "bar", constraint: "1.0.0" }]);
+    requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "1.0.0" }]);
     await model.getConfig(Constraints.of({ BUILD_OPERATION: "files" }), execution).getTarget("a");
     const delivered = lastDepSets[0] as PackageFileSet;
     expect(delivered.packageName).to.equal("foo");
@@ -335,9 +361,9 @@ describe("CatalogRepository (through the model)", () => {
       "test_deps only_b { deps = @cat:b; }\n" +
       "test_deps both { deps = @cat:a @cat:b; }\n";
     const graph = (): void => {
-      requirementTable.set("a@1.0.0", [{ pkg: "x", constraint: "^2.0.0" }]);
-      requirementTable.set("b@1.0.0", [{ pkg: "y", constraint: "1.0.0" }]);
-      requirementTable.set("y@1.0.0", [{ pkg: "x", constraint: "^1.0.0" }]);
+      requirementTable.set("a@1.0.0", [{ name: "x", versionConstraint: "^2.0.0" }]);
+      requirementTable.set("b@1.0.0", [{ name: "y", versionConstraint: "1.0.0" }]);
+      requirementTable.set("y@1.0.0", [{ name: "x", versionConstraint: "^1.0.0" }]);
     };
 
     it("delivers a subset that reaches only the version satisfying it", async () => {
@@ -404,7 +430,7 @@ describe("CatalogRepository (through the model)", () => {
           "test_deps both { deps = @cat:a @cat:b; }\n"
       );
       graph();
-      requirementTable.set("c@1.0.0", [{ pkg: "x", constraint: "^3.0.0" }]);
+      requirementTable.set("c@1.0.0", [{ name: "x", versionConstraint: "^3.0.0" }]);
       const { help } = await failure(model, "both");
       expect(help).to.contain("@backing:x:2.0.0?");
       expect(help).to.not.contain("@backing:x:1.0.0?");
@@ -448,12 +474,12 @@ describe("CatalogRepository (through the model)", () => {
      * whether langsmith is bound to openai is decided by the installation that
      * consumes them, not by which subset delivered it. */
     const graph = (): void => {
-      requirementTable.set("anthropic@1.0.0", [{ pkg: "langsmith", constraint: "1.0.0" }]);
+      requirementTable.set("anthropic@1.0.0", [{ name: "langsmith", versionConstraint: "1.0.0" }]);
       requirementTable.set("classic@1.0.0", [
-        { pkg: "langsmith", constraint: "1.0.0" },
-        { pkg: "openai", constraint: "1.0.0" },
+        { name: "langsmith", versionConstraint: "1.0.0" },
+        { name: "openai", versionConstraint: "1.0.0" },
       ]);
-      requirementTable.set("langsmith@1.0.0", [{ pkg: "openai", constraint: "1.0.0", provided: "optional" }]);
+      requirementTable.set("langsmith@1.0.0", [{ name: "openai", versionConstraint: "1.0.0", provided: "optional" }]);
     };
     const catalog = "package_repo @backing { }\ncatalog @cat { deps = @backing:anthropic @backing:classic; }\n";
     const langsmiths = (): PackageFileSet[] =>
@@ -478,7 +504,10 @@ describe("CatalogRepository (through the model)", () => {
       const found = langsmiths();
       expect(found).to.have.lengthOf(1);
       expect(found[0].getDependency("openai")).to.equal(undefined);
-      expect(found[0].provided.get("openai")).to.equal("1.0.0");
+      /* What would answer it is recorded, as a reference nothing resolves. */
+      const [peer] = found[0].provided;
+      expect([peer.provided, peer.target.toString()]).to.deep.equal(["optional", "openai:1.0.0"]);
+      expect(peer.target).to.be.instanceOf(RepositoryRef);
       expect(backings.get("@backing")!.materialized).to.not.include("openai");
     });
   });
@@ -490,7 +519,7 @@ describe("CatalogRepository (through the model)", () => {
     const catalog =
       "package_repo @backing { }\ncatalog @cat { deps = @backing:tool @backing:ts:2.0.0 @backing:ts:1.0.0 -> ts1; }\n";
     const graph = (): void => {
-      requirementTable.set("tool@1.0.0", [{ pkg: "ts", constraint: "*", provided: "expected" }]);
+      requirementTable.set("tool@1.0.0", [{ name: "ts", versionConstraint: "*", provided: "expected" }]);
     };
     const versionsOf = (name: string): string[] =>
       [...new Set(reachablePackages(lastDepSets).filter(pkg => pkg.packageName === name).map(pkg => pkg.version!))].sort();
@@ -528,10 +557,10 @@ describe("CatalogRepository (through the model)", () => {
           "test_deps a { deps = @cat:suite @cat:host; }\n"
       );
       requirementTable.set("suite@1.0.0", [
-        { pkg: "plugin", constraint: "1.0.0" },
-        { pkg: "host", constraint: "1.0.0" },
+        { name: "plugin", versionConstraint: "1.0.0" },
+        { name: "host", versionConstraint: "1.0.0" },
       ]);
-      requirementTable.set("plugin@1.0.0", [{ pkg: "host", constraint: "*", provided: "expected" }]);
+      requirementTable.set("plugin@1.0.0", [{ name: "host", versionConstraint: "*", provided: "expected" }]);
       await model.getConfig(Constraints.of({}), execution).getTarget("a");
       expect(boundBy("suite", "host")).to.deep.equal(["1.0.0"]);
       expect(boundBy("plugin", "host")).to.deep.equal(["1.0.0"]);
@@ -595,7 +624,7 @@ describe("CatalogRepository (through the model)", () => {
     expect(await delivered.readFile("foo/data.txt")).to.equal("foo");
     /* A rename at the USE site is what this requirer knows it by, so it — not
      * the member's own address — is what a generated manifest would record. */
-    expect(lastDeclared).to.deep.equal([{ pkg: "foo", constraint: "1.0.0", alias: "renamed" }]);
+    expect(lastDeclared).to.deep.equal([{ name: "foo", versionConstraint: "1.0.0", renameTo: "renamed" }]);
     const repo = backings.get("@backing")!;
     expect(repo.requested).to.deep.equal(["foo"]);
     expect(repo.materialized).to.deep.equal(["foo"]);
@@ -624,12 +653,29 @@ describe("CatalogRepository (through the model)", () => {
      * the consumer's own code imports it by — the address, with the package it
      * stands for carried as the alias. */
     expect(lastDeclared).to.deep.equal([
-      { pkg: "foo", constraint: "1.0.0" },
-      { pkg: "foo", constraint: "2.0.0", alias: "foo2" },
+      { name: "foo", versionConstraint: "1.0.0" },
+      { name: "foo", versionConstraint: "2.0.0", renameTo: "foo2" },
     ]);
   });
 
+  it("delivers a renamed requirement as a package of its own, beside another version of the one it renames", async () => {
+    /* One version per name, and the name is the one after renaming: foo's
+     * `semver-old` keeps its own minimum beside the consumer's semver, and the
+     * two are no divergence for the strict check to refuse. */
+    const model = build("package_repo @backing { }\n" + "test_deps a { deps = @backing:foo @backing:semver:7.6.0; }\n");
+    requirementTable.set("foo@1.0.0", [{ name: "semver", versionConstraint: "^7.5.0", renameTo: "semver-old" }]);
+    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    const [foo, semver] = lastDepSets as PackageFileSet[];
+    expect(semver.packageId).to.equal("semver@7.6.0");
+    expect((foo.dependencies as PackageFileSet[]).map(dep => dep.packageId)).to.deep.equal(["semver-old@7.5.0"]);
+    /* Its content is the package's it renames, asked of the registry by that name. */
+    expect(await (foo.dependencies[0] as PackageFileSet).readFile("semver/data.txt")).to.equal("semver");
+    expect([...backings.get("@backing")!.fetched].sort()).to.deep.equal(["foo@1.0.0", "semver@7.5.0", "semver@7.6.0"]);
+  });
+
   it("reports two entries claiming one ALIAS as a conflict (the address, not the package)", async () => {
+    /* One name is one package: the registry's joint resolution refuses it,
+     * attributed to the entries that wrote it. */
     const model = build(
       "package_repo @backing { }\n" +
         "catalog @cat { deps = @backing:foo -> shared @backing:bar -> shared; }\n" +
@@ -639,10 +685,204 @@ describe("CatalogRepository (through the model)", () => {
       await model.getConfig(Constraints.of({}), execution).getTarget("a");
       expect.fail("expected the duplicate alias to conflict");
     } catch (err) {
-      const conflict = findCause(err, ConflictError);
-      expect(conflict, "a ConflictError in the cause chain").to.not.be.undefined;
-      expect(conflict!.key).to.equal("shared");
+      const failure = findCause(err, RequirementResolutionError);
+      expect(failure, "a RequirementResolutionError in the cause chain").to.not.be.undefined;
+      expect(failure!.message).to.contain("'shared' is required as two different packages");
+      expect(failure!.refs.map(ref => ref.toString()).sort()).to.deep.equal(["bar:1.0.0 -> shared", "foo:1.0.0 -> shared"]);
     }
+  });
+
+  describe("a locally built member", () => {
+    /** The names a delivered package's dependencies resolved to; an edge still
+     * an inert reference shows as `ref:<name>`. */
+    const edges = (pkg: PackageFileSet): string[] =>
+      pkg.dependencies.map(dep => (dep instanceof PackageFileSet ? dep.packageId : `ref:${dep.toString()}`));
+
+    it("delivers a directly listed package with its requirements resolved (the baseline)", async () => {
+      const model = build("package_repo @backing { }\n" + "test_pkg lib { deps = @backing:bar; }\n" + "test_deps a { deps = lib; }\n");
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      expect(edges(lastDepSets[0] as PackageFileSet)).to.deep.equal(["bar@1.0.0"]);
+      expect(backings.get("@backing")!.fetched).to.deep.equal(["bar@1.0.0"]);
+    });
+
+    it("delivers it through the catalog with its requirements resolved", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_pkg lib { deps = @backing:bar; }\n" +
+          "catalog @cat { deps = @backing:foo lib; }\n" +
+          "test_deps a { deps = @cat:lib; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const delivered = lastDepSets[0] as PackageFileSet;
+      expect(delivered.packageName).to.equal("lib");
+      expect(edges(delivered)).to.deep.equal(["bar@1.0.0"]);
+      /* Only what the named member reaches is fetched: foo is pinned, not named. */
+      expect(backings.get("@backing")!.fetched).to.deep.equal(["bar@1.0.0"]);
+    });
+
+    it("selects the member's requirements jointly with the catalog's own entries", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_pkg lib { deps = @backing:foo; }\n" +
+          "catalog @cat { deps = @backing:bar:1.2.0 lib; }\n" +
+          "test_deps a { deps = @cat:lib @cat:bar; }\n"
+      );
+      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const [lib, bar] = lastDepSets as PackageFileSet[];
+      /* What the member reaches is bound by the catalog's own pin. */
+      expect(edges(lib)).to.deep.equal(["foo@1.0.0"]);
+      expect(edges(lib.dependencies[0] as PackageFileSet)).to.deep.equal(["bar@1.2.0"]);
+      expect(bar.packageId).to.equal("bar@1.2.0");
+      /* Each delivery fetches what it reaches; no other version of bar is among them. */
+      expect([...new Set(backings.get("@backing")!.fetched)].sort()).to.deep.equal(["bar@1.2.0", "foo@1.0.0"]);
+      /* The consumer's manifest records the member as declared: unversioned. */
+      expect(lastDeclared[0]).to.deep.equal({ name: "lib", versionConstraint: undefined });
+      expect(lib.version).to.equal(undefined);
+    });
+
+    it("brings a built package the member depends on into the same resolution", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_pkg base { deps = @backing:bar; }\n" +
+          "test_pkg lib { deps = base; }\n" +
+          "catalog @cat { deps = lib; }\n" +
+          "test_deps a { deps = @cat:lib; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const lib = lastDepSets[0] as PackageFileSet;
+      expect(edges(lib)).to.deep.equal(["base@*"]);
+      expect(edges(lib.dependencies[0] as PackageFileSet)).to.deep.equal(["bar@1.0.0"]);
+    });
+
+    it("keeps a marker the member wrote on its own requirement", async () => {
+      /* The member's requirement is a root of the catalog's resolution, as it
+       * is of a consumer's when the member is listed directly: its `!` forces. */
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_pkg lib { deps = @backing:bar:1.0.0!; }\n" +
+          "catalog @cat { deps = @backing:foo lib; }\n" +
+          "test_deps a { deps = @cat:lib @cat:foo; }\n"
+      );
+      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^2.0.0" }]);
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const [lib, foo] = lastDepSets as PackageFileSet[];
+      expect(edges(lib)).to.deep.equal(["bar@1.0.0"]);
+      expect(edges(foo)).to.deep.equal(["bar@1.0.0"]);
+    });
+
+    it("pins a carried requirement without making it a member", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_pkg lib { deps = @backing:bar; }\n" +
+          "catalog @cat { deps = lib; }\n" +
+          "test_deps a { deps = @cat:bar; }\n"
+      );
+      try {
+        await model.getConfig(Constraints.of({}), execution).getTarget("a");
+        expect.fail("expected bar to be no member of the catalog");
+      } catch (err) {
+        expect(findCause(err, RequirementResolutionError)!.message).to.contain("Catalog @cat has no member 'bar'");
+      }
+    });
+
+    it("reports a member that takes a requirement from the catalog itself as a cycle", async () => {
+      /* The catalog's pin needs the member built, and the member names the
+       * catalog: a dependency loop, in whichever configuration it closes. */
+      const source =
+        "package_repo @backing { }\n" +
+        "test_pkg lib { deps = @cat:bar; }\n" +
+        "catalog @cat { deps = @backing:bar:1.2.0 lib; }\n" +
+        "test_deps a { deps = @cat:lib; }\n";
+      for (const constraints of [Constraints.of({}), Constraints.of({ BUILD_OPERATION: "build" })]) {
+        try {
+          await build(source).getConfig(constraints, execution).getTarget("a");
+          expect.fail("expected the loop through the catalog to be reported");
+        } catch (err) {
+          expect(findCause(err, CircularDependencyError), "a CircularDependencyError in the cause chain").to.not.be.undefined;
+        }
+      }
+    });
+
+    it("delivers a requirement the member takes from another catalog, at that catalog's pin", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @other { deps = @backing:bar:1.1.0; }\n" +
+          "test_pkg lib { deps = @other:bar; }\n" +
+          "catalog @cat { deps = @backing:bar:1.2.0 lib; }\n" +
+          "test_deps a { deps = @cat:lib; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      expect(edges(lastDepSets[0] as PackageFileSet)).to.deep.equal(["bar@1.1.0"]);
+    });
+  });
+
+  describe("a built package's provided requirement", () => {
+    const edges = (pkg: PackageFileSet): string[] =>
+      pkg.dependencies.map(dep => (dep instanceof PackageFileSet ? dep.packageId : `ref:${dep.toString()}`));
+    const versionsOf = (name: string): string[] =>
+      [...new Set(reachablePackages(lastDepSets).filter(pkg => pkg.packageName === name).map(pkg => pkg.version!))].sort();
+
+    it("is answered by what its reference resolves to where nothing above supplies the name", async () => {
+      const model = build("package_repo @backing { }\n" + "test_pkg lib { provided = @backing:host; }\n" + "test_deps a { deps = lib; }\n");
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const lib = lastDepSets[0] as PackageFileSet;
+      expect(edges(lib)).to.deep.equal(["host@1.0.0"]);
+      expect(lib.provided.map(entry => [entry.provided, (entry.target as PackageFileSet).packageId])).to.deep.equal([["expected", "host@1.0.0"]]);
+    });
+
+    it("binds the consuming target's own package of that name, whatever supplies it", async () => {
+      /* The consumer's `host` comes from another repository, which the one
+       * resolving the package's own reference cannot see. */
+      const model = build(
+        "package_repo @backing { }\n" +
+          "package_repo @other { }\n" +
+          "test_pkg lib { provided = @backing:host:1.0.0; }\n" +
+          "test_deps a { deps = lib @other:host:2.0.0; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      expect(edges(lastDepSets[0] as PackageFileSet)).to.deep.equal(["host@2.0.0"]);
+      expect(versionsOf("host")).to.deep.equal(["2.0.0"]);
+    });
+
+    it("demands nothing where its repository already selects the package", async () => {
+      /* The consumer's own requirement is the selection; the package's is
+       * bound to it, out of range or not, and no second version is selected
+       * to answer it. */
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_pkg lib { provided = @backing:host:2.0.0; }\n" +
+          "test_deps a { deps = lib @backing:host:1.0.0; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      expect(edges(lastDepSets[0] as PackageFileSet)).to.deep.equal(["host@1.0.0"]);
+      expect(backings.get("@backing")!.fetched).to.deep.equal(["host@1.0.0"]);
+    });
+
+    it("binds what the dependent of the package uses", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "package_repo @other { }\n" +
+          "test_pkg plugin { provided = @backing:host:1.0.0; }\n" +
+          "test_pkg suite { deps = plugin @other:host:2.0.0; }\n" +
+          "test_deps a { deps = suite; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const suite = lastDepSets[0] as PackageFileSet;
+      const plugin = suite.dependencies.find(dep => dep instanceof PackageFileSet && dep.packageName === "plugin") as PackageFileSet;
+      expect(edges(plugin)).to.deep.equal(["host@2.0.0"]);
+    });
+
+    it("is pinned by a catalog that lists the package, and still bound by the consumer", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_pkg lib { provided = @backing:host:1.0.0; }\n" +
+          "catalog @cat { deps = lib @backing:host:2.0.0 -> host2; }\n" +
+          "test_deps a { deps = @cat:lib @cat:host2 -> host; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      expect(edges(lastDepSets[0] as PackageFileSet)).to.deep.equal(["host@2.0.0"]);
+    });
   });
 
   it("delivers a member as a runnable under run, delegating to its source (no re-resolution)", async () => {

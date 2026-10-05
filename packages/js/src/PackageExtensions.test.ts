@@ -57,7 +57,7 @@ describe("PackageExtensions.extend", () => {
   it("adds an undeclared peer, which the manifest reading makes an expected peer", () => {
     const decls = list.extend("reactcss", parseVersion("1.2.3"), { dependencies: { lodash: "^4.0.1" } });
     const { required } = declaredDependencies(decls);
-    expect(required.map(req => [req.pkg, req.constraint, req.provided])).to.deep.equal([
+    expect(required.map(req => [req.name, req.versionConstraint, req.provided])).to.deep.equal([
       ["lodash", "^4.0.1", undefined],
       ["react", "*", "expected"],
     ]);
@@ -87,6 +87,6 @@ describe("PackageExtensions.extend", () => {
 
   it("marks a peer optional where the manifest gives it no metadata", () => {
     const decls = list.extend("widget", parseVersion("1.0.0"), { peerDependencies: { react: ">=16" } });
-    expect(declaredDependencies(decls).required.find(req => req.pkg === "react")?.provided).to.equal("optional");
+    expect(declaredDependencies(decls).required.find(req => req.name === "react")?.provided).to.equal("optional");
   });
 });

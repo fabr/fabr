@@ -22,12 +22,13 @@ import { FileSet } from "../core/FileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import {
-  groupByRepository,
+  ResolvedCollection,
+  materializeCollection,
+  resolveCollection,
   isRepositoryReader,
   Repository,
   RepositoryPublishRef,
   RepositoryLookup,
-  RepositoryReader,
   RepositoryRef,
   Resolution,
   ResolutionContext,
@@ -39,7 +40,7 @@ import { attachHelp, ConflictError, IConflictSource, RequirementResolutionError,
 import { Name } from "../core/Name";
 import { TargetContext } from "../model/BuildContext";
 import { BUILD_OPERATION, BUILD_OVERRIDE, FILES_OPERATION } from "../model/Constraints";
-import { aliasedAs, declaredRequirementFrom, fetchPinnedPackage, materializePackages, resolvePackages, runnableFrom } from "../resolver/PackageResolver";
+import { declaredRequirement, fetchPinnedPackage, knownAs, runnableFrom } from "../resolver/PackageResolver";
 import { RepositoryRegistration } from "./Types";
 
 /**
@@ -47,7 +48,7 @@ import { RepositoryRegistration } from "./Types";
  * fixed set of requirements (its `deps` property), resolves them **jointly and
  * once** — the single minimal-version-selection over all of the catalog's roots —
  * and exposes each resolved root by the name it is delivered as — its package
- * name, or the alias a written rename gives it (`@npm:typescript:6.0.0-beta ->
+ * name, or the name a written rename gives it (`@npm:typescript:6.0.0-beta ->
  * typescript-6`), which is what lets two versions of one package sit side by
  * side in a catalog: it is the address that must be unique, not the package
  * behind it. A reference `@cat:pkg` therefore delivers an *already-resolved*
@@ -56,7 +57,7 @@ import { RepositoryRegistration } from "./Types";
  *
  * Mechanically it is just a {@link Repository} whose read face answers from a
  * **table** rather than a registry: the joint resolution is the catalog's own
- * collection point (resolveDeps, forced to build), and every consuming
+ * collection point (resolveCatalog, forced to build), and every consuming
  * reference rides the normal RepositoryRef path — grouped by this instance at
  * the consumer's collection point and answered from the table.
  *
@@ -65,15 +66,18 @@ import { RepositoryRegistration } from "./Types";
  * boundary, but a user-declared and named one, not an implicit global fixpoint.
  */
 /**
- * One pinned entry. A **repository** entry is not fetched yet: it holds its
- * source repository, its own reference, and the shared {@link Resolution} that
- * repository produced — so it is materialized on demand (and only if named).
- * A **local** entry is an already-built target's package (evaluated during
- * resolution, so eager).
+ * A catalog entry: the reference written in `deps`, or the package a locally
+ * built entry was evaluated to. Either is delivered from the catalog's resolution, a
+ * package with the references it carries bound by it.
  */
-type CatalogMember =
-  | { readonly kind: "repository"; readonly source: RepositoryReader<unknown, unknown>; readonly reference: RepositoryRef; readonly resolution: Resolution }
-  | { readonly kind: "local"; readonly pkg: PackageFileSet };
+type CatalogEntry = RepositoryRef | PackageFileSet;
+
+/** The catalog's entries by the name each is delivered as, and the collection they
+ * were resolved in. */
+interface ResolvedCatalog {
+  readonly entries: ReadonlyMap<string, CatalogEntry>;
+  readonly collection: ResolvedCollection;
+}
 
 export class CatalogRepository implements Repository, RepositoryLookup {
   constructor(
@@ -84,19 +88,19 @@ export class CatalogRepository implements Repository, RepositoryLookup {
      * delivery — and what the resolution layer needs when a member's pinned
      * closure is materialized through it. */
     private readonly context: ResolutionContext,
-    /* name -> its pinned member; the version pin is resolved once (a single
-     * memoized Computable) and shared, but a member's package is fetched only
-     * when a delivery names it. */
-    private readonly pinned: Computable<Map<string, CatalogMember>>
+    /* The entries are resolved once and shared, but a member's package is
+     * fetched only when a delivery names it. */
+    private readonly resolved: Computable<ResolvedCatalog>
   ) {}
 
   /**
-   * Deliver the ONE named member, fetched on demand from its pinned resolution
-   * (a member never named is never fetched): the driver materializes the
-   * member's reference against the STORED resolution — the subset keeps the
-   * joint pin, never a fresh selection. Under `run` the member is made
-   * runnable via its source's format, keeping that same closure; under `files`
-   * the member is delivered alone (see {@link deliverFiles}).
+   * Deliver the ONE named member, fetched on demand from its resolution (a member
+   * never named is never fetched): only what it reaches is materialized, under
+   * the catalog's joint selection — never a fresh one. A locally built member
+   * is delivered with the references it carries bound by the same resolution. Under
+   * `run` the member is made runnable via its source's format, keeping that
+   * same closure; under `files` the member is delivered alone (see
+   * {@link deliverFiles}).
    *
    * The catalog resolves once (forced build); whether what a consumer takes
    * from it is acceptable is judged at that consumer's collection point, over
@@ -105,14 +109,21 @@ export class CatalogRepository implements Repository, RepositoryLookup {
    */
   public deliver(reference: RepositoryRef): Computable<FileSet> {
     return this.context.getGlobalString(BUILD_OPERATION).then(operation =>
-      this.pinned.then(table => {
+      this.resolved.then(catalog => {
         if (operation === FILES_OPERATION) {
           return this.deliverFiles(reference);
         }
-        const member = this.memberOf(reference, table);
-        return this.materializeMember(reference, member).then(pkg =>
-          operation === "run" ? this.toRunnable(reference.name.getLiteralPrefix(), member, pkg) : Computable.resolve<FileSet>(pkg)
-        );
+        const entry = this.entryFor(reference, catalog);
+        return materializeCollection(this.context, catalog.collection, [entry])
+          .then(({ delivered: [pkg] }) => {
+            if (!(pkg instanceof PackageFileSet)) {
+              throw new Error(`internal: catalog member '${reference.toString()}' resolved to no package`);
+            }
+            return operation === "run" ? this.toRunnable(reference.name, entry, pkg) : Computable.resolve<FileSet>(pkg);
+          })
+          .catch(err => {
+            throw new RequirementResolutionError([reference], toError(err));
+          });
       })
     );
   }
@@ -120,114 +131,90 @@ export class CatalogRepository implements Repository, RepositoryLookup {
   /** The named member alone at its pinned version, named as the catalog
    *  delivers it: its closure is neither fetched nor assembled. */
   public deliverFiles(reference: RepositoryRef): Computable<FileSet> {
-    return this.pinned.then(table => {
-      const member = this.memberOf(reference, table);
-      if (member.kind === "local") {
-        return Computable.resolve<FileSet>(member.pkg);
+    return this.resolved.then(catalog => {
+      const entry = this.entryFor(reference, catalog);
+      if (entry instanceof PackageFileSet) {
+        return Computable.resolve<FileSet>(entry);
       }
-      return fetchPinnedPackage(member.source, member.reference, member.resolution)
-        .then(files => member.reference.deliveredAs(files) as FileSet)
+      const source = entry.source;
+      const resolution = catalog.collection.resolutions.get(source);
+      if (!isRepositoryReader(source) || resolution === undefined) {
+        /* resolveCatalog admits only entries a registry resolves. */
+        throw new Error(`internal: catalog member '${reference.toString()}' has no resolution`);
+      }
+      return resolution()
+        .then(resolved => fetchPinnedPackage(source, entry, resolved))
+        .then(files => entry.deliveredAs(files) as FileSet)
         .catch(err => {
           throw new RequirementResolutionError([reference], toError(err));
         });
     });
   }
 
-  /** The pinned member a reference names. An unknown one is just a resolution
+  /** The entry a reference names. An unknown one is just a resolution
    *  failure — like any repository not having a requirement — attributed to the
    *  reference that wrote it. */
-  private memberOf(reference: RepositoryRef, table: Map<string, CatalogMember>): CatalogMember {
-    const alias = aliasOf(reference);
-    const member = table.get(alias);
-    if (!member) {
+  private entryFor(reference: RepositoryRef, { entries }: ResolvedCatalog): CatalogEntry {
+    const name = memberNameOf(reference);
+    const entry = entries.get(name);
+    if (!entry) {
       throw new RequirementResolutionError(
         [reference],
         attachHelp(
-          new Error(`Catalog ${this.catalogName} has no member '${alias}'`),
-          table.size > 0 ? `it pins: ${[...table.keys()].sort().join(", ")}` : "the catalog pins nothing"
+          new Error(`Catalog ${this.catalogName} has no member '${name}'`),
+          entries.size > 0 ? `it pins: ${[...entries.keys()].sort().join(", ")}` : "the catalog pins nothing"
         )
       );
     }
-    return member;
+    return entry;
   }
 
-  /**
-   * Fetch + assemble one named member from its pinned resolution, via the
-   * resolution layer's driver — a SUBSET materialization against the stored
-   * Resolution, so the delivery keeps the catalog's joint pin (the resolution
-   * carries its own edges; what must nest privately is decided by the
-   * consumer's merge, not by batch shape). A local entry is already built.
-   */
-  private materializeMember(reference: RepositoryRef, member: CatalogMember): Computable<PackageFileSet> {
-    if (member.kind === "local") {
-      return Computable.resolve(member.pkg);
-    }
-    return materializePackages(this.context, member.source, [member.reference], member.resolution)
-      .then(([base]) => {
-        if (base === undefined) {
-          throw new Error(`internal: catalog member '${reference.name.toString()}' resolved to no package`);
-        }
-        /* Finished like any other delivery — provenance stamped, and a rename
-         * written on the ENTRY applied, so the member is named as the table
-         * keys it. It can be no FileSetRef: a projecting entry is refused at
-         * resolveDeps, so the reference carries no projections. */
-        return member.reference.deliveredAs(base) as PackageFileSet;
-      })
-      .catch(err => {
-        throw new RequirementResolutionError([reference], toError(err));
-      });
-  }
-
-  private toRunnable(alias: string, member: CatalogMember, pkg: PackageFileSet): Computable<RunnableFileSet> {
-    if (member.kind === "local") {
+  private toRunnable(name: string, entry: CatalogEntry, pkg: PackageFileSet): Computable<RunnableFileSet> {
+    if (entry instanceof PackageFileSet) {
       throw attachHelp(
-        new Error(`Catalog ${this.catalogName} member '${alias}' is a locally-built target, which the catalog cannot deliver as a runnable`),
+        new Error(
+          `Catalog ${this.catalogName} member '${name}' is a locally-built target, which the catalog cannot deliver as a runnable`
+        ),
         "run the target directly rather than through the catalog"
       );
     }
-    return runnableFrom(member.source, pkg);
+    return runnableFrom(entry.source, pkg);
   }
 
   /**
    * The requirement a member was **declared** with in the catalog's `deps` — NOT
-   * the version the joint resolution pinned it to. A locally-built member is
-   * versionless (its version is assigned at publish), contributing `*`; an external
-   * member delegates to its own source repository (which reads the declaration off
-   * `@npm:pkg:1.2.3`), so the catalog parses no version syntax itself.
+   * the version the joint resolution pinned it to. A locally-built member
+   * declares its own version, if it has one; an external member's is what its
+   * reference states (`@npm:pkg:1.2.3`).
    *
    * The **address** is the name the requirer knows it by — a member pinned under
-   * an alias (`@dep:typescript-6`) is imported under that name — so it is
-   * recorded as the requirement's alias where it differs from the package's own
-   * name. (A rename written on `ref` itself outranks it, applied by the caller.)
+   * another name (`@dep:typescript-6`) is imported under that name — so it is
+   * recorded as the requirement's `renameTo` where it differs from the package's
+   * own name. (A rename written on `ref` itself outranks it, applied by the caller.)
    */
   public declaredRequirement(ref: RepositoryRef): Computable<Requirement | undefined> {
-    const name = aliasOf(ref);
-    return this.pinned.then(table => {
-      const member = table.get(name);
-      if (!member) {
-        return Computable.resolve(undefined);
-      }
-      return member.kind === "local"
-        ? Computable.resolve<Requirement | undefined>({ pkg: name, constraint: member.pkg.version ?? "*" })
-        : declaredRequirementFrom(member.reference.source, member.reference).then(requirement =>
-            requirement === undefined ? undefined : aliasedAs(requirement, name)
-          );
+    const name = memberNameOf(ref);
+    return this.resolved.then(({ entries }) => {
+      const entry = entries.get(name);
+      return entry === undefined
+        ? Computable.resolve(undefined)
+        : declaredRequirement(entry).then(requirement => (requirement === undefined ? undefined : knownAs(requirement, name)));
     });
   }
 
   /**
-   * The alias is the whole literal up to a projection `:` — there is no
+   * The member name is the whole literal up to a projection `:` — there is no
    * `name:version` to peel (versions live in the catalog, not the reference), so
-   * a `/` inside a scoped alias (`@types/node`) is part of the key, not a
+   * a `/` inside a scoped name (`@types/node`) is part of the key, not a
    * boundary. A trailing `:tail` projects into the pinned package.
    */
   public getRepositoryRef(name: Name): RepositoryRef {
     const lit = name.getLiteralPrefix();
     const colon = lit.indexOf(":");
     if (colon === -1) {
-      return new RepositoryRef(this, name);
+      return RepositoryRef.written(this, name);
     }
-    return new RepositoryRef(this, Name.fromLiteral(lit.substring(0, colon))).find(name.substring(colon + 1));
+    return new RepositoryRef(this, { name: lit.substring(0, colon), versionConstraint: undefined }).find(name.substring(colon + 1));
   }
 
   /** A catalog pins versions for reading; it is not a place content goes. */
@@ -241,35 +228,29 @@ export class CatalogRepository implements Repository, RepositoryLookup {
  * the catalog delivers (applied where every delivery is finished) and names no
  * member. Every table lookup goes through this, so they cannot disagree about
  * what a reference addresses. */
-function aliasOf(reference: RepositoryRef): string {
-  return reference.name.getLiteralPrefix();
+function memberNameOf(reference: RepositoryRef): string {
+  return reference.name;
 }
 
 /** The provenance + concrete detail attributing one catalog entry (for a
- * same-name conflict). A repository entry is attributed by its written reference
- * (no version yet — unfetched); a local entry by its built package. */
-function conflictSide(member: CatalogMember): IConflictSource {
-  return member.kind === "local"
-    ? { provenance: member.pkg.origin, detail: member.pkg.version }
-    : { provenance: chainSteps(member.reference.steps, undefined), detail: member.reference.name.getLiteralPrefix() };
-}
-
-/** The catalog's `deps` resolved but NOT fetched: one {@link Resolution} per
- * repository the entries came from (members materialize on demand from these),
- * plus any already-built local entries. */
-interface ResolvedPackageSet {
-  readonly resolutions: ReadonlyArray<{ source: RepositoryReader<unknown, unknown>; resolution: Resolution }>;
-  readonly local: ReadonlyArray<FileSet>;
+ * same-name conflict): a reference by what was written, a locally built
+ * package by itself. */
+function conflictSide(entry: CatalogEntry): IConflictSource {
+  return entry instanceof PackageFileSet
+    ? { provenance: entry.origin, detail: entry.version }
+    : { provenance: chainSteps(entry.steps, undefined), detail: entry.name };
 }
 
 /**
- * Resolve the catalog's `deps` to per-repository resolutions WITHOUT fetching,
- * forcing build (members are wanted as mountable packages regardless of how the
- * catalog is consumed). External refs group by repository and `resolve` jointly —
- * versions fixed, nothing fetched; a local target reference is evaluated (built)
- * during resolution and comes back as an eager `local` entry.
+ * Resolve the catalog's `deps` — NOT fetched — forcing build (members are
+ * wanted as mountable packages regardless of how the catalog is consumed), and
+ * key each entry by the name it is delivered as. A reference is resolved
+ * jointly with every other in its registry; a local target reference is
+ * evaluated (built) where it is read, and the references its package carries
+ * are resolved with the rest, as at any collection point. Two entries claiming
+ * one name are a conflict.
  */
-function resolveDeps(context: TargetContext): Computable<ResolvedPackageSet> {
+function resolveCatalog(context: TargetContext): Computable<ResolvedCatalog> {
   return context.getFileProperty("deps", BUILD_OVERRIDE).then(sources => {
     const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
     /* A catalog pins whole packages: an entry projecting *into* one would
@@ -284,16 +265,15 @@ function resolveDeps(context: TargetContext): Computable<ResolvedPackageSet> {
       );
     const projected = references.find(reference => reference.projections.length > 0);
     if (projected) {
-      throw projectsInto(`'${projected.name.toString()}'`);
+      throw projectsInto(`'${projected.toString()}'`);
     }
     const pendingLocal = sources.find((source): source is FileSetRef => source instanceof FileSetRef);
     if (pendingLocal) {
       const base = pendingLocal.source;
       throw projectsInto(base instanceof PackageFileSet ? `'${base.packageName}'` : "of a local target");
     }
-    const local = sources.filter((source): source is FileSet => source instanceof FileSet);
     /* Anything neither a requirement nor content pins nothing — a bare
-     * repository alias (`deps = @npm;`) or a fetch table. Silence here would
+     * repository name (`deps = @npm;`) or a fetch table. Silence here would
      * leave the catalog quietly empty of the entry. */
     const inert = sources.find(source => !(source instanceof RepositoryRef) && !(source instanceof FileSet));
     if (inert) {
@@ -302,74 +282,72 @@ function resolveDeps(context: TargetContext): Computable<ResolvedPackageSet> {
         "each entry must name specific packages — an external requirement (`@npm:pkg:1.2.3`) or a built package target; a bare repository reference pins nothing"
       );
     }
-    return Computable.forAll(
-      [...groupByRepository(references).entries()].map(([source, refs]) => {
-        /* A catalog pins package VERSIONS, so its entries must come from a
-         * repository that resolves them. The one non-resolving source a
-         * reference can carry today is another catalog — deliberately
-         * rejected: each catalog is its own joint resolution, and chaining
-         * would nest one inside another. */
-        if (!isRepositoryReader(source)) {
-          const entry = refs[0].name.toString();
-          throw new RequirementResolutionError(
-            refs,
-            source instanceof CatalogRepository
-              ? attachHelp(
-                  new Error(`Catalog entry '${entry}' is a member of another catalog`),
-                  "a catalog cannot pin another catalog's members — pin the package directly here, or reference the other catalog's member at the point of use"
-                )
-              : attachHelp(
-                  new Error(`Catalog entry '${entry}' comes from a repository that does not resolve package versions`),
-                  "a catalog pins versions of registry packages; reference the repository's content directly instead"
-                )
+    /* A catalog pins package VERSIONS, so its entries must come from a
+     * repository that resolves them. The one non-resolving source a reference
+     * can carry today is another catalog — deliberately rejected: each catalog
+     * is its own joint resolution, and chaining would nest one inside another. */
+    const unresolvable = references.find(reference => !isRepositoryReader(reference.source));
+    if (unresolvable) {
+      const entry = unresolvable.toString();
+      throw new RequirementResolutionError(
+        references.filter(reference => reference.source === unresolvable.source),
+        unresolvable.source instanceof CatalogRepository
+          ? attachHelp(
+              new Error(`Catalog entry '${entry}' is a member of another catalog`),
+              "a catalog cannot pin another catalog's members — pin the package directly here, or reference the other catalog's member at the point of use"
+            )
+          : attachHelp(
+              new Error(`Catalog entry '${entry}' comes from a repository that does not resolve package versions`),
+              "a catalog pins versions of registry packages; reference the repository's content directly instead"
+            )
+      );
+    }
+    const local = sources
+      .filter((source): source is FileSet => source instanceof FileSet)
+      .map(content => {
+        if (!(content instanceof PackageFileSet)) {
+          const from = describeProvenance(content.origin);
+          throw attachHelp(
+            new Error(`Catalog ${context.name} has an entry that does not resolve to a package${from ? ` (${from})` : ""}`),
+            "every catalog entry must be a package — an @npm requirement or a built package target"
           );
         }
-        return resolvePackages(context, source, refs).then(resolution => ({ source, resolution }));
-      }),
-      (...resolutions: { source: RepositoryReader<unknown, unknown>; resolution: Resolution }[]) => ({ resolutions, local })
+        return content;
+      });
+    const collection = resolveCollection(context, [...references, ...local]);
+    const written = new Set(references);
+    /* A catalog is one collection point: every registry's batch is resolved before any
+     * entry is delivered. */
+    return Computable.forAll(
+      [...collection.resolutions.values()].map(resolution => resolution()),
+      (...resolutions: Resolution[]) => {
+        const entries = new Map<string, CatalogEntry>();
+        const add = (name: string, entry: CatalogEntry): void => {
+          const existing = entries.get(name);
+          if (existing) {
+            throw new ConflictError("catalog entries", name, conflictSide(existing), conflictSide(entry));
+          }
+          entries.set(name, entry);
+        };
+        /* A resolution names its roots as they will be delivered. Those the
+         * catalog wrote are its members: the rest are references its local
+         * entries carry, which are resolved but name no member. */
+        for (const resolution of resolutions) {
+          for (const root of resolution.roots) {
+            if (written.has(root.reference)) {
+              add(root.name, root.reference);
+            }
+          }
+        }
+        local.forEach(pkg => add(pkg.packageName, pkg));
+        return { entries, collection };
+      }
     );
   });
 }
 
-/**
- * Build the catalog's lookup table from its resolved-but-unfetched package set:
- * each repository's resolution names its roots as they will be delivered (keyed
- * without fetching), plus any already-built local entries — whose rename, if
- * written, was applied where they were referenced, so both kinds key by the
- * name they answer to. Two entries claiming one name are a conflict; a
- * non-package local entry is rejected.
- */
-function buildCatalog(catalogName: string, set: ResolvedPackageSet): Map<string, CatalogMember> {
-  const table = new Map<string, CatalogMember>();
-  const add = (name: string, member: CatalogMember): void => {
-    const existing = table.get(name);
-    if (existing) {
-      throw new ConflictError("catalog entries", name, conflictSide(existing), conflictSide(member));
-    }
-    table.set(name, member);
-  };
-  for (const { source, resolution } of set.resolutions) {
-    for (const root of resolution.roots) {
-      add(root.name, { kind: "repository", source, reference: root.reference, resolution });
-    }
-  }
-  for (const content of set.local) {
-    if (!(content instanceof PackageFileSet)) {
-      const from = describeProvenance(content.origin);
-      throw attachHelp(
-        new Error(`Catalog ${catalogName} has an entry that does not resolve to a package${from ? ` (${from})` : ""}`),
-        "every catalog entry must be a package — an @npm requirement or a built package target"
-      );
-    }
-    add(content.packageName, { kind: "local", pkg: content });
-  }
-  return table;
-}
-
 function createCatalog(context: TargetContext): Computable<Repository> {
-  const name = context.name;
-  const pinned = resolveDeps(context).then(set => buildCatalog(name, set));
-  return Computable.resolve(new CatalogRepository(name, context, pinned));
+  return Computable.resolve(new CatalogRepository(context.name, context, resolveCatalog(context)));
 }
 
 export const catalogRepositoryRegistration: RepositoryRegistration = { type: "catalog", provider: createCatalog };

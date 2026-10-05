@@ -370,9 +370,9 @@ describe("NPM_FORMAT.readContentPackage", () => {
      * optional-provided — never installed, but a requirement all the same, so
      * the requirer can reach the package when a consumer does provide it. */
     expect(content.requirements).to.deep.equal([
-      { pkg: "xmldom", constraint: "^0.6.0" },
-      { pkg: "react", constraint: ">=16", provided: "expected" },
-      { pkg: "ganache", constraint: "^7.0.0", provided: "optional" },
+      { name: "xmldom", versionConstraint: "^0.6.0" },
+      { name: "react", versionConstraint: ">=16", provided: "expected" },
+      { name: "ganache", versionConstraint: "^7.0.0", provided: "optional" },
     ]);
   });
 

@@ -341,8 +341,7 @@ function manifestFileInput(value: FileSet | ReadonlyArray<FileSet>): string {
 /**
  * The package graph as key material, in the same path vocabulary as a
  * discovered-deps record: one line per root and one per edge, each holding the
- * path the node is reached by, its content hash, and the nested-override flag
- * that no path can express.
+ * path the node is reached by, and its content hash.
  *
  * A package's own edges are walked at its FIRST-SEEN path only, so the count is
  * one line per root plus one per edge rather than one per distinct route (which
@@ -357,7 +356,7 @@ function manifestFileInput(value: FileSet | ReadonlyArray<FileSet>): string {
 function manifestGraph(members: ReadonlyArray<FileSet>): string[] {
   const lines: string[] = [];
   walkPackages(members, (pkg, route) =>
-    lines.push(`${route.join(" ")} ${pkg.toManifestHash()}${pkg.isNestedOverride ? " nested" : ""}`)
+    lines.push(`${route.join(" ")} ${pkg.toManifestHash()}`)
   );
   return lines;
 }

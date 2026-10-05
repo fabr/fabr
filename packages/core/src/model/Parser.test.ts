@@ -743,28 +743,20 @@ describe("Parser Tests", () => {
     });
   });
 
-  describe("trailing glob (version marker fold)", () => {
-    it("a trailing '?' lexes as a glob and folds back via getLiteralWithGlobTail", () => {
-      /* The permitted-alternate marker `pkg:1.4.2?` is lexically a glob —
-       * repositories fold it back into the version text, where a pattern has
-       * no meaning (Name.getLiteralWithGlobTail). */
+  describe("trailing glob (version marker)", () => {
+    it("a trailing '?' lexes as a glob, its text kept as written", () => {
+      /* The permitted-alternate marker `pkg:1.4.2?` is lexically a glob — a
+       * repository reads the written text where it vends the reference, the
+       * tail of a requirement having no pattern meaning. */
       const name = parseName("@npm:tslib:1.14.1?");
       expect(name.getSimpleName()).to.equal(undefined);
-      expect(name.getLiteralWithGlobTail()).to.equal("@npm:tslib:1.14.1?");
-    });
-
-    it("only a pure literal-then-glob name folds", () => {
-      /* A real pattern — a projection like `src/*.ts?` — has interior glob
-       * parts and is never folded; trailing-`?` globs keep their wildcard
-       * meaning everywhere a pattern is a pattern. */
-      expect(parseName("test?.js").getLiteralWithGlobTail()).to.equal(undefined);
-      expect(parseName("src/*.ts?").getLiteralWithGlobTail()).to.equal(undefined);
-      expect(parseName("esbuild:1.14.*").getLiteralWithGlobTail()).to.equal("esbuild:1.14.*");
+      expect(name.toBaseString()).to.equal("@npm:tslib:1.14.1?");
+      expect(parseName("esbuild:1.14.*").toBaseString()).to.equal("esbuild:1.14.*");
     });
 
     it("a trailing '?' composes with a constraint facet", () => {
       const name = parseName("@npm:tslib:1.14.1?<BUILD_TYPE=release>");
-      expect(name.getLiteralWithGlobTail()).to.equal("@npm:tslib:1.14.1?");
+      expect(name.toBaseString()).to.equal("@npm:tslib:1.14.1?");
       expect(name.getConstraints().map(([key]) => key)).to.deep.equal(["BUILD_TYPE"]);
     });
 

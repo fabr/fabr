@@ -65,6 +65,7 @@ export { declName, declPosn, isNameValue, PropertyType, syntheticValue } from ".
 export type { INameValue, IPropertyDecl, ITargetDecl, ITargetDefDecl, IPropertySchema } from "./model/AST";
 export * from "./resolver/MVSResolver";
 export * from "./resolver/Overrides";
+export * from "./resolver/Requirement";
 export * from "./resolver/ResolutionGraph";
 export * from "./resolver/ResolutionProvenance";
 export * from "./resolver/ResolutionReport";

@@ -50,7 +50,7 @@ import { LogFormatter, LogLevel } from "../support/Log";
 import { parseVersion, SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
 import { Requirement, Selected } from "../resolver/Types";
 import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
-import { declaredRequirementOf, resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
+import { resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
 import { bestRoute, parseRouteKey, repositoryGroupRegistration, RouteKey, routeKeyText } from "./RepositoryGroup";
 import { PluginContribution, RuleDefinition } from "./Types";
 
@@ -176,24 +176,24 @@ describe("bestRoute", () => {
  * contract the npm format implements from a package.json. One shared instance
  * — sharing it is what admits two registries to one group. */
 function makeFormat(tag: string): PackageFormat<SemverVersion, SemverConstraint> {
-  const splitIdentity = (name: Name): { identifier: string; version: string } | undefined => {
-    const lit = name.toString();
+  const splitIdentity = (lit: string): { identifier: string; version: string } | undefined => {
     const idx = lit.lastIndexOf(":");
     return idx > 0 ? { identifier: lit.substring(0, idx), version: lit.substring(idx + 1) } : undefined;
   };
   return {
     ...SEMVER,
     resolutionTag: tag,
-    splitReference: (name: Name) => ({ requirement: name }),
-    parseRequirement: (name: Name): Requirement => {
-      const split = splitIdentity(name);
-      if (!split) {
-        throw new Error(`missing version in '${name.toString()}'`);
+    splitReference: (name: Name) => {
+      const split = splitIdentity(name.toBaseString());
+      return split ? { name: split.identifier, versionConstraint: split.version } : { name: name.toBaseString(), versionConstraint: undefined };
+    },
+    validateRequirement: ({ name, versionConstraint: version }): void => {
+      if (version === undefined) {
+        throw new Error(`missing version in '${name}'`);
       }
-      return { pkg: split.identifier, constraint: split.version };
     },
     parsePublishCoordinate: (name: Name) => {
-      const split = splitIdentity(name);
+      const split = splitIdentity(name.toString());
       if (!split) {
         throw new Error(`publish coordinate '${name.toString()}' must name a version`);
       }
@@ -205,7 +205,7 @@ function makeFormat(tag: string): PackageFormat<SemverVersion, SemverConstraint>
         return {
           name: meta.name,
           version: parseVersion(meta.version),
-          requirements: Object.entries(meta.deps ?? {}).map(([pkg, constraint]) => ({ pkg, constraint })),
+          requirements: Object.entries(meta.deps ?? {}).map(([pkg, constraint]) => ({ name: pkg, versionConstraint: constraint })),
         };
       }),
     makeRunnable: (pkg: PackageFileSet) => Computable.reject<RunnableFileSet>(new Error(`cannot run '${pkg.packageName}'`)),
@@ -241,10 +241,6 @@ class FakeRegistry implements Repository, RepositoryReader<SemverVersion, Semver
     throw new Error(`test_registry is not a publish destination ('${name.toString()}')`);
   }
 
-  public declaredRequirement(ref: RepositoryRef): Computable<Requirement | undefined> {
-    return declaredRequirementOf(this.format, ref);
-  }
-
   public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
     const id = `${pkg}@${versionToString(version)}`;
     this.requested.push(id);
@@ -252,7 +248,7 @@ class FakeRegistry implements Repository, RepositoryReader<SemverVersion, Semver
     if (!deps) {
       return Computable.reject(new VersionNotFoundError(pkg, versionToString(version), `${id} not in ${this.identity}`));
     }
-    return Computable.resolve(Object.entries(deps).map(([dep, constraint]) => ({ pkg: dep, constraint })));
+    return Computable.resolve(Object.entries(deps).map(([dep, constraint]) => ({ name: dep, versionConstraint: constraint })));
   }
 
   public environmentKey(): Computable<string> {

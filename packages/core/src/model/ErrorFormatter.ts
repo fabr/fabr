@@ -340,7 +340,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
 
   /** Full provenance chains of culpable references, as notes. */
   private refNotes(refs: ReadonlyArray<RepositoryRef>): IDiagnosticNote[] {
-    return refs.flatMap(ref => this.chainNotes(chainSteps(ref.steps, undefined), ref.name.toString()));
+    return refs.flatMap(ref => this.chainNotes(chainSteps(ref.steps, undefined), ref.toString()));
   }
 }
 
