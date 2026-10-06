@@ -18,6 +18,10 @@
  */
 
 import { expect } from "chai";
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { assetStubFor } from "./Assets";
 
 /** The stub as a property bag, which is how the code under test reads it. */
@@ -73,5 +77,35 @@ describe("assetStubFor", () => {
     /* A stylesheet outside the target's srcs does not resolve at all, and must
      * still be stubbed rather than becoming "cannot find module". */
     expect(stub("./nowhere/missing.scss").x).to.equal("x");
+  });
+});
+
+describe("installAssetHooks", () => {
+  /* The hooks rewire THIS process's loader, so they are exercised in a child:
+   * a script that installs them and then loads assets both ways node can —
+   * `require`, and `import` from an ES module — including one that does not
+   * exist in the tree. */
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-assets-"));
+  fs.writeFileSync(path.join(dir, "theme.css"), ".a { }\n");
+  fs.writeFileSync(path.join(dir, "card.module.css"), ".card { }\n");
+  fs.writeFileSync(
+    path.join(dir, "esm.mjs"),
+    'import styles from "./card.module.css";\nimport logo from "./missing.png";\nimport "./theme.css";\nexport default { title: styles.title, logo };\n'
+  );
+  fs.writeFileSync(
+    path.join(dir, "probe.cjs"),
+    `require(${JSON.stringify(require.resolve("./Assets"))}).installAssetHooks();\n` +
+      'const styles = require("./card.module.css");\n' +
+      'const logo = require("./missing.png");\n' +
+      'require("./theme.css");\n' +
+      'import("./esm.mjs").then(m => console.log(JSON.stringify({ cjs: { title: styles.title, logo }, esm: m.default })));\n'
+  );
+
+  it("makes stylesheet and binary imports yield their stubs on both loader seams", () => {
+    const output = execFileSync(process.execPath, [path.join(dir, "probe.cjs")], { encoding: "utf8" });
+    expect(JSON.parse(output)).to.deep.equal({
+      cjs: { title: "title", logo: "missing.png" },
+      esm: { title: "title", logo: "missing.png" },
+    });
   });
 });

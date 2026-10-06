@@ -26,11 +26,15 @@
  * from node:test directly are unaffected (their imports shadow the globals).
  *
  * Also places node:test's recorded snapshots (`t.assert.snapshot`) where fabr
- * collects them — see snapshotPathOf.
+ * collects them — see snapshotPathOf — and makes stylesheet and binary imports
+ * yield their stubs (see Assets).
  */
 
 import * as nodeTest from "node:test";
+import { installAssetHooks } from "./Assets";
 import { snapshotPathOf } from "./Report";
+
+installAssetHooks();
 
 const globals = globalThis as Record<string, unknown>;
 

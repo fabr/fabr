@@ -153,6 +153,29 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(result.stderr).to.contain("1 test passed");
   });
 
+  it("stubs stylesheet and binary imports under the node framework", () => {
+    /* A stylesheet in the install is parsed as JavaScript by node's loader,
+     * and one NOT in the install (the image) does not resolve at all; the
+     * runner's preload makes both yield their stubs instead. The real css
+     * pipeline is not involved: the stylesheet rides as a resource. */
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; test_resources = src:theme.css; }\n",
+        "src/thing.test.ts":
+          'const assert = require("node:assert");\nconst styles = require("./theme.css");\nconst logo = require("./logo.png");\n' +
+          'describe("assets", () => { it("yield their stubs", () => { assert.equal(styles.title, "title"); assert.equal(logo, "logo.png"); }); });',
+        "src/theme.css": ".title { color: red }\n",
+      },
+      ["-DJS_TARGET=es2020", "test", "thing"]
+    );
+    expect(result.status).to.equal(0);
+    expect(result.stderr).to.contain("1 test passed");
+  });
+
   it("survives ill-behaved test code: leaked handles don't hang, spawned processes are reaped", async () => {
     /* Adversarial test code, both ways it can hurt: (1) it leaks live handles
      * (an interval, a child's pipes) — without the runner's forceExit the

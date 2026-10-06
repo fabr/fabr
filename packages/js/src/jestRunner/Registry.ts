@@ -47,7 +47,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire, Module } from "node:module";
-import { assetStubFor } from "./Assets";
+import { assetStubFor } from "../testRunner/Assets";
 import { isCodeUnderTest, RUNNER_ROOT } from "./Tools";
 
 /** What a caller module is, for resolution purposes: node's CJS Module. */

@@ -28,7 +28,7 @@ const ROOT = path.join(path.sep, "work", "build");
 describe("vitestOptions", () => {
   const reporter = {};
   const options = (extra: object = {}): Record<string, unknown> =>
-    vitestOptions({ report: "r.json", env: "node", update: false, setup: [], files: ["a.test.js", "sub/b.test.js"], ...extra }, ROOT, reporter);
+    vitestOptions({ report: "r.json", env: "node", update: false, setup: [], files: ["a.test.js", "sub/b.test.js"], ...extra }, ROOT, [], reporter);
 
   it("runs exactly the given files, from no config file, on node's own loader", () => {
     const made = options();

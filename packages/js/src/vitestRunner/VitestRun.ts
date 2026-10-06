@@ -61,22 +61,23 @@ export interface IReportedModule {
 
 /**
  * The options one invocation runs vitest with, for the test files of `options`
- * in the installation whose working directory is `root`. Nothing is read from
- * a config file: what a suite needs is what the target declares.
+ * in the installation whose working directory is `root`, each worker loading
+ * the runner's own `preloads` before the target's setup entries. Nothing is
+ * read from a config file: what a suite needs is what the target declares.
  *
  * Modules load through node's own loader (`viteModuleRunner: false`), which is
  * what the compiled tests are built for, and recorded snapshots are checked
  * strictly unless they are being updated — vitest would otherwise record a
  * missing one and pass.
  */
-export function vitestOptions(options: IRunnerOptions, root: string, reporter: object): Record<string, unknown> {
+export function vitestOptions(options: IRunnerOptions, root: string, preloads: string[], reporter: object): Record<string, unknown> {
   return {
     config: false,
     root,
     watch: false,
     include: options.files.map(file => path.relative(root, path.resolve(root, file)).split(path.sep).join("/")),
     environment: options.env,
-    setupFiles: options.setup.map(entry => (entry.startsWith("./") ? path.resolve(root, entry) : entry)),
+    setupFiles: [...preloads, ...options.setup.map(entry => (entry.startsWith("./") ? path.resolve(root, entry) : entry))],
     update: options.update ? "all" : "none",
     resolveSnapshotPath: (testPath: string) => snapshotPathOf(testPath),
     testTimeout: TEST_TIMEOUT_MS,

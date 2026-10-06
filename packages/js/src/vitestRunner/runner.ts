@@ -85,7 +85,7 @@ async function runTests(options: IRunnerOptions, root: string): Promise<ITestRes
       results.push(...modules.flatMap(toTestResults), ...unhandled.map(toRunFailure));
     },
   };
-  const vitest = await startVitest("test", [], vitestOptions(options, root, reporter));
+  const vitest = await startVitest("test", [], vitestOptions(options, root, [path.join(__dirname, "preload.js")], reporter));
   await vitest.close();
   return results;
 }
