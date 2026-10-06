@@ -66,6 +66,21 @@ targetdef generate {
 }
 
 #
+# Apply patches to files or to a package. `srcs` are what is patched and
+# `patches` the unified diffs applied to them, in the order written, each naming
+# its files as git does (`a/lib/x.js`). One package in `srcs` yields a package
+# named as this target is, at the same version and with the same requirements,
+# its files patched; anything else yields the patched files. Named after the
+# package it patches, for example:
+#
+#     patched glob-promise { srcs = @npm:glob-promise:1.33.0; patches = patches/glob.patch; }
+#
+targetdef patched {
+    srcs = REQUIRED FILES;
+    patches = REQUIRED FILES;
+}
+
+#
 # Define a runnable plain shell script (run it with `fabr run`, collect its
 # output with the generic `generate` target, or check it with a golden test).
 # `entry` is the script FILE itself — it contributes the file to the install (at

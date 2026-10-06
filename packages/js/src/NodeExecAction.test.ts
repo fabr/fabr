@@ -37,7 +37,7 @@ import {
   SILENT_REPORT,
   manifestFileInputs,
   reachablePackages,
-} from "@fabr-build/core";
+  } from "@fabr-build/core";
 import { assembleNodeModules } from "./NodeModules";
 import { createNodeExecAction, NODE_EXEC_ACTION, NODE_MODULES, PNP } from "./NodeExecAction";
 import { pnpManifestOf, referenceOf } from "./PnPManifest";
@@ -794,7 +794,7 @@ describe("js_compile discovered dependencies", () => {
       return [declPkg("forked", "new"), declPkg("requirer", "1", [nested])];
     };
     const forkReport = (deps: PackageFileSet[]): IReport => {
-      const nested = (deps[1].dependencies as PackageFileSet[])[0];
+      const nested = deps[1].packages[0];
       return {
         reads: ["forked index.d.ts", "requirer forked index.d.ts"],
         edges: [

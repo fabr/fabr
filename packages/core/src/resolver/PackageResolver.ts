@@ -30,7 +30,7 @@ import {
 import { FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { Name } from "../core/Name";
-import { PackageFileSet, PackageGraphBuilder, ProvidedDependency } from "../core/PackageFileSet";
+import { dependencyName, PackageFileSet, PackageGraphBuilder, Provided } from "../core/PackageFileSet";
 import {
   isRepositoryReader,
   PackageRequest,
@@ -47,6 +47,7 @@ import { PackageFormat } from "./PackageFormat";
 import { resolveMVS } from "./MVSResolver";
 import { collectSanctions, satisfiedByAnySelection, writtenVersions } from "./Overrides";
 import {
+  allowingUnversioned,
   canonicalRequirements,
   constraintOf,
   requiredAs,
@@ -56,11 +57,11 @@ import {
   violationKeys,
 } from "./Requirement";
 import { deserializeResolutionDoc, IResolutionDoc, serializeResolutionDoc } from "./ResolutionDoc";
-import { ResolutionGraph } from "./ResolutionGraph";
+import { nodeId, ResolutionGraph } from "./ResolutionGraph";
 import { IResolutionOrigin, PACKAGE_RESOLUTION_PROVENANCE } from "./ResolutionProvenance";
 import type { IDeliveryFacts } from "./StrictCollection";
 import { completeRepairSet, RefRenderer, SuggestSources, unrepairableError } from "./ResolutionReport";
-import { IRequirementEdge, MVSResolution, PackageIdentity, Requirement, ROOT_REQUIRER, Selected } from "./Types";
+import { IRequirementEdge, MVSResolution, PackageIdentity, Requirement, RequirementSource, ROOT_REQUIRER, Selected, VersionDomain } from "./Types";
 
 const RESOLUTION_FILE = "resolution.json";
 
@@ -101,7 +102,11 @@ export function vendPackageRef<V, C>(source: RefSource, format: PackageFormat<V,
  */
 export function declaredRequirement(source: SourceRef): Computable<Requirement | undefined> {
   if (source instanceof PackageFileSet) {
-    return Computable.resolve({ name: source.packageName, versionConstraint: source.version });
+    /* A package a repository delivered declares what the reference it was
+     * delivered for states, not the version that happened to be selected. */
+    return source.reference === undefined
+      ? Computable.resolve({ name: source.packageName, versionConstraint: source.version })
+      : declaredRequirement(source.reference);
   }
   if (!(source instanceof RepositoryRef)) {
     return Computable.resolve(undefined);
@@ -151,8 +156,9 @@ interface DomainResolution<V> extends Resolution {
   readonly roots: ResolvedRoot[];
   /** requirementKey → index into the resolution's roots (the space `reachableFrom` indexes). */
   readonly rootIndex: Map<string, number>;
-  /** The loaded resolution itself. */
-  readonly graph: ResolutionGraph<V>;
+  /** The loaded resolution itself. A node has no version where it is a built
+   * package that has none. */
+  readonly graph: ResolutionGraph<V | undefined>;
   /**
    * The versions written as sanctioned in this collection's references — a
    * `?`, or an exact pin: pkg → versions. Every delivery cut from the
@@ -161,6 +167,112 @@ interface DomainResolution<V> extends Resolution {
    * outcome does not depend on it, so neither does the memo key).
    */
   readonly written: ReadonlyMap<string, ReadonlySet<string>>;
+  /** The packages built in the project that are nodes of the resolution, by
+   * node id (see {@link builtNodes}). */
+  readonly built: ReadonlyMap<string, BuiltNode<V>>;
+  /** Where each reference a built package carries sits in the graph: the edge
+   * of that package's node it is. Such a reference is no root. */
+  readonly carried: ReadonlyMap<RepositoryRef, CarriedEdge>;
+}
+
+/**
+ * A package built in the project, as a node of a registry's resolution: a
+ * package like any the registry publishes, except that what it requires is
+ * read off the package in hand, and that it is the only version of its name.
+ * A requirement on that name, from anywhere, binds to it.
+ */
+interface BuiltNode<V> {
+  readonly pkg: PackageFileSet;
+  /** The version it has, if any. */
+  readonly version: V | undefined;
+  readonly requirements: Requirement[];
+}
+
+/** The edge of a built package's node that one of its references is. */
+interface CarriedEdge {
+  /** The node id of the package carrying the reference. */
+  readonly from: string;
+  /** The name the edge is required under. */
+  readonly name: string;
+  readonly requirement: Requirement;
+}
+
+/**
+ * The packages built in the project, as nodes for `registry`'s resolution:
+ * what each requires of this registry — the references it carries that are
+ * addressed to it, as they are written but without their markers, which were
+ * its own collection point's — and of the other built packages. A reference
+ * that resolves nothing here is left out, as a collection point leaves it out:
+ * one addressed elsewhere, one with projections, a `?`.
+ */
+function builtNodes<V, C>(
+  registry: RepositoryReader<V, C>,
+  locals: ReadonlyArray<PackageFileSet>
+): { built: Map<string, BuiltNode<V>>; carried: Map<RepositoryRef, CarriedEdge> } {
+  const { format } = registry;
+  const domain = allowingUnversioned(format);
+  const built = new Map<string, BuiltNode<V>>();
+  const carried = new Map<RepositoryRef, CarriedEdge>();
+  const names = new Set<string>();
+  for (const pkg of locals) {
+    if (names.has(pkg.packageName)) {
+      continue;
+    }
+    names.add(pkg.packageName);
+    const version = versionIn(format, pkg.version);
+    const id = nodeId(domain, pkg.packageName, version);
+    const requirements: Requirement[] = [];
+    for (const dep of pkg.dependencies) {
+      const provided = pkg.provided.get(dependencyName(dep));
+      const role = provided === undefined ? {} : { provided };
+      const reference = dep instanceof RepositoryRef ? dep : dep.reference;
+      if (reference === undefined) {
+        requirements.push({ name: dependencyName(dep), versionConstraint: undefined, ...role });
+      } else if (reference.source === registry && reference.projections.length === 0 && reference.override !== "alternate") {
+        let stated: Requirement;
+        try {
+          stated = requirementOf(format, reference);
+        } catch (err) {
+          throw new RequirementResolutionError([reference], toError(err));
+        }
+        const requirement: Requirement = { ...stated, override: undefined, ...role };
+        requirements.push(requirement);
+        carried.set(reference, { from: id, name: requiredAs(requirement), requirement });
+      }
+    }
+    built.set(id, { pkg, version, requirements });
+  }
+  return { built, carried };
+}
+
+/** A built package's version as `format` reads it: none where it has none,
+ * or where what it has is another ecosystem's and means nothing to this one. */
+function versionIn<V, C>(format: PackageFormat<V, C>, version: string | undefined): V | undefined {
+  if (version === undefined) {
+    return undefined;
+  }
+  try {
+    return format.parseVersion(version);
+  } catch {
+    return undefined;
+  }
+}
+
+/** `registry`, with the built packages answering for themselves. */
+function withBuiltNodes<V, C>(registry: RepositoryReader<V, C>, built: ReadonlyMap<string, BuiltNode<V>>): RequirementSource<V | undefined> {
+  const domain = allowingUnversioned(registry.format);
+  const lowestAvailable = registry.lowestAvailable?.bind(registry);
+  return {
+    getRequirements: (name, version) => {
+      const node = built.get(nodeId(domain, name, version));
+      if (node !== undefined) {
+        return Computable.resolve(node.requirements);
+      }
+      /* Only a built package has no version. */
+      return registry.getRequirements(name, version as V);
+    },
+    ...(lowestAvailable === undefined ? {} : { lowestAvailable }),
+  };
 }
 
 /*
@@ -182,16 +294,6 @@ interface DomainResolution<V> extends Resolution {
  * against; a group's routing is invisible here.
  * ---------------------------------------------------------------------------
  */
-
-/**
- * The requirement a request makes as a root of its batch. One wanted as
- * provided binds what the batch selects for its name, and demands its own
- * minimum only where the batch selects nothing.
- */
-function rootRequirement<V, C>(format: PackageFormat<V, C>, request: PackageRequest): Requirement {
-  const requirement = requirementOf(format, request.reference);
-  return request.as === "provided" ? { ...requirement, provided: "expected" } : requirement;
-}
 
 /**
  * The requirement a reference states, once its repository's format accepts
@@ -222,7 +324,10 @@ export function requirementOf<V, C>(format: PackageFormat<V, C>, reference: Requ
 export function resolvePackages<V, C>(
   context: ResolutionContext,
   registry: RepositoryReader<V, C>,
-  requests: ReadonlyArray<PackageRequest>
+  requests: ReadonlyArray<PackageRequest>,
+  locals: ReadonlyArray<PackageFileSet> = [],
+  /** Those of `locals` the collection requires outright. */
+  own: ReadonlySet<PackageFileSet> = new Set()
 ): Computable<Resolution> {
   const { format } = registry;
   const references = requests.map(request => request.reference);
@@ -233,9 +338,16 @@ export function resolvePackages<V, C>(
    * one resolution, and the field only existed to be carried back out to
    * materialize. */
   return Computable.resolve(undefined).then(() => {
+    const { built, carried } = builtNodes(registry, locals);
+    /* Each request as the requirement it is: the collection's own as written,
+     * a built package's as that package's node states it. */
     const requirements = requests.map(request => {
+      const edge = request.as === "package" ? undefined : carried.get(request.reference);
+      if (edge !== undefined) {
+        return edge.requirement;
+      }
       try {
-        return rootRequirement(format, request);
+        return requirementOf(format, request.reference);
       } catch (err) {
         throw new RequirementResolutionError([request.reference], toError(err));
       }
@@ -269,15 +381,24 @@ export function resolvePackages<V, C>(
      * key carries the marker). It still joins neither `roots` above (a
      * catalog's member table must not see it) nor a delivery (it mounts
      * nothing of its own). */
-    const { roots: rootReqs, keys: rootKeys } = canonicalRequirements(requirements);
+    /* The roots are the collection's own requirements: on what its references
+     * name, and on the built packages it holds outright. What a built package
+     * carries — a reference, or another built package — is an edge of its
+     * node, not a root. */
+    const { roots: rootReqs, keys: rootKeys } = canonicalRequirements([
+      ...requirements.filter((_, index) => requests[index].as === "package" || !carried.has(references[index])),
+      ...[...built.values()].filter(node => own.has(node.pkg)).map((node): Requirement => ({ name: node.pkg.packageName, versionConstraint: undefined })),
+    ]);
     const rootIndex = new Map<string, number>(rootKeys.map((key, index) => [key, index]));
+    /* Only the collection's own requirements are written by it: a package's
+     * exact requirement is a transitive one, which vouches for nothing. */
     const written = writtenVersions(
       format,
       alternates,
-      requirements.filter(req => req.override !== "alternate")
+      requirements.filter((req, index) => requests[index].as === "package" && req.override !== "alternate")
     );
-    return getJointResolution(context, registry, repositoryNameOf(references), rootReqs, rootKeys)
-      .then(graph => ({ roots, rootIndex, written, graph }) satisfies DomainResolution<V>)
+    return getJointResolution(context, registry, repositoryNameOf(references), rootReqs, rootKeys, built)
+      .then(graph => ({ roots, rootIndex, written, graph, built, carried }) satisfies DomainResolution<V>)
       .catch(err => attributeResolutionFailure(err, references, requirements));
   });
 }
@@ -306,18 +427,28 @@ export function materializePackages<V, C>(
   const { format } = registry;
   const references = requests.map(request => request.reference);
   const resolved = resolution as DomainResolution<V>;
-  const { rootIndex, written, graph } = resolved;
-  const requirements = requests.map(request => rootRequirement(format, request));
+  const { rootIndex, written, graph, built, carried } = resolved;
+  /* A reference a built package carries is the edge of that package's node it
+   * was resolved as; any other is a root. */
+  const edgeOf = (index: number): CarriedEdge | undefined => (requests[index].as === "package" ? undefined : carried.get(references[index]));
+  const requirements = requests.map((request, index) => edgeOf(index)?.requirement ?? requirementOf(format, request.reference));
   /* An alternate (`?`) reference demands nothing and delivers nothing of its
    * own — the sanctioned fork arrives nested inside the canonical closure. */
-  const demanded = requirements.filter(req => req.override !== "alternate");
-  const requestedKeys = new Set(demanded.map(requirementKey));
-  const violable = violationKeys(demanded);
-  /* What a root requirement BINDS to — normally the principal, but a violated
-   * root requirement is answered by its fork. The resolution decided this when
-   * it was computed, scoped to what that root reaches, so another root's fork
-   * cannot answer here. */
-  const bindingOf = (req: Requirement): Selected<V> | undefined => graph.rootBinding(rootIndex.get(requirementKey(req))!);
+  const rooted = requirements.filter((req, index) => edgeOf(index) === undefined && req.override !== "alternate");
+  const requestedKeys = new Set(requirements.filter(req => req.override !== "alternate").map(requirementKey));
+  const violable = violationKeys(rooted);
+  /* What a requirement BINDS to — normally the principal, but a violated one
+   * is answered by its fork. The resolution decided this when it was computed:
+   * for a root scoped to what that root reaches, so another root's fork cannot
+   * answer here, and for a built package's requirement as its node's edge. */
+  const bindings = requirements.map((req, index): Selected<V | undefined> | undefined => {
+    const edge = edgeOf(index);
+    if (edge !== undefined) {
+      const to = graph.edgesOf(edge.from).get(edge.name);
+      return to === undefined ? undefined : graph.node(to);
+    }
+    return req.override === "alternate" ? undefined : graph.rootBinding(rootIndex.get(requirementKey(req))!);
+  });
   /* The selections reachable from the requested roots — the fetch set.
    * Forks are reachable exactly through the violated edges bound to them,
    * so a strict subset whose closure has no violations carries no forks.
@@ -326,17 +457,16 @@ export function materializePackages<V, C>(
    * rather than the whole resolution: `reachableFrom` indexes the other way
    * (which roots reach a node), and consulting it would scan every selection
    * on every delivery, however few packages the delivery names. */
-  const seeds = new Set(
-    demanded
-      .map(bindingOf)
-      .filter((sel): sel is Selected<V> => sel !== undefined)
-      .map(sel => graph.id(sel))
-  );
+  const seeds = new Set(bindings.filter((sel): sel is Selected<V | undefined> => sel !== undefined).map(sel => graph.id(sel)));
   const reachableIds = graph.reachable(seeds);
   /* Back to the resolution's canonical order — the walk reaches nodes in edge
    * order, and everything downstream that reports on the delivery must read
    * the same way whichever root led to a node first. */
-  const needed = graph.nodesOf(reachableIds);
+  /* The delivery's nodes: what the requests reach, and the built packages
+   * whose requirements they are — each as much a part of what is delivered,
+   * and as answerable for what it requires, as a package the registry holds. */
+  const carriers = requests.flatMap((_, index) => edgeOf(index)?.from ?? []);
+  const needed = graph.nodesOf(new Set([...reachableIds, ...carriers]));
   /* A violation is a property of an *edge*: in scope iff its requirer is in
    * the delivered closure (a root-requirement violation: iff that root is
    * among the requested). Raises are NOT judged here in any mode: a raised
@@ -354,19 +484,24 @@ export function materializePackages<V, C>(
      * requested root — right by construction: a forced root surfaces as
      * `coerced`, and an alternate is never demanded. */
     ...graph.violationsOf(ROOT_REQUIRER).filter(violation => violable.has(violationKey(violation))),
+    /* A built package's requirement: its own node's edge, where requested. */
+    ...requirements.flatMap((req, index) => {
+      const edge = edgeOf(index);
+      const own = edge && violationKeys([req]);
+      return edge === undefined ? [] : graph.violationsOf(edge.from).filter(violation => own!.has(violationKey(violation)));
+    }),
     ...[...reachableIds].flatMap(id => graph.violationsOf(id)),
   ];
   const root = [...requestedKeys].sort().join(", ");
   const refText = refTextFor(references, registry);
-  const facts: IDeliveryFacts<V, C> = {
-    domain: format,
+  const facts: IDeliveryFacts<V | undefined, C> = {
+    domain: allowingUnversioned(format),
     graph,
     needed,
     requested: requirements,
     written,
-    roots: [...requestedKeys].sort(),
     refText,
-    sources: () => suggestSourcesFor(context, registry, repositoryNameOf(references)),
+    sources: () => suggestSourcesFor(context, registry, repositoryNameOf(references), built),
   };
   /* Judged before anything is downloaded: the verdict is decided by the
    * resolution alone. Rejects rather than throws — materialize may be entered
@@ -384,21 +519,23 @@ export function materializePackages<V, C>(
       /* The forks repairing the reachable violations are already in `needed`,
        * nested by the layout plan where the consumer accepts them. One
        * fetch per member — ids are distinct by construction. */
-      const toFetch = new Map(needed.map(sel => [graph.id(sel), sel] as const));
+      /* A built package is in hand: only the others are the registry's to fetch. */
+      const toFetch = new Map(needed.filter(sel => !built.has(graph.id(sel))).map(sel => [graph.id(sel), sel] as const));
       const fetchIds = [...toFetch.keys()];
       return Computable.forAll(
         fetchIds.map(id => {
           const sel = toFetch.get(id)!;
-          return registry.fetch(sel.publishedName ?? sel.name, sel.version);
+          /* What is fetched is published, so it has a version. */
+          return registry.fetch(sel.publishedName ?? sel.name, sel.version as V);
         }),
         (...fetched: PackageFileSet[]) => {
           const packages = new Map<string, PackageFileSet>(fetchIds.map((id, k) => [id, fetched[k]]));
-          const assembled = requirements.map(req => {
+          const assembled = requirements.map((req, index) => {
             if (req.override === "alternate") {
               return undefined;
             }
-            const bound = bindingOf(req);
-            if (!bound && req.provided !== undefined) {
+            const bound = bindings[index];
+            if (!bound && (req.provided !== undefined || edgeOf(index) !== undefined)) {
               /* Nothing this resolution selects answers it: it offers nothing. */
               return undefined;
             }
@@ -406,7 +543,9 @@ export function materializePackages<V, C>(
               /* Can't happen: a root requirement is always reachable from itself */
               throw new FabrError(`Resolution of ${requirementKey(req)} does not contain its own root package`);
             }
-            return buildClosure(registry, req, bound, graph, packages, facts as IDeliveryFacts);
+            /* A requirement a built package answers is that package, as it
+             * stands: the collection point delivers it in its own right. */
+            return built.get(graph.id(bound))?.pkg ?? buildClosure(registry, req, bound, graph, packages, facts as IDeliveryFacts, built);
           });
           /* Assembled, not shaped: what a package BECOMES on delivery (mounted
            * as-is, launched as a runnable, or reduced to its own files) is the
@@ -493,13 +632,14 @@ function attributeResolutionFailure(err: unknown, references: RepositoryRef[], r
 function buildClosure<V, C>(
   registry: RepositoryReader<V, C>,
   req: Requirement,
-  root: Selected<V>,
-  graph: ResolutionGraph<V>,
+  root: Selected<V | undefined>,
+  graph: ResolutionGraph<V | undefined>,
   packages: Map<string, PackageFileSet>,
-  delivery: IDeliveryFacts
+  delivery: IDeliveryFacts,
+  built: ReadonlyMap<string, BuiltNode<V>>
 ): PackageFileSet {
   const rootId = graph.id(root);
-  const origin = resolutionOrigin(registry.format, req, graph.selections, delivery);
+  const origin = resolutionOrigin(allowingUnversioned(registry.format), req, graph.selections, delivery);
   /* A worklist over the graph, in the builder's own two-phase shape: discover
    * each delivered (name, id) instance from the root, then wire its edges once
    * its targets exist. Discovery IS the membership walk — everything reached
@@ -524,44 +664,44 @@ function buildClosure<V, C>(
     }
     return node;
   };
-  /* A node's provided requirements. One this delivery wires holds the
-   * instance wired. Any other — an optional one, or one whose answer is
-   * outside the fetched batch — holds a reference instead: to what this
-   * resolution selected for it, or, where it selected nothing, to what the
-   * package declared. */
-  const providedOf = (id: string): Array<ProvidedDependency> => {
-    const edges = graph.edgesOf(id);
-    const optionalNames = graph.optionalProvidedNames(id);
-    return [...graph.providedNames(id)].sort().map((name): ProvidedDependency => {
-      const toId = edges.get(name);
-      const optional = optionalNames?.has(name) === true;
-      if (!optional && toId !== undefined && packages.has(toId)) {
-        return { provided: "expected", target: instance(toId) };
-      }
-      const selected = toId === undefined ? undefined : graph.node(toId);
-      const declared = graph.requirements.get(id)?.find(req => req.provided !== undefined && (req.renameTo ?? req.name) === name);
-      const pkg = selected === undefined ? (declared?.name ?? name) : (selected.publishedName ?? selected.name);
-      return {
-        provided: optional ? "optional" : "expected",
-        target: new RepositoryRef(registry, {
-          name: pkg,
-          versionConstraint: selected === undefined ? declared?.versionConstraint : graph.versionToString(selected.version),
-          renameTo: name === pkg ? undefined : name,
-        }),
-      };
+  /* A provided requirement this delivery does not wire — an optional one, or
+   * one whose answer is outside the fetched batch — as a reference: to what
+   * this resolution selected for it, or, where it selected nothing, to what
+   * the package declared. */
+  const offered = (id: string, name: string, toId: string | undefined): RepositoryRef => {
+    const selected = toId === undefined ? undefined : graph.node(toId);
+    const declared = graph.requirements.get(id)?.find(req => req.provided !== undefined && requiredAs(req) === name);
+    const pkg = selected === undefined ? (declared?.name ?? name) : (selected.publishedName ?? selected.name);
+    return new RepositoryRef(registry, {
+      name: pkg,
+      versionConstraint: selected === undefined ? declared?.versionConstraint : graph.versionToString(selected.version),
+      renameTo: name === pkg ? undefined : name,
     });
   };
   const delivered = instance(rootId);
   while (pending.length > 0) {
     const [id, node] = pending.pop()!;
+    const edges = graph.edgesOf(id);
+    const providedNames = graph.providedNames(id);
     const optional = graph.optionalProvidedNames(id);
-    builder.wire(
-      node,
-      [...graph.edgesOf(id)]
-        .filter(([depName, toId]) => optional?.has(depName) !== true && packages.has(toId))
-        .map(([, toId]) => instance(toId)),
-      providedOf(id)
-    );
+    /* Each edge bound to the instance this delivery wires for it. One leading
+     * outside the fetched batch is not carried, unless it is a provided
+     * requirement, which stays — as a reference — for its consumer to answer. */
+    const dependencies = [...new Set([...edges.keys(), ...[...providedNames].sort()])].flatMap((name): Array<PackageFileSet | RepositoryRef> => {
+      const toId = edges.get(name);
+      if (optional?.has(name) !== true && toId !== undefined && packages.has(toId)) {
+        return [instance(toId)];
+      }
+      /* An edge to a package built in the project holds that package as it
+       * stands; the collection point puts its delivered form in its place. */
+      const local = toId === undefined ? undefined : built.get(toId);
+      if (local !== undefined) {
+        return [local.pkg];
+      }
+      return providedNames.has(name) ? [offered(id, name, toId)] : [];
+    });
+    const provided = new Map([...providedNames].map((name): [string, Provided] => [name, optional?.has(name) === true ? "optional" : "expected"]));
+    builder.wire(node, dependencies, provided);
   }
   builder.seal();
   return delivered;
@@ -572,7 +712,7 @@ function buildClosure<V, C>(
  * carries no registry identity — "who provided this" is answered by following
  * the chain to the written reference and the declaration it names. */
 function resolutionOrigin<V, C>(
-  format: PackageFormat<V, C>,
+  format: VersionDomain<V, C>,
   req: Requirement,
   selections: Selected<V>[],
   delivery?: IDeliveryFacts
@@ -598,6 +738,40 @@ function resolutionOrigin<V, C>(
  * resolution provenance a delivered package carries.
  */
 export function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, reference: RepositoryRef): Computable<FileSet> {
+  return barePackage(registry, reference, () => Computable.resolve({ dependencies: [], provided: new Map() }));
+}
+
+/**
+ * The package `reference` names as an **instance**: its own files at the
+ * reference's lower bound, carrying each requirement that version declares as
+ * a reference to `registry`, the provided ones marked. Nothing is resolved:
+ * the collection point the instance reaches resolves what it carries, as it
+ * does a built package's.
+ */
+export function instantiatePackage<V, C>(registry: RepositoryReader<V, C>, reference: RepositoryRef): Computable<PackageFileSet> {
+  return barePackage(registry, reference, (name, version) =>
+    registry.getRequirements(name, version).then(requirements => ({
+      dependencies: requirements.map(
+        req => new RepositoryRef(registry, { name: req.name, versionConstraint: req.versionConstraint, override: req.override, renameTo: req.renameTo })
+      ),
+      provided: new Map(requirements.flatMap((req): Array<[string, Provided]> => (req.provided === undefined ? [] : [[requiredAs(req), req.provided]]))),
+    }))
+  );
+}
+
+/** What a package declares, as a delivered package carries it. */
+interface DeclaredRequirements {
+  readonly dependencies: ReadonlyArray<RepositoryRef>;
+  readonly provided: ReadonlyMap<string, Provided>;
+}
+
+/** The package `reference` names at its lower bound, carrying what `declared`
+ * gives for that published name and version. */
+function barePackage<V, C>(
+  registry: RepositoryReader<V, C>,
+  reference: RepositoryRef,
+  declared: (name: string, version: V) => Computable<DeclaredRequirements>
+): Computable<PackageFileSet> {
   const { format } = registry;
   const req = requirementOf(format, reference);
   const stated = req.versionConstraint;
@@ -619,10 +793,10 @@ export function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, refer
     reachableFrom: [0],
   };
   const origin = resolutionOrigin(format, req, [selection]);
-  return registry
-    .fetch(req.name, version)
-    .then(pkg => new PackageFileSet(pkg, pkg.packageName, pkg.version, [], origin))
-    .catch(err => {
+  return Computable.forAll(
+    [registry.fetch(req.name, version), declared(req.name, version)],
+    (pkg, { dependencies, provided }) => new PackageFileSet(pkg, pkg.packageName, pkg.version, dependencies, origin, provided)
+  ).catch(err => {
       /* The written minimum was never published. The joint (build/test) path
        * would floor-raise here; the standalone files path stays exact by
        * design, but the error should name the raise the build would take. */
@@ -658,10 +832,12 @@ export function fetchPinnedPackage<V, C>(registry: RepositoryReader<V, C>, refer
   if (!bound) {
     throw new FabrError(`Resolution does not contain ${requirementKey(req)}`);
   }
-  const origin = resolutionOrigin(format, req, graph.selections);
-  return registry
-    .fetch(bound.publishedName ?? bound.name, bound.version)
-    .then(pkg => new PackageFileSet(pkg, pkg.packageName, pkg.version, [], origin));
+  const version = bound.version;
+  if (version === undefined) {
+    throw new FabrError(`${requirementKey(req)} is a package built in this project, which its repository does not hold`);
+  }
+  const origin = resolutionOrigin(allowingUnversioned(format), req, graph.selections);
+  return registry.fetch(bound.publishedName ?? bound.name, version).then(pkg => new PackageFileSet(pkg, pkg.packageName, pkg.version, [], origin));
 }
 
 /**
@@ -669,9 +845,14 @@ export function fetchPinnedPackage<V, C>(registry: RepositoryReader<V, C>, refer
  * resolver/ResolutionReport): the written reference form, the registry's
  * version list, and a memoized enrichment-free re-resolve.
  */
-function suggestSourcesFor<V, C>(context: ResolutionContext, registry: RepositoryReader<V, C>, repositoryName: string | undefined): SuggestSources<V, C> {
+function suggestSourcesFor<V, C>(
+  context: ResolutionContext,
+  registry: RepositoryReader<V, C>,
+  repositoryName: string | undefined,
+  built: ReadonlyMap<string, BuiltNode<V>>
+): SuggestSources<V | undefined, C> {
   return {
-    domain: registry.format,
+    domain: allowingUnversioned(registry.format),
     refText: (pkg, versionText, marker) => writtenReference(repositoryName ?? registry.identity, pkg, versionText, marker),
     availableVersions: pkg => registry.availableVersions?.(pkg.publishedName ?? pkg.name) ?? Computable.resolve(undefined),
     resolve: roots =>
@@ -681,6 +862,7 @@ function suggestSourcesFor<V, C>(context: ResolutionContext, registry: Repositor
         repositoryName,
         roots,
         roots.map(req => requirementKey(req)),
+        built,
         false
       ),
   };
@@ -711,23 +893,36 @@ function getJointResolution<V, C>(
   repositoryName: string | undefined,
   roots: Requirement[],
   rootKeys: string[],
+  built: ReadonlyMap<string, BuiltNode<V>> = new Map(),
   enrich = true
-): Computable<ResolutionGraph<V>> {
+): Computable<ResolutionGraph<V | undefined>> {
   const { format } = registry;
+  /* A built package may have no version, which the registry's own domain
+   * cannot say. */
+  const domain = allowingUnversioned(format);
+  /* What each built package requires is as much an input as the roots are. */
+  const builtKeys = [...built]
+    .map(([id, node]) => `built ${id}: ${node.requirements.map(requirementKey).sort().join(", ")}`)
+    .sort();
   return registry.environmentKey().then(environment => {
     return context
       /* Newline-join the roots: a version constraint may contain spaces (a
        * quoted hyphen range, `1.2.3 - 2.3.4`), so a space delimiter isn't
        * obviously injective — a newline can appear in neither a package name
        * nor a constraint, matching how file deps are already newline-separated. */
-      .memoize(format.resolutionTag, `${registry.identity} ${environment}\n${rootKeys.join("\n")}`, () =>
+      .memoize(format.resolutionTag, `${registry.identity} ${environment}\n${[...rootKeys, ...builtKeys].join("\n")}`, () =>
         /* A memo miss means real resolution work on behalf of the consumer —
          * tracked, so the metadata reads it fans out are attributable to a
          * resolution still in flight rather than appearing on their own. */
         context.runTask(
           { kind: "repository-resolve", repository: repositoryName ?? registry.identity, consumer: context.name, requirements: rootKeys },
           () =>
-            resolveMVS(roots, format, registry).then(result => {
+            resolveMVS(
+              roots,
+              domain,
+              withBuiltNodes(registry, built),
+              new Map([...built.values()].map(node => [node.pkg.packageName, node.version]))
+            ).then(result => {
               /* Hard errors (unparseable constraints, unconstrained-only
                * requirements) are not repairable in any mode. Grouped and
                * enriched with pin suggestions before throwing — typed + per-error
@@ -738,16 +933,16 @@ function getJointResolution<V, C>(
                 if (!enrich) {
                   throw new ResolutionWalkError(result.errors);
                 }
-                return completeRepairSet(result.errors, roots, suggestSourcesFor(context, registry, repositoryName)).then(failures => {
+                return completeRepairSet(result.errors, roots, suggestSourcesFor(context, registry, repositoryName, built)).then(failures => {
                   throw new ResolutionWalkError(failures);
                 });
               }
-              return validatedResolutionDoc(registry, roots, result);
+              return validatedResolutionDoc(registry, roots, result, built);
             })
         )
       )
       .then(files => files.readFile(RESOLUTION_FILE))
-      .then(data => deserializeResolutionDoc(JSON.parse(data) as IResolutionDoc, format));
+      .then(data => deserializeResolutionDoc(JSON.parse(data) as IResolutionDoc, domain));
   });
 }
 
@@ -760,10 +955,14 @@ function getJointResolution<V, C>(
 function validatedResolutionDoc<V, C>(
   registry: RepositoryReader<V, C>,
   roots: Requirement[],
-  result: MVSResolution<V>
+  result: MVSResolution<V | undefined>,
+  built: ReadonlyMap<string, BuiltNode<V>>
 ): Computable<FileSet> {
-  return (registry.validateSelections?.(result.selections) ?? Computable.resolve(undefined)).then(() => {
-    const doc = serializeResolutionDoc(roots, result, registry.format.versionToString);
+  /* The registry's policy is over what it publishes. */
+  const domain = allowingUnversioned(registry.format);
+  const published = result.selections.filter((sel): sel is Selected<V> => !built.has(nodeId(domain, sel.name, sel.version)));
+  return (registry.validateSelections?.(published) ?? Computable.resolve(undefined)).then(() => {
+    const doc = serializeResolutionDoc(roots, result, domain.versionToString);
     return new FileSet(new Map([[RESOLUTION_FILE, MemoryFile.from(JSON.stringify(doc, undefined, 2))]]));
   });
 }

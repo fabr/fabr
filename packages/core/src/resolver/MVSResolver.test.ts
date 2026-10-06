@@ -1247,6 +1247,41 @@ describe("force overrides", () => {
     expect(versionToString(result.coerced[0].selected)).to.equal("2.0.0");
   });
 
+  describe("a package in hand", () => {
+    /* `lib` is not something the registry is asked to choose a version of: it
+     * is present, at 1.0.0, and the registry answers for it as for any node. */
+    const data = {
+      A: { "1.0.0": { lib: "^3.0.0" } },
+      lib: { "1.0.0": { C: "^1.0.0" }, "3.0.0": { C: "^9.0.0" } },
+      C: { "1.0.0": {}, "1.2.0": {} },
+    };
+    const run = (roots: Record<string, string>): MVSResolution<SemverVersion> => {
+      let result: MVSResolution<SemverVersion> | undefined;
+      resolveMVS(rootRequirements(roots), SEMVER, mockRegistry(data), new Map([["lib", parseVersion("1.0.0")]])).then(resolution => {
+        result = resolution;
+      });
+      return result!;
+    };
+
+    it("answers every requirement on its name, whatever version is asked, and is never a violation", () => {
+      const result = run({ A: "1.0.0" });
+      expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@1.0.0", "lib@1.0.0"]);
+      expect(result.violations).to.deep.equal([]);
+      expect(result.errors).to.deep.equal([]);
+    });
+
+    it("requires what it requires, as edges of its own node, resolved with everything else", () => {
+      const result = run({ A: "1.0.0", C: "1.2.0" });
+      expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@1.2.0", "lib@1.0.0"]);
+      expect(result.requirements.get("lib@1.0.0")).to.deep.equal([{ name: "C", versionConstraint: "^1.0.0" }]);
+    });
+
+    it("is in the graph only where something requires it", () => {
+      const result = run({ C: "1.0.0" });
+      expect(selectionStrings(result)).to.deep.equal(["C@1.0.0"]);
+    });
+  });
+
   it("coerces a lower exact pin up onto the forced version without forking", () => {
     const result = resolve(
       { A: "1.0.0", C: "2.0.0!" },

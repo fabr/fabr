@@ -336,7 +336,7 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
 
   it("takes an entry point at a virtual location as that wiring", async () => {
     const { right, manifest } = stage();
-    const wiring = right.dependencies[0] as PackageFileSet;
+    const wiring = right.packages[0];
     fs.writeFileSync(path.join(work, "entry.js"), "");
     assert.equal(await bundleAndRun(`${manifest.mountOf(wiring)}/index.js`), "");
     const bundled = fs.readFileSync(path.join(work, "out", "bundle.js"), "utf8");

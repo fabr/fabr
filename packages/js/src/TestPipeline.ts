@@ -65,7 +65,9 @@ import {
   UPDATE_EXPECTATIONS,
   WriteBackFileSet,
   Flag,
+  toEnvironment,
 } from "@fabr-build/core";
+import { createTestRunAction } from "./TestRunAction";
 import { posix } from "path";
 import { COMPILE_OUT_DIR, COMPILE_SRC_DIR } from "./rules/BuildJSCompile";
 import { assembleNodeModules } from "./NodeModules";
@@ -407,7 +409,7 @@ interface ITestRun {
  * the runner's install staged under {@link RUNNER_STAGE_DIR}, a minimal
  * package.json and any copied sources) is assembled in resolution, and the
  * compiled tree — the output of the shared js_compile sub-target — is passed
- * in as a concrete input to the `js_test_run` sub-target.
+ * in as a concrete input to the test-run action.
  *
  * The run is a **sub-target** rather than an action yielded directly, so its
  * output is observed here, in resolution: the report is the target's content,
@@ -441,7 +443,7 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
      * `package.json` stay at the root, where node's walk-up finds them from
      * `build/` just as well.
      *
-     * `build/` is ALSO the working directory (see js_test_run): a test's paths —
+     * `build/` is ALSO the working directory (see the test-run action): a test's paths —
      * `./x` from cwd or `__dirname`-relative alike — then mean what they mean in
      * the source tree, since the compiled tree mirrors it. Staging resources
      * anywhere else forced the declaration to re-encode fabr's layout. */
@@ -498,16 +500,12 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
      * seen through the mount; the comparison below wants them in the compiled
      * tree's own namespace, which is what `records` is. */
     const writable = FileSet.layout({ [COMPILE_OUT_DIR]: [records] });
-    return context
-      .subTarget("js_test_run", {
-        staged,
-        writable,
-        argv,
-        test_files: testFiles,
-        outputs,
-        env: run.env,
-      })
-      .then(result => reshapeTestResult(result, run.tests, records));
+    /* The run's output is given its delivered shape — the report, and what it
+     * offers back to the tree — every evaluation, so refreshed records reach
+     * the driver on a cache hit as well as on a miss. */
+    return createTestRunAction({ staged, writable, argv, testFiles, outputs, env: toEnvironment(run.env) }).withReshape(result =>
+      reshapeTestResult(result, run.tests, records)
+    );
   });
 }
 

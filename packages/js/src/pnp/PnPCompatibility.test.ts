@@ -485,7 +485,7 @@ describe("PnpResolver conforms to Yarn's PnP runtime", () => {
       expectConformant(pair(root, state));
       /* And fabr's realpath spelling of a virtual file still names its row. */
       const resolver = new PnpResolver(state, root, []);
-      const wiring = left.dependencies[0] as PackageFileSet;
+      const wiring = left.packages[0];
       const file = resolver.resolveRequest("shared/index.js", path.join(root, treeMountOf(left), "index.js"));
       expect(file).to.equal(path.join(root, "store", "__virtual__", file!.split("/__virtual__/")[1]));
       expect(resolver.findPackageLocator(file!)).to.deep.equal({ name: "shared", reference: resolver.findPackageLocator(path.join(root, pnpManifestOf([left, right]).mountOf(wiring)))!.reference });

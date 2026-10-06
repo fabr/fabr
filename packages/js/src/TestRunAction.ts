@@ -18,19 +18,15 @@
  */
 
 /**
- * The js_test_run rule: one execution of a test runner over a staged
- * installation — the cache unit of a test run, composed by the shared test
- * pipeline (which assembles `staged` and `argv`) rather than declared by hand.
- * It exists as a *target* rather than an action the test rules yield directly
- * so that its output is observable in the caller's resolution: that is what
- * lets refreshed snapshot files reach the driver on a cache hit as well as on a
- * miss. See TestPipeline for the run's construction and for the reshaping of
- * this target's output.
+ * The test-run action: one execution of a test runner over a staged
+ * installation — the cache unit of a test run, built by the shared test
+ * pipeline (which assembles `staged` and `argv`, and gives the run's output its
+ * delivered shape). See TestPipeline for the run's construction.
  */
 
 import * as fs from "fs";
 import { join } from "path";
-import { COMPILE_OUT_DIR } from "./BuildJSCompile";
+import { COMPILE_OUT_DIR } from "./rules/BuildJSCompile";
 import {
   BuildResult,
   ActionContext,
@@ -49,21 +45,17 @@ import {
   mergeTestReports,
   MultiError,
   parseJson,
-  RuleDefinition,
-  RuleResult,
   stringListConfig,
-  TargetContext,
   TEST_REPORT_FILENAME,
   TestsFailedError,
   toError,
   toTestReport,
   writeFileSet,
   TaskProgress,
-  toEnvironment,
 } from "@fabr-build/core";
 
 /**
- * The js_test_run build step: stage the complete installation (built in
+ * The test-run build step: stage the complete installation (built in
  * resolution — deps as node_modules, the runner, the compiled tree, a minimal
  * package.json), execute the runner once per test file, and deliver the
  * collected outputs with the per-invocation reports merged into one. Per-file
@@ -249,39 +241,38 @@ function concludeRun(workDir: string, runs: IFileRun[]): void {
   fs.writeFileSync(join(workDir, TEST_REPORT_FILENAME), JSON.stringify(merged, undefined, 2));
 }
 
-/**
- * The rule's evaluate: an internal sub-target whose whole job is to be the
- * cache unit for one test run. It is deliberately not a step yielded straight
- * from the test rules — being a target, its output is observable in the
- * caller's resolution (see TestPipeline's planTestRun), which is what lets
- * refreshed snapshots reach the driver on a cache hit as well as a miss. A
- * generic exec can't serve here either: a red run must fail the target while
- * keeping the report.
- */
-function evaluateTestRun(context: TargetContext): Computable<RuleResult> {
-  return Computable.forAll(
-    [
-      context.getFileSetProperties(["staged", "writable"]),
-      context.getRequiredProperty("argv"),
-      context.getRequiredProperty("test_files"),
-      context.getRequiredProperty("outputs"),
-      context.getMap("env").then(toEnvironment),
-    ],
-    ({ staged, writable }, argv, testFiles, outputs, env) =>
-      new BuildAction(
-        JS_TEST_STEP,
-        {
-          staged: FileSet.unionAll(...staged),
-          writable: FileSet.unionAll(...writable),
-        },
-        {
-          argv: argv.getValues(),
-          test_files: testFiles.getValues(),
-          outputs: outputs.getValues(),
-          ...(env.size > 0 ? { env: [...env].map(([name, value]) => `${name}=${value}`) } : {}),
-        }
-      )
-  );
+/** What one test run is made from. */
+export interface ITestRunInputs {
+  /** The complete installation. */
+  staged: FileSet;
+  /** The subset of `staged` the runner may rewrite (the recorded expectations,
+   * under TEST_EXPECTATIONS=update): staged as writable copies rather than
+   * links into the content store. */
+  writable: FileSet;
+  /** The runner invocation, without report or files: the step invokes it once
+   * per `testFiles` entry, appending a per-invocation report name and the file. */
+  argv: string[];
+  testFiles: string[];
+  /** The selectors for what the run leaves behind: the report, plus any
+   * refreshed expectation files. */
+  outputs: string[];
+  /** The environment variables each invocation runs with: its whole environment. */
+  env: ReadonlyMap<string, string>;
 }
 
-export const jsTestRunRule: RuleDefinition = { type: "js_test_run", properties: {}, evaluate: evaluateTestRun };
+/**
+ * @return the action that runs the tests. A generic exec cannot serve: a red
+ * run must fail the target while keeping the report.
+ */
+export function createTestRunAction({ staged, writable, argv, testFiles, outputs, env }: ITestRunInputs): BuildAction {
+  return new BuildAction(
+    JS_TEST_STEP,
+    { staged, writable },
+    {
+      argv,
+      test_files: testFiles,
+      outputs,
+      ...(env.size > 0 ? { env: [...env].map(([name, value]) => `${name}=${value}`) } : {}),
+    }
+  );
+}

@@ -48,6 +48,7 @@ import {
   usesDom,
 } from "../JSPackage";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
+import { assertOnePackagePerName } from "../PnPManifest";
 import { CHANGES_FILE, CHANGES_FLAG, DEPS_REPORT_FILE, DEPS_REPORT_FLAG, STATE_DIR, STATE_DIR_FLAG } from "../pnp/ReadSet";
 
 /** Where the toolchain is mounted in the working dir — disjoint from src/node_modules/build. */
@@ -312,6 +313,7 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       context.getRewriteRules("rewrite_imports"),
     ],
     ({ srcs: srcSets, deps, resources }, target, driver, buildType, depFlags, packageNameProp, moduleExtensionProp, rewriteRules) => {
+      assertOnePackagePerName(deps);
       const jsTarget = parseJSTarget(target);
       if (jsTarget.module === "dual") {
         /* Not a user error: every caller pins a format (js_package builds one

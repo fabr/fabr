@@ -26,12 +26,12 @@
 import { posix } from "path";
 import {
   compareText,
-  ConflictError,
   FileSet,
   hashString,
   IFile,
   nodeNaming,
   packageConflict,
+  packageNameConflict,
   PackageFileSet,
   SymlinkFile,
 } from "@fabr-build/core";
@@ -66,10 +66,8 @@ function collectPackages(sets: FileSet[]): CollectedPackages {
     if (!byNode.has(node)) {
       byNode.set(node, pkg);
     }
-    for (const dep of pkg.dependencies) {
-      if (dep instanceof PackageFileSet) {
-        collect(dep);
-      }
+    for (const dep of pkg.packages) {
+      collect(dep);
     }
   };
   for (const set of sets) {
@@ -99,15 +97,6 @@ function assertOneContentPerId(collected: CollectedPackages): void {
       throw packageConflict(held, pkg);
     }
   }
-}
-
-/** Two instances claiming one mount name: two versions of it, or — where the
- * version is the same — the conflict {@link packageConflict} explains. */
-function nameConflict(held: PackageFileSet, arrived: PackageFileSet): Error {
-  if (held.packageId === arrived.packageId) {
-    return packageConflict(held, arrived);
-  }
-  return new ConflictError("packages", held.packageName, { provenance: held.origin, detail: held.packageId }, { provenance: arrived.origin, detail: arrived.packageId });
 }
 
 /** The directory, within node_modules, holding one directory per package
@@ -175,15 +164,13 @@ export function assembleNodeModules(sets: FileSet[]): FileSet {
   const instance = instanceNames(collected);
   const homeOf = (pkg: PackageFileSet, name: string): string => `${INSTANCE_AREA}/${instance.get(nodeOf(pkg))!}/node_modules/${name}`;
   const dependenciesOf = (pkg: PackageFileSet): PackageFileSet[] =>
-    pkg.dependencies
-      .filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet)
-      .sort((a, b) => compareText(a.packageName, b.packageName));
+    pkg.packages.sort((a, b) => compareText(a.packageName, b.packageName));
 
   const top = new Map<string, PackageFileSet>();
   for (const root of roots) {
     const held = top.get(root.packageName);
     if (held !== undefined && nodeOf(held) !== nodeOf(root)) {
-      throw nameConflict(held, root);
+      throw packageNameConflict(held, root);
     }
     top.set(root.packageName, root);
   }

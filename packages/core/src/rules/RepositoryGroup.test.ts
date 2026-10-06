@@ -415,7 +415,7 @@ describe("repository_group (through the model)", () => {
     expect(top.packageName).to.equal("top");
     expect(await top.readFile("from.txt")).to.equal("test:@b");
     /* The transitive scoped package rode the private registry end to end. */
-    const lib = top.dependencies[0] as PackageFileSet;
+    const lib = top.packages[0];
     expect(lib.packageName).to.equal("@scope/lib");
     expect(await lib.readFile("from.txt")).to.equal("test:@a");
     expect(registries.get("@a")!.requested).to.deep.equal(["@scope/lib@1.2.0"]);
@@ -562,13 +562,13 @@ describe("repository_group (through the model)", () => {
 
     const top = lastDepSets[0] as PackageFileSet;
     expect(top.packageName).to.equal("top");
-    const lib = top.dependencies[0] as PackageFileSet;
+    const lib = top.packages[0];
     expect(lib.packageName).to.equal("mylib");
     expect(lib.version).to.equal("1.5.0");
     expect(await lib.readFile("lib/index.js")).to.equal("42");
     /* The content's requirement was answered by the registry its name routes
      * to — the composition a standalone content member cannot do. */
-    const pad = lib.dependencies[0] as PackageFileSet;
+    const pad = lib.packages[0];
     expect(pad.packageName).to.equal("left-pad");
     expect(await pad.readFile("from.txt")).to.equal("test:@b");
     expect(registries.get("@b")!.fetched).to.have.members(["top@1.0.0", "left-pad@1.0.0"]);

@@ -110,3 +110,33 @@ export function violationKeys(roots: readonly Requirement[]): Set<string> {
 export function violationKey<V>(violation: Violation<V>): string {
   return `${violation.name}\n${violation.versionConstraint}`;
 }
+
+/** How a package with no version is written where a version would be. */
+export const UNVERSIONED = "*";
+
+/**
+ * `domain`, over versions that may be absent: a package with no version — one
+ * built in the project and not yet given one — answers whatever is asked of
+ * it, since nothing else answers to its name, and orders below any version.
+ */
+export function allowingUnversioned<V, C>(domain: VersionDomain<V, C>): VersionDomain<V | undefined, C> {
+  /* One per domain: a domain's identity is how deliveries are told to belong
+   * together. */
+  const held = UNVERSIONED_DOMAINS.get(domain) as VersionDomain<V | undefined, C> | undefined;
+  if (held !== undefined) {
+    return held;
+  }
+  const isStable = domain.isStable?.bind(domain);
+  const lifted: VersionDomain<V | undefined, C> = {
+    ...domain,
+    compare: (a, b) => (a === undefined ? (b === undefined ? 0 : -1) : b === undefined ? 1 : domain.compare(a, b)),
+    satisfies: (version, constraint) => version === undefined || domain.satisfies(version, constraint),
+    versionToString: version => (version === undefined ? UNVERSIONED : domain.versionToString(version)),
+    parseVersion: text => (text === UNVERSIONED ? undefined : domain.parseVersion(text)),
+    ...(isStable === undefined ? {} : { isStable: (version: V | undefined) => version === undefined || isStable(version) }),
+  };
+  UNVERSIONED_DOMAINS.set(domain, lifted);
+  return lifted;
+}
+
+const UNVERSIONED_DOMAINS = new WeakMap<object, object>();

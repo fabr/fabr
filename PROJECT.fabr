@@ -34,6 +34,7 @@ catalog @pkg {
          @npm:unicode-properties:1.3.1 @npm:@types/unicode-properties:1.3.0
          @npm:tar-stream:3.1.7 @npm:@types/tar-stream:3.1.3
          @npm:@napi-rs/lzma:1.5.1
+         @npm:diff:9.0.0
 
          # The bundle driver's tests drive the real bundler; pinned to the same
          # version ESBUILD names, since what they check is what THAT esbuild
@@ -92,7 +93,7 @@ tar_stream = @pkg:tar-stream @pkg:@types/tar-stream;
 js_package @fabr-build/core {
   srcs = packages/core/src:**/*.ts packages/core:lib/** README.md COPYING -> LICENSE;
   tests = packages/core/src:**/*.test.ts;
-  deps = @pkg:@types/node @pkg:@parcel/watcher @pkg:picomatch @pkg:undici @pkg:@napi-rs/lzma
+  deps = @pkg:@types/node @pkg:@parcel/watcher @pkg:picomatch @pkg:undici @pkg:@napi-rs/lzma @pkg:diff
          unicode_properties tar_stream;
   test_deps = chai jest_types;
   metadata = { FABR_METADATA; description = Fabr core }

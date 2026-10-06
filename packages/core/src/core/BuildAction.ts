@@ -96,9 +96,9 @@ export interface IBuildActionDefinition {
  * composition is via sub-targets (see ResolveContext.subTarget), so an action's
  * inputs are always plain data.
  *
- * Every member must reduce to a stable manifest, since the key is a function of
- * exactly these fields. The per-field bags are developer-authored fixed-key
- * records, never user-controlled names.
+ * Every member but {@link reshape} must reduce to a stable manifest, since the
+ * key is a function of exactly those fields. The per-field bags are
+ * developer-authored fixed-key records, never user-controlled names.
  */
 export class BuildAction {
   constructor(
@@ -121,12 +121,28 @@ export class BuildAction {
      * records what this build was made from and serves the next build the
      * difference, as {@link ActionContext.changedFiles}.
      */
-    public readonly trackChangedFiles: boolean = false
+    public readonly trackChangedFiles: boolean = false,
+    /**
+     * Gives the step's output the shape the target delivers: what the files
+     * ARE — a package, with its identity — or how they divide, which a cached
+     * step cannot carry. Applied to the output every evaluation, whether the
+     * step ran or its entry was served.
+     *
+     * It is no part of the action's key, so it must add nothing the output's
+     * content depends on: the files it is given are all it may draw content
+     * from.
+     */
+    public readonly reshape?: (output: FileSet) => FileSet | Computable<FileSet>
   ) {}
 
   /** @return a copy carrying the given display label */
   public withLabel(label: string): BuildAction {
-    return new BuildAction(this.step, this.inputs, this.config, this.discoverable, label, this.trackChangedFiles);
+    return new BuildAction(this.step, this.inputs, this.config, this.discoverable, label, this.trackChangedFiles, this.reshape);
+  }
+
+  /** @return a copy whose output is given its delivered shape by `reshape`. */
+  public withReshape(reshape: (output: FileSet) => FileSet | Computable<FileSet>): BuildAction {
+    return new BuildAction(this.step, this.inputs, this.config, this.discoverable, this.label, this.trackChangedFiles, reshape);
   }
 
   /**

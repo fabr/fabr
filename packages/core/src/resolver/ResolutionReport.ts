@@ -30,7 +30,7 @@
 
 import { Computable } from "../core/Computable";
 import { FabrError, ResolutionWalkError } from "../core/Errors";
-import { nodeId, ResolutionExplainer, ResolutionGraph } from "./ResolutionGraph";
+import { nodeId, nodeLabel, ResolutionExplainer, ResolutionGraph } from "./ResolutionGraph";
 import { canonicalRequirements, requiredAs, versionConstraintText } from "./Requirement";
 import {
   IRequirementEdge,
@@ -111,7 +111,7 @@ function alsoRequiredBy(constraint: string, others: readonly string[]): string[]
   if (others.length === 0) {
     return [];
   }
-  const shown = others.slice(0, 4);
+  const shown = others.slice(0, 4).map(nodeLabel);
   const more = others.length - shown.length;
   return [`  '${constraint}' also required by: ${shown.join(", ")}${more > 0 ? ` (+${more} more)` : ""}`];
 }
@@ -142,6 +142,44 @@ function explainViolation<V>(
   return lines;
 }
 
+/**
+ * A violation as the disagreement it is: two requirements on one package that
+ * the version selected does not both meet, each with where it came from. The
+ * requirement that selected the version is as much a party as the one it
+ * fails, so neither is reported as the loser. Falls back to naming the
+ * selected version where the resolution does not record what selected it.
+ */
+function conflictLines<V>(
+  violation: Violation<V>,
+  moreRequirers: string,
+  explainer: ResolutionExplainer<V>,
+  versionToString: (version: V) => string
+): string[] {
+  const { find, pathTo } = explainer;
+  const selected = versionToString(violation.selected);
+  const winner = find(`${violation.name}@${selected}`)?.selectedBy;
+  if (winner === undefined) {
+    return [
+      `${violation.name}@${selected} does not satisfy '${violation.versionConstraint}' required by ${nodeLabel(violation.requiredBy)}${moreRequirers}`,
+      ...explainViolation(violation, explainer, versionToString),
+    ];
+  }
+  const via = (requiredBy: string): string => {
+    if (requiredBy === ROOT_REQUIRER) {
+      return "required directly";
+    }
+    const requirer = find(requiredBy);
+    return `required via: ${requirer === undefined ? nodeLabel(requiredBy) : pathTo(requirer).join(" -> ")}`;
+  };
+  const violated = `'${violation.versionConstraint}'`;
+  const winning = versionConstraintText(winner.versionConstraint);
+  return [
+    `${violation.name} is required as ${violated} and as ${winning}, and no one version is both`,
+    `  ${violated} ${via(violation.requiredBy)}${moreRequirers}`,
+    `  ${winning} ${via(winner.requiredBy)}`,
+  ];
+}
+
 /** The requirement whose floor won `selection` its version, as the path from a
  * root down to it. */
 function winnerOf<V>(
@@ -155,7 +193,7 @@ function winnerOf<V>(
   const winnerNode = explainer.find(winner.requiredBy);
   if (!winnerNode) {
     /* The winning requirement was declared by a version itself since superseded */
-    return `${winner.requiredBy} requiring ${versionConstraintText(winner.versionConstraint)} (since superseded)`;
+    return `${nodeLabel(winner.requiredBy)} requiring ${versionConstraintText(winner.versionConstraint)} (since superseded)`;
   }
   const chosen = `${explainer.id(selection)} (${winner.versionConstraint ?? "any version"})`;
   return [...explainer.pathTo(winnerNode), chosen].join(" -> ");
@@ -176,7 +214,7 @@ function explainDuplicate<V>(
       return [];
     }
     return via.requiredBy === ROOT_REQUIRER
-      ? [`  ${versionToString(version)} required directly ('${via.versionConstraint}')`]
+      ? [`  ${versionToString(version)} required directly${via.versionConstraint === undefined ? "" : ` ('${via.versionConstraint}')`}`]
       : [`  ${versionToString(version)} required via: ${explainer.pathTo(selection).join(" -> ")}`];
   });
 }
@@ -197,7 +235,6 @@ function explainDuplicate<V>(
  * becomes the help.
  */
 export function conflictError<V>(
-  root: string,
   violations: Violation<V>[],
   duplicates: Array<[string, V[]]>,
   needed: readonly Selected<V>[],
@@ -217,12 +254,7 @@ export function conflictError<V>(
   const sanctionNoted = new Set<string>();
   for (const { first, others } of groupViolations(violations, versionToString)) {
     const moreRequirers = others.length > 0 ? ` (and ${others.length} more)` : "";
-    lines.push(
-      `${first.name}@${versionToString(first.selected)} does not satisfy '${first.versionConstraint}' ` +
-        `required by ${first.requiredBy}${moreRequirers}`,
-      ...explainViolation(first, explainer, versionToString),
-      ...alsoRequiredBy(first.versionConstraint, others)
-    );
+    lines.push(...conflictLines(first, moreRequirers, explainer, versionToString), ...alsoRequiredBy(first.versionConstraint, others));
     /* A partial sanction is a set mismatch, called out where the conflict is
      * reported: the versions this delivery needs vs the versions written. */
     const declared = written?.get(first.name);
@@ -243,11 +275,7 @@ export function conflictError<V>(
    * violation entry report here — a safety net for a multiplicity nothing
    * above explained, not the normal path. */
   for (const [pkg, versions] of duplicates.filter(([pkg]) => !violatedPkgs.has(pkg))) {
-    lines.push(
-      `requires multiple versions of ${pkg} (${versions.map(versionToString).join(", ")}), ` +
-        `which the flat package layout cannot represent`,
-      ...explainDuplicate(pkg, versions, explainer, versionToString)
-    );
+    lines.push(`${pkg} is required at ${versions.map(versionToString).join(" and ")}`, ...explainDuplicate(pkg, versions, explainer, versionToString));
   }
   /* The help IS the remedy: the suggester's pasteable override set when it
    * produced one, else the generic statement of the two fixes. */
@@ -255,7 +283,7 @@ export function conflictError<V>(
     suggestion !== undefined && suggestion.length > 0
       ? suggestion
       : ["pin a single version satisfying every requirement, or write '?' overrides naming each version to ship"];
-  return new FabrError(`Unable to resolve ${root}:\n  ${lines.join("\n  ")}`).withHelp(help);
+  return new FabrError(`Resolution requires multiple versions of the same package:\n  ${lines.join("\n  ")}`).withHelp(help);
 }
 
 /**
@@ -275,7 +303,7 @@ export function unrepairableError<V>(
   const explainer = graph.explainer();
   const groups = groupViolations(violations, versionToString);
   const lines = groups.flatMap(({ first, others }) => [
-    `no published version of ${first.name} satisfies '${first.versionConstraint}' required by ${first.requiredBy}`,
+    `no published version of ${first.name} satisfies '${first.versionConstraint}' required by ${nodeLabel(first.requiredBy)}`,
     ...explainViolation(first, explainer, versionToString),
     ...alsoRequiredBy(first.versionConstraint, others),
   ]);
@@ -556,7 +584,7 @@ export function completeRepairSet<V, C>(
             `completing the resolution with those versions also hits ${conflicts.size} version conflict(s), sanctioned by the list below:`,
             ...groupViolations(completed.violations, domain.versionToString).map(({ first, others }) => {
               const more = others.length > 0 ? ` (and ${others.length} more)` : "";
-              return `  ${first.name}@${domain.versionToString(first.selected)} does not satisfy '${first.versionConstraint}' required by ${first.requiredBy}${more}`;
+              return `  ${first.name}@${domain.versionToString(first.selected)} does not satisfy '${first.versionConstraint}' required by ${nodeLabel(first.requiredBy)}${more}`;
             }),
           ]
         : [];

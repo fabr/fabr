@@ -146,4 +146,15 @@ describe("e2e: js_package metadata", () => {
     expect(pkg.license).to.equal("MIT");
     expect(pkg.author).to.equal("fabr");
   });
+
+  it("refuses a version npm cannot read, against the package that states it", () => {
+    const project = {
+      ...base,
+      "PROJECT.fabr": "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_package thing { version = 1.0; srcs = src:**/*; }\n",
+    };
+    const result = runFabr(project, ["-DJS_TARGET=es2020", "build", "thing"]);
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.contain("Failed to build thing: '1.0' is not a valid package version");
+    expect(result.stderr).to.contain("write it as major.minor.patch");
+  });
 });

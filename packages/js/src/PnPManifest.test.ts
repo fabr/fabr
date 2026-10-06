@@ -27,10 +27,10 @@ import {
   PACKAGE_RESOLUTION_PROVENANCE,
   PackageFileSet,
   PackageGraphBuilder,
-} from "@fabr-build/core";
+  } from "@fabr-build/core";
 import { packageNodeSignature } from "@fabr-build/core";
 import * as path from "path";
-import { IPnpPackageInfo, pnpManifestOf, PnpDependencyTarget, TREE_MOUNT, treeMountOf } from "./PnPManifest";
+import { assertOnePackagePerName, IPnpPackageInfo, pnpManifestOf, PnpDependencyTarget, TREE_MOUNT, treeMountOf } from "./PnPManifest";
 import { resolveVirtual } from "./pnp/VirtualPath";
 
 /** A package as a REPOSITORY delivered it — carrying a resolution provenance,
@@ -66,6 +66,15 @@ function dependencyOf(info: IPnpPackageInfo, name: string): PnpDependencyTarget 
 }
 
 describe("pnpManifestOf", () => {
+  it("refuses two versions of one package among the direct deps, which no import could tell apart", () => {
+    expect(() => pnpManifestOf([pkg("dep", "1.0.0"), pkg("dep", "2.0.0")])).to.throw("Conflicting packages for dep");
+    expect(() => assertOnePackagePerName([pkg("dep", "1.0.0"), pkg("dep", "2.0.0")])).to.throw("Conflicting packages for dep");
+    /* The same version twice is one package; two versions BELOW the direct
+     * deps are each their requirer's own. */
+    expect(() => assertOnePackagePerName([pkg("dep", "1.0.0"), pkg("dep", "1.0.0")])).to.not.throw();
+    expect(() => pnpManifestOf([pkg("a", "1.0.0", [pkg("dep", "1.0.0")]), pkg("b", "1.0.0", [pkg("dep", "2.0.0")])])).to.not.throw();
+  });
+
   it("emits the compilation as the top-level package, seeing exactly its declared deps", () => {
     const manifest = pnpManifestOf([pkg("left-pad"), pkg("chalk", "1.0.0", [pkg("ansi-styles")])]);
     const top = rowsOf(manifest, null).get(null)!;

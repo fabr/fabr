@@ -32,7 +32,7 @@ import {
   FileSetRef,
   FileSource,
   PackageFileSet,
-  ProvidedDependency,
+  Provided,
   readJsonFile,
   RepositoryRef,
   RuleDefinition,
@@ -40,6 +40,7 @@ import {
   TargetContext,
   toJsonObject,
   Flag,
+  dependencyName,
 } from "@fabr-build/core";
 import {
   compileContents,
@@ -51,6 +52,7 @@ import {
   stripPackageJson,
   withBinShebangs,
 } from "../JSPackage";
+import { NPM_FORMAT } from "../NPMProtocol";
 import { createPackageJson } from "../PackageJson";
 
 /**
@@ -71,17 +73,32 @@ function asExportSource(source: FileSet | FileSetRef): FileSet {
   return source instanceof FileSetRef ? source.select() : source;
 }
 
+/** A package needs no version, but one it states must be one npm can read: it
+ * is written into the manifest, and everything that later resolves against
+ * the package compares by it. */
+function assertPackageVersion(version: string | undefined): void {
+  if (version === undefined) {
+    return;
+  }
+  try {
+    NPM_FORMAT.parseVersion(version);
+  } catch {
+    throw new FabrError(`'${version}' is not a valid package version`).withHelp(
+      "write it as major.minor.patch (1.0.0), optionally followed by a prerelease (1.0.0-beta.1)"
+    );
+  }
+}
+
 function buildJsPackage(context: TargetContext): Computable<RuleResult> {
   return Computable.forAll(
     [
       context.getGlobalString("JS_TARGET"),
       context.getProperty("version"),
-      context.getFileProperty("deps"),
-      context.getFileProperty("provided_deps"),
       context.getMap("metadata"),
     ],
-    (target, version, depSources, providedSources, metadata) => {
+    (target, version, metadata) => {
       const jsTarget = parseJSTarget(target);
+      assertPackageVersion(version?.toString());
 
       /* THE collection point, singular per evaluation: srcs, tests, deps AND
        * provided_deps materialize through one joint resolution (a package needing
@@ -105,16 +122,9 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
         resources: context.getFileProperty("resources"),
         tests: context.getFileProperty("tests"),
         exports: context.getFileProperty("exports"),
-        deps: depSources,
-        provided: providedSources,
+        deps: context.getDependencyProperty("deps"),
+        provided: context.getDependencyProperty("provided_deps"),
       });
-
-      /* Declared (not resolved) requirements for the generated manifest: each dep
-       * source reports the version it was *declared* with — an inline `@npm:pkg:1.2.3`
-       * off its own ref, a catalog dep from the catalog's pin — not the version the
-       * joint resolution selected. Provided deps declare `peerDependencies`. */
-      const declaredDeps = context.collectDeclaredRequirements(depSources);
-      const declaredProvided = context.collectDeclaredRequirements(providedSources);
 
       return Computable.forAll(
         [gathered, testDeps, testResources, expectations],
@@ -152,6 +162,26 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
         );
         const compileSources = sources.minus(tests).minus(FileSet.unionAll(...testOnlySources));
 
+        /* What the package requires, carried on it: the packages its `deps`
+         * were delivered as — each still naming the reference it was delivered
+         * for, so every consuming collection point resolves it again — and the
+         * references that deliver no package. `provided_deps` are carried with
+         * them, named as its provided requirements: the consumer's collection
+         * point binds each to what the consumer uses under that name. */
+        const carriedOf = (collected: ReadonlyArray<FileSet | RepositoryRef>): Array<PackageFileSet | RepositoryRef> =>
+          collected.filter((dep): dep is PackageFileSet | RepositoryRef => dep instanceof PackageFileSet || dep instanceof RepositoryRef);
+        const providedCarried = carriedOf(provided);
+        const carried = [...carriedOf(deps), ...providedCarried];
+        const providedNames = new Map(providedCarried.map((dep): [string, Provided] => [dependencyName(dep), "expected"]));
+        const compileDeps = [...deps, ...provided].filter((dep): dep is FileSet => dep instanceof FileSet);
+        /* Declared (not resolved) requirements for the generated manifest: each
+         * reports what was *written* — an inline `@npm:pkg:1.2.3` off the
+         * reference it was delivered for, a catalog dep from the catalog's pin —
+         * not the version the joint resolution selected. Provided deps declare
+         * `peerDependencies`. */
+        const declaredDeps = context.collectDeclaredRequirements(carriedOf(deps));
+        const declaredProvided = context.collectDeclaredRequirements(providedCarried);
+
         return Computable.forAll([seedJson, declaredDeps, declaredProvided], (seed, declared, providedDeclared) => {
           /* Compile against the direct deps: the sources see only these, while
            * the transitive closure is reachable only by the deps themselves —
@@ -168,7 +198,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
            * emits `.mjs`/`.d.mts`, so the two trees ship together at the package
            * root instead of occupying the same names. */
           const formatCompile = (format: "commonjs" | "esm"): Computable<ICompiledContents> =>
-            compileContents(context, compileSources, [...deps, ...provided], {
+            compileContents(context, compileSources, compileDeps, {
               packageName: context.name,
               constraints: Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: format }) }),
               moduleExtension: format === "esm" ? ESM_JS_EXTENSION : undefined,
@@ -177,26 +207,8 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
            * it, so nothing about an ordinary build moves. */
           const contents = dual
             ? formatCompile("commonjs")
-            : compileContents(context, compileSources, [...deps, ...provided], { packageName: context.name });
+            : compileContents(context, compileSources, compileDeps, { packageName: context.name });
           const esmContents = dual ? formatCompile("esm") : undefined;
-
-          /* The package's DIRECT deps as written (built packages as packages,
-           * external requirements as inert references, resolved fresh at each
-           * consuming collection point) — carried on the delivered package.
-           * `provided_deps` are carried apart, as its provided requirements:
-           * the consumer's collection point binds each to what the consumer
-           * uses under that name. */
-          const carried = depSources.filter(
-            (source): source is PackageFileSet | RepositoryRef =>
-              source instanceof PackageFileSet || source instanceof RepositoryRef
-          );
-          /* A built package already in hand is also wired as an edge; an
-           * external one is answered by whatever its reference resolves to at
-           * the consumer's collection point. */
-          const offered = providedSources.filter((source): source is PackageFileSet => source instanceof PackageFileSet);
-          const providedCarried = providedSources.flatMap((source): Array<ProvidedDependency> =>
-            source instanceof PackageFileSet || source instanceof RepositoryRef ? [{ provided: "expected", target: source }] : []
-          );
 
           /* Delivery shape: add the generated package.json (in memory — its
            * entry points depend on the compiled file list) and wrap with
@@ -236,7 +248,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
                 rewrites,
               });
               const assembled = FileSet.unionAll(shebanged, new FileSet(new Map([["package.json", packageJson]])));
-              return new PackageFileSet(assembled, context.name, version?.toString(), [...carried, ...offered], undefined, providedCarried);
+              return new PackageFileSet(assembled, context.name, version?.toString(), carried, undefined, providedNames);
             });
           };
 

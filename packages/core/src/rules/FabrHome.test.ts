@@ -74,7 +74,7 @@ describe("FabrHomeRepository", () => {
     expect(delivered.version).to.equal("1.2.3");
     expect([...delivered].map(([name]) => name).sort()).to.deep.equal(["index.js", "lib/x.js", "package.json"]);
     /* The optional dependency that is not installed is simply absent. */
-    const deps = delivered.dependencies as PackageFileSet[];
+    const deps = delivered.packages;
     expect(deps.map(dep => `${dep.packageName}@${dep.version}`)).to.deep.equal(["helper@1.0.0"]);
   });
 

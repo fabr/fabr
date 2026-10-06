@@ -21,13 +21,7 @@ import { expect } from "chai";
 import { MemoryFile } from "./MemoryFS";
 import { ConflictError, FabrError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
-import {
-  assertSamePackageNode,
-  flattenFileSetArray,
-  packageNodeSignature,
-  PackageFileSet,
-  PackageGraphBuilder,
-} from "./PackageFileSet";
+import { assertSamePackageNode, flattenFileSetArray, PackageFileSet, PackageGraphBuilder, packageNodeSignature } from "./PackageFileSet";
 
 describe("PackageGraphBuilder", () => {
   function files(tag: string): Map<string, IFile> {
@@ -43,8 +37,8 @@ describe("PackageGraphBuilder", () => {
     builder.wire(a, [b]);
     builder.wire(b, [a]);
     builder.seal();
-    expect(a.dependencies).to.deep.equal([b]);
-    expect(b.dependencies).to.deep.equal([a]);
+    expect(a.packages).to.deep.equal([b]);
+    expect(b.packages).to.deep.equal([a]);
     expect(Object.isFrozen(a.dependencies)).to.equal(true);
   });
 

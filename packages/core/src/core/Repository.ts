@@ -25,8 +25,7 @@ import {
   PackageFileSet,
   PackageGraphBuilder,
   packageNodeSignature,
-  ProvidedDependency,
-  providedName,
+  dependencyName,
   reachablePackages,
 } from "./PackageFileSet";
 import { chainSteps, IProvenanceStep } from "./Provenance";
@@ -41,7 +40,7 @@ import type { ITaskReport } from "../support/Execute";
  * neither module touches the other's bindings at load time. */
 import { checkStrictCollection } from "../resolver/StrictCollection";
 import { constraintOf, markerOf } from "../resolver/Requirement";
-import { materializePackages, resolvePackages } from "../resolver/PackageResolver";
+import { instantiatePackage, materializePackages, resolvePackages } from "../resolver/PackageResolver";
 
 /**
  * One resolved root of a {@link Resolution}: the input reference and the name it
@@ -364,6 +363,14 @@ export interface ResolutionContext {
   /** Whose collection point this is — the consuming target's name, or a
    *  catalog's. Reported as the subject of the resolution work. */
   readonly name: string;
+  /**
+   * The packages this context was given already bound — a sub-target's
+   * inputs, which its creator collected. One among the sources of a
+   * collection here is delivered as it stands, like an
+   * {@link instanceRequests instance}: its edges were resolved where it came
+   * from, with requirements this context does not hold.
+   */
+  readonly given?: ReadonlySet<PackageFileSet>;
   getGlobalString(name: string): Computable<string>;
   memoize(tag: string, key: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet>;
   runTask<T>(task: TaskDescription, run: (report: ITaskReport) => Computable<T>): Computable<T>;
@@ -391,6 +398,27 @@ export function fileRequests(extracted: ReadonlyArray<SourceRef>, kept: Readonly
 }
 
 /**
+ * The sources among `instantiated` that are taken as an INSTANCE of a package:
+ * the package itself, as material to derive another from, rather than
+ * something required. Nothing an instance requires is resolved here — its
+ * edges are for the collection point the derived package reaches.
+ *
+ * - A reference joins no resolution and pins nothing, and is delivered as the
+ *   package carrying the requirements it declares as references (see
+ *   instantiatePackage in the resolution layer). A projected reference selects
+ *   files, so it is a {@link fileRequests file request} instead.
+ * - A package already in hand is delivered as it stands.
+ */
+export function instanceRequests(instantiated: ReadonlyArray<SourceRef>): ReadonlySet<RepositoryRef | PackageFileSet> {
+  return new Set(
+    instantiated.filter(
+      (source): source is RepositoryRef | PackageFileSet =>
+        source instanceof PackageFileSet || (source instanceof RepositoryRef && source.projections.length === 0)
+    )
+  );
+}
+
+/**
  * Resolve + deliver one repository's reference batch — the resolution layer's
  * dispatch: a package registry's references resolve jointly
  * (resolvePackages/materializePackages, the batch machinery); any other
@@ -407,7 +435,7 @@ export function resolveAndMaterialize(
   options?: MaterializeOptions,
   resolution?: () => Computable<Resolution>
 ): Computable<FileSet[]> {
-  const packaged = requests.filter(request => !deliversAsFiles(source, request));
+  const packaged = requests.filter(request => !deliversApart(source, request));
   const position = new Map(packaged.map((request, index) => [request, index]));
   /* One shape for both kinds of source: every reference is delivered by its
    * repository. A registry additionally gets a thunk for its resolved closure —
@@ -416,7 +444,9 @@ export function resolveAndMaterialize(
   const closures = isRepositoryReader(source) && packaged.length > 0 ? assembleClosures(context, source, packaged, resolution) : undefined;
   return Computable.forAll(
     requests.map(request =>
-      deliversAsFiles(source, request)
+      request.as === "instance"
+        ? attributedTo(request.reference, () => deliverInstance(source, request))
+        : deliversAsFiles(source, request)
         ? attributedTo(request.reference, () =>
             source.deliverFiles!(request.reference).then(delivered => new FileSet(delivered, delivered.origin))
           )
@@ -461,47 +491,171 @@ function assembleClosures<V, C>(
 export interface ResolvedCollection {
   readonly requests: ReadonlyMap<RepositoryRef, PackageRequest>;
   readonly resolutions: ReadonlyMap<RefSource, () => Computable<Resolution>>;
+  /**
+   * The collection's own packages by name: those built in the project that
+   * its sources hold or reach, as distinct from any delivered for a reference. Each is the package of its
+   * name throughout what the collection delivers — whatever a repository
+   * selected for that name is left out (see {@link bindMembers}).
+   */
+  readonly members: ReadonlyMap<string, PackageFileSet>;
+  /** The packages among the sources taken as {@link instanceRequests
+   * instances}: delivered as they stand, and no member. */
+  readonly instances: ReadonlySet<PackageFileSet>;
 }
 
 /**
  * Resolve `sources`: gather their references, and set up each registry's
  * resolution of its batch. The references in `files` are
- * {@link fileRequests file requests}, which join no resolution.
+ * {@link fileRequests file requests} and those in `instances`
+ * {@link instanceRequests instance requests}, neither of which joins a
+ * resolution.
  */
-export function resolveCollection(context: ResolutionContext, sources: SourceRef[], files?: ReadonlySet<RepositoryRef>): ResolvedCollection {
-  const requests = gatherReferences(sources).map(request =>
-    files?.has(request.reference) === true ? { ...request, as: "files" as const } : request
+export function resolveCollection(
+  context: ResolutionContext,
+  sources: SourceRef[],
+  files?: ReadonlySet<RepositoryRef>,
+  instances?: ReadonlySet<RepositoryRef | PackageFileSet>
+): ResolvedCollection {
+  const held = new Set([...(instances ?? [])].filter((source): source is PackageFileSet => source instanceof PackageFileSet));
+  const gathered = gatherRequirements(sources.filter(source => !(source instanceof PackageFileSet && held.has(source))));
+  const { locals, own } = gathered;
+  const requests = gathered.requests.map((request): PackageRequest =>
+    files?.has(request.reference) === true
+      ? { ...request, as: "files" }
+      : instances?.has(request.reference) === true
+      ? { ...request, as: "instance" }
+      : request
   );
   const resolutions = new Map<RefSource, () => Computable<Resolution>>();
   for (const [source, batch] of groupRequests(requests)) {
-    const packaged = batch.filter(request => !deliversAsFiles(source, request));
+    const packaged = batch.filter(request => !deliversApart(source, request));
     if (isRepositoryReader(source) && packaged.length > 0) {
       let started: Computable<Resolution> | undefined;
-      resolutions.set(source, () => (started ??= resolvePackages(context, source, packaged)));
+      resolutions.set(source, () => (started ??= resolvePackages(context, source, packaged, locals, own)));
     }
   }
-  return { requests: new Map(requests.map(request => [request.reference, request])), resolutions };
+  const members = new Map<string, PackageFileSet>();
+  for (const local of locals) {
+    if (!members.has(local.packageName)) {
+      members.set(local.packageName, local);
+    }
+  }
+  return { requests: new Map(requests.map(request => [request.reference, request])), resolutions, members, instances: held };
 }
 
 /**
  * Materialize `sources` — any of those `resolved` holds — from their resolutions: each
  * reference among them replaced by its delivery, and each package re-delivered
  * with the references it carries replaced likewise. Only what these sources
- * reach is fetched. Provided requirements are left for the consumer to bind,
- * and projections for the driver to finish (see {@link Materialized}).
+ * reach is fetched, and every edge named as one of the collection's
+ * {@link ResolvedCollection.members members} is bound to that member. Provided
+ * requirements are left for the consumer to bind, and projections for the
+ * driver to finish (see {@link Materialized}).
  *
- * @return the delivered sources, and what each reference was delivered as.
+ * @return the delivered sources; what each reference was delivered as —
+ * including the references of a member these sources reach without naming —
+ * and, as `unbound`, the delivered sources before the members were bound, for
+ * a caller accounting for what binding left out.
  */
 export function materializeCollection(
   context: ResolutionContext,
   resolved: ResolvedCollection,
   sources: SourceRef[],
   options?: MaterializeOptions
-): Computable<{ delivered: Materialized[]; finished: Map<RepositoryRef, FileSet | FileSetRef> }> {
+): Computable<{ delivered: Materialized[]; finished: Map<RepositoryRef, Delivered>; unbound: Materialized[] }> {
+  return deliverSources(context, resolved, sources, options).then(({ delivered, finished, rebuilt }) => {
+    /* Each member as this delivery made it: what it was rebuilt as, or itself
+     * where it had nothing to resolve. The same target reached by two routes
+     * is two packages in hand and one member; either's delivered form is it. */
+    const forms = new Map<string, PackageFileSet>();
+    for (const [built, form] of rebuilt) {
+      if (built.reference === undefined && !forms.has(built.packageName)) {
+        forms.set(built.packageName, form);
+      }
+    }
+    const own = new Map<string, PackageFileSet>();
+    for (const [name, member] of resolved.members) {
+      const form = forms.get(name) ?? (carriesReferences(member) ? undefined : member);
+      if (form !== undefined) {
+        own.set(name, form);
+      }
+    }
+    /* A member these sources reach under its name, but did not deliver — one
+     * a subset of the collection leaves out — is delivered with them: its own
+     * requirements are part of what it brings. */
+    const reached = new Set(reachablePackages(packagesAmong(delivered)).map(pkg => pkg.packageName));
+    const unnamed = [...resolved.members].filter(([name]) => reached.has(name) && !own.has(name)).map(([, member]) => member);
+    if (unnamed.length > 0) {
+      return materializeCollection(context, resolved, [...sources, ...unnamed], options).then(all => ({
+        delivered: all.delivered.slice(0, sources.length),
+        finished: all.finished,
+        unbound: all.unbound.slice(0, sources.length),
+      }));
+    }
+    return { delivered: bindMembers(delivered, own), finished, unbound: delivered };
+  });
+}
+
+/** The packages among delivered sources, a pending projection's base included. */
+function packagesAmong(sources: ReadonlyArray<Materialized>): PackageFileSet[] {
+  return sources.flatMap(source =>
+    source instanceof PackageFileSet ? [source] : source instanceof FileSetRef && source.source instanceof PackageFileSet ? [source.source] : []
+  );
+}
+
+/**
+ * `delivered` with each of the collection's own packages — `members`, by name —
+ * as the package of its name throughout: every edge to another package of a
+ * member's name is bound to the member instead, whatever version that edge
+ * asked for, and what it led to leaves the installation unless something else
+ * holds it. The sources come back unchanged where no such edge exists.
+ */
+function bindMembers(delivered: Materialized[], members: ReadonlyMap<string, PackageFileSet>): Materialized[] {
+  const displaced = (pkg: PackageFileSet): boolean => (members.get(pkg.packageName) ?? pkg) !== pkg;
+  if (members.size === 0 || !reachablePackages(packagesAmong(delivered)).some(displaced)) {
+    return delivered;
+  }
+  const builder = new PackageGraphBuilder();
+  const copies = new Map<PackageFileSet, PackageFileSet>();
+  const copy = (asked: PackageFileSet): PackageFileSet => {
+    const pkg = members.get(asked.packageName) ?? asked;
+    const held = copies.get(pkg);
+    if (held !== undefined) {
+      return held;
+    }
+    const node = builder.node(pkg, pkg.packageName, pkg.version, pkg.origin, pkg.reference);
+    copies.set(pkg, node);
+    builder.wire(
+      node,
+      pkg.dependencies.map(dep => (dep instanceof PackageFileSet ? copy(dep) : dep)),
+      pkg.provided
+    );
+    return node;
+  };
+  const result = delivered.map((source): Materialized => {
+    if (source instanceof PackageFileSet) {
+      return copy(source);
+    } else if (source instanceof FileSetRef && source.source instanceof PackageFileSet) {
+      return new FileSetRef(copy(source.source), source.projections, source.miss);
+    }
+    return source;
+  });
+  builder.seal();
+  return result;
+}
+
+/** {@link materializeCollection}, before the collection's members are bound. */
+function deliverSources(
+  context: ResolutionContext,
+  resolved: ResolvedCollection,
+  sources: SourceRef[],
+  options?: MaterializeOptions
+): Computable<{ delivered: Materialized[]; finished: Map<RepositoryRef, Delivered>; rebuilt: Map<PackageFileSet, PackageFileSet> }> {
   /* Each reference as it was resolved, so that it is found in its resolution
    * under the role it was resolved in. */
   const requests: PackageRequest[] = [];
-  for (const { reference } of gatherReferences(sources)) {
+  const taken = (source: SourceRef): boolean => source instanceof PackageFileSet && resolved.instances.has(source);
+  for (const { reference } of gatherReferences(sources.filter(source => !taken(source)))) {
     const request = resolved.requests.get(reference);
     if (request === undefined) {
       return Computable.reject(new FabrError(`internal: '${reference.toString()}' was not resolved with the sources it is delivered among`));
@@ -514,6 +668,8 @@ export function materializeCollection(
     const delivered = sources.map((source): Materialized => {
       if (source instanceof RepositoryRef) {
         return finished.get(source)!;
+      } else if (taken(source)) {
+        return source;
       } else if (source instanceof PackageFileSet) {
         return rebuildPackage(source, finished, rebuilt, builder);
       } else if (source instanceof FileSetRef && source.source instanceof PackageFileSet) {
@@ -528,7 +684,7 @@ export function materializeCollection(
       }
     });
     builder.seal();
-    return { delivered, finished };
+    return { delivered, finished, rebuilt };
   });
 }
 
@@ -717,7 +873,11 @@ export class RepositoryRef implements Requirement {
    */
   public deliveredAs(base: FileSet): FileSet | FileSetRef {
     const renameTo = this.renameTo;
-    const stamped = this.stampProvenance(base);
+    /* A package delivered whole is what this reference names: the graph is
+     * built with its root saying so, and a collection point handed the package
+     * asks for the reference again. */
+    const stamped =
+      base instanceof PackageFileSet && this.projections.length === 0 ? restampPackage(base, this.steps, this) : this.stampProvenance(base);
     /* A rename written on the reference's IDENTITY half is the package rename,
      * applied here because this is where an external package first exists; at a
      * projection the facet rides the projection instead (see find) and renames
@@ -760,20 +920,21 @@ export function renamedDelivery(source: SourceRef, renameTo: string, written: st
  * carried package deps, recursively. The delivered graph may be **cyclic**
  * (complete edge bindings — see PackageFileSet), so each package is memoized
  * *before* its dependencies are restamped and the copies are wired through a
- * {@link PackageGraphBuilder}; carried RepositoryRefs pass through.
+ * {@link PackageGraphBuilder}; carried references pass through. Given
+ * `reference`, the copy of `pkg` is built as the package delivered for it.
  */
-function restampPackage(pkg: PackageFileSet, steps: ReadonlyArray<IProvenanceStep>): PackageFileSet {
+function restampPackage(pkg: PackageFileSet, steps: ReadonlyArray<IProvenanceStep>, reference?: RepositoryRef): PackageFileSet {
   const builder = new PackageGraphBuilder();
   const restamped = new Map<PackageFileSet, PackageFileSet>();
   const restamp = (source: PackageFileSet): PackageFileSet => {
     let copy = restamped.get(source);
     if (!copy) {
-      copy = builder.node(source, source.packageName, source.version, chainSteps(steps, source.origin));
+      copy = builder.node(source, source.packageName, source.version, chainSteps(steps, source.origin), source === pkg ? (reference ?? source.reference) : source.reference);
       restamped.set(source, copy);
       builder.wire(
         copy,
         source.dependencies.map(dep => (dep instanceof PackageFileSet ? restamp(dep) : dep)),
-        source.provided.map(entry => (entry.target instanceof PackageFileSet ? { ...entry, target: restamp(entry.target) } : entry))
+        source.provided
       );
     }
     return copy;
@@ -797,7 +958,14 @@ export type SourceRef = FileSource | Repository | RepositoryRef | FileSetRef;
  * that asked, holding the run context) resumes the walk — applying the pending
  * projections (BuildContext.finishDelivered), or handing the ref to a consumer
  * that reinterprets it (see TargetContext.getContainedFileProperty). */
-export type Materialized = FileSource | Repository | FileSetRef;
+export type Materialized = FileSource | Repository | FileSetRef | RepositoryRef;
+
+/**
+ * What a reference was delivered as: content, a pending projection over it,
+ * or — for a reference that demands nothing and delivers nothing of its own,
+ * a `?` alternate — the reference itself, still the requirement it states.
+ */
+export type Delivered = FileSet | FileSetRef | RepositoryRef;
 
 /**
  * A strict collection point's check of what it was delivered (see
@@ -813,9 +981,10 @@ function checkedCollection(
 
 /**
  * Which delivered packages binding left out of the installation: a `pkg` at
- * `version` the collection held before its provided requirements were bound
- * and holds no longer — an offer its consumer answered with something else.
- * Undefined where binding changed nothing.
+ * `version` the collection held before its members and its provided
+ * requirements were bound and holds no longer — a package a member stands in
+ * for, or an offer its consumer answered with something else. Undefined where
+ * binding changed nothing.
  */
 function droppedByBinding(before: Materialized[], after: Materialized[]): ((name: string, version: string) => boolean) | undefined {
   if (before === after) {
@@ -854,7 +1023,7 @@ export function materializeShallow(
   options?: MaterializeOptions
 ): Computable<Materialized[]> {
   const references = sources.filter((source): source is RepositoryRef => source instanceof RepositoryRef);
-  const finish = (finished: Map<RepositoryRef, FileSet | FileSetRef>): Materialized[] =>
+  const finish = (finished: Map<RepositoryRef, Delivered>): Materialized[] =>
     sources.map((source): Materialized => (source instanceof RepositoryRef ? finished.get(source)! : source));
   if (references.length === 0) {
     return Computable.resolve(finish(new Map()));
@@ -878,19 +1047,27 @@ export function materializeShallow(
  * applied — a projected source comes back as a pending {@link FileSetRef} for
  * the driver to finish (see Materialized). The references in `files` are
  * {@link fileRequests file requests}, delivered as plain files outside the
- * joint resolution.
+ * joint resolution, and those in `instances` {@link instanceRequests instance
+ * requests}, delivered as packages outside it.
  */
 export function materializeAll(
   context: ResolutionContext,
   sources: SourceRef[],
   options?: MaterializeOptions,
-  files?: ReadonlySet<RepositoryRef>
+  files?: ReadonlySet<RepositoryRef>,
+  instances?: ReadonlySet<RepositoryRef | PackageFileSet>
 ): Computable<Materialized[]> {
-  return materializeCollection(context, resolveCollection(context, sources, files), sources, options).then(({ delivered, finished }) => {
-    /* Judged as bound: an offer the consumer answered with something else is
-     * not in the installation, so it is not a version that ships. */
+  const given = context.given;
+  const taken =
+    given === undefined
+      ? instances
+      : new Set([...(instances ?? []), ...sources.filter((source): source is PackageFileSet => source instanceof PackageFileSet && given.has(source))]);
+  return materializeCollection(context, resolveCollection(context, sources, files, taken), sources, options).then(({ delivered, finished, unbound }) => {
+    /* Judged as bound: a package the collection's own member stands in for,
+     * or an offer the consumer answered with something else, is not in the
+     * installation, so it is not a version that ships. */
     const bound = bindProvided(delivered);
-    return finished.size === 0 ? bound : checkedCollection(finished, options, droppedByBinding(delivered, bound)).then(() => bound);
+    return finished.size === 0 ? bound : checkedCollection(finished, options, droppedByBinding(unbound, bound)).then(() => bound);
   });
 }
 
@@ -922,7 +1099,7 @@ export function bindProvided(sources: Materialized[]): Materialized[] {
     source instanceof PackageFileSet ? [source] : source instanceof FileSetRef && source.source instanceof PackageFileSet ? [source.source] : []
   );
   const packages = reachablePackages(roots);
-  if (!packages.some(pkg => pkg.provided.length > 0)) {
+  if (!packages.some(pkg => pkg.provided.size > 0)) {
     return sources;
   }
   const present = new Map<string, Array<{ pkg: PackageFileSet; signature: string }>>();
@@ -982,42 +1159,40 @@ export function bindProvided(sources: Materialized[]): Materialized[] {
     if (held !== undefined) {
       return held;
     }
-    const node = builder.node(pkg, pkg.packageName, pkg.version, pkg.origin);
+    const node = builder.node(pkg, pkg.packageName, pkg.version, pkg.origin, pkg.reference);
     copies.set(key, node);
     const own: IScope = { id: scopes++, parent: scope, bindings: new Map() };
-    const edges: Array<PackageFileSet | RepositoryRef> = [];
-    const kept: ISupply[] = [];
-    const providedNames = new Set(pkg.provided.map(providedName));
-    for (const dep of pkg.dependencies) {
-      if (!(dep instanceof PackageFileSet)) {
-        edges.push(dep);
-      } else if (!providedNames.has(dep.packageName)) {
-        const supply = { pkg: dep, scope: own };
-        own.bindings.set(dep.packageName, supply);
-        kept.push(supply);
+    /* Each edge with what supplies it: an ordinary one is supplied by what it
+     * is bound to, here; a provided one is decided below. */
+    const edges = pkg.dependencies.map(dep => {
+      const provided = pkg.provided.has(dependencyName(dep));
+      const supply: ISupply | undefined = !provided && dep instanceof PackageFileSet ? { pkg: dep, scope: own } : undefined;
+      if (supply !== undefined) {
+        own.bindings.set(supply.pkg.packageName, supply);
       }
-    }
+      return { dep, provided, supply };
+    });
     /* Every binding is decided before anything below is copied: how a
      * dependency is wired depends on all of them. */
-    const bindings = pkg.provided.map(entry => {
-      const name = providedName(entry);
-      const target = entry.target;
-      const supply =
-        supplied(scope, name) ??
-        (target instanceof PackageFileSet ? { pkg: target, scope: own } : undefined) ??
-        (target instanceof RepositoryRef
-          ? ((held): ISupply | undefined => held && { pkg: held, scope: top })(answering(name, target))
-          : undefined);
-      if (supply !== undefined) {
-        own.bindings.set(name, supply);
+    const bound = edges.map(({ dep, provided, supply }) => {
+      if (!provided) {
+        return { dep, supply };
       }
-      return { entry, supply };
+      const name = dependencyName(dep);
+      const answer =
+        supplied(scope, name) ??
+        (dep instanceof PackageFileSet
+          ? { pkg: dep, scope: own }
+          : ((held): ISupply | undefined => held && { pkg: held, scope: top })(answering(name, dep)));
+      if (answer !== undefined) {
+        own.bindings.set(name, answer);
+      }
+      return { dep, supply: answer };
     });
-    const bound = bindings.map(({ entry, supply }) => ({ entry, to: supply && copy(supply.pkg, supply.scope) }));
     builder.wire(
       node,
-      [...edges, ...kept.map(supply => copy(supply.pkg, supply.scope)), ...bound.flatMap(({ to }) => (to === undefined ? [] : [to]))],
-      bound.map(({ entry, to }) => (to === undefined ? entry : { ...entry, target: to }))
+      bound.map(({ dep, supply }) => (supply === undefined ? dep : copy(supply.pkg, supply.scope))),
+      pkg.provided
     );
     return node;
   };
@@ -1038,13 +1213,13 @@ export function bindProvided(sources: Materialized[]): Materialized[] {
  * — the names whose answers decide how its subtree is wired — sorted.
  */
 function providedNamesBelow(packages: PackageFileSet[]): Map<PackageFileSet, string[]> {
-  const names = new Map(packages.map(pkg => [pkg, new Set(pkg.provided.map(providedName))]));
+  const names = new Map(packages.map(pkg => [pkg, new Set(pkg.provided.keys())]));
   for (let changed = true; changed; ) {
     changed = false;
     for (const pkg of packages) {
       const own = names.get(pkg)!;
-      for (const dep of pkg.dependencies) {
-        for (const name of (dep instanceof PackageFileSet && names.get(dep)) || []) {
+      for (const dep of pkg.packages) {
+        for (const name of names.get(dep) ?? []) {
           if (!own.has(name)) {
             own.add(name);
             changed = true;
@@ -1067,13 +1242,16 @@ function providedNamesBelow(packages: PackageFileSet[]): Map<PackageFileSet, str
  * `extracted` says, per list, whether its consumer extracts the files a
  * projection selects (so the list's projected references are
  * {@link fileRequests file requests}) rather than taking the package behind
- * it. Absent, no list is extracted.
+ * it. Absent, no list is extracted. `instantiated` says, per list, whether its
+ * consumer takes each package the list names as an
+ * {@link instanceRequests instance}. Absent, no list is.
  */
 export function materializeLists(
   context: ResolutionContext,
   lists: SourceRef[][],
   options?: MaterializeOptions,
-  extracted?: ReadonlyArray<boolean>
+  extracted?: ReadonlyArray<boolean>,
+  instantiated?: ReadonlyArray<boolean>
 ): Computable<Materialized[][]> {
   const files =
     extracted === undefined
@@ -1082,7 +1260,8 @@ export function materializeLists(
           lists.filter((_, index) => extracted[index]).flat(),
           lists.filter((_, index) => !extracted[index]).flat()
         );
-  return materializeAll(context, lists.flat(), options, files).then(resolved => {
+  const instances = instantiated === undefined ? undefined : instanceRequests(lists.filter((_, index) => instantiated[index]).flat());
+  return materializeAll(context, lists.flat(), options, files, instances).then(resolved => {
     const partitioned: Materialized[][] = [];
     let index = 0;
     for (const list of lists) {
@@ -1097,16 +1276,21 @@ export function materializeLists(
  * One reference a collection point resolves, and what is wanted of it:
  *
  * - `"package"` — the package it names, resolved jointly with the rest of its
- *   repository's batch;
- * - `"provided"` — the same, as a provided requirement of the package carrying
- *   it: the result is what answers it where nothing above that package does,
- *   and it demands nothing where the batch already selects the package;
+ *   repository's batch: a requirement of the collection's own, so what is
+ *   written on it — an exact pin, a `?`, a `!` — is the collection's;
+ * - `"carried"` — the package a built package among the sources requires by
+ *   it: an edge of that package's node in the resolution, bound like any
+ *   package's requirement, with nothing written on it the collection's;
  * - `"files"` — the files its projection selects, on their own: it joins no
- *   resolution, pins nothing and brings no closure (see {@link fileRequests}).
+ *   resolution, pins nothing and brings no closure (see {@link fileRequests});
+ * - `"instance"` — the package it names, on its own: it joins no resolution and
+ *   pins nothing, and the package carries the requirements it declares as
+ *   references to the same repository, for the collection point it reaches to
+ *   resolve (see {@link instanceRequests}).
  */
 export interface PackageRequest {
   readonly reference: RepositoryRef;
-  readonly as: "package" | "provided" | "files";
+  readonly as: "package" | "carried" | "files" | "instance";
 }
 
 /** A request for the package `reference` names. */
@@ -1115,31 +1299,57 @@ export function packageRequest(reference: RepositoryRef): PackageRequest {
 }
 
 /**
- * @return a request for every reference among the sources, plus those carried
- * by packages — recursively through their built-package deps — one per
- * reference. One anything requires outright is wanted as a package, whoever
- * else is to be provided it. A carried reference with projections is left out:
- * it mounts nothing (see {@link rebuildPackage}), so it has nothing to resolve.
+ * @return a request for every reference among the sources, plus those of the
+ * packages among them: the reference a package was delivered for, or, for a
+ * package nothing delivered, the references its edges hold — recursively,
+ * and no further than a package that has one of its own. One per reference:
+ * a source's own is the collection's requirement, whoever else carries it. A
+ * carried reference is left out where it resolves nothing: an optional
+ * provided requirement, a `?` — a permission its writer gave its own
+ * collection point — and one with projections, which names files and so
+ * binds no package.
  */
 function gatherReferences(sources: SourceRef[]): PackageRequest[] {
+  return gatherRequirements(sources).requests;
+}
+
+/**
+ * {@link gatherReferences}, with the packages built in the project that the
+ * sources hold or reach: each a node of every resolution here, the references
+ * it carries being its own requirements.
+ */
+function gatherRequirements(sources: SourceRef[]): { requests: PackageRequest[]; locals: PackageFileSet[]; own: Set<PackageFileSet> } {
+  const locals: PackageFileSet[] = [];
+  /* Those of them the sources hold outright: the collection's own
+   * requirements, as a reference among the sources is. */
+  const own = new Set<PackageFileSet>();
   const references: RepositoryRef[] = [];
-  const required = new Set<RepositoryRef>();
+  const direct = new Set<RepositoryRef>();
   const visited = new Set<RepositoryRef | PackageFileSet>();
-  const gather = (source: SourceRef | PackageFileSet, carried: boolean, provided = false): void => {
+  const gather = (source: SourceRef | PackageFileSet, carried: boolean): void => {
     if (source instanceof RepositoryRef) {
-      if (!carried || source.projections.length === 0) {
-        if (!visited.has(source)) {
-          visited.add(source);
-          references.push(source);
-        }
-        if (!provided) {
-          required.add(source);
-        }
+      if (!carried) {
+        direct.add(source);
       }
+      if ((!carried || (source.projections.length === 0 && source.override !== "alternate")) && !visited.has(source)) {
+        visited.add(source);
+        references.push(source);
+      }
+    } else if (source instanceof PackageFileSet && source.reference !== undefined) {
+      /* A package a repository delivered is its reference, asked for again:
+       * the resolution follows it from there. */
+      gather(source.reference, carried);
     } else if (source instanceof PackageFileSet && !visited.has(source)) {
       visited.add(source);
-      source.dependencies.forEach(dep => gather(dep, true));
-      source.provided.forEach(entry => entry.provided === "expected" && gather(entry.target, true, true));
+      locals.push(source);
+      if (!carried) {
+        own.add(source);
+      }
+      for (const dep of source.dependencies) {
+        if (source.provided.get(dependencyName(dep)) !== "optional") {
+          gather(dep, true);
+        }
+      }
     } else if (source instanceof FileSetRef) {
       /* A pending projection's base still carries its refs — they resolve at
        * this collection point like any package's. */
@@ -1147,7 +1357,8 @@ function gatherReferences(sources: SourceRef[]): PackageRequest[] {
     }
   };
   sources.forEach(source => gather(source, false));
-  return references.map(reference => ({ reference, as: required.has(reference) ? "package" : "provided" }));
+  const requests = references.map((reference): PackageRequest => ({ reference, as: direct.has(reference) ? "package" : "carried" }));
+  return { requests, locals, own };
 }
 
 /** The requests of each repository, in the order first asked of it. */
@@ -1159,10 +1370,31 @@ function groupRequests(requests: ReadonlyArray<PackageRequest>): Map<RefSource, 
   return groups;
 }
 
+/** Whether `request` is for a package its reference only permits (a `?`
+ * alternate): it installs nothing, so what comes back is the requirement. */
+function deliversNothing(request: PackageRequest): boolean {
+  return request.reference.override === "alternate" && request.as === "package";
+}
+
 /** Whether `source` delivers `request` as plain files, apart from its batch:
  * the request asks for files, and the repository can deliver them. */
 function deliversAsFiles(source: RefSource, request: PackageRequest): boolean {
   return request.as === "files" && source.deliverFiles !== undefined;
+}
+
+/** Whether `request` is delivered apart from its repository's batch. */
+function deliversApart(source: RefSource, request: PackageRequest): boolean {
+  return request.as === "instance" || deliversAsFiles(source, request);
+}
+
+/** The package `request` names, as an instance of `source`'s. */
+function deliverInstance(source: RefSource, { reference }: PackageRequest): Computable<FileSet> {
+  if (!isRepositoryReader(source)) {
+    throw new FabrError(
+      `'${reference.toString()}' names a package its repository pins rather than resolves, so its requirements are not that repository's to state`
+    ).withHelp("name the package in the registry it comes from");
+  }
+  return instantiatePackage(source, reference);
 }
 
 /**
@@ -1176,14 +1408,16 @@ function deliverRequests(
   requests: ReadonlyArray<PackageRequest>,
   options?: MaterializeOptions,
   resolutions?: ReadonlyMap<RefSource, () => Computable<Resolution>>
-): Computable<Map<RepositoryRef, FileSet | FileSetRef>> {
+): Computable<Map<RepositoryRef, Delivered>> {
   const batches = [...groupRequests(requests)];
   return Computable.forAll(
     batches.map(([repository, batch]) => resolveAndMaterialize(context, repository, batch, options, resolutions?.get(repository))),
     (...results: FileSet[][]) => {
-      const finished = new Map<RepositoryRef, FileSet | FileSetRef>();
+      const finished = new Map<RepositoryRef, Delivered>();
       batches.forEach(([, batch], batchIndex) =>
-        batch.forEach(({ reference }, index) => finished.set(reference, reference.deliveredAs(results[batchIndex][index])))
+        batch.forEach((request, index) =>
+          finished.set(request.reference, deliversNothing(request) ? request.reference : request.reference.deliveredAs(results[batchIndex][index]))
+        )
       );
       return finished;
     }
@@ -1210,10 +1444,12 @@ function answers(reference: RepositoryRef, pkg: PackageFileSet): boolean {
 }
 
 /**
- * Whether any inert RepositoryRef rides anywhere beneath `pkg`. Only such a
- * package needs rebuilding at a collection point; a ref-free subgraph — in
- * particular any *delivered external* closure, which may be cyclic — is
- * returned as-is by {@link rebuildPackage}.
+ * Whether an edge of `pkg`, or of a package it reaches without passing one a
+ * repository delivered, is one a collection point resolves: a reference, or a
+ * package delivered for one. Only such a package needs rebuilding at a
+ * collection point; any other subgraph — in particular the closure below a
+ * delivered package, which may be cyclic — is returned as-is by
+ * {@link rebuildPackage}.
  *
  * Cached globally (a published PackageFileSet's dependencies never change) —
  * but only where the answer is COMPLETE. On a cyclic graph, a node judged
@@ -1228,6 +1464,7 @@ function answers(reference: RepositoryRef, pkg: PackageFileSet): boolean {
  * shape yields a wrong answer, only at worst an uncached one.
  */
 const CARRIES_REFS = new WeakMap<PackageFileSet, boolean>();
+
 function carriesReferences(pkg: PackageFileSet): boolean {
   const depth = new Map<PackageFileSet, number>();
   /** The answer, plus the shallowest stack depth any open back-edge reached. */
@@ -1241,15 +1478,14 @@ function carriesReferences(pkg: PackageFileSet): boolean {
       return { carries: false, low: open };
     }
     depth.set(node, at);
-    let carries = node.provided.some(entry => entry.provided === "expected" && entry.target instanceof RepositoryRef);
+    const followed = node.dependencies.filter(dep => node.provided.get(dependencyName(dep)) !== "optional");
+    let carries = followed.some(dep => dep instanceof RepositoryRef || dep.reference !== undefined);
     let low = Infinity;
-    for (const dep of node.dependencies) {
+    for (const dep of followed) {
       if (carries) {
         break;
       }
-      if (dep instanceof RepositoryRef) {
-        carries = true;
-      } else {
+      if (dep instanceof PackageFileSet) {
         const result = walk(dep, at + 1);
         carries = result.carries;
         low = Math.min(low, result.low);
@@ -1265,50 +1501,50 @@ function carriesReferences(pkg: PackageFileSet): boolean {
 }
 
 /**
- * Re-deliver a package with its carried references replaced by their
- * resolutions (recursively); a reference that carries projections names
- * files, not a package — it cannot be mounted, so it drops out of the
- * dependency list unresolved. A ref-free package — every delivered external subgraph,
- * which may be cyclic — passes through untouched; what does get rebuilt is
- * copied through the caller's {@link PackageGraphBuilder}, memoized *before*
- * its dependencies wire, so even a ref-carrying cycle rebuilds rather than
- * recursing forever.
+ * Re-deliver a package as this collection point resolved it: a package a
+ * repository delivered is what its reference was delivered as here, and any
+ * other has each edge that is a reference, or such a package, bound to what
+ * was delivered for it — recursively. A reference that delivered no package
+ * stays one. A package with nothing here to resolve passes through untouched;
+ * what does get rebuilt is copied through the caller's
+ * {@link PackageGraphBuilder}, memoized *before* its dependencies wire, so
+ * even a cycle rebuilds rather than recursing forever.
  */
 function rebuildPackage(
   pkg: PackageFileSet,
-  finished: Map<RepositoryRef, FileSet | FileSetRef>,
+  finished: Map<RepositoryRef, Delivered>,
   rebuilt: Map<PackageFileSet, PackageFileSet>,
   builder: PackageGraphBuilder
 ): PackageFileSet {
+  const delivered = pkg.reference && finished.get(pkg.reference);
+  if (delivered instanceof PackageFileSet) {
+    return delivered;
+  }
+  if (pkg.reference !== undefined) {
+    return pkg;
+  }
   if (!carriesReferences(pkg)) {
+    rebuilt.set(pkg, pkg);
     return pkg;
   }
   let result = rebuilt.get(pkg);
   if (!result) {
     result = builder.node(pkg, pkg.packageName, pkg.version, pkg.origin);
     rebuilt.set(pkg, result);
-    const own = pkg.dependencies
-      .map(dep => (dep instanceof RepositoryRef ? finished.get(dep) : rebuildPackage(dep, finished, rebuilt, builder)))
-      .filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
-    /* A provided requirement's reference is resolved here like any other: the
-     * entry then holds the package it was delivered as. An optional one's is
-     * left alone, as is one that delivered no package. */
-    const provided = pkg.provided.map((entry): ProvidedDependency => {
-      const target = entry.target;
-      if (target instanceof PackageFileSet) {
-        return { ...entry, target: rebuildPackage(target, finished, rebuilt, builder) };
-      }
-      const offer = entry.provided === "optional" ? undefined : finished.get(target);
-      return offer instanceof PackageFileSet ? { ...entry, target: offer } : entry;
-    });
-    /* What answers a provided requirement is one of the package's edges. */
-    const named = new Set(own.map(dep => dep.packageName));
-    const offers = provided.flatMap(entry =>
-      entry.provided === "expected" && entry.target instanceof PackageFileSet && !named.has(entry.target.packageName)
-        ? [entry.target]
-        : []
+    builder.wire(
+      result,
+      pkg.dependencies.map(dep => {
+        if (pkg.provided.get(dependencyName(dep)) === "optional") {
+          return dep;
+        }
+        if (dep instanceof PackageFileSet) {
+          return rebuildPackage(dep, finished, rebuilt, builder);
+        }
+        const bound = finished.get(dep);
+        return bound instanceof PackageFileSet ? bound : dep;
+      }),
+      pkg.provided
     );
-    builder.wire(result, [...own, ...offers], provided);
   }
   return result;
 }

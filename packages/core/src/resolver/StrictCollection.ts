@@ -60,8 +60,6 @@ export interface IDeliveryFacts<V = unknown, C = unknown> {
   readonly requested: readonly Requirement[];
   /** The versions written as sanctioned (`?`, or an exact pin), by package. */
   readonly written: ReadonlyMap<string, ReadonlySet<string>>;
-  /** The delivery's requests, as its failure names them. */
-  readonly roots: readonly string[];
   readonly refText: RefRenderer;
   /** The registry access a remedy is computed and verified with. */
   sources(): SuggestSources<V, C>;
@@ -196,7 +194,6 @@ function checkDomain<V, C>(
   }
   const members = [...involved];
   const graphs = [...new Set(members.map(facts => facts.graph))];
-  const root = [...new Set(members.flatMap(facts => facts.roots))].sort().join(", ");
   const needed = [...shipped.values()].flatMap(versions => [...versions.values()].map(entry => entry.selection));
   const outstanding = [...violations.keys()];
   const refText = members[0].refText;
@@ -211,7 +208,7 @@ function checkDomain<V, C>(
       ? suggestSanctions(outstanding, graphs[0], needed, members.flatMap(facts => facts.requested), written, members[0].sources())
       : Computable.resolve(sanctionHelp(conflictedSanctions(outstanding, duplicates, shipped, written, domain, refText)));
   return suggestion.then(help => {
-    const error = conflictError(root, outstanding, duplicates, needed, explaining, refText, written, help);
+    const error = conflictError(outstanding, duplicates, needed, explaining, refText, written, help);
     const references = [...new Set(members.flatMap(facts => [...(culprits.get(facts as IDeliveryFacts) ?? [])]))];
     return Computable.resolve<Error | undefined>(
       references.length > 0 ? new RequirementResolutionError(references, error) : error

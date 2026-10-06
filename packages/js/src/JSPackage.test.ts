@@ -28,7 +28,7 @@ import {
   PackageFileSet,
   PackageGraphBuilder,
   SymlinkFile,
-} from "@fabr-build/core";
+  } from "@fabr-build/core";
 import {
   binByConvention,
   binOf,

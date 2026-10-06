@@ -28,7 +28,7 @@ import {
   PackageFileSet,
   PackageGraphBuilder,
   SymlinkFile,
-} from "@fabr-build/core";
+  } from "@fabr-build/core";
 import { referenceOf } from "./PnPManifest";
 import { assembleNodeModules } from "./NodeModules";
 
@@ -269,10 +269,9 @@ describe("assembling delivered edge-binding graphs", () => {
      * is concerned (npm's node_modules/wrap-ansi-cjs, whose package.json still
      * says wrap-ansi) — the content is the aliased package's. */
     const root = delivered({ "cli@1.0.0": { "wrap-ansi-cjs": "wrap-ansi@7.0.0" }, "wrap-ansi@7.0.0": {} }, "cli@1.0.0");
-    const [mounted] = root.dependencies;
-    expect(mounted).to.be.instanceOf(PackageFileSet);
-    expect((mounted as PackageFileSet).packageName).to.equal("wrap-ansi-cjs");
-    expect((mounted as PackageFileSet).version).to.equal("7.0.0");
+    const [mounted] = root.packages;
+    expect(mounted.packageName).to.equal("wrap-ansi-cjs");
+    expect(mounted.version).to.equal("7.0.0");
   });
 
   it("lays out the same deliveries identically regardless of arrival order", () => {
@@ -355,7 +354,7 @@ describe("assembling delivered edge-binding graphs", () => {
      * is its own signature, so it exists whatever layout does. */
     const batches = disagreeingBatches();
     const pOf = (root: PackageFileSet): PackageFileSet =>
-      [...root.dependencies].find((dep): dep is PackageFileSet => dep instanceof PackageFileSet && dep.packageName === "p")!;
+      root.getDependency("p") as PackageFileSet;
     expect(referenceOf(pOf(batches[0])), "the two p nodes get distinct references").to.not.equal(
       referenceOf(pOf(batches[1]))
     );

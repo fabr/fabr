@@ -66,7 +66,7 @@ import {
   SemverConstraint,
   TARGET,
   versionToString,
-} from "@fabr-build/core";
+  } from "@fabr-build/core";
 import { NPMRepository } from "./NPMRepository";
 import { NO_PACKAGE_EXTENSIONS, PackageExtensions, toPackageExtensions } from "./PackageExtensions";
 import { assembleNodeModules } from "./NodeModules";
@@ -456,10 +456,10 @@ describe("cyclic dependency closures through resolve + materialize", () => {
     const [delivered] = await toPromise(drive(repo, [ref]));
     const ping = delivered as PackageFileSet;
     expect(ping.packageName).to.equal("ping");
-    const pong = ping.dependencies[0] as PackageFileSet;
+    const pong = ping.packages[0];
     expect(pong.packageName).to.equal("pong");
     /* The edge back closes on the same instance — a real cycle, not a copy. */
-    expect(pong.dependencies[0]).to.equal(ping);
+    expect(pong.packages[0]).to.equal(ping);
 
     /* Exactly the reachable members and nothing else: a directory each, a
      * link per edge, the given package at the top and the other findable
@@ -499,13 +499,13 @@ describe("NPMRepository package extensions", () => {
     const repo = npmRepository(REG, fakeContext("build", served, []), extensions);
     const refs = [repo.getRepositoryRef(Name.fromLiteral("widget:1.0.0")), repo.getRepositoryRef(Name.fromLiteral("react:18.0.0"))];
     const [widget] = await toPromise(drive(repo, refs));
-    return (widget as PackageFileSet).dependencies[0] as PackageFileSet;
+    return (widget as PackageFileSet).packages[0];
   }
 
   it("gives a package the peer an extension declares, bound to the consumer's selection", async () => {
     const css = await cssOf(repair);
     expect(css.packageName).to.equal("css");
-    expect(css.dependencies.map(dep => (dep as PackageFileSet).packageName)).to.deep.equal(["react"]);
+    expect(css.packages.map(dep => dep.packageName)).to.deep.equal(["react"]);
   });
 
   it("leaves the package as published without one", async () => {
@@ -602,7 +602,7 @@ describe("NPMRepository file requests", () => {
 
     expect((files as FileSetRef).source).to.not.be.instanceOf(PackageFileSet);
     expect(fetched).to.include(`${REG}/tarball/1.2.0.tgz`);
-    expect((app as PackageFileSet).dependencies.map(dep => (dep as PackageFileSet).version)).to.deep.equal(["1.3.0"]);
+    expect((app as PackageFileSet).packages.map(dep => dep.version)).to.deep.equal(["1.3.0"]);
   });
 
   it("stays a package request where its consumer keeps the package", async () => {
@@ -1226,16 +1226,17 @@ describe("override markers", () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
     const delivered = await toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:2.5.0?", "C:1.5.0?"])));
     expect(delivered).to.have.lengthOf(4);
-    /* The alternates themselves deliver nothing — the fork arrives nested
-     * inside the canonical closure (under A, whose edge needs it). */
-    expect([...delivered[2]].length).to.equal(0);
-    expect([...delivered[3]].length).to.equal(0);
+    /* The alternates themselves deliver nothing, so each comes back as the
+     * requirement it is — the fork arrives nested inside the canonical closure
+     * (under A, whose edge needs it). */
+    expect(delivered[2]).to.be.instanceOf(RepositoryRef);
+    expect(delivered[3]).to.be.instanceOf(RepositoryRef);
     const a = delivered[0] as PackageFileSet;
-    const nested = a.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+    const nested = a.packages;
     expect(nested.map(dep => `${dep.packageName}@${dep.version}`)).to.contain("C@1.5.0");
     /* And a layout holds both, each linked beside the requirer whose edge
      * binds it. */
-    const assembled = new Map(assembleNodeModules(delivered.filter(set => [...set].length > 0)));
+    const assembled = new Map(assembleNodeModules(delivered.filter(set => set instanceof FileSet)));
     expect((assembled.get(".fabr/B@1.2.0/node_modules/C") as SymlinkFile).target).to.equal("../../C@2.5.0/node_modules/C");
     expect((assembled.get(".fabr/A@1.1.0/node_modules/C") as SymlinkFile).target).to.equal("../../C@1.5.0/node_modules/C");
   });
@@ -1288,7 +1289,7 @@ describe("override markers", () => {
   it("an unsanctioned conflict fails strict with pasteable suggestions", async () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
     const err = await rejection(() => toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0"]))));
-    expect(err.message).to.contain("does not satisfy '~1.5.0'");
+    expect(err.message).to.contain("C is required as '~1.5.0' and as '^2.5.0', and no one version is both");
     /* Resolution-pure, and rendered as the help (the remedy line): the whole
      * coexisting set as '?' sanctions — no unmarked pin, which would be a
      * real direct dependency in a js_package's deps. */
@@ -1311,7 +1312,7 @@ describe("override markers", () => {
      * resolved nor fetched. */
     expect(fetched.some(url => url.includes("/C/1.5.0"))).to.equal(false);
     const a = delivered[0] as PackageFileSet;
-    const nested = a.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+    const nested = a.packages;
     expect(nested.map(dep => `${dep.packageName}@${dep.version}`)).to.deep.equal(["C@2.5.0"]);
   });
 
@@ -1388,9 +1389,9 @@ describe("override markers", () => {
     expect(delivered).to.have.lengthOf(3);
     /* The alternates deliver nothing of their own; T and U ride inside P's
      * closure as ordinary members — transitive, not direct deps. */
-    expect([...delivered[1]].length).to.equal(0);
-    expect([...delivered[2]].length).to.equal(0);
-    const assembled = assembleNodeModules(delivered.filter(set => [...set].length > 0));
+    expect(delivered[1]).to.be.instanceOf(RepositoryRef);
+    expect(delivered[2]).to.be.instanceOf(RepositoryRef);
+    const assembled = assembleNodeModules(delivered.filter(set => set instanceof FileSet));
     const names = [...assembled].map(([name]) => name);
     /* Installed as an ordinary member of P's closure — nothing of its own was
      * delivered for it to be installed FROM. */
@@ -1450,14 +1451,12 @@ describe("merged layout across a batch", () => {
     const delivered = await toPromise(
       drive(repo, refsFor(repo, ["jsdom:1.0.0", "md:1.0.0", "entities:4.0.0?", "entities:6.0.0?"]))
     );
-    const packages = delivered.filter(set => [...set].length > 0);
+    const packages = delivered.filter(set => set instanceof FileSet);
     /* parse5 carries the copy its edge binds, even though its own delivery
      * hoisted that very version — the batch is what it must survive. */
     const jsdom = packages[0] as PackageFileSet;
-    const parse5 = jsdom.dependencies.find(
-      (dep): dep is PackageFileSet => dep instanceof PackageFileSet && dep.packageName === "parse5"
-    );
-    expect(parse5?.dependencies.map(dep => (dep as PackageFileSet).packageId)).to.deep.equal(["entities@4.0.0"]);
+    const parse5 = jsdom.getDependency("parse5") as PackageFileSet | undefined;
+    expect(parse5?.packages.map(dep => dep.packageId)).to.deep.equal(["entities@4.0.0"]);
     /* And the consumer's one node_modules puts each requirer on the version it
      * asked for. */
     const assembled = new Map(assembleNodeModules(packages));
@@ -1559,11 +1558,12 @@ describe("conflictError (the strict repair report)", () => {
   const graph = graphFor(selections);
 
   it("reports violations and coexisting versions as structural facts", () => {
-    const err = conflictError("A:^1.0.0", [violation], duplicates, selections, graph, npmRefText) as Error & {
+    const err = conflictError([violation], duplicates, selections, graph, npmRefText) as Error & {
       help?: string;
     };
-    expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0'");
-    expect(err.message).to.contain("multiple versions of D (1.0.0, 2.0.0)");
+    expect(err.message).to.contain("C is required as '^2.0.0' and as '^3.0.0', and no one version is both");
+    expect(err.message).to.contain("Resolution requires multiple versions of the same package:");
+    expect(err.message).to.contain("D is required at 1.0.0 and 2.0.0");
     expect(helpText(err)).to.contain("pin a single version satisfying every requirement");
   });
 
@@ -1573,25 +1573,27 @@ describe("conflictError (the strict repair report)", () => {
      * remedy are the same — one full stanza, the rest summarised by name. */
     const requirers = ["A@1.0.0", "B@1.0.0", "E@1.0.0", "F@1.0.0", "G@1.0.0", "H@1.0.0", "I@1.0.0"];
     const violationsFrom = requirers.map(requiredBy => ({ ...violation, requiredBy }));
-    const err = conflictError("A:^1.0.0", violationsFrom, [], selections, graph, npmRefText);
-    expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0' required by A@1.0.0 (and 6 more)");
+    const err = conflictError(violationsFrom, [], selections, graph, npmRefText);
+    expect(err.message).to.contain("'^2.0.0' required via: A@1.0.0 (and 6 more)");
     expect(err.message).to.contain("'^2.0.0' also required by: B@1.0.0, E@1.0.0, F@1.0.0, G@1.0.0 (+2 more)");
     /* One stanza, not seven: the violation line appears exactly once */
-    expect(err.message.match(/does not satisfy/g)).to.have.lengthOf(1);
+    expect(err.message.match(/C is required as/g)).to.have.lengthOf(1);
     /* A distinct conflict (different selected version) keeps its own entry */
     const other = { name: "C", versionConstraint: "^2.0.0", requiredBy: "B@1.0.0", selected: parseVersion("3.5.0") };
-    const two = conflictError("A:^1.0.0", [violation, other], [], selections, graph, npmRefText);
-    expect(two.message.match(/does not satisfy/g)).to.have.lengthOf(2);
+    const two = conflictError([violation, other], [], selections, graph, npmRefText);
+    /* (Its selected version is none the resolution holds, so it is stated
+     * the plain way: nothing records what selected it.) */
+    expect(two.message.match(/C is required as|does not satisfy/g)).to.have.lengthOf(2);
   });
 
   it("attributes both sides of a violation to their requirement paths", () => {
-    const err = conflictError("A:^1.0.0", [violation], [], selections, graph, npmRefText);
-    expect(err.message).to.contain("3.0.0 selected by: B@1.0.0 -> C@3.0.0 (^3.0.0)");
+    const err = conflictError([violation], [], selections, graph, npmRefText);
+    expect(err.message).to.contain("'^3.0.0' required via: B@1.0.0");
     expect(err.message).to.contain("'^2.0.0' required via: A@1.0.0");
   });
 
   it("attributes each coexisting version to its requirement path", () => {
-    const err = conflictError("A:^1.0.0", [], duplicates, selections, graph, npmRefText);
+    const err = conflictError([], duplicates, selections, graph, npmRefText);
     expect(err.message).to.contain("1.0.0 required via: A@1.0.0 -> D@1.0.0 (^1.0.0)");
     expect(err.message).to.contain("2.0.0 required directly ('^2.0.0')");
   });
@@ -1600,16 +1602,16 @@ describe("conflictError (the strict repair report)", () => {
     /* A fork exists exactly because an edge violated, so the multiplicity is
      * the violation restated — one stanza, not two. */
     const cDuplicates: Array<[string, SemverVersion[]]> = [["C", [parseVersion("2.5.0"), parseVersion("3.0.0")]]];
-    const err = conflictError("A:^1.0.0", [violation], cDuplicates, selections, graph, npmRefText);
-    expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0'");
-    expect(err.message).to.not.contain("requires multiple versions of C");
+    const err = conflictError([violation], cDuplicates, selections, graph, npmRefText);
+    expect(err.message).to.contain("C is required as '^2.0.0' and as '^3.0.0'");
+    expect(err.message).to.not.contain("C is required at");
   });
 
   /* Provenance edges are optional (resolutions persisted before they existed),
    * so the bare statement of each repair has to stand on its own. */
   it("states the repairs alone when the resolution carries no provenance", () => {
     const bare = [{ name: "C", version: parseVersion("3.0.0") }];
-    const err = conflictError("A:^1.0.0", [violation], duplicates, bare, graphFor(bare), npmRefText);
+    const err = conflictError([violation], duplicates, bare, graphFor(bare), npmRefText);
     expect(err.message).to.contain("C@3.0.0 does not satisfy '^2.0.0' required by A@1.0.0");
     expect(err.message).to.not.contain("selected by:");
     expect(err.message).to.not.contain("required via:");
@@ -1656,7 +1658,7 @@ describe("multi-route domains (repository groups)", () => {
     const [delivered] = await toPromise(drive(repo, [ref]));
     const app = delivered as PackageFileSet;
     expect(app.packageName).to.equal("app");
-    expect((app.dependencies[0] as PackageFileSet).packageName).to.equal("@scope/icons");
+    expect((app.packages[0]).packageName).to.equal("@scope/icons");
     /* The scoped package's documents came from the private registry. */
     expect(fetched).to.contain(`${PRIV}/@scope%2ficons/1.2.0`);
     expect(fetched).to.contain(`${PRIV}/tarball/icons.tgz`);

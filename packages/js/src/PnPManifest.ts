@@ -49,6 +49,7 @@ import {
   nodeNaming,
   packageNodeSignature,
   PackageFileSet,
+  packageNameConflict,
   reachablePackages,
 } from "@fabr-build/core";
 import { virtualLocation } from "./pnp/VirtualPath";
@@ -124,6 +125,26 @@ const INFO = [
 ];
 
 /**
+ * Sources address their direct dependencies by name, so a name is one package:
+ * two versions under one name could not both be imported.
+ *
+ * @throws the conflict between the two, for the rule compiling against them to
+ * report before it yields anything that could be served from the cache.
+ */
+export function assertOnePackagePerName(directDeps: ReadonlyArray<FileSet>): void {
+  const top = new Map<string, PackageFileSet>();
+  for (const dep of directDeps) {
+    if (dep instanceof PackageFileSet) {
+      const held = top.get(dep.packageName);
+      if (held !== undefined && held.packageId !== dep.packageId) {
+        throw packageNameConflict(held, dep);
+      }
+      top.set(dep.packageName, dep);
+    }
+  }
+}
+
+/**
  * Build the manifest for a compilation whose directly declared dependencies are
  * `directDeps` (packages only — a Flag or a loose FileSet has no row).
  *
@@ -144,6 +165,7 @@ const INFO = [
  * phantom import in first-party code is a bug whose author can fix it.
  */
 export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage): IPnpManifest {
+  assertOnePackagePerName(directDeps);
   const roots = directDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
   const referenceIn = referencesOf(roots);
   const packages: PackageFileSet[] = [];
@@ -241,7 +263,7 @@ function locations(
   referenceIn: (pkg: PackageFileSet) => string
 ): (pkg: PackageFileSet) => string {
   const wiring = (pkg: PackageFileSet): string =>
-    dependencyList(pkg.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet), referenceIn)
+    dependencyList(pkg.packages, referenceIn)
       .map(([name, reference]) => `${name}=${reference}`)
       .join(",");
   const wiringsByContent = new Map<string, Set<string>>();
@@ -346,7 +368,7 @@ function packageInfo(
 ): IPnpPackageInfo {
   const own = new Map<string, PnpDependencyTarget>([
     [pkg.packageName, reference],
-    ...dependencyList(pkg.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet), referenceIn),
+    ...dependencyList(pkg.packages, referenceIn),
   ]);
   for (const [name, target] of supplied) {
     if (!own.has(name)) {

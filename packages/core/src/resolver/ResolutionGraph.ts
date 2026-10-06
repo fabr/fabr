@@ -29,7 +29,7 @@
  * obliged to agree is how they stop agreeing.
  */
 
-import { constraintOf, requiredAs } from "./Requirement";
+import { constraintOf, requiredAs, UNVERSIONED } from "./Requirement";
 import { DependencyName, NodeId, PackageName, RaisedFloor, Requirement, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
 
 /**
@@ -40,6 +40,15 @@ import { DependencyName, NodeId, PackageName, RaisedFloor, Requirement, ROOT_REQ
  */
 export function nodeId<V, C>(domain: VersionDomain<V, C>, pkg: PackageName, version: V): NodeId {
   return `${pkg}@${domain.versionToString(version)}`;
+}
+
+/**
+ * A node as a message names it: its id, or its name alone where it has no
+ * version to tell it from another.
+ */
+export function nodeLabel(id: NodeId): string {
+  const unversioned = `@${UNVERSIONED}`;
+  return id.endsWith(unversioned) ? id.slice(0, -unversioned.length) : id;
 }
 
 /** The data of a finished resolution — what {@link ResolutionGraph} is
@@ -232,10 +241,10 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
       seen.add(current);
       const via = current.reachedVia;
       if (!via || via.requiredBy === ROOT_REQUIRER) {
-        chain.unshift(this.id(current));
+        chain.unshift(nodeLabel(this.id(current)));
         break;
       }
-      chain.unshift(`${this.id(current)} (${via.versionConstraint})`);
+      chain.unshift(`${nodeLabel(this.id(current))} (${via.versionConstraint})`);
       current = this.byId.get(via.requiredBy);
     }
     return chain;

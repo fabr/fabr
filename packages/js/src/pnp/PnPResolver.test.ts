@@ -510,8 +510,8 @@ describe("PnpResolver over one package wired two ways", () => {
     const resolver = new PnpResolver(manifest.state, root, ["types", "require"]);
     const inside = (which: PackageFileSet): string => path.join(root, manifest.mountOf(which), "index.js");
     expect(manifest.mountOf(left)).to.not.equal(manifest.mountOf(right));
-    expect(resolver.locationOf("dep", inside(left))).to.equal(path.join(root, manifest.mountOf(left.dependencies[0] as PackageFileSet)));
-    expect(resolver.locationOf("dep", inside(right))).to.equal(path.join(root, manifest.mountOf(right.dependencies[0] as PackageFileSet)));
+    expect(resolver.locationOf("dep", inside(left))).to.equal(path.join(root, manifest.mountOf(left.packages[0])));
+    expect(resolver.locationOf("dep", inside(right))).to.equal(path.join(root, manifest.mountOf(right.packages[0])));
   });
 
   it("keeps a virtual location virtual under realpath", () => {
@@ -519,7 +519,7 @@ describe("PnpResolver over one package wired two ways", () => {
     const resolver = new PnpResolver(manifest.state, root, ["types", "require"]);
     const real = path.join(realpathKeepingVirtual(path.join(root, manifest.mountOf(left))), "index.js");
     expect(real).to.include("/__virtual__/");
-    expect(resolver.locationOf("dep", real)).to.equal(path.join(root, manifest.mountOf(left.dependencies[0] as PackageFileSet)));
+    expect(resolver.locationOf("dep", real)).to.equal(path.join(root, manifest.mountOf(left.packages[0])));
   });
 
   it("refuses the physical tree no row owns", () => {

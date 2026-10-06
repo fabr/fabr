@@ -37,6 +37,7 @@ import { defaultFilesRule } from "../rules/DefaultFilesRule";
 import { scriptRunRule } from "../rules/RunScript";
 import { serveRunRule } from "../rules/RunServe";
 import { generateRule } from "../rules/BuildGenerate";
+import { patchedRule } from "../rules/BuildPatched";
 import { syncRule } from "../rules/BuildSync";
 import { catalogRepositoryRegistration } from "../rules/CatalogRepository";
 import { fetchSourceRegistration } from "../rules/FetchSource";
@@ -78,12 +79,12 @@ const DIAG_PLUGIN_ACTIVATION = new Diagnostic<{ detail: string; loc: ISourceSpan
 
 /**
  * Core's own contribution to every build: the generic bootstrap rules (flag,
- * files, script[run], serve[run], generate) and STD.fabr, which is therefore **always present** —
+ * files, script[run], serve[run], generate, patched) and STD.fabr, which is therefore **always present** —
  * no explicit `include STD.fabr;` needed. Seeds every load before any plugin.
  */
 export function coreContribution(): PluginContribution {
   return {
-    rules: [flagRule, defaultFilesRule, scriptRunRule, serveRunRule, generateRule, syncRule],
+    rules: [flagRule, defaultFilesRule, scriptRunRule, serveRunRule, generateRule, patchedRule, syncRule],
     repositories: [catalogRepositoryRegistration, fetchSourceRegistration, repositoryGroupRegistration, fabrHomeRegistration()],
     includes: [packageLibFile("@fabr-build/core", "STD.fabr")],
   };

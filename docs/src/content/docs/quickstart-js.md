@@ -108,6 +108,40 @@ js_package mylib {
 }
 ```
 
+## Patching a dependency
+
+To change a published package without forking it, declare a `patched` target named after it:
+`srcs` is the package and `patches` the diffs to apply to it.
+
+```
+patched glob-promise {
+  srcs = @npm:glob-promise:1.33.0;
+  patches = patches/glob.patch;
+}
+
+js_package editor {
+  srcs = src:**/*.ts;
+  deps = glob-promise;
+}
+```
+
+The result is a package named as the target is, with the version and dependencies of the one it
+was made from and its files patched. Because it is named `glob-promise`, it takes the place of
+the published copy for everything built with it. Listing the patched target in a
+[catalog](#dependencies-and-catalogs) does the same for every member of the catalog. Under any
+other name it is a separate package, and the original stays where it is used. Name the package in
+its registry (`@npm:…`) in `srcs`, not through a catalog.
+
+A patch is a unified diff with paths relative to the package root, as `git diff`, `pnpm patch` and
+`yarn patch` write them (`a/dist/index.js`). It may change, add, delete and rename files and set a
+file's executable bit; binary changes are refused. Several patches apply in the order written. A
+patch that does not apply exactly fails the build, naming the patch, the file and the hunk.
+
+Patching `package.json` changes the file, but not the package's version or dependencies.
+
+`srcs` may also name plain files (or several packages), in which case the result is the patched
+files.
+
 ## Stylesheets
 
 Stylesheets are ordinary sources: list them in `srcs` and they build with everything else — there is

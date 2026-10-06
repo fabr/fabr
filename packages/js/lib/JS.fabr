@@ -445,31 +445,6 @@ targetdef js_compile {
 }
 
 #
-# One execution of a test runner over a staged installation — the cache unit of
-# a test run. Composed automatically by `js_package`/`js_test` (which assemble
-# the installation and the invocation); there is nothing useful to declare by
-# hand. `staged` is the complete installation, `argv` the runner invocation, and
-# `outputs` the selectors for what the run leaves behind (the report, plus any
-# refreshed expectation files under TEST_EXPECTATIONS=update).
-#
-
-targetdef js_test_run {
-    staged = FILES;
-    # The subset of `staged` the runner is allowed to rewrite (the recorded
-    # expectations, under TEST_EXPECTATIONS=update): staged as writable copies
-    # rather than links into the content store.
-    writable = FILES;
-    # The runner invocation, without report or files: the step invokes it once
-    # per test_files entry (each execution admitted separately by the process
-    # funnel), appending a per-invocation report name and the file.
-    argv = REQUIRED STRING;
-    test_files = REQUIRED STRING;
-    outputs = REQUIRED STRING;
-    # The environment variables each invocation runs with.
-    env = MAP;
-}
-
-#
 # Lower a Sass source tree to plain CSS. `srcs` are the Sass sources
 # (`.scss`/`.sass`, modules included); `deps` are scss packages mounted for
 # Sass `@use`/`@import` resolution.

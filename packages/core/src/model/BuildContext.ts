@@ -488,8 +488,38 @@ export type ResolvedCommandPipeline = ResolvedCommandStage[];
  * projections.
  */
 export class ContainedSources {
+  /** Tells the markers apart by type: they are otherwise the same shape. */
+  public readonly marks = "contained";
   constructor(public readonly sources: SourceRef[]) {}
 }
+
+/**
+ * A property's sources, marked as **instantiated**: the reading rule takes each
+ * package the property names as material to derive another from, not as a
+ * requirement. A repository reference among them is delivered on its own — no
+ * joint resolution, no closure — as the package carrying what it declares (see
+ * instanceRequests); every other source is collected as usual.
+ */
+export class InstantiatedSources {
+  /** Tells the markers apart by type: they are otherwise the same shape. */
+  public readonly marks = "instantiated";
+  constructor(public readonly sources: SourceRef[]) {}
+}
+
+/**
+ * A property's sources, marked as **dependencies**: the reading rule builds a
+ * package that requires what the property names, and carries those
+ * requirements on it. Collected like any other list, except that a reference
+ * which installs nothing of its own (a `?` alternate) comes back as the
+ * reference — a requirement the rule must still carry, having no content.
+ */
+export class DependencySources {
+  /** Tells the markers apart by type: they are otherwise the same shape. */
+  public readonly marks = "dependencies";
+  constructor(public readonly sources: SourceRef[]) {}
+}
+
+type MarkedSources = ContainedSources | InstantiatedSources | DependencySources;
 
 /**
  * What a collected part settles to: a part marked {@link ContainedSources} keeps
@@ -498,12 +528,16 @@ export class ContainedSources {
  * re-narrow the others.
  */
 export type Collected<P> = {
-  [K in keyof P]: P[K] extends ContainedSources | Computable<ContainedSources> ? (FileSet | FileSetRef)[] : FileSet[];
+  [K in keyof P]: P[K] extends ContainedSources | Computable<ContainedSources>
+    ? (FileSet | FileSetRef)[]
+    : P[K] extends DependencySources | Computable<DependencySources>
+    ? (FileSet | RepositoryRef)[]
+    : FileSet[];
 };
 
 /** A collect part: a plain source list (extracted, the default) or one marked
- * contained. */
-export type CollectPart = SourceRef[] | ContainedSources | Computable<SourceRef[] | ContainedSources>;
+ * contained, instantiated or as dependencies. */
+export type CollectPart = SourceRef[] | MarkedSources | Computable<SourceRef[] | MarkedSources>;
 
 /**
  * A BuildContext is (effectively) the BuildModel instantiated with an explicit set of additional
@@ -620,10 +654,21 @@ export class BuildContext {
    * own element type (a contained consumer's `FileSet | FileSetRef` settles
    * to plain FileSets; a collection's `Materialized` to content + repositories).
    */
-  public finishDelivered<S extends FileSource | Repository>(resolved: ReadonlyArray<S | FileSetRef>): Computable<(S | FileSet)[]> {
+  public finishDelivered(resolved: ReadonlyArray<Materialized>): Computable<Array<FileSource | Repository | FileSet>> {
+    return this.finishDependencies(resolved).then(finished =>
+      finished.filter((source): source is FileSource | Repository | FileSet => !(source instanceof RepositoryRef))
+    );
+  }
+
+  /**
+   * {@link finishDelivered}, keeping a reference that was delivered as itself
+   * — a requirement that installs nothing (a `?` alternate) — for a consumer
+   * that carries its requirements onward.
+   */
+  public finishDependencies(resolved: ReadonlyArray<Materialized>): Computable<Array<FileSource | Repository | FileSet | RepositoryRef>> {
     return Computable.forAll(
       resolved.map(source => (source instanceof FileSetRef ? this.manifest(source) : Computable.resolve(source))),
-      (...finished: (S | FileSet)[]) => finished
+      (...finished: Array<FileSource | Repository | FileSet | RepositoryRef>) => finished
     );
   }
 
@@ -2080,7 +2125,9 @@ export class BuildContext {
     /* The action is the demand whole: the cache derives the key (anchor or
      * complete, by the action's own shape), the discoverable deps and the
      * change tracking from it. */
-    return execution.buildCache.getOrCreateAction(action, create, { force, targetKey, processLimit: execution.processLimit });
+    const output = execution.buildCache.getOrCreateAction(action, create, { force, targetKey, processLimit: execution.processLimit });
+    const reshape = action.reshape;
+    return reshape === undefined ? output : output.then(result => reshape(result));
   }
 
   /**
@@ -2424,6 +2471,18 @@ export abstract class TargetContext {
     return this.getFileProperty(name, overrides).then(sources => new ContainedSources(sources));
   }
 
+  /** A FILES property read as DEPENDENCIES (see {@link DependencySources}):
+   * for a rule building a package that requires what the property names. */
+  public getDependencyProperty(name: string, overrides?: Constraints): Computable<DependencySources> {
+    return this.getFileProperty(name, overrides).then(sources => new DependencySources(sources));
+  }
+
+  /** A FILES property read as INSTANTIATED (see {@link InstantiatedSources}):
+   * for a rule deriving a package from the ones the property names. */
+  public getInstantiatedFileProperty(name: string, overrides?: Constraints): Computable<InstantiatedSources> {
+    return this.getFileProperty(name, overrides).then(sources => new InstantiatedSources(sources));
+  }
+
   /**
    * A REWRITE property's values: each a `sel -> tmpl` rename or a bare constant,
    * in written order. `makeRewrite` turns them into the first-match-wins
@@ -2760,24 +2819,27 @@ export abstract class TargetContext {
   public collect(
     parts: Map<string, CollectPart>,
     options?: MaterializeOptions
-  ): Computable<Map<string, (FileSet | FileSetRef)[]>>;
+  ): Computable<Map<string, (FileSet | FileSetRef | RepositoryRef)[]>>;
   public collect(
     parts: Record<string, CollectPart> | Map<string, CollectPart>,
     options?: MaterializeOptions
-  ): Computable<Record<string, (FileSet | FileSetRef)[]> | Map<string, (FileSet | FileSetRef)[]>> {
+  ): Computable<Record<string, (FileSet | FileSetRef | RepositoryRef)[]> | Map<string, (FileSet | FileSetRef | RepositoryRef)[]>> {
     const entries = parts instanceof Map ? [...parts] : Object.entries(parts);
     return Computable.forAll(
       entries.map(([, value]) => (value instanceof Computable ? value : Computable.resolve(value))),
-      (...values: Array<SourceRef[] | ContainedSources>) => {
+      (...values: Array<SourceRef[] | MarkedSources>) => {
         /* Which parts asked to stay in their containers — per property, since a
          * rule commonly wants one contained (`entry`) and the rest extracted. */
         const contained = values.map(value => value instanceof ContainedSources);
-        const lists = values.map(value => (value instanceof ContainedSources ? value.sources : value));
+        const instantiated = values.map(value => value instanceof InstantiatedSources);
+        const dependencies = values.map(value => value instanceof DependencySources);
+        const lists = values.map(value => (Array.isArray(value) ? value : value.sources));
         return materializeLists(
           this,
           lists,
           options,
-          contained.map(kept => !kept)
+          contained.map(kept => !kept),
+          instantiated
         ).then(partitions => {
           /* The delivery machinery returns entities with their projections
            * pending; the context — the driver — finishes the walk here, except
@@ -2786,18 +2848,23 @@ export abstract class TargetContext {
             partitions.map((partition, index) =>
               contained[index]
                 ? Computable.resolve(partition)
+                : dependencies[index]
+                ? this.context.finishDependencies(partition)
                 : this.context.finishDelivered(partition)
             ),
             (...finished: Materialized[][]) => finished
           );
           return settled.then(all => {
-            const filtered = all.map(partition =>
-              partition.filter((source): source is FileSet | FileSetRef => source instanceof FileSet || source instanceof FileSetRef)
+            const filtered = all.map((partition, index) =>
+              partition.filter(
+                (source): source is FileSet | FileSetRef | RepositoryRef =>
+                  source instanceof FileSet || source instanceof FileSetRef || (dependencies[index] && source instanceof RepositoryRef)
+              )
             );
             if (parts instanceof Map) {
               return new Map(entries.map(([name], i) => [name, filtered[i]]));
             }
-            const result: Record<string, (FileSet | FileSetRef)[]> = {};
+            const result: Record<string, (FileSet | FileSetRef | RepositoryRef)[]> = {};
             entries.forEach(([name], i) => {
               result[name] = filtered[i];
             });
@@ -2815,7 +2882,7 @@ export abstract class TargetContext {
    * expansion and all (see BuildContext.finishDelivered).
    */
   public manifestAll(sources: ReadonlyArray<FileSet | FileSetRef>): Computable<FileSet[]> {
-    return this.context.finishDelivered(sources);
+    return this.context.finishDelivered(sources).then(finished => finished.filter((source): source is FileSet => source instanceof FileSet));
   }
 
   /**
@@ -3131,7 +3198,16 @@ export class AnonymousTargetContext extends TargetContext {
     this.inputs = inputs;
     this.declared = declared;
     this.label = label;
+    this.given = new Set(
+      Object.values(inputs)
+        .flatMap((value): unknown[] => (Array.isArray(value) ? value : [value]))
+        .filter((value): value is PackageFileSet => value instanceof PackageFileSet)
+    );
   }
+
+  /** The packages among the inputs: bound by the creating rule's collection
+   * point, so a collection here takes them as they stand. */
+  public readonly given: ReadonlySet<PackageFileSet>;
 
   public get name(): string {
     return this.declared.name;

@@ -22,6 +22,7 @@ import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { PackageFileSet, packageNodeSignature, reachablePackages } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { CatalogRepository, catalogRepositoryRegistration } from "./CatalogRepository";
+import { patchedRule } from "./BuildPatched";
 import { Repository, RepositoryRef,
   MaterializeOptions,
   ClosureThunk,
@@ -61,7 +62,7 @@ const TEST_RESOLUTION_CONTEXT: ResolutionContext = {
 const emptyCatalog = new CatalogRepository(
   "@cat",
   TEST_RESOLUTION_CONTEXT,
-  Computable.resolve({ entries: new Map(), collection: { requests: new Map(), resolutions: new Map() } })
+  Computable.resolve({ entries: new Map(), collection: { requests: new Map(), resolutions: new Map(), members: new Map(), instances: new Set() } })
 );
 
 describe("CatalogRepository.getRepositoryRef", () => {
@@ -260,15 +261,52 @@ describe("CatalogRepository (through the model)", () => {
           new Map([[`${context.name}/data.txt`, contentOf(context.name)]]),
           context.name,
           undefined,
-          sources.filter((source): source is PackageFileSet | RepositoryRef => source instanceof PackageFileSet || source instanceof RepositoryRef),
+          [...sources, ...provided].filter(
+            (source): source is PackageFileSet | RepositoryRef => source instanceof PackageFileSet || source instanceof RepositoryRef
+          ),
           undefined,
-          provided.flatMap(source => (source instanceof RepositoryRef ? [{ provided: "expected" as const, target: source }] : []))
+          new Map(provided.flatMap((source): Array<[string, "expected"]> => (source instanceof RepositoryRef ? [[source.deliveredName, "expected"]] : [])))
         )
       ),
   };
+  /* A patch file, as a target: its text is what the test set for its name. */
+  const patchTexts = new Map<string, string>();
+  const patchRule: RuleDefinition = {
+    type: "test_patch",
+    properties: {},
+    evaluate: (context: TargetContext) =>
+      Computable.resolve(new FileSet(new Map([[`${context.name}.patch`, MemoryFile.from(patchTexts.get(context.name) ?? "")]]))),
+  };
+  /* A package built against its deps: it collects them once, and carries what
+   * they were delivered as. What a manifest would record of them is kept. */
+  let builtDeclared: (Requirement | undefined)[] = [];
+  const builtRule: RuleDefinition = {
+    type: "test_built",
+    properties: {},
+    evaluate: (context: TargetContext) =>
+      context.collect({ deps: context.getDependencyProperty("deps") }).then(({ deps }) => {
+        const carried = deps.filter((dep): dep is PackageFileSet | RepositoryRef => dep instanceof PackageFileSet || dep instanceof RepositoryRef);
+        return context.collectDeclaredRequirements(carried).then(declared => {
+          builtDeclared = declared;
+          return new PackageFileSet(new Map([[`${context.name}/data.txt`, contentOf(context.name)]]), context.name, undefined, carried);
+        });
+      }),
+  };
+  /* A target that is the first thing it collected, handed on as its own. */
+  const passRule: RuleDefinition = {
+    type: "test_pass",
+    properties: {},
+    evaluate: (context: TargetContext) => context.getFileSetProperties(["deps"]).then(({ deps }) => deps[0]),
+  };
+  /* A target that collects its deps and hands the first to a sub-target. */
+  const subRule: RuleDefinition = {
+    type: "test_sub",
+    properties: {},
+    evaluate: (context: TargetContext) => context.getFileSetProperties(["deps"]).then(({ deps }) => context.subTarget("test_deps", { deps: [deps[0]] })),
+  };
   const contributions: PluginContribution[] = [
     {
-      rules: [depsRule, runRule, packageRule],
+      rules: [depsRule, runRule, packageRule, patchRule, patchedRule, passRule, subRule, builtRule],
       repositories: [
         { type: "package_repo", provider: (context: TargetContext) => Computable.resolve(backing(context.name)) },
         catalogRepositoryRegistration,
@@ -291,11 +329,17 @@ describe("CatalogRepository (through the model)", () => {
     "targetdef package_repo { }\n" +
     "targetdef test_deps { deps = FILES; }\n" +
     "targetdef test_run { tool = FILES; }\n" +
-    "targetdef test_pkg { deps = FILES; provided = FILES; }\n";
+    "targetdef test_pkg { deps = FILES; provided = FILES; }\n" +
+    "targetdef test_patch { }\n" +
+    "targetdef test_pass { deps = FILES; }\n" +
+    "targetdef test_sub { deps = FILES; }\n" +
+    "targetdef test_built { deps = FILES; }\n" +
+    "targetdef patched { srcs = REQUIRED FILES; patches = REQUIRED FILES; }\n";
 
   function build(source: string): BuildModel {
     backings.clear();
     requirementTable.clear();
+    patchTexts.clear();
     ran.length = 0;
     lastDeps = undefined;
     lastDepSets = [];
@@ -386,10 +430,10 @@ describe("CatalogRepository (through the model)", () => {
           message = current.message;
         }
       }
-      expect(message).to.contain("x@2.0.0 does not satisfy '^1.0.0' required by y@1.0.0");
+      expect(message).to.contain("x is required as '^1.0.0' and as '^2.0.0', and no one version is both");
       /* Explained as fully as one delivery's conflict: the winner's path and the
        * losing requirement's, each through the delivery that ships it. */
-      expect(message).to.contain("2.0.0 selected by: a@1.0.0 -> x@2.0.0 (^2.0.0)");
+      expect(message).to.contain("'^2.0.0' required via: a@1.0.0");
       expect(message).to.contain("'^1.0.0' required via: b@1.0.0 -> y@1.0.0 (1.0.0)");
     });
 
@@ -458,7 +502,8 @@ describe("CatalogRepository (through the model)", () => {
           help = current instanceof FabrError && current.help.length > 0 ? current.help.join("\n") : help;
         }
       }
-      expect(message).to.contain("requires multiple versions of x (1.0.0, 2.0.0)");
+      expect(message).to.contain("Resolution requires multiple versions of the same package:");
+      expect(message).to.contain("x is required at 1.0.0 and 2.0.0");
       expect(message).to.contain("1.0.0 required via: b@1.0.0 -> y@1.0.0");
       expect(message).to.contain("2.0.0 required directly ('2.0.0')");
       /* The direct reference's exact pin already sanctions 2.0.0; the remedy
@@ -492,7 +537,7 @@ describe("CatalogRepository (through the model)", () => {
       const found = langsmiths();
       expect(found.length, "langsmith reached through both members").to.be.greaterThan(0);
       for (const pkg of found) {
-        expect(pkg.getDependency("openai"), "bound to the installation's openai").to.not.equal(undefined);
+        expect(pkg.getDependency("openai"), "bound to the installation's openai").to.be.instanceOf(PackageFileSet);
       }
       expect(new Set(found.map(packageNodeSignature)).size, "one node").to.equal(1);
     });
@@ -503,11 +548,11 @@ describe("CatalogRepository (through the model)", () => {
       await model.getConfig(Constraints.of({}), execution).getTarget("a");
       const found = langsmiths();
       expect(found).to.have.lengthOf(1);
-      expect(found[0].getDependency("openai")).to.equal(undefined);
+      expect(found[0].packages.map(pkg => pkg.packageName)).to.not.include("openai");
       /* What would answer it is recorded, as a reference nothing resolves. */
-      const [peer] = found[0].provided;
-      expect([peer.provided, peer.target.toString()]).to.deep.equal(["optional", "openai:1.0.0"]);
-      expect(peer.target).to.be.instanceOf(RepositoryRef);
+      const peer = found[0].getDependency("openai");
+      expect([found[0].provided.get("openai"), peer?.toString()]).to.deep.equal(["optional", "openai:1.0.0"]);
+      expect(peer).to.be.instanceOf(RepositoryRef);
       expect(backings.get("@backing")!.materialized).to.not.include("openai");
     });
   });
@@ -667,9 +712,9 @@ describe("CatalogRepository (through the model)", () => {
     await model.getConfig(Constraints.of({}), execution).getTarget("a");
     const [foo, semver] = lastDepSets as PackageFileSet[];
     expect(semver.packageId).to.equal("semver@7.6.0");
-    expect((foo.dependencies as PackageFileSet[]).map(dep => dep.packageId)).to.deep.equal(["semver-old@7.5.0"]);
+    expect(foo.packages.map(dep => dep.packageId)).to.deep.equal(["semver-old@7.5.0"]);
     /* Its content is the package's it renames, asked of the registry by that name. */
-    expect(await (foo.dependencies[0] as PackageFileSet).readFile("semver/data.txt")).to.equal("semver");
+    expect(await (foo.packages[0]).readFile("semver/data.txt")).to.equal("semver");
     expect([...backings.get("@backing")!.fetched].sort()).to.deep.equal(["foo@1.0.0", "semver@7.5.0", "semver@7.6.0"]);
   });
 
@@ -732,7 +777,7 @@ describe("CatalogRepository (through the model)", () => {
       const [lib, bar] = lastDepSets as PackageFileSet[];
       /* What the member reaches is bound by the catalog's own pin. */
       expect(edges(lib)).to.deep.equal(["foo@1.0.0"]);
-      expect(edges(lib.dependencies[0] as PackageFileSet)).to.deep.equal(["bar@1.2.0"]);
+      expect(edges(lib.packages[0])).to.deep.equal(["bar@1.2.0"]);
       expect(bar.packageId).to.equal("bar@1.2.0");
       /* Each delivery fetches what it reaches; no other version of bar is among them. */
       expect([...new Set(backings.get("@backing")!.fetched)].sort()).to.deep.equal(["bar@1.2.0", "foo@1.0.0"]);
@@ -752,23 +797,41 @@ describe("CatalogRepository (through the model)", () => {
       await model.getConfig(Constraints.of({}), execution).getTarget("a");
       const lib = lastDepSets[0] as PackageFileSet;
       expect(edges(lib)).to.deep.equal(["base@*"]);
-      expect(edges(lib.dependencies[0] as PackageFileSet)).to.deep.equal(["bar@1.0.0"]);
+      expect(edges(lib.packages[0])).to.deep.equal(["bar@1.0.0"]);
     });
 
-    it("keeps a marker the member wrote on its own requirement", async () => {
-      /* The member's requirement is a root of the catalog's resolution, as it
-       * is of a consumer's when the member is listed directly: its `!` forces. */
+    it("delivers a built package reached through another once, whichever way it is also named", async () => {
+      for (const deps of ["outer", "outer lib", "lib outer"]) {
+        const model = build(
+          "package_repo @backing { }\n" +
+            "test_pkg lib { deps = @backing:foo; }\n" +
+            "test_pkg outer { deps = lib; }\n" +
+            `test_deps a { deps = ${deps}; }\n`
+        );
+        await model.getConfig(Constraints.of({}), execution).getTarget("a");
+        expect(backings.get("@backing")!.fetched, deps).to.deep.equal(["foo@1.0.0"]);
+        /* One lib in the installation, with its requirement resolved. */
+        const libs = reachablePackages(lastDepSets).filter(pkg => pkg.packageName === "lib");
+        expect(new Set(libs).size, deps).to.equal(1);
+        expect(edges(libs[0]), deps).to.deep.equal(["foo@1.0.0"]);
+      }
+    });
+
+    it("takes a marker the member wrote on its own requirement as the member's, not the catalog's", async () => {
+      /* The member's requirement is a transitive one here, as a published
+       * package's would be: its `!` forced the member's own build and forces
+       * nothing for anyone the catalog serves. */
       const model = build(
         "package_repo @backing { }\n" +
           "test_pkg lib { deps = @backing:bar:1.0.0!; }\n" +
-          "catalog @cat { deps = @backing:foo lib; }\n" +
+          "catalog @cat { deps = @backing:foo lib @backing:bar:2.0.0? @backing:bar:1.0.0?; }\n" +
           "test_deps a { deps = @cat:lib @cat:foo; }\n"
       );
       requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^2.0.0" }]);
       await model.getConfig(Constraints.of({}), execution).getTarget("a");
       const [lib, foo] = lastDepSets as PackageFileSet[];
       expect(edges(lib)).to.deep.equal(["bar@1.0.0"]);
-      expect(edges(foo)).to.deep.equal(["bar@1.0.0"]);
+      expect(edges(foo)).to.deep.equal(["bar@2.0.0"]);
     });
 
     it("pins a carried requirement without making it a member", async () => {
@@ -828,7 +891,9 @@ describe("CatalogRepository (through the model)", () => {
       await model.getConfig(Constraints.of({}), execution).getTarget("a");
       const lib = lastDepSets[0] as PackageFileSet;
       expect(edges(lib)).to.deep.equal(["host@1.0.0"]);
-      expect(lib.provided.map(entry => [entry.provided, (entry.target as PackageFileSet).packageId])).to.deep.equal([["expected", "host@1.0.0"]]);
+      expect([...lib.provided].map(([name, expected]) => [expected, (lib.getDependency(name) as PackageFileSet).packageId])).to.deep.equal([
+        ["expected", "host@1.0.0"],
+      ]);
     });
 
     it("binds the consuming target's own package of that name, whatever supplies it", async () => {
@@ -869,7 +934,7 @@ describe("CatalogRepository (through the model)", () => {
       );
       await model.getConfig(Constraints.of({}), execution).getTarget("a");
       const suite = lastDepSets[0] as PackageFileSet;
-      const plugin = suite.dependencies.find(dep => dep instanceof PackageFileSet && dep.packageName === "plugin") as PackageFileSet;
+      const plugin = suite.getDependency("plugin") as PackageFileSet;
       expect(edges(plugin)).to.deep.equal(["host@2.0.0"]);
     });
 
@@ -882,6 +947,414 @@ describe("CatalogRepository (through the model)", () => {
       );
       await model.getConfig(Constraints.of({}), execution).getTarget("a");
       expect(edges(lastDepSets[0] as PackageFileSet)).to.deep.equal(["host@2.0.0"]);
+    });
+  });
+
+  describe("two exact pins of one package", () => {
+    /** The first line of every message down the failure's chain of causes, or
+     * the versions delivered where there is none. */
+    const outcome = async (model: BuildModel): Promise<string> => {
+      try {
+        await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      } catch (err) {
+        const messages: string[] = [];
+        for (let current: unknown = err; current instanceof Error; current = (current as { cause?: unknown }).cause) {
+          messages.push(current.message, ...((current as { help?: string[] }).help ?? []));
+        }
+        return messages.join("\n");
+      }
+      return [...new Set(reachablePackages(lastDepSets).map(pkg => pkg.packageId))].sort().join(" ");
+    };
+    const libs = "package_repo @backing { }\n" + "test_pkg old { deps = @backing:bar:1.0.0; }\n" + "test_pkg new { deps = @backing:bar:1.2.0; }\n";
+
+    it("written by the packages a target uses are requirements like any transitive one, and sanction nothing", async () => {
+      const failure = await outcome(build(libs + "test_deps a { deps = old new; }\n"));
+      /* Reported as it is for two published packages: against the package that
+       * made the requirement — a node of the graph like any other — with the
+       * entries that would permit it. */
+      expect(failure).to.contain("bar is required as '1.0.0' and as '1.2.0', and no one version is both");
+      expect(failure).to.contain("'1.0.0' required via: old\n");
+      expect(failure).to.contain("'1.2.0' required via: new\n");
+      expect(failure).to.contain("add to the failing deps (or a shared catalog): @backing:bar:1.2.0? @backing:bar:1.0.0?");
+    });
+
+    it("ship together once the target itself permits both", async () => {
+      const permitted = libs + "test_deps a { deps = old new @backing:bar:1.0.0? @backing:bar:1.2.0?; }\n";
+      expect(await outcome(build(permitted))).to.equal("bar@1.0.0 bar@1.2.0 new@* old@*");
+    });
+
+    it("are not completed by a pin one of those packages wrote", async () => {
+      /* The target permits 1.0.0; the other version is `new`'s requirement,
+       * which the target has not vouched for. */
+      const failure = await outcome(build(libs + "test_deps a { deps = old new @backing:bar:1.0.0?; }\n"));
+      expect(failure).to.contain("required bar versions: 1.0.0, 1.2.0 — allowed: 1.0.0; add @backing:bar:1.2.0?");
+    });
+
+    it("permit a version beside the target's own pin of the other", async () => {
+      const pinned = libs + "test_deps a { deps = old @backing:bar:1.2.0 @backing:bar:1.0.0?; }\n";
+      expect(await outcome(build(pinned))).to.equal("bar@1.0.0 bar@1.2.0 old@*");
+    });
+
+    it("of a package a target uses does not carry that package's own permissions to the target", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_pkg lib { deps = @backing:foo @backing:bar:1.2.0? @backing:bar:1.0.0?; }\n" +
+          "test_deps a { deps = lib @backing:bar:1.2.0; }\n"
+      );
+      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "1.0.0" }]);
+      const failure = await outcome(model);
+      expect(failure).to.contain("add @backing:bar:1.0.0?");
+    });
+
+    it("are one version where they agree", async () => {
+      const model = build("package_repo @backing { }\n" + "test_pkg old { deps = @backing:bar:1.2.0; }\n" + "test_deps a { deps = old @backing:bar:1.2.0; }\n");
+      expect(await outcome(model)).to.equal("bar@1.2.0 old@*");
+    });
+  });
+
+  describe("a package a rule hands on", () => {
+    const edges = (pkg: PackageFileSet): string[] =>
+      pkg.dependencies.map(dep => (dep instanceof PackageFileSet ? dep.packageId : `ref:${dep.toString()}`));
+
+    it("is bound again by the collection point it reaches, on the requirements it was delivered with", async () => {
+      const model = build(
+        "package_repo @backing { }\n" + "test_pass through { deps = @backing:foo; }\n" + "test_deps a { deps = through @backing:bar:1.2.0; }\n"
+      );
+      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const foo = lastDepSets[0] as PackageFileSet;
+      expect(foo.packageId).to.equal("foo@1.0.0");
+      expect(edges(foo)).to.deep.equal(["bar@1.2.0"]);
+      /* One version of what it requires in the installation. */
+      expect([...new Set(reachablePackages(lastDepSets).map(pkg => pkg.packageId))].sort()).to.deep.equal(["bar@1.2.0", "foo@1.0.0"]);
+      expect([...new Set(backings.get("@backing")!.fetched)]).to.not.include("bar@1.1.0");
+    });
+
+    it("is carried by a package built against it, and bound again where that package is used", async () => {
+      const model = build(
+        "package_repo @backing { }\n" + "test_built lib { deps = @backing:bar:^1.0.0; }\n" + "test_deps a { deps = lib @backing:bar:1.2.0; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const lib = lastDepSets[0] as PackageFileSet;
+      expect(edges(lib)).to.deep.equal(["bar@1.2.0"]);
+      /* The manifest records what was written, not what lib's own build selected. */
+      expect(builtDeclared).to.deep.equal([{ name: "bar", versionConstraint: "^1.0.0" }]);
+    });
+
+    it("carries a requirement that installs nothing as the reference it is", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_built lib { deps = @backing:foo @backing:bar:1.0.0?; }\n" +
+          "test_deps a { deps = lib; }\n"
+      );
+      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.1.0" }]);
+      requirementTable.set("bar@1.1.0", []);
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const lib = lastDepSets[0] as PackageFileSet;
+      expect(edges(lib)).to.deep.equal(["foo@1.0.0", "ref:bar:1.0.0?"]);
+      expect(builtDeclared.map(req => req?.override)).to.deep.equal([undefined, "alternate"]);
+    });
+
+    it("is taken as it stands by a sub-target of the rule that collected it", async () => {
+      const model = build("package_repo @backing { }\n" + "test_sub a { deps = @backing:foo @backing:bar:1.2.0; }\n");
+      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      /* The sub-target holds only foo: resolving foo's requirement there, apart
+       * from the pin its creator held, would select another bar. */
+      const foo = lastDepSets[0] as PackageFileSet;
+      expect(edges(foo)).to.deep.equal(["bar@1.2.0"]);
+      expect([...new Set(backings.get("@backing")!.fetched)].sort()).to.deep.equal(["bar@1.2.0", "foo@1.0.0"]);
+    });
+
+    it("stays bound as a catalog pinned it", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @cat { deps = @backing:foo @backing:bar:1.1.0; }\n" +
+          "test_pass through { deps = @cat:foo; }\n" +
+          "test_deps a { deps = through; }\n"
+      );
+      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const foo = lastDepSets[0] as PackageFileSet;
+      expect(edges(foo)).to.deep.equal(["bar@1.1.0"]);
+      /* Nothing of it is asked of the registry again. */
+      expect((foo.reference as RepositoryRef).toString()).to.equal("foo");
+    });
+  });
+
+  describe("a patched package", () => {
+    /** A patch replacing the one line `pkg`'s fixture file holds. */
+    const rewrite = (pkg: string, to: string): string =>
+      [
+        `diff --git a/${pkg}/data.txt b/${pkg}/data.txt`,
+        `--- a/${pkg}/data.txt`,
+        `+++ b/${pkg}/data.txt`,
+        "@@ -1 +1 @@",
+        `-${pkg}`,
+        "\\ No newline at end of file",
+        `+${to}`,
+        "\\ No newline at end of file",
+        "",
+      ].join("\n");
+    const edges = (pkg: PackageFileSet): string[] =>
+      pkg.dependencies.map(dep => (dep instanceof PackageFileSet ? dep.packageId : `ref:${dep.toString()}`));
+    const text = (pkg: FileSet, name: string): Promise<string> => Promise.resolve(pkg.getFile(name)!.readString());
+    /** Every message down an error's chain of causes. */
+    const messagesOf = (err: unknown): string[] => {
+      const messages: string[] = [];
+      for (let current: unknown = err; current instanceof Error; current = (current as { cause?: unknown }).cause) {
+        messages.push(current.message);
+      }
+      return messages;
+    };
+    const dependency = (pkg: PackageFileSet, name: string): PackageFileSet =>
+      pkg.getDependency(name) as PackageFileSet;
+
+    it("is the package it patches, with its files changed and its requirements resolved by the consumer", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_patch fix { }\n" +
+          "patched foo { srcs = @backing:foo; patches = fix; }\n" +
+          "test_deps a { deps = foo @backing:bar:1.2.0; }\n"
+      );
+      patchTexts.set("fix", rewrite("foo", "foo, patched"));
+      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const foo = lastDepSets[0] as PackageFileSet;
+      expect(foo.packageId).to.equal("foo@1.0.0");
+      expect(await text(foo, "foo/data.txt")).to.equal("foo, patched");
+      /* What it declares is selected with the consumer's own requirements. */
+      expect(edges(foo)).to.deep.equal(["bar@1.2.0"]);
+      expect([...new Set(backings.get("@backing")!.fetched)].sort()).to.deep.equal(["bar@1.2.0", "foo@1.0.0"]);
+    });
+
+    it("carries a provided requirement of the package as one, for its consumer to bind", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_patch fix { }\n" +
+          "patched foo { srcs = @backing:foo; patches = fix; }\n" +
+          "test_deps a { deps = foo @backing:host:1.3.0; }\n"
+      );
+      patchTexts.set("fix", rewrite("foo", "foo, patched"));
+      requirementTable.set("foo@1.0.0", [{ name: "host", versionConstraint: "^1.0.0", provided: "expected" }]);
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const foo = lastDepSets[0] as PackageFileSet;
+      expect([...foo.provided.keys()].map(name => foo.getDependency(name)).map(dep => (dep instanceof PackageFileSet ? dep.packageId : "unbound"))).to.deep.equal([
+        "host@1.3.0",
+      ]);
+    });
+
+    it("patches a package built in the project, leaving its requirements for the consumer to resolve", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_patch fix { }\n" +
+          "test_pkg lib { deps = @backing:foo; }\n" +
+          "patched patched_lib { srcs = lib; patches = fix; }\n" +
+          "test_deps a { deps = patched_lib @backing:bar:1.2.0; }\n"
+      );
+      patchTexts.set("fix", rewrite("lib", "lib, patched"));
+      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const lib = lastDepSets[0] as PackageFileSet;
+      /* A package of its own, named as its target is. */
+      expect(lib.packageName).to.equal("patched_lib");
+      expect(await text(lib, "lib/data.txt")).to.equal("lib, patched");
+      expect(edges(lib)).to.deep.equal(["foo@1.0.0"]);
+      expect(edges(lib.packages[0])).to.deep.equal(["bar@1.2.0"]);
+      /* The patched target resolved nothing of its own: only the consumer's
+       * selection was ever fetched. */
+      expect([...new Set(backings.get("@backing")!.fetched)].sort()).to.deep.equal(["bar@1.2.0", "foo@1.0.0"]);
+    });
+
+    it("is named as its target, so a package patched under another name leaves the original where it is used", async () => {
+      for (const deps of ["patched_lib other", "other patched_lib"]) {
+        const model = build(
+          "package_repo @backing { }\n" +
+            "test_patch fix { }\n" +
+            "test_pkg lib { }\n" +
+            "patched patched_lib { srcs = lib; patches = fix; }\n" +
+            "test_pkg other { deps = lib; }\n" +
+            `test_deps a { deps = ${deps}; }\n`
+        );
+        patchTexts.set("fix", rewrite("lib", "lib, patched"));
+        await model.getConfig(Constraints.of({}), execution).getTarget("a");
+        const delivered = new Map((lastDepSets as PackageFileSet[]).map(pkg => [pkg.packageName, pkg]));
+        expect(await text(delivered.get("patched_lib")!, "lib/data.txt"), deps).to.equal("lib, patched");
+        expect(await text(dependency(delivered.get("other")!, "lib"), "lib/data.txt"), deps).to.equal("lib");
+      }
+    });
+
+    it("stands in for the registry's copy wherever another package requires it", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_patch fix { }\n" +
+          "patched foo { srcs = @backing:foo; patches = fix; }\n" +
+          "test_deps a { deps = foo @backing:app; }\n"
+      );
+      patchTexts.set("fix", rewrite("foo", "foo, patched"));
+      requirementTable.set("app@1.0.0", [{ name: "foo", versionConstraint: "^1.0.0" }]);
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const [foo, app] = lastDepSets as PackageFileSet[];
+      expect(dependency(app, "foo")).to.equal(foo);
+      expect(await text(dependency(app, "foo"), "foo/data.txt")).to.equal("foo, patched");
+      /* One package of the name in the installation. */
+      expect(reachablePackages([foo, app]).filter(pkg => pkg.packageName === "foo")).to.have.length(1);
+      /* The registry's foo is a node the resolution never selects: it is
+       * fetched once, as the material patched, and never as a dependency. */
+      expect(backings.get("@backing")!.fetched.filter(fetched => fetched === "foo@1.0.0")).to.have.length(1);
+    });
+
+    it("stands in for it throughout a catalog that lists it, for a member named without it", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_patch fix { }\n" +
+          "patched foo { srcs = @backing:foo; patches = fix; }\n" +
+          "catalog @cat { deps = foo @backing:app; }\n" +
+          "test_deps a { deps = @cat:app; }\n"
+      );
+      patchTexts.set("fix", rewrite("foo", "foo, patched"));
+      requirementTable.set("app@1.0.0", [{ name: "foo", versionConstraint: "^1.0.0" }]);
+      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const app = lastDepSets[0] as PackageFileSet;
+      const foo = dependency(app, "foo");
+      expect(await text(foo, "foo/data.txt")).to.equal("foo, patched");
+      expect(edges(foo)).to.deep.equal(["bar@1.0.0"]);
+    });
+
+    it("stands in for the copy a catalog member brings, which then ships no version of its own", async () => {
+      /* The catalog pins foo at 1.2.0 for app; the consumer holds its own foo.
+       * Only that one is installed, so two versions are not judged to ship —
+       * whether or not the patched package has requirements of its own. */
+      for (const requires of [[], [{ name: "bar", versionConstraint: "^1.0.0" }]] as Requirement[][]) {
+        const model = build(
+          "package_repo @backing { }\n" +
+            "test_patch fix { }\n" +
+            "patched foo { srcs = @backing:foo; patches = fix; }\n" +
+            "catalog @cat { deps = @backing:app @backing:foo:1.2.0; }\n" +
+            "test_deps a { deps = foo @cat:app; }\n"
+        );
+        patchTexts.set("fix", rewrite("foo", "foo, patched"));
+        requirementTable.set("app@1.0.0", [{ name: "foo", versionConstraint: "^1.0.0" }]);
+        requirementTable.set("foo@1.0.0", requires);
+        await model.getConfig(Constraints.of({}), execution).getTarget("a");
+        const [foo, app] = lastDepSets as PackageFileSet[];
+        expect(dependency(app, "foo")).to.equal(foo);
+        expect(await text(foo, "foo/data.txt")).to.equal("foo, patched");
+      }
+    });
+
+    it("applies patches in the order written, each to what the last left", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_patch first { }\n" +
+          "test_patch second { }\n" +
+          "patched foo { srcs = @backing:foo; patches = second first; }\n" +
+          "test_deps a { deps = foo; }\n"
+      );
+      patchTexts.set("second", rewrite("foo", "once"));
+      patchTexts.set("first", rewrite("foo", "twice").replace("-foo", "-once"));
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      expect(await text(lastDepSets[0], "foo/data.txt")).to.equal("twice");
+    });
+
+    it("yields plain patched files for anything but one package", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_patch fix { }\n" +
+          "patched both { srcs = @backing:foo @backing:bar; patches = fix; }\n" +
+          "test_deps a { deps = both; }\n"
+      );
+      patchTexts.set("fix", rewrite("foo", "foo, patched"));
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const both = lastDepSets[0];
+      expect(both instanceof PackageFileSet).to.equal(false);
+      expect([...both].map(([name]) => name).sort()).to.deep.equal(["bar/data.txt", "foo/data.txt"]);
+      expect(await text(both, "foo/data.txt")).to.equal("foo, patched");
+      expect(await text(both, "bar/data.txt")).to.equal("bar");
+    });
+
+    it("creates, renames and deletes files, and gives a file the mode the patch states", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_patch fix { }\n" +
+          "patched both { srcs = @backing:foo @backing:bar; patches = fix; }\n" +
+          "test_deps a { deps = both; }\n"
+      );
+      patchTexts.set(
+        "fix",
+        [
+          "diff --git a/foo/data.txt b/foo/moved/data.txt",
+          "similarity index 50%",
+          "rename from foo/data.txt",
+          "rename to foo/moved/data.txt",
+          "--- a/foo/data.txt",
+          "+++ b/foo/moved/data.txt",
+          "@@ -1 +1 @@",
+          "-foo",
+          "\\ No newline at end of file",
+          "+moved",
+          "diff --git a/bin/run.sh b/bin/run.sh",
+          "new file mode 100755",
+          "--- /dev/null",
+          "+++ b/bin/run.sh",
+          "@@ -0,0 +1 @@",
+          "+#!/bin/sh",
+          "diff --git a/bar/data.txt b/bar/data.txt",
+          "deleted file mode 100644",
+          "--- a/bar/data.txt",
+          "+++ /dev/null",
+          "@@ -1 +0,0 @@",
+          "-bar",
+          "\\ No newline at end of file",
+          "",
+        ].join("\n")
+      );
+      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const both = lastDepSets[0];
+      expect([...both].map(([name]) => name).sort()).to.deep.equal(["bin/run.sh", "foo/moved/data.txt"]);
+      expect(await text(both, "foo/moved/data.txt")).to.equal("moved\n");
+      expect(both.getFile("bin/run.sh")!.mode).to.equal(0o755);
+      expect(both.getFile("foo/moved/data.txt")!.mode).to.equal(0o644);
+    });
+
+    it("reports every change that does not apply, across the patches", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_patch one { }\n" +
+          "test_patch two { }\n" +
+          "patched foo { srcs = @backing:foo; patches = one two; }\n" +
+          "test_deps a { deps = foo; }\n"
+      );
+      patchTexts.set("one", rewrite("missing", "x"));
+      patchTexts.set("two", ["--- /dev/null", "+++ b/foo/data.txt", "@@ -0,0 +1 @@", "+again", ""].join("\n"));
+      let failure = "";
+      await model
+        .getConfig(Constraints.of({}), execution)
+        .getTarget("a")
+        .catch(err => {
+          failure = messagesOf(err).join("\n");
+        });
+      expect(failure).to.contain("patch 'one.patch' does not apply to 'missing/data.txt': there is no such file");
+      expect(failure).to.contain("patch 'two.patch' does not apply to 'foo/data.txt': the file it creates already exists");
+    });
+
+    it("fails naming the patch, the file and the hunk that does not apply", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_patch fix { }\n" +
+          "patched foo { srcs = @backing:foo; patches = fix; }\n" +
+          "test_deps a { deps = foo; }\n"
+      );
+      patchTexts.set("fix", rewrite("foo", "x").replace("-foo", "-something else"));
+      let failure = "";
+      await model
+        .getConfig(Constraints.of({}), execution)
+        .getTarget("a")
+        .catch(err => {
+          failure = messagesOf(err).join("\n");
+        });
+      expect(failure).to.contain("patch 'fix.patch' does not apply to 'foo/data.txt': hunk @@ -1,1 +1,1 @@ does not match the file");
     });
   });
 

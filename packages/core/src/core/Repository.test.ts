@@ -57,7 +57,7 @@ describe("RepositoryRef.deliveredAs", () => {
     /* Only the identity changes: content, version and the closure — which still
      * resolves among itself under the real names — are the delivery's own. */
     expect([...renamed].map(([name]) => name)).to.deep.equal(["index.js"]);
-    expect(renamed.dependencies).to.deep.equal([inner]);
+    expect(renamed.packages).to.deep.equal([inner]);
   });
 
   it("leaves the package alone when the rename rides a projection", () => {
@@ -168,19 +168,19 @@ describe("materializeAll over cyclic package graphs", () => {
     const rebuiltApp = delivered as PackageFileSet;
     expect(rebuiltApp).to.be.instanceOf(PackageFileSet);
     expect(rebuiltApp).to.not.equal(app);
-    const names = rebuiltApp.dependencies.map(dep => (dep as PackageFileSet).packageName);
+    const names = rebuiltApp.packages.map(dep => dep.packageName);
     expect(names).to.deep.equal(["buddy", "dep"]);
     /* The cycle survives the rebuild, closed over the REBUILT instances. */
-    const rebuiltBuddy = rebuiltApp.dependencies[0] as PackageFileSet;
-    expect(rebuiltBuddy.dependencies).to.deep.equal([rebuiltApp]);
+    const rebuiltBuddy = rebuiltApp.packages[0];
+    expect(rebuiltBuddy.packages).to.deep.equal([rebuiltApp]);
 
     /* Entering at the other node of the cycle judges the same way: buddy
      * reaches the ref through the cycle, so it too must rebuild. */
     const [second] = await toPromise(materializeAll(RESOLUTION_CONTEXT, [buddy]));
     const secondBuddy = second as PackageFileSet;
     expect(secondBuddy).to.not.equal(buddy);
-    const secondApp = secondBuddy.dependencies[0] as PackageFileSet;
-    expect(secondApp.dependencies.map(dep => (dep as PackageFileSet).packageName)).to.deep.equal(["buddy", "dep"]);
-    expect(secondApp.dependencies[0]).to.equal(secondBuddy);
+    const secondApp = secondBuddy.packages[0];
+    expect(secondApp.packages.map(dep => dep.packageName)).to.deep.equal(["buddy", "dep"]);
+    expect(secondApp.packages[0]).to.equal(secondBuddy);
   });
 });
