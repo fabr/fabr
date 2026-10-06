@@ -41,15 +41,17 @@ const SNAPSHOT_NODE = [23, 4] as const;
 
 /**
  * Environments this flavour provides. It runs tests in the node process it is
- * given, so `node` is the only one it can honestly claim — a target compiled
- * for the browser needs a runner that installs a DOM (the jest flavour does).
- * Said plainly rather than by silently running DOM tests without a DOM.
+ * given, so `node` is the only one it can honestly claim — a target declaring
+ * the `dom` flag needs a runner that installs a DOM (the jest and vitest
+ * flavours do). Said plainly rather than by silently running DOM tests without
+ * a DOM.
  */
 function requireSupportedEnvironment(options: IRunnerOptions): void {
   if (options.env !== "node") {
     throw new Error(
       `The fabr test runner provides no '${options.env}' environment — it runs tests directly in node.\n` +
-        "Use a framework whose runner supplies one (JS_TEST_FRAMEWORK = jest), or build the target for node."
+        "A target declaring the `dom` flag (in deps or test_deps) runs its tests under jsdom, which only the jest and vitest " +
+        "frameworks supply: set test_framework = jest or vitest (framework on a js_test), or drop the flag if the tests need no DOM."
     );
   }
 }

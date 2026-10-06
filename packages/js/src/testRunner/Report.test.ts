@@ -23,8 +23,11 @@
  * "node:test" would make it invisible to a jest-framework runner. */
 
 import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { ITestResult } from "@fabr-build/core";
-import { buildReport, describeSnapshotFailure, formatTestFailures, formatTestSummary } from "./Report";
+import { buildReport, describeSnapshotFailure, formatTestFailures, formatTestSummary, reportPathOf } from "./Report";
 
 function test(name: string, status: ITestResult["status"], extra?: Partial<ITestResult>): ITestResult {
   return { name, status, duration: 0, ...extra };
@@ -61,6 +64,47 @@ describe("buildReport", () => {
       start: 5,
       stop: 7,
     });
+  });
+});
+
+describe("reportPathOf", () => {
+  /* A staged test install as the pipeline lays it out — the compiled tree under
+   * `build/`, its sources under `src/`, each `.js.map` naming its source across
+   * the two — with the working directory at `build/`, where the runner is
+   * invoked. The name is the target's own: neither mount, and never `../`. */
+  const install = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-report-")));
+  const withInstallCwd = <T>(fn: () => T): T => {
+    const previous = process.cwd();
+    process.chdir(path.join(install, "build"));
+    try {
+      return fn();
+    } finally {
+      process.chdir(previous);
+    }
+  };
+  const stage = (compiled: string, source: string): string => {
+    const file = path.join(install, "build", compiled);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "");
+    const toSrc = path.relative(path.dirname(file), path.join(install, "src", source));
+    fs.writeFileSync(`${file}.map`, JSON.stringify({ version: 3, sources: [toSrc], mappings: "" }));
+    return file;
+  };
+
+  it("names a compiled file by its source, relative to the source mount", () => {
+    const file = stage("a.test.js", "a.test.ts");
+    assert.equal(withInstallCwd(() => reportPathOf(file)), "a.test.ts");
+  });
+
+  it("keeps the source's own directory", () => {
+    const file = stage("sub/b.test.js", "sub/b.test.ts");
+    assert.equal(withInstallCwd(() => reportPathOf(file)), path.join("sub", "b.test.ts"));
+  });
+
+  it("falls back to the compiled name, still mount-stripped, when there is no map", () => {
+    const file = path.join(install, "build", "nomap.test.js");
+    fs.writeFileSync(file, "");
+    assert.equal(withInstallCwd(() => reportPathOf(file)), "nomap.test.js");
   });
 });
 

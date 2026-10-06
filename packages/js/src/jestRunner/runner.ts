@@ -255,7 +255,8 @@ const NOT_WRITTEN = "New snapshot was not written";
 const FABR_REMEDY =
   "No recorded snapshot for this test.\n\n" +
   "Run `fabr test -u <target>` to record one. If the snapshot file already exists in your source tree, " +
-  "add it to the target's inputs — snapshot files are ordinary srcs (e.g. `srcs = src:**/*.ts src:**/__snapshots__/*.snap;`).";
+  "declare it as a recorded expectation of the target — `test_expectations = src:**/__snapshots__/*.snap;` on a " +
+  "js_package, `expectations = …` on a js_test — not among its srcs.";
 
 function withFabrRemedy(message: string): string {
   const at = message.indexOf(NOT_WRITTEN);

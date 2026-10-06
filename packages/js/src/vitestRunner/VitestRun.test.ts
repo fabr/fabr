@@ -67,8 +67,12 @@ describe("toTestResults", () => {
       diagnostic: () => (extra.duration === undefined ? undefined : { duration: extra.duration }),
     };
   }
+  /* A compiled file in the install's `build/` mount: the runner is invoked
+   * with that mount as its working directory, and names a file by its path
+   * under it. */
+  const COMPILED = path.join(path.dirname(process.cwd()), "build", "a.test.js");
   function moduleOf(tests: IReportedTest[], errors: IReportedError[] = []): IReportedModule {
-    return { moduleId: path.join(process.cwd(), "a.test.js"), errors: () => errors, children: { allTests: () => tests } };
+    return { moduleId: COMPILED, errors: () => errors, children: { allTests: () => tests } };
   }
 
   it("reports each test under its full name, with its outcome and duration", () => {

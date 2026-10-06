@@ -2190,7 +2190,7 @@ export function main(argv: string[]): number {
   }
   /* A dependency's invalid `exports` map is read as the compiler reads it: a
    * fault in that package, which its runtime reports and the compile has no
-   * cause to (docs `reference/typescript.md`). */
+   * cause to (docs `reference/js/typescript.md`). */
   const resolver = PnpResolver.load(root, conditionsOf(ts, parsed.options), { validateExports: false });
   /* One table, read once: resolution must find the file the emit will name, so
    * the two consumers below cannot be given different answers. */

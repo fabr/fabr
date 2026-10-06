@@ -287,9 +287,9 @@ targetdef js_package {
     # already-built JavaScript (note there are definitionally no checks on
     # the included files.)
     resources = FILES;
-    # Test source files, plus any supporting files (mocks, snapshots)
-    # May contain a setupTests.ts/setupTests.js; if present it will run
-    # before every test.
+    # The test files: every compilable file here runs as a test. Support that
+    # is not itself a test (mocks, a harness, the setupTests script) goes in
+    # test_deps; recorded snapshots in test_expectations.
     tests = FILES;
     # Extra packages for compiling and running the tests only (assertion
     # libraries and their @types); never part of the package's own
@@ -317,9 +317,10 @@ targetdef js_package {
     # Reuse a shared map by bare reference (metadata = COMMON;) or splice it
     # into a block and override per package, later entries winning:
     # metadata = { COMMON; description = This package; };
-    # A key fabr computes itself (name, version, type, main, types, bin,
-    # dependencies, devDependencies, peerDependencies) is rejected rather than
-    # silently overridden.
+    # A key fabr computes itself (name, version, type, main, types, exports,
+    # bin, dependencies, peerDependencies) is rejected rather than silently
+    # overridden, as is one a published package does not carry (devDependencies,
+    # scripts, files, private, publishConfig, workspaces, ...).
     metadata = MAP;
 }
 
@@ -355,9 +356,9 @@ targetdef js_bundle {
 #
 
 targetdef js_test {
-    # Test source files, plus any supporting files (mocks, snapshots)
-    # May contain a setupTests.ts/setupTests.js; if present it will run
-    # before every test.
+    # The test files: every compilable file here runs as a test. Support that
+    # is not itself a test (mocks, a harness, the setupTests script) goes in
+    # deps; recorded snapshots in expectations.
     tests = FILES;
     deps = FILES;
     # The test framework the tests are written for (see js_package's

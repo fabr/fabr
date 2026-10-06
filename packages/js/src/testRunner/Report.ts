@@ -61,10 +61,16 @@ const reportPaths = new Map<string, string>();
 export function reportPathOf(file: string): string {
   let name = reportPaths.get(file);
   if (name === undefined) {
-    name = stripMount(path.relative(process.cwd(), sourcePathOf(file) ?? file));
+    name = stripMount(path.relative(installRoot(), sourcePathOf(file) ?? file));
     reportPaths.set(file, name);
   }
   return name;
+}
+
+/** The root of the staged install, under which the mounts sit: a runner is
+ * invoked with the compiled mount (`build/`) as its working directory. */
+function installRoot(): string {
+  return path.dirname(process.cwd());
 }
 
 /** Drop the leading install mount, so the name is the target's own. */

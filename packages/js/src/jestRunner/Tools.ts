@@ -137,8 +137,8 @@ export function requireEnvironment(env: string, fromDocblock = false): void {
       fromDocblock
         ? "This test file asks for a DOM environment (its @jest-environment docblock), but 'jsdom' is not among the target's dependencies.\n" +
           "Add it to the target's test_deps (e.g. test_deps = @npm:jsdom:26.1.0;)."
-        : "These tests need a DOM environment (the target is built for the browser), but 'jsdom' is not among its dependencies.\n" +
-          "Add it to the target's test_deps (e.g. test_deps = @npm:jsdom:26.1.0;), or build the target for node."
+        : "These tests need a DOM environment (the target declares the `dom` flag), but 'jsdom' is not among its dependencies.\n" +
+          "Add it to the target's test_deps (e.g. test_deps = dom @npm:jsdom:26.1.0;), or drop the flag if the tests need no DOM."
     );
   }
 }
