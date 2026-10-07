@@ -11,8 +11,8 @@ js_script gendoc {
 
 # The target reference is generated from the live build model: `list-all` emits
 # the whole vocabulary (types, config, flags) and gendoc writes one page per
-# source package (core -> standard-rules.md, JS plugin -> js-rules.md). gendoc
-# writes them by bare name; docs_site places them under the content tree with a
+# source package (core -> standard-rules.md, JS plugin -> js-targets.md). gendoc
+# writes them by bare name; docs_site places each in the content tree with a
 # rename projection.
 generate reference_docs {
   srcs = ./DOCGEN.fabr -> PROJECT.fabr;
@@ -27,7 +27,8 @@ generate docs_site {
   srcs = ./src/** ./public/** ./astro.config.mjs
          ../CHANGELOG.md -> src/changelog.md
          release/@npm/@fabr-build/cli/*/package.json -> src/fabr-version.json
-         reference_docs:*.md -> src/content/docs/reference/*.md;
+         reference_docs:standard-rules.md -> src/content/docs/reference/standard-rules.md
+         reference_docs:js-targets.md -> src/content/docs/reference/js/targets.md;
   run = astro build;
   output = dist:**;
 }

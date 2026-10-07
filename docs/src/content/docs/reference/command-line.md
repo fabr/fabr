@@ -1,78 +1,93 @@
 ---
 title: Command line
-description: The fabr CLI — its commands, options, and how targets and files are named on the command line.
+description: The fabr command — its commands and options, and how targets and files are named on the command line.
 ---
-
-Fabr is driven by a single `fabr` command:
 
 ```sh
 fabr [command] [options] <targets…>
 ```
 
-With no command, each target takes the operation its type supports — `build` if it has one, else
-`test`, else `run` — so `fabr mylib` builds a `js_package`, `fabr mytests` runs a `js_test`'s tests,
-and `fabr myserver` runs a `serve` target. A target that can only *run* ends the command line:
-everything after it is passed to the program, so `fabr myserver --port 3000` gives `--port 3000` to
-the server rather than to fabr. Write the command out to be explicit, or to pass arguments to
-anything else (`fabr run mylib -- --flag`).
+`fabr` works on the project that contains the current directory: the nearest `PROJECT.fabr`, in
+this directory or one above it. Progress and errors are written to stderr, and a command's own
+output, such as the listing from `ls` or the file contents from `cat`, to stdout, so that output
+can be piped or redirected on its own.
 
-Diagnostics and progress go to **stderr**; a command's *data* output — a `cat`'s file bytes, an `ls`
-listing — goes to **stdout**, so the data can be piped cleanly away from the noise.
+## Commands at a glance
 
-All fabr commands run inside the context of the current project, that is, the nearest PROJECT.fabr file
-found to the current working directory. 
+| Command | What it does |
+|---|---|
+| [`build`](#build) | Build targets. |
+| [`test`](#test) | Build and run targets' tests. |
+| [`run`](#run) | Build a program and run it. |
+| [`ls`](#ls), [`cat`](#cat), [`cp`](#cp) | List, print or copy the files a target produces. |
+| [`shell`](#shell) | Open a shell in the directory a build step runs in, for debugging. |
+| [`sync`](#sync) | Publish packages. |
+| [`list-targets`](#list-targets), [`list-targetdefs`](#list-targetdefs), [`list-properties`](#list-properties), [`list-all`](#list-all) | Describe the project and what a build file can contain. |
+
+### Leaving the command out
+
+With no command, each target gets the first of `build`, `test` and `run` that its type supports:
+
+```sh
+fabr mylib                    # a js_package: builds it
+fabr e2e                      # a js_test: runs its tests
+fabr devserver --port 3000    # a serve target: runs it
+```
+
+A target that can only be run ends fabr's own arguments: everything after it goes to the program,
+as `--port 3000` does above. To pass arguments to a target that can also be built, name the
+command: `fabr run mylib --flag`.
 
 ## Commands
 
 ### `build`
 
-Build the given targets. Each target's result is produced into the cache; nothing is written to your
-working tree.
+Builds the targets. The results go into fabr's cache; nothing is written into your project
+directory. Use [`ls`](#ls), [`cat`](#cat) and [`cp`](#cp) to look at them or take a copy.
 
 ```sh
 fabr build mylib
-fabr mylib            # a js_package supports build, so this builds it
+fabr build -DBUILD_TYPE=release mylib app
 ```
+
+When nothing has changed since the last build, fabr prints `Already up to date`.
 
 ### `test`
 
-Compile and run the targets' tests, reporting the results. A run is hermetic: the tests execute in
-a staged copy of their inputs and cannot write to your working tree.
+Compiles and runs the targets' tests, and prints a summary for each target. The tests run in a
+copy of their declared inputs, so they can't change your project directory.
 
 ```sh
 fabr test mylib
-fabr test -u mylib    # …and update the recorded expectations (snapshots) it produces
+fabr test -u mylib    # also record new and changed snapshots
 ```
 
-`-u` re-runs asking the test runner to refresh the expectations it has on record rather than fail
-on them, and writes the changed ones back into your source tree afterwards, naming each. Nothing is
-written without it — and nothing is written if the run is red for any other reason.
+A passing run is cached and isn't repeated until something the tests depend on changes. With `-u`,
+new and changed snapshots are written back into your source tree after a passing run, and each
+file is named as it is written. For JavaScript, see [Testing](/reference/js/testing/).
 
 ### `run`
 
-Build a target as a runnable and execute it with inherited stdio (tty, pipes, exit code all pass
-through). Everything **after** the target is passed to the program verbatim — put fabr's own options
-*before* the target. The target runs in the current working directory and with the active environment.
+Builds a target as a program and runs it. The program has your terminal: its input, output and
+exit status are its own. It runs in your current directory, with your environment.
 
 ```sh
-fabr run mytool --flag arg                 # --flag arg go to the program
-fabr run @npm:typescript:5.4.5:tsc --version
+fabr run mytool --flag arg                    # --flag arg go to the program
+fabr run -DBUILD_TYPE=release mytool          # options for fabr go before the target
+fabr run @npm:typescript:5.6.3:tsc --version  # a package's command-line program
 ```
 
-### `shell`
+Everything after the target is passed to the program unchanged, including a `--`. Options meant
+for fabr go before the target.
 
-Stage a target's build sandbox — its resolved inputs and tool mounts, exactly as the build step sees
-them — into a temporary directory, print the command the step would run, and open a shell there. For
-debugging a build step (a genrule, a compile) by hand. The shell runs with the build's own clean
-environment; the directory is removed on exit.
-
-```sh
-fabr shell docs_site
-```
+A [`serve`](/reference/standard-rules/#serve) target is the exception to "runs in your current
+directory": it runs in a directory containing the files it serves. `fabr run -w` restarts the
+program, or updates the files it serves, as sources change; see
+[Watch mode & dev servers](/guides/watch/).
 
 ### `ls`
 
-Build the given names and list the files they resolve to. `-l` adds each file's hash and size.
+Builds what the references name and lists the files. `-l` adds each file's content hash and size.
 
 ```sh
 fabr ls mylib
@@ -81,106 +96,133 @@ fabr ls -l 'mylib:*.js'
 
 ### `cat`
 
-Build a target and write its matching files' bytes to **stdout**, so you can inspect or pipe them.
+Builds what the references name and writes the contents of the files to stdout.
 
 ```sh
-fabr cat 'mylib:index.js'
+fabr cat mylib/package.json
+fabr cat 'mylib:*.d.ts' > all-types.d.ts
 ```
+
+A reference that matches no files is an error.
 
 ### `cp`
 
-Build the given names and copy their files into a destination directory (the final argument, a plain
-filesystem path relative to your working directory). Additive, and a copy rather than a hard-link, so
-it never writes through a cache blob.
+Builds what the references name and copies the files into a directory, which is the last argument
+and an ordinary path. Existing files in the directory are kept unless a copied file has the same
+name.
 
-`cp` follows **`cp -R`'s rules exactly** and is never package-aware: whether the files land flat or
-under a subdirectory is decided by the reference *as written*, exactly as a shell path would decide
-it.
+Where the files land follows the rules of `cp -R`, applied to the reference as you wrote it:
 
 ```sh
-fabr cp mylib build/             # names a container -> build/mylib/…
-fabr cp 'mylib:index.js' out     # names one file    -> out/index.js
-fabr cp 'mylib:build/*.js' out   # a glob -> the matched files land directly in out/
-fabr cp 'mylib:build/**' out     # a subtree -> out/…, the structure below build/ kept
+fabr cp mylib out                # a whole target      -> out/mylib/…
+fabr cp 'mylib:index.js' out     # one file            -> out/index.js
+fabr cp 'mylib:build/*.js' out   # a pattern           -> the matching files, directly in out/
+fabr cp 'mylib:build/**' out     # everything under it -> out/…, keeping the structure below build/
 ```
 
-If the reference carries a [rename](/reference/syntax/#projection-and-renaming) (`-> tmpl`), that is
-the naming: the files are copied under the names it produced and none of the above applies.
+Writing the reference with `/` or `:` makes no difference to `cp`: `mylib/index.js` and
+`mylib:index.js` both copy to `out/index.js`. A reference with a
+[rename](/reference/syntax/#projection-and-renaming) (`-> template`) is the one case where the
+names come from the reference: the files are copied under the names the rename gives them.
 
-Whether you write the path with a `:` or a `/` makes no difference here. The separator decides what
-the resolved files are *named* — a `:` strips what precedes it, a `/` keeps the whole written path,
-which is what `ls` shows you — but `cp` copies *from* the path as written either way, so both forms
-land the same files in the same places.
+### `shell`
+
+Sets up the directory that a target's build step runs in, with its inputs and tools in place,
+prints the command the step would run, and opens a shell there. Use it to reproduce a failing step
+by hand. The shell has the same empty environment the step has, and the directory is removed when
+you exit.
+
+```sh
+fabr shell docs_site
+```
 
 ### `sync`
 
-Build a `sync` target's members and publish them to their destination coordinates (e.g. an npm
-registry). Building the target is the cacheable dry run; `sync` performs the upload, dependencies
-first.
+Builds the packages a [`sync`](/reference/standard-rules/#sync) target lists and publishes them,
+each after the packages it depends on. `fabr build` on the same target produces the packages
+without uploading them, which is a way to check a release first.
 
 ```sh
-fabr sync release
+fabr build release    # produce the packages to be published
+fabr sync release     # publish them
 ```
 
 ### `list-targets`
 
-List the targets declared in the project. `-l` adds each target's source location; `--all` includes
-the internal targets normally hidden (those declared by core and plugin libraries); `--json` emits
-structured data. An optional list of names filters the listing.
+Lists the targets the project declares. Names given as arguments limit the listing to those
+targets.
+
+| Option | Adds |
+|---|---|
+| `-l` | Where each target is declared. |
+| `--all` | The targets fabr and its plugins declare themselves, which are normally hidden. |
+| `--json` | Output as JSON. |
 
 ### `list-targetdefs`
 
-List the available target *types* and their property schema. `-l` for source locations, `--json` for
-structured data. An optional name filters to specific types.
+Lists the target types a build file can use, with the properties each takes. A name limits it to
+that type.
 
 ```sh
 fabr list-targetdefs js_package
 ```
 
+`-l` adds where each is declared, and `--json` gives the output as JSON.
+
 ### `list-properties`
 
-List the global configuration properties (with their defaults) and the flag switches. `--json` for
-structured data.
+Lists the configuration settings with their current values, and the flags. `--json` gives the
+output as JSON.
 
 ### `list-all`
 
-Emit the whole build vocabulary — types, properties, and flags — as one JSON document, for tooling
-(fabr's own documentation is generated from it). Always JSON.
+Writes everything the other `list-` commands report, as one JSON document. The
+[core](/reference/standard-rules/) and [JavaScript](/reference/js/targets/) reference pages are
+generated from it.
 
 ## Options
 
-| Option | Meaning |
-|---|---|
-| `-DPROP=VALUE` | Force property `PROP` to `VALUE` for this run (overrides the build script and any default). |
-| `-w` | Watch mode: rebuild — and, for `run`, restage/relaunch when sources change. |
-| `-u`, `--update` | (`test`) Update the recorded test expectations — snapshots — from the run, writing the changed ones back into your source tree. |
-| `-q`, `--quiet` | Suppress subcommand output and the progress display; a *failed* step still shows its output in its error. |
-| `--no-progress` | No progress display, even on a terminal: subcommand output streams as it arrives, as it does when stderr is not a terminal. With the display, a step's output is held until the step ends and logged as one block beneath its completion line — or, if it failed, shown in its error. |
-| `-l` | Long listing: hash + size per file (`ls`), or source location (`list-*`). |
-| `--json` | Emit JSON (the `list-*` verbs). |
-| `--all` | Include internal targets in `list-targets`. |
-| `-v`, `--version` | Print the fabr version and exit. |
-| `-h`, `--help` | Print usage and exit. |
-| `--` | End option parsing — everything after is a positional, so a target may begin with `-` or be spelled like a command. |
+| Option | Applies to | Meaning |
+|---|---|---|
+| `-DNAME=VALUE` | all | Set a configuration property for this run, overriding the build file and any default. |
+| `-w` | `build`, `test`, `run` | Keep running, and rebuild, retest or restart when sources change. See [Watch mode](/guides/watch/). |
+| `-u`, `--update` | `test` | Record new and changed snapshots, and write them into your source tree. |
+| `-q`, `--quiet` | all | Don't show the progress display or the output of build steps. A step that fails still shows its output in the error. |
+| `--no-progress` | all | Don't show the progress display. Output from build steps is then printed as it arrives, as it is when stderr isn't a terminal. |
+| `-l` | `ls`, `list-*` | Long listing: hash and size for `ls`, source location for the `list-` commands. |
+| `--json` | `list-*` | Output as JSON. |
+| `--all` | `list-targets` | Include the targets fabr and its plugins declare. |
+| `--` | all | End of options. What follows is a target, even if it starts with `-` or is the name of a command. |
+| `-v`, `--version` | | Print fabr's version. |
+| `-h`, `--help` | | Print a summary of the commands and options. |
+
+On a terminal, fabr shows the steps in progress at the bottom of the screen, and holds each step's
+output until the step finishes, so that the output of steps running in parallel isn't mixed
+together.
 
 ## Naming targets and files
 
-Every target you name — on `build`, `test`, `run`, `shell`, `ls`, `cat`, `cp`, `sync` — is a whole
-**reference**, parsed exactly as in a build script. See the [language syntax](/reference/syntax/) for
-the full grammar. Two parts of a reference apply on the command line:
+An argument that names a target is a **reference**, written as it would be in a build file. The
+[language reference](/reference/syntax/#references) describes references in full. On the command
+line:
 
-- A **`:projection`** selects and renames files out of the resolved result — `pkg:build/*.js` selects
-  `build/*.js` out of target `pkg`, `golden:*.expect -> *.out` renames as it selects, and an external
-  requirement such as `@npm:esbuild:0.28.1:package.json` resolves too. Projections are meaningful only
-  for the file-listing verbs (`ls`, `cat`, `cp`) and for picking a runnable's entry (`run`); the
-  whole-target verbs (`build`, `test`, `sync`) build the entire target and ignore any projection.
-- A **`<KEY=VALUE>` constraint** applies a build-config override to just that reference — the
-  per-reference form of `-D` (which sets the property for the *whole* run). It works everywhere a
-  target is named. See [Constraints](/reference/syntax/#constraints).
+- **A target name** means the target: `mylib`.
+- **A path into a target** selects files from what it builds: `mylib/package.json`,
+  `'mylib:build/*.js'`. Quote a pattern so that your shell doesn't expand it.
+- **A path in your project** names source files, relative to the current directory:
+  `fabr ls ./src`.
+- **A package reference** needs no declared target: `fabr ls @npm:esbuild:0.28.1`,
+  `fabr run @npm:prettier:3.3.3 --check src`.
+- **A constraint** builds that one reference with a different setting:
+  `'mylib<BUILD_TYPE=release>'`.
 
-The difference between a constrained reference and `-D` only shows when you name more than one target:
+Selecting files matters to `ls`, `cat` and `cp`, and to `run`, where it picks which of a package's
+programs to run. `build`, `test` and `sync` work on the whole target and ignore it.
+
+A constraint is the per-reference form of `-D`. The difference shows when you name more than one
+target:
 
 ```sh
-fabr build 'a<BUILD_TYPE=release>' b       # a (and its deps) as release; b at the default
-fabr build -DBUILD_TYPE=release a b        # both a and b as release
+fabr build 'a<BUILD_TYPE=release>' b       # a and what it depends on as release; b as usual
+fabr build -DBUILD_TYPE=release a b        # both as release
 ```

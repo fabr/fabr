@@ -1,198 +1,199 @@
 #
-# Build type: standard values are one of
-#  - debug          = no optimization, full debugging info (default)
-#  - relwithdebinfo = full optimization but still debuggable
-#  - release        = full optimization, all debug info stripped
+# How far a build is optimised and how much debugging information it keeps:
+# `debug` (not optimised, full debugging information), `relwithdebinfo`
+# (optimised, debugging information kept) or `release` (optimised, debugging
+# information removed).
 default BUILD_TYPE = debug;
 
-# The current operation. Standard values are
-# - build  = standard compile/link/package
-# - files  = return the raw contents of the built target
-# - run    = create a direct executable
-# - test   = execute tests
+# What is being done with a target: `build` (produce its output), `test` (run
+# its tests), `run` (produce it as a program that can be launched) or `files`
+# (its built output as plain files). The `build`, `test` and `run` commands set
+# it; a build script can require it of a dependency (`tool<BUILD_OPERATION=run>`).
 default BUILD_OPERATION = build;
 
-# What a test run does when its actual output diverges from an expectation it
-# has on record (a snapshot entry, a golden expected-file):
-#  - check  = fail, reporting the difference (default)
-#  - update = rewrite the record, and offer the new content back to the source
-#             tree. `fabr test -u` is sugar for setting this.
-# Updates are offered, never applied by the build: an action is hermetic and
-# cannot write to your tree, so the driver applies them, only on request, only
-# after an otherwise-green run.
+# What a test run does when a result differs from the expectation recorded for
+# it, such as a snapshot: `check` fails the test and reports the difference;
+# `update` records the new result and, after a passing run, writes the changed
+# records back into the source tree. `fabr test -u` sets `update` for one run.
 default TEST_EXPECTATIONS = check;
 
-# The platform we are building for, as a clang/LLVM triple (e.g.
-# arm64-apple-macosx15.0, x86_64-linux-gnu). Defaults to HOST — the machine fabr
-# is running on — and is what dependency/native selection gates on; override it
-# (-D TARGET=… or ref<TARGET=…>) to cross-compile.
+# The platform being built for, as a clang/LLVM target triple such as
+# `arm64-apple-macosx15.0` or `x86_64-linux-gnu`. Defaults to `HOST`, the
+# machine fabr is running on. Set it to cross-compile: for a whole run with
+# `-DTARGET=…`, or for one dependency with `mylib<TARGET=…>`. Platform-specific
+# packages are selected by it.
 default TARGET = ${HOST};
 
 
 #
-# A catalog pins a fixed set of external requirements in one place. Its `deps`
-# are resolved jointly and once (a single version selection over the whole set),
-# and each resolved package is exposed by its package name: reference it as
-# `<catalog>:<package>` wherever a dependency is wanted, with the version fixed
-# here rather than repeated at each use. Because the whole set resolves together,
-# every consumer sees one consistent version of everything the catalog covers,
-# and does no resolution of its own.
+# A named set of dependencies whose versions are chosen once, together. Refer to
+# a member wherever a dependency is wanted as `<catalog>:<package>`, with no
+# version:
+#
+#     catalog @pkg { deps = @npm:react:^19.1.0 @npm:react-dom:^19.1.0; }
+#
+#     js_package ui { srcs = src:**/*.tsx; deps = @pkg:react @pkg:react-dom; }
+#
+# Every target that uses the catalog gets the same version of each member, and
+# of everything the members depend on. A member is downloaded only when a target
+# uses it.
 #
 targetdef catalog {
+    # The members: packages from a registry, each with its version, or package
+    # targets of this project.
     deps = FILES;
 }
 
 #
-# Run a command pipeline and collect its output — the codegen/genrule builder (a
-# build step, distinct from the interactive `fabr run` verb). `run` is a command
-# line: `cmd args... [redirs] | cmd args... [redirs]`. Each command is a fabr
-# runnable (a target/tool, mounted in its own sandbox dir); args are literal or a
-# glob expanded over `srcs`. `|` pipes stdout to the next stage's stdin; `> name`
-# / `2> name` / `&> name` capture stdout / stderr / both as content named `name`;
-# `< source` streams a single-file reference to the first stage's stdin. `srcs`
-# are input files staged at the sandbox root; `output` (a `dir:glob`, optionally
-# `-> tmpl`) selects what is collected, from the files the tools wrote and the
-# redirect captures alike; without it, the redirect captures are collected. The
-# commands run with no environment variables but those in `env`. Example:
+# Run a command and keep its output as the target's files, for code generation
+# or any step that no other target type covers:
 #
-#     generate docs { run = list_targetdefs --json | gendoc > reference.md; }
+#     generate api_docs {
+#         srcs = ./templates/**;
+#         run = list_api --json | render_docs > reference.md;
+#     }
+#
+# Each command in `run` is a runnable target or package, never a program found
+# on the host. The commands run in a directory holding `srcs`.
+#
+# The result is the files the redirections capture (`> name`). When `output` is
+# set, the result is instead the files it selects, from the captured files and
+# from anything the commands wrote.
 #
 targetdef generate {
+    # Input files, placed in the directory the commands run in.
     srcs = FILES;
+    # The command to run: a pipeline of runnables with their arguments, with
+    # `|`, `<`, `>`, `2>` and `&>` as in a shell.
     run = REQUIRED COMMAND;
+    # Which files to keep, as a pattern with an optional rename: `dist:**`,
+    # `*.out -> *.txt`.
     output = STRING;
-    # Environment variables the commands run with, by name: their whole environment.
+    # Environment variables for the commands, which run with no others.
     env = MAP;
 }
 
 #
-# Apply patches to files or to a package. `srcs` are what is patched and
-# `patches` the unified diffs applied to them, in the order written, each naming
-# its files as git does (`a/lib/x.js`). One package in `srcs` yields a package
-# named as this target is, at the same version and with the same requirements,
-# its files patched; anything else yields the patched files. Named after the
-# package it patches, for example:
+# Apply patches to a package, or to plain files:
 #
 #     patched glob-promise { srcs = @npm:glob-promise:1.33.0; patches = patches/glob.patch; }
 #
+# When `srcs` is one package, the result is a package with this target's name
+# and the original's version and dependencies. Naming the target after the
+# package therefore replaces that package wherever it is used. For anything
+# else, the result is the patched files.
+#
 targetdef patched {
+    # What to patch.
     srcs = REQUIRED FILES;
+    # Unified diffs, applied in the order written, with paths as git writes
+    # them (`a/lib/x.js`).
     patches = REQUIRED FILES;
 }
 
 #
-# Define a runnable plain shell script (run it with `fabr run`, collect its
-# output with the generic `generate` target, or check it with a golden test).
-# `entry` is the script FILE itself — it contributes the file to the install (at
-# its resolved name) and launches it with the shell; `deps` stage any further
-# support files (their filesets union flat — just files, no package mounting);
-# `args` are fixed leading arguments. It yields a runnable, it does not itself
-# execute.
+# A shell script that can be run: with `fabr run`, as a command in a `generate`
+# target, or as the `tool` of a `serve` target.
 #
 targetdef script {
+    # Other files the script needs, placed alongside it under their own names.
     deps = FILES;
+    # The script file, which is run with `sh`.
     entry = REQUIRED FILES;
+    # Arguments passed to the script ahead of any given when it is run.
     args = STRING;
 }
 
 #
-# Define a served program: a long-lived server plus the content it serves.
-# `tool` names the server — any runnable (a `script`/`js_script` target, or an
-# external package run via its bin); `deps` union additional support files
-# into the install; `files` are the served content, staged at the install
-# root; `args` are fixed leading arguments. The program launches with its
-# working directory at the staged install (its content is its world — unlike
-# a plain script under `fabr run`, which runs in the caller's directory), so
-# e.g. a stock static server serves `files` with no path argument. Under
-# `fabr run -w`, a change to `files` is synced into the running server's
-# staging area in place; only a change to the program itself (`tool`, `deps`,
-# `args`, `env`) restarts it. It yields a runnable, it does not itself execute.
+# A long-running program together with the files it serves, such as a
+# development server:
+#
+#     serve site { tool = @npm:http-server:14.1.1; files = site_build; args = -c-1 .; }
+#
+# `fabr run site` starts the program in a directory containing `files`, so a
+# static file server needs no path argument. Under `fabr run -w`, a change to
+# `files` is copied into that directory while the program keeps running; a
+# change to `tool`, `deps`, `args` or `env` restarts it.
 #
 targetdef serve {
+    # The program to run: a `script` or `js_script` target, or a package that
+    # has a command-line program.
     tool = REQUIRED FILES;
+    # Other files the program needs, placed in the directory it runs in.
     deps = FILES;
+    # Arguments passed to the program ahead of any given to `fabr run`.
     args = STRING;
+    # The content to serve.
     files = FILES;
-    # Environment variables the program is launched with, by name, over the
-    # environment `fabr run` was itself started in.
+    # Environment variables added to those `fabr run` was started with.
     env = MAP;
 }
 
 #
-# A sync publishes built content to one or more destination coordinates. Its body
-# is a set of members written as `<destination>:<address> = content` (the
-# coordinate is the key, the identityless built content the value); the address's
-# shape is the destination's — an npm registry's is `<name>:<version>`, e.g.
+# Publish built packages to a registry. Each entry names where a package goes
+# and which target supplies it; for an npm registry that is
+# `<registry>:<name>:<version> = <target>;`:
 #
-#     sync release { @npm:@fabr/core:0.1.0 = core; @npm:@fabr/cli:0.1.0 = cli; }
+#     sync release {
+#         @npm:@acme/core:1.2.0 = @acme/core<BUILD_TYPE=release>;
+#         @npm:@acme/cli:1.2.0  = @acme/cli<BUILD_TYPE=release>;
+#     }
 #
-# Each destination packages its members jointly with the whole release as context
-# (npm rewrites a member's manifest dependency on another member to that member's
-# assigned version). Building the sync target produces the wire artifacts (a
-# dry-run); `fabr sync` uploads them, deps-first. The members are reference-keyed
-# bindings rather than fixed schema properties; `* = FILES` types them — any
-# coordinate key maps to a FILES (content) value.
+# An entry publishes the build type it is given, so `<BUILD_TYPE=release>` on
+# the target is what makes the published package a release build.
+#
+# `fabr build release` produces the packages as they would be published, without
+# uploading anything. `fabr sync release` uploads them, each after the packages
+# it depends on. Where one entry depends on another, the published package
+# requires the version assigned to it here.
 #
 targetdef sync {
     * = FILES;
 }
 
 #
-# A `fetch` repository is a declared table of downloads: each member names a URL
-# and the integrity digest its content must match (`<algorithm>-<base64>`, told
-# apart from the URL by shape, so the two may be written in either order).
+# A set of files to download, each with the integrity hash its contents must
+# match:
 #
-#     fetch @dl { package.tgz = "https://…/<sha>" "sha256-…"; }
+#     fetch @dl { node.tar.gz = "https://nodejs.org/dist/v22.15.0/node-v22.15.0.tar.gz" "sha256-…"; }
 #
-# The digest is required: a URL promises nothing about staying the same, so the
-# declaration is where immutability is claimed and it is checked on every fetch,
-# before anything is cached. A member is downloaded only when something names it.
-# `@dl` denotes the whole set and each member is a file in it, so `@dl:name` is
-# the downloaded file and `@dl:name:…` projects into it — including into an
-# archive — exactly as a local file of that name would.
+# `@dl:node.tar.gz` is then the downloaded file, and `@dl:node.tar.gz:*:bin/node`
+# a file inside the archive. The hash is required, is written
+# `<algorithm>-<base64>`, and is checked on every download. A file is downloaded
+# only when something refers to it.
 #
 targetdef fetch {
     * = STRING;
 }
 
 #
-# A `repository_group` serves one package namespace from several registries:
-# every member is a route — a literal package-name prefix mapped to a declared
-# registry — and references written against the group resolve together, in one
-# joint version selection, with each package fetched from the registry its name
-# routes to. This is how a private registry serving one scope coexists with a
-# public registry serving everything else:
+# Combine several registries into one, choosing the registry for each package by
+# its name:
 #
 #     repository_group @deps {
-#         @fortawesome/* = @fa;
-#         *              = @npm;
+#         @acme/* = @internal;
+#         *       = @npm;
 #     }
 #
-# A key is a literal name (`lodash`), a literal with one trailing `*`
-# (`@fortawesome/*`, `acme-*`), or the bare `*` — the empty prefix, which is
-# not a special entry: the longest matching key always wins (an exact name
-# beating its own `name*` twin), so exceptions are written as longer prefixes
-# and declaration order carries no meaning. A name matching no route is simply
-# not served (there is deliberately no scan or fall-through across registries —
-# what resolves must never depend on what a registry happens to be missing).
-# All routed registries must speak the same package ecosystem.
+# Dependencies are then written `@deps:<package>:<version>`, and versions are
+# chosen across all the registries together. A key is a package name, a name
+# prefix ending in `*`, or `*` alone for everything else. The longest matching
+# key decides, whatever order the entries are written in. A package is looked up
+# only in the registry its name selects, never in another as a fallback. The
+# registries must all be of the same kind.
 #
-# A route's value may instead be a file set, which is interpreted as a package of
-# the same kind as the rest of the repository group. In this case, the key must be
-# the full name of the package.
+# A value can instead be a target or files, to be used as the package of exactly
+# that name.
 #
 targetdef repository_group {
     * = FILES;
 }
 
 #
-# A `fabr_home` repository is where fabr itself is installed: its plugins and the
-# tools they ship, found by node's module resolution the way plugins are. A
-# declaration declares the namespace of its name, so a name under it that the
-# project does not declare resolves to the installed package of that name —
-# `@fabr-build/js-drivers`, or `@fabr-build/js-drivers:cssDriver/driver.js` to
-# project into it. A project declaring the name builds it instead. No version is
-# chosen: the installation fixes each one.
+# The packages installed with fabr itself: its plugins and the tools they use.
+# The standard library declares `fabr_home @fabr-build { }`, so that a name such
+# as `@fabr-build/sass-pnp-importer` refers to the installed package, at the
+# version that is installed, unless the project declares a target of that name.
 #
 targetdef fabr_home {
 }
@@ -200,12 +201,13 @@ targetdef fabr_home {
 fabr_home @fabr-build { }
 
 #
-# A `flag` yields file content directly, with no build step. Its main use is as
-# a named switch that a target lists in its `deps` to opt into some behaviour
-# (the `ts/*` source-mode flags are instances of this type); `provides` may also
-# expose a computed set of files as the flag's result.
+# A named switch. A target turns a flag on by listing it in its `deps`, and the
+# rules that build the target decide what it means (`dom`, `ts/no_strict`).
+# Declare your own to give a set of flags one name:
+#
+#     flag legacy_ts { provides = ts/no_strict_null_checks ts/allow_implicit_any; }
 #
 targetdef flag {
+    # Other flags this one turns on, or files it supplies.
     provides = FILES;
 }
-

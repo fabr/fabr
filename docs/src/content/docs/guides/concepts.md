@@ -1,165 +1,210 @@
 ---
 title: Conceptual model
-description: The underlying concepts that drive fabr.
+description: The ideas behind a fabr build file — file sets, properties, configuration and packages — and how one target is built in several configurations.
 ---
 
-
-In fabr, everything (almost) is either a file set, or a property. Generally speaking, file sets are what
-we're building and manipulating, and properties are parameters within which it works. All properties
-can be assigned only once (single static assignment), and are resolved lazily on-demand.
+Almost everything in a fabr build file is one of two things: a **file set** or a **property**.
+File sets are what a build makes and consumes: your sources, the packages you depend on, and the
+output of every target. Properties are the named values that say how. This page explains both,
+and then the two ideas built on them: configuration and packages.
 
 ## File sets
 
-The simplest fileset is a set of real files:
- - `src` - all files recursively in the src directory
- - `src/**/*.ts` - all files recursively in the src directory that end in `.ts`
- - `./src/*.[jt]s` - all files directly in the src directory ending in `.js` or `.ts`
- - `bin/script.ts` - a single script file.
+A file set is a set of named files. The simplest kind comes straight from your source tree:
 
-All the usual shell globbing syntax is supported, plus `**` (globstar) for recursive matching.
+| Reference | The files it names |
+|---|---|
+| `bin/script.ts` | One file. |
+| `src` | Every file under the `src` directory. |
+| `src/**/*.ts` | Every `.ts` file under `src`, at any depth. |
+| `./src/*.[jt]s` | The `.js` and `.ts` files directly in `src`. |
 
-A build target then is just a set of derived files. For example this declaration provides a fileset
-containing an NPM package:
+These are shell glob patterns, with `**` matching across directories. Paths are relative to the
+build file they are written in.
+
+### A target is a file set
+
+A target declares what a result is made from:
 
 ```
 js_package hello {
-    srcs = index.ts;
+  srcs = index.ts;
 }
 ```
 
-Target names can contain alphanumeric characters plus '@', '/', '_', '-' and '.'. Targets
-themselves carry only their inputs - sources and dependencies. 
-The built form of the package can then be accessed exactly like a directory:
+The built package is itself a file set, and you refer to it and to the files inside it as if it
+were a directory:
 
-- `hello` - the package itself as a whole
-- `hello/package.json` - the package.json file inside the package
-- `hello/**/*.js` - All `.js` files inside the package.
+| Reference | The files it names |
+|---|---|
+| `hello` | The whole package. |
+| `hello/package.json` | The package's `package.json`. |
+| `hello/**/*.js` | Every `.js` file in the package. |
 
-:::note
-target and property names are _global_ throughout the project, while source files are resolved relative to
-the fabr file they're included from. In the event of a conflict between a target name and a real directory,
-the target is used in preference. 
+The same references work on the command line (`fabr ls hello`, `fabr cat hello/package.json`) and
+as another target's inputs. Using a target in a reference is what causes it to be built.
 
-Recommended style is generally to prefix directories with `./` for clarity.
-:::
+Target names are global to the project, whichever build file declares them, and a target takes
+precedence over a directory of the same name. Write a directory as `./hello` to be unambiguous.
 
-Artifact repositories (eg npm) are accessed in exactly the same way. The default JS rules provide an
-`@npm` repository for the central `npmjs.com` repository, which takes package and version (colon separated):
-- `@npm:@parcel/watcher:2.6.0` - the package as a whole
-- `@npm:picomatch:4.0.5:package.json` - extract the package.json file from the package
+### So is a package from a registry
 
-Now, having picked up some files, you might want to rename them as well. For the common case of stripping prefixes,
-the ':' operator replaces '/', and means 'remove the left hand side from the resulting names'. For example:
+Packages from a registry are referred to the same way. The JavaScript plugin provides `@npm`, the
+npm registry, which takes a package name and a version:
 
-- `./src/*.ts` - file set with 'src/a.ts, src/b.ts, etc'
-- `./src:*.ts` - file set with `a.ts, b.ts, etc`
+| Reference | The files it names |
+|---|---|
+| `@npm:picomatch:4.0.5` | The package. |
+| `@npm:picomatch:4.0.5:package.json` | One file from it. |
 
-This doesn't affect the resolution of the files themselves, only how they appear to subsequent consumers of the
-fileset - each file set behaves as a virtual filesystem, that connects an arbitrary name to the real underlying file.
+### Naming the files
 
-:::note
-Any leading ./ and ../ path segments are stripped off completely, so `../scripts/index.ts` is legal (as long as its
-still inside the project tree), but will be named `scripts/index.ts`
-:::
+A file set gives each file a name, and whatever consumes the set sees those names, not the paths
+the files came from. A reference decides the names as well as the files.
 
-For more complex renames, there's the -> rename operator which does pattern match replacement:
+Written with `/`, a reference keeps the path as written. Replacing a `/` with `:` drops everything
+before it:
 
-- `./src/**/*.cts -> **/*.ts` - Name eg `src/foo/bar.cts` to `foo/bar.ts`
-- `hello/*.js -> src/hello_vendored/*.js` - Name eg `hello/index.js` to `src/hello_vendored/index.js`
-- `@npm:picomatch:4.0.5:package.json -> pico.json` - Name the package's `package.json` as `pico.json`.
+| Reference | Names |
+|---|---|
+| `./src/*.ts` | `src/a.ts`, `src/b.ts` |
+| `./src:*.ts` | `a.ts`, `b.ts` |
+
+This is why sources are usually written `srcs = src:**/*.ts`: the package then contains
+`index.js`, not `src/index.js`. A leading `./` or `../` is never part of a name, so
+`../scripts/run.ts` is named `scripts/run.ts`.
+
+For anything else there is `->`, which renames by pattern. Each `*` or `**` on the right takes
+what the corresponding one on the left matched:
+
+| Reference | Result |
+|---|---|
+| `./src/**/*.cts -> **/*.ts` | `src/foo/bar.cts` is named `foo/bar.ts`. |
+| `hello/*.js -> vendor/hello/*.js` | The package's `index.js` is named `vendor/hello/index.js`. |
+| `@npm:picomatch:4.0.5:package.json -> pico.json` | That one file, named `pico.json`. |
+
+The [language reference](/reference/syntax/#projection-and-renaming) has the full rules.
 
 ## Properties
 
-Properties live in the same namespace as targets, but must contain identifier 
-characters only (ie alphanumeric, '_' and '@')
-Properties come in a handful of different types, but the most common is a string:
-
-- `VERSION=4.0;`
-- `DESCRIPTION='Starter example';`
-- `TEST_DEPS = @npm:chai:4.0.5 @npm:@types/chai:4.0.1;`
-- `MY_DEPS = @npm:package:${VERSION};`
-
-String values can be single or double-quoted (shell rules), and substituted with ${VAR},
-where VAR is another property.
-
-## Constraints
-
-'Constraints' is the way in which targets can request their dependencies in a particular form. You might think of them as property overrides, but creating an _additional_ 'version' of the project, rather than replacing it. The basic
-syntax is
-
-- `hello<JS_TARGET=es6-esm,BUILD_TYPE=release>` - the hello target release built against es6-esm
-- `@npm:esbuild:0.28.1<TARGET=x86_64-linux-gnu>` - The x64 esbuild build
-
-An example might be in order:
+A property is a named value. Inside a target, a property is one of the target's inputs (`srcs`,
+`deps`). At the top level of a build file, it is a setting or a value you want to reuse:
 
 ```
-JS_TARGET=es2021-commonjs;
+VERSION = 4.0;
+DESCRIPTION = 'Starter example';
+TEST_DEPS = @npm:chai:4.3.6 @npm:@types/chai:4.3.1;
+GREETING = "hello v${VERSION}";
+```
+
+`${NAME}` substitutes another property's value. A property that holds references, like `TEST_DEPS`
+above, is used by its bare name: `test_deps = TEST_DEPS;`.
+
+Two things differ from variables in a script:
+
+- **A property is assigned once.** There is no reassignment, so a property means the same thing
+  everywhere in the project.
+- **Order doesn't matter.** A property can be used before the line that declares it, and its
+  value is worked out only when something needs it.
+
+Properties share one namespace with targets. A property name may contain letters, digits, `_` and
+`@`; a target name may also contain `/`, `.` and `-`.
+
+## Configuration
+
+Some properties are settings that rules read to decide how to build: `BUILD_TYPE` (`debug`,
+`relwithdebinfo` or `release`), `JS_TARGET` (which JavaScript to emit), `TARGET` (the platform).
+Each has a default, and a build file sets its own value by declaring the property:
+
+```
+JS_TARGET = es2021-commonjs;
+```
+
+A setting can also be changed for one build or for one reference, without editing any target.
+
+- **For a whole run**, with `-D` on the command line: `fabr build -DBUILD_TYPE=release app`.
+- **For one reference**, with `<NAME=value>` after it. The reference then means "this target,
+  built with this setting". This is a **constraint**.
+
+A constraint doesn't replace the target's ordinary build; it asks for another one alongside it.
+In this project, `third` is a CommonJS package that also ships an ES-module build of `second`:
+
+```
+JS_TARGET = es2021-commonjs;
 
 js_package base {
-    srcs = ./base:*.ts;
+  srcs = ./base:*.ts;
 }
 
 js_package second {
-    srcs = ./second:*.ts;
-    deps = base;
+  srcs = ./second:*.ts;
+  deps = base;
 }
 
 js_package third {
-    srcs = index.ts second<JS_TARGET=es6-esm>:*.js -> second_esm/*.js;
-    deps = base;
+  srcs = index.ts;
+  deps = base;
+  resources = second<JS_TARGET=es2021-esm>:*.js -> esm/*.js;
 }
 ```
 
-Running fabr build yields:
 ```
-info:Building base (required by third)
-info:Compiling base
-info:Building base [JS_TARGET=es6-esm] (required by second < third)
-info:Compiling base [JS_TARGET=es6-esm]
-info:Building second [JS_TARGET=es6-esm] (required by third)
-info:Compiling second [JS_TARGET=es6-esm]
-info:Building third
-info:Compiling third
+$ fabr build third
+info:✓ Compiling base (required by third) (486ms)
+info:✓ Compiling base [JS_TARGET=es2021-esm] (required by second < third) (620ms)
+info:✓ Compiling second [JS_TARGET=es2021-esm] (required by third) (431ms)
+info:✓ Compiling third (549ms)
 info:Built third
 ```
 
-Note that base was built twice - once in JS_TARGET=es201-commonjs and once in JS_TARGET=es6-esm, just by requesting it in that format.
+`base` is compiled twice: once as CommonJS because `third` depends on it, and once as ES modules
+because the ES-module `second` does. A constraint carries through to everything the constrained
+target depends on. Nothing in `base` or `second` mentions either format.
 
-Standard properties commonly used in constraints include
-- `BUILD_TYPE` normally one of `debug`, `relwithdebinfo`, or `release`
-- `BUILD_OPERATION` normally one of `build`, `test`, `run`, `files` - this is the main
-  extension point for adding new kinds of rules for existing target types.
+A constraint and `-D` combine. `fabr build -DBUILD_TYPE=release third` builds all of the above as
+release builds, the ES-module ones included.
 
-## Rules
+## Rules and operations
 
-Currently build rules are handwritten and live in the fabr core + plugins. There may
-be multiple rules applicable to any given target - the rule to use is determined by the
-most specific match against the target type and the active constraints/properties.
+A rule is what does the building. Each rule applies to one target type and one **operation**:
+`build`, `test` or `run`. The command you give chooses the operation, so `fabr test mylib` and
+`fabr build mylib` apply different rules to the same target.
 
-The rules job is essentially - transform the input into the format requested by the currently active properties/constraints.
+Rules are written in TypeScript and ship with fabr's core and its plugins; a build file can't
+define one. When a target type has several rules for an operation, the one that matches the
+current settings most specifically is used. That is how, for example, a `js_package` with
+`test_framework = jest` is tested differently from one with `vitest`.
 
 ## Packages
 
-Now, we said that everything is a file set, and while that's true it's not quite the complete story - A package is a file set that specifically represents a particular
-software ecosystems packaging unit (eg NPM for javascript). In addition to its files, it also carries a name, and direct dependencies on other packages.
+A package is a file set that also has a name, a version and dependencies on other packages. A
+`js_package` produces one, and so does a reference to a registry such as `@npm:lodash:4.17.21`.
 
-This means that packages will automatically end up in the right place for the module
-system to recognize them, under their burned-in name, and their dependencies will similarly be brought into the runtime. On the other hand if you extract them (eg packge:**) they'll
-be treated as plain files.
+The difference shows in how a package is used:
 
-Transitive resolution of external dependencies is performed at each target individually by default using the MVS algorithm. Different targets may receive a different resolution. For serious projects, you can use a catalog:
+- **Listed whole as a dependency** (`deps = hello;`), it is made available to imports under its
+  own name, together with the packages it depends on.
+- **With files selected from it** (`hello:*.js`, `hello/package.json`), you get those files and
+  nothing more: no name, no dependencies.
+
+Each target chooses the versions of its dependencies, and of their dependencies, for itself. Two
+targets can therefore end up with different versions of the same package. A **catalog** chooses
+versions once for every target that uses it:
 
 ```
-catalog @pkgs {
-   deps = @npm:esbuild:0.28.1
+catalog @pkg {
+  deps = @npm:esbuild:0.28.1 @npm:react:^19.1.0;
 }
 
-... deps = @pkgs:esbuild
+js_package ui {
+  srcs = src:**/*.tsx;
+  deps = @pkg:react;
+}
 ```
 
-which both forces everything to be resolved once and for all, together, it lets you
-ensure that all parts of your project are using the exact same versions.
+[Dependencies](/reference/js/dependencies/) covers how versions are chosen and what catalogs do.
 
 :::note
-You don't have to name catalogs and repositories with a leading '@', but we find it makes a nice convention.
+Catalogs and registries don't have to be named with a leading `@`. It is a convention that makes
+them easy to tell from targets.
 :::

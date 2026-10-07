@@ -79,10 +79,11 @@ describe("e2e: list-targetdefs", () => {
     expect(def.name).to.equal("script");
     expect(def.operations).to.deep.equal(["run"]);
     /* The doc-comment prose is carried through, marker-stripped. */
-    expect(def.description).to.match(/^Define a runnable plain shell script/);
-    /* Property schema: type, required flag, and (absent here) description. */
+    expect(def.description).to.match(/^A shell script that can be run/);
+    /* Property schema: type, required flag, and the property's own doc comment. */
     const entry = def.properties.find((p: { name: string }) => p.name === "entry");
     expect(entry).to.deep.include({ type: "FILES", required: true });
+    expect(entry.description).to.match(/^The script file/);
     const deps = def.properties.find((p: { name: string }) => p.name === "deps");
     expect(deps).to.deep.include({ required: false });
   });

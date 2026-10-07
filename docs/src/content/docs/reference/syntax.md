@@ -1,335 +1,351 @@
 ---
 title: Language syntax
-description: The full syntax of PROJECT.fabr and .fabr build scripts.
+description: The syntax of PROJECT.fabr and the .fabr files it includes — references, properties, targets and target types.
 ---
 
-A fabr build script (`PROJECT.fabr`, and any files it includes) is a small declarative language:
-configuration properties, target declarations, and plugin/include directives.
+A fabr build file (`PROJECT.fabr`, and any files it includes) is written in a small declarative
+language. It has four kinds of statement:
 
-Every name (property or target) is declared exactly once, and order of declaration is unimportant.
-All properties and targets are resolved lazily when required to satisfy a build.
+| Statement | Example | Section |
+|---|---|---|
+| Load a plugin or another file | `plugin @fabr-build/js;` | [Plugins and includes](#plugins-and-includes) |
+| Set a property | `JS_TARGET = es2022-esm;` | [Properties](#properties) |
+| Declare a target | `js_package mylib { srcs = src:**/*.ts; }` | [Target declarations](#target-declarations) |
+| Define a target type | `targetdef mytype { srcs = FILES; }` | [Targetdef declarations](#targetdef-declarations) |
 
+Most of what you write inside them is [references](#references): the patterns that name files,
+targets and packages.
+
+Two rules apply throughout. Every name, whether a property or a target, is declared once. And the
+order of declarations doesn't matter: a name can be used before the line that declares it, and
+nothing is worked out until a build needs it.
 
 ## Comments and whitespace
 
-A `#` begins a comment that runs to end of line. Whitespace (spaces, tabs, newlines) is
-insignificant except as a token separator.
+A `#` starts a comment that runs to the end of the line. Spaces, tabs and newlines only separate
+words.
 
 ```
 # This is a comment.
-JS_TARGET = es2021-commonjs;   # trailing comment
+JS_TARGET = es2021-commonjs;   # so is this
 ```
+
+A comment directly above a property, target or target type is its documentation: `fabr
+list-targetdefs` and `fabr list-properties` show it.
 
 ## Plugins and includes
 
-`plugin <name>;` loads a rule plugin by package name (resolved by regular module resolution)
+`plugin <package>;` loads a plugin, by the name of the npm package that provides it. The package
+has to be installed alongside fabr.
 
 ```
 plugin @fabr-build/js;
 ```
 
-`include ./<path>.fabr;` includes another script **relative to the including file**. There is no
-system include search path; the path must be relative and must not contain variables:
+Loading a plugin makes its target types and settings available; nothing else needs including.
+Fabr's own standard definitions are always available.
+
+`include <path>;` reads another build file, by a path relative to the file containing the
+`include`:
 
 ```
 include ./targets/frontend.fabr;
+include ./packages/*/BUILD.fabr;
 ```
 
-The path may **glob**, in which case it includes every file that matches.
-
-```
-include ./targets/*.fabr;
-include ./packages/**/BUILD.fabr;
-```
-
-An include must name **at least one file** either way: a pattern matching nothing is an error, as a
-plain path that isn't there is. 
-
-Core's standard library (`STD.fabr`) is always present, and each declared plugin's own `.fabr` files
-are included automatically — so `plugin @fabr-build/js;` is all you need to get the `js_*` targets
-and their configuration.
+The path can be a pattern, which includes every file that matches. It can't contain a `${…}`
+substitution, and it must name at least one file: a path that doesn't exist and a pattern that
+matches nothing are both errors.
 
 ## Names
 
-The characters a name may contain depend on what it names:
-
-| Name | Allowed characters |
+| Name | Characters allowed |
 |---|---|
-| Property name, target type | letters, digits, `@`, `_` |
-| Target name | the above, plus `/`, `.`, `-` |
+| Property, target type | letters, digits, `_`, `@` |
+| Target | the same, plus `/`, `.`, `-` |
 
-By convention, global repositories (e.g. `@npm`) are prefixed with `@`, but this is not required.
+Registries and catalogs are conventionally named with a leading `@` (`@npm`, `@pkg`), which isn't
+required.
 
 ## References
 
-A reference is a shell-like glob expression plus optional name splitting, renaming, and constraints.
-
-:::note
-Direct file references may use `../` (relative to the current fabr file) as long as the resulting path
-is still inside the overall project, however (if not otherwise removed already) any `../` will be stripped
-from the resulting names. For example:
+A reference names files. It can be a path or a pattern in your source tree, a target, a package in
+a registry, or a selection of files from any of those:
 
 ```
-js_script myscript {
-  entry = ../scripts/script.ts;  # Yields scripts/script.ts
-}
+srcs = src/index.ts;                  # a file
+srcs = src/**/*.ts;                   # a pattern
+deps = mylib;                         # a target
+deps = @npm:lodash:4.17.21;           # a package in a registry
+srcs = mylib:build/*.js;              # files selected from a target
 ```
-:::
+
+A path is relative to the build file it is written in. It can use `../` to reach files elsewhere
+in the project, but not outside it. A name that is both a target and a directory means the target;
+write `./name` for the directory.
 
 ### Globbing
 
-Standard shell globbing is supported, plus the recursive '**':
+Shell glob patterns work, along with `**` to match across directories:
 
 ```
-srcs = src/*.tsx;              # All files ending in .tsx immediately inside src (not a subdir)
-srcs = src/**/*.ts;            # All files ending in .ts anywhere inside src/
-deps = lib/*.[jt]s;            # Match both *.js and *.ts using a character class.
+srcs = src/*.tsx;              # .tsx files directly in src
+srcs = src/**/*.ts;            # .ts files anywhere under src
+deps = lib/*.[jt]s;            # .js and .ts files, using a character class
+srcs = src;                    # a directory: everything under it
 ```
 
-A name that names a directory is treated as implicitly ending in `/**`:
-```
-srcs = src;                    # where src is a directory, matches all files in src recursively.
-```
-
-Bash's **extended globs** are supported too — one of five leaders followed by a parenthesised
-*pattern list*, matching within a single path component. A pattern list is **one or more** patterns
-separated by `|`, so `!(node_modules)`, `!(dist|build)` and `!(dist|build|coverage)` are all valid:
+Bash's extended globs are supported too. Each is a prefix character followed by a parenthesised
+list of one or more patterns separated by `|`, and matches within one path component:
 
 | Pattern | Matches |
 | --- | --- |
-| `?(…)` | zero or one occurrence of any listed pattern |
-| `*(…)` | zero or more occurrences |
-| `+(…)` | one or more occurrences |
-| `@(…)` | exactly one occurrence |
-| `!(…)` | anything *except* the listed patterns |
+| `?(…)` | zero or one of the listed patterns |
+| `*(…)` | zero or more |
+| `+(…)` | one or more |
+| `@(…)` | exactly one |
+| `!(…)` | anything except the listed patterns |
 
 ```
-srcs = src/!(Validation)/**;        # every file under src/, excluding the Validation subtree
-srcs = src/!(dist|build|gen)/**;    # ...excluding three of them
-srcs = src/@(api|web)/*.ts;         # only the api and web subtrees
-srcs = !(*.test).ts;                # .ts files, excluding .test.ts
+srcs = src/!(generated)/**;         # everything under src except the generated directory
+srcs = src/!(dist|build|gen)/**;    # ...except three directories
+srcs = src/@(api|web)/*.ts;         # only the api and web directories
+srcs = src/!(*.test).ts;            # .ts files other than .test.ts
 ```
 
-Each listed pattern is itself a pattern, so wildcards, character classes, nested groups and
-`${...}` substitutions all work inside one. A group must be closed — an unterminated `!(` is an
-error, not literal text (quote it to name a file that really contains those characters).
+The patterns in a list can themselves contain wildcards, character classes, further groups and
+`${…}` substitutions. An unclosed group, such as `!(` with no `)`, is an error.
 
 ### Quoting
 
-Unquoted values may contain letters, digits, `_`, and `/ - . @ :` (plus glob characters
-`* ? [ ]` and the extglob `?*+@!( | )`) — enough for paths, references, globs, and versions.
-Note that outside an extglob group `( ) | !` are ordinary characters, so a bare leading `!` is a
-literal `!` and not a negation. Use quotes when you need spaces or exact bytes:
+An unquoted value can contain letters, digits, `_`, and `/ - . @ :`, the glob characters
+`* ? [ ]`, and the extended-glob forms above. Outside an extended glob, `(`, `)`, `|` and `!` are
+ordinary characters, so a leading `!` on its own doesn't negate anything.
 
-- **Single quotes** `'…'` are literal (no substitution).
-- **Double quotes** `"…"` allow variable substitution and escapes.
+Quote a value that contains spaces or any other character:
 
+- **Single quotes** `'…'` take the text as it is.
+- **Double quotes** `"…"` allow `${…}` substitution and backslash escapes.
 
 ### Variable substitution
 
-Variable substitution is `$NAME` or `${NAME}`, in double-quoted and unquoted values:
+`$NAME` or `${NAME}` is replaced by the value of a property, in unquoted and double-quoted values:
 
 ```
-url = "${NPM_REPOSITORY_URL}";
-version = ${FABR_VERSION};
+VERSION = 2.4.0;
+url = "https://example.com/releases/v${VERSION}/";
+deps = @npm:my-package:${VERSION};
 ```
 
 ### Command substitution
 
-Backticks run a command and substitute what it wrote to stdout, for a tool that reports fixed
-information — a version, a set of compiler flags:
+Backticks run a command and are replaced by what it prints, for information that comes from a
+tool, such as its version:
 
 ```
-TSC_VERSION = `${TSC} --version`;
+TSC_VERSION = `@npm:typescript:5.6.3:tsc --version`;
 ```
 
-A backtick expression is a *part* of a value, exactly like `${NAME}`, so it composes with the text
-around it and may appear anywhere a variable may — including in double quotes, in a guard, or in a
-reference. Single quotes are literal, so ``'`cmd`'`` is a backtick string rather than a command.
+Like `${NAME}`, a backtick expression is one part of a value. It can be joined to the text around
+it and used anywhere a substitution can be, including inside double quotes and inside a reference.
+Inside single quotes it is ordinary text.
 
 ```
-srcs = build/v`${TSC} --version`/*.js;
+srcs = generated/`version_tool --short`/*.js;
 ```
 
-The output is **trimmed**, and internal runs of whitespace (newlines included) are collapsed to
-single spaces — the same text a shell would substitute. A command whose output is genuinely
-multi-line wants a [`generate`](#command-property) target and a file instead.
+- **The command must be something fabr can run**: a runnable target, a property naming one, or a
+  package such as `@npm:typescript:5.6.3:tsc`. A program that exists only on your machine, such as
+  `cc` or `sed`, can't be named.
+- **The output is trimmed**, and runs of whitespace inside it, newlines included, become single
+  spaces, as a shell does. For output of several lines, use a
+  [`generate`](/reference/standard-rules/#generate) target and read the file it produces.
+- **The command is run once** for a given tool and arguments, however many places use it, and the
+  result is cached.
 
-Between the backticks is a command pipeline in the same form as a
-[command property](#command-property), so `|` and the redirections work and the command's own words
-substitute first. Two differences follow from a substitution's value *being* its stdout:
-
-- A redirection to a name **discards** that stream — the file it would write is unreachable, so
-  `2> log` simply silences stderr. Redirecting stdout leaves the substitution with nothing to
-  capture, and its value is empty.
-- `2>&1` folds stderr into the value, which is otherwise stdout only.
-
-The command runs once and its result is cached against the tool and its arguments, so the same
-substitution written in several places costs one run.
-
-The command must name a fabr **runnable** — a target, a global, or a package reference such as
-`@npm:typescript:5.4.5:tsc`. A tool that only exists on the host (`cc`, `sed`, etc) cannot be named.
+The command is a pipeline as in a [command property](#command-property), so `|` and redirections
+work. Because the value is the command's stdout, a redirection to a file name discards that
+stream (`2> log` silences stderr), and `2>&1` includes stderr in the value.
 
 ### Constraints
 
-A reference can **require** a configuration, as a `<KEY=value>` facet on the reference:
+`<NAME=value>` after a reference asks for that reference to be built with a setting changed:
 
 ```
-deps = @package/core<TARGET=arm64-apple-darwin24.6.0>;   # Depend on @package/core for the given target
+deps = core<TARGET=arm64-apple-macosx15.0>;      # core, built for another platform
+srcs = mylib<JS_TARGET=es2022-esm>:*.js;         # mylib's .js files, built as ES modules
+deps = other<BUILD_TYPE=release, JS_TARGET=es2022-esm>;
 ```
 
-Constraints are transitive, ie the above example will also require @package/core's dependencies
-to be recursively built under the specified target as well, unless further overridden.
+The `<` follows the name directly, before any `:` or `/` selection. The setting applies to the
+target and to everything it depends on, unless one of those references sets it again. The rest of
+the build is unaffected, so the same target can be built several ways in one build.
 
+The same notation on the left of a property declaration means something different; see
+[Guarded properties](#guarded-properties).
 
 ### Projection and renaming
 
-The ':' operator (a *projection*) is used in place of '/' to strip the part of the name before the
-':' — the same reference with a `/` instead resolves to the same files, but keeps the whole written
-path as their names:
+A reference decides what its files are named as well as which files they are. Written with `/`,
+the names keep the whole path. A `:` in place of a `/` drops everything before it:
 
 ```
-srcs = src:lib/index.ts;       # maps src/lib/index.ts to lib/index.ts
+srcs = src/lib/index.ts;       # named src/lib/index.ts
+srcs = src:lib/index.ts;       # named lib/index.ts
 ```
 
-More general renames are supported using the '->' operator, matching wildcards on both sides:
+Selecting files from a target or a package works the same way: `mylib:build/*.js`,
+`@npm:esbuild:0.28.1:package.json`. What you get is those files only, not the package they came
+from.
+
+`->` renames. Each `*` and `**` in the template on the right takes what the wildcard in the same
+position on the left matched:
 
 ```
-srcs = src/index.ts -> test.ts;
-srcs = src/**/*.ts -> bin/**/*.js;
+srcs = src/index.ts -> main.ts;
+srcs = src/**/*.ts -> lib/**/*.mts;
 ```
 
-Each `*`/`**` in the template replays the same-position wildcard from the selector, so both sides must
-use only `*`/`**` (not `?` or `[…]`) and have an equal number of them. The `->` must be spaced, and if
-present must be the last part of the reference.
+- The `->` has spaces around it and comes last in the reference.
+- Both sides use only `*` and `**` as wildcards, not `?` or `[…]`, and the same number of them.
+- A template with no wildcard names one file, so the left side can be any pattern that matches
+  exactly one: `srcs = vendor/*/dist/index.js -> vendor.js;`. Matching two files is an error,
+  since both would get the same name.
 
-A template with no wildcards at all is exempt: it names one file outright, so the selector may be any
-pattern — `srcs = foo/*/bar/index.ts -> index.ts;` names whatever it finds `index.ts`. It has to find
-exactly one, since renaming two different files to the same name is a conflict like any other.
-
-A template can also name the wildcards it wants by number, `$1` for the first, `$2` for the second and
-so on — the same replay written explicitly. Because each one says which wildcard it takes, the counts
-need not match: a numbered template may **reuse** a wildcard, **reorder** them, or leave some out.
+A template can instead refer to the wildcards by number, `$1` for the first and so on. The counts
+then needn't match, so a numbered template can repeat a wildcard, reorder them or leave one out:
 
 ```
-srcs = v*.tgz -> v$1/node-v$1.tgz;    # $1 twice — impossible positionally
+srcs = v*.tgz -> v$1/node-v$1.tgz;    # the first wildcard, twice
 srcs = */*.a -> $2-$1.b;              # reordered
-srcs = */*.a -> only-$2.b;            # first wildcard unused
+srcs = */*.a -> only-$2.b;            # the first one unused
 ```
 
-The two forms don't mix in one template, and every `$n` must name a wildcard the selector actually has.
-(`$1` means a back reference only inside a rename template; anywhere else it is an ordinary
-[variable substitution](#variable-substitution).)
+The two styles can't be mixed in one template. Outside a rename template, `$1` is an ordinary
+[variable substitution](#variable-substitution).
 
-These can be applied anywhere, for example `@npm:esbuild:0.2.1:package.json` references the package.json
-file directly from the esbuild 0.2.1 package. These results are treated as simple files (ie not as the
-package they came from).
-
-`->` renames what the reference delivers, so on a package — with no projection following it — it
-renames the package itself: the name it is delivered and mounted under, leaving its content,
-version and dependencies alone.
+**Renaming a package.** When `->` follows a whole package, with no files selected from it, it
+renames the package: the name it is installed and imported under. Its contents, version and
+dependencies don't change.
 
 ```
-deps = @npm:stream-browserify:3.0.0 -> stream;   # sources importing 'stream' get the shim
-deps = mylib -> renamedlib;                      # a built package, mounted under another name
+deps = @npm:stream-browserify:3.0.0 -> stream;   # code importing "stream" gets this package
+deps = mylib -> renamedlib;
 ```
 
-A projection against a package being run — under fabr run, or via a property that takes a runnable
-such as a serve target's tool — searches the program names the package declares in its
-bin as well as its files, so `@npm:typescript:5.4.5:tsc` selects the tsc compiler to run. A package
-declaring a single bin needs no projection: that bin is the default entry. One declaring several has no
-default, so the reference must name one — typescript declares both tsc and tsserver, and leaving
-the projection off will report an error.
+**Choosing a program.** Where a reference is run, by `fabr run` or as a property that takes a
+program such as a `serve` target's `tool`, selecting from a package looks among the package's
+command-line programs as well as its files. `@npm:typescript:5.6.3:tsc` is the `tsc` program. A
+package with one program needs no selection. A package with several, as `typescript` has `tsc` and
+`tsserver`, must have one named.
 
 ### Archives
 
-An archive file can be referenced as if it were a directory: continue the path through it to select
-files inside. A reference that stops at the archive is just the file itself.
+An archive can be read as if it were a directory, by continuing a reference into it. A reference
+that stops at the archive is the archive file itself.
 
 ```
-srcs = ./vendor.tgz:*:**;      # everything inside the archive (the * skips the tarball's top-level directory)
-data = ./vendor.tgz;           # no path inside it: the tarball itself, as a file
+srcs = ./vendor.tgz:*:**;      # everything in the archive, below its top-level directory
+data = ./vendor.tgz;           # the archive, as one file
 ```
 
-Whether a file can be opened this way is decided by its contents, not its name: naming a text file
-`notes.tgz` doesn't make it an archive, and a real archive is recognized whatever it's called. The
-formats recognized are **tar**, **zip**, and tar under **gzip** or **xz** compression (so `.tgz`,
-`.tar.gz` and `.tar.xz` all work, whatever they are named). Archives inside archives work the same
-way (`outer.tgz:inner.tgz:**`).
+Tar and zip archives are recognised, and tar compressed with gzip or xz, so `.tgz`, `.tar.gz`,
+`.tar.xz` and `.zip` all work. Recognition is by a file's contents, not its name. An archive
+inside an archive can be read the same way (`outer.tgz:inner.tgz:**`).
 
-The one thing that never looks inside an archive is `**`. A recursive glob matches the archive as an
-ordinary file, so `./**/*.ts` won't pick up `.ts` files packed inside archives it passed along the
-way. To search inside archives, the reference needs a path component that matches the archive file
-itself — everything after that component then matches its contents:
+`**` doesn't look inside archives. `./**/*.ts` finds `.ts` files in your tree and treats any
+archive it passes as a file. To look inside, the reference has to match the archive itself with
+one of its components:
 
 ```
-srcs = ./**/*.ts;              # .ts files in the tree; archives are just files here
-srcs = ./**/*.tgz/**/*.ts;     # for every .tgz in the tree, the .ts files inside it
+srcs = ./**/*.ts;              # .ts files in the tree
+srcs = ./**/*.tgz/**/*.ts;     # the .ts files inside every .tgz in the tree
 ```
 
 ### Version override markers
 
-When a dependency closure's requirements are jointly unsatisfiable — two parts of the build need
-incompatible versions of one package — the conflict is resolved with a one-character marker on an
-**exact** version, written wherever the dependency is:
+A package version in a reference can end in `?` or `!`, to resolve a conflict between the versions
+that different parts of a build require. Both need an exact version, and both can be written
+wherever dependencies are listed: in a target's `deps` or in a catalog.
 
 ```
 deps = @npm:aws-param-store-sdkv3:4.0.0
-       @npm:tslib:2.6.2? @npm:tslib:1.14.1?     # both versions may ship: 1.14.1 nests where required
-       @npm:tight-peer:2.0.0!;                  # forced: everyone gets this version
+       @npm:tslib:2.6.2? @npm:tslib:1.14.1?     # both versions of tslib are allowed
+       @npm:some-package:2.0.0!;                # every requirement on it becomes 2.0.0
 ```
 
-- `?` **permits a version to ship**. The markers name the *complete* set of versions you allow to
-  coexist: the canonical (which stays the flat, shared copy) and each alternate (installed
-  *nested* under the specific dependencies whose declared ranges need it, npm-style). A `?` entry
-  is not a dependency — it demands nothing and delivers nothing directly — and it matches exactly:
-  if either side of the conflict moves to a different version, the build errors again and tells
-  you which marker to update. In a `catalog`, an ordinary exact pin of the canonical counts as its
-  half of the sanction (`deps = @npm:tslib:2.6.2 @npm:tslib:1.14.1?;`). A `?` also **supplies**
-  the version for a package that is required only with unbounded ranges (`@types/node: "*"` and
-  friends), where no version is otherwise selectable — again without becoming a dependency.
-- `!` **forces a version**: every requirement on the package, from any dependency, is replaced by
-  exactly this version (npm's `overrides` semantics) — the tool for a dependency's over-tight
-  constraint you judge wrong. Ranges the forced version does not satisfy are overridden silently,
-  so prefer `?` (which honors every declared range) unless the constraint itself is the problem.
+**`?` allows a version.** A build normally uses one version of each package, and fails when the
+requirements can't agree on one. Listing each version involved with a `?` lets them all be used:
+each package gets the version its own requirement accepts, as it would under npm.
 
+- The entries name the complete set of versions allowed. If a later change makes the build need a
+  different version, it fails again and says which entry to update.
+- An entry is not a dependency. It doesn't add the package to the target.
+- In a catalog, an ordinary exact entry counts as allowing that version:
+  `deps = @npm:tslib:2.6.2 @npm:tslib:1.14.1?;`.
+- A `?` also supplies a version for a package that is only ever required as `*`, which otherwise
+  has no version to select.
 
+**`!` forces a version.** Every requirement on the package, from any dependency, is replaced by
+exactly this version, as npm's `overrides` does. Requirements it doesn't satisfy are overridden
+without a warning, so use it when a dependency's requirement is wrong, and `?` otherwise.
+
+[Dependencies](/reference/js/dependencies/#when-versions-conflict) shows the error that prompts
+these and how to choose between them.
 
 ## Properties
 
-A property assigns one or more values to a name, terminated by `;` (optional after a `{ … }`
-block). Global property
-declarations are either strings, maps, or commands and are declared as bare key/value pairs:
+A property gives a name a value, and ends with `;`:
 
 ```
 name = value;
 ```
 
-Default properties are specified with the `default` keyword:
+At the top level of a build file a property is global: a configuration setting, or a value to
+reuse. Inside a target it is one of that target's inputs. The value is a
+[string](#string-properties), a [map](#map-properties) or a [command](#command-property).
+
+A global property can be set from outside the build file: for one run with `-DNAME=value` on the
+command line, or for one reference with a [constraint](#constraints).
+
+### Default properties
+
+`default` declares a value to use only when nothing else declares the property:
 
 ```
-default TYPESCRIPT = @npm:typescript:5.4.5;
+default TYPESCRIPT = @npm:typescript:5.6.3;
 ```
 
-A default property is used if and only if there is no non-default property with the same name
-(typically used by system defaults). The keyword applies to
-[target declarations](#target-declarations) in the same way.
+Fabr and its plugins declare their settings this way, which is why a build file can set
+`TYPESCRIPT` itself without that being a second declaration of the name.
 
-Properties can be overridden on the command-line or (locally) through a constraint expression.
+### String properties
 
-
-### String property
-A string property is a white-space separated list of name references (or quoted strings).
+A string property is one or more words separated by whitespace. Each word is a reference or a
+quoted string:
 
 ```
-name = value;
+version = 1.4.0;
+description = "A small example";
 deps = @npm:chai:4.3.6 @npm:@types/chai:4.3.1 @npm:picomatch:2.3.1;
+```
+
+A property that lists references can be used by name where references are expected, which is how
+a list of dependencies is shared:
+
+```
+TEST_LIBS = @npm:chai:4.3.6 @npm:@types/chai:4.3.1;
+
+js_package mylib {
+  srcs = src:**/*.ts;
+  test_deps = TEST_LIBS;
+}
 ```
 
 ### Map properties
 
-A map property is a block of `key = value;` entries, where each value is in turn a string, a sub-map,
-or a sequence of maps (as in `maintainers` below):
+A map is a block of `key = value;` entries. A value is a string, another map, or several maps one
+after another, which make a list:
 
 ```
 metadata = {
@@ -340,8 +356,11 @@ metadata = {
 }
 ```
 
-You can extend another block-valued property by reference, to splice it into a block —
-later entries win, so you can share a base and override per target:
+The `;` after a closing `}` is optional.
+
+Naming another map inside a block includes its entries. Entries are applied in the order written
+and a later one replaces an earlier one with the same key, so a shared map can be extended or
+overridden:
 
 ```
 COMMON = { license = GPL-3.0-or-later; author = { name = Ann; }; };
@@ -349,88 +368,86 @@ COMMON = { license = GPL-3.0-or-later; author = { name = Ann; }; };
 metadata = { COMMON; description = This particular package; };
 ```
 
-Duplicate keys in a map extension are resolved left-to-right (similar to a destructuring operation)
-
 ### Command property
 
-A command property (currently used only for generic `generate` rules, but allowed as a global property)
-is a shell-like command expression allowing piping and redirection:
+A command is a pipeline, written much as in a shell. A [`generate`](/reference/standard-rules/#generate)
+target's `run` is one, and so is the inside of a [command substitution](#command-substitution).
 
 ```
-cmd = my_script -l < src/input.txt | pagination > output.txt;
+run = my_script -l < src/input.txt | paginate > output.txt;
 ```
 
-When resolved, each command must be a runnable target, an input redirection takes a name reference that
-must resolve to a single file, and output redirections must be a valid file path.
-
-The redirections are:
+Each command is something fabr can run: a runnable target, or a package with a command-line
+program. Programs on your machine can't be named. The arguments are words, and a pattern among
+them is expanded against the target's input files.
 
 | Form | Meaning |
 | --- | --- |
-| `< name` | Feed the first stage's stdin from a reference resolving to a single file. |
-| `> name` | Capture stdout as content called `name` (final stage only — an earlier stage's stdout feeds the pipe). |
-| `2> name` | Capture stderr as content called `name`. |
-| `2>&1` | Send stderr wherever stdout currently goes. `1>&2` is the mirror; those are the only two streams. |
-| `&> name` | Capture both together — exactly `> name 2>&1`. |
+| `a \| b` | Send `a`'s stdout to `b`'s stdin. |
+| `< name` | Read the first command's stdin from a reference that names one file. |
+| `> name` | Keep stdout as a file called `name`. Only on the last command, since an earlier one's stdout goes to the pipe. |
+| `2> name` | Keep stderr as a file called `name`. |
+| `2>&1` | Send stderr wherever stdout is going at that point. `1>&2` is the reverse. |
+| `&> name` | Keep both in one file: the same as `> name 2>&1`. |
 
-Redirections apply **in written order**, as in a shell: `> f 2>&1` sends both streams to `f`, while
-`2>&1 > f` sends stderr where stdout was going *before* the redirection (so, to fabr's own output)
-and only then moves stdout to `f`. Unlike a shell, redirecting the same stream twice is an error
-rather than the last one quietly winning.
+Redirections apply in the order written, as in a shell: `> f 2>&1` sends both streams to `f`,
+while `2>&1 > f` sends stderr to where stdout was going before, and then stdout to `f`. Unlike a
+shell, redirecting the same stream twice is an error.
 
-A stream that is not redirected is reported by fabr as the target's output, and is shown if the
+A stream that isn't redirected is shown as the step's output, and included in the error if the
 command fails.
 
-In a `generate` target, the files the redirections capture are the result. If the target also sets
-`output`, that selects the result instead, choosing among the captured files and any files the
-commands wrote, so a capture `output` doesn't match is left out. A captured file and a written file
-that end up with the same name are reported as a conflict.
-
+In a `generate` target, the files that redirections keep are the target's result. If the target
+sets `output`, that chooses the result instead, from those files and from any files the commands
+wrote, and a kept file it doesn't match is left out. A kept file and a written file with the same
+name is an error.
 
 ### Guarded properties
 
-A property declaration may carry a **guard** — the same `<KEY=value>` facet a
-[reference](#constraints) carries, written on the *declaration* instead of on a *use*. Position
-decides what it means: on a use it is a **requirement** (the configuration that reference is built
-under); on a declaration it is a **guard** (the configuration this declaration applies in), so the
-declaration participates only where it matches. Guard values are patterns — a requirement takes an
-exact value, and writing a pattern there is an error suggesting this form:
+A property declaration can have a **guard**: `<NAME=pattern>` after the property's name. The
+declaration then applies only in builds where the setting matches.
 
 ```
-library platform_io {
-  srcs = src/**/*.c;
-  srcs<TARGET=*-linux-*> = src/epoll/**/*.c;
-  srcs<TARGET=*-apple-*> = src/kqueue/**/*.c;
-  deps<TARGET=*-linux-*> = @npm:epoll-native:1.2.0;
+js_package watcher {
+  srcs = src:*.ts;
+  srcs<TARGET=*-linux-*> = src:linux/**/*.ts;
+  srcs<TARGET=*-apple-*> = src:macos/**/*.ts;
+  deps<TARGET=*-apple-*> = @npm:fsevents:2.3.3;
 }
 ```
 
-Several keys in one guard are a conjunction (`<TARGET=*-linux-*, BUILD_TYPE=release>`);
+A build for Linux gets the common sources and the Linux ones; a build for macOS gets the common
+sources, the macOS ones and `fsevents`.
 
-**Every matching declaration contributes.** For a files property they combine, exactly as the
-values of a single declaration do — above, a linux build gets the common sources *and* the epoll
-ones. Guards are never ranked against each other: there is no "most specific wins", because
-patterns do not order (`*-linux-*` and `aarch64-*` are simply incomparable). For a property read
-as a single value, two matching declarations are therefore an error naming both guards, not a
-silent choice between them — make the guards disjoint, or put the fallback in the targetdef's
-[declared default](#property-defaults), which supplies the property whenever no guard matched.
+- **A guard's value is a pattern**, matched against the setting's value. Several settings in one
+  guard must all match: `<TARGET=*-linux-*, BUILD_TYPE=release>`.
+- **Every declaration that matches applies.** For a property that lists files, the matching
+  declarations are combined. There is no "most specific guard wins".
+- **A property with a single value can have only one match.** Two guarded declarations of `version`
+  that both match are an error naming both, so write guards for such a property that can't
+  overlap.
+- **When no declaration matches, the property is unset**, and the target type's
+  [default](#property-defaults) applies if it has one.
 
-A guard can also be written once over a block of declarations, which is purely shorthand for
-writing it on each of them:
+This is the notation of a [constraint](#constraints) in a different place, with a different
+meaning. After a reference it *requires* a setting, and takes an exact value. After a property
+name being declared it *tests* a setting, and takes a pattern.
+
+A guard can be written once around several declarations:
 
 ```
-js_package mylib {
-  srcs = src/**/*.ts;
-  <TARGET=*-linux-*> {
-    srcs = src/linux/**/*.ts;
-    deps = @npm:epoll-native:1.2.0;
+js_package watcher {
+  srcs = src:*.ts;
+  <TARGET=*-apple-*> {
+    srcs = src:macos/**/*.ts;
+    deps = @npm:fsevents:2.3.3;
   }
 }
 ```
 
-Guards apply to global properties in the same way, at file scope. There a `default` declaration is
-the fallback: it supplies the property when no ordinary declaration matched. A global written only
-under guards that all miss is an error saying so — it is declared, just not here.
+Global properties can be guarded in the same way. For those, a `default` declaration is what
+applies when no guarded declaration matches; a property declared only under guards, none of which
+match, is an error.
 
 ## Target declarations
 
@@ -444,26 +461,24 @@ js_package mylib {
 }
 ```
 
-The `<type>` must be a targetdef provided by core or a loaded plugin. The `<name>` is how the target
-is referenced elsewhere and on the command line.
+The type is one that fabr's core or a loaded plugin defines; the reference pages for
+[core](/reference/standard-rules/) and [JavaScript](/reference/js/targets/) list them with their
+properties. The name is how the target is referred to, in build files and on the command line.
 
-A declaration may be prefixed with `default`, exactly as a [property](#properties) may:
+A target can be declared `default`, like a property:
 
 ```
-default js_script test-runner { entry = ...; }
+default js_script lint_tool { entry = tools/lint.js; }
 ```
 
-A default target is used if and only if there is no non-default declaration of that name — so a
-build script can replace one a plugin or standard library ships simply by declaring its own. Two
-default declarations of the same name still conflict, and a default declaration is validated
-against its targetdef whether or not it ends up being used.
+A default target is used only if no other declaration has its name. A plugin declares the tools it
+supplies this way, so that a project can replace one by declaring a target with the same name. Two
+default declarations of one name are still an error.
 
 ## Targetdef declarations
 
-A `targetdef` declares a new *target type* and the schema of properties that targets of that type
-accept. Core and loaded plugins provide the standard targetdefs (see the
-[Core reference](/reference/standard-rules/) and [JavaScript reference](/reference/js-rules/)); you can
-also declare your own in a build script.
+`targetdef` defines a target type: the properties its targets take. Fabr's core and its plugins
+define the standard ones.
 
 ```
 targetdef script {
@@ -473,10 +488,12 @@ targetdef script {
 }
 ```
 
-Each entry is `<property> = <kind…>;`, where the kinds combine on one line — `REQUIRED FILES` marks a
-mandatory files property. A `*` key, in place of a property name, types every *otherwise-undeclared*
-property, for target types whose set of properties is open-ended (e.g. `sync`'s reference-keyed
-members):
+Building a target needs a rule for its type, and rules come from plugins, so defining a type in a
+build file is mostly useful alongside a plugin that supplies its rules. Writing plugins is
+described in `PLUGINS.md` in the fabr repository.
+
+Each entry is `<property> = <kind>;`. A `*` in place of a property name gives a kind to every
+property not otherwise listed, for types whose targets take arbitrary keys:
 
 ```
 targetdef sync {
@@ -486,24 +503,24 @@ targetdef sync {
 
 ### Property kinds
 
-| Kind | Meaning |
+| Kind | The value is |
 |---|---|
-| `STRING` | A scalar text value (supports substitution). |
-| `FILES` | One or more references/globs, resolved to a set of files. |
-| `MAP` | A block of `key = value;` entries (see [Map properties](#map-properties)). |
-| `COMMAND` | A shell-like command pipeline (see [Command property](#command-property)). |
-| `REWRITE` | Name-rewriting rules (`selector -> template`); see [Projection and renaming](#projection-and-renaming). |
-| `REQUIRED` | A modifier marking a property as mandatory. |
+| `STRING` | Text. |
+| `FILES` | References, which become a set of files. |
+| `MAP` | A block of `key = value;` entries; see [Map properties](#map-properties). |
+| `COMMAND` | A command pipeline; see [Command property](#command-property). |
+| `REWRITE` | Renaming rules written `pattern -> template`; see [Projection and renaming](#projection-and-renaming). |
+| `REQUIRED` | Not a kind but a modifier, written before one: the property must be set. |
 
-`MAP`, `COMMAND`, and `REWRITE` are enforced — they constrain the *shape* the value may take (a block,
-a pipeline, a rename template), and `REQUIRED` is checked for presence. `STRING` versus `FILES`,
-however, is currently only a **hint**: it documents whether a property is meant to carry scalar text or
-file references, but is not enforced — the rule that consumes the property decides how to interpret it.
+`MAP`, `COMMAND` and `REWRITE` are checked: a value of the wrong form is an error, as is a missing
+`REQUIRED` property. `STRING` and `FILES` are not told apart when a build file is read. They
+document what a property is for, and the rule that reads the property decides how to treat its
+value.
 
 ### Property defaults
 
-A kind may be followed by `default` and a value, supplying the property for every target of the type
-that doesn't write one of its own:
+A kind can be followed by `default` and a value, which a target of the type gets when it doesn't
+set the property:
 
 ```
 targetdef script {
@@ -513,17 +530,10 @@ targetdef script {
 }
 ```
 
-A default takes the full value syntax — references, globs, `${...}` substitution, and `{ ... }` blocks
-for a `MAP` — and is resolved lazily, only where the property is actually read. Relative paths in a
-default are rooted at the file that declares the targetdef, not at the one using it, so a plugin can
-ship defaults that point at its own files. `${...}` substitution, by contrast, reads globals as
-resolved for the *using* target, so a default can pick up build settings like `${BUILD_TYPE}`.
-
-`REQUIRED` and `default` are mutually exclusive: a default supplies the property whenever it is
-unwritten, leaving nothing for `REQUIRED` to demand, so declaring both is an error. The `*` wildcard
-cannot carry a default either — it types only the keys a target actually writes, so there is no
-unwritten property for a default to supply.
-
-Defaults also apply where a rule builds an internal sub-target of the type without supplying that
-property — so a defaulted property behaves the same however the target came about. A rule that means
-to suppress a default passes an explicit empty value rather than omitting the property.
+- A default can be anything the property itself could be set to, including references, `${…}`
+  substitutions and a `{ … }` block for a `MAP`.
+- A relative path in a default is relative to the file that defines the type, not to the file
+  declaring the target, so a plugin's defaults can refer to the plugin's own files.
+- A `${…}` in a default is replaced with the value the setting has for the target being built, so
+  a default can follow `${BUILD_TYPE}`.
+- `REQUIRED` and `default` can't be combined, and a `*` entry can't have a default.

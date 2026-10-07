@@ -62,7 +62,9 @@ export default defineConfig({
           label: "Guides",
           items: [
             { label: "Conceptual model", link: "/guides/concepts" },
-            { label: "Watch mode & dev servers", link: "/guides/watch/" }
+            { label: "Projects with several packages", link: "/guides/multi-package/" },
+            { label: "Watch mode & dev servers", link: "/guides/watch/" },
+            { label: "Continuous integration", link: "/guides/ci/" },
           ],
         },
         {
@@ -70,8 +72,20 @@ export default defineConfig({
           items: [
             { label: "Command line", link: "/reference/command-line/" },
             { label: "Language syntax", link: "/reference/syntax/" },
-            { label: "Core reference", link: "/reference/standard-rules/" },
-            { label: "JavaScript reference", link: "/reference/js-rules/" },
+            { label: "Core targets & configuration", link: "/reference/standard-rules/" },
+          ],
+        },
+        {
+          label: "JavaScript reference",
+          items: [
+            { label: "Targets & configuration", link: "/reference/js/targets/" },
+            { label: "Dependencies", link: "/reference/js/dependencies/" },
+            { label: "Module resolution", link: "/reference/js/module-resolution/" },
+            { label: "TypeScript compilation", link: "/reference/js/typescript/" },
+            { label: "Stylesheets", link: "/reference/js/stylesheets/" },
+            { label: "Testing", link: "/reference/js/testing/" },
+            { label: "Bundling", link: "/reference/js/bundling/" },
+            { label: "Publishing packages", link: "/reference/js/publishing/" },
           ],
         },
         { label: "Known limitations", link: "/known-limitations/" },

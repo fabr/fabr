@@ -1,136 +1,133 @@
 ##################### Global Properties ####################
 
 #
-# Primary URL for the remote NPM repository. You'll usually want to override this if you're using
-# a private mirror/cache.
+# The registry that `@npm` refers to. Set it to use a mirror or a private
+# registry for every package.
 #
 
 default NPM_REPOSITORY_URL = https://registry.npmjs.org/;
 
 #
-# The default target for JS output, written <ES-version>-<module>-<environment>
-# (the last two optional): es2022, es2022-esm, es6-esm-browser.
-#
-# The module component is `commonjs`, `esm`, or `dual`. `dual` ships BOTH formats
-# of a js_package in one tree — CommonJS as `.js`/`.d.ts` (what `type`, `main`
-# and `types` describe) and ES modules as `.mjs`/`.d.mts` beside it.
+# The JavaScript to emit, written `<ES version>-<module format>-<environment>`:
+# `es2022`, `es2022-esm`, `es2020-esm-browser`. The module format is `commonjs`
+# (assumed when left out), `esm`, or `dual`, which builds a `js_package` in both
+# formats. The environment is `node` (assumed when left out) or `browser`.
 #
 
 default JS_TARGET = es6-esm;
 
 #
-# INTERNAL: the program `js_compile` actually runs — fabr's TypeScript driver,
-# which drives the compiler through its API so that module resolution can come
-# from the build's dependency manifest, which a `tsc` process cannot do. Not a
-# supported override point and not a way to change compiler: ${TYPESCRIPT} is
-# the pin that governs what compiles your code. Named here only because a rule
-# reaches its own tools the same way every other driver is reached.
+# Internal: the program that runs the TypeScript compiler. To choose the
+# compiler version, set `TYPESCRIPT`.
 #
 
 default TSC_DRIVER = @fabr-build/js-tools/tsc-driver;
 
 #
-# The TypeScript release the driver compiles with — the one version knob for
-# compiles. You'll usually want to override this to set a specific version.
-# (Note these must be pinned versions or ranges; mutable dist-tags like
-# 'latest' are not supported as they make the build non-deterministic.)
+# The TypeScript compiler that compiles your sources, as a version or a range.
+# A dist-tag such as `latest` is not accepted.
 #
 
 default TYPESCRIPT = @npm:typescript:5.6.3;
 
 #
-# The esbuild library the bundle driver requires for JS bundling.
+# The esbuild that `js_bundle` bundles with.
 #
 
 default ESBUILD = @npm:esbuild:0.28.1;
 
 #
-# The Sass compiler the Sass driver (SASS_DRIVER) requires.
+# The Sass compiler that compiles `.scss` and `.sass` sources.
 #
 
 default SASS = @npm:sass-embedded:1.100.0;
 
 #
-# The importer the Sass driver (SASS_DRIVER) resolves package stylesheets
-# through. Installed with fabr.
+# Internal: how Sass finds stylesheets inside packages. Installed with fabr.
 #
 
 default SASS_PNP_IMPORTER = @fabr-build/sass-pnp-importer;
 
 #
-# The postcss host and its css-modules scoping plugin, which the postcss driver
-# (POSTCSS_DRIVER) requires.
+# The PostCSS that processes css-modules.
 #
 
 default POSTCSS = @npm:postcss:8.5.28;
+
+#
+# The PostCSS plugin that scopes the class names of css-modules.
+#
+
 default POSTCSS_MODULES = @npm:postcss-modules:9.0.1;
 
 #
-# The bundler `js_bundle` runs (fabr's esbuild driver: reads the rule's
-# options manifest, maps it onto esbuild).
+# Internal: the program `js_bundle` runs, which drives esbuild.
 #
 
 default JS_BUNDLER = @fabr-build/js-tools/bundle-driver;
 
 #
-# The Sass compiler `sass_compile` runs (fabr's driver: Sass lowering, driven
-# by the rule's manifest).
+# Internal: the program `sass_compile` runs, which drives Sass.
 #
 
 default SASS_DRIVER = @fabr-build/js-tools/sass-driver;
 
 #
-# The postcss chain `css_postcss` runs (fabr's driver: css-modules scoping and
-# publication, driven by the rule's manifest).
+# Internal: the program `css_postcss` runs, which drives PostCSS.
 #
 
 default POSTCSS_DRIVER = @fabr-build/js-tools/postcss-driver;
 
 #
-# The test framework a project's tests are written for: `node` (fabr's own
-# runner, over node:test), `jest` (the jest-compatibility runner) or `vitest`. A target
-# overrides it for itself with its `test_framework` property (`framework` on a
-# js_test).
+# The test framework a project's tests are written for: `node` (Node.js's
+# built-in `node:test`), `jest` or `vitest`. A target overrides it with its
+# `test_framework` property (`framework` on a `js_test`).
 #
 
 default JS_TEST_FRAMEWORK = node;
 
 #
-# The runner behind each test framework. Each must honor the runner contract:
-# invoked in the staged test install as `<runner> --report=<file> <test
-# files...>`, exit status red on failure, report written as CTRF.
+# The program that runs tests under the `node` framework. A replacement is run
+# in the directory of compiled tests as `<runner> --report=<file>
+# --env=<node|jsdom> [--update-snapshots] [--setup=<file>]… <test files…>`. It
+# must exit with a non-zero status when a test fails, and write its results to
+# the report file in CTRF form.
 #
 
 default JS_NODE_TEST_RUNNER = @fabr-build/js-tools/test-runner;
+
+#
+# The program that runs tests under the `jest` framework, invoked as
+# `JS_NODE_TEST_RUNNER` is.
+#
+
 default JS_JEST_RUNNER = @fabr-build/js-tools/jest-runner;
+
+#
+# The program that runs tests under the `vitest` framework, invoked as
+# `JS_NODE_TEST_RUNNER` is.
+#
+
 default JS_VITEST_RUNNER = @fabr-build/js-tools/vitest-runner;
 
 #
-# The jest release the jest-compatibility runner takes its libraries from.
-# Pinned like any tool (TYPESCRIPT, SASS, ...) — fabr never hardcodes a tool
-# version;
-# override this one default to move. Jest 29/30 are supported; the runner checks
-# at startup rather than failing obscurely later.
+# The jest release that the `jest` test framework uses. Jest 29 and 30 are
+# supported.
 #
 
 default JEST = @npm:jest:30.3.0;
 
 #
-# The transform the jest runner hoists `jest.mock` calls with. Native, so it is
-# platform-gated like esbuild.
+# Internal: the compiler the `jest` test framework uses to move `jest.mock`
+# calls above a file's imports.
 #
 
 default SWC = @npm:@swc/core:1.15.43;
 
 #
-# The `@types/*` packages inside jest's closure that are required WITHOUT a
-# version lower bound ('*', the DefinitelyTyped house style), so nothing in the
-# closure picks a version for them. Fabr does not invent one — a floorless
-# requirement is satisfied by whatever the floored ones select, and here nothing
-# does — so they are named here. They are compile-time type declarations that
-# nothing in a test process ever loads; the versions matter only in that they
-# must exist. Overridable alongside JEST if a different jest release needs
-# different ones.
+# Versions for the `@types` packages that jest's own dependencies require
+# without a minimum version. Change it together with `JEST` if another jest
+# release needs different ones.
 #
 
 default JEST_TYPE_PINS = @npm:@types/node:20.12.7
@@ -143,343 +140,335 @@ default JEST_TYPE_PINS = @npm:@types/node:20.12.7
 ################### Source-mode flags #####################
 
 #
-# Source-interpretation flags for TypeScript compilation. The compile is strict
-# by default (matching modern TS); list one of these in a target's `deps` to say
-# how tsc should read that target's sources — a per-target escape hatch.
+# Flags that change how TypeScript reads one target's sources. The compile is
+# strict by default; a target lists these in its `deps` to relax it.
 #
-# Each is named for the tsconfig option it sets, snake_cased: `no_` switches an
-# option off, a bare name switches one on, and tsc's own negatively-named
-# options read `allow_` rather than double-negate (`noImplicitAny: false` is
-# `ts/allow_implicit_any`).
+# Each is named for the tsconfig option it sets, in snake_case: `no_` turns an
+# option off, a bare name turns one on, and an option whose own name is negative
+# reads `allow_` (`noImplicitAny: false` is `ts/allow_implicit_any`).
 #
-# Two kinds sit here. The strict-family relaxations are checking only — nothing
-# about the output changes, and a converting codebase deletes them as it cleans
-# up. The rest declare a dialect the sources are written in (classic CJS
-# interop, pre-5.0 decorators) and DO change what is emitted. Several relaxations
-# at once are best given a name of their own: a `flag` of your own listing them
-# in `provides` reads better in forty targets than the list does.
+# The strictness flags affect checking only. `ts/no_es_module_interop` and the
+# decorator flags also change the emitted JavaScript.
 #
 
-# Turn TypeScript strict mode off wholesale for this target's sources.
+# Turn off all of TypeScript's `strict` checks for this target's sources.
 flag ts/no_strict { }
-# Allow implicit `any` (`noImplicitAny: false`) for this target's sources.
+# Allow implicit `any` (`noImplicitAny: false`).
 flag ts/allow_implicit_any { }
-# Allow an implicitly-`any` `this` (`noImplicitThis: false`): for sources using
-# dynamic-`this` callbacks.
+# Allow `this` to be implicitly `any` (`noImplicitThis: false`).
 flag ts/allow_implicit_this { }
-# Treat null and undefined as members of every type (`strictNullChecks: false`),
-# as TypeScript did before 2.0.
+# Treat `null` and `undefined` as members of every type
+# (`strictNullChecks: false`), as TypeScript did before 2.0.
 flag ts/no_strict_null_checks { }
-# Allow class properties with no definite assignment
+# Allow class properties that aren't definitely assigned
 # (`strictPropertyInitialization: false`).
 flag ts/no_strict_property_initialization { }
 # Compare function parameter types bivariantly (`strictFunctionTypes: false`),
 # as TypeScript did before 2.6.
 flag ts/no_strict_function_types { }
-# Leave `bind`/`call`/`apply` argument types unchecked
+# Leave the argument types of `bind`, `call` and `apply` unchecked
 # (`strictBindCallApply: false`), as TypeScript did before 3.2.
 flag ts/no_strict_bind_call_apply { }
 # Type a caught error as `any` rather than `unknown`
-# (`useUnknownInCatchVariables: false`): for sources written before TypeScript 4.4.
+# (`useUnknownInCatchVariables: false`), as TypeScript did before 4.4.
 flag ts/no_use_unknown_in_catch_variables { }
-# Compile with classic CJS interop (`esModuleInterop: false`): for sources written
-# with `import * as x` of callable CJS modules rather than default imports.
+# Compile without `esModuleInterop`, for sources that import a callable
+# CommonJS module with `import * as x` rather than a default import.
 flag ts/no_es_module_interop { }
 # Leave side-effect imports unchecked (`noUncheckedSideEffectImports: false`),
-# so `import "./typo.css"` naming nothing is silent rather than an error. The
-# check is on wherever the compiler supports it (TypeScript 5.6+); this asks
-# for the older behaviour, and names an option an earlier compiler will reject.
+# so that `import "./typo.css"` naming no file is not an error. Needs
+# TypeScript 5.6 or later; an earlier compiler rejects the option.
 flag ts/allow_unchecked_side_effect_imports { }
-# Compile decorators with the legacy semantics TypeScript used before 5.0
-# (`experimentalDecorators: true`). Class fields keep assignment semantics with
-# it: a real field would shadow the prototype accessor a property decorator
+# Compile decorators with the semantics TypeScript used before 5.0
+# (`experimentalDecorators: true`). Class fields are then assigned rather than
+# defined, because a defined field would hide the accessor a property decorator
 # installs.
 flag ts/experimental_decorators { }
-# Additionally emit design-time type metadata for those decorators — the shape a
-# reflect-metadata DI container reads. Note it retains type-only imports as
-# runtime ones. Implies ts/experimental_decorators, which TypeScript requires.
+# Also emit type metadata for decorators (`emitDecoratorMetadata: true`), as
+# dependency-injection containers built on `reflect-metadata` need. Imports used
+# only as types in decorated signatures are kept at run time. Turns on
+# `ts/experimental_decorators` too.
 flag ts/emit_decorator_metadata { provides = ts/experimental_decorators; }
 
 ################## Source version flags ###################
 
 #
-# The ECMAScript level a target's SOURCES are written against — what APIs the
-# code may use — as opposed to `JS_TARGET`'s level, which is what gets emitted
-# and which runtime the output must run on. List one among a target's `deps`:
+# The ECMAScript version a target's SOURCES are written against, as opposed to
+# `JS_TARGET`'s version, which is what gets emitted. A target lists one in its
+# `deps`; with none, the source version follows `JS_TARGET`.
 #
-#     js_package mylib { srcs = src:**/*.ts; deps = es2023; }
+# Sources declared below es2022 keep assignment semantics for class fields even
+# when emitted for a later target, because `useDefineForClassFields` turns on at
+# ES2022 and changes what a class field does.
 #
-# It sets the compile's `lib` (so using an API above the declared level is an
-# error, not a silent success), and — because `useDefineForClassFields` turns
-# on at emit target ES2022 and changes what class fields DO — sources declared
-# below es2022 keep assignment semantics even when emitted for a later target.
-# Declaring none leaves the level following JS_TARGET, as before.
-#
-# A package built from es2023 sources genuinely requires an es2023 runtime, so
-# the flag rides its dependency list outward like any other runtime dependency.
-#
+
+# The sources are written against ES5: using a newer API is a compile error,
+# whatever version `JS_TARGET` emits.
 flag es5 { }
-flag es6 { }     # Alias for es2015
+# The same as `es2015`.
+flag es6 { }
+# The sources are written against ES2015: using a newer API is a compile error,
+# whatever version `JS_TARGET` emits. A package built from them needs a runtime
+# that supports ES2015, so the flag also applies to targets that depend on it.
 flag es2015 { }
+# The sources are written against ES2016. See `es2015`.
 flag es2016 { }
+# The sources are written against ES2017. See `es2015`.
 flag es2017 { }
+# The sources are written against ES2018. See `es2015`.
 flag es2018 { }
+# The sources are written against ES2019. See `es2015`.
 flag es2019 { }
+# The sources are written against ES2020. See `es2015`.
 flag es2020 { }
+# The sources are written against ES2021. See `es2015`.
 flag es2021 { }
+# The sources are written against ES2022. See `es2015`.
 flag es2022 { }
+# The sources are written against ES2023. See `es2015`.
 flag es2023 { }
+# The sources may use the newest APIs the compiler knows. See `es2015`.
 flag esnext { }
 
 #
-# Whether the sources require the DOM runtime.
+# The sources use browser APIs. Adds the DOM type declarations to the compile,
+# and runs the target's tests in a jsdom environment.
 #
 flag dom { }
 
 #
-# Whether the sources use node's runtime GLOBALS — `process`, `Buffer` and
-# `global` — which node supplies to every module and a browser does not. In a
-# bundle built for a `-browser` JS_TARGET the flag binds those identifiers to
-# shim packages; a `-node` bundle needs no help, so there it does nothing.
-#
-# The shims are NOT supplied by the flag: they are ordinary dependencies whose
-# versions are the project's to pin, so the target mounts them itself, under the
-# names node knows them by.
-#
-#     js_bundle app {
-#       entry = @myapp:index.js;
-#       srcs  = @npm:process:0.11.10 @npm:buffer:6.0.3 js/node_globals;
-#     }
-#
-# `process` and `buffer` must both be present — a missing one is an ordinary
-# unresolved import from the bundler. `global` needs no package (it binds to
-# `globalThis`), and an explicit `defines` entry for it wins.
-#
-# Node builtin MODULES (`import "path"`) are a separate matter, handled by
-# mounting a shim renamed to the builtin's own name:
-#
-#     srcs = @npm:path-browserify:1.0.1 -> path;
+# The sources use the globals Node.js gives every module: `process`, `Buffer`
+# and `global`. In a `js_bundle` for a browser, the flag binds `process` and
+# `Buffer` to the `process` and `buffer` packages, which the bundle must list in
+# its `srcs`, and `global` to `globalThis`. In a bundle for Node.js it does
+# nothing.
 #
 flag js/node_globals { }
 
 ################### JS-specific targets ####################
 
 #
-# A standard JavaScript/TypeScript npm package: compile a source tree and produce
-# an installable package (with a generated `package.json`). `srcs` are the sources
-# to compile; `deps` are its dependencies (packages, or plain-source siblings);
-# `tests` are compiled and run under `fabr test`. It builds a package for `build`,
-# runs its bin for `run`, and runs its tests for `test`.
+# An npm package compiled from TypeScript or JavaScript sources, with a
+# generated `package.json`:
+#
+#     js_package mylib {
+#       srcs = src:**/*.ts;
+#       deps = @npm:lodash:4.17.21;
+#       tests = src:**/*.test.ts;
+#     }
+#
+# `fabr build` produces the package, `fabr test` runs its tests, and `fabr run`
+# runs its command-line program, which is any script directly under `bin/`.
 #
 
 targetdef js_package {
+    # The sources to compile: TypeScript, JavaScript and stylesheets. A
+    # `package.json` here supplies fields for the generated one.
     srcs = FILES;
+    # The packages the sources import, written to `dependencies`. Also takes
+    # flags, and source files to compile with the package without shipping.
     deps = FILES;
-    # Host-provided (peer) dependencies: compiled and resolved against exactly
-    # like 'deps', but the host supplies the single shared copy at runtime, so
-    # they are emitted as peerDependencies (not dependencies) in the generated
-    # package.json rather than bundled. Used by a plugin for @fabr-build/core.
+    # Packages the sources import but whoever uses this package supplies, such
+    # as `react` for a component library. Written to `peerDependencies`.
     provided_deps = FILES;
-    # The package's public entry points, named as the sources they compile from.
-    # Sources are added to the compiled srcs list (if not already present).
+    # The package's public entry points, named by the sources they compile
+    # from. They are compiled even if `srcs` doesn't list them.
     exports = FILES;
-    # Files that ship as package content WITHOUT being compiled, including
-    # already-built JavaScript (note there are definitionally no checks on
-    # the included files.)
+    # Files to ship in the package as they are, without compiling or checking
+    # them.
     resources = FILES;
-    # The test files: every compilable file here runs as a test. Support that
-    # is not itself a test (mocks, a harness, the setupTests script) goes in
-    # test_deps; recorded snapshots in test_expectations.
+    # The test files. Every source file here is run as a test, so helpers and
+    # the `setupTests` file go in `test_deps`, and snapshots in
+    # `test_expectations`.
     tests = FILES;
-    # Extra packages for compiling and running the tests only (assertion
-    # libraries and their @types); never part of the package's own
-    # dependencies. The describe/it globals are provided (and typed) by the
-    # test runner. A plain SOURCE here is test support: compiled with the test
-    # types in scope, never run as a test, never shipped (and kept out of the
-    # package's own compile).
+    # Packages only the tests import, such as an assertion library and its
+    # types. A source file here is compiled with the tests but not run as a
+    # test, and not shipped.
     test_deps = FILES;
-    # Recorded expectations the tests compare against — jest's
-    # `__snapshots__/*.snap`, or any equivalent a runner reads. 
+    # Snapshot files the tests compare against (`__snapshots__/*.snap`).
+    # `fabr test -u` updates them.
     test_expectations = FILES;
-    # Files the tests need at runtime, staged verbatim: neither compiled nor
-    # shipped as package content.
+    # Files the tests read when they run. Neither compiled nor shipped.
     test_resources = FILES;
-    # Environment variables the test processes run with; they run with no
-    # others.
+    # Environment variables for the test processes, which run with no others.
     test_env = MAP;
     # The test framework the tests are written for: `node`, `jest` or `vitest`.
     test_framework = STRING default ${JS_TEST_FRAMEWORK};
+    # The package's version.
     version = STRING;
-    # Descriptive package.json fields (description, license, author, homepage,
-    # ...), overlaid onto the generated manifest. A value is a string, a nested
-    # block (an object: repository = { type = git; url = ...; };), or a list of
-    # blocks (an array of objects: maintainers = { name = a; } { name = b; };).
-    # Reuse a shared map by bare reference (metadata = COMMON;) or splice it
-    # into a block and override per package, later entries winning:
-    # metadata = { COMMON; description = This package; };
-    # A key fabr computes itself (name, version, type, main, types, exports,
-    # bin, dependencies, peerDependencies) is rejected rather than silently
-    # overridden, as is one a published package does not carry (devDependencies,
-    # scripts, files, private, publishConfig, workspaces, ...).
+    # Other `package.json` fields, such as `description`, `license` and
+    # `repository`. A value is a string, a block for an object
+    # (`repository = { type = git; url = …; };`), or several blocks for an
+    # array. Fields fabr generates (`name`, `version`, `main`, `exports`,
+    # `dependencies` and the like) and fields a published package doesn't carry
+    # (`devDependencies`, `scripts`, `private`, …) are rejected.
     metadata = MAP;
 }
 
 #
-# Bundle a JavaScript/TypeScript source tree into a self-contained artifact.
-# `srcs` is the extra sources allowed INTO the bundle (plain files land at the
-# working root; packages mount under `node_modules` and are inlined); `entry` is
-# the source(s) to bundle (a glob gives N independent bundles) — entry files are
-# included automatically, so they need not also be listed in `srcs`; `deps`
-# is what the RUNTIME provides — externalized by package identity, so their
-# imports survive verbatim (the lambda case: handler + vendored libs in `srcs`,
-# `@aws-sdk/*` in `deps`). `output` optionally renames each entry's default output
-# (identity modulo `.ts`/`.tsx` -> `.js`), e.g. `*.entry.js -> *.min.js`. `defines`
-# are compile-time constant substitutions (esbuild `define`): each value is code
-# text verbatim, so a string constant is shell-quoted like esbuild's own CLI
-# (`process.env.NODE_ENV = '"production"';`) while `DEBUG = false;` stays a bare
-# literal. Minify and sourcemaps follow `BUILD_TYPE`; platform/format follow `JS_TARGET`.
+# Bundle sources and their dependencies into self-contained JavaScript files,
+# with esbuild:
+#
+#     js_bundle handler {
+#       entry = src:handler.ts;
+#       srcs = src:**/*.ts @npm:lodash:4.17.21;
+#     }
+#
+# The module format and platform follow `JS_TARGET`. `release` and
+# `relwithdebinfo` builds are minified; `debug` and `relwithdebinfo` builds have
+# source maps.
 #
 
 targetdef js_bundle {
+    # What may go into the bundle: source files, and packages to include in it.
     srcs = FILES;
+    # The file to bundle. A pattern matching several files produces one bundle
+    # for each. Entry files need not also be in `srcs`.
     entry = REQUIRED FILES;
+    # Packages the environment the bundle runs in already has. Imports of them
+    # are left in the output and their code is not included.
     deps = FILES;
+    # Renames the output files, which are otherwise named after each entry with
+    # a `.js` extension: `*.js -> *.min.js`.
     output = REWRITE;
+    # Constants to substitute at compile time (esbuild's `define`). Each value
+    # is JavaScript source text, so a string needs its own quotes:
+    # `process.env.NODE_ENV = '"production"';`, but `DEBUG = false;`.
     defines = MAP;
 }
 
 #
-# Standalone JavaScript test target: `tests` are the test files, compiled and
-# run under fabr's own test runner; `deps` are everything they need but that
-# isn't itself a test — packages, and plain-source support (e.g. a test harness,
-# which compiles as a sibling so `./harness` resolves, but is never run).
+# Tests that don't belong to a package, such as an end-to-end suite:
+#
+#     js_test e2e {
+#       tests = test:**/*.test.ts;
+#       deps = test:**/*.ts mylib @npm:@types/node:22.15.3;
+#     }
+#
+# A source file named `setupTests` at the root of the source tree is loaded in
+# every test process before the test file.
 #
 
 targetdef js_test {
-    # The test files: every compilable file here runs as a test. Support that
-    # is not itself a test (mocks, a harness, the setupTests script) goes in
-    # deps; recorded snapshots in expectations.
+    # The test files. Every source file here is run as a test, so helpers and
+    # the `setupTests` file go in `deps`, and snapshots in `expectations`.
     tests = FILES;
+    # Packages the tests import, and source files to compile with them that
+    # aren't themselves tests.
     deps = FILES;
-    # The test framework the tests are written for (see js_package's
-    # test_framework).
+    # The test framework the tests are written for: `node`, `jest` or `vitest`.
     framework = STRING default ${JS_TEST_FRAMEWORK};
-    # Files the tests need at runtime, staged verbatim (see js_package's
-    # test_resources — unprefixed here, since everything in a js_test is tests).
+    # Files the tests read when they run.
     resources = FILES;
-    # Environment variables the test processes run with; they run with no
-    # others.
+    # Environment variables for the test processes, which run with no others.
     env = MAP;
-    # Recorded expectations the tests compare against (see js_package).
+    # Snapshot files the tests compare against (`__snapshots__/*.snap`).
+    # `fabr test -u` updates them.
     expectations = FILES;
-    # A source named `setupTests` (.ts/.js) at the ROOT of this target's source
-    # tree is loaded into every test process before any test file — the usual
-    # home for environment polyfills and suite-wide mocks. A convention, not a
-    # property: it is one file per target and already an ordinary source, so it
-    # compiles with the tests and may use the test globals.
 }
 
 #
-# Define a runnable JavaScript program (run it with `fabr run`, collect its
-# output with the generic `generate` target, or check it with a golden test).
-# `entry` is either a plain script FILE (contributed to the install at its
-# resolved name and launched under node), or a PACKAGE — external or built —
-# that becomes the runnable via the usual npm rules (`entry = @npm:astro:7.1.1;`
-# — its sole declared bin is the default entry, and a projection selects among
-# several — `entry = @npm:typescript:5.4.5:tsc` — exactly as under `fabr run`);
-# package-mode exists to decorate a packaged tool with additional dependencies:
-# `entry` and `deps` resolve jointly at one collection point, so the whole
-# environment shares one version selection and mounts into one `node_modules`
-# (loose dep filesets land at their own paths). `args` are fixed leading
-# arguments. It yields a runnable, it does not itself execute.
+# A Node.js program that can be run: with `fabr run`, as a command in a
+# `generate` target, or as the `tool` of a `serve` target.
+#
+#     js_script migrate { entry = scripts/migrate.ts; deps = @npm:pg:8.11.5; }
+#
+#     js_script docs_tool { entry = @npm:astro:7.1.1; deps = @npm:@astrojs/starlight:0.41.3; }
+#
+# The second form adds dependencies to a packaged tool, such as plugins it loads
+# by name. `entry` and `deps` are installed together, with one version of each
+# package.
 #
 
 targetdef js_script {
+    # The packages the program imports, and other files it needs.
     deps = FILES;
+    # The script file to run, or a package to run by its command-line program.
+    # Where a package has several, name one: `@npm:typescript:5.6.3:tsc`.
     entry = REQUIRED FILES;
+    # Arguments passed to the program ahead of any given when it is run.
     args = STRING;
 }
 
 #
-# npmjs.org compatible repository, specified by URL. `access` is the access
-# level packages published here request on their first publish: `public`, or
-# `private` (npmjs's paid private packages; npm's wire term `restricted` is
-# accepted as a synonym).
+# An npm registry, to fetch packages from and publish them to:
+#
+#     npm_repository @internal { url = https://npm.example.com/; access = private; }
+#
+# Packages in it are then written `@internal:<package>:<version>`. Credentials
+# come from `.npmrc`.
 #
 
 targetdef npm_repository {
+    # The registry's URL.
     url = REQUIRED STRING;
+    # The access requested when a package is first published: `public`, or
+    # `private` (`restricted` means the same).
     access = STRING;
 }
 
 #
-# The compile primitives below are normally composed automatically by the target
-# types above rather than declared by hand; they are documented last for that
-# reason.
+# The target types below are normally created for you by the ones above, and
+# rarely need declaring.
 #
 
 #
-# Compile a JavaScript/TypeScript source tree to plain JS — the one TS-compile
-# path. `srcs` are the sources (`.ts`/`.tsx`/`.js`/`.jsx`, plus ambient `.d.ts`);
-# `deps` are the packages the sources are compiled against (mounted as
-# `node_modules`). Composed automatically by `js_package`/`js_test`/
-# `js_script`; also declarable directly.
+# Compile TypeScript and JavaScript sources to JavaScript and type declarations.
+# A `js_package`, `js_test` or `js_script` does this for its own sources; declare
+# one to compile sources on their own.
 #
 
 targetdef js_compile {
+    # The sources: `.ts`, `.tsx`, `.js`, `.jsx`, and `.d.ts` declarations.
     srcs = FILES;
+    # The packages the sources import.
     deps = FILES;
-    # The package name these sources are importable as, which enables
-    # source that imports its own package by name to work correctly.
+    # The package name the sources can import themselves by.
     package_name = STRING;
-    # What this compile's `.js` output is named instead (only `.mjs`), for the
-    # ES-module format of a dual package: its tree ships beside the CommonJS
-    # format's, which occupies the same names. Emitted specifiers are renamed to
-    # match, so the compile has to know rather than being renamed afterwards.
+    # Set to `.mjs` to name the emitted JavaScript `.mjs` rather than `.js`,
+    # with the imports between the files written to match.
     module_extension = STRING;
-    # Rewrite rules from import specifier to target name, applied both for file
-    # resolution and to the emitted import names.
+    # Rules that rename import specifiers (`*.scss -> *.css`), applied when
+    # resolving an import and to the import written in the output.
     rewrite_imports = REWRITE;
-    # Additional files that the source files may reference (eg css), for static
-    # checking purposes.
+    # Files that aren't compiled but that the sources import, such as
+    # stylesheets, so that those imports resolve.
     resources = FILES;
 }
 
 #
-# Lower a Sass source tree to plain CSS. `srcs` are the Sass sources
-# (`.scss`/`.sass`, modules included); `deps` are scss packages mounted for
-# Sass `@use`/`@import` resolution.
+# Compile Sass sources to CSS. A `js_package` or `js_bundle` does this for the
+# Sass among its own sources; declare one to compile Sass on its own.
 #
-# Each source becomes the same name with a `.css` extension, the `.module.`
-# marker riding through (`x.module.scss` -> `x.module.css`) for `css_postcss`
-# to consume, with its source map beside it in builds that carry them. Sass
-# partials (`_foo.scss`) produce nothing.
-#
-# Composed automatically by `js_package`/`js_bundle`/the test pipeline for any
-# Sass sources; also declarable directly. Uses `SASS`.
+# Each `.scss` or `.sass` source produces a `.css` file of the same name
+# (`x.module.scss` produces `x.module.css`), with a source map in builds that
+# have them. Partials (`_x.scss`) produce nothing.
 #
 
 targetdef sass_compile {
+    # The Sass sources.
     srcs = FILES;
+    # Packages whose stylesheets the sources load with `@use` or `@import`.
     deps = FILES;
 }
 
 #
-# Run the postcss chain over a plain-CSS tree, scoping css-modules. `srcs` are
-# stylesheets — authored `.css`, or a `sass_compile` step's lowered output with
-# its maps beside it; `package_name` is the identity scoped class names are
-# derived from, along with the file.
+# Scope the css-modules in a set of CSS files. A `js_package` or `js_bundle`
+# does this for its own stylesheets; declare one to process CSS on its own.
 #
-# Composed automatically by `js_package`/`js_bundle`/the test pipeline for any
-# styled sources; also declarable directly. Uses `POSTCSS` and
-# `POSTCSS_MODULES`.
+# Each `x.module.css` produces `x.css` with its class names scoped, and a
+# TypeScript module `x.css.ts` exporting them. Other stylesheets are copied
+# unchanged.
 #
 
 targetdef css_postcss {
+    # The stylesheets: `.css` files, or the output of a `sass_compile`.
     srcs = FILES;
-    # Packages whose stylesheets a `composes` may reach, mounted by name
-    # (`composes: x from 'pkg/base.css'`). Read, never published.
+    # Packages whose stylesheets a `composes` can name
+    # (`composes: x from 'pkg/base.css'`).
     deps = FILES;
+    # The package name that scoped class names are derived from, together with
+    # each file's path.
     package_name = STRING;
 }
 
@@ -487,10 +476,9 @@ targetdef css_postcss {
 ####################### Repository ##########################
 
 #
-# Convenience provider for the public npmjs.com repository. Publishing here
-# publishes publicly — this is *the public registry*, To publish restricted-
-# access/private packages, declare a separate repository instance
-# with `access = private;`.
+# The public npm registry, or the registry `NPM_REPOSITORY_URL` names.
+# Packages published to it are public; to publish private packages, declare an
+# `npm_repository` with `access = private;`.
 #
 
 default npm_repository @npm {
@@ -501,30 +489,21 @@ default npm_repository @npm {
 ##################### Driver tools ########################
 
 #
-# Fabr's own driver scripts, declared as ordinary runnable targets over the
-# compiled entries shipped in this @fabr-build/js installation (entry paths are
-# relative to this file). The `js_bundle` / `sass_compile` / `css_postcss`
-# rules resolve them through the JS_BUNDLER / SASS_DRIVER / POSTCSS_DRIVER
-# globals, so an alternative driver
-# honoring the same options-manifest contract can be swapped in by overriding
-# the global. (Named under `@fabr-build/js-tools` — our npm scope, but NOT the
-# plugin's own package name: `@fabr-build/js` is a declared target in any
-# project that builds the plugin itself, and a name cannot be both a target
-# and a namespace.)
+# The programs fabr runs to drive each tool, declared as ordinary runnable
+# targets over the compiled scripts shipped in this installation (paths are
+# relative to this file). Each is reached through a global (`JS_BUNDLER`,
+# `SASS_DRIVER`, …). They are named under `@fabr-build/js-tools` rather than
+# `@fabr-build/js`, because that name is a target in a project that builds the
+# plugin itself, and a name cannot be both a target and a namespace.
 #
 
-# The bundler driver `js_bundle` runs (the default `JS_BUNDLER`): reads the
-# rule's options manifest and maps it onto esbuild. Like all the driver tools
-# here, an ordinary runnable target over compiled entries shipped in this
-# installation — a replacement honoring the same manifest contract can be
-# swapped in by overriding the global.
+# Internal: runs esbuild for `js_bundle`. The default `JS_BUNDLER`.
 js_script @fabr-build/js-tools/bundle-driver {
     entry = ../bundleDriver/bundle-driver.js;
     deps = ${ESBUILD} ../pnp/PnPResolver.js ../pnp/PnPApi.js ../pnp/VirtualPath.js ../pnp/PackageExports.js ../pnp/ReadSet.js;
 }
 
-# The Sass compiler `sass_compile` runs (the default `SASS_DRIVER`): Sass
-# lowering, driven by the rule's options manifest.
+# Internal: runs Sass for `sass_compile`. The default `SASS_DRIVER`.
 js_script @fabr-build/js-tools/sass-driver {
     entry = ../cssDriver/sass-driver.js;
     deps = ${SASS} ${SASS_PNP_IMPORTER}
@@ -532,78 +511,44 @@ js_script @fabr-build/js-tools/sass-driver {
            ../pnp/PnPResolver.js ../pnp/PnPApi.js ../pnp/VirtualPath.js ../pnp/PackageExports.js ../pnp/ReadSet.js;
 }
 
-# The postcss chain `css_postcss` runs (the default `POSTCSS_DRIVER`): css-modules
-# scoping and publication, driven by the rule's options manifest. No dependency
-# table: the chain reads nothing outside its staged inputs.
+# Internal: runs PostCSS for `css_postcss`. The default `POSTCSS_DRIVER`.
 js_script @fabr-build/js-tools/postcss-driver {
     entry = ../cssDriver/postcss-driver.js;
     deps = ${POSTCSS} ${POSTCSS_MODULES} ../cssDriver/Support.js;
 }
 
-# The TypeScript driver `js_compile` runs (see TSC_DRIVER): drives the compiler
-# through its API, resolving modules from the build's dependency manifest rather
-# than from a node_modules tree. It depends on the compiler PACKAGE, exactly as
-# the bundle, Sass and postcss drivers depend on theirs — the API is what it
-# drives, so the `tsc` bin would mean nothing to it — and ${TYPESCRIPT} is the
-# one pin governing what compiles your code. Run in the staged workspace exactly
-# as the `tsc` bin is, and with no manifest present it resolves through the
-# filesystem like the bin does — so it is a drop-in for either layout.
+# Internal: runs the TypeScript compiler for `js_compile`, through its API.
+# The default `TSC_DRIVER`.
 js_script @fabr-build/js-tools/tsc-driver {
     entry = ../tscDriver/tsc-driver.js;
     deps = ../pnp/PnPResolver.js ../pnp/PnPApi.js ../pnp/VirtualPath.js ../pnp/PackageExports.js ../pnp/ReadSet.js
            ../tscDriver/Planning.js ../tscDriver/Wave.js ${TYPESCRIPT};
 }
 
-# Fabr's own test runner ('fabr test' / js_test / js_package tests): wraps
-# node:test, preloads the describe/it globals, and writes the CTRF report.
-# Snapshot assertions are node:test's own (`t.assert.snapshot`, node 23.4+),
-# recorded as `__snapshots__/<test file>.snap` beside the test. Its
-# test-globals.d.ts rides in the install — the test rules mount it into the
-# test compile as ambient types, so a replacement (JS_NODE_TEST_RUNNER) carries
-# its own globals typings.
+# Runs tests under the `node` framework, with Node.js's `node:test`. The
+# default `JS_NODE_TEST_RUNNER`.
 js_script @fabr-build/js-tools/test-runner {
     entry = ../testRunner/runner.js;
-    deps = ../testRunner/Report.js ../testRunner/globals.js ../testRunner/RunTests.js ../testRunner/test-globals.d.ts;
+    deps = ../testRunner/Assets.js ../testRunner/Report.js ../testRunner/globals.js ../testRunner/RunTests.js
+           ../testRunner/test-globals.d.ts;
 }
 
-# Fabr's test runner with a JEST COMPATIBILITY LAYER: it drives JEST-CIRCUS
-# itself. Circus owns the framework (describe/it, hooks, .each/.only/.concurrent,
-# per-test timeouts, `expect` with its snapshot state and assertion counting);
-# fabr owns the module system (node's real loader, the mock registry, the
-# load-time hoist, the `jest` object). Neither jest's orchestrator nor
-# jest-runtime runs: circus is handed a facade over the eleven methods it
-# actually calls, so modules load through node and `require(esm)` keeps working
-# — the capability jest's own vm-based loader lacks.
-#
-# Select it per target (`test_framework = jest;`) or project-wide
-# (`JS_TEST_FRAMEWORK = jest;`). A target using it should declare `@npm:@types/jest` among its `test_deps` for the
-# describe/it/expect/jest globals' types — this runner deliberately ships no
-# ambient globals of its own, which would collide with them.
-#
-# A test file that imports describe/it from `node:test` DIRECTLY is invisible to
-# it — those registrations go to node:test, which this runner does not drive —
-# so a file that registers no tests is reported as a failure rather than
-# silently passing. Use the globals, or `@jest/globals`.
+# Runs tests under the `jest` framework, with jest's own test framework and
+# libraries and Node.js's module loader. The default `JS_JEST_RUNNER`.
 js_script @fabr-build/js-tools/jest-runner {
     entry = ../jestRunner/runner.js;
     deps = ${JEST} ${SWC} JEST_TYPE_PINS
-           ../jestRunner/Assets.js ../jestRunner/child.js ../jestRunner/Config.js ../jestRunner/Environment.js
+           ../jestRunner/child.js ../jestRunner/Config.js ../jestRunner/Environment.js
            ../jestRunner/Failures.js ../jestRunner/Hoist.js ../jestRunner/JestObject.js ../jestRunner/Registry.js
            ../jestRunner/RuntimeFacade.js ../jestRunner/SnapshotResolver.js ../jestRunner/Tools.js
-           ../testRunner/Report.js ../testRunner/RunTests.js;
+           ../testRunner/Assets.js ../testRunner/Report.js ../testRunner/RunTests.js;
 }
 
-# Fabr's test runner for VITEST (`JS_TEST_FRAMEWORK = vitest;`): it runs the
-# target's own vitest — declared among its `test_deps`, 4.1 or later — over the
-# compiled tests, which this framework compiles as ES modules. Vitest loads
-# them through node's own module loader, so Vite's transforms (plugins,
-# aliases, `import.meta.env`) do not apply.
-#
-# It carries its own package.json: the tests it runs are ES modules, so the
-# installation they share says `"type": "module"`, and this one says how the
-# runner itself was built.
+# Runs tests under the `vitest` framework, with the vitest the target declares
+# in its `test_deps`. The default `JS_VITEST_RUNNER`.
 js_script @fabr-build/js-tools/vitest-runner {
     entry = ../vitestRunner/runner.js;
-    deps = ../vitestRunner/VitestRun.js ../testRunner/Report.js ../testRunner/RunTests.js
+    deps = ../vitestRunner/preload.js ../vitestRunner/VitestRun.js
+           ../testRunner/Assets.js ../testRunner/Report.js ../testRunner/RunTests.js
            vitest-runner.package.json -> package.json;
 }

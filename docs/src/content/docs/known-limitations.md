@@ -1,112 +1,81 @@
 ---
 title: Known limitations
-description: Current limitations and rough edges in fabr you should be aware of — host-tool hermeticity, test-runner support, npm version resolution, cache concurrency, and watch-mode cleanup.
+description: Current limitations and rough edges in fabr you should be aware of — host-tool hermeticity, npm install-time behaviour, cache concurrency, and watch-mode cleanup.
 ---
 
-Fabr is under active development. It is fully self-hosting and builds, tests, and runs real
-JavaScript/TypeScript projects, but several things are deliberately incomplete or behave differently
-from the tools you may be used to. The most important ones to know about are below. (This page is
-about present behaviour; planned features that simply don't exist yet are a separate matter.)
+Fabr builds, tests and runs real JavaScript and TypeScript projects, itself included, but it is
+under active development. This page lists the places where its present behaviour falls short of
+what it intends, with a workaround for each. Limits of a particular feature are documented with
+that feature: see [Testing](/reference/js/testing/),
+[Stylesheets](/reference/js/stylesheets/#what-isnt-supported) and
+[TypeScript compilation](/reference/js/typescript/).
+
+| Limitation | Effect |
+|---|---|
+| [Programs on your machine aren't tracked](#host-tools-arent-hermetically-sealed-yet) | A different `node` can change results without fabr noticing; running fabr through `yarn` defeats the cache. |
+| [npm install-time behaviour is missing](#npm-packages-that-rely-on-install-time-behaviour) | Packages that need a `postinstall` script may not work. |
+| [No lock between fabr processes](#concurrent-fabr-processes-duplicate-work-rather-than-sharing-it) | Two builds at once may each do the same work. |
+| [A force-killed watch leaves its program running](#watch-mode-can-leave-a-program-running-if-fabr-is-force-killed) | `kill -9` on fabr orphans the program it started. |
 
 ## Host tools aren't hermetically sealed yet
 
-Fabr aims at [deterministic builds](/introduction/#determinism-and-no-lockfiles), but there is one
-significant gap today: **host programs are not modelled as identified dependencies.** The `node`
-interpreter used to run JavaScript, the `sh` used by shell scripts, and any other tool fabr invokes
-on the host are found by a **`PATH` search**, and the resolved absolute path is what goes into the
-build cache key.
+Fabr intends a build to depend only on its
+[declared inputs](/introduction/#the-same-result-every-time). The programs it runs from your
+machine are the exception today. `node`, which runs every JavaScript tool, and `sh`, which runs
+shell scripts, are found by searching your `PATH`, and what fabr records about them is the path
+where they were found, not which version they are.
 
-Two consequences follow:
+- **A different `node` can change a result without invalidating the cache.** If you switch Node.js
+  versions in place, at the same path, fabr reuses results built with the old one. Builds on two
+  machines with different Node.js versions aren't guaranteed to match.
+- **A `PATH` that changes on every run defeats the cache.** `yarn` puts a new temporary directory
+  at the front of `PATH` each time it runs a command, so `node` is found at a different path on
+  every run, and steps that should be reused run again. Under `yarn`, `fabr test` re-runs the
+  tests every time for this reason.
 
-- **Builds aren't fully hermetic with respect to your toolchain.** A different build of `node` (or
-  another host tool) can change outputs, but fabr captures only its path, not its identity — so a
-  genuine toolchain change may not invalidate the cache, and a build isn't guaranteed reproducible
-  across machines with different tools installed.
-- **A `PATH` that changes every run defeats the cache.** If you launch fabr through a wrapper that
-  rewrites `PATH` per invocation — most notably `yarn`, which prepends a fresh temp shim directory
-  each time — the interpreter resolves to a different path every run, the cache key changes, and work
-  that should have been a cache hit re-runs. `fabr test` under `yarn` never hits the cache for this
-  reason.
+**Workaround:** run `fabr` directly, not through `yarn` or another wrapper that changes `PATH`,
+and use the same Node.js version on machines that should produce the same results. After
+switching Node.js versions in place, delete the cache. The second problem costs time only; the
+results are still correct.
 
-**Workaround:** invoke fabr by a stable path — install the CLI and run `fabr` directly (or
-`node …/cli/build/index.js`) rather than through a `PATH`-rewriting wrapper — and keep a consistent
-host toolchain across the machines that share a cache. This is wasted recompute, not incorrect
-output.
+## npm packages that rely on install-time behaviour
 
-## Only fabr's own test runners are available, and each has gaps
+Fabr chooses dependency versions differently from npm, Yarn and pnpm, by
+[minimal version selection](/reference/js/dependencies/#how-versions-are-chosen) and with no
+lockfile; that is by design, and [Dependencies](/reference/js/dependencies/) describes it. Two
+things a package manager does at install time are missing, though:
 
-`fabr test` runs tests through a runner satisfying fabr's runner contract — invoked as
-`<runner> --report=<file> --env=<node|jsdom> …` and reporting in [CTRF](https://ctrf.io) form. Two
-ship: fabr's own, built on Node's `node:test`, and a jest compatibility layer (see
-[the JS quickstart](/quickstart-js/) for choosing between them). What that rules out today:
+- **Install scripts aren't run.** A package that downloads or builds something in a `postinstall`
+  script won't have done so, and may not work.
+- **Unconstrained optional dependencies are skipped silently.** An optional dependency required
+  only as `*` (for example `fsevents: "*"`) has no version that can be selected, so fabr leaves
+  it out, currently without a warning.
 
-- **Jest's own CLI cannot be the runner.** It does not satisfy the contract. Jest suites
-  (`JS_TEST_FRAMEWORK = jest`) run through the compatibility layer instead, which
-  drives jest-circus with jest's own libraries — so their behaviour is jest's, but none of jest's
-  orchestrator runs.
-- **Vitest is not supported.** Its API is unavailable and there is no compatibility layer for it.
-- **Custom jest plugins and extensions are not supported.** The compatibility layer does not load
-  custom test environments, transformers, reporters, resolvers or runners.
-
-## npm resolution uses MVS and can differ from npm/yarn
-
-Fabr resolves npm dependencies by **[minimal version selection](/reference/js-rules/)** (MVS): for
-each package it picks the highest of the *minimum* versions actually required across the build, with
-**no lockfile**. This is deterministic and reproducible — the same requirements always select the
-same versions — but it is a different algorithm from npm's and yarn's "newest version satisfying the
-range at install time", so the results can differ:
-
-- **The selected version may not match what `npm install` gives you.** If a package only works
-  correctly with a version newer than anything your build actually requires, raise the floor with an
-  explicit requirement (e.g. `@npm:some-pkg:1.4.2`) — MVS will never silently pick a newer version
-  for you.
-- **One version per package for anything you compile or link against.** Each package resolves to
-  one version; requirements no single version can satisfy jointly (incompatible majors of a shared
-  transitive, an exact pin against a higher floor) are a conflict, reported with the requirement
-  chains on both sides and the override lines that would resolve it: a pin where a single
-  satisfying version exists, a `?` alternate (`@npm:pkg:1.4.2?`) to sanction nesting the second
-  version exactly where it is needed, or a `!` force (`@npm:pkg:2.0.0!`) to override an incorrect
-  constraint. (Sealed *tool* closures — a `js_script`/`script` and its `run` delivery — nest
-  conflicting versions npm-style without needing a sanction; the one-version rule holds for
-  everything a target compiles or links into its output unless you sanction otherwise.)
-- **Install-time behaviours don't happen.** Fabr fetches and assembles package contents; it does not
-  run `postinstall` scripts or auto-install peer dependencies the way an npm client would. A package
-  that depends on such behaviour may not work out of the box.
-- **Unconstrained optional dependencies are skipped silently.** An optional dependency pinned only as
-  `*` (for example `fsevents: "*"`) has no deterministic version under MVS and no lockfile to freeze
-  one, so fabr drops it — the correct choice for reproducibility, but currently with no warning. If
-  you need such an optional package, pin it with an explicit requirement.
-
-**Workaround:** add explicit version requirements to raise floors, and use a
-[`catalog`](/reference/js-rules/) to pin one consistent set of versions across a project. A genuine
-need for two coexisting majors of a *linked* dependency is a current limitation.
+**Workaround:** for an install script, look for a variant of the package that ships prebuilt
+platform-specific packages, or [patch](/reference/js/dependencies/#patching-a-package) it. For a
+skipped optional dependency, declare it yourself with a version.
 
 ## Concurrent fabr processes duplicate work rather than sharing it
 
-Fabr deduplicates in-flight work and effectively write-locks cache entries **within a single
-process**, so all of one build's internal parallelism is safe. There is, however, **no cross-process
-lock** on the build cache: two fabr processes running at the same time that both miss the same entry
-will each build it.
+Within one `fabr` process, each piece of work is done once, however many targets need it. Between
+processes there is no such coordination: two `fabr` runs at the same time that both need something
+neither has built will each build it.
 
-That costs time, not correctness. Everything transient lives in a per-process work tree
-(`work/<host>-<pid>/`) and every commit into the store is atomic — a rename into the content pool,
-temp-plus-rename for a manifest — so the two runs cannot interleave into a corrupt entry, and for a
-deterministic build the loser's result is byte-identical to the winner's.
+This costs time, not correctness. Each process works in a directory of its own and adds a result
+to the cache in a single step, so two runs can't corrupt an entry between them.
 
-**Workaround:** none is needed for correctness. To avoid the duplicated work, don't run two fabr
-builds against the same cache concurrently, or give each its own `FABR_CACHE_DIR`. Note also that
-deleting the cache from under a *running* `fabr run`/`serve` removes the live staged install with
-it.
+**Workaround:** none is needed for correctness. To avoid the repeated work, don't run two builds
+of the same project at once, or give each its own cache with `FABR_CACHE_DIR`.
+
+Relatedly, deleting the cache while a `fabr run` is in progress deletes the files of the program
+it is running.
 
 ## Watch mode can leave a program running if fabr is force-killed
 
-`fabr run -w` (including on a `serve` target — there is no separate `serve` verb) supervises the
-program it launches and tears down its whole process group
-— including any workers it forked — on every restart and on every orderly exit (Ctrl-C, `SIGTERM`,
-`SIGHUP`, or an uncaught error). But if fabr **itself** is force-killed — `SIGKILL`, an
-out-of-memory kill, or a crash — nothing can run to clean up, and the launched program is orphaned,
-left running with no supervisor. Only a hard kill of fabr does this; every ordinary way of stopping
-it shuts the program down cleanly.
+`fabr run -w` stops the program it started, along with any processes that program started,
+whenever it restarts it and whenever fabr exits normally: on Ctrl-C, `SIGTERM`, `SIGHUP` or an
+error. If fabr itself is killed with `SIGKILL`, by `kill -9` or by the system when memory runs
+out, it gets no chance to do that, and the program keeps running with nothing supervising it.
 
-**Workaround:** stop a watching fabr with Ctrl-C or `SIGTERM` rather than `kill -9`. If a program is
-orphaned, stop it by hand (for a server, finding it by the port it holds is usually easiest).
+**Workaround:** stop a watching fabr with Ctrl-C or `SIGTERM`. If a program is left behind, stop
+it by hand; for a server, finding the process that holds its port is usually quickest.

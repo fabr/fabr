@@ -1,49 +1,57 @@
 ---
 title: Watch mode & dev servers
-description: Rebuild, retest, relaunch, and serve automatically as your sources change with fabr's -w flag.
+description: Rebuild, retest, restart and serve automatically as your sources change, with fabr's -w option.
 ---
 
-Add **`-w`** to a command and fabr keeps running: it watches the files your targets actually depend
-on and reacts whenever they change, until you stop it with Ctrl-C. Because fabr already knows the
-exact input set of every target, watch mode is precise — only the work whose inputs changed re-runs;
-everything else stays a cache hit.
+Add `-w` to `fabr build`, `fabr test` or `fabr run` and fabr keeps running: it watches the files
+your targets are built from and redoes the affected work when one changes, until you stop it with
+Ctrl-C.
 
-`-w` applies to the graph-building verbs (`build`, `test`) and to `run`. A burst of edits (an editor
-saving several files at once) is coalesced before fabr reacts, so a multi-file save triggers one
-rebuild, not several.
+Fabr already knows exactly which files each step of a build reads, so only the steps whose inputs
+changed run again, and there is nothing to configure: no list of directories to watch or ignore.
+Changes that arrive close together, as when an editor saves several files or a branch is switched,
+are handled as one.
+
+| Command | On a change |
+|---|---|
+| `fabr build -w <target>` | Rebuilds. |
+| `fabr test -w <target>` | Rebuilds and re-runs the tests. |
+| `fabr run -w <program>` | Rebuilds and restarts the program. |
+| `fabr run -w <serve target>` | Updates the files being served, or restarts the server if the server itself changed. |
 
 ## Rebuild and retest on change
 
 ```sh
-fabr build -w mylib     # recompile whenever a source changes
-fabr test -w mylib      # recompile and re-run the tests on every change
+fabr build -w mylib     # recompile when a source changes
+fabr test -w mylib      # recompile and re-run the tests
 ```
 
-Each cycle reports what it rebuilt; an unchanged run reports nothing new. `fabr test -w` reprints the
-per-target report summary each time, so you get a live red/green as you edit.
+Each round prints what it rebuilt, and `fabr test -w` prints the test summary again, so the
+terminal shows whether the tests pass as you edit. A change that affects nothing, such as an edit
+to a file no target uses, prints nothing.
 
-## Relaunch a program on change
+Editing a build file takes effect in the same way as editing a source.
 
-For a runnable target, `-w` **restages and relaunches** the program when its inputs change:
+## Restart a program on change
 
 ```sh
 fabr run -w mytool --flag arg
 ```
 
-Fabr rebuilds the install, stops the old process, and starts the new one with the same arguments and
-inherited stdio. This is the basic dev loop for a CLI or a long-running program you're editing.
+When something the program is built from changes, fabr rebuilds it, stops the running process and
+starts the new one with the same arguments. Stopping includes any processes the program started
+itself.
 
 ## Dev servers with `serve`
 
-A [`serve`](/reference/standard-rules/#serve) target describes a **long-lived server plus the content
-it serves** — the shape that gets the most out of `-w`. It decorates any runnable (`tool`) with the
-files it should serve (`files`) and any extra support files (`deps`):
+A [`serve`](/reference/standard-rules/#serve) target describes a long-running server together
+with the files it serves. Any program fabr can run will do as the server:
 
 ```
 serve site {
-  tool  = @npm:http-server:14.1.1;   # any runnable: a script, a js_script, or an external bin
-  files = mysite;                    # the built content to serve
-  args  = -c-1 .;                    # http-server: disable caching so edits show on reload
+  tool  = @npm:http-server:14.1.1;   # the server: a package, a script or a js_script
+  files = mysite;                    # what to serve: here, the output of the mysite target
+  args  = -c-1 .;                    # http-server options: no caching, serve this directory
 }
 ```
 
@@ -51,22 +59,21 @@ serve site {
 fabr run -w site
 ```
 
-Under `-w`, fabr distinguishes two kinds of change and reacts to each as cheaply as it can:
+The server starts in a directory that contains `files`, which is why `.` is the right path to
+serve. This differs from other programs, which `fabr run` starts in your current directory.
 
-- **A content-only change** (something in `files`) is **synced into the running server's directory in
-  place** — no restart. Fabr reports `Updating site content (N files)`, and the server's own file
-  watcher picks up the change. This keeps a live-reload dev server fast: editing served content never
-  bounces the process.
-- **A change to the program itself** — `tool`, `deps`, `args` or `env` — **restarts** the server, since
-  the running install is no longer the right one.
+Under `-w`, fabr treats the two parts of the target differently:
 
-Unlike a plain `fabr run` (which launches in *your* current directory), a `serve` target launches
-with its working directory at its own staged install, so a stock static file server serves `files`
-with no path wrangling.
+- **When the served files change**, fabr updates them in the directory the server is running in,
+  and prints `Updating site content (N files)`. The server isn't restarted. Each file is replaced
+  in one step, so the server never reads half of one, and a server that watches its directory
+  sees the change as it would any other.
+- **When the server changes**, meaning its `tool`, `deps`, `args` or `env`, fabr restarts it.
 
-To set environment variables for the server, give the target an `env` map. The server starts with
-the environment you ran `fabr` in, with these variables added, and a variable set here wins over
-one of the same name from your shell:
+### Environment variables
+
+A server starts with the environment you ran `fabr` in. Give the target an `env` map to add
+variables or replace ones your shell sets:
 
 ```
 serve site {
@@ -76,9 +83,34 @@ serve site {
 }
 ```
 
-A [`generate`](/reference/standard-rules/#generate) target takes `env` too, with one difference: its
-commands are build steps and start with no environment at all, so the `env` variables are the only
-ones they see.
+A [`generate`](/reference/standard-rules/#generate) target has `env` too, with a difference: its
+commands are build steps and start with no environment, so the variables in `env` are the only
+ones they have.
 
-Fabr's own documentation site is built and previewed exactly this way — a [`generate`](/reference/standard-rules/#generate)
-target produces the static site, and a `serve` target runs `http-server` over it under `fabr run -w`.
+### An example
+
+Fabr's own documentation site is built and previewed this way. A `generate` target runs the site
+generator to produce the static site, and a `serve` target runs `http-server` over the result:
+
+```
+generate docs_site {
+  srcs = ./src/** ./public/** ./astro.config.mjs;
+  run = astro build;
+  output = dist:**;
+}
+
+serve docs_serve {
+  tool = @npm:http-server:14.1.1;
+  files = docs_site;
+  args = -c-1 .;
+}
+```
+
+With `fabr run -w docs_serve` running, saving a page rebuilds the site and updates the served
+files.
+
+## Stopping
+
+Ctrl-C stops fabr and the program it is running. If fabr itself is killed with `SIGKILL`, the
+program is left running; see
+[Known limitations](/known-limitations/#watch-mode-can-leave-a-program-running-if-fabr-is-force-killed).

@@ -3,104 +3,97 @@ title: Quick start (JavaScript / TypeScript)
 description: Build, test, and run a TypeScript package with fabr.
 ---
 
-This guide gets you from an empty directory to a compiled, tested, runnable TypeScript package.
-
-:::note
-It's worth noting what you _don't_ need here: no package.json, tsconfig.json, jest.config.js, or lock files -
-just your `PROJECT.fabr` and your source files.
-:::
+This guide takes you from an empty directory to a TypeScript package that is compiled, tested and
+runnable. The whole project is a `PROJECT.fabr` file and your sources: there is no `package.json`,
+`tsconfig.json`, test configuration or lockfile to write.
 
 ## Install
 
-Fabr ships as two npm packages: **`@fabr-build/cli`** (the `fabr` command) and **`@fabr-build/js`**
-(the JavaScript/TypeScript rules, loaded from your build script). Install the CLI globally — it
-depends on the rules package, so both arrive together.
+Fabr needs Node.js 22.19 or later. Install the `fabr` command globally:
 
 ```sh
 npm install -g @fabr-build/cli
 ```
 
-:::note
-Fabr resolves a plugin by ordinary module resolution, so the plugin package must sit next to the
-host `fabr` — installing the CLI, as above, satisfies that. Declaring `plugin @fabr-build/js;` then
-loads its rules and configuration.
-:::
+That also installs `@fabr-build/js`, the plugin with the JavaScript and TypeScript rules.
 
 :::caution
-Don't add `@fabr-build/js` to that command. Naming it makes npm install it as a global package in
-its own right, with its own nested copy of `@fabr-build/core` — and a plugin must share the host's
-core, not load a second one. Fabr detects this and says so, but the fix is to install the CLI alone.
+Install `@fabr-build/cli` only. Adding `@fabr-build/js` to the command makes npm install a second
+copy of fabr's core beneath it, which a plugin can't use; fabr reports this when it loads the
+plugin.
 :::
 
 ## A minimal project
 
-Create a `PROJECT.fabr` at your project root:
+Create `PROJECT.fabr` in an empty directory:
 
 ```
 plugin @fabr-build/js;
-
-# Optional: which TypeScript compiler to use, and the output target.
-TYPESCRIPT = @npm:typescript:5.4.5;
-JS_TARGET = es2021-commonjs;
 
 js_package mylib {
   srcs = src:**/*.ts;
 }
 ```
 
-And a source file, `src/index.ts`:
+and a source file, `src/index.ts`:
 
 ```ts
 export const greet = (name: string): string => `Hello, ${name}!`;
 ```
 
-Now build it:
+Then build it:
 
 ```sh
 fabr build mylib
 ```
 
-Fabr compiles the TypeScript, generates a `package.json`, and produces the package. Inspect the
-result without digging through the cache:
+Fabr downloads the TypeScript compiler, compiles the source, and assembles a package with a
+generated `package.json`. The package isn't written into your project; it is kept in fabr's
+cache, and you look at it with `fabr`:
 
 ```sh
-fabr ls mylib            # list the built files
-fabr cat mylib/index.js  # print a built file — path into a target as if it were a directory
-fabr cp mylib ./out      # copy the package out -> ./out/mylib/ (cp -R rules)
+fabr ls mylib                 # list the files in the package
+fabr cat mylib/index.js       # print one of them
+fabr cp mylib ./out           # copy the package to ./out/mylib/
 ```
 
-Everything you build can be inspected in this way as if the targets were plain directories.
+`srcs = src:**/*.ts` means "the `.ts` files under `src`, named without the `src/` prefix", which
+is why the package contains `index.js` and not `src/index.js`.
 
-:::note
-`mylib/index.js` and `mylib:index.js` reach the same file but *name* it differently: a `/` keeps the
-whole written path, while a `:` strips everything before it. It makes no difference to `cat`, but it
-decides the names that `ls` prints.
-:::
+Two settings are worth making explicit from the start: the compiler version, and the JavaScript
+to emit. Both have defaults (`typescript` 5.6.3 and `es6-esm`):
 
-## Dependencies and catalogs
+```
+TYPESCRIPT = @npm:typescript:5.6.3;
+JS_TARGET = es2022-esm;
+```
 
-Declare an npm dependency with a `@npm:` reference — `@npm:<package>:<version>`:
+[TypeScript compilation](/reference/js/typescript/) lists what else you would have put in
+`tsconfig.json` and where it goes.
+
+## Dependencies
+
+Declare an npm dependency with an `@npm:` reference, `@npm:<package>:<version>`, in the target's
+`deps`:
 
 ```
 js_package mylib {
   srcs = src:**/*.ts;
-  deps = @npm:lodash:4.17.21 @npm:@types/node:20.12.7;
+  deps = @npm:lodash:4.17.21 @npm:@types/lodash:4.17.7;
 }
 ```
 
-Versions are exact requirements, resolved deterministically at each usage using the MVS algorithm. Mutable dist-tags like
-`latest` are rejected — they would make the build non-deterministic.
-
-When several targets share dependencies, you can declare them once in a **catalog** so they resolve jointly
-and every consumer sees one consistent set of versions:
+There is no install step and no lockfile: fabr fetches packages as the build needs them, and the
+same build file always selects the same versions. When several targets share dependencies, declare
+them once in a **catalog** and refer to its members by name:
 
 ```
 catalog @pkg {
-  deps = @npm:typescript:5.4.5 @npm:@types/node:20.12.7
+  deps = @npm:typescript:5.6.3 @npm:@types/node:22.15.3
          @npm:chai:4.3.6 @npm:@types/chai:4.3.1;
 }
 
-TYPESCRIPT = @pkg:typescript;   # reference a catalog member as @pkg:<name>
+TYPESCRIPT = @pkg:typescript;
 
 js_package mylib {
   srcs = src:**/*.ts;
@@ -108,82 +101,25 @@ js_package mylib {
 }
 ```
 
-## Patching a dependency
-
-To change a published package without forking it, declare a `patched` target named after it:
-`srcs` is the package and `patches` the diffs to apply to it.
-
-```
-patched glob-promise {
-  srcs = @npm:glob-promise:1.33.0;
-  patches = patches/glob.patch;
-}
-
-js_package editor {
-  srcs = src:**/*.ts;
-  deps = glob-promise;
-}
-```
-
-The result is a package named as the target is, with the version and dependencies of the one it
-was made from and its files patched. Because it is named `glob-promise`, it takes the place of
-the published copy for everything built with it. Listing the patched target in a
-[catalog](#dependencies-and-catalogs) does the same for every member of the catalog. Under any
-other name it is a separate package, and the original stays where it is used. Name the package in
-its registry (`@npm:…`) in `srcs`, not through a catalog.
-
-A patch is a unified diff with paths relative to the package root, as `git diff`, `pnpm patch` and
-`yarn patch` write them (`a/dist/index.js`). It may change, add, delete and rename files and set a
-file's executable bit; binary changes are refused. Several patches apply in the order written. A
-patch that does not apply exactly fails the build, naming the patch, the file and the hunk.
-
-Patching `package.json` changes the file, but not the package's version or dependencies.
-
-`srcs` may also name plain files (or several packages), in which case the result is the patched
-files.
-
-## Stylesheets
-
-Stylesheets are ordinary sources: list them in `srcs` and they build with everything else — there is
-no separate target to declare. Sass (`.scss`/`.sass`) is lowered to CSS, and a `.module.` infix makes
-the file a **css-module**, whose class names are scoped so two packages can both define `.card`
-without colliding.
-
-```
-js_package ui {
-  srcs = src:**/*.ts src:**/*.scss;
-}
-```
-
-```ts
-import styles from "./Card.module.scss";  // the scoped class map
-import "./theme.scss";                    // published as theme.css, imported for its effect
-
-element.className = styles.cardTitle;     // "card-title_QpiebDfz"
-```
-
-Write the import as the file is named on disk; fabr rewrites it to whatever ships. A module's class
-map is typed from the classes the stylesheet really defines, so `styles.noSuchClass` is a compile
-error rather than `undefined` at runtime, and both spellings are available (`styles.cardTitle` and
-`styles["card-title"]`). The package ships the compiled `.css`, the class map, and a declaration for
-it; Sass partials (`_vars.scss`) are inputs only and produce nothing of their own. A `composes:` may
-name any stylesheet of the same target, or a plain stylesheet that a package dependency delivers.
+[Dependencies](/reference/js/dependencies/) covers version ranges, how versions are chosen,
+resolving version conflicts, patching a package, and private registries.
 
 ## Testing
 
-For package tests, just add a `tests` property with the sources and (if needed) any additional test dependencies in `test_deps`.
-Tests will be automatically excluded from your main package build.
+Add a `tests` property naming the test files, and `test_deps` for anything only the tests need.
+Test files are left out of the built package.
 
 ```
 js_package mylib {
   srcs = src:**/*.ts;
   tests = src:**/*.test.ts;
+  deps = @pkg:@types/node;
   test_deps = @pkg:chai @pkg:@types/chai;
 }
 ```
 
-Fabr ships its own test runner (built on `node:test`). It provides the `describe`/`it`/`before`/…
-**globals**; assertions are imported normally:
+By default, tests run with Node.js's built-in test runner. `describe`, `it` and the hooks are
+globals, and assertions come from whichever library you add:
 
 ```ts
 import { expect } from "chai";
@@ -196,108 +132,26 @@ describe("greet", () => {
 });
 ```
 
-Snapshot assertions are `node:test`'s own, `t.assert.snapshot(value)`, and need Node 23.4 or later.
-Records are kept in `__snapshots__/<test file>.snap` beside the test. Declare them as the target's
-`test_expectations`; `fabr test -u` records or refreshes them and writes them back to your source
-tree:
-
-```
-js_package mylib {
-  srcs = src:**/*.ts;
-  tests = src:**/*.test.ts;
-  test_expectations = src:**/__snapshots__/*.snap;
-}
-```
-
-```ts
-import type { TestContext } from "node:test";
-
-it("renders the greeting", (t: TestContext) => {
-  t.assert.snapshot(render("world"));
-});
-```
-
-### Running a jest-flavoured suite
-
-If your tests are written against jest, first extend the catalog with the members the layer needs.
-`@types/jest` supplies the globals' types; its dependency closure also needs a handful of explicit
-pins — packages it requires only with unbounded ranges (so nothing else picks a version for them),
-and two it needs at coexisting versions, which the `?` marker sanctions. Miss one and fabr tells
-you exactly which:
-
-```
-catalog @pkg {
-  deps = @npm:typescript:5.4.5 @npm:@types/node:20.12.7
-         @npm:chai:4.3.6 @npm:@types/chai:4.3.1
-         @npm:@types/jest:30.0.0
-         @npm:jsdom:26.1.0                        # only if your tests need a DOM
-         @npm:@types/istanbul-lib-report:3.0.3? @npm:@types/yargs-parser:21.0.3?
-         @npm:ansi-styles:4.1.0? @npm:ansi-styles:5.2.0?
-         @npm:picomatch:2.3.1? @npm:picomatch:4.0.5?;
-}
-```
-
-Then select jest as the test framework — which runs the tests under fabr's jest-compatibility
-runner — and declare the globals' types:
-
-```
-JS_TEST_FRAMEWORK = jest;                 # or per target: test_framework = jest;
-
-js_package mylib {
-  srcs = src:**/*.ts;
-  tests = src:**/*.test.ts;
-  test_expectations = src:**/__snapshots__/*.snap;
-  test_deps = @pkg:@types/jest @pkg:jsdom;           # jsdom only if your tests need a DOM
-}
-```
-
-`jest.mock`, `jest.fn`, `expect`, `.each`, fake timers and snapshots all work, using jest's own
-libraries. Declare snapshot files as the target's `test_expectations` (above), not as `srcs`;
-`fabr test -u` refreshes them and writes them back. See [known limitations](/known-limitations/)
-for what the layer does not cover yet.
-
-### Running a vitest suite
-
-If your tests are written against vitest, select it as the framework and add vitest itself to the
-test dependencies. Fabr runs the vitest you declare (4.1 or later); `@types/deep-eql` is required
-by its type dependencies without a version, so it needs an explicit pin:
-
-```
-JS_TEST_FRAMEWORK = vitest;               # or per target: test_framework = vitest;
-
-js_package mylib {
-  srcs = src:**/*.ts;
-  tests = src:**/*.test.ts;
-  test_expectations = src:**/__snapshots__/*.snap;
-  test_deps = @npm:vitest:5.0.3 @npm:@types/deep-eql:4.0.2?;
-}
-```
-
-`vi.mock`, `expect`, snapshots (`fabr test -u` updates them), a `setupTests` file and the
-`// @vitest-environment` comment all work; add `jsdom` to `test_deps` and the `dom` flag to `deps`
-for DOM tests. Fabr compiles the tests itself and vitest loads them through Node, so no
-`vitest.config` is read and Vite's own import handling is not available — see
-[known limitations](/known-limitations/).
-
-Run them:
-
 ```sh
 fabr test mylib
 ```
 
-`fabr test mylib` is exactly `mylib` built with the `test` operation. A per-target report summary
-prints before the build-status line, and a failing test fails the target.
+A summary such as `mylib: 1 test passed` is printed for each target, and a failing test fails the
+build. A passing run is cached, so running `fabr test` again without changes reports the result
+without re-running the tests.
+
+To run an existing jest or vitest suite, or to use snapshots or DOM tests, see
+[Testing](/reference/js/testing/).
 
 ## Running programs
 
-A `js_script` target defines a runnable Node program — `entry` is the script file to launch (or a
-package whose bin is the entry), and `deps` assemble the rest of the install (packages mount under
-`node_modules`, loose files land at their own paths):
+A `js_script` is a Node.js program: `entry` is the file to run, and `deps` the packages it
+imports.
 
 ```
 js_script tool {
-  entry = src:main.js;
-  deps = @npm:chalk:5.3.0;
+  entry = src:main.ts;
+  deps = @npm:chalk:5.3.0 @pkg:@types/node;
 }
 ```
 
@@ -305,29 +159,41 @@ js_script tool {
 fabr run tool arg1 arg2
 ```
 
-`fabr run` stages the install and launches it with inherited stdio — stdin, tty, pipes, and the exit
-code all pass straight through, in your current working directory. Everything after the target name
-is passed to the program verbatim (put any fabr options *before* the target).
+The program runs in your current directory with your terminal, and everything after the target
+name is passed to it. Options for fabr itself go before the target.
 
 ## The commands you'll use
 
 | Command | What it does |
 |---|---|
-| `fabr build <target>` | Build the target (the default operation). |
+| `fabr build <target>` | Build the target. |
 | `fabr test <target>` | Compile and run the target's tests. |
-| `fabr run <target> [args…]` | Launch a runnable with inherited stdio. |
-| `fabr ls [-l] <ref>` | List the files a reference resolves to (`-l` adds hash + size). |
-| `fabr cat <ref>` | Write the resolved files' bytes to stdout. |
-| `fabr cp <ref…> <dir>` | Copy the resolved files into a directory. |
+| `fabr run <target> [args…]` | Build a program and run it. |
+| `fabr ls <reference>` | List the files a target produces. |
+| `fabr cat <reference>` | Print them. |
+| `fabr cp <reference…> <dir>` | Copy them into a directory. |
 
-Two flags work on most commands:
+Two options work with most of them:
 
-- `-D<PROP>=<VALUE>` overrides a configuration property, e.g. `fabr -DBUILD_TYPE=release build mylib`.
-- `-w` keeps fabr running and rebuilds (or re-tests, or relaunches) as your sources change — see
+- `-D<NAME>=<VALUE>` changes a setting for one run: `fabr build -DBUILD_TYPE=release mylib`.
+- `-w` keeps fabr running and rebuilds, retests or restarts as your sources change; see
   [Watch mode & dev servers](/guides/watch/).
 
-Next steps:
+The [command-line reference](/reference/command-line/) has the rest.
 
-- The [JavaScript reference](/reference/js-rules/) for every `js_*` target and its properties.
-- [Watch mode & dev servers](/guides/watch/) — the live rebuild/retest/relaunch loop.
-- [Known limitations](/known-limitations/) — a few rough edges worth knowing about up front.
+## Next steps
+
+- [Dependencies](/reference/js/dependencies/): version ranges, catalogs, conflicts, patches and
+  private registries.
+- [Testing](/reference/js/testing/): the three test frameworks, snapshots and DOM tests.
+- [TypeScript compilation](/reference/js/typescript/): what replaces `tsconfig.json`, and how
+  fabr's output differs from `tsc`'s.
+- [Module resolution](/reference/js/module-resolution/): what an import can reach.
+- [Stylesheets](/reference/js/stylesheets/): CSS, Sass and css-modules.
+- [Bundling](/reference/js/bundling/): one-file builds for browsers and for Node.js.
+- [Publishing packages](/reference/js/publishing/): the generated `package.json`, and `fabr sync`.
+- [Projects with several packages](/guides/multi-package/): the layout that replaces workspaces.
+- [Continuous integration](/guides/ci/): caching, output and exit statuses.
+- [Targets and configuration](/reference/js/targets/): every `js_*` target and setting.
+- [Watch mode & dev servers](/guides/watch/): the live rebuild, retest and relaunch loop.
+- [Known limitations](/known-limitations/): rough edges worth knowing about up front.

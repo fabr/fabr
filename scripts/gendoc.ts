@@ -21,7 +21,7 @@
  * Docs generator: reads `fabr list-all --json` on stdin (the whole build
  * vocabulary — target types, config properties, flags) and writes the Markdown
  * reference pages into the given output directory — one per source package (core
- * -> standard-rules.md, JS plugin -> js-rules.md). Compiled and launched by fabr
+ * -> standard-rules.md, JS plugin -> js-targets.md). Compiled and launched by fabr
  * as a TypeScript js_script (the `gendoc` target); the pages are `.md`, not
  * `.mdx`, because the doc-comment prose contains `{ ... }` which MDX would parse
  * as JSX. The genrule collects them with an `output` glob (no `>` redirect).
@@ -101,25 +101,26 @@ const inCore = (location: string | undefined): boolean => (location ?? "").inclu
 const GROUPS: Group[] = [
   {
     file: "standard-rules.md",
-    title: "Core reference",
+    title: "Core targets and configuration",
     description: "The target types, configuration, and flags that fabr's core provides, independent of any plugin.",
     intro: [
       "The target types, configuration properties, and flags that ship in fabr's core (`STD.fabr`) and are",
       "always available, independent of any language plugin. Ecosystem-specific definitions (like",
-      "`js_package`) come from plugins — see the [JavaScript reference](/reference/js-rules/).",
+      "`js_package`) come from plugins — see [JavaScript targets and configuration](/reference/js/targets/).",
       "",
       "This page is generated from `fabr list-all`, so it never drifts from the code.",
     ],
     isMember: inCore,
   },
   {
-    file: "js-rules.md",
-    title: "JavaScript reference",
+    file: "js-targets.md",
+    title: "JavaScript targets and configuration",
     description: "The JavaScript/TypeScript target types, configuration, and flags from the @fabr-build/js plugin.",
     intro: [
       "The target types, configuration properties, and flags contributed by the `@fabr-build/js` plugin",
       "(`plugin @fabr-build/js;`). They cover building, bundling, testing, and styling JavaScript and",
-      "TypeScript. Core definitions (like `script` and `generate`) are in the [Core reference](/reference/standard-rules/).",
+      "TypeScript. Core definitions (like `script` and `generate`) are in",
+      "[Core targets and configuration](/reference/standard-rules/).",
       "",
       "This page is generated from `fabr list-all`, so it never drifts from the code.",
     ],
@@ -130,6 +131,12 @@ const GROUPS: Group[] = [
 /** Make a doc-comment safe for one Markdown table cell: one line, pipes escaped. */
 function cell(text: string | undefined | null): string {
   return (text ?? "").replace(/\s*\n\s*/g, " ").replace(/\|/g, "\\|").trim();
+}
+
+/** A Markdown table: a header row, the rule beneath it, and one row per entry. */
+function table(head: string[], rows: string[][]): string[] {
+  const row = (cells: string[]): string => `| ${cells.join(" | ")} |`;
+  return [row(head), row(head.map(() => "---")), ...rows.map(row)];
 }
 
 /** The property's declared type as written in a targetdef (`REQUIRED FILES`). */
@@ -159,21 +166,16 @@ function schemaBlock(def: TargetDef): string {
  * that declares one, so the common case isn't a column of blanks. */
 function propertyTable(def: TargetDef): string[] {
   const defaults = def.properties.some(prop => prop.default);
-  const head = ["Property", "Type", "Required", ...(defaults ? ["Default"] : []), "Description"];
-  const row = (cells: string[]): string => `| ${cells.join(" | ")} |`;
-  return [
-    row(head),
-    row(head.map(() => "---")),
-    ...def.properties.map(prop =>
-      row([
-        `\`${prop.name}\``,
-        propType(prop),
-        prop.required ? "yes" : "",
-        ...(defaults ? [prop.default ? `\`${cell(prop.default)}\`` : ""] : []),
-        cell(prop.description),
-      ])
-    ),
-  ];
+  return table(
+    ["Property", "Type", "Required", ...(defaults ? ["Default"] : []), "Description"],
+    def.properties.map(prop => [
+      `\`${prop.name}\``,
+      propType(prop),
+      prop.required ? "yes" : "",
+      ...(defaults ? [prop.default ? `\`${cell(prop.default)}\`` : ""] : []),
+      cell(prop.description),
+    ])
+  );
 }
 
 /** Reconstruct a provided target's declaration from its written properties,
@@ -193,25 +195,20 @@ function render(group: Group, doc: Doc): string {
 
   const props = doc.properties.filter(prop => group.isMember(prop.location));
   if (props.length > 0) {
-    out.push("## Configuration", "");
-    for (const prop of props) {
-      out.push(`### \`${prop.name}\``, "");
-      out.push(`Default: \`${prop.value || "(unset)"}\``, "");
-      if (prop.description) {
-        out.push(prop.description, "");
-      }
-    }
+    out.push("## Global properties", "");
+    out.push(
+      ...table(
+        ["Property", "Default", "Description"],
+        props.map(prop => [`\`${prop.name}\``, `\`${cell(prop.value) || "(unset)"}\``, cell(prop.description)])
+      ),
+      ""
+    );
   }
 
   const flags = doc.flags.filter(flag => group.isMember(flag.location));
   if (flags.length > 0) {
     out.push("## Flags", "", "List a flag in a target's `deps` to switch its behaviour for that target.", "");
-    for (const flag of flags) {
-      out.push(`### \`${flag.name}\``, "");
-      if (flag.description) {
-        out.push(flag.description, "");
-      }
-    }
+    out.push(...table(["Flag", "Description"], flags.map(flag => [`\`${flag.name}\``, cell(flag.description)])), "");
   }
 
   const defs = doc.targetdefs.filter(def => group.isMember(def.location));

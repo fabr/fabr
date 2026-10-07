@@ -43,12 +43,12 @@ describe("e2e: list-properties", () => {
     const buildType = parsed.properties.find((p: { name: string }) => p.name === "BUILD_TYPE");
     expect(buildType).to.include({ value: "debug" });
     expect(buildType.location).to.match(/STD\.fabr/); /* core */
-    expect(buildType.description).to.match(/Build type/);
+    expect(buildType.description).to.match(/How far a build is optimised/);
     const jsTarget = parsed.properties.find((p: { name: string }) => p.name === "JS_TARGET");
     expect(jsTarget.location).to.match(/JS\.fabr/); /* plugin */
 
     const noStrict = parsed.flags.find((f: { name: string }) => f.name === "ts/no_strict");
-    expect(noStrict.description).to.match(/strict mode off/);
+    expect(noStrict.description).to.match(/`strict` checks/);
     expect(noStrict.location).to.match(/JS\.fabr/);
   });
 
