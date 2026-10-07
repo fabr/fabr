@@ -885,7 +885,13 @@ describe("NPMRepository getRepositoryPublishRef", () => {
   });
 
   it("rejects a range where a coordinate must pin an exact version", () => {
-    expect(() => repo.getRepositoryPublishRef(Name.fromLiteral("@fabr/core:^1.0.0"))).to.throw(/exact version/);
+    expect(() => repo.getRepositoryPublishRef(Name.fromLiteral("@fabr/core:^1.0.0"))).to.throw(/'\^1.0.0' is not an exact package version/);
+  });
+
+  it("names a truncated version as not a version, not as a range", () => {
+    /* `0.3` is a valid range (0.3.x) to semver, but the writer meant a version;
+     * the message must say what to write, not that a range was found. */
+    expect(() => repo.getRepositoryPublishRef(Name.fromLiteral("@fabr/core:0.3"))).to.throw(/'0.3' is not an exact package version/);
   });
 });
 

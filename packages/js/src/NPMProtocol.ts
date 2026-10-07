@@ -598,7 +598,9 @@ export function parseNpmPublishCoordinate(ref: Name): NpmPublishIdentity {
   try {
     parseVersion(version);
   } catch {
-    throw new FabrError(`publish coordinate '${name}' must pin an exact version, got '${version}'`);
+    throw new FabrError(`'${version}' is not an exact package version, which a publish coordinate for '${name}' must name`).withHelp(
+      "write it as major.minor.patch (1.0.0), optionally followed by a prerelease (1.0.0-beta.1); a range cannot be published"
+    );
   }
   return { name, version };
 }
