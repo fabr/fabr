@@ -136,6 +136,10 @@ With a `dual` module format (`JS_TARGET = es2022-dual;`), the package holds both
 With no `exports` property, a dual package still gets an `exports` field, mapping every file so
 that `import` and `require` each reach the right format.
 
+[TypeScript compilation](/reference/js/typescript/#one-package-in-both-module-formats) describes
+what a dual build compiles, when a package needs one, and which parts of a package stay in one
+format.
+
 ### Command-line programs
 
 A script directly inside the package's `bin/` directory becomes a command named after the file:

@@ -22,7 +22,7 @@ your build file:
 
 | tsconfig.json option | In fabr |
 |---|---|
-| `target`, `module` | The `JS_TARGET` setting, written `<ES-version>-<module>-<environment>`, for example `JS_TARGET = es2022-esm;`. The module part is `commonjs`, `esm` or `dual` (both formats in one package); the default is `es6-esm`. |
+| `target`, `module` | The `JS_TARGET` setting, written `<ES-version>-<module>-<environment>`, for example `JS_TARGET = es2022-esm;`. The module part is `commonjs`, `esm` or `dual` ([both formats in one package](#one-package-in-both-module-formats)); the default is `es6-esm`. |
 | `lib` | Follows the ES version in `JS_TARGET`. To declare the level your sources are written against separately, add an ES-level flag (`es5`, `es2015` … `es2023`, `esnext`) to the target's `deps`; using a newer API is then a compile error, and sources declared below `es2022` keep assignment semantics for class fields whatever version is emitted. Add the `dom` flag for browser APIs. |
 | `strict` and the options it enables | On. Relax them per target with `ts/…` flags in `deps` (see below). |
 | `esModuleInterop` | On. Add `ts/no_es_module_interop` for code written with `import * as x` of a callable CommonJS module. |
@@ -87,6 +87,7 @@ Anything else that differs from `tsc` is a bug, and we'd like to hear about it.
 | Imports of your own package are written as relative paths | Output fix | [Own-package imports](#imports-of-your-own-package-are-written-as-relative-paths) |
 | `__dirname` and `import.meta` convert between module systems | Output fix | [Module-system globals](#__dirname-and-importmeta-convert-between-module-systems) |
 | Declaration files never contain build paths | Output fix | [Declaration files](#declaration-files-never-contain-build-paths) |
+| One package can be built in both module formats | Output fix | [Dual packages](#one-package-in-both-module-formats) |
 | Unresolvable side-effect imports are errors | Earlier error | [Side-effect imports](#unresolvable-side-effect-imports-are-errors) |
 | Imports of files that don't exist are errors | Earlier error | [Missing files](#imports-of-files-that-dont-exist-are-errors) |
 | `@types` packages can't type paths a package doesn't export | Earlier error | [Unexported paths](#types-packages-cant-type-paths-a-package-doesnt-export) |
@@ -250,6 +251,67 @@ who installs your package.
 
 **fabr:** writes the dependency's package name instead, and refuses to produce a declaration file
 that still refers to a build path.
+
+### One package in both module formats
+
+**tsc:** emits one module format per compile. Shipping a package that works for both `import` and
+`require` means two configurations and two output directories, renaming one set of files, and
+writing an `exports` map by hand that sends each kind of consumer to the right one.
+
+**fabr:** a module format of `dual` in `JS_TARGET` builds a `js_package` in both formats in one
+package:
+
+```
+JS_TARGET = es2022-dual;
+
+js_package mylib {
+  srcs = src:**/*.ts;
+}
+```
+
+Each source file is compiled twice, and the two sets of output sit side by side:
+
+| | CommonJS | ES modules |
+|---|---|---|
+| JavaScript | `index.js` | `index.mjs` |
+| Declarations | `index.d.ts` | `index.d.mts` |
+| Source map | `index.js.map` | `index.mjs.map` |
+
+The generated `package.json` has `"type": "commonjs"`, and an `exports` map that sends `import` to
+the `.mjs` files and `require` to the `.js` files, each with its own declarations; see
+[Publishing packages](/reference/js/publishing/#both-module-formats).
+
+You write the source once, in either style. What differs between the two outputs is handled for
+you:
+
+- **Imports between the package's own files** name the matching format. `import { x } from "./util"`
+  becomes `require("./util.js")` in `index.js` and `from "./util.mjs"` in `index.mjs`.
+- **`__dirname`, `__filename` and `import.meta`** are converted for each format, as described
+  [above](#__dirname-and-importmeta-convert-between-module-systems).
+
+**This is for a package used outside your project**, typically one you publish, when you want
+its consumers to be able to use it as both ESM and CommonJS. a
+single-format package is often enough, since CommonJS can be imported from an ES module anywhere,
+and an ES module can be `require`d on Node.js 22.12 and later. Inside a fabr project it isn't
+needed at all: a target that depends on `mylib` gets `mylib` built in its own format, whatever that
+is. To build one package as dual without changing the rest of the project, ask for it where the
+package is published:
+
+```
+sync release {
+  @npm:mylib:${VERSION} = mylib<JS_TARGET=es2022-dual, BUILD_TYPE=release>;
+}
+```
+
+Some things have one format even in a dual package:
+
+- **Command-line programs.** A script in `bin/` is built as CommonJS only.
+- **Sources with a fixed format.** An `.mts` file is always an ES module and a `.cts` file always
+  CommonJS, so each produces one output (`.mjs` or `.cjs`), and its `exports` entry has one side.
+- **Things that aren't packages.** A `js_bundle` and a `js_script` are one program, so with a
+  `dual` target they are built as ES modules.
+- **Tests.** Tests are compiled in the format their test framework needs, CommonJS for `node` and
+  `jest` and ES modules for `vitest`, so a dual package's tests exercise one format.
 
 ## Errors fabr reports that tsc does not
 
