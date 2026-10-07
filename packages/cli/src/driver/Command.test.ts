@@ -194,6 +194,20 @@ describe("Command", () => {
     expect(err).to.deep.equal([]);
   });
 
+  for (const command of ["build", "test", "run", "shell", "ls", "cat", "sync"]) {
+    it(`rejects '${command}' with no target — error + usage to stderr, exit 1`, () => {
+      const { exit, out, err } = capture([command]);
+      expect(exit).to.equal(1);
+      expect(err.join("\n")).to.match(new RegExp(`The '${command}' command requires a target`));
+      expect(err.join("\n")).to.match(/Usage: fabr/);
+      expect(out).to.deep.equal([]);
+    });
+  }
+
+  it("still lists with no names for a query command", () => {
+    expect(capture(["list-targets"]).exit).to.equal(undefined);
+  });
+
   it("rejects a flag that doesn't apply to the command (cat --json)", () => {
     const { exit, out, err } = capture(["cat", "foo", "--json"]);
     expect(exit).to.equal(1);

@@ -78,17 +78,20 @@ interface CommandSpec {
    * `run` needs no marker — it captures one target and forwards the rest as the
    * program's argv. */
   singleTarget?: boolean;
+  /** This command acts on the targets it is given, so naming none is a usage
+   * error. */
+  requiresTarget?: boolean;
 }
 
 const COMMAND_SPECS: CommandSpec[] = [
-  { name: "build", synopsis: "[-w] <targets>", summary: "Build the given targets (the default command)", accepts: ["-w", "-q", "--no-progress", "-f"] },
-  { name: "test", synopsis: "[-w] [-u] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "-q", "--no-progress", "-f"] },
-  { name: "run", synopsis: "[-w] <target> [args…]", summary: "Execute a target, forwarding trailing args to it", accepts: ["-w", "-q", "--no-progress", "-f"] },
-  { name: "shell", synopsis: "<target>", summary: "Stage a target's build sandbox and open a shell in it (debugging)", accepts: ["-q", "--no-progress"], singleTarget: true },
-  { name: "ls", synopsis: "[-l] <names>", summary: "Build the given targets and list their contents", accepts: ["-l", "-q", "--no-progress"] },
-  { name: "cat", synopsis: "<names>", summary: "Build a target and write its matching files to stdout", accepts: ["-q", "--no-progress"] },
-  { name: "cp", synopsis: "<sources…> <dest>", summary: "Build targets and copy their files to a destination directory", accepts: ["-q", "--no-progress"] },
-  { name: "sync", synopsis: "<target>", summary: "Build and publish a sync target to its destination coordinates", accepts: ["-q", "--no-progress"] },
+  { name: "build", synopsis: "[-w] <targets>", summary: "Build the given targets (the default command)", accepts: ["-w", "-q", "--no-progress", "-f"], requiresTarget: true },
+  { name: "test", synopsis: "[-w] [-u] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "-q", "--no-progress", "-f"], requiresTarget: true },
+  { name: "run", synopsis: "[-w] <target> [args…]", summary: "Execute a target, forwarding trailing args to it", accepts: ["-w", "-q", "--no-progress", "-f"], requiresTarget: true },
+  { name: "shell", synopsis: "<target>", summary: "Stage a target's build sandbox and open a shell in it (debugging)", accepts: ["-q", "--no-progress"], singleTarget: true, requiresTarget: true },
+  { name: "ls", synopsis: "[-l] <names>", summary: "Build the given targets and list their contents", accepts: ["-l", "-q", "--no-progress"], requiresTarget: true },
+  { name: "cat", synopsis: "<names>", summary: "Build a target and write its matching files to stdout", accepts: ["-q", "--no-progress"], requiresTarget: true },
+  { name: "cp", synopsis: "<sources…> <dest>", summary: "Build targets and copy their files to a destination directory", accepts: ["-q", "--no-progress"], requiresTarget: true },
+  { name: "sync", synopsis: "<target>", summary: "Build and publish a sync target to its destination coordinates", accepts: ["-q", "--no-progress"], requiresTarget: true },
   {
     name: "list-targets",
     synopsis: "[-l] [--all] [--json] [names]",
@@ -117,10 +120,6 @@ const COMMAND_SPECS: CommandSpec[] = [
 
 const COMMANDS = new Set(COMMAND_SPECS.map((c) => c.name));
 const COMMAND_BY_NAME = new Map(COMMAND_SPECS.map((c) => [c.name, c]));
-
-/** Model-query verbs: they inspect the loaded model rather than building targets,
- * so a bare invocation (no targets) is a valid "list everything" request. */
-const QUERY_COMMANDS = new Set(["list-targets", "list-targetdefs", "list-properties", "list-all"]);
 
 export interface Options {
   command: string;
@@ -187,8 +186,8 @@ export interface CommandPlan {
 }
 
 /** Write the usage text to the given sink — stdout for an explicit `-h`/`--help`
- * or the bare no-target invocation (the de-facto help), stderr for a usage
- * *error*. Each command is listed with its own `fabr <name> <synopsis>` line so
+ * or a bare `fabr` with neither command nor target (the de-facto help), stderr
+ * for a usage *error*. Each command is listed with its own `fabr <name> <synopsis>` line so
  * the options that apply to it are visible in place; the Options section then
  * explains each flag once. */
 function printUsage(write: (message: string) => void = console.log): void {
@@ -376,9 +375,14 @@ export function parseCommandLine(args: string[]): Options {
     }
     options.dest = options.targets.pop();
   }
-  if (options.targets.length === 0 && !options.deferred && !QUERY_COMMANDS.has(options.command)) {
-    printUsage();
-    process.exit(0);
+  if (options.targets.length === 0 && !options.deferred) {
+    if (!commandGiven) {
+      printUsage();
+      process.exit(0);
+    }
+    if (spec?.requiresTarget) {
+      usageError(`The '${options.command}' command requires a target`);
+    }
   }
   checkFlagsCoherent(options);
   return options;
