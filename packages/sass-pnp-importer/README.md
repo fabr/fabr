@@ -1,79 +1,150 @@
 # @fabr-build/sass-pnp-importer
 
-A [Sass](https://sass-lang.com) importer that loads package stylesheets through a
-[Plug'n'Play](https://yarnpkg.com/advanced/pnp-spec) dependency table — Yarn PnP, or any
-tool implementing the PnP runtime API. Works with `sass` and `sass-embedded`.
+A [Sass](https://sass-lang.com) importer for projects installed with
+[Yarn Plug'n'Play](https://yarnpkg.com/features/pnp). It lets a stylesheet load another package's
+stylesheets by package name, in a project that has no `node_modules` directory for Sass to search.
+
+```scss
+@use "@acme/design-system/colors";
+```
+
+```js
+// build.js
+const sass = require("sass");
+const { sassPnpImporter } = require("@fabr-build/sass-pnp-importer");
+
+const result = sass.compile("src/app.scss", { importers: [sassPnpImporter()] });
+console.log(result.css);
+```
+
+```sh
+yarn node build.js
+```
+
+It works with `sass` and with `sass-embedded`, and with `compile`, `compileString` and their async
+forms. With `sass-embedded`, use the async forms; see [Using sass-embedded](#using-sass-embedded).
+
+This package is part of the [fabr](https://fabr.build) build tool, which uses it to compile Sass,
+but it has no dependency on fabr and can be used on its own in any Yarn PnP project. See
+[About this package](#about-this-package).
+
+## Install
+
+```sh
+yarn add --dev @fabr-build/sass-pnp-importer sass
+```
+
+It needs Node.js 22.19 or later. It is tested with `sass` and `sass-embedded` 1.100, under Yarn 4.
+
+## What it resolves
+
+A load of a package name, with or without Sass's `pkg:` prefix, is resolved by this importer:
+
+```scss
+@use "@acme/design-system/colors";
+@use "pkg:@acme/design-system/colors";   // the same load
+```
+
+- **The package is looked up from the file doing the loading.** Which package a name refers to is
+  whatever Yarn's dependency table says for that file. A stylesheet inside a dependency therefore
+  sees the packages that dependency declares, not yours, and a package the loading file's own
+  package doesn't declare can't be loaded. This holds for Yarn's virtual packages too: where a
+  package is installed more than once, for different peer dependencies, a load resolves through
+  the copy that is doing the loading.
+- **Inside the package, Sass's own rules for packages apply:**
+  1. the package's `exports` map, under the `sass` and `style` conditions;
+  2. for the package's root, the `sass` and `style` fields of its `package.json`;
+  3. Sass's usual search for the path: partials (`_colors.scss`), `index` files, and the `.scss`,
+     `.sass` and `.css` extensions, with `.import` files preferred under `@import`.
+
+  An `exports` map is tried first but doesn't hide other files. Many packages write `exports`
+  for their JavaScript only, and their stylesheets remain loadable by path.
+- **Packages inside zip archives work.** The importer reads files through Node.js's `fs`, which
+  Yarn's runtime patches to read them.
+
+Everything else is left to Sass: relative loads between your own files, and anything found through
+`loadPaths`. A name that isn't one of the loading file's dependencies is also passed on, so the
+importer can sit beside others in the `importers` list.
+
+Webpack's `~` prefix (`@use "~bootstrap/scss/functions"`) is refused with an error telling you to
+remove it. It isn't part of Sass.
+
+## Running under Yarn's runtime
+
+The importer gets Yarn's dependency table, the `.pnp.cjs` file at the root of the project, by
+asking Node.js for the table that governs each file. That works when Yarn's runtime is loaded in
+the process, which your build script needs in any case in order to `require("sass")`. Any of these
+loads it:
+
+```sh
+yarn node build.js              # also: any script run with `yarn run`
+node -r ./.pnp.cjs build.js     # loading the runtime yourself
+```
+
+```js
+// or as the first line of build.js, so that plain `node build.js` works
+require("./.pnp.cjs").setup();
+```
+
+Packages that Yarn keeps inside zip archives load in all three cases, because the runtime patches
+Node.js's `fs`, which is what the importer reads files with.
+
+### Using sass-embedded
+
+With `sass-embedded`, use the asynchronous API:
 
 ```js
 const sass = require("sass-embedded");
 const { sassPnpImporter } = require("@fabr-build/sass-pnp-importer");
 
-sass.compile("src/app.scss", { importers: [sassPnpImporter()] });
+sass.compileAsync("src/app.scss", { importers: [sassPnpImporter()] }).then(result => {
+  console.log(result.css);
+});
 ```
 
-```scss
-@use "@acme/design-system/colors"; // or "pkg:@acme/design-system/colors"
-```
-
-## What it does
-
-- **Resolves each load from the file that wrote it.** Which package a name means is the
-  PnP table's answer for that file, so a package's own `@use "dep"` sees the dependencies
-  *it* declares — including under Yarn's virtual packages, where one package is installed
-  wired several ways.
-- **Follows dart-sass's package rules below the package root**: the package's `exports` under
-  the `sass`/`style` conditions as a first choice (not a boundary — a map describing the
-  package's JavaScript does not hide its stylesheets), then its `sass`/`style` fields for
-  the root, then Sass's ordinary search — partials, `index` files, `.scss`/`.sass`/`.css`,
-  import-only files under `@import`, and Sass's error when two candidates match.
-- **Reads through node's `fs`**, so under Yarn (whose runtime patches `fs`) packages inside
-  zip archives load too — which a Sass `FileImporter` cannot do, since the compiler reads
-  those files itself.
-
-Project sources and `loadPaths` stay with Sass's own loading; a name the table does not
-bind is left to them. The webpack `~` prefix is refused rather than stripped.
-
-## Finding the dependency table
-
-By default the importer asks node, per file, which PnP table governs it —
-`module.findPnpApi(file)`. That function is not part of node itself: Yarn's PnP runtime adds it
-when `.pnp.cjs` is loaded into the process, which happens when you run under Yarn:
-
-- `yarn node build.js`, or any `yarn run` script (Yarn preloads `.pnp.cjs` through
-  `NODE_OPTIONS`);
-- `node -r ./.pnp.cjs build.js`, preloading it yourself.
-
-For each file, Yarn's runtime uses an already-loaded table that owns the file, or else walks up
-from the file's directory to the nearest `.pnp.cjs` and loads it. The answer is per file, so a
-stylesheet inside a dependency resolves against the table that installed it.
-
-Run outside Yarn's runtime — plain `node build.js` in a PnP project — and there is no
-`module.findPnpApi`: the importer finds no table, resolves nothing, and Sass reports package
-loads as "Can't find stylesheet". Either run under Yarn as above, or pass the table explicitly:
-
-```js
-const pnpApi = require("./.pnp.cjs"); // requiring (not preloading) returns the API without patching fs
-sass.compile("src/app.scss", { importers: [sassPnpImporter({ pnpApi })] });
-```
-
-Passing it explicitly works for packages Yarn has unpacked on disk, but not for packages still
-inside zip archives: reading those needs the `fs` patch that only preloading installs.
+Its synchronous `compile` didn't return under `yarn node` when this was written (Yarn 4.5,
+Node.js 24), with or without this importer. If you need the synchronous API, unplugging the
+`sync-child-process` package (`dependenciesMeta` in `package.json`) made it work.
 
 ## Options
 
-`sassPnpImporter()` is a factory: it takes an optional options object and returns an importer
-to put in Sass's `importers` list. Every option may be omitted.
+`sassPnpImporter(options)` returns an importer for Sass's `importers` list. Both options are
+optional.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `pnpApi` | The table Yarn's runtime finds for each loading file (`module.findPnpApi`) | The dependency table to resolve through. Pass one to use a particular table, or another implementation of the [PnP runtime API](https://yarnpkg.com/advanced/pnpapi), in place of the one Yarn's runtime would find. |
+| `entryPointDirectory` | The working directory | Where a package load is resolved from when the stylesheet has no file location, which happens for source passed to `compileString` without a `url`. |
 
 ```js
 sassPnpImporter({
-  pnpApi: require("./.pnp.cjs"),
+  pnpApi: require("pnpapi"),          // Yarn's API for the running process
   entryPointDirectory: __dirname,
 });
 ```
 
-- `pnpApi` — the PnP API to resolve through: Yarn's `pnpapi`, or any implementation of the PnP
-  runtime API. By default, the one `module.findPnpApi` finds for each loading file — see
-  *Finding the dependency table*.
-- `entryPointDirectory` — where a package load is resolved from when the stylesheet writing it
-  has no file location: source text compiled from memory (`sass.compileString`) without a `url`
-  option saying where it came from. Defaults to the working directory.
+## Troubleshooting
+
+| What you see | Cause | What to do |
+|---|---|---|
+| `Cannot find module 'sass'` | The script is run with plain `node`, without Yarn's runtime | Run it with `yarn node`, or one of the other ways in [Running under Yarn's runtime](#running-under-yarns-runtime). |
+| The script never finishes | `sass-embedded`'s synchronous `compile` under `yarn node` | Use `compileAsync`; see [Using sass-embedded](#using-sass-embedded). |
+| `Can't find stylesheet to import` for a package load | The package isn't a dependency of the package whose stylesheet loads it | Add it to that package's dependencies. For a third-party package that forgot to declare it, use Yarn's [`packageExtensions`](https://yarnpkg.com/configuration/yarnrc#packageExtensions). |
+| `uses the webpack '~' prefix, which Sass does not define` | `@use "~pkg/…"` or `@import "~pkg/…"` | Remove the `~`. |
+| `It's not clear which file to import` | Two files match one load, such as `_colors.scss` and `colors.scss` | This is Sass's own rule; the package needs to keep one. |
+
+## About this package
+
+`@fabr-build/sass-pnp-importer` is developed as part of [fabr](https://fabr.build), a build tool
+for JavaScript and TypeScript projects, in the [fabr repository](https://github.com/fabr/fabr).
+Fabr resolves packages the way Yarn PnP does, and uses this importer for the Sass in the projects
+it builds. The importer talks only to the public PnP runtime API, so it works the same under Yarn.
+It is released together with fabr, under the same version numbers.
+
+Bug reports and contributions go to the
+[fabr issue tracker](https://github.com/fabr/fabr/issues).
+
+## License
+
+[GNU General Public License v3.0 or later](https://www.gnu.org/licenses/gpl-3.0.html)
+(GPL-3.0-or-later).
