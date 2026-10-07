@@ -25,7 +25,7 @@ import { FileSetRef } from "./FileSetRef";
 import { MemoryFile } from "./MemoryFS";
 import { Name } from "./Name";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
-import { materializeAll, renamedDelivery, Repository, RepositoryLookup, RepositoryRef, ResolutionContext } from "./Repository";
+import { bindProvided, materializeAll, renamedDelivery, Repository, RepositoryLookup, RepositoryRef, ResolutionContext } from "./Repository";
 import { parseName } from "../model/Parser";
 
 /** deliveredAs reads only the reference itself, never its source. */
@@ -182,5 +182,86 @@ describe("materializeAll over cyclic package graphs", () => {
     const secondApp = secondBuddy.packages[0];
     expect(secondApp.packages.map(dep => dep.packageName)).to.deep.equal(["buddy", "dep"]);
     expect(secondApp.packages[0]).to.equal(secondBuddy);
+  });
+});
+
+describe("bindProvided over cyclic package graphs", () => {
+  const dependency = (of: PackageFileSet, name: string): PackageFileSet => of.packages.find(dep => dep.packageName === name)!;
+
+  it("closes a cycle through a package something below it wants provided", () => {
+    /* a ↔ b, and a's own dependency c wants `a` provided: the a beneath b is
+     * supplied by itself, as the a at the top is. */
+    const builder = new PackageGraphBuilder();
+    const top = builder.node(graphFiles("top"), "top", "1.0.0");
+    const a = builder.node(graphFiles("a"), "a", "1.0.0");
+    const b = builder.node(graphFiles("b"), "b", "1.0.0");
+    const c = builder.node(graphFiles("c"), "c", "1.0.0");
+    builder.wire(top, [a]);
+    builder.wire(a, [b, c]);
+    builder.wire(b, [a]);
+    builder.wire(c, [a], new Map([["a", "expected"]]));
+    builder.seal();
+
+    const [bound] = bindProvided([top]) as PackageFileSet[];
+    const boundA = dependency(bound, "a");
+    expect(dependency(dependency(boundA, "b"), "a")).to.equal(boundA);
+    expect(dependency(dependency(boundA, "c"), "a")).to.equal(boundA);
+  });
+
+  it("closes a cycle of two packages each wanted provided beneath the other", () => {
+    /* sts ↔ oidc, both reaching `node`, whose dependencies want one each
+     * provided (@aws-sdk/client-s3@3.600.0's shape). */
+    const builder = new PackageGraphBuilder();
+    const top = builder.node(graphFiles("top"), "top", "1.0.0");
+    const sts = builder.node(graphFiles("sts"), "sts", "1.0.0");
+    const oidc = builder.node(graphFiles("oidc"), "oidc", "1.0.0");
+    const node = builder.node(graphFiles("node"), "node", "1.0.0");
+    const ini = builder.node(graphFiles("ini"), "ini", "1.0.0");
+    const tokens = builder.node(graphFiles("tokens"), "tokens", "1.0.0");
+    builder.wire(top, [sts, oidc]);
+    builder.wire(sts, [oidc, node]);
+    builder.wire(oidc, [sts, node]);
+    builder.wire(node, [ini, tokens]);
+    builder.wire(ini, [sts], new Map([["sts", "expected"]]));
+    builder.wire(tokens, [oidc], new Map([["oidc", "expected"]]));
+    builder.seal();
+
+    const [bound] = bindProvided([top]) as PackageFileSet[];
+    const boundSts = dependency(bound, "sts");
+    const boundOidc = dependency(bound, "oidc");
+    expect(dependency(boundSts, "oidc")).to.equal(boundOidc);
+    expect(dependency(boundOidc, "sts")).to.equal(boundSts);
+    const boundNode = dependency(boundSts, "node");
+    expect(dependency(boundOidc, "node")).to.equal(boundNode);
+    expect(dependency(dependency(boundNode, "ini"), "sts")).to.equal(boundSts);
+    expect(dependency(dependency(boundNode, "tokens"), "oidc")).to.equal(boundOidc);
+  });
+
+  it("keeps a package on a cycle apart where its dependents supply different packages", () => {
+    /* q ↔ loop, q wanting `r` provided; p1 and p2 each depend on q and on an
+     * r of their own. */
+    const builder = new PackageGraphBuilder();
+    const top = builder.node(graphFiles("top"), "top", "1.0.0");
+    const p1 = builder.node(graphFiles("p1"), "p1", "1.0.0");
+    const p2 = builder.node(graphFiles("p2"), "p2", "1.0.0");
+    const q = builder.node(graphFiles("q"), "q", "1.0.0");
+    const loop = builder.node(graphFiles("loop"), "loop", "1.0.0");
+    const r1 = builder.node(graphFiles("r1"), "r", "1.0.0");
+    const r2 = builder.node(graphFiles("r2"), "r", "2.0.0");
+    builder.wire(top, [p1, p2]);
+    builder.wire(p1, [q, r1]);
+    builder.wire(p2, [q, r2]);
+    builder.wire(q, [loop, r1], new Map([["r", "expected"]]));
+    builder.wire(loop, [q]);
+    builder.wire(r1, []);
+    builder.wire(r2, []);
+    builder.seal();
+
+    const [bound] = bindProvided([top]) as PackageFileSet[];
+    const under = (parent: string): PackageFileSet => dependency(dependency(bound, parent), "q");
+    expect(dependency(under("p1"), "r").version).to.equal("1.0.0");
+    expect(dependency(under("p2"), "r").version).to.equal("2.0.0");
+    expect(under("p1")).to.not.equal(under("p2"));
+    expect(dependency(dependency(under("p2"), "loop"), "q")).to.equal(under("p2"));
   });
 });

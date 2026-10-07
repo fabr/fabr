@@ -1146,21 +1146,36 @@ export function bindProvided(sources: Materialized[]): Materialized[] {
   }
 
   const builder = new PackageGraphBuilder();
-  const copies = new Map<string, PackageFileSet>();
-  /** `pkg` as its dependent's `scope` wires it: one node per distinct answer to
-   * the names anything below it wants supplied. */
-  const copy = (pkg: PackageFileSet, scope: IScope): PackageFileSet => {
-    const answers = wanted.get(pkg)!.map(name => {
-      const supply = supplied(scope, name);
-      return supply === undefined ? "-" : `${ids.get(supply.pkg)}/${supply.scope.id}`;
+  /** Whether `pkg` is wired the same way in scopes `a` and `b`: each name
+   * anything below it wants supplied is answered in both by nothing, or by one
+   * package itself wired the same way in the two scopes answering it. A pair
+   * in `assumed` is one this comparison is already deciding, and counts as
+   * alike — a package supplied by itself round a cycle is one wiring. */
+  const wiredAlike = (pkg: PackageFileSet, a: IScope, b: IScope, assumed: Set<string>): boolean => {
+    const pair = `${ids.get(pkg)}:${a.id}:${b.id}`;
+    if (a === b || assumed.has(pair)) {
+      return true;
+    }
+    assumed.add(pair);
+    return wanted.get(pkg)!.every(name => {
+      const left = supplied(a, name);
+      const right = supplied(b, name);
+      return left === undefined || right === undefined
+        ? left === right
+        : left.pkg === right.pkg && wiredAlike(left.pkg, left.scope, right.scope, assumed);
     });
-    const key = `${ids.get(pkg)}:${answers.join(",")}`;
-    const held = copies.get(key);
+  };
+  const copies = new Map<PackageFileSet, Array<{ scope: IScope; node: PackageFileSet }>>();
+  /** `pkg` as its dependent's `scope` wires it: one node per distinct wiring
+   * ({@link wiredAlike}). */
+  const copy = (pkg: PackageFileSet, scope: IScope): PackageFileSet => {
+    const made = copies.get(pkg) ?? [];
+    const held = made.find(other => wiredAlike(pkg, scope, other.scope, new Set()));
     if (held !== undefined) {
-      return held;
+      return held.node;
     }
     const node = builder.node(pkg, pkg.packageName, pkg.version, pkg.origin, pkg.reference);
-    copies.set(key, node);
+    copies.set(pkg, [...made, { scope, node }]);
     const own: IScope = { id: scopes++, parent: scope, bindings: new Map() };
     /* Each edge with what supplies it: an ordinary one is supplied by what it
      * is bound to, here; a provided one is decided below. */
