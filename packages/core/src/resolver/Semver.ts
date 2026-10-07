@@ -358,13 +358,10 @@ function mentionsPrerelease(constraint: SemverConstraint): boolean {
 /**
  * The lowest of `versions` satisfying `constraint`, under npm's prerelease
  * contract: a prerelease version is a candidate only when the constraint
- * itself mentions one (node-semver's opt-in — every other consumer of the
- * same registry metadata reads `^4.0.0` as excluding prereleases; and since
- * a prerelease sorts *below* its release, admitting them would make a
- * lowest-satisfying pick actively prefer `4.0.1-rc.0` over an available
- * `4.0.1`). The candidate rule for the floor-raise repair (see
- * NPMRepository.lowestAvailable), where fabr invents a version rather than
- * taking a declared one — so it must invent npm-consistently.
+ * itself mentions one (node-semver's opt-in; a prerelease sorts *below* its
+ * release, so admitting them unasked would pick `4.0.1-rc.0` over an
+ * available `4.0.1`). The candidate rule for the floor-raise repair (see
+ * NPMRepository.lowestAvailable).
  */
 export function lowestSatisfying(versions: SemverVersion[], constraint: SemverConstraint): SemverVersion | undefined {
   const allowPrerelease = mentionsPrerelease(constraint);

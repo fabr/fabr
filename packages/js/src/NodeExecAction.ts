@@ -49,30 +49,25 @@ import { IChangeLists, splitDepsPath, toRunReport } from "./pnp/ReadSet";
  * The JS ecosystem's build step, and the one place that owns **how a JS tool
  * reaches its dependencies**: make them reachable, then run it — core's generic
  * `exec` with the one thing every JS tool needs in front of it. Which
- * arrangement is the {@link PNP}/{@link NODE_MODULES} choice, and having
- * both here is the point: one step owns the question, so a rule says which
- * answer it wants and nothing else.
+ * arrangement is the {@link PNP}/{@link NODE_MODULES} choice: a rule says
+ * which it wants and nothing else.
  *
- * Doing it here rather than in the rule is what makes it free on a cache hit.
  * The rule hands the *packages* over as delivered; the key walks that graph
- * (see `manifestFileInput`) plus the layout token, and what this
- * step makes of them is a pure function of those — which is what lets the key
- * be computed without building anything. Evaluation therefore does no
- * filesystem work at all, and a hit does none either.
+ * (see `manifestFileInput`) plus the layout token, and what this step makes of
+ * them is a pure function of those, so the key is computed without building
+ * anything: evaluation does no filesystem work, and a cache hit does none
+ * either.
  *
- * A layout conflict therefore surfaces on the miss that would have produced it,
- * not during evaluation. That is the same set of runs: a hit is proof the same
- * inputs assembled cleanly, and anything that introduces a conflict changes an
- * input and so misses. The packages carry their `origin` in, so the diagnostic
- * keeps its provenance.
+ * A layout conflict surfaces on the miss that would have produced it, not
+ * during evaluation (a hit is proof the same inputs assembled cleanly). The
+ * packages carry their `origin` in, so the diagnostic keeps its provenance.
  */
 export const NODE_EXEC_ACTION: IBuildActionDefinition = {
   id: "js:exec",
   /* Tracks the exec body this delegates to, plus this step's own layouts; add
    * a `+ N` when what a layout produces changes. A change to the action-key
    * text's shape (see BuildAction.actionKey) already invalidates mechanically
-   * and needs no bump here. +8: file-shaped config members stage with the
-   * inputs. */
+   * and needs no bump here. */
   version: EXEC_ACTION.version + 9,
   run: (action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> => {
     const deps = depsInput(action);

@@ -40,9 +40,8 @@ import { mapComputable } from "../support/Functional";
  * ```
  *
  * It is a plain {@link FileSource} — a namespace whose NAMES are the declared
- * member table and whose CONTENTS download on demand — deliberately not a
- * repository: there is nothing to version-select, so it wants none of the
- * resolution machinery (no references, no batching, no joint pin).
+ * member table and whose CONTENTS download on demand — not a repository: it
+ * vends no references and joins no resolution (nothing to version-select).
  * `@dl:amperize.tgz` is the downloaded file (usable as-is), and
  * `@dl:amperize.tgz:*:**` projects into it exactly as `./amperize.tgz:*:**`
  * would over a local copy: the projection walker's descent probes ({@link
@@ -70,8 +69,7 @@ class FetchSource implements FileSource {
    * *into* a member is descent's business and matches nothing here, but the
    * table being a closed namespace tells "nothing yet" apart from "nothing
    * ever": a pattern that neither names a member nor could descend into one
-   * is an unknown download, failed with the declared table — the same
-   * judgment (and message) the repository form of fetch used to make.
+   * is an unknown download, failed with the declared table.
    */
   public find(name: Name, prefix = ""): ComputableSource<FileSet> {
     const projector = name.makeProjector(prefix);
@@ -257,10 +255,9 @@ function encodeDigest(hexHash: string, encoding: "base64" | "hex"): string {
  * Read the declared table. Each member is a STRING property whose values are its
  * URL and its integrity digest, told apart **by shape** rather than by position:
  * an SRI value is `<algorithm>-<base64>` and a URL has a scheme, so the two
- * cannot be confused and their order does not matter. Requiring the digest is
- * the point — a URL is not immutable by itself (a git SHA in the path makes it
- * so, but only the author knows that), so the declaration is where that claim
- * gets made in checkable form.
+ * cannot be confused and their order does not matter. The digest is required:
+ * a URL is not immutable by itself (a git SHA in the path makes it so, but only
+ * the author knows that).
  */
 function readMembers(context: TargetContext): Computable<Map<string, FetchMember>> {
   /* Members via the wildcard surface: every non-declared property, its key

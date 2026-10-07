@@ -114,11 +114,10 @@ interface ILocationEntry {
  * what keeps a dependency's typings resolvable when they import a peer the
  * package failed to declare and the consumer did.
  *
- * A resolver carries the CONDITIONS it resolves under, because they are a
- * property of the consumer rather than of any one lookup: a driver resolves for
- * exactly one world (tsc for `types`, Sass for `sass`) for its whole run, and
- * threading the set through every call would only invite two lookups in one
- * process to disagree about which files a package has.
+ * A resolver carries the CONDITIONS it resolves under: a property of the
+ * consumer rather than of any one lookup — a driver resolves for exactly one
+ * world (tsc for `types`, Sass for `sass`) for its whole run. {@link resolveAll}
+ * takes a per-lookup override.
  */
 export class PnpResolver implements IPnpApi {
   public readonly VERSIONS = { std: 3, resolveVirtual: 1, getAllLocators: 1 };
@@ -169,10 +168,8 @@ export class PnpResolver implements IPnpApi {
    * are. Kept as locators, so an excluded package's own row still answers
    * everything it did declare. */
   private readonly excluded = new Set<LocatorKey>();
-  /** Which package each DIRECTORY belongs to. The locator of a file is a
-   * property of the directory holding it, and a compile asks tens of thousands
-   * of times over a few thousand directories — without this, every question
-   * rescans every row. */
+  /** Which package each DIRECTORY belongs to, memoized: the locator of a file
+   * is a property of the directory holding it. */
   private readonly locatorByDirectory = new Map<string, LocatorKey>();
   /** Each package's `exports`/`imports`, read once per location. A compile asks
    * about a few hundred packages tens of thousands of times; the miss is
@@ -287,12 +284,11 @@ export class PnpResolver implements IPnpApi {
    *
    * Several rows CAN share one: the same content resolved under two names (an
    * alias beside the real package) is one directory, and a file inside it
-   * cannot say which row it belongs to — the location→row map is not injective,
-   * Merging is the honest answer: the manifest gives rows of one content a
-   * shared location only where they bind the same dependencies (a content
+   * cannot say which row it belongs to. The manifest gives rows of one content
+   * a shared location only where they bind the same dependencies (a content
    * wired two ways gets a virtual location per wiring), so they differ only in
    * the name each resolves itself by, and inside the shared directory both
-   * names should work. Own bindings win; the manifest's rows are sorted, so the
+   * names work. Own bindings win; the manifest's rows are sorted, so the
    * result is deterministic.
    */
   private mergeSharedLocations(): void {
@@ -376,7 +372,7 @@ export class PnpResolver implements IPnpApi {
    *
    * Several rows may share a location — the same content resolved under two
    * names, an alias beside the real package — in which case their tables are
-   * merged by {@link dependenciesOf}. They agree except on their own names,
+   * merged by {@link mergeSharedLocations}. They agree except on their own names,
    * which is exactly the answer wanted inside a shared directory.
    */
   public locatorOf(file: string): LocatorKey {
@@ -455,8 +451,7 @@ export class PnpResolver implements IPnpApi {
    * package, wherever one might otherwise be written down.
    */
   public get treeRoots(): ReadonlyArray<string> {
-    /* Derived once: something reads this per file, and rebuilding the set each
-     * time cost 1.5s of a full-program run. */
+    /* Derived once; read per file. */
     this.cachedTreeRoots ??= [
       ...new Set(
         this.byLocation

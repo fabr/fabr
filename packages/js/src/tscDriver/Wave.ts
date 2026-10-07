@@ -126,9 +126,8 @@ export function runWave(plan: ICompilePlan, host: IWaveHost): IWaveResult {
   /* Only a bounded wave follows edges; a whole-project one never reads them. */
   const forwarders = whole ? new Map<string, string[]>() : reverseEdges(plan.memo, host, "forwarding");
   const users = whole ? new Map<string, string[]>() : reverseEdges(plan.memo, host, "use");
-  /* An index cursor rather than shift(): BFS order is wanted (the telemetry
-   * reports the wave in growth order), and shift() is O(n) per dequeue —
-   * quadratic over a whole-project expansion. */
+  /* An index cursor: BFS order, which is the order the telemetry reports the
+   * wave in. */
   for (let at = 0; at < pending.length; at++) {
     const name = pending[at];
     if (seen.has(name)) {

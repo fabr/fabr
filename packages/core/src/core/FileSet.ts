@@ -114,11 +114,8 @@ type FileSetContent = Map<string, IFile>;
 /**
  * The lazily-computed manifest hash of one content map, held in a cell **shared
  * by every set sharing that map**. The hash is a property of the content, not
- * of any one set, and only some sets are ever asked for it — a build constructs
- * ~3× more packages than it keys — so it is computed on demand. A per-instance
- * field would then be recomputed by whichever of a package's many re-wraps is
- * asked first; the cell travels with the map instead: share the content, share
- * the answer.
+ * of any one set, and is computed on demand: the cell travels with the map, so
+ * a re-wrap that shares the content shares the answer.
  */
 interface IManifestHash {
   value?: string;
@@ -278,8 +275,7 @@ export class FileSet implements FileSource {
    * Through the checked `rename`, so a many-to-one rename is the ordinary
    * ConflictError rather than a silently lost file. Overridden where a container
    * is addressed by something other than its own file names (a runnable's launch
-   * surface), which is exactly why applying projections belongs to the container
-   * rather than to whoever holds a pending reference to it.
+   * surface).
    */
   public select(projections: ReadonlyArray<IProjection>): FileSet {
     return projections.reduce((set: FileSet, projection) => set.rename(projection.pattern.makeProjector(projection.prefix)), this);
@@ -539,7 +535,7 @@ export class FileSet implements FileSource {
         sources.push({ prefix: mount, fileset: files });
       } else if (files !== undefined) {
         /* A bare file mounts *at* the prefix, which is then the whole name —
-         * so an empty one names nothing and is rejected, as it always was. */
+         * so an empty one names nothing and is rejected. */
         result.set(canonicalFileName(prefix), files);
       }
     }
@@ -552,7 +548,7 @@ export const EMPTY_FILESET: FileSet = new FileSet(new Map());
 /**
  * Provenance for a FileSet assembled from several sources (a `unionAll`, or a
  * prefixed `layout`). A single `origin` slot can't represent multiple sources,
- * so combinations used to drop it; instead this step retains only its
+ * so this step retains only its
  * contributor FileSets (O(K) references — never a per-file map) and reconstructs
  * one file's origin **lazily**, at render/error time: given the file's path it
  * strips the matching mount prefix, finds the contributor that holds it, and

@@ -505,9 +505,8 @@ export function buildPostcssOptions(
  * mounted under {@link CSS_DEPS_DIR} by package name, each with a scope of its
  * own so two of them cannot name one class alike.
  *
- * Scoped by DELIVERED name rather than by whatever the dependency's own build
- * scoped it as — a compose takes a private copy, so the name only has to be
- * distinct here, and the published one is unknowable from the file anyway.
+ * Scoped by delivered name: a compose takes a private copy, so the scope only
+ * has to be distinct here.
  */
 function composableStylesheets(deps: PackageFileSet[]): Array<{ path: string; scope: string }> {
   return deps
@@ -525,9 +524,8 @@ function composableStylesheets(deps: PackageFileSet[]): Array<{ path: string; sc
  * **compile inputs** (the shims and declarations, which go into js_compile's
  * `srcs`) and the **content** (the stylesheets, which are delivered).
  *
- * Decided by extension over the step's whole output rather than remembered from
- * the naming above: the caller holds a FileSet and not the source list, and the
- * two sets must partition the output exactly.
+ * Decided by extension over the step's whole output; the two sets partition it
+ * exactly.
  */
 export function partitionCssOutput(output: FileSet): { compileInputs: FileSet; content: FileSet } {
   const groups = output.partition(name => (/\.(js|ts)$/i.test(name) ? "compileInputs" : "content"));

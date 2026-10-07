@@ -29,9 +29,9 @@
  * `expect`, `chalk` or `pretty-format` coexists with jest's copies exactly as a
  * project's `typescript` coexists with `TSC`.
  *
- * **The test installation** (the process's cwd) holds what the target itself
- * declared. Only one thing is read from there — `jsdom`, which supplies the DOM
- * environment — and deliberately so: an environment is the *target's* choice
+ * **The test installation** (the process's cwd is its compiled mount) holds
+ * what the target itself declared. Only one thing is read from there — `jsdom`,
+ * which supplies the DOM environment: an environment is the *target's* choice
  * and pin, not the runner's.
  */
 
@@ -46,7 +46,7 @@ import { atLeastNode } from "../testRunner/RunTests";
 const SUPPORTED_JEST_MAJORS = [29, 30];
 
 /** `module.registerHooks` — the seam for intercepting ESM edges — is 22.15/23.5
- * and up, and node 20 is end-of-life. */
+ * and up. */
 const MINIMUM_NODE = [22, 15] as const;
 
 const fromRunner = createRequire(__filename);
@@ -73,10 +73,11 @@ export function jestLibrary(name: string): unknown {
 }
 
 /**
- * Load a module from the TEST installation (the process's cwd) rather than the
- * runner's mount — how the DOM environment reaches jsdom, which the target
- * declares among its `test_deps`. Returns undefined if it isn't installed, so
- * the caller can say *which* dependency is missing and why it is wanted.
+ * Load a module from the TEST installation (resolved from the process's cwd,
+ * inside it) rather than the runner's mount — how the DOM environment reaches
+ * jsdom, which the target declares among its `test_deps`. Returns undefined if
+ * it isn't installed, so the caller can say *which* dependency is missing and
+ * why it is wanted.
  */
 export function userModule(name: string): unknown {
   try {
@@ -146,7 +147,7 @@ export function requireEnvironment(env: string, fromDocblock = false): void {
 /**
  * Everything under this directory is the runner's own machinery, not the code
  * under test: the load-time hoist skips it (a dependency merely *containing*
- * the token `jest.mock` must never be fed through babel) and `resetModules`
+ * the token `jest.mock` must never be fed through the transform) and `resetModules`
  * leaves it cached (evicting the runner from under itself is not what a test
  * asked for).
  */
@@ -156,8 +157,7 @@ export const RUNNER_ROOT = path.dirname(__dirname);
  * Whether a file is the code under test, as opposed to the runner's own
  * machinery or an installed dependency. Defined once because the hoist and
  * `resetModules` must agree on the boundary: the hoist transforms exactly the
- * code under test, and a reset evicts exactly the code under test — the two
- * drifting apart would be a subtle behavioural bug, not a style problem.
+ * code under test, and a reset evicts exactly the code under test.
  */
 export function isCodeUnderTest(root: string, filename: string): boolean {
   return (

@@ -106,12 +106,10 @@ export class SourceFileSource extends FSFileSource {
    * Write refreshed content back into the source tree — recorded test
    * expectations, a golden test's blessed output.
    *
-   * It lives here, on the source that owns the tree, for one reason that no
-   * other placement can supply: under watch these destinations are *inputs
-   * being watched*, so the write is an input change and would rebuild on its
-   * own. Only the object holding the tree's content identity can say "this
-   * change is mine, and its content is already what I just produced" — so the
-   * write and the suppression of its echo are the same object's business.
+   * Under watch these destinations are *inputs being watched*, so the write is
+   * an input change: this source records what it wrote and its content, and
+   * recognizes the resulting events as its own echo (see
+   * {@link isExpectedChange}) rather than arming a rebuild.
    *
    * The DECISION stays the driver's — only under `-u`, only after a green
    * build, and it is the driver that resolved each destination from the
@@ -212,9 +210,8 @@ export class SourceFileSource extends FSFileSource {
       .catch(err => {
         /* Gone since the event fired, or the path is a directory (a watch event
          * on a directory the tree gained — e.g. a served tool's own cache/output
-         * dirs): either way it is not a file, so treat it as absent, not an error
-         * (and never a sync throw into the watcher callback, as the old statSync
-         * could be). Mirrors the base FSFileSource.ingest. */
+         * dirs): either way it is not a file, so treat it as absent, not an error.
+         * Mirrors the base FSFileSource.ingest. */
         if (isNotFound(err) || isDirectoryError(err)) {
           this.dropIndexRow(filename);
           return undefined;

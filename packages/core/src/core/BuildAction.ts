@@ -93,7 +93,7 @@ export interface IBuildActionDefinition {
 /**
  * A build action: a build step plus its concrete (already-resolved) inputs —
  * the cacheable leaf a rule yields. Actions do not compose directly;
- * composition is via sub-targets (see ResolveContext.subTarget), so an action's
+ * composition is via sub-targets (see TargetContext.subTarget), so an action's
  * inputs are always plain data.
  *
  * Every member but {@link reshape} must reduce to a stable manifest, since the

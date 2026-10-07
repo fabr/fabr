@@ -18,27 +18,22 @@
  */
 
 /**
- * Where a test's recorded snapshots live. This is jest's own `snapshotResolver`
- * hook — a documented config option — which is exactly the seam fabr needs, so
- * the one wrinkle of compiling before running costs a config entry rather than
- * a patch.
+ * Where a test's recorded snapshots live: jest's own `snapshotResolver` hook, a
+ * documented config option.
  *
- * The wrinkle: the run works in COMPILED names (`Foo.test.js`) while the
- * checked-in record is named for the SOURCE (`Foo.test.tsx.snap`, jest's own
- * convention, ported untouched from an existing suite). The compiled file's own
- * `.js.map` says which source it came from, so the record is named from that —
- * a NEW record is created source-named too, not just an existing one matched.
- * That makes the name a function of the inputs rather than of what happens to be
- * on disk, and it is what lets everything downstream treat records as ordinary
- * source-named files.
+ * The run works in COMPILED names (`Foo.test.js`) while the checked-in record
+ * is named for the SOURCE (`Foo.test.tsx.snap`, jest's own convention). The
+ * compiled file's own `.js.map` says which source it came from, so the record
+ * is named from that — a NEW record is created source-named too, not just an
+ * existing one matched.
  *
  * Without a map (a release build emits none) it falls back to finding an
  * existing record by **stem** — one readdir — and failing that to the compiled
- * name, which is the best available and still matches on the next run.
+ * name, which still matches on the next run.
  *
  * Loaded by jest-config from a path, so it must be a plain CommonJS module with
  * no dependency on fabr's *core* at runtime — a sibling runner module is fine,
- * and is how runner.ts already reaches Report.
+ * and is how runner.ts reaches Report.
  */
 
 import * as path from "node:path";

@@ -222,9 +222,7 @@ export interface IConflictSide extends IConflictSource {
  * Two provenance-attributed sources supply the same `key` with different
  * content — a naming conflict. `kind` names what collides ("files", "catalog
  * entries", ...); both sides are attributed so whoever reports it (the driver)
- * can point at each. A single joint version-selection already coalesces two
- * versions of one package, so a package-name collision here is genuinely
- * distinct sources, not a version disagreement.
+ * can point at each.
  */
 export class ConflictError extends FabrError {
   public readonly left: IConflictSide;
@@ -255,7 +253,8 @@ function describeSide(source: IConflictSource): IConflictSide {
 /**
  * Rejection raised when the registry cannot supply the metadata needed to
  * continue a resolution walk (a fetch failure, an unpublished package) —
- * unlike a constraint violation, which is reported via Resolution.errors.
+ * unlike a constraint violation, which is reported as data on the
+ * MVSResolution (`violations`/`errors`).
  * Carries the failing package, the chain of requirers that first reached it
  * (nearest first; empty when the package is itself a root requirement), and
  * the root package name the chain leads back to — so a repository can

@@ -254,9 +254,7 @@ export abstract class ComputableSource<T> {
      * detach reversible. The async tail of a superseded evaluation (an orphaned
      * TreeQuery's enumeration, a watch batch's prepared update) routinely
      * completes after the detach; dropping it here discards the stale result —
-     * a reattach re-derives from current state. Without the guard a late settle
-     * would strand the node serving a stale value at zero dependants, and
-     * addDependant's Detached check would never reattach it. */
+     * a reattach re-derives from current state. */
     if (this.currentState === ComputableState.Detached) {
       return;
     }
@@ -276,8 +274,7 @@ export abstract class ComputableSource<T> {
    */
   protected revalidate(): void {
     /* Inert while Detached, like settle: revalidation restores a *settled*
-     * state and a detached node has none — the ternary below would otherwise
-     * mint a Valid out of nothing if a stray cascade brushed an orphan. */
+     * state and a detached node has none. */
     if (this.currentState === ComputableState.Detached) {
       return;
     }
@@ -508,9 +505,7 @@ export class Computable<T> extends ComputableSource<T> {
 
   private run(): void {
     /* Re-running supersedes the previous fn-result link: detach it, so the old
-     * inner subgraph (and any watches under it) unwinds once orphaned. This is the
-     * ONLY supersede point — resolveTo below keeps the current link attached so
-     * the inner re-settling (a source change flowing through) still re-delivers. */
+     * inner subgraph (and any watches under it) unwinds once orphaned. */
     this.unbind();
     const errors: Error[] = [];
     for (const dep of this.dependsOn) {

@@ -45,12 +45,11 @@ const INSTALL_MOUNTS = ["src", "build"];
  * Two corrections to the path a runner is handed. It should name what the user
  * wrote rather than the artifact that ran — fabr compiles ahead of the run, so
  * the file executed is `build/Foo.test.js` while the thing to point at is
- * `Foo.test.ts` — and the `.js.map` beside it records that authoritatively,
- * where a stem guess in the parallel source directory could not tell
- * `Foo.test.ts` from a `Foo.test.js` next to it. And the install's mount point
- * is not part of the name: a target whose `srcs` are `src:**` calls the file
- * `Foo.test.ts`, so reporting `src/Foo.test.ts` would be naming fabr's staging
- * rather than the target's own namespace.
+ * `Foo.test.ts` — and the `.js.map` beside it records that authoritatively (a
+ * stem guess in the parallel source directory cannot tell `Foo.test.ts` from a
+ * `Foo.test.js` next to it). And the install's mount point is not part of the
+ * name: a target whose `srcs` are `src:**` calls the file `Foo.test.ts`, not
+ * `src/Foo.test.ts`.
  *
  * Degrades rather than fails: no map (a release build emits none) leaves the
  * compiled name, which is still mount-stripped. Memoized because the node:test

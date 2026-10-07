@@ -252,7 +252,7 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     /* Both arms fire, deliberately. A bare-directory reference matches its own path, so
      * `mv elsewhere src` takes the literal arm — which ingests to `undefined`, a
      * directory being no file — and the subtree it just gained is found only by the
-     * rescan. Taking one arm or the other would miss one of the two cases. */
+     * rescan. */
     const matched = this.project(rel) !== undefined;
     if (matched) {
       this.files.set(rel, this.owner.ingest(rel));
@@ -482,9 +482,7 @@ export class FSFileSource implements FileSource {
   /**
    * Ensure the single source-tree subscription exists, then hand each filesystem change
    * to every registered query ({@link TreeQuery.applyEvent}), scheduling a (debounced)
-   * re-settle for each that claims it. @parcel/watcher's FSEvents backend delivers
-   * reliably under heavy load where chokidar silently dropped events (the reason for the
-   * switch). Pinned exact at >=2.5.0: 2.4.1 can deadlock natively when the kqueue
+   * re-settle for each that claims it. @parcel/watcher is pinned exact at >=2.5.0: 2.4.1 can deadlock natively when the kqueue
    * fallback races a failing FSEvents start (upstream #187, fixed by #189 in 2.5.0;
    * the wedged process ignores every signal but SIGKILL).
    */
@@ -685,7 +683,7 @@ function subscribeWithFallback(
 }
 
 /** Normalise an OS path to forward slashes so glob matching and FileSet names
- * are platform-independent (matching chokidar's old behaviour). */
+ * are platform-independent. */
 function toPosix(p: string): string {
   return p.split(path.sep).join("/");
 }

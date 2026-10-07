@@ -22,9 +22,7 @@
  * The split this file marks: a specifier's PACKAGE is decided by the dependency
  * table (which is composition — who may see whom), and everything below the
  * package root is decided by the package itself. `exports` is where a package
- * writes that down, so it belongs on the resolver's side of the seam and not in
- * whatever compiler happens to be driven — a name that names nothing must fail
- * identically in tsc, in Sass and in esbuild.
+ * writes that down.
  *
  * Pure and fs-free by construction: it takes the parsed manifest value and
  * answers with a package-relative path. Everything filesystem-shaped (finding
@@ -152,8 +150,6 @@ export function resolveImportsAll(imports: ExportsValue, specifier: string, cond
  * occurs — a more specific key may intercept the name (`./aa*` shadowing what
  * `./a*` derived), a broader key may name a subpath a narrower `null` has
  * blocked, and a key with two wildcards expands to a name that matches nothing.
- * A name a consumer cannot resolve is worse than no name at all, because the
- * caller has an honest fallback and a shipped declaration does not.
  *
  * Keys are tried most-specific first, so among the names that do round-trip the
  * answer is the tightest one, and deterministic.
@@ -202,9 +198,7 @@ function isMap(value: ExportsValue): value is { readonly [key: string]: ExportsV
  * (or which is not a map at all) is sugar for the main entry: `"exports":
  * "./index.js"` and `"exports": { "import": … }` both describe `.` alone.
  *
- * Mixing the two is reported rather than declined: no reading of it can be what
- * the author meant, and answering "not exported" would send the consumer
- * looking for a mistake in their own import. Unvalidated, it is read as the
+ * Mixing the two is reported rather than declined. Unvalidated, it is read as the
  * TypeScript compiler reads it: its `"."` entry answers for the package itself,
  * and no other subpath resolves.
  */
@@ -251,9 +245,8 @@ function matchSubpath(map: ReadonlyMap<string, ExportsValue>, subpath: string, f
   }
   let best: (IMatch & { key: string }) | undefined;
   for (const [key, target] of map) {
-    /* Only a pattern expands. A key without a `*` names one subpath and was
-     * already offered above, so letting it through here would re-admit the
-     * spellings that guard exists to refuse. */
+    /* Only a pattern expands; a key without a `*` names one subpath, offered
+     * above. */
     if (!key.includes("*")) {
       if (folders && key.endsWith("/") && subpath.length > key.length && subpath.startsWith(key)) {
         if (best === undefined || compareKeys(key, best.key) < 0) {

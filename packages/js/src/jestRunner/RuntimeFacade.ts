@@ -23,17 +23,14 @@
  * Circus's adapter is written against `jest-runtime` — but it only ever calls
  * **eleven methods** on it, and needs **four members** of the environment. This
  * module is those, backed by node's real module system and fabr's own mock
- * registry. That substitution is the whole hybrid: circus gets the framework it
- * expects, while modules load through node, so `require(esm)` keeps working and
- * every capability node gains arrives for free.
+ * registry: circus gets the framework it expects, while modules load through
+ * node, so `require(esm)` keeps working.
  *
- * The surface is measured, not guessed, and it is stable: identical across jest
- * 27.5.1 → 29.7.0, gaining only `enterTestCode`/`leaveTestCode` in 30 — which
- * are pure bookkeeping in the real Runtime (`this.state = 'inTest'`) and so are
- * honestly no-ops here. Nothing has been removed across four majors.
+ * `enterTestCode`/`leaveTestCode` (jest 30) are pure bookkeeping in the real
+ * Runtime (`this.state = 'inTest'`) and so are no-ops here.
  *
- * If a future circus calls something absent here, it fails loudly and
- * immediately — a TypeError on the first test — rather than degrading quietly.
+ * A circus that calls something absent here fails loudly and immediately — a
+ * TypeError on the first test — rather than degrading quietly.
  */
 
 import { MockRegistry } from "./Registry";
@@ -87,8 +84,7 @@ export function makeRuntimeFacade(registry: MockRegistry, mocker: IMockerControl
     restoreAllMocks: () => mocker.restoreAllMocks(),
 
     /* Always false: fabr compiles tests to CommonJS, and an ESM-only dependency
-     * is reached through node's `require(esm)` rather than jest's ESM path —
-     * which is precisely the capability jest's own vm loader lacks. */
+     * is reached through node's `require(esm)` rather than jest's ESM path. */
     unstable_shouldLoadAsEsm: () => false,
     unstable_importModule: (request: string) => import(request),
 

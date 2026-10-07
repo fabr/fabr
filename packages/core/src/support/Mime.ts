@@ -19,7 +19,7 @@
 
 /*
  * Content classification by magic bytes — the home of {@link IFile.mime}'s
- * vocabulary and the one place that knows a format's signature. Deliberately
+ * vocabulary and the one place that knows a format's signature. Keep it
  * import-free: classification is consulted from the lowest layers (file
  * hashing, the cache store), which must not drag stream/unpack machinery into
  * their import graphs.

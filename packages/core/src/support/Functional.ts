@@ -21,11 +21,9 @@ import { Computable, ComputableSource } from "../core/Computable";
 
 /**
  * Map each item and keep only the defined results — `map` then drop `undefined`
- * in one pass. The typed primitive for the map-and-filter idiom, so the result
- * is `U[]` (not `(U | undefined)[]` needing a narrowing filter, nor the
- * obscure `flatMap` returning `[x]`/`[]`). A `fn` returning `undefined` selects
- * the item out; any side effect it performs on that path (e.g. logging the
- * reason) still runs.
+ * in one pass, typed as `U[]`. A `fn` returning `undefined` selects the item
+ * out; any side effect it performs on that path (e.g. logging the reason)
+ * still runs.
  */
 export function select<T, U>(items: Iterable<T>, fn: (item: T) => U | undefined): U[] {
   const result: U[] = [];

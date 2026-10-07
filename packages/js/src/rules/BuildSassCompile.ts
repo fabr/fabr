@@ -27,9 +27,9 @@
  * scoping and shims are the css_postcss step's, which consumes this step's
  * output. The compiler is a build *tool*, independent of what it lowers,
  * so it is resolved apart as the SASS_DRIVER runnable (fabr's own Sass
- * driver, declared in JS.fabr — the TSC precedent) and mounted under a tool dir
+ * driver, declared in JS.fabr) and mounted under a tool dir
  * (its deps must not collide with — nor be visible to — the styled tree). The
- * driver runs with cwd at the working root and yields the generic `exec` action
+ * driver runs with cwd at the working root and yields the `js:exec` action
  * (output: `out/**`).
  */
 

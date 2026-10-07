@@ -34,8 +34,7 @@ const DIAG_PUBLISH_SKIPPED = Diagnostic.Warn<{ destination: string; blockedBy: s
  * upload fails does not abort the rest, but its dependants are skipped rather
  * than published dangling (matched via the carriers' `provides`/`dependsOn`
  * tokens), and any member that didn't land makes the overall sync a failure so
- * the process exits non-zero. Uploads run sequentially — a registry is happier
- * not being hammered with concurrent writes.
+ * the process exits non-zero. Uploads run sequentially.
  */
 export function publishSync(execution: ExecutionContext, members: ReadonlyArray<PublishableFileSet>): Computable<void> {
   const unavailable = new Set<string>(); /* tokens provided by members that failed or were skipped */

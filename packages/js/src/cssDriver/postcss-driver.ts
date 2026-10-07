@@ -100,13 +100,11 @@ type IPostcssModules = (options: IModulesOptions) => unknown;
  * The JS shim for a css-module: the class-name map as an ES module, plus a
  * side-effect import of the stylesheet it belongs to.
  *
- * The import is deliberate and is what every css-modules toolchain emits — it is
- * how a bundler learns the CSS belongs in the output, and how a test runner's
- * asset stub knows to ignore it. Emitted as ESM because the shim is an ordinary
- * compile INPUT, not a delivered artifact: tsc restates it in whatever module
- * system the compile emits, so a dual package gets both copies for free and the
- * stylesheet import goes through the same specifier machinery as everything
- * else.
+ * The import is how a bundler learns the CSS belongs in the output, and how a
+ * test runner's asset stub knows to ignore it. Emitted as ESM: the shim is a
+ * compile INPUT, not a delivered artifact, so tsc restates it in whatever module
+ * system the compile emits and the stylesheet import goes through the same
+ * specifier machinery as everything else.
  */
 export function cssModuleShim(cssName: string, tokens: Record<string, string>): string {
   const basename = cssName.split("/").pop() ?? cssName;
@@ -268,10 +266,8 @@ async function processFile(source: IPostcssSource, options: IPostcssOptions, too
           getJSON: (_file: string, json: Record<string, string>): void => {
             exported = json;
           },
-          /* Both spellings, literal and camelCase. Not a fabr invention: it is
-           * what a Sass-and-css-modules project's sources are written against
-           * (`.header-bar` read as `styles.headerBar`), and the alternative is
-           * that those reads are silently `undefined`. */
+          /* Both spellings, literal and camelCase (`.header-bar` read as
+           * `styles.headerBar`). */
           localsConvention: "camelCase",
           resolve: (file: string, importer: string): string =>
             resolveComposePath(table, options.srcRoot, file, importer || inputPath, options.depsDir),

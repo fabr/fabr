@@ -170,8 +170,7 @@ export class RepositoryGroup<V, C>
     private readonly context: TargetContext,
     /** The domain's shared format — every member holds this same instance
      * (registry members by the homogeneity check, content members by
-     * construction), so the factory passes it explicitly rather than having
-     * the group trust whichever member happens to be first. */
+     * construction). */
     public readonly format: PackageFormat<V, C>,
     private readonly routes: Route<V, C>[]
   ) {}
@@ -190,10 +189,8 @@ export class RepositoryGroup<V, C>
   /**
    * Publishing is pure pass-through: the routed member vends its own ref
    * (validating the address shape itself), so the sync binds directly to the
-   * destination registry — `BuildSync` already partitions a release by
-   * destination and drives each one's package/publish, which is the only
-   * "multi-registry" work a group could have added. A member without the vend
-   * (a content route) is refused here, routes listed.
+   * destination registry (`BuildSync` partitions a release by destination). A
+   * member without the vend (a content route) is refused here, routes listed.
    */
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
     const member = this.memberFor(name.getLiteralPathPrefix());
@@ -439,7 +436,7 @@ interface ContentRoute {
  * `npm_repository` declares), and not itself a group. Any other value is a
  * **content route** — the value IS the one package the key names
  * (`amperize = @dl:amperize.tgz:*:**;`, or a local directory), served by the
- * format's single-package member ({@link ContentPackageMember}): its version and requirements are read
+ * format's single-package member ({@link contentPackageMember}): its version and requirements are read
  * from the ecosystem's manifest inside the content, so it joins the domain's
  * joint resolution exactly as a registry-served package does.
  */

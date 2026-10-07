@@ -21,19 +21,10 @@
  * The delivered package graph as a **Yarn PnP manifest** — composition as a
  * table instead of a tree.
  *
- * Walk-up resolution couples a package's environment to its location: one mount
- * per instance forces one environment per instance, so either the environment
- * moves into the mount (edge-keyed trees, which fork physical copies per
- * context) or it comes from the surroundings (the old hoisted install, which
- * forgave undeclared edges by accident). A table breaks the coupling: a
- * package's tree is content-named, mounted once, and *what it sees* is a row
- * here.
- *
- * The format is Yarn's rather than fabr's own because the seams already exist —
- * esbuild reads `.pnp.data.json` natively, the `@yarnpkg/sdks` route feeds
- * tsserver, and a node loader is generated rather than written. tsc is the one
- * missing seam and fabr owns its invocation, hence the tsc driver
- * (tscDriver/tsc-driver.ts) rather than a patched compiler.
+ * A package's tree is content-named and mounted once; *what it sees* is a row
+ * here. The format is Yarn's: esbuild reads `.pnp.data.json` natively, and the
+ * tsc driver (tscDriver/tsc-driver.ts) reads it for a compiler that has no PnP
+ * support of its own.
  *
  * PnP is package-granular: the table answers "which directory is this package
  * here", and the file part of a specifier (`main`/`types`/extensions) is
@@ -149,9 +140,7 @@ export function assertOnePackagePerName(directDeps: ReadonlyArray<FileSet>): voi
  * `directDeps` (packages only — a Flag or a loose FileSet has no row).
  *
  * The sources being compiled are the top-level package (`packageLocation:
- * "./"`), so they see exactly what was declared and nothing else — the
- * undeclared-transitive rule the scoped layout enforced positionally, now
- * enforced by the table.
+ * "./"`), so they see exactly what was declared and nothing else.
  *
  * **Fallback is on, and holds the compilation's declared direct deps.** A
  * delivered package that imports something it never declared — a peer its
@@ -314,26 +303,16 @@ function selfPackageRow(
 }
 
 /**
- * A package's **reference**: its label in this table, minted from the identity
- * idiom the engine already uses for a package node — content hash, edge targets
- * by id, override flag ({@link packageNodeSignature}).
+ * A package's **reference**: its label in this table, the hash of the package
+ * node's identity — content hash, edge targets by id, override flag
+ * ({@link packageNodeSignature}).
  *
  * NOT the content digest, which is the *location's* identity: two instances can
- * hold identical bytes and still resolve differently — a republished version
- * whose content never changed, coexisting under a `?` divergence, or one
- * package bound to different versions of a requirement by different requirers.
- * Those must be separate rows with separate dependency tables, and keying on
- * content alone would collapse them onto one, handing half their requirers a
- * table that is not theirs. Content is what a package IS; content plus edges is
- * what a package is HERE.
- *
- * Hashed rather than carried verbatim: a reference is repeated in every
- * dependency entry that names the package, so raw signatures would multiply
- * through the document and escape badly in JSON. Memoized per instance —
- * module-scoped but keyed by the object, so it is a pure-function cache, not
- * state; instances sharing an id share a signature
- * ({@link assertSamePackageNode}), so the value is per-node even though the
- * memo is per-instance.
+ * hold identical bytes and still resolve differently (a republished version
+ * whose content never changed, or one package bound to different versions of a
+ * requirement by different requirers), and those are separate rows with
+ * separate dependency tables. Memoized per instance; instances sharing an id
+ * share a signature, so the value is per-node.
  */
 const REFERENCES = new WeakMap<PackageFileSet, string>();
 
@@ -428,17 +407,11 @@ function dependencyList(
 
 /**
  * Where a package's files are staged, relative to the working directory: its
- * tree under the pool mount.
- *
- * The tree's name is the package's content digest — the same hex string the
- * FileSet carries, that a package node's signature quotes, and that the cache
- * derives the tree from ({@link BuildCache.ensureTree}) — so a pool directory
- * traces back to whatever named it with nothing to un-salt on the way. Its
- * being content alone is what makes a tree context-free: composition is this
- * table, so the same bytes are one directory however many environments deliver
- * them, and no package is ineligible, a workspace-built one included. Were the
- * tree format ever to change, the version belongs in the pool PATH — one
- * renamed directory for the whole format — not in every name.
+ * tree under the pool mount, named by the package's content digest — the same
+ * hex string the FileSet carries, that a package node's signature quotes, and
+ * that the cache derives the tree from ({@link BuildCache.ensureTree}). A tree
+ * is content alone, so the same bytes are one directory however many
+ * environments deliver them.
  */
 export function treeMountOf(pkg: PackageFileSet): string {
   return `${TREE_MOUNT}/${pkg.toManifestHash()}`;

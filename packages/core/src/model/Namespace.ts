@@ -144,7 +144,7 @@ export class Namespace {
         /* One row per NAME: this documents the configuration surface, so a
          * property declared once per platform is still one property. The first
          * declaration represents it (a default only if nothing else declares
-         * it), which is what "the effective set" meant before guards, too. */
+         * it). */
         const first = item.decls[0] ?? item.defaults[0];
         if (first) {
           result.push({ name: qualified, decl: first });
@@ -158,7 +158,8 @@ export class Namespace {
    * Given a Name, return the first target or prop that can be identified
    * as a prefix of the Name.
    * Note this requires the name to have a literal prefix.
-   * @return the target or prop whose name forms a prefix of the
+   * @return the target or prop whose name forms a prefix of the name, or the
+   * fallback of the namespace the name reaches; undefined if neither.
    */
   public getPrefixMatch(name: Name): IPrefixMatch | undefined {
     const literalPrefix = name.getLiteralPathPrefix();
@@ -205,8 +206,6 @@ export class Namespace {
 
   /**
    * @return the decl with the given name, or undefined if there is no such decl.
-   * @param name
-   * @returns
    */
   public getDecl(name: string): ITargetDecl | IPropertyEntry | INamespaceDecl | undefined {
     const parts = name.split(NAME_COMPONENT_SEPARATOR);

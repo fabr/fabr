@@ -23,8 +23,6 @@
  * scoping. Beside each stylesheet it writes the source map, where the build
  * carries maps, and nothing else — shims and declarations belong to the
  * css_postcss step, which names them after the stylesheets it publishes.
- * `loadedUrls` is captured (the depfile hook for future discovered-deps) but
- * unused for now.
  *
  * **The driver names nothing.** Every output path arrives in the options
  * document; this file writes what it is told to.
@@ -104,8 +102,6 @@ async function processFile(source: ISassSource, options: ISassOptions, tools: IS
   let css: string;
   let map: IRawSourceMap | undefined;
   try {
-    /* loadedUrls is available on `result` for future discovered-deps;
-     * intentionally unused for now. */
     const lowered = await tools.compiler.compileAsync(inputPath, {
       loadPaths: options.loadPaths,
       importers: tools.importers,
@@ -151,10 +147,7 @@ export async function main(argv: string[]): Promise<void> {
   const importers = resolver ? [pnpImporter().sassPnpImporter({ pnpApi: resolver })] : undefined;
   const compiler = await sass.initAsyncCompiler();
   try {
-    /* Sequential for now — correctness first; the warm compiler already
-     * amortizes startup.
-     *
-     * Sass partials (`_foo.scss`) are absent from this list by construction:
+    /* Sass partials (`_foo.scss`) are absent from this list by construction:
      * they exist to be `@use`d/`@import`ed and fail compiled on their own, so
      * the rule names no outputs for them. They are still STAGED, because the
      * stylesheets that include them need them on disk. */

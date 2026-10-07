@@ -254,18 +254,17 @@ export function findExecutable(name: string): string {
  * plain spawn): each step's process is spawned detached, leading its own group,
  * and when it exits the group is swept — SIGTERM immediately (a straggler that
  * cleans its own children on TERM, like a supervised watcher, gets to), SIGKILL
- * after a grace. This makes the step boundary a real containment boundary: fabr
- * must not rely on the tools — or a test suite's code — being well behaved, and
- * anything a step leaves running would otherwise leak as an orphan (and, by
- * holding the step's output pipes open, could hang the build waiting for a
- * stream close that never comes; the sweep is what forces those pipes shut).
- * Only a child that starts its *own* session escapes the sweep — the TERM'd
- * parent cleaning up behind itself is the recovery there.
+ * after a grace. The step boundary is a containment boundary: anything a step
+ * leaves running is swept rather than leaking as an orphan (one holding the
+ * step's output pipes open would otherwise hang the build waiting for a stream
+ * close that never comes; the sweep forces those pipes shut). Only a child
+ * that starts its *own* session escapes the sweep — the TERM'd parent cleaning
+ * up behind itself is the recovery there.
  *
- * Because a detached step no longer sits in the terminal's foreground group,
- * Ctrl-C stops reaching it directly — the driver compensates by routing its own
- * termination signals through `process.exit`, which fires {@link sweepAllGroups}
- * from the exit hook installed here.
+ * A detached step does not sit in the terminal's foreground group, so Ctrl-C
+ * does not reach it directly — the driver routes its own termination signals
+ * through `process.exit`, which fires {@link killLiveChildren} from the exit
+ * hook installed here.
  *
  * The sweep signals the group by the (exited) leader's pid; POSIX keeps that
  * pgid reserved while any member survives, so the signal is precise whenever
@@ -295,8 +294,7 @@ function trackGroup(pid: number | undefined): void {
   }
   if (!exitSweepInstalled) {
     exitSweepInstalled = true;
-    /* Fabr is dying: no grace — guaranteeing no orphans outranks giving a
-     * straggler a graceful window (same rationale as the run supervisor). */
+    /* Fabr is dying: no grace. */
     process.on("exit", killLiveChildren);
   }
   liveGroups.add(pid);
@@ -366,8 +364,8 @@ function sweepGroup(pid: number | undefined): Computable<void> {
   }
   /* Something survived the step. TERM was just delivered; poll until the group drains,
    * escalating to KILL at the grace (a natively-wedged process handles no signal but
-   * KILL). The timers are deliberately NOT unref'd — the step's outcome now waits on
-   * this, so it must hold the loop open. The group stays registered throughout, so a
+   * KILL). The timers are NOT unref'd: the step's outcome waits on this, so it must
+   * hold the loop open. The group stays registered throughout, so a
    * concurrent fabr exit still KILLs it via the exit hook. */
   return Computable.fromOnce<void>(resolve => {
     const deadline = Date.now() + SWEEP_KILL_GRACE_MS;
@@ -416,7 +414,7 @@ function commandLine(cmd: string, args: string[]): string {
  * `ActionContext.processLimit`): the slot is acquired around exactly the
  * process lifetime, so boundedness is enforced by this signature — there is no
  * unbounded way to run a build process. The interactive spawns below take no
- * limit, deliberately: the user's foreground program is not build parallelism.
+ * limit: the user's foreground program is not build parallelism.
  */
 export function execute(
   limit: Semaphore,
@@ -614,16 +612,16 @@ function pipelineUnbounded(
     let settled = false;
     let remaining = specs.length;
 
-    /* Pipefail teardown kills each stage's whole GROUP (the stages are group
-     * leaders now), so a driver that doesn't forward signals to its own children
-     * no longer leaves them briefly orphaned. An exited stage is signalled too:
-     * its own sweep may still be within its KILL grace, and a dissolved group is
-     * a swallowed ESRCH. */
+    /* Pipefail teardown kills each stage's whole GROUP (each stage is a group
+     * leader), so a stage that doesn't forward signals to its own children
+     * does not leave them orphaned. An exited stage is signalled too: its own
+     * sweep may still be within its KILL grace, and a dissolved group is a
+     * swallowed ESRCH. */
     const killAll = (): void => procs.forEach(p => killProcessGroup(p, "SIGTERM"));
-    /* The sweeps of stages that have exited. Deliberately only the *started* ones: a
-     * stage still running is TERM'd by killAll and left to the exit hook exactly as
-     * before, since waiting on a process that may never exit would trade debris for a
-     * hang. Empty or already-settled ⇒ the outcome is delivered in line. */
+    /* The sweeps of stages that have exited — only those: a stage still running
+     * is TERM'd by killAll and left to the exit hook (waiting on a process that
+     * may never exit would hang). Empty or already-settled ⇒ the outcome is
+     * delivered in line. */
     const sweeps: Computable<void>[] = [];
     const afterSweeps = (deliver: () => void): void => {
       Computable.forAll(sweeps.slice(), () => undefined).once(deliver, deliver);
@@ -827,9 +825,9 @@ function trackInteractive(child: ChildProcess): void {
   if (!interactiveExitHookInstalled) {
     interactiveExitHookInstalled = true;
     /* Fabr is leaving: the program it launched goes with it. Hard (SIGKILL) and
-     * synchronous because an exit hook can neither wait nor escalate — the same
-     * rationale as the run supervisor's stop, and the reason the signal path
-     * below gives the program its graceful window *before* fabr exits. By pid,
+     * synchronous, because an exit hook can neither wait nor escalate (the
+     * signal path below gives the program its graceful window *before* fabr
+     * exits). By pid,
      * not by group: this child shares fabr's own process group (it must, to stay
      * in the terminal's foreground and read stdin), so the group form would
      * signal fabr itself; a program that forks its own workers is supervised by
@@ -947,10 +945,9 @@ export function executeInteractive(
  * program that forks its own workers (every real dev server does) puts them in
  * that group, and {@link killProcessGroup} then tears the whole tree down as a
  * unit rather than orphaning the workers. (The child is *not* unref'd — the
- * supervisor still tracks it and waits on its exit.) One consequence of the new
- * session: the controlling terminal no longer delivers Ctrl-C straight to the
- * child — only fabr receives it, and the supervisor forwards it to the group,
- * which is exactly the supervision we want.
+ * supervisor still tracks it and waits on its exit.) In its own session the
+ * child does not receive the controlling terminal's Ctrl-C — only fabr does,
+ * and the supervisor forwards it to the group.
  */
 export function spawnInteractive(cmd: string, args: string[], cwd?: string, env?: Record<string, string>): ChildProcess {
   return spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd, env, detached: true });

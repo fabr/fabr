@@ -55,7 +55,7 @@ export interface IResolutionOrigin<V> extends IProvenanceStep {
  * name is simply a two-component prefix). Purely positional: the selections
  * carry every name in the closure, so no ecosystem naming convention is
  * needed. Undefined when nothing owns it — e.g. a path mounted under a
- * dependency *alias*, which is deliberately not a resolution name.
+ * dependency *alias*, which is not a resolution name.
  */
 function owningSelection<V>(selections: Selected<V>[], path: string): Selected<V> | undefined {
   let best: Selected<V> | undefined;

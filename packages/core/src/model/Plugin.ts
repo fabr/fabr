@@ -26,15 +26,13 @@ import { INSTALLED_FROM } from "../rules/FabrHome";
 import { PluginContribution } from "../rules/Types";
 import { FabrError } from "../core/Errors";
 
-/** The package a plugin must share with its host, never load a second copy of. */
-
 /**
  * The shape a plugin package's entry point must export: `activate` is a pure
- * function that RETURNS the plugin's contribution (rules, repositories, include
- * dirs) — it performs no global registration and takes no arguments. It reaches
- * the host's facilities by importing `@fabr-build/core` directly; the single-copy
- * invariant (a plugin shares the host's core instance, never a second copy) is
- * what makes that sound. The full plugin contract is documented in PLUGINS.md.
+ * function that RETURNS the plugin's contribution (rules, repositories, included
+ * `.fabr` files) — it performs no global registration and takes no arguments. It
+ * reaches the host's facilities by importing `@fabr-build/core` directly, and
+ * must share the host's core instance, never a second copy. The full plugin
+ * contract is documented in PLUGINS.md.
  */
 interface IFabrPluginModule {
   activate?: () => PluginContribution | undefined;

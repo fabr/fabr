@@ -21,7 +21,7 @@
  * The driver's incremental planning: everything between "these names changed"
  * and "compile exactly this".
  *
- * The division of facts is the design: fabr's native facts are bytes and
+ * The division of facts: fabr's native facts are bytes and
  * hashes, so fabr diffs the staged inputs against its own manifest triples and
  * hands over two name lists. Everything *graph*-shaped — which change reaches
  * what, which file roots global scope, what an addition can re-bind, which
@@ -373,8 +373,7 @@ export function mergeMemo(base: DriverMemo, deleted: Iterable<string>, learned: 
 }
 
 /** A diagnostic, structured — so a caller can compare two runs' outcomes
- * without parsing rendered text. The human rendering is unchanged and still
- * goes to stdout. */
+ * without parsing rendered text. The human rendering goes to stdout. */
 export interface IDriverDiagnostic {
   file?: string;
   code: number;

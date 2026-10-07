@@ -116,10 +116,8 @@ const SNAPSHOT_BELONGS_TO = parseName(`**/${SNAPSHOT_DIR}/*.snap`).withRenameTo(
  * `setupTests.js` convention, and the usual home for environment polyfills and
  * suite-wide mocks.
  *
- * A convention rather than a property, deliberately for now: it is one file
- * per target and it is already an ordinary source (so it compiles with the
- * tests, may be TypeScript, and may use the test globals), which leaves a
- * declaration with nothing to say that the name doesn't.
+ * A convention, not a property: the file is an ordinary source, so it
+ * compiles with the tests, may be TypeScript, and may use the test globals.
  */
 const SETUP_STEM = "setupTests";
 
@@ -262,8 +260,7 @@ export function compileAndRunTests(context: TargetContext, framework: ITestFrame
            * that format: the override is then a different SPELLING of the same
            * target (`es2020` formats back as `es2020-commonjs-node`), which
            * parses identically, yields an identical tsconfig, and so shares the
-           * one compile by cache key. Guarding it would trade that no-op for a
-           * special case.
+           * one compile by cache key.
            *
            * Built as the package would build it, stylesheets included — a test
            * importing one gets the CSS the package ships, not raw Sass. */
@@ -435,18 +432,16 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
     const runtime = FileSet.unionAll(compiledTree, stripPackageJson(run.copied), run.resources);
     /* Laid out AS THE COMPILE LAID IT OUT — output under `build/`, sources under
      * `src/` — because each `.js.map` names its source relative to that pairing
-     * (`../../src/foo.ts`). Re-rooting the output at the install root, as this
-     * did, left every one of those paths resolving outside the install: node
-     * still mapped stack frames to `foo.ts` (the positions are in the map) but
-     * nothing could READ that file, so jest's code frame — which loads the file
-     * the top frame names — silently rendered nothing. `node_modules` and
-     * `package.json` stay at the root, where node's walk-up finds them from
-     * `build/` just as well.
+     * (`../../src/foo.ts`). Re-rooting the output at the install root leaves
+     * every one of those paths resolving outside the install: node still maps
+     * stack frames to `foo.ts` (the positions are in the map) but nothing can
+     * READ that file, so jest's code frame — which loads the file the top frame
+     * names — silently renders nothing. `node_modules` and `package.json` stay
+     * at the root, where node's walk-up finds them from `build/` just as well.
      *
      * `build/` is ALSO the working directory (see the test-run action): a test's paths —
      * `./x` from cwd or `__dirname`-relative alike — then mean what they mean in
-     * the source tree, since the compiled tree mirrors it. Staging resources
-     * anywhere else forced the declaration to re-encode fabr's layout. */
+     * the source tree, since the compiled tree mirrors it. */
     const staged = FileSet.layout({
       node_modules: [run.nodeModules, selfMount(run.packageName)],
       [RUNNER_STAGE_DIR]: [run.runner],
@@ -488,13 +483,10 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
       : [TEST_REPORT_FILENAME];
     /* Under `update` the runner REWRITES the recorded files it was given, so
      * those inputs must be staged as writable copies. The DECLARED
-     * `expectations` are that set — not whatever happens to sit in a
-     * `__snapshots__` directory, which made updatability a property of a path
-     * rather than a statement (and silently gave a runner recording elsewhere
-     * nothing to update). Everything else is staged
-     * as a hardlink into the content store, where the blob is read-only — which
-     * is the protection working, not a limitation to route around: writing
-     * through such a link would corrupt the entry every other build shares. */
+     * `expectations` are that set, not whatever happens to sit in a
+     * `__snapshots__` directory. Everything else is staged as a hardlink into
+     * the content store, where the blob is read-only: writing through such a
+     * link would corrupt the entry every other build shares. */
     const records = run.update ? run.expectations : EMPTY_FILESET;
     /* The action stages by INSTALL name, so the writable set is the same records
      * seen through the mount; the comparison below wants them in the compiled
@@ -509,9 +501,6 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
   });
 }
 
-/** The files a runner may rewrite: the recorded expectations, by the same
- * `__snapshots__/*.snap` convention the run's outputs are collected under.
- * Named in the compiled tree's namespace, like everything it is matched against. */
 /**
  * Split the run's output into what the target delivers and what it offers: the
  * report is the content, and each refreshed snapshot file is paired with the
@@ -545,11 +534,9 @@ function reshapeTestResult(result: FileSet, tests: FileSet, recorded: FileSet): 
  *
  * A record the run reproduced unchanged is **not offered at all**: `recorded`
  * is the staged input it was given, and both sides are already hashed, so
- * changed-ness is decided here in the build's own terms rather than
- * rediscovered by reading the user's file at write time. What comes out is
- * therefore exactly the set of real changes — which is what lets the write
- * itself be unconditional, and what keeps a no-op update run from touching the
- * tree (so, under watch, producing no event to have to recognize).
+ * changed-ness is decided here. What comes out is exactly the set of real
+ * changes, so the driver's write is unconditional and a no-op update run never
+ * touches the tree.
  */
 export function snapshotWriteBacks(snapshots: FileSet, tests: FileSet, recorded: FileSet): IWriteBackCandidate[] {
   const byStem = new Map<string, IFile>();
@@ -566,8 +553,7 @@ export function snapshotWriteBacks(snapshots: FileSet, tests: FileSet, recorded:
     /* An exact name match first — fabr's own runner names a record for the
      * source (see SnapshotResolver), so this is the ordinary path. The stem
      * fallback keeps the contract honest for a runner that names records after
-     * the compiled file it ran, which is jest's own default and so a perfectly
-     * conforming thing to do. Either way the record is REKEYED to the source
+     * the compiled file it ran, which is jest's own default. Either way the record is REKEYED to the source
      * name here, which is what makes the correspondence a pure naming rule the
      * driver can apply without knowing anything about snapshots. */
     const file = byName.get(snapshotNameFor(name)) ?? byStem.get(stripExtension(name));

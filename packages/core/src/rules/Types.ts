@@ -47,9 +47,6 @@ export enum PropertyType {
  * into the tsconfig *inside* the exec action's `files`). The manifestability
  * constraint is the action role's alone; a sub-target must instead satisfy the
  * ordinary target contract — its inputs make sense as properties on their own.
- * Deliberately a flat bag: a sub-target is not an action, so the action struct's
- * key-role partition means nothing here — the seam where roles are assigned is
- * where a rule builds a BuildAction from resolved values.
  */
 export type SubTargetInput = string | string[] | Name | Name[] | FileSource | FileSource[] | PropertyMap | CommandValue;
 export type SubTargetInputs = Record<string, SubTargetInput>;
@@ -83,8 +80,7 @@ export type RepositoryProvider = (context: TargetContext) => Computable<Reposito
  * admit, contributed to a build by core or a plugin. Omit `type` for a *default*
  * rule — the type-dimension wildcard, selected for any target type that has no
  * more specific rule of its own. The BuildModel indexes these into its rule
- * tables; a future language surface for defining rules would contribute the same
- * shape.
+ * tables.
  *
  * A rule is selected as a guarded declaration is: every pattern must match the
  * value of the property it names (a glob, as in `srcs<TARGET=*-linux-*>`), and

@@ -191,9 +191,7 @@ function validatePropertyShape(prop: IPropertyDecl, type: PropertyType, log: Log
  * Validate a targetdef's own schema: each property's `default` values are
  * checked against the declared type exactly as a written property's would be —
  * at load, whether or not any target ever takes the default (the same
- * discipline as a default target: declared ⇒ validated). Without this, a
- * malformed default surfaces only when some target omits the property, as a
- * resolution error far from the mistake.
+ * discipline as a default target: declared ⇒ validated).
  */
 export function validateTargetDef(decl: ITargetDefDecl, log: Log): boolean {
   let isValid = true;
@@ -213,7 +211,7 @@ export function validateTargetDef(decl: ITargetDefDecl, log: Log): boolean {
  * schema — a rename's own rules read only the written name, so the parser has
  * already enforced them.
  *
- * A command value is deliberately NOT rejected here: a pipeline may be defined in
+ * A command value is NOT rejected here: a pipeline may be defined in
  * a standalone property and *referenced* into a target's COMMAND property (the
  * "chase"), so whether it lands in a COMMAND slot is only knowable at resolution
  * — an invalid placement is caught by the resolution-time backstop, not statically.

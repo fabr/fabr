@@ -874,8 +874,7 @@ export class BuildCache {
    * so publish dependencies before dependents.
    */
   public ensureTree(files: FileSet): Computable<string> {
-    /* Memoized on the FileSet, so a hit costs the lookup and an existsSync —
-     * which is why nothing here needs deferring behind a thunk. */
+    /* Memoized on the FileSet, so a hit costs the lookup and an existsSync. */
     const key = files.toManifestHash();
     const entry = path.resolve(this.treeRoot, key);
     if (fs.existsSync(entry)) {
@@ -1212,8 +1211,8 @@ export class BuildCache {
    *
    * `current` is resolved ONCE and every part read from the resolved
    * generation, so a concurrent swap cannot pair two builds' parts; no
-   * `current` (never recorded, a crash before the first swap, or a record in
-   * the old one-file layout) is simply no record — one cold build.
+   * `current` (never recorded, or a crash before the first swap) is simply no
+   * record — one cold build.
    */
   public readBuildState(targetKey: string): Computable<IBuildState | undefined> {
     return realpath(path.join(this.buildStatePath(targetKey), STATE_CURRENT_LINK)).then(
@@ -1677,7 +1676,7 @@ export class BuildCache {
         continue;
       }
       /* The shared row, with the mime as this document's own trailing field —
-       * required, so a mime-less (pre-mime) line is malformed like any other. */
+       * required, so a mime-less line is malformed like any other. */
       const entry = parseManifestLine(line);
       if (entry === undefined || entry.extra === undefined) {
         throw new FabrError(`Malformed cache manifest line: '${line}'`);
@@ -2343,8 +2342,7 @@ function withContent(files: FileSet | undefined): FileSet | undefined {
 }
 
 /** What a demand that named no funnel admits work through: everything, at once.
- * The absence of a bound made explicit, rather than a second bound nobody
- * declared — a run always names its own (see {@link ICreateOptions}). */
+ * A run always names its own (see {@link ICreateOptions}). */
 const UNBOUNDED_FUNNEL = new Semaphore(Number.MAX_SAFE_INTEGER);
 
 /**

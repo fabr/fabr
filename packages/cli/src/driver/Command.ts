@@ -25,8 +25,8 @@ import { dirname, join } from "path";
 /** The fabr version, read from the CLI package's own package.json at runtime.
  * The compiled module's depth below the package root differs between build
  * layouts (`build/driver/` under the yarn/tsc devchain, but `driver/` in the
- * fabr-built package, which strips the outDir), so rather than hardcode a hop
- * count we walk up to the *nearest* package.json — the CLI's own in every
+ * fabr-built package, which strips the outDir), so we walk up to the *nearest*
+ * package.json — the CLI's own in every
  * layout. That first hit is authoritative: we never climb past it (an ancestor
  * could be an unrelated package). The version is stamped only at release, so a
  * present-but-versionless package.json is an unreleased build. */
@@ -51,8 +51,7 @@ export enum Mode {
 
 /** One command's help entry: its own argument synopsis (options that apply to it,
  * shown inline — `fabr <name> <synopsis>`) and a one-line summary. The set of
- * commands the command line accepts is derived from this table, so a new command
- * is added in exactly one place and is self-documenting.
+ * commands the command line accepts is derived from this table.
  *
  * `build`/`test`/`run` are BUILD_OPERATION values; `ls`/`cat`/`cp`/`sync` are
  * driver-side verbs that build under BUILD_OPERATION=build and then list / dump /
@@ -125,8 +124,8 @@ export interface Options {
   command: string;
   mode: Mode;
   longListing: boolean;
-  /** For the model-query verbs (`list-targets`/`list-targetdefs`): emit machine-
-   * readable JSON instead of the human listing (the docs-generation interface). */
+  /** For the model-query verbs (`list-*`): emit machine-readable JSON instead
+   * of the human listing (the docs-generation interface). */
   json: boolean;
   /** For `list-targets`: include system-contributed targets (declared in core's
    * or a plugin's lib files) alongside the project's own, which are otherwise
@@ -253,7 +252,7 @@ function applyOption(arg: string, options: Options, seenFlags: SeenFlag[]): void
   } else if (arg === "-u" || arg === "--update") {
     /* Sugar for the -D pathway: update mode IS a build input (a check run and
      * an update run are different builds and must not share a cache entry), so
-     * it rides the ordinary constraint rather than a side channel. */
+     * it rides the ordinary constraint. */
     options.properties.set(TEST_EXPECTATIONS, UPDATE_EXPECTATIONS);
     seenFlags.push({ raw: arg, flag: "-u" });
   } else if (arg === "-q" || arg === "--quiet") {
@@ -391,7 +390,7 @@ export function parseCommandLine(args: string[]): Options {
 /**
  * Finish parsing a command-less invocation, now that the model can say what
  * each named target's type supports: each positional takes the operation it
- * supports (build, else test, else run — see {@link OPERATION_PREFERENCE}),
+ * supports (build, else test, else run — see core's {@link preferredOperation}),
  * defaulting to `build` for a name that supports none, which then reports as
  * the ordinary "no rule matches" failure. A target that *runs* ends the line:
  * everything after it is the program's own argv, so an inferred run cannot be

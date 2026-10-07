@@ -29,7 +29,7 @@
  * derives the tsconfig, and lays out the working directory. The tool is
  * **mounted apart** from the workspace (under `TOOL_DIR`): its dependencies
  * must not collide with — nor be visible to — the sources'. It runs with cwd at
- * the workspace root and yields the `exec` action (output: `build/**`).
+ * the workspace root and yields the `js:exec` action (output: `build/**`).
  *
  * The dependencies reach the compiler as a generated PnP manifest over the
  * cache's tree pool, so a compile stages only its own sources however large its
@@ -57,8 +57,8 @@ const TOOL_DIR = ".tools/tsc";
 /**
  * The compile's own layout: sources under `src/`, emitted output under `build/`.
  *
- * Exported because it is not private to this rule after all — a consumer that
- * mounts the compiled tree ALONGSIDE its sources has to reproduce the same
+ * Exported: a consumer that mounts the compiled tree ALONGSIDE its sources has
+ * to reproduce the same
  * pairing, or the `sources` paths tsc writes into each `.js.map` (relative from
  * outDir back to rootDir) resolve to nothing. The test install does exactly
  * that, which is what lets a stack frame — and jest's code frame — name the
@@ -73,16 +73,6 @@ export function jsxModeFor(buildType: string | undefined): "react-jsx" | "react-
   return buildType === "debug" ? "react-jsxdev" : "react-jsx";
 }
 
-/**
- * The tsconfig the compile runs under. `include` matches `.ts`/`.tsx` and
- * `.js`/`.jsx` (all routed to this compile), so none is silently ignored. `.js`
- * comes in via `allowJs`: tsc downlevels it to `target` (a package's own JS
- * honors JS_TARGET) and includes it in the program (a `.ts` can import a local
- * `.js`), while `checkJs` stays off — JS is transpiled, not typechecked, so
- * untyped JS can't fail the build. When a `jsx` runtime is given, the automatic
- * transform is emitted — a JSX source's code imports `<jsxImportSource>/jsx-runtime`,
- * so the target must carry that runtime as a dep (auto-detected, see resolveJsxImportSource).
- */
 /**
  * The `paths` entries that let a package's sources import their own package
  * name (`@scope/pkg/sub` -> `src/sub`). Node resolves an installed package's
@@ -138,8 +128,7 @@ function defineClassFieldsOverride(sourceVersion: string | undefined, target: st
  * every other iterable — a Map/Set/generator is rejected outright (TS2802) and
  * a string is silently mis-iterated over UTF-16 code units. `downlevelIteration`
  * emits the real protocol instead, and has no effect from es2015 up, so it is
- * derived from the emit target rather than offered as a flag: no source wants
- * the index loop.
+ * derived from the emit target.
  */
 function needsDownlevelIteration(target: string): boolean {
   return esLevelOrder(target) < 2015;
@@ -160,6 +149,16 @@ function automaticTypes(deps: FileSet[]): string[] {
     .sort();
 }
 
+/**
+ * The tsconfig the compile runs under. `include` matches `.ts`/`.tsx` and
+ * `.js`/`.jsx` (all routed to this compile), so none is silently ignored. `.js`
+ * comes in via `allowJs`: tsc downlevels it to `target` (a package's own JS
+ * honors JS_TARGET) and includes it in the program (a `.ts` can import a local
+ * `.js`), while `checkJs` stays off — JS is transpiled, not typechecked, so
+ * untyped JS can't fail the build. When a `jsx` runtime is given, the automatic
+ * transform is emitted — a JSX source's code imports `<jsxImportSource>/jsx-runtime`,
+ * so the target must carry that runtime as a dep (auto-detected, see resolveJsxImportSource).
+ */
 export function makeTsConfig(
   jsTarget: JSTarget,
   jsx?: { mode: string; importSource: string },
@@ -179,8 +178,7 @@ export function makeTsConfig(
       declaration: true,
       /* No declarationMap: a `.d.ts.map` can only resolve against a shipped
        * `src/` tree (unlike a JS map, `inlineSources` does NOT embed sources
-       * into it), which we don't ship — so it would only ever dangle. Editor
-       * go-to-definition into the `.ts` awaits a future ship-source flag. */
+       * into it), which we don't ship — so it would only ever dangle. */
       outDir: COMPILE_OUT_DIR,
       rootDir: COMPILE_SRC_DIR,
       /* Strict by default (fabr's own code and modern TS); a target relaxes it

@@ -82,15 +82,13 @@ export interface INPMPackageMetadata {
    * Deps npm installs when they can be installed but tolerates the absence of.
    * The dominant use is os/cpu-gated native binaries (esbuild's @esbuild/<plat>,
    * rollup, swc, …): every platform variant is listed here, each self-gated by
-   * its own package's `os`/`cpu`, and only the host-matching one(s) are kept.
+   * its own package's `os`/`cpu`, and only the target-matching one(s) are kept.
    */
   optionalDependencies?: unknown;
   /**
    * Host-supplied singleton requirements (the plugin pattern: an eslint plugin
-   * peers on eslint). Fabr treats them as ordinary requirements — see
-   * getRequirements: the peer/regular distinction exists to work around npm's
-   * tolerance of duplicated regular deps, which fabr's strict single-version
-   * closures don't have.
+   * peers on eslint). Fabr reads them as provided requirements — see
+   * NPMRepository.getRequirements.
    */
   peerDependencies?: unknown;
   /** Per-peer flags; an `optional: true` peer is "if present, must match" —
@@ -232,8 +230,7 @@ export function expectedTarballDigest(dist: {
   if (sri) {
     return sri;
   }
-  /* npm-specific, and deliberately not something a written declaration may use:
-   * plenty of long-published versions carry only this. */
+  /* npm-specific: plenty of long-published versions carry only this. */
   if (dist.shasum) {
     return { algorithm: "sha1", encoding: "hex", value: dist.shasum.toLowerCase() };
   }

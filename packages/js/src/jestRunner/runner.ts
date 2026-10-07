@@ -60,16 +60,12 @@ import type { IChildRequest, IChildResult, IChildTestResult } from "./child";
  * fails the test rather than the file), while the file's TOTAL is by design
  * unbounded — it holds as many tests as it holds.
  *
- * So this has to exceed a plausible total, not a plausible test. Sized at ten
- * minutes for that reason: fabr's own heaviest e2e file spawns a `fabr`
- * subprocess per test and legitimately runs several minutes under a saturated
- * gate, and killing it at the old file-budget of three minutes reported a
- * healthy suite as "the test process was killed".
+ * So this has to exceed a plausible total, not a plausible test: fabr's own
+ * heaviest e2e file spawns a `fabr` subprocess per test and legitimately runs
+ * several minutes under a saturated gate.
  *
  * A child reports once, at the end, so there is no progress signal to reset
- * this against — the honest fix is for the child to report per test (circus
- * offers `sendMessageToJest` for exactly that), after which this could be a
- * short idle timeout instead of a long total one.
+ * this against.
  */
 const CHILD_GRACE_MS = 600_000;
 
@@ -146,9 +142,8 @@ async function runAll(requests: IChildRequest[], childModule: string): Promise<I
 /**
  * One file, run in THIS process rather than forked. fabr invokes the runner
  * once per test file (a partition the contract permits), so this process
- * already IS the per-file isolation boundary a fork would provide — forking
- * again would only add a node startup per file. The pool below remains for a
- * standalone invocation with a list.
+ * already IS the per-file isolation boundary a fork would provide. The pool
+ * below serves a standalone invocation with a list.
  *
  * The wedge backstop mirrors the forked path's guard, minus the process to
  * kill: with no result after {@link CHILD_GRACE_MS} the run is declared

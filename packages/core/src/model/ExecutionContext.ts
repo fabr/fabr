@@ -65,13 +65,11 @@ export class PluginKey<T> {
 }
 
 /**
- * The monotonic build-cycle counter. In watch mode the driver advances it once
- * per applied batch (before the graph re-settles), so a target that already
- * announced itself in an earlier cycle announces again for the new one (the
- * per-target announce flag is keyed by the cycle, not a plain boolean). Split out
- * of the ExecutionContext so the watch controller and the execution can share it
- * WITHOUT a construction cycle — the controller is built with the source FS, which
- * the execution then holds, so it's built first and both are wired to it.
+ * The monotonic build-cycle counter, shared by the watch controller (which
+ * advances it once per applied batch, before the graph re-settles) and the
+ * execution (which turns each advance into a `cycle-start` event). The
+ * controller is built first, with the source FS the execution then holds, so
+ * both are wired to one instance.
  */
 export class BuildCycle {
   private count = 0;
@@ -140,17 +138,12 @@ export class ExecutionContext {
    * asked through their declared owner — see {@link BuildContext.runAction}),
    * its dependencies are not, and neither is decided by inference. Nothing is
    * forced by default.
-   *
-   * Naming what to force is the only workable form: the cache key identifies
-   * the work and never who asked for it, so "force" cannot be a property of an
-   * entry — only of the run's request for it.
    */
   private readonly forcedTargets = new Set<ITargetDecl>();
 
   /** Mark a target as one to rebuild rather than serve from cache. The mark is
-   * on the DECL, so it covers every target that decl produces — CLI-level
-   * looseness, accepted deliberately: `-f` is a development aid, and naming one
-   * constrained instance of a decl is not something the command line can say. */
+   * on the DECL, so it covers every target that decl produces, under every
+   * constraint set. */
   public forceTarget(target: ITargetDecl): void {
     this.forcedTargets.add(target);
   }
@@ -163,22 +156,18 @@ export class ExecutionContext {
    * "non-interactive run" signal. */
   public interaction?: UserInteraction;
   /**
-   * Bounds how many build actions run at once — the run-wide execution budget,
-   * held here because it is a property of the run's surroundings (the machine),
-   * shared by every BuildContext of the run, and no concern of the cache.
-   * Without it a cold build of a wide graph spawns a process per cache miss
-   * simultaneously; the machine's parallelism is what that work can actually
-   * use.
+   * Bounds how much of the run's work runs at once — the run-wide execution
+   * budget, shared by every BuildContext of the run.
    *
    * The unit admitted is the *process execution*, acquired around exactly the
-   * process lifetime by `execute` — with one refinement: a
-   * command pipeline's stages are pipe-wired and must co-run, so a pipeline is
-   * ONE unit (admitting its stages individually could wedge it half-started).
-   * Step code itself holds no slot — staging and collection are event-loop
-   * I/O, not machine parallelism — so a step waiting on its processes never
-   * holds a slot while waiting for one: no hold-and-wait, no deadlock, and a
-   * step may fan out as many executions as it likes (the per-file test run).
-   * Cache hits and the resolution memos sharing that cache queue for nothing.
+   * process lifetime by `execute`/`executePipeline` — a command pipeline's
+   * stages are pipe-wired and must co-run, so a pipeline is ONE unit (admitting
+   * its stages individually could wedge it half-started) — and a step's own
+   * staging and collection, admitted through `IActionContext.admit`. Admissions
+   * are never nested: a step holds no slot while waiting for another, so there
+   * is no hold-and-wait, and a step may fan out as many executions as it likes
+   * (the per-file test run). Cache hits and the resolution memos sharing that
+   * cache queue for nothing.
    */
   public readonly processLimit = new Semaphore(availableParallelism());
   /** Per-run state a plugin keeps here, keyed by its {@link PluginKey}. Lazily

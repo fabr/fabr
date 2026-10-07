@@ -18,12 +18,12 @@
  */
 
 /**
- * The js_package[run] rule: make a package runnable via its declared bin. It
+ * The js_package[run] rule: make a package runnable via its declared bins. It
  * *depends on* js_package[build] (resolves this package under build, cached —
- * never repeating its work), requires it to declare exactly one bin/ executable,
- * then mounts it (and its resolved dep closure) as node_modules and launches
- * that bin under node — so `fabr run @some/pkg` runs its CLI. A package with no
- * bin, or more than one, is not (unambiguously) runnable.
+ * never repeating its work), then mounts it (and its resolved dep closure) as
+ * node_modules and launches a declared bin under node — so `fabr run @some/pkg`
+ * runs its CLI: the sole bin by default, else the one a projection picks
+ * (`fabr run pkg:cmd`).
  */
 
 import {

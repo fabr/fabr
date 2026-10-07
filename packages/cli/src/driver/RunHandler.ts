@@ -40,13 +40,12 @@ import { resumeActiveTerminal, suspendActiveTerminal, withTerminalSuspended } fr
  * *interactively*: inherited stdio, so args, pipes, tty and the exit code all
  * pass through, and it runs in the user's own working directory (the entry is
  * anchored at the staged dir, so its module/resource resolution still points at
- * the install regardless of cwd). Returns the program's exit code.
+ * the install regardless of cwd) — or, for an install-anchored runnable
+ * (`launchCwd: "install"`), in the staged dir. Returns the program's exit code.
  *
- * This shares the launch reduction (`toCommandLine`) with the codegen `run`
- * build step; the intentional differences from that path — inherited (not
- * captured) stdio, the user's cwd (not the staged dir), and passing the exit
- * code through rather than failing on non-zero — are exactly what makes running
- * a program interactive rather than a cached build step.
+ * This shares the launch reduction (`toCommandLine`) with the `generate` build
+ * step, differing in inherited (not captured) stdio, the launch cwd, and
+ * passing the exit code through rather than failing on non-zero.
  */
 export function runInteractive(cache: BuildCache, runnable: RunnableFileSet, callerArgs: string[]): Computable<number> {
   /* A cache work dir, not a temp dir of our own: an install is hardlinks into
@@ -61,7 +60,7 @@ export function runInteractive(cache: BuildCache, runnable: RunnableFileSet, cal
       withTerminalSuspended(() => executeInteractive(findExecutable(argv[0]), argv.slice(1), launchDir(runnable, dir), launchEnv(runnable)))
     )
     /* Remove the staged install whichever way the run ends — a staging or launch
-     * failure must not leak the work dir (only the success path did before). */
+     * failure must not leak the work dir. */
     .finally(() => cache.releaseWorkDir(dir));
 }
 
@@ -127,21 +126,18 @@ interface Install {
  * reaction is a pure function of successive artifacts, on two keys:
  *
  * - the **program key** — the program-partition manifest (the install minus the
- *   `served` content) plus the launch argv (an args-only decl edit must
- *   relaunch too) — a change triggers the stop-stage-relaunch;
+ *   `served` content) plus the launch argv and `env` (an args- or env-only decl
+ *   edit must relaunch too) — a change triggers the stop-stage-relaunch;
  * - the **served content** — a content-only change is synced into the running
  *   child's staged dir in place (syncFileSet: per-file atomic, so the server —
  *   or its own fs watcher — never sees a torn file), no restart.
  *
  * An ordinary runnable has an empty `served` partition, so the second key never
- * differs and the behavior is exactly the old relaunch-on-change — not a
- * special case, the same rule.
+ * differs and every change relaunches.
  *
- * Deliberately scoped for now: a build error leaves the current child running
- * (the caller simply doesn't call {@link update} on a failed re-settle); a child
- * that exits on its own is *not* auto-respawned — we stay watching and relaunch
- * on the next change (opt-in respawn-on-death is a separate future option, as is
- * a notify channel telling the server what a sync changed).
+ * A build error leaves the current child running (the caller simply doesn't
+ * call {@link update} on a failed re-settle); a child that exits on its own is
+ * *not* auto-respawned — we stay watching and relaunch on the next change.
  */
 export class RunSupervisor {
   /** Every install staged on disk, so a shutdown removes the lot. */

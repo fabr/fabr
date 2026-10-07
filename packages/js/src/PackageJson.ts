@@ -215,9 +215,7 @@ export function declaredDependencies(manifest: IDependencyDecls): { required: Re
     .filter(([dep]) => !optionalDeps.has(dep))
     /* An `optional: true` peer is never installed, but it is still a
      * requirement: if the consumer provides the package, the requirer has to be
-     * able to reach it. Dropping it entirely is what a hoisted tree could
-     * afford — the requirer found the hoisted copy by walking up — and what a
-     * dependency table cannot. */
+     * able to reach it through its own row. */
     .map(([dep, spec]) => ({
       ...dependencyRequirement(dep, spec),
       provided: optionalPeerNames.has(dep) ? ("optional" as const) : ("expected" as const),
@@ -382,16 +380,12 @@ function conditionsFor(names: ReadonlySet<string>, stem: string, formats: Readon
  *
  * So declaring exports **narrows** rather than renames: every subpath is exactly
  * what path resolution reached before there was a map at all, and what the map
- * adds is that everything undeclared becomes private. That is what lets entry
- * points be declared in source terms — fabr owns the emit layout, so an author
- * naming target paths would be writing against a layout that is not theirs.
+ * adds is that everything undeclared becomes private.
  *
  * `./package.json` is published unconditionally. Every other file is public only
  * if the author names its source; package.json has no source to name, being
  * generated here, and a file nobody is able to declare should not become
- * unreachable merely because the map exists. Consumers do reach for it by name
- * (version banners, plugin discovery), so the alternative is an
- * `ERR_PACKAGE_PATH_NOT_EXPORTED` with no remedy available to either side.
+ * unreachable merely because the map exists.
  */
 function exportsByConvention(
   files: FileSet,
@@ -753,8 +747,7 @@ function packageDependencies(declared: (Requirement | undefined)[]): Map<string,
 /**
  * The `peerDependencies` for the generated package.json — the declared
  * requirements of `provided_deps`. Like `dependencies`, the version stated is the
- * declaration (what the package requires of its host), not what resolution pinned;
- * unlike `dependencies` there is no `@types/*` split — a peer is a runtime peer.
+ * declaration (what the package requires of its host), not what resolution pinned.
  */
 function peerDependenciesOf(providedDeclared: (Requirement | undefined)[]): Map<string, string> {
   const peerDependencies = new Map<string, string>();
@@ -771,8 +764,8 @@ function peerDependenciesOf(providedDeclared: (Requirement | undefined)[]): Map<
 const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
 
 /* The manifest fields whose entries the consumer's install actually resolves —
- * where an unresolvable version is fatal. devDependencies deliberately excluded
- * (never installed from a published package). */
+ * where an unresolvable version is fatal. devDependencies excluded: never
+ * installed from a published package. */
 const INSTALLED_DEPENDENCY_FIELDS = ["dependencies", "optionalDependencies", "peerDependencies"];
 
 /**
@@ -813,9 +806,7 @@ export function rewriteManifest(
  * identity (a `provided_deps` peer), so the consumer must supply the EXACT
  * co-member instance the package was built against, not merely a semver-compatible
  * one — a range can't express "the same loaded module". Every other field takes a
- * caret range. (A stable inter-package ABI might later widen the others too; the
- * peer stays exact regardless, since identity-compat is strictly stronger than
- * API-compat.)
+ * caret range.
  */
 function rewriteCoMemberField(
   deps: Record<string, unknown>,

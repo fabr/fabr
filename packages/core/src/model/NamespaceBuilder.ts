@@ -169,8 +169,8 @@ export class NamespaceBuilder {
    * A property joins the entry already under that name, in its own tier — so
    * what must be unique is the key **as written**, guard included, which is what
    * `name.toString()` renders, and an ordinary declaration never collides with a
-   * `default` one of the same key (they are different tiers, which is the point
-   * of the tier). Across kinds the tiers work the same way: an ordinary
+   * `default` one of the same key (they are different tiers). Across kinds the
+   * tiers work the same way: an ordinary
    * declaration supersedes a `default` one of the other kind (a property keeps
    * a default target as its fallback — see {@link buildNamespace}), while two
    * `default`s of one name conflict whatever their kinds. Anything else — a

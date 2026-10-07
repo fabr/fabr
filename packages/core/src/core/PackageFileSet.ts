@@ -54,23 +54,6 @@ const NOTHING_PROVIDED: ReadonlyMap<string, Provided> = new Map();
  * An edge's *name* is the bound instance's `packageName`, or the name its
  * reference delivers as: a renamed dependency is a restamped instance
  * carrying the name its requirer knows it by.
- *
- * `reference` is the reference the package was **delivered for**, where a
- * repository delivered it: the package IS what that reference names. A
- * collection point handed the package asks for the reference again, with
- * everything else it resolves, and uses what it is delivered — so a rule may
- * hand on a package it collected. A package derived from another (built,
- * patched) is no longer what any reference names, and has none.
- *
- * `provided` names the edges that are **provided requirements** — a
- * dependency something above the package supplies — by how strongly each is
- * expected. Which package answers one is its consumer's to say (see
- * bindProvided); what `dependencies` holds under that name is the answer where
- * nothing above gives another. An `"expected"` one still a reference is
- * resolved at the collection point the package reaches; an `"optional"` one
- * never is, and binds only where the installation already holds a package
- * that answers it.
- *
  * Content derivations (find/remap/minus/...) deliberately return plain
  * FileSets: once you reach inside a package, the result is just files.
  */
@@ -81,7 +64,11 @@ export class PackageFileSet extends FileSet {
     public readonly version?: string,
     public readonly dependencies: ReadonlyArray<PackageFileSet | RepositoryRef> = [],
     origin?: IProvenanceStep,
+
+    /* The names among `dependencies` that are provided requirements, each with
+     * how strongly it is expected. */
     public readonly provided: ReadonlyMap<string, Provided> = NOTHING_PROVIDED,
+    /* The reference that the package was delivered for (if any). */
     public readonly reference?: RepositoryRef
   ) {
     /* An existing FileSet passes straight through — the base shares its content
@@ -234,10 +221,9 @@ export function nodeNaming(sets: ReadonlyArray<FileSet>): (pkg: PackageFileSet) 
  * Assert that two instances delivered under one {@link PackageFileSet.packageId}
  * really are the same node — same bytes, same edge bindings.
  *
- * The layout planner resolves the node, not the id, so it can hold two nodes
- * under one id; a physical install cannot, a tree giving a package one
- * directory. So this is the assemblers' precondition, and a conflict rather
- * than a pick.
+ * A resolution is per node, not per id, so it can hold two nodes under one
+ * id; a physical install cannot, a tree giving a package one directory. So
+ * this is the assemblers' precondition, and a conflict rather than a pick.
  */
 export function assertSamePackageNode(held: PackageFileSet, arrived: PackageFileSet): void {
   if (packageNodeSignature(held) !== packageNodeSignature(arrived)) {

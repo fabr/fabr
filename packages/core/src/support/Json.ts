@@ -25,14 +25,10 @@ import type { IFile } from "../core/FileSet";
  * Reading third-party JSON — a registry document, a package.json, a report
  * written by someone else's tool.
  *
- * **Parse to `unknown`, then convert.** `JSON.parse` is typed `any`, so
- * `JSON.parse(text) as IThing` type-checks and then propagates a shape nothing
- * ever verified; the document says what it says, and the first field that isn't
- * what the interface promised throws a TypeError from whatever code finally
- * touched it — deep inside an evaluation, attributed to nothing, usually
- * failing far more than the one bad document.
+ * **Parse to `unknown`, then convert** — never `JSON.parse(text) as IThing`,
+ * which type-checks a shape nothing verified.
  *
- * So a document is always read through a {@link JsonConverter} — `toJsonObject`
+ * A document is always read through a {@link JsonConverter} — `toJsonObject`
  * where the caller claims nothing more, a domain one (`toTestReport`) where the
  * whole document becomes a domain value. Malformed JSON and a converter's
  * refusal both throw, attributed to the document, so a caller holds a value and
@@ -46,8 +42,7 @@ import type { IFile } from "../core/FileSet";
 
 /**
  * Converts a parsed document to the value a caller needs, or throws the reason
- * it cannot — succeed-or-throw, so the caller never handles a maybe. (A boolean
- * predicate could only say *false*, which is no diagnostic at all.)
+ * it cannot — succeed-or-throw, so the caller never handles a maybe.
  */
 export type JsonConverter<T> = (json: unknown) => T;
 

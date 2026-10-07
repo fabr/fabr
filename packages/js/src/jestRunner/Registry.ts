@@ -21,11 +21,8 @@
  * Module interception: the mocking semantics a jest test observes, implemented
  * over NODE'S OWN module system rather than a replacement for it.
  *
- * This is the deliberate boundary of the compatibility layer. jest's
- * `jest-runtime` is a substitute module system — resolver, transformer,
- * registry, sandbox — and reimplementing the module system is the price of
- * owning resolution. Fabr owns compilation and import resolution already, so
- * what is wanted here is only jest-runtime's *interface obligations*: the
+ * jest's `jest-runtime` — resolver, transformer, registry, sandbox — does not
+ * run; what this layer takes on is only its *interface obligations*: the
  * observable behaviour of `jest.mock` and friends. Those are one registry and
  * two seams:
  *

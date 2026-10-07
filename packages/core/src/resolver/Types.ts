@@ -96,11 +96,9 @@ export interface Requirement {
    *   as an ordinary demand for its own minimum (npm's peer auto-install as a
    *   last resort).
    * - `"optional"` — never a demand: nothing is installed, ever, and the edge
-   *   simply does not bind. It is still a requirement, and that is the whole
-   *   point of recording it: the requirer must be able to REACH the package
-   *   when a consumer does provide it (`zustand` optionally peering on
-   *   `react`). A hoisted tree gave that away for free by walking up; a
-   *   dependency table has to say it.
+   *   simply does not bind. It is still a requirement, recorded so that the
+   *   requirer can REACH the package when a consumer does provide it
+   *   (`zustand` optionally peering on `react`).
    */
   readonly provided?: "expected" | "optional";
 }
@@ -133,9 +131,6 @@ export interface IRequirementEdge {
  * been declared by a version that was itself later superseded — the raised
  * version legitimately remains — so selectedBy.requiredBy is not always a
  * selected node.
- *
- * Both are optional so that resolutions persisted before these fields existed
- * still deserialize.
  */
 export interface Selected<V> {
   /** The package's name — the one it is required as (`requiredAs`), hence
@@ -156,9 +151,8 @@ export interface Selected<V> {
    * Resolver-internal and NOT persisted: it is the marking pass's own working
    * state, used to prune superseded nodes and to scope each root's binding. A
    * consumer carving the resolution into per-root subsets walks the edges
-   * forward instead ({@link reachableFrom}) — this index answers the opposite
-   * question ("which roots reach me"), so consulting it would cost a pass over
-   * every selection per delivery.
+   * forward instead ({@link reachableFrom}); this index answers the opposite
+   * question ("which roots reach me").
    */
   reachableFrom?: number[];
   /**
@@ -217,11 +211,9 @@ export interface RaisedFloor<V> {
  * repairs applied (floor raises) and constraint violations found, plus any
  * hard errors (unparseable constraints, unconstrained-only requirements).
  *
- * Violations and repairs are reported as data rather than by rejecting the
- * Computable, both so that callers can decide how to present them (strict
- * consumers error at delivery; sealed tool deliveries accept the repaired
- * tree), and because a rejected Computable halts the graph without
- * user-visible diagnostics.
+ * Violations and repairs are reported as data, not by rejecting the
+ * Computable: the consumer decides what they mean (strict consumers error at
+ * delivery; sealed tool deliveries accept the repaired tree).
  */
 export interface MVSResolution<V> {
   selections: Selected<V>[];
@@ -261,9 +253,7 @@ export interface MVSResolution<V> {
    * constraint text, while laying one out needs only where each edge leads.
    *
    * Computed here, once, by {@link edgeBinding} — the one rule for what an edge
-   * binds to. A consumer reads the answer rather than recomputing it, which is
-   * what makes a delivery a walk over the graph instead of a search of it, and
-   * leaves nothing for a layout to disagree with.
+   * binds to; a consumer reads the answer rather than recomputing it.
    */
   edges: Map<NodeId, Map<DependencyName, NodeId>>;
   /**
@@ -272,9 +262,6 @@ export interface MVSResolution<V> {
    * reachable only from a different root cannot capture it. Undefined for a
    * root that selects nothing (an `?`-alternate, which demands nothing of its
    * own).
-   *
-   * A position rather than an id so that reading it costs nothing: a delivery
-   * resolves its root with an array index, needing no id table of its own.
    */
   rootBindings: (number | undefined)[];
 }
@@ -402,7 +389,7 @@ export interface VersionDomain<V, C> {
 /**
  * What the resolution walk reads: the requirements a name@version declares, and
  * the floor-raise hook — resolveMVS's whole view of a registry (the full
- * registry surface, PackageResolver's `RepositoryReader`, extends this). All
+ * registry surface, core/Repository's `RepositoryReader`, extends this). All
  * answers are expected to be immutable documents (a given name@version never
  * changes its declared requirements), which is what makes resolution results
  * cacheable.

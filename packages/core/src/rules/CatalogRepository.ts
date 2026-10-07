@@ -60,10 +60,6 @@ import { RepositoryRegistration } from "./Types";
  * collection point (resolveCatalog, forced to build), and every consuming
  * reference rides the normal RepositoryRef path — grouped by this instance at
  * the consumer's collection point and answered from the table.
- *
- * This is a deliberate, sanctioned exception to "the resolution boundary is the
- * consuming target, never a context-global fixpoint": the catalog IS a shared
- * boundary, but a user-declared and named one, not an implicit global fixpoint.
  */
 /**
  * A catalog entry: the reference written in `deps`, or the package a locally
@@ -277,9 +273,8 @@ function resolveCatalog(context: TargetContext): Computable<ResolvedCatalog> {
       );
     }
     /* A catalog pins package VERSIONS, so its entries must come from a
-     * repository that resolves them. The one non-resolving source a reference
-     * can carry today is another catalog — deliberately rejected: each catalog
-     * is its own joint resolution, and chaining would nest one inside another. */
+     * repository that resolves them. A member of another catalog is rejected:
+     * each catalog is its own joint resolution. */
     const unresolvable = references.find(reference => !isRepositoryReader(reference.source));
     if (unresolvable) {
       const entry = unresolvable.toString();

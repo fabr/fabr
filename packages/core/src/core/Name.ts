@@ -93,9 +93,6 @@ function normalizeHead(pathForm: string): string {
 }
 
 /**
- * A string expression, potentially consisting of literal, wildcard, and variable substitution parts
- */
-/**
  * A single constraint written in a `<KEY=value>` facet: the key is a scalar
  * config identifier, the value a Name (so it may itself carry a `${subst}`).
  * Kept in written order (see Name.constraints). What it *means* is decided by
@@ -104,6 +101,9 @@ function normalizeHead(pathForm: string): string {
  */
 export type NameConstraint = readonly [key: string, value: Name];
 
+/**
+ * A string expression, potentially consisting of literal, wildcard, and variable substitution parts
+ */
 export class Name {
   private parts: NamePart[];
   /**
@@ -755,8 +755,8 @@ export class Name {
    * It is deliberately the default rendering, because implicit conversion
    * (`${name}`, string coercion) reaches for it: the failure mode of forgetting
    * to ask for the other one is visible text where a pattern was wanted, rather
-   * than escape characters silently entering a payload — which is the bug this
-   * split fixes. Anything compiling a matcher wants {@link toGlobString}.
+   * than escape characters silently entering a payload. Anything compiling a
+   * matcher wants {@link toGlobString}.
    *
    * Note this does NOT round-trip through the parser: a literal that contains
    * metacharacters (a quoted `'!(a)'`) renders as the syntax it isn't. Identity —

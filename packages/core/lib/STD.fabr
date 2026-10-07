@@ -208,6 +208,6 @@ fabr_home @fabr-build { }
 #     flag legacy_ts { provides = ts/no_strict_null_checks ts/allow_implicit_any; }
 #
 targetdef flag {
-    # Other flags this one turns on, or files it supplies.
+    # Other flags this one turns on.
     provides = FILES;
 }

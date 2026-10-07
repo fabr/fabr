@@ -75,9 +75,7 @@ export interface IResolutionDoc {
   /**
    * The resolved edges (see {@link MVSResolution.edges}), positionally: entry
    * `i` belongs to `selections[i]`, and each `[name, target]` pair names the
-   * *index* of the selection it binds to. Indices rather than `pkg@version`
-   * strings because there is one entry per edge in the whole graph — the
-   * document would otherwise grow by more than the selections it describes.
+   * *index* of the selection it binds to.
    */
   edges: [string, number][][];
   /** Per root (see {@link MVSResolution.rootBindings}), the index of the

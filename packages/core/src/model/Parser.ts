@@ -784,9 +784,8 @@ export class BuildParser {
           break;
         case CHAR_BACKTICK:
           /* Inside a substitution's own words a backtick ENDS the word (and the
-           * command): fabr has no nested substitution — shell's `\`` escape for
-           * it is deliberately not adopted — so the innermost backtick is always
-           * a close, never an open. */
+           * command): fabr has no nested substitution (and no `\`` escape for
+           * one), so the innermost backtick is always a close, never an open. */
           if (this.commandSubstDepth > 0) {
             return true;
           }
@@ -855,10 +854,9 @@ export class BuildParser {
       return false;
     });
 
-    /* A group left open at the end of the name is a typo, not a literal: bash
-     * would silently degrade `!(a` to plain text, but a build script says what
-     * it means, and the `[...]` class — the parallel construct — already errors
-     * unterminated. Quoting remains the way to name such a file. */
+    /* A group left open at the end of the name is an error, as an unterminated
+     * `[...]` class is (bash would degrade `!(a` to plain text); quoting is the
+     * way to name such a file. */
     if (extglobDepth > 0) {
       this.unterminatedExtglobError(extglobStart);
     }
@@ -900,7 +898,7 @@ export class BuildParser {
       }
       return name;
     }
-    /* Empty input or a leading operator: preserve the prior empty-name result. */
+    /* Empty input or a leading operator yields the empty name. */
     return Name.fromLiteral("");
   }
 
@@ -1148,8 +1146,8 @@ export class BuildParser {
    * as its {@link CommandOpKind} (with source offset), else undefined. `<`/`>`
    * reuse LANGLE/RANGLE (a spaced `<` is not a `<k=v>` constraint, which binds
    * only when abutting); `2>`/`&>` arrive as their own folded tokens. A `>`
-   * preceded by `-` is the mis-spaced rename arrow, not a redirect — kept as the
-   * existing spacing hint. An operator may appear in any value; it makes the
+   * preceded by `-` is the mis-spaced rename arrow, not a redirect — reported
+   * with the spacing hint. An operator may appear in any value; it makes the
    * property a command, which Validate restricts to COMMAND properties.
    */
   private tryCommandOp(): CommandOp | undefined {
@@ -1375,9 +1373,9 @@ export class BuildParser {
    * sink, as in a shell); a dup instead *aliases* the two, which is what
    * {@link flattenStage} reads back as "one destination".
    *
-   * Redirecting a stream twice stays an error, unlike a shell's last-one-wins:
-   * in a build script it is a mistake worth catching, not an intent. A dup counts
-   * as redirecting its `from` stream, and self-dup (`2>&2`) is the no-op it says.
+   * Redirecting a stream twice is an error (not a shell's last-one-wins). A dup
+   * counts as redirecting its `from` stream, and self-dup (`2>&2`) is the no-op
+   * it says.
    */
   private applyRedirect({ stage, fds }: PendingStage, op: CommandOp, target: INameValue | undefined): void {
     /* Whether a stream has been given a destination of its own — a capture, or a
@@ -1528,10 +1526,9 @@ export class BuildParser {
    * replayed against it ({@link checkRenameWildcards}) and is a pattern rather than a
    * reference (no `:`). Assumes the current token is the ARROW.
    *
-   * Here rather than in Validate because these rules read only the written name,
-   * so this is the one place every rename passes through — including a CLI
-   * reference (`fabr cat 'x:*.a -> *.b.*'`), which has no schema and no Validate
-   * pass, and used to reach `find` and emit a literal `$2` into a result name.
+   * These rules read only the written name, so they are enforced here, where
+   * every rename passes through — including a CLI reference
+   * (`fabr cat 'x:*.a -> *.b.*'`), which has no schema and no Validate pass.
    */
   private withRename(name: Name): Name {
     const arrow = this.token.start;
@@ -1737,12 +1734,8 @@ export class BuildParser {
   }
 
   /**
-   * PropertyDecl ::= NAME '=' NAME ';'
-   *                       ^
-   * @param name
-   * @param nameOffset
-   */
-  /**
+   * PropertyDecl ::= NAME '=' Value* ';'
+   *                      ^
    * @param key the key as written — a bare identifier, or a whole reference (a
    * `sync` coordinate). Any `<k=v>` on it has already been parsed into its
    * constraint facet, which in key position IS the guard; an enclosing guard
@@ -2016,9 +2009,7 @@ export class BuildParser {
         }
         /* Recover *within* this body: skip to the next `;` (resume with the next
          * property, keeping this target and the properties that parsed) or the
-         * body's own `}` (end the body). Without this, the error would propagate
-         * to the top-level recovery, which resyncs INTO the body — leaking the
-         * remaining body properties to the top level and misreporting the `}`. */
+         * body's own `}` (end the body). */
         this.recoverInBody();
       }
     }
@@ -2057,8 +2048,7 @@ export class BuildParser {
   /**
    * TargetDecl ::= NAME NAME '{' PropertyList '}'
    *                     ^
-   * @param name
-   * @param nameOffset
+   * `type` and `typeOffset` are the already-consumed type token.
    */
   private parseTargetDecl(type: string, typeOffset: number, docComment?: string): ITargetDecl {
     if (this.token.type !== TokenType.IDENTIFIER && this.token.type !== TokenType.SIMPLE_NAME) {
@@ -2118,8 +2108,6 @@ export class BuildParser {
   /**
    * TargetDefDecl ::= 'targetdef' NAME '{' PropertyTypeList '}'
    *                     ^
-   * @param name
-   * @param nameOffset
    */
   private parseTargetDefDecl(docComment: string | undefined): ITargetDefDecl {
     if (this.token.type !== TokenType.IDENTIFIER) {
@@ -2146,7 +2134,7 @@ export class BuildParser {
   /**
    * PropertyTypeList ::= PropertyType*
    * PropertyType ::= NAME '=' PropertySchema DefaultClause? ';'
-   * PropertySchema ::=  ( 'STRING'|'FILES'|'REQUIRED' )*
+   * PropertySchema ::=  ( 'STRING'|'FILES'|'REWRITE'|'MAP'|'COMMAND'|'REQUIRED' )*
    * DefaultClause ::= 'default' Value*
    *
    */
@@ -2223,9 +2211,7 @@ export class BuildParser {
         if (defaultDecl) {
           /* `default` ended the keyword run before any type keyword. The clause
            * itself parsed clean (values and ';' consumed), so this is an
-           * ordinary logged error at the key, not a thrown recovery — the
-           * generic unexpected-token report would point at whatever follows
-           * the clause, nowhere near the mistake. */
+           * ordinary logged error at the key, not a thrown recovery. */
           this.log.log(DIAG_DEFAULT_BEFORE_TYPE, { key, loc: { ...this.source, offset: token.start } });
         } else {
           this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'MAP'");
@@ -2238,8 +2224,7 @@ export class BuildParser {
       } else if (key === "*" && defaultDecl) {
         /* The wildcard types keys the schema never named; a default applies to a
          * named property that went unwritten, and there is no such thing here —
-         * an unwritten wildcard member simply does not exist. Rejected rather
-         * than accepted-and-ignored. */
+         * an unwritten wildcard member simply does not exist. */
         this.log.log(DIAG_WILDCARD_DEFAULT, { loc: { ...this.source, offset: token.start } });
       } else if (result.has(key)) {
         /* The first declaration stands; the load fails on the error anyway, so

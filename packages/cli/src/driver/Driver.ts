@@ -107,7 +107,7 @@ const SHUTDOWN_GRACE_MS = 5000;
  * presentation the driver otherwise never shows. Core swallows EPIPE for the
  * *child* pipes it spawns, but nothing covers fabr's own streams.
  *
- * We *swallow* it but deliberately do NOT exit from here: the command's own
+ * We *swallow* it but do NOT exit from here: the command's own
  * control flow still runs to its `flushAndExit(code)`, so the exit status stays
  * the real outcome. Exiting 0 on any EPIPE would be wrong — a *failing* build
  * whose diagnostics pipe broke (`fabr build 2>&1 | head`) hits EPIPE on stderr
@@ -162,10 +162,10 @@ export type Takeover = () => Computable<number>;
 /**
  * The CLI entry: dispatch the command to a tiny operation (each closing over
  * `options`) and run it in the harness. The `BUILD_OPERATION` constraint is the
- * command itself (explicit `-DBUILD_OPERATION=...` takes precedence); `ls`/`cat`
- * are driver verbs, not operations — they build under `build` and resolve the
- * whole name (target + `:`/glob projection) through the model, while the build
- * verbs take a bare target name.
+ * command itself (explicit `-DBUILD_OPERATION=...` takes precedence); `ls`/`cat`/
+ * `cp` are driver verbs, not operations — they resolve the whole name (target +
+ * `:`/glob projection) through the model under the `files` operation (see
+ * {@link resolveNames}), while the build verbs take a bare target name.
  */
 export function runFabr(options: Options): Promise<void> {
   ignorePipeErrors();
@@ -277,11 +277,8 @@ function runTest(
 function applyExpectationUpdates(execution: ExecutionContext, site: IInvocationSite, results: SourceRef[][]): Computable<void> {
   /* Resolving each candidate's input to a place on disk is the driver's half of
    * the arrangement: the rule offered content named relative to an input it
-   * belongs beside, which is all a rule can honestly know. An input with no
-   * source-tree location (a generated test) is where the offer runs out — said
-   * out loud, because the run is green and reports no update, so silence would
-   * leave the next `check` run failing on the same stale record with nothing to
-   * explain why `-u` did not help. */
+   * belongs beside. An input with no source-tree location (a generated test) is
+   * where the offer runs out, and is warned (see DIAG_EXPECTATION_UNPLACEABLE). */
   const writes = new Map<string, IResolvedWriteBack>();
   for (const { files, belongsTo, origin } of results.flatMap(sources => writeBackCandidates(sources))) {
     /* The offer names its content in the inputs' own namespace and says, as one
@@ -503,12 +500,8 @@ async function runWith(options: Options, operation: Operation, watch = false): P
    * pane can erase and repaint around each block. Without a tty there is no
    * pane and it is a direct write (the pane is a derived view of what the log
    * already records, so its absence loses nothing). */
-  /* `-q` asks for less happening on the terminal, and the live pane is the
-   * most of it: a display that repaints ten times a second is not what someone
-   * who just silenced the build's own tools wants left running. So quiet drops
-   * the pane as well as the streamed output — and (see ProgressReporter) does
-   * NOT get the start lines back in its place, which is the one thing that
-   * would make asking for quiet produce more output than not asking.
+  /* `-q` drops the pane as well as the streamed output — and (see
+   * ProgressReporter) does NOT get the start lines in its place.
    * `--no-progress` drops only the pane: the log is then exactly what it is
    * without a tty. */
   const terminal = new TerminalStream(process.stderr, process.stderr.isTTY === true && !options.quiet && options.progress);
@@ -566,8 +559,8 @@ async function runWith(options: Options, operation: Operation, watch = false): P
 
     /* One-shot runs must route termination signals through process.exit rather
      * than the default disposition: build steps run detached in their own
-     * process groups (see Execute.ts), so the terminal's Ctrl-C no longer
-     * reaches them — the exit hooks (Execute's group sweep, the run
+     * process groups (see Execute.ts), so the terminal's Ctrl-C does not
+     * reach them — the exit hooks (Execute's group sweep, the run
      * supervisor's cleanup) are what stop in-flight work, and a default-killed
      * process runs no hooks. Codes follow the 128+signal convention. (The watch
      * path already routes its signals through process.exit in runWatched.)
@@ -638,7 +631,7 @@ function showsMarkers(command: string, watch: boolean): boolean {
  * Computable re-settles on each (debounced) change. Unlike the one-shot path it
  * never exits on completion — a failed build reports and keeps watching, a
  * subsequent fix re-settles the graph to green — and it tears the watchers down
- * on SIGINT. The returned promise deliberately never resolves; the process is
+ * on SIGINT. The returned promise never resolves; the process is
  * kept alive by the persistent watchers and ends only via the signal handler.
  */
 function runWatched(operation: Operation, fabr: Fabr, site: IInvocationSite, log: Log): Promise<void> {
@@ -664,8 +657,7 @@ function runWatched(operation: Operation, fabr: Fabr, site: IInvocationSite, log
    * failure) settles without notifying any `then`, but a handle's onSettled
    * still fires, once per applied batch. The execution observes it first (the
    * cycle-end and its marker); this second handle renders what the stream
-   * deliberately doesn't carry: the failure tree, and the watching
-   * announcements. */
+   * doesn't carry: the failure tree, and the watching announcements. */
   const outcome = fabr.evaluate(model => operation(model, fabr.execution, site)).then(
     () => undefined,
     (err: Error) => err
@@ -737,9 +729,9 @@ const ALL_FILES = parseName("**");
  * name stopping at such a source resolves to something none of ls/cat/cp can
  * read, and silently lists nothing.
  *
- * Deliberately not applied to every source: a RunnableFileSet reads a projection
- * as *entry selection*, so asking it for `**` would narrow the program rather
- * than list the install.
+ * Not applied to every source: a RunnableFileSet reads a projection as *entry
+ * selection*, so asking it for `**` would narrow the program rather than list
+ * the install.
  */
 function openedOut(source: SourceRef): Computable<SourceRef> {
   if (source instanceof FileSet || !isFileSource(source)) {
@@ -800,8 +792,7 @@ function writeStdout(bytes: Uint8Array): Computable<void> {
  * created if absent. The copy is **additive** (files already in `dest` are left
  * untouched) and breaks the cache hardlink (`copy: true`), so the copies are
  * independent of fabr's cache. A source matching no files is an error, raised
- * before a byte is written. (The declarative dual — laying built content into a
- * directory as part of a `sync` release — is parked.)
+ * before a byte is written.
  */
 function copyTarget(options: Options, execution: ExecutionContext, results: SourceRef[][]): Computable<void> {
   const sets: FileSet[] = results.flatMap( (sources,i) => {
@@ -1143,9 +1134,8 @@ function targetDefJson(model: BuildModel, def: ITargetDefDecl): Record<string, u
 }
 
 /** One entry of the config listing (a documented global property, or a flag
- * target — which has no value of its own). Typed rather than a bare JSON
- * record because the same entries are also printed as text: an untyped field
- * interpolates whatever it happens to hold. */
+ * target — which has no value of its own); the same entries are also printed
+ * as text. */
 interface IConfigEntry {
   name: string;
   location: string;
@@ -1153,7 +1143,7 @@ interface IConfigEntry {
 }
 
 /** @return the documented global configuration properties (`BUILD_TYPE`,
- * `JS_TARGET`, `TSC`, …) — only those carrying a doc comment, each with its
+ * `JS_TARGET`, `TYPESCRIPT`, …) — only those carrying a doc comment, each with its
  * default value, source location, and description — for docs generation. */
 function configPropertiesJson(model: BuildModel): Array<IConfigEntry & { value: string }> {
   return model

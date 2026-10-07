@@ -25,26 +25,17 @@
  * build and the test run alike), so the rewrite happens here instead, at
  * require time, on a file about to be loaded.
  *
- * **The transform is swc's**, not jest's `babel-plugin-jest-hoist`, for two
- * measured reasons:
+ * **The transform is swc's** (its jest hoist pass), not jest's
+ * `babel-plugin-jest-hoist`. The two differ in what they accept: babel's plugin
+ * also *validates* a factory's free variables, allowing only `mock`-prefixed
+ * names, known globals and pure `const`s, while swc hoists without judging. So
+ * fabr accepts a superset of what babel-jest accepts, never a subset: a suite
+ * that runs under jest keeps running here.
  *
- * 1. **babel's plugin rejects real code.** It also *validates* a factory's free
- *    variables, allowing only `mock`-prefixed names, known globals and pure
- *    `const`s — so a plain function declaration fails, though it is correct
- *    (the factory runs lazily, by which time JS has hoisted the declaration).
- *    Measured against a real suite, that rejected **18 of 40** test files. swc
- *    hoists without judging, which is why such code is ordinary today, and fabr
- *    follows it: a deliberate *lenience* divergence — fabr accepts a superset of
- *    what babel-jest accepts, never a subset, so a suite that runs under jest
- *    keeps running here.
- * 2. **It is far faster where it counts.** Each test file gets its own process,
- *    so the first-call cost is paid per file and never amortised: ~124ms with
- *    babel against ~8.5ms with swc, on that same corpus.
- *
- * Source maps are threaded through deliberately (see {@link inputMapFor}): the
- * hoist MOVES statements, so line numbers shift, and without chaining the
- * compiler's map every stack trace in a failure would point at compiled lines
- * rather than the original TypeScript.
+ * Source maps are threaded through (see {@link inputMapFor}): the hoist MOVES
+ * statements, so line numbers shift, and without chaining the compiler's map
+ * every stack trace in a failure would point at compiled lines rather than the
+ * original TypeScript.
  */
 
 import * as fs from "node:fs";

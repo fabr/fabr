@@ -198,9 +198,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       /* Both contributors that claim `key`, each traced to where it was written;
        * the concrete detail keeps identical-provenance conflicts diagnosable.
        * The two sides render whether or not the conflict arose inside a target
-       * build (an ownerless one has no enclosing DependencyFailedError) — they
-       * are exactly what makes the clash diagnosable, so they must not depend
-       * on `owner`. */
+       * build (an ownerless one has no enclosing DependencyFailedError). */
       /* When both sides trace to the same source (a case-collision within one
        * package — both names have the same origin, keyed on the same path), the
        * two chains are identical: render it once and list both files, rather than
@@ -212,15 +210,10 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
         side.detail !== undefined && side.provenance !== undefined ? [{ message: `at ${side.detail}` }] : [];
       const sameSource = cause.left.provenance !== undefined && cause.left.provenance === cause.right.provenance;
       /* No label passed, so a side with no provenance contributes no note at
-       * all: the fallback would be `from 'X' (no origin information)`, and the
-       * message above already names both sides — repeating them to report an
-       * absence the reader cannot act on is worse than saying nothing. */
+       * all (the message already names both sides). */
       const notes = sameSource
         ? [...this.chainNotes(cause.left.provenance, undefined, cause.key), ...detailNote(cause.left), ...detailNote(cause.right)]
         : [cause.left, cause.right].flatMap(side => [...this.chainNotes(side.provenance, undefined, cause.key), ...detailNote(side)]);
-      /* `help` like every other branch: the two sides say what clashed, and a
-       * producer that knows WHY two names met — and what to do about it — has
-       * nowhere else to put that. */
       return owner
         ? { message: `Failed to build ${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target), notes, help: helpOf(cause) }
         : { message: cause.message, notes, help: helpOf(cause) };
@@ -284,14 +277,6 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   }
 
   /**
-   * A repository failure attributed to written reference(s): anchored at the
-   * first culpable reference's own use site (underlining the written
-   * requirement, the use site on the headline, any constraint requirement as the
-   * underline's label); deeper provenance hops and further culpable
-   * references follow as notes. Without a written use site (a CLI name), it
-   * anchors like any other cause.
-   */
-  /**
    * A requirement that failed to resolve, anchored at the reference behind it
    * when that reference was written in the failing target itself; otherwise —
    * a reference carried in from a dependency, or none written at all — at the
@@ -344,12 +329,6 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   }
 }
 
-/**
- * The remedy for a target asked to do something its type has no rule for: the
- * operations it does support, and the command that performs the one fabr would
- * itself pick (`fabr docs_serve` infers the same verb, so the two agree). No
- * help for a type with no rules at all — there is nothing to redirect to.
- */
 /**
  * What a target with no applicable rule could have matched. Where its type has
  * rules for the operation asked of it, those rules are listed, each with what

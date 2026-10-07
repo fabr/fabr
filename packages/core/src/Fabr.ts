@@ -175,8 +175,7 @@ export function forceTargets(model: BuildModel, execution: ExecutionContext, nam
  * Force what a target's own build promises but produces on demand: a release
  * namespace packages a member when something names one, so building the target
  * itself — which asks for its outputs, not for a reference into them — must
- * realise every member. That is the sync dry-run, and it is why laziness
- * belongs to references into a namespace rather than to the target's build.
+ * realise every member. That is the sync dry-run.
  */
 function realiseNamespaces(sources: SourceRef[]): Computable<unknown> {
   return Computable.forAll(

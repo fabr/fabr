@@ -32,7 +32,7 @@ import { ActionContext } from "../core/BuildCache";
  * the content store, each named content) where there is no `output`, else what
  * `output` selects from the captures and the files the tools wrote together. One
  * cacheable unit, keyed by the staged content + the stage specs (see
- * {@link runPipeline}).
+ * {@link createPipelineAction}).
  */
 function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const files = FileSet.unionAll(fileSetInput(action, "files"), configFiles(action));
@@ -107,12 +107,8 @@ function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | undefined> 
   return files.length === 0 ? Computable.resolve(undefined) : files[0][1].getBuffer();
 }
 
-/* v2: a declared `output` glob that matches nothing is now an error, not a
- * cached empty success — bump so entries cached green under v1 re-run.
- * v3: the stage spec's stream members changed shape (`both` → `stdout` +
- * `mergeErr`), and the spec is serialized into the key, so v2 entries would key
- * differently for the same command.
- * v4: a given `output` selects the captures too. */
+/* The version tracks what the step does and what its serialized stage spec
+ * means; either changing is a bump. */
 export const PIPELINE_ACTION = { id: "core:command-pipeline", version: 4, run: runPipeline };
 
 /** One stage as {@link stagePipeline} needs it: the runnable to launch plus its

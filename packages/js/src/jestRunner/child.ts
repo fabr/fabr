@@ -21,10 +21,9 @@
  * One test file, in its own process: assemble the jest environment, then hand
  * jest-circus the facades and let it run the file.
  *
- * A process per file is the isolation `jest.mock` actually requires (it is
- * file-scoped by construction), and here it is the real thing rather than a
- * simulated one — `process.env`, native state, leaked handles and heap are all
- * genuinely separate, which a vm context cannot give you.
+ * A process per file is the isolation `jest.mock` requires (it is file-scoped
+ * by construction): `process.env`, native state, leaked handles and heap are
+ * all separate per file.
  *
  * Invoked by the parent (runner.ts) as a forked child; the result goes back
  * over the IPC channel. Anything that kills the process before that — a module

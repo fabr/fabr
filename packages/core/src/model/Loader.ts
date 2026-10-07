@@ -79,7 +79,7 @@ const DIAG_PLUGIN_ACTIVATION = new Diagnostic<{ detail: string; loc: ISourceSpan
 
 /**
  * Core's own contribution to every build: the generic bootstrap rules (flag,
- * files, script[run], serve[run], generate, patched) and STD.fabr, which is therefore **always present** —
+ * files, script[run], serve[run], generate, patched, sync) and STD.fabr, which is therefore **always present** —
  * no explicit `include STD.fabr;` needed. Seeds every load before any plugin.
  */
 export function coreContribution(): PluginContribution {

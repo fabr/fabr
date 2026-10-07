@@ -22,12 +22,9 @@
  *
  * A component that does `import styles from "./Card.module.scss"` is asking a
  * BUNDLER for something; under test there is no bundler, and handing the file
- * to node gets a syntax error. Every jest project solves this the same way — a
- * `moduleNameMapper` entry pointing stylesheets at an identity proxy and
- * binaries at a string stub — so fabr does it in the loader instead, because
- * the loader is already the place a request is intercepted. That is one fewer
- * thing a project has to declare, and it removes the commonest reason a suite
- * needs `moduleNameMapper` at all.
+ * to node gets a syntax error. Fabr answers such an import in the loader with
+ * what a jest `moduleNameMapper` entry conventionally supplies: an identity
+ * proxy for a stylesheet, a string stub for a binary.
  *
  * Shared by every runner flavour: the stubs ({@link assetStubFor}) are what an
  * asset import yields, and {@link installAssetHooks} puts them on node's own
@@ -60,7 +57,7 @@ const ASSET = extensionPattern([...STYLESHEET_EXTENSIONS, ...BINARY_EXTENSIONS])
 /**
  * The stub for `request`, or undefined if it is ordinary JavaScript.
  *
- * Judged on the REQUEST rather than the resolved path, deliberately: a
+ * Judged on the REQUEST rather than the resolved path: a
  * stylesheet that was never staged (not among the target's `srcs`) does not
  * resolve at all, and it must still be stubbed rather than becoming a confusing
  * "cannot find module". `undefined` means "ordinary JavaScript, not ours".

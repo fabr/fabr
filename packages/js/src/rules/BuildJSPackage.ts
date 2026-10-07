@@ -103,15 +103,13 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
       /* THE collection point, singular per evaluation: srcs, tests, deps AND
        * provided_deps materialize through one joint resolution (a package needing
        * Node APIs lists `@types/node` among them), so this target's pins
-       * participate across the lot. `provided_deps` are host-provided,
-       * singleton-by-identity peers (the plugin↔core relationship): they
-       * take part in resolution, the
-       * compile, AND the carried closure exactly like `deps` (flatten +
-       * per-name uniqueness already yields the one shared instance the peer
-       * wants). They differ only in the generated manifest — `peerDependencies`,
-       * not `dependencies` — and in strict-singleton resolution enforcement
-       * (deferred). TSC is the compiler's own concern (resolved in js_compile),
-       * independent of what it compiles. */
+       * participate across the lot. `provided_deps` are the package's provided
+       * requirements (the plugin↔core relationship): they take part in
+       * resolution, the compile, AND the carried closure like `deps`, differ in
+       * the generated manifest — `peerDependencies`, not `dependencies` — and
+       * are carried named as provided, so a consumer's collection point binds
+       * each to what it uses under that name. TSC is the compiler's own concern
+       * (resolved in js_compile), independent of what it compiles. */
       /* Read but NOT collected: see the subtraction below — this must not draw
        * the test dependencies into the build's resolution. */
       const testDeps = context.getFileProperty("test_deps");
@@ -203,8 +201,7 @@ function buildJsPackage(context: TargetContext): Computable<RuleResult> {
               constraints: Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: format }) }),
               moduleExtension: format === "esm" ? ESM_JS_EXTENSION : undefined,
             });
-          /* Single-format keeps the ambient target verbatim rather than respelling
-           * it, so nothing about an ordinary build moves. */
+          /* Single-format keeps the ambient target verbatim. */
           const contents = dual
             ? formatCompile("commonjs")
             : compileContents(context, compileSources, compileDeps, { packageName: context.name });

@@ -44,13 +44,6 @@ function canonicalExactVersion<V, C>(domain: VersionDomain<V, C>, text: string |
 }
 
 /**
- * The versions the user explicitly WROTE per package — `?` sanctions plus
- * exact unmarked pins (the catalog form; recognized via the domain's
- * `exactVersion`, so a range stays a floor, not a written version), all in
- * canonical `versionToString` form. This is the right-hand side of the
- * sanction rule: a strict delivery ships only version sets ⊆ what was written.
- */
-/**
  * Collect the `?` sanctions written in a batch (pkg → the canonical exact
  * versions whose forks a strict delivery may accept), rejecting the
  * contradictory marker combinations — a package both forced and alternated,
@@ -95,6 +88,13 @@ export function collectSanctions<V, C>(
   return alternates;
 }
 
+/**
+ * The versions the user explicitly WROTE per package — `?` sanctions plus
+ * exact unmarked pins (the catalog form; recognized via the domain's
+ * `exactVersion`, so a range stays a floor, not a written version), all in
+ * canonical `versionToString` form. This is the right-hand side of the
+ * sanction rule: a strict delivery ships only version sets ⊆ what was written.
+ */
 export function writtenVersions<V, C>(
   domain: VersionDomain<V, C>,
   alternates: ReadonlyMap<string, ReadonlySet<string>>,

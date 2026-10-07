@@ -201,8 +201,7 @@ function checkDomain<V, C>(
   /* One resolution behind every part of the conflict: its remedy is computed
    * and verified against it, as for a single delivery. Several resolutions
    * have no joint one to verify a pin against, so the remedy is the sanction
-   * set — correct by construction, since each version shipped demonstrably
-   * answers its own requirers. */
+   * set. */
   const suggestion =
     graphs.length === 1
       ? suggestSanctions(outstanding, graphs[0], needed, members.flatMap(facts => facts.requested), written, members[0].sources())

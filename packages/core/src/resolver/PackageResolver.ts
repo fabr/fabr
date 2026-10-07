@@ -331,12 +331,9 @@ export function resolvePackages<V, C>(
 ): Computable<Resolution> {
   const { format } = registry;
   const references = requests.map(request => request.reference);
-  /* No operation here, by construction: a resolution is a function of the
-   * requirements alone, and what varies by operation is the SHAPE of the
-   * delivery, decided by the repository in its own `deliver`. That is also why
-   * the memo key has never carried the operation — build and run always shared
-   * one resolution, and the field only existed to be carried back out to
-   * materialize. */
+  /* No operation here: a resolution is a function of the requirements alone
+   * (build and run share one), and what varies by operation is the SHAPE of
+   * the delivery, decided by the repository in its own `deliver`. */
   return Computable.resolve(undefined).then(() => {
     const { built, carried } = builtNodes(registry, locals);
     /* Each request as the requirement it is: the collection's own as written,
@@ -406,9 +403,9 @@ export function resolvePackages<V, C>(
 /**
  * Phase 2 — fetch + assemble the requested references (a subset of `resolution`).
  * Only the closure reachable from the requested roots is fetched, from the
- * pre-resolved tree — so a subset materialization keeps the joint pin. The
- * operation (captured in the resolution) decides the shape: run → each root
- * becomes a runnable, otherwise the plain packages.
+ * pre-resolved tree — so a subset materialization keeps the joint pin. What is
+ * delivered is the assembled packages; the shape an operation wants (a
+ * runnable, bare files) is the repository's `deliver`'s business.
  *
  * A violation nothing in the resolution satisfies has no repairing fork and
  * fails here, in EVERY mode — no delivery can honor the constraint. Whether a
@@ -452,11 +449,7 @@ export function materializePackages<V, C>(
   /* The selections reachable from the requested roots — the fetch set.
    * Forks are reachable exactly through the violated edges bound to them,
    * so a strict subset whose closure has no violations carries no forks.
-   *
-   * Walked forward over the resolution's own edges, so this costs the SUBSET
-   * rather than the whole resolution: `reachableFrom` indexes the other way
-   * (which roots reach a node), and consulting it would scan every selection
-   * on every delivery, however few packages the delivery names. */
+   * Walked forward over the resolution's own edges (O(the subset)). */
   const seeds = new Set(bindings.filter((sel): sel is Selected<V | undefined> => sel !== undefined).map(sel => graph.id(sel)));
   const reachableIds = graph.reachable(seeds);
   /* Back to the resolution's canonical order — the walk reaches nodes in edge
@@ -618,9 +611,7 @@ function attributeResolutionFailure(err: unknown, references: RepositoryRef[], r
  * ({@link edgeBinding} via the precomputed edge map), a fact identical in
  * every delivery. NO layout is decided here: hoisting and private nesting
  * are the consuming assembler's business (assembleNodeModules), computed
- * from these complete facts at the merge that needs them — which is what
- * lets one delivery's member survive a merge with a sibling delivery
- * unharmed.
+ * from these complete facts at the merge that needs them.
  *
  * The graph may be cyclic (mutual same-version deps are ordinary npm), so
  * it is constructed through a {@link PackageGraphBuilder}, each instance
@@ -733,9 +724,8 @@ function resolutionOrigin<V, C>(
  * it), so this is exactly the version the joint path would give the root,
  * reached without walking — or fetching — the closure; any projection stays
  * pending on the delivered ref (RepositoryRef.deliveredAs), finished by the
- * driving context. Exported because a repository decides its own delivery
- * shapes but this is resolver machinery: it mints the `Selected` and the
- * resolution provenance a delivered package carries.
+ * driving context. For a repository's `deliver` to call: it mints the
+ * `Selected` and the resolution provenance a delivered package carries.
  */
 export function resolveBarePackage<V, C>(registry: RepositoryReader<V, C>, reference: RepositoryRef): Computable<FileSet> {
   return barePackage(registry, reference, () => Computable.resolve({ dependencies: [], provided: new Map() }));

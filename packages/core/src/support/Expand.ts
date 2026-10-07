@@ -44,8 +44,7 @@ import { unpackStream } from "./Unpack";
  * contents as a FileSet, named relative to the archive root. Production binds
  * this to the resolver's cached expansion (BuildContext.expandArchive — the
  * one owner of the traversal, with the BuildCache in hand); a caller with no
- * cache (tests) binds {@link expandOnce}. A domain seam, not cache plumbing —
- * it is also where a hypothetical second boundary kind would plug in.
+ * cache (tests) binds {@link expandOnce}.
  */
 export type ExpandFn = (file: IFile) => Computable<FileSet>;
 
@@ -59,8 +58,7 @@ export type ExpandFn = (file: IFile) => Computable<FileSet>;
  * source tree from probing every file it matches. Candidates stop at an
  * unsubstituted `${var}` (nothing concrete to probe with), and probes carry no
  * facets — a rename or constraint applies to the whole reference, never to a
- * probe. Exported so the policy is testable directly; the walker is its one
- * production consumer.
+ * probe.
  */
 export function descentPrefixes(pattern: Name): Name[] {
   const components = pattern.components();
@@ -82,9 +80,8 @@ export function descentPrefixes(pattern: Name): Name[] {
  * polymorphic `find`, plus — wherever a proper prefix of the pattern lands on a
  * real file with pattern remaining (see {@link descentPrefixes}) — that file
  * read as a directory of its contents (`expand`) and the whole pattern
- * re-matched over the expansion mounted at the file's path. Mounting (rather
- * than splitting the remainder off) is what makes naming fall out of the
- * ordinary written-name rule: `./a.tgz:*:**` names results relative to
+ * re-matched over the expansion mounted at the file's path, so naming follows
+ * the ordinary written-name rule: `./a.tgz:*:**` names results relative to
  * `a.tgz:*` exactly as it would were `a.tgz` a directory. Recursion over the
  * mounted set descends nested archives the same way.
  *

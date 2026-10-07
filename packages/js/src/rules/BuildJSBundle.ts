@@ -27,7 +27,7 @@
  * srcs and deps resolve through ONE collection point (so they can't version-fork
  * across the bundle boundary). The bundler is a build *tool*, independent of what
  * it bundles, so it is resolved apart as the JS_BUNDLER runnable (fabr's own
- * esbuild driver, declared in JS.fabr — the TSC precedent) and mounted under a
+ * esbuild driver, declared in JS.fabr) and mounted under a
  * tool dir, its deps neither colliding with nor visible to the sources. The
  * bundle is a terminal artifact, delivered as a plain FileSet.
  */
@@ -87,9 +87,7 @@ const NODE_GLOBAL_DEFINES: Record<string, string> = { global: "globalThis" };
  * The target a bundle's inputs are built and compiled for: ESM, whatever the
  * bundle itself ships as. Only ESM carries the import graph a bundler needs —
  * `require` hands back a namespace built at run time, so every export of a
- * required module must survive and tree-shaking becomes impossible. Lowering to
- * CommonJS is lossy, and the bundler re-emits everything anyway, so the loss
- * buys nothing and costs whatever the unused half of each dependency weighs.
+ * required module must survive and tree-shaking becomes impossible.
  *
  * The mirror of the test compile's swap to `commonjs`, and set the same way:
  * component-wise (the ES version and environment are the target's own),

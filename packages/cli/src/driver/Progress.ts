@@ -51,11 +51,9 @@ const OPERATION_VERBS = new Map([
   ["run", "Running"],
 ]);
 
-/** Marks a finished task in the log. The completion line repeats the
- *  start line's verb rather than restating it in the past tense: a sub-target's
- *  label is display text a rule author chose ("Compiling"), with no derivable
- *  past form ("Running" → "Ran"), and repeating it reads as the same item being
- *  checked off. */
+/** Marks a finished task in the log. The completion line repeats the start
+ *  line's verb verbatim (a sub-target's label is display text a rule author
+ *  chose, with no derivable past form). */
 const MARK_OK = "✓";
 const MARK_FAILED = "✗";
 
@@ -79,8 +77,7 @@ export function formatDuration(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
-/** Decimal units, as a registry and a browser both report a download — the
- *  point of comparison is the origin's own figure, not the memory it occupies. */
+/** Decimal units, as a registry and a browser both report a download. */
 const BYTE_UNITS = ["B", "kB", "MB", "GB", "TB"];
 
 /**
@@ -136,9 +133,7 @@ export class ProgressReporter {
    * is running is already on screen, and the start line would only repeat it a
    * few hundred milliseconds before the completion line supersedes it; without
    * one it is the sole indication that anything is happening — *unless* the run
-   * asked for quiet, which has no live display precisely because it wants none,
-   * and must not be handed the start lines in its place. Asking for quiet can
-   * only ever produce less.
+   * asked for quiet, which gets no start lines in the pane's place either.
    */
   private readonly announceStart: boolean;
   /**
@@ -266,16 +261,13 @@ export class ProgressReporter {
    * one line for the remainder.
    *
    * A wide graph starts every action at once, so on a big build most of what
-   * has begun is queued rather than happening. Counting that rather than
-   * listing it keeps the pane's size a function of the screen rather than of
-   * the graph, while still saying how much is behind it: "30 waiting" is the
-   * useful fact, a list of 30 target names is not.
+   * has begun is queued rather than happening; that is counted, not listed, so
+   * the pane's size is a function of the screen rather than of the graph.
    */
   private paneContent(budget: number): IPaneContent {
     const items = [...this.running.values()];
-    /* Incidental task is never individually interesting — that is what makes it
-     * incidental — and a resolution has a dozen in flight at once. One row per
-     * kind says as much, in a tenth of the space. */
+    /* Incidental tasks (a resolution has a dozen in flight at once) get one row
+     * per kind, not one each. */
     const summaries = this.summaryRows(items.flatMap(item => (incidental(item.task) ? [{ task: item.task, started: item.started }] : [])));
     const own = items.filter(item => !incidental(item.task));
     const running = own.filter(item => item.state === "running");
@@ -303,8 +295,7 @@ export class ProgressReporter {
 
   /** Incidental task — always a fetch (see {@link incidental}) — as one row per
    *  resource kind ("Fetching metadata (12)"), timed from the oldest still
-   *  running: the group's age, which is what a reader watching for something
-   *  stuck actually wants. */
+   *  running. */
   private summaryRows(items: Array<{ task: IFetchTask; started: number }>): IPaneRow[] {
     const kinds = new Map<string, number[]>();
     for (const { task, started } of items) {
@@ -343,8 +334,7 @@ function formatProgress(progress: TaskProgress): string {
 
 /**
  * A test run in flight: files finished of the total, and the outcomes they have
- * reported. The failures are named only when there are some — a green run says
- * nothing about failures, which is what makes a red one worth noticing.
+ * reported. The failures are named only when there are some.
  */
 function formatTestRun(files: number, totalFiles: number, passed: number, failed: number): string {
   const outcomes = failed > 0 ? `${passed} passed, ${failed} failed` : `${passed} passed`;
@@ -353,9 +343,8 @@ function formatTestRun(files: number, totalFiles: number, passed: number, failed
 
 /**
  * A download's progress: a bar, its percentage and the size it is heading for
- * where the origin declared one, else the bare bytes so far — a chunked
- * response has no total to be a fraction of (and so nothing to draw a bar
- * against), and "how much has arrived" is still worth seeing.
+ * where the origin declared one, else the bare bytes so far (a chunked
+ * response has no total to be a fraction of).
  */
 export function formatTransfer(done: number, total?: number): string {
   if (total === undefined || total === 0) {
@@ -365,8 +354,7 @@ export function formatTransfer(done: number, total?: number): string {
   return `${formatBar(fraction)} ${Math.round(fraction * 100)}% of ${formatBytes(total)}`;
 }
 
-/** Cells in a progress bar. Small: it shares a line with the task's name, and
- *  the eighths below give it eight times its width in resolution anyway. */
+/** Cells in a progress bar; it shares a line with the task's name. */
 const BAR_WIDTH = 10;
 
 /** Left-to-right partial blocks, for the cell the bar is part-way through. */
@@ -387,8 +375,8 @@ function formatBar(fraction: number): string {
 /**
  * What a task IS, in one phrase — the same text in the start line, the
  * completion line and the pane row, so the three are recognizably one thing.
- * Deliberately free of the surrounding context (which required it, under what
- * constraints): that belongs on the start line alone, where it is read once.
+ * Free of the surrounding context (which required it, under what constraints):
+ * that is {@link context}, added to the line that introduces the item.
  */
 function describe(task: TaskDescription): string {
   switch (task.kind) {
@@ -401,16 +389,14 @@ function describe(task: TaskDescription): string {
       return `${verb} ${declName(task.target)}`;
     }
     case "repository-resolve":
-      /* Named by whose requirements they are, not by the requirements: the
-       * batch is a list of package names of which only the first few would
-       * fit, and which say nothing about what fabr is working on. */
+      /* Named by whose requirements they are (the consuming target, or the
+       * catalog), not by the batch of package names. */
       return `Resolving ${task.consumer} dependencies from ${task.repository}`;
     case "fetch":
       return `Fetching ${task.resource} ${task.url}`;
     case "command-subst":
-      /* A substitution belongs to no target, so it names itself: the command as
-       * written is what a reader recognizes it by, and the only thing there is
-       * to say about it. */
+      /* A substitution belongs to no target, so it names itself by the command
+       * as written. */
       return `Running \`${task.command}\``;
   }
 }
@@ -418,8 +404,7 @@ function describe(task: TaskDescription): string {
 /**
  * The CLI's policy for task that goes unrecorded in the log: a registry index
  * read is a step within task already being reported (a resolution makes dozens
- * of them), so it is shown in the pane while it runs — which is where a reader
- * wants it: what is taking the time, not what took it — and never logged. The
+ * of them), so it is shown in the pane while it runs and never logged. The
  * event states the fact (a fetch's `role`); this is the decision made from it.
  * Only a fetch is ever incidental, which the narrowing carries to the summary
  * rows.

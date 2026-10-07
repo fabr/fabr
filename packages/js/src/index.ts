@@ -20,16 +20,15 @@
 /**
  * @fabr-build/js: the Javascript/NPM ecosystem support for fabr, loaded as a fabr
  * plugin (`plugin @fabr-build/js;` — see PLUGINS.md for the plugin contract):
- * activation registers the js rules (js_package build+test, js_test,
- * js_script, npm_repository) and this package's lib/ (JS.fabr) on the system
- * include path.
+ * activation contributes the js rules, the npm repository type, and this
+ * package's lib/ (JS.fabr), which the plugin declaration auto-includes.
  *
- * The package doubles as fabr's test runner: the js test rules source the
- * runner runtime straight from this installation's own testRunner/ (see
- * TestPipeline.getHostRunner), never resolving it as a build target. That
- * runtime lives in src/testRunner/ and is deliberately disjoint from this side
- * of the package: it executes standalone inside client test processes (no
- * dependency on the host's core at runtime), and nothing here imports it.
+ * The package also ships the test runners the js test rules run (the
+ * `js_script` declarations in JS.fabr, over the compiled entries in this
+ * installation). Those runtimes live in src/testRunner/, src/jestRunner/ and
+ * src/vitestRunner/, disjoint from this side of the package: they execute
+ * standalone inside client test processes (no dependency on the host's core at
+ * runtime), and nothing here imports them.
  */
 
 import { packageLibFile, PluginContribution } from "@fabr-build/core";
@@ -58,7 +57,8 @@ export {
 
 /**
  * Plugin entry point: return this package's contribution — the js rules
- * (js_package build/run/test, js_test, js_script, js_compile, js_bundle), the npm
+ * (js_package build/run/test, js_test, js_script, js_compile, js_bundle,
+ * sass_compile, css_postcss), the npm
  * repository type, and this package's `.fabr` library (JS.fabr), which a
  * `plugin @fabr-build/js;` declaration auto-includes. Pure: no global registration
  * (see PLUGINS.md); the host merges this into the build model's rule tables.

@@ -218,10 +218,10 @@ export interface IIncludeDecl extends IBaseDecl {
 }
 
 /**
- * `plugin <name>;` — requests that the named target (typically a js_package)
- * be built and loaded into the host as a rule plugin before the requested
- * targets are resolved. The name must resolve to a target that yields a
- * package with an `activate(api)` entry point.
+ * `plugin <name>;` — loads the named installed package as a rule plugin before
+ * the requested targets are resolved. The name is resolved by module resolution
+ * from the fabr installation (never built from source), and the package must
+ * export a no-arg `activate()` returning its contribution (see Plugin.ts).
  */
 export interface IPluginDecl extends IBaseDecl {
   kind: DeclKind.Plugin;

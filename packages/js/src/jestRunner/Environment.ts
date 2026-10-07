@@ -18,14 +18,13 @@
  */
 
 /**
- * Test environments. `node` is free — the process *is* the environment, which
- * is the whole benefit of process-per-file over a simulated sandbox. `jsdom`
+ * Test environments. `node` is free — the process *is* the environment. `jsdom`
  * installs a DOM into that process's globals.
  *
- * `jest-environment-jsdom` is deliberately not used: its job is to construct a
- * global object for a vm context, and there is no vm context here. What it does
- * that matters is copied instead — in particular the *shadowing* of node's own
- * overlapping globals, which is load-bearing rather than cosmetic (see below).
+ * `jest-environment-jsdom` is not used: its job is to construct a global object
+ * for a vm context, and there is no vm context here. What it does that matters
+ * is copied instead — in particular the *shadowing* of node's own overlapping
+ * globals, which is load-bearing rather than cosmetic (see below).
  *
  * jsdom comes from the TARGET's `test_deps`, not from the runner's mount: the
  * DOM implementation and its version are the project's choice, exactly like any

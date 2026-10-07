@@ -332,8 +332,7 @@ export class NPMRepository
    * that varies per build config has one authority. Instances are interned per
    * BuildContext, so a rule reading a FILES property under BUILD_OVERRIDE
    * reaches a build-flavoured instance even when the rule itself was selected
-   * under `run`; the collection point consuming the references cannot know
-   * that, which is why it is not asked.
+   * under `run`.
    */
   public deliver(reference: RepositoryRef, options?: MaterializeOptions, closure?: ClosureThunk): Computable<FileSet> {
     return this.context.getGlobalString(BUILD_OPERATION).then(operation => {
@@ -371,14 +370,9 @@ export class NPMRepository
    * os/cpu-gated native binaries (esbuild's @esbuild/<platform> engine): all
    * variants are listed, and only the target-matching one(s) are kept. Peers
    * are **provided** requirements (the `provided_deps` relationship — the
-   * consumer's tree supplies them): satisfied by any selection in range
-   * whatever its resolution key — a wide multi-major peer range must not
-   * spawn its floor as a coexisting major — an "expected" one demanding its
-   * minimum only when the converged tree selects nothing for the package, an
-   * "optional" one never. "Shared, one instance" holds by construction in a
-   * strict closure (one version per name, flat mount) — the peer/regular
-   * distinction only exists to work around duplicate-tolerant regular deps,
-   * which fabr doesn't have. A peer the build's selection is outside the range
+   * consumer's tree supplies them): an "expected" one demands its minimum
+   * only when the converged tree selects nothing for the package, an
+   * "optional" one never. A peer the build's selection is outside the range
    * of binds that selection anyway (the format shares provided requirements):
    * recorded as data, never repaired by a private copy.
    */
@@ -439,7 +433,7 @@ export class NPMRepository
    * (origin-derived freshness, revalidated when stale, never frozen); if the
    * cached list satisfies nothing, that is evidence it may be stale, so it is
    * force-revalidated once before giving up. Deterministic modulo registry
-   * append — the one sanctioned relaxation, confined to this repair path.
+   * append.
    *
    * A package the registry has never heard of (a typo'd name) has no published
    * versions at all, which is a definite answer rather than a stale one: it

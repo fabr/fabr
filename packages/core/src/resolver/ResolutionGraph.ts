@@ -22,11 +22,9 @@
  * leads, and the structural questions a consumer asks of a finished
  * resolution. Separate from the algorithm that produces one (MVSResolver) and
  * from how it is explained (ResolutionProvenance) — but *shared* with the
- * algorithm, which asks the same questions of its own converged state.
- *
- * That sharing is the point of the module. A consumer laying a resolution out,
- * or judging it, must reach the same answers the walk did; two implementations
- * obliged to agree is how they stop agreeing.
+ * algorithm, which asks the same questions of its own converged state, so a
+ * consumer laying a resolution out or judging it reaches the answers the walk
+ * did.
  */
 
 import { constraintOf, requiredAs, UNVERSIONED } from "./Requirement";
@@ -78,9 +76,9 @@ const NO_EDGES: ReadonlyMap<DependencyName, NodeId> = new Map();
  * (deserialization returns one); a delivery reads it through this face, so it
  * cannot disagree with the resolution it came from.
  *
- * Takes a `versionToString` rather than a whole VersionDomain (the explainer's
- * precedent): a persisted resolution is readable on its own, without the
- * ecosystem's comparison and constraint machinery.
+ * Takes a `versionToString` rather than a whole VersionDomain: a persisted
+ * resolution is readable on its own, without the ecosystem's comparison and
+ * constraint machinery.
  */
 export class ResolutionGraph<V> implements IResolutionData<V> {
   public readonly selections: Selected<V>[];
@@ -259,15 +257,9 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
 
 /**
  * The nodes reachable from `seeds`, by **walking the resolution's own edges**
- * — the delivered subset of a joint resolution.
- *
- * A walk rather than a filter over `reachableFrom`: that index answers "which
- * roots reach this node", so asking it what a root reaches costs a pass over
- * every selection, per delivery, however small the subset. Following the edges
- * forward is O(the subset) — which is what a delivery is proportional to.
- *
- * The two agree by construction: the resolver marked `reachableFrom` by
- * following exactly these bindings (see the walk's own reachability pass).
+ * — the delivered subset of a joint resolution. O(the subset). The resolver
+ * marked `reachableFrom` by following exactly these bindings (see the walk's
+ * own reachability pass), so the two agree.
  */
 export function reachableFrom(
   edges: ReadonlyMap<NodeId, ReadonlyMap<DependencyName, NodeId>>,
@@ -319,9 +311,6 @@ function highestOf<V, C>(domain: VersionDomain<V, C>, selections: readonly Selec
  * answers both, with no case of their own. Undefined when the constraint is
  * unparseable (reported by the walk) or nothing of the package is selected (a
  * gated optional pruned from it).
- *
- * A layout whose answer here disagreed with the walk's would be one the
- * resolution never sanctioned — hence one rule, two callers.
  */
 export function edgeBinding<V, C>(
   domain: VersionDomain<V, C>,
@@ -381,7 +370,7 @@ export function resolutionExplainer<V>(
 ): ResolutionExplainer<V> {
   /* A bare selection list explained as a graph with nothing else in it — the
    * synthetic case (a bare package's minted origin, a delivery slice) where no
-   * loaded resolution stands behind the selections. One pathTo, one home. */
+   * loaded resolution stands behind the selections. */
   return new ResolutionGraph(versionToString, {
     selections: [...selections],
     violations: [],

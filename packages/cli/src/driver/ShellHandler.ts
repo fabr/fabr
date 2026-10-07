@@ -40,8 +40,8 @@ const DIAG_NO_SANDBOX = Diagnostic.Error<{ name: string }>(
 /**
  * `fabr shell <target>`: stage the target's build-action sandbox — its resolved
  * inputs (`srcs`) and tool mounts, exactly as the build step would see them —
- * into a work dir — the real thing, from the cache's own work tree, so the
- * sandbox sits exactly where the step's would — print the command the step would
+ * into a work dir in the cache's own work tree (where the step's would sit),
+ * print the command the step would
  * run, and open an interactive shell there so the environment can be reproduced
  * and inspected by hand. The dir is removed when the shell exits. Fabr's
  * analogue of Bazel's --sandbox_debug.

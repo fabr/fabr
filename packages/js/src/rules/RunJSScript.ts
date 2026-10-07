@@ -28,9 +28,9 @@
  * assemble the rest of the install (packages mount under `node_modules/<name>`,
  * loose filesets land at their own paths); `args` are fixed leading arguments.
  * It yields a `RunnableFileSet` — the assembled install plus how to launch it —
- * for `fabr run`, the generic `run` target, or a golden test to invoke. It does
- * not itself execute (executing a runnable and collecting output is the generic
- * `run` target's job).
+ * for `fabr run`, the generic `generate` target, or a golden test to invoke. It
+ * does not itself execute (executing a runnable and collecting output is the
+ * generic `generate` target's job).
  */
 
 import {

@@ -15,14 +15,15 @@
  */
 
 /**
- * The runner core, shared by every flavour of fabr's test runner: parse the
- * invocation fabr makes, drive node:test over the test files with a given set
- * of preloads, and write the CTRF report.
+ * The runner core of fabr's node:test flavour: parse the invocation fabr makes,
+ * drive node:test over the test files with a given set of preloads, and write
+ * the CTRF report.
  *
- * A "flavour" is this core plus a preload — the module that furnishes each test
- * process with whatever the test files expect to find already there. The native
- * runner's preload installs describe/it; the jest-compatibility flavour's
- * installs a whole jest environment. Nothing below knows which.
+ * A node:test flavour is this core plus a preload — the module that furnishes
+ * each test process with whatever the test files expect to find already there;
+ * the native runner's installs describe/it. Nothing below knows which. The jest
+ * and vitest flavours drive their own frameworks and take only the invocation
+ * parsing and the per-test timeout from here.
  */
 
 import { run } from "node:test";
@@ -68,7 +69,7 @@ export interface IRunnerOptions {
   update: boolean;
   /** What every test process loads before any test file, in the order given: a
    * bare module name, or a `./`-prefixed path within the installation. The
-   * prefix is the whole distinction — see the `setup` property in JS.fabr. */
+   * prefix is the whole distinction. */
   setup: string[];
   files: string[];
 }
@@ -212,10 +213,10 @@ function finish(results: ITestResult[], reportPath: string, start: number): void
  * blocked on stdin that never closes) fails as a timeout rather than hanging the
  * whole run forever — node:test defaults to no timeout, unlike jest's 5s. Baked
  * in (tests run with a clean env, so an env knob could not reach here) and set
- * generously — well above the slowest legit test (the watch/serve suites cap
- * themselves at 90s) — so it only ever catches a genuine hang. Shared across
- * flavours: node:test takes it for the run here, and the jest flavour hands it
- * to circus, which enforces it per test and honours a test's own override. */
+ * well above any legitimate test, so it only ever catches a genuine hang.
+ * Shared across flavours: node:test takes it for the run here, the jest flavour
+ * hands it to circus and the vitest flavour to vitest, each of which enforces
+ * it per test and honours a test's own override. */
 export const TEST_TIMEOUT_MS = 120_000;
 
 /* The timeout's complement: the timeout fails a hung TEST, but cannot make a
@@ -225,8 +226,8 @@ export const TEST_TIMEOUT_MS = 120_000;
  * forceExit exits each file's process once its tests complete regardless of
  * stray handles; anything the tests *spawned* and left behind is then reaped by
  * the host's process-group sweep at the action boundary (see core's Execute).
- * Not available before node 20.14/22.0 — older hosts keep the old behavior
- * rather than choke on an unknown option. */
+ * Not available before node 20.14/22.0, and an unknown option is refused, so an
+ * older host runs without it. */
 function forceExitOption(): { forceExit?: boolean } {
   return atLeastNode(20, 14) ? { forceExit: true } : {};
 }
@@ -239,7 +240,7 @@ export function atLeastNode(major: number, minor: number): boolean {
 
 /**
  * Deliver the preloads to each test child. `run({ execArgv })` reaches ONLY the
- * runner's own test processes, which is what we want: NODE_OPTIONS is inherited
+ * runner's own test processes, whereas NODE_OPTIONS is inherited
  * by every node process descended from a test, so a preload that installs a
  * whole environment (module patches, DOM globals) would contaminate arbitrary
  * helper processes the tests spawn. `execArgv` needs node 22.10; older hosts

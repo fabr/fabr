@@ -77,10 +77,9 @@ function eraseOnExit(erase: () => void): void {
 
 /**
  * One row of the pane: what the work is, and its current state (elapsed time,
- * a download's bytes). Split because only the terminal knows the width — the
+ * a download's bytes). Split because only the terminal knows the width: the
  * `right` column is the part that must survive a narrow terminal, so it is the
- * `left` that is truncated, and laying that out here keeps the decision with
- * the component holding the measurement.
+ * `left` that is truncated.
  */
 export interface IPaneRow {
   left: string;
@@ -165,9 +164,7 @@ export class TerminalStream {
        *
        * Known limit: this first erase counts lines laid out at the OLD width,
        * so a terminal that reflows on shrink (iTerm2, VTE) can briefly strand
-       * pane fragments; the repaint at the new width heals from there. A
-       * reserved scroll region (DECSTBM) would prevent it but leaves the
-       * user's terminal broken on abnormal exit — the worse failure. */
+       * pane fragments; the repaint at the new width heals from there. */
       this.out.on("resize", () => this.repaint());
       /* Torn down from the shared exit hook (see eraseOnExit) or not at all. */
       eraseOnExit(() => this.erase());
@@ -180,12 +177,10 @@ export class TerminalStream {
    * experimental-feature notice), and anything else that reaches for
    * `process.stderr` directly.
    *
-   * This is not belt-and-braces: such a write lands *below* the painted pane
-   * and moves the cursor, after which every erase counts back from the wrong
-   * line — stranding a copy of the pane on screen while the live one carries
-   * on elsewhere. Owning the stream has to mean the stream, not the writes we
-   * happen to know about; a warning fabr never emitted is exactly the case
-   * that cannot be found by reading fabr's own call sites.
+   * Unadopted, such a write lands *below* the painted pane and moves the
+   * cursor, after which every erase counts back from the wrong line —
+   * stranding a copy of the pane on screen while the live one carries on
+   * elsewhere.
    */
   private adoptForeignWrites(): void {
     const original = this.out.write.bind(this.out);
@@ -381,10 +376,8 @@ export class TerminalStream {
 /**
  * The run's terminal, for the code that must hand it over rather than write to
  * it — a prompt reading a line, an interactive child with inherited stdio.
- * Module-level for the same reason Execute tracks its interactive child that
- * way: "who owns the terminal right now" is a property of the process, and the
- * alternative is threading a display object through call paths that have no
- * other interest in one.
+ * Module-level, as Execute's interactive child is: "who owns the terminal
+ * right now" is a property of the process.
  */
 let active: TerminalStream | undefined;
 

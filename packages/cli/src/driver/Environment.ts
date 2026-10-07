@@ -29,7 +29,7 @@ export const BUILD_CACHE_ENV = "FABR_CACHE_DIR";
  * Walk up the source tree until we find the PROJECT.fabr file
  * that marks the top of the project.
  * @returns The absolute directory name.
- * @thorws Error if the file is not found.
+ * @throws Error if the file is not found.
  */
 export async function getSourceRoot(): Promise<string> {
   let dir = process.cwd();

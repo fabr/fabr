@@ -24,13 +24,15 @@
  * node:test's native describe/it plus whatever assertion/mock libraries the
  * target declares as ordinary dependencies.
  *
- * Usage: node runner.js [--report=<path>] [--env=node] [--update-snapshots] <test-file>...
+ * Usage: node runner.js [--report=<path>] [--env=node] [--update-snapshots]
+ *                       [--setup=<module|./staged path>]... <test-file>...
  * Exit code 0 if everything passed; 1 if any test failed. The report document
  * (see Report.ts) is written to the given path in either case.
  *
  * This is the base flavour: the runner core (RunTests.ts) plus a preload that
- * installs the describe/it globals and nothing else. The jest-compatibility
- * flavour (../jestRunner) is the same core with a much larger preload.
+ * installs the describe/it globals and nothing else. The jest (../jestRunner)
+ * and vitest (../vitestRunner) flavours drive their own frameworks and share
+ * only the invocation parsing and the report.
  */
 
 import * as path from "node:path";
@@ -43,8 +45,7 @@ const SNAPSHOT_NODE = [23, 4] as const;
  * Environments this flavour provides. It runs tests in the node process it is
  * given, so `node` is the only one it can honestly claim — a target declaring
  * the `dom` flag needs a runner that installs a DOM (the jest and vitest
- * flavours do). Said plainly rather than by silently running DOM tests without
- * a DOM.
+ * flavours do).
  */
 function requireSupportedEnvironment(options: IRunnerOptions): void {
   if (options.env !== "node") {

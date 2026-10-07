@@ -19,7 +19,8 @@
 
 /**
  * The js_test[test] rule: a standalone test target `{ tests, deps }`. The `tests`
- * are compiled and run under fabr's own runner; `deps` are given explicitly and
+ * are compiled and run under the runner of the framework the target's
+ * `framework` selects; `deps` are given explicitly and
  * carry both packages and any plain-source support (e.g. a test harness), which
  * compiles as a sibling but is never run.
  */

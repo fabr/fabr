@@ -67,7 +67,7 @@ export class SymlinkFile implements IFile {
     return file instanceof SymlinkFile && file.target === this.target;
   }
 
-  /** A symlink has no source path on disk — it names its target, which BuildCache stages as a real link. */
+  /** A symlink has no source path on disk — it names its target, which staging (Staging.writeFileSet) writes as a real link. */
   public getAbsPath(): undefined {
     return undefined;
   }

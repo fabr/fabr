@@ -422,8 +422,8 @@ export function instanceRequests(instantiated: ReadonlyArray<SourceRef>): Readon
  * Resolve + deliver one repository's reference batch — the resolution layer's
  * dispatch: a package registry's references resolve jointly
  * (resolvePackages/materializePackages, the batch machinery); any other
- * repository delivers per reference. Repositories no longer carry batch
- * methods at all — batching IS this layer. A request for files is delivered
+ * repository delivers per reference. Batching IS this layer — a repository
+ * carries no batch methods. A request for files is delivered
  * apart from the batch, as plain files. Given `resolution`, the batch is delivered
  * from that resolution — which must be of a batch these requests are among —
  * so that a subset keeps the joint selection.
@@ -1008,12 +1008,9 @@ function droppedByBinding(before: Materialized[], after: Materialized[]): ((name
  * (`fabr ls`/`cat`/`run` via `resolveName`): resolve only the top-level
  * references the name itself denotes — never the dependency closure a delivered
  * package carries. A verb wants the named entity's own content (its files, or
- * its runnable), not its mounted deps: recursing the closure here would
- * re-resolve a built package's carried externals pointlessly (ls/cat discard the
- * deps, reading only the delivered set's own files) and under the wrong
- * operation (those refs ride the repository instance they were built with, not
- * this `files` one), so it both wastes work and can fail on a requirement only
- * the original build context constrained. Non-reference sources (a built
+ * its runnable), not its mounted deps — and a built package's carried refs
+ * ride the repository instance they were built with, not this `files` one, so
+ * they are not re-resolved here. Non-reference sources (a built
  * package, a runnable) pass through untouched; a projected source comes back as
  * a pending {@link FileSetRef} for the caller to finish (see Materialized).
  */

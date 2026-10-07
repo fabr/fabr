@@ -24,7 +24,7 @@ import { EnvHttpProxyAgent, interceptors, request as httpRequest } from "undici"
 import { Computable } from "./Computable";
 import { FabrError, HttpStatusError } from "./Errors";
 
-/** Bounded redirect following npmjs serves tarballs directly, but GitHub
+/** Bounded redirect following: npmjs serves tarballs directly, but GitHub
  * Packages, Artifactory, and most corporate mirrors 302 to blob storage. */
 const MAX_REDIRECTS = 5;
 

@@ -125,8 +125,7 @@ interface IEsbuild {
  * membership pulls into the bundle is emitted as a file asset (hashed, its
  * import rewritten to the URL). This is a denylist of code, NOT an allowlist of
  * assets: what goes into the bundle is decided by resolution into srcs, and a
- * file's *representation* is "code if it's a known code extension, else a file"
- * — so no asset-extension list to maintain and no "unsupported extension" error.
+ * file's *representation* is "code if it's a known code extension, else a file".
  * CSS/JSON are concatenated/parsed natively; JS/TS are compiled. */
 const CODE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".css", ".json", ".txt"]);
 
@@ -206,9 +205,7 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
    * Resolving through a manifest there is no walk — a bare specifier is answered
    * from the importer's PACKAGE — so every directory within one pooled tree
    * shares an answer, and keying by directory only splits it into as many
-   * entries as the package has directories. On a large graph that is the
-   * difference between resolving each dependency once and resolving it for every
-   * folder that mentions it. */
+   * entries as the package has directories. */
   const byPackage = usesManifest();
   const variantCache = new Map<string, IOnResolveResult>();
   /* Only the manifest's own view of who-sees-what is wanted here, never a
@@ -225,12 +222,10 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
    * map never mentions `import` or `require` cannot either. Anything else might,
    * and gets pinned.
    *
-   * Deliberately syntactic, and deliberately one-sided. Modelling the map well
-   * enough to prove two conditions agree would be resolving it — the job left to
-   * esbuild — and being wrong that way is invisible: the package simply arrives
-   * twice and the bundle grows. So every uncertainty (no manifest, no location,
-   * an unreadable package.json) answers `true`, which costs a resolve and
-   * nothing else.
+   * Syntactic, and one-sided: a wrong `false` is invisible (the package simply
+   * arrives twice and the bundle grows), so every uncertainty (no manifest, no
+   * location, an unreadable package.json) answers `true`, which costs a resolve
+   * and nothing else.
    */
   function kindCanMatter(specifier: string, importer: string): boolean {
     if (manifest === undefined) {
@@ -332,8 +327,8 @@ function fabrResolverPlugin(options: IBundleOptions, unresolved: Set<string>): I
 
       /* Representation, not membership: a file membership already pulled in is
        * loaded natively if it is a known code extension, else emitted as a file
-       * asset. So no asset-extension list — anything that resolved into srcs and
-       * isn't code becomes an emitted, URL-rewritten file (fonts, images, …). */
+       * asset: anything that resolved into srcs and isn't code becomes an
+       * emitted, URL-rewritten file (fonts, images, …). */
       build.onLoad({ filter: /.*/ }, async (args): Promise<IOnLoadResult | null> => {
         if (CODE_EXTENSIONS.has(path.extname(args.path).toLowerCase())) {
           return null;
@@ -457,11 +452,9 @@ function toEsbuildOptions(options: IBundleOptions, unresolved: Set<string>): Rec
      * the importing JS; every other stylesheet keeps global names. */
     loader: { ".module.css": "local-css", ".css": "global-css" },
     /* ADDED to esbuild's own conditions, not replacing them. `module-sync`
-     * marks an ESM entry that may be loaded synchronously — node 22 and later
-     * require() exactly these, and fabr's compiler resolves them for that
-     * reason, so a bundler that did not know the condition would refuse a
-     * package that had just typechecked. Bundling one costs nothing: esbuild
-     * consumes ESM whatever format it is emitting. */
+     * marks an ESM entry that may be loaded synchronously — what node 22 and
+     * later require() — and fabr's compiler resolves it, so the bundler must
+     * too; esbuild consumes ESM whatever format it is emitting. */
     conditions: ["module-sync"],
     ...(options.define ? { define: options.define } : {}),
     ...(options.inject ? { inject: options.inject } : {}),
@@ -471,9 +464,9 @@ function toEsbuildOptions(options: IBundleOptions, unresolved: Set<string>): Rec
      * Resolving that link away (the default) would leave a package's own
      * imports walking up through the cache, where there is no manifest to find,
      * and every transitive dependency would fail to resolve. Keeping the link
-     * spelling means the walk reaches this workspace's table instead. Safe
-     * precisely because the table decides identity: it gives each package ONE
-     * location, so preserving symlinks cannot fork one package into two. */
+     * spelling means the walk reaches this workspace's table instead. The table
+     * gives each package ONE location, so preserving symlinks cannot fork one
+     * package into two. */
     ...(usesManifest() ? { preserveSymlinks: true } : {}),
   };
 }

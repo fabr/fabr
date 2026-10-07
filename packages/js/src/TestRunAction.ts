@@ -59,14 +59,12 @@ import {
  * resolution — deps as node_modules, the runner, the compiled tree, a minimal
  * package.json), execute the runner once per test file, and deliver the
  * collected outputs with the per-invocation reports merged into one. Per-file
- * invocation is a partition the runner contract permits, and it is what makes
- * each test process an ordinary unit of the machine-wide execution funnel —
- * files interleave with every other execution of the build instead of the
- * runner multiplying fabr's parallelism by its own. Only green runs enter the
- * cache — a red run throws (as TestsFailedError when the reports say so),
- * which also removes the partial entry, so tests re-run until they pass. That
- * is also the v1 rule for updates: a run red for any *other* reason yields
- * nothing, so nothing is offered back to the tree.
+ * invocation is a partition the runner contract permits, so each test process
+ * is an ordinary unit of the machine-wide execution funnel. Only green runs
+ * enter the cache — a red run throws (as TestsFailedError when the reports say
+ * so), which also removes the partial entry, so tests re-run until they pass.
+ * The same holds for updates: a run red for any *other* reason yields nothing,
+ * so nothing is offered back to the tree.
  */
 const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 6, run: runTests };
 
@@ -117,9 +115,8 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
  *
  * Per *file*, not per test: a file's report exists only once its process has
  * written it, so this is as live as the runner contract allows — the runner is
- * invoked, writes a report and exits, and says nothing in between. (Per-test
- * ticking would need it to stream, which is a change to a contract that is
- * deliberately swappable.) A file whose invocation failed outright counts as
+ * invoked, writes a report and exits, and says nothing in between. A file
+ * whose invocation failed outright counts as
  * finished with nothing to add; the summary at the end is what judges it.
  */
 class RunTally {
@@ -170,8 +167,7 @@ function runOneFile(
 ): Computable<IFileRun> {
   const reportName = invocationReport(index);
   const invocation = [...argv.slice(1), `--report=${reportName}`, file];
-  /* Always captured (never streamed), as the one-invocation step always was:
-   * the report carries the outcomes, the capture backs the no-report failure
+  /* Always captured (never streamed): the report carries the outcomes, the capture backs the no-report failure
    * path, and a per-file fan-out must not chatter a summary per process. The
    * activity half of the report is still passed through — these invocations
    * take slots of the machine's funnel like any others, and a run waiting for
@@ -226,7 +222,7 @@ function isMissingFile(err: unknown): boolean {
  * reports merge into the one document the target delivers — written as
  * {@link TEST_REPORT_FILENAME} for collection when green, rendered into the
  * thrown TestsFailedError when red (the action fails, so the driver reads the
- * failure, not the artifact — as before).
+ * failure, not the artifact).
  */
 function concludeRun(workDir: string, runs: IFileRun[]): void {
   const errors = runs.flatMap(run => (run.error ? [run.error] : []));

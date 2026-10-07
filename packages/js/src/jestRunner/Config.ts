@@ -24,15 +24,13 @@
  * `jest-config` produces — for things like the test timeout, snapshot format
  * and `injectGlobals`. Those records are jest's internals and change shape every
  * release, so fabr does not build them: it states the handful of *documented*
- * config options it actually has an opinion about and lets `readConfig`
- * normalize them. That keeps fabr on jest's public schema (`InitialOptions`,
- * deprecation-cycled) rather than its private one.
+ * config options (`InitialOptions`) it has an opinion about and lets
+ * `readConfig` normalize them.
  *
- * Note what is NOT set, and why: `transform` is empty because fabr already
- * compiled (the hoist is a load-time concern, see Hoist.ts), and `roots`/
- * `moduleDirectories` describe the staged installation fabr assembled. Nothing
- * here asks jest to resolve or transform anything — that is the boundary this
- * runner exists to hold.
+ * Note what is NOT set: `transform` is empty because fabr already compiled (the
+ * hoist is a load-time concern, see Hoist.ts), and `roots`/`moduleDirectories`
+ * describe the staged installation fabr assembled. Nothing here asks jest to
+ * resolve or transform anything.
  */
 
 import * as path from "node:path";
@@ -62,8 +60,7 @@ export interface IConfigOptions {
   /** Rewrite recorded snapshots rather than failing on a mismatch. */
   updateSnapshots: boolean;
   /** Per-test timeout in milliseconds. Circus enforces this itself, per test,
-   * and honours a test's own override — which is why the runner no longer needs
-   * a timeout of its own. */
+   * and honours a test's own override. */
   timeoutMs: number;
   /** What to preload, in order: a bare module name, or a `./`-prefixed path
    * within the installation. */
@@ -84,8 +81,7 @@ export async function makeJestConfig(options: IConfigOptions): Promise<IJestConf
      * (see Environment.ts) and hands circus a facade, so this only has to be a
      * value jest-config accepts. */
     testEnvironment: "node",
-    /* fabr compiled the tree already — there is nothing for jest to transform,
-     * and asking it to would re-parse every module fabr just emitted. */
+    /* fabr compiled the tree already — there is nothing for jest to transform. */
     transform: {},
     automock: false,
     injectGlobals: true,
@@ -107,9 +103,7 @@ export async function makeJestConfig(options: IConfigOptions): Promise<IJestConf
     setupFilesAfterEnv: options.setup.map(entry => (entry.startsWith("./") ? path.resolve(options.root, entry) : entry)),
   };
   const config = await readConfig({ _: [], $0: "" }, initialOptions, false, options.root);
-  /* `updateSnapshot` lives on the GLOBAL config, which is jest's own normalized
-   * record — set through the same channel jest's CLI uses rather than by
-   * mutating a field name we would then have to track. */
+  /* `updateSnapshot` lives on the GLOBAL config, where jest's CLI sets it. */
   return {
     globalConfig: { ...config.globalConfig, updateSnapshot: options.updateSnapshots ? "all" : "none" },
     projectConfig: config.projectConfig,

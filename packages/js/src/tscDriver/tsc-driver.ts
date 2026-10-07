@@ -17,11 +17,11 @@
 /**
  * Fabr's TypeScript driver: the runtime executed (standalone, under node)
  * inside a js_compile build step. It compiles the staged `tsconfig.json` via
- * the compiler API instead of the `tsc` bin, for one reason — **module
- * resolution**. tsc has no PnP support and never will (microsoft/TypeScript
- * #28289); Yarn patches the package because it does not control invocation,
- * and fabr does, so the seam is a driver rather than a patch. Everything else
- * is deliberate CLI parity: same tsconfig, same diagnostics, same exit codes.
+ * the compiler API instead of the `tsc` bin: **module resolution** comes from
+ * the PnP table (tsc has no PnP support — microsoft/TypeScript#28289), and the
+ * emit carries the corrections documented in docs `reference/js/typescript.md`.
+ * Everything else is CLI parity: same tsconfig, same diagnostics, same exit
+ * codes.
  *
  * Usage: `node tsc-driver.js` in the staged workspace (cwd), exactly as the
  * `tsc` bin would be run. With no `.pnp.data.json` beside the tsconfig it
@@ -701,13 +701,12 @@ function installResolution(
    * The declarations for an implementation the package publishes but gives this
    * compilation no typings for, tried in turn until one is typed.
    *
-   * Why look at all, rather than report the package as mis-specified: a package
-   * that publishes `./dist/index.cjs` for `require` and one `dist/index.d.ts`
-   * beside it — the shape half the ecosystem's build tools emit — RUNS. Node
-   * loads it, esbuild bundles it, and only the strict declaration rule (which
-   * wants `dist/index.d.cts`) cannot see its types. Refusing to compile what
-   * will execute is the wrong failure, so the declarations are looked for under
-   * their plain name, and then under the package's own `types`/`main`.
+   * A package that publishes `./dist/index.cjs` for `require` and one
+   * `dist/index.d.ts` beside it — the shape half the ecosystem's build tools
+   * emit — RUNS: node loads it, esbuild bundles it, and only the strict
+   * declaration rule (which wants `dist/index.d.cts`) cannot see its types. So
+   * the declarations are looked for under their plain name, and then under the
+   * package's own `types`/`main`.
    *
    * What this does NOT do is rescue an implementation that will not run: every
    * recovery needs the published resolution to have succeeded first, so a
@@ -887,8 +886,7 @@ function installResolution(
   const missingFiles = new Map<string, { file: SourceFile; start: number; length: number; specifier: string }>();
   /* One answer per (asking package, specifier). A name means the same thing to
    * every file of one package — that is what the table says — so the file part
-   * is probed once rather than once per import site: a compile asks tens of
-   * thousands of times and holds hundreds of distinct answers. */
+   * is probed once rather than once per import site. */
   const answers = new Map<string, IResolvedModuleWithFailedLookupLocations>();
   const resolveModule = (
     specifier: string,
@@ -918,13 +916,10 @@ function installResolution(
     if (held !== undefined) {
       return held;
     }
-    /* A NAME is the resolver's business, exclusively. Asking the compiler first
-     * would make it walk `node_modules` up from the issuer — through every
-     * ancestor of the workspace and of the cache — finding nothing, on every
-     * bare import of every file: the dominant cost of a compile, and a way for
-     * a stray directory above the build to answer an undeclared import. A `#`
-     * specifier is the same: private to the issuing package, and answered from
-     * its own `imports` map rather than by probing.  */
+    /* A NAME is the resolver's business, exclusively: the compiler is never
+     * asked to walk `node_modules` for one. A `#` specifier is the same: private
+     * to the issuing package, and answered from its own `imports` map rather
+     * than by probing. */
     /* What the package publishes is the answer whenever it carries typings; a
      * published implementation with none keeps its place as the fallback, so an
      * import that will execute resolves either way and the compiler reports the
@@ -1226,15 +1221,13 @@ export function rewriteDeclaration(fileName: string, text: string, resolver: Pnp
  * absolute ones (a parsed config resolves its file names against the project
  * directory). Any emit that carries a source path therefore carries THIS
  * compile's staging directory — `_jsxFileName` under the automatic JSX runtime's
- * dev variant is the one that reaches shipped code, ~1400 of them in a real app
- * bundle. That directory is named for the process that made it, so the same
+ * dev variant is the one that reaches shipped code. That directory is named for
+ * the process that made it, so the same
  * inputs emit different bytes on every build: the artifact stops being a
  * function of its cache key, and a content-hashed resource name derived from it
  * churns for no reason.
  *
- * Applied to every emitted file rather than to the one construct that is known
- * to do this, because what must not appear in the output is the path, whichever
- * emitter wrote it.
+ * Applied to every emitted file, whichever emitter wrote the path.
  */
 export function relativizeBuildRoot(text: string, root: string): string {
   /* TypeScript spells paths with forward slashes whatever the platform. */
@@ -1262,9 +1255,8 @@ export function relativizeBuildRoot(text: string, root: string): string {
  * innermost-first, so the result does not depend on visit order.
  */
 export function canonicalizeUnions(ts: ITypeScript, fileName: string, text: string): string {
-  /* Neither construct can be present without one of these, and many declarations
-   * have neither: this skips the parse for them rather than the work, which is
-   * where the cost is. */
+  /* Neither construct can be present without one of these, so a declaration
+   * holding neither is not parsed. */
   if (!text.includes("|") && !text.includes("{")) {
     return text;
   }
@@ -1453,7 +1445,7 @@ export interface IImportRewrite {
  * The name the first matching rule gives `relative`, or undefined where none
  * matches.
  *
- * Deliberately the whole of the interpretation: the rules arrive compiled, so
+ * The whole of the interpretation: the rules arrive compiled, so
  * this needs nothing but `RegExp`. The trailing tidy-up mirrors the producer's
  * own — an unmatched recursive group substitutes as empty, which can leave a
  * doubled or edge slash for a path at the tree root.
@@ -2072,7 +2064,6 @@ function effectiveModule(ts: ITypeScript, options: CompilerOptions): number {
   return target >= ts.ScriptTarget.ES2015 ? ts.ModuleKind.ES2015 : ts.ModuleKind.CommonJS;
 }
 
-/** The first specifier in `text` that points inside the tree pool, if any. */
 /**
  * Let the compiler reach packages through PnP virtual locations: every
  * filesystem question is asked of the physical path, while the names the
@@ -2098,6 +2089,7 @@ function readThroughVirtualPaths(host: ICompilerHost): void {
   }
 }
 
+/** The first specifier in `text` that points inside the tree pool, if any. */
 function treeReferenceIn(text: string, from: string, treeRoots: ReadonlyArray<string>): string | undefined {
   for (const [, , , specifier] of text.matchAll(QUOTED_SPECIFIER)) {
     const target = isPathSpecifier(specifier) ? path.resolve(from, specifier) + path.sep : undefined;
@@ -2209,8 +2201,8 @@ export function main(argv: string[]): number {
    * green build into the state directory and hands over the names whose bytes
    * moved since; the driver plans what that change reaches, checks and emits
    * only that, and leaves the memo the next run works from back in the same
-   * directory. With no `--state-dir` the whole program is compiled, exactly as
-   * before — the flag is the whole of the difference. */
+   * directory. With no `--state-dir` the whole program is compiled — the flag
+   * is the whole of the difference. */
   const handover = memoHandoverOf(argv, root);
   if (handover !== undefined && reportPath === undefined) {
     throw new Error(`tsc-driver: ${STATE_DIR_FLAG} needs ${DEPS_REPORT_FLAG}, which is where the run's reads are reported`);
@@ -2966,7 +2958,7 @@ function affectsGlobalScope(ts: ITypeScript, file: ISourceFileInfo): boolean {
 
 /** A diagnostic as data — enough to compare two runs' outcomes without parsing
  * rendered text, which is what a caller checking wave parity needs. The human
- * rendering is unchanged and still goes to stdout. */
+ * rendering goes to stdout. */
 function structureDiagnostic(
   ts: ITypeScript,
   diagnostic: Diagnostic,

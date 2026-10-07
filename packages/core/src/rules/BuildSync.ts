@@ -165,9 +165,7 @@ export class SyncSource implements FileSource {
    * a name picks ONE member. But `find` answers with one FileSet, and a
    * selection of several members is several carriers — union them and the
    * per-member `destination` an upload goes through is gone. So `fabr sync`
-   * takes the entities; everything else takes their content. (Enumerating a
-   * namespace generically — what a bare `ls release` wants — is its own
-   * pending design; this is the release's own answer meanwhile.)
+   * takes the entities; everything else takes their content.
    */
   public members(name?: Name, prefix = ""): Computable<PublishableFileSet[]> {
     const selected = name === undefined ? [...this.table.keys()] : this.touchedBy(name, prefix);
@@ -219,8 +217,7 @@ export class SyncSource implements FileSource {
    * read side's per-repository joint resolution), with the **full** release's
    * assignments as context — every packaging policy (npm's co-member version
    * rewriting, unresolvable-dependency errors) is the destination's, and it is
-   * the assignments it needs for that, never the other members' content. Which
-   * is what makes packaging one member at a time sound.
+   * the assignments it needs for that, never the other members' content.
    */
   private packageBatch(paths: string[]): Computable<PublishableFileSet[]> {
     /* Keyed by coordinate — a user-supplied key, hence a Map — so members

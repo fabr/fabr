@@ -53,9 +53,8 @@ let tempExitHookInstalled = false;
  * rather than paranoia: fabr routes its own termination signals through
  * `process.exit` (so the build-step group sweep and the run supervisor's child
  * kill still run), and `process.exit` runs no Computable continuation — a
- * `finally` that removes the tree is skipped entirely, which is how every
- * interrupted `fabr run`/`fabr shell` used to leave a full staged install
- * behind. WHERE the tree lives is the cache's business, not this module's (see
+ * `finally` that removes the tree is skipped entirely.
+ * WHERE the tree lives is the cache's business, not this module's (see
  * {@link BuildCache.createWorkDir}); only its disposal is handled here.
  */
 export function registerTempTree(dir: string): string {
@@ -141,14 +140,9 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
       throw new ExecutionError(describeSystemError(err));
     });
   /* Resolve every name first, so the directories can be created as ONE
-   * concurrent batch of distinct paths ahead of the writes. Creating them
-   * per-file instead is both quadratic-ish in calls (a node_modules install is
-   * ~6 files per directory, so most calls create nothing) and synchronous —
-   * which matters far more than the wasted calls, because this event loop is
-   * also the build's scheduler: while a tree stages, no other target can be
-   * evaluated and no other action can start. Measured on a two-target dylan
-   * build: 30,716 `mkdirSync` calls over 5,085 distinct directories, ~0.9s of
-   * blocked loop. The writes below need every parent to exist (the symlink arm
+   * concurrent batch of distinct paths ahead of the writes (a synchronous
+   * per-file mkdir would block the event loop, which is also the build's
+   * scheduler). The writes below need every parent to exist (the symlink arm
    * additionally reads the real path of one), hence a barrier and not a
    * per-file dependency. */
   const staged = [...files].map(([name, file]) => contained(root, name, file));
@@ -263,9 +257,9 @@ let tempCounter = 0;
  * untouched). Writes and file removals run concurrently, but **directory
  * pruning is deferred to a final phase, once the whole tree has settled**: a
  * removal that empties a directory must not rmdir it while a sibling write is
- * still renaming a new file into that same directory (which left renames failing
- * ENOENT — content-hashed shards replace a directory's entire contents wholesale,
- * so removes and writes routinely target the same dir). Resolves to the applied
+ * still renaming a new file into that same directory (content-hashed shards
+ * replace a directory's entire contents wholesale, so removes and writes
+ * routinely target the same dir). Resolves to the applied
  * delta counts, for progress reporting.
  */
 export function syncFileSet(targetDir: string, before: FileSet, after: FileSet): Computable<{ written: number; removed: number }> {
@@ -331,8 +325,7 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
 
 /** Finish one staged write: `create` has produced the temp sibling; rename it
  * atomically over the target. On any failure, remove the temp best-effort so a
- * partial sync leaves no debris behind (a stale temp would otherwise linger, and
- * — before the counter went process-monotonic — poison later syncs).
+ * partial sync leaves no debris behind.
  *
  * Exported for the write-back path, which replaces a user's file under exactly
  * the same rule: the destination may be a hardlink into the blob pool, so it is

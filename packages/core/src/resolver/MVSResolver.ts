@@ -46,10 +46,8 @@ import {
  * result a pure function of the requirement set rather than of metadata
  * arrival order — a demanded version that loses its slot still contributes its
  * own requirements' floors, whether it is reached before or after the winner.
- * (Expanding only improving versions would make a superseded package's floors
- * count or not count according to which fetch landed first — and the result is
- * persisted, so a cache flush could then change a build.) Selection is
- * consequently monotone: a max over a set, computed once the walk is quiet.
+ * Selection is consequently monotone: a max over a set, computed once the walk
+ * is quiet.
  * Superseded versions are pruned from the *result* by the post-walk
  * reachability pass, which follows the edge bindings only.
  *
@@ -308,8 +306,8 @@ function resolvePhase<V, C>(
          * (followEdge), not here: the fixpoint walk visits superseded/pruned
          * requirements too, and a bad constraint in one that doesn't survive
          * pruning must not fail the whole resolution. followEdge reparses the
-         * constraint anyway (deterministically the same error) on exactly the
-         * edges that are in effect, so reporting there is both truthful and free. */
+         * constraint (deterministically the same error) on exactly the edges
+         * that are in effect. */
         return;
       }
       if (req.override === "alternate") {
@@ -646,11 +644,10 @@ function resolvePhase<V, C>(
       }
       for (const [pkg, packed] of forks) {
         /* A principal CAN go phantom after its forks were created — a fork
-         * subtree's expansion can raise the pool to an unpublished floor.
-         * Dropping the forks with it is deliberate: the round then sees no
-         * candidates for the package, records the needed phantom below, and
-         * the armed rerun rebuilds fork state from scratch against the
-         * repaired principal. */
+         * subtree's expansion can raise the pool to an unpublished floor. The
+         * forks drop with it: the round then sees no candidates for the
+         * package, records the needed phantom below, and the armed rerun
+         * rebuilds fork state from scratch against the repaired principal. */
         selectionsByPkg.get(pkg)?.push(...packed);
       }
 
@@ -676,13 +673,10 @@ function resolvePhase<V, C>(
       const followEdge = (from: string, req: Requirement): void => {
         if (req.provided === "optional") {
           /* An optional peer attaches to what the tree DELIVERS; it never makes
-           * anything deliverable. Walking it here would do exactly that — the
-           * walk is what decides reachability, so binding a selection some
-           * pruned branch left lying around would resurrect it and its whole
-           * subtree, installing a package npm would not have installed and
-           * reading metadata nothing needs. The binding itself is not lost: the
-           * edge map is built from the requirements directly (see `edges` in
-           * finalize), so a peer the tree does deliver is still bound. */
+           * anything deliverable, so the walk — which decides reachability —
+           * does not follow it. The binding itself is not lost: the edge map is
+           * built from the requirements directly (see `edges` in finalize), so
+           * a peer the tree does deliver is still bound. */
           return;
         }
         const name = requiredAs(req);
@@ -797,8 +791,8 @@ function resolvePhase<V, C>(
        * doesn't depend on which metadata answer landed first. */
       if (neededPhantoms.size > 0) {
         const needed = [...neededPhantoms.entries()].sort(([a], [b]) => compareText(a, b));
-        /* A forced package's phantom is terminal outright — the user pinned
-         * the version, so arming a raise for it would be a pointless rerun. */
+        /* A forced package's phantom is terminal outright: the user pinned
+         * the version, so it is never raised. */
         const unarmed = needed.filter(([id, info]) => !repairable.has(id) && !forced.has(info.name)).map(([id]) => id);
         const [id, info] = needed[0];
         fail(

@@ -23,19 +23,15 @@
  * Half of it is **adopted wholesale** from the libraries that implement it —
  * every public method of jest-mock's `ModuleMocker` (`fn`, `spyOn`, `mocked`,
  * the clear/reset/restore family) and of `@jest/fake-timers`' `ModernFakeTimers`
- * — bound and copied across rather than forwarded one by one. Copying is not
- * merely less code than 24 hand-written wrappers: it is more *faithful*.
- * Signatures cannot drift, and a member that a given jest release does not have
- * is simply absent here too, which is exactly what a test would see running
- * under that release of real jest (`jest.advanceTimersToNextFrame` on jest 29,
- * say). Hand-forwarding has to model those differences; adopting reproduces
- * them.
+ * — bound and copied across, not forwarded one by one, so a member that a given
+ * jest release does not have is absent here too, as under that release of real
+ * jest (`jest.advanceTimersToNextFrame` on jest 29, say).
  *
  * The other half cannot be adopted, because no library implements it: the
  * module-registry operations (`mock`, `unmock`, `requireActual`,
- * `resetModules`, …) ARE the interface to the registry, and fabr owns the
- * registry — that is the whole point of the layer (see Registry.ts). Those are
- * written out below, along with the few members that need fabr behaviour.
+ * `resetModules`, …) ARE the interface to the registry, which is fabr's own
+ * (see Registry.ts). Those are written out below, along with the few members
+ * that need fabr behaviour.
  *
  * There is one object per *caller*, because `jest.mock('./x')` resolves
  * relative to the module that wrote it. The per-caller objects are handed out
@@ -60,8 +56,7 @@ export interface IFakeTimers {
   /** Restore the real timers/clock (uninstall). Not on the jest object (see
    * NOT_JEST_API) — the RUN calls it after the framework returns, because a
    * file whose last test leaves fake timers active would otherwise fake the
-   * clock the run's own reporting reads (the fork used to absorb this by
-   * exiting; the in-process path has no such luck). */
+   * clock the run's own reporting reads. */
   dispose(): void;
 }
 
@@ -78,10 +73,10 @@ export interface IJestEnvironment {
  * Circus's own control channel. Real jest's runtime hands these values to
  * circus as `Symbol.for` globals (see jest-runtime's `retryTimes`/`setTimeout`)
  * and circus reads them off `globalThis` — which is the SAME global object
- * here, so assigning them is jest's real mechanism, not an imitation of it:
- * when a member is applied (per test, at describe entry) is circus's business
- * and identical by construction. A symbol a given circus release does not read
- * is simply inert, exactly as under that release of real jest.
+ * here, so assigning them is jest's own mechanism; when a member is applied
+ * (per test, at describe entry) is circus's business. A symbol a given circus
+ * release does not read is simply inert, exactly as under that release of real
+ * jest.
  */
 const TEST_TIMEOUT = Symbol.for("TEST_TIMEOUT_SYMBOL");
 const RETRY_TIMES = Symbol.for("RETRY_TIMES");
@@ -226,9 +221,8 @@ function adopt(target: Record<string, unknown>, source: object): void {
  * Fake-timer defaults, with ONE deliberate divergence from jest's:
  * `setImmediate` and `process.nextTick` are not faked.
  *
- * This is a runner-correctness matter rather than a preference. There is no vm
- * sandbox here, so circus and the child's own IPC report back to the parent
- * run in the SAME realm as the test and schedule through the same
+ * There is no vm sandbox here, so circus and the child's own IPC report back to
+ * the parent run in the SAME realm as the test and schedule through the same
  * `setImmediate`/`nextTick` a test fakes; with the two faked, a test that
  * times out under fake timers fails *silently* — the timeout is never reported
  * and the run appears to stop. Excluding them restores the ordinary report

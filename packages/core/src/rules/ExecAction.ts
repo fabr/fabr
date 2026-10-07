@@ -59,9 +59,8 @@ function runExec(action: BuildAction, ctx: ActionContext, report: ITaskReport): 
     ctx
       .admit(report, () => writeFileSet(ctx.workDir, files))
       .then(() => execute(ctx.processLimit, findExecutable(argv[0]), argv.slice(1), ctx.workDir, {}, report))
-      /* Collecting is the other half of the step's own machine work — reading
-       * and hashing what the tool wrote — and is admitted for the same reason as
-       * staging, once the execution's slot has been given back. */
+      /* Collecting — reading and hashing what the tool wrote — is admitted as
+       * its own unit, once the execution's slot has been given back. */
       .then(() => ctx.admit(report, () => getResultFileSet(ctx.workDir, outputs)))
       .then(result => ({ result }))
   );

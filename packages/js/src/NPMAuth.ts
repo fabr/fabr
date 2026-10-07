@@ -24,7 +24,7 @@
  *  - the configured credential — the auth-relevant `.npmrc` contents (project +
  *    user files, `${VAR}` substitution, "the Authorization header for this URL"
  *    by longest nerf-dart prefix match; registry/scope config like
- *    `@scope:registry` is deliberately out of scope);
+ *    `@scope:registry` is not read);
  *  - answering the second-factor challenge a 2FA account's write receives
  *    (the browser/passkey ceremony via {@link pollWebAuthToken}, or a terminal
  *    prompt), with one answer per registry reused across the run's publishes

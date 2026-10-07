@@ -27,8 +27,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** The slice of a source map the drivers read: the source list they rewrite,
- * and the embedded contents kept aligned with it. */
 /** Whether a name is a Sass source (the ones the driver compiles; a plain
  * `.css` passes through). */
 export function isSassSource(name: string): boolean {
@@ -44,6 +42,8 @@ export function sassLoweredName(name: string): string {
   return name.replace(/\.(scss|sass)$/i, ".css");
 }
 
+/** The slice of a source map the drivers read: the source list they rewrite,
+ * and the embedded contents kept aligned with it. */
 export interface IRawSourceMap {
   sources: string[];
   sourcesContent?: Array<string | null>;

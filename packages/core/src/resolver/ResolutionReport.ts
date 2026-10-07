@@ -121,8 +121,8 @@ function alsoRequiredBy(constraint: string, others: readonly string[]): string[]
  * requirement pushed the package to the version that violates the bound (and
  * where *that* requirer came from), and where the losing requirement itself
  * came from. Rendered as detail lines under the violation, indented one level;
- * empty for a resolution carrying no provenance edges (persisted before they
- * existed) or a requirer since superseded out of the selections.
+ * empty for a resolution carrying no provenance edges or a requirer since
+ * superseded out of the selections.
  */
 function explainViolation<V>(
   violation: Violation<V>,
@@ -223,9 +223,9 @@ function explainDuplicate<V>(
  * The strict (linked) delivery's judgment of a repaired closure: every repair
  * reachable from the requested roots, reported together — violations and
  * coexisting versions as the structural facts they are — rather than one
- * build-fail-pin iteration each. (Floor raises are deliberately NOT judged: a
- * raised floor is the constraint's plain meaning when its literal minimum was
- * never published, acceptable in every delivery mode.)
+ * build-fail-pin iteration each. (Floor raises are NOT judged: a raised floor
+ * is the constraint's plain meaning when its literal minimum was never
+ * published, acceptable in every delivery mode.)
  *
  * `needed` is what the delivery ships; `graph` explains each repair — one
  * resolution's, or several combined where a collection point's deliveries
@@ -379,8 +379,7 @@ export function sanctionHelp(entries: string[]): string[] {
  * violation is the proof no such version exists) — verified by one
  * re-resolution with the candidate pins added; otherwise the **`?` sanction
  * lines completing what the consumer ships** (`needed`) against what is
- * already `written`, correct by construction since the forks demonstrably
- * repair every violated edge. If the
+ * already `written`. If the
  * verification resolution still shows conflicts, every pin is demoted to its
  * sanction lines — the always-safe suggestion. Runs only on the failure path;
  * degrades to the sanction lines when the registry is unreachable.

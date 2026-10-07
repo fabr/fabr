@@ -331,12 +331,9 @@ const SUBST_CAPTURE = ".value";
  * (leaving it unset would send it to the task's output sink, the opposite of
  * silencing), so it gets a generated one and the bytes go nowhere.
  *
- * Generating **every** name is what makes the value's own capture safe. The two
- * share one namespace with last-writer-wins semantics, so a written `2> <capture>`
- * would otherwise have silently replaced the value with stderr — and *no* reserved
- * name could have prevented that, a redirect target being substitutable (`> ${X}`).
- * The fix is not a name nobody would pick but a map no user string reaches: these
- * need only be distinct from each other.
+ * Every name is generated, so no written target (which may be substituted,
+ * `> ${X}`) can collide with the value's own capture: the names need only be
+ * distinct from each other.
  *
  * A command that redirects its own stdout keeps that redirect, so it captures
  * nothing and the value is empty — as `$(cmd > f)` is in a shell.
@@ -482,10 +479,6 @@ export type ResolvedCommandPipeline = ResolvedCommandStage[];
  * projection is already a FileSetRef, while an external one is still a
  * RepositoryRef and only becomes a FileSetRef once materialized. The list is the
  * thing the reading rule actually has an opinion about.
- *
- * Collection policy is the DRIVER's, so it lives here in the model: the delivery
- * machinery (materializeAll) knows only MaterializeOptions and never applies
- * projections.
  */
 export class ContainedSources {
   /** Tells the markers apart by type: they are otherwise the same shape. */
@@ -687,7 +680,8 @@ export class BuildContext {
    */
   public getTargetWithOverrides(name: string, overrides: Constraints, stack?: IDependencyStack): Computable<SourceRef[]> {
     /* Through getTarget's callerOverrides so a property's value requirement cannot
-     * beat the explicit override (a direct target decl folds as before). */
+     * beat the explicit override (a direct target decl folds the override into
+     * the ambient context). */
     return this.getTarget(name, stack, overrides);
   }
 
@@ -742,13 +736,12 @@ export class BuildContext {
    * conjunction — disjunction is a second declaration). An absent guard admits
    * everything.
    *
-   * The configuration is read as a PROPERTY, not as a raw constraint, because
-   * that is what it is: `TARGET` is a `default` property rather than an injected
-   * constraint, a `-D` or `<k=v>` override rides the same read (the constructor
-   * pre-forces the constraint set into the property cache), and a project's own
-   * flag (`default TRACING = off;`) is then guardable with no further design. A
-   * guard naming a property nothing declares is the ordinary unknown-property
-   * error — a typo in a guard must not quietly mean "never".
+   * The configuration is read as a PROPERTY, not as a raw constraint: `TARGET`
+   * is a `default` property rather than an injected constraint, a `-D` or
+   * `<k=v>` override rides the same read (the constructor pre-forces the
+   * constraint set into the property cache), and a project's own flag
+   * (`default TRACING = off;`) is guardable. A guard naming a property nothing
+   * declares is the ordinary unknown-property error, never a silent "never".
    */
   public guardAdmits(guard: readonly NameConstraint[] | undefined, stack?: IDependencyStack): Computable<boolean> {
     if (!guard) {
@@ -860,11 +853,8 @@ export class BuildContext {
     const candidates = [...decls, ...defaults];
     if (!candidates.some(candidate => candidate.name.hasConstraints())) {
       /* Nothing is guarded, so there is nothing to decide: every declaration
-       * applies, and the tier rule alone picks between them. This is the shape
-       * of almost every property — one plain declaration, a `default` global
-       * nobody overrode, or an override that supersedes one — and taking it
-       * without evaluating a guard is what keeps an unguarded property free of
-       * a guard's costs, its property reads included. */
+       * applies, and the tier rule alone picks between them — with no property
+       * read. */
       return Computable.resolve(decls.length > 0 ? decls : defaults);
     }
     /* The property being judged is a stack frame while its guards read other
@@ -1499,12 +1489,6 @@ export class BuildContext {
   }
 
   /**
-   * Resolve the Names as they appear in a target property list to their respective targets
-   * (potentially causing them to be queued for evaluation), along with the declaration
-   * the name resolved to (if it named a target or property rather than plain files).
-   * @param name
-   */
-  /**
    * Resolve a name (target reference, projection, glob or bare path) to its
    * sources — the whole-name entry the CLI uses so `fabr ls`/`cat` reuse the
    * model's reference semantics (target-prefix + `:`/glob projection) rather
@@ -2078,18 +2062,16 @@ export class BuildContext {
    * construction, since the step consumes nothing else. A miss is the moment
    * real work happens, and is announced as such (staging begins immediately;
    * the announcement marks a cache miss with work begun, never a hit). The
-   * machine-wide bound is NOT taken here: step code holds no execution slot —
-   * a slot is acquired around each process the step runs, inside the context's
-   * `execute`/`executePipeline` —
-   * so a step waiting on its processes (or on many of them in parallel) can
-   * never hold a slot while waiting for one, and the funnel is deadlock-free
-   * by construction. Steps still never run actions of their own (composition
-   * is via sub-targets, whose actions complete before their output becomes
-   * another action's inputs).
+   * machine-wide bound is NOT taken here: a step admits its staging, each
+   * process it runs (`execute`/`executePipeline`) and its collection through
+   * the funnel as separate, never nested, admissions, so a step waiting on its
+   * processes (or on many of them in parallel) never holds a slot while waiting
+   * for one. Steps still never run actions of their own (composition is via
+   * sub-targets, whose actions complete before their output becomes another
+   * action's inputs).
    *
-   * Under the run's {@link ExecutionContext.forceBuild} the entry is rebuilt
-   * rather than served, for the directly-requested targets only — see
-   * {@link forcedBuild}.
+   * A target the run was asked to force ({@link ExecutionContext.forceTarget})
+   * is rebuilt rather than served — see {@link forcedBuild}.
    */
   public runAction(action: BuildAction, context: TargetContext): Computable<FileSet> {
     /* An anonymous sub-target keys under its declared owner's identity plus its
@@ -2136,12 +2118,6 @@ export class BuildContext {
    * *declared* owner, so a forced target's anonymous sub-targets — the compile
    * whose time is being measured — are forced along with it, while the declared
    * targets it depends on build from cache as usual.
-   *
-   * Asking by declaration rather than inferring the request from an empty
-   * dependency stack is load-bearing: a target re-entering its own build under
-   * an override ({@link getTargetWithOverrides}, how `js_package[run]` and the
-   * `files` rule reach their own `build`) passes no stack, so a *dependency*
-   * tool's build is indistinguishable from a directly-requested one there.
    */
   private forcedBuild(context: TargetContext): boolean {
     return this.execution.isForced(context.getDeclaredContext().target);
@@ -2223,18 +2199,6 @@ function requestingTargets(target: ITargetDecl, stack?: IDependencyStack): ITarg
   return result;
 }
 
-/**
- * The context a rule's evaluate runs in: property and global resolution
- * for the target under evaluation, plus sub-target composition. Evaluate code
- * deliberately has no work directory and no cache access — all content work
- * goes through the BuildActions it yields (or the sub-targets it builds).
- *
- * A rule cannot tell whether it is building a declared or an anonymous target:
- * the interface is uniform, and only the two raw-value primitives
- * (`getProperty`, `getFileProperty`) and `taskDescription` differ between the
- * two implementations. Everything else — materialization, flag extraction,
- * collection, globals, sub-targets — derives from those and is shared here.
- */
 /** Pick the RunnableFileSet out of a resolved source list, or throw naming the
  * property/global that was expected to yield one. Shared by getGlobalRunnable
  * (a global) and getRunnableProperty (a FILES property). */
@@ -2279,12 +2243,6 @@ function nonNameValueError(prop: IPropertyDecl, value: IMapValue | ICommandValue
   return isMapValue(value) ? mapInWrongContextError(prop, context) : commandInWrongContextError(prop);
 }
 
-/**
- * How a reader combines the declarations of one property that a configuration
- * admits: `"union"` for a list-shaped read (FILES, REWRITE — the values simply
- * concatenate, in written order), `"single"` for a scalar one, where two
- * matching declarations are an error rather than a silent join.
- */
 /**
  * The applicable declarations as ONE — their values concatenated in written
  * order: what a list-shaped read (FILES, REWRITE) makes of several, which is
@@ -2385,8 +2343,7 @@ function mostSpecificRule(applicable: RuleDefinition[], ruleSet: string): RuleDe
  * The selected declaration, or a hard error if every guard excluded this
  * configuration. A *global* has no default tier to fall back to (unlike a
  * target's property, which has its targetdef's declared default), so a property
- * written only under guards that do not match is simply not supplied here — and
- * saying that is far more use than the "unknown property" it is not.
+ * written only under guards that do not match is simply not supplied here.
  */
 function unmatchedIfAbsent(selected: IPropertyDecl | undefined, name: string, entry: IPropertyEntry): IPropertyDecl {
   if (selected) {
@@ -2416,6 +2373,21 @@ function ambiguousDeclsError(chosen: IPropertyDecl[]): Error {
   );
 }
 
+/**
+ * The context a rule's evaluate runs in: property and global resolution
+ * for the target under evaluation, plus sub-target composition. Evaluate code
+ * has no work directory and no cache access — all content work goes through
+ * the BuildActions it yields (or the sub-targets it builds).
+ *
+ * A rule cannot tell whether it is building a declared or an anonymous target:
+ * the interface is uniform, and only the per-property-type readers
+ * (`getProperty`, `getFileProperty`, `getRewriteRules`, `getProjection`,
+ * `getMap`, `getCommandStages`, `getWildcardProperties`) and the identity and
+ * attribution members (`name`, `taskDescription`, `getDeclaredContext`,
+ * `stampProvenance`, `failure`) differ between the two implementations.
+ * Everything else — materialization, flag extraction, collection, globals,
+ * sub-targets — derives from those and is shared here.
+ */
 export abstract class TargetContext {
   public readonly context: BuildContext;
   public readonly stack?: IDependencyStack;
@@ -2763,9 +2735,8 @@ export abstract class TargetContext {
    * SINGLE joint materialization — the common-case sugar for {@link collect}:
    * `getFileSetProperties(["srcs", "deps"])` yields `{ srcs, deps }`, both
    * resolved together so their references pin jointly. This IS the evaluation's
-   * collection point; naming every file property in the one call is what makes
-   * it singular by design (there is no per-property materializer left to
-   * fragment it). `overrides` apply uniformly to the batch. Reach for the
+   * collection point: name every file property in the one call. `overrides`
+   * apply uniformly to the batch. Reach for the
    * underlying {@link getFileProperty} + {@link collect} only when you also need
    * the raw sources (a manifest via {@link collectDeclaredRequirements}), must
    * merge or mix in a global, or feed a shared helper.
@@ -2975,8 +2946,8 @@ export abstract class TargetContext {
    */
   public getGlobalRunnable(name: string): Computable<RunnableFileSet> {
     /* A tool resolves *apart* from the workspace's collection point — its pins
-     * deliberately don't co-resolve with what it builds — so it materializes on
-     * its own here rather than through `collect`. */
+     * don't co-resolve with what it builds — so it materializes on its own here
+     * rather than through `collect`. */
     return this.context
       .getTarget(name, this.stack, this.runOverrides())
       .then(sources => materializeLists(this, [sources], PERMISSIVE_RESOLUTION))
@@ -2989,8 +2960,8 @@ export abstract class TargetContext {
    * (e.g. a `run` target's `tool`): resolved under runOverrides (BUILD_OPERATION=run
    * with TARGET pinned to HOST, so the tool is its *host* binary even in a
    * cross-build — a build-time tool executes on this machine), and asserted to be a
-   * RunnableFileSet. The caller launches it via `toCommandLine`. The host-pinning is
-   * internal by design: a consumer resolving a tool to run it needn't restate it.
+   * RunnableFileSet. The caller launches it via `toCommandLine`. The host pinning
+   * is internal: a consumer resolving a tool to run it needn't restate it.
    */
   public getRunnableProperty(name: string): Computable<RunnableFileSet> {
     return this.getFileProperty(name, this.runOverrides()).then(sources => {

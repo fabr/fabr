@@ -30,7 +30,8 @@ import { FabrError } from "../core/Errors";
 /**
  * Build model holds the generalized model-as-it-is-written in the build files.
  *
- * It primarily exists to maintain a cache from constraint sets to active
+ * It primarily exists to maintain a cache from constraint sets to active build
+ * configurations ({@link getConfig}).
  */
 export class BuildModel {
   private root: Namespace;
@@ -38,10 +39,7 @@ export class BuildModel {
   /**
    * The rules and repository providers available to this model — indexed from
    * core's base contribution plus each active plugin's, so they reflect exactly
-   * the declared plugin set (not process-global registration). Held directly by
-   * the model (rather than in a separate registry) because rules are model-level
-   * knowledge, on the same footing as targets/properties — and a future language
-   * surface for defining rules would add to these same tables.
+   * the declared plugin set (not process-global registration).
    */
   private readonly targetRules: Map<string, RuleDefinition[]> = new Map();
   private readonly defaultRules: RuleDefinition[] = [];
@@ -120,7 +118,7 @@ export class BuildModel {
   }
 
   /** @return every declared target — repository instances (`npm_repository
-   * @npm`, `catalog @dep`) included — in declaration order. The docs listing
+   * @npm`, `catalog @dep`) included — in declaration order. For the docs listing
    * (`fabr list-all`), which documents repositories alongside ordinary lib
    * targets; {@link getTargets} excludes them as not buildable. */
   public getDeclaredTargets(): { name: string; decl: ITargetDecl }[] {
@@ -190,9 +188,7 @@ export class BuildModel {
    *
    * This is for a caller holding a name it was *given* and needing to say
    * something about the target behind it before building — the CLI's `-f`,
-   * which marks what the command line named. Asking the model keeps that
-   * reading in the one place that owns it: a driver splitting the name itself
-   * would be a second, divergent answer to what a reference means.
+   * which marks what the command line named.
    */
   public getReferencedTarget(name: string): ITargetDecl | undefined {
     const match = this.getPrefixMatch(parseName(name).withConstraints([]));

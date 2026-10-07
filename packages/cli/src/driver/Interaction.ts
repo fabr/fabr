@@ -76,7 +76,7 @@ export class TerminalInteraction implements UserInteraction {
   public openUrl(url: string, purpose: string): Computable<void> {
     /* The URL is always shown: over ssh (or if the opener fails) the browser
      * never appears, and the printed URL is the fallback the user follows by
-     * hand — so a launch failure is deliberately not an error. */
+     * hand — so a launch failure is not an error. */
     this.log.log(DIAG_OPEN_URL, { purpose, url });
     const { command, args } = openCommandFor(url);
     const child = spawn(command, args, { stdio: "ignore", detached: true });

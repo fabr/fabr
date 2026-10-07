@@ -132,6 +132,11 @@ export interface IWriteBackObserver {
   touches(path: string): void;
 }
 
+/** Monotonic across the process, so no two temp siblings ever share a name —
+ * two candidates in one batch may resolve to the same destination, and the pid
+ * alone would give their in-flight temps the same path. */
+let tempCounter = 0;
+
 /**
  * Write one candidate into the source tree under `realRoot` (a destination
  * resolving outside it is refused, the same containment discipline staging
@@ -145,17 +150,12 @@ export interface IWriteBackObserver {
  *
  * The mechanics live here; the CALLER is {@link SourceFileSource.applyWriteBack},
  * which owns the tree being written to and is therefore the only thing able to
- * recognize the resulting watch event as its own. `expect` is invoked with the
- * bytes destined for the file — before the write, and whether or not one proves
- * necessary — so that expectation is registered ahead of any event explaining it.
+ * recognize the resulting watch event as its own — it is told every path the
+ * write touches through `observer` (see {@link IWriteBackObserver}), ahead of
+ * any event explaining it.
  *
  * The driver drives this — nothing in the build graph may.
  */
-/** Monotonic across the process, so no two temp siblings ever share a name —
- * two candidates in one batch may resolve to the same destination, and the pid
- * alone would give their in-flight temps the same path. */
-let tempCounter = 0;
-
 export function writeBackFile(write: IResolvedWriteBack, realRoot: string, observer: IWriteBackObserver): Computable<string> {
   const destination = path.resolve(write.destination);
   assertContained(destination, realRoot);

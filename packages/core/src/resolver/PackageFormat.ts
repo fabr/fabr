@@ -82,8 +82,8 @@ export interface PackageFormat<V, C> extends VersionDomain<V, C> {
   /**
    * Read package content as the package its manifest declares (npm: the
    * `package.json` at the fileset root) — the import half of a
-   * `repository_group` content route, and deliberately ONLY the reading:
-   * one pure function of the files, no registry surface. Throws (or rejects)
+   * `repository_group` content route, and ONLY the reading: one pure
+   * function of the files, no registry surface. Throws (or rejects)
    * when the content carries no usable manifest, in the manifest's own terms —
    * the caller positions the error at whatever declared the content.
    */
@@ -91,9 +91,9 @@ export interface PackageFormat<V, C> extends VersionDomain<V, C> {
   /**
    * Make an already-resolved package launchable, keeping the exact closure it
    * carries (no re-resolution). Launching is ecosystem convention (npm: bin
-   * entries under a node_modules mount), not transport — every registry of the
-   * format launches a package the same way, which is why this lives here and
-   * the repository faces delegate.
+   * entries under a node_modules mount), not transport: every registry of the
+   * format launches a package the same way, and the repository faces delegate
+   * here.
    */
   makeRunnable(pkg: PackageFileSet): Computable<RunnableFileSet>;
 }

@@ -30,9 +30,8 @@ export interface IInvocationSite {
    * The source tree, as something writable rather than as the bare `FileSource`
    * interface: it is both what a bare path resolves through and what the driver
    * writes refreshed test expectations back into, and the write belongs to the
-   * owner of the tree (see {@link WritableSourceTree}). That also means the
-   * project root need not be carried separately — the source knows its own, and
-   * containment against it is its own invariant.
+   * owner of the tree (see {@link WritableSourceTree}). The source knows its
+   * own root, and containment against it is its own invariant.
    */
   sourceFileSource: WritableSourceTree;
   absFileSource: FileSource;
@@ -66,9 +65,8 @@ const NEEDS_QUOTING = /^$|[\s'"\\|&;<>()$`*?[\]{}!#~]/;
  *   |         ^^^^^^^^
  * ```
  *
- * An argument is located by its text (the first occurrence, which two identical
- * arguments render indistinguishably anyway) rather than by an argv index, so
- * nothing has to carry positions through the parse and its regroupings.
+ * An argument is located by its text (the first occurrence: two identical
+ * arguments render indistinguishably), not by an argv index.
  */
 export class CommandLineSource {
   private readonly text: string;
@@ -96,17 +94,16 @@ export class CommandLineSource {
 
   /**
    * The decl a name typed on the command line is written in: this line as its
-   * file, `<command-line>` *located in the invocation directory*. The location
-   * is the point — a reference's bare paths root at the directory of the file it
-   * is written in, so siting the virtual file at the cwd is exactly what makes
-   * `fabr ls ./packages` mean what `./packages` written in a build file there
-   * means, with no command-line-specific resolution path behind it.
+   * file, `<command-line>` *located in the invocation directory*. A reference's
+   * bare paths root at the directory of the file it is written in, so
+   * `fabr ls ./packages` means what `./packages` written in a build file there
+   * means.
    *
    * An absolute name has no directory to root at, and reads through the absolute
-   * file source instead — the rule the loader applies to a lib path.
+   * file source instead — as the loader reads a lib path.
    *
    * A name this line does not contain (nothing produces one today) falls back to
-   * the whole line, which is honest rather than a wrong caret.
+   * the whole line.
    */
   public refFor(name: string, site: IInvocationSite): INameValue {
     const absolute = name.startsWith(NAME_COMPONENT_SEPARATOR);

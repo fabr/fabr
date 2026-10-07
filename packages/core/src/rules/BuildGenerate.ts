@@ -19,9 +19,9 @@
 
 /**
  * The generic `generate` target: run a command **pipeline** and collect its
- * output — the ecosystem-neutral genrule (Bazel's genrule analogue). Named
- * `generate`, not `run`, so it doesn't collide with the interactive `fabr run`
- * verb — it is a *build* step (registered under BUILD_OPERATION=build).
+ * output — the ecosystem-neutral genrule (Bazel's genrule analogue). It is a
+ * *build* step (registered under BUILD_OPERATION=build), unrelated to the
+ * interactive `fabr run` verb.
  *
  * `run` is a command line: `cmd args… [redirs] | cmd args… [redirs]`. Each
  * command is a fabr runnable (resolved under `run` and mounted in its own
