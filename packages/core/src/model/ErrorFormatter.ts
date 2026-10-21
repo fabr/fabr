@@ -17,21 +17,37 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { CommandFailedError, ConflictError, ExecutionError, helpOf, MultiError, RequirementResolutionError, TestsFailedError } from "../core/Errors";
+import {
+  CommandFailedError,
+  ConflictError,
+  CycleError,
+  ExecutionError,
+  Label,
+  helpOf,
+  MultiError,
+  RequirementResolutionError,
+  TargetNotPackageError,
+  TestsFailedError,
+} from "../core/Errors";
 import { chainSteps, IProvenanceStep, renderProvenance } from "../core/Provenance";
 import { RepositoryRef } from "../core/Repository";
+import type { Reference } from "../core/Reference";
 import { Diagnostic, IDiagnosticDetail, IDiagnosticNote, ISourceSpan, Log } from "../support/Log";
 import { declName, declPosn } from "./AST";
-import { constraintText, describeUseSite, IModelRefStep, MODEL_REF_PROVENANCE, substitutionNotes } from "./BuildContext";
-import { AMBIENT_CONSTRAINT_KEYS, BUILD_OPERATION, preferredOperation, shownConstraints } from "./Constraints";
+import { constraintText, describeUseSite, IModelStep, MODEL_PROVENANCE, substitutionNotes } from "./ModelProvenance";
+import { AMBIENT_CONSTRAINT_KEYS, BUILD_OPERATION, operationOf, preferredOperation, shownConstraints } from "./Constraints";
 import {
   BuildFilesInvalidError,
   CircularDependencyError,
   DependencyFailedError,
   IJudgedKey,
+  IUseSite,
+  NameLabel,
   NameResolutionError,
   NoRuleFoundError,
+  ProvenanceLabel,
   ReferenceFailedError,
+  ReferenceLabel,
 } from "./Errors";
 import { compareText } from "../support/Functional";
 
@@ -59,22 +75,28 @@ export interface ErrorFormatter {
   report(log: Log, err: Error): void;
 }
 
+/** One "required by" hop of a trail. `inferred` where no written reference
+ * of the requirer's own was crossed: the hop names the requirer alone. */
+interface IHop extends IDiagnosticNote {
+  inferred?: true;
+}
+
+interface Trail {
+  notes: IHop[];
+  /** The outermost requirer (the requested target this trail descends from). */
+  root: string | undefined;
+}
+
 /**
  * The diagnostics of one report, deduplicated by rendered content: the same
  * root cause can surface as distinct error instances from several collection
  * points, and can be reached through several dependant chains — it gets one
  * diagnostic carrying every distinct requirer trail, not one copy per path.
  */
-interface Trail {
-  notes: IDiagnosticNote[];
-  /** The outermost requirer (the requested target this trail descends from). */
-  root: string | undefined;
-}
-
 class PendingReport {
   private readonly pending = new Map<string, { diagnostic: IDiagnostic; trails: Trail[] }>();
 
-  public add(diagnostic: IDiagnostic, trail: IDiagnosticNote[], root: string | undefined): void {
+  public add(diagnostic: IDiagnostic, trail: IHop[], root: string | undefined): void {
     const key = JSON.stringify([diagnostic.message, spanKey(diagnostic.loc), (diagnostic.notes ?? []).map(noteKey)]);
     let entry = this.pending.get(key);
     if (!entry) {
@@ -88,11 +110,11 @@ class PendingReport {
 
   public flush(log: Log): void {
     for (const { diagnostic, trails } of this.pending.values()) {
-      /* Several paths can reach the same failure; one is enough to explain why
-       * it's in the build, so keep just the shortest trail per requesting root —
-       * an alternate longer route to a root already shown is noise. */
+      /* Several paths can reach the same failure, and one is enough to explain
+       * why it is in the build. Drop a trail another retraces with hops left
+       * out, then keep the shortest trail per requesting root. */
       const shortestByRoot = new Map<string | undefined, IDiagnosticNote[]>();
-      for (const { notes, root } of trails) {
+      for (const { notes, root } of trails.filter(trail => !trails.some(other => other !== trail && retraces(other, trail)))) {
         const shortest = shortestByRoot.get(root);
         if (!shortest || notes.length < shortest.length) {
           shortestByRoot.set(root, notes);
@@ -146,12 +168,14 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   private walk(
     report: PendingReport,
     err: Error,
-    trail: IDiagnosticNote[],
+    trail: IHop[],
     owner: DependencyFailedError | undefined,
     root: string | undefined
   ): void {
     if (err instanceof MultiError) {
       err.errors.forEach(cause => this.walk(report, cause, trail, owner, root));
+    } else if (err instanceof CycleError) {
+      this.walk(report, cycleErrorOf(err.labels), trail, owner, root);
     } else if (err instanceof ReferenceFailedError) {
       const hop = { message: `required by ${describeUseSite(err.property, err.target)}`, loc: declPosn(err.value) };
       this.walk(report, err.cause, [...trail, hop], owner, err.target ? (root ?? declName(err.target)) : root);
@@ -161,14 +185,17 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       const execution = causes.filter(cause => cause instanceof ExecutionError);
       for (const cause of causes.filter(cause => !(cause instanceof ExecutionError))) {
         /* A dependency reached without a written reference of the target's own
-         * gets a hop against the requiring declaration: a rule resolving a
-         * target directly, or the target reaching it through a GLOBAL — one its
-         * rule read, or one a property of its named — where the reference
-         * crossed is the global's own value and says nothing of who wanted it.
-         * An anonymous sub-target (label set) is part of its declared target. */
+         * gets a hop against the requiring declaration. That is a rule
+         * resolving a target directly, a GLOBAL the target reached (one its rule
+         * read, or one a property of its named), whose value says nothing of who
+         * wanted it, or a reference another declaration wrote (a catalog's
+         * entry, reached by a member of the catalog). An anonymous sub-target
+         * (label set) is part of its declared target. */
         const direct =
-          (cause instanceof DependencyFailedError && !cause.label) || (cause instanceof ReferenceFailedError && cause.target === undefined);
-        const hops = direct ? [...trail, { message: `required by ${declName(err.target)}`, loc: declPosn(err.target) }] : trail;
+          (cause instanceof DependencyFailedError && !cause.label) || (cause instanceof ReferenceFailedError && cause.target !== err.target);
+        const hops: IHop[] = direct
+          ? [...trail, { message: `required by ${declName(err.target)}`, loc: declPosn(err.target), inferred: true }]
+          : trail;
         this.walk(report, cause, hops, err, direct ? (root ?? declName(err.target)) : root);
       }
       if (execution.length > 0) {
@@ -214,6 +241,14 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       const notes = sameSource
         ? [...this.chainNotes(cause.left.provenance, undefined, cause.key), ...detailNote(cause.left), ...detailNote(cause.right)]
         : [cause.left, cause.right].flatMap(side => [...this.chainNotes(side.provenance, undefined, cause.key), ...detailNote(side)]);
+      return owner
+        ? { message: `Failed to build ${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target), notes, help: helpOf(cause) }
+        : { message: cause.message, notes, help: helpOf(cause) };
+    }
+    if (cause instanceof TargetNotPackageError) {
+      /* Where the requirement came from, and where the target was named. */
+      const requirer = cause.requirer instanceof RepositoryRef ? chainSteps(cause.requirer.steps, undefined) : cause.requirer.origin;
+      const notes = [...this.chainNotes(requirer), ...this.chainNotes(cause.dependency.origin)];
       return owner
         ? { message: `Failed to build ${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target), notes, help: helpOf(cause) }
         : { message: cause.message, notes, help: helpOf(cause) };
@@ -265,7 +300,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
    * from the operation in effect, only the override constraints shown. What the
    * type *does* support is the remedy, named as the command that would do it. */
   private describeNoRule(cause: NoRuleFoundError): IDiagnostic {
-    const operation = cause.constraints.get(BUILD_OPERATION) ?? "build";
+    const operation = operationOf(cause.constraints);
     const verb = NO_RULE_VERBS.get(operation) ?? `perform '${operation}' on`;
     const overrides = shownConstraints(cause.constraints, this.ambientConstraintKeys).map(([key, value]) => `${key}=${value}`);
     const suffix = overrides.length > 0 ? ` (${overrides.join(", ")})` : "";
@@ -286,20 +321,25 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
   private describeRequirement(cause: RequirementResolutionError, owner: DependencyFailedError | undefined): IDiagnostic {
     const help = helpOf(cause);
     const [first, ...rest] = cause.refs;
-    const chain = first ? chainSteps(first.steps, undefined) : undefined;
-    const written = chain?.kind === MODEL_REF_PROVENANCE && (owner === undefined || (chain as IModelRefStep).target === owner.target);
+    const chain = first ? (cause.delivered.get(first) ?? chainSteps(first.steps, undefined)) : undefined;
+    const written = chain?.kind === MODEL_PROVENANCE && (owner === undefined || (chain as IModelStep).target === owner.target);
     if (!written) {
       const anchor = owner
         ? { message: `Failed to build ${owner.target.name}: ${cause.message}`, loc: declPosn(owner.target) }
         : { message: cause.message };
-      return { ...anchor, notes: this.refNotes(cause.refs), help };
+      return { ...anchor, notes: [...this.refNotes(cause.refs, cause.delivered), ...cause.builds.flatMap(origin => this.chainNotes(origin))], help };
     }
-    const head = chain as IModelRefStep;
+    const head = chain as IModelStep;
     return {
       message: `${cause.message} - required by ${describeUseSite(head.property, head.target)}`,
       loc: declPosn(head.value),
       label: constraintText(head, { elideConstraintKeys: this.ambientConstraintKeys }),
-      notes: [...substitutionNotes(head), ...this.chainNotes(chain.parent), ...this.refNotes(rest)],
+      notes: [
+        ...substitutionNotes(head),
+        ...this.chainNotes(chain.parent),
+        ...this.refNotes(rest, cause.delivered),
+        ...cause.builds.flatMap(origin => this.chainNotes(origin)),
+      ],
       help,
     };
   }
@@ -323,9 +363,10 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
     return notes;
   }
 
-  /** Full provenance chains of culpable references, as notes. */
-  private refNotes(refs: ReadonlyArray<RepositoryRef>): IDiagnosticNote[] {
-    return refs.flatMap(ref => this.chainNotes(chainSteps(ref.steps, undefined), ref.toString()));
+  /** Render the full provenance chain of each culpable reference as notes,
+   * from where what it delivered came from where `delivered` records that. */
+  private refNotes(refs: ReadonlyArray<Reference>, delivered: ReadonlyMap<Reference, IProvenanceStep> = new Map()): IDiagnosticNote[] {
+    return refs.flatMap(ref => this.chainNotes(delivered.get(ref) ?? chainSteps(ref.steps, undefined), ref.toString()));
   }
 }
 
@@ -345,7 +386,7 @@ function noRuleHelp(cause: NoRuleFoundError): string[] | undefined {
     const supported = operations.map(operation => `'${operation}'`).join(", ");
     return preferred ? [`'${type}' targets support ${supported} — try 'fabr ${preferred} ${cause.target.name}'`] : undefined;
   }
-  const operation = cause.candidates.flat().find(isOperation)?.value ?? cause.constraints.get(BUILD_OPERATION) ?? "build";
+  const operation = cause.candidates.flat().find(isOperation)?.value ?? operationOf(cause.constraints);
   const name = (key: IJudgedKey): string => (key.own ? `target.${key.key}` : key.key);
   const rows = forOperation
     .map(keys => keys.filter(key => !isOperation(key)))
@@ -367,6 +408,26 @@ function spanKey(loc: ISourceSpan | undefined): string {
 
 function noteKey(note: IDiagnosticNote): string {
   return `${note.message}@${spanKey(note.loc)}`;
+}
+
+/**
+ * Check whether `longer` passes every written hop of `shorter`, in order, and
+ * has more written hops besides. `shorter` is then the same route with hops
+ * left out, as when a failure reaches a target that holds the failed thing in
+ * its graph without having written a reference to it.
+ */
+function retraces(longer: Trail, shorter: Trail): boolean {
+  const written = shorter.notes.filter(hop => !hop.inferred).map(noteKey);
+  if (written.length === 0 || longer.notes.filter(hop => !hop.inferred).length <= written.length) {
+    return false;
+  }
+  let at = 0;
+  for (const hop of longer.notes) {
+    if (at < written.length && noteKey(hop) === written[at]) {
+      at++;
+    }
+  }
+  return at === written.length;
 }
 
 function trailKey(trail: IDiagnosticNote[]): string {
@@ -426,4 +487,32 @@ export function errorSummary(err: Error): string | undefined {
  *  the driver's catch sites and the facade's watch channel. */
 export function reportFailure(log: Log, err: Error): void {
   DEFAULT_FORMATTER.report(log, err);
+}
+
+/**
+ * Read a dependency cycle from the labels on it (see {@link CycleError}) as
+ * the report states it: named for the name on it that was asked for first,
+ * with the written references that make it up, the closing one first, and
+ * as that target's failure where the name is a target's.
+ */
+export function cycleErrorOf(labels: ReadonlyArray<Label>): Error {
+  const names = labels.filter((label): label is NameLabel => label instanceof NameLabel);
+  const entered = names.reduce<NameLabel | undefined>((first, each) => (first === undefined || each.order < first.order ? each : first), undefined);
+  const start = entered === undefined ? 0 : labels.indexOf(entered);
+  const sites = [...new Map([...labels.slice(start), ...labels.slice(0, start)].flatMap(siteOf).map(site => [site.value, site])).values()];
+  const circular = new CircularDependencyError(
+    entered?.name ?? sites[0]?.value.value.toString() ?? "a computation",
+    sites.reverse(),
+    entered?.target
+  );
+  return entered?.target === undefined ? circular : new DependencyFailedError(entered.target, circular);
+}
+
+/** Get the written reference a label stands for, where it stands for one. */
+function siteOf(label: Label): IUseSite[] {
+  if (label instanceof ReferenceLabel) {
+    return [label.site];
+  }
+  const written = label instanceof ProvenanceLabel ? label.steps.find((step): step is IModelStep => step.kind === MODEL_PROVENANCE) : undefined;
+  return written === undefined ? [] : [{ value: written.value, property: written.property, target: written.target }];
 }

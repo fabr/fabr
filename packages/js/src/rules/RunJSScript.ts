@@ -46,6 +46,11 @@ import {
   RuleResult,
   RunnableFileSet,
   TargetContext,
+  defineRule,
+  ContainedSources,
+  PackageSources,
+  Permissive,
+  permissive,
 } from "@fabr-build/core";
 import { assembleNodeModules } from "../NodeModules";
 import {
@@ -66,100 +71,106 @@ export function compiledEntryName(entryName: string): string {
   return entryName.replace(/\.(?:([cm])?ts|tsx)$/i, (_match, flavour: string | undefined) => `.${(flavour ?? "").toLowerCase()}js`);
 }
 
-function defineJsRunnable(context: TargetContext): Computable<RuleResult> {
-  /* deps/entry are built content — resolve them under build, not the run
-   * operation this rule is selected by (constraints otherwise propagate). */
+/**
+ * State `deps` and `entry`, read under build rather than the run operation this
+ * rule is selected by. They resolve as one collection, so an entry package
+ * resolves with the deps' own pins. The install is a sealed program, executed
+ * and never linked against, so they are collected permissively: resolution
+ * repairs are accepted and the assembly nests npm-style. `entry` is read
+ * contained, so a projected package arrives as a pending FileSetRef that
+ * makeNpmRunnable consumes directly: the projection selects the runnable's
+ * entry, as it does for `fabr run`.
+ */
+function requirements(
+  context: TargetContext
+): Permissive<{ deps: Computable<PackageSources>; entry: Computable<ContainedSources> }> {
+  return permissive({
+    deps: context.getPackageProperty("deps", BUILD_OVERRIDE),
+    entry: context.getContainedFileProperty("entry", BUILD_OVERRIDE),
+  });
+}
+
+function defineJsRunnable(
+  context: TargetContext,
+  { deps, entry }: { deps: FileSet[]; entry: (FileSet | FileSetRef)[] }
+): Computable<RuleResult> {
   return Computable.forAll(
-    [
-      context.getFileProperty("deps", BUILD_OVERRIDE),
-      context.getContainedFileProperty("entry", BUILD_OVERRIDE),
-      context.getProperty("args"),
-      context.getGlobalString("JS_TARGET"),
-    ],
-    (depSources, entrySources, args, target) =>
-      /* THE collection point: deps AND entry materialize jointly, so an entry
-       * package resolves with the deps' own pins (one environment). The
-       * install is a sealed program (executed, never linked against), so
-       * resolution repairs are accepted and the assembly nests npm-style.
-       * `entry` is read CONTAINED, so a projected package arrives as a pending
-       * FileSetRef that makeNpmRunnable consumes directly — the projection
-       * selects the RUNNABLE's entry, the written form's `fabr run` meaning. */
-      context
-        .collect({ deps: depSources, entry: entrySources }, { resolutionMode: "permissive" })
-        .then(({ deps, entry }) => {
-          const argv = args ? args.getValues() : [];
-          const sole = entry.length === 1 ? entry[0] : undefined;
-          /* Package-mode: the (jointly-resolved) package IS the runnable —
-           * its declared bin (or the pending projection's pick) the entry —
-           * with the deps bundled into its install. */
-          if (sole instanceof PackageFileSet || (sole instanceof FileSetRef && sole.source instanceof PackageFileSet)) {
-            return makeNpmRunnable(sole, deps, argv);
-          }
-          /* File-mode: the entry IS the script file. A plain-JS entry is
-           * contributed to the install verbatim and launched under node; a
-           * TypeScript entry is compiled first (see below). */
-          return context.manifestAll(entry).then(entrySets => {
-            if (entrySets.some(set => set instanceof PackageFileSet)) {
-              throw new FabrError("js_script 'entry' must be a single file or a single package — further packages belong in 'deps'");
-            }
-            const entrySet = FileSet.unionAll(...entrySets);
-            const names = [...entrySet].map(([name]) => name);
-            if (names.length !== 1) {
-              throw new FabrError(
-                names.length === 0
-                  ? "js_script 'entry' resolved to no file — name the script file (or a package) itself"
-                  : `js_script 'entry' resolved to ${names.length} files (${names.slice(0, 5).join(", ")}) — name exactly one`
-              );
-            }
-            const entryName = names[0];
-            const packages = deps.filter((d): d is PackageFileSet => d instanceof PackageFileSet);
+    [context.getProperty("args"), context.getGlobalString("JS_TARGET")],
+    (args, target): RuleResult | Computable<RuleResult> => {
+      const argv = args ? args.getValues() : [];
+      const sole = entry.length === 1 ? entry[0] : undefined;
+      /* Package-mode: the (jointly-resolved) package IS the runnable —
+       * its declared bin (or the pending projection's pick) the entry —
+       * with the deps bundled into its install. */
+      if (sole instanceof PackageFileSet || (sole instanceof FileSetRef && sole.source instanceof PackageFileSet)) {
+        return makeNpmRunnable(sole, deps, argv);
+      }
+      /* File-mode: the entry IS the script file. A plain-JS entry is
+       * contributed to the install verbatim and launched under node; a
+       * TypeScript entry is compiled first (see below). */
+      return context.applyProjections(entry).then(entrySets => {
+        if (entrySets.some(set => set instanceof PackageFileSet)) {
+          throw new FabrError("js_script 'entry' must be a single file or a single package — further packages belong in 'deps'");
+        }
+        const entrySet = FileSet.unionAll(...entrySets);
+        const names = [...entrySet].map(([name]) => name);
+        if (names.length !== 1) {
+          throw new FabrError(
+            names.length === 0
+              ? "js_script 'entry' resolved to no file — name the script file (or a package) itself"
+              : `js_script 'entry' resolved to ${names.length} files (${names.slice(0, 5).join(", ")}) — name exactly one`
+          );
+        }
+        const entryName = names[0];
+        const packages = deps.filter((d): d is PackageFileSet => d instanceof PackageFileSet);
 
-            /* TypeScript entry: compile the entry + any source deps through the
-             * shared js_compile path (the package deps become the compile's
-             * node_modules), then launch the entry's compiled `.js`. A root
-             * package.json carries the module `type` matching JS_TARGET so node
-             * runs the emitted code (ESM by default) in the right mode. */
-            if (classifySourceByExt(entryName) === "ts") {
-              const jsTarget = parseJSTarget(target);
-              const launchName = compiledEntryName(entryName);
-              /* Loose-dep runtime resources (.json, templates, assets): tsc
-               * neither compiles nor emits them, so they never ride compiledTree
-               * and must be carried into the install explicitly — rooted at the
-               * package root, next to the compiled entry, so a `./x.json` import
-               * resolves. Compilable loose deps are excluded (their output is
-               * already in compiledTree — and a raw .js would collide by name). */
-              const resources = resourceFiles(deps.filter(d => !(d instanceof PackageFileSet)));
-              /* A runnable install is a single artifact with one `type`, so a
-               * `dual` target reduces to its sole format — for the compile as well
-               * as the manifest, or js_compile would be asked to emit both. Set
-               * unconditionally: for an already-single target this is the same
-               * target respelt, so it shares the one compile by cache key. */
-              const format = soleModuleFormat(jsTarget.module);
-              const faceTarget = Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: format }) });
-              return compileContents(context, entrySet, deps, { constraints: faceTarget }).then(built => {
-                const install = FileSet.unionAll(
-                  FileSet.layout({ node_modules: assembleNodeModules(packages) }),
-                  stripPackageJson(built.passthrough),
-                  built.compiled,
-                  resources,
-                  new FileSet(new Map([["package.json", moduleTypeFile(format)]]))
-                );
-                return RunnableFileSet.forEntry(install, launchName, argv, "node");
-              });
-            }
-
-            /* Plain-JS entry: contributed verbatim, deps placed as-is (packages
-             * under node_modules, loose files at their own paths). */
-            const loose = deps.filter(d => !(d instanceof PackageFileSet));
-            const install = FileSet.unionAll(FileSet.layout({ node_modules: assembleNodeModules(packages) }), ...loose, entrySet);
-            return RunnableFileSet.forEntry(install, entryName, argv, "node");
+        /* TypeScript entry: compile the entry + any source deps through the
+         * shared js_compile path (the package deps become the compile's
+         * node_modules), then launch the entry's compiled `.js`. A root
+         * package.json carries the module `type` matching JS_TARGET so node
+         * runs the emitted code (ESM by default) in the right mode. */
+        if (classifySourceByExt(entryName) === "ts") {
+          const jsTarget = parseJSTarget(target);
+          const launchName = compiledEntryName(entryName);
+          /* Loose-dep runtime resources (.json, templates, assets): tsc
+           * neither compiles nor emits them, so they never ride compiledTree
+           * and must be carried into the install explicitly — rooted at the
+           * package root, next to the compiled entry, so a `./x.json` import
+           * resolves. Compilable loose deps are excluded (their output is
+           * already in compiledTree — and a raw .js would collide by name). */
+          const resources = resourceFiles(deps.filter(d => !(d instanceof PackageFileSet)));
+          /* A runnable install is a single artifact with one `type`, so a
+           * `dual` target reduces to its sole format — for the compile as well
+           * as the manifest, or js_compile would be asked to emit both. Set
+           * unconditionally: for an already-single target this is the same
+           * target respelt, so it shares the one compile by cache key. */
+          const format = soleModuleFormat(jsTarget.module);
+          const faceTarget = Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: format }) });
+          return compileContents(context, entrySet, deps, { constraints: faceTarget }).then(built => {
+            const install = FileSet.unionAll(
+              FileSet.layout({ node_modules: assembleNodeModules(packages) }),
+              stripPackageJson(built.passthrough),
+              built.compiled,
+              resources,
+              new FileSet(new Map([["package.json", moduleTypeFile(format)]]))
+            );
+            return RunnableFileSet.forEntry(install, launchName, argv, "node");
           });
-        })
+        }
+
+        /* Plain-JS entry: contributed verbatim, deps placed as-is (packages
+         * under node_modules, loose files at their own paths). */
+        const loose = deps.filter(d => !(d instanceof PackageFileSet));
+        const install = FileSet.unionAll(FileSet.layout({ node_modules: assembleNodeModules(packages) }), ...loose, entrySet);
+        return RunnableFileSet.forEntry(install, entryName, argv, "node");
+      });
+    }
   );
 }
 
-export const jsScriptRule: RuleDefinition = {
+export const jsScriptRule: RuleDefinition = defineRule({
   type: "js_script",
   properties: { [BUILD_OPERATION]: "run" },
-  evaluate: defineJsRunnable,
-};
+  requirements,
+  evaluateMaterialized: defineJsRunnable,
+});

@@ -22,7 +22,16 @@ import type { BuildAction } from "../core/BuildAction";
 import { FileSource } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { Repository } from "../core/Repository";
-import { CommandValue, PropertyMap, TargetContext } from "../model/BuildContext";
+import {
+  CommandValue,
+  MaterializedRequirements,
+  Permissive,
+  PropertyMap,
+  RequiredSources,
+  Requirements,
+  TargetContext,
+  Unmaterialized,
+} from "../context/index";
 
 export enum PropertyType {
   String,
@@ -104,17 +113,80 @@ export interface RuleDefinition {
    * type's targetdef. */
   targetProperties?: Record<string, string>;
   /**
-   * The rule body — always run, per evaluation, as the in-memory Computable
-   * graph (property/global lookups, materialization, layout, generated-file
-   * computation, and composing sub-targets via `context.subTarget`). It is given
-   * no work directory and never executes tools; all execution happens inside
-   * the build steps of the BuildActions it (and the sub-targets it builds)
-   * yield. It cannot tell whether it is building a declared or an anonymous
-   * target: it reads its properties through the same `context` accessors either
-   * way (for an anonymous target they are served from the caller-supplied
-   * inputs).
+   * State what the target requires: the files, packages and targets its
+   * FILES and PACKAGES properties and globals name, under names of the rule's
+   * choosing, read and not materialized. The framework resolves them as one
+   * collection and hands them to {@link evaluate}. Only such sources are
+   * requirements: a string, map or command property has nothing to resolve,
+   * and is read in `evaluate`. Nor is a tool: it is read in `evaluate`, to be
+   * run.
+   *
+   * Three names mean something to the framework. `dependencies` and
+   * `provided` are what the target passes on: requirements of whatever
+   * requires the target too, `provided` bound by that consumer. `extends` is
+   * the package the target is made from; where it is exactly one package,
+   * the target passes on that package's version and requirements. Every
+   * other name is private to the target's build.
+   *
+   * Optional: a rule without it requires nothing. What a rule reads for
+   * itself in `evaluate` is outside the resolved graph, so a cycle through it
+   * is found only when the target is built, and `fabr deps` does not show it.
+   * Returns the requirements as they are, or a Computable of them where they
+   * depend on a value read first.
    */
-  evaluate: (context: TargetContext) => Computable<RuleResult>;
+  requirements?: (context: TargetContext) => Requirements | Permissive | Computable<Requirements | Permissive>;
+  /**
+   * Whether the target is a value, with nothing to build (a flag): `evaluate`
+   * runs where the target is resolved, and what it yields stands for the
+   * target from then on. A value rule's `requirements` are never read.
+   */
+  value?: true;
+  /**
+   * The rule body — always run, per evaluation, as the in-memory Computable
+   * graph (property/global lookups, layout, generated-file computation, and
+   * composing sub-targets via `context.subTarget`). Its requirements arrive
+   * resolved and without content: it calls `requirements.materializeAll()`,
+   * or `materialize(name)` for the ones it needs. A rule written with
+   * {@link defineRule} states it as `evaluateResolved`, or as
+   * `evaluateMaterialized` to be given them all materialized. It is given no work
+   * directory and never executes tools; all execution happens inside the
+   * build steps of the BuildActions it (and the sub-targets it builds)
+   * yield. It cannot tell whether it is building a declared or an anonymous
+   * target: it reads its properties through the same `context` accessors
+   * either way (for an anonymous target they are served from the
+   * caller-supplied inputs).
+   */
+  evaluate: (context: TargetContext, requirements: Unmaterialized<Record<string, RequiredSources>>) => Computable<RuleResult>;
+}
+
+/** The `evaluate` a rule given to {@link defineRule} states: one of the two. */
+type RuleEvaluation<P> =
+  | {
+      /** Build the target from its requirements as {@link RuleDefinition.evaluate}
+       * receives them: resolved, materialized when the rule asks. */
+      evaluateResolved: (context: TargetContext, requirements: Unmaterialized<P>) => Computable<RuleResult>;
+      evaluateMaterialized?: never;
+    }
+  | {
+      /** Build the target from its requirements, every one materialized first. */
+      evaluateMaterialized: (context: TargetContext, materialized: MaterializedRequirements<P>) => RuleResult | Computable<RuleResult>;
+      evaluateResolved?: never;
+    };
+
+/**
+ * Define a rule whose evaluation is typed by what its `requirements` names.
+ */
+export function defineRule<P extends Record<string, RequiredSources>>(
+  rule: Omit<RuleDefinition, "requirements" | "evaluate"> & {
+    requirements: (context: TargetContext) => P | Permissive<P> | Computable<P | Permissive<P>>;
+  } & RuleEvaluation<P>
+): RuleDefinition {
+  const { evaluateResolved, evaluateMaterialized, ...definition } = rule;
+  const evaluate: (context: TargetContext, requirements: Unmaterialized<P>) => Computable<RuleResult> =
+    evaluateMaterialized === undefined
+      ? evaluateResolved
+      : (context, requirements) => requirements.materializeAll().then(materialized => evaluateMaterialized(context, materialized));
+  return { ...definition, evaluate: evaluate as RuleDefinition["evaluate"] };
 }
 
 /** A repository type contributed to a build. */
@@ -134,11 +206,12 @@ export interface RepositoryRegistration {
 /**
  * What core and each plugin contribute to a build: rules, repository types, and
  * `.fabr` library files. A plugin's `activate()` *returns* this — it performs no
- * global registration (see PLUGINS.md), so the build's rule tables are a pure
- * function of the active contribution set and are rebuilt per load. `includes`
- * are absolute paths to the plugin's own `.fabr` files, which a `plugin <name>;`
- * declaration auto-parses and merges into the model (no explicit `include`
- * needed); core's contribution auto-includes STD.fabr, so it is always present.
+ * global registration (see docs/src/content/docs/developer/plugins.md), so the
+ * build's rule tables are a pure function of the active contribution set and are
+ * rebuilt per load. `includes` are absolute paths to the plugin's own `.fabr`
+ * files, which a `plugin <name>;` declaration auto-parses and merges into the
+ * model (no explicit `include` needed); core's contribution auto-includes
+ * STD.fabr, so it is always present.
  * `rules` and `repositories` are tracked by the {@link BuildModel}.
  */
 export interface PluginContribution {

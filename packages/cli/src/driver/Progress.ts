@@ -18,7 +18,6 @@
  */
 
 import {
-  BUILD_OPERATION,
   BuildEvent,
   BuildListener,
   Constraints,
@@ -28,6 +27,7 @@ import {
   errorSummary,
   IFetchTask,
   Log,
+  operationOf,
   shownConstraints,
   TaskDescription,
   TaskProgress,
@@ -382,9 +382,8 @@ function describe(task: TaskDescription): string {
   switch (task.kind) {
     case "target-build": {
       /* A sub-target carries its action verb as `label` ("Compiling"); anything
-       * else derives its verb from the operation — which is just the
-       * BUILD_OPERATION constraint, defaulting to a plain build. */
-      const operation = task.constraints.get(BUILD_OPERATION) ?? "build";
+       * else derives its verb from the operation. */
+      const operation = operationOf(task.constraints);
       const verb = task.label ?? OPERATION_VERBS.get(operation) ?? `Running ${operation} on`;
       return `${verb} ${declName(task.target)}`;
     }

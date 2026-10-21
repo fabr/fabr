@@ -24,8 +24,7 @@ import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import {
-  MaterializeOptions,
-  PERMISSIVE_RESOLUTION,
+  ProjectedPackage,
   PublishMember,
   PublishStatus,
   Repository,
@@ -34,29 +33,47 @@ import {
   RepositoryWriter,
   RepositoryLookup,
   SourceRef,
+  Resolved,
 } from "../core/Repository";
-import { PackageFileSet } from "../core/PackageFileSet";
+import { dependencyName, isPackage, PackageFileSet, ResolvedNode } from "../core/PackageFileSet";
+import { buildOperation } from "../Fabr";
+import { materializeTargets, TargetRef } from "../core/TargetRef";
+import { ResolvedTarget } from "./ResolvedTarget";
 import { PublishableFileSet } from "../core/PublishableFileSet";
 import { SyncSource, syncRule } from "../rules/BuildSync";
 import { defaultFilesRule } from "../rules/DefaultFilesRule";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { makeRewrite, Name } from "../core/Name";
 import { renderProvenance } from "../core/Provenance";
-import { ConflictError, FabrError, toError } from "../core/Errors";
+import { ConflictError, CycleError, FabrError, MultiError, toError } from "../core/Errors";
+import { cycleErrorOf } from "../model/ErrorFormatter";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { BuildAction, IBuildActionDefinition } from "../core/BuildAction";
 import { DiscoveredDeps } from "../core/Manifest";
-import { PluginContribution, RepositoryProvider, RepositoryRegistration, RuleDefinition } from "../rules/Types";
+import { defineRule, PluginContribution, RepositoryProvider, RepositoryRegistration, RuleDefinition } from "../rules/Types";
 import { FSFileSource } from "../core/FSFileSource";
 import { scriptRunRule } from "../rules/RunScript";
-import { BuildContext, mapEntryOrigin, PropertyMap, PropertyMapValue } from "./BuildContext";
-import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints } from "./Constraints";
-import { CircularDependencyError, DependencyFailedError, NameResolutionError, NoRuleFoundError, ReferenceFailedError } from "./Errors";
-import { ExecutionContext } from "./ExecutionContext";
-import { declName, INameValue, syntheticValue } from "./AST";
+import { BuildContext, InternalBuildContext } from "./BuildContext";
+import { ResolvedRequirements } from "./Collection";
+import { mapEntryOrigin, PropertyMap, PropertyMapValue } from "./PropertyMap";
+import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints } from "../model/Constraints";
+import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
+import { PackageFormat } from "../resolver/PackageFormat";
+import { Requirement } from "../resolver/Types";
+import { resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
+import { RepositoryReader } from "../core/Repository";
+import {
+  CircularDependencyError,
+  DependencyFailedError,
+  NameResolutionError,
+  NoRuleFoundError,
+  ReferenceFailedError,
+} from "../model/Errors";
+import { ExecutionContext } from "../model/ExecutionContext";
+import { declName, INameValue, syntheticValue } from "../model/AST";
 import { StringReader } from "../support/StringReader";
-import { parseBuildString, parseName } from "./Parser";
-import { toBuildModel } from "./Sema";
+import { parseBuildString, parseName } from "../model/Parser";
+import { toBuildModel } from "../model/Sema";
 import chai, { expect } from "chai";
 import chaiAsPromised from "chai-as-promised";
 import { BuildCache } from "../core/BuildCache";
@@ -71,20 +88,34 @@ const testLog = new LogFormatter(LogLevel.Info, console.error);
  * cache, so a single throwaway instance serves them all */
 const execution = new ExecutionContext(new BuildCache(".", testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
 
-/** A name as the driver hands one over: every caller of {@link
- * BuildContext.resolveName} supplies the decl its reference was written in
- * (the CLI's is synthesized over the command line — see CommandLineSource),
- * there being no such thing as a reference written nowhere. */
+/** A name as the driver hands one over. Every {@link BuildContext} method
+ * takes the decl its reference was written in (the CLI synthesizes one over
+ * the command line, see CommandLineSource). */
 function writtenOnCommandLine(name: string): INameValue {
   const source = { fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(name) };
   return syntheticValue(parseName(name), source, 0, name.length);
 }
 
-/* These tests exercise the evaluation engine with throwaway rules. Rules now
- * ride the model's registry (not a global), so collect them into a contribution
- * and build a per-test registry passed to toBuildModel. `registerRule` /
- * `registerRepositoryProvider` are kept as local shims so the registrations
- * below read unchanged. */
+/** Gather what `resolved` requires, by requirement name: a target's
+ * requirements under their own names, and anything else as itself under the
+ * empty name. */
+function requirementsOf(resolved: ResolvedRequirements): Map<string, Resolved[]> {
+  const sections = new Map<string, Resolved[]>();
+  for (const source of resolved.denoted) {
+    const entries: Array<[string, ReadonlyArray<Resolved>]> =
+      source instanceof ResolvedTarget ? [...source.resolved.sources] : [["", [source]]];
+    entries.forEach(([name, sources]) => sections.set(name, [...(sections.get(name) ?? []), ...sources]));
+  }
+  return sections;
+}
+
+/** A configuration as the framework's own code holds it. */
+const internal = (config: BuildContext): InternalBuildContext => config as InternalBuildContext;
+
+/* These tests exercise the evaluation engine with throwaway rules, collected
+ * into one contribution that each test's model is built with. Each rule is
+ * added to `testRules` and each repository type to `testRepos`, directly or
+ * through `registerRule` and `registerRepositoryProvider`. */
 const testRules: RuleDefinition[] = [];
 const testRepos: RepositoryRegistration[] = [];
 function registerRule(type: string, properties: Record<string, string>, evaluate: RuleDefinition["evaluate"]): void {
@@ -99,17 +130,63 @@ let lastDeps: FileSet | undefined;
 /* The delivered sets before the union, for a test that cares about the identity
  * a delivery carries rather than its content. */
 let lastDepSets: FileSet[] = [];
-registerRule("test_good", {}, context =>
-  context.getFileSetProperties(["deps"]).then(({ deps }) => {
-    lastDepSets = deps;
-    lastDeps = FileSet.unionAll(...deps);
-    return EMPTY_FILESET;
+testRules.push(
+  defineRule({
+    type: "test_good",
+    properties: {},
+    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    evaluateResolved: (_context, requirements) =>
+      requirements.materializeAll().then(({ deps }) => {
+        lastDepSets = deps;
+        lastDeps = FileSet.unionAll(...deps);
+        return Computable.resolve(EMPTY_FILESET);
+      }),
+  })
+);
+/* States what it requires only after an asynchronous step, so that another
+ * target can begin, and ask for this one, before this one has asked for anything. */
+testRules.push(
+  defineRule({
+    type: "test_slow",
+    properties: {},
+    requirements: context =>
+      Computable.from<void>(resolve => setTimeout(resolve, 5)).then(() => ({ deps: context.getPackageProperty("deps") })),
+    evaluateResolved: (_context, requirements) => requirements.materializeAll().then(() => EMPTY_FILESET),
   })
 );
 /* Yields a package under its own target name, so a reference to it delivers one
  * — the subject of a `-> name` package rename. */
-registerRule("test_package", {}, context =>
-  Computable.resolve(new PackageFileSet(new Map([["index.js", MemoryFile.from("")]]), context.name, "1.0.0"))
+testRules.push({
+  type: "test_package",
+  properties: {},
+  evaluate: context => Computable.resolve(new PackageFileSet(new Map([["index.js", MemoryFile.from("")]]), context.name, "1.0.0")),
+});
+/* A package built against its `deps`, which it states and carries; its one
+ * file holds the `MODE` it was built in. */
+testRules.push(
+  defineRule({
+    type: "test_carrier",
+    properties: { [BUILD_OPERATION]: "build" },
+    requirements: context => Computable.resolve({ dependencies: context.getPackageProperty("deps") }),
+    evaluateResolved: (context, requirements) =>
+      Computable.forAll([requirements.packages("dependencies"), context.getGlobalString("MODE")], (dependencies, mode) =>
+        new PackageFileSet(new Map([["mode.txt", MemoryFile.from(mode)]]), context.name, undefined, dependencies)
+      ),
+  })
+);
+/* Holds what its `deps` were materialized as, entry by entry. */
+let heldDeps: FileSet[] = [];
+testRules.push(
+  defineRule({
+    type: "test_holds",
+    properties: {},
+    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    evaluateResolved: (_context, requirements) =>
+      requirements.materializeAll().then(({ deps }) => {
+        heldDeps = deps;
+        return EMPTY_FILESET;
+      }),
+  })
 );
 registerRule("test_fail", {}, () => Computable.reject(new Error("reasons")));
 /* The operation-hop shape: a rule for one operation whose result IS its own
@@ -117,23 +194,36 @@ registerRule("test_fail", {}, () => Computable.reject(new Error("reasons")));
  * myself, then present the result differently). The hop is a dependency edge
  * like any other, so it must carry the stack; this rule is here to hold that. */
 registerRule("test_good", { [BUILD_OPERATION]: "run" }, context =>
-  context.getSelfWithOverrides(BUILD_OVERRIDE).then(() => EMPTY_FILESET)
+  context.buildSelfWithOverrides(BUILD_OVERRIDE).then(() => EMPTY_FILESET)
 );
 /* Resolves its dep under a caller-supplied constraint override, for testing
  * override precedence against a reference's own <k=v> requirement. */
-registerRule("test_override", {}, context =>
-  context.getFileSetProperties(["dep"], Constraints.of({ FLAVOR: "caller" })).then(({ dep }) => {
-    lastDeps = FileSet.unionAll(...dep);
-    return EMPTY_FILESET;
+testRules.push(
+  defineRule({
+    type: "test_override",
+    properties: {},
+    requirements: context => Computable.resolve({ dep: context.getPackageProperty("dep", Constraints.of({ FLAVOR: "caller" })) }),
+    evaluateResolved: (_context, requirements) =>
+      requirements.materializeAll().then(({ dep }) => {
+        lastDeps = FileSet.unionAll(...dep);
+        return Computable.resolve(EMPTY_FILESET);
+      }),
   })
 );
 /* Resolves a GLOBAL under a caller-supplied override, for testing override
  * precedence against a <k=v> requirement written on the global's value (the
  * getGlobalFileProperty path — e.g. getGlobalRunnable forcing BUILD_OPERATION=run). */
-registerRule("test_globaltool", {}, context =>
-  context.collect({ tool: context.getGlobalFileProperty("GLOBALTOOL", Constraints.of({ FLAVOR: "caller" })) }).then(({ tool }) => {
-    lastDeps = FileSet.unionAll(...tool);
-    return EMPTY_FILESET;
+testRules.push(
+  defineRule({
+    type: "test_globaltool",
+    properties: {},
+    requirements: context =>
+      Computable.resolve({ tool: context.getGlobalFileProperty("GLOBALTOOL", Constraints.of({ FLAVOR: "caller" })) }),
+    evaluateResolved: (_context, requirements) =>
+      requirements.materializeAll().then(({ tool }) => {
+        lastDeps = FileSet.unionAll(...tool);
+        return Computable.resolve(EMPTY_FILESET);
+      }),
   })
 );
 /* Resolve a tool to launch, through the two accessors that own that contract:
@@ -212,14 +302,12 @@ registerRule("test_map", {}, context =>
   })
 );
 
-/* Repository double: resolves each reference to a single file, and records
- * the batches it was asked to resolve */
-/* One entry per DELIVERED reference (label = the delivering repository's
- * declared name): per-reference by design — joint batching is the package
- * registries' property now, pinned at the resolver layer (RepositoryGroup
- * tests); what the collection point owes a plain repository is that every
- * gathered reference is delivered, by the repository it names. */
-const batchCalls: { repo: string; name: string; mode?: string }[] = [];
+/* Repository double: delivers each reference as a single file, and records
+ * each reference it delivered. */
+/* One entry per delivered reference, labelled with the delivering repository's
+ * declared name. Every reference a collection point gathers is delivered by
+ * the repository it names. */
+const batchCalls: { repo: string; name: string }[] = [];
 class TestRepo implements Repository, RepositoryLookup {
   private readonly cache = new Map<string, FileSet>();
 
@@ -234,11 +322,8 @@ class TestRepo implements Repository, RepositoryLookup {
     throw new Error(`test_repo is not a publish destination ('${name.toString()}')`);
   }
 
-  /* `mode` is recorded because the collection point's judgment is not
-   * observable in the delivered content: a repository with a resolution to
-   * judge (a real registry) accepts or refuses repairs by it. */
-  public deliver(reference: RepositoryRef, options?: MaterializeOptions): Computable<FileSet> {
-    batchCalls.push({ repo: this.label, name: reference.name.toString(), mode: options?.resolutionMode });
+  public resolve(reference: RepositoryRef): Computable<FileSet> {
+    batchCalls.push({ repo: this.label, name: reference.name.toString() });
     return Computable.resolve(this.filesFor(reference.name.toString()));
   }
 
@@ -254,15 +339,77 @@ class TestRepo implements Repository, RepositoryLookup {
 registerRepositoryProvider("test_repo", context => Computable.resolve(new TestRepo(context.name)));
 
 /* Delivers a runnable rather than plain files, so the launch-bound accessors
- * (getRunnableProperty / getGlobalRunnable / the run verb's resolveName) can be
+ * (getRunnableProperty / getGlobalRunnable / the run verb's materialize) can be
  * driven against a repository reference — what they ask FOR is recorded in
  * batchCalls by the base class. */
 class TestToolRepo extends TestRepo {
-  public override deliver(reference: RepositoryRef, options?: MaterializeOptions): Computable<FileSet> {
-    return super.deliver(reference, options).then(files => RunnableFileSet.forEntry(files, [...files].map(([name]) => name)[0]));
+  public override resolve(reference: RepositoryRef): Computable<FileSet> {
+    return super.resolve(reference).then(files => RunnableFileSet.forEntry(files, [...files].map(([name]) => name)[0]));
   }
 }
 registerRepositoryProvider("test_tool_repo", context => Computable.resolve(new TestToolRepo(context.name)));
+
+/* A registry, whose references resolve jointly: a written name is the package
+ * at 1.0.0, or `name:version`; what each version requires is what
+ * `registryRequirements` holds for `name@version`, nothing where it holds
+ * nothing. A package is one file; under `run` it is delivered as a runnable. */
+const REGISTRY_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
+  ...SEMVER,
+  resolutionTag: "buildcontexttest:resolve:1",
+  providedMismatch: "tolerate",
+  splitReference: (name: Name) => {
+    const written = name.toBaseString();
+    const colon = written.lastIndexOf(":");
+    return colon === -1
+      ? { name: written, versionConstraint: "1.0.0" }
+      : { name: written.substring(0, colon), versionConstraint: written.substring(colon + 1) };
+  },
+  validateRequirement: () => undefined,
+  parsePublishCoordinate: () => {
+    throw new Error("not used");
+  },
+  readContentPackage: () => {
+    throw new Error("not used");
+  },
+  makeRunnable: pkg => Computable.resolve(RunnableFileSet.forEntry(pkg, `${pkg.packageName}/data.txt`, [], "node")),
+};
+const registryRequirements = new Map<string, Requirement[]>();
+class TestRegistry implements Repository, RepositoryReader<SemverVersion, SemverConstraint> {
+  public readonly format = REGISTRY_FORMAT;
+
+  constructor(
+    public readonly identity: string,
+    public readonly operation: string
+  ) {}
+
+  public getRepositoryRef(name: Name): RepositoryRef {
+    return vendPackageRef(this, REGISTRY_FORMAT, name);
+  }
+
+  public getRepositoryPublishRef(name: Name): never {
+    throw new Error(`test_registry is not a publish destination ('${name.toString()}')`);
+  }
+
+  public environmentKey(): Computable<string> {
+    return Computable.resolve("test-env");
+  }
+
+  public fetchFiles(reference: RepositoryRef): Computable<FileSet> {
+    return resolveBarePackage(this, reference);
+  }
+
+  public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
+    return Computable.resolve(registryRequirements.get(`${pkg}@${versionToString(version)}`) ?? []);
+  }
+
+  public fetch(pkg: string, version: SemverVersion): Computable<PackageFileSet> {
+    return Computable.resolve(new PackageFileSet(new Map([[`${pkg}/data.txt`, MemoryFile.from(pkg)]]), pkg, versionToString(version)));
+  }
+}
+/* A fresh identity per instance: a resolution is memoized by it through the
+ * cache, and each test's model is a fresh registry. */
+let registries = 0;
+registerRepositoryProvider("test_registry", context => Computable.resolve(new TestRegistry(`${context.name}#${++registries}`, context.operation)));
 
 /** A repository answering every name under its namespace with a package of that
  * name, marked as its answer — a stand-in for `fabr_home`. */
@@ -277,7 +424,7 @@ class TestNamespaceRepo implements Repository, RepositoryLookup {
     throw new Error(`not a publish destination: ${name.toString()}`);
   }
 
-  public deliver(reference: RepositoryRef): Computable<FileSet> {
+  public resolve(reference: RepositoryRef): Computable<FileSet> {
     const name = `${this.namespace}/${reference.name}`;
     return Computable.resolve(new PackageFileSet(new Map([["from-fallback", MemoryFile.from("")]]), name, "1.0.0"));
   }
@@ -327,17 +474,22 @@ testRules.push(syncRule, defaultFilesRule);
 
 /* A rule gathering two properties and a global through ONE collection point:
  * all of their references must land in a single joint resolution batch */
-registerRule("test_joint", {}, context =>
-  context
-    .collect({
-      adeps: context.getFileProperty("adeps"),
-      bdeps: context.getFileProperty("bdeps"),
-      globalSrc: context.getGlobalFileProperty("JOINT_GLOBAL"),
-    })
-    .then(({ adeps, bdeps, globalSrc }) => {
-      lastDeps = FileSet.unionAll(...adeps, ...bdeps, ...globalSrc);
-      return EMPTY_FILESET;
-    })
+testRules.push(
+  defineRule({
+    type: "test_joint",
+    properties: {},
+    requirements: context =>
+      Computable.resolve({
+        adeps: context.getPackageProperty("adeps"),
+        bdeps: context.getPackageProperty("bdeps"),
+        globalSrc: context.getGlobalFileProperty("JOINT_GLOBAL"),
+      }),
+    evaluateResolved: (_context, requirements) =>
+      requirements.materializeAll().then(({ adeps, bdeps, globalSrc }) => {
+        lastDeps = FileSet.unionAll(...adeps, ...bdeps, ...globalSrc);
+        return Computable.resolve(EMPTY_FILESET);
+      }),
+  })
 );
 
 /* A leaf build step and a rule that yields it as a build action, for
@@ -471,21 +623,25 @@ registerRule("test_members", {}, context =>
   })
 );
 
-/* Read a GLOBAL on the target's behalf — `TOOL` as files, or `MODE` as a string
- * where the target sets `mode` — after an asynchronous step where it sets
- * `wait`. By then the target's own evaluation is in the target cache, which is
- * what a request re-entering it finds. */
+/* Read a GLOBAL on the target's behalf — `TOOL` as files, built as a rule
+ * builds a tool it reads, or `MODE` as a string where the target sets `mode`
+ * — after an asynchronous step where it sets `wait`. By then the target's own
+ * evaluation is in the target cache, which is what a request re-entering it
+ * finds. */
 registerRule("test_reads_global", {}, context =>
   Computable.forAll([context.getString("wait"), context.getString("mode")], (wait, mode) =>
     (wait ? Computable.from<void>(resolve => setTimeout(resolve, 5)) : Computable.resolve(undefined))
-      .then((): Computable<unknown> => (mode ? context.getGlobalString("MODE") : context.getGlobalFileProperty("TOOL")))
+      .then(
+        (): Computable<unknown> =>
+          mode ? context.getGlobalString("MODE") : context.getGlobalFileProperty("TOOL").then(materializeTargets)
+      )
       .then(() => EMPTY_FILESET)
   )
 );
 
 /* Records who its task says required it. */
 let lastRequiredBy: string[] = [];
-registerRule("test_describes", {}, context => {
+registerRule("test_records_requirer", {}, context => {
   const task = context.taskDescription();
   lastRequiredBy = task.kind === "target-build" ? task.requiredBy.map(declName) : [];
   return Computable.resolve(EMPTY_FILESET);
@@ -495,6 +651,17 @@ const testContributions: PluginContribution[] = [{ rules: testRules, repositorie
 
 /** `outcome`, or `otherwise` if it has not settled within two seconds — so a
  * build that never settles fails its test rather than hanging the suite. */
+/** The cycle `err` reports: unwrapped from the target boundaries around it, and read as the report reads it. */
+function circularOf(err: unknown): CircularDependencyError {
+  let cause = err;
+  while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError || cause instanceof MultiError) {
+    cause = cause instanceof MultiError ? cause.errors[0] : cause.cause;
+  }
+  expect(cause, cause instanceof Error ? cause.message : String(cause)).to.be.instanceOf(CycleError);
+  const circular = cycleErrorOf((cause as CycleError).labels);
+  return (circular instanceof DependencyFailedError ? circular.cause : circular) as CircularDependencyError;
+}
+
 function settledOr<T>(outcome: Promise<T>, otherwise: T): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const expiry = new Promise<T>(resolve => {
@@ -512,7 +679,7 @@ async function testGetProperty(input: string, prop: string, constraints?: Record
   }
 
   const context = model.getConfig(Constraints.of(constraints ?? {}), execution);
-  const result = await context.getProperty(prop);
+  const result = await internal(context).getProperty(prop);
   return result.getValues();
 }
 
@@ -524,14 +691,14 @@ describe("BuildContext", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "targetdef test_package { }\n" +
       "test_package mylib { }\n" +
       "test_good a { deps = mylib -> renamedlib; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     const delivered = lastDepSets[0] as PackageFileSet;
     expect(delivered).to.be.instanceOf(PackageFileSet);
     expect(delivered.packageName).to.equal("renamedlib");
@@ -544,7 +711,7 @@ describe("BuildContext", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "targetdef test_file { content = STRING; }\n" +
       "test_file plain { content = hello; }\n" +
       "test_good a { deps = plain -> renamed; }\n";
@@ -552,7 +719,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect.fail("expected target a to fail");
     } catch (err) {
       /* Never a silent no-op: a dropped rename is a mount under the wrong name,
@@ -569,12 +736,12 @@ describe("BuildContext", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_good { deps = FILES; }\n" + "targetdef test_fail { }\n" + "test_fail b { }\n" + "test_good a { deps = b; }\n";
+      "targetdef test_good { deps = PACKAGES; }\n" + "targetdef test_fail { }\n" + "test_fail b { }\n" + "test_good a { deps = b; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect.fail("expected target a to fail");
     } catch (err) {
       expect(err).to.be.instanceOf(DependencyFailedError);
@@ -600,17 +767,15 @@ describe("BuildContext", () => {
      * cycle is one use site — the written reference, which is the mistake. */
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    const input = "targetdef test_good { deps = FILES; }\ntest_good base { deps = base:*.ts; }\n";
+    const input = "targetdef test_good { deps = PACKAGES; }\ntest_good base { deps = base:*.ts; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("base");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("base"));
       expect.fail("expected target base to fail");
     } catch (err) {
-      const cause = (err as DependencyFailedError).cause;
-      expect(cause).to.be.instanceOf(CircularDependencyError);
-      const circular = cause as CircularDependencyError;
+      const circular = circularOf(err);
       expect(circular.name).to.equal("base");
       expect(circular.message).to.equal("Circular dependency: 'base' depends on itself");
       expect(circular.cycle.map(site => site.value.value.toString())).to.deep.equal(["base:*.ts"]);
@@ -622,20 +787,15 @@ describe("BuildContext", () => {
   it("Reports a cycle through several targets as the whole loop", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    const input = "targetdef test_good { deps = FILES; }\ntest_good one { deps = two; }\ntest_good two { deps = one; }\n";
+    const input = "targetdef test_good { deps = PACKAGES; }\ntest_good one { deps = two; }\ntest_good two { deps = one; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("one");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("one"));
       expect.fail("expected target one to fail");
     } catch (err) {
-      let cause: Error = err as Error;
-      while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
-        cause = cause.cause;
-      }
-      expect(cause).to.be.instanceOf(CircularDependencyError);
-      const circular = cause as CircularDependencyError;
+      const circular = circularOf(err);
       expect(circular.name).to.equal("one");
       /* Closing reference first ('one', written in two's deps), back to the use
        * site that entered the cycle ('two', written in one's deps). */
@@ -648,31 +808,23 @@ describe("BuildContext", () => {
   });
 
   it("Reports a cycle that closes through an operation hop, rather than overflowing", async () => {
-    /* `one[build]` needs `two[run]`, whose rule's result IS `two[build]` (the
-     * js_package[run] shape) — and two's own deps close back on one. That last
-     * edge is only detectable if the hop passed the caller's stack along: with
-     * the hop starting a fresh chain, nothing on the stack names `one`, so the
-     * re-entry silently joins the in-flight evaluation and the graph recurses
-     * to a RangeError instead of naming the cycle. */
+    /* `one[build]` needs `two[run]`, whose rule's result is `two[build]` (the
+     * js_package[run] shape), and two's own deps close back on one. The cycle
+     * is named rather than recursing to a RangeError. */
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "test_good one { deps = two<BUILD_OPERATION=run>; }\n" +
       "test_good two { deps = one; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("one");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("one"));
       expect.fail("expected target one to fail");
     } catch (err) {
-      let cause: Error = err as Error;
-      while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
-        cause = cause.cause;
-      }
-      expect(cause).to.be.instanceOf(CircularDependencyError);
-      const circular = cause as CircularDependencyError;
+      const circular = circularOf(err);
       /* The whole loop, both use sites: one's deps naming two under `run`, and
        * two's deps naming one back. */
       expect(
@@ -684,32 +836,31 @@ describe("BuildContext", () => {
   });
 
   describe("a cycle entered through something a target's rule reads", () => {
-    /* The target is not on the stack through one of its own properties here, so
-     * only its evaluation's own frame can close the cycle — and it must, however
-     * the timing falls: a re-entry that arrives after the evaluation was cached
-     * would otherwise join it and never settle. */
+    /* The target reaches itself only through what its rule reads, never through
+     * one of its own properties. The cycle must be found however the timing
+     * falls, including a re-entry that arrives after the evaluation was cached
+     * and joins it. */
     /* (Under `run`, test_good reaches itself under `build`, so the loops below
      * close in the build configuration: on `u`, by the global naming it.) */
-    const DEFS = "targetdef test_reads_global { wait = STRING; mode = STRING; }\ntargetdef test_good { deps = FILES; }\n";
+    const DEFS = "targetdef test_reads_global { wait = STRING; mode = STRING; }\ntargetdef test_good { deps = PACKAGES; }\n";
 
-    async function cycleOf(input: string, name: string): Promise<CircularDependencyError> {
+    async function cycleOf(input: string, name: string, operation = "run"): Promise<CircularDependencyError> {
       const errors: string[] = [];
       const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
       const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", DEFS + input, logger)], logger, testContributions);
       expect(errors).to.deep.equal([]);
       const failure = await settledOr(
-        Promise.resolve(model.getConfig(Constraints.of({ BUILD_OPERATION: "run" }), execution).getTarget(name)).then(
+        Promise.resolve(
+          model.getConfig(Constraints.of({ BUILD_OPERATION: operation }), execution).materialize(writtenOnCommandLine(name))
+        ).then(
           () => new Error("built"),
           (err: Error) => err
         ),
         new Error("never settled")
       );
-      let cause = failure;
-      while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
-        cause = cause.cause;
-      }
-      expect(cause, cause.message).to.be.instanceOf(CircularDependencyError);
-      return cause as CircularDependencyError;
+      /* Where several named targets are in the cycle each reports it, so one
+       * of them is followed. */
+      return circularOf(failure);
     }
     const sites = (circular: CircularDependencyError): string[] =>
       circular.cycle.map(site => `${site.target ? declName(site.target) + " " : ""}${site.property.name.toBaseString()} = ${site.value.value.toString()}`);
@@ -725,7 +876,10 @@ describe("BuildContext", () => {
 
       it(`names a FILES global naming a target that depends on the one reading it (${timing})`, async () => {
         const circular = await cycleOf(`TOOL = u;\ntest_good u { deps = t; }\ntest_reads_global t {${wait} }\n`, "t");
-        expect(sites(circular)).to.deep.equal(["TOOL = u", "u deps = t"]);
+        /* Read from `t`, the first of the cycle to be asked for: the closing
+         * reference, then the one that led to it. */
+        expect(circular.name).to.equal("t");
+        expect(sites(circular)).to.deep.equal(["u deps = t", "TOOL = u"]);
       });
 
       it(`names a string global whose command needs the target reading it (${timing})`, async () => {
@@ -733,6 +887,108 @@ describe("BuildContext", () => {
         expect(sites(circular)).to.deep.equal(["MODE = `u`", "u deps = t"]);
       });
     }
+
+    it("names the command that runs a tool depending on the target running it", async () => {
+      const circular = await cycleOf("targetdef test_cmd { run = COMMAND; }\ntest_cmd g { run = u a.txt; }\ntest_good u { deps = g; }\n", "g", "build");
+      expect(circular.name).to.equal("g");
+      expect(sites(circular)).to.deep.equal(["u deps = g", "g run = u"]);
+    });
+
+    it("names the redirect that reads from a target depending on the one running the command", async () => {
+      const circular = await cycleOf(
+        "targetdef test_cmd { run = COMMAND; }\ntest_cmd g { run = echo < u; }\ntest_good u { deps = g; }\n",
+        "g",
+        "build"
+      );
+      expect(sites(circular)).to.deep.equal(["u deps = g", "g run = u"]);
+    });
+
+    it("finds the cycle when the target the global names was resolved before the one reading it", async () => {
+      /* `t` and then `u` are resolved by the name that lists them, neither
+       * under the other, so the answer is already in hand when `t`'s rule reads
+       * TOOL. The cycle is found by carrying on through what `u` requires to
+       * `t`. */
+      const circular = await cycleOf("TOOL = u;\nALL = t u;\ntest_good u { deps = t; }\ntest_reads_global t { }\n", "ALL", "build");
+      expect(circular.name).to.equal("t");
+    });
+
+    for (const order of ["w t u", "u w t", "t u w"]) {
+      it(`finds the cycle through a global another target resolved first (${order})`, async () => {
+        /* `w` and `u` both reach `t` through COMMON, and whichever is resolved
+         * second gets COMMON's answer without asking for `t` itself. The
+         * cycle closes when `t` is built and its rule reads TOOL. */
+        const circular = await cycleOf(
+          `TOOL = u;\nCOMMON = t;\nALL = ${order};\ntest_good w { deps = COMMON; }\ntest_good u { deps = COMMON; }\ntest_reads_global t { }\n`,
+          "ALL",
+          "build"
+        );
+        /* Reported at whichever target of the cycle is being asked for again. */
+        expect(["t", "u"]).to.include(circular.name);
+      });
+    }
+
+    it("finds the cycle through a string global another target read first", async () => {
+      /* `w` is the first to read MODE, whose command needs `u`, which needs
+       * `t`; `t` then reads MODE while it is still being answered for `w`. */
+      const circular = await cycleOf(
+        "MODE = `u`;\nALL = w t;\ntest_good u { deps = t; }\ntest_reads_global w { mode = yes; }\ntest_reads_global t { mode = yes; }\n",
+        "ALL",
+        "build"
+      );
+      expect(["t", "MODE"]).to.include(circular.name);
+    });
+
+    for (const order of ["a b", "b a"]) {
+      it(`finds a cycle between two targets resolved side by side (${order})`, async () => {
+        /* Neither is resolved under the other: `a` pauses before it asks for
+         * `b`, and `b`, begun in the meantime, asks for `a` and joins it. */
+        const circular = await cycleOf(
+          `targetdef test_slow { deps = PACKAGES; }\nALL = ${order};\ntest_slow a { deps = b; }\ntest_good b { deps = a; }\n`,
+          "ALL",
+          "build"
+        );
+        expect(["a", "b"]).to.include(circular.name);
+        expect(sites(circular).sort()).to.deep.equal(["a deps = b", "b deps = a"]);
+      });
+    }
+
+    it("finds a cycle between two slow targets resolved side by side", async () => {
+      const circular = await cycleOf(
+        "targetdef test_slow { deps = PACKAGES; }\nALL = a b;\ntest_slow a { deps = b; }\ntest_slow b { deps = a; }\n",
+        "ALL",
+        "build"
+      );
+      expect(sites(circular).sort()).to.deep.equal(["a deps = b", "b deps = a"]);
+    });
+
+    describe("through a global read under the reader's own overrides, which is not cached", () => {
+      const TOOLS = "targetdef test_globalrunnable { }\ntargetdef test_globalstr { }\n";
+
+      it("finds a tool global that names the target reading it", async () => {
+        const circular = await cycleOf(`${TOOLS}TOOLGLOBAL = t;\ntest_globalrunnable t { }\n`, "t", "build");
+        expect(circular.name).to.equal("t");
+        expect(sites(circular)).to.deep.equal(["TOOLGLOBAL = t"]);
+      });
+
+      it("finds a tool global naming a target that depends on the one reading it", async () => {
+        const circular = await cycleOf(`${TOOLS}TOOLGLOBAL = u;\ntest_good u { deps = t; }\ntest_globalrunnable t { }\n`, "t", "build");
+        expect(sites(circular)).to.include.members(["TOOLGLOBAL = u", "u deps = t"]);
+      });
+
+      it("finds two tool globals that reach each other through targets that read them", async () => {
+        const circular = await cycleOf(
+          `${TOOLS}targetdef test_tool { tool = PACKAGES; }\nTOOLGLOBAL = u;\ntest_tool u { tool = t; }\ntest_globalrunnable t { }\n`,
+          "t",
+          "build"
+        );
+        expect(sites(circular)).to.include.members(["TOOLGLOBAL = u", "u tool = t"]);
+      });
+
+      it("finds a string global whose value reads itself back", async () => {
+        const circular = await cycleOf(`${TOOLS}FLAVOR = ambient;\nGLOBALSTR = \${OTHER};\nOTHER = \${GLOBALSTR};\ntest_globalstr t { }\n`, "t", "build");
+        expect(["GLOBALSTR", "OTHER"]).to.include(circular.name);
+      });
+    });
 
     it("says which target the cycle re-entered, where no property of its own did", async () => {
       const circular = await cycleOf("TOOL = t;\ntest_reads_global t { wait = yes; }\n", "t");
@@ -746,12 +1002,12 @@ describe("BuildContext", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_reads_global { wait = STRING; mode = STRING; }\ntargetdef test_describes { }\ntargetdef test_good { deps = FILES; }\n" +
-      "TOOL = u;\ntest_describes u { }\ntest_reads_global t { }\ntest_good top { deps = t; }\n";
+      "targetdef test_reads_global { wait = STRING; mode = STRING; }\ntargetdef test_records_requirer { }\ntargetdef test_good { deps = PACKAGES; }\n" +
+      "TOOL = u;\ntest_records_requirer u { }\ntest_reads_global t { }\ntest_good top { deps = t; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("top");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("top"));
     expect(lastRequiredBy).to.deep.equal(["t", "top"]);
   });
 
@@ -765,15 +1021,10 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("A");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("A"));
       expect.fail("expected property A to fail");
     } catch (err) {
-      let cause: Error = err as Error;
-      while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
-        cause = cause.cause;
-      }
-      expect(cause).to.be.instanceOf(CircularDependencyError);
-      const circular = cause as CircularDependencyError;
+      const circular = circularOf(err);
       expect(circular.name).to.equal("A");
       expect(circular.cycle.map(site => `${site.property.name.toBaseString()} = ${site.value.value.toString()}`)).to.deep.equal([
         "B = A",
@@ -790,22 +1041,17 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("DEPS");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("DEPS"));
       expect.fail("expected property DEPS to fail");
     } catch (err) {
-      let cause: Error = err as Error;
-      while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
-        cause = cause.cause;
-      }
-      expect(cause).to.be.instanceOf(CircularDependencyError);
-      expect((cause as CircularDependencyError).name).to.equal("DEPS");
-      expect((cause as CircularDependencyError).cycle.map(site => site.value.value.toString())).to.deep.equal(["DEPS"]);
+      const circular = circularOf(err);
+      expect(circular.name).to.equal("DEPS");
+      expect(circular.cycle.map(site => site.value.value.toString())).to.deep.equal(["DEPS"]);
     }
   });
 
   it("Reports a guard reading its own property as a cycle instead of overflowing", async () => {
-    /* Judging FOO's guard reads FOO — the property being judged is a stack
-     * frame while its guards resolve, so the loop is the ordinary positioned
+    /* Judging FOO's guard reads FOO, so the loop is the ordinary positioned
      * cycle error, not a RangeError. */
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
@@ -814,15 +1060,10 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({}), execution).getProperty("FOO");
+      await internal(model.getConfig(Constraints.of({}), execution)).getProperty("FOO");
       expect.fail("expected property FOO to fail");
     } catch (err) {
-      let cause: Error = err as Error;
-      while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
-        cause = cause.cause;
-      }
-      expect(cause).to.be.instanceOf(CircularDependencyError);
-      expect((cause as CircularDependencyError).name).to.equal("FOO");
+      expect(circularOf(err).name).to.equal("FOO");
     }
   });
 
@@ -834,15 +1075,10 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({}), execution).getProperty("A");
+      await internal(model.getConfig(Constraints.of({}), execution)).getProperty("A");
       expect.fail("expected property A to fail");
     } catch (err) {
-      let cause: Error = err as Error;
-      while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
-        cause = cause.cause;
-      }
-      expect(cause).to.be.instanceOf(CircularDependencyError);
-      const circular = cause as CircularDependencyError;
+      const circular = circularOf(err);
       expect(circular.name).to.equal("A");
       /* Both use sites — each frame's value is the guarded declaration's key. */
       expect(circular.cycle.map(site => site.value.value.toString())).to.deep.equal(["B<A=1>", "A<B=1>"]);
@@ -860,15 +1096,10 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({}), execution).getProperty("FOO");
+      await internal(model.getConfig(Constraints.of({}), execution)).getProperty("FOO");
       expect.fail("expected property FOO to fail");
     } catch (err) {
-      let cause: Error = err as Error;
-      while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
-        cause = cause.cause;
-      }
-      expect(cause).to.be.instanceOf(CircularDependencyError);
-      const circular = cause as CircularDependencyError;
+      const circular = circularOf(err);
       expect(circular.name).to.equal("FOO");
       /* Both hops: MODE's value reading FOO back, and the guarded key that
        * demanded MODE. */
@@ -883,11 +1114,11 @@ describe("BuildContext", () => {
      * stack node, or this legitimate reference reports a false cycle. */
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    const input = "targetdef test_good { deps = FILES; }\ndeps = sub;\ntest_good t { deps = ${deps}/*.txt; }\n";
+    const input = "targetdef test_good { deps = PACKAGES; }\ndeps = sub;\ntest_good t { deps = ${deps}/*.txt; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t"));
     expect(lastDeps?.isEmpty()).to.equal(true);
   });
 
@@ -895,7 +1126,7 @@ describe("BuildContext", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "targetdef test_file { content = STRING; }\n" +
       "test_file c1 { content = one; }\n" +
       "test_file c2 { content = two; }\n" +
@@ -904,7 +1135,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({ arch: "armv7" }), execution).getTarget("a");
+      await model.getConfig(Constraints.of({ arch: "armv7" }), execution).materialize(writtenOnCommandLine("a"));
       expect.fail("expected target a to fail");
     } catch (err) {
       expect(err).to.be.instanceOf(DependencyFailedError);
@@ -941,7 +1172,7 @@ describe("BuildContext", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "targetdef test_file { content = STRING; }\n" +
       "test_file c1 { content = one; }\n" +
       "test_file c2 { content = two; }\n" +
@@ -951,7 +1182,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect.fail("expected target a to fail");
     } catch (err) {
       const conflict = (err as DependencyFailedError).cause as ConflictError;
@@ -971,12 +1202,12 @@ describe("BuildContext", () => {
     /* A projection into a multi-source property (`x:f.txt`) unions two producers
      * that both emit `f.txt` — the conflict is raised inside the value's own
      * resolution (a rename projection collapsing names is the same path), before
-     * the model-ref step is stamped, so it must be chained on so the driver
+     * the model step is stamped, so it must be chained on so the driver
      * traces it to the written `x:f.txt`, not just the underlying producers. */
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "targetdef test_file { content = STRING; }\n" +
       "test_file c1 { content = one; }\n" +
       "test_file c2 { content = two; }\n" +
@@ -986,7 +1217,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect.fail("expected target a to fail");
     } catch (err) {
       expect(err).to.be.instanceOf(DependencyFailedError);
@@ -1007,7 +1238,7 @@ describe("BuildContext", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "targetdef test_constrained { }\n" +
       "test_constrained n { }\n" +
       "test_good a { deps = n; }\n";
@@ -1015,7 +1246,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect.fail("expected target a to fail");
     } catch (err) {
       expect(err).to.be.instanceOf(DependencyFailedError);
@@ -1035,14 +1266,12 @@ describe("BuildContext", () => {
   });
 
   it("rejects a prototype-polluting name instead of resolving an inherited member", async () => {
-    /* Names are user-controlled and looked up with `name in cache` / `cache[name]`.
-     * A name like `toString` or `__proto__` must resolve as an ordinary unknown
-     * name, not silently hit an Object.prototype member (which previously let
-     * `fabr build toString` succeed with exit 0 against no such target). */
+    /* Names are user-controlled. A name like `toString` or `__proto__` must
+     * resolve as an ordinary unknown name, not hit an Object.prototype member. */
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const model = toBuildModel(
-      [parseBuildString(EMPTY_FILESET, "TEST.fabr", "targetdef test_good { deps = FILES; }\n", logger)],
+      [parseBuildString(EMPTY_FILESET, "TEST.fabr", "targetdef test_good { deps = PACKAGES; }\n", logger)],
       logger,
       testContributions
     );
@@ -1051,7 +1280,7 @@ describe("BuildContext", () => {
     for (const name of ["toString", "valueOf", "__proto__", "constructor"]) {
       let threw = false;
       try {
-        await model.getConfig(Constraints.of({}), execution).getTarget(name);
+        await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine(name));
       } catch (err) {
         threw = true;
         expect((err as Error).message, name).to.match(/^Unknown name '/);
@@ -1059,18 +1288,18 @@ describe("BuildContext", () => {
       expect(threw, `expected '${name}' to be unresolved`).to.equal(true);
     }
     /* The `${valueOf}` property path is guarded the same way. */
-    expect(() => model.getConfig(Constraints.of({}), execution).getProperty("valueOf")).to.throw(/Unknown property/);
+    expect(() => internal(model.getConfig(Constraints.of({}), execution)).getProperty("valueOf")).to.throw(/Unknown property/);
   });
 
   it("Fails a literal name that names no target and matches no file", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    const input = "targetdef test_good { deps = FILES; }\n" + "test_good a { deps = fooff; }\n";
+    const input = "targetdef test_good { deps = PACKAGES; }\n" + "test_good a { deps = fooff; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect.fail("expected target a to fail");
     } catch (err) {
       expect(err).to.be.instanceOf(DependencyFailedError);
@@ -1095,7 +1324,7 @@ describe("BuildContext", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "targetdef test_file { content = STRING; }\n" +
       "test_file t1 { content = one; }\n" +
       "test_file t2 { content = two; }\n" +
@@ -1105,22 +1334,22 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     /* No override: the naked `tool` resolves the declared value t1. */
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     expect(await lastDeps!.readFile("f.txt")).to.equal("one");
 
     /* `-Dtool=t2` (a constraint) repins the same bare reference to t2. */
-    await model.getConfig(Constraints.of({ tool: "t2" }), execution).getTarget("a");
+    await model.getConfig(Constraints.of({ tool: "t2" }), execution).materialize(writtenOnCommandLine("a"));
     expect(await lastDeps!.readFile("f.txt")).to.equal("two");
   });
 
   it("Leaves a glob matching nothing as an empty resolution", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    const input = "targetdef test_good { deps = FILES; }\n" + "test_good a { deps = fooff*; }\n";
+    const input = "targetdef test_good { deps = PACKAGES; }\n" + "test_good a { deps = fooff*; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     expect(lastDeps?.isEmpty()).to.equal(true);
   });
 
@@ -1128,7 +1357,7 @@ describe("BuildContext", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "targetdef test_file { content = STRING; }\n" +
       "test_file b { content = one; }\n" +
       "test_good a { deps = b:missing.txt; }\n";
@@ -1136,7 +1365,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect.fail("expected target a to fail");
     } catch (err) {
       expect(err).to.be.instanceOf(DependencyFailedError);
@@ -1157,16 +1386,29 @@ describe("BuildContext", () => {
     /* A name every member matches: one projected source per member — the
      * same-named files are NOT a conflict here (union, and its conflict
      * detection, is the consumer's act). */
-    const both = await config.resolveName(writtenOnCommandLine("m:package.json"));
+    const both = await config.materialize(writtenOnCommandLine("m:package.json"));
     expect(both).to.have.length(2);
     const contents = await Promise.all(both.map(source => (source as FileSet).get("package.json").then(file => file!.readString())));
     expect(contents.sort()).to.deep.equal(["one", "two"]);
 
     /* A name only one member matches: the missed members are dropped, not
      * kept as empty sources. */
-    const one = await config.resolveName(writtenOnCommandLine("m:one.tgz"));
+    const one = await config.materialize(writtenOnCommandLine("m:one.tgz"));
     expect(one).to.have.length(1);
     expect([...(one[0] as FileSet)].map(([name]) => name)).to.deep.equal(["one.tgz"]);
+  });
+
+  it("Hands a target that requires a multi-source target each of its sources", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "targetdef test_multi { }\ntargetdef test_holds { deps = PACKAGES; }\ntest_multi m { }\ntest_holds u { deps = m; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("u"));
+    /* The same-named files of two sources are no conflict: nothing unions them. */
+    expect(heldDeps).to.have.length(2);
+    const contents = await Promise.all(heldDeps.map(source => source.get("package.json").then(file => file!.readString())));
+    expect(contents.sort()).to.deep.equal(["one", "two"]);
   });
 
   const RELEASE_INPUT =
@@ -1197,10 +1439,10 @@ describe("BuildContext", () => {
      * written reference mean one thing at the CLI and in a build script. */
     for (const operation of ["files", "build"]) {
       const config = releaseConfig(operation);
-      const slash = await config.resolveName(writtenOnCommandLine("release/pub/alpha/1.0.0/manifest.txt"));
+      const slash = await config.materialize(writtenOnCommandLine("release/pub/alpha/1.0.0/manifest.txt"));
       expect(namesOf(slash), operation).to.deep.equal(["release/pub/alpha/1.0.0/manifest.txt"]);
       /* Colon form strips to the last alias boundary, as anywhere else. */
-      const colon = await config.resolveName(writtenOnCommandLine("release:pub:alpha:1.0.0:manifest.txt"));
+      const colon = await config.materialize(writtenOnCommandLine("release:pub:alpha:1.0.0:manifest.txt"));
       expect(namesOf(colon), operation).to.deep.equal(["manifest.txt"]);
       /* The vended ref's display form is the full written coordinate — the
        * resolver attached the repository's declared name (`pub`) at vend time. */
@@ -1213,7 +1455,7 @@ describe("BuildContext", () => {
     const config = releaseConfig("build");
     /* Naming a member outright yields the entity — still publishable, which is
      * what lets `fabr sync release/pub/alpha/1.0.0` publish just that one. */
-    const member = await config.resolveName(writtenOnCommandLine("release/pub/alpha/1.0.0"));
+    const member = await config.materialize(writtenOnCommandLine("release/pub/alpha/1.0.0"));
     expect(member).to.have.length(1);
     expect(member[0]).to.be.instanceOf(PublishableFileSet);
     expect((member[0] as PublishableFileSet).destination.toString()).to.equal("pub:alpha:1.0.0");
@@ -1221,14 +1463,14 @@ describe("BuildContext", () => {
     expect(namesOf(member)).to.deep.equal(["f.txt", "manifest.txt"]);
 
     /* A glob is a match over the namespace's files, not a name for an entry. */
-    const globbed = await config.resolveName(writtenOnCommandLine("release/**/manifest.txt"));
+    const globbed = await config.materialize(writtenOnCommandLine("release/**/manifest.txt"));
     expect(namesOf(globbed)).to.deep.equal(["release/pub/alpha/1.0.0/manifest.txt", "release/pub/beta/2.0.0/manifest.txt"]);
 
     /* A bare `**` spans every member — what a name that stops AT the release
      * asks for, and how the file verbs list one (they hold files, so a source
      * that is not itself a FileSet is opened out this way rather than silently
      * listing nothing). */
-    const all = await releaseConfig("build").getTarget("release");
+    const all = await releaseConfig("build").materialize(writtenOnCommandLine("release"));
     const everything = await (all[0] as SyncSource).find(parseName("**"));
     expect([...everything].map(([name]) => name).sort()).to.deep.equal([
       "pub/alpha/1.0.0/f.txt",
@@ -1238,18 +1480,42 @@ describe("BuildContext", () => {
     ]);
   });
 
+  it("Publishes one package in two configurations, each as its own build", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input =
+      "default MODE = plain;\n" +
+      "targetdef test_pub { }\n" +
+      "targetdef test_package { }\n" +
+      "targetdef test_carrier { deps = PACKAGES; }\n" +
+      "targetdef sync { * = FILES; }\n" +
+      "test_pub pub { }\n" +
+      "test_package base { }\n" +
+      "test_carrier lib { deps = base; }\n" +
+      "sync twice { pub:lib-debug:1.0.0 = lib<MODE=debug>; pub:lib:1.0.0 = lib<MODE=release>; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    const config = model.getConfig(Constraints.of({ [BUILD_OPERATION]: "build" }), execution);
+    const modeOf = async (member: string): Promise<string> => {
+      const [files] = await config.materialize(writtenOnCommandLine(`twice:pub:${member}:1.0.0:mode.txt`));
+      return (await (files as FileSet).get("mode.txt"))!.readString();
+    };
+    expect(await modeOf("lib-debug")).to.equal("debug");
+    expect(await modeOf("lib")).to.equal("release");
+  });
+
   it("Packages only the members a reference names", async () => {
     /* The declaration is a list of outputs, not an instruction to make all of
      * them: naming one member must not build the others (the same property a
      * `fetch` table has — the table is a pin, not a download list). */
     packagedMembers.length = 0;
     const config = releaseConfig("build");
-    await config.resolveName(writtenOnCommandLine("release/pub/alpha/1.0.0/manifest.txt"));
+    await config.materialize(writtenOnCommandLine("release/pub/alpha/1.0.0/manifest.txt"));
     expect(packagedMembers).to.deep.equal(["pub:alpha:1.0.0"]);
 
     /* And the whole release when the whole release is named. */
     packagedMembers.length = 0;
-    const all = await releaseConfig("build").getTarget("release");
+    const all = await releaseConfig("build").materialize(writtenOnCommandLine("release"));
     const release = all[0] as SyncSource;
     const everything = await release.members();
     expect([...packagedMembers].sort()).to.deep.equal(["pub:alpha:1.0.0", "pub:beta:2.0.0"]);
@@ -1262,7 +1528,7 @@ describe("BuildContext", () => {
   it("Reports a name that no member answers against the declared members", async () => {
     const config = releaseConfig("files");
     try {
-      await config.resolveName(writtenOnCommandLine("release/pub/gamma/3.0.0/manifest.txt"));
+      await config.materialize(writtenOnCommandLine("release/pub/gamma/3.0.0/manifest.txt"));
       expect.fail("expected an unknown-member failure");
     } catch (err) {
       expect(toError(err).message).to.match(/release has no member matching 'pub\/gamma\/3\.0\.0\/manifest\.txt'/);
@@ -1273,7 +1539,7 @@ describe("BuildContext", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "targetdef test_multi { }\n" +
       "test_multi m { }\n" +
       "test_good a { deps = m:package.json; }\n";
@@ -1281,7 +1547,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect.fail("expected target a to fail");
     } catch (err) {
       expect(err).to.be.instanceOf(DependencyFailedError);
@@ -1295,14 +1561,14 @@ describe("BuildContext", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "targetdef test_dir { }\n" +
       "test_dir d { }\n" +
       "test_good a { deps = d:**/*.expect -> **/*.out; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     /* `.expect` files renamed to `.out`, directory structure kept, `c.txt`
      * dropped (not selected); the root-level file gets no leading slash. */
     expect(lastDeps && [...lastDeps].map(([name]) => name).sort()).to.deep.equal(["a.out", "sub/b.out"]);
@@ -1315,14 +1581,14 @@ describe("BuildContext", () => {
      * selector is `sub:*.expect` (a reached colon): it matches `sub/…` and the
      * `sub/` alias is stripped, then renamed. */
     const input =
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "targetdef test_dir { }\n" +
       "test_dir d { }\n" +
       "test_good a { deps = d:sub:*.expect -> *.out; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     expect(lastDeps && [...lastDeps].map(([name]) => name).sort()).to.deep.equal(["b.out"]);
   });
 
@@ -1330,14 +1596,14 @@ describe("BuildContext", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "targetdef test_dir { }\n" +
       "test_dir d { }\n" +
       "test_good a { deps = d:*.expect -> *.out; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     /* `*` is segment-bounded, so only the root `a.expect` matches. */
     expect(lastDeps && [...lastDeps].map(([name]) => name).sort()).to.deep.equal(["a.out"]);
   });
@@ -1350,7 +1616,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t"));
     /* Matched names replay into the template; an unmatched name maps to undefined. */
     expect(lastRewrite).to.deep.equal(["a.min.js", "b.min.js", undefined]);
   });
@@ -1363,7 +1629,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t"));
     /* A bare constant maps every input to itself. */
     expect(lastRewrite).to.deep.equal(["bundle.js", "bundle.js", "bundle.js"]);
   });
@@ -1386,7 +1652,7 @@ describe("BuildContext", () => {
       const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
       const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
       expect(errors).to.deep.equal([]);
-      const sources = await model.getConfig(Constraints.of({}), runExecution).getTarget("t");
+      const sources = await model.getConfig(Constraints.of({}), runExecution).materialize(writtenOnCommandLine("t"));
       return sources[0] as FileSet;
     }
 
@@ -1413,7 +1679,7 @@ describe("BuildContext", () => {
       lastDeps = undefined;
       await build(
         "targetdef test_file { content = STRING; }\n" +
-          "targetdef test_good { deps = FILES default fallback; }\n" +
+          "targetdef test_good { deps = PACKAGES default fallback; }\n" +
           "test_file fallback { content = defaulted; }\n" +
           "test_good t { }\n"
       );
@@ -1449,12 +1715,10 @@ describe("BuildContext", () => {
        * closes a cycle exactly as a written value would — it must be diagnosed,
        * not recursed into. */
       try {
-        await build("targetdef test_good { deps = FILES default t; }\n" + "test_good t { }\n");
+        await build("targetdef test_good { deps = PACKAGES default t; }\n" + "test_good t { }\n");
         expect.fail("expected target t to fail");
       } catch (err) {
-        const cause = (err as DependencyFailedError).cause;
-        expect(cause).to.be.instanceOf(CircularDependencyError);
-        expect((cause as CircularDependencyError).name).to.equal("t");
+        expect(circularOf(err).name).to.equal("t");
       }
     });
 
@@ -1524,7 +1788,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t"));
     expect(lastMap).to.deep.equal([
       ["process.env.NODE_ENV", ["production"]],
       ["DEBUG", ["false"]],
@@ -1542,7 +1806,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t"));
     expect(lastMap).to.deep.equal([
       [
         "repository",
@@ -1566,7 +1830,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t"));
     /* The splice lands at its written position; the later literal entry
      * overrides the spliced `description`. */
     expect(lastMap).to.deep.equal([
@@ -1590,7 +1854,7 @@ describe("BuildContext", () => {
     testMapObserver = resolved => {
       map = resolved;
     };
-    await model.getConfig(Constraints.of({}), execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t"));
     testMapObserver = undefined;
 
     /* license arrived via the SHARED splice: origin names the written entry in
@@ -1613,7 +1877,7 @@ describe("BuildContext", () => {
     let caught: Error | undefined;
     await model
       .getConfig(Constraints.of({}), execution)
-      .getTarget("t")
+      .materialize(writtenOnCommandLine("t"))
       .catch((err: Error) => {
         caught = err;
       });
@@ -1633,7 +1897,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t"));
     /* The shared block's `${WHO}` resolves under the consuming build's config. */
     expect(lastMap).to.deep.equal([
       ["license", ["gpl3"]],
@@ -1651,7 +1915,7 @@ describe("BuildContext", () => {
     let caught: Error | undefined;
     await model
       .getConfig(Constraints.of({}), execution)
-      .getTarget("t")
+      .materialize(writtenOnCommandLine("t"))
       .catch((err: Error) => {
         caught = err;
       });
@@ -1672,7 +1936,7 @@ describe("BuildContext", () => {
     let caught: Error | undefined;
     await model
       .getConfig(Constraints.of({}), execution)
-      .getTarget("t")
+      .materialize(writtenOnCommandLine("t"))
       .catch((err: Error) => {
         caught = err;
       });
@@ -1692,7 +1956,7 @@ describe("BuildContext", () => {
     let caught: Error | undefined;
     await model
       .getConfig(Constraints.of({}), execution)
-      .getTarget("SHARED")
+      .materialize(writtenOnCommandLine("SHARED"))
       .catch((err: Error) => {
         caught = err;
       });
@@ -1707,7 +1971,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("t");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t"));
     expect(lastMap).to.deep.equal([]);
   });
 
@@ -1737,14 +2001,14 @@ describe("BuildContext", () => {
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
       "targetdef test_repo { }\n" +
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "test_repo repo { }\n" +
       "x = repo:one;\n" +
       "test_good a { deps = x repo:two; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     /* Both references delivered — the one reached through the property
      * expansion of 'x' as well as the direct one */
     expect(batchCalls.map(call => call.name).sort()).to.deep.equal(["one", "two"]);
@@ -1757,7 +2021,7 @@ describe("BuildContext", () => {
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
       "targetdef test_repo { }\n" +
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "test_repo repo { }\n" +
       "one = repo:one;\n" +
       "two = repo:two;\n" +
@@ -1766,48 +2030,9 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     expect(batchCalls.map(call => call.name).sort()).to.deep.equal(["one", "two"]);
     expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "two/data.txt"]);
-  });
-
-  it("Materializes a tool permissively, and ordinary deps strictly", async () => {
-    /* The judgment is the consuming code path's, and the launch-bound paths are
-     * where it is NOT a rule's to make: what they resolve IS the program, so its
-     * closure is never linked against and its repairs nest inside the install.
-     * A rule's own deps through the same repository are linked, and stay strict.
-     * (Regression: dropped when the operation left the resolution layer, which
-     * broke every bare external consumed as a tool — `serve { tool = @npm:… }`.) */
-    const errors: string[] = [];
-    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    const input =
-      "targetdef test_tool_repo { }\n" +
-      "targetdef test_tool { tool = FILES; }\n" +
-      "targetdef test_globalrunnable { }\n" +
-      "targetdef test_good { deps = FILES; }\n" +
-      "test_tool_repo tools { }\n" +
-      "TOOLGLOBAL = tools:viaglobal;\n" +
-      "test_tool a { tool = tools:viaproperty; }\n" +
-      "test_globalrunnable b { }\n" +
-      "test_good c { deps = tools:vialink; }\n";
-    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
-    expect(errors).to.deep.equal([]);
-    const config = model.getConfig(Constraints.of({}), execution);
-
-    batchCalls.length = 0;
-    await config.getTarget("a");
-    await config.getTarget("b");
-    await config.getTarget("c");
-    /* The run verb's own name is the same judgment, made by the driver — the
-     * only launch-bound path whose caller is outside the model. */
-    await config.resolveName(writtenOnCommandLine("tools:viaverb"), undefined, PERMISSIVE_RESOLUTION);
-
-    expect(batchCalls.map(call => `${call.name}=${call.mode ?? "strict"}`).sort()).to.deep.equal([
-      "viaglobal=permissive",
-      "vialink=strict",
-      "viaproperty=permissive",
-      "viaverb=permissive",
-    ]);
   });
 
   it("Partitions references by repository for resolution", async () => {
@@ -1816,14 +2041,14 @@ describe("BuildContext", () => {
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
       "targetdef test_repo { }\n" +
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "test_repo repoA { }\n" +
       "test_repo repoB { }\n" +
       "test_good a { deps = repoA:one repoB:two; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     /* Each repository delivers its own references */
     expect(batchCalls.map(call => `${call.repo}:${call.name}`).sort()).to.deep.equal(["repoA:one", "repoB:two"]);
     expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "two/data.txt"]);
@@ -1835,14 +2060,14 @@ describe("BuildContext", () => {
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
       "targetdef test_repo { }\n" +
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "test_repo repo { }\n" +
       "x = repo:one;\n" +
       "test_good a { deps = x:one/*.txt; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     expect(batchCalls.map(call => call.name)).to.deep.equal(["one"]);
     /* The projection was applied to the resolved files */
     expect(lastDeps && [...lastDeps].map(([path]) => path)).to.deep.equal(["one/data.txt"]);
@@ -1852,14 +2077,14 @@ describe("BuildContext", () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "targetdef test_file { content = STRING; }\n" +
       "test_file c1 { content = one; }\n" +
       "test_good a { deps = c1/f.txt c1:f.txt; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     /* Slash-form keeps the written name; colon-form strips the prefix */
     expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["c1/f.txt", "f.txt"]);
   });
@@ -1870,14 +2095,14 @@ describe("BuildContext", () => {
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
       "targetdef test_repo { }\n" +
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "test_repo repo { }\n" +
       "x = repo:one;\n" +
       "test_good a { deps = x/one/*.txt; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     expect(batchCalls.map(call => call.name)).to.deep.equal(["one"]);
     expect(lastDeps && [...lastDeps].map(([path]) => path)).to.deep.equal(["x/one/data.txt"]);
   });
@@ -1895,17 +2120,84 @@ describe("BuildContext", () => {
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const input =
       "targetdef test_repo { }\n" +
-      "targetdef test_joint { adeps = FILES; bdeps = FILES; }\n" +
+      "targetdef test_joint { adeps = PACKAGES; bdeps = PACKAGES; }\n" +
       "test_repo repo { }\n" +
       "JOINT_GLOBAL = repo:three;\n" +
       "test_joint a { adeps = repo:one; bdeps = repo:two; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     /* One batch for the whole evaluation — not one per property/global */
     expect(batchCalls.map(call => call.name).sort()).to.deep.equal(["one", "three", "two"]);
     expect(lastDeps && [...lastDeps].map(([path]) => path).sort()).to.deep.equal(["one/data.txt", "three/data.txt", "two/data.txt"]);
+  });
+
+  describe("A package whose closure needs two versions of one package", () => {
+    /* tool needs a and b, which need x at ^2.0.0 and (through y) at ^1.0.0:
+     * no one version of x is both. A target linked against it is refused for
+     * it. A program is a sealed install, so whatever launches one is not:
+     * a rule reading it as a tool, by property or by global, and the run verb. */
+    let root: string;
+    let runExecution: ExecutionContext;
+    beforeEach(() => {
+      /* Own cache root: a registry's resolution is memoized through the cache. */
+      root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-closure-test-"));
+      runExecution = new ExecutionContext(new BuildCache(root, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
+      registryRequirements.clear();
+      registryRequirements.set("tool@1.0.0", [
+        { name: "a", versionConstraint: "^1.0.0" },
+        { name: "b", versionConstraint: "^1.0.0" },
+      ]);
+      registryRequirements.set("a@1.0.0", [{ name: "x", versionConstraint: "^2.0.0" }]);
+      registryRequirements.set("b@1.0.0", [{ name: "y", versionConstraint: "1.0.0" }]);
+      registryRequirements.set("y@1.0.0", [{ name: "x", versionConstraint: "^1.0.0" }]);
+    });
+    afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+    const input =
+      "targetdef test_registry { }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
+      "targetdef test_tool { tool = PACKAGES; }\n" +
+      "targetdef test_globalrunnable { }\n" +
+      "test_registry @reg { }\n" +
+      "TOOLGLOBAL = @reg:tool;\n" +
+      "test_good linked { deps = @reg:tool; }\n" +
+      "test_tool byproperty { tool = @reg:tool; }\n" +
+      "test_globalrunnable byglobal { }\n";
+    const REFUSED = "Resolution requires multiple versions of the same package:";
+
+    /** Materialize `name` under `operation`: "accepted", or the first line of
+     * the failure under the target boundaries around it. */
+    function outcome(name: string, operation = "build"): Promise<string> {
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      return Promise.resolve(model.getConfig(Constraints.of({ [BUILD_OPERATION]: operation }), runExecution).materialize(writtenOnCommandLine(name))).then(
+        () => "accepted",
+        (err: unknown) => {
+          let cause = err;
+          while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
+            cause = cause.cause;
+          }
+          return (cause as Error).message.split("\n")[0];
+        }
+      );
+    }
+
+    it("is refused where a target depends on it", async () => {
+      expect(await outcome("linked")).to.equal(REFUSED);
+    });
+
+    it("is accepted where a rule reads it as a tool, by property or by global", async () => {
+      expect(await outcome("byproperty")).to.equal("accepted");
+      expect(await outcome("byglobal")).to.equal("accepted");
+    });
+
+    it("is accepted where it is the program named to run", async () => {
+      expect(await outcome("@reg:tool", "run")).to.equal("accepted");
+    });
   });
 
   it("Caches build steps at the boundary and announces only real work", async () => {
@@ -1921,7 +2213,7 @@ describe("BuildContext", () => {
         runExecution.onBuildEvent(event => events.push(event.kind));
         const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
         expect(errors).to.deep.equal([]);
-        await model.getConfig(Constraints.of({}), runExecution).getTarget("a");
+        await model.getConfig(Constraints.of({}), runExecution).materialize(writtenOnCommandLine("a"));
         return events;
       };
 
@@ -1957,7 +2249,7 @@ describe("BuildContext", () => {
         const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
         expect(errors).to.deep.equal([]);
         const sources = await new Promise<SourceRef[]>((resolve, reject) =>
-          model.getConfig(Constraints.of({}), runExecution).getTarget("a").then(resolve, reject)
+          model.getConfig(Constraints.of({}), runExecution).materialize(writtenOnCommandLine("a")).then(resolve, reject)
         );
         return sources[0] as FileSet;
       };
@@ -1992,7 +2284,7 @@ describe("BuildContext", () => {
     await new Promise<void>(resolve =>
       model
         .getConfig(Constraints.of({}), execution)
-        .getTarget("a")
+        .materialize(writtenOnCommandLine("a"))
         .then(
           () => resolve(),
           err => {
@@ -2035,7 +2327,7 @@ describe("BuildContext", () => {
      * plainly and once with a FLAVOR override, so the override must reach leaf's
      * own evaluation (not the ambient config). */
     const input =
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "targetdef test_file { content = STRING; }\n" +
       "default FLAVOR = plain;\n" +
       "test_file leaf { content = ${FLAVOR}; }\n" +
@@ -2046,10 +2338,10 @@ describe("BuildContext", () => {
     const config = model.getConfig(Constraints.of({}), execution);
     const readLeaf = (): Computable<string | undefined> => lastDeps!.get("f.txt").then(file => file?.readString());
 
-    await config.getTarget("plain_root");
+    await config.materialize(writtenOnCommandLine("plain_root"));
     expect(await readLeaf()).to.equal("plain");
 
-    await config.getTarget("fancy_root");
+    await config.materialize(writtenOnCommandLine("fancy_root"));
     expect(await readLeaf()).to.equal("fancy");
   });
 
@@ -2060,7 +2352,7 @@ describe("BuildContext", () => {
      * the reference carries <FLAVOR=ref>; the caller's requirement must win
      * (e.g. a `run` rule forcing BUILD_OPERATION=run over a stray requirement). */
     const input =
-      "targetdef test_override { dep = FILES; }\n" +
+      "targetdef test_override { dep = PACKAGES; }\n" +
       "targetdef test_file { content = STRING; }\n" +
       "default FLAVOR = ambient;\n" +
       "test_file leaf { content = ${FLAVOR}; }\n" +
@@ -2068,7 +2360,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("root");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("root"));
     expect(await lastDeps!.get("f.txt").then(file => file?.readString())).to.equal("caller");
   });
 
@@ -2089,7 +2381,7 @@ describe("BuildContext", () => {
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    await model.getConfig(Constraints.of({}), execution).getTarget("root");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("root"));
     expect(await lastDeps!.get("f.txt").then(file => file?.readString())).to.equal("caller");
   });
 
@@ -2109,7 +2401,7 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
 
     lastString = undefined;
-    await model.getConfig(Constraints.of({}), execution).getTarget("root");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("root"));
     expect(lastString).to.equal("caller");
   });
 
@@ -2118,7 +2410,7 @@ describe("BuildContext", () => {
       const errors: string[] = [];
       const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
       const input =
-        "targetdef test_good { deps = FILES; }\n" +
+        "targetdef test_good { deps = PACKAGES; }\n" +
         "targetdef test_file { content = STRING; }\n" +
         "default FLAVOR = plain;\n" +
         "test_file other { content = overridden; }\n" +
@@ -2127,7 +2419,7 @@ describe("BuildContext", () => {
     };
     const built = async (model: ReturnType<typeof toBuildModel>, constraints: Record<string, string>): Promise<string | undefined> => {
       lastDeps = undefined;
-      await model.getConfig(Constraints.of(constraints), execution).getTarget("root");
+      await model.getConfig(Constraints.of(constraints), execution).materialize(writtenOnCommandLine("root"));
       return lastDeps!.get("f.txt").then(file => file?.readString());
     };
 
@@ -2187,10 +2479,10 @@ describe("BuildContext", () => {
       const errors: string[] = [];
       const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
       const input =
-        "targetdef test_override { dep = FILES; }\n" +
+        "targetdef test_override { dep = PACKAGES; }\n" +
         "targetdef test_globaltool { }\n" +
         "targetdef test_globalstr { }\n" +
-        "targetdef test_good { deps = FILES; }\n" +
+        "targetdef test_good { deps = PACKAGES; }\n" +
         "targetdef test_file { content = STRING; }\n" +
         "default FLAVOR = ambient;\n" +
         "test_file leaf { content = ${FLAVOR}; }\n" +
@@ -2205,7 +2497,7 @@ describe("BuildContext", () => {
     it("for a target property", async () => {
       const model = guardedModel("test_override root { dep<FLAVOR=ambient> = wrong; dep<FLAVOR=caller> = leaf; }\n");
       lastDeps = undefined;
-      await model.getConfig(Constraints.of({}), execution).getTarget("root");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("root"));
       expect(await leafContent()).to.equal("caller");
     });
 
@@ -2214,7 +2506,7 @@ describe("BuildContext", () => {
         "GLOBALTOOL<FLAVOR=ambient> = wrong;\nGLOBALTOOL<FLAVOR=caller> = leaf;\ntest_globaltool root { }\n"
       );
       lastDeps = undefined;
-      await model.getConfig(Constraints.of({}), execution).getTarget("root");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("root"));
       expect(await leafContent()).to.equal("caller");
     });
 
@@ -2223,7 +2515,7 @@ describe("BuildContext", () => {
         "GLOBALSTR<FLAVOR=ambient> = wrong;\nGLOBALSTR<FLAVOR=caller> = ${FLAVOR};\ntest_globalstr root { }\n"
       );
       lastString = undefined;
-      await model.getConfig(Constraints.of({}), execution).getTarget("root");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("root"));
       expect(lastString).to.equal("caller");
     });
 
@@ -2233,22 +2525,32 @@ describe("BuildContext", () => {
           "test_good root { deps = GLOBALTOOL<FLAVOR=caller>; }\n"
       );
       lastDeps = undefined;
-      await model.getConfig(Constraints.of({}), execution).getTarget("root");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("root"));
       expect(await leafContent()).to.equal("caller");
     });
   });
 
-  it("getTargetRef substitutes ${vars} in the target name (build/test parity with cat/ls)", async () => {
+  it("substitutes ${vars} in a whole target name (build/test parity with cat/ls)", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    /* build/test resolve a whole target name via getTargetRef; a ${...} in that
-     * name is substituted just as it is on the file/CLI path — previously it was
-     * substituted only when the reference also carried a <k=v> requirement. */
+    /* build/test substitute a ${...} in a whole target name as ls/cat do for
+     * any name. */
     const input = "targetdef test_file { content = STRING; }\n" + "default WHICH = leaf;\n" + "test_file leaf { content = hi; }\n";
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
 
-    const sources = await model.getConfig(Constraints.of({}), execution).getTargetRef("${WHICH}");
+    const [sources] = await buildOperation(model.getConfig(Constraints.of({}), execution), [writtenOnCommandLine("${WHICH}")]);
+    const files = FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet));
+    expect(await files.get("f.txt").then(file => file?.readString())).to.equal("hi");
+  });
+
+  it("builds a name that only a -D gives a value to, as what the value names", async () => {
+    const errors: string[] = [];
+    const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const input = "targetdef test_file { content = STRING; }\n" + "test_file leaf { content = hi; }\n";
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+    expect(errors).to.deep.equal([]);
+    const [sources] = await buildOperation(model.getConfig(Constraints.of({ zz: "leaf" }), execution), [writtenOnCommandLine("zz")]);
     const files = FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet));
     expect(await files.get("f.txt").then(file => file?.readString())).to.equal("hi");
   });
@@ -2283,7 +2585,7 @@ describe("discovered dependencies", () => {
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
-    const sources = await model.getConfig(Constraints.of({}), runExecution).getTarget("t");
+    const sources = await model.getConfig(Constraints.of({}), runExecution).materialize(writtenOnCommandLine("t"));
     return (sources[0] as FileSet).readFile("out.o");
   }
 
@@ -2320,14 +2622,14 @@ describe("discovered dependencies", () => {
 });
 
 describe("default target declarations", () => {
-  /** Build `input`, resolve target `leaf` and read the content its rule wrote —
-   * which of the collated declarations won is exactly what that content says. */
+  /** Build a model from `input`, materialize `leaf` and read the content its
+   * rule wrote, which says which of the collated declarations won. */
   async function leafContent(input: string): Promise<string | undefined> {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
     expect(errors).to.deep.equal([]);
-    const sources = await model.getConfig(Constraints.of({}), execution).getTargetRef("leaf");
+    const sources = await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("leaf"));
     const files = FileSet.unionAll(...sources.filter((source): source is FileSet => source instanceof FileSet));
     return files.get("f.txt").then(file => file?.readString());
   }
@@ -2358,13 +2660,12 @@ describe("unresolved-name diagnostics", () => {
 
   it("positions a typo'd ${property} at its use and suggests the near name", async () => {
     /* The substitution site carries a dependency stack, so the error is the
-     * positioned NameResolutionError, anchored at the referencing value —
-     * delivered via Computable rejection (as the file path always has), the
-     * string path now resolving each value through the same context path. */
+     * positioned NameResolutionError, anchored at the referencing value and
+     * delivered as a Computable rejection. */
     const input = "FOO = x;\nBAR = ${FOOO};\n";
     const context = modelOf(input).getConfig(Constraints.of({}), execution);
     try {
-      await context.getProperty("BAR");
+      await internal(context).getProperty("BAR");
       expect.fail("expected a rejection");
     } catch (e) {
       const err = e as NameResolutionError;
@@ -2378,14 +2679,14 @@ describe("unresolved-name diagnostics", () => {
   it("names the kind when a property reference hits a target", () => {
     const input = "targetdef test_file { content = STRING; }\ntest_file thing { content = x; }\n";
     const context = modelOf(input).getConfig(Constraints.of({}), execution);
-    expect(() => context.getProperty("thing")).to.throw(/'thing' names a target, not a property/);
+    expect(() => internal(context).getProperty("thing")).to.throw(/'thing' names a target, not a property/);
   });
 
   it("suggests a near target name and points at list-targets for a CLI name", () => {
     const input = "targetdef test_file { content = STRING; }\ntest_file mytarget { content = x; }\n";
     const context = modelOf(input).getConfig(Constraints.of({}), execution);
     try {
-      context.getTarget("mytargt");
+      internal(context).resolveTarget("mytargt");
       expect.fail("expected a throw");
     } catch (e) {
       const err = e as FabrError;
@@ -2396,22 +2697,21 @@ describe("unresolved-name diagnostics", () => {
   });
 
   it("reports a name nothing declares the same way for every verb", async () => {
-    /* build/test resolve a whole name through getTarget; ls/cat/run resolve a
-     * possibly-projected one through resolveName. One mistake, so one wording
-     * and one suggestion — they used to differ ('Unresolved name' with a
-     * suggestion versus 'Unknown target' without the property candidates). */
+    /* `resolveTarget` looks up a whole name, and `materialize` a possibly
+     * projected one (as ls/cat/run do). Both report the one mistake with one
+     * wording and one suggestion. */
     const input = "targetdef test_file { content = STRING; }\ntest_file mytarget { content = x; }\n";
     const context = modelOf(input).getConfig(Constraints.of({}), execution);
     const failures: FabrError[] = [];
     try {
-      context.getTarget("mytargt");
+      internal(context).resolveTarget("mytargt");
       expect.fail("expected a throw");
     } catch (e) {
       failures.push(e as FabrError);
     }
     try {
-      /* The projection is what routes this one down the resolveName path. */
-      await context.resolveName(writtenOnCommandLine("mytargt:build/x.js"));
+      /* A projected name, as ls/cat/run may be given. */
+      await context.materialize(writtenOnCommandLine("mytargt:build/x.js"));
       expect.fail("expected a rejection");
     } catch (e) {
       failures.push(e as FabrError);
@@ -2423,15 +2723,35 @@ describe("unresolved-name diagnostics", () => {
     }
   });
 
-  it("hints that build/test take whole targets when the name carries a projection", () => {
+  it("refuses to build a reference that selects files of a target", async () => {
     const input = "targetdef test_file { content = STRING; }\ntest_file mytarget { content = x; }\n";
-    const context = modelOf(input).getConfig(Constraints.of({}), execution);
-    try {
-      context.getTarget("mytarget:build/x.js");
-      expect.fail("expected a throw");
-    } catch (e) {
-      expect((e as FabrError).help.join("\n")).to.contain("whole target names");
-    }
+    const model = modelOf(input);
+    const context = model.getConfig(Constraints.of({}), execution);
+    const failure = await Promise.resolve(buildOperation(context, [writtenOnCommandLine("mytarget:build/x.js")])).then(
+      () => undefined,
+      (err: FabrError) => err
+    );
+    expect(failure?.message).to.equal("'mytarget:build/x.js' selects files of 'mytarget'");
+    expect(failure?.help.join("\n")).to.contain("name it without the selection: 'mytarget'");
+  });
+
+  it("builds a name the project declares, whatever it resolves to, and nothing else", async () => {
+    const input =
+      "targetdef test_file { content = STRING; }\ntest_file mytarget { content = x; }\n" +
+      "ALL = mytarget;\nMIXED = mytarget mytarget:nothing/*.zzz;\n";
+    const model = modelOf(input);
+    const context = model.getConfig(Constraints.of({}), execution);
+    const refused = (name: string): Promise<string | undefined> =>
+      Promise.resolve(buildOperation(context, [writtenOnCommandLine(name)])).then(
+        () => undefined,
+        (err: FabrError) => err.message
+      );
+    /* A target, and a global: one naming a target, one naming files too. */
+    expect(await refused("mytarget")).to.equal(undefined);
+    expect(await refused("ALL")).to.equal(undefined);
+    expect(await refused("MIXED")).to.equal(undefined);
+    /* A pattern is no declared name, so a mistyped one does not pass. */
+    expect(await refused("nothing/*.zzz")).to.equal("'nothing/*.zzz' is not a name the project declares");
   });
 });
 
@@ -2459,7 +2779,7 @@ describe("contributed-lib-relative FILES", () => {
        * namespace) whose remainder climbs out of the lib dir, matched in
        * canonical path space and named relative to the dir alias. */
       const input =
-        "targetdef script { deps = FILES; entry = REQUIRED FILES; args = STRING; }\n" +
+        "targetdef script { deps = PACKAGES; entry = REQUIRED FILES; args = STRING; }\n" +
         "script @plug/drv { entry = ../tool/run.sh; deps = ../tool/*.js; }\n";
       const model = toBuildModel(
         [parseBuildString(new FSFileSource("/"), nodePath.join(tmp, "lib", "LIB.fabr"), input, logger)],
@@ -2467,7 +2787,9 @@ describe("contributed-lib-relative FILES", () => {
         [{ rules: [scriptRunRule] }]
       );
       expect(errors).to.deep.equal([]);
-      const sources = await model.getConfig(Constraints.of({ [BUILD_OPERATION]: "run" }), execution).getTarget("@plug/drv");
+      const sources = await model
+        .getConfig(Constraints.of({ [BUILD_OPERATION]: "run" }), execution)
+        .materialize(writtenOnCommandLine("@plug/drv"));
       const runnable = sources.find((source): source is RunnableFileSet => source instanceof RunnableFileSet);
       expect(runnable, "expected a RunnableFileSet").to.not.equal(undefined);
       const names = [...(runnable as RunnableFileSet)].map(([name]) => name).sort();
@@ -2486,7 +2808,7 @@ describe("contributed-lib-relative FILES", () => {
    */
   describe("conditional properties (constraint guards)", () => {
     const GUARD_DEFS =
-      "targetdef test_good { deps = FILES; }\n" +
+      "targetdef test_good { deps = PACKAGES; }\n" +
       "targetdef test_file { content = STRING; }\n" +
       "targetdef test_dir { }\n" +
       "default FLAVOR = none;\n";
@@ -2499,7 +2821,7 @@ describe("contributed-lib-relative FILES", () => {
       const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
       expect(errors).to.deep.equal([]);
       lastDeps = undefined;
-      await model.getConfig(Constraints.of(constraints), execution).getTarget("t");
+      await model.getConfig(Constraints.of(constraints), execution).materialize(writtenOnCommandLine("t"));
       return [...(lastDeps ?? EMPTY_FILESET)].map(([name]) => name).sort();
     }
 
@@ -2561,7 +2883,7 @@ describe("contributed-lib-relative FILES", () => {
       const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
       const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
       expect(errors).to.deep.equal([]);
-      const files = await model.getConfig(Constraints.of({ FLAVOR: "linux" }), execution).getTarget("t");
+      const files = await model.getConfig(Constraints.of({ FLAVOR: "linux" }), execution).materialize(writtenOnCommandLine("t"));
       expect(await (files[0] as FileSet).readFile("f.txt")).to.equal("linux");
     });
 
@@ -2572,7 +2894,7 @@ describe("contributed-lib-relative FILES", () => {
       const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
       expect(errors).to.deep.equal([]);
       try {
-        await model.getConfig(Constraints.of({ FLAVOR: "linux" }), execution).getTarget("t");
+        await model.getConfig(Constraints.of({ FLAVOR: "linux" }), execution).materialize(writtenOnCommandLine("t"));
         expect.fail("expected target t to fail");
       } catch (err) {
         /* A scalar cannot silently join two contributions the way a list can,
@@ -2593,7 +2915,7 @@ describe("contributed-lib-relative FILES", () => {
       const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
       expect(errors).to.deep.equal([]);
       try {
-        await model.getConfig(Constraints.of({ FLAVOR: "linux" }), execution).getTarget("t");
+        await model.getConfig(Constraints.of({ FLAVOR: "linux" }), execution).materialize(writtenOnCommandLine("t"));
         expect.fail("expected target t to fail");
       } catch (err) {
         expect((err as DependencyFailedError).cause.message).to.contain("(unguarded and <FLAVOR=lin*>)");
@@ -2612,9 +2934,9 @@ describe("contributed-lib-relative FILES", () => {
       /* Guarded out ⇒ the target supplies no value here, which is exactly the
        * case the schema's default exists for — the same path a target that
        * never mentioned the property takes. */
-      const windows = await model.getConfig(Constraints.of({ FLAVOR: "windows" }), execution).getTarget("t");
+      const windows = await model.getConfig(Constraints.of({ FLAVOR: "windows" }), execution).materialize(writtenOnCommandLine("t"));
       expect(await (windows[0] as FileSet).readFile("f.txt")).to.equal("fallback");
-      const linux = await model.getConfig(Constraints.of({ FLAVOR: "linux" }), execution).getTarget("t");
+      const linux = await model.getConfig(Constraints.of({ FLAVOR: "linux" }), execution).materialize(writtenOnCommandLine("t"));
       expect(await (linux[0] as FileSet).readFile("f.txt")).to.equal("linux");
     });
 
@@ -2663,7 +2985,7 @@ describe("contributed-lib-relative FILES", () => {
       expect(errors).to.deep.equal([]);
       const keysUnder = async (flavor: string): Promise<string[]> => {
         lastMemberKeys = undefined;
-        await model.getConfig(Constraints.of({ FLAVOR: flavor }), execution).getTarget("m");
+        await model.getConfig(Constraints.of({ FLAVOR: flavor }), execution).materialize(writtenOnCommandLine("m"));
         return lastMemberKeys ?? [];
       };
       expect(await keysUnder("linux")).to.deep.equal(["common", "linux_only"]);
@@ -2676,8 +2998,8 @@ describe("contributed-lib-relative FILES", () => {
         await depNames(input);
         expect.fail("expected the guard to fail");
       } catch (err) {
-        /* A typo in a guard must not quietly mean "never" — the declaration
-         * would simply vanish from every build. */
+        /* A typo in a guard must not quietly mean "never", or the declaration
+         * would vanish from every build. */
         expect(err).to.be.instanceOf(DependencyFailedError);
         expect((err as DependencyFailedError).cause.message).to.contain("Unknown property 'NOSUCH'");
       }
@@ -2695,10 +3017,10 @@ describe("a namespace declared by a repository", () => {
     return { model, errors };
   }
 
-  /** What resolving `name` delivers: the package's name, and whether the
+  /** Materialize `name` and report the package's name and whether the
    * namespace's repository answered. */
   async function answer(model: ReturnType<typeof toBuildModel>, name: string): Promise<{ name: string; fallback: boolean }> {
-    const [source] = await model.getConfig(Constraints.of({}), execution).resolveName(writtenOnCommandLine(name));
+    const [source] = await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine(name));
     const pkg = source as PackageFileSet;
     return { name: pkg.packageName, fallback: (await pkg.get("from-fallback")) !== undefined };
   }
@@ -2718,10 +3040,28 @@ describe("a namespace declared by a repository", () => {
     }
   });
 
-  it("names the repository by the namespace's own name", async () => {
+  it("names the repository by the namespace's own name, and refuses it where files are wanted", async () => {
     const { model } = load("test_ns_repo @ns { }\n");
-    const [source] = await model.getConfig(Constraints.of({}), execution).resolveName(writtenOnCommandLine("@ns"));
-    expect(source).to.be.instanceOf(TestNamespaceRepo);
+    const outcome = await Promise.resolve(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("@ns"))).then(
+      () => "materialized",
+      (err: Error) => err.message
+    );
+    expect(outcome).to.equal("'@ns' names a repository, not a package or files");
+  });
+
+  it("refuses a repository named on its own among a target's packages", async () => {
+    const { model } = load("targetdef test_override { dep = PACKAGES; }\ntest_ns_repo @ns { }\ntest_override t { dep = @ns; }\n");
+    const outcome = await Promise.resolve(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t"))).then(
+      () => "built",
+      (err: Error) => {
+        let cause: unknown = err;
+        while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
+          cause = cause.cause;
+        }
+        return (cause as Error).message;
+      }
+    );
+    expect(outcome).to.equal("'@ns' names a repository, not a package or files");
   });
 
   it("still conflicts with an ordinary target of the namespace's name", () => {
@@ -2778,7 +3118,7 @@ describe("Rule selection", () => {
   async function selected(from: ReturnType<typeof toBuildModel>, type: string, config: Record<string, string> = {}): Promise<unknown> {
     lastRan = undefined;
     try {
-      await from.getConfig(Constraints.of(config), execution).getTarget(`a_${type}`);
+      await from.getConfig(Constraints.of(config), execution).materialize(writtenOnCommandLine(`a_${type}`));
     } catch (err) {
       if (err instanceof NoRuleFoundError) {
         return undefined;
@@ -2895,20 +3235,21 @@ describe("Rule selection", () => {
   it("reports a cycle through a key whose value needs a target selected on it", async () => {
     /* `u` settles asynchronously, so by the time it asks for `t` again, t's own
      * evaluation — waiting on MODE, which is waiting on u — is already cached. */
-    const cyclic = modelOf("targetdef typed { }\ntargetdef mid { deps = FILES; }\nMODE = `u`;\nmid u { deps = t; }\ntyped t { }\n", [
+    const cyclic = modelOf("targetdef typed { }\ntargetdef mid { deps = PACKAGES; }\nMODE = `u`;\nmid u { deps = t; }\ntyped t { }\n", [
       { type: "typed", properties: {}, evaluate: wildcardRule },
       { type: "typed", properties: { MODE: "fast" }, evaluate: testRule },
       {
         type: "mid",
         properties: {},
-        evaluate: context =>
-          Computable.from<void>(resolve => setTimeout(resolve, 5))
-            .then(() => context.getFileSetProperties(["deps"]))
-            .then(() => EMPTY_FILESET),
+        requirements: context =>
+          Computable.from<void>(resolve => setTimeout(resolve, 5)).then(() => ({ deps: context.getPackageProperty("deps") })),
+        evaluate: () => Computable.resolve(EMPTY_FILESET),
       },
     ]);
     const outcome = await settledOr(
-      Promise.resolve(cyclic.getConfig(Constraints.of({ BUILD_OPERATION: "run" }), execution).getTarget("t")).then(
+      Promise.resolve(
+        cyclic.getConfig(Constraints.of({ BUILD_OPERATION: "run" }), execution).materialize(writtenOnCommandLine("t"))
+      ).then(
         () => "built",
         (err: Error) => {
           let cause = err;
@@ -2941,7 +3282,9 @@ describe("Rule selection", () => {
 
     async function build(input: string, name: string, config: Record<string, string> = {}): Promise<string[]> {
       ran = [];
-      await modelOf(DEFS + input, rules).getConfig(Constraints.of(config), execution).getTarget(name);
+      await modelOf(DEFS + input, rules)
+        .getConfig(Constraints.of(config), execution)
+        .materialize(writtenOnCommandLine(name));
       return ran;
     }
 
@@ -2977,10 +3320,13 @@ describe("Rule selection", () => {
 
     it("reports no rule where none applies, with how each rule was judged", async () => {
       const only = modelOf(DEFS + "typed t { flavour = chocolate; }\n", [rules[1]]);
-      const failure = (await only.getConfig(Constraints.of({}), execution).getTarget("t").then(
-        () => undefined,
-        (err: Error) => err
-      )) as NoRuleFoundError;
+      const failure = (await only
+        .getConfig(Constraints.of({}), execution)
+        .materialize(writtenOnCommandLine("t"))
+        .then(
+          () => undefined,
+          (err: Error) => err
+        )) as NoRuleFoundError;
       expect(failure).to.be.instanceOf(NoRuleFoundError);
       expect(failure.candidates).to.deep.equal([[{ key: "flavour", own: true, pattern: "van*", value: "chocolate", matched: false }]]);
     });
@@ -2990,6 +3336,491 @@ describe("Rule selection", () => {
       expect(() => modelOf(DEFS, keyed("colour"))).to.throw(/selects on its property 'colour', which 'typed' does not declare as a STRING/);
       expect(() => modelOf(DEFS, keyed("srcs"))).to.throw(/'srcs'/);
     });
+  });
+});
+
+describe("inspecting a target's collection", () => {
+  /** The targets whose rule was evaluated, in order. */
+  let proceeded: string[] = [];
+  const libRule = (part: string, properties: Record<string, string>): RuleDefinition => ({
+    type: "lib",
+    properties,
+    requirements: context => {
+      const deps = context.getPackageProperty("deps", BUILD_OVERRIDE);
+      /* The package's own requirements under `build`; under `test`, a
+       * requirement of the test run alone. */
+      return Computable.resolve({ srcs: context.getFileProperty("srcs"), [part === "deps" ? "dependencies" : part]: deps });
+    },
+    evaluate: (context, requirements) =>
+      Computable.forAll([requirements.materializeAll(), requirements.packages(part === "deps" ? "dependencies" : part)], (_collected, deps) => {
+        proceeded.push(context.name);
+        return new PackageFileSet([["index.js", new MemoryFile(Buffer.from(context.name))]], context.name, "1.0.0", deps);
+      }),
+  });
+  /* A rule with requirements that delivers files, not a package. */
+  const filesRule: RuleDefinition = {
+    type: "files",
+    properties: {},
+    requirements: context => Computable.resolve({ srcs: context.getFileProperty("srcs") }),
+    evaluate: context => {
+      proceeded.push(context.name);
+      return Computable.resolve(new FileSet(new Map([["out.txt", new MemoryFile(Buffer.from(context.name))]])));
+    },
+  };
+  /* A `run` rule whose one requirement is its own target under `build`. */
+  const runRule: RuleDefinition = {
+    type: "lib",
+    properties: { BUILD_OPERATION: "run" },
+    requirements: context => Computable.resolve({ pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE) }),
+    evaluate: (context, requirements) =>
+      requirements.materializeAll().then(({ pkg }) => {
+        proceeded.push(`${context.name}[run]`);
+        return Computable.resolve(pkg[0]);
+      }),
+  };
+  const rules: RuleDefinition[] = [
+    libRule("deps", {}),
+    libRule("test_deps", { BUILD_OPERATION: "test" }),
+    runRule,
+    filesRule,
+    { type: "plain", properties: {}, evaluate: () => Computable.resolve(EMPTY_FILESET) },
+  ];
+  const DEFS = "targetdef lib { srcs = FILES; deps = PACKAGES; }\ntargetdef files { srcs = FILES; }\ntargetdef plain { }\n";
+
+  function configOf(input: string): BuildContext {
+    const errors: string[] = [];
+    const log = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const built = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", DEFS + input, log)], log, [{ rules }]);
+    expect(errors).to.deep.equal([]);
+    return built.getConfig(Constraints.of({}), execution);
+  }
+
+  /** Resolve `name` and list each requirement's package ids, by requirement name. */
+  async function inspected(config: BuildContext, name: string): Promise<Record<string, string[]>> {
+    const parts = requirementsOf(await config.resolve(writtenOnCommandLine(name)));
+    return Object.fromEntries([...parts].map(([part, resolved]) => [part, resolved.filter(isPackage).map(pkg => pkg.packageId)]));
+  }
+
+  beforeEach(() => {
+    proceeded = [];
+  });
+
+  it("yields what the rule requires, building nothing", async () => {
+    const config = configOf("lib base { }\nlib mid { deps = base; }\nlib app { deps = mid; }");
+    expect(await inspected(config, "app")).to.deep.equal({ srcs: [], dependencies: ["mid@*"] });
+    expect(proceeded).to.deep.equal([]);
+  });
+
+  it("states each package with the packages it requires", async () => {
+    const config = configOf("lib base { }\nlib mid { deps = base; }\nlib app { deps = mid; }");
+    const [mid] = requirementsOf(await config.resolve(writtenOnCommandLine("app"))).get("dependencies")!;
+    expect(mid).to.be.instanceOf(ResolvedNode);
+    expect((mid as ResolvedNode).packages.map(pkg => pkg.packageId)).to.deep.equal(["base@*"]);
+  });
+
+  it("answers for a target and for one that depends on it", async () => {
+    const config = configOf("lib base { }\nlib app { deps = base; }");
+    const [base, app] = await Promise.all([inspected(config, "base"), inspected(config, "app")]);
+    expect(base).to.deep.equal({ srcs: [], dependencies: [] });
+    expect(app).to.deep.equal({ srcs: [], dependencies: ["base@*"] });
+  });
+
+  it("reads a projection into a package as no requirement", async () => {
+    const config = configOf("lib base { }\nlib mid { deps = base:index.js; }\nlib app { deps = mid base:*.js; }");
+    expect(await inspected(config, "app")).to.deep.equal({ srcs: [], dependencies: ["mid@*"] });
+    const [mid] = requirementsOf(await config.resolve(writtenOnCommandLine("app"))).get("dependencies")!;
+    expect((mid as ResolvedNode).packages).to.deep.equal([]);
+    expect(proceeded).to.deep.equal([]);
+  });
+
+  it("reads a rule's requirement of its own target without building it", async () => {
+    const config = configOf("lib base { }\nlib app { deps = base; }");
+    expect(await inspected(config, "app<BUILD_OPERATION=run>")).to.deep.equal({ pkg: ["app@*"] });
+    expect(proceeded).to.deep.equal([]);
+    /* Materialized, the run rule is given the target's own build. */
+    const [built] = await config.materialize(writtenOnCommandLine("app<BUILD_OPERATION=run>"));
+    expect((built as PackageFileSet).packageId).to.equal("app@1.0.0");
+    expect(proceeded).to.deep.equal(["base", "app", "app[run]"]);
+  });
+
+  it("reports a cycle among what is read, building nothing", async () => {
+    const failure = await configOf("lib a { deps = b; }\nlib b { deps = a; }")
+      .resolve(writtenOnCommandLine("a"))
+      .then(
+        () => undefined,
+        err => err
+      );
+    expect(circularOf(failure)).to.be.instanceOf(CircularDependencyError);
+    expect(proceeded).to.deep.equal([]);
+  });
+
+  it("reads a name a constraint overrides as what it is overridden to", async () => {
+    const errors: string[] = [];
+    const log = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const built = toBuildModel(
+      [parseBuildString(EMPTY_FILESET, "TEST.fabr", DEFS + "lib base { }\nlib alt { }\nlib app { deps = base; }", log)],
+      log,
+      [{ rules }]
+    );
+    const config = built.getConfig(Constraints.of({ base: "alt" }), execution);
+    expect(await inspected(config, "app")).to.deep.equal({ srcs: [], dependencies: ["alt@*"] });
+  });
+
+  it("shows a target that builds files as it shows any target, unbuilt", async () => {
+    const config = configOf("files gen { }\nlib app { deps = gen; }");
+    expect(await inspected(config, "app")).to.deep.equal({ srcs: [], dependencies: ["gen@*"] });
+    expect(proceeded).to.deep.equal([]);
+  });
+
+  it("asks under the configuration the name requires", async () => {
+    const config = configOf("lib base { }\nlib app { deps = base; }");
+    expect(await inspected(config, "app<BUILD_OPERATION=test>")).to.deep.equal({ srcs: [], test_deps: ["base@*"] });
+  });
+
+  it("yields no parts for a target whose rule has no requirements", async () => {
+    expect(await inspected(configOf("plain p { }"), "p")).to.deep.equal({});
+  });
+
+  it("resolves a global to the targets it names, each resolved to its node without being built", async () => {
+    const config = configOf("lib base { }\nDEPS = base;");
+    const [base] = (await config.resolve(writtenOnCommandLine("DEPS"))).denoted;
+    expect(base).to.be.instanceOf(ResolvedTarget);
+    expect((base as ResolvedTarget).packageId).to.equal("base@*");
+    expect(proceeded).to.deep.equal([]);
+  });
+
+  it("resolves a projection into a target to the projection pending over its node", async () => {
+    const [selected] = (await configOf("lib base { }").resolve(writtenOnCommandLine("base:lib/*.js"))).denoted;
+    expect(selected).to.be.instanceOf(ProjectedPackage);
+    expect(((selected as ProjectedPackage).base as ResolvedTarget).packageName).to.equal("base");
+  });
+});
+
+describe("a reference to a target", () => {
+  /** The targets whose rule was evaluated, in order. */
+  let evaluated: string[] = [];
+  /* A package made from its `deps`, with one file. */
+  const libRule: RuleDefinition = {
+    type: "lib",
+    properties: {},
+    requirements: context => Computable.resolve({ dependencies: context.getPackageProperty("deps") }),
+    evaluate: (context, requirements) =>
+      Computable.forAll([requirements.materializeAll(), requirements.packages("dependencies")], (_collected, packages) => {
+        evaluated.push(context.name);
+        return new PackageFileSet([["index.js", new MemoryFile(Buffer.from(context.name))]], context.name, "1.0.0", packages);
+      }),
+  };
+  /* Plain files. */
+  const genRule: RuleDefinition = {
+    type: "gen",
+    properties: {},
+    requirements: () => Computable.resolve({}),
+    evaluate: context => {
+      evaluated.push(context.name);
+      return Computable.resolve(new FileSet(new Map([["out.txt", new MemoryFile(Buffer.from(context.name))]])));
+    },
+  };
+  /* Plain files: one, named for the target. */
+  const noteRule: RuleDefinition = {
+    type: "note",
+    properties: {},
+    evaluate: context => Computable.resolve(new FileSet(new Map([[`${context.name}.txt`, new MemoryFile(Buffer.from(context.name))]]))),
+  };
+  /* A package that requires nothing, from a rule that states no requirements. */
+  const bareLibRule: RuleDefinition = {
+    type: "barelib",
+    properties: {},
+    evaluate: context => Computable.resolve(new PackageFileSet([["index.js", new MemoryFile(Buffer.from(context.name))]], context.name, "1.0.0")),
+  };
+  /* A package whose build fails. */
+  const badLibRule: RuleDefinition = {
+    type: "badlib",
+    properties: {},
+    evaluate: () => Computable.reject(new FabrError("it broke")),
+  };
+  const brokenRule: RuleDefinition = {
+    type: "broken",
+    properties: {},
+    requirements: () => Computable.resolve({}),
+    evaluate: () => Computable.reject(new FabrError("it broke")),
+  };
+  /* Records what each of its `deps` delivered: `package <name>` for a package,
+   * and the file names of anything else. */
+  const userRule: RuleDefinition = {
+    type: "user",
+    properties: {},
+    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    evaluate: (context, requirements) =>
+      requirements.materializeAll().then(({ deps }) => {
+        evaluated.push(context.name);
+        const names = deps.flatMap(dep =>
+          dep instanceof PackageFileSet ? [`package ${dep.packageName}`] : [...(dep as FileSet)].map(([name]) => name)
+        );
+        return Computable.resolve(new FileSet(new Map([["names", new MemoryFile(Buffer.from(names.join(",")))]])));
+      }),
+  };
+  /* Reads `extra` in `evaluate`, outside its requirements, and materializes
+   * none of it. */
+  const readerRule: RuleDefinition = {
+    type: "reader",
+    properties: {},
+    requirements: () => Computable.resolve({}),
+    evaluate: context => context.getPackageProperty("extra").then(() => EMPTY_FILESET),
+  };
+  /* A package naming each of its `deps` as a provided requirement. */
+  const peerLibRule: RuleDefinition = {
+    type: "peerlib",
+    properties: {},
+    requirements: context => Computable.resolve({ dependencies: context.getPackageProperty("deps") }),
+    evaluate: (context, requirements) =>
+      Computable.forAll([requirements.materializeAll(), requirements.packages("dependencies")], (_collected, packages) => {
+        const provided = new Map(packages.map(edge => [dependencyName(edge), "expected" as const]));
+        return new PackageFileSet([["index.js", new MemoryFile(Buffer.from(context.name))]], context.name, "1.0.0", packages, undefined, provided);
+      }),
+  };
+  /* The packages the last `outer` handed its sub-target. */
+  let handed: PackageFileSet[] = [];
+  /* Hands the packages among its `deps` to an `inner` sub-target as they are. */
+  const outerRule: RuleDefinition = {
+    type: "outer",
+    properties: {},
+    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    evaluate: (context, requirements) =>
+      requirements.materializeAll().then(({ deps }) => {
+        handed = deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+        return context.subTarget("inner", { deps: handed }, { label: "inner" });
+      }),
+  };
+  /* Records, per package among its `deps`, whether it is the very one handed. */
+  const innerRule: RuleDefinition = {
+    type: "inner",
+    properties: {},
+    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    evaluate: (_context, requirements) =>
+      requirements.materializeAll().then(({ deps }) => {
+        const names = deps.map(dep => (dep instanceof PackageFileSet ? `${dep.packageName}:${handed.includes(dep)}` : "files"));
+        return new FileSet(new Map([["names", new MemoryFile(Buffer.from(names.join(",")))]]));
+      }),
+  };
+  const DEFS =
+    ["lib", "user", "peerlib", "outer", "inner"].map(type => `targetdef ${type} { deps = PACKAGES; }\n`).join("") +
+    "targetdef gen { }\ntargetdef note { }\ntargetdef broken { }\ntargetdef badlib { }\ntargetdef barelib { }\ntargetdef reader { extra = PACKAGES; }\n";
+
+  function configOf(input: string): BuildContext {
+    const errors: string[] = [];
+    const log = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+    const built = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", DEFS + input, log)], log, [
+      { rules: [libRule, genRule, noteRule, brokenRule, badLibRule, bareLibRule, userRule, readerRule, peerLibRule, outerRule, innerRule] },
+    ]);
+    expect(errors).to.deep.equal([]);
+    return built.getConfig(Constraints.of({}), execution);
+  }
+
+  /** Materialize `u` and return what its deps delivered, as its rule saw them. */
+  async function delivered(config: BuildContext): Promise<string> {
+    const [result] = await config.materialize(writtenOnCommandLine("u"));
+    return (await (result as FileSet).getFile("names")!.readString()).toString();
+  }
+
+  /** Unwrap `err` from the target boundaries around it. */
+  function rootCause(err: unknown): unknown {
+    let cause = err;
+    while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
+      cause = cause.cause;
+    }
+    return cause;
+  }
+
+  beforeEach(() => {
+    evaluated = [];
+  });
+
+  it("hands a sub-target the packages it was given as they stand, provided requirements among them or not", async () => {
+    expect(await delivered(configOf("lib base { }\nlib x { deps = base; }\nouter u { deps = x base; }"))).to.equal("x:true,base:true");
+    expect(await delivered(configOf("lib base { }\npeerlib x { deps = base; }\nouter u { deps = x base; }"))).to.equal("x:true,base:true");
+  });
+
+  it("delivers a target and a rename of it as two packages, each for its reference, from one build", async () => {
+    expect(await delivered(configOf("lib base { }\nuser u { deps = base base -> other; }"))).to.equal("package base,package other");
+    expect(evaluated.filter(name => name === "base")).to.deep.equal(["base"]);
+    expect(await delivered(configOf("lib base { }\nuser u { deps = base -> other base; }"))).to.equal("package other,package base");
+  });
+
+  it("leaves a sibling's edge to the target where a rename of it is delivered beside", async () => {
+    const config = configOf("lib base { }\nlib mid { deps = base; }\nuser u { deps = mid base -> other; }");
+    const [mid, other] = requirementsOf(await config.resolve(writtenOnCommandLine("u"))).get("deps")!;
+    expect((mid as ResolvedNode).packages.map(pkg => pkg.packageName)).to.deep.equal(["base"]);
+    expect((other as ResolvedNode).packageName).to.equal("other");
+    expect(await delivered(config)).to.equal("package mid,package other");
+  });
+
+  it("is built by the collection point of what names it, not by reading the property", async () => {
+    const config = configOf("lib base { }\nuser u { deps = base; }");
+    const model = config as unknown as { resolveTarget(name: string): Computable<unknown[]> };
+    const [reference] = await model.resolveTarget("base");
+    expect(reference).to.be.instanceOf(TargetRef);
+    expect(evaluated).to.deep.equal([]);
+    expect(await delivered(config)).to.equal("package base");
+    expect(evaluated).to.deep.equal(["base", "u"]);
+  });
+
+  it("resolves to its node for the reference that asks, renamed as written", async () => {
+    const config = configOf("lib base { }");
+    const resolved = await config.resolve(writtenOnCommandLine("base"));
+    const [reference] = resolved.references.get("")!;
+    expect(reference).to.be.instanceOf(TargetRef);
+    expect(reference?.toString()).to.equal("base");
+    /* Renamed, the package and the reference that asked for it agree. */
+    const renamed = await config.resolve(writtenOnCommandLine("base -> other"));
+    expect((renamed.denoted[0] as ResolvedNode).packageName).to.equal("other");
+    expect(renamed.references.get("")![0]?.localName).to.equal("other");
+  });
+
+  it("is built once, however many name it", async () => {
+    const config = configOf("lib base { }\nlib left { deps = base; }\nlib right { deps = base; }\nuser u { deps = left right; }");
+    expect(await delivered(config)).to.equal("package left,package right");
+    expect(evaluated.filter(name => name === "base")).to.deep.equal(["base"]);
+  });
+
+  it("applies a projection when the target is delivered", async () => {
+    expect(await delivered(configOf("gen g { }\nuser u { deps = g:out.txt; }"))).to.equal("out.txt");
+    expect(await delivered(configOf("gen g { }\nuser u { deps = g:*.txt -> *.md; }"))).to.equal("out.md");
+  });
+
+  it("reports a literal projection that matches nothing in the target", async () => {
+    const failure = await configOf("gen g { }\nuser u { deps = g:nope.txt; }")
+      .materialize(writtenOnCommandLine("u"))
+      .then(
+        () => undefined,
+        err => err
+      );
+    expect(rootCause(failure)).to.be.instanceOf(NameResolutionError);
+    /* A glob that matches nothing is no error. */
+    expect(await delivered(configOf("gen g { }\nuser u { deps = g:*.md; }"))).to.equal("");
+  });
+
+  it("refuses a literal projection over a target that selects nothing, where the name reached that target alone", async () => {
+    const failure = await configOf("gen g { }\nuser u { deps = g:nope.txt; }")
+      .materialize(writtenOnCommandLine("u"))
+      .then(
+        () => undefined,
+        err => err
+      );
+    expect(rootCause(failure)).to.be.instanceOf(NameResolutionError);
+  });
+
+  it("holds no target to a literal projection where its name reached several", async () => {
+    /* BOTH names two targets: each is projected on its own, and one that has
+     * no such file yields none, as a registry reference among them would. */
+    expect(await delivered(configOf("gen g { }\nnote n { }\nBOTH = g n;\nuser u { deps = BOTH:n.txt; }"))).to.equal("n.txt");
+  });
+
+  it("applies a rename when the target is delivered", async () => {
+    expect(await delivered(configOf("lib base { }\nuser u { deps = base -> other; }"))).to.equal("package other");
+  });
+
+  it("reaches a target through a property that names it", async () => {
+    expect(await delivered(configOf("lib base { }\nALL = base;\nuser u { deps = ALL; }"))).to.equal("package base");
+  });
+
+  it("attributes a target's failure to the reference it was delivered for", async () => {
+    const failure = await configOf("broken b { }\nuser u { deps = b; }")
+      .materialize(writtenOnCommandLine("u"))
+      .then(
+        () => undefined,
+        err => err
+      );
+    expect(failure).to.be.instanceOf(DependencyFailedError);
+    const hop = (failure as DependencyFailedError).cause;
+    expect(hop).to.be.instanceOf(ReferenceFailedError);
+    expect((rootCause(failure) as Error).message).to.equal("it broke");
+  });
+
+  it("takes a package that requires nothing from a rule that states no requirements", async () => {
+    expect(await delivered(configOf("barelib b { }\nuser u { deps = b; }"))).to.equal("package b");
+  });
+
+  it("takes such a package as the dependency of another package, wherever that one is required", async () => {
+    /* `b`'s rule states nothing, which is to say that `b` requires nothing;
+     * `mid` states `b` and builds requiring it. */
+    const built = await configOf("barelib b { }\nlib mid { deps = b; }\nuser u { deps = mid; }").materialize(writtenOnCommandLine("u"));
+    expect(built).to.have.length(1);
+    const [mid] = await configOf("barelib b { }\nlib mid { deps = b; }").materialize(writtenOnCommandLine("mid"));
+    expect((mid as PackageFileSet).packages.map(pkg => pkg.packageName)).to.deep.equal(["b"]);
+  });
+
+  it("attributes the failure of a package, built for what requires it, to each reference crossed", async () => {
+    /* `bad` and `mid` are packages, so each is built through the node its
+     * requirer resolved it as, and not by the reference being materialized. */
+    const failure = await configOf("badlib bad { }\nlib mid { deps = bad; }\nuser u { deps = mid; }")
+      .materialize(writtenOnCommandLine("u"))
+      .then(
+        () => undefined,
+        err => err
+      );
+    const crossed: string[] = [];
+    const causes = new Set<string>();
+    const visit = (err: unknown): void => {
+      if (err instanceof MultiError) {
+        err.errors.forEach(visit);
+      } else if (err instanceof ReferenceFailedError) {
+        crossed.push(`${err.target === undefined ? "" : declName(err.target)} ${err.value.value.toString()}`);
+        visit(err.cause);
+      } else if (err instanceof DependencyFailedError) {
+        visit(err.cause);
+      } else {
+        causes.add((err as Error).message);
+      }
+    };
+    visit(failure);
+    expect(crossed).to.include("u mid");
+    expect(crossed).to.include("mid bad");
+    expect([...causes]).to.deep.equal(["it broke"]);
+  });
+
+  it("reports a cycle through references", async () => {
+    const failure = await configOf("lib a { deps = b; }\nlib b { deps = a; }")
+      .materialize(writtenOnCommandLine("a"))
+      .then(
+        () => undefined,
+        err => err
+      );
+    expect(circularOf(failure)).to.be.instanceOf(CircularDependencyError);
+  });
+
+  it("reports a cycle whose members something else names first", async () => {
+    const failure = await configOf("lib a { deps = b; }\nlib b { deps = a; }\nuser u { deps = a b; }")
+      .materialize(writtenOnCommandLine("u"))
+      .then(
+        () => undefined,
+        err => err
+      );
+    /* Both members fail with the cycle, and each is reported. */
+    const causes = (
+      failure instanceof DependencyFailedError && failure.cause instanceof MultiError ? failure.cause.errors : [failure]
+    ).map(rootCause);
+    expect(causes).to.have.length(2);
+    causes.forEach(cause => expect(circularOf(cause)).to.be.instanceOf(CircularDependencyError));
+    expect(evaluated).to.deep.equal([]);
+  });
+
+  it("does not count a reference that is looked up and never depended on", async () => {
+    /* `a`'s build looks `b` up, which resolves it and builds nothing; `b`
+     * requires `a`. Nothing depends on itself: `a` is resolved before either
+     * is built, and `b` is never built. */
+    const built = await configOf("reader a { extra = b; }\nlib b { deps = a; }").materialize(writtenOnCommandLine("a"));
+    expect(built).to.have.length(1);
+  });
+
+  it("resolves what a target requires where it is referenced, building none of it", async () => {
+    const failure = await configOf("lib base { deps = nowhere; }\nreader a { extra = base; }")
+      .materialize(writtenOnCommandLine("a"))
+      .then(
+        () => undefined,
+        err => err
+      );
+    expect(rootCause(failure)).to.be.instanceOf(NameResolutionError);
+    expect(evaluated).to.deep.equal([]);
   });
 });
 

@@ -126,8 +126,15 @@ export class Name {
    * itself carries a rename target or constraints (parser-enforced).
    */
   private readonly renameTo: Name | undefined;
+  /**
+   * Whether the name's last character is a `?` or `!` written unquoted at the
+   * end of a reference: the one place an override marker can be written. The
+   * character stays in `parts`, so the name reads as written; whether it is a
+   * marker is for whoever looks the name up to decide ({@link getMarker}).
+   */
+  private readonly marked: boolean;
 
-  constructor(parts: NamePart[], constraints: readonly NameConstraint[] = [], renameTo?: Name) {
+  constructor(parts: NamePart[], constraints: readonly NameConstraint[] = [], renameTo?: Name, marked = false) {
     if (parts.length === 0) {
       this.parts = [{ kind: NamePartKind.Literal, value: "" }];
     } else {
@@ -135,6 +142,35 @@ export class Name {
     }
     this.constraints = constraints;
     this.renameTo = renameTo;
+    this.marked = marked;
+  }
+
+  /** @return a copy of this name recording that it ends in an override marker
+   * written unquoted (see {@link getMarker}). */
+  public withMarker(): Name {
+    return new Name(this.parts, this.constraints, this.renameTo, true);
+  }
+
+  /** @return the override marker this name ends in, where one was written
+   * unquoted at the end of a reference: `?` an alternate, `!` a force. */
+  public getMarker(): "alternate" | "force" | undefined {
+    if (!this.marked) {
+      return undefined;
+    }
+    const written = this.renderParts(false);
+    return written.endsWith("?") ? "alternate" : written.endsWith("!") ? "force" : undefined;
+  }
+
+  /** @return this name without the override marker it ends in (unchanged where
+   * it has none). */
+  public withoutMarker(): Name {
+    if (this.getMarker() === undefined) {
+      return this;
+    }
+    const parts = this.parts.slice(0, -1);
+    const last = this.parts[this.parts.length - 1];
+    const rest = last.value.slice(0, -1);
+    return new Name(rest === "" ? parts : [...parts, { ...last, value: rest }], this.constraints, this.renameTo);
   }
 
   /**
@@ -149,7 +185,7 @@ export class Name {
    * any it already had). The parts are unchanged — constraints ride alongside.
    */
   public withConstraints(constraints: readonly NameConstraint[]): Name {
-    return new Name(this.parts, constraints, this.renameTo);
+    return new Name(this.parts, constraints, this.renameTo, this.marked);
   }
 
   /** @return the constraints written on this name — what a reference *requires*
@@ -166,7 +202,7 @@ export class Name {
    * onto a selector unconditionally.
    */
   public withRenameTo(renameTo: Name | undefined): Name {
-    return new Name(this.parts, this.constraints, renameTo);
+    return new Name(this.parts, this.constraints, renameTo, this.marked);
   }
 
   /** @return the rename target written on this reference (undefined if none). */
@@ -445,7 +481,8 @@ export class Name {
    * the seam (so a literal base and a literal projection tail collapse to one
    * literal prefix, keeping prefix-matching intact). Used to reassemble a
    * reference split by an intervening `<...>` (`pkg` + `:build/*.js`). Constraints
-   * are taken from neither operand — the caller attaches them.
+   * are taken from neither operand — the caller attaches them. The override
+   * marker is `other`'s, since it ends the name.
    */
   public concat(other: Name): Name {
     const merged: NamePart[] = [];
@@ -457,7 +494,7 @@ export class Name {
         merged.push({ ...part });
       }
     }
-    return new Name(merged);
+    return new Name(merged, [], undefined, other.marked);
   }
 
   public hasConstraints(): boolean {
@@ -544,7 +581,7 @@ export class Name {
     /* The rename target substitutes as well (`-> *.${BUILD_NO}.js`), collapsed to
      * literal parts here so replay never sees a VarSubst. */
     const renameTo = this.renameTo?.substitute(resolved);
-    return new Name(parts, constraints, renameTo);
+    return new Name(parts, constraints, renameTo, this.marked);
   }
 
   /**
@@ -575,8 +612,8 @@ export class Name {
   /**
    * @return the tail of this name from `start` — an offset into its written
    * text ({@link toBaseString}) that must fall in a literal part, as a `:` or
-   * `/` boundary always does — carrying the rename target but NOT the
-   * constraints. The sole use is splitting a reference into target +
+   * `/` boundary always does — carrying the rename target and override marker
+   * but NOT the constraints. The sole use is splitting a reference into target +
    * projection (getPrefixMatch, a repository's getRepositoryRef): the tail IS
    * the projection, so a `-> tmpl` rename (final naming) rides onto it, while
    * the constraints stay behind on the target it constrains (and is consumed
@@ -601,7 +638,7 @@ export class Name {
       }
       offset = end;
     }
-    return new Name(parts, [], this.renameTo);
+    return new Name(parts, [], this.renameTo, this.marked);
   }
 
   /**
@@ -618,9 +655,9 @@ export class Name {
     if (this.parts[0].kind === NamePartKind.Literal) {
       const [head, ...rest] = this.parts;
       const value = prefix + head.value.replace(/^\.\//, "");
-      return new Name([{ kind: NamePartKind.Literal, value }, ...rest], this.constraints, this.renameTo);
+      return new Name([{ kind: NamePartKind.Literal, value }, ...rest], this.constraints, this.renameTo, this.marked);
     } else {
-      return new Name([{ kind: NamePartKind.Literal, value: prefix }, ...this.parts], this.constraints, this.renameTo);
+      return new Name([{ kind: NamePartKind.Literal, value: prefix }, ...this.parts], this.constraints, this.renameTo, this.marked);
     }
   }
 
@@ -673,7 +710,7 @@ export class Name {
       return this;
     }
     const rebased: NamePart = { kind: NamePartKind.Literal, value: head.value.substring(prefix.length) };
-    return new Name([rebased, ...this.parts.slice(1)], this.constraints, this.renameTo);
+    return new Name([rebased, ...this.parts.slice(1)], this.constraints, this.renameTo, this.marked);
   }
 
   /**

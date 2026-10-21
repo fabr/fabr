@@ -22,10 +22,10 @@
  * markers on written requirements sanction, and whether a delivery's versions
  * stay within it. A repository contributes only its `VersionDomain`;
  * everything here is shared by any ecosystem that resolves through the MVS
- * core. (The markers' spelling is read in Requirement.ts.)
+ * core. (The parser reads the markers; Requirement.ts writes their spelling.)
  */
 
-import { requiredAs } from "./Requirement";
+import { requiredAs, versionText } from "./Requirement";
 import { PackageName, Requirement, Selected, VersionDomain, Violation } from "./Types";
 
 /**
@@ -81,7 +81,8 @@ export function collectSanctions<V, C>(
     const name = requiredAs(req);
     const existing = forcedAt.get(name);
     if (existing !== undefined && existing !== req.versionConstraint) {
-      fail(name, `'${name}' is forced ('!') at two different versions (${existing}, ${req.versionConstraint}) — pick one`);
+      const shown = (text: string): string => versionText(text, name);
+      fail(name, `'${name}' is forced ('!') at two different versions (${shown(existing)}, ${shown(req.versionConstraint)}) — pick one`);
     }
     forcedAt.set(name, req.versionConstraint);
   }

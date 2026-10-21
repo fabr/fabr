@@ -290,6 +290,17 @@ each package gets the version its own requirement accepts, as it would under npm
 exactly this version, as npm's `overrides` does. Requirements it doesn't satisfy are overridden
 without a warning, so use it when a dependency's requirement is wrong, and `?` otherwise.
 
+**On a target.** Both markers can also end the name of a target that builds a package, with the
+same meaning: `mylib!` uses the package `mylib` builds wherever `mylib` is required, in place of
+a registry package of that name, and `mylib?` allows it alongside one. See
+[Packages built in your project](/reference/js/dependencies/#packages-built-in-your-project).
+A marker is the last character of a reference, written unquoted, before or after a
+[`<k=v>` constraint](#constraints) (`mylib!<BUILD_TYPE=release>` or
+`mylib<BUILD_TYPE=release>!`). On a target, it is read as a marker only where the rest is the
+exact name of a declared target; anywhere else a `?` is a wildcard and a `!` part of the name.
+Quoted, either character is part of the name (`"mylib!"` names a file). A marker on a reference
+that selects files of a package (`@npm:pkg:1.2.3!:lib/x.js`) is an error: files are no package.
+
 [Dependencies](/reference/js/dependencies/#when-versions-conflict) shows the error that prompts
 these and how to choose between them.
 
@@ -490,7 +501,7 @@ targetdef script {
 
 Building a target needs a rule for its type, and rules come from plugins, so defining a type in a
 build file is mostly useful alongside a plugin that supplies its rules. Writing plugins is
-described in `PLUGINS.md` in the fabr repository.
+described in the [plugin reference](/developer/plugins/).
 
 Each entry is `<property> = <kind>;`. A `*` in place of a property name gives a kind to every
 property not otherwise listed, for types whose targets take arbitrary keys:
@@ -507,6 +518,7 @@ targetdef sync {
 |---|---|
 | `STRING` | Text. |
 | `FILES` | References, which become a set of files. |
+| `PACKAGES` | References to packages: registry packages and the targets that build one. |
 | `MAP` | A block of `key = value;` entries; see [Map properties](#map-properties). |
 | `COMMAND` | A command pipeline; see [Command property](#command-property). |
 | `REWRITE` | Renaming rules written `pattern -> template`; see [Projection and renaming](#projection-and-renaming). |
@@ -516,6 +528,19 @@ targetdef sync {
 `REQUIRED` property. `STRING` and `FILES` are not told apart when a build file is read. They
 document what a property is for, and the rule that reads the property decides how to treat its
 value.
+
+`FILES` and `PACKAGES` take the same references and differ in what a reference means:
+
+| A reference to | In a `FILES` property | In a `PACKAGES` property |
+|---|---|---|
+| a target | The files it builds. | The package it builds, under the target's name. |
+| a registry package (`@npm:lodash:4.17.21`) | That package's own files, at the version written (the lowest version a range allows). Nothing it depends on is fetched. | A dependency: its version is chosen together with every other package the target depends on, and its own dependencies come with it. |
+| a file or directory | Those files. | Those files. |
+
+A rule may read a `PACKAGES` property for its files, but reads a `FILES` property only for its
+files, except where a type says otherwise: a `js_script`'s `entry` may name a package, and a
+`sync` or `repository_group` makes the files it is given into a package. The
+[JavaScript targets](/reference/js/targets/) page gives each property's kind.
 
 ### Property defaults
 

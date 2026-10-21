@@ -736,6 +736,14 @@ export class BuildParser {
      * `)` and `|` structural — at depth 0 both are ordinary name characters. */
     let extglobDepth = 0;
     let extglobStart = 0;
+    /* Whether the name ends in an override marker: a `?` or `!` written
+     * unquoted after at least one other character (see Name.getMarker). */
+    let marked = false;
+    const endsName = (ch: number | undefined): boolean =>
+      ch === undefined ||
+      isWhitespace(ch) ||
+      [CHAR_COMMA, CHAR_EQUALS, CHAR_LBRACE, CHAR_RBRACE, CHAR_SEMI, CHAR_LANGLE, CHAR_RANGLE, CHAR_HASH].includes(ch) ||
+      (ch === CHAR_BACKTICK && this.commandSubstDepth > 0);
     /* Expect current character is not whitespace or a special character.
      * Quoted strings, substitutions and character classes consume themselves
      * whole (the scan only advances past characters they leave in place). */
@@ -804,6 +812,7 @@ export class BuildParser {
             break;
           }
           maybeIdent = false;
+          marked = ch === CHAR_QUESTION && this.reader.currentOffset() > start && endsName(this.reader.peekAt(1));
           nameBuilder.appendEscapedString(this.reader.substring(posn));
           nameBuilder.appendGlobMetachars(String.fromCodePoint(ch));
           posn = this.reader.currentOffset() + 1;
@@ -817,6 +826,9 @@ export class BuildParser {
            * negation picomatch would otherwise read it as (see escapeGlob). */
           if (this.reader.peekAt(1) === CHAR_LPAREN) {
             openExtglob(ch);
+          } else if (ch === CHAR_BANG && this.reader.currentOffset() > start && endsName(this.reader.peekAt(1))) {
+            marked = true;
+            maybeIdent = false;
           }
           break;
         case CHAR_RPAREN:
@@ -874,7 +886,8 @@ export class BuildParser {
     }
 
     nameBuilder.appendEscapedString(rest);
-    return { type: TokenType.NAME, text: nameBuilder.name(), start };
+    const name = nameBuilder.name();
+    return { type: TokenType.NAME, text: marked ? name.withMarker() : name, start };
   }
 
   /**
@@ -1554,9 +1567,15 @@ export class BuildParser {
      * (`foo<k=v>bar`) is NOT a projection — leave it unconsumed so it errors or
      * parses separately, rather than silently gluing into `foobar<k=v>`. */
     if (tail) {
-      const tailLiteral = this.tokenToName(tail).getLiteralPrefix();
+      const tailName = this.tokenToName(tail);
+      const tailLiteral = tailName.getLiteralPrefix();
       if (tailLiteral.startsWith(":") || tailLiteral.startsWith("/")) {
-        name = name.concat(this.tokenToName(tail));
+        name = name.concat(tailName);
+        this.nextToken();
+      } else if (tailName.toBaseString() === "!" || tailName.toBaseString() === "?") {
+        /* An override marker written after the constraints (`pkg<k=v>!`) is
+         * the reference's, as one written before them is. */
+        name = name.concat(tailName).withMarker();
         this.nextToken();
       }
     }
@@ -2134,7 +2153,7 @@ export class BuildParser {
   /**
    * PropertyTypeList ::= PropertyType*
    * PropertyType ::= NAME '=' PropertySchema DefaultClause? ';'
-   * PropertySchema ::=  ( 'STRING'|'FILES'|'REWRITE'|'MAP'|'COMMAND'|'REQUIRED' )*
+   * PropertySchema ::=  ( 'STRING'|'FILES'|'PACKAGES'|'REWRITE'|'MAP'|'COMMAND'|'REQUIRED' )*
    * DefaultClause ::= 'default' Value*
    *
    */
@@ -2164,7 +2183,7 @@ export class BuildParser {
       this.nextToken();
       let next = this.consumeToken(TokenType.EQUALS);
       if (next.type !== TokenType.IDENTIFIER) {
-        this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'MAP' or 'REQUIRED'");
+        this.unexpectedTokenError("'STRING' or 'FILES' or 'PACKAGES' or 'REWRITE' or 'MAP' or 'COMMAND' or 'REQUIRED'");
       } else {
         while (next.type === TokenType.IDENTIFIER) {
           /* `default` ends the keyword run and hands the rest of the line to the
@@ -2192,6 +2211,9 @@ export class BuildParser {
             case "FILES":
               type = PropertyType.FileSet;
               break;
+            case "PACKAGES":
+              type = PropertyType.Packages;
+              break;
             case "REWRITE":
               type = PropertyType.Rewrite;
               break;
@@ -2202,7 +2224,7 @@ export class BuildParser {
               type = PropertyType.Command;
               break;
             default:
-              this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'MAP' or 'COMMAND' or 'REQUIRED'");
+              this.unexpectedTokenError("'STRING' or 'FILES' or 'PACKAGES' or 'REWRITE' or 'MAP' or 'COMMAND' or 'REQUIRED'");
           }
           next = this.nextToken();
         }
@@ -2214,7 +2236,7 @@ export class BuildParser {
            * ordinary logged error at the key, not a thrown recovery. */
           this.log.log(DIAG_DEFAULT_BEFORE_TYPE, { key, loc: { ...this.source, offset: token.start } });
         } else {
-          this.unexpectedTokenError("'STRING' or 'FILES' or 'REWRITE' or 'MAP'");
+          this.unexpectedTokenError("'STRING' or 'FILES' or 'PACKAGES' or 'REWRITE' or 'MAP' or 'COMMAND'");
         }
       } else if (required && defaultDecl) {
         /* A default supplies the property whenever it is unwritten, so nothing is

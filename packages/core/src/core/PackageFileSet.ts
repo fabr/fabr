@@ -17,19 +17,167 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { ConflictError, FabrError } from "./Errors";
+import { Computable } from "./Computable";
+import { ConflictError, FabrError, TargetNotPackageError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
 import { hashString } from "./FSWrapper";
-import { IProvenanceStep } from "./Provenance";
+import { IProvenanceStep, rootedAt } from "./Provenance";
 /* Type-only: RepositoryRef values are only ever constructed/inspected on the
  * Repository side; carrying the type here must not create a module cycle. */
-import type { RepositoryRef } from "./Repository";
+import type { Reference } from "./Reference";
+import type { RepositoryRef, SourceRef } from "./Repository";
 import type { Requirement } from "../resolver/Types";
 
 /** How strongly a provided requirement is expected (see Requirement.provided). */
 export type Provided = NonNullable<Requirement["provided"]>;
 
 const NOTHING_PROVIDED: ReadonlyMap<string, Provided> = new Map();
+
+/**
+ * A package, less its files: its name, its version, what each of its direct
+ * edges is bound to, which of those are provided requirements, and where it
+ * came from. A resolution produces it, and it is all that reading a package
+ * graph needs. A {@link ResolvedNode} is this alone; a {@link PackageFileSet}
+ * is this with the files.
+ */
+export interface PackageMetadata {
+  readonly packageName: string;
+  readonly version?: string;
+  /** Its direct dependencies, each the reference that asked and what it is
+   *  bound to. */
+  readonly dependencies: ReadonlyArray<Dependency>;
+  /** The names among `dependencies` that are provided requirements. */
+  readonly provided: ReadonlyMap<string, Provided>;
+  readonly origin?: IProvenanceStep;
+  /** `name@version`, the package's identity. */
+  readonly packageId: string;
+  /** The packages its edges are bound to. */
+  readonly packages: Package[];
+}
+
+/** A package at either level: resolved, or resolved and holding its files. */
+export type Package = ResolvedNode | PackageFileSet;
+
+/**
+ * One of a package's direct dependencies: the reference that asked for it,
+ * and the package it is bound to, where something has bound it. The edge is
+ * named by its reference ({@link dependencyName}).
+ */
+export interface Dependency<P extends Package = Package> {
+  readonly reference: Reference;
+  readonly package?: P;
+}
+
+/** How a package's files are had, for one that does not hold them. */
+export interface PackageContent {
+  /** Names the files without reading them: one key, one set of files. */
+  readonly key: string;
+  /** Get the files, fetching or building them on first demand: one set, or,
+   * where a target's build is no package, its sources as they stand. */
+  files(): Computable<FileSet | ReadonlyArray<SourceRef>>;
+  /**
+   * The target whose build the files are, by name. What a target builds is
+   * known when it is built: the node is a package where its build is one, and
+   * plain files otherwise.
+   */
+  readonly builds?: string;
+  /** The configuration the target is built under, as a message shows it
+   * (`BUILD_TYPE=release`): empty where it is the ambient one. */
+  readonly configuration?: string;
+  /** Whether the build is known to be no package (the target was read for
+   * its files). Such a node claims no name among packages. */
+  readonly plain?: true;
+}
+
+/** What a {@link ResolvedNode} is made of. */
+export interface NodeFields {
+  readonly content: PackageContent;
+  readonly packageName: string;
+  readonly version?: string;
+  readonly dependencies: ReadonlyArray<Dependency>;
+  readonly origin?: IProvenanceStep;
+  readonly provided: ReadonlyMap<string, Provided>;
+}
+
+/**
+ * A node of a resolved graph: a name, a version where one is known, every
+ * edge bound, and no files — only how to have them ({@link content}), which
+ * {@link materializePackages} calls and nothing that reads the graph does. A
+ * registry's node is a package. A target's node is whatever the target
+ * builds, a package or plain files, which is known when it is built
+ * ({@link PackageContent.builds}). The graph may be cyclic; build one with a
+ * {@link PackageGraphBuilder}.
+ */
+export class ResolvedNode implements PackageMetadata {
+  constructor(
+    public readonly content: PackageContent,
+    public readonly packageName: string,
+    public readonly version?: string,
+    public readonly dependencies: ReadonlyArray<Dependency> = [],
+    public readonly origin?: IProvenanceStep,
+    public readonly provided: ReadonlyMap<string, Provided> = NOTHING_PROVIDED
+  ) {}
+
+  public get packageId(): string {
+    return `${this.packageName}@${this.version ?? "*"}`;
+  }
+
+  public get packages(): Package[] {
+    return this.dependencies.flatMap(dep => (dep.package === undefined ? [] : [dep.package]));
+  }
+
+  public withOrigin(origin: IProvenanceStep): ResolvedNode {
+    return this.copy({ origin });
+  }
+
+  /** Make a copy whose files are had as `content` says. */
+  public withContent(content: PackageContent): ResolvedNode {
+    return this.copy({ content });
+  }
+
+  /** See {@link PackageFileSet.withPackageName}. */
+  public withPackageName(packageName: string): ResolvedNode {
+    return this.copy({ packageName });
+  }
+
+  /** Make a copy with `changes` made, of the same kind as this node. */
+  public copy(changes: Partial<NodeFields>): ResolvedNode {
+    const fields = { ...this.fields(), ...changes };
+    return new ResolvedNode(
+      fields.content,
+      fields.packageName,
+      fields.version,
+      fields.dependencies,
+      fields.origin,
+      fields.provided
+    );
+  }
+
+  /** Get what this node is made of, for a copy. */
+  protected fields(): NodeFields {
+    return {
+      content: this.content,
+      packageName: this.packageName,
+      version: this.version,
+      dependencies: this.dependencies,
+      origin: this.origin,
+      provided: this.provided,
+    };
+  }
+
+  public getDependency(name: string): Dependency | undefined {
+    return this.dependencies.find(dep => dependencyName(dep) === name);
+  }
+}
+
+export function isPackage(source: unknown): source is Package {
+  return source instanceof ResolvedNode || source instanceof PackageFileSet;
+}
+
+/** Make the content of a package whose files are in hand. */
+export function contentOf(pkg: Package): PackageContent {
+  return pkg instanceof ResolvedNode ? pkg.content : { key: pkg.toManifestHash(), files: () => Computable.resolve(pkg) };
+}
 
 /**
  * A FileSet that is a package; adds package name, version, and dependencies.
@@ -51,9 +199,9 @@ const NOTHING_PROVIDED: ReadonlyMap<string, Provided> = new Map();
  *   cycle-safe; hoisting and private nesting are computed by the assembler
  *   from these complete facts, not read out of the structure.
  *
- * An edge's *name* is the bound instance's `packageName`, or the name its
- * reference delivers as: a renamed dependency is a restamped instance
- * carrying the name its requirer knows it by.
+ * An edge's *name* is its reference's local name ({@link dependencyName}):
+ * the name its requirer knows it by, which a renamed dependency's instance
+ * is restamped under too.
  * Content derivations (find/remap/minus/...) deliberately return plain
  * FileSets: once you reach inside a package, the result is just files.
  */
@@ -62,14 +210,12 @@ export class PackageFileSet extends FileSet {
     files: Iterable<[string, IFile]>,
     public readonly packageName: string,
     public readonly version?: string,
-    public readonly dependencies: ReadonlyArray<PackageFileSet | RepositoryRef> = [],
+    public readonly dependencies: ReadonlyArray<Dependency<PackageFileSet>> = [],
     origin?: IProvenanceStep,
 
     /* The names among `dependencies` that are provided requirements, each with
      * how strongly it is expected. */
-    public readonly provided: ReadonlyMap<string, Provided> = NOTHING_PROVIDED,
-    /* The reference that the package was delivered for (if any). */
-    public readonly reference?: RepositoryRef
+    public readonly provided: ReadonlyMap<string, Provided> = NOTHING_PROVIDED
   ) {
     /* An existing FileSet passes straight through — the base shares its content
      * (already canonical) rather than copying and rechecking every name, which
@@ -84,9 +230,8 @@ export class PackageFileSet extends FileSet {
     return this.packageName;
   }
 
-  /** This package's semantic `name@version` id — the identity that decides
-   * flat-mount deduplication (object identity is deliberately meaningless:
-   * every delivery wraps its own instances). */
+  /** This package's semantic `name@version` id. Object identity means nothing,
+   * since every delivery wraps its own instances. */
   public get packageId(): string {
     return `${this.packageName}@${this.version ?? "*"}`;
   }
@@ -94,11 +239,11 @@ export class PackageFileSet extends FileSet {
   /** The packages this package's edges are bound to — the installation's
    * edges out of it, provided bindings included. */
   public get packages(): PackageFileSet[] {
-    return this.dependencies.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+    return this.dependencies.flatMap(dep => (dep.package === undefined ? [] : [dep.package]));
   }
 
   public withOrigin(origin: IProvenanceStep): PackageFileSet {
-    return new PackageFileSet(this, this.packageName, this.version, this.dependencies, origin, this.provided, this.reference);
+    return new PackageFileSet(this, this.packageName, this.version, this.dependencies, origin, this.provided);
   }
 
   /**
@@ -110,19 +255,17 @@ export class PackageFileSet extends FileSet {
    * but the mount point alone.
    */
   public withPackageName(packageName: string): PackageFileSet {
-    const reference = this.reference === undefined || this.reference.deliveredName === packageName ? this.reference : this.reference.withRenameTo(packageName);
-    return new PackageFileSet(this, packageName, this.version, this.dependencies, this.origin, this.provided, reference);
+    return new PackageFileSet(this, packageName, this.version, this.dependencies, this.origin, this.provided);
   }
 
-  public getDependency(name: string): PackageFileSet | RepositoryRef | undefined {
+  public getDependency(name: string): Dependency<PackageFileSet> | undefined {
     return this.dependencies.find(dep => dependencyName(dep) === name);
   }
 }
 
-/** The name an edge is required under: its package's, or the one its
- * reference delivers as. */
-export function dependencyName(dep: PackageFileSet | RepositoryRef): string {
-  return dep instanceof PackageFileSet ? dep.packageName : dep.deliveredName;
+/** Get the name an edge is required under: the one its reference gives. */
+export function dependencyName(dep: Dependency): string {
+  return dep.reference.localName;
 }
 
 /**
@@ -157,37 +300,29 @@ export function reachablePackages(sets: ReadonlyArray<FileSet>): PackageFileSet[
   return flattenFileSetArray(sets).filter((set): set is PackageFileSet => set instanceof PackageFileSet);
 }
 
-/**
- * One graph node's id-level line: identity, content hash, edge targets by id,
- * override flag. It names a node exactly when no id in its installation is
- * wired two ways — the common case, and what {@link nodeNaming} answers with
- * wherever that holds.
- */
-export function packageNodeSignature(pkg: PackageFileSet): string {
-  const edges = pkg.packages.map(dep => dep.packageId).sort();
-  return `${pkg.packageId} ${pkg.toManifestHash()} [${edges.join(",")}]`;
+/** Get each package `roots` are or reach, once, at either level. */
+export function reachableNodes(roots: ReadonlyArray<Package>): Package[] {
+  const seen = new Set<Package>(roots);
+  const result = [...seen];
+  for (let i = 0; i < result.length; i++) {
+    for (const dep of result[i].packages) {
+      if (!seen.has(dep)) {
+        seen.add(dep);
+        result.push(dep);
+      }
+    }
+  }
+  return result;
 }
 
 /**
- * The node names of one installation — the graph reachable from `sets` — as a
- * function of an instance: two instances get one name exactly when they are
- * the same package wired the same way all the way down (cycles included), so
- * an installation may hold one `packageId` wired several ways and each wiring
- * is its own node, as npm nests and Yarn virtualizes.
- *
- * Computed by partition refinement: instances start grouped by their own label
- * (id, content, override flag) and a group splits wherever members' children,
- * by the name each is required under, fall in different groups — to the fixed
- * point, which is structural equality. Where an id ends in one group the name
- * is the id-level {@link packageNodeSignature}; an id wired several ways adds
- * a suffix that tells its wirings apart. Names are meaningful only within the
- * installation they were computed for.
+ * Partition `packages` into classes of structural equality — the same package
+ * wired the same way all the way down, cycles included — by refining a
+ * coloring to a fixpoint: each node's class, as an opaque string.
  */
-export function nodeNaming(sets: ReadonlyArray<FileSet>): (pkg: PackageFileSet) => string {
-  const packages = reachablePackages(sets);
-  const children = (pkg: PackageFileSet): PackageFileSet[] =>
-    pkg.packages;
-  let color = new Map(packages.map(pkg => [pkg, `${pkg.packageId} ${pkg.toManifestHash()}`]));
+function structuralClasses(packages: ReadonlyArray<Package>): Map<Package, string> {
+  const children = (pkg: Package): Package[] => pkg.packages;
+  let color = new Map(packages.map(pkg => [pkg, `${pkg.packageId} ${contentOf(pkg).key}`]));
   let groups = new Set(color.values()).size;
   for (;;) {
     const refined = new Map(
@@ -198,11 +333,65 @@ export function nodeNaming(sets: ReadonlyArray<FileSet>): (pkg: PackageFileSet) 
     );
     const refinedGroups = new Set(refined.values()).size;
     if (refinedGroups === groups) {
-      break;
+      return color;
     }
     color = refined;
     groups = refinedGroups;
   }
+}
+
+/**
+ * Map each node the graph under `roots` holds to the one node of its
+ * structural class ({@link nodeNaming}): itself where it is the first of its
+ * class reached from the roots, in root order, and that first one otherwise.
+ * Two nodes mapping to one are the same package wired the same way, which
+ * one installation holds once.
+ */
+export function equalNodes(roots: ReadonlyArray<Package>): Map<Package, Package> {
+  const packages = reachableNodes(roots);
+  const color = structuralClasses(packages);
+  const first = new Map<string, Package>();
+  const canonical = new Map<Package, Package>();
+  for (const pkg of packages) {
+    const group = color.get(pkg)!;
+    const held = first.get(group);
+    if (held === undefined) {
+      first.set(group, pkg);
+    }
+    canonical.set(pkg, held ?? pkg);
+  }
+  return canonical;
+}
+
+/**
+ * One graph node's id-level line: identity, content key, edge targets by id.
+ * It names a node exactly when no id in its installation is wired two ways —
+ * the common case, and what {@link nodeNaming} answers with wherever that
+ * holds.
+ */
+export function packageNodeSignature(pkg: Package): string {
+  const edges = pkg.packages.map(dep => dep.packageId).sort();
+  return `${pkg.packageId} ${contentOf(pkg).key} [${edges.join(",")}]`;
+}
+
+/**
+ * The node names of one installation — the graph reachable from `sets` — as a
+ * function of an instance: two instances get one name exactly when they are
+ * the same package wired the same way all the way down (cycles included), so
+ * an installation may hold one `packageId` wired several ways and each wiring
+ * is its own node, as npm nests and Yarn virtualizes.
+ *
+ * Computed by partition refinement: instances start grouped by their own label
+ * (id, content key) and a group splits wherever members' children,
+ * by the name each is required under, fall in different groups — to the fixed
+ * point, which is structural equality. Where an id ends in one group the name
+ * is the id-level {@link packageNodeSignature}; an id wired several ways adds
+ * a suffix that tells its wirings apart. Names are meaningful only within the
+ * installation they were computed for.
+ */
+export function nodeNaming(sets: ReadonlyArray<FileSet | ResolvedNode>): (pkg: Package) => string {
+  const packages = reachableNodes(sets.filter(isPackage));
+  const color = structuralClasses(packages);
   /* An id is split when its instances ended in more than one group. */
   const groupsById = new Map<string, Set<string>>();
   for (const pkg of packages) {
@@ -328,36 +517,58 @@ export function packageNameConflict(held: PackageFileSet, arrived: PackageFileSe
  * fine (a leaf simply has no dependencies). The builder is single-use.
  */
 export class PackageGraphBuilder {
-  private readonly pending = new Map<PackageFileSet, { dependencies: Array<PackageFileSet | RepositoryRef>; provided: Map<string, Provided> }>();
-  private readonly wired = new Set<PackageFileSet>();
+  private readonly pending = new Map<Package, { dependencies: Array<Dependency>; provided: Map<string, Provided> }>();
+  private readonly wired = new Set<Package>();
   private sealed = false;
 
-  /** Create a node with empty (unwired) dependencies. `reference` is the one
-   * the node is delivered for, if a repository delivered it. */
-  public node(
-    files: Iterable<[string, IFile]>,
-    packageName: string,
-    version?: string,
-    origin?: IProvenanceStep,
-    reference?: RepositoryRef
-  ): PackageFileSet {
+  /** Create a node with empty (unwired) dependencies. */
+  public node(files: Iterable<[string, IFile]>, packageName: string, version?: string, origin?: IProvenanceStep): PackageFileSet {
     if (this.sealed) {
       throw new FabrError("PackageGraphBuilder is sealed");
     }
     /* The constructor stores both by reference, which is exactly what lets
      * the builder fill them in after construction. */
-    const dependencies: Array<PackageFileSet | RepositoryRef> = [];
+    const dependencies: Array<Dependency<PackageFileSet>> = [];
     const provided = new Map<string, Provided>();
-    const pkg = new PackageFileSet(files, packageName, version, dependencies, origin, provided, reference);
+    const pkg = new PackageFileSet(files, packageName, version, dependencies, origin, provided);
     this.pending.set(pkg, { dependencies, provided });
     return pkg;
+  }
+
+  /** Create a node, as {@link node} does, for a package that does not hold its files. */
+  public resolved(content: PackageContent, packageName: string, version?: string, origin?: IProvenanceStep): ResolvedNode {
+    if (this.sealed) {
+      throw new FabrError("PackageGraphBuilder is sealed");
+    }
+    const dependencies: Array<Dependency> = [];
+    const provided = new Map<string, Provided>();
+    const pkg = new ResolvedNode(content, packageName, version, dependencies, origin, provided);
+    this.pending.set(pkg, { dependencies, provided });
+    return pkg;
+  }
+
+  /** Copy `pkg` as an unwired resolved node: its identity, its origin and
+   *  its content, and of its kind where it is a node (a target's stays a
+   *  target's). What a pass that rewires a graph makes of each package. */
+  public copy(pkg: Package, origin: IProvenanceStep | undefined = pkg.origin): ResolvedNode {
+    if (!(pkg instanceof ResolvedNode)) {
+      return this.resolved(contentOf(pkg), pkg.packageName, pkg.version, origin);
+    }
+    if (this.sealed) {
+      throw new FabrError("PackageGraphBuilder is sealed");
+    }
+    const dependencies: Array<Dependency> = [];
+    const provided = new Map<string, Provided>();
+    const node = pkg.copy({ dependencies, provided, origin });
+    this.pending.set(node, { dependencies, provided });
+    return node;
   }
 
   /** Wire a node's dependencies, and which of them are provided requirements
    * (once — an empty wiring counts), to nodes of this or any graph. */
   public wire(
-    pkg: PackageFileSet,
-    dependencies: ReadonlyArray<PackageFileSet | RepositoryRef>,
+    pkg: Package,
+    dependencies: ReadonlyArray<Dependency>,
     provided: ReadonlyMap<string, Provided> = NOTHING_PROVIDED
   ): void {
     const lists = this.pending.get(pkg);
@@ -381,4 +592,107 @@ export class PackageGraphBuilder {
     this.wired.clear();
     this.sealed = true;
   }
+}
+
+/**
+ * Materialize the packages `roots` are and reach: each resolved node among
+ * them is given its content, fetched or built here, and wired as the graph
+ * is. A package already holding its files that reaches no node without them
+ * comes back as itself, and a root whose content is no package (a target that
+ * builds files, a program) as that content. Throw {@link TargetNotPackageError} where a package
+ * requirement is bound to a target that builds no package. This is the one
+ * step that turns a resolution into content.
+ */
+export function materializePackages(roots: ReadonlyArray<Package>): Computable<Array<PackageFileSet | ReadonlyArray<SourceRef>>>;
+/** As above, for roots known to be packages: a registry's. */
+export function materializePackages(roots: ReadonlyArray<Package>, packages: true): Computable<PackageFileSet[]>;
+export function materializePackages(roots: ReadonlyArray<Package>): Computable<Array<PackageFileSet | ReadonlyArray<SourceRef>>> {
+  const all = reachableNodes(roots);
+  const nodes = all.filter((pkg): pkg is ResolvedNode => pkg instanceof ResolvedNode);
+  if (nodes.length === 0) {
+    return Computable.resolve(roots as PackageFileSet[]);
+  }
+  /* A package holding its files is rebuilt only where it reaches one that
+   * does not; found by walking back from the nodes. */
+  const dependents = new Map<Package, Package[]>();
+  for (const pkg of all) {
+    for (const dep of pkg.packages) {
+      dependents.set(dep, [...(dependents.get(dep) ?? []), pkg]);
+    }
+  }
+  const rebuilt = new Set<Package>(nodes);
+  const queue: Package[] = [...nodes];
+  for (let i = 0; i < queue.length; i++) {
+    for (const dependent of dependents.get(queue[i]) ?? []) {
+      if (!rebuilt.has(dependent)) {
+        rebuilt.add(dependent);
+        queue.push(dependent);
+      }
+    }
+  }
+  return Computable.forAll(
+    nodes.map(node => node.content.files()),
+    (...files: Array<FileSet | ReadonlyArray<SourceRef>>) => {
+      const content = new Map<Package, FileSet | ReadonlyArray<SourceRef>>(nodes.map((node, index) => [node, files[index]]));
+      const builder = new PackageGraphBuilder();
+      const made = new Map<Package, PackageFileSet>();
+      /* A node's content where that is no package (what a target built as
+       * files, or a program): its sources, as they stand. */
+      const plain = (pkg: Package): ReadonlyArray<SourceRef> | undefined => {
+        const files = content.get(pkg);
+        if (!(pkg instanceof ResolvedNode) || files === undefined || files instanceof PackageFileSet) {
+          return undefined;
+        }
+        /* The node's origin stood in for the build: the built files' own
+         * origin replaces its last step, under the steps added since. */
+        return (files instanceof FileSet ? [files] : files).map(source => {
+          const origin = source instanceof FileSet ? rootedAt(pkg.origin, source.origin) : undefined;
+          return origin === undefined ? source : (source as FileSet).withOrigin(origin);
+        });
+      };
+      const withFiles = (pkg: Package): PackageFileSet => {
+        if (!rebuilt.has(pkg)) {
+          return pkg as PackageFileSet;
+        }
+        let held = made.get(pkg);
+        if (held === undefined) {
+          const files = (content.get(pkg) ?? pkg) as FileSet;
+          /* A package built in the project states no version before it is
+           * built: it has the one its build gave it. */
+          const version = pkg.version ?? (files instanceof PackageFileSet ? files.version : undefined);
+          const builds = pkg instanceof ResolvedNode ? pkg.content.builds : undefined;
+          held = builder.node(files, pkg.packageName, version, builds === undefined ? pkg.origin : rootedAt(pkg.origin, files.origin));
+          made.set(pkg, held);
+          builder.wire(
+            held,
+            pkg.dependencies.flatMap((dep): Array<Dependency<PackageFileSet>> => {
+              const bound = dep.package;
+              if (bound === undefined) {
+                return [{ reference: dep.reference }];
+              }
+              if (plain(bound) === undefined) {
+                return [{ reference: dep.reference, package: withFiles(bound) }];
+              }
+              /* What a package from elsewhere requires must be a package; so
+               * must what a target requires by a reference to a repository's
+               * package, while its reference to a target is answered by
+               * whatever that builds. */
+              if (builds === undefined) {
+                throw new TargetNotPackageError(pkg, bound);
+              }
+              if (dep.reference.requiresPackage === true) {
+                throw new TargetNotPackageError(dep.reference as RepositoryRef, bound);
+              }
+              return [];
+            }),
+            pkg.provided
+          );
+        }
+        return held;
+      };
+      const result = roots.map(root => plain(root) ?? withFiles(root));
+      builder.seal();
+      return result;
+    }
+  );
 }

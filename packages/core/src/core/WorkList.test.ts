@@ -77,9 +77,9 @@ class StepSource extends ComputableSource<Item> {
     }
   }
 
-  protected override detach(): void {
-    super.detach();
+  protected override detach(): ComputableSource<unknown>[] {
     this.detaches++;
+    return super.detach();
   }
 }
 

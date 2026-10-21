@@ -18,7 +18,7 @@
  */
 
 import { Computable, ComputableHandle, ComputableSource, ComputableState } from "./Computable";
-import { MultiError } from "./Errors";
+import { MultiError, CycleError } from "./Errors";
 import { expect } from "chai";
 
 /** A pull-based external source with observable attach/detach counters, for exercising
@@ -58,9 +58,9 @@ class TestSource<T> extends ComputableSource<T> {
     }
   }
 
-  protected override detach(): void {
-    super.detach();
+  protected override detach(): ComputableSource<unknown>[] {
     this.detaches++;
+    return super.detach();
   }
 }
 
@@ -437,6 +437,45 @@ describe("Computable", () => {
     expect(cell.state).to.equal(ComputableState.Error);
   });
 
+  it("settles an invalidated from() cell that its executor then resolves to a settled source", () => {
+    /* A fn-less cell has no run() to consume its invalidation: resolving it to
+     * a source must, or the binding's delivery is held off the Invalid node forever. */
+    let resolve: (value: number | Computable<number>) => void = () => {};
+    const cell = Computable.from<number>(res => {
+      resolve = res;
+    });
+    const seen: number[] = [];
+    cell.then(v => seen.push(v));
+    resolve(1);
+    cell.invalidate();
+    expect(cell.state).to.equal(ComputableState.Invalid);
+    resolve(Computable.resolve(2));
+    expect(cell.state).to.equal(ComputableState.Valid);
+    expect(cell.value).to.equal(2);
+    expect(seen).to.deep.equal([1, 2]);
+  });
+
+  it("settles an invalidated from() cell when the pending source it was resolved to delivers", () => {
+    let innerResolve: (value: number) => void = () => {};
+    const inner = Computable.from<number>(res => {
+      innerResolve = res;
+    });
+    let resolve: (value: number | Computable<number>) => void = () => {};
+    const cell = Computable.from<number>(res => {
+      resolve = res;
+    });
+    const seen: number[] = [];
+    cell.then(v => seen.push(v));
+    resolve(1);
+    cell.invalidate();
+    resolve(inner);
+    expect(cell.isSettled()).to.equal(false);
+    innerResolve(3);
+    expect(cell.state).to.equal(ComputableState.Valid);
+    expect(cell.value).to.equal(3);
+    expect(seen).to.deep.equal([1, 3]);
+  });
+
   it("revalidates through a binding without recomputation when the inner is unchanged", () => {
     let resolve: (value: number) => void = () => {};
     const src = Computable.from<number>(res => {
@@ -645,6 +684,24 @@ describe("Computable", () => {
 });
 
 describe("Computable attach/detach", () => {
+  it("marks a long chain maybe-invalid and detaches it without running out of stack", () => {
+    const source = new TestSource<number>();
+    source.set(1);
+    let node: Computable<number> = source.then(value => value);
+    const chain = [node];
+    for (let i = 0; i < 50000; i++) {
+      node = node.then(value => value);
+      chain.push(node);
+    }
+    const handle = new ComputableHandle<number>();
+    handle.seat(node);
+    source.invalidate();
+    expect(node.state).to.equal(ComputableState.MaybeValid);
+    handle.release();
+    expect(chain.every(each => each.state === ComputableState.Detached)).to.equal(true);
+    expect(source.detaches).to.equal(1);
+  });
+
   it("attaches a source on its first dependant and detaches on its last", () => {
     const src = new TestSource<number>();
     src.set(1);
@@ -1340,5 +1397,532 @@ describe("Computable unhandled-error surface", () => {
     src.then(v => v + 2);
     await flush();
     expect(reported).to.deep.equal([boom, boom]); /* one per tail, none doubled */
+  });
+});
+
+describe("Computable.detached and dependency cycles", () => {
+  /* P waits on Q, and Q on R; a change to `s2` has R wait on P. Whether that
+   * closes a cycle depends on what `s1` then does to P: re-run it off Q, or
+   * leave it waiting. */
+  function flipped(): { s1: TestSource<number>; s2: TestSource<number>; top: Computable<unknown>; r: Computable<number> } {
+    const s1 = new TestSource<number>();
+    const s2 = new TestSource<number>();
+    s1.set(1);
+    s2.set(1);
+    const p: { node?: Computable<number> } = {};
+    const r: Computable<number> = s2.then(value => (value === 1 ? 10 : p.node!.then(x => x)));
+    const q = r.then(value => value + 1);
+    p.node = s1.then(value => (value === 1 ? q : 5));
+    const top = Computable.forAll([p.node, r], (a, b) => [a, b]).catch((err: Error) => `ERR ${err.message}`);
+    return { s1, s2, top, r };
+  }
+
+  for (const first of ["s1", "s2"] as const) {
+    it(`reports no cycle through a binding its node goes on to drop, whichever input lands first (${first})`, () => {
+      const { s1, s2, top } = flipped();
+      expect(top.value).to.deep.equal([11, 10]);
+      s1.invalidate();
+      s2.invalidate();
+      (first === "s1" ? [s1, s2] : [s2, s1]).forEach(source => source.set(2));
+      expect(top.value).to.deep.equal([5, 5]);
+    });
+  }
+
+  it("reports the cycle where a maybe-invalid node turns out to keep its binding", () => {
+    const { s1, s2, top, r } = flipped();
+    s1.invalidate();
+    s2.invalidate();
+    /* R now waits on P, and P's input comes back unchanged: P still waits on Q. */
+    s2.set(2);
+    s1.set(1);
+    expect(top.isSettled()).to.equal(true);
+    expect(String(top.value)).to.contain("depends on its own result");
+    expect(r.isSettled()).to.equal(true);
+  });
+
+  it("computes when first depended on, not when made", () => {
+    let runs = 0;
+    const node = Computable.detached(() => ++runs);
+    expect(runs).to.equal(0);
+    expect(node.isSettled()).to.equal(false);
+    const seen: number[] = [];
+    node.then(value => seen.push(value));
+    expect(runs).to.equal(1);
+    expect(seen).to.deep.equal([1]);
+    /* Held by its dependant, it is not computed again for a second one. */
+    node.then(value => seen.push(value));
+    expect(runs).to.equal(1);
+  });
+
+  it("is in hand before its function runs, so a request made inside it joins it", async () => {
+    /* A memo: the function asks for the memoised value again. */
+    let memo: Computable<number> | undefined;
+    const ask = (): Computable<number> => (memo ??= Computable.detached(() => ask().then(value => value + 1)));
+    const outcome = await Promise.resolve(ask()).then(
+      () => "settled",
+      (err: Error) => err.message
+    );
+    expect(outcome).to.equal("A computation depends on its own result");
+  });
+
+  it("reports a cycle between two nodes begun side by side, with the labels on it", async () => {
+    const cells = new Map<string, Computable<number>>();
+    const pause = (): Computable<void> => Computable.from<void>(resolve => setTimeout(resolve, 1));
+    const ask = (name: string, needs: string): Computable<number> => {
+      let cell = cells.get(name);
+      if (cell === undefined) {
+        /* Each pauses before it asks for the other. */
+        cell = Computable.detached(() => pause().then(() => ask(needs, name))).labelled({ name });
+        cells.set(name, cell);
+      }
+      return cell;
+    };
+    const both = Computable.forAll([ask("a", "b"), ask("b", "a")], (a, b) => a + b);
+    const failure = await Promise.resolve(both).then(
+      () => undefined,
+      (err: Error) => err
+    );
+    const cause = failure instanceof MultiError ? failure.errors[0] : failure;
+    expect(cause).to.be.instanceOf(CycleError);
+    expect((cause as CycleError).labels.map(label => (label as { name: string }).name).sort()).to.deep.equal(["a", "b"]);
+  });
+
+  it("reports a cycle between memos that each yield the other outright", async () => {
+    let a: Computable<number> | undefined;
+    let b: Computable<number> | undefined;
+    const askA = (): Computable<number> => (a ??= Computable.detached(() => askB()));
+    const askB = (): Computable<number> => (b ??= Computable.detached(() => askA()));
+    const outcome = await Promise.race([
+      Promise.resolve(askA()).then(
+        () => "settled",
+        (err: Error) => err.message
+      ),
+      new Promise<string>(resolve => setTimeout(() => resolve("never settled"), 200)),
+    ]);
+    expect(outcome).to.equal("A computation depends on its own result");
+  });
+
+  it("does not take a dependency a node is about to drop for a cycle", async () => {
+    /* n depends on o in one generation and o on n in the next: when the
+     * source changes, o is re-run while n still holds what it had bound. */
+    const source = new TestSource<number>();
+    source.set(1);
+    const o: Computable<string> = source.then((value): string | Computable<string> => (value === 1 ? "o1" : n.then(got => `o<-${got}`)));
+    const n: Computable<string> = source.then((value): string | Computable<string> => (value === 1 ? o.then(got => `n<-${got}`) : "n2"));
+    const top = Computable.forAll([o, n], (first, second) => `${first},${second}`);
+    expect(await top).to.equal("o1,n<-o1");
+    source.invalidate();
+    source.set(2);
+    expect(await top).to.equal("o<-n2,n2");
+  });
+
+  it("reports no cycle through a node that never settled and will re-run, whichever input lands first", () => {
+    for (const first of ["s1", "s2"]) {
+      const s1 = new TestSource<number>();
+      const s2 = new TestSource<number>();
+      const slow = new TestSource<number>();
+      s1.set(1);
+      s2.set(1);
+      const p: { node?: Computable<number> } = {};
+      /* R waits on `slow`, so nothing has settled when both inputs change. */
+      const r: Computable<number> = s2.then(value => (value === 1 ? slow.then(x => x) : p.node!.then(x => x)));
+      const q = r.then(value => value + 1);
+      p.node = s1.then(value => (value === 1 ? q : 5));
+      const top = Computable.forAll([p.node, r], (a, b) => [a, b]).catch((err: Error) => `ERR ${err.message}`);
+      s1.invalidate();
+      s2.invalidate();
+      (first === "s1" ? [s1, s2] : [s2, s1]).forEach(source => source.set(2));
+      expect(top.value, first).to.deep.equal([5, 5]);
+    }
+  });
+
+  it("reports the cycle a re-running node closes through a memo not yet demanded, and clears it when it goes", () => {
+    const source = new TestSource<number>();
+    source.set(1);
+    const memo: { node?: Computable<number> } = {};
+    const a = source.then((value): number | Computable<number> => (value === 1 ? 5 : memo.node!));
+    memo.node = Computable.detached(() => a.then(x => x + 1));
+    const top = a.catch((err: Error) => `ERR ${err.message}`);
+    expect(top.value).to.equal(5);
+    source.invalidate();
+    source.set(2);
+    expect(top.value).to.equal("ERR A computation depends on its own result");
+    source.invalidate();
+    source.set(1);
+    expect(top.value).to.equal(5);
+  });
+
+  it("clears a cycle's error from every node on it once the cycle is broken from either side", () => {
+    const s1 = new TestSource<number>();
+    const s2 = new TestSource<number>();
+    s1.set(1);
+    s2.set(1);
+    const p: { node?: Computable<number> } = {};
+    const r: Computable<number> = s2.then(value => (value === 1 ? 10 : p.node!.then(x => x)));
+    const q = r.then(value => value + 1);
+    p.node = s1.then(value => (value === 1 ? q : 5));
+    const top = Computable.forAll([p.node, r], (a, b) => [a, b]).catch(() => "CYCLE");
+    s1.invalidate();
+    s2.invalidate();
+    s2.set(2);
+    s1.set(1);
+    expect(top.value).to.equal("CYCLE");
+    /* Broken from R's side: R no longer waits on P. */
+    s2.invalidate();
+    s2.set(1);
+    expect(top.value).to.deep.equal([11, 10]);
+    /* Made again, then broken from P's side: P no longer waits on Q. */
+    s2.invalidate();
+    s2.set(2);
+    expect(top.value).to.equal("CYCLE");
+    s1.invalidate();
+    s1.set(2);
+    expect(top.value).to.deep.equal([5, 5]);
+  });
+
+  it("settles a consumer outside a cycle once per batch, whether the batch heals the cycle or leaves it", () => {
+    /* `sibling` shares an input with the ring and is notified before it; a
+     * consumer of both must not settle from the stale cycle error and again
+     * from the healed value within one batch. */
+    const s1 = new TestSource<number>();
+    const s2 = new TestSource<number>();
+    s1.set(1);
+    s2.set(1);
+    const sibling = s2.then(() => 0);
+    const p: { node?: Computable<number> } = {};
+    const r: Computable<number> = s2.then(value => (value === 1 ? 10 : p.node!.then(x => x)));
+    const q = r.then(value => value + 1);
+    p.node = s1.then(value => (value === 1 ? q : 5));
+    const consumer = Computable.forAll([p.node.catch(() => "CYCLE"), sibling], (a, b) => [a, b]);
+    const settlements: unknown[] = [];
+    const handle = new ComputableHandle<unknown[]>(source => settlements.push(source.value));
+    handle.seat(consumer);
+    s1.invalidate();
+    s2.invalidate();
+    s2.set(2);
+    s1.set(1);
+    expect(settlements).to.deep.equal([["CYCLE", 0]]);
+    /* A batch that leaves the cycle in place: reported once, settled once. */
+    settlements.length = 0;
+    s1.invalidate();
+    s1.set(1);
+    expect(settlements).to.deep.equal([["CYCLE", 0]]);
+    /* A batch that heals it from R's side: the healed value, once. */
+    settlements.length = 0;
+    s2.invalidate();
+    s2.set(1);
+    expect(settlements).to.deep.equal([[11, 0]]);
+    /* Made again and healed from P's side. */
+    settlements.length = 0;
+    s2.invalidate();
+    s2.set(2);
+    expect(settlements).to.deep.equal([["CYCLE", 0]]);
+    settlements.length = 0;
+    s1.invalidate();
+    s1.set(2);
+    expect(settlements).to.deep.equal([[5, 0]]);
+    handle.release();
+  });
+
+  it("keeps a cycle reported, and settled, through a batch that leaves it in place", () => {
+    const source = new TestSource<number>();
+    source.set(0);
+    const cells: Array<Computable<number>> = [];
+    cells.push(Computable.detached(() => source.then(() => cells[1].then(x => x + 1))));
+    cells.push(Computable.detached(() => source.then(() => cells[0].then(x => x + 1))));
+    const top = Computable.forAll(
+      cells.map(cell => cell.catch(() => -1)),
+      (...values) => values
+    );
+    expect(top.value).to.deep.equal([-1, -1]);
+    source.invalidate();
+    source.set(0);
+    expect(top.isSettled()).to.equal(true);
+    expect(top.value).to.deep.equal([-1, -1]);
+  });
+
+  it("settles a batch that disturbs only an arm of a cycle the recorded path missed", () => {
+    /* A diamond behind the closer: f binds b, which waits on r1 and r2, both
+     * reaching f. r1 also reads g, off the cycle. A batch changing only g
+     * must settle with the cycle still reported, not hold r1 up behind f. */
+    const s = new TestSource<number>();
+    const g = new TestSource<number>();
+    g.set(0);
+    const f: Computable<number> = s.then((v): number | Computable<number> => (v === 1 ? b : 100));
+    const r1 = Computable.forAll([g, f], (v, x) => x + v);
+    const r2 = f.then(x => x * 2);
+    const b = Computable.forAll([r1, r2], (a, c) => a + c);
+    const consumer = f.catch(() => "CYCLE");
+    const settlements: unknown[] = [];
+    const handle = new ComputableHandle<unknown>(source => settlements.push(source.value));
+    handle.seat(consumer);
+    s.set(1);
+    expect(settlements).to.deep.equal(["CYCLE"]);
+    settlements.length = 0;
+    g.invalidate();
+    g.set(5);
+    expect([f, r1, r2, b, consumer].map(node => node.isSettled())).to.deep.equal([true, true, true, true, true]);
+    expect(f.state).to.equal(ComputableState.Error);
+    /* Marked through the binding, settled once with the error unchanged. */
+    expect(settlements).to.deep.equal(["CYCLE"]);
+    /* Healed from the closer's side. */
+    settlements.length = 0;
+    s.invalidate();
+    s.set(2);
+    expect(settlements).to.deep.equal([100]);
+    handle.release();
+  });
+
+  it("settles a batch that breaks one of two cycles sharing nodes", () => {
+    /* m binds b, b waits on bb, bb on k and j. j closes a cycle through a and
+     * m first; then k closes one through m directly. Breaking j's cycle alone
+     * must leave k's reported and everything settled. */
+    const sm = new TestSource<number>();
+    const sj = new TestSource<number>();
+    const sk = new TestSource<number>();
+    const m: Computable<number> = sm.then((v): number | Computable<number> => (v === 1 ? b : 100));
+    const a = m.then(x => x * 2);
+    const j = sj.then((v): number | Computable<number> => (v === 1 ? a : 7));
+    const k = sk.then((v): number | Computable<number> => (v === 1 ? m.then(x => x + 1) : 9));
+    const bb = Computable.forAll([k, j], (x, y) => x + y);
+    const b = bb.then(x => x + 1);
+    const top = Computable.forAll(
+      [m, k, j].map(node => node.catch(() => "CYCLE")),
+      (...values) => values
+    );
+    sm.set(1);
+    sj.set(1);
+    sk.set(1);
+    expect(top.value).to.deep.equal(["CYCLE", "CYCLE", "CYCLE"]);
+    sj.invalidate();
+    sj.set(2);
+    /* a, demanded by j alone, detached when j dropped it. */
+    expect([m, j, k, bb, b, top].map(node => node.isSettled())).to.deep.equal([true, true, true, true, true, true]);
+    expect(top.value).to.deep.equal(["CYCLE", "CYCLE", 7]);
+    /* k's cycle broken too: everything heals. */
+    sk.invalidate();
+    sk.set(2);
+    expect(top.value).to.deep.equal([17, 9, 7]);
+  });
+
+  it("settles a consumer once when a batch heals a cycle from inside it", () => {
+    /* f binds b = p + g; p reaches f while x is 0. A batch changing the source
+     * under both x and g dissolves the cycle: the consumer sees the healed
+     * value once, never the stale error first. */
+    const source = new TestSource<number>();
+    const sf = new TestSource<number>();
+    const f: Computable<number> = sf.then((): Computable<number> => b);
+    const r2 = f.then(x => x + 1);
+    const x = source.then(v => v);
+    const g = source.then(v => v);
+    const p = x.then((v): number | Computable<number> => (v === 0 ? r2 : 5));
+    const b = Computable.forAll([p, g], (l, r) => l + r);
+    const consumer = f.catch(() => "CYCLE");
+    const settlements: unknown[] = [];
+    const handle = new ComputableHandle<unknown>(source => settlements.push(source.value));
+    handle.seat(consumer);
+    source.set(0);
+    sf.set(0);
+    expect(settlements).to.deep.equal(["CYCLE"]);
+    settlements.length = 0;
+    source.invalidate();
+    source.set(1);
+    expect(settlements).to.deep.equal([6]);
+    handle.release();
+  });
+
+  it("re-runs a node an input changed under while it awaited its first value", () => {
+    const source = new TestSource<number>();
+    const slow = new TestSource<number>();
+    source.set(1);
+    const a = source.then((value): number | Computable<number> => (value === 1 ? slow.then(x => x) : 100));
+    const b = source.then((value): number | Computable<number> => (value === 1 ? a.then(x => x + 1) : 7));
+    const top = Computable.forAll([a, b], (x, y) => [x, y]);
+    source.invalidate();
+    source.set(2);
+    expect(top.value).to.deep.equal([100, 7]);
+  });
+
+  it("keeps a cycle attached after outside demand for it goes, and releases it once a re-run breaks it", () => {
+    /* The nodes on a cycle hold each other attached, so withdrawing the only
+     * outside demand leaves the ring (and the source under it) in the graph;
+     * it unwinds when a member's re-run drops the edge that closed it. */
+    const source = new TestSource<number>();
+    source.set(0);
+    const cells: Array<Computable<number>> = [];
+    cells.push(Computable.detached(() => source.then(value => (value === 0 ? 0 : cells[1].then(x => x + 1)))));
+    cells.push(Computable.detached(() => source.then(() => cells[0].then(x => x + 1))));
+    const handle = new ComputableHandle<number[]>();
+    handle.seat(Computable.forAll(cells.map(cell => cell.catch(() => -1)), (...values) => values));
+    source.invalidate();
+    source.set(1);
+    expect(cells.map(cell => cell.state)).to.deep.equal([ComputableState.Error, ComputableState.Error]);
+    expect(() => handle.release()).to.not.throw();
+    expect(source.detaches).to.equal(0);
+    expect(cells.map(cell => cell.state)).to.deep.equal([ComputableState.Error, ComputableState.Error]);
+    /* cells[0] no longer waits on cells[1]: the ring is open, and nothing outside holds it. */
+    source.invalidate();
+    source.set(0);
+    expect(source.detaches).to.equal(1);
+    expect(cells.map(cell => cell.state)).to.deep.equal([ComputableState.Detached, ComputableState.Detached]);
+  });
+
+  it("does not report a node that depends on something settled", async () => {
+    const settled = Computable.resolve(1);
+    const outer = Computable.detached(() => settled.then(value => Computable.from<number>(resolve => setTimeout(() => resolve(value + 1), 1))));
+    expect(await outer).to.equal(2);
+  });
+});
+
+describe("cycle handling against a from-scratch oracle", () => {
+  /* Random small graphs whose bindings depend on data: node i reads its own
+   * source and some earlier nodes, and, where its source is odd, binds to any
+   * node (itself included) — so cycles form and dissolve as sources change.
+   * Each random batch of source changes must leave every node settled, settle
+   * an observer of the whole graph at most once, and agree node for node
+   * with the same graph built from scratch over the new values. */
+  interface IShape {
+    readonly inputs: ReadonlyArray<ReadonlyArray<number>>;
+    readonly targets: ReadonlyArray<number>;
+  }
+  function random(seed: number): () => number {
+    let state = seed >>> 0 || 1;
+    return () => {
+      state ^= state << 13;
+      state >>>= 0;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      state >>>= 0;
+      return state / 4294967296;
+    };
+  }
+  function shapeOf(next: () => number): IShape {
+    const size = 2 + Math.floor(next() * (Number(process.env.FABR_CYCLE_ORACLE_SIZE) || 5));
+    const inputs: number[][] = [];
+    const targets: number[] = [];
+    for (let i = 0; i < size; i++) {
+      inputs.push([...Array(i).keys()].filter(() => next() < 0.3));
+      targets.push(Math.floor(next() * size));
+    }
+    return { inputs, targets };
+  }
+  function graphOf(shape: IShape, sources: Array<TestSource<number>>): Array<Computable<number>> {
+    const nodes: Array<Computable<number>> = [];
+    shape.targets.forEach((target, i) => {
+      const inputs = shape.inputs[i].map(j => nodes[j]);
+      nodes.push(
+        Computable.forAll([sources[i], ...inputs], (own: number, ...rest: number[]): number | Computable<number> => {
+          const base = own + rest.reduce((sum, value) => sum + value, 0);
+          return own % 2 === 1 ? nodes[target].then(x => x + base) : base;
+        })
+      );
+    });
+    return nodes;
+  }
+  /** Each node's outcome: its value, or "E" for an error. */
+  function outcomes(nodes: ReadonlyArray<Computable<number>>): unknown[] {
+    return nodes.map(node => (node.state === ComputableState.Error ? "E" : node.state === ComputableState.Valid ? node.value : `unsettled:${node.state}`));
+  }
+  function fresh(shape: IShape, values: number[]): unknown[] {
+    const sources = values.map(() => new TestSource<number>());
+    const nodes = graphOf(shape, sources);
+    const top = Computable.forAll(nodes.map(node => node.catch(() => "E")), (...all) => all);
+    values.forEach((value, i) => sources[i].set(value));
+    expect(top.isSettled()).to.equal(true);
+    return outcomes(nodes);
+  }
+
+  /** Run one history — a shape, its initial values and batches of source
+   * changes — asserting the three invariants after every batch. */
+  function replay(shape: IShape, initial: number[], batches: ReadonlyArray<[number[], number[]]>, label: string): void {
+    const values = [...initial];
+    const sources = values.map(() => new TestSource<number>());
+    const nodes = graphOf(shape, sources);
+    let settlements = 0;
+    const handle = new ComputableHandle<unknown[]>(() => settlements++);
+    handle.seat(Computable.forAll(nodes.map(node => node.catch(() => "E")), (...all) => all));
+    values.forEach((value, i) => sources[i].set(value));
+    expect(outcomes(nodes), label).to.deep.equal(fresh(shape, values));
+    batches.forEach(([changed, next], batch) => {
+      settlements = 0;
+      for (const i of changed) {
+        sources[i].invalidate();
+      }
+      for (const i of changed) {
+        values[i] = next[i];
+        sources[i].set(next[i]);
+      }
+      const seen = outcomes(nodes);
+      expect(seen.filter(outcome => typeof outcome === "string" && outcome.startsWith("unsettled")), `${label} batch ${batch}`).to.deep.equal([]);
+      expect(settlements, `${label} batch ${batch}: settlements`).to.be.at.most(1);
+      expect(seen, `${label} batch ${batch}`).to.deep.equal(fresh(shape, values));
+    });
+    handle.release();
+  }
+
+  it("asks the closer from a node that joined its region after the cycle was found", () => {
+    /* n1 binds into n4 after n0's cycle through n2 has formed; a later batch
+     * reaches n0's ring only through n4, which must ask n0. */
+    replay({ inputs: [[], [], [0, 1], [], [0]], targets: [2, 4, 3, 4, 4] }, [3, 1, 0, 3, 1], [[[3, 4], [3, 1, 0, 3, 0]]], "joined region");
+  });
+
+  it("asks the closer from a node that settles out of its region", () => {
+    /* One cycle dissolves (n6 settles a plain value) while another forms
+     * through n0's re-run; n1, holding, is asked when n6 settles. */
+    replay(
+      { inputs: [[], [], [0], [2], [3], [1], []], targets: [5, 3, 6, 2, 4, 1, 1] },
+      [1, 3, 2, 2, 3, 3, 0],
+      [
+        [[1, 4], [1, 3, 2, 2, 3, 3, 0]],
+        [[4, 5], [1, 3, 2, 2, 0, 0, 0]],
+        [[3, 4], [1, 3, 2, 2, 0, 0, 0]],
+        [[0, 4, 5, 6], [1, 3, 2, 2, 1, 3, 2]],
+        [[2, 5, 6], [1, 3, 0, 2, 1, 2, 0]],
+        [[6], [1, 3, 0, 2, 1, 2, 3]],
+        [[0, 2, 4, 5, 6], [2, 3, 1, 2, 1, 2, 3]],
+        [[0, 1, 4, 6], [1, 3, 1, 2, 1, 2, 2]],
+      ],
+      "settled out of region"
+    );
+  });
+
+  it("leaves nothing unsettled, settles an observer at most once per batch, and matches a fresh evaluation", () => {
+    /* FABR_CYCLE_ORACLE_GRAPHS and FABR_CYCLE_ORACLE_SEED widen the sweep for a one-off run. */
+    const next = random(Number(process.env.FABR_CYCLE_ORACLE_SEED) || 20261021);
+    const graphs = Number(process.env.FABR_CYCLE_ORACLE_GRAPHS) || 400;
+    for (let graph = 0; graph < graphs; graph++) {
+      const shape = shapeOf(next);
+      const size = shape.targets.length;
+      const sources = shape.targets.map(() => new TestSource<number>());
+      const nodes = graphOf(shape, sources);
+      const values = shape.targets.map(() => Math.floor(next() * 4));
+      let settlements = 0;
+      const handle = new ComputableHandle<unknown[]>(() => settlements++);
+      handle.seat(Computable.forAll(nodes.map(node => node.catch(() => "E")), (...all) => all));
+      values.forEach((value, i) => sources[i].set(value));
+      const history: string[] = [`initial ${JSON.stringify(values)}`];
+      const describe = (batch: number): string => `graph ${graph} batch ${batch} shape ${JSON.stringify(shape)}; ${history.join("; ")}`;
+      expect(outcomes(nodes), describe(-1)).to.deep.equal(fresh(shape, values));
+      for (let batch = 0; batch < 8; batch++) {
+        const changed = [...Array(size).keys()].filter(() => next() < 0.5);
+        if (changed.length === 0) {
+          continue;
+        }
+        settlements = 0;
+        for (const i of changed) {
+          sources[i].invalidate();
+        }
+        for (const i of changed) {
+          values[i] = next() < 0.3 ? values[i] : Math.floor(next() * 4);
+          sources[i].set(values[i]);
+        }
+        history.push(`batch ${batch} changed ${JSON.stringify(changed)} -> ${JSON.stringify(values)}`);
+        const seen = outcomes(nodes);
+        expect(seen.filter(outcome => typeof outcome === "string" && outcome.startsWith("unsettled")), describe(batch)).to.deep.equal([]);
+        expect(settlements, `${describe(batch)}: settlements`).to.be.at.most(1);
+        expect(seen, describe(batch)).to.deep.equal(fresh(shape, values));
+      }
+      handle.release();
+    }
   });
 });

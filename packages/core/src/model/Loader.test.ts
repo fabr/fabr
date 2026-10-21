@@ -350,9 +350,9 @@ class LiveQuery<T> extends ComputableSource<T> implements LiveSource {
     this.refresh();
   }
 
-  protected override detach(): void {
+  protected override detach(): ComputableSource<unknown>[] {
     this.tree.unregister(this);
-    super.detach();
+    return super.detach();
   }
 }
 

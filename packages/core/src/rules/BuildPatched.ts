@@ -25,10 +25,11 @@
  * files. Named after the package it patches, it is that package to everything
  * built with it.
  *
- * `srcs` are instantiated, not required: a package named in a repository is
- * taken on its own, carrying what it declares for the consumer's collection
- * point to resolve. A patch therefore changes a package's files and nothing
- * else — its manifest included, as a file.
+ * `srcs` is the target's `extends` requirement: the package it is made from,
+ * resolved on its own as material, so a package named in a repository carries
+ * what it declares for the consumer's collection point to resolve. A patch
+ * therefore changes a package's files and nothing else, its manifest included
+ * as a file.
  */
 
 import * as fs from "fs";
@@ -42,31 +43,30 @@ import { PackageFileSet } from "../core/PackageFileSet";
 import { getResultFileSet, writeFileSet } from "../core/Staging";
 import { SymlinkFile } from "../core/SymlinkFile";
 import { BUILD_OPERATION } from "../model/Constraints";
-import { TargetContext } from "../model/BuildContext";
+import { TargetContext } from "../context/index";
 import { ITaskReport } from "../support/Execute";
 import { FilePatch, parsePatchFile } from "../support/Patch";
-import { RuleDefinition, RuleResult } from "./Types";
+import { defineRule, RuleDefinition, RuleResult } from "./Types";
 
 /** The path components a patch's names lose: the `a/`…`b/` git writes. */
 const STRIP = 1;
 
-function patched(context: TargetContext): Computable<RuleResult> {
-  return context.collect({ srcs: context.getInstantiatedFileProperty("srcs"), patches: context.getFileProperty("patches") }).then(({ srcs, patches }) => {
-    if (patches.length === 0) {
-      throw new FabrError("a 'patched' target requires 'patches'");
-    }
-    /* Written order: each patch applies to what the ones before it left. */
-    const order = patches.flatMap(set => [...set].map(([name]) => name).sort());
-    const action = new BuildAction(PATCH_ACTION, { files: FileSet.unionAll(...srcs), patches: FileSet.unionAll(...patches) }, { order, strip: String(STRIP) });
-    const [only] = srcs;
-    /* One package's files are patched as files and are a package again: this
-     * target's, at the version and with the requirements of the one it was
-     * made from, which are not the patch's to change. Not what any reference
-     * names, so it carries none. */
-    return srcs.length === 1 && only instanceof PackageFileSet
+function patched(context: TargetContext, { srcs, patches }: { srcs: FileSet[]; patches: FileSet[] }): Computable<RuleResult> {
+  if (patches.length === 0) {
+    throw new FabrError("a 'patched' target requires 'patches'");
+  }
+  /* Written order: each patch applies to what the ones before it left. */
+  const order = patches.flatMap(set => [...set].map(([name]) => name).sort());
+  const action = new BuildAction(PATCH_ACTION, { files: FileSet.unionAll(...srcs), patches: FileSet.unionAll(...patches) }, { order, strip: String(STRIP) });
+  /* One package in is a package out: named as this target is, at that
+   * package's version and with its requirements, which are not the patch's to
+   * change. The reference to the target that asks for it is given it there. */
+  const [only] = srcs;
+  return Computable.resolve(
+    srcs.length === 1 && only instanceof PackageFileSet
       ? action.withReshape(files => new PackageFileSet(files, context.name, only.version, only.dependencies, only.origin, only.provided))
-      : action;
-  });
+      : action
+  );
 }
 
 function runPatch(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
@@ -146,4 +146,11 @@ function applyChange(root: string, links: FileSet, change: FilePatch, patch: str
 
 export const PATCH_ACTION: IBuildActionDefinition = { id: "core:patch", version: 1, run: runPatch };
 
-export const patchedRule: RuleDefinition = { type: "patched", properties: { [BUILD_OPERATION]: "build" }, evaluate: patched };
+export const patchedRule: RuleDefinition = defineRule({
+  type: "patched",
+  properties: { [BUILD_OPERATION]: "build" },
+  /* One package patched is a package again, at the version and with the
+   * requirements of the one it was made from. */
+  requirements: context => ({ extends: context.getPackageProperty("srcs"), patches: context.getFileProperty("patches") }),
+  evaluateMaterialized: (context, { extends: srcs, patches }) => patched(context, { srcs, patches }),
+});

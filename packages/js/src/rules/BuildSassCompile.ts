@@ -19,7 +19,7 @@
 
 /**
  * The sass_compile rule: lower a Sass source tree to plain CSS, a
- * self-contained target `{ srcs = FILES; deps = FILES }`. `srcs` are the Sass
+ * self-contained target `{ srcs = FILES; deps = PACKAGES }`. `srcs` are the Sass
  * sources (.scss/.sass, modules included — the `.module.` marker rides through
  * to the output name, since lowering is not scoping); `deps` are scss packages
  * mounted for Sass `@use`/`@import` resolution. Beside each stylesheet the step
@@ -33,14 +33,24 @@
  * (output: `out/**`).
  */
 
-import { BUILD_OPERATION, Computable, EMPTY_FILESET, FileSet, MemoryFile, RuleDefinition, RuleResult, TargetContext } from "@fabr-build/core";
+import {
+  BUILD_OPERATION,
+  Computable,
+  defineRule,
+  EMPTY_FILESET,
+  FileSet,
+  MemoryFile,
+  RuleDefinition,
+  RuleResult,
+  TargetContext,
+} from "@fabr-build/core";
 import { buildSassOptions, CSS_OUTDIR, CSS_SRC_ROOT, CSS_TOOL_DIR } from "../CSSCompile";
 import { emitsSourceMap } from "../JSPackage";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
 
-function buildSassCompile(context: TargetContext): Computable<RuleResult> {
+function buildSassCompile(context: TargetContext, collected: { srcs: FileSet[]; deps: FileSet[] }): Computable<RuleResult> {
   return Computable.forAll(
-    [context.getFileSetProperties(["srcs", "deps"]), context.getGlobalRunnable("SASS_DRIVER"), context.getGlobalString("BUILD_TYPE")],
+    [Computable.resolve(collected), context.getGlobalRunnable("SASS_DRIVER"), context.getGlobalString("BUILD_TYPE")],
     ({ srcs: srcSets, deps }, compiler, buildType): RuleResult => {
       const srcs = FileSet.unionAll(...srcSets);
       /* Maps ride the same BUILD_TYPE axis as the JavaScript ones. */
@@ -68,8 +78,9 @@ function buildSassCompile(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-export const buildSassCompileRule: RuleDefinition = {
+export const buildSassCompileRule: RuleDefinition = defineRule({
   type: "sass_compile",
   properties: { [BUILD_OPERATION]: "build" },
-  evaluate: buildSassCompile,
-};
+  requirements: context => ({ srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") }),
+  evaluateMaterialized: (context, collected) => buildSassCompile(context, collected),
+});

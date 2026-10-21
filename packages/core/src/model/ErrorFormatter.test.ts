@@ -18,14 +18,14 @@
  */
 
 import { expect } from "chai";
-import { CommandFailedError, ConflictError, ExecutionError, MultiError, RequirementResolutionError } from "../core/Errors";
+import { CommandFailedError, ConflictError, CycleError, ExecutionError, MultiError, RequirementResolutionError, TargetNotPackageError } from "../core/Errors";
 import { RefSource, RepositoryRef } from "../core/Repository";
-import { registerProvenanceRenderer } from "../core/Provenance";
+import { chainSteps, registerProvenanceRenderer } from "../core/Provenance";
 import { IDiagnosticNote, Log } from "../support/Log";
-import { IModelRefStep, MODEL_REF_PROVENANCE } from "./BuildContext";
+import { IModelStep, MODEL_PROVENANCE } from "./ModelProvenance";
 import { parseName } from "./Parser";
 import { BUILD_OPERATION, Constraints } from "./Constraints";
-import { CircularDependencyError, DependencyFailedError, IJudgedKey, NoRuleFoundError, ReferenceFailedError } from "./Errors";
+import { CircularDependencyError, DependencyFailedError, IJudgedKey, NameLabel, NoRuleFoundError, ReferenceFailedError, ReferenceLabel } from "./Errors";
 import { DiagnosticErrorFormatter, errorSummary } from "./ErrorFormatter";
 
 /** A stand-in for the driver-injected host facts, and the keys a report elides. */
@@ -53,8 +53,8 @@ function targetDecl(name: string, type = "js_package"): TargetDecl {
 function propertyDecl(name: string): PropertyDecl {
   return { name: parseName(name), values: [], offset: 0, endOffset: 0, source: {} } as unknown as PropertyDecl;
 }
-function value(written = "x"): ValueDecl {
-  return { value: parseName(written), offset: 0, endOffset: 0, source: {} } as unknown as ValueDecl;
+function value(written = "x", offset = 0): ValueDecl {
+  return { value: parseName(written), offset, endOffset: offset, source: {} } as unknown as ValueDecl;
 }
 
 /** One captured diagnostic: the parts these tests assert on. */
@@ -122,6 +122,27 @@ describe("DiagnosticErrorFormatter", () => {
     expect(diag.help ?? []).to.deep.equal([]);
   });
 
+  it("reads a cycle found in the graph from its labels", () => {
+    /* The graph's error names the node that closed the cycle; the report names
+     * the name asked for first and lists the references, closing one first. */
+    const one = targetDecl("one");
+    const two = targetDecl("two");
+    const deps = propertyDecl("deps");
+    const oneLabel = new NameLabel("one", one);
+    const twoLabel = new NameLabel("two", two);
+    const cycle = new CycleError([
+      new ReferenceLabel({ value: value("two"), property: deps, target: one }),
+      twoLabel,
+      new ReferenceLabel({ value: value("one"), property: deps, target: two }),
+      oneLabel,
+    ]);
+    expect(errorSummary(cycle)).to.equal("Circular dependency: 'two' depends on itself");
+
+    const [diag] = capture(cycle);
+    expect(diag.message).to.equal("Circular dependency: 'one' depends on itself");
+    expect((diag.notes ?? []).map(note => note.message)).to.deep.equal(["required by one deps"]);
+  });
+
   it("says which target read a global, where the failure crossed the global's value", () => {
     /* `thing`'s rule read RUNNER, whose value names the target that failed. The
      * reference crossed is the global's own, which says nothing of who read it. */
@@ -133,6 +154,18 @@ describe("DiagnosticErrorFormatter", () => {
     const [diag] = capture(failure);
     expect(diag.message).to.equal("Failed to build my_runner: boom");
     expect((diag.notes ?? []).map(note => note.message)).to.deep.equal(["required by RUNNER", "required by thing"]);
+  });
+
+  it("shows the whole chain where a failure also arrives with hops left out", () => {
+    /* top requires mid, which requires leaf, which fails. top holds leaf in
+     * its graph and builds it too, so the failure reaches top along the chain
+     * and also straight from leaf, by the reference mid wrote. */
+    const [leaf, mid, top] = [targetDecl("leaf"), targetDecl("mid"), targetDecl("top")];
+    const deps = propertyDecl("deps");
+    const leafFromMid = new ReferenceFailedError(value("leaf", 0), deps, mid, new DependencyFailedError(leaf, new Error("boom")));
+    const midFromTop = new ReferenceFailedError(value("mid", 9), deps, top, new DependencyFailedError(mid, leafFromMid));
+    const [diag] = capture(new DependencyFailedError(top, MultiError.of([leafFromMid, midFromTop])));
+    expect((diag.notes ?? []).map(note => note.message)).to.deep.equal(["required by mid deps", "required by top deps"]);
   });
 
   it("points a cycle entered through a global at the target it re-entered", () => {
@@ -156,10 +189,11 @@ describe("DiagnosticErrorFormatter", () => {
     const deps = propertyDecl("deps");
 
     const coreFailure = new DependencyFailedError(core, new ExecutionError("compile failed"));
-    const coreFromFabr = new ReferenceFailedError(value(), deps, fabr, coreFailure);
-    const coreFromJs = new ReferenceFailedError(value(), deps, js, coreFailure);
+    /* `deps = core js;`: two references, each written at its own place. */
+    const coreFromFabr = new ReferenceFailedError(value("core", 0), deps, fabr, coreFailure);
+    const coreFromJs = new ReferenceFailedError(value("core", 0), deps, js, coreFailure);
     const jsFailure = new DependencyFailedError(js, coreFromJs);
-    const jsFromFabr = new ReferenceFailedError(value(), deps, fabr, jsFailure);
+    const jsFromFabr = new ReferenceFailedError(value("js", 5), deps, fabr, jsFailure);
     const fabrFailure = new DependencyFailedError(fabr, MultiError.of([coreFromFabr, jsFromFabr]));
 
     const diagnostics = capture(fabrFailure);
@@ -186,8 +220,8 @@ describe("DiagnosticErrorFormatter", () => {
   describe("a requirement that failed to resolve", () => {
     /** A reference written in `target`'s `deps`, as the model stamps it. */
     function writtenRef(written: string, target: TargetDecl): RepositoryRef {
-      const step: IModelRefStep = {
-        kind: MODEL_REF_PROVENANCE,
+      const step: IModelStep = {
+        kind: MODEL_PROVENANCE,
         value: value(written),
         constraints: Constraints.of({}),
         property: propertyDecl("deps"),
@@ -212,6 +246,37 @@ describe("DiagnosticErrorFormatter", () => {
       expect(diagnostic.message).to.equal("Failed to build api: Unable to resolve x");
       expect(diagnostic.notes?.map(note => note.message)).to.deep.equal(["from '@dep:x' (engine deps)"]);
     });
+
+    it("traces a reference to what it delivered, where that says more", () => {
+      /* A catalog's member: the catalog's own entry is where the version came from. */
+      const app = targetDecl("app");
+      const member = writtenRef("@cat:x", app);
+      const entry = writtenRef("@npm:x:1.0.0", targetDecl("@cat", "catalog"));
+      const delivered = { ...chainSteps(member.steps, undefined)!, parent: chainSteps(entry.steps, undefined) };
+      const failure = new DependencyFailedError(
+        app,
+        new RequirementResolutionError([member], new Error("x conflicts"), [], new Map([[member, delivered]]))
+      );
+      const [diagnostic] = capture(failure);
+      expect(diagnostic.message).to.equal("x conflicts - required by app deps");
+      expect(diagnostic.notes?.map(note => note.message)).to.deep.equal(["from '@npm:x:1.0.0' (@cat deps)"]);
+    });
+  });
+
+  it("says where both sides of a requirement bound to a target that is no package came from", () => {
+    const app = targetDecl("app");
+    const step = (written: string): IModelStep => ({
+      kind: MODEL_PROVENANCE,
+      value: value(written),
+      constraints: Constraints.of({}),
+      property: propertyDecl("deps"),
+      target: app,
+    });
+    const requirer = RepositoryRef.written(undefined as unknown as RefSource, parseName("@npm:bar:1.0.0")).withStep(step("@npm:bar:1.0.0"));
+    const target = { packageName: "foo", origin: step("foo") } as unknown as ConstructorParameters<typeof TargetNotPackageError>[1];
+    const failure = new DependencyFailedError(app, new TargetNotPackageError(requirer, target));
+    const [diagnostic] = capture(failure);
+    expect(diagnostic.notes?.map(note => note.message)).to.deep.equal(["from '@npm:bar:1.0.0' (app deps)", "from 'foo' (app deps)"]);
   });
 
   it("keeps a distinct trail per root when a shared failure is requested two ways", () => {

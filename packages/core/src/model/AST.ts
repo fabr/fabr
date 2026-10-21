@@ -21,6 +21,7 @@ import { Name } from "../core/Name";
 import { StringReader } from "../support/StringReader";
 import { FileSource } from "../core/FileSet";
 import { ISourceSpan } from "../support/Log";
+import { FabrError } from "../core/Errors";
 
 export enum DeclKind {
   NameValue,
@@ -68,6 +69,8 @@ export interface ITargetDecl extends IBaseDecl {
 export enum PropertyType {
   String,
   FileSet,
+  /** A list of packages (`PACKAGES`): read as packages, or for its files. */
+  Packages,
   StringList,
   FileSetList,
   OutputFileSet,
@@ -321,4 +324,54 @@ export function getDeclKindName(kind: DeclKind): string {
  * name/value where the parser recorded one (rendered as an underline). */
 export function declPosn(decl: IBaseDecl): ISourceSpan {
   return { ...decl.source, offset: decl.offset, endOffset: decl.endOffset };
+}
+
+/**
+ * Merge the applicable declarations into one whose values are theirs
+ * concatenated in written order, for a list-shaped read (FILES, REWRITE).
+ */
+export function mergedDecls(applicable: IPropertyDecl[]): IPropertyDecl | undefined {
+  if (applicable.length <= 1) {
+    return applicable[0];
+  }
+  /* The merged decl carries no guard and takes the first contributor's
+   * position, so an error about the property points there. A per-value error
+   * carries its own value span. */
+  return {
+    ...applicable[0],
+    name: applicable[0].name.withConstraints([]),
+    values: applicable.flatMap(decl => decl.values),
+  };
+}
+
+/**
+ * Get the single applicable declaration, for a scalar read (STRING, MAP,
+ * COMMAND, a projection). Throw {@link ambiguousDeclsError} where more than
+ * one applies.
+ */
+export function soleDecl(applicable: IPropertyDecl[]): IPropertyDecl | undefined {
+  if (applicable.length > 1) {
+    throw ambiguousDeclsError(applicable);
+  }
+  return applicable[0];
+}
+
+/** Render one declaration's guard as it was written (`<TARGET=*-linux-*, BUILD_TYPE=release>`),
+ * or `unguarded` where it has none. */
+export function guardText(decl: IPropertyDecl): string {
+  const guard = decl.name.getConstraints();
+  return guard.length === 0 ? "unguarded" : `<${guard.map(([key, value]) => `${key}=${value.toString()}`).join(", ")}>`;
+}
+
+/** Make the error for several guards admitting one configuration where only one
+ * value is wanted, naming each guard. */
+export function ambiguousDeclsError(chosen: IPropertyDecl[]): Error {
+  const guards = chosen.map(guardText).join(" and ");
+  return new FabrError(
+    `'${chosen[0].name.toBaseString()}' is declared for this configuration by ${
+      chosen.length
+    } declarations (${guards}), but takes a single value`
+  ).withHelp(
+    "guards are never ranked against each other, so make them disjoint — a fallback belongs in a `default` (the targetdef's, or a `default` global)"
+  );
 }

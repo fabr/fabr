@@ -267,7 +267,7 @@ describe("Expand", () => {
 
     it("reads archive contents only through the supplied expand function", async () => {
       /* The boundary action is the caller's — production binds the build
-       * cache's expansion (BuildContext.expandArchive); here we observe it. */
+       * cache's expansion (BuildContextImpl.expandArchive); here we observe it. */
       const seen: string[] = [];
       const expand = (file: IFile): Computable<FileSet> => {
         seen.push(file.hash);

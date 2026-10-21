@@ -27,8 +27,10 @@
 import { STATUS_CODES } from "node:http";
 
 import { describeProvenance, IProvenanceStep } from "./Provenance";
-import { RepositoryRef } from "./Repository";
+import type { Reference } from "./Reference";
+import type { RepositoryRef } from "./Repository";
 import type { OutputStream } from "../support/Execute";
+import type { Package } from "./PackageFileSet";
 
 /**
  * Coerce an arbitrary thrown value to an Error.
@@ -65,6 +67,25 @@ export class FabrError extends Error {
   public withHelp(help: string | string[]): this {
     this.help = Array.isArray(help) ? help : [help];
     return this;
+  }
+}
+
+/** What a node of the Computable graph stands for, to a reader of a dependency
+ * cycle it is found on: the name it answers for, or the written reference it
+ * was made for. */
+export interface Label {
+  readonly name: string;
+}
+
+/**
+ * A dependency cycle in the Computable graph. `labels` are those of the nodes
+ * on it that have one: the node that closed the cycle first, then each node
+ * it depends on in turn. The message names the first; the whole cycle is
+ * read off the labels.
+ */
+export class CycleError extends FabrError {
+  constructor(public readonly labels: ReadonlyArray<Label>) {
+    super(labels.length > 0 ? `Circular dependency: '${labels[0].name}' depends on itself` : "A computation depends on its own result");
   }
 }
 
@@ -314,18 +335,47 @@ export class VersionNotFoundError extends FabrError {
 }
 
 /**
+ * A requirement on a package that was bound, by its name, to a target of the
+ * project that turned out to build no package. `requirer` is the package that
+ * states the requirement, or the registry's reference the target answers; `constraint` is
+ * what a package's requirement asked for, where that is known.
+ */
+export class TargetNotPackageError extends FabrError {
+  constructor(
+    public readonly requirer: Package | RepositoryRef,
+    public readonly dependency: Package,
+    public readonly constraint?: string
+  ) {
+    const name = dependency.packageName;
+    super(
+      (!("packageName" in requirer)
+        ? `'${requirer.repositoryName === undefined ? "" : `${requirer.repositoryName}:`}${requirer.toString()}' is`
+        : `${requirer.packageName}${requirer.version === undefined ? "" : `:${requirer.version}`} depends on ` +
+          `${name}${constraint === undefined ? "" : `:${constraint}`}, which is`) + ` provided by the target '${name}', but '${name}' is not a package`
+    );
+    this.withHelp(`either build '${name}' as a package, or rename it to avoid the name collision`);
+  }
+}
+
+/**
  * A repository failure attributed to the written reference(s) it traces back
  * to: the underlying error (e.g. a registry 404) wrapped with the refs whose
  * requirement — or whose closure's root requirement — the failure arose from.
- * The refs' carried provenance (model-ref steps) is what lets the driver point
+ * The refs' carried provenance (model steps) is what lets the driver point
  * back at the written requirement rather than only at the consuming target.
  */
 export class RequirementResolutionError extends FabrError {
   declare public readonly cause: Error;
 
   constructor(
-    public readonly refs: ReadonlyArray<RepositoryRef>,
-    cause: Error
+    public readonly refs: ReadonlyArray<Reference>,
+    cause: Error,
+    /** Where each package built in the project that takes part was required. */
+    public readonly builds: ReadonlyArray<IProvenanceStep> = [],
+    /** Where what a reference delivered came from, for a reference whose
+     * delivery has an origin of its own (a catalog member: the catalog's
+     * entry for it). */
+    public readonly delivered: ReadonlyMap<Reference, IProvenanceStep> = new Map()
   ) {
     super(cause.message, cause);
   }

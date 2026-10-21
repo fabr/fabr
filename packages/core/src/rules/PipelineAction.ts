@@ -112,9 +112,9 @@ function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | undefined> 
 export const PIPELINE_ACTION = { id: "core:command-pipeline", version: 4, run: runPipeline };
 
 /** One stage as {@link stagePipeline} needs it: the runnable to launch plus its
- * argv and stream destinations. Structurally the model's `ResolvedCommandStage`,
- * spelt without naming it — this module sits *below* the model (which imports it),
- * so it cannot import the model's types back. */
+ * argv and stream destinations. Structurally the build context's
+ * `MaterializedCommandStage` (context/Commands.ts), spelt without naming it:
+ * context/ imports this module, so it cannot import context's types back. */
 export interface RunnableStage extends StageStreams {
   runnable: RunnableFileSet;
   args: string[];

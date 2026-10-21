@@ -36,15 +36,15 @@ import {
   RepositoryPublishRef,
   RepositoryReader,
   RepositoryRef,
-  MaterializeOptions,
-  ClosureThunk,
 } from "../core/Repository";
 import { VersionNotFoundError } from "../core/Errors";
-import { TargetContext } from "../model/BuildContext";
+import { TargetContext } from "../context/index";
 import { BuildModel } from "../model/BuildModel";
 import { Constraints } from "../model/Constraints";
 import { ExecutionContext } from "../model/ExecutionContext";
-import { parseBuildString } from "../model/Parser";
+import { parseBuildString, parseName } from "../model/Parser";
+import { INameValue, syntheticValue } from "../model/AST";
+import { StringReader } from "../support/StringReader";
 import { toBuildModel } from "../model/Sema";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { parseVersion, SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
@@ -52,7 +52,13 @@ import { Requirement, Selected } from "../resolver/Types";
 import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
 import { resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
 import { bestRoute, parseRouteKey, repositoryGroupRegistration, RouteKey, routeKeyText } from "./RepositoryGroup";
-import { PluginContribution, RuleDefinition } from "./Types";
+import { defineRule, PluginContribution, RuleDefinition } from "./Types";
+
+/** `name` as a reference written on the command line. */
+function writtenOnCommandLine(name: string): INameValue {
+  const source = { fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(name) };
+  return syntheticValue(parseName(name), source, 0, name.length);
+}
 
 function key(text: string): RouteKey {
   const parsed = parseRouteKey(text);
@@ -255,16 +261,12 @@ class FakeRegistry implements Repository, RepositoryReader<SemverVersion, Semver
     return Computable.resolve("test-env");
   }
 
-    /* These fakes stand in for a registry reached under an ordinary build. */
-    /* Delivers the assembled package as-is: these fakes stand in for a registry
-     * reached under an ordinary build. */
-    public deliver(_reference: RepositoryRef, _options?: MaterializeOptions, closure?: ClosureThunk): Computable<FileSet> {
-      return closure ? closure().then((pkg: PackageFileSet | undefined) => pkg ?? EMPTY_FILESET) : Computable.resolve<FileSet>(EMPTY_FILESET);
-    }
+  /* These fakes stand in for a registry reached under an ordinary build. */
+  public readonly operation = "build";
 
-    public deliverFiles(reference: RepositoryRef): Computable<FileSet> {
-      return Computable.resolve(undefined).then(() => resolveBarePackage(this, reference));
-    }
+  public fetchFiles(reference: RepositoryRef): Computable<FileSet> {
+    return Computable.resolve(undefined).then(() => resolveBarePackage(this, reference));
+  }
 
   public availableVersions(pkg: string): Computable<SemverVersion[] | undefined> {
     const versions = Object.keys(this.table)
@@ -318,15 +320,16 @@ describe("repository_group (through the model)", () => {
   }
 
   let lastDepSets: FileSet[] = [];
-  const depsRule: RuleDefinition = {
+  const depsRule: RuleDefinition = defineRule({
     type: "test_deps",
     properties: {},
-    evaluate: (context: TargetContext) =>
-      context.getFileSetProperties(["deps"]).then(({ deps }) => {
+    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    evaluateResolved: (_context, requirements) =>
+      requirements.materializeAll().then(({ deps }) => {
         lastDepSets = deps;
-        return EMPTY_FILESET;
+        return Computable.resolve(EMPTY_FILESET);
       }),
-  };
+  });
   const contributions: PluginContribution[] = [
     {
       rules: [depsRule],
@@ -356,7 +359,7 @@ describe("repository_group (through the model)", () => {
     "targetdef repository_group { * = FILES; }\n" +
     "targetdef test_registry { }\n" +
     "targetdef alien_registry { }\n" +
-    "targetdef test_deps { deps = FILES; }\n";
+    "targetdef test_deps { deps = PACKAGES; }\n";
 
   function build(source: string, expectErrors = false, sourceFs: FileSet = EMPTY_FILESET): { model: BuildModel; errors: string[] } {
     registries.clear();
@@ -376,7 +379,7 @@ describe("repository_group (through the model)", () => {
   }
 
   async function getTarget(model: BuildModel, name: string): Promise<void> {
-    await model.getConfig(Constraints.of({}), execution).getTarget(name);
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine(name));
   }
 
   /** Every message down the cause chain, for asserting through the

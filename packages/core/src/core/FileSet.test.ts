@@ -24,7 +24,7 @@ import { MemoryFile } from "./MemoryFS";
 import { ConflictError } from "./Errors";
 import { registerProvenanceRenderer, renderProvenance } from "./Provenance";
 import { parseName } from "../model/Parser";
-import type { IProjection } from "./FileSetRef";
+import type { IProjection } from "./Reference";
 
 function set(entries: Record<string, string>): FileSet {
   return new FileSet(new Map(Object.entries(entries).map(([name, content]) => [name, MemoryFile.from(content)])));

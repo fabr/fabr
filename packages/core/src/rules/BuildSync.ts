@@ -17,8 +17,8 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { TargetContext } from "../model/BuildContext";
-import { BUILD_OPERATION, BUILD_OVERRIDE } from "../model/Constraints";
+import { RequiredSources, TargetContext, Unmaterialized } from "../context/index";
+import { BUILD_OPERATION, FILES_OVERRIDE } from "../model/Constraints";
 import { Computable, ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { RepositoryPublishRef, RepositoryWriter, SourceRef } from "../core/Repository";
@@ -114,7 +114,9 @@ export class SyncSource implements FileSource {
   constructor(
     private readonly context: TargetContext,
     /** Coordinate (slash form) -> its member, in declaration order. */
-    private readonly table: Map<string, Member>
+    private readonly table: Map<string, Member>,
+    /** The members' content by {@link contentKey}, each materialized when first asked for. */
+    private readonly content: Unmaterialized<Record<string, RequiredSources>>
   ) {}
 
   public find(name: Name, prefix = ""): ComputableSource<FileSet> {
@@ -195,9 +197,8 @@ export class SyncSource implements FileSource {
 
   /**
    * Package these members, memoized per coordinate: whatever is already in hand
-   * is reused, and everything new goes through ONE collection point and one
-   * `package()` batch per destination — so members demanded together still
-   * resolve and package together.
+   * is reused, and everything new goes through one `package()` batch per
+   * destination, so members demanded together package together.
    */
   private packageMembers(paths: string[]): Computable<PublishableFileSet[]> {
     const missing = paths.filter(path => !this.packaged.has(path));
@@ -212,7 +213,7 @@ export class SyncSource implements FileSource {
   }
 
   /**
-   * Build these members' content through one collection point, then hand each
+   * Materialize these members' content, then hand each
    * destination its whole batch to `package` jointly (the write-side dual of the
    * read side's per-repository joint resolution), with the **full** release's
    * assignments as context — every packaging policy (npm's co-member version
@@ -220,14 +221,11 @@ export class SyncSource implements FileSource {
    * the assignments it needs for that, never the other members' content.
    */
   private packageBatch(paths: string[]): Computable<PublishableFileSet[]> {
-    /* Keyed by coordinate — a user-supplied key, hence a Map — so members
-     * sharing a package name stay distinct. */
-    const sources = new Map<string, Computable<SourceRef[]>>();
-    for (const path of paths) {
-      sources.set(path, this.context.getFileProperty(this.member(path).decl.name.toBaseString(), BUILD_OVERRIDE));
-    }
     const release = [...this.table.values()].map(member => member.assigned);
-    return this.context.collect(sources).then(content => {
+    return Computable.forAll(
+      paths.map(path => this.content.materialize(contentKey(this.member(path).decl))),
+      (...content: FileSet[][]) => content
+    ).then(content => {
       const batches = new Map<RepositoryWriter, { path: string; index: number }[]>();
       paths.forEach((path, index) => {
         const writer = this.member(path).assigned.source;
@@ -238,10 +236,9 @@ export class SyncSource implements FileSource {
         [...batches].map(([writer, batch]) =>
           writer
             .package(
-              batch.map(({ path }) => ({
+              batch.map(({ path, index }) => ({
                 destination: this.member(path).assigned,
-                /* Every path's key was set above, so the lookup can't miss. */
-                content: FileSet.unionAll(...(content.get(path) ?? [])),
+                content: FileSet.unionAll(...content[index]),
               })),
               release
             )
@@ -276,11 +273,11 @@ function memberPath(coordinate: string): string {
  * of `coordinate = content` members (reference-keyed bindings; the coordinate's
  * shape is the destination's — npm: `@repo:name:version`): each key resolves to
  * a vended publish ref (destination + validated address), and each member's
- * content is built under `BUILD_OPERATION=build` (identityless content). Every
- * coordinate is resolved and validated HERE, before any content is built —
- * cheap (a name lookup, no fetch), so a bad destination or version fails fast
- * positioned at the offending coordinate, and the resulting assignments are the
- * release-wide context each packaging needs.
+ * content is a requirement read under `BUILD_OPERATION=files` (its files
+ * alone). Every coordinate is resolved and validated HERE, once, before any
+ * content is built — cheap (a name lookup, no fetch), so a bad destination or
+ * version fails fast positioned at the offending coordinate, and the resulting
+ * assignments are the release-wide context each packaging needs.
  *
  * The result is the release as a {@link SyncSource} — a namespace of members
  * packaged on demand, NOT a pre-built set of carriers: `fabr sync` names the
@@ -288,14 +285,19 @@ function memberPath(coordinate: string): string {
  * artifacts member by member — the dry-run — packaging only what is named. No
  * upload happens here; that is the driver's job.
  */
-function syncPackages(context: TargetContext): Computable<RuleResult> {
+function syncPackages(context: TargetContext, content: Unmaterialized<Record<string, RequiredSources>>): Computable<RuleResult> {
+  return members(context).then(table => new SyncSource(context, table, content));
+}
+
+/** Read the sync's members by coordinate (slash form), validating each coordinate. */
+function members(context: TargetContext): Computable<Map<string, Member>> {
   return context.getWildcardProperties().then(props =>
     Computable.forAll(
       props.map(prop => validateMember(context, prop)),
-      (...members: Member[]) => members
-    ).then(members => {
+      (...declared: Member[]) => declared
+    ).then(declared => {
       const table = new Map<string, Member>();
-      for (const member of members) {
+      for (const member of declared) {
         const path = memberPath(member.assigned.toString());
         const clash = table.get(path);
         if (clash) {
@@ -309,7 +311,7 @@ function syncPackages(context: TargetContext): Computable<RuleResult> {
         table.set(path, member);
       }
       rejectShadowedMembers(context.name, table);
-      return new SyncSource(context, table);
+      return table;
     })
   );
 }
@@ -338,8 +340,8 @@ function rejectShadowedMembers(declaredName: string, table: ReadonlyMap<string, 
 }
 
 /**
- * Resolve one member's coordinate to a vended publish ref: the repository alias
- * resolves, and the destination vends (validating shape) or refuses (read-only).
+ * Look up one member's coordinate as a vended publish ref: the repository alias
+ * is looked up, and the destination vends (validating shape) or refuses (read-only).
  * A failure of the coordinate itself (no such repository, not a publish
  * destination, a malformed address) is positioned at the written coordinate via
  * {@link NameResolutionError}; a genuine repository build failure passes through
@@ -347,7 +349,7 @@ function rejectShadowedMembers(declaredName: string, table: ReadonlyMap<string, 
  */
 function validateMember(context: TargetContext, prop: { key: Name; decl: IPropertyDecl }): Computable<Member> {
   return context
-    .resolvePublishRef(prop.key)
+    .lookupPublishRef(prop.key)
     .then(assigned => ({ assigned, decl: prop.decl }))
     .catch(err => {
       if (err instanceof DependencyFailedError) {
@@ -364,5 +366,27 @@ function validateMember(context: TargetContext, prop: { key: Name; decl: IProper
 export const syncRule: RuleDefinition = {
   type: "sync",
   properties: { [BUILD_OPERATION]: "build" },
+  /* Each member's content is a requirement keyed by its written coordinate
+   * ({@link contentKey}), read for its files alone whatever the sync is asked
+   * for, and materialized only for the members a name reaches. The coordinates
+   * themselves are validated once, in evaluate ({@link syncPackages}). */
+  requirements: context =>
+    context
+      .getWildcardProperties()
+      .then(
+        props =>
+          new Map(
+            props.map((prop): [string, Computable<SourceRef[]>] => [
+              contentKey(prop.decl),
+              context.getFileProperty(contentKey(prop.decl), FILES_OVERRIDE),
+            ])
+          )
+      ),
   evaluate: syncPackages,
 };
+
+/** The name a member's content requirement is stated under: its written
+ * coordinate, which is also the property its content is read from. */
+function contentKey(decl: IPropertyDecl): string {
+  return decl.name.toBaseString();
+}

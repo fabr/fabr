@@ -20,14 +20,13 @@
 import { Computable } from "../core/Computable";
 import { FabrError, MetadataFetchError, toError, VersionNotFoundError } from "../core/Errors";
 import { constraintOf, requiredAs, versionConstraintText } from "./Requirement";
-import { edgeBinding, nodeId as idOf } from "./ResolutionGraph";
+import { edgeBinding, MVSResolution, nodeId as idOf } from "./MVSResolution";
 import {
   IRequirementEdge,
   IResolutionError,
   RequirementSource,
   RaisedFloor,
   Requirement,
-  MVSResolution,
   ROOT_REQUIRER,
   Selected,
   VersionDomain,
@@ -125,18 +124,10 @@ import {
 export function resolveMVS<V, C>(
   roots: Requirement[],
   domain: VersionDomain<V, C>,
-  registry: RequirementSource<V>,
-  /**
-   * Packages that are in hand, by name, each at the one version it has: not
-   * selected among candidates but simply present, so every requirement on the
-   * name binds to it whatever version it asks for. One is part of the graph
-   * where something requires it, like any package, and `registry` answers for
-   * its requirements as for any node's.
-   */
-  present: ReadonlyMap<string, V> = new Map()
+  registry: RequirementSource<V>
 ): Computable<MVSResolution<V>> {
   const attempt = (repairable: ReadonlySet<string>): Computable<MVSResolution<V>> =>
-    resolvePhase(roots, domain, registry, repairable, present).catch(err => {
+    resolvePhase(roots, domain, registry, repairable).catch(err => {
       if (err instanceof RepairsRequired) {
         return attempt(new Set([...repairable, ...err.nodes]));
       }
@@ -196,8 +187,7 @@ function resolvePhase<V, C>(
   /** Node ids ({@link nodeId}) whose floors this walk may raise — the ones a
    * previous walk converged on as unpublished *winners*. Empty on the first
    * walk, so it is repair-free. */
-  repairable: ReadonlySet<string>,
-  present: ReadonlyMap<string, V>
+  repairable: ReadonlySet<string>
 ): Computable<MVSResolution<V>> {
   /* The walk knows a package by the name it is required as (its slot); the
    * registry is asked for it by the name it is published under. */
@@ -206,9 +196,8 @@ function resolvePhase<V, C>(
      * is substituted with exactly this version — npm-`overrides` semantics.
      * The caller validates at most one force per package (a generic defensive
      * first-in-canonical-order would mask the error); the resolver takes the
-     * first. A package in hand is held at its version in the same way: what
-     * a requirement on it asks for is judged at convergence, never offered. */
-    const forced = new Map<string, V>(present);
+     * first. */
+    const forced = new Map<string, V>();
     for (const root of roots) {
       if (root.override === "force" && !forced.has(requiredAs(root))) {
         try {
@@ -332,9 +321,7 @@ function resolvePhase<V, C>(
          * convergence: unsatisfied means coerced, recorded as data. The force
          * root's own edge is the one demand offered to the pool, so the
          * principal is the forced version by construction. */
-        if (req.override === "force" || present.has(requiredAs(req))) {
-          /* There is no force root to offer a package in hand to the pool:
-           * whichever requirement reaches it does. */
+        if (req.override === "force") {
           attempt(req, forcedVersion, requiredBy);
         } else {
           visit(requiredAs(req), forcedVersion, requiredBy, req);
@@ -1127,7 +1114,7 @@ function resolvePhase<V, C>(
       /* Candidates per package, in the canonical order — binding an edge only
        * ever considers selections of its own package, so this is what the walk
        * itself passes to edgeBinding (see targetsOf). Built locally: the
-       * ResolutionGraph (which indexes the same way) wraps the *finished*
+       * MVSResolution (which indexes the same way) wraps the *finished*
        * resolution, which this is still becoming. */
       const candidates = new Map<string, Selected<V>[]>();
       for (const selection of selections) {
@@ -1173,7 +1160,8 @@ function resolvePhase<V, C>(
         const at = bound === undefined ? -1 : selections.indexOf(bound);
         return at < 0 ? undefined : at;
       });
-      resolve({
+      resolve(
+        new MVSResolution(domain.versionToString.bind(domain), {
         selections,
         errors: [...round.errors.values()],
         violations,
@@ -1183,7 +1171,8 @@ function resolvePhase<V, C>(
         requirements,
         edges,
         rootBindings,
-      });
+        })
+      );
     };
 
     /**

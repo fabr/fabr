@@ -17,9 +17,11 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { TargetContext } from "../model/BuildContext";
+import { TargetContext } from "../context/index";
 import { BUILD_OPERATION, BUILD_OVERRIDE, FILES_OPERATION } from "../model/Constraints";
 import { Computable } from "../core/Computable";
+import { FileSet } from "../core/FileSet";
+import { PackageFileSet } from "../core/PackageFileSet";
 import { isFileSource } from "../core/Repository";
 import { RuleDefinition, RuleResult } from "./Types";
 import { FabrError } from "../core/Errors";
@@ -39,15 +41,16 @@ import { FabrError } from "../core/Errors";
  * the build yielded passes through, whatever shape it takes — several sources
  * stay several, and a source that serves its content on its own terms (a `sync`
  * release namespace, packaging members on demand) passes through as itself
- * rather than being flattened. Only the deferred kinds drop out.
+ * rather than being flattened. Only the deferred kinds drop out. A package is
+ * delivered as its files: it has no identity here and requires nothing.
  */
 function deliverFiles(context: TargetContext): Computable<RuleResult> {
-  return context.getSelfWithOverrides(BUILD_OVERRIDE).then(sources => {
+  return context.buildSelfWithOverrides(BUILD_OVERRIDE).then(sources => {
     const files = sources.filter(isFileSource);
     if (files.length === 0) {
       throw new FabrError(`internal: building '${context.name}' under files did not yield file content`);
     }
-    return files;
+    return files.map(source => (source instanceof PackageFileSet ? new FileSet(source, source.origin) : source));
   });
 }
 

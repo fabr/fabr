@@ -21,7 +21,7 @@ import { expect } from "chai";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { FileSet, IFile, MemoryFile, PackageFileSet } from "@fabr-build/core";
+import { FileSet, IFile, MemoryFile, PackageFileSet, dependenciesOn } from "@fabr-build/core";
 import { type IPnpPackageInfo, type IPnpSerializedState, pnpManifestOf, treeMountOf } from "../PnPManifest";
 import type { ExportsValue } from "./PackageExports";
 import { PnpResolver, splitSpecifier, typesPackageName } from "./PnPResolver";
@@ -486,14 +486,14 @@ describe("PnpResolver over one package wired two ways", () => {
       ["package.json", MemoryFile.from(JSON.stringify({ name: tag.split("@")[0] }))],
     ]);
   const pkg = (name: string, version: string, deps: PackageFileSet[] = []): PackageFileSet =>
-    new PackageFileSet(files(`${name}@${version}`), name, version, deps);
+    new PackageFileSet(files(`${name}@${version}`), name, version, dependenciesOn(...deps));
 
   /** The shared content wired two ways, its manifest materialized as the step
    * does: one physical tree per content, whatever its rows' locations. */
   const staged = (): { left: PackageFileSet; right: PackageFileSet; manifest: ReturnType<typeof pnpManifestOf> } => {
     const content = files("shared@1.0.0");
-    const left = new PackageFileSet(content, "shared", "1.0.0", [pkg("dep", "1.0.0")]);
-    const right = new PackageFileSet(content, "shared", "1.0.0", [pkg("dep", "2.0.0")]);
+    const left = new PackageFileSet(content, "shared", "1.0.0", dependenciesOn(pkg("dep", "1.0.0")));
+    const right = new PackageFileSet(content, "shared", "1.0.0", dependenciesOn(pkg("dep", "2.0.0")));
     const manifest = pnpManifestOf([pkg("left", "1.0.0", [left]), pkg("right", "1.0.0", [right])]);
     for (const each of manifest.packages) {
       const dir = path.join(root, treeMountOf(each));

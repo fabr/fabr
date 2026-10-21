@@ -23,7 +23,7 @@ import { expect } from "chai";
 import { Computable } from "../core/Computable";
 import { FileSet, FileSource, IFile } from "../core/FileSet";
 import { Name, NameBuilder } from "../core/Name";
-import { TargetContext } from "../model/BuildContext";
+import { TargetContext } from "../context/index";
 import { FETCH_PROVENANCE, fetchSourceRegistration } from "./FetchSource";
 
 const BODY = "tarball bytes";

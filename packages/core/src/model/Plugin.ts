@@ -32,7 +32,7 @@ import { FabrError } from "../core/Errors";
  * `.fabr` files) — it performs no global registration and takes no arguments. It
  * reaches the host's facilities by importing `@fabr-build/core` directly, and
  * must share the host's core instance, never a second copy. The full plugin
- * contract is documented in PLUGINS.md.
+ * contract is documented in docs/src/content/docs/developer/plugins.md.
  */
 interface IFabrPluginModule {
   activate?: () => PluginContribution | undefined;

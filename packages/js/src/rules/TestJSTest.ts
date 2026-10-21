@@ -25,37 +25,29 @@
  * compiles as a sibling but is never run.
  */
 
-import { BUILD_OPERATION, BUILD_OVERRIDE, Computable, RuleDefinition, RuleResult, TargetContext } from "@fabr-build/core";
-import { compileAndRunTests, ITestFramework, TEST_FRAMEWORKS } from "../TestPipeline";
+import { BUILD_OPERATION, BUILD_OVERRIDE, Computable, defineRule, RuleDefinition, TargetContext, PackageSources } from "@fabr-build/core";
+import { compileAndRunTests, TestRequirements, TEST_FRAMEWORKS, testRequirements } from "../TestPipeline";
 
-function runJsTest(context: TargetContext, framework: ITestFramework): Computable<RuleResult> {
+function requirements(context: TargetContext): Computable<TestRequirements> {
   return Computable.forAll(
     [
       context.getFileProperty("tests", BUILD_OVERRIDE),
-      context.getGlobalString("JS_TARGET", BUILD_OVERRIDE),
-      context.getFileProperty("deps", BUILD_OVERRIDE),
+      context.getPackageProperty("deps", BUILD_OVERRIDE),
       context.getFileProperty("resources", BUILD_OVERRIDE),
       context.getFileProperty("expectations", BUILD_OVERRIDE),
-      context.getMap("env"),
     ],
-    (testRefs, target, depSources, testResourceSources, expectationSources, env) =>
-      compileAndRunTests(context, framework, {
-        sourceRefs: [],
-        testRefs,
-        target,
-        depSources,
-        testDepSources: [],
-        testResourceSources,
-        expectationSources,
-        env,
-      })
+    (tests, deps, test_resources, expectations) =>
+      testRequirements({ srcs: [], tests, deps, test_deps: new PackageSources([]), test_resources, expectations })
   );
 }
 
 /** One rule per test framework, selected on the target's `framework`. */
-export const jsTestRules: RuleDefinition[] = [...TEST_FRAMEWORKS].map(([name, framework]) => ({
-  type: "js_test",
-  properties: { [BUILD_OPERATION]: "test" },
-  targetProperties: { framework: name },
-  evaluate: context => runJsTest(context, framework),
-}));
+export const jsTestRules: RuleDefinition[] = [...TEST_FRAMEWORKS].map(([name, framework]) =>
+  defineRule({
+    type: "js_test",
+    properties: { [BUILD_OPERATION]: "test" },
+    targetProperties: { framework: name },
+    requirements,
+    evaluateMaterialized: (context, collected) => compileAndRunTests(context, framework, { envProperty: "env" }, collected),
+  })
+);

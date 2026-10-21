@@ -41,6 +41,50 @@ const BUILDING_GEN = started("Building gen");
 jest.setTimeout(90000);
 
 describe("e2e: watch mode (fabr build -w)", () => {
+  it("reports a cycle a value makes, keeps it through an edit inside it, and heals it when the value changes", async () => {
+    /* Whether `foo` depends on its own output is decided by what `get_value`
+     * prints. An edit to a source on the cycle, which `bar` shares, leaves it
+     * standing: one more cycle, `bar` rebuilt, nothing new reported for `foo`.
+     * An edit changing the value cuts it. */
+    const session = startFabrWatch(
+      {
+        "PROJECT.fabr":
+          "script get_value { entry = src:value.sh; }\n" +
+          "CYCLE = `get_value`;\n" +
+          "script foo_prog { entry = src:foo.sh; }\n" +
+          "generate foo {\n" +
+          "  run = foo_prog > out.txt;\n" +
+          "  srcs = in.txt;\n" +
+          "  srcs<CYCLE=1> = foo:out.txt;\n" +
+          "}\n" +
+          "generate bar { run = foo_prog > bar.txt; srcs = in.txt; }\n",
+        "src/value.sh": 'printf "1"\n',
+        "src/foo.sh": "cat in.txt\n",
+        "in.txt": "one\n",
+      },
+      ["build", "-w", "foo", "bar"]
+    );
+    try {
+      await session.waitFor("Watching for changes", { timeoutMs: 60000 });
+      expect(session.stderr).to.contain("Circular dependency: 'foo' depends on itself");
+      /* The standing cycle's batch: `bar` rebuilds, the unchanged failure is
+       * not re-reported, and a failed cycle renders no marker. */
+      session.write("in.txt", "two\n");
+      await session.waitFor(started("Building bar"), { count: 2, timeoutMs: 60000 });
+      await session.waitFor("✓ Building bar", { count: 2, timeoutMs: 60000 });
+      /* The healing batch: the marker names `foo` alone — the batch before it
+       * ended, so `bar` was reported with it rather than carried over. */
+      session.write("src/value.sh", 'printf "0"\n');
+      await session.waitFor("Watching for changes", { count: 2, timeoutMs: 60000 });
+      expect(session.stderr).to.match(/info:Built foo\n/);
+      expect(session.stderr).to.not.match(/Built .*bar/);
+      expect(session.stderr.match(/Circular dependency/g)).to.have.length(1);
+    } finally {
+      const code = await session.stop();
+      expect(code).to.equal(0);
+    }
+  });
+
   it("rebuilds on a source change and exits cleanly on SIGINT", async () => {
     const session = startFabrWatch(
       {

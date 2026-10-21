@@ -110,7 +110,7 @@ yarn dist        # build with tsc, run the tests under jest, and lint
 
 Run both before proposing a change. Contributions are welcome: see
 [Getting involved](https://fabr.build/contributing/) for the repository layout and conventions, and
-[PLUGINS.md](PLUGINS.md) to add support for a new ecosystem. Please discuss a change to the design
+[Writing a plugin](https://fabr.build/developer/writing-a-plugin/) to add support for a new ecosystem. Please discuss a change to the design
 before implementing it.
 
 ## License

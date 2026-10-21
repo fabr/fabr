@@ -20,17 +20,7 @@
 import type { FileSet, FileSource } from "./FileSet";
 import { Name } from "./Name";
 import { FabrError } from "./Errors";
-
-/**
- * One narrowing step of a reference: the pattern to match (against the names
- * produced by the previous step), and the prefix prepended to the matched
- * names — the written-name rule: `alias/path` keeps the written `alias/` in
- * result names, `alias:path` strips it (empty prefix).
- */
-export interface IProjection {
-  pattern: Name;
-  prefix: string;
-}
+import type { IProjection } from "./Reference";
 
 /**
  * A resolved source with pending projections — **pure data**: the suspended
@@ -38,16 +28,16 @@ export interface IProjection {
  * further narrowing. Deliberately NOT a FileSource (like RepositoryRef): it
  * cannot honestly promise files until the projections are applied, and how
  * they apply is the consumer's business — the RESOLVER resumes the walk
- * (BuildContext.manifest: the polymorphic `find` chain with archive descent,
+ * (`applyProjections`: the polymorphic `find` chain with archive descent,
  * expansion cached in the build cache), while a reinterpreting consumer gives
  * the projections its own meaning (js_script's package entry replays them as
  * bin selection on the runnable it builds — a raw `find` fold, no walk).
- * Produced by resolveFileSource for a projection landing on a target-output
+ * Produced by lookupFileSource for a projection landing on a target-output
  * *package* (the one base type whose `find` erases the information conversion
  * needs; runnables' own `find` preserves theirs, and plain/directory finds
  * have nothing to preserve, so those stay eager), and uniformly by the
  * delivery machinery as the pending form of every projected repository
- * delivery (stampProvenance + projections — see RepositoryRef.deliveredAs).
+ * delivery (stampProvenance + projections — see RepositoryRef.applyTo).
  * Ordinary consumers never see one: the model layer finishes pending refs as
  * its collections come back; a CONTAINED property instead hands the
  * pending ref to a reinterpreting consumer.
@@ -75,7 +65,7 @@ export class FileSourceRef {
     public readonly miss?: () => Error
   ) {
     /* A ref exists to suspend projections; every construction site supplies at
-     * least one, and the applier (BuildContext.manifest) folds from the first.
+     * least one, and the applier (`applyProjections`) folds from the first.
      * Enforced here so a violation fails at construction, not as a stray base. */
     if (projections.length === 0) {
       throw new FabrError("internal: a FileSetRef must carry at least one projection");
@@ -90,7 +80,7 @@ export class FileSourceRef {
 
 /**
  * A pending ref whose base is already materialized — a delivered fileset or a
- * built package. 
+ * built package.
  */
 export class FileSetRef extends FileSourceRef {
   public declare readonly source: FileSet;

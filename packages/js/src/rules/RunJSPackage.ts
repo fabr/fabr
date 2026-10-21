@@ -26,36 +26,23 @@
  * (`fabr run pkg:cmd`).
  */
 
-import {
-  BUILD_OPERATION,
-  BUILD_OVERRIDE,
-  Computable,
-  FabrError,
-  PackageFileSet,
-  RuleDefinition,
-  RuleResult,
-  TargetContext,
-} from "@fabr-build/core";
+import { BUILD_OPERATION, BUILD_OVERRIDE, FabrError, PackageFileSet, RuleDefinition, defineRule } from "@fabr-build/core";
 import { makeNpmRunnable } from "../JSPackage";
 
-function runJsPackage(context: TargetContext): Computable<RuleResult> {
-  /* The package is built under build, since the ambient operation here is run. */
-  return context.getSelfWithOverrides(BUILD_OVERRIDE).then((buildResult): Computable<RuleResult> => {
-    const built = buildResult.find((s): s is PackageFileSet => s instanceof PackageFileSet);
+/* The requirement is this package under build (the ambient operation here is
+ * run), so its carried deps resolve at this collection point: a carried @types
+ * dep needing @types/node is satisfied by the package's own explicit
+ * @types/node dep, in the same batch. The package is made runnable via its
+ * generated package.json bin, the same path an external `@npm:` package takes. */
+export const runJsPackageRule: RuleDefinition = defineRule({
+  type: "js_package",
+  properties: { [BUILD_OPERATION]: "run" },
+  requirements: context => ({ pkg: context.resolveSelfWithOverrides(BUILD_OVERRIDE) }),
+  evaluateMaterialized: (_context, { pkg }) => {
+    const built = pkg.find((source): source is PackageFileSet => source instanceof PackageFileSet);
     if (!built) {
       throw new FabrError("internal: js_package[build] did not yield a package");
     }
-    /* Resolve the package's carried deps at this collection point (a carried
-     * @types dep needing @types/node is satisfied by the package's own explicit
-     * @types/node dep, in the same batch), then make the fully-resolved package
-     * runnable via its generated package.json bin: the same path an external
-     * `@npm:` package takes. */
-    return context.collect({ pkg: [built] }).then(({ pkg }) => makeNpmRunnable(pkg[0] as PackageFileSet));
-  });
-}
-
-export const runJsPackageRule: RuleDefinition = {
-  type: "js_package",
-  properties: { [BUILD_OPERATION]: "run" },
-  evaluate: runJsPackage,
-};
+    return makeNpmRunnable(built);
+  },
+});

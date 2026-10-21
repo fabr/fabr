@@ -101,7 +101,9 @@ A package can use a sibling in other ways than as a dependency:
 
 - **Files from it:** `resources = @acme/core:schema/*.json;`.
 - **A different build of it:** `@acme/core<JS_TARGET=es2022-commonjs>`; see
-  [Configuration](/guides/concepts/#configuration).
+  [Configuration](/guides/concepts/#configuration). Where two packages need different builds of
+  one sibling, the one your target names directly is used; see
+  [Packages built in your project](/reference/js/dependencies/#packages-built-in-your-project).
 - **As a test-only dependency:** `test_deps = @acme/test-helpers;`.
 
 Dependencies can't form a cycle. If two packages depend on each other, fabr reports

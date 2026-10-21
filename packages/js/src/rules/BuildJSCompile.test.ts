@@ -27,9 +27,8 @@ function toPromise<T>(computable: Computable<T>): Promise<T> {
 }
 
 /** A minimal TargetContext serving just what js_compile's evaluate reads, so the
- * rule can be driven to the tsconfig it generates. `deps` carries the source-mode
- * flags (read via getFlags) exactly as it does in a real build. */
-function stubContext(flags: Flag[], packageName?: string): TargetContext {
+ * rule can be driven to the tsconfig it generates. */
+function stubContext(packageName?: string): TargetContext {
   /* The one tool the rule mounts, answering with the argv its install would
    * launch. An empty install: the rule mounts it as a FileSet, so the stub has
    * to be a real one — only the argv is under test here. */
@@ -39,12 +38,8 @@ function stubContext(flags: Flag[], packageName?: string): TargetContext {
     TSC_DRIVER: tool(["node", ".tools/tsc/tscDriver/tsc-driver.js"]),
   };
   return {
-    getFileSetProperties: () =>
-      Computable.resolve({ srcs: [new FileSet(new Map([["a.ts", MemoryFile.from("export const x = 1;")]]))], deps: [] }),
-    getGlobalString: (name: string) =>
-      Computable.resolve(name === "JS_TARGET" ? "es2021-commonjs" : "debug"),
+    getGlobalString: (name: string) => Computable.resolve(name === "JS_TARGET" ? "es2021-commonjs" : "debug"),
     getGlobalRunnable: (name: string) => Computable.resolve(tools[name]),
-    getFlags: () => Computable.resolve(flags),
     getProperty: () => Computable.resolve(packageName === undefined ? undefined : new Property([packageName])),
     /* No stylesheets among these sources, so nothing to rename — the empty
      * rewrite, which is what a target declaring none resolves to. */
@@ -58,16 +53,31 @@ function stubContext(flags: Flag[], packageName?: string): TargetContext {
   } as unknown as TargetContext;
 }
 
+/** The rule's requirements, materialized to one source, with the source-mode
+ * flags among `deps` exactly as a real build delivers them. */
+const collected = (flags: Flag[] = []): Parameters<typeof jsCompileRule.evaluate>[1] => {
+  const parts = {
+    srcs: [new FileSet(new Map([["a.ts", MemoryFile.from("export const x = 1;")]]))],
+    deps: flags,
+    resources: [],
+  };
+  return {
+    materializeAll: () => Computable.resolve(parts),
+    materialize: name => Computable.resolve(parts[name as keyof typeof parts]),
+    packages: () => Computable.resolve([]),
+  };
+};
+
 /** Drive the rule and answer the action it yielded. */
 async function compileAction(): Promise<BuildAction> {
-  const result = await toPromise(jsCompileRule.evaluate(stubContext([])));
+  const result = await toPromise(jsCompileRule.evaluate(stubContext(), collected()));
   expect(result).to.be.instanceOf(BuildAction);
   return result as BuildAction;
 }
 
 /** Drive the rule and read back the tsconfig.json it carries as config. */
 async function generatedTsConfig(flags: Flag[], packageName?: string): Promise<TsConfig> {
-  const result = await toPromise(jsCompileRule.evaluate(stubContext(flags, packageName)));
+  const result = await toPromise(jsCompileRule.evaluate(stubContext(packageName), collected(flags)));
   expect(result).to.be.instanceOf(BuildAction);
   const config = configFiles(result as BuildAction);
   const file = await toPromise(config.get("tsconfig.json"));
@@ -284,9 +294,8 @@ describe("js_compile package self-reference", () => {
 
 describe("js_compile source-mode flags (through deps)", () => {
   it("recognizes a ts/no_strict flag carried in deps and relaxes the tsconfig", async () => {
-    /* End-to-end wiring: the flag rides `deps`, js_compile reads it with
-     * getFlags("deps") and folds the recognized overlay into the tsconfig it
-     * stages — the path that replaced the old caller-resolved `mode` JSON. */
+    /* End-to-end wiring: the flag rides the materialized `deps` and js_compile
+     * folds the recognized overlay into the tsconfig it stages. */
     const cfg = await generatedTsConfig([new Flag("ts/no_strict", [])]);
     expect(cfg.compilerOptions.strict).to.equal(false);
   });

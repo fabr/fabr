@@ -28,7 +28,8 @@ import {
   PackageFileSet,
   PackageGraphBuilder,
   SymlinkFile,
-  } from "@fabr-build/core";
+  dependenciesOn,
+} from "@fabr-build/core";
 import {
   binByConvention,
   binOf,
@@ -358,8 +359,8 @@ describe("makeNpmRunnable", () => {
     const helper1 = builder.node(new Map<string, IFile>([["index.js", MemoryFile.from("// helper@1.0.0")]]), "helper", "1.0.0");
     const helper2 = builder.node(new Map<string, IFile>([["index.js", MemoryFile.from("// helper@2.0.0")]]), "helper", "2.0.0");
     const other = builder.node(new Map<string, IFile>([["index.js", MemoryFile.from("// other@1.0.0")]]), "other", "1.0.0");
-    builder.wire(tool, [helper1, other]);
-    builder.wire(other, [helper2, tool]);
+    builder.wire(tool, dependenciesOn(helper1, other));
+    builder.wire(other, dependenciesOn(helper2, tool));
     builder.seal();
 
     const install = new Map(await settle(makeNpmRunnable(tool)));

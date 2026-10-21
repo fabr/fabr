@@ -47,8 +47,8 @@ import {
   SEMVER,
   SemverConstraint,
   SemverVersion,
+  markerOnProjection,
   sendRequest,
-  splitOverrideMarker,
   toJsonObject,
   verifyingStream,
 } from "@fabr-build/core";
@@ -498,18 +498,21 @@ export function splitNpmReference(name: Name): Requirement & { projection?: IPro
     return npmIdentity(written);
   }
   const prefix = written[boundary] === "/" ? written.substring(0, boundary) + "/" : "";
-  return { ...npmIdentity(written.substring(0, boundary)), projection: { pattern: name.substring(boundary + 1), prefix } };
+  const identity = npmIdentity(written.substring(0, boundary));
+  if (identity.versionConstraint?.endsWith("?") === true || identity.versionConstraint?.endsWith("!") === true) {
+    throw markerOnProjection(name);
+  }
+  return { ...identity, projection: { pattern: name.substring(boundary + 1), prefix } };
 }
 
-/** An identity's written `name:version` as its parts: the package, the version
- * or range after the last colon, and the override marker written on that. */
+/** Split an identity's written `name:version` into the package and the version
+ * or range after the last colon. */
 function npmIdentity(written: string): Requirement {
   const split = splitWrittenNameVersion(written);
   if (!split) {
     return { name: written, versionConstraint: undefined };
   }
-  const { text: version, override } = splitOverrideMarker(split.version);
-  return { name: split.identifier, versionConstraint: version, ...(override === undefined ? {} : { override }) };
+  return { name: split.identifier, versionConstraint: split.version };
 }
 
 /**
@@ -614,7 +617,7 @@ export function parseNpmPublishCoordinate(ref: Name): NpmPublishIdentity {
 export const NPM_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
   ...SEMVER,
   providedMismatch: "tolerate",
-  resolutionTag: "npm:resolve:30",
+  resolutionTag: "npm:resolve:31",
   splitReference: splitNpmReference,
   validateRequirement: validateNpmRequirement,
   parsePublishCoordinate: parseNpmPublishCoordinate,

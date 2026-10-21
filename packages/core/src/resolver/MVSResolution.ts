@@ -23,12 +23,12 @@
  * resolution. Separate from the algorithm that produces one (MVSResolver) and
  * from how it is explained (ResolutionProvenance) — but *shared* with the
  * algorithm, which asks the same questions of its own converged state, so a
- * consumer laying a resolution out or judging it reaches the answers the walk
+ * consumer laying a resolution out or checking it reaches the answers the walk
  * did.
  */
 
-import { constraintOf, requiredAs, UNVERSIONED } from "./Requirement";
-import { DependencyName, NodeId, PackageName, RaisedFloor, Requirement, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
+import { buildReference, constraintOf, isBuildVersion, requiredAs } from "./Requirement";
+import { DependencyName, IResolutionError, NodeId, PackageName, RaisedFloor, Requirement, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
 
 /**
  * The identity of one concrete package version — `pkg@version` — as it appears
@@ -41,25 +41,75 @@ export function nodeId<V, C>(domain: VersionDomain<V, C>, pkg: PackageName, vers
 }
 
 /**
- * A node as a message names it: its id, or its name alone where it has no
- * version to tell it from another.
+ * Format a node for a message: its id, or for a build the reference to it
+ * (`core<BUILD_TYPE=release>`).
  */
 export function nodeLabel(id: NodeId): string {
-  const unversioned = `@${UNVERSIONED}`;
-  return id.endsWith(unversioned) ? id.slice(0, -unversioned.length) : id;
+  const at = id.indexOf("@", 1);
+  const version = at < 0 ? "" : id.slice(at + 1);
+  return isBuildVersion(version) ? buildReference(id.slice(0, at), version) : id;
 }
 
-/** The data of a finished resolution — what {@link ResolutionGraph} is
- * constructed over: the deserialized form of the persisted resolution doc
- * (see ResolutionDoc), one field for one doc section. */
+/**
+ * The data of a finished resolution, what {@link MVSResolution} is made from:
+ * the selected package versions, the repairs applied (floor raises), the
+ * constraint violations found and any hard errors (unparseable constraints,
+ * unconstrained-only requirements). It is the walk's result, or the persisted
+ * resolution doc read back (see ResolutionDoc), one field for one doc section
+ * (`errors` excepted: a resolution with errors is never persisted).
+ *
+ * Violations and repairs are data, not a rejection: the consumer decides what
+ * they mean (a strict collection is refused for them; a sealed tool install
+ * accepts the repaired tree).
+ */
 export interface IResolutionData<V> {
   readonly selections: Selected<V>[];
+  readonly errors: IResolutionError[];
   readonly violations: Violation<V>[];
+  /**
+   * Requirement edges a `force` override coerced: `requiredBy` declared
+   * `versionConstraint` on `name`, and the forced version (`selected`) does not
+   * satisfy it. The force suppresses the conflict by design — these are
+   * recorded so the coercion is explainable, never judged as violations (no
+   * fork is packed for them and no delivery refuses them).
+   */
   readonly coerced: Violation<V>[];
+  /**
+   * Provided requirement edges the selection they bind does not satisfy, in a
+   * domain that {@link VersionDomain.providedMismatch tolerates} that: data,
+   * never judged — no delivery refuses them, and only the one selection ships.
+   */
   readonly shared: Violation<V>[];
   readonly raises: RaisedFloor<V>[];
+  /**
+   * The declared requirements of each selected node ({@link nodeId} → its
+   * requirements), i.e. the resolution's edges as the packages declared them.
+   * The walk collects these to compute reachability; handing them back is what
+   * lets a consumer lay the result out — where each edge leads is a pure
+   * function of these plus {@link MVSResolution.selections} (see edgeBinding),
+   * so a layout needs no second read of package metadata. Pruned nodes are not
+   * listed: only what the resolution selected.
+   */
   readonly requirements: Map<NodeId, Requirement[]>;
+  /**
+   * The **resolved** edges of the selected graph: for each node, the selection
+   * each of its requirements binds to, keyed by the name the *requirer* uses
+   * (so a renamed dependency is an edge to the package under the name it is
+   * renamed to). The companion of {@link MVSResolution.requirements}, which is the
+   * same edges as *declared* — kept because explaining a resolution needs the
+   * constraint text, while laying one out needs only where each edge leads.
+   *
+   * Computed here, once, by {@link edgeBinding} — the one rule for what an edge
+   * binds to; a consumer reads the answer rather than recomputing it.
+   */
   readonly edges: Map<NodeId, Map<DependencyName, NodeId>>;
+  /**
+   * Per canonical root (by index), the **index within `selections`** of the
+   * node its requirement binds to — scoped to what that root reaches, so a fork
+   * reachable only from a different root cannot capture it. Undefined for a
+   * root that selects nothing (an `?`-alternate, which demands nothing of its
+   * own).
+   */
   readonly rootBindings: (number | undefined)[];
 }
 
@@ -68,20 +118,21 @@ const NO_EDGES: ReadonlyMap<DependencyName, NodeId> = new Map();
 
 /**
  * A finished resolution **as a graph**: the resolved data plus the indexes
- * every consumer of it asks for, built once at construction. A resolution is
- * immutable and shared by every delivery made from it, so every recurring
- * question — which selection an id names, which selections a package has,
- * what a node violated, what a seed set reaches — is answered from one
- * derivation instead of once per delivery. This IS the loaded resolution
- * (deserialization returns one); a delivery reads it through this face, so it
- * cannot disagree with the resolution it came from.
+ * every consumer of it asks for, built once at construction. It is what the
+ * walk returns and what a persisted resolution is read back as. A resolution
+ * is immutable and shared by every collection point it answers, so every
+ * recurring question — which selection an id names, which selections a
+ * package has, what a node violated, what a seed set reaches — is answered
+ * from one derivation; a consumer reads it through this face, so it cannot
+ * disagree with the resolution it came from.
  *
  * Takes a `versionToString` rather than a whole VersionDomain: a persisted
  * resolution is readable on its own, without the ecosystem's comparison and
  * constraint machinery.
  */
-export class ResolutionGraph<V> implements IResolutionData<V> {
+export class MVSResolution<V> implements IResolutionData<V> {
   public readonly selections: Selected<V>[];
+  public readonly errors: IResolutionError[];
   public readonly violations: Violation<V>[];
   public readonly coerced: Violation<V>[];
   public readonly shared: Violation<V>[];
@@ -96,6 +147,8 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
   /** id → position in {@link selections} — the canonical order, reimposable on
    * any id subset without the domain's comparator. */
   private readonly positions = new Map<NodeId, number>();
+  /** Each selection's position in {@link selections}, by the selection. */
+  private readonly order = new Map<Selected<V>, number>();
   /** id → the dependency names its OPTIONAL-provided requirements bind
    * (optional peers, minus any name a real requirement also demands). Derived
    * lazily — only {@link reachable} asks. */
@@ -106,6 +159,7 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
     data: IResolutionData<V>
   ) {
     this.selections = data.selections;
+    this.errors = data.errors;
     this.violations = data.violations;
     this.coerced = data.coerced;
     this.shared = data.shared;
@@ -117,6 +171,7 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
       const id = this.id(selection);
       this.byId.set(id, selection);
       this.positions.set(id, this.positions.size);
+      this.order.set(selection, this.order.size);
       const candidates = this.byPkg.get(selection.name);
       if (candidates) {
         candidates.push(selection);
@@ -152,6 +207,11 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
       .filter(id => this.byId.has(id))
       .sort((a, b) => this.positions.get(a)! - this.positions.get(b)!)
       .map(id => this.byId.get(id)!);
+  }
+
+  /** Put `selections`, each one of this resolution's, in its canonical order. */
+  public ordered(selections: Iterable<Selected<V>>): Selected<V>[] {
+    return [...selections].sort((a, b) => this.order.get(a)! - this.order.get(b)!);
   }
 
   /** The selections of a package, in the resolution's canonical order — the
@@ -242,7 +302,10 @@ export class ResolutionGraph<V> implements IResolutionData<V> {
         chain.unshift(nodeLabel(this.id(current)));
         break;
       }
-      chain.unshift(`${nodeLabel(this.id(current))} (${via.versionConstraint})`);
+      /* A node required with no version stated is shown alone, and so is a
+       * build, whose label already names the build required. */
+      const stated = via.versionConstraint === undefined || isBuildVersion(via.versionConstraint) ? "" : ` (${via.versionConstraint})`;
+      chain.unshift(`${nodeLabel(this.id(current))}${stated}`);
       current = this.byId.get(via.requiredBy);
     }
     return chain;
@@ -265,7 +328,7 @@ export function reachableFrom(
   edges: ReadonlyMap<NodeId, ReadonlyMap<DependencyName, NodeId>>,
   seeds: Iterable<NodeId>,
   /** Edge names of a node the walk must NOT follow — its optional-provided
-   * bindings, which confer no reachability (see {@link ResolutionGraph.reachable}). */
+   * bindings, which confer no reachability (see {@link MVSResolution.reachable}). */
   skip?: (id: NodeId) => ReadonlySet<DependencyName> | undefined
 ): Set<NodeId> {
   const reached = new Set<NodeId>();
@@ -371,8 +434,9 @@ export function resolutionExplainer<V>(
   /* A bare selection list explained as a graph with nothing else in it — the
    * synthetic case (a bare package's minted origin, a delivery slice) where no
    * loaded resolution stands behind the selections. */
-  return new ResolutionGraph(versionToString, {
+  return new MVSResolution(versionToString, {
     selections: [...selections],
+    errors: [],
     violations: [],
     coerced: [],
     shared: [],
@@ -381,17 +445,5 @@ export function resolutionExplainer<V>(
     edges: new Map(),
     rootBindings: [],
   }).explainer();
-}
-
-/**
- * The names `selections` selects more than one version of — the fact a strict
- * (linked) delivery rejects and a sealed one nests.
- */
-export function coexistingVersions<V>(selections: readonly Selected<V>[]): Array<[string, V[]]> {
-  const byPkg = new Map<string, V[]>();
-  for (const sel of selections) {
-    byPkg.set(sel.name, [...(byPkg.get(sel.name) ?? []), sel.version]);
-  }
-  return [...byPkg].filter(([, versions]) => versions.length > 1);
 }
 

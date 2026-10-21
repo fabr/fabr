@@ -18,209 +18,309 @@
  */
 
 /**
- * The strict (linked) check of a collection point: over everything a
- * consumer uses together — every delivery from every source — a package may
- * ship at one version only, unless each version it ships is sanctioned.
+ * The strict (linked) check of a collection point: over everything a consumer
+ * uses together, a package may ship at one version only, unless each version
+ * it ships is sanctioned.
  *
- * A delivery records what it ships and how to explain it
- * ({@link IDeliveryFacts}, carried on its packages' resolution provenance);
- * the collection point gathers those records from what it was delivered and
- * checks them together. A violation recorded by a resolution counts only
- * where a version the consumer actually ships fails it — the resolution's
- * principal may belong to a member this consumer never reaches.
+ * It is made at the end of the collection point's resolution, from what the
+ * collection resolves to (what ships) and the resolutions it was answered
+ * from. A violation a resolution recorded counts only where a version the
+ * consumer actually ships fails it: the resolution's principal may belong to a
+ * member this consumer never reaches.
  */
 
 import { Computable } from "../core/Computable";
 import { MultiError, RequirementResolutionError } from "../core/Errors";
 import { FileSetRef } from "../core/FileSetRef";
-import { PackageFileSet } from "../core/PackageFileSet";
+import { isPackage, Package } from "../core/PackageFileSet";
 import { IProvenanceStep } from "../core/Provenance";
-import type { RepositoryRef } from "../core/Repository";
+import { isRepositoryCollection, ProjectedPackage, RepositoryReader, RepositoryRef } from "../core/Repository";
+import { PackageRequest, Resolution } from "./Types";
 import { violatedAmong } from "./Overrides";
-import { violationKey, violationKeys } from "./Requirement";
-import { ResolutionExplainer, ResolutionGraph } from "./ResolutionGraph";
-import { PACKAGE_RESOLUTION_PROVENANCE, type IResolutionOrigin } from "./ResolutionProvenance";
+import { BUILDS_ALONE, violationKey, violationKeys } from "./Requirement";
+import { ResolutionExplainer, MVSResolution } from "./MVSResolution";
 import { conflictError, RefRenderer, sanctionHelp, suggestSanctions, SuggestSources } from "./ResolutionReport";
 import { Requirement, ROOT_REQUIRER, Selected, VersionDomain, Violation } from "./Types";
 
 /**
- * What one delivery ships and everything needed to explain it: the facts a
- * collection point judges, recorded by the resolution layer where they are at
- * hand. Runtime-only, like the provenance that carries it.
+ * A resolution a collection was answered from, with what the collection asked
+ * of it.
  */
-export interface IDeliveryFacts<V = unknown, C = unknown> {
-  /** The versions' domain — deliveries are judged together only within one. */
+export interface ResolvedBatch {
+  /** The registry the batch was asked of; none for builds resolved alone. */
+  readonly registry?: RepositoryReader<unknown, unknown>;
+  readonly resolution: Resolution;
+  /** The collection's requests the resolution answered. */
+  readonly requests: ReadonlyArray<PackageRequest>;
+  /** Whether the collection's own builds were resolved in it, their
+   * requirements among its roots. */
+  readonly builds: boolean;
+}
+
+/**
+ * A resolution as the strict check reads it: made from a {@link
+ * ResolvedBatch} when the collection is checked.
+ */
+export interface CheckedResolution<V = unknown, C = unknown> {
+  /** The versions' domain, builds among them. */
   readonly domain: VersionDomain<V, C>;
-  /** The resolution the delivery was cut from. */
-  readonly graph: ResolutionGraph<V>;
-  /** The selections the delivery ships. */
-  readonly needed: readonly Selected<V>[];
-  /** The requirements the delivery was asked for, as written — `?`
-   * alternates included. */
+  /** The format the resolution is of ({@link BUILDS_ALONE} for builds
+   * alone): resolutions are checked together only within one. */
+  readonly format: object;
+  readonly graph: MVSResolution<V>;
+  /** The requirements the collection made of it, as written: `?` alternates
+   * included. */
   readonly requested: readonly Requirement[];
   /** The versions written as sanctioned (`?`, or an exact pin), by package. */
   readonly written: ReadonlyMap<string, ReadonlySet<string>>;
   readonly refText: RefRenderer;
+  /** Find the selection of this resolution that `pkg` is, if it is one. */
+  selectionOf(pkg: Package): Selected<V> | undefined;
+  /** The provenance of the build a selection is, where it is one: where it
+   * was required. */
+  buildOrigin(selection: Selected<V>): IProvenanceStep | undefined;
   /** The registry access a remedy is computed and verified with. */
   sources(): SuggestSources<V, C>;
 }
 
-/** The delivery facts a package was delivered with, found on its provenance
- * chain; none for a package no resolution delivered. */
-export function deliveryFactsOf(pkg: PackageFileSet): IDeliveryFacts | undefined {
-  for (let step: IProvenanceStep | undefined = pkg.origin; step !== undefined; step = step.parent) {
-    if (step.kind === PACKAGE_RESOLUTION_PROVENANCE) {
-      return (step as IResolutionOrigin<unknown>).delivery;
-    }
+/** The versions that conflict in a collection. */
+export class Conflicts {
+  constructor(
+    /** Each package shipping at versions that conflict, by name, with those
+     * versions as its resolution writes them. */
+    public readonly versions: ReadonlyMap<string, ReadonlySet<string>>,
+    private readonly among: (pkg: Package) => boolean,
+    private readonly refusal: () => Computable<Error | undefined>
+  ) {}
+
+  /** The number of packages that conflict. */
+  public get size(): number {
+    return this.versions.size;
   }
-  return undefined;
+
+  /** Check whether `pkg` is one of the versions that conflict. */
+  public includes(pkg: Package): boolean {
+    return this.among(pkg);
+  }
+
+  /** Make the error a strict collection is refused with, or undefined where
+   * nothing conflicts. Made on the first call, once. */
+  public error(): Computable<Error | undefined> {
+    return this.refusal();
+  }
 }
+
+/** The conflicts of a collection where nothing conflicts. */
+export const NO_CONFLICTS = new Conflicts(new Map(), () => false, () => Computable.resolve(undefined));
 
 /**
- * Judge a strict collection point: `delivered` is each written reference and
- * what it delivered. Rejects with the conflicts — attributed to the references
- * whose deliveries take part — or resolves when there are none. `dropped`
- * names what a delivery shipped that the collection does not hold after
- * binding (see bindProvided); such a version takes no part.
+ * Find what conflicts in a collection. `resolutions` are the resolutions it
+ * was answered from, `shipped` what it resolves to, and `finished` each
+ * written reference with what it resolved to: a conflict is attributed to the
+ * references whose closures hold a package taking part in it.
  */
-export function checkStrictCollection(
-  delivered: ReadonlyMap<RepositoryRef, unknown>,
-  dropped?: (name: string, version: string) => boolean
-): Computable<void> {
-  const culprits = factsByReference(delivered);
-  const byDomain = new Map<VersionDomain<unknown, unknown>, IDeliveryFacts[]>();
-  for (const facts of culprits.keys()) {
-    byDomain.set(facts.domain, [...(byDomain.get(facts.domain) ?? []), facts]);
+export function findConflicts(
+  resolutions: ReadonlyArray<CheckedResolution>,
+  shipped: ReadonlyArray<unknown>,
+  finished: ReadonlyMap<RepositoryRef, unknown>
+): Conflicts {
+  if (resolutions.length === 0) {
+    return NO_CONFLICTS;
   }
-  const judged = [...byDomain.values()].map(group => checkDomain(group, culprits, dropped));
-  return Computable.forAll(judged, (...errors: Array<Error | undefined>) => {
-    const failures = errors.filter((error): error is Error => error !== undefined);
-    if (failures.length > 0) {
-      throw MultiError.of(failures);
-    }
-    return Computable.resolve(undefined);
-  });
-}
-
-/** Each delivery's facts, with the references whose delivered closures hold
- * it. */
-function factsByReference(delivered: ReadonlyMap<RepositoryRef, unknown>): Map<IDeliveryFacts, Set<RepositoryRef>> {
-  const culprits = new Map<IDeliveryFacts, Set<RepositoryRef>>();
-  for (const [reference, value] of delivered) {
-    const visited = new Set<PackageFileSet>();
-    const pending: unknown[] = [value];
-    while (pending.length > 0) {
-      const next = pending.pop();
-      const pkg = next instanceof FileSetRef ? next.source : next;
-      if (!(pkg instanceof PackageFileSet) || visited.has(pkg)) {
-        continue;
-      }
-      visited.add(pkg);
-      const facts = deliveryFactsOf(pkg);
-      if (facts !== undefined) {
-        culprits.set(facts, (culprits.get(facts) ?? new Set()).add(reference));
-      }
-      pending.push(...pkg.dependencies);
+  const byFormat = new Map<object, CheckedResolution[]>();
+  for (const resolution of resolutions) {
+    byFormat.set(resolution.format, [...(byFormat.get(resolution.format) ?? []), resolution]);
+  }
+  /* Builds alone belong to no format, and are checked with each. */
+  const alone = byFormat.get(BUILDS_ALONE);
+  if (alone !== undefined && byFormat.size > 1) {
+    byFormat.delete(BUILDS_ALONE);
+    for (const [format, group] of byFormat) {
+      byFormat.set(format, [...group, ...alone]);
     }
   }
-  return culprits;
+  const packages = closureOf(shipped);
+  const found = [...byFormat.values()].map(group => checkDomain(group, packages));
+
+  const conflicts = new Map<string, Set<string>>();
+  for (const { conflicts: inDomain } of found) {
+    for (const [name, versions] of inDomain) {
+      conflicts.set(name, new Set([...(conflicts.get(name) ?? []), ...versions]));
+    }
+  }
+  if (conflicts.size === 0) {
+    return NO_CONFLICTS;
+  }
+  let reported: Computable<Error | undefined> | undefined;
+  return new Conflicts(
+    conflicts,
+    pkg => found.some(domain => domain.conflicting(pkg)),
+    () =>
+      (reported ??= Computable.forAll(
+        found.map(domain => domain.report(finished)),
+        (...errors: Array<Error | undefined>) => {
+          const failures = errors.filter((error): error is Error => error !== undefined);
+          return failures.length === 0 ? undefined : MultiError.of(failures);
+        }
+      ))
+  );
 }
 
-/** One version shipped, and the deliveries shipping it. */
-interface IShipped<V> {
+/** Get every package `sources` hold or reach, each once. A projection
+ * pending over a package holds the package. */
+function closureOf(sources: ReadonlyArray<unknown>): Package[] {
+  const visited = new Set<Package>();
+  const pending: unknown[] = [...sources];
+  while (pending.length > 0) {
+    const next = pending.pop();
+    const pkg = next instanceof FileSetRef ? next.source : next instanceof ProjectedPackage ? next.base : next;
+    if (!isPackage(pkg) || visited.has(pkg)) {
+      continue;
+    }
+    visited.add(pkg);
+    pending.push(...pkg.packages);
+  }
+  return [...visited];
+}
+
+/** One version shipped, and the resolutions it is a selection of. */
+interface IShipped<V, C> {
   readonly selection: Selected<V>;
-  readonly by: IDeliveryFacts<V>[];
+  readonly by: CheckedResolution<V, C>[];
 }
 
-/** The judgment of the deliveries in one domain, as the error it fails with. */
-function checkDomain<V, C>(
-  group: IDeliveryFacts<V, C>[],
-  culprits: ReadonlyMap<IDeliveryFacts, ReadonlySet<RepositoryRef>>,
-  dropped?: (name: string, version: string) => boolean
-): Computable<Error | undefined> {
+/** What conflicts within one domain, and how to report it. */
+interface DomainConflicts {
+  readonly conflicts: ReadonlyMap<string, ReadonlySet<string>>;
+  conflicting(pkg: Package): boolean;
+  report(finished: ReadonlyMap<RepositoryRef, unknown>): Computable<Error | undefined>;
+}
+
+/** Find what conflicts among the resolutions of one domain, given what ships
+ * (`packages`). */
+function checkDomain<V, C>(group: CheckedResolution<V, C>[], packages: ReadonlyArray<Package>): DomainConflicts {
   const { domain } = group[0];
-  /* Everything shipped, one entry per version of each package. */
-  const shipped = new Map<string, Map<string, IShipped<V>>>();
-  for (const facts of group) {
-    for (const selection of facts.needed) {
+  /* Each resolution's selections that ship, in its own canonical order, and
+   * everything shipped: one entry per version of each package. */
+  const needed = new Map(
+    group.map(resolution => {
+      const shipping = new Set(packages.flatMap(pkg => resolution.selectionOf(pkg) ?? []));
+      return [resolution, resolution.graph.ordered(shipping)] as const;
+    })
+  );
+  const shipped = new Map<string, Map<string, IShipped<V, C>>>();
+  for (const [resolution, selections] of needed) {
+    for (const selection of selections) {
       const text = domain.versionToString(selection.version);
-      if (dropped?.(selection.name, text) === true) {
-        continue;
-      }
-      const versions = shipped.get(selection.name) ?? new Map<string, IShipped<V>>();
+      const versions = shipped.get(selection.name) ?? new Map<string, IShipped<V, C>>();
       shipped.set(selection.name, versions);
       const held = versions.get(text);
-      versions.set(text, held === undefined ? { selection, by: [facts] } : { selection: held.selection, by: [...held.by, facts] });
+      versions.set(text, held === undefined ? { selection, by: [resolution] } : { selection: held.selection, by: [...held.by, resolution] });
     }
   }
   const written = new Map<string, Set<string>>();
-  for (const facts of group) {
-    for (const [pkg, versions] of facts.written) {
+  for (const resolution of group) {
+    for (const [pkg, versions] of resolution.written) {
       written.set(pkg, new Set([...(written.get(pkg) ?? []), ...versions]));
     }
   }
   const sanctioned = (pkg: string): boolean => [...(shipped.get(pkg)?.keys() ?? [])].every(version => written.get(pkg)?.has(version) === true);
   const shippedOf = (pkg: string): Selected<V>[] => [...(shipped.get(pkg)?.values() ?? [])].map(entry => entry.selection);
 
-  /* Each delivery's recorded violations in its own scope — its requested
-   * roots, and the requirers it ships — that a version shipped here fails. */
-  const violations = new Map<Violation<V>, IDeliveryFacts<V>>();
-  for (const facts of group) {
-    const requested = violationKeys(facts.requested);
+  /* Each resolution's recorded violations in its own scope — the roots the
+   * collection asked of it, and the requirers it ships — that a version
+   * shipped here fails. */
+  const violations = new Map<Violation<V>, CheckedResolution<V, C>>();
+  for (const resolution of group) {
+    const { graph } = resolution;
+    const requested = violationKeys(resolution.requested);
     const recorded = [
-      ...facts.graph.violationsOf(ROOT_REQUIRER).filter(violation => requested.has(violationKey(violation))),
-      ...facts.needed.flatMap(selection => facts.graph.violationsOf(facts.graph.id(selection))),
+      ...graph.violationsOf(ROOT_REQUIRER).filter(violation => requested.has(violationKey(violation))),
+      ...needed.get(resolution)!.flatMap(selection => graph.violationsOf(graph.id(selection))),
     ];
     for (const violation of recorded) {
       if (!violations.has(violation) && !sanctioned(violation.name) && violatedAmong(domain, shippedOf(violation.name), violation)) {
-        violations.set(violation, facts);
+        violations.set(violation, resolution);
       }
     }
   }
   const duplicates: Array<[string, V[]]> = [...shipped]
     .filter(([pkg, versions]) => versions.size > 1 && !sanctioned(pkg))
     .map(([pkg, versions]) => [pkg, [...versions.values()].map(entry => entry.selection.version).sort((a, b) => domain.compare(a, b))]);
-  if (violations.size === 0 && duplicates.length === 0) {
-    return Computable.resolve(undefined);
+  const conflicted = new Set([...violations.keys()].map(violation => violation.name).concat(duplicates.map(([pkg]) => pkg)));
+  const conflicts = new Map([...conflicted].map(pkg => [pkg, new Set(shipped.get(pkg)?.keys() ?? [])] as const));
+  const conflicting = (pkg: Package): boolean =>
+    group.some(resolution => {
+      const selection = resolution.selectionOf(pkg);
+      return selection !== undefined && conflicts.get(selection.name)?.has(domain.versionToString(selection.version)) === true;
+    });
+  if (conflicted.size === 0) {
+    return { conflicts, conflicting, report: () => Computable.resolve(undefined) };
   }
-
-  /* The deliveries taking part: those owning a violation, and those shipping a
-   * version of a conflicted package. */
-  const involved = new Set<IDeliveryFacts<V>>(violations.values());
-  for (const [pkg] of duplicates) {
-    for (const entry of shipped.get(pkg)!.values()) {
-      entry.by.forEach(facts => involved.add(facts));
-    }
-  }
-  const members = [...involved];
-  const graphs = [...new Set(members.map(facts => facts.graph))];
-  const needed = [...shipped.values()].flatMap(versions => [...versions.values()].map(entry => entry.selection));
-  const outstanding = [...violations.keys()];
-  const refText = members[0].refText;
-  const explaining = graphs.length === 1 ? graphs[0] : combinedExplanation(graphs);
-  /* One resolution behind every part of the conflict: its remedy is computed
-   * and verified against it, as for a single delivery. Several resolutions
-   * have no joint one to verify a pin against, so the remedy is the sanction
-   * set. */
-  const suggestion =
-    graphs.length === 1
-      ? suggestSanctions(outstanding, graphs[0], needed, members.flatMap(facts => facts.requested), written, members[0].sources())
-      : Computable.resolve(sanctionHelp(conflictedSanctions(outstanding, duplicates, shipped, written, domain, refText)));
-  return suggestion.then(help => {
-    const error = conflictError(outstanding, duplicates, needed, explaining, refText, written, help);
-    const references = [...new Set(members.flatMap(facts => [...(culprits.get(facts as IDeliveryFacts) ?? [])]))];
-    return Computable.resolve<Error | undefined>(
-      references.length > 0 ? new RequirementResolutionError(references, error) : error
-    );
-  });
+  return {
+    conflicts,
+    conflicting,
+    report: finished => {
+      /* The resolutions taking part: those owning a violation, and those of
+       * which a version of a conflicted package is a selection. */
+      const involved = new Set<CheckedResolution<V, C>>(violations.values());
+      for (const pkg of conflicted) {
+        for (const entry of shipped.get(pkg)?.values() ?? []) {
+          entry.by.forEach(resolution => involved.add(resolution));
+        }
+      }
+      const members = [...involved];
+      const graphs = [...new Set(members.map(resolution => resolution.graph))];
+      const all = [...shipped.values()].flatMap(versions => [...versions.values()].map(entry => entry.selection));
+      const outstanding = [...violations.keys()];
+      const refText = members[0].refText;
+      const explaining = graphs.length === 1 ? graphs[0] : combinedExplanation(graphs);
+      /* One resolution behind every part of the conflict: its remedy is
+       * computed and verified against it. Several resolutions have no joint one
+       * to verify a pin against, so the remedy is the sanction set. */
+      const suggestion =
+        graphs.length === 1
+          ? suggestSanctions(outstanding, graphs[0], all, members.flatMap(resolution => resolution.requested), written, members[0].sources())
+          : Computable.resolve(sanctionHelp(conflictedSanctions(outstanding, duplicates, shipped, written, domain, refText)));
+      return suggestion.then(help => {
+        const error = conflictError(outstanding, duplicates, all, explaining, refText, written, help);
+        /* A reference takes part where its closure holds a version of a
+         * conflicted package, or the requirer of a violation. */
+        const requirers = new Set(outstanding.map(violation => violation.requiredBy));
+        const takesPart = (pkg: Package): boolean => conflicted.has(pkg.packageName) || requirers.has(pkg.packageId);
+        const references = [...finished].filter(([, value]) => closureOf([value]).some(takesPart)).map(([reference]) => reference);
+        /* A build takes part where it is a version of a conflicted package. */
+        const builds = [
+          ...new Set(
+            [...conflicted].flatMap(pkg =>
+              [...(shipped.get(pkg)?.values() ?? [])].flatMap(entry => entry.by.flatMap(resolution => resolution.buildOrigin(entry.selection) ?? []))
+            )
+          ),
+        ];
+        /* A catalog's member is attributed to the catalog's entry for it,
+         * found on its origin: its reference does not name the entry. */
+        const origins = new Map(
+          references.flatMap(reference => {
+            const value = finished.get(reference);
+            return isRepositoryCollection(reference.source) && isPackage(value) && value.origin !== undefined
+              ? [[reference, value.origin] as const]
+              : [];
+          })
+        );
+        return Computable.resolve<Error | undefined>(
+          references.length > 0 || builds.length > 0 ? new RequirementResolutionError(references, error, builds, origins) : error
+        );
+      });
+    },
+  };
 }
 
 /** The `?` lines completing each conflicted package's sanction: every version
  * shipped, less those already written. */
-function conflictedSanctions<V>(
+function conflictedSanctions<V, C>(
   outstanding: readonly Violation<V>[],
   duplicates: ReadonlyArray<[string, V[]]>,
-  shipped: ReadonlyMap<string, ReadonlyMap<string, IShipped<V>>>,
+  shipped: ReadonlyMap<string, ReadonlyMap<string, IShipped<V, C>>>,
   written: ReadonlyMap<string, ReadonlySet<string>>,
   domain: VersionDomain<V, unknown>,
   refText: RefRenderer
@@ -238,9 +338,9 @@ function conflictedSanctions<V>(
 
 /** An explanation over several resolutions: a node is explained by the first
  * resolution holding it, and its path through that same resolution. */
-function combinedExplanation<V>(graphs: readonly ResolutionGraph<V>[]): Pick<ResolutionGraph<V>, "versionToString" | "explainer"> {
+function combinedExplanation<V>(graphs: readonly MVSResolution<V>[]): Pick<MVSResolution<V>, "versionToString" | "explainer"> {
   const explainers = graphs.map(graph => graph.explainer());
-  const owners = new WeakMap<Selected<V>, ResolutionExplainer<V>>();
+  const owners = new Map<Selected<V>, ResolutionExplainer<V>>();
   const explainer: ResolutionExplainer<V> = {
     id: selection => (owners.get(selection) ?? explainers[0]).id(selection),
     find: id => {

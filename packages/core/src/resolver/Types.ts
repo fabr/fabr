@@ -18,6 +18,11 @@
  */
 
 import { Computable } from "../core/Computable";
+import type { FileSet } from "../core/FileSet";
+import type { Package, PackageFileSet } from "../core/PackageFileSet";
+import type { RefSource, RepositoryReader, RepositoryRef } from "../core/Repository";
+import type { TaskDescription } from "../model/BuildEvents";
+import type { ITaskReport } from "../support/Execute";
 
 /** A bare package name — the per-name slot minimal version selection selects
  * over, and the namespace a {@link Requirement} demands from. */
@@ -206,65 +211,6 @@ export interface RaisedFloor<V> {
   requiredBy: NodeId;
 }
 
-/**
- * The complete result of a resolution: the selected package versions, plus the
- * repairs applied (floor raises) and constraint violations found, plus any
- * hard errors (unparseable constraints, unconstrained-only requirements).
- *
- * Violations and repairs are reported as data, not by rejecting the
- * Computable: the consumer decides what they mean (strict consumers error at
- * delivery; sealed tool deliveries accept the repaired tree).
- */
-export interface MVSResolution<V> {
-  selections: Selected<V>[];
-  errors: IResolutionError[];
-  violations: Violation<V>[];
-  /**
-   * Requirement edges a `force` override coerced: `requiredBy` declared
-   * `versionConstraint` on `name`, and the forced version (`selected`) does not
-   * satisfy it. The force suppresses the conflict by design — these are
-   * recorded so the coercion is explainable, never judged as violations (no
-   * fork is packed for them and no delivery refuses them).
-   */
-  coerced: Violation<V>[];
-  /**
-   * Provided requirement edges the selection they bind does not satisfy, in a
-   * domain that {@link VersionDomain.providedMismatch tolerates} that: data,
-   * never judged — no delivery refuses them, and only the one selection ships.
-   */
-  shared: Violation<V>[];
-  raises: RaisedFloor<V>[];
-  /**
-   * The declared requirements of each selected node ({@link nodeId} → its
-   * requirements), i.e. the resolution's edges as the packages declared them.
-   * The walk collects these to compute reachability; handing them back is what
-   * lets a consumer lay the result out — where each edge leads is a pure
-   * function of these plus {@link MVSResolution.selections} (see edgeBinding),
-   * so a layout needs no second read of package metadata. Pruned nodes are not
-   * listed: only what the resolution selected.
-   */
-  requirements: Map<NodeId, Requirement[]>;
-  /**
-   * The **resolved** edges of the selected graph: for each node, the selection
-   * each of its requirements binds to, keyed by the name the *requirer* uses
-   * (so a renamed dependency is an edge to the package under the name it is
-   * renamed to). The companion of {@link MVSResolution.requirements}, which is the
-   * same edges as *declared* — kept because explaining a resolution needs the
-   * constraint text, while laying one out needs only where each edge leads.
-   *
-   * Computed here, once, by {@link edgeBinding} — the one rule for what an edge
-   * binds to; a consumer reads the answer rather than recomputing it.
-   */
-  edges: Map<NodeId, Map<DependencyName, NodeId>>;
-  /**
-   * Per canonical root (by index), the **index within `selections`** of the
-   * node its requirement binds to — scoped to what that root reaches, so a fork
-   * reachable only from a different root cannot capture it. Undefined for a
-   * root that selects nothing (an `?`-alternate, which demands nothing of its
-   * own).
-   */
-  rootBindings: (number | undefined)[];
-}
 
 /**
  * A hard resolution error, attributed to the root package whose subtree
@@ -412,4 +358,119 @@ export interface RequirementSource<V> {
    * registry without this hook keeps unpublished floors as hard failures.
    */
   lowestAvailable?(name: string, versionConstraint: string): Computable<V | undefined>;
+}
+
+/**
+ * One resolved root of a {@link Resolution}: the input reference and the name it
+ * is *delivered* as — the one thing a caller can read out of an otherwise-opaque
+ * Resolution, so it can key/address entries (a catalog keys its members by this)
+ * *without* fetching them. `name` is the identity the repository addresses
+ * entries by (npm: the package name), or — when the reference writes a rename —
+ * the name that rename gives the delivery (see {@link renamedAs}), so an
+ * addressing key and the package it addresses can never disagree.
+ */
+export interface ResolvedRoot {
+  readonly reference: RepositoryRef;
+  readonly name: string;
+}
+
+/**
+ * The result of resolving a registry's batch (`resolvePackages`): versions and
+ * dependency tree, nothing fetched. Opaque except for `roots`; the selection
+ * and tree live in a private subtype, read back by `packageClosure`.
+ */
+export interface Resolution {
+  readonly roots: ReadonlyArray<ResolvedRoot>;
+}
+
+/**
+ * One reference a collection point resolves, and what is wanted of it:
+ *
+ * - `"package"` — the package it names, resolved jointly with the rest of its
+ *   repository's batch: a requirement of the collection's own, so what is
+ *   written on it — an exact pin, a `?`, a `!` — is the collection's;
+ * - `"carried"` — the package a built package among the sources requires by
+ *   it: an edge of that package's node in the resolution, bound like any
+ *   package's requirement, with nothing written on it the collection's;
+ * - `"files"` — the files its projection selects, on their own: it joins no
+ *   resolution, pins nothing and brings no closure (see {@link fileRequests});
+ * - `"instance"` — the package it names, on its own: it joins no resolution and
+ *   pins nothing, and the package carries the requirements it declares as
+ *   references to the same repository, for the collection point it reaches to
+ *   resolve (see {@link instanceRequests}).
+ */
+export interface PackageRequest {
+  readonly reference: RepositoryRef;
+  readonly as: "package" | "carried" | "files" | "instance";
+}
+
+/**
+ * What the resolution layer needs from the CONSUMING collection point — the
+ * operation the references are consumed under (a global-config read), the
+ * resolve-phase memo store, and progress reporting. Every TargetContext
+ * satisfies it structurally; the repositories themselves contribute only
+ * per-name answers (their captured contexts stay their own business, for
+ * their own transports).
+ */
+export interface ResolutionContext {
+  /** Whose collection point this is — the consuming target's name, or a
+   *  catalog's. Reported as the subject of the resolution work. */
+  readonly name: string;
+  /**
+   * The packages this context was given already bound — a sub-target's
+   * inputs, which its creator collected. One among the sources of a
+   * collection here is delivered as it stands, like an
+   * {@link instanceRequests instance}: its edges were resolved where it came
+   * from, with requirements this context does not hold.
+   */
+  readonly given?: ReadonlySet<PackageFileSet>;
+  getGlobalString(name: string): Computable<string>;
+  memoize(tag: string, key: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet>;
+  runTask<T>(task: TaskDescription, run: (report: ITaskReport) => Computable<T>): Computable<T>;
+}
+
+/**
+ * A collection point's sources **resolved**: every reference they hold
+ * or carry, as it is asked of its repository, and each registry's joint
+ * resolution of its batch — computed when first wanted, once, and fetching
+ * nothing. Any subset of the sources is delivered from it
+ * ({@link resolveSources}) under the one selection.
+ */
+export interface ResolvedCollection {
+  readonly requests: ReadonlyMap<RepositoryRef, PackageRequest>;
+  readonly resolutions: ReadonlyMap<RefSource, () => Computable<Resolution>>;
+  /**
+   * The resolution the packages built in the project are bound from, and its
+   * registry: that of the registry whose package a `!` gave a build's name to,
+   * else any registry's (each holds every build), else a resolution of the
+   * builds alone. Absent where the sources hold or reach no build.
+   */
+  readonly builds?: { readonly registry?: RepositoryReader<unknown, unknown>; readonly resolution: () => Computable<Resolution> };
+  /** The packages built in the project that the sources hold or reach, by
+   * content key: the candidates the resolutions hold beside published ones. */
+  readonly locals: ReadonlyMap<string, Package>;
+  /**
+   * The build that answers for each name within what another collection
+   * resolved (a catalog's member and what it reaches): the one the collection
+   * requires outright, or the forced one where it requires several of that
+   * name. A package of that name there is replaced by it.
+   */
+  readonly members: ReadonlyMap<string, Package>;
+  /** The packages among the sources taken as {@link instanceRequests
+   * instances}: delivered as they stand, and no candidate. */
+  readonly instances: ReadonlySet<Package>;
+}
+
+/**
+ * A member of a collection a repository resolved, as
+ * {@link RepositoryCollection.member} answers it. The collection point that
+ * asked delivers it.
+ */
+export interface ResolvedMember {
+  readonly collection: ResolvedCollection;
+  /** The member, as a source of that collection. */
+  readonly entry: RepositoryRef | Package;
+  /** The operation of the configuration the repository was made in: what the
+   * member is answered with, as for {@link RepositoryReader.operation}. */
+  readonly operation: string;
 }

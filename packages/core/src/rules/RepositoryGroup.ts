@@ -23,21 +23,19 @@ import { Name } from "../core/Name";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { FileSet } from "../core/FileSet";
 import {
-  isRepository,
   isRepositoryReader,
   Repository,
   RepositoryPublishRef,
   RepositoryReader,
   RepositoryRef,
   SourceRef,
-  MaterializeOptions,
-  ClosureThunk,
 } from "../core/Repository";
-import { TargetContext } from "../model/BuildContext";
+import { TargetContext } from "../context/index";
 import { Requirement, Selected } from "../resolver/Types";
 import { PackageFormat } from "../resolver/PackageFormat";
 import { vendPackageRef } from "../resolver/PackageResolver";
 import { contentPackageMember } from "./ContentPackage";
+import { NamespaceRef } from "../core/NamespaceRef";
 import { RepositoryRegistration } from "./Types";
 
 /**
@@ -247,18 +245,15 @@ export class RepositoryGroup<V, C>
     return member?.availableVersions ? member.availableVersions(pkg) : Computable.resolve(undefined);
   }
 
-  /** Delegated like every other reader method: the member serving this name
-   * decides its own delivery. A group routes, it does not deliver — and the
-   * shape is not uniform across members, since a content route's package is its
-   * own (see contentPackageMember), not this group's format's. */
-  public deliver(reference: RepositoryRef, options?: MaterializeOptions, closure?: ClosureThunk): Computable<FileSet> {
-    const member = this.routed(reference.name);
-    return member instanceof Error ? Computable.reject(member) : member.deliver(reference, options, closure);
+  /** The operation of this group's configuration: its members are declared
+   * under the same one. */
+  public get operation(): string {
+    return this.context.operation;
   }
 
-  public deliverFiles(reference: RepositoryRef): Computable<FileSet> {
+  public fetchFiles(reference: RepositoryRef): Computable<FileSet> {
     const member = this.routed(reference.name);
-    return member instanceof Error ? Computable.reject(member) : member.deliverFiles(reference);
+    return member instanceof Error ? Computable.reject(member) : member.fetchFiles(reference);
   }
 
   /** Environment keys deduplicated across the members — with a shared format
@@ -441,7 +436,7 @@ interface ContentRoute {
  * joint resolution exactly as a registry-served package does.
  */
 function routeValue(groupName: string, routeName: string, sources: readonly SourceRef[]): RegistryRoute | ContentRoute {
-  const repositories = sources.filter(isRepository);
+  const repositories = sources.filter((source): source is NamespaceRef => source instanceof NamespaceRef).map(named => named.repository);
   if (repositories.length === 0) {
     if (sources.length !== 1) {
       throw new FabrError(

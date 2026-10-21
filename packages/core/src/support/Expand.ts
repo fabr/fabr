@@ -42,7 +42,7 @@ import { unpackStream } from "./Unpack";
 /**
  * The boundary action the walker is parameterized by: an archive file's
  * contents as a FileSet, named relative to the archive root. Production binds
- * this to the resolver's cached expansion (BuildContext.expandArchive — the
+ * this to the build context's cached expansion (BuildContextImpl.expandArchive — the
  * one owner of the traversal, with the BuildCache in hand); a caller with no
  * cache (tests) binds {@link expandOnce}.
  */
@@ -185,7 +185,7 @@ function descend(candidate: BoundaryCandidate, pattern: Name, prefix: string, ex
 
 /**
  * THE expansion: read the whole archive into memory and unpack it. Cached use
- * wraps this ({@link BuildContext.expandArchive} memoizes it in the build
+ * wraps this (`BuildContextImpl.expandArchive` memoizes it in the build
  * cache, keyed on the file's content hash); a cache-less caller (tests) uses
  * it directly as its {@link ExpandFn}. A non-archive yields an empty set
  * rather than an error: "this file has no contents to address into" is the
@@ -208,7 +208,7 @@ export const EXPAND_TAG = "expand:1";
 
 /** An in-memory sink for {@link unpackStream}: entries land as MemoryFiles,
  *  which whoever caches the expansion then ingests (see
- *  BuildContext.expandArchive → BuildCache). */
+ *  BuildContextImpl.expandArchive → BuildCache). */
 class MemoryOutput implements IOutputHandle {
   private readonly chunks: Buffer[] = [];
 

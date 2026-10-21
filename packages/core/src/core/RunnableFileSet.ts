@@ -19,7 +19,8 @@
 
 import * as path from "path";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "./FileSet";
-import { FileSetRef, IProjection } from "./FileSetRef";
+import { FileSetRef } from "./FileSetRef";
+import { IProjection } from "./Reference";
 import { IProvenanceStep } from "./Provenance";
 import type { Repository } from "./Repository";
 import { SymlinkFile } from "./SymlinkFile";

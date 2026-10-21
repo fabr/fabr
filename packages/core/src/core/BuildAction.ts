@@ -22,11 +22,11 @@
  * by, and the run contract a step is handed and answers with.
  */
 
+import type { Reference } from "./Reference";
 import { Computable } from "./Computable";
 import { FileSet } from "./FileSet";
 import { hashString } from "./FSWrapper";
 import { PackageFileSet } from "./PackageFileSet";
-import { RepositoryRef } from "./Repository";
 import { ABSENT_PREFIX, DiscoveredDeps, encodeName } from "./Manifest";
 import { Name } from "./Name";
 import type { ActionContext } from "./BuildCache";
@@ -404,7 +404,7 @@ export function walkPackages(members: ReadonlyArray<FileSet>, reached: (pkg: Pac
   }
   for (let i = 0; i < queue.length; i++) {
     const here = firstSeen.get(queue[i])!;
-    for (const dep of packageMembers(queue[i].dependencies)) {
+    for (const dep of packageMembers(queue[i].packages)) {
       reach(dep, [...here, dep.packageName]);
     }
   }
@@ -412,7 +412,7 @@ export function walkPackages(members: ReadonlyArray<FileSet>, reached: (pkg: Pac
 
 /** The package members of a list, in canonical order — by delivered name, then
  * by content, two instances of one name being distinct nodes. */
-function packageMembers(members: ReadonlyArray<FileSet | RepositoryRef>): PackageFileSet[] {
+function packageMembers(members: ReadonlyArray<FileSet | Reference>): PackageFileSet[] {
   return members
     .filter((member): member is PackageFileSet => member instanceof PackageFileSet)
     .sort((a, b) => compareText(a.packageName, b.packageName) || compareText(a.toManifestHash(), b.toManifestHash()));

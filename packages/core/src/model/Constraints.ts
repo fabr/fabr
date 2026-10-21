@@ -99,6 +99,12 @@ export const UPDATE_EXPECTATIONS = "update";
  */
 export const FILES_OPERATION = "files";
 
+/** Get the operation a configuration of `constraints` is under: the
+ * `BUILD_OPERATION` it was given, or `build`, as STD.fabr defaults it. */
+export function operationOf(constraints: Constraints): string {
+  return constraints.get(BUILD_OPERATION) ?? "build";
+}
+
 /**
  * An immutable, interned set of scalar build-config constraints (`BUILD_OPERATION`,
  * `TARGET`, `BUILD_TYPE`, and `-D`/`<k=v>` overrides). A distinct constraint set is

@@ -889,6 +889,12 @@ function mountedDeps(directDeps: FileSet[]): FileSet[] {
   return directDeps.filter(dep => dep instanceof PackageFileSet || dep instanceof Flag);
 }
 
+/** Strip a file's final extension: `a/foo.test.ts` → `a/foo.test` — the stem a
+ * source and its compiled output share. */
+export function stripExtension(name: string): string {
+  return name.replace(/\.[^./]+$/, "");
+}
+
 /** @return the files without any root package.json (consumed, not copied through) */
 export function stripPackageJson(files: FileSet): FileSet {
   return files.remap(name => (name === "package.json" ? undefined : name));

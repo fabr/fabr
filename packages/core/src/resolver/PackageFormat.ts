@@ -19,7 +19,7 @@
 
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
-import { IProjection } from "../core/FileSetRef";
+import { IProjection } from "../core/Reference";
 import { Name } from "../core/Name";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";

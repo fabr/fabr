@@ -19,7 +19,8 @@
 
 import { DeclKind, INamespaceDecl, IPropertyDecl, ITargetDecl, ITargetDefDecl, PropertyType } from "./AST";
 import { IPrefixMatch, IPropertyEntry, Namespace } from "./Namespace";
-import { BuildContext } from "./BuildContext";
+import { BuildContext } from "../context/index";
+import { BuildContextImpl } from "../context/BuildContextImpl";
 import { BUILD_OPERATION, Constraints } from "./Constraints";
 import { ExecutionContext } from "./ExecutionContext";
 import { Name } from "../core/Name";
@@ -35,7 +36,7 @@ import { FabrError } from "../core/Errors";
  */
 export class BuildModel {
   private root: Namespace;
-  private configs: BuildContext[] = [];
+  private configs: BuildContextImpl[] = [];
   /**
    * The rules and repository providers available to this model — indexed from
    * core's base contribution plus each active plugin's, so they reflect exactly
@@ -155,7 +156,7 @@ export class BuildModel {
         return config;
       }
     }
-    const config = new BuildContext(this, constraints, execution);
+    const config = new BuildContextImpl(this, constraints, execution);
     this.configs.push(config);
     return config;
   }

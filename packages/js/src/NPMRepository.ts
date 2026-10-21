@@ -18,12 +18,8 @@
  */
 
 import {
-  EMPTY_FILESET,
   FabrError,
-  FILES_OPERATION,
   resolveBarePackage,
-  MaterializeOptions,
-  ClosureThunk,
   Computable,
   FileSet,
   HttpStatusError,
@@ -56,7 +52,6 @@ import {
   SEMVER,
   SemverConstraint,
   SemverVersion,
-  BUILD_OPERATION,
   TARGET,
   toJsonObject,
   tripleToNpm,
@@ -83,7 +78,6 @@ import {
 import { declaredDependencies, memberDependencies, rewriteManifest, unresolvableDependencies } from "./PackageJson";
 import { installedPackageExtensions, PackageExtensions } from "./PackageExtensions";
 import { NPMAuth } from "./NPMAuth";
-import { makeNpmRunnable } from "./JSPackage";
 import { jsPluginContext } from "./JSPluginContext";
 
 const METADATA_FILE = "metadata.json";
@@ -125,7 +119,7 @@ function packagePath(pkg: string): string {
  * tarballs, the publish PUT, and npm's per-name policies (dependency-block
  * reading, os/cpu/libc gating, platform validation). Its reader face hands
  * each reference batch to the package resolver
- * (resolvePackages/materializePackages) with itself as the registry the
+ * (resolvePackages/packageClosure) with itself as the registry the
  * resolution reads from.
  */
 export class NPMRepository
@@ -327,38 +321,18 @@ export class NPMRepository
   }
 
   /**
-   * RepositoryReader implementation: shape the delivery, from THIS instance's
-   * context — the same context targetPlatform reads TARGET from, so everything
-   * that varies per build config has one authority. Instances are interned per
-   * BuildContext, so a rule reading a FILES property under BUILD_OVERRIDE
-   * reaches a build-flavoured instance even when the rule itself was selected
-   * under `run`.
+   * RepositoryReader implementation: the operation of the configuration this
+   * instance was made in. Instances are interned per BuildContext, so a rule
+   * reading a FILES property under BUILD_OVERRIDE reaches a build-configured
+   * instance even when the rule itself was selected under `run`.
    */
-  public deliver(reference: RepositoryRef, options?: MaterializeOptions, closure?: ClosureThunk): Computable<FileSet> {
-    return this.context.getGlobalString(BUILD_OPERATION).then(operation => {
-      /* Files alone: never force the closure. A package whose closure is
-       * unsatisfiable still HAS files, so resolving to obtain them would fail a
-       * delivery that has no business failing. */
-      if (operation === FILES_OPERATION) {
-        return this.deliverFiles(reference);
-      }
-      if (!closure) {
-        return Computable.resolve<FileSet>(EMPTY_FILESET);
-      }
-      return closure().then(pkg => {
-        /* A `?` alternate demands nothing of its own — its sanctioned fork
-         * arrives nested inside the closure that needed it. */
-        if (pkg === undefined) {
-          return Computable.resolve<FileSet>(EMPTY_FILESET);
-        }
-        return operation === "run" ? makeNpmRunnable(pkg) : Computable.resolve<FileSet>(pkg);
-      });
-    });
+  public get operation(): string {
+    return this.context.operation;
   }
 
   /** RepositoryReader implementation: the package's own files at the
    * reference's lower bound, with no closure. */
-  public deliverFiles(reference: RepositoryRef): Computable<FileSet> {
+  public fetchFiles(reference: RepositoryRef): Computable<FileSet> {
     return Computable.resolve(undefined).then(() => resolveBarePackage(this, reference));
   }
 

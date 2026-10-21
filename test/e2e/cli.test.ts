@@ -383,3 +383,84 @@ describe("e2e: driver CLI", () => {
     expect(result.stderr).to.match(/cp requires .* destination/);
   });
 });
+
+/* A `?` or `!` ending the literal name of a target is a marker. On the other
+ * names here a `?` is a wildcard and a `!` is part of the name. The names are
+ * read through globals so that nothing has to run, and the target is a
+ * `patched`, which builds in process. */
+describe("e2e: markers and wildcards on a name", () => {
+  const project = {
+    "PROJECT.fabr":
+      "patched d/f { srcs = base.txt; patches = one.patch; }\n" +
+      "catalog @c { deps = d/f; }\n" +
+      "LOOSE = srx;\n" +
+      'QUOTED = "hey you!";\n' +
+      'QUOTED_GLOB = "a b"?;\n' +
+      "SUBSTITUTED_GLOB = ${STEM}?;\n" +
+      'STEM = "a b";\n' +
+      "FORCED = d/f!;\n" +
+      "ALTERNATE = d/f?;\n" +
+      "COLON = d:f?;\n" +
+      "CATALOG_GLOB = @c:d/f:base.tx?;\n" +
+      "ON_GLOBAL = LOOSE?;\n" +
+      "ON_ALIAS = @c!;\n" +
+      "TNAME = d/f;\n" +
+      "ON_SUBSTITUTION = ${TNAME}!;\n" +
+      'QUOTED_TARGET = "d/f!";\n' +
+      "AFTER_REQUIREMENT = d/f<BUILD_OPERATION=build>!;\n",
+    "base.txt": "base\n",
+    "one.patch": "--- a/base.txt\n+++ b/base.txt\n@@ -1 +1 @@\n-base\n+patched\n",
+    "hey you!": "",
+    "a bc": "",
+    "d/f1": "",
+    "d/f!": "",
+    "d/f2": "",
+    srx: "",
+  };
+  const listed = (name: string): string[] => runFabr(project, ["ls", "-q", name]).stdout.split("\n").filter(line => line !== "");
+
+  it("reads a quoted name ending in a marker character as the file it names", () => {
+    expect(listed("QUOTED")).to.deep.equal(["hey you!"]);
+  });
+
+  it("reads `?` after a quoted or substituted name as a wildcard", () => {
+    expect(listed("QUOTED_GLOB")).to.deep.equal(["a bc"]);
+    expect(listed("SUBSTITUTED_GLOB")).to.deep.equal(["a bc"]);
+  });
+
+  it("reads a marker on the literal name of a target as that target", () => {
+    expect(listed("FORCED")).to.deep.equal(["base.txt"]);
+    expect(listed("ALTERNATE")).to.deep.equal(["base.txt"]);
+  });
+
+  it("reads `?` on another spelling of the name as a wildcard", () => {
+    expect(listed("COLON")).to.deep.equal(["f!", "f1", "f2"]);
+  });
+
+  it("reads `?` ending a projection into a catalog member as a wildcard", () => {
+    expect(listed("CATALOG_GLOB")).to.deep.equal(["base.txt"]);
+  });
+
+  it("reads a quoted name as written, though the rest of it names a target", () => {
+    expect(listed("QUOTED_TARGET")).to.deep.equal(["d/f!"]);
+  });
+
+  it("reads a marker written after a requirement as the reference's", () => {
+    expect(listed("AFTER_REQUIREMENT")).to.deep.equal(["base.txt"]);
+  });
+
+  it("reads a marker after a substitution as part of the name", () => {
+    expect(listed("ON_SUBSTITUTION")).to.deep.equal(["d/f!"]);
+  });
+
+  it("builds a target named with a marker", () => {
+    expect(runFabr(project, ["build", "-q", "d/f!"]).status).to.equal(0);
+  });
+
+  it("reads a marker on a global or a repository as part of the name", () => {
+    expect(listed("ON_GLOBAL")).to.deep.equal([]);
+    const onAlias = runFabr(project, ["ls", "-q", "ON_ALIAS"]);
+    expect(onAlias.status).to.equal(1);
+    expect(onAlias.stderr).to.contain("Unable to resolve '@c!'");
+  });
+});

@@ -30,14 +30,15 @@ import {
   IBuildState,
   IFile,
   Log,
+  manifestFileInputs,
   MemoryFile,
   PackageFileSet,
   PackageGraphBuilder,
+  reachablePackages,
   Semaphore,
   SILENT_REPORT,
-  manifestFileInputs,
-  reachablePackages,
-  } from "@fabr-build/core";
+  dependenciesOn,
+} from "@fabr-build/core";
 import { assembleNodeModules } from "./NodeModules";
 import { createNodeExecAction, NODE_EXEC_ACTION, NODE_MODULES, PNP } from "./NodeExecAction";
 import { pnpManifestOf, referenceOf } from "./PnPManifest";
@@ -63,7 +64,7 @@ function toPromise<T>(computable: Computable<T>): Promise<T> {
 /** A package at a version, its one file naming it — the layout fixture, where
  * what varies between packages is the version. */
 function pkg(name: string, version = "1.0.0", deps: PackageFileSet[] = []): PackageFileSet {
-  return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}@${version}`)]]), name, version, deps);
+  return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}@${version}`)]]), name, version, dependenciesOn(...deps));
 }
 
 /** A package as something to RESOLVE and READ: typings plus a manifest, at one
@@ -78,7 +79,7 @@ function declPkg(name: string, content = "1", deps: PackageFileSet[] = []): Pack
     ]),
     name,
     "1.0.0",
-    deps
+    dependenciesOn(...deps)
   );
 }
 
@@ -104,7 +105,7 @@ function delivered(
   for (const [id, deps] of Object.entries(graph)) {
     builder.wire(
       nodes.get(id)!,
-      Object.values(deps).map(dep => nodes.get(dep)!)
+      dependenciesOn(...Object.values(deps).map(dep => nodes.get(dep)!))
     );
   }
   builder.seal();
@@ -247,7 +248,7 @@ describe("createNodeExecAction layouts", () => {
     /* The app and its orm both bind shared@1 while saver binds shared@2: real
      * node, asked from each, must hand the first two ONE module object. */
     const code = (name: string, version: string, body: string, deps: PackageFileSet[] = []): PackageFileSet =>
-      new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(body)]]), name, version, deps);
+      new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(body)]]), name, version, dependenciesOn(...deps));
     const shared1 = code("shared", "1.0.0", "module.exports = { Client: class {}, version: 1 };");
     const shared2 = code("shared", "2.0.0", "module.exports = { Client: class {}, version: 2 };");
     const app = code(

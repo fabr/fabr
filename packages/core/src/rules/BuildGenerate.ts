@@ -35,19 +35,19 @@
  * wrote and the redirect captures alike — without it, the captures are collected.
  */
 
-import { ResolvedCommandPipeline, TargetContext, toEnvironment } from "../model/BuildContext";
+import { MaterializedCommandPipeline, TargetContext, toEnvironment } from "../context/index";
 import { BUILD_OPERATION } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { createPipelineAction, stagePipeline } from "./PipelineAction";
-import { RuleDefinition, RuleResult } from "./Types";
+import { defineRule, RuleDefinition, RuleResult } from "./Types";
 import { FabrError } from "../core/Errors";
 
-function generate(context: TargetContext): Computable<RuleResult> {
+function generate(context: TargetContext, srcSets: FileSet[]): Computable<RuleResult> {
   return Computable.forAll(
-    [context.getFileSetProperties(["srcs"]), context.getProjection("output"), context.getMap("env").then(toEnvironment)],
-    ({ srcs: srcSets }, output: Name | undefined, env) => {
+    [context.getProjection("output"), context.getMap("env").then(toEnvironment)],
+    (output: Name | undefined, env) => {
       const srcs = FileSet.unionAll(...srcSets);
       return context.getCommandProperty("run", srcs).then(stages => {
         if (stages.length === 0) {
@@ -63,7 +63,7 @@ function generate(context: TargetContext): Computable<RuleResult> {
  * substitution) and yield the pipeline action. */
 function assemblePipeline(
   srcs: FileSet,
-  stages: ResolvedCommandPipeline,
+  stages: MaterializedCommandPipeline,
   output: Name | undefined,
   env: ReadonlyMap<string, string>
 ): RuleResult {
@@ -71,4 +71,9 @@ function assemblePipeline(
   return createPipelineAction(files, specs, stages[0].stdin, output, "generate", env);
 }
 
-export const generateRule: RuleDefinition = { type: "generate", properties: { [BUILD_OPERATION]: "build" }, evaluate: generate };
+export const generateRule: RuleDefinition = defineRule({
+  type: "generate",
+  properties: { [BUILD_OPERATION]: "build" },
+  requirements: context => ({ srcs: context.getFileProperty("srcs") }),
+  evaluateMaterialized: (context, { srcs }) => generate(context, srcs),
+});

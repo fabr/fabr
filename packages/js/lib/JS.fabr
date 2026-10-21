@@ -267,10 +267,10 @@ targetdef js_package {
     srcs = FILES;
     # The packages the sources import, written to `dependencies`. Also takes
     # flags, and source files to compile with the package without shipping.
-    deps = FILES;
+    deps = PACKAGES;
     # Packages the sources import but whoever uses this package supplies, such
     # as `react` for a component library. Written to `peerDependencies`.
-    provided_deps = FILES;
+    provided_deps = PACKAGES;
     # The package's public entry points, named by the sources they compile
     # from. They are compiled even if `srcs` doesn't list them.
     exports = FILES;
@@ -284,7 +284,7 @@ targetdef js_package {
     # Packages only the tests import, such as an assertion library and its
     # types. A source file here is compiled with the tests but not run as a
     # test, and not shipped.
-    test_deps = FILES;
+    test_deps = PACKAGES;
     # Snapshot files the tests compare against (`__snapshots__/*.snap`).
     # `fabr test -u` updates them.
     test_expectations = FILES;
@@ -321,13 +321,13 @@ targetdef js_package {
 
 targetdef js_bundle {
     # What may go into the bundle: source files, and packages to include in it.
-    srcs = FILES;
+    srcs = PACKAGES;
     # The file to bundle. A pattern matching several files produces one bundle
     # for each. Entry files need not also be in `srcs`.
     entry = REQUIRED FILES;
     # Packages the environment the bundle runs in already has. Imports of them
     # are left in the output and their code is not included.
-    deps = FILES;
+    deps = PACKAGES;
     # Renames the output files, which are otherwise named after each entry with
     # a `.js` extension: `*.js -> *.min.js`.
     output = REWRITE;
@@ -355,7 +355,7 @@ targetdef js_test {
     tests = FILES;
     # Packages the tests import, and source files to compile with them that
     # aren't themselves tests.
-    deps = FILES;
+    deps = PACKAGES;
     # The test framework the tests are written for: `node`, `jest` or `vitest`.
     framework = STRING default ${JS_TEST_FRAMEWORK};
     # Files the tests read when they run.
@@ -382,7 +382,7 @@ targetdef js_test {
 
 targetdef js_script {
     # The packages the program imports, and other files it needs.
-    deps = FILES;
+    deps = PACKAGES;
     # The script file to run, or a package to run by its command-line program.
     # Where a package has several, name one: `@npm:typescript:5.6.3:tsc`.
     entry = REQUIRED FILES;
@@ -422,7 +422,7 @@ targetdef js_compile {
     # The sources: `.ts`, `.tsx`, `.js`, `.jsx`, and `.d.ts` declarations.
     srcs = FILES;
     # The packages the sources import.
-    deps = FILES;
+    deps = PACKAGES;
     # The package name the sources can import themselves by.
     package_name = STRING;
     # Set to `.mjs` to name the emitted JavaScript `.mjs` rather than `.js`,
@@ -449,7 +449,7 @@ targetdef sass_compile {
     # The Sass sources.
     srcs = FILES;
     # Packages whose stylesheets the sources load with `@use` or `@import`.
-    deps = FILES;
+    deps = PACKAGES;
 }
 
 #
@@ -466,7 +466,7 @@ targetdef css_postcss {
     srcs = FILES;
     # Packages whose stylesheets a `composes` can name
     # (`composes: x from 'pkg/base.css'`).
-    deps = FILES;
+    deps = PACKAGES;
     # The package name that scoped class names are derived from, together with
     # each file's path.
     package_name = STRING;

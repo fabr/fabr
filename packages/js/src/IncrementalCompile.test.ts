@@ -32,7 +32,8 @@ import {
   PackageFileSet,
   Semaphore,
   SILENT_REPORT,
-  } from "@fabr-build/core";
+  dependenciesOn,
+} from "@fabr-build/core";
 import { createNodeExecAction, NODE_EXEC_ACTION, PNP } from "./NodeExecAction";
 import { parseDriverMemo, toCompileTelemetry } from "./tscDriver/Planning";
 import { CHANGES_FILE, CHANGES_FLAG, DEPS_REPORT_FILE, STATE_DIR, STATE_DIR_FLAG } from "./pnp/ReadSet";
@@ -1292,7 +1293,7 @@ function incrementalScenarios(): void {
           new Map<string, IFile>([["index.d.ts", MemoryFile.from("export declare const held: number;\n")]]),
           "requirer",
           "1.0.0",
-          [unread]
+          dependenciesOn(unread)
         ),
       ];
 

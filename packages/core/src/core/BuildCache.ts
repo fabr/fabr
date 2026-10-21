@@ -77,7 +77,6 @@ import {
   splitDepsPath,
 } from "./Manifest";
 import { PackageFileSet } from "./PackageFileSet";
-import { RepositoryRef } from "./Repository";
 import { mapComputable, mapObject, select } from "../support/Functional";
 import { registerTempTree, removeTempTree, writeFileSet } from "./Staging";
 import { CacheLink, SymlinkFile } from "./SymlinkFile";
@@ -2624,8 +2623,8 @@ function resolvePackagePath(members: ReadonlyArray<FileSet>, path: DepsPath): IF
   if (path.length === 1) {
     return select(members, member => (member.name === "" ? member.getFile(path[0]) : undefined))[0];
   }
-  const pkg = path.slice(1, -1).reduce<FileSet | RepositoryRef | undefined>(
-    (prev, file) => (prev instanceof PackageFileSet ? prev.getDependency(file) : undefined),
+  const pkg = path.slice(1, -1).reduce<FileSet | undefined>(
+    (prev, file) => (prev instanceof PackageFileSet ? prev.getDependency(file)?.package : undefined),
     members.find(child => child.name === path[0])
   );
   return pkg instanceof FileSet ? pkg.getFile(path.at(-1)!) : undefined;

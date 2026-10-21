@@ -30,42 +30,35 @@
  * change (tool/deps/args/env) restarts it. It does not itself execute.
  */
 
-import { TargetContext, toEnvironment } from "../model/BuildContext";
+import { toEnvironment } from "../context/index";
 import { BUILD_OPERATION, BUILD_OVERRIDE } from "../model/Constraints";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
-import { RuleDefinition, RuleResult } from "./Types";
+import { defineRule, RuleDefinition, RuleResult } from "./Types";
 
-function defineServeRunnable(context: TargetContext): Computable<RuleResult> {
-  /* deps/files are ordinary build content — resolve them under build, not the
-   * run operation this rule is selected by (constraints otherwise propagate).
-   * `tool` resolves apart under runOverrides (getRunnableProperty): a program
-   * to execute on this machine, so its constraint set differs by design. */
-  return Computable.forAll(
-    [
-      context.getRunnableProperty("tool"),
-      context.getFileProperty("deps", BUILD_OVERRIDE),
-      context.getFileProperty("files", BUILD_OVERRIDE),
-      context.getProperty("args"),
-      context.getMap("env").then(toEnvironment),
-    ],
-    (tool, depSources, fileSources, args, env) =>
-      /* THE collection point: deps and files materialize jointly, so any
-       * carried external requirements resolve with the target's own pins. The
-       * install is a sealed program, so resolution repairs are accepted (as
-       * script/js_script). */
-      context.collect({ deps: depSources, files: fileSources }, { resolutionMode: "permissive" }).then(({ deps, files }) => {
+/* deps/files are ordinary build content, read under build rather than the run
+ * operation this rule is selected by (constraints otherwise propagate). Both
+ * are read for their files, as script's are: each requirement delivers its
+ * own — a repository reference the package's files alone, a target what it
+ * built — and nothing is resolved together. `tool` is read apart in
+ * `evaluate`, under the run operation (getRunnableProperty), as a program to
+ * execute on this machine. */
+export const serveRunRule: RuleDefinition = defineRule({
+  type: "serve",
+  properties: { [BUILD_OPERATION]: "run" },
+  requirements: context => ({
+    deps: context.getFileProperty("deps", BUILD_OVERRIDE),
+    files: context.getFileProperty("files", BUILD_OVERRIDE),
+  }),
+  evaluateMaterialized: (context, { deps, files }) =>
+    Computable.forAll(
+      [context.getRunnableProperty("tool"), context.getProperty("args"), context.getMap("env").then(toEnvironment)],
+      (tool, args, env): RuleResult => {
         const served = FileSet.unionAll(...files);
         /* A same-name collision between content and program is the ordinary
          * two-sided conflict, raised here by the union. */
         const install = FileSet.unionAll(tool, ...deps, served);
         return tool.withServedContent(install, served, args ? args.getValues() : [], env);
-      })
-  );
-}
-
-export const serveRunRule: RuleDefinition = {
-  type: "serve",
-  properties: { [BUILD_OPERATION]: "run" },
-  evaluate: defineServeRunnable,
-};
+      }
+    ),
+});

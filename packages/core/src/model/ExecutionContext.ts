@@ -135,7 +135,7 @@ export class ExecutionContext {
    * cached (the driver's `-f`) — for timing a build step whose inputs have not
    * changed. Held by *declaration*, so it says exactly what the command line
    * named: a target's own sub-targets are forced with it (they are its work,
-   * asked through their declared owner — see {@link BuildContext.runAction}),
+   * asked through their declared owner — see `BuildContextImpl.runAction`),
    * its dependencies are not, and neither is decided by inference. Nothing is
    * forced by default.
    */

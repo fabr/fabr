@@ -52,10 +52,15 @@ package says about them:
 
 The range written to `package.json` is the one you declared: `@npm:lodash:^4.17.0` becomes
 `"lodash": "^4.17.0"`. A dependency on another target in the same project is written by its name
-(`deps = mylib;`).
+(`deps = mylib;`); see [Projects with several packages](/guides/multi-package/#depend-on-a-sibling-package)
+and [Packages built in your project](#packages-built-in-your-project).
 
 `@types` packages go in `deps` alongside the packages they describe, and so does anything else the
 compiler needs to see.
+
+A reference is a dependency only in a property that takes packages, such as these three. In a
+property that takes files, such as `resources`, `@npm:normalize.css:8.0.1` is that package's own
+files, with nothing it depends on; see [Property kinds](/reference/syntax/#property-kinds).
 
 ## How versions are chosen
 
@@ -165,6 +170,62 @@ fails again and names the marker to update. The
 Programs that fabr only runs, such as the TypeScript compiler, a bundler, or a `js_script`'s own
 dependencies, are not held to one version per package. Their dependencies nest as npm's would,
 without markers.
+
+### Packages built in your project
+
+A target that builds a package, such as a sibling `js_package` or a
+[patched](#patching-a-package) package, takes part in choosing versions like a package from the
+registry. A build has no version number, so a range asked of its name is no request for it: a build
+your target names in its own `deps` answers every requirement on its name, whatever range is asked
+for, which is how a patched package replaces the original everywhere, but a build reached only
+through another target answers only the requirements that name it. A build of a target in another
+[configuration](/guides/concepts/#configuration), such as `core<BUILD_TYPE=release>`, counts as a
+different version of the same package, and the build your target names in its own `deps` is the
+one it uses:
+
+| `app`'s `deps` | Result |
+|---|---|
+| `core widgets<BUILD_TYPE=release>`, where `widgets` depends on `core` | Builds. `widgets` uses the `core` that `app` names. |
+| `lib1 lib2`, where `lib1` depends on `core<BUILD_TYPE=release>` and `lib2` on `core` | A version conflict: nothing says which build to use. |
+| `lib @npm:core:1.0.0`, where `lib` depends on the target `core` | A version conflict: a registry version doesn't stand in for a package built in your project. |
+| `core @npm:core:1.0.0`, or `core core<BUILD_TYPE=release>` | An error: `app` would import two packages named `core`. |
+
+The version conflict is the same error as for registry versions, with each build written the way
+you would reference it:
+
+```
+error: Failed to build app: Resolution requires multiple versions of the same package:
+  core is required as 'core' and as 'core<BUILD_TYPE=release>', and no one version is both
+    'core' required via: lib2
+    'core<BUILD_TYPE=release>' required via: lib1
+help: add to the failing deps (or a shared catalog): core<BUILD_TYPE=release>? core?
+```
+
+To resolve it:
+
+- **Name the one to use** in the target's own `deps`: `deps = core lib1 lib2;`.
+- **Force one with `!`.** `core!` uses the package the target builds wherever `core` is required;
+  `@npm:core:1.0.0!` uses the registry's.
+- **Allow both with `?`**, as the help line suggests. Each package then gets the build or version
+  it asked for.
+
+A single `deps` list names each package once, whatever the two would resolve to, so asking for a
+name twice in one list is reported against the list itself:
+
+```
+error: Failed to build app: 'core' is required here as two different packages (from 'core' and '@npm:core:1.0.0')
+help: a target requires one package of each name: keep one, or allow the other alongside with '?'
+```
+
+Keep one, or mark the other with `?`, which allows it without asking for it. A `!` doesn't settle
+it: `core! @npm:core:1.0.0` still names `core` twice. Across lists the resolution decides: with
+`deps = core<MODE=a>; test_deps = core<MODE=b>;` the tests ship two builds of `core`, a conflict,
+unless the test's is marked `core<MODE=b>!` (tests run against that build throughout) or
+`core<MODE=b>?` (each package gets the build it asked for). Under `fabr build`, `test_deps` is
+read for its loose files only, so the build itself is unaffected.
+
+To use the files of several builds side by side, rather than a package, list them in a property
+that takes files, such as `resources`.
 
 ### Packages required without a minimum version
 
@@ -334,6 +395,8 @@ versions.
 | `'latest' is not a valid version constraint for 'x'` | A dist-tag where a version is needed | Write a version or a range. |
 | `Missing version in package reference 'x'` | `@npm:x` with no version | Add one: `@npm:x:1.2.3`. |
 | `Resolution requires multiple versions of the same package` | Requirements that no single version satisfies | See [When versions conflict](#when-versions-conflict). |
+| `'x' is required here as two different packages` | One `deps` list names `x` twice: two versions or ranges, two builds of a target, or a target and a registry package | Keep one, or mark the other with `?`; see [Packages built in your project](#packages-built-in-your-project). |
+| `… which is provided by the target 'x', but 'x' is not a package` | A package depends on `x`, and the target named `x` in the build produces plain files, not a package | Build `x` as a package, or rename the target so the names no longer collide. |
 | `required only without a version lower bound ('*')` | A package required only as `*` | Add the suggested `@npm:…?` line; see [above](#packages-required-without-a-minimum-version). |
 | `no published version of x satisfies '…' required by y` | A range nothing published matches | Correct the requirement, use a version of `y` whose requirement can be met, or force a version with `!`. |
 | `NPM package x@1.2.3 not found` | That exact version was never published | Check the version against the registry. |

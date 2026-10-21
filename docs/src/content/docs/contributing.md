@@ -65,5 +65,5 @@ The cache is at `~/Library/Caches/fabr` on macOS and `~/.cache/fabr` on Linux, o
 
 Support for a language or ecosystem is a plugin: an npm package that exports an `activate()`
 function returning its rules, registries and `.fabr` files. A build file loads it with
-`plugin <package>;`. The interface is documented in `PLUGINS.md` in the repository, which is the
-place to start if you want fabr to build something new.
+`plugin <package>;`. [Writing a plugin](/developer/writing-a-plugin/) walks through building one, and
+[Plugin reference](/developer/plugins/) documents the interface.

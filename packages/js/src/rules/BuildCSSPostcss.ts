@@ -19,7 +19,7 @@
 
 /**
  * The css_postcss rule: run the postcss chain over a plain-CSS tree, a
- * self-contained target `{ srcs = FILES; deps = FILES; package_name = STRING }`.
+ * self-contained target `{ srcs = FILES; deps = PACKAGES; package_name = STRING }`.
  * `srcs` are stylesheets (authored `.css`, or a sass_compile step's lowered
  * output with its maps beside it); `package_name` is the identity css-module
  * scoped names are derived from. css-modules is the chain's first plugin: a
@@ -42,6 +42,7 @@ import {
   MemoryFile,
   PackageFileSet,
   RuleDefinition,
+  defineRule,
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
@@ -49,10 +50,10 @@ import { buildPostcssOptions, CSS_DEPS_DIR, CSS_OUTDIR, CSS_SRC_ROOT, CSS_TOOL_D
 import { emitsSourceMap } from "../JSPackage";
 import { createNodeExecAction, NODE_MODULES } from "../NodeExecAction";
 
-function buildCssPostcss(context: TargetContext): Computable<RuleResult> {
+function buildCssPostcss(context: TargetContext, collected: { srcs: FileSet[]; deps: FileSet[] }): Computable<RuleResult> {
   return Computable.forAll(
     [
-      context.getFileSetProperties(["srcs", "deps"]),
+      Computable.resolve(collected),
       context.getGlobalRunnable("POSTCSS_DRIVER"),
       context.getProperty("package_name"),
       context.getGlobalString("BUILD_TYPE"),
@@ -85,8 +86,9 @@ function buildCssPostcss(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-export const buildCssPostcssRule: RuleDefinition = {
+export const buildCssPostcssRule: RuleDefinition = defineRule({
   type: "css_postcss",
   properties: { [BUILD_OPERATION]: "build" },
-  evaluate: buildCssPostcss,
-};
+  requirements: context => ({ srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") }),
+  evaluateMaterialized: (context, collected) => buildCssPostcss(context, collected),
+});

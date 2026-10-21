@@ -24,7 +24,7 @@
  * runtime-provided and externalized by identity; entry names the source(s) to
  * bundle; output optionally renames each entry's result.
  *
- * srcs and deps resolve through ONE collection point (so they can't version-fork
+ * srcs, entry and deps resolve as one collection (so they can't version-fork
  * across the bundle boundary). The bundler is a build *tool*, independent of what
  * it bundles, so it is resolved apart as the JS_BUNDLER runnable (fabr's own
  * esbuild driver, declared in JS.fabr) and mounted under a
@@ -34,6 +34,8 @@
 
 import {
   BUILD_OPERATION,
+  defineRule,
+  ContainedSources,
   Computable,
   Constraints,
   FabrError,
@@ -49,8 +51,9 @@ import {
   RunnableFileSet,
   TargetContext,
   makeRewrite,
+  PackageSources,
 } from "@fabr-build/core";
-import { compileContents, formatJSTarget, JSTarget, parseJSTarget, usesNodeGlobals } from "../JSPackage";
+import { compileContents, formatJSTarget, JSTarget, parseJSTarget, stripExtension, usesNodeGlobals } from "../JSPackage";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
 import { pnpManifestOf } from "../PnPManifest";
 import {
@@ -169,12 +172,6 @@ function isContainedEntry(source: FileSet | FileSetRef): source is FileSetRef & 
   return source instanceof FileSetRef && source.source instanceof PackageFileSet;
 }
 
-/** A name minus its extension — the identity a source and its compiled output
- * share. */
-function stemOf(name: string): string {
-  return name.replace(/\.[^./]+$/, "");
-}
-
 /**
  * Where a loose entry ended up in the staged tree. js_compile names its own
  * output (`.ts`→`.js`, but also `.mts`→`.mjs`/`.cts`→`.cjs`), and an
@@ -182,8 +179,8 @@ function stemOf(name: string): string {
  * by stem in what was actually staged, never re-derived from the source name.
  */
 function stagedEntry(staged: FileSet, name: string): string {
-  const stem = stemOf(name);
-  const match = [...staged].find(([staged]) => stemOf(staged) === stem && /\.[cm]?js$/i.test(staged));
+  const stem = stripExtension(name);
+  const match = [...staged].find(([staged]) => stripExtension(staged) === stem && /\.[cm]?js$/i.test(staged));
   if (match === undefined) {
     throw new FabrError(`js_bundle entry '${name}' produced no JavaScript to bundle`);
   }
@@ -213,8 +210,8 @@ function composeBundle(context: TargetContext, inputs: IBundleInputs): Computabl
   /* Everything else is a loose entry, staged at the bundle root and built with
    * the rest of the sources. `entry` was read contained, so a projection over a
    * NON-package (a plain delivered fileset) also arrives pending — it has no
-   * container to be kept in, so manifestAll extracts it, exactly as collect
-   * would have. A plain fileset passes through untouched. */
+   * container to be kept in, so applyProjections extracts it. A plain fileset
+   * passes through untouched. */
   const looseSources = inputs.entry.filter(set => !isContainedEntry(set));
 
   /* Naming a package as `entry` mounts it — a bundle entry that isn't bundled
@@ -236,7 +233,7 @@ function composeBundle(context: TargetContext, inputs: IBundleInputs): Computabl
     [...ref.locate()].map(([path, name]) => ({ path: `${layout!.mountOf(ref.source)}/${path}`, name }))
   );
 
-  return context.manifestAll(looseSources).then(looseEntries => {
+  return context.applyProjections(looseSources).then(looseEntries => {
     const rootTree = FileSet.unionAll(
       ...inputs.srcs.filter(set => !(set instanceof PackageFileSet)),
       ...looseEntries
@@ -263,43 +260,46 @@ function composeBundle(context: TargetContext, inputs: IBundleInputs): Computabl
   });
 }
 
-function buildJsBundle(context: TargetContext): Computable<RuleResult> {
-  return Computable.forAll(
-    [context.getGlobalString("JS_TARGET"), context.getGlobalString("BUILD_TYPE")],
-    (target, buildType) => {
-      const jsTarget = parseJSTarget(target);
-      return buildWithInputs(context, jsTarget, buildType, bundleInputTarget(jsTarget));
-    }
+/** The bundle's requirements, materialized. `entry` was read contained, so its
+ * projections arrive pending for composeBundle to place. */
+interface IBundleContents {
+  srcs: FileSet[];
+  entry: (FileSet | FileSetRef)[];
+  deps: FileSet[];
+}
+
+/**
+ * State the bundle's contents, read under the bundle's input `JS_TARGET` and
+ * resolved as one collection. The bundler is a build tool, independent of what it compiles, so
+ * it is resolved apart.
+ */
+function requirements(
+  context: TargetContext
+): Computable<{ srcs: Computable<PackageSources>; entry: Computable<ContainedSources>; deps: Computable<PackageSources> }> {
+  return context.getGlobalString("JS_TARGET").then(target => {
+    const inputTarget = bundleInputTarget(parseJSTarget(target));
+    return {
+      srcs: context.getPackageProperty("srcs", inputTarget),
+      entry: context.getContainedFileProperty("entry", inputTarget),
+      deps: context.getPackageProperty("deps", inputTarget),
+    };
+  });
+}
+
+function buildJsBundle(context: TargetContext, contents: IBundleContents): Computable<RuleResult> {
+  return Computable.forAll([context.getGlobalString("JS_TARGET"), context.getGlobalString("BUILD_TYPE")], (target, buildType) =>
+    buildWithInputs(context, parseJSTarget(target), buildType, contents)
   );
 }
 
-/** The source-mode flags declared on this bundle, from either list they may be
- * written in: `srcs`, where a bundle's own code arrives, or `deps`, where flags
- * conventionally sit. A flag materializes to nothing in both. */
-function bundleFlags(context: TargetContext, inputTarget: Constraints): Computable<Flag[]> {
+function buildWithInputs(context: TargetContext, jsTarget: JSTarget, buildType: string, { srcs, entry, deps }: IBundleContents): Computable<RuleResult> {
+  /* The source-mode flags declared on this bundle, from either list they may
+   * be written in: `srcs`, where a bundle's own code arrives, or `deps`, where
+   * flags conventionally sit. A flag materializes to nothing in both. */
+  const flags = [...srcs, ...deps].filter((set): set is Flag => set instanceof Flag);
   return Computable.forAll(
-    [context.getFlags("srcs", inputTarget), context.getFlags("deps", inputTarget)],
-    (srcFlags, depFlags) => [...srcFlags, ...depFlags]
-  );
-}
-
-function buildWithInputs(
-  context: TargetContext,
-  jsTarget: JSTarget,
-  buildType: string,
-  inputTarget: Constraints
-): Computable<RuleResult> {
-  return Computable.forAll(
-    [
-      context.getFileProperty("srcs", inputTarget),
-      context.getContainedFileProperty("entry", inputTarget),
-      context.getFileProperty("deps", inputTarget),
-      context.getGlobalRunnable("JS_BUNDLER"),
-      context.getRewriteRules("output").then(makeRewrite),
-      context.getMap("defines"),
-      bundleFlags(context, inputTarget),
-    ],
-    (srcSources, entrySources, depSources, bundler, rewrite, defineMap, flags) => {
+    [context.getGlobalRunnable("JS_BUNDLER"), context.getRewriteRules("output").then(makeRewrite), context.getMap("defines")],
+    (bundler, rewrite, defineMap) => {
       /* `js/node_globals` binds node's globals for a BROWSER bundle only: a node
        * bundle is already given them, and the flag is a fact about the sources,
        * so one tree bundling both ways declares it once and pays only where it
@@ -322,33 +322,24 @@ function buildWithInputs(
         }
         defines[key] = value.join(" ");
       }
-      /* THE collection point for the bundle's contents: srcs, entry and deps
-       * resolve jointly. The bundler resolved above is a build tool, independent
-       * of what it compiles — its pins don't co-resolve with the sources'. */
-      /* `entry` was read contained, so its projections arrive pending for
-       * composeBundle to place; srcs and deps extract as usual. One collection
-       * point, per-property treatment. */
-      const contents = context.collect({ srcs: srcSources, entry: entrySources, deps: depSources });
-
-      return contents.then(({ srcs, entry, deps }) =>
-        composeBundle(context, {
-          jsTarget,
-          buildType,
-          rewrite,
-          defines,
-          nodeGlobals,
-          entry,
-          srcs,
-          deps,
-          bundler,
-        })
-      );
+      return composeBundle(context, {
+        jsTarget,
+        buildType,
+        rewrite,
+        defines,
+        nodeGlobals,
+        entry,
+        srcs,
+        deps,
+        bundler,
+      });
     }
   );
 }
 
-export const buildJsBundleRule: RuleDefinition = {
+export const buildJsBundleRule: RuleDefinition = defineRule({
   type: "js_bundle",
   properties: { [BUILD_OPERATION]: "build" },
-  evaluate: buildJsBundle,
-};
+  requirements,
+  evaluateMaterialized: buildJsBundle,
+});

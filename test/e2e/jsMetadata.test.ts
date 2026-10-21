@@ -63,6 +63,21 @@ describe("e2e: js_package metadata", () => {
     expect(JSON.parse(result.stdout).description).to.equal("Fast (and small)! a|b * [x]");
   });
 
+  it("declares a sibling depended on under a rename in npm's alias form", () => {
+    const project = {
+      ...base,
+      "lib/index.ts": "export const y = 2;\n",
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        "\njs_package mylib { srcs = lib:**/*; version = 1.2.3; }\n" +
+        "js_package thing { srcs = src:**/*; deps = mylib -> foo; }\n",
+    };
+    const result = runFabr(project, ["-DJS_TARGET=es2020", "cat", "thing:package.json"]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(JSON.parse(result.stdout).dependencies).to.deep.equal({ foo: "npm:mylib@1.2.3" });
+  });
+
   it("rejects a metadata key fabr computes itself", () => {
     const result = runFabr(projectWith("name = evil;"), ["-DJS_TARGET=es2020", "cat", "thing:package.json"]);
     expect(result.status).to.not.equal(0);

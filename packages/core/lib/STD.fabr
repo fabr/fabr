@@ -41,7 +41,7 @@ default TARGET = ${HOST};
 targetdef catalog {
     # The members: packages from a registry, each with its version, or package
     # targets of this project.
-    deps = FILES;
+    deps = PACKAGES;
 }
 
 #
@@ -85,7 +85,7 @@ targetdef generate {
 #
 targetdef patched {
     # What to patch.
-    srcs = REQUIRED FILES;
+    srcs = REQUIRED PACKAGES;
     # Unified diffs, applied in the order written, with paths as git writes
     # them (`a/lib/x.js`).
     patches = REQUIRED FILES;

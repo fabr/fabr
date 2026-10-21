@@ -22,6 +22,7 @@ import { MemoryFile } from "./MemoryFS";
 import { ConflictError, FabrError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
 import { assertSamePackageNode, flattenFileSetArray, PackageFileSet, PackageGraphBuilder, packageNodeSignature } from "./PackageFileSet";
+import { dependenciesOn } from "./Repository";
 
 describe("PackageGraphBuilder", () => {
   function files(tag: string): Map<string, IFile> {
@@ -34,8 +35,8 @@ describe("PackageGraphBuilder", () => {
     const builder = new PackageGraphBuilder();
     const a = builder.node(files("a"), "a", "1.0.0");
     const b = builder.node(files("b"), "b", "1.0.0");
-    builder.wire(a, [b]);
-    builder.wire(b, [a]);
+    builder.wire(a, dependenciesOn(b));
+    builder.wire(b, dependenciesOn(a));
     builder.seal();
     expect(a.packages).to.deep.equal([b]);
     expect(b.packages).to.deep.equal([a]);
@@ -46,8 +47,8 @@ describe("PackageGraphBuilder", () => {
     const builder = new PackageGraphBuilder();
     const a = builder.node(files("a"), "a", "1.0.0");
     const b = builder.node(files("b"), "b", "1.0.0");
-    builder.wire(a, [b]);
-    expect(() => builder.wire(a, [b])).to.throw("already wired");
+    builder.wire(a, dependenciesOn(b));
+    expect(() => builder.wire(a, dependenciesOn(b))).to.throw("already wired");
   });
 
   it("counts an empty wiring as wired (a deliberate leaf is still wired once)", () => {
@@ -55,7 +56,7 @@ describe("PackageGraphBuilder", () => {
     const a = builder.node(files("a"), "a", "1.0.0");
     const b = builder.node(files("b"), "b", "1.0.0");
     builder.wire(a, []);
-    expect(() => builder.wire(a, [b])).to.throw("already wired");
+    expect(() => builder.wire(a, dependenciesOn(b))).to.throw("already wired");
   });
 
   it("rejects nodes and wiring after seal", () => {
@@ -88,8 +89,8 @@ describe("flattenFileSetArray", () => {
   it("retains loose members and appends a package member's closure, each instance once", () => {
     const loose = new FileSet(files("loose"));
     const shared = new PackageFileSet(files("shared"), "shared", "1.0.0");
-    const a = new PackageFileSet(files("a"), "a", "1.0.0", [shared]);
-    const b = new PackageFileSet(files("b"), "b", "1.0.0", [shared]);
+    const a = new PackageFileSet(files("a"), "a", "1.0.0", dependenciesOn(shared));
+    const b = new PackageFileSet(files("b"), "b", "1.0.0", dependenciesOn(shared));
     const flat = flattenFileSetArray([loose, a, b]);
     /* Given members in order first, then the closure breadth-first; the shared
      * instance is deduplicated by identity. */
@@ -100,8 +101,8 @@ describe("flattenFileSetArray", () => {
     const builder = new PackageGraphBuilder();
     const a = builder.node(files("a"), "a", "1.0.0");
     const b = builder.node(files("b"), "b", "1.0.0");
-    builder.wire(a, [b]);
-    builder.wire(b, [a]);
+    builder.wire(a, dependenciesOn(b));
+    builder.wire(b, dependenciesOn(a));
     builder.seal();
     expect(flattenFileSetArray([a])).to.deep.equal([a, b]);
   });
@@ -116,7 +117,7 @@ describe("packageNodeSignature", () => {
     const builder = new PackageGraphBuilder();
     const a = builder.node(files("a"), "a", "1.0.0");
     const b = builder.node(files("b"), "b", "1.0.0");
-    builder.wire(a, [b]);
+    builder.wire(a, dependenciesOn(b));
     builder.wire(b, []);
     builder.seal();
     const line = packageNodeSignature(a);
@@ -129,7 +130,7 @@ describe("packageNodeSignature", () => {
 
   it("distinguishes an edge rebinding, contents unchanged", () => {
     const leaf = new PackageFileSet(files("p"), "p", "1.0.0");
-    const bound = new PackageFileSet(files("p"), "p", "1.0.0", [new PackageFileSet(files("d"), "d", "1.0.0")]);
+    const bound = new PackageFileSet(files("p"), "p", "1.0.0", dependenciesOn(new PackageFileSet(files("d"), "d", "1.0.0")));
     expect(packageNodeSignature(leaf), "an edge is part of the node").to.not.equal(packageNodeSignature(bound));
   });
 });
@@ -155,7 +156,7 @@ describe("assertSamePackageNode", () => {
   it("accepts two equal wrappings of one package", () => {
     /* Byte-identical, separately constructed — the ordinary shape of one
      * package arriving through two deliveries. */
-    const dep = (): PackageFileSet => new PackageFileSet(files("p"), "p", "1.0.0", [new PackageFileSet(files("q"), "q", "1.0.0")]);
+    const dep = (): PackageFileSet => new PackageFileSet(files("p"), "p", "1.0.0", dependenciesOn(new PackageFileSet(files("q"), "q", "1.0.0")));
     expect(() => assertSamePackageNode(dep(), dep())).to.not.throw();
   });
 
@@ -168,8 +169,8 @@ describe("assertSamePackageNode", () => {
   });
 
   it("rejects two edge bindings under one id, contents equal", () => {
-    const a = new PackageFileSet(files("p"), "p", "1.0.0", [new PackageFileSet(files("q1"), "q", "1.0.0")]);
-    const b = new PackageFileSet(files("p"), "p", "1.0.0", [new PackageFileSet(files("q2"), "q", "2.0.0")]);
+    const a = new PackageFileSet(files("p"), "p", "1.0.0", dependenciesOn(new PackageFileSet(files("q1"), "q", "1.0.0")));
+    const b = new PackageFileSet(files("p"), "p", "1.0.0", dependenciesOn(new PackageFileSet(files("q2"), "q", "2.0.0")));
     expect(() => assertSamePackageNode(a, b)).to.throw(ConflictError);
     /* Named by what differs, never by a signature or a content hash. */
     const help = helpOf(() => assertSamePackageNode(a, b));
@@ -178,7 +179,7 @@ describe("assertSamePackageNode", () => {
   });
 
   it("names a dependency present on one side only", () => {
-    const a = new PackageFileSet(files("p"), "p", "1.0.0", [new PackageFileSet(files("q"), "q", "1.0.0")]);
+    const a = new PackageFileSet(files("p"), "p", "1.0.0", dependenciesOn(new PackageFileSet(files("q"), "q", "1.0.0")));
     const b = new PackageFileSet(files("p"), "p", "1.0.0");
     expect(helpOf(() => assertSamePackageNode(a, b))).to.contain("(q@1.0.0 on one side only)");
   });

@@ -88,6 +88,13 @@ export default defineConfig({
             { label: "Publishing packages", link: "/reference/js/publishing/" },
           ],
         },
+        {
+          label: "Developer docs",
+          items: [
+            { label: "Writing a plugin", link: "/developer/writing-a-plugin/" },
+            { label: "Plugin reference", link: "/developer/plugins/" },
+          ],
+        },
         { label: "Known limitations", link: "/known-limitations/" },
         { label: "Release notes", link: "/release-notes/" },
         { label: "Getting involved", link: "/contributing/" },

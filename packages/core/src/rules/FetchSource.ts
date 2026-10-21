@@ -25,7 +25,7 @@ import { HASH_ALGORITHM } from "../core/FSWrapper";
 import { Name } from "../core/Name";
 import { IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
 import { ExpectedDigest, isIntegrity, parseIntegrity, verifyingStream } from "../support/Integrity";
-import { TargetContext } from "../model/BuildContext";
+import { TargetContext } from "../context/index";
 import { RepositoryRegistration } from "./Types";
 import { mapComputable } from "../support/Functional";
 

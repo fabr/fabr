@@ -24,16 +24,17 @@ import * as tar from "tar-stream";
 import { AddressInfo } from "node:net";
 import { expect } from "chai";
 import {
-  RefSource,
-  Requirement,
-  vendPackageRef,
   BUILD_OPERATION,
   BuildCache,
+  collectLists,
   Computable,
+  conflictError,
   ExecutionContext,
   explainResolutionPath,
   FILES_OPERATION,
   FileSet,
+  FileSetRef,
+  helpOf,
   HttpStatusError,
   IFile,
   IRequirementEdge,
@@ -42,31 +43,31 @@ import {
   LogLevel,
   MemoryFile,
   Name,
-  parseName,
   PackageFileSet,
-  parseVersion,
-  RepositoryPublishRef,
-  TargetContext,
-  MaterializeOptions,
-  RepositoryRef,
-  SymlinkFile,
-  ResolutionContext,
-  materializeAll,
-  fileRequests,
-  FileSetRef,
-  helpOf,
-  conflictError,
-  ROOT_REQUIRER,
   PackageIdentity,
-  Selected,
-  SemverVersion,
-  ResolutionGraph,
+  parseName,
   parseRouteKey,
+  parseVersion,
+  RefSource,
   RepositoryGroup,
+  RepositoryPublishRef,
+  RepositoryRef,
+  Requirement,
+  RequirementResolutionError,
+  ResolutionContext,
+  MVSResolution,
+  ResolutionOptions,
+  ROOT_REQUIRER,
+  Selected,
   SemverConstraint,
+  SemverVersion,
+  SymlinkFile,
   TARGET,
+  TargetContext,
+  vendPackageRef,
   versionToString,
-  } from "@fabr-build/core";
+  dependenciesOn,
+} from "@fabr-build/core";
 import { NPMRepository } from "./NPMRepository";
 import { NO_PACKAGE_EXTENSIONS, PackageExtensions, toPackageExtensions } from "./PackageExtensions";
 import { assembleNodeModules } from "./NodeModules";
@@ -195,15 +196,24 @@ describe("splitNpmReference", () => {
   });
 
   it("reads a version the lexer saw as a glob, whatever projection follows it", () => {
-    /* `?` (an override marker) and `*` (an x-range) are glob characters, so
-     * the name's literal prefix ends inside the version; the boundary is found
-     * over the written text. */
+    /* `*` (an x-range) is a glob character, so the name's literal prefix ends
+     * inside the version; the boundary is found over the written text. */
     const vend = (written: string): RepositoryRef => vendPackageRef({} as RefSource, NPM_FORMAT, parseName(written));
     const projectionsOf = (ref: RepositoryRef): string[][] => ref.projections.map(p => [p.pattern.toBaseString(), p.prefix]);
     expect(vend("tslib:1.14.1?").toString()).to.equal("tslib:1.14.1?");
-    const marked = vend("tslib:1.14.1?:package.json");
-    expect(marked.toString()).to.equal("tslib:1.14.1?");
-    expect(projectionsOf(marked)).to.deep.equal([["package.json", ""]]);
+    expect(vend("tslib:1.14.1?").override).to.equal("alternate");
+    /* A marker ends a reference to a package: on one that selects its files,
+     * it means nothing. */
+    expect(() => vend("tslib:1.14.1?:package.json")).to.throw("selects files, so an override marker means nothing on it");
+    expect(() => vend("tslib:1.14.1!:package.json")).to.throw("selects files, so an override marker means nothing on it");
+    /* Quoted, the character is part of the version, which is no version. */
+    expect(vend('"tslib:1.14.1!"').override).to.equal(undefined);
+    /* Ending a projection, the character is the pattern's: `?` a wildcard. */
+    const globbed = vend("tslib:1.14.1:lib/a?");
+    expect(globbed.override).to.equal(undefined);
+    expect(globbed.toString()).to.equal("tslib:1.14.1");
+    expect(projectionsOf(globbed)).to.deep.equal([["lib/a?", ""]]);
+    expect(projectionsOf(vend("tslib:1.14.1:README!"))).to.deep.equal([["README!", ""]]);
     const ranged = vend("esbuild:1.14.*/lib/*.js");
     expect(ranged.toString()).to.equal("esbuild:1.14.*");
     expect(projectionsOf(ranged)).to.deep.equal([["lib/*.js", "esbuild:1.14.*/"]]);
@@ -383,6 +393,7 @@ function fakeContext(operation: string, served: Record<string, FileSet | Error>,
     /* The declared name of the repository, as the domain renders references
      * (suggestions read `@npm:pkg:ver`, matching what a user would write). */
     name: "@npm",
+    operation,
     getDeclaredContext: () => ({ target: { name: "@npm" } }),
     getGlobalString: (name: string) =>
       name in globals ? Computable.resolve(globals[name]) : Computable.reject(new Error(`unexpected property: ${name}`)),
@@ -410,10 +421,16 @@ function npmRepository(url: string, context: TargetContext, extensions = NO_PACK
   machineryContexts.set(repo, context);
   return repo;
 }
-/** The references delivered through a collection point — which judges them —
- * in the context the repository was built with. */
-function drive(repo: object & { getRepositoryRef?: unknown }, refs: RepositoryRef[], options?: MaterializeOptions): Computable<FileSet[]> {
-  return materializeAll(machineryContexts.get(repo)! as unknown as ResolutionContext, refs, options) as Computable<FileSet[]>;
+/** Deliver `refs` through a collection point, which judges them, in the
+ * context the repository was built with. */
+function drive(
+  repo: object & { getRepositoryRef?: unknown },
+  refs: RepositoryRef[],
+  options?: ResolutionOptions
+): Computable<FileSet[]> {
+  return collectLists(machineryContexts.get(repo)! as unknown as ResolutionContext, [refs], options).then(([delivered]) => delivered) as Computable<
+    FileSet[]
+  >;
 }
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {
@@ -575,8 +592,12 @@ describe("NPMRepository file requests", () => {
     [`${REG}/tarball/1.3.0.tgz`]: packageTarball(),
     [`${REG}/tarball/1.0.0.tgz`]: packageTarball(),
   };
-  const collect = (repo: NPMRepository, refs: RepositoryRef[], files = fileRequests(refs)): Promise<unknown[]> =>
-    toPromise(materializeAll(machineryContexts.get(repo)! as unknown as ResolutionContext, refs, undefined, files));
+  /* `extracted` says whether the references' projections are extracted as
+   * files or stay pending over the package behind them. */
+  const collect = (repo: NPMRepository, refs: RepositoryRef[], extracted = true): Promise<unknown[]> =>
+    toPromise(
+      collectLists(machineryContexts.get(repo)! as unknown as ResolutionContext, [refs], undefined, [extracted]).then(([delivered]) => delivered)
+    );
 
   it("delivers plain files with no resolution, under an ordinary build", async () => {
     const fetched: string[] = [];
@@ -608,7 +629,7 @@ describe("NPMRepository file requests", () => {
   it("stays a package request where its consumer keeps the package", async () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
     const ref = repo.getRepositoryRef(parseName("left-pad:1.3.0:index.js"));
-    const [delivered] = await collect(repo, [ref], fileRequests([], [ref]));
+    const [delivered] = await collect(repo, [ref], false);
 
     expect((delivered as FileSetRef).source).to.be.instanceOf(PackageFileSet);
   });
@@ -1148,6 +1169,7 @@ function authCapturingContext(
 ): TargetContext {
   const globals: Record<string, string> = { [BUILD_OPERATION]: operation, [TARGET]: "arm64-apple-macosx15.0" };
   return {
+    operation,
     getGlobalString: (name: string) =>
       name in globals ? Computable.resolve(globals[name]) : Computable.reject(new Error(`unexpected property: ${name}`)),
     fetch: (url: string, _tag: string, _process: unknown, _resource: string | undefined, headers?: Record<string, string>) => {
@@ -1212,10 +1234,12 @@ describe("override markers", () => {
     [`${REG}/B/1.2.0`]: metadataFor("B", "1.2.0", { C: "^2.5.0" }, { dist: tarballDist("b") }),
     [`${REG}/C/1.5.0`]: metadataFor("C", "1.5.0", {}, { dist: tarballDist("c1") }),
     [`${REG}/C/2.5.0`]: metadataFor("C", "2.5.0", {}, { dist: tarballDist("c2") }),
+    [`${REG}/D/1.0.0`]: metadataFor("D", "1.0.0", {}, { dist: tarballDist("d") }),
     [`${REG}/tarball/a.tgz`]: packageTarball(),
     [`${REG}/tarball/b.tgz`]: packageTarball(),
     [`${REG}/tarball/c1.tgz`]: packageTarball("v1.5.0.marker"),
     [`${REG}/tarball/c2.tgz`]: packageTarball("v2.5.0.marker"),
+    [`${REG}/tarball/d.tgz`]: packageTarball(),
   };
   function tarballDist(stem: string): Record<string, unknown> {
     return { tarball: `${REG}/tarball/${stem}.tgz`, integrity: "", shasum: "", signatures: [] };
@@ -1228,15 +1252,32 @@ describe("override markers", () => {
   const refsFor = (repo: NPMRepository, names: string[]): RepositoryRef[] =>
     names.map(name => repo.getRepositoryRef(parseName(name)).withRepositoryName("@npm"));
 
+  it("judges a collection whose every reference is a projection kept in its package", async () => {
+    /* A needs C ~1.5 and B needs C ^2.5, so two versions of C ship. Each
+     * reference selects a file and is kept in its package, not extracted. */
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const context = machineryContexts.get(repo)! as unknown as ResolutionContext;
+    const whole = await toPromise(collectLists(context, [refsFor(repo, ["A:1.1.0", "B:1.2.0"])])).then(
+      () => "accepted",
+      (err: Error) => err.message
+    );
+    const projected = await toPromise(
+      collectLists(context, [refsFor(repo, ["A:1.1.0:index.js", "B:1.2.0:index.js"])], undefined, [false])
+    ).then(
+      () => "accepted",
+      (err: Error) => err.message
+    );
+    expect(whole).to.contain("Resolution requires multiple versions of the same package:");
+    expect(projected).to.contain("Resolution requires multiple versions of the same package:");
+  });
+
   it("a '?' pair — principal and fork — sanctions the coexistence in a strict delivery", async () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
     const delivered = await toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:2.5.0?", "C:1.5.0?"])));
-    expect(delivered).to.have.lengthOf(4);
-    /* The alternates themselves deliver nothing, so each comes back as the
-     * requirement it is — the fork arrives nested inside the canonical closure
-     * (under A, whose edge needs it). */
-    expect(delivered[2]).to.be.instanceOf(RepositoryRef);
-    expect(delivered[3]).to.be.instanceOf(RepositoryRef);
+    /* The alternates are requirements of the resolution and resolve to nothing
+     * themselves — the fork arrives nested inside the canonical closure (under
+     * A, whose edge needs it). */
+    expect(delivered).to.have.lengthOf(2);
     const a = delivered[0] as PackageFileSet;
     const nested = a.packages;
     expect(nested.map(dep => `${dep.packageName}@${dep.version}`)).to.contain("C@1.5.0");
@@ -1250,7 +1291,7 @@ describe("override markers", () => {
   it("an exact unmarked pin of the principal completes the sanction too (the catalog form)", async () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
     const delivered = await toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:2.5.0", "C:1.5.0?"])));
-    expect(delivered).to.have.lengthOf(4);
+    expect(delivered).to.have.lengthOf(3);
   });
 
   it("a non-canonically written sanction ('v'-prefix) still matches the versions it names", async () => {
@@ -1260,7 +1301,7 @@ describe("override markers", () => {
      * pin and the alternate. */
     const repo = npmRepository(REG, fakeContext("build", served, []));
     const delivered = await toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "C:v2.5.0", "C:v1.5.0?"])));
-    expect(delivered).to.have.lengthOf(4);
+    expect(delivered).to.have.lengthOf(3);
   });
 
   it("an exact pin OF THE FORK delivers a nested override, so a carried closure still lays out", async () => {
@@ -1271,11 +1312,19 @@ describe("override markers", () => {
     const packages = delivered.filter((set): set is PackageFileSet => set instanceof PackageFileSet && [...set].length > 0);
     /* Reached only through a built package's carried deps: the carrier's own
      * edge binds the fork, and the principal sits in the closure beside it. */
-    const carrier = new PackageFileSet(new FileSet(new Map([["package.json", MemoryFile.from("{}")]])), "P", "1.0.0", packages);
+    const carrier = new PackageFileSet(new FileSet(new Map([["package.json", MemoryFile.from("{}")]])), "P", "1.0.0", dependenciesOn(...packages));
     const assembled = new Map(assembleNodeModules([carrier]));
     expect(assembled.has(".fabr/C@2.5.0/node_modules/C/v2.5.0.marker")).to.equal(true);
     expect(assembled.has(".fabr/C@1.5.0/node_modules/C/v1.5.0.marker")).to.equal(true);
     expect((assembled.get(".fabr/P@1.0.0/node_modules/C") as SymlinkFile).target).to.equal("../../C@1.5.0/node_modules/C");
+  });
+
+  it("attributes a conflict to the references whose closures hold it", async () => {
+    /* D is resolved in the same batch as A and B but reaches no C. */
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const err = await rejection(() => toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "B:1.2.0", "D:1.0.0"]))));
+    expect(err).to.be.instanceOf(RequirementResolutionError);
+    expect((err as RequirementResolutionError).refs.map(ref => ref.toString()).sort()).to.deep.equal(["A:1.1.0", "B:1.2.0"]);
   });
 
   it("a lone '?' is an incomplete sanction — every shipping version must be written", async () => {
@@ -1328,10 +1377,17 @@ describe("override markers", () => {
     expect(err.message).to.contain("both forced ('!') and permitted as an alternate ('?')");
   });
 
-  it("two forces at different versions are contradictory too", async () => {
+  it("two forces at different versions, in separate lists, are contradictory too", async () => {
+    const repo = npmRepository(REG, fakeContext("build", served, []));
+    const lists = [refsFor(repo, ["A:1.1.0", "C:2.5.0!"]), refsFor(repo, ["C:1.5.0!"])];
+    const err = await rejection(() => toPromise(collectLists(machineryContexts.get(repo)! as unknown as ResolutionContext, lists)));
+    expect(err.message).to.contain("forced ('!') at two different versions");
+  });
+
+  it("two forces in one list name the package twice", async () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
     const err = await rejection(() => toPromise(drive(repo, refsFor(repo, ["A:1.1.0", "C:2.5.0!", "C:1.5.0!"]))));
-    expect(err.message).to.contain("forced ('!') at two different versions");
+    expect(err.message).to.equal("'C' is required here as two different packages (from 'C:2.5.0!' and 'C:1.5.0!')");
   });
 
   it("a marker demands an exact version, not a range", async () => {
@@ -1392,11 +1448,9 @@ describe("override markers", () => {
   it("the suggested '?' alternates supply the floorless-only versions (attach-last)", async () => {
     const repo = npmRepository(REG, fakeContext("build", floorlessServed, []));
     const delivered = await toPromise(drive(repo, refsFor(repo, ["P:1.0.0", "T:24.2.0?", "U:3.1.0?"])));
-    expect(delivered).to.have.lengthOf(3);
-    /* The alternates deliver nothing of their own; T and U ride inside P's
+    /* The alternates resolve to nothing of their own; T and U ride inside P's
      * closure as ordinary members — transitive, not direct deps. */
-    expect(delivered[1]).to.be.instanceOf(RepositoryRef);
-    expect(delivered[2]).to.be.instanceOf(RepositoryRef);
+    expect(delivered).to.have.lengthOf(1);
     const assembled = assembleNodeModules(delivered.filter(set => set instanceof FileSet));
     const names = [...assembled].map(([name]) => name);
     /* Installed as an ordinary member of P's closure — nothing of its own was
@@ -1461,7 +1515,7 @@ describe("merged layout across a batch", () => {
     /* parse5 carries the copy its edge binds, even though its own delivery
      * hoisted that very version — the batch is what it must survive. */
     const jsdom = packages[0] as PackageFileSet;
-    const parse5 = jsdom.getDependency("parse5") as PackageFileSet | undefined;
+    const parse5 = jsdom.getDependency("parse5")?.package;
     expect(parse5?.packages.map(dep => dep.packageId)).to.deep.equal(["entities@4.0.0"]);
     /* And the consumer's one node_modules puts each requirer on the version it
      * asked for. */
@@ -1492,10 +1546,10 @@ describe("package rename", () => {
 
   it("delivers the package under the written name, and mounts it there", async () => {
     const repo = npmRepository(REG, fakeContext("build", served, []));
-    /* materializeAll, not resolveAndMaterialize: the rename is applied where
-     * every delivery is finished (RepositoryRef.deliveredAs), which is the
+    /* collectLists, not resolveBatch: the rename is applied where
+     * every delivery is finished (RepositoryRef.applyTo), which is the
      * collection point's job, not the repository's. */
-    const [delivered] = await toPromise(materializeAll(machineryContexts.get(repo)! as unknown as ResolutionContext, refsFor(repo, ["stream-browserify:3.0.0 -> stream"])));
+    const [delivered] = await toPromise(collectLists(machineryContexts.get(repo)! as unknown as ResolutionContext, [refsFor(repo, ["stream-browserify:3.0.0 -> stream"])]).then(([delivered]) => delivered));
     expect((delivered as PackageFileSet).packageName).to.equal("stream");
     /* The mount follows the delivered identity, so a source importing 'stream'
      * resolves the shim — while its own closure keeps its real names. */
@@ -1512,7 +1566,9 @@ describe("package rename", () => {
      * requirements, which here happen to be the same version. */
     const repo = npmRepository(REG, fakeContext("build", served, []));
     const delivered = (await toPromise(
-      materializeAll(machineryContexts.get(repo)! as unknown as ResolutionContext, refsFor(repo, ["stream-browserify:3.0.0", "stream-browserify:3.0.0 -> stream"]))
+      collectLists(machineryContexts.get(repo)! as unknown as ResolutionContext, [
+        refsFor(repo, ["stream-browserify:3.0.0", "stream-browserify:3.0.0 -> stream"]),
+      ]).then(([materialized]) => materialized)
     )) as PackageFileSet[];
     expect(delivered.map(set => set.packageName)).to.deep.equal(["stream-browserify", "stream"]);
     expect(delivered[1].version).to.equal(delivered[0].version);
@@ -1550,9 +1606,10 @@ describe("conflictError (the strict repair report)", () => {
     selection("D", "2.0.0", rootEdge("^2.0.0")),
   ];
   /** The delivery's graph: the same selections the slice ships, explained. */
-  const graphFor = (list: Selected<SemverVersion>[]): ResolutionGraph<SemverVersion> =>
-    new ResolutionGraph(versionToString, {
+  const graphFor = (list: Selected<SemverVersion>[]): MVSResolution<SemverVersion> =>
+    new MVSResolution(versionToString, {
       selections: list,
+      errors: [],
       violations: [],
       coerced: [],
       shared: [],

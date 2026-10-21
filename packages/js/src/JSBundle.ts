@@ -29,7 +29,7 @@
  * and must not depend on core at runtime).
  */
 
-import { FabrError, FileSet, PackageFileSet, RewriteFn } from "@fabr-build/core";
+import { dependencyName, FabrError, FileSet, PackageFileSet, RewriteFn } from "@fabr-build/core";
 import { JSTarget, soleModuleFormat } from "./JSPackage";
 
 /** Where esbuild writes and the rule collects the bundle output from. */
@@ -88,9 +88,9 @@ export interface IBundleOptions {
 }
 
 /** Every package name reachable from the given roots — the roots themselves plus
- * their whole dependency closure, deduped. RepositoryRef dependencies (external
- * requirements a package still carries inertly) contribute their package name;
- * built-package dependencies recurse. */
+ * their whole dependency closure, deduped. An unbound edge (an external
+ * requirement a package still carries inertly) contributes the name it is
+ * imported by, its local name; a bound one recurses into its package. */
 export function collectClosureNames(roots: FileSet[]): Set<string> {
   const names = new Set<string>();
   const visit = (pkg: PackageFileSet): void => {
@@ -99,10 +99,10 @@ export function collectClosureNames(roots: FileSet[]): Set<string> {
     }
     names.add(pkg.packageName);
     for (const dep of pkg.dependencies) {
-      if (dep instanceof PackageFileSet) {
-        visit(dep);
+      if (dep.package !== undefined) {
+        visit(dep.package);
       } else {
-        names.add(dep.name);
+        names.add(dependencyName(dep));
       }
     }
   };

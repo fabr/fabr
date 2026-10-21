@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { MultiError, toError } from "./Errors";
+import { MultiError, toError, CycleError, Label } from "./Errors";
 
 export enum ComputableState {
   /**
@@ -69,7 +69,8 @@ type CatchHandler<U> = (err: Error) => U | ComputableSource<U>;
  * {@link Computable}.
  *
  * **Attachment.** A raw source is born {@link ComputableState.Detached} and attaches on
- * its first dependant; every other node enters the graph at birth — a derived node
+ * its first dependant, and so is the one derived node made to wait for demand,
+ * {@link Computable.detached}; every other node enters the graph at birth — a derived node
  * attaches eagerly on creation (so fire-and-forget tails run), a `from`/`fromOnce` cell
  * attaches in its factory (its executor runs eagerly there — it is producer-driven,
  * never demand-deferred), and `resolve`/`reject` are born already settled. On losing its
@@ -100,6 +101,9 @@ export abstract class ComputableSource<T> {
   /** Nodes depending on this one — typed at the base contract the cascade uses (its
    * cascade methods), not the concrete `Computable` they always are in practice (via then/forAll). */
   private readonly dependants: ComputableSource<any>[] = [];
+
+  /** What this node stands for, to a reader of a cycle it is found in. */
+  public label?: Label;
 
   /**
    * Global event listener for otherwise unhandled rejections.
@@ -192,12 +196,34 @@ export abstract class ComputableSource<T> {
   /** Detach a dependant. When the last one leaves, this source detaches too
    * (releasing its dependencies / external subscription), cascading upward. */
   protected removeDependant(dep: ComputableSource<any>): void {
+    if (this.dropDependant(dep)) {
+      ComputableSource.release([this]);
+    }
+  }
+
+  /** Remove `dep` from this source's dependants, detaching nothing. Returns
+   * whether that left this source attached with no dependants: a node to
+   * detach. */
+  private dropDependant(dep: ComputableSource<unknown>): boolean {
     const index = this.dependants.indexOf(dep);
     if (index >= 0) {
       this.dependants.splice(index, 1);
     }
-    if (this.dependants.length === 0 && this.currentState !== ComputableState.Detached) {
-      this.detach();
+    return this.dependants.length === 0 && this.currentState !== ComputableState.Detached;
+  }
+
+  /**
+   * Detach each of `nodes` still attached with no dependants, and each node
+   * that leaves with none in turn, from a work list rather than the stack, so
+   * a long chain detaches without running out of it. A node that gained a
+   * dependant again before its turn stays.
+   */
+  protected static release(nodes: ComputableSource<unknown>[]): void {
+    const pending = nodes.slice();
+    for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+      if (next.dependants.length === 0 && next.currentState !== ComputableState.Detached) {
+        pending.push(...next.detach());
+      }
     }
   }
 
@@ -213,9 +239,12 @@ export abstract class ComputableSource<T> {
     }
   }
 
-  /** Unregister from dependencies / release external state, returning to Detached. */
-  protected detach(): void {
+  /** Unregister from dependencies / release external state, returning to
+   * Detached. Detaches nothing further: returns the dependencies left with no
+   * dependants, which {@link release} detaches in turn. */
+  protected detach(): ComputableSource<unknown>[] {
     this.currentState = ComputableState.Detached;
+    return [];
   }
 
   /** Register as a dependant of each of `dependencies`. The cross-instance
@@ -227,11 +256,16 @@ export abstract class ComputableSource<T> {
     }
   }
 
-  /** Deregister as a dependant of each of `dependencies` — the inverse of {@link attachTo}. */
+  /** Deregister as a dependant of each of `dependencies` — the inverse of
+   * {@link attachTo} — detaching those left with no dependants. */
   protected detachFrom(dependencies: ComputableSource<unknown>[]): void {
-    for (const dep of dependencies) {
-      dep.removeDependant(this);
-    }
+    ComputableSource.release(this.dropFrom(dependencies));
+  }
+
+  /** Deregister as a dependant of each of `dependencies`, detaching nothing:
+   * returns those left with no dependants. */
+  protected dropFrom(dependencies: ComputableSource<unknown>[]): ComputableSource<unknown>[] {
+    return dependencies.filter(dep => dep.dropDependant(this));
   }
 
   /**
@@ -240,12 +274,23 @@ export abstract class ComputableSource<T> {
    * scenarios, e.g. watch-mode re-settlement.)
    */
   public invalidate(): void {
-    /* Nothing to invalidate before a first value (Unresolved) or while out of the
-     * graph (Detached — unobservable, and it re-derives on reattach anyway). */
-    if (this.currentState !== ComputableState.Unresolved && this.currentState !== ComputableState.Detached) {
+    /* Nothing to invalidate while out of the graph (Detached — unobservable, and
+     * it re-derives on reattach anyway), nor before a first value unless that
+     * value is computed from inputs (see {@link recomputesWhileUnresolved}). */
+    if (
+      this.currentState !== ComputableState.Detached &&
+      (this.currentState !== ComputableState.Unresolved || this.recomputesWhileUnresolved())
+    ) {
       this.currentState = ComputableState.Invalid;
       this.eachDependant(dep => dep.markMaybeInvalid());
     }
+  }
+
+  /** Check whether an input changing while this node awaits its first value
+   * means it must compute again. A derived node's does: its pending value was
+   * asked for from the inputs it had. */
+  protected recomputesWhileUnresolved(): boolean {
+    return false;
   }
 
   protected settle(state: ComputableState.Valid | ComputableState.Error, value: T | Error): void {
@@ -282,11 +327,36 @@ export abstract class ComputableSource<T> {
     this.notifyDependants();
   }
 
+  /**
+   * Mark this node maybe-invalid, and everything that depends on it, from a
+   * work list rather than the stack, so a long chain is marked without
+   * running out of it.
+   */
   protected markMaybeInvalid(): void {
-    if (this.currentState === ComputableState.Valid || this.currentState === ComputableState.Error) {
-      this.currentState = this.currentState === ComputableState.Error ? ComputableState.MaybeError : ComputableState.MaybeValid;
-      this.eachDependant(dep => dep.markMaybeInvalid());
+    const pending: ComputableSource<unknown>[] = [this];
+    const marked: ComputableSource<unknown>[] = [];
+    for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+      marked.push(node);
+      pending.push(...node.markSelfMaybeInvalid());
     }
+    for (const node of marked) {
+      node.afterMaybeInvalidWave();
+    }
+  }
+
+  /** Called on each node a maybe-invalid wave marked, once the wave is done. */
+  protected afterMaybeInvalidWave(): void {}
+
+  /**
+   * Mark this node alone maybe-invalid: a settled value becomes a maybe.
+   * Returns the nodes to mark after it.
+   */
+  protected markSelfMaybeInvalid(): ComputableSource<unknown>[] {
+    if (!this.isSettled()) {
+      return [];
+    }
+    this.currentState = this.currentState === ComputableState.Error ? ComputableState.MaybeError : ComputableState.MaybeValid;
+    return this.dependants.slice();
   }
 
   private notifyDependants(): void {
@@ -368,6 +438,33 @@ export class Computable<T> extends ComputableSource<T> {
   /** Set only on a binding node: the outer Computable that resolved to this node's
    * sole dependency, and which mirrors our cascade (see {@link resolveTo}). */
   private outer?: Computable<T>;
+  /** Whether this binding's inner depends on its outer (set only on a binding
+   * node). While it does, the outer holds the cycle's error and refuses what
+   * the inner delivers (see {@link fromBinding}). */
+  private cyclic = false;
+  /** Set on a cyclic binding while a maybe-invalid wave it carried into its
+   * outer is still being marked (see {@link afterMaybeInvalidWave}). */
+  private carriedWave = false;
+  /** Whether a search for a cycle reached this node and could not follow its
+   * binding (see {@link inputsWaitedOn}). If so, whether the binding closes a
+   * cycle is checked when this node is next waiting on it for certain (see
+   * {@link maybeRecompute}). */
+  private unsearched = false;
+  /** The nodes that closed a cycle this node is on and are holding for it
+   * to stop moving (see {@link recheckCycle}): each is asked again whenever
+   * this node moves. */
+  private closedBy: Set<Computable<unknown>> | undefined;
+  /** The nodes this node is holding on, having closed a cycle (see
+   * {@link recheckCycle}): the pending region behind its binding, as a wave
+   * crossing the binding or a node asking finds it. Released when the binding
+   * delivers, and when this node re-runs or detaches. */
+  private holding = new Set<Computable<unknown>>();
+
+  /** Label this node, and return it. */
+  public labelled(label: Label | undefined): Computable<T> {
+    this.label = label;
+    return this;
+  }
 
   /** Core derivation: a node computing `fn` over `deps` (or `errfn` on failure). */
   public static deriving<U>(
@@ -378,6 +475,18 @@ export class Computable<T> extends ComputableSource<T> {
     const result = new Computable<U>();
     result.errfn = errfn;
     result.setDerivation(deps, fn);
+    return result;
+  }
+
+  /**
+   * Create a node that computes `fn` when it is first depended on, not when
+   * it is made: it is born detached, as a raw source is. A memo that files
+   * such a node holds it before `fn` runs, so a request for the same thing
+   * made while `fn` runs finds the node and depends on it.
+   */
+  public static detached<U>(fn: () => U | ComputableSource<U>): Computable<U> {
+    const result = new Computable<U>();
+    result.fn = fn;
     return result;
   }
 
@@ -487,16 +596,26 @@ export class Computable<T> extends ComputableSource<T> {
     }
   }
 
-  protected override detach(): void {
+  protected override detach(): ComputableSource<unknown>[] {
+    this.releaseHolds();
     /* Detachable ⟺ reconstructable. A node with no `fn` (a resolve/reject/from
      * constant) can't be recomputed on reattach and has no inputs registered to
      * release, so it never detaches — it keeps serving its value at zero dependants. */
     if (!this.fn) {
-      return;
+      return [];
     }
-    this.detachFrom(this.dependsOn);
-    this.unbind();
     super.detach();
+    return [...this.dropFrom(this.dependsOn), ...this.dropBinding()];
+  }
+
+  protected override recomputesWhileUnresolved(): boolean {
+    return this.fn !== undefined;
+  }
+
+  /** Check whether this node is in a maybe state: a value served before, with
+   * an input since marked maybe-invalid. */
+  private isMaybe(): boolean {
+    return this.currentState === ComputableState.MaybeValid || this.currentState === ComputableState.MaybeError;
   }
 
   private canRun(): boolean {
@@ -507,6 +626,13 @@ export class Computable<T> extends ComputableSource<T> {
     /* Re-running supersedes the previous fn-result link: detach it, so the old
      * inner subgraph (and any watches under it) unwinds once orphaned. */
     this.unbind();
+    this.unsearched = false;
+    this.releaseHolds();
+    /* Running consumes the inputs: no re-run is owed any longer, and this node
+     * awaits what `fn` gives it, as on a first run. */
+    if (this.currentState === ComputableState.Invalid) {
+      this.currentState = ComputableState.Unresolved;
+    }
     const errors: Error[] = [];
     for (const dep of this.dependsOn) {
       if (dep.state === ComputableState.Error) {
@@ -543,41 +669,132 @@ export class Computable<T> extends ComputableSource<T> {
      * also detach a prior still-pending binding, or its inner would later forward
      * and clobber this value with the superseded result. */
     this.unbind();
-    if (value instanceof ComputableSource) {
-      const binding = new Computable<T>();
-      /* Wire the outer before entering the graph: an already-settled inner
-       * settles the binding during setDerivation's attach, which must forward. */
-      binding.outer = this;
-      binding.setDerivation([value], IDENTITY);
-      this.binding = binding;
-      /* An already-settled inner settled the binding during attach, but its
-       * forward may have been held: mid-re-run this node is Invalid, which the
-       * forward's coherence gate cannot tell apart from a stale binding under a
-       * pending re-run (see acceptFromBinding). THIS binding is definitionally
-       * current — just created from the current inputs — so pull its result
-       * directly. (Already delivered ⇒ settled ⇒ skipped.) */
-      if (binding.isSettled() && !this.isSettled()) {
-        this.settle(binding.state as ComputableState.Valid | ComputableState.Error, binding.value as T | Error);
-      } else if (this.currentState === ComputableState.Invalid) {
-        /* A re-run bound a still-pending inner: `fn` has now consumed the
-         * (settled) inputs, so Invalid — "a re-run is owed" — no longer
-         * describes this node; it is awaiting its inner, exactly the state a
-         * first attach waits in. Normalizing to Unresolved is what lets
-         * acceptFromBinding read Invalid as *always* meaning a pending re-run
-         * (hold, the binding is about to be superseded) while the awaited
-         * inner's eventual forward lands (deliver). */
-        this.currentState = ComputableState.Unresolved;
-      }
-    } else {
+    if (!(value instanceof ComputableSource)) {
       this.settle(ComputableState.Valid, value);
+      this.askClosers();
+      return;
     }
+    /* A cell with no `fn` is resolved by its executor, so this is its run:
+     * resolving consumes the inputs as run() does, and the node awaits the
+     * inner's delivery (which acceptFromBinding holds off an Invalid node). */
+    if (!this.fn && this.currentState === ComputableState.Invalid) {
+      this.currentState = ComputableState.Unresolved;
+    }
+    const binding = new Computable<T>();
+    /* Wired before entering the graph: an already-settled inner settles the
+     * binding during setDerivation's attach, which must forward to this node. */
+    binding.outer = this;
+    this.binding = binding;
+    binding.setDerivation([value], IDENTITY);
+    this.checkCycle();
+    this.askClosers();
+  }
+
+  /**
+   * Check whether the binding closes a dependency cycle: whether the inner
+   * depends on this node through nodes waiting for certain. If so this node
+   * settles with the cycle's error and the binding stays, marked cyclic: inert
+   * to every wave, so this node stays settled until its own inputs re-run it
+   * or the inner's delivery no longer depends on it (see {@link fromBinding}).
+   */
+  private checkCycle(): void {
+    const binding = this.binding;
+    if (binding === undefined || binding.isSettled()) {
+      return;
+    }
+    const path = Computable.pathBetween(binding, this, node => node.inputsWaitedOn());
+    if (path === undefined) {
+      return;
+    }
+    this.settleCycle(path);
+  }
+
+  /** Settle with the error of the cycle `path` leads round from the binding
+   * to this node, marking the binding cyclic. */
+  private settleCycle(path: ComputableSource<unknown>[]): void {
+    const labels = [this, ...path].map(node => node.label).filter((label): label is Label => label !== undefined);
+    /* The same cycle found again is the same error: an unchanged value. */
+    const held = this.currentValue;
+    const same = held instanceof CycleError && held.labels.length === labels.length && held.labels.every((label, i) => label === labels[i]);
+    this.binding!.cyclic = true;
+    this.settle(ComputableState.Error, same ? held : new CycleError(labels));
+  }
+
+  /** Check whether `start` depends on `target` through any node, settled or
+   * not. Asked of a cyclic binding, to tell whether its cycle is still there. */
+  private static reaches(start: ComputableSource<unknown>, target: ComputableSource<unknown>): boolean {
+    return Computable.pathBetween(start, target, node => node.inputs()) !== undefined;
+  }
+
+  /**
+   * Get the path by which `start` depends on `target`: `start`, then each
+   * node it depends on in turn, up to but not including `target`; undefined
+   * where there is none. `inputsOf` says which nodes each derived node on
+   * the way depends on, for the search's purpose ({@link inputs} or
+   * {@link inputsWaitedOn}); a raw source depends on nothing.
+   */
+  private static pathBetween(
+    start: ComputableSource<unknown>,
+    target: ComputableSource<unknown>,
+    inputsOf: (node: Computable<unknown>) => ComputableSource<unknown>[]
+  ): ComputableSource<unknown>[] | undefined {
+    const from = new Map<ComputableSource<unknown>, ComputableSource<unknown> | undefined>([[start, undefined]]);
+    const pending: ComputableSource<unknown>[] = [start];
+    for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+      for (const input of node instanceof Computable ? inputsOf(node) : []) {
+        if (input === target) {
+          const path: ComputableSource<unknown>[] = [];
+          for (let at: ComputableSource<unknown> | undefined = node; at !== undefined; at = from.get(at)) {
+            path.unshift(at);
+          }
+          return path;
+        }
+        if (!from.has(input)) {
+          from.set(input, node);
+          pending.push(input);
+        }
+      }
+    }
+    return undefined;
+  }
+
+  /** The nodes this one depends on: its inputs and, where it has one, its binding. */
+  private inputs(): ComputableSource<unknown>[] {
+    return this.binding === undefined ? this.dependsOn : [...this.dependsOn, this.binding];
+  }
+
+  /**
+   * The nodes this one is waiting on: none where it is settled (its value is
+   * in hand, so nothing is held up behind it); otherwise its inputs, and its
+   * binding only where it is waiting on that for certain — its own inputs
+   * settled and no re-run owed. A node whose inputs are unsettled may re-run
+   * and drop its binding, so it is marked to be judged when they settle
+   * instead: a re-run binds afresh, and one whose inputs come back unchanged
+   * checks in {@link maybeRecompute}.
+   */
+  private inputsWaitedOn(): ComputableSource<unknown>[] {
+    if (this.isSettled()) {
+      return [];
+    }
+    if (this.binding !== undefined && (this.currentState === ComputableState.Invalid || !this.canRun())) {
+      this.unsearched = true;
+      return this.dependsOn;
+    }
+    return this.inputs();
   }
 
   /** Tear down the current resolveTo binding, releasing the inner subgraph once
    * it has no other dependants. */
   private unbind(): void {
-    this.binding?.detach();
+    ComputableSource.release(this.dropBinding());
+  }
+
+  /** Detach the current resolveTo binding, releasing nothing further: returns
+   * the inner where the binding was its last dependant. */
+  private dropBinding(): ComputableSource<unknown>[] {
+    const binding = this.binding;
     this.binding = undefined;
+    return binding === undefined ? [] : binding.detach();
   }
 
   private rejectWith(err: Error): void {
@@ -587,6 +804,7 @@ export class Computable<T> extends ComputableSource<T> {
      * through the stale binding and clobber the error. */
     this.unbind();
     this.settle(ComputableState.Error, err);
+    this.askClosers();
   }
 
   protected override isUnhandledError(): boolean {
@@ -602,7 +820,7 @@ export class Computable<T> extends ComputableSource<T> {
       return;
     }
     if (!this.isSettled() && this.canRun()) {
-      if (this.state === ComputableState.MaybeValid || this.state === ComputableState.MaybeError) {
+      if (this.isMaybe()) {
         /* Returning to settled after a maybe-invalid wave. With a live binding,
          * this node's settled-ness is the CONJUNCTION of its own deps (all
          * settled — canRun above) and the binding: revalidating from the
@@ -617,12 +835,120 @@ export class Computable<T> extends ComputableSource<T> {
         if (!binding) {
           this.revalidate();
         } else if (binding.isSettled()) {
-          this.settle(binding.state as ComputableState.Valid | ComputableState.Error, binding.value as T | Error);
+          this.fromBinding(binding.state as ComputableState.Valid | ComputableState.Error, binding.value as T | Error);
+        } else if (binding.cyclic) {
+          /* Its own inputs came back unchanged, so the cycle's error stands
+           * unless the batch is still cutting it (see {@link recheckCycle}). */
+          this.recheckCycle();
+        } else if (this.unsearched) {
+          /* Its own inputs came back unchanged, so it is now waiting on its
+           * binding for certain: where a search for a cycle reached it while
+           * it was maybe-invalid, check now whether the binding closes one. */
+          this.unsearched = false;
+          this.checkCycle();
         }
       } else {
         this.run();
       }
     }
+    this.askClosers();
+  }
+
+  /**
+   * Decide, as the node that closed a cycle, whether to settle its error again
+   * while its binding is pending: asked when its own inputs come back from a
+   * maybe-invalid wave unchanged, and again whenever a node it holds on
+   * moves. The cycle's nodes wait on this one, so it must settle for them to;
+   * but the batch may be cutting the cycle, and settling first would serve
+   * the stale error to a consumer that then sees the healed value too. So it
+   * settles only when nothing behind its binding can move — every node the
+   * binding still waits on this one through is waiting itself, on nothing
+   * but the cycle — and otherwise holds on those nodes, which ask again as
+   * each moves. A binding that no longer waits on this node decides by its
+   * delivery.
+   */
+  private recheckCycle(): void {
+    const binding = this.binding;
+    if (binding === undefined || !binding.cyclic || binding.isSettled()) {
+      return;
+    }
+    const region = Computable.pendingRegion(binding, this);
+    if (region === undefined) {
+      return;
+    }
+    /* The region as it stands now: a node that joined it since is held on too. */
+    this.holdOn(region);
+    if (!this.isMaybe() || !this.canRun()) {
+      return;
+    }
+    if (region.some(node => (node instanceof Computable ? node.canMove() : !node.isSettled()))) {
+      return;
+    }
+    this.revalidate();
+  }
+
+  /** Hold on each derived node of `region`: it asks this node to decide again
+   * whenever it moves (see {@link recheckCycle}). */
+  private holdOn(region: ReadonlyArray<ComputableSource<unknown>>): void {
+    for (const node of region) {
+      if (node instanceof Computable && !this.holding.has(node)) {
+        (node.closedBy ??= new Set()).add(this);
+        this.holding.add(node);
+      }
+    }
+  }
+
+  /** Ask each node holding on this one to decide again, this node having
+   * moved: recomputed, resolved, rejected, or left waiting (see
+   * {@link recheckCycle}). */
+  private askClosers(): void {
+    if (this.closedBy !== undefined) {
+      for (const closer of [...this.closedBy]) {
+        closer.recheckCycle();
+      }
+    }
+  }
+
+  /** Stop holding on every node this one holds on. */
+  private releaseHolds(): void {
+    for (const node of this.holding) {
+      node.closedBy?.delete(this);
+    }
+    this.holding.clear();
+  }
+
+  /** Check whether this node can move on its own: a derived node owed a run
+   * it can make, or a cell still to be resolved by its executor. */
+  private canMove(): boolean {
+    if (this.fn === undefined) {
+      return this.binding === undefined && !this.isSettled();
+    }
+    return this.canRun() && (this.currentState === ComputableState.Invalid || (this.currentState === ComputableState.Unresolved && this.binding === undefined));
+  }
+
+  /**
+   * Get the pending region behind `binding`: every unsettled node it waits on,
+   * directly or through other unsettled nodes, up to `closer`; undefined
+   * where it does not wait on `closer` at all. A raw source still to settle
+   * is in it as a leaf.
+   */
+  private static pendingRegion(binding: ComputableSource<unknown>, closer: ComputableSource<unknown>): Array<ComputableSource<unknown>> | undefined {
+    const region: Array<ComputableSource<unknown>> = [];
+    const seen = new Set<ComputableSource<unknown>>([binding]);
+    const pending: ComputableSource<unknown>[] = [binding];
+    let reached = false;
+    for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+      region.push(node);
+      for (const input of node instanceof Computable ? node.inputs() : []) {
+        if (input === closer) {
+          reached = true;
+        } else if (!input.isSettled() && !seen.has(input)) {
+          seen.add(input);
+          pending.push(input);
+        }
+      }
+    }
+    return reached ? region : undefined;
   }
 
   /**
@@ -637,8 +963,31 @@ export class Computable<T> extends ComputableSource<T> {
    */
   private acceptFromBinding(state: ComputableState.Valid | ComputableState.Error, value: T | Error): void {
     if (this.canRun() && this.currentState !== ComputableState.Invalid) {
-      this.settle(state, value);
+      this.fromBinding(state, value);
     }
+  }
+
+  /**
+   * Take what the binding delivers — unless the binding closes a cycle the
+   * inner still makes: then this node keeps the cycle's error, and what came
+   * back around is its own. Once the inner no longer depends on this node the
+   * cycle is gone, and the delivery is its value.
+   */
+  private fromBinding(state: ComputableState.Valid | ComputableState.Error, value: T | Error): void {
+    /* The binding has settled, so whether it closes a cycle is answered. */
+    this.unsearched = false;
+    const binding = this.binding;
+    if (binding?.cyclic === true) {
+      if (Computable.reaches(binding, this)) {
+        if (this.isMaybe()) {
+          this.revalidate();
+        }
+        return;
+      }
+      binding.cyclic = false;
+      this.releaseHolds();
+    }
+    this.settle(state, value);
   }
 
   /**
@@ -648,10 +997,7 @@ export class Computable<T> extends ComputableSource<T> {
    * side's own settle/revalidate converges us through maybeRecompute.
    */
   private revalidateFromBinding(): void {
-    if (
-      this.canRun() &&
-      (this.currentState === ComputableState.MaybeValid || this.currentState === ComputableState.MaybeError)
-    ) {
+    if (this.canRun() && this.isMaybe()) {
       this.revalidate();
     }
   }
@@ -660,8 +1006,10 @@ export class Computable<T> extends ComputableSource<T> {
    * `outer` is only ever set on a binding): the maybe-invalid frontier, the
    * revalidation wave, and the settle itself (state + value adopted verbatim,
    * never recomputed — re-running the outer's fn would mint a fresh inner).
-   * The invalidating direction forwards unconditionally (unsettling is always
-   * safe); the SETTLING direction is coherence-gated on the outer
+   * A maybe-invalid wave forwards, except through a pending cyclic binding,
+   * and a hard invalidate forwards except from a cyclic binding (see
+   * {@link markSelfMaybeInvalid} and {@link invalidate}); the SETTLING
+   * direction is coherence-gated on the outer
    * (acceptFromBinding / revalidateFromBinding): the outer returns to settled
    * only when both its own deps and the binding agree, so a consumer never
    * observes mixed-generation inputs across the boundary. */
@@ -669,15 +1017,38 @@ export class Computable<T> extends ComputableSource<T> {
   /** A hard invalidate (the inner re-settled a changed value with no prior
    * maybe-invalid wave) must still unsettle the outer, or a consumer sharing
    * another arm of the diamond reads the outer's stale value mid-cascade. The
-   * outer only ever needs maybe: the definite new value arrives via settle. */
+   * outer only ever needs maybe: the definite new value arrives via settle.
+   * Not from a cyclic binding: what the inner re-settles to while the cycle
+   * stands is the outer's own error coming back around, or a change inside
+   * the cycle, neither of which changes the outer; one that cuts the cycle
+   * reaches it as a delivery (see {@link fromBinding}). */
   public override invalidate(): void {
     super.invalidate();
-    this.outer?.markMaybeInvalid();
+    if (this.outer !== undefined && !this.cyclic) {
+      this.outer.markMaybeInvalid();
+    }
   }
 
-  protected override markMaybeInvalid(): void {
-    super.markMaybeInvalid();
-    this.outer?.markMaybeInvalid();
+  /** A maybe-invalid wave crosses a cyclic binding where the binding was
+   * settled, the cycle standing: the outer and what depends on it may be
+   * about to change, if the batch cuts the cycle, and must hold until it is
+   * decided (see {@link recheckCycle}). It does not cross one still pending:
+   * the wave is then the outer's own cycle error on its way back around. */
+  protected override markSelfMaybeInvalid(): ComputableSource<unknown>[] {
+    const settled = this.isSettled();
+    const next = super.markSelfMaybeInvalid();
+    this.carriedWave = this.cyclic && settled;
+    return this.outer !== undefined && (!this.cyclic || settled) ? [...next, this.outer] : next;
+  }
+
+  /** A cyclic binding that carried a wave into its outer: once the wave is
+   * done the outer's pending region is marked in full, and the outer holds on
+   * it, so that whichever of its nodes moves first asks the outer to decide. */
+  protected override afterMaybeInvalidWave(): void {
+    if (this.carriedWave) {
+      this.carriedWave = false;
+      this.outer?.holdOn(Computable.pendingRegion(this, this.outer) ?? []);
+    }
   }
 
   protected override revalidate(): void {

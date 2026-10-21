@@ -27,7 +27,7 @@ import { expect } from "chai";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { FileSet, IFile, MemoryFile, PACKAGE_RESOLUTION_PROVENANCE, PackageFileSet } from "@fabr-build/core";
+import { FileSet, IFile, MemoryFile, PACKAGE_RESOLUTION_PROVENANCE, PackageFileSet, dependenciesOn } from "@fabr-build/core";
 import { type IPnpSerializedState, type ISelfPackage, pnpManifestOf, PnpDependencyTarget, TREE_MOUNT, treeMountOf } from "../PnPManifest";
 import type { IPnpApi, PackageLocator, ResolveRequestOptions } from "./PnPApi";
 import { PnpResolver } from "./PnPResolver";
@@ -370,7 +370,7 @@ function generated(root: string, roots: FileSet[], self?: ISelfPackage, linkedPo
 /** A delivered package with the fixture files. */
 function delivered(name: string, version: string, deps: PackageFileSet[] = [], fields: Record<string, unknown> = {}): PackageFileSet {
   const files = new Map<string, IFile>([...packageFiles(name, version, fields)].map(([file, text]) => [file, MemoryFile.from(text)]));
-  return new PackageFileSet(files, name, version, deps).withOrigin({ kind: PACKAGE_RESOLUTION_PROVENANCE });
+  return new PackageFileSet(files, name, version, dependenciesOn(...deps)).withOrigin({ kind: PACKAGE_RESOLUTION_PROVENANCE });
 }
 
 function expectConformant(both: IPair): void {
@@ -464,7 +464,7 @@ describe("PnpResolver conforms to Yarn's PnP runtime", () => {
     it("answers one content wired two ways through its virtual locations", () => {
       const root = workspace();
       const shared = (dep: PackageFileSet): PackageFileSet =>
-        new PackageFileSet(new Map([...delivered("shared", "1.0.0")]), "shared", "1.0.0", [dep]).withOrigin({
+        new PackageFileSet(new Map([...delivered("shared", "1.0.0")]), "shared", "1.0.0", dependenciesOn(dep)).withOrigin({
           kind: PACKAGE_RESOLUTION_PROVENANCE,
         });
       const left = delivered("left", "1.0.0", [shared(delivered("dep", "1.0.0"))]);
@@ -476,7 +476,7 @@ describe("PnpResolver conforms to Yarn's PnP runtime", () => {
     it("answers through a linked tree pool, as fabr stages one", () => {
       const root = workspace();
       const shared = (dep: PackageFileSet): PackageFileSet =>
-        new PackageFileSet(new Map([...delivered("shared", "1.0.0")]), "shared", "1.0.0", [dep]).withOrigin({
+        new PackageFileSet(new Map([...delivered("shared", "1.0.0")]), "shared", "1.0.0", dependenciesOn(dep)).withOrigin({
           kind: PACKAGE_RESOLUTION_PROVENANCE,
         });
       const left = delivered("left", "1.0.0", [shared(delivered("dep", "1.0.0"))]);
@@ -529,7 +529,7 @@ function randomGraph(seed: number): PackageFileSet[] {
     const exists = built.find(pkg => pkg.packageName === name && pkg.version === version);
     built.push(
       exists !== undefined
-        ? new PackageFileSet(new Map([...exists]), name, version, deps).withOrigin({ kind: PACKAGE_RESOLUTION_PROVENANCE })
+        ? new PackageFileSet(new Map([...exists]), name, version, dependenciesOn(...deps)).withOrigin({ kind: PACKAGE_RESOLUTION_PROVENANCE })
         : delivered(name, version, deps, fields)
     );
   }

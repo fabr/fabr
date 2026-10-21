@@ -77,9 +77,9 @@ class AttachProbe extends ComputableSource<number> {
     this.settle(ComputableState.Valid, this.attaches);
   }
 
-  protected override detach(): void {
-    super.detach();
+  protected override detach(): ComputableSource<unknown>[] {
     this.detaches++;
+    return super.detach();
   }
 }
 

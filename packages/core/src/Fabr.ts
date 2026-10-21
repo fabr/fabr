@@ -21,10 +21,13 @@ import { PROJECT_FILENAME } from "./Constants";
 import { BuildCache } from "./core/BuildCache";
 import { Computable } from "./core/Computable";
 import { FSFileSource } from "./core/FSFileSource";
-import { SourceRef } from "./core/Repository";
+import { FabrError } from "./core/Errors";
+import { ProjectedPackage, Resolved, SourceRef } from "./core/Repository";
+import { ResolvedTarget } from "./context/index";
 import { getSourceFileSource, SourceFileSource } from "./core/SourceFileSource";
 import { WatchController } from "./core/WatchController";
-import { BuildContext } from "./model/BuildContext";
+import { BuildContext } from "./context/index";
+import type { INameValue } from "./model/AST";
 import { BuildModel } from "./model/BuildModel";
 import { BuildCycle, ExecutionContext } from "./model/ExecutionContext";
 import { reportFailure } from "./model/ErrorFormatter";
@@ -137,23 +140,56 @@ export class Fabr {
   }
 }
 
-/** Build each named target under `config`'s operation (bare target names). */
-function build(config: BuildContext, names: string[]): Computable<SourceRef[]>[] {
-  return names.map(name => config.getTargetRef(name));
+/**
+ * Throw where any of `resolved` (what `ref` resolved to) is a selection of a
+ * target's files rather than the whole target.
+ */
+export function requireWhole(ref: INameValue, resolved: ReadonlyArray<Resolved>): void {
+  for (const source of resolved) {
+    if (source instanceof ProjectedPackage && source.base instanceof ResolvedTarget) {
+      const name = source.base.packageName;
+      throw new FabrError(`'${ref.value.toString()}' selects files of '${name}'`).withHelp(`name it without the selection: '${name}'`);
+    }
+  }
 }
 
-/** Build each named target, realising any release namespaces, and yield the
- *  results. */
-export function buildOperation(config: BuildContext, names: string[]): Computable<SourceRef[][]> {
-  return Computable.forAll(build(config, names), (...results: SourceRef[][]) =>
+/**
+ * Build what each of `refs` names under `config`'s operation: resolve it, then
+ * materialize it. Each must be a name the project declares (a target, a
+ * global, a repository), with any `<k=v>` on it. A path, a pattern or a
+ * selection of a target's files is refused.
+ */
+function build(config: BuildContext, refs: INameValue[]): Computable<SourceRef[]>[] {
+  return refs.map(ref =>
+    config.isDeclared(ref).then(declared => {
+      if (declared) {
+        return config.materialize(ref);
+      }
+      /* Not a declared name. Resolving it rejects a name that names nothing,
+       * with suggestions; anything else is refused here, as a selection of a
+       * target's files or as no declared name. */
+      return config.resolve(ref).then((resolved): SourceRef[] => {
+        requireWhole(ref, resolved.denoted);
+        throw new FabrError(`'${ref.value.toString()}' is not a name the project declares`).withHelp(
+          "'build' and 'test' act on a declared target or global; read files with ls, cat or cp"
+        );
+      });
+    })
+  );
+}
+
+/** Build what each reference names, realising any release namespaces, and
+ *  yield the results. */
+export function buildOperation(config: BuildContext, refs: INameValue[]): Computable<SourceRef[][]> {
+  return Computable.forAll(build(config, refs), (...results: SourceRef[][]) =>
     Computable.forAll(results.map(realiseNamespaces), () => results)
   );
 }
 
-/** Build and run each named target's tests, yielding the results (the test
- *  reports ride them as artifacts). */
-export function testOperation(config: BuildContext, names: string[]): Computable<SourceRef[][]> {
-  return Computable.forAll(build(config, names), (...results: SourceRef[][]) => results);
+/** Build and run the tests of what each reference names, yielding the results
+ *  (the test reports ride them as artifacts). */
+export function testOperation(config: BuildContext, refs: INameValue[]): Computable<SourceRef[][]> {
+  return Computable.forAll(build(config, refs), (...results: SourceRef[][]) => results);
 }
 
 /**

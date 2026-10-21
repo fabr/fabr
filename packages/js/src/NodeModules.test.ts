@@ -28,20 +28,21 @@ import {
   PackageFileSet,
   PackageGraphBuilder,
   SymlinkFile,
-  } from "@fabr-build/core";
+  dependenciesOn,
+} from "@fabr-build/core";
 import { referenceOf } from "./PnPManifest";
 import { assembleNodeModules } from "./NodeModules";
 
 /** A package with a single `index.js` and the given (already-built) deps. */
 function pkg(name: string, deps: PackageFileSet[] = []): PackageFileSet {
-  return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}`)]]), name, "1.0.0", deps);
+  return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}`)]]), name, "1.0.0", dependenciesOn(...deps));
 }
 
 /** A versioned package (content distinct per version) with the given carried
  * deps — for a delivered closure: flat winners on the root, private version
  * overrides nested on their requirers. */
 function vpkg(name: string, version: string, deps: PackageFileSet[] = []): PackageFileSet {
-  return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}@${version}`)]]), name, version, deps);
+  return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}@${version}`)]]), name, version, dependenciesOn(...deps));
 }
 
 /** Snapshot a FileSet's entries into a plain map for synchronous inspection. */
@@ -115,7 +116,7 @@ describe("assembling delivered edge-binding graphs", () => {
         instances.set(key, node);
         builder.wire(
           node,
-          Object.entries(edges[id] ?? {}).map(([depName, toId]) => instance(depName, toId))
+          dependenciesOn(...Object.entries(edges[id] ?? {}).map(([depName, toId]) => instance(depName, toId)))
         );
       }
       return node;
@@ -342,7 +343,7 @@ describe("assembling delivered edge-binding graphs", () => {
     const other = new PackageGraphBuilder();
     const root = other.node(new Map<string, IFile>([["index.js", MemoryFile.from("// rootB@1.0.0")]]), "rootB", "1.0.0");
     const p = other.node(new Map<string, IFile>([["index.js", MemoryFile.from("// a different p")]]), "p", "1.0.0");
-    other.wire(root, [p]);
+    other.wire(root, dependenciesOn(p));
     other.wire(p, []);
     other.seal();
     expect(() => assembleNodeModules([one, root])).to.throw(ConflictError, /p/);
@@ -354,7 +355,7 @@ describe("assembling delivered edge-binding graphs", () => {
      * is its own signature, so it exists whatever layout does. */
     const batches = disagreeingBatches();
     const pOf = (root: PackageFileSet): PackageFileSet =>
-      root.getDependency("p") as PackageFileSet;
+      root.getDependency("p")!.package!;
     expect(referenceOf(pOf(batches[0])), "the two p nodes get distinct references").to.not.equal(
       referenceOf(pOf(batches[1]))
     );
@@ -436,7 +437,7 @@ describe("assembleNodeModules", () => {
 
   it("rejects two given packages of one id wired differently", () => {
     const carrierOf = (dep: PackageFileSet): PackageFileSet =>
-      new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from("// carrier")]]), "carrier", "1.0.0", [dep]);
+      new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from("// carrier")]]), "carrier", "1.0.0", dependenciesOn(dep));
     expect(() => assembleNodeModules([carrierOf(vpkg("q", "1.0.0")), carrierOf(vpkg("q", "2.0.0"))])).to.throw(ConflictError);
   });
 });

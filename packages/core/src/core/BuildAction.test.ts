@@ -36,6 +36,7 @@ import {
 
 import { DeclKind, ITargetDecl } from "../model/AST";
 import { parseName } from "../model/Parser";
+import { dependenciesOn } from "./Repository";
 
 const STEP: IBuildActionDefinition = { id: "test:compile", version: 1, run: () => Computable.resolve({ result: EMPTY_FILESET }) };
 
@@ -226,7 +227,7 @@ describe("the key fold over package inputs", () => {
     const builder = new PackageGraphBuilder();
     const a = builder.node(new Map([["index.js", MemoryFile.from("// a")]]), "a", "1.0.0");
     const b = builder.node(new Map([["index.js", MemoryFile.from(`// ${bTag}`)]]), "b", "1.0.0");
-    builder.wire(a, [b]);
+    builder.wire(a, dependenciesOn(b));
     builder.wire(b, []);
     builder.seal();
     return { a, b };
@@ -286,9 +287,9 @@ describe("the key fold over package inputs", () => {
     const builder = new PackageGraphBuilder();
     const node = (tag: string): PackageFileSet => builder.node(new Map([["index.js", MemoryFile.from(`// ${tag}`)]]), tag, "1.0.0");
     const [a, b, c, d] = [node("a"), node("b"), node("c"), node("d")];
-    builder.wire(a, [b, c]);
-    builder.wire(b, [c]);
-    builder.wire(c, [d]);
+    builder.wire(a, dependenciesOn(b, c));
+    builder.wire(b, dependenciesOn(c));
+    builder.wire(c, dependenciesOn(d));
     builder.wire(d, []);
     builder.seal();
     const paths = keyOf([a])

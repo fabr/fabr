@@ -26,7 +26,7 @@ import { Name } from "../core/Name";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { SourceRef } from "../core/Repository";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { TargetContext } from "../model/BuildContext";
+import { TargetContext } from "../context/index";
 import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
 import { parseVersion, SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
 import { RepositoryReader } from "../core/Repository";

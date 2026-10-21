@@ -2,6 +2,22 @@ Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
 (`@fabr-build/core`) and the JavaScript plugin (`@fabr-build/js`) are released together and share a
 version number.
 
+## Fabr 0.3.1
+@fabr-build/core:
+- Split resolution and materialization explicitly to support pure dependency operations
+- Move cycle checking down to the low-level Computable to fix some missed cycles.
+- Built packages now participate normally in dependency resolution, including ? and ! marks.
+- Add explicit 'PACKAGES' property type.
+- Repositories/namespaces now error if used unprojected rather than silently doing nothing.
+- Circular dependency errors list the written references making up the cycle, closing one first.
+
+@fabr-build/cli:
+- Add `fabr deps`: print the dependency tree of targets or packages, marking conflicting versions `(!)`.
+
+### @fabr-build/js 0.3.1
+- A sibling package depended on under a rename (`deps = mylib -> foo;`) is declared in npm's alias
+  form (`"foo": "npm:mylib@1.2.3"`).
+
 ## Fabr 0.3.0
 @fabr-build/core:
 - Add support for guarded properties.

@@ -199,9 +199,10 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
     });
   }
 
-  protected override detach(): void {
-    super.detach();
+  protected override detach(): ComputableSource<unknown>[] {
+    const released = super.detach();
     this.owner.unregisterQuery(this);
+    return released;
   }
 
   /** Whether the attach that captured `generation` is still the live one. The

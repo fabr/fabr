@@ -33,10 +33,10 @@ import { FabrError, toError } from "../core/Errors";
 import { FileSet, FileSource, IFile } from "../core/FileSet";
 import { Name, NamePartKind } from "../core/Name";
 import { PackageFileSet, PackageGraphBuilder } from "../core/PackageFileSet";
-import { IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
-import { Repository, RepositoryLookup, RepositoryPublishRef, RepositoryRef } from "../core/Repository";
+import { chainSteps, IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
+import { RefSource, Repository, RepositoryLookup, RepositoryPublishRef, RepositoryRef } from "../core/Repository";
 import { isJsonObject, readJsonFile, toJsonObject } from "../support/Json";
-import type { TargetContext } from "../model/BuildContext";
+import type { TargetContext } from "../context/index";
 import { RepositoryRegistration } from "./Types";
 
 /** Where lookups of the packages installed with fabr start: fabr's own code,
@@ -124,10 +124,17 @@ function readInstalled(files: FileSource, directory: string): Computable<{ manif
 /**
  * The installed package `name` at `directory`, with every package it brings
  * with it wired as its dependencies — each located as node locates it from the
- * requiring package's own directory. A missing required dependency is an
- * installation fault; a missing optional one is simply absent.
+ * requiring package's own directory, and each with the delivering reference's
+ * `steps` in its provenance. A missing required dependency is an installation
+ * fault; a missing optional one is simply absent.
  */
-function installedPackage(files: FileSource, name: string, directory: string): Computable<PackageFileSet> {
+function installedPackage(
+  repository: RefSource,
+  files: FileSource,
+  name: string,
+  directory: string,
+  steps: ReadonlyArray<IProvenanceStep>
+): Computable<PackageFileSet> {
   const found = new Map<string, { name: string; version?: string; files: FileSet; deps: Array<[string, string]> }>();
   const started = new Set<string>();
   const visit = (pkgName: string, pkgDir: string): Computable<void> => {
@@ -158,14 +165,18 @@ function installedPackage(files: FileSource, name: string, directory: string): C
     const nodes = new Map<string, PackageFileSet>();
     for (const [pkgDir, pkg] of found) {
       const origin: IFabrHomeOrigin = { kind: FABR_HOME_PROVENANCE, directory: pkgDir };
-      nodes.set(pkgDir, builder.node(pkg.files, pkg.name, pkg.version, origin));
+      nodes.set(pkgDir, builder.node(pkg.files, pkg.name, pkg.version, chainSteps(steps, origin)));
     }
     for (const [pkgDir, { deps }] of found) {
       builder.wire(
         nodes.get(pkgDir)!,
         deps.map(([dep, depDir]) => {
           const node = nodes.get(depDir)!;
-          return node.packageName === dep ? node : node.withPackageName(dep);
+          /* Asked for by name, of the installation. */
+          return {
+            reference: new RepositoryRef(repository, { name: dep, versionConstraint: undefined }),
+            package: node.packageName === dep ? node : node.withPackageName(dep),
+          };
         })
       );
     }
@@ -188,26 +199,33 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
     private readonly resolveFrom: string = INSTALLED_FROM
   ) {}
 
+  /** Vend the reference to the package `name` names under this namespace,
+   *  by its full package name (`@fabr-build/<name>`), as it is installed. */
   public getRepositoryRef(name: Name): RepositoryRef {
+    if (name.getMarker() !== undefined) {
+      throw new FabrError(`'${name.toString()}' is installed with fabr, not resolved, so an override marker means nothing on it`).withHelp(
+        "write the reference without the marker"
+      );
+    }
     const literal = name.getLiteralPrefix();
     const colon = literal.indexOf(":");
     return colon === -1
-      ? RepositoryRef.written(this, name)
-      : new RepositoryRef(this, { name: literal.substring(0, colon), versionConstraint: undefined }).find(name.substring(colon + 1));
+      ? new RepositoryRef(this, { name: `${this.namespace}/${name.toBaseString()}`, versionConstraint: undefined, renameTo: name.getRenameTo()?.toString() })
+      : new RepositoryRef(this, { name: `${this.namespace}/${literal.substring(0, colon)}`, versionConstraint: undefined }).find(name.substring(colon + 1));
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
     throw new FabrError(`fabr's installation is not a publish destination (cannot sync to '${name.toString()}')`);
   }
 
-  public deliver(reference: RepositoryRef): Computable<FileSet> {
-    const name = `${this.namespace}/${reference.name}`;
+  public resolve(reference: RepositoryRef): Computable<FileSet> {
+    const { name } = reference;
     try {
       const directory = locate(name, this.resolveFrom);
       if (directory === undefined) {
         throw new FabrError(`${name} is not installed with fabr (looked from ${this.resolveFrom})`);
       }
-      return installedPackage(this.files, name, directory);
+      return installedPackage(this, this.files, name, directory, reference.steps);
     } catch (err) {
       return Computable.reject(toError(err));
     }

@@ -18,13 +18,13 @@
  */
 
 import { expect } from "chai";
-import { IFile, MemoryFile, PackageFileSet, RewriteFn } from "@fabr-build/core";
+import { IFile, MemoryFile, PackageFileSet, RefSource, RepositoryRef, RewriteFn, dependenciesOn } from "@fabr-build/core";
 import { buildBundleOptions, compiledName, computeBundleEntries, computeExternalNames, IBundleEntrySource } from "./JSBundle";
 import { parseJSTarget } from "./JSPackage";
 
 /** A package with a single index.js and the given (already-built) deps. */
 function pkg(name: string, deps: PackageFileSet[] = []): PackageFileSet {
-  return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}`)]]), name, "1.0.0", deps);
+  return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}`)]]), name, "1.0.0", dependenciesOn(...deps));
 }
 
 const sorted = (names: string[]): string[] => [...names].sort((x, y) => x.localeCompare(y));
@@ -63,6 +63,19 @@ describe("computeExternalNames", () => {
     const depHost = pkg("depHost", [shared]);
     /* p direct in srcs, only transitive in deps → src wins, bundled. */
     expect(computeExternalNames([shared], [depHost])).to.deep.equal(["depHost"]);
+  });
+
+  it("externalizes an unbound renamed edge under the name the code imports it by", () => {
+    /* A dep still carried as a reference, written `@npm:wrap-ansi:^7 -> wrap-ansi-cjs`:
+     * the host's code requires the local name, so that is what must stay external. */
+    const renamed = new RepositoryRef({} as RefSource, { name: "wrap-ansi", versionConstraint: "^7.0.0", renameTo: "wrap-ansi-cjs" });
+    const host = new PackageFileSet(
+      new Map<string, IFile>([["index.js", MemoryFile.from("// host")]]),
+      "host",
+      "1.0.0",
+      [{ reference: renamed }]
+    );
+    expect(sorted(computeExternalNames([], [host]))).to.deep.equal(["host", "wrap-ansi-cjs"]);
   });
 });
 

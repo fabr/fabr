@@ -17,8 +17,8 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { ResolutionGraph } from "./ResolutionGraph";
-import { IRequirementEdge, MVSResolution, Requirement, Selected, Violation } from "./Types";
+import { MVSResolution } from "./MVSResolution";
+import { IRequirementEdge, Requirement, Selected, Violation } from "./Types";
 
 /** Serialized form of one selection in a persisted resolution document */
 interface IResolutionEntry {
@@ -134,12 +134,12 @@ function nodeKey<V>(selection: Selected<V>, versionToString: (version: V) => str
 }
 
 /** Deserialize a resolution document into the loaded resolution — a
- * {@link ResolutionGraph}, indexed and ready to deliver from. `domain` is any
+ * {@link MVSResolution}, indexed and ready to deliver from. `domain` is any
  * carrier of the version codec (a PackageFormat serves). */
 export function deserializeResolutionDoc<V>(
   doc: IResolutionDoc,
   domain: { parseVersion(text: string): V; versionToString(version: V): string }
-): ResolutionGraph<V> {
+): MVSResolution<V> {
   const parseVersion = (text: string): V => domain.parseVersion(text);
   /* Edge targets are positional (see IResolutionDoc.edges); the ids they mean
    * are read straight off the serialized selections, no version parsing. */
@@ -150,7 +150,7 @@ export function deserializeResolutionDoc<V>(
     requiredBy: entry.requiredBy,
     selected: parseVersion(entry.selected),
   });
-  return new ResolutionGraph(version => domain.versionToString(version), {
+  return new MVSResolution(version => domain.versionToString(version), {
     selections: doc.selections.map(entry => ({
       name: entry.name,
       ...(entry.publishedName === undefined ? {} : { publishedName: entry.publishedName }),
@@ -159,6 +159,7 @@ export function deserializeResolutionDoc<V>(
       reachedVia: entry.reachedVia,
       fork: entry.fork,
     })),
+    errors: [],
     violations: (doc.violations ?? []).map(violation),
     coerced: (doc.coerced ?? []).map(violation),
     shared: (doc.shared ?? []).map(violation),

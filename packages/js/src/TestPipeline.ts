@@ -45,6 +45,7 @@
  */
 
 import {
+  BUILD_OVERRIDE,
   Computable,
   Constraints,
   EMPTY_FILESET,
@@ -66,6 +67,7 @@ import {
   WriteBackFileSet,
   Flag,
   toEnvironment,
+  PackageSources,
 } from "@fabr-build/core";
 import { createTestRunAction } from "./TestRunAction";
 import { posix } from "path";
@@ -78,6 +80,7 @@ import {
   moduleTypeFile,
   parseJSTarget,
   resourceFiles,
+  stripExtension,
   stripPackageJson,
   usesDom,
 } from "./JSPackage";
@@ -159,30 +162,46 @@ export const TEST_FRAMEWORKS: ReadonlyMap<string, ITestFramework> = new Map([
   ["vitest", { runner: "JS_VITEST_RUNNER", module: "esm" }],
 ]);
 
-export interface ITestInputs {
-  /** The as-written source and test sources: they join the same collection point
-   * as the deps, so everything this evaluation consumes resolves jointly. */
-  sourceRefs: SourceRef[];
-  testRefs: SourceRef[];
-  target: string;
-  /** The as-written (unmaterialized) dependency sources. A js_package[test]
-   * folds its `provided_deps` in here — a test install is self-contained, so a
-   * peer is just another dep with no host to supply it and no manifest to
-   * distinguish it. */
-  depSources: SourceRef[];
+/** What a test target requires, as written (unmaterialized): everything the
+ * evaluation consumes from the build graph, so it all resolves jointly. */
+export type TestRequirements = {
+  srcs: SourceRef[];
+  tests: SourceRef[];
+  /** A js_package[test] folds its `provided_deps` in here — a test install is
+   * self-contained, so a peer is just another dep with no host to supply it
+   * and no manifest to distinguish it. */
+  deps: PackageSources;
   /** Test-only packages (assertion libraries and their @types), available to
    * both the test compile and the test run but never to the package build */
-  testDepSources: SourceRef[];
-  /** Files the tests need at runtime, staged verbatim (see `test_resources`). */
-  testResourceSources: SourceRef[];
-  /** Recorded expectations the tests compare against (see `expectations`). */
-  expectationSources: SourceRef[];
-  /** The environment variables the test processes run with — their whole
-   * environment — as the target's map declares them. */
-  env: PropertyMap;
+  test_deps: PackageSources;
+  /** Files the tests need at runtime, staged verbatim. */
+  test_resources: SourceRef[];
+  /** Recorded expectations the tests compare against. */
+  expectations: SourceRef[];
+};
+
+/** {@link TestRequirements}, materialized. */
+export type TestContents = { [K in keyof TestRequirements]: FileSet[] };
+
+export interface ITestSettings {
+  /** The MAP property declaring the environment variables the test processes
+   * run with — their whole environment: `test_env` on a js_package, `env` on a
+   * js_test. */
+  envProperty: string;
   /** The package name a js_package[test]'s sources may import themselves by; a
    * standalone js_test has no package identity and leaves it unset. */
   packageName?: string;
+}
+
+/**
+ * Return a test target's requirements as written, or none where it declares no
+ * `tests` at all, so that such a target fetches nothing under `fabr test`. A
+ * declared `tests` that matches no files keeps its requirements.
+ */
+export function testRequirements(written: TestRequirements): TestRequirements {
+  return written.tests.length === 0
+    ? { srcs: [], tests: [], deps: new PackageSources([]), test_deps: new PackageSources([]), test_resources: [], expectations: [] }
+    : written;
 }
 
 /**
@@ -193,119 +212,109 @@ export interface ITestInputs {
  * artifact is the test report; a red run fails the target with the report's
  * failure summary.
  *
- * Everything the evaluation consumes from the build graph — sources, tests,
- * deps and test-only deps — goes through ONE collection point, so every
- * requirement resolves jointly and the consumer's pins participate across the
- * lot. The runner and the compile toolchain are not among them: they are
- * *tools*, independent of what they test/compile, and resolve apart.
+ * The last argument is the target's {@link TestRequirements}, materialized:
+ * resolved as one collection, so the consumer's pins govern the lot. The
+ * runner and the compile toolchain are not among them: they are tools,
+ * independent of what they test or compile, and resolve apart. The target
+ * the tests are compiled for is `JS_TARGET` under the build operation.
  */
-export function compileAndRunTests(context: TargetContext, framework: ITestFramework, inputs: ITestInputs): Computable<RuleResult> {
-  const jsTarget = parseJSTarget(inputs.target);
-  if (inputs.testRefs.length === 0) {
-    /* No `tests` at all: trivially green, and nothing is resolved for it — a
-     * target that declares no tests must not fetch its deps under `fabr test`.
-     * (A declared `tests` that *matches* no files still resolves, and greens
-     * below; one matching files but producing no runnable output errors.) */
+export function compileAndRunTests(
+  context: TargetContext,
+  framework: ITestFramework,
+  settings: ITestSettings,
+  { srcs, tests: testSets, deps, test_deps: testDeps, test_resources: testResources, expectations: expectationSets }: TestContents
+): Computable<RuleResult> {
+  const tests = FileSet.unionAll(...testSets);
+  if (tests.isEmpty()) {
+    /* No tests declared: trivially green (and no runner is needed). A declared
+     * test that yields no runnable output is NOT this case — it errors below. */
     return Computable.resolve(EMPTY_FILESET);
   }
-  /* THE collection point, singular per evaluation: the sources, the tests, the
-   * deps and the test-only deps all materialize through one joint resolution. */
-  return context
-    .collect({
-      srcs: inputs.sourceRefs,
-      tests: inputs.testRefs,
-      deps: inputs.depSources,
-      testDeps: inputs.testDepSources,
-      testResources: inputs.testResourceSources,
-      expectations: inputs.expectationSources,
-    })
-    .then(({ srcs, tests: testSets, deps, testDeps, testResources, expectations: expectationSets }): Computable<RuleResult> => {
-      const tests = FileSet.unionAll(...testSets);
-      if (tests.isEmpty()) {
-        /* No tests declared: trivially green (and no runner is needed). A declared
-         * test that yields no runnable output is NOT this case — it errors below. */
-        return Computable.resolve(EMPTY_FILESET);
-      }
-      /* Compile srcs and tests together (tests are normally within srcs); the
-       * globals declarations come in via the synthetic @types mount, so a copy
-       * among the sources (the runner testing itself) is dropped */
-      const sources = FileSet.unionAll(...srcs, tests).remap(name => (name === RUNNER_GLOBALS_TYPES ? undefined : name));
-      /* The declared test sources' stems (path minus extension). Their compiled `.js`
-       * are picked out of the *actual* compiled tree by stem in planTestRun, so the
-       * source→output naming is never re-derived here — js_compile owns it. */
-      const testStems = new Set([...tests].map(([name]) => stripExtension(name)));
-      /* The runner is a *tool*, independent of what it tests, so it resolves
-       * apart (the TSC precedent — its pins don't co-resolve with the tests'
-       * deps). */
-      return Computable.forAll(
-        [context.getGlobalRunnable(framework.runner), context.getGlobalString(TEST_EXPECTATIONS)],
-        (runner, expectations): Computable<RuleResult> => {
-          /* The test compile may import the package's deps, the test_deps, and the
-           * runner globals directly (all passed to compileJsSources). The runtime
-           * install splits them like RunJSScript: packages mount as node_modules,
-           * while a loose *resource* dep (.json, a template — tsc never emits it)
-           * stages at the install root next to the compiled tests, so a `./x.json`
-           * import resolves. Compilable loose deps (.ts/.js) are excluded here — their
-           * output already rides the compiled tree (and a raw .js would collide). */
-          const allDeps = [...deps, ...testDeps];
-          const packages = allDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
-          const runtimeModules = assembleNodeModules(packages);
-          const resources = resourceFiles(allDeps.filter(dep => !(dep instanceof PackageFileSet)));
+  /* Compile srcs and tests together (tests are normally within srcs); the
+   * globals declarations come in via the synthetic @types mount, so a copy
+   * among the sources (the runner testing itself) is dropped */
+  const sources = FileSet.unionAll(...srcs, tests).remap(name => (name === RUNNER_GLOBALS_TYPES ? undefined : name));
+  /* The declared test sources' stems (path minus extension). Their compiled `.js`
+   * are picked out of the *actual* compiled tree by stem in planTestRun, so the
+   * source→output naming is never re-derived here — js_compile owns it. */
+  const testStems = new Set([...tests].map(([name]) => stripExtension(name)));
+  /* The runner is a *tool*, independent of what it tests, so it resolves
+   * apart (the TSC precedent — its pins don't co-resolve with the tests'
+   * deps). */
+  return Computable.forAll(
+    [
+      context.getGlobalRunnable(framework.runner),
+      context.getGlobalString(TEST_EXPECTATIONS),
+      context.getGlobalString("JS_TARGET", BUILD_OVERRIDE),
+      context.getMap(settings.envProperty),
+    ],
+    (runner, expectations, target, env): Computable<RuleResult> => {
+      const jsTarget = parseJSTarget(target);
+      /* The test compile may import the package's deps, the test_deps, and the
+       * runner globals directly (all passed to compileJsSources). The runtime
+       * install splits them like RunJSScript: packages mount as node_modules,
+       * while a loose *resource* dep (.json, a template — tsc never emits it)
+       * stages at the install root next to the compiled tests, so a `./x.json`
+       * import resolves. Compilable loose deps (.ts/.js) are excluded here — their
+       * output already rides the compiled tree (and a raw .js would collide). */
+      const allDeps = [...deps, ...testDeps];
+      const packages = allDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+      const runtimeModules = assembleNodeModules(packages);
+      const resources = resourceFiles(allDeps.filter(dep => !(dep instanceof PackageFileSet)));
 
-          /* Tests compile to the format their framework's runner loads,
-           * whatever the package itself is built as. Component-wise — the ES
-           * version and the environment are the target's own and are kept. */
-          const testTarget: PinnedJSTarget = { ...jsTarget, module: framework.module };
-          /* Set unconditionally, including when the target already emits
-           * that format: the override is then a different SPELLING of the same
-           * target (`es2020` formats back as `es2020-commonjs-node`), which
-           * parses identically, yields an identical tsconfig, and so shares the
-           * one compile by cache key.
-           *
-           * Built as the package would build it, stylesheets included — a test
-           * importing one gets the CSS the package ships, not raw Sass. */
-          return compileContents(context, sources, [...deps, ...testDeps, runnerGlobalsTypes(runner)], {
-            packageName: inputs.packageName,
-            constraints: Constraints.of({ JS_TARGET: formatJSTarget(testTarget) }),
-            /* A distinct label: the test compile is its own work item (its tree
-             * includes the tests), with its own incremental base. */
-            label: "Compiling tests for",
-          }).then(built => {
-            if (built.sources.ts.isEmpty() && built.sources.js.isEmpty() && built.sources.jsx.isEmpty()) {
-              /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
-               * so there is nothing to run — a loud failure, not a silent green. */
-              throw new FabrError("Test target declares test files but none is a compilable source");
-            }
-            return planTestRun(context, {
-              compiled: Computable.resolve(built.compiled),
-              /* The lowered CSS is a sibling of the compiled code that imports it. */
-              copied: FileSet.unionAll(built.passthrough, built.css),
-              compileSrcs: built.compileSrcs,
-              nodeModules: runtimeModules,
-              resources,
-              runner,
-              tests,
-              testStems,
-              testTarget,
-              /* The suite's environment follows the `dom` SOURCE flag, not the
-               * target it is emitted for: a tree that uses the DOM needs jsdom
-               * however it is built, and one that does not should run under plain
-               * node even when its bundle is emitted for a browser. Read off
-               * `deps` AND `test_deps` — the same flags the test compile sees, so
-               * a suite whose TESTS need a DOM its sources do not (a component
-               * library rendering in its tests) declares `dom` in test_deps and
-               * gets both the lib and the environment. */
-              needsDom: usesDom([...deps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
-              testResources: FileSet.unionAll(...testResources),
-              expectations: FileSet.unionAll(...expectationSets),
-              env: inputs.env,
-              packageName: inputs.packageName,
-              update: expectations === UPDATE_EXPECTATIONS,
-            });
-          });
+      /* Tests compile to the format their framework's runner loads,
+       * whatever the package itself is built as. Component-wise — the ES
+       * version and the environment are the target's own and are kept. */
+      const testTarget: PinnedJSTarget = { ...jsTarget, module: framework.module };
+      /* Set unconditionally, including when the target already emits
+       * that format: the override is then a different SPELLING of the same
+       * target (`es2020` formats back as `es2020-commonjs-node`), which
+       * parses identically, yields an identical tsconfig, and so shares the
+       * one compile by cache key.
+       *
+       * Built as the package would build it, stylesheets included — a test
+       * importing one gets the CSS the package ships, not raw Sass. */
+      return compileContents(context, sources, [...deps, ...testDeps, runnerGlobalsTypes(runner)], {
+        packageName: settings.packageName,
+        constraints: Constraints.of({ JS_TARGET: formatJSTarget(testTarget) }),
+        /* A distinct label: the test compile is its own work item (its tree
+         * includes the tests), with its own incremental base. */
+        label: "Compiling tests for",
+      }).then(built => {
+        if (built.sources.ts.isEmpty() && built.sources.js.isEmpty() && built.sources.jsx.isEmpty()) {
+          /* Tests are declared but none is a compilable source (.ts/.tsx/.js/.jsx),
+           * so there is nothing to run — a loud failure, not a silent green. */
+          throw new FabrError("Test target declares test files but none is a compilable source");
         }
-      );
-    });
+        return planTestRun(context, {
+          compiled: Computable.resolve(built.compiled),
+          /* The lowered CSS is a sibling of the compiled code that imports it. */
+          copied: FileSet.unionAll(built.passthrough, built.css),
+          compileSrcs: built.compileSrcs,
+          nodeModules: runtimeModules,
+          resources,
+          runner,
+          tests,
+          testStems,
+          testTarget,
+          /* The suite's environment follows the `dom` SOURCE flag, not the
+           * target it is emitted for: a tree that uses the DOM needs jsdom
+           * however it is built, and one that does not should run under plain
+           * node even when its bundle is emitted for a browser. Read off
+           * `deps` AND `test_deps` — the same flags the test compile sees, so
+           * a suite whose TESTS need a DOM its sources do not (a component
+           * library rendering in its tests) declares `dom` in test_deps and
+           * gets both the lib and the environment. */
+          needsDom: usesDom([...deps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
+          testResources: FileSet.unionAll(...testResources),
+          expectations: FileSet.unionAll(...expectationSets),
+          env,
+          packageName: settings.packageName,
+          update: expectations === UPDATE_EXPECTATIONS,
+        });
+      });
+    }
+  );
 }
 
 /**
@@ -332,12 +341,6 @@ function selfMount(packageName: string | undefined): FileSet {
    * `@scope/pkg/sub` has to land there or it resolves to nothing. */
   const up = "../".repeat(packageName.split("/").length);
   return FileSet.layout({ [packageName]: new SymlinkFile(up + COMPILE_OUT_DIR) });
-}
-
-/** Strip a file's final extension: `a/foo.test.ts` → `a/foo.test`. Used to match
- * a declared test source against its compiled `.js` output by stem. */
-function stripExtension(name: string): string {
-  return name.replace(/\.[^./]+$/, "");
 }
 
 /** The runnable test files: the JS entries of the *actual* compiled tree whose

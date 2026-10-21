@@ -25,7 +25,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { FileSet, IFile, MemoryFile, PackageFileSet } from "@fabr-build/core";
+import { FileSet, IFile, MemoryFile, PackageFileSet, dependenciesOn } from "@fabr-build/core";
 import type { ISassOptions } from "../CSSCompile";
 import { PNP_DATA_FILE } from "../pnp/PnPResolver";
 import { pnpManifestOf, TREE_MOUNT, treeMountOf } from "../PnPManifest";
@@ -93,7 +93,7 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
   const files = (entries: Record<string, string>): Map<string, IFile> =>
     new Map(Object.entries(entries).map(([name, text]) => [name, MemoryFile.from(text)]));
   const pkg = (name: string, version: string, entries: Record<string, string>, deps: PackageFileSet[] = []): PackageFileSet =>
-    new PackageFileSet(files({ "package.json": JSON.stringify({ name, version }), ...entries }), name, version, deps);
+    new PackageFileSet(files({ "package.json": JSON.stringify({ name, version }), ...entries }), name, version, dependenciesOn(...deps));
 
   /**
    * Stage a workspace as the step does — the pool mounted as one link, each
@@ -139,10 +139,10 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
     });
     const tokens = (value: string, version: string): PackageFileSet => pkg("tokens", version, { "_index.scss": `$value: "${value}";\n` });
     const left = pkg("left", "1.0.0", { "_index.scss": '@forward "theme";\n' }, [
-      new PackageFileSet(theme, "theme", "1.0.0", [tokens("one", "1.0.0")]),
+      new PackageFileSet(theme, "theme", "1.0.0", dependenciesOn(tokens("one", "1.0.0"))),
     ]);
     const right = pkg("right", "1.0.0", { "_index.scss": '@forward "theme";\n' }, [
-      new PackageFileSet(theme, "theme", "1.0.0", [tokens("two", "2.0.0")]),
+      new PackageFileSet(theme, "theme", "1.0.0", dependenciesOn(tokens("two", "2.0.0"))),
     ]);
     const { css } = await lower([left, right], '@use "left";\n@use "right";\n');
     assert.match(css, /v: "one"/);
@@ -162,8 +162,8 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
   it("names the real files in the map, never a virtual location", async () => {
     const shared = files({ "package.json": "{}", "_index.scss": '@use "dep";\n.shared { v: dep.$v; }\n' });
     const dep = (version: string): PackageFileSet => pkg("dep", version, { "_index.scss": `$v: "${version}";\n` });
-    const a = pkg("a", "1.0.0", { "_index.scss": '@forward "shared";\n' }, [new PackageFileSet(shared, "shared", "1.0.0", [dep("1.0.0")])]);
-    const b = pkg("b", "1.0.0", { "_index.scss": '@forward "shared";\n' }, [new PackageFileSet(shared, "shared", "1.0.0", [dep("2.0.0")])]);
+    const a = pkg("a", "1.0.0", { "_index.scss": '@forward "shared";\n' }, [new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("1.0.0")))]);
+    const b = pkg("b", "1.0.0", { "_index.scss": '@forward "shared";\n' }, [new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("2.0.0")))]);
     const { sources } = await lower([a, b], '@use "a";\n@use "b";\n.app { v: 1; }\n');
     assert.ok(sources.includes("app.scss"), `the source itself is named as the target names it: ${sources.join(", ")}`);
     assert.ok(

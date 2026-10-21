@@ -108,11 +108,4 @@ describe("e2e: js_package exports", () => {
     expect(result.status).to.not.equal(0);
     expect(result.stderr).to.contain("'decls.d.ts' is named in exports, but produces nothing importable");
   });
-
-  it("rejects a dependency named as an entry point", () => {
-    const result = manifestOf("exports = es2023;");
-    expect(result.status).to.not.equal(0);
-    expect(result.stderr).to.contain("exports names this package's own source files");
-    expect(result.stderr).to.contain("'es2023' is a flag");
-  });
 });

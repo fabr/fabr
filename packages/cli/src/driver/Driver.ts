@@ -22,6 +22,8 @@ import {
   FabrError,
   FILES_OPERATION,
   BuildContext,
+  INameValue,
+  requireWhole,
   BuildModel,
   buildOperation,
   Computable,
@@ -52,7 +54,6 @@ import {
   SyncSource,
   testOperation,
   forceTargets,
-  PERMISSIVE_RESOLUTION,
   toRunnable,
   signalInteractiveChild,
   SourceRef,
@@ -65,6 +66,7 @@ import {
 } from "@fabr-build/core";
 import { runInteractive, RunSupervisor } from "./RunHandler";
 import { shellInto } from "./ShellHandler";
+import { DependencyTree, renderDependencyTrees, sectionsOf } from "./DepsTree";
 import { publishSync } from "./SyncHandler";
 import { completeCommandLine, Mode, Options } from "./Command";
 import { getSourceRoot, getBuildCacheRoot, getHostProperties } from "./Environment";
@@ -188,6 +190,8 @@ export function runFabr(options: Options): Promise<void> {
       return runWith(options, (model, execution, site) =>
         Computable.forAll(resolveNames(model, options, execution, site), (...results) => copyTarget(options, execution, results))
       );
+    case "deps":
+      return runWith(options, (model, execution, site) => printDependencies(model, options, execution, site));
     case "test":
       return runWith(options, (model, execution, site) => runTest(model, options, execution, site, options.targets), watch);
     case "run": {
@@ -195,7 +199,7 @@ export function runFabr(options: Options): Promise<void> {
       return runWith(options, (model, execution, site) => runProgram(model, options, execution, site, watch, supervisors), watch);
     }
     case "shell":
-      return runWith(options, (model, execution) => shellTarget(model, options, execution));
+      return runWith(options, (model, execution, site) => shellTarget(model, options, execution, site));
     case "sync":
       return runWith(options, (model, execution, site) => syncTargets(model, options, execution, site));
     case "list-targets":
@@ -215,7 +219,7 @@ export function runFabr(options: Options): Promise<void> {
           watch
         );
       }
-      return runWith(options, (model, execution) => runBuild(model, options, execution, options.targets), watch);
+      return runWith(options, (model, execution, site) => runBuild(model, options, execution, site, options.targets), watch);
   }
 }
 
@@ -240,9 +244,16 @@ class Supervisors {
 }
 
 /** `fabr build <targets>`: the core operation; the marker rides cycle-end. */
-function runBuild(model: BuildModel, options: Options, execution: ExecutionContext, names: string[]): Computable<void> {
+function runBuild(
+  model: BuildModel,
+  options: Options,
+  execution: ExecutionContext,
+  site: IInvocationSite,
+  names: string[]
+): Computable<void> {
   markForced(model, options, execution, names);
-  return buildOperation(configFor(model, options, execution, "build"), names).then(() => undefined);
+  const refs = names.map(name => options.commandLine.refFor(name, site));
+  return buildOperation(configFor(model, options, execution, "build"), refs).then(() => undefined);
 }
 
 /** `fabr test <targets>`: the core operation, with the summaries and
@@ -257,7 +268,8 @@ function runTest(
   names: string[]
 ): Computable<void> {
   markForced(model, options, execution, names);
-  return testOperation(configFor(model, options, execution, "test"), names).then(results =>
+  const refs = names.map(name => options.commandLine.refFor(name, site));
+  return testOperation(configFor(model, options, execution, "test"), refs).then(results =>
     reportTestResults(execution.log, names, results).then(() => applyExpectationUpdates(execution, site, results))
   );
 }
@@ -350,7 +362,7 @@ function runInferred(
   const plan = completeCommandLine(options, name => operationsOf(model, name));
   const groups: Computable<void>[] = [];
   if (plan.build.length > 0) {
-    groups.push(runBuild(model, options, execution, plan.build));
+    groups.push(runBuild(model, options, execution, site, plan.build));
   }
   if (plan.test.length > 0) {
     groups.push(runTest(model, options, execution, site, plan.test));
@@ -400,9 +412,9 @@ function runProgram(
   const config = configFor(model, options, execution, "run");
   markForced(model, options, execution, [target]);
   const supervisor = watch ? supervisors.of(execution, target, args) : undefined;
-  /* The name IS the program (`fabr run @npm:http-server:14.1.1`), so its closure
-   * is a sealed install — the same judgment a rule's `tool` property makes. */
-  return config.resolveName(options.commandLine.refFor(target, site), undefined, PERMISSIVE_RESOLUTION).then<void | Takeover>(sources => {
+  /* The name is the program (`fabr run @npm:http-server:14.1.1`), so under
+   * `run` materialize resolves its closure permissively, as a rule's `tool` is. */
+  return config.materialize(options.commandLine.refFor(target, site)).then<void | Takeover>(sources => {
     /* A projected runnable (`fabr run pkg:tsc`) arrives pending — this is the
      * point a launcher is demanded, so it collapses here. */
     const runnable = sources.map(toRunnable).find(Boolean);
@@ -435,21 +447,24 @@ function runProgram(
  * under `build` like the real step, so the inputs that fill the sandbox are the
  * real ones. Exits with the shell's own code.
  */
-function shellTarget(model: BuildModel, options: Options, execution: ExecutionContext): Computable<void | Takeover> {
+function shellTarget(
+  model: BuildModel,
+  options: Options,
+  execution: ExecutionContext,
+  site: IInvocationSite
+): Computable<void | Takeover> {
   const config = configFor(model, options, execution, "build");
-  return config
-    .resolveActionForShell(options.targets[0])
-    .then<void | Takeover>(action => {
-      /* The shell owns the process once launched — a takeover, like run's
-       * program, so the evaluation settles (and its cycle closes) first. */
-      const takeover: Takeover = () => shellInto(execution.buildCache, options.targets[0], action, execution.log);
-      return takeover;
-    });
+  return config.getAction(options.commandLine.refFor(options.targets[0], site)).then<void | Takeover>(action => {
+    /* The shell owns the process once launched — a takeover, like run's
+     * program, so the evaluation settles (and its cycle closes) first. */
+    const takeover: Takeover = () => shellInto(execution.buildCache, options.targets[0], action, execution.log);
+    return takeover;
+  });
 }
 
 /**
  * `fabr sync <name>…`: package the named wire artifacts under `build`, then
- * upload them. Each name is resolved WHOLE (as ls/cat resolve theirs), so it may
+ * upload them. Each name is materialized whole (as ls/cat materialize theirs), so it may
  * name a release — every member of it, packaged in publish order — or reach into
  * one for a single member (`release/@npm/x/1.0.0`), which packages that member
  * alone; a release is a namespace, so both are ordinary references into it.
@@ -459,7 +474,7 @@ function shellTarget(model: BuildModel, options: Options, execution: ExecutionCo
  */
 function syncTargets(model: BuildModel, options: Options, execution: ExecutionContext, site: IInvocationSite): Computable<void> {
   const config = configFor(model, options, execution, "build");
-  const resolved = options.targets.map(name => config.resolveName(options.commandLine.refFor(name, site)));
+  const resolved = options.targets.map(name => config.materialize(options.commandLine.refFor(name, site)));
   return Computable.forAll(resolved, (...results: SourceRef[][]) =>
     Computable.forAll(
       results.map((sources, i) => membersOf(sources, options.targets[i])),
@@ -696,13 +711,12 @@ function markForced(model: BuildModel, options: Options, execution: ExecutionCon
   }
 }
 
-/** Resolve each whole name (target + projection) under the `files` operation:
- * ls/cat only ever want the resolved files, so this lets the leaves do less —
- * an `@npm:` reference delivers a package's own files with no dependency
- * closure — while a declared target still builds (files falls back to build).
- * Each name resolves as the reference it is, written on the command line
- * ({@link CommandLineSource}) — so a bare path names files just as it would in
- * a build file. */
+/** Materialize each whole name (target + projection) under the `files`
+ * operation, which ls/cat want: an `@npm:` reference delivers the package's own
+ * files with no dependency closure, while a declared target still builds (files
+ * falls back to build). Each name is read as the reference written on the
+ * command line ({@link CommandLineSource}), so a bare path names files as it
+ * would in a build file. */
 function resolveNames(
   model: BuildModel,
   options: Options,
@@ -712,7 +726,7 @@ function resolveNames(
   const config = configFor(model, options, execution, FILES_OPERATION);
   return options.targets.map(name =>
     config
-      .resolveName(options.commandLine.refFor(name, site))
+      .materialize(options.commandLine.refFor(name, site))
       .then(sources => Computable.forAll(sources.map(openedOut), (...opened: SourceRef[]) => opened))
   );
 }
@@ -923,6 +937,42 @@ function listTargets(options: Options, results: SourceRef[][]): Computable<void>
   );
 }
 
+/** Resolve `ref` under `config` to the tree `fabr deps` prints for it, titled `title`. */
+function resolvedTree(config: BuildContext, ref: INameValue, title: string): Computable<DependencyTree> {
+  return config.resolve(ref).then(resolved => {
+    requireWhole(ref, resolved.denoted);
+    return sectionsOf(title, resolved);
+  });
+}
+
+/**
+ * Print the dependency tree of each name (`fabr deps`) to stdout: what a target
+ * requires, resolved and not built, or what any other name resolves to. A
+ * target is resolved under `build`, or under its type's sole operation where
+ * the type has no build rule, unless the name requires another
+ * (`pkg<BUILD_OPERATION=test>`).
+ */
+function printDependencies(model: BuildModel, options: Options, execution: ExecutionContext, site: IInvocationSite): Computable<void> {
+  /* A type with no build rule and one operation of its own (a `js_script`
+   * runs, a `js_test` tests) is asked under that one. */
+  const operationFor = (name: string): string => {
+    const target = model.getReferencedTarget(name);
+    const operations = target === undefined ? [] : model.getOperations(target.type);
+    return operations.length === 1 && operations[0] !== "*" ? operations[0] : "build";
+  };
+  return Computable.forAll(
+    options.targets.map(name =>
+      resolvedTree(configFor(model, options, execution, operationFor(name)), options.commandLine.refFor(name, site), name)
+    ),
+    (...blocks: DependencyTree[]) => {
+      /* Painted for a terminal only, like every other colour decision here
+       * (NO_COLOR is any non-empty value). */
+      const color = process.stdout.isTTY === true && !process.env.NO_COLOR;
+      renderDependencyTrees(blocks, color ? (code, text) => `\x1b[${code}m${text}\x1b[0m` : undefined).forEach(line => console.log(line));
+    }
+  );
+}
+
 /**
  * `fabr list-targets`: print the targets declared in the project (name + type),
  * recursively across namespaces. A model query — it builds nothing. Repository
@@ -984,6 +1034,8 @@ function propertyTypeName(schema: IPropertySchema): string {
   switch (schema.type) {
     case PropertyType.FileSet:
       return "FILES";
+    case PropertyType.Packages:
+      return "PACKAGES";
     case PropertyType.String:
       return "STRING";
     case PropertyType.Map:

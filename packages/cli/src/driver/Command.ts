@@ -90,6 +90,7 @@ const COMMAND_SPECS: CommandSpec[] = [
   { name: "ls", synopsis: "[-l] <names>", summary: "Build the given targets and list their contents", accepts: ["-l", "-q", "--no-progress"], requiresTarget: true },
   { name: "cat", synopsis: "<names>", summary: "Build a target and write its matching files to stdout", accepts: ["-q", "--no-progress"], requiresTarget: true },
   { name: "cp", synopsis: "<sources…> <dest>", summary: "Build targets and copy their files to a destination directory", accepts: ["-q", "--no-progress"], requiresTarget: true },
+  { name: "deps", synopsis: "<names>", summary: "Print the dependency tree of the given targets or packages", accepts: ["-q", "--no-progress"], requiresTarget: true },
   { name: "sync", synopsis: "<target>", summary: "Build and publish a sync target to its destination coordinates", accepts: ["-q", "--no-progress"], requiresTarget: true },
   {
     name: "list-targets",

@@ -103,7 +103,8 @@ imported by path.
 
 Set `exports` to the source files that are the package's public entry points. Each becomes an
 entry named after the source, without its extension, and files not listed can no longer be
-imported from outside:
+imported from outside. `exports` is read as `srcs` is: a reference to a package there is that
+package's files, compiled as this package's own.
 
 ```
 exports = src:index.ts src:server.ts src:lib/api.ts;

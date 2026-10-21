@@ -25,10 +25,12 @@ import { FileSetRef } from "./FileSetRef";
 import { MemoryFile } from "./MemoryFS";
 import { Name } from "./Name";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
-import { bindProvided, materializeAll, renamedDelivery, Repository, RepositoryLookup, RepositoryRef, ResolutionContext } from "./Repository";
+import { dependenciesOn, renamedAs, Repository, RepositoryLookup, RepositoryRef } from "./Repository";
+import { ResolutionContext } from "../resolver/Types";
+import { bindProvided, collectLists } from "../context/CollectionPoint";
 import { parseName } from "../model/Parser";
 
-/** deliveredAs reads only the reference itself, never its source. */
+/** applyTo reads only the reference itself, never its source. */
 const SOURCE = {} as unknown as RepositoryLookup;
 
 function ref(written: string): RepositoryRef {
@@ -36,12 +38,12 @@ function ref(written: string): RepositoryRef {
 }
 
 function pkg(name: string, version = "1.0.0", dependencies: PackageFileSet[] = []): PackageFileSet {
-  return new PackageFileSet(new Map([["index.js", MemoryFile.from("")]]), name, version, dependencies);
+  return new PackageFileSet(new Map([["index.js", MemoryFile.from("")]]), name, version, dependenciesOn(...dependencies));
 }
 
-describe("RepositoryRef.deliveredAs", () => {
+describe("RepositoryRef.applyTo", () => {
   it("delivers a package unchanged when the reference carries no rename", () => {
-    const delivered = ref("stream-browserify:3.0.0").deliveredAs(pkg("stream-browserify", "3.0.0"));
+    const delivered = ref("stream-browserify:3.0.0").applyTo(pkg("stream-browserify", "3.0.0"));
     expect((delivered as PackageFileSet).packageName).to.equal("stream-browserify");
   });
 
@@ -50,7 +52,7 @@ describe("RepositoryRef.deliveredAs", () => {
      * package, so the rename is its mount identity — the npm dependency alias
      * ("stream": "npm:stream-browserify@^3") written the other way round. */
     const inner = pkg("readable-stream", "2.0.0");
-    const delivered = ref("stream-browserify:3.0.0 -> stream").deliveredAs(pkg("stream-browserify", "3.0.0", [inner]));
+    const delivered = ref("stream-browserify:3.0.0 -> stream").applyTo(pkg("stream-browserify", "3.0.0", [inner]));
     const renamed = delivered as PackageFileSet;
     expect(renamed.packageName).to.equal("stream");
     expect(renamed.packageId).to.equal("stream@3.0.0");
@@ -65,7 +67,7 @@ describe("RepositoryRef.deliveredAs", () => {
      * the projection boundary, so a projected rename renames the files it
      * selects and the delivered package keeps its own name. */
     const projected = ref("stream-browserify:3.0.0").find(parseName("lib/*.js -> *.mjs"));
-    const delivered = projected.deliveredAs(pkg("stream-browserify", "3.0.0"));
+    const delivered = projected.applyTo(pkg("stream-browserify", "3.0.0"));
     expect(delivered).to.be.instanceOf(FileSetRef);
     expect((delivered as FileSetRef).source).to.be.instanceOf(PackageFileSet);
     expect(((delivered as FileSetRef).source as PackageFileSet).packageName).to.equal("stream-browserify");
@@ -75,22 +77,22 @@ describe("RepositoryRef.deliveredAs", () => {
     /* Only a package has an identity to rename; a plain fileset has no name a
      * rename could be about, so this is an error rather than a silent no-op. */
     const files = new FileSet(new Map([["a.txt", MemoryFile.from("")]]));
-    expect(() => ref("something:1.0.0 -> other").deliveredAs(files)).to.throw(/does not deliver a package/);
+    expect(() => ref("something:1.0.0 -> other").applyTo(files)).to.throw(/does not deliver a package/);
   });
 });
 
-describe("renamedDelivery", () => {
+describe("renamedAs", () => {
   /* The rule itself, shared by both delivery sites — an external package's (via
-   * deliveredAs, above) and a built one's (BuildContext.resolveFileSource). */
+   * applyTo, above) and a target's (BuildContextImpl.lookupFileSource). */
 
   it("carries the rename onward when the delivery is still deferred", () => {
     /* A reference that has not been delivered yet cannot be restamped, so the
      * facet rides it — reaching this same rule again at its collection point. */
-    const deferred = renamedDelivery(ref("stream-browserify:3.0.0"), "stream", "written");
+    const deferred = renamedAs(ref("stream-browserify:3.0.0"), "stream", "written");
     expect(deferred).to.be.instanceOf(RepositoryRef);
     expect((deferred as RepositoryRef).renameTo).to.equal("stream");
     /* And it means the same thing when it lands. */
-    const delivered = (deferred as RepositoryRef).deliveredAs(pkg("stream-browserify", "3.0.0"));
+    const delivered = (deferred as RepositoryRef).applyTo(pkg("stream-browserify", "3.0.0"));
     expect((delivered as PackageFileSet).packageName).to.equal("stream");
   });
 
@@ -98,7 +100,7 @@ describe("renamedDelivery", () => {
     /* Its delivery is files, not a package — the two readings of `-> ` must not
      * both apply to one reference. */
     const projected = ref("pkg:1.0.0").find(parseName("lib/*.js -> *.mjs"));
-    expect(() => renamedDelivery(projected, "other", "written")).to.throw(/does not deliver a package/);
+    expect(() => renamedAs(projected, "other", "written")).to.throw(/does not deliver a package/);
   });
 });
 
@@ -112,7 +114,7 @@ class StubRepository implements Repository {
     throw new Error(`not a publish destination ('${name.toString()}')`);
   }
 
-  public deliver(reference: RepositoryRef): Computable<FileSet> {
+  public resolve(reference: RepositoryRef): Computable<FileSet> {
     const name = reference.name.toString();
     return Computable.resolve(new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}`)]]), name, "1.0.0"));
   }
@@ -135,16 +137,16 @@ function graphFiles(tag: string): Map<string, IFile> {
   return new Map([["index.js", MemoryFile.from(`// ${tag}`)]]);
 }
 
-describe("materializeAll over cyclic package graphs", () => {
+describe("collecting over cyclic package graphs", () => {
   it("passes a ref-free cyclic delivered graph through untouched", async () => {
     const builder = new PackageGraphBuilder();
     const a = builder.node(graphFiles("a"), "a", "1.0.0");
     const b = builder.node(graphFiles("b"), "b", "1.0.0");
-    builder.wire(a, [b]);
-    builder.wire(b, [a]);
+    builder.wire(a, dependenciesOn(b));
+    builder.wire(b, dependenciesOn(a));
     builder.seal();
 
-    const [delivered] = await toPromise(materializeAll(RESOLUTION_CONTEXT, [a]));
+    const [[delivered]] = await toPromise(collectLists(RESOLUTION_CONTEXT, [[a]]));
     /* Nothing to resolve beneath it, so the very same value comes back — no
      * copy, no infinite walk. */
     expect(delivered).to.equal(a);
@@ -160,11 +162,11 @@ describe("materializeAll over cyclic package graphs", () => {
     const builder = new PackageGraphBuilder();
     const app = builder.node(graphFiles("app"), "app", "1.0.0");
     const buddy = builder.node(graphFiles("buddy"), "buddy", "1.0.0");
-    builder.wire(app, [buddy, external]);
-    builder.wire(buddy, [app]);
+    builder.wire(app, [...dependenciesOn(buddy), { reference: external }]);
+    builder.wire(buddy, dependenciesOn(app));
     builder.seal();
 
-    const [delivered] = await toPromise(materializeAll(RESOLUTION_CONTEXT, [app]));
+    const [[delivered]] = await toPromise(collectLists(RESOLUTION_CONTEXT, [[app]]));
     const rebuiltApp = delivered as PackageFileSet;
     expect(rebuiltApp).to.be.instanceOf(PackageFileSet);
     expect(rebuiltApp).to.not.equal(app);
@@ -176,7 +178,7 @@ describe("materializeAll over cyclic package graphs", () => {
 
     /* Entering at the other node of the cycle judges the same way: buddy
      * reaches the ref through the cycle, so it too must rebuild. */
-    const [second] = await toPromise(materializeAll(RESOLUTION_CONTEXT, [buddy]));
+    const [[second]] = await toPromise(collectLists(RESOLUTION_CONTEXT, [[buddy]]));
     const secondBuddy = second as PackageFileSet;
     expect(secondBuddy).to.not.equal(buddy);
     const secondApp = secondBuddy.packages[0];
@@ -196,10 +198,10 @@ describe("bindProvided over cyclic package graphs", () => {
     const a = builder.node(graphFiles("a"), "a", "1.0.0");
     const b = builder.node(graphFiles("b"), "b", "1.0.0");
     const c = builder.node(graphFiles("c"), "c", "1.0.0");
-    builder.wire(top, [a]);
-    builder.wire(a, [b, c]);
-    builder.wire(b, [a]);
-    builder.wire(c, [a], new Map([["a", "expected"]]));
+    builder.wire(top, dependenciesOn(a));
+    builder.wire(a, dependenciesOn(b, c));
+    builder.wire(b, dependenciesOn(a));
+    builder.wire(c, dependenciesOn(a), new Map([["a", "expected"]]));
     builder.seal();
 
     const [bound] = bindProvided([top]) as PackageFileSet[];
@@ -218,12 +220,12 @@ describe("bindProvided over cyclic package graphs", () => {
     const node = builder.node(graphFiles("node"), "node", "1.0.0");
     const ini = builder.node(graphFiles("ini"), "ini", "1.0.0");
     const tokens = builder.node(graphFiles("tokens"), "tokens", "1.0.0");
-    builder.wire(top, [sts, oidc]);
-    builder.wire(sts, [oidc, node]);
-    builder.wire(oidc, [sts, node]);
-    builder.wire(node, [ini, tokens]);
-    builder.wire(ini, [sts], new Map([["sts", "expected"]]));
-    builder.wire(tokens, [oidc], new Map([["oidc", "expected"]]));
+    builder.wire(top, dependenciesOn(sts, oidc));
+    builder.wire(sts, dependenciesOn(oidc, node));
+    builder.wire(oidc, dependenciesOn(sts, node));
+    builder.wire(node, dependenciesOn(ini, tokens));
+    builder.wire(ini, dependenciesOn(sts), new Map([["sts", "expected"]]));
+    builder.wire(tokens, dependenciesOn(oidc), new Map([["oidc", "expected"]]));
     builder.seal();
 
     const [bound] = bindProvided([top]) as PackageFileSet[];
@@ -248,11 +250,11 @@ describe("bindProvided over cyclic package graphs", () => {
     const loop = builder.node(graphFiles("loop"), "loop", "1.0.0");
     const r1 = builder.node(graphFiles("r1"), "r", "1.0.0");
     const r2 = builder.node(graphFiles("r2"), "r", "2.0.0");
-    builder.wire(top, [p1, p2]);
-    builder.wire(p1, [q, r1]);
-    builder.wire(p2, [q, r2]);
-    builder.wire(q, [loop, r1], new Map([["r", "expected"]]));
-    builder.wire(loop, [q]);
+    builder.wire(top, dependenciesOn(p1, p2));
+    builder.wire(p1, dependenciesOn(q, r1));
+    builder.wire(p2, dependenciesOn(q, r2));
+    builder.wire(q, dependenciesOn(loop, r1), new Map([["r", "expected"]]));
+    builder.wire(loop, dependenciesOn(q));
     builder.wire(r1, []);
     builder.wire(r2, []);
     builder.seal();

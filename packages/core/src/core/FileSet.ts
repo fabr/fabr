@@ -19,7 +19,7 @@
 
 import { Name } from "./Name";
 import { FileSetRef } from "./FileSetRef";
-import type { IProjection } from "./FileSetRef";
+import type { IProjection } from "./Reference";
 import { Computable, ComputableSource } from "./Computable";
 import { IDiagnosticNote } from "../support/Log";
 import { IProvenanceStep, registerProvenanceLocator, registerProvenanceRenderer, renderProvenance, locateSource } from "./Provenance";

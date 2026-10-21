@@ -23,7 +23,7 @@ import { Computable } from "./Computable";
 import { FileSet } from "./FileSet";
 import { Flag } from "./Flag";
 import { Name } from "./Name";
-import { materializeAll } from "./Repository";
+import { collectLists } from "../context/CollectionPoint";
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.then(resolve, reject));
@@ -43,13 +43,13 @@ describe("Flag", () => {
 
   it("survives materialization as itself (so a rule reads it back with getFlags)", async () => {
     /* The point of Flag being a FileSet: it rides `deps` through the collection
-     * point untouched (materializeAll's identity branch), keeping its Flag
-     * identity, rather than collapsing to an anonymous empty set. */
+     * point untouched, keeping its Flag identity, rather than collapsing to an
+     * anonymous empty set. */
     const flag = new Flag("ts/no_strict", []);
-    const [materialized] = await toPromise(
-      materializeAll(
+    const [[materialized]] = await toPromise(
+      collectLists(
         { name: "test", getGlobalString: () => Computable.resolve("build"), memoize: (_t, _k, create) => create("unused"), runTask: (_task, run) => run(SILENT_REPORT) },
-        [flag]
+        [[flag]]
       )
     );
     expect(materialized).to.equal(flag);

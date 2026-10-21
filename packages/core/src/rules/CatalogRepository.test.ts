@@ -18,51 +18,66 @@
  */
 
 import { Computable } from "../core/Computable";
-import { EMPTY_FILESET, FileSet } from "../core/FileSet";
-import { PackageFileSet, packageNodeSignature, reachablePackages } from "../core/PackageFileSet";
+import { EMPTY_FILESET, FileSet, IFile } from "../core/FileSet";
+import { Dependency, isPackage, PackageFileSet, ResolvedNode, packageNodeSignature, reachablePackages } from "../core/PackageFileSet";
+import { TargetRef, Unbuilt } from "../core/TargetRef";
+import { ResolvedTarget } from "../context/ResolvedTarget";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { CatalogRepository, catalogRepositoryRegistration } from "./CatalogRepository";
 import { patchedRule } from "./BuildPatched";
-import { Repository, RepositoryRef,
-  MaterializeOptions,
-  ClosureThunk,
-} from "../core/Repository";
-import { splitOverrideMarker } from "../resolver/Requirement";
+import { Repository, RepositoryRef } from "../core/Repository";
 import { Requirement } from "../resolver/Types";
-import { ConflictError, FabrError, RequirementResolutionError } from "../core/Errors";
+import { ConflictError, CycleError, FabrError, RequirementResolutionError } from "../core/Errors";
+import { cycleErrorOf } from "../model/ErrorFormatter";
 import { CircularDependencyError } from "../model/Errors";
 import { MemoryFile } from "../core/MemoryFS";
 import { BuildCache } from "../core/BuildCache";
 import { Name } from "../core/Name";
-import { TargetContext } from "../model/BuildContext";
+import { permissive, ResolvedRequirements, TargetContext } from "../context/index";
 import { Constraints, RUN_OVERRIDE } from "../model/Constraints";
 import { BuildModel } from "../model/BuildModel";
 import { ExecutionContext } from "../model/ExecutionContext";
-import { parseBuildString } from "../model/Parser";
+import { parseBuildString, parseName } from "../model/Parser";
+import { INameValue, syntheticValue } from "../model/AST";
+import { StringReader } from "../support/StringReader";
 import { toBuildModel } from "../model/Sema";
 import { LogFormatter, LogLevel } from "../support/Log";
-import { PluginContribution, RuleDefinition } from "./Types";
+import { defineRule, PluginContribution, RuleDefinition } from "./Types";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
 import { IContentPackage, PackageFormat } from "../resolver/PackageFormat";
-import { resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
-import { RepositoryReader, ResolutionContext } from "../core/Repository";
+import { requestedConstraint, resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
+import { RepositoryReader, Resolved, SourceRef } from "../core/Repository";
 import { expect } from "chai";
-import { SILENT_REPORT } from "../support/Execute";
+
+/** Group what `resolved` requires by name: a target's requirements, and
+ * anything else as itself under no name, the shape `fabr deps` prints. */
+function requirementsOf(resolved: ResolvedRequirements): Map<string, Resolved[]> {
+  const sections = new Map<string, Resolved[]>();
+  for (const source of resolved.denoted) {
+    const entries: Array<[string, ReadonlyArray<Resolved>]> =
+      source instanceof ResolvedTarget ? [...source.resolved.sources] : [["", [source]]];
+    entries.forEach(([name, sources]) => sections.set(name, [...(sections.get(name) ?? []), ...sources]));
+  }
+  return sections;
+}
+
+/** Make `name` a reference written on the command line. */
+function writtenOnCommandLine(name: string): INameValue {
+  const source = { fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(name) };
+  return syntheticValue(parseName(name), source, 0, name.length);
+}
 
 /* getRepositoryRef vending is pure — an empty catalog suffices. */
-const TEST_RESOLUTION_CONTEXT: ResolutionContext = {
-  name: "@cat",
-  getGlobalString: () => Computable.resolve("build"),
-  memoize: (_tag, _key, create) => create("unused"),
-  runTask: (_task, run) => run(SILENT_REPORT),
-};
 const emptyCatalog = new CatalogRepository(
   "@cat",
-  TEST_RESOLUTION_CONTEXT,
-  Computable.resolve({ entries: new Map(), collection: { requests: new Map(), resolutions: new Map(), members: new Map(), instances: new Set() } })
+  "build",
+  Computable.resolve({
+    entries: new Map(),
+    collection: { requests: new Map(), resolutions: new Map(), locals: new Map(), members: new Map(), instances: new Set() },
+  })
 );
 
 describe("CatalogRepository.getRepositoryRef", () => {
@@ -84,6 +99,16 @@ describe("CatalogRepository.getRepositoryRef", () => {
     expect(ref.projections).to.have.length(1);
     expect(ref.projections[0].pattern.toString()).to.equal("bin/tsc");
     expect(ref.projections[0].prefix).to.equal("");
+  });
+
+  it("reads a `?` or `!` ending the alias as a marker, and one ending a projection as the pattern's", () => {
+    expect(emptyCatalog.getRepositoryRef(parseName("chai?")).override).to.equal("alternate");
+    expect(emptyCatalog.getRepositoryRef(parseName("chai!")).name.toString()).to.equal("chai");
+    const globbed = emptyCatalog.getRepositoryRef(parseName("typescript:bin/ts?"));
+    expect(globbed.override).to.equal(undefined);
+    expect(globbed.name.toString()).to.equal("typescript");
+    expect(globbed.projections.map(p => p.pattern.toString())).to.deep.equal(["bin/ts?"]);
+    expect(emptyCatalog.getRepositoryRef(parseName("typescript:README!")).projections.map(p => p.pattern.toString())).to.deep.equal(["README!"]);
   });
 
   it("refuses to vend a write ref (a catalog is read-only)", () => {
@@ -116,8 +141,7 @@ describe("CatalogRepository (through the model)", () => {
       if (colon === -1) {
         return { name: written, versionConstraint: "1.0.0" };
       }
-      const { text, override } = splitOverrideMarker(written.substring(colon + 1));
-      return { name: written.substring(0, colon), versionConstraint: text, ...(override ? { override } : {}) };
+      return { name: written.substring(0, colon), versionConstraint: written.substring(colon + 1) };
     },
     validateRequirement: () => undefined,
     parsePublishCoordinate: () => {
@@ -131,7 +155,6 @@ describe("CatalogRepository (through the model)", () => {
       return Computable.resolve(RunnableFileSet.forEntry(pkg, `${pkg.packageName}/data.txt`, [], "node"));
     },
   };
-
 
   /* One backing registry per declared `package_repo` target, resolvable by name
    * so a test can inspect the exact instance the catalog used. */
@@ -177,17 +200,14 @@ describe("CatalogRepository (through the model)", () => {
       return Computable.resolve("cattest-env");
     }
 
-      /* Members are pinned and delivered as packages: a catalog resolves
-       * build-shaped whatever it is consumed under. */
-      /* Delivers the assembled package as-is: these fakes stand in for a registry
-       * reached under an ordinary build. */
-      public deliver(_reference: RepositoryRef, _options?: MaterializeOptions, closure?: ClosureThunk): Computable<FileSet> {
-        return closure ? closure().then((pkg: PackageFileSet | undefined) => pkg ?? EMPTY_FILESET) : Computable.resolve<FileSet>(EMPTY_FILESET);
-      }
+    /* Members are pinned and delivered as packages: a catalog resolves
+     * build-shaped whatever it is consumed under. */
+    /* These fakes stand in for a registry reached under an ordinary build. */
+    public readonly operation = "build";
 
-      public deliverFiles(reference: RepositoryRef): Computable<FileSet> {
-        return Computable.resolve(undefined).then(() => resolveBarePackage(this, reference));
-      }
+    public fetchFiles(reference: RepositoryRef): Computable<FileSet> {
+      return Computable.resolve(undefined).then(() => resolveBarePackage(this, reference));
+    }
 
     public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
       this.requested.push(pkg);
@@ -222,51 +242,109 @@ describe("CatalogRepository (through the model)", () => {
   /* What a manifest would record of those deps (collectDeclaredRequirements —
    * the declaration, not what resolution pinned). */
   let lastDeclared: (Requirement | undefined)[] = [];
-  const depsRule: RuleDefinition = {
+  const depsRule: RuleDefinition = defineRule({
     type: "test_deps",
     properties: {},
-    evaluate: (context: TargetContext) =>
-      context.getFileProperty("deps").then(sources =>
-        Computable.forAll(
-          [context.collectDeclaredRequirements(sources), context.getFileSetProperties(["deps"])],
-          (declared, { deps }) => {
+    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps"), also: context.getPackageProperty("also") }),
+    evaluateResolved: (context, requirements) =>
+      requirements.materializeAll().then(({ deps, also }) =>
+        context
+          .getFileProperty("deps")
+          .then(sources => context.collectDeclaredRequirements(sources))
+          .then(declared => {
             lastDeclared = declared;
-            lastDepSets = deps;
-            lastDeps = FileSet.unionAll(...deps);
+            lastDepSets = [...deps, ...also];
+            lastDeps = FileSet.unionAll(...deps, ...also);
             return EMPTY_FILESET;
-          }
-        )
+          })
       ),
-  };
+  });
   let lastTool: FileSet | undefined;
-  const runRule: RuleDefinition = {
+  const runRule: RuleDefinition = defineRule({
     type: "test_run",
     properties: {},
-    evaluate: (context: TargetContext) =>
-      context.getFileSetProperties(["tool"], RUN_OVERRIDE).then(({ tool }) => {
+    requirements: context => Computable.resolve({ tool: context.getPackageProperty("tool", RUN_OVERRIDE) }),
+    evaluateResolved: (_context, requirements) =>
+      requirements.materializeAll().then(({ tool }) => {
         lastTool = FileSet.unionAll(...tool);
-        return EMPTY_FILESET;
+        return Computable.resolve(EMPTY_FILESET);
       }),
+  });
+  /* Run a tool, read the two ways a rule reads one: a property naming it, and
+   * a global naming it. A tool is no requirement of the target's. */
+  const toolRule: RuleDefinition = {
+    type: "test_usetool",
+    properties: {},
+    evaluate: context => context.getRunnableProperty("tool").then(() => EMPTY_FILESET),
+  };
+  /* Assembles its deps into a sealed install of its own, as a rule that
+   * defines a program does: nothing links against them. */
+  const sealedRule: RuleDefinition = defineRule({
+    type: "test_sealed",
+    properties: {},
+    requirements: context => Computable.resolve(permissive({ deps: context.getPackageProperty("deps") })),
+    evaluateResolved: (_context, requirements) => requirements.materializeAll().then(() => EMPTY_FILESET),
+  });
+  const globalToolRule: RuleDefinition = {
+    type: "test_useglobal",
+    properties: {},
+    evaluate: context => context.getGlobalRunnable("TOOL").then(() => EMPTY_FILESET),
   };
   /* A locally built package: named as its target, unversioned, carrying its
    * `deps` as written — packages as packages, external requirements as inert
    * references — and its `provided` as provided requirements, as a
    * package-building rule delivers one. */
+  const providedNames = (provided: ReadonlyArray<SourceRef>): Map<string, "expected"> =>
+    new Map(
+      provided.flatMap(
+        (source): Array<[string, "expected"]> => (source instanceof RepositoryRef ? [[source.localName, "expected"]] : [])
+      )
+    );
+  /* Read `deps` and `provided`, each target among them as `open` gives it (its
+   * node, or its build), and yield them with `provided` as read. */
+  /** Each written source with what it opens to, and the `provided` sources. */
+  interface Written {
+    reference: SourceRef;
+    opened: SourceRef | Unbuilt;
+  }
+  const written = (
+    context: TargetContext,
+    open: (target: TargetRef) => Computable<ReadonlyArray<SourceRef | Unbuilt>>
+  ): Computable<[Written[], SourceRef[]]> =>
+    Computable.forAll([context.getFileProperty("deps"), context.getFileProperty("provided")], (sources, provided) =>
+      Computable.forAll(
+        [...sources, ...provided].map(source =>
+          (source instanceof TargetRef ? open(source) : Computable.resolve([source])).then(opened => opened.map((each): Written => ({ reference: source, opened: each })))
+        ),
+        (...opened: Written[][]): [Written[], SourceRef[]] => [opened.flat(), provided]
+      )
+    );
+  /* The edges to what was opened: a package by the reference written for it,
+   * a repository's reference as it stands. */
+  const carriedAmong = (entries: ReadonlyArray<Written>): Dependency[] =>
+    entries.flatMap(({ reference, opened }): Dependency[] =>
+      isPackage(opened)
+        ? [{ reference: reference as TargetRef | RepositoryRef, package: opened }]
+        : opened instanceof RepositoryRef
+        ? [{ reference: opened }]
+        : []
+    );
   const packageRule: RuleDefinition = {
     type: "test_pkg",
     properties: {},
+    requirements: (context: TargetContext) =>
+      Computable.resolve({ dependencies: context.getPackageProperty("deps"), provided: context.getPackageProperty("provided") }),
     evaluate: (context: TargetContext) =>
-      Computable.forAll([context.getFileProperty("deps"), context.getFileProperty("provided")], (sources, provided) =>
-        new PackageFileSet(
-          new Map([[`${context.name}/data.txt`, contentOf(context.name)]]),
-          context.name,
-          undefined,
-          [...sources, ...provided].filter(
-            (source): source is PackageFileSet | RepositoryRef => source instanceof PackageFileSet || source instanceof RepositoryRef
-          ),
-          undefined,
-          new Map(provided.flatMap((source): Array<[string, "expected"]> => (source instanceof RepositoryRef ? [[source.deliveredName, "expected"]] : [])))
-        )
+      written(context, target => target.materialize()).then(
+        ([sources, provided]) =>
+          new PackageFileSet(
+            new Map([[`${context.name}/data.txt`, contentOf(context.name)]]),
+            context.name,
+            undefined,
+            carriedAmong(sources) as Array<Dependency<PackageFileSet>>,
+            undefined,
+            providedNames(provided)
+          )
       ),
   };
   /* A patch file, as a target: its text is what the test set for its name. */
@@ -277,36 +355,142 @@ describe("CatalogRepository (through the model)", () => {
     evaluate: (context: TargetContext) =>
       Computable.resolve(new FileSet(new Map([[`${context.name}.patch`, MemoryFile.from(patchTexts.get(context.name) ?? "")]]))),
   };
+  /* Files that differ by configuration: one named for the `MODE` it is built in. */
+  const modeRule: RuleDefinition = {
+    type: "test_mode",
+    properties: {},
+    evaluate: (context: TargetContext) =>
+      context
+        .getGlobalString("MODE")
+        .then(mode => new FileSet(new Map([[`${context.name}-${mode}.txt`, MemoryFile.from(mode)]]))),
+  };
+  /* Reads `srcs` for files and `deps` as packages, and holds what each was
+   * materialized as. */
+  let lastFiles: FileSet[] = [];
+  const mixedRule: RuleDefinition = defineRule({
+    type: "test_mixed",
+    properties: {},
+    requirements: context => Computable.resolve({ srcs: context.getFileProperty("srcs"), deps: context.getPackageProperty("deps") }),
+    evaluateResolved: (_context, requirements) =>
+      requirements.materializeAll().then(({ srcs, deps }) => {
+        lastFiles = srcs;
+        lastDepSets = deps;
+        return EMPTY_FILESET;
+      }),
+  });
+  /* Reads `extra` for its loose files alone. */
+  const looseRule: RuleDefinition = defineRule({
+    type: "test_loose",
+    properties: {},
+    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps"), extra: context.getLooseFileProperty("extra") }),
+    evaluateResolved: (_context, requirements) =>
+      requirements.materializeAll().then(({ deps, extra }) => {
+        lastDepSets = deps;
+        lastFiles = extra;
+        return EMPTY_FILESET;
+      }),
+  });
+  /* Yields a package and a set of files beside it. */
+  const bothRule: RuleDefinition = {
+    type: "test_both",
+    properties: {},
+    evaluate: (context: TargetContext) =>
+      Computable.resolve([
+        new PackageFileSet(new Map([["index.js", MemoryFile.from("")]]), context.name, "1.0.0"),
+        new FileSet(new Map([["extra.txt", MemoryFile.from("")]])),
+      ]),
+  };
+  /* Reads as packages a property its targetdef declares FILES. */
+  const wrongTypeRule: RuleDefinition = defineRule({
+    type: "test_wrongtype",
+    properties: {},
+    requirements: context => Computable.resolve({ srcs: context.getPackageProperty("srcs") }),
+    evaluateResolved: (_context, requirements) => requirements.materializeAll().then(() => EMPTY_FILESET),
+  });
+  /* Reads for files a property its targetdef declares PACKAGES. */
+  const filesOfRule: RuleDefinition = defineRule({
+    type: "test_filesof",
+    properties: {},
+    requirements: context => Computable.resolve({ pkgs: context.getFileProperty("pkgs") }),
+    evaluateResolved: (_context, requirements) =>
+      requirements.materializeAll().then(({ pkgs }) => {
+        lastFiles = pkgs;
+        return EMPTY_FILESET;
+      }),
+  });
+  /* States what it passes on from a list it read for files. */
+  const misreadRule: RuleDefinition = defineRule({
+    type: "test_misread",
+    properties: {},
+    requirements: context => Computable.resolve({ dependencies: context.getFileProperty("deps") }),
+    evaluateResolved: (_context, requirements) => requirements.materializeAll().then(() => EMPTY_FILESET),
+  });
   /* A package built against its deps: it collects them once, and carries what
    * they were delivered as. What a manifest would record of them is kept. */
   let builtDeclared: (Requirement | undefined)[] = [];
-  const builtRule: RuleDefinition = {
+  const builtRule: RuleDefinition = defineRule({
     type: "test_built",
     properties: {},
-    evaluate: (context: TargetContext) =>
-      context.collect({ deps: context.getDependencyProperty("deps") }).then(({ deps }) => {
-        const carried = deps.filter((dep): dep is PackageFileSet | RepositoryRef => dep instanceof PackageFileSet || dep instanceof RepositoryRef);
-        return context.collectDeclaredRequirements(carried).then(declared => {
+    requirements: context => Computable.resolve({ dependencies: context.getPackageProperty("deps") }),
+    evaluateResolved: (context, requirements) =>
+      requirements.packages("dependencies").then(carried =>
+        Computable.forAll([context.collectDeclaredRequirements(carried), context.getString("version")], (declared, version) => {
           builtDeclared = declared;
-          return new PackageFileSet(new Map([[`${context.name}/data.txt`, contentOf(context.name)]]), context.name, undefined, carried);
-        });
+          return new PackageFileSet(new Map([[`${context.name}/data.txt`, contentOf(context.name)]]), context.name, version || undefined, carried);
+        })
+      ),
+  });
+  /* A package whose rule states what it passes on (`dependencies`), so it is
+   * resolved with whatever requires it before it is built. `statedBuilt` names
+   * those evaluated. */
+  const statedBuilt: string[] = [];
+  const packageCarrying = (name: string, files: Iterable<[string, IFile]>, deps: ReadonlyArray<Dependency<PackageFileSet>>): PackageFileSet =>
+    new PackageFileSet(files, name, undefined, deps);
+  const statedRule: RuleDefinition = defineRule({
+    type: "test_stated",
+    properties: {},
+    requirements: context => Computable.resolve({ dependencies: context.getPackageProperty("deps") }),
+    evaluateResolved: (context, requirements) =>
+      requirements.packages("dependencies").then(deps => {
+        statedBuilt.push(context.name);
+        if (statedFailing.has(context.name)) {
+          return Computable.reject(new FabrError(`${context.name} broke`));
+        }
+        return Computable.resolve(packageCarrying(context.name, new Map([[`${context.name}/data.txt`, contentOf(context.name)]]), deps));
       }),
-  };
-  /* A target that is the first thing it collected, handed on as its own. */
-  const passRule: RuleDefinition = {
+  });
+  /* The `test_stated` targets whose build fails. */
+  const statedFailing = new Set<string>();
+  /* A package carrying requirements its rule reads as private `deps` and does
+   * not state it passes on. */
+  const driftRule: RuleDefinition = defineRule({
+    type: "test_drift",
+    properties: {},
+    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    evaluateResolved: (context, requirements) =>
+      requirements
+        .packages("deps")
+        .then(deps => Computable.resolve(packageCarrying(context.name, new Map([[`${context.name}/data.txt`, contentOf(context.name)]]), deps))),
+  });
+  /* A target that hands on the first package among its deps as its own build,
+   * stating nothing it passes on. */
+  const passRule: RuleDefinition = defineRule({
     type: "test_pass",
     properties: {},
-    evaluate: (context: TargetContext) => context.getFileSetProperties(["deps"]).then(({ deps }) => deps[0]),
-  };
+    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    evaluateResolved: (_context, requirements) => requirements.materializeAll().then(({ deps }) => Computable.resolve(deps[0])),
+  });
   /* A target that collects its deps and hands the first to a sub-target. */
-  const subRule: RuleDefinition = {
+  const subRule: RuleDefinition = defineRule({
     type: "test_sub",
     properties: {},
-    evaluate: (context: TargetContext) => context.getFileSetProperties(["deps"]).then(({ deps }) => context.subTarget("test_deps", { deps: [deps[0]] })),
-  };
+    requirements: context => Computable.resolve({ deps: context.getPackageProperty("deps") }),
+    evaluateResolved: (context, requirements) =>
+      requirements.materializeAll().then(({ deps }) => context.subTarget("test_deps", { deps: [deps[0]] })),
+  });
   const contributions: PluginContribution[] = [
     {
-      rules: [depsRule, runRule, packageRule, patchRule, patchedRule, passRule, subRule, builtRule],
+      rules: [depsRule, runRule, toolRule, globalToolRule, sealedRule, packageRule, patchRule, modeRule, mixedRule, misreadRule, wrongTypeRule, filesOfRule, bothRule, looseRule, patchedRule, passRule, subRule, builtRule, statedRule, driftRule],
       repositories: [
         { type: "package_repo", provider: (context: TargetContext) => Computable.resolve(backing(context.name)) },
         catalogRepositoryRegistration,
@@ -325,22 +509,36 @@ describe("CatalogRepository (through the model)", () => {
    * which the real build always has via STD's default. */
   const preamble =
     "default BUILD_OPERATION = build;\n" +
-    "targetdef catalog { deps = FILES; }\n" +
+    "targetdef catalog { deps = PACKAGES; }\n" +
     "targetdef package_repo { }\n" +
-    "targetdef test_deps { deps = FILES; }\n" +
-    "targetdef test_run { tool = FILES; }\n" +
-    "targetdef test_pkg { deps = FILES; provided = FILES; }\n" +
+    "targetdef test_deps { deps = PACKAGES; also = PACKAGES; }\n" +
+    "targetdef test_run { tool = PACKAGES; }\n" +
+    "targetdef test_usetool { tool = PACKAGES; }\n" +
+    "targetdef test_useglobal { }\n" +
+    "targetdef test_sealed { deps = PACKAGES; }\n" +
+    "targetdef test_pkg { deps = PACKAGES; provided = PACKAGES; }\n" +
     "targetdef test_patch { }\n" +
-    "targetdef test_pass { deps = FILES; }\n" +
-    "targetdef test_sub { deps = FILES; }\n" +
-    "targetdef test_built { deps = FILES; }\n" +
-    "targetdef patched { srcs = REQUIRED FILES; patches = REQUIRED FILES; }\n";
+    "targetdef test_mode { }\n" +
+    "targetdef test_mixed { srcs = FILES; deps = PACKAGES; }\n" +
+    "targetdef test_misread { deps = PACKAGES; }\n" +
+    "targetdef test_wrongtype { srcs = FILES; }\n" +
+    "targetdef test_both { }\n" +
+    "targetdef test_loose { deps = PACKAGES; extra = PACKAGES; }\n" +
+    "targetdef test_filesof { pkgs = PACKAGES; }\n" +
+    "targetdef test_pass { deps = PACKAGES; }\n" +
+    "targetdef test_sub { deps = PACKAGES; }\n" +
+    "targetdef test_built { deps = PACKAGES; version = STRING; }\n" +
+    "targetdef test_stated { deps = PACKAGES; }\n" +
+    "targetdef test_drift { deps = PACKAGES; }\n" +
+    "targetdef patched { srcs = REQUIRED PACKAGES; patches = REQUIRED FILES; }\n";
 
   function build(source: string): BuildModel {
     backings.clear();
     requirementTable.clear();
     patchTexts.clear();
     ran.length = 0;
+    statedBuilt.length = 0;
+    statedFailing.clear();
     lastDeps = undefined;
     lastDepSets = [];
     lastTool = undefined;
@@ -357,7 +555,7 @@ describe("CatalogRepository (through the model)", () => {
         "catalog @cat { deps = @backing:foo @backing:bar; }\n" +
         "test_deps a { deps = @cat:foo; }\n"
     );
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     const repo = backings.get("@backing")!;
     /* the consumer got foo's package... */
     expect(await lastDeps!.readFile("foo/data.txt")).to.equal("foo");
@@ -374,7 +572,7 @@ describe("CatalogRepository (through the model)", () => {
         "test_deps a { deps = @cat:foo:foo/data.txt; }\n"
     );
     requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "1.0.0" }]);
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     const repo = backings.get("@backing")!;
     expect([...lastDeps!].map(([name]) => name)).to.deep.equal(["foo/data.txt"]);
     /* The catalog pinned foo's whole closure; the projection fetched foo alone. */
@@ -389,7 +587,7 @@ describe("CatalogRepository (through the model)", () => {
         "test_deps a { deps = @cat:foo; }\n"
     );
     requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "1.0.0" }]);
-    await model.getConfig(Constraints.of({ BUILD_OPERATION: "files" }), execution).getTarget("a");
+    await model.getConfig(Constraints.of({ BUILD_OPERATION: "files" }), execution).materialize(writtenOnCommandLine("a"));
     const delivered = lastDepSets[0] as PackageFileSet;
     expect(delivered.packageName).to.equal("foo");
     expect(delivered.dependencies).to.deep.equal([]);
@@ -415,7 +613,7 @@ describe("CatalogRepository (through the model)", () => {
        * principal x@2.0.0 is a's, and b's delivery does not reach it. */
       const model = build(source);
       graph();
-      await model.getConfig(Constraints.of({}), execution).getTarget("only_b");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("only_b"));
       expect([...backings.get("@backing")!.fetched].sort()).to.deep.equal(["b@1.0.0", "x@1.0.0", "y@1.0.0"]);
     });
 
@@ -424,7 +622,7 @@ describe("CatalogRepository (through the model)", () => {
       graph();
       let message = "";
       try {
-        await model.getConfig(Constraints.of({}), execution).getTarget("both");
+        await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("both"));
       } catch (err) {
         for (let current: unknown = err; current instanceof Error; current = (current as { cause?: unknown }).cause) {
           message = current.message;
@@ -442,7 +640,7 @@ describe("CatalogRepository (through the model)", () => {
       let message = "";
       let help = "";
       try {
-        await model.getConfig(Constraints.of({}), execution).getTarget(name);
+        await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine(name));
       } catch (err) {
         for (let current: unknown = err; current instanceof Error; current = (current as { cause?: unknown }).cause) {
           message = current.message;
@@ -461,7 +659,7 @@ describe("CatalogRepository (through the model)", () => {
           "test_deps both { deps = @cat:a @cat:b; }\n"
       );
       graph();
-      await model.getConfig(Constraints.of({}), execution).getTarget("both");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("both"));
       expect([...backings.get("@backing")!.fetched].sort()).to.include.members(["x@1.0.0", "x@2.0.0"]);
     });
 
@@ -495,7 +693,7 @@ describe("CatalogRepository (through the model)", () => {
       let message = "";
       let help = "";
       try {
-        await model.getConfig(Constraints.of({}), execution).getTarget("mixed");
+        await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("mixed"));
       } catch (err) {
         for (let current: unknown = err; current instanceof Error; current = (current as { cause?: unknown }).cause) {
           message = current.message;
@@ -533,11 +731,11 @@ describe("CatalogRepository (through the model)", () => {
     it("binds the peer in an installation that holds it, making the two deliveries one node", async () => {
       const model = build(catalog + "test_deps a { deps = @cat:anthropic @cat:classic; }\n");
       graph();
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const found = langsmiths();
       expect(found.length, "langsmith reached through both members").to.be.greaterThan(0);
       for (const pkg of found) {
-        expect(pkg.getDependency("openai"), "bound to the installation's openai").to.be.instanceOf(PackageFileSet);
+        expect(pkg.getDependency("openai")?.package, "bound to the installation's openai").to.be.instanceOf(PackageFileSet);
       }
       expect(new Set(found.map(packageNodeSignature)).size, "one node").to.equal(1);
     });
@@ -545,14 +743,15 @@ describe("CatalogRepository (through the model)", () => {
     it("leaves the peer unbound, and unfetched, in an installation without it", async () => {
       const model = build(catalog + "test_deps a { deps = @cat:anthropic; }\n");
       graph();
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const found = langsmiths();
       expect(found).to.have.lengthOf(1);
       expect(found[0].packages.map(pkg => pkg.packageName)).to.not.include("openai");
       /* What would answer it is recorded, as a reference nothing resolves. */
       const peer = found[0].getDependency("openai");
-      expect([found[0].provided.get("openai"), peer?.toString()]).to.deep.equal(["optional", "openai:1.0.0"]);
-      expect(peer).to.be.instanceOf(RepositoryRef);
+      expect([found[0].provided.get("openai"), peer?.reference.toString()]).to.deep.equal(["optional", "openai:1.0.0"]);
+      expect(peer?.package).to.equal(undefined);
+      expect(peer?.reference).to.be.instanceOf(RepositoryRef);
       expect(backings.get("@backing")!.materialized).to.not.include("openai");
     });
   });
@@ -572,14 +771,14 @@ describe("CatalogRepository (through the model)", () => {
       ...new Set(
         reachablePackages(lastDepSets)
           .filter(pkg => pkg.packageName === requirer)
-          .map(pkg => (pkg.getDependency(name) as PackageFileSet | undefined)?.version ?? "unbound")
+          .map(pkg => pkg.getDependency(name)?.package?.version ?? "unbound")
       ),
     ];
 
     it("keeps what the resolution offers where nothing above supplies the name", async () => {
       const model = build(catalog + "test_deps a { deps = @cat:tool; }\n");
       graph();
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect(boundBy("tool", "ts")).to.deep.equal(["2.0.0"]);
     });
 
@@ -588,7 +787,7 @@ describe("CatalogRepository (through the model)", () => {
        * ship at two versions and this would be refused. */
       const model = build(catalog + "test_deps a { deps = @cat:tool @cat:ts1 -> ts; }\n");
       graph();
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect(boundBy("tool", "ts")).to.deep.equal(["1.0.0"]);
       expect(versionsOf("ts")).to.deep.equal(["1.0.0"]);
     });
@@ -606,7 +805,7 @@ describe("CatalogRepository (through the model)", () => {
         { name: "host", versionConstraint: "1.0.0" },
       ]);
       requirementTable.set("plugin@1.0.0", [{ name: "host", versionConstraint: "*", provided: "expected" }]);
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect(boundBy("suite", "host")).to.deep.equal(["1.0.0"]);
       expect(boundBy("plugin", "host")).to.deep.equal(["1.0.0"]);
       expect(versionsOf("host")).to.deep.equal(["1.0.0", "2.0.0"]);
@@ -623,7 +822,7 @@ describe("CatalogRepository (through the model)", () => {
         "catalog @cat { deps = @backing:foo @backing:bar; }\n" +
         "test_deps a { deps = @cat:foo @cat:bar; }\n"
     );
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     const repo = backings.get("@backing")!;
     expect([...repo.materialized].sort()).to.deep.equal(["bar", "foo"]);
   });
@@ -640,7 +839,7 @@ describe("CatalogRepository (through the model)", () => {
         "catalog @cat { deps = @backing:foo; }\n" +
         "test_deps a { deps = @cat:foo @direct:bar; }\n"
     );
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     /* Both deliveries arrived at the one collection point. */
     expect(await lastDeps!.readFile("foo/data.txt")).to.equal("foo");
     expect(await lastDeps!.readFile("bar/data.txt")).to.equal("bar");
@@ -660,7 +859,7 @@ describe("CatalogRepository (through the model)", () => {
         "catalog @cat { deps = @backing:foo; }\n" +
         "test_deps a { deps = @cat:foo -> renamed; }\n"
     );
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     const delivered = lastDepSets[0] as PackageFileSet;
     expect(delivered).to.be.instanceOf(PackageFileSet);
     expect(delivered.packageName).to.equal("renamed");
@@ -685,7 +884,7 @@ describe("CatalogRepository (through the model)", () => {
         "catalog @cat { deps = @backing:foo:1.0.0 @backing:foo:2.0.0 -> foo2; }\n" +
         "test_deps a { deps = @cat:foo @cat:foo2; }\n"
     );
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     const [one, two] = lastDepSets as PackageFileSet[];
     /* Each alias delivered its own pinned version, named as it is addressed —
      * so a consumer can mount both. */
@@ -709,7 +908,7 @@ describe("CatalogRepository (through the model)", () => {
      * two are no divergence for the strict check to refuse. */
     const model = build("package_repo @backing { }\n" + "test_deps a { deps = @backing:foo @backing:semver:7.6.0; }\n");
     requirementTable.set("foo@1.0.0", [{ name: "semver", versionConstraint: "^7.5.0", renameTo: "semver-old" }]);
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     const [foo, semver] = lastDepSets as PackageFileSet[];
     expect(semver.packageId).to.equal("semver@7.6.0");
     expect(foo.packages.map(dep => dep.packageId)).to.deep.equal(["semver-old@7.5.0"]);
@@ -727,7 +926,7 @@ describe("CatalogRepository (through the model)", () => {
         "test_deps a { deps = @cat:shared; }\n"
     );
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect.fail("expected the duplicate alias to conflict");
     } catch (err) {
       const failure = findCause(err, RequirementResolutionError);
@@ -741,11 +940,11 @@ describe("CatalogRepository (through the model)", () => {
     /** The names a delivered package's dependencies resolved to; an edge still
      * an inert reference shows as `ref:<name>`. */
     const edges = (pkg: PackageFileSet): string[] =>
-      pkg.dependencies.map(dep => (dep instanceof PackageFileSet ? dep.packageId : `ref:${dep.toString()}`));
+      pkg.dependencies.map(dep => (dep.package ? dep.package.packageId : `ref:${dep.reference.toString()}`));
 
     it("delivers a directly listed package with its requirements resolved (the baseline)", async () => {
       const model = build("package_repo @backing { }\n" + "test_pkg lib { deps = @backing:bar; }\n" + "test_deps a { deps = lib; }\n");
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect(edges(lastDepSets[0] as PackageFileSet)).to.deep.equal(["bar@1.0.0"]);
       expect(backings.get("@backing")!.fetched).to.deep.equal(["bar@1.0.0"]);
     });
@@ -757,7 +956,7 @@ describe("CatalogRepository (through the model)", () => {
           "catalog @cat { deps = @backing:foo lib; }\n" +
           "test_deps a { deps = @cat:lib; }\n"
       );
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const delivered = lastDepSets[0] as PackageFileSet;
       expect(delivered.packageName).to.equal("lib");
       expect(edges(delivered)).to.deep.equal(["bar@1.0.0"]);
@@ -773,7 +972,7 @@ describe("CatalogRepository (through the model)", () => {
           "test_deps a { deps = @cat:lib @cat:bar; }\n"
       );
       requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const [lib, bar] = lastDepSets as PackageFileSet[];
       /* What the member reaches is bound by the catalog's own pin. */
       expect(edges(lib)).to.deep.equal(["foo@1.0.0"]);
@@ -794,7 +993,7 @@ describe("CatalogRepository (through the model)", () => {
           "catalog @cat { deps = lib; }\n" +
           "test_deps a { deps = @cat:lib; }\n"
       );
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const lib = lastDepSets[0] as PackageFileSet;
       expect(edges(lib)).to.deep.equal(["base@*"]);
       expect(edges(lib.packages[0])).to.deep.equal(["bar@1.0.0"]);
@@ -808,7 +1007,7 @@ describe("CatalogRepository (through the model)", () => {
             "test_pkg outer { deps = lib; }\n" +
             `test_deps a { deps = ${deps}; }\n`
         );
-        await model.getConfig(Constraints.of({}), execution).getTarget("a");
+        await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
         expect(backings.get("@backing")!.fetched, deps).to.deep.equal(["foo@1.0.0"]);
         /* One lib in the installation, with its requirement resolved. */
         const libs = reachablePackages(lastDepSets).filter(pkg => pkg.packageName === "lib");
@@ -828,7 +1027,7 @@ describe("CatalogRepository (through the model)", () => {
           "test_deps a { deps = @cat:lib @cat:foo; }\n"
       );
       requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^2.0.0" }]);
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const [lib, foo] = lastDepSets as PackageFileSet[];
       expect(edges(lib)).to.deep.equal(["bar@1.0.0"]);
       expect(edges(foo)).to.deep.equal(["bar@2.0.0"]);
@@ -842,7 +1041,7 @@ describe("CatalogRepository (through the model)", () => {
           "test_deps a { deps = @cat:bar; }\n"
       );
       try {
-        await model.getConfig(Constraints.of({}), execution).getTarget("a");
+        await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
         expect.fail("expected bar to be no member of the catalog");
       } catch (err) {
         expect(findCause(err, RequirementResolutionError)!.message).to.contain("Catalog @cat has no member 'bar'");
@@ -859,11 +1058,261 @@ describe("CatalogRepository (through the model)", () => {
         "test_deps a { deps = @cat:lib; }\n";
       for (const constraints of [Constraints.of({}), Constraints.of({ BUILD_OPERATION: "build" })]) {
         try {
-          await build(source).getConfig(constraints, execution).getTarget("a");
+          await build(source).getConfig(constraints, execution).materialize(writtenOnCommandLine("a"));
           expect.fail("expected the loop through the catalog to be reported");
         } catch (err) {
-          expect(findCause(err, CircularDependencyError), "a CircularDependencyError in the cause chain").to.not.be.undefined;
+          const cycle = findCause(err, CycleError);
+          expect(cycle, "a CycleError in the cause chain").to.not.be.undefined;
+          const circular = findCause(cycleErrorOf(cycle!.labels), CircularDependencyError);
+          /* Both halves are written references: the catalog's entry, and the
+           * member's own reference back into the catalog. */
+          expect(circular!.cycle.map(site => site.value.value.toString()).sort()).to.deep.equal(["@cat:bar", "lib"]);
         }
+      }
+    });
+
+    it("resolves over what the member's rule states, and builds it only to deliver it", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_stated lib { deps = @backing:bar; }\n" +
+          "catalog @cat { deps = @backing:foo lib; }\n" +
+          "test_deps a { deps = @cat:foo; }\n" +
+          "test_deps b { deps = @cat:lib; }\n"
+      );
+      const config = model.getConfig(Constraints.of({}), execution);
+      await config.materialize(writtenOnCommandLine("a"));
+      /* The whole catalog was resolved, the member's requirement included. */
+      expect([...new Set(backings.get("@backing")!.requested)].sort()).to.deep.equal(["bar", "foo"]);
+      expect(statedBuilt).to.deep.equal([]);
+
+      await config.materialize(writtenOnCommandLine("b"));
+      expect(statedBuilt).to.deep.equal(["lib"]);
+      const delivered = lastDepSets[0] as PackageFileSet;
+      expect(await delivered.readFile("lib/data.txt")).to.equal("lib");
+      expect(edges(delivered)).to.deep.equal(["bar@1.0.0"]);
+    });
+
+    it("builds only the members a delivery reaches, wired by the catalog's selection", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_stated lib { deps = @backing:foo; }\n" +
+          "test_stated other { }\n" +
+          "catalog @cat { deps = @backing:bar:1.2.0 lib other; }\n" +
+          "test_deps a { deps = @cat:lib; }\n"
+      );
+      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+      expect(statedBuilt).to.deep.equal(["lib"]);
+      const lib = lastDepSets[0] as PackageFileSet;
+      expect(await lib.readFile("lib/data.txt")).to.equal("lib");
+      expect(edges(lib)).to.deep.equal(["foo@1.0.0"]);
+      expect(edges(lib.packages[0])).to.deep.equal(["bar@1.2.0"]);
+    });
+
+    it("builds a member another member depends on, with it", async () => {
+      const model = build(
+        "test_stated base { }\n" +
+          "test_stated lib { deps = base; }\n" +
+          "catalog @cat { deps = lib; }\n" +
+          "test_deps a { deps = @cat:lib; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+      const lib = lastDepSets[0] as PackageFileSet;
+      expect(await lib.readFile("lib/data.txt")).to.equal("lib");
+      expect(await lib.packages[0].readFile("base/data.txt")).to.equal("base");
+    });
+
+    it("fetches no file a projection selects for a reading, and fetches it for a build", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @cat { deps = @backing:foo; }\n" +
+          "test_stated app { deps = @cat:foo:foo/data.txt; }\n" +
+          "test_deps a { deps = @cat:foo:foo/data.txt; }\n"
+      );
+      const name = "app";
+      const written = syntheticValue(
+        parseName(name),
+        { fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(name) },
+        0,
+        name.length
+      );
+      const config = model.getConfig(Constraints.of({}), execution);
+      await config.resolve(written);
+      expect(backings.get("@backing")!.fetched).to.deep.equal([]);
+      await config.materialize(writtenOnCommandLine("a"));
+      expect(await lastDeps!.readFile("foo/data.txt")).to.equal("foo");
+      expect(backings.get("@backing")!.fetched).to.deep.equal(["foo@1.0.0"]);
+    });
+
+    it("builds no member for a reading that projects into one", async () => {
+      const model = build(
+        "test_stated lib { }\n" + "catalog @cat { deps = lib; }\n" + "test_stated app { deps = @cat:lib:lib/data.txt; }\n"
+      );
+      const name = "app";
+      const written = syntheticValue(
+        parseName(name),
+        { fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(name) },
+        0,
+        name.length
+      );
+      await model.getConfig(Constraints.of({}), execution).resolve(written);
+      expect(statedBuilt).to.deep.equal([]);
+    });
+
+    it("refuses a member built in the project as a runnable, naming the catalog, before building it", async () => {
+      const model = build("test_stated lib { }\n" + "catalog @cat { deps = lib; }\n" + "test_run a { tool = @cat:lib; }\n");
+      try {
+        await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+        expect.fail("expected the member to be refused as a runnable");
+      } catch (err) {
+        expect((rootCauseOf(err) as Error).message).to.equal(
+          "@cat member 'lib' is built in this project, which @cat cannot deliver as a runnable"
+        );
+        expect(statedBuilt).to.deep.equal([]);
+      }
+    });
+
+    describe("a tool whose own closure needs two versions of one package", () => {
+      /* tool needs a and b, which need x at ^2.0.0 and (through y) at ^1.0.0:
+       * no one version of x is both. A program is a sealed install, so that
+       * is its own business; something linked against it is not. */
+      const source =
+        "package_repo @backing { }\ncatalog @cat { deps = @backing:tool; }\nTOOL = @cat:tool;\n" +
+        "test_deps linked { deps = @cat:tool; }\n" +
+        "test_sealed sealed { deps = @cat:tool; }\n" +
+        "test_usetool byproperty { tool = @cat:tool; }\n" +
+        "test_useglobal byglobal { }\n";
+      const graph = (): void => {
+        requirementTable.set("tool@1.0.0", [
+          { name: "a", versionConstraint: "^1.0.0" },
+          { name: "b", versionConstraint: "^1.0.0" },
+        ]);
+        requirementTable.set("a@1.0.0", [{ name: "x", versionConstraint: "^2.0.0" }]);
+        requirementTable.set("b@1.0.0", [{ name: "y", versionConstraint: "1.0.0" }]);
+        requirementTable.set("y@1.0.0", [{ name: "x", versionConstraint: "^1.0.0" }]);
+      };
+      const outcome = (name: string, operation: string): Promise<string> => {
+        const model = build(source);
+        graph();
+        return Promise.resolve(model.getConfig(Constraints.of({ BUILD_OPERATION: operation }), execution).materialize(writtenOnCommandLine(name))).then(
+          () => "accepted",
+          (err: Error) => (rootCauseOf(err) as Error).message.split("\n")[0]
+        );
+      };
+      const REFUSED = "Resolution requires multiple versions of the same package:";
+
+      it("is refused where a target requires it as a dependency", async () => {
+        expect(await outcome("linked", "build")).to.equal(REFUSED);
+      });
+
+      it("is accepted where a rule materializes its requirements as a sealed install", async () => {
+        expect(await outcome("sealed", "build")).to.equal("accepted");
+      });
+
+      it("is accepted where a rule reads it as a tool, by property or by global", async () => {
+        expect(await outcome("byproperty", "build")).to.equal("accepted");
+        expect(await outcome("byglobal", "build")).to.equal("accepted");
+      });
+
+      it("is accepted where it is the program named to run", async () => {
+        expect(await outcome("@cat:tool", "run")).to.equal("accepted");
+      });
+    });
+
+    it("states what each edge of a reading asks for", async () => {
+      const model = build("package_repo @backing { }\n" + "test_stated app { deps = @backing:foo:1.0.0; }\n");
+      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
+      const name = "app";
+      const written = syntheticValue(
+        parseName(name),
+        { fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(name) },
+        0,
+        name.length
+      );
+      const [target] = (await model.getConfig(Constraints.of({}), execution).resolve(written)).denoted;
+      const [foo] = (target as ResolvedTarget).resolved.sources.get("dependencies") as PackageFileSet[];
+      const [fooReference] = (target as ResolvedTarget).resolved.references.get("dependencies")!;
+      expect(requestedConstraint(fooReference)).to.equal("1.0.0");
+      expect(requestedConstraint(foo.dependencies[0].reference)).to.equal("^1.0.0");
+    });
+
+    it("delivers a member as stated, unbuilt, to a reading of what is required", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_stated lib { deps = @backing:bar; }\n" +
+          "catalog @cat { deps = lib; }\n" +
+          "test_stated app { deps = @cat:lib; }\n"
+      );
+      const name = "app";
+      const written = syntheticValue(
+        parseName(name),
+        { fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(name) },
+        0,
+        name.length
+      );
+      const parts = requirementsOf(await model.getConfig(Constraints.of({}), execution).resolve(written));
+      const [lib] = parts.get("dependencies") as PackageFileSet[];
+      expect(lib.packageName).to.equal("lib");
+      expect(edges(lib)).to.deep.equal(["bar@1.0.0"]);
+      expect(statedBuilt).to.deep.equal([]);
+    });
+
+    it("delivers a member that projects into another of the project's packages", async () => {
+      const model = build(
+        "test_stated base { }\n" +
+          "test_stated lib { deps = base:base/data.txt; }\n" +
+          "catalog @cat { deps = lib; }\n" +
+          "test_deps a { deps = @cat:lib; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+      const lib = lastDepSets[0] as PackageFileSet;
+      expect(await lib.readFile("lib/data.txt")).to.equal("lib");
+      expect(lib.packages).to.deep.equal([]);
+    });
+
+    it("reports a member's failed build as that build's failure, not as the catalog's", async () => {
+      const model = build("test_stated lib { }\n" + "catalog @cat { deps = lib; }\n" + "test_deps a { deps = @cat:lib; }\n");
+      statedFailing.add("lib");
+      try {
+        await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+        expect.fail("expected lib's build to fail");
+      } catch (err) {
+        expect(findCause(err, RequirementResolutionError), "no resolution failure in the cause chain").to.be.undefined;
+        const cause = rootCauseOf(err);
+        expect((cause as Error).message).to.equal("lib broke");
+      }
+    });
+
+    it("refuses a member built with a requirement its rule did not state", async () => {
+      const model = build(
+        "test_stated base { }\n" +
+          "test_drift lib { deps = base; }\n" +
+          "catalog @cat { deps = lib; }\n" +
+          "test_deps a { deps = @cat:lib; }\n"
+      );
+      try {
+        await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+        expect.fail("expected the disagreement to be reported");
+      } catch (err) {
+        const cause = rootCauseOf(err);
+        expect((cause as Error).message).to.match(
+          /'lib' builds a package requiring 'base', which its rule does not state/
+        );
+      }
+    });
+
+    it("reports a stated member that takes a requirement from the catalog itself as a cycle", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_stated lib { deps = @cat:bar; }\n" +
+          "catalog @cat { deps = @backing:bar:1.2.0 lib; }\n" +
+          "test_deps a { deps = @cat:lib; }\n"
+      );
+      try {
+        await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+        expect.fail("expected the loop through the catalog to be reported");
+      } catch (err) {
+        expect(findCause(err, CycleError), "a CycleError in the cause chain").to.not.be.undefined;
       }
     });
 
@@ -875,23 +1324,25 @@ describe("CatalogRepository (through the model)", () => {
           "catalog @cat { deps = @backing:bar:1.2.0 lib; }\n" +
           "test_deps a { deps = @cat:lib; }\n"
       );
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect(edges(lastDepSets[0] as PackageFileSet)).to.deep.equal(["bar@1.1.0"]);
     });
   });
 
   describe("a built package's provided requirement", () => {
     const edges = (pkg: PackageFileSet): string[] =>
-      pkg.dependencies.map(dep => (dep instanceof PackageFileSet ? dep.packageId : `ref:${dep.toString()}`));
+      pkg.dependencies.map(dep => (dep.package ? dep.package.packageId : `ref:${dep.reference.toString()}`));
     const versionsOf = (name: string): string[] =>
       [...new Set(reachablePackages(lastDepSets).filter(pkg => pkg.packageName === name).map(pkg => pkg.version!))].sort();
 
     it("is answered by what its reference resolves to where nothing above supplies the name", async () => {
-      const model = build("package_repo @backing { }\n" + "test_pkg lib { provided = @backing:host; }\n" + "test_deps a { deps = lib; }\n");
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      const model = build(
+        "package_repo @backing { }\n" + "test_pkg lib { provided = @backing:host; }\n" + "test_deps a { deps = lib; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const lib = lastDepSets[0] as PackageFileSet;
       expect(edges(lib)).to.deep.equal(["host@1.0.0"]);
-      expect([...lib.provided].map(([name, expected]) => [expected, (lib.getDependency(name) as PackageFileSet).packageId])).to.deep.equal([
+      expect([...lib.provided].map(([name, expected]) => [expected, lib.getDependency(name)!.package!.packageId])).to.deep.equal([
         ["expected", "host@1.0.0"],
       ]);
     });
@@ -905,7 +1356,7 @@ describe("CatalogRepository (through the model)", () => {
           "test_pkg lib { provided = @backing:host:1.0.0; }\n" +
           "test_deps a { deps = lib @other:host:2.0.0; }\n"
       );
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect(edges(lastDepSets[0] as PackageFileSet)).to.deep.equal(["host@2.0.0"]);
       expect(versionsOf("host")).to.deep.equal(["2.0.0"]);
     });
@@ -919,7 +1370,7 @@ describe("CatalogRepository (through the model)", () => {
           "test_pkg lib { provided = @backing:host:2.0.0; }\n" +
           "test_deps a { deps = lib @backing:host:1.0.0; }\n"
       );
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect(edges(lastDepSets[0] as PackageFileSet)).to.deep.equal(["host@1.0.0"]);
       expect(backings.get("@backing")!.fetched).to.deep.equal(["host@1.0.0"]);
     });
@@ -932,9 +1383,9 @@ describe("CatalogRepository (through the model)", () => {
           "test_pkg suite { deps = plugin @other:host:2.0.0; }\n" +
           "test_deps a { deps = suite; }\n"
       );
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const suite = lastDepSets[0] as PackageFileSet;
-      const plugin = suite.getDependency("plugin") as PackageFileSet;
+      const plugin = suite.getDependency("plugin")!.package!;
       expect(edges(plugin)).to.deep.equal(["host@2.0.0"]);
     });
 
@@ -945,7 +1396,7 @@ describe("CatalogRepository (through the model)", () => {
           "catalog @cat { deps = lib @backing:host:2.0.0 -> host2; }\n" +
           "test_deps a { deps = @cat:lib @cat:host2 -> host; }\n"
       );
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect(edges(lastDepSets[0] as PackageFileSet)).to.deep.equal(["host@2.0.0"]);
     });
   });
@@ -955,7 +1406,7 @@ describe("CatalogRepository (through the model)", () => {
      * the versions delivered where there is none. */
     const outcome = async (model: BuildModel): Promise<string> => {
       try {
-        await model.getConfig(Constraints.of({}), execution).getTarget("a");
+        await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       } catch (err) {
         const messages: string[] = [];
         for (let current: unknown = err; current instanceof Error; current = (current as { cause?: unknown }).cause) {
@@ -981,6 +1432,14 @@ describe("CatalogRepository (through the model)", () => {
     it("ship together once the target itself permits both", async () => {
       const permitted = libs + "test_deps a { deps = old new @backing:bar:1.0.0? @backing:bar:1.2.0?; }\n";
       expect(await outcome(build(permitted))).to.equal("bar@1.0.0 bar@1.2.0 new@* old@*");
+    });
+
+    it("are resolved with their conflicts, and refused where the target is built", async () => {
+      const config = build(libs + "test_deps a { deps = old new; }\n").getConfig(Constraints.of({}), execution);
+      const [target] = (await config.resolve(writtenOnCommandLine("a"))).denoted;
+      expect(target).to.be.instanceOf(ResolvedTarget);
+      expect([...(target as ResolvedTarget).resolved.conflicts.versions].map(([pkg, versions]) => [pkg, [...versions].sort()])).to.deep.equal([["bar", ["1.0.0", "1.2.0"]]]);
+      expect(await outcome(build(libs + "test_deps a { deps = old new; }\n"))).to.contain("no one version is both");
     });
 
     it("are not completed by a pin one of those packages wrote", async () => {
@@ -1014,34 +1473,580 @@ describe("CatalogRepository (through the model)", () => {
 
   describe("a package a rule hands on", () => {
     const edges = (pkg: PackageFileSet): string[] =>
-      pkg.dependencies.map(dep => (dep instanceof PackageFileSet ? dep.packageId : `ref:${dep.toString()}`));
+      pkg.dependencies.map(dep => (dep.package ? dep.package.packageId : `ref:${dep.reference.toString()}`));
 
-    it("is bound again by the collection point it reaches, on the requirements it was delivered with", async () => {
+    it("is refused where it requires something its rule did not state", async () => {
+      /* `through` builds foo, whose requirement on bar its rule does not state,
+       * so nothing resolved it with a's pin. */
       const model = build(
         "package_repo @backing { }\n" + "test_pass through { deps = @backing:foo; }\n" + "test_deps a { deps = through @backing:bar:1.2.0; }\n"
       );
       requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
-      const foo = lastDepSets[0] as PackageFileSet;
-      expect(foo.packageId).to.equal("foo@1.0.0");
-      expect(edges(foo)).to.deep.equal(["bar@1.2.0"]);
-      /* One version of what it requires in the installation. */
-      expect([...new Set(reachablePackages(lastDepSets).map(pkg => pkg.packageId))].sort()).to.deep.equal(["bar@1.2.0", "foo@1.0.0"]);
-      expect([...new Set(backings.get("@backing")!.fetched)]).to.not.include("bar@1.1.0");
+      const failure = await Promise.resolve(
+        model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"))
+      ).then(
+        () => undefined,
+        (err: Error) => err
+      );
+      expect((rootCauseOf(failure) as Error).message).to.equal("'through' builds a package requiring 'bar', which its rule does not state");
+    });
+
+    for (const [route, deps] of [
+      ["directly", "base"],
+      ["through a catalog", "@cat:base"],
+    ]) {
+      it(`declares a package built in the project at the version it is built with, required ${route}`, async () => {
+        const model = build(`test_built base { version = 1.2.3; }\ncatalog @cat { deps = base; }\ntest_built app { deps = ${deps}; }\n`);
+        await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("app"));
+        expect(builtDeclared).to.deep.equal([{ name: "base", versionConstraint: "1.2.3" }]);
+      });
+
+      it(`declares no version for a package built without one, required ${route}`, async () => {
+        const model = build(`test_built base { }\ncatalog @cat { deps = base; }\ntest_built app { deps = ${deps}; }\n`);
+        await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("app"));
+        expect(builtDeclared).to.deep.equal([{ name: "base", versionConstraint: undefined }]);
+      });
+    }
+
+    const refusal = (model: BuildModel): Promise<string | undefined> =>
+      Promise.resolve(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"))).then(
+        () => undefined,
+        (err: Error) => (rootCauseOf(err) as Error).message
+      );
+
+    it("refuses a registry's package bound, by its name, to a target that builds no package", async () => {
+      /* foo requires a package called `notes`, and the project has a target
+       * of that name, so the requirement is bound to it. What the target
+       * builds is known when it is built, and it is no package. */
+      const model = build("package_repo @backing { }\n" + "test_patch notes { }\n" + "test_deps a { deps = @backing:foo notes; }\n");
+      requirementTable.set("foo@1.0.0", [{ name: "notes", versionConstraint: "^1.0.0" }]);
+      const failure = await Promise.resolve(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"))).then(
+        () => undefined,
+        (err: Error) => err
+      );
+      const cause = rootCauseOf(failure) as FabrError;
+      expect(cause.message).to.equal("foo:1.0.0 depends on notes:^1.0.0, which is provided by the target 'notes', but 'notes' is not a package");
+      expect(cause.help).to.deep.equal(["either build 'notes' as a package, or rename it to avoid the name collision"]);
+    });
+
+    const entries = (): Array<string | string[]> =>
+      lastDepSets.map(set => (set instanceof PackageFileSet ? set.packageId : [...set].map(([name]) => name)));
+
+    describe("forced in place of a build of its name", () => {
+      it("is passed on by a target that states it, asked for at the version selected", async () => {
+        const model = build(
+          "package_repo @backing { }\n" +
+            "test_built notes { }\n" +
+            "test_stated mid { deps = notes; }\n" +
+            "test_stated lib { deps = @backing:notes:1.0.0! mid; }\n" +
+            "test_deps a { deps = lib; }\n"
+        );
+        expect(await refusal(model)).to.equal(undefined);
+        expect((lastDepSets[0] as PackageFileSet).getDependency("notes")?.package?.packageId).to.equal("notes@1.0.0");
+      });
+
+      it("joins the resolution of what reaches it through another target, its closure with it", async () => {
+        const model = build(
+          "package_repo @backing { }\n" +
+            "test_built pages { }\n" +
+            "test_stated lib { deps = pages; }\n" +
+            "test_stated app { deps = lib @backing:pages:1.0.0!; }\n" +
+            "test_deps a { deps = app @backing:z:2.0.0; }\n"
+        );
+        requirementTable.set("pages@1.0.0", [{ name: "z", versionConstraint: "^1.0.0" }]);
+        expect(await refusal(model)).to.contain("z is required as '^1.0.0' and as '2.0.0'");
+      });
+    });
+
+    const collision = (via: string): string =>
+      "Resolution requires multiple versions of the same package:\n" +
+      "  notes is required as '1.0.0' and as 'notes', and no one version is both\n" +
+      "    '1.0.0' required directly\n" +
+      `    'notes' ${via}\n` +
+      "    required notes versions: 1.0.0, notes — allowed: 1.0.0; add notes?";
+
+    for (const [builds, type] of [
+      ["files", "test_patch"],
+      ["a package", "test_built"],
+    ]) {
+      it(`refuses a registry's package required beside a target of its name that builds ${builds}`, async () => {
+        const model = build(`package_repo @backing { }\n${type} notes { }\ntest_deps a { deps = @backing:notes:1.0.0 notes; }\n`);
+        expect(await refusal(model)).to.equal(
+          "'notes' is required here as two different packages (from '@backing:notes:1.0.0' and 'notes')"
+        );
+      });
+
+      it(`refuses it where the target that builds ${builds} is reached through another target`, async () => {
+        const model = build(
+          `package_repo @backing { }\n${type} notes { }\ntest_stated lib { deps = notes; }\ntest_deps a { deps = lib @backing:notes:1.0.0; }\n`
+        );
+        expect(await refusal(model)).to.equal(collision("required via: lib"));
+      });
+    }
+
+    it("refuses a forced target that builds no package where a registry's package was asked for", async () => {
+      const model = build("package_repo @backing { }\n" + "test_patch notes { }\n" + "test_deps a { deps = @backing:notes:1.0.0; also = notes!; }\n");
+      expect(await refusal(model)).to.equal("'@backing:notes:1.0.0' is provided by the target 'notes', but 'notes' is not a package");
+    });
+
+    describe("required beside a catalog's member of its name", () => {
+      const built = (model: BuildModel): Promise<string | undefined> =>
+        Promise.resolve(model.getConfig(Constraints.of({ BUILD_OPERATION: "build" }), execution).materialize(writtenOnCommandLine("a"))).then(
+          () => undefined,
+          (err: Error) => (rootCauseOf(err) as Error).message
+        );
+
+      it("is the one package where the member is that same target", async () => {
+        const model = build("test_built lib { }\n" + "catalog @cat { deps = lib; }\n" + "test_deps a { deps = lib; also = @cat:lib; }\n");
+        expect(await built(model)).to.equal(undefined);
+        expect(entries()).to.deep.equal(["lib@*", "lib@*"]);
+      });
+
+      it("is the one package where the target is reached through another", async () => {
+        const model = build(
+          "test_built lib { }\n" + "test_stated app { deps = lib; }\n" + "catalog @cat { deps = lib; }\n" + "test_deps a { deps = app @cat:lib; }\n"
+        );
+        expect(await built(model)).to.equal(undefined);
+      });
+
+      it("is a collision where the member is another package", async () => {
+        const model = build(
+          "package_repo @backing { }\n" + "test_built lib { }\n" + "catalog @cat { deps = @backing:lib:1.0.0; }\n" + "test_deps a { deps = lib @cat:lib; }\n"
+        );
+        expect(await built(model)).to.equal("'lib' is required here as two different packages (from 'lib' and '@cat:lib')");
+      });
+    });
+
+    it("refuses a target that builds a package with other things beside it", async () => {
+      const model = build("test_both lib { }\n" + "test_deps a { deps = lib; }\n");
+      expect(await refusal(model)).to.equal("'lib' builds a package and other things beside it");
+    });
+
+    it("gives the name to a target that is forced, in place of the registry's package", async () => {
+      const model = build("package_repo @backing { }\n" + "test_built notes { }\n" + "test_deps a { deps = @backing:notes:1.0.0; also = notes!; }\n");
+      expect(await refusal(model)).to.equal(undefined);
+      expect(entries()).to.deep.equal(["notes@*", "notes@*"]);
+      expect(backings.get("@backing")!.fetched).to.deep.equal([]);
+    });
+
+    it("accepts a target written as an alternate alongside the registry's package, and delivers nothing for it", async () => {
+      const model = build(
+        "package_repo @backing { }\n" + "test_built notes { }\n" + "test_stated lib { deps = notes; }\n" + "test_deps a { deps = lib @backing:notes:1.0.0 notes?; }\n"
+      );
+      expect(await refusal(model)).to.equal(undefined);
+      expect(entries()).to.deep.equal(["lib@*", "notes@1.0.0"]);
+    });
+
+    it("uses the registry's package where the target beside it is marked an alternate", async () => {
+      const model = build("package_repo @backing { }\n" + "test_built notes { }\n" + "test_deps a { deps = notes? @backing:notes:1.0.0; }\n");
+      expect(await refusal(model)).to.equal(undefined);
+      expect(entries()).to.deep.equal(["notes@1.0.0"]);
+    });
+
+    it("gives the name to the target where the registry's package is marked an alternate", async () => {
+      const model = build("package_repo @backing { }\n" + "test_built notes { }\n" + "test_deps a { deps = @backing:notes:1.0.0? notes; }\n");
+      expect(await refusal(model)).to.equal(undefined);
+      expect(entries()).to.deep.equal(["notes@*"]);
+      expect(backings.get("@backing")!.fetched).to.deep.equal([]);
+    });
+
+    it("gives the name to the registry's package where it is forced, which then answers for the target", async () => {
+      const model = build("package_repo @backing { }\n" + "test_patch notes { }\n" + "test_deps a { deps = @backing:notes:1.0.0!; also = notes; }\n");
+      expect(await refusal(model)).to.equal(undefined);
+      expect(entries()).to.deep.equal(["notes@1.0.0", "notes@1.0.0"]);
+    });
+
+    for (const type of ["test_deps", "test_sealed"]) {
+      it(`refuses two versions of a registry's package required directly, whether or not judged strictly (${type})`, async () => {
+        const model = build(`package_repo @backing { }\n${type} a { deps = @backing:x:1.0.0 @backing:x:2.0.0; }\n`);
+        expect(await refusal(model)).to.equal(
+          "'x' is required here as two different packages (from '@backing:x:1.0.0' and '@backing:x:2.0.0')"
+        );
+        expect(backings.get("@backing")!.fetched).to.deep.equal([]);
+      });
+    }
+
+    it("accepts two requirements on one name in separate lists that resolve to one package", async () => {
+      const model = build("package_repo @backing { }\n" + "test_deps a { deps = @backing:x:^1.0.0; also = @backing:x:1.0.0; }\n");
+      expect(await refusal(model)).to.equal(undefined);
+      expect(entries()).to.deep.equal(["x@1.0.0", "x@1.0.0"]);
+      /* One selection is one node, whichever reference delivers it. */
+      expect(lastDepSets[0]).to.equal(lastDepSets[1]);
+    });
+
+    it("delivers a catalog's member and a direct reference to the same version as one node", async () => {
+      /* Two resolutions answer with the same package wired the same way: the
+       * collection holds it once, and plugin's peer on it binds to that one. */
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @cat { deps = @backing:x:1.0.0; }\n" +
+          "test_deps a { deps = @cat:x; also = @backing:x:1.0.0; }\n"
+      );
+      requirementTable.set("x@1.0.0", [{ name: "plugin", versionConstraint: "1.0.0" }]);
+      requirementTable.set("plugin@1.0.0", [{ name: "x", versionConstraint: "1.0.0", provided: "expected" }]);
+      expect(await refusal(model)).to.equal(undefined);
+      const [fromCatalog, direct] = lastDepSets as PackageFileSet[];
+      expect(direct).to.equal(fromCatalog);
+      expect(reachablePackages([direct]).filter(pkg => pkg.packageName === "plugin")).to.have.lengthOf(1);
+    });
+
+    it("refuses a catalog's member and a direct reference to the same version wired differently", async () => {
+      /* x requires y: the catalog pins y@1.0.0, the direct collection selects
+       * y@1.1.0 for a range, so the two x's are two packages and y ships at
+       * two versions, one of them sanctioned by nothing written. */
+      const model = build(
+        "package_repo @backing { }\n" +
+          "catalog @cat { deps = @backing:x:1.0.0 @backing:y:1.0.0; }\n" +
+          "test_deps a { deps = @cat:x; also = @backing:x:1.0.0 @backing:y:^1.1.0; }\n"
+      );
+      requirementTable.set("x@1.0.0", [{ name: "y", versionConstraint: "^1.0.0" }]);
+      expect(await refusal(model)).to.contain("Resolution requires multiple versions of the same package");
+    });
+
+    it("delivers one node for one selection through a cycle back to it", async () => {
+      /* x requires plugin, which requires x back as a plugin requires its
+       * host: each delivery of x is the one node, and plugin's edge leads to
+       * it, not to a copy. */
+      const model = build("package_repo @backing { }\n" + "test_deps a { deps = @backing:x:1.0.0; also = @backing:x:^1.0.0; }\n");
+      requirementTable.set("x@1.0.0", [{ name: "plugin", versionConstraint: "1.0.0" }]);
+      requirementTable.set("plugin@1.0.0", [{ name: "x", versionConstraint: "1.0.0", provided: "expected" }]);
+      expect(await refusal(model)).to.equal(undefined);
+      const [x, again] = lastDepSets as PackageFileSet[];
+      expect(again).to.equal(x);
+      expect(reachablePackages([x]).filter(pkg => pkg.packageName === "x")).to.have.lengthOf(1);
+      expect(x.packages[0].packageName).to.equal("plugin");
+      expect(x.packages[0].packages[0]).to.equal(x);
+    });
+
+    it("refuses two requirements on one name in one list, though they resolve to one package", async () => {
+      const model = build("package_repo @backing { }\n" + "test_deps a { deps = @backing:x:^1.0.0 @backing:x:1.0.0; }\n");
+      expect(await refusal(model)).to.equal(
+        "'x' is required here as two different packages (from '@backing:x:^1.0.0' and '@backing:x:1.0.0')"
+      );
+    });
+
+    it("refuses a second request of one name in one list though one is forced", async () => {
+      const model = build("package_repo @backing { }\n" + "test_built notes { }\n" + "test_deps a { deps = notes! @backing:notes:1.0.0; }\n");
+      expect(await refusal(model)).to.equal(
+        "'notes' is required here as two different packages (from 'notes!' and '@backing:notes:1.0.0')"
+      );
+    });
+
+    it("accepts a second version of a name required directly where it is an alternate", async () => {
+      const model = build("package_repo @backing { }\n" + "test_deps a { deps = @backing:x:1.0.0 @backing:x:2.0.0?; }\n");
+      expect(await refusal(model)).to.equal(undefined);
+      expect(entries()).to.deep.equal(["x@1.0.0"]);
+    });
+
+    it("refuses a target and a registry's package both forced under one name", async () => {
+      const model = build("package_repo @backing { }\n" + "test_built notes { }\n" + "test_deps a { deps = @backing:notes:1.0.0!; also = notes!; }\n");
+      expect(await refusal(model)).to.equal("'notes' is forced ('!') at two different versions (1.0.0, notes) — pick one");
+    });
+
+    it("leaves a target read for its files holding no name: what requires the target keeps it", async () => {
+      const model = build("test_built notes { }\n" + "test_stated lib { deps = notes; }\n" + "test_deps a { deps = lib notes<BUILD_OPERATION=files>; }\n");
+      expect(await refusal(model)).to.equal(undefined);
+      const [lib, files] = lastDepSets;
+      expect((lib as PackageFileSet).packages.map(pkg => pkg.packageId)).to.deep.equal(["notes@*"]);
+      expect(files).to.not.be.instanceOf(PackageFileSet);
+    });
+
+    it("delivers a target's files, not its package, beside the target itself", async () => {
+      const model = build("test_built notes { }\n" + "test_deps a { deps = notes notes<BUILD_OPERATION=files>; }\n");
+      expect(await refusal(model)).to.equal(undefined);
+      expect(lastDepSets.map(set => set instanceof PackageFileSet)).to.deep.equal([true, false]);
+    });
+
+    it("accepts a target as an alternate where a registry's packages are resolved too", async () => {
+      const model = build(
+        "package_repo @backing { }\n" + "test_built notes { }\n" + "test_stated lib { deps = notes; }\n" + "test_deps a { deps = lib notes? @backing:foo; }\n"
+      );
+      expect(await refusal(model)).to.equal(undefined);
+      expect(entries()).to.deep.equal(["lib@*", "foo@1.0.0"]);
+    });
+
+    it("settles a catalog's own collision by the marker: the forced target is the member", async () => {
+      const model = build(
+        "package_repo @backing { }\n" + "test_built notes { }\n" + "catalog @cat { deps = @backing:notes:1.0.0 notes!; }\n" + "test_deps a { deps = @cat:notes; }\n"
+      );
+      expect(await refusal(model)).to.equal(undefined);
+      expect(entries()).to.deep.equal(["notes@*"]);
+    });
+
+    it("leaves an alternate out of a catalog's members", async () => {
+      const model = build(
+        "package_repo @backing { }\n" + "test_built notes { }\n" + "catalog @cat { deps = notes? @backing:notes:1.0.0; }\n" + "test_deps a { deps = @cat:notes; }\n"
+      );
+      expect(await refusal(model)).to.equal(undefined);
+      expect(entries()).to.deep.equal(["notes@1.0.0"]);
+    });
+
+    for (const lists of ["deps = @backing:host:1.0.0! @backing:plugin; also = host", "deps = host @backing:plugin; also = @backing:host:1.0.0!"]) {
+      it(`answers a provided requirement with the forced registry package, whichever list holds it (${lists})`, async () => {
+        const model = build(`package_repo @backing { }\ntest_built host { }\ntest_deps a { ${lists}; }\n`);
+        requirementTable.set("plugin@1.0.0", [{ name: "host", versionConstraint: "^1.0.0", provided: "expected" }]);
+        expect(await refusal(model)).to.equal(undefined);
+        const plugin = lastDepSets.find((set): set is PackageFileSet => set instanceof PackageFileSet && set.packageName === "plugin")!;
+        expect(plugin.packages.map(pkg => pkg.packageId)).to.deep.equal(["host@1.0.0"]);
+      });
+    }
+
+    it("refuses a target's own requirement on a registry's package bound to a target that builds no package", async () => {
+      /* lib asked for the package `notes`; here that name is the target's. */
+      const model = build(
+        "package_repo @backing { }\n" + "test_patch notes { }\n" + "test_stated lib { deps = @backing:notes:1.0.0; }\n" + "test_deps a { deps = lib notes; }\n"
+      );
+      expect(await refusal(model)).to.equal("'@backing:notes:1.0.0' is provided by the target 'notes', but 'notes' is not a package");
+    });
+
+    describe("read for its loose files", () => {
+      it("keeps what a target builds where that is files, and leaves out a package", async () => {
+        const model = build("test_patch notes { }\n" + "test_built lib { }\n" + "test_loose a { extra = notes lib; }\n");
+        expect(await refusal(model)).to.equal(undefined);
+        expect(lastFiles.map(set => [...set].map(([name]) => name))).to.deep.equal([["notes.patch"]]);
+      });
+
+      it("leaves a registry's package out unresolved, so it constrains nothing", async () => {
+        const model = build("package_repo @backing { }\n" + "test_loose a { deps = @backing:bar:^1.0.0; extra = @backing:bar:1.2.0; }\n");
+        expect(await refusal(model)).to.equal(undefined);
+        expect(lastFiles).to.deep.equal([]);
+        expect(entries()).to.deep.equal(["bar@1.0.0"]);
+        expect(backings.get("@backing")!.fetched).to.deep.equal(["bar@1.0.0"]);
+      });
+    });
+
+    describe("read for its files", () => {
+      const names = (): string[][] => lastFiles.map(set => [...set].map(([name]) => name));
+
+      it("is each configuration's own build, side by side", async () => {
+        const model = build("default MODE = plain;\n" + "test_mode notes { }\n" + "test_mixed a { srcs = notes<MODE=debug> notes<MODE=release>; }\n");
+        expect(await refusal(model)).to.equal(undefined);
+        expect(names()).to.deep.equal([["notes-debug.txt"], ["notes-release.txt"]]);
+      });
+
+      it("is its files, with no name: a registry's package of that name stands with it", async () => {
+        const model = build(
+          "package_repo @backing { }\n" + "test_built notes { }\n" + "test_mixed a { srcs = notes; deps = @backing:notes:1.0.0; }\n"
+        );
+        expect(await refusal(model)).to.equal(undefined);
+        expect(lastFiles.map(set => set instanceof PackageFileSet)).to.deep.equal([false]);
+        expect(names()).to.deep.equal([["notes/data.txt"]]);
+        expect(entries()).to.deep.equal(["notes@1.0.0"]);
+      });
+
+      it("delivers a registry's package as its own files, with nothing it requires fetched", async () => {
+        const model = build("package_repo @backing { }\n" + "test_mixed a { srcs = @backing:foo:1.0.0; }\n");
+        requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
+        expect(await refusal(model)).to.equal(undefined);
+        expect(lastFiles.map(set => set instanceof PackageFileSet)).to.deep.equal([false]);
+        expect(backings.get("@backing")!.fetched).to.deep.equal(["foo@1.0.0"]);
+      });
+
+      it("may be read from a property declared PACKAGES: each package is its files", async () => {
+        const model = build("test_built notes { }\n" + "test_filesof a { pkgs = notes; }\n");
+        expect(await refusal(model)).to.equal(undefined);
+        expect(lastFiles.map(set => set instanceof PackageFileSet)).to.deep.equal([false]);
+      });
+
+      it("is all a property declared FILES can be read for", async () => {
+        const model = build("test_built notes { }\n" + "test_wrongtype a { srcs = notes; }\n");
+        expect(await refusal(model)).to.equal("internal: 'srcs' of test_wrongtype is not declared PACKAGES, and is read as packages");
+      });
+
+      it("projects through a global naming a target and a registry's package, delivering both", async () => {
+        const model = build("package_repo @backing { }\n" + "test_built notes { }\n" + "G = notes @backing:x:1.0.0;\n" + "test_mixed a { srcs = G:*/data.txt; }\n");
+        expect(await refusal(model)).to.equal(undefined);
+        expect(names().sort()).to.deep.equal([["notes/data.txt"], ["x/data.txt"]]);
+      });
+
+      it("attributes a registry reference it cannot deliver to the reference", async () => {
+        const model = build("package_repo @backing { }\n" + "test_mixed a { srcs = @backing:x:1.0.0 -> z; }\n");
+        const failure = await Promise.resolve(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"))).then(
+          () => undefined,
+          (err: Error) => err
+        );
+        expect(findCause(failure, RequirementResolutionError), "attributed to the written reference").to.not.be.undefined;
+      });
+
+      it("is refused for what a target passes on", async () => {
+        const model = build("test_built notes { }\n" + "test_misread a { deps = notes; }\n");
+        expect(await refusal(model)).to.equal("internal: the rule of 'a' reads its 'dependencies' requirement for files");
+      });
+    });
+
+    describe("forced among builds of one name", () => {
+      const VERSIONS = "default MODE = 1.0.0;\n" + "package_repo @backing { }\n" + "test_built foo { version = ${MODE}; }\n";
+      const depsOf = (index: number): string[] => (lastDepSets[index] as PackageFileSet).packages.map(pkg => pkg.packageId);
+
+      for (const lists of ["deps = foo<MODE=2.0.0>; also = foo!", "deps = foo!; also = foo<MODE=2.0.0>"]) {
+        it(`holds the name whichever list holds it (${lists})`, async () => {
+          const model = build(VERSIONS + `test_deps a { ${lists}; }\n`);
+          expect(await refusal(model)).to.equal(undefined);
+          expect(entries()).to.deep.equal(["foo@1.0.0", "foo@1.0.0"]);
+        });
+      }
+
+      it("stands in for a build another target brings, written after it", async () => {
+        const model = build(VERSIONS + "test_stated lib { deps = foo<MODE=2.0.0> @backing:x; }\n" + "test_deps a { deps = lib foo!; }\n");
+        expect(await refusal(model)).to.equal(undefined);
+        expect(depsOf(0)).to.include("foo@1.0.0");
+        expect(depsOf(0)).to.not.include("foo@2.0.0");
+      });
+
+      it("settles the name after two other builds of it", async () => {
+        const model = build(
+          VERSIONS + "test_stated lib { deps = foo<MODE=2.0.0>; }\n" + "test_stated lib2 { deps = foo<MODE=3.0.0>; }\n" + "test_deps a { deps = lib lib2 foo!; }\n"
+        );
+        expect(await refusal(model)).to.equal(undefined);
+        expect([depsOf(0), depsOf(1)]).to.deep.equal([["foo@1.0.0"], ["foo@1.0.0"]]);
+      });
+
+      it("belongs to the collection it is written in: a dependency's own `!` is not its consumer's", async () => {
+        const model = build(VERSIONS + "test_stated lib { deps = foo!; }\n" + "test_deps a { deps = lib foo!<MODE=2.0.0>; }\n");
+        expect(await refusal(model)).to.equal(undefined);
+        expect(depsOf(0)).to.deep.equal(["foo@2.0.0"]);
+      });
+
+      it("is refused where two different builds are both forced", async () => {
+        const model = build(VERSIONS + "test_deps a { deps = foo!; also = foo!<MODE=2.0.0>; }\n");
+        expect(await refusal(model)).to.equal("'foo' is forced ('!') at two different versions (foo, foo<MODE=2.0.0>) — pick one");
+      });
+
+      it("settles a catalog's entry: the forced build is the member", async () => {
+        const model = build(VERSIONS + "catalog @cat { deps = foo<MODE=2.0.0> foo!; }\n" + "test_deps a { deps = @cat:foo; }\n");
+        expect(await refusal(model)).to.equal(undefined);
+        expect(entries()).to.deep.equal(["foo@1.0.0"]);
+      });
+
+      it("leaves a catalog's other build the member where one is an alternate", async () => {
+        const model = build(VERSIONS + "catalog @cat { deps = foo<MODE=2.0.0> foo?; }\n" + "test_deps a { deps = @cat:foo; }\n");
+        expect(await refusal(model)).to.equal(undefined);
+        expect(entries()).to.deep.equal(["foo@2.0.0"]);
+      });
+    });
+
+    describe("required in two configurations by one target", () => {
+      const MODES = "default MODE = plain;\n";
+
+      it("is refused: one name is one build", async () => {
+        const model = build(MODES + "test_mode notes { }\n" + "test_deps a { deps = notes<MODE=debug> notes<MODE=release>; }\n");
+        expect(await refusal(model)).to.equal(
+          "'notes' is required here as two different packages (from 'notes<MODE=debug>' and 'notes<MODE=release>')"
+        );
+      });
+
+      it("is a conflict where two lists each ask for one: a reference to a target sanctions nothing", async () => {
+        const model = build(MODES + "test_mode notes { }\n" + "test_deps a { deps = notes<MODE=debug>; also = notes<MODE=release>; }\n");
+        expect(await refusal(model)).to.equal(
+          "Resolution requires multiple versions of the same package:\n" +
+            "  notes is required as 'notes<MODE=debug>' and as 'notes<MODE=release>', and no one version is both\n" +
+            "    'notes<MODE=debug>' required directly\n" +
+            "    'notes<MODE=release>' required directly"
+        );
+      });
+
+      it("is the build the target requires directly, wherever another build of it is required", async () => {
+        const model = build(
+          MODES + "test_built notes { }\n" + "test_stated lib { deps = notes; }\n" + "test_deps a { deps = notes lib<MODE=debug>; }\n"
+        );
+        expect(await refusal(model)).to.equal(undefined);
+        const [direct, lib] = lastDepSets as PackageFileSet[];
+        expect(lib.packages).to.deep.equal([direct]);
+      });
+
+      it("is the direct build for every other build of it that is required", async () => {
+        const model = build(
+          MODES +
+            "test_built notes { }\n" +
+            "test_stated lib1 { deps = notes<MODE=debug>; }\n" +
+            "test_stated lib2 { deps = notes<MODE=release>; }\n" +
+            "test_deps a { deps = notes lib1 lib2; }\n"
+        );
+        expect(await refusal(model)).to.equal(undefined);
+        const [direct, lib1, lib2] = lastDepSets as PackageFileSet[];
+        expect([lib1.packages, lib2.packages]).to.deep.equal([[direct], [direct]]);
+      });
+
+      it("names each build on the path to a conflicting build by its reference", async () => {
+        const model = build(
+          MODES +
+            "test_built notes { }\n" +
+            "test_stated mid { deps = notes<MODE=debug>; }\n" +
+            "test_stated lib1 { deps = mid; }\n" +
+            "test_stated lib2 { deps = notes<MODE=release>; }\n" +
+            "test_deps a { deps = lib1 lib2; }\n"
+        );
+        expect(await refusal(model)).to.contain("'notes<MODE=debug>' required via: lib1 -> mid\n");
+      });
+
+      it("is refused where two builds of it are required and the target requires neither directly", async () => {
+        const model = build(
+          MODES +
+            "test_built notes { }\n" +
+            "test_stated lib1 { deps = notes<MODE=debug>; }\n" +
+            "test_stated lib2 { deps = notes<MODE=release>; }\n" +
+            "test_deps a { deps = lib1 lib2; }\n"
+        );
+        expect(await refusal(model)).to.equal(
+          "Resolution requires multiple versions of the same package:\n" +
+            "  notes is required as 'notes<MODE=debug>' and as 'notes<MODE=release>', and no one version is both\n" +
+            "    'notes<MODE=debug>' required via: lib1\n" +
+            "    'notes<MODE=release>' required via: lib2"
+        );
+      });
+
+      it("is the forced build throughout where one is forced", async () => {
+        const model = build(
+          MODES + "test_built notes { }\n" + "test_stated lib { deps = notes<MODE=debug>; }\n" + "test_deps a { deps = notes! lib; }\n"
+        );
+        expect(await refusal(model)).to.equal(undefined);
+        const [forced, lib] = lastDepSets as PackageFileSet[];
+        expect(lib.packages).to.deep.equal([forced]);
+      });
+
+      it("is each its own where one is accepted as an alternate", async () => {
+        const model = build(
+          MODES + "test_built notes { }\n" + "test_stated lib { deps = notes<MODE=debug>; }\n" + "test_deps a { deps = notes? lib; }\n"
+        );
+        expect(await refusal(model)).to.equal(undefined);
+        expect(entries()).to.deep.equal(["lib@*"]);
+      });
+
+      it("is each target's own where one requires it privately", async () => {
+        const model = build(
+          MODES + "test_mode notes { }\n" + "test_deps inner { deps = notes<MODE=debug>; }\n" + "test_deps a { deps = notes inner; }\n"
+        );
+        expect(await refusal(model)).to.equal(undefined);
+        expect(lastDepSets.map(set => [...set].map(([name]) => name))).to.deep.equal([["notes-plain.txt"], []]);
+      });
     });
 
     it("is carried by a package built against it, and bound again where that package is used", async () => {
       const model = build(
         "package_repo @backing { }\n" + "test_built lib { deps = @backing:bar:^1.0.0; }\n" + "test_deps a { deps = lib @backing:bar:1.2.0; }\n"
       );
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const lib = lastDepSets[0] as PackageFileSet;
       expect(edges(lib)).to.deep.equal(["bar@1.2.0"]);
       /* The manifest records what was written, not what lib's own build selected. */
       expect(builtDeclared).to.deep.equal([{ name: "bar", versionConstraint: "^1.0.0" }]);
     });
 
-    it("carries a requirement that installs nothing as the reference it is", async () => {
+    it("is bound by the consumer's own pin where the package was built in another configuration", async () => {
+      /* lib<MODE=x> carries its reference as @backing under MODE=x: the same
+       * registry, which resolves it with the consumer's pin. */
+      const model = build(
+        "default MODE = plain;\n" +
+          "package_repo @backing { }\n" +
+          "test_built lib { deps = @backing:bar:^1.0.0; }\n" +
+          "test_deps a { deps = lib<MODE=x> @backing:bar:1.2.0; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+      const lib = lastDepSets[0] as PackageFileSet;
+      expect(edges(lib)).to.deep.equal(["bar@1.2.0"]);
+    });
+
+    it("neither carries nor declares a requirement that installs nothing", async () => {
       const model = build(
         "package_repo @backing { }\n" +
           "test_built lib { deps = @backing:foo @backing:bar:1.0.0?; }\n" +
@@ -1049,36 +2054,23 @@ describe("CatalogRepository (through the model)", () => {
       );
       requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.1.0" }]);
       requirementTable.set("bar@1.1.0", []);
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const lib = lastDepSets[0] as PackageFileSet;
-      expect(edges(lib)).to.deep.equal(["foo@1.0.0", "ref:bar:1.0.0?"]);
-      expect(builtDeclared.map(req => req?.override)).to.deep.equal([undefined, "alternate"]);
+      /* The `?` is lib's own collection point's: it sanctions a version there,
+       * and is no requirement of the package lib builds. */
+      expect(edges(lib)).to.deep.equal(["foo@1.0.0"]);
+      expect(builtDeclared.map(req => req?.name)).to.deep.equal(["foo"]);
     });
 
     it("is taken as it stands by a sub-target of the rule that collected it", async () => {
       const model = build("package_repo @backing { }\n" + "test_sub a { deps = @backing:foo @backing:bar:1.2.0; }\n");
       requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       /* The sub-target holds only foo: resolving foo's requirement there, apart
        * from the pin its creator held, would select another bar. */
       const foo = lastDepSets[0] as PackageFileSet;
       expect(edges(foo)).to.deep.equal(["bar@1.2.0"]);
       expect([...new Set(backings.get("@backing")!.fetched)].sort()).to.deep.equal(["bar@1.2.0", "foo@1.0.0"]);
-    });
-
-    it("stays bound as a catalog pinned it", async () => {
-      const model = build(
-        "package_repo @backing { }\n" +
-          "catalog @cat { deps = @backing:foo @backing:bar:1.1.0; }\n" +
-          "test_pass through { deps = @cat:foo; }\n" +
-          "test_deps a { deps = through; }\n"
-      );
-      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
-      const foo = lastDepSets[0] as PackageFileSet;
-      expect(edges(foo)).to.deep.equal(["bar@1.1.0"]);
-      /* Nothing of it is asked of the registry again. */
-      expect((foo.reference as RepositoryRef).toString()).to.equal("foo");
     });
   });
 
@@ -1097,7 +2089,7 @@ describe("CatalogRepository (through the model)", () => {
         "",
       ].join("\n");
     const edges = (pkg: PackageFileSet): string[] =>
-      pkg.dependencies.map(dep => (dep instanceof PackageFileSet ? dep.packageId : `ref:${dep.toString()}`));
+      pkg.dependencies.map(dep => (dep.package ? dep.package.packageId : `ref:${dep.reference.toString()}`));
     const text = (pkg: FileSet, name: string): Promise<string> => Promise.resolve(pkg.getFile(name)!.readString());
     /** Every message down an error's chain of causes. */
     const messagesOf = (err: unknown): string[] => {
@@ -1108,7 +2100,33 @@ describe("CatalogRepository (through the model)", () => {
       return messages;
     };
     const dependency = (pkg: PackageFileSet, name: string): PackageFileSet =>
-      pkg.getDependency(name) as PackageFileSet;
+      pkg.getDependency(name)!.package!;
+
+    it("is stated unpatched to a reading of what requires it: its name, the patched package's version and requirements", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_patch fix { }\n" +
+          "patched foo { srcs = @backing:foo; patches = fix; }\n" +
+          "test_stated app { deps = foo; }\n"
+      );
+      patchTexts.set("fix", rewrite("foo", "foo, patched"));
+      requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
+      const name = "app";
+      const written = syntheticValue(
+        parseName(name),
+        { fs: EMPTY_FILESET, file: "<command-line>", reader: new StringReader(name) },
+        0,
+        name.length
+      );
+      const parts = requirementsOf(await model.getConfig(Constraints.of({}), execution).resolve(written));
+      const [foo] = parts.get("dependencies") as PackageFileSet[];
+      expect(foo.packageId).to.equal("foo@1.0.0");
+      expect(edges(foo)).to.deep.equal(["bar@1.0.0"]);
+      expect(foo).to.be.instanceOf(ResolvedNode);
+      /* Resolving it fetched nothing: the package it patches is fetched when
+       * the patch is applied. */
+      expect(backings.get("@backing")!.fetched).to.deep.equal([]);
+    });
 
     it("is the package it patches, with its files changed and its requirements resolved by the consumer", async () => {
       const model = build(
@@ -1119,7 +2137,7 @@ describe("CatalogRepository (through the model)", () => {
       );
       patchTexts.set("fix", rewrite("foo", "foo, patched"));
       requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const foo = lastDepSets[0] as PackageFileSet;
       expect(foo.packageId).to.equal("foo@1.0.0");
       expect(await text(foo, "foo/data.txt")).to.equal("foo, patched");
@@ -1137,9 +2155,9 @@ describe("CatalogRepository (through the model)", () => {
       );
       patchTexts.set("fix", rewrite("foo", "foo, patched"));
       requirementTable.set("foo@1.0.0", [{ name: "host", versionConstraint: "^1.0.0", provided: "expected" }]);
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const foo = lastDepSets[0] as PackageFileSet;
-      expect([...foo.provided.keys()].map(name => foo.getDependency(name)).map(dep => (dep instanceof PackageFileSet ? dep.packageId : "unbound"))).to.deep.equal([
+      expect([...foo.provided.keys()].map(name => foo.getDependency(name)).map(dep => dep?.package?.packageId ?? "unbound")).to.deep.equal([
         "host@1.3.0",
       ]);
     });
@@ -1154,7 +2172,7 @@ describe("CatalogRepository (through the model)", () => {
       );
       patchTexts.set("fix", rewrite("lib", "lib, patched"));
       requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const lib = lastDepSets[0] as PackageFileSet;
       /* A package of its own, named as its target is. */
       expect(lib.packageName).to.equal("patched_lib");
@@ -1177,7 +2195,7 @@ describe("CatalogRepository (through the model)", () => {
             `test_deps a { deps = ${deps}; }\n`
         );
         patchTexts.set("fix", rewrite("lib", "lib, patched"));
-        await model.getConfig(Constraints.of({}), execution).getTarget("a");
+        await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
         const delivered = new Map((lastDepSets as PackageFileSet[]).map(pkg => [pkg.packageName, pkg]));
         expect(await text(delivered.get("patched_lib")!, "lib/data.txt"), deps).to.equal("lib, patched");
         expect(await text(dependency(delivered.get("other")!, "lib"), "lib/data.txt"), deps).to.equal("lib");
@@ -1193,7 +2211,7 @@ describe("CatalogRepository (through the model)", () => {
       );
       patchTexts.set("fix", rewrite("foo", "foo, patched"));
       requirementTable.set("app@1.0.0", [{ name: "foo", versionConstraint: "^1.0.0" }]);
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const [foo, app] = lastDepSets as PackageFileSet[];
       expect(dependency(app, "foo")).to.equal(foo);
       expect(await text(dependency(app, "foo"), "foo/data.txt")).to.equal("foo, patched");
@@ -1215,7 +2233,7 @@ describe("CatalogRepository (through the model)", () => {
       patchTexts.set("fix", rewrite("foo", "foo, patched"));
       requirementTable.set("app@1.0.0", [{ name: "foo", versionConstraint: "^1.0.0" }]);
       requirementTable.set("foo@1.0.0", [{ name: "bar", versionConstraint: "^1.0.0" }]);
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const app = lastDepSets[0] as PackageFileSet;
       const foo = dependency(app, "foo");
       expect(await text(foo, "foo/data.txt")).to.equal("foo, patched");
@@ -1237,7 +2255,7 @@ describe("CatalogRepository (through the model)", () => {
         patchTexts.set("fix", rewrite("foo", "foo, patched"));
         requirementTable.set("app@1.0.0", [{ name: "foo", versionConstraint: "^1.0.0" }]);
         requirementTable.set("foo@1.0.0", requires);
-        await model.getConfig(Constraints.of({}), execution).getTarget("a");
+        await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
         const [foo, app] = lastDepSets as PackageFileSet[];
         expect(dependency(app, "foo")).to.equal(foo);
         expect(await text(foo, "foo/data.txt")).to.equal("foo, patched");
@@ -1254,7 +2272,7 @@ describe("CatalogRepository (through the model)", () => {
       );
       patchTexts.set("second", rewrite("foo", "once"));
       patchTexts.set("first", rewrite("foo", "twice").replace("-foo", "-once"));
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect(await text(lastDepSets[0], "foo/data.txt")).to.equal("twice");
     });
 
@@ -1266,7 +2284,7 @@ describe("CatalogRepository (through the model)", () => {
           "test_deps a { deps = both; }\n"
       );
       patchTexts.set("fix", rewrite("foo", "foo, patched"));
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const both = lastDepSets[0];
       expect(both instanceof PackageFileSet).to.equal(false);
       expect([...both].map(([name]) => name).sort()).to.deep.equal(["bar/data.txt", "foo/data.txt"]);
@@ -1310,7 +2328,7 @@ describe("CatalogRepository (through the model)", () => {
           "",
         ].join("\n")
       );
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       const both = lastDepSets[0];
       expect([...both].map(([name]) => name).sort()).to.deep.equal(["bin/run.sh", "foo/moved/data.txt"]);
       expect(await text(both, "foo/moved/data.txt")).to.equal("moved\n");
@@ -1331,7 +2349,7 @@ describe("CatalogRepository (through the model)", () => {
       let failure = "";
       await model
         .getConfig(Constraints.of({}), execution)
-        .getTarget("a")
+        .materialize(writtenOnCommandLine("a"))
         .catch(err => {
           failure = messagesOf(err).join("\n");
         });
@@ -1350,7 +2368,7 @@ describe("CatalogRepository (through the model)", () => {
       let failure = "";
       await model
         .getConfig(Constraints.of({}), execution)
-        .getTarget("a")
+        .materialize(writtenOnCommandLine("a"))
         .catch(err => {
           failure = messagesOf(err).join("\n");
         });
@@ -1364,7 +2382,7 @@ describe("CatalogRepository (through the model)", () => {
         "catalog @cat { deps = @backing:tool; }\n" +
         "test_run a { tool = @cat:tool; }\n"
     );
-    await model.getConfig(Constraints.of({}), execution).getTarget("a");
+    await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
     const repo = backings.get("@backing")!;
     expect(lastTool).to.be.instanceOf(RunnableFileSet);
     /* the pinned package was made runnable via its source's format — resolved
@@ -1381,7 +2399,7 @@ describe("CatalogRepository (through the model)", () => {
         "test_deps a { deps = @cat:missing; }\n"
     );
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect.fail("expected @cat:missing to fail");
     } catch (err) {
       const failure = findCause(err, RequirementResolutionError);
@@ -1392,7 +2410,7 @@ describe("CatalogRepository (through the model)", () => {
 
   it("rejects a catalog entry that projects into a package", async () => {
     /* A projected entry would materialize to plain files, not a package —
-     * caught at resolveDeps, before any resolution work. The inner catalog is
+     * refused in resolveCatalog, before any resolution work. The inner catalog is
      * the projection producer here: its getRepositoryRef packs ':data.txt'
      * into the ref as a projection (pinned by its own unit test above). */
     const model = build(
@@ -1402,7 +2420,7 @@ describe("CatalogRepository (through the model)", () => {
         "test_deps a { deps = @outer:foo; }\n"
     );
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect.fail("expected the projected entry to be rejected");
     } catch (err) {
       let message = "";
@@ -1424,7 +2442,7 @@ describe("CatalogRepository (through the model)", () => {
         "test_deps a { deps = @outer:foo; }\n"
     );
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect.fail("expected the chained entry to be rejected");
     } catch (err) {
       const failure = findCause(err, RequirementResolutionError);
@@ -1442,7 +2460,7 @@ describe("CatalogRepository (through the model)", () => {
         "test_deps a { deps = @cat:foo; }\n"
     );
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect.fail("expected the bare repository entry to be rejected");
     } catch (err) {
       let message = "";
@@ -1464,7 +2482,7 @@ describe("CatalogRepository (through the model)", () => {
         "test_deps a { deps = @cat:dup; }\n"
     );
     try {
-      await model.getConfig(Constraints.of({}), execution).getTarget("a");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect.fail("expected a catalog conflict");
     } catch (err) {
       const conflict = findCause(err, ConflictError);
@@ -1478,6 +2496,18 @@ describe("CatalogRepository (through the model)", () => {
     }
   });
 });
+
+/** Get the failure at the bottom of `err`'s cause chain. */
+function rootCauseOf(err: unknown): unknown {
+  let current = err;
+  for (;;) {
+    const cause = (current as { cause?: unknown }).cause;
+    if (!(cause instanceof Error)) {
+      return current;
+    }
+    current = cause;
+  }
+}
 
 /* Walk the cause chain (DependencyFailedError / ReferenceFailedError wrappers). */
 function findCause<T extends Error>(err: unknown, type: new (...args: never[]) => T): T | undefined {

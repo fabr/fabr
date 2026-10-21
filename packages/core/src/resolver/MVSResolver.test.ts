@@ -19,10 +19,11 @@
 
 import { Computable } from "../core/Computable";
 import { resolveMVS } from "./MVSResolver";
-import { edgeBinding, nodeId, ResolutionGraph } from "./ResolutionGraph";
+import { allowingBuilds, buildKey, isBuildVersion } from "./Requirement";
+import { edgeBinding, nodeId, MVSResolution } from "./MVSResolution";
 import { parseVersion, SEMVER, SemverConstraint, SemverVersion, versionToString } from "./Semver";
 import { MetadataFetchError, VersionNotFoundError } from "../core/Errors";
-import { RequirementSource, Requirement, MVSResolution, Selected, VersionDomain } from "./Types";
+import { RequirementSource, Requirement, Selected, VersionDomain } from "./Types";
 import { expect } from "chai";
 
 /**
@@ -1247,38 +1248,99 @@ describe("force overrides", () => {
     expect(versionToString(result.coerced[0].selected)).to.equal("2.0.0");
   });
 
-  describe("a package in hand", () => {
-    /* `lib` is not something the registry is asked to choose a version of: it
-     * is present, at 1.0.0, and the registry answers for it as for any node. */
+  describe("builds", () => {
+    const domain = allowingBuilds(SEMVER);
+    const debug = buildKey("BUILD_TYPE=debug", "aaaaaaaa");
+    const release = buildKey("BUILD_TYPE=release", "bbbbbbbb");
     const data = {
-      A: { "1.0.0": { lib: "^3.0.0" } },
-      lib: { "1.0.0": { C: "^1.0.0" }, "3.0.0": { C: "^9.0.0" } },
-      C: { "1.0.0": {}, "1.2.0": {} },
+      A: { "1.0.0": { lib: "^1.0.0" } },
+      B: { "1.0.0": { lib: "*" } },
+      lib: { "1.0.0": {} },
     };
-    const run = (roots: Record<string, string>): MVSResolution<SemverVersion> => {
-      let result: MVSResolution<SemverVersion> | undefined;
-      resolveMVS(rootRequirements(roots), SEMVER, mockRegistry(data), new Map([["lib", parseVersion("1.0.0")]])).then(resolution => {
+    const builds = new Map<string, Requirement[]>([
+      [debug, []],
+      [release, []],
+    ]);
+    const run = (roots: Requirement[]): MVSResolution<SemverVersion | string> => {
+      const base = mockRegistry(data);
+      const registry: RequirementSource<SemverVersion | string> = {
+        getRequirements: (pkg, version) =>
+          isBuildVersion(version) ? Computable.resolve(builds.get(version)!) : base.getRequirements(pkg, version),
+      };
+      let result: MVSResolution<SemverVersion | string> | undefined;
+      resolveMVS(roots, domain, registry).then(resolution => {
         result = resolution;
       });
       return result!;
     };
+    const ids = (result: MVSResolution<SemverVersion | string>): string[] =>
+      result.selections.map(sel => `${sel.name}@${domain.versionToString(sel.version)}`).sort();
 
-    it("answers every requirement on its name, whatever version is asked, and is never a violation", () => {
-      const result = run({ A: "1.0.0" });
-      expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@1.0.0", "lib@1.0.0"]);
+    it("answers no range on its name: a published version answers it beside the build, as a violation", () => {
+      const result = run(
+        [
+          { name: "A", versionConstraint: "1.0.0" },
+          { name: "lib", versionConstraint: debug },
+        ]
+      );
+      expect(ids(result)).to.deep.equal(["A@1.0.0", "lib@1.0.0", `lib@${debug}`]);
+      expect(result.violations.map(violation => `${violation.versionConstraint} by ${violation.requiredBy}`)).to.deep.equal(["^1.0.0 by A@1.0.0"]);
+    });
+
+    it("answers a floorless requirement on its name, as any selection does", () => {
+      const result = run(
+        [
+          { name: "B", versionConstraint: "1.0.0" },
+          { name: "lib", versionConstraint: debug },
+        ]
+      );
+      expect(ids(result)).to.deep.equal(["B@1.0.0", `lib@${debug}`]);
       expect(result.violations).to.deep.equal([]);
-      expect(result.errors).to.deep.equal([]);
+      expect(result.edgesOf(`lib@${debug}`)).to.deep.equal(new Map());
+      expect([...result.edgesOf("B@1.0.0").values()]).to.deep.equal([`lib@${debug}`]);
     });
 
-    it("requires what it requires, as edges of its own node, resolved with everything else", () => {
-      const result = run({ A: "1.0.0", C: "1.2.0" });
-      expect(selectionStrings(result)).to.deep.equal(["A@1.0.0", "C@1.2.0", "lib@1.0.0"]);
-      expect(result.requirements.get("lib@1.0.0")).to.deep.equal([{ name: "C", versionConstraint: "^1.0.0" }]);
+    it("answers a range on its name where it is forced", () => {
+      const result = run(
+        [
+          { name: "A", versionConstraint: "1.0.0" },
+          { name: "lib", versionConstraint: debug, override: "force" },
+        ]
+      );
+      expect(ids(result)).to.deep.equal(["A@1.0.0", `lib@${debug}`]);
     });
 
-    it("is in the graph only where something requires it", () => {
-      const result = run({ C: "1.0.0" });
-      expect(selectionStrings(result)).to.deep.equal(["C@1.0.0"]);
+    it("is the only answer to a requirement naming it, so two builds of one name violate", () => {
+      const result = run(
+        [
+          { name: "lib", versionConstraint: debug },
+          { name: "lib", versionConstraint: release },
+        ]
+      );
+      expect(ids(result)).to.deep.equal([`lib@${debug}`, `lib@${release}`]);
+      expect(result.violations.map(violation => violation.versionConstraint)).to.deep.equal([debug]);
+    });
+
+    it("is unversioned, so it answers no version required of its name", () => {
+      const result = run(
+        [
+          { name: "lib", versionConstraint: debug },
+          { name: "lib", versionConstraint: "1.0.0" },
+        ]
+      );
+      expect(ids(result)).to.deep.equal(["lib@1.0.0", `lib@${debug}`]);
+      expect(result.violations.map(violation => violation.versionConstraint)).to.deep.equal(["1.0.0"]);
+    });
+
+    it("gives its name to a forced build throughout", () => {
+      const result = run(
+        [
+          { name: "lib", versionConstraint: debug, override: "force" },
+          { name: "lib", versionConstraint: release },
+        ]
+      );
+      expect(ids(result)).to.deep.equal([`lib@${debug}`]);
+      expect(result.coerced.map(edge => edge.versionConstraint)).to.deep.equal([release]);
     });
   });
 
@@ -1566,7 +1628,7 @@ describe("resolved edges", () => {
   for (const [what, roots, data] of cases) {
     it(`walking the edges reaches exactly what reachableFrom marks, for ${what}`, () => {
       const result = resolve(roots, data);
-      const graph = new ResolutionGraph(versionToString, result);
+      const graph = new MVSResolution(versionToString, result);
       result.rootBindings.forEach((at, index) => {
         if (at === undefined) {
           return;
@@ -1586,7 +1648,7 @@ describe("resolved edges", () => {
      * hold R must still mount it where A sees it, so the edge stays BOUND. */
     const result = resolve({ A: "^1.0.0", R: "^1.0.0" }, { A: { "1.0.0": { R: "peer? ^1.0.0" } }, R: { "1.0.0": {} } });
     expect(result.edges.get("A@1.0.0")!.get("R"), "the binding layout reads").to.equal("R@1.0.0");
-    const graph = new ResolutionGraph(versionToString, result);
+    const graph = new MVSResolution(versionToString, result);
     const walked = graph.reachable(["A@1.0.0"]);
     expect([...walked], "A's subset does not deliver the peer").to.deep.equal(["A@1.0.0"]);
     /* And the walk agrees with the resolver's own marking, attach edges included. */

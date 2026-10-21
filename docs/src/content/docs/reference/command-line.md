@@ -20,6 +20,7 @@ can be piped or redirected on its own.
 | [`test`](#test) | Build and run targets' tests. |
 | [`run`](#run) | Build a program and run it. |
 | [`ls`](#ls), [`cat`](#cat), [`cp`](#cp) | List, print or copy the files a target produces. |
+| [`deps`](#deps) | Print the dependency tree of targets or packages. |
 | [`shell`](#shell) | Open a shell in the directory a build step runs in, for debugging. |
 | [`sync`](#sync) | Publish packages. |
 | [`list-targets`](#list-targets), [`list-targetdefs`](#list-targetdefs), [`list-properties`](#list-properties), [`list-all`](#list-all) | Describe the project and what a build file can contain. |
@@ -124,6 +125,75 @@ Writing the reference with `/` or `:` makes no difference to `cp`: `mylib/index.
 `mylib:index.js` both copy to `out/index.js`. A reference with a
 [rename](/reference/syntax/#projection-and-renaming) (`-> template`) is the one case where the
 names come from the reference: the files are copied under the names the rename gives them.
+
+### `deps`
+
+Prints the packages each reference depends on, as a tree: one block per reference, with a section
+for each property that brings in packages. On a terminal, packages built in your project are shown
+in colour.
+
+```sh
+fabr deps mylib
+```
+
+```
+mylib
+deps
+├── mycore
+│   └── undici:^6.19.0 -> 6.19.8
+├── chai-as-promised:7.1.1
+│   ├── check-error:^1.0.2 -> 1.0.2
+│   └── chai:>= 2.1.2 < 5 -> 4.3.6 (p)
+└── semver:7.6.3
+
+(p) - provided requirement, bound by the consumer
+```
+
+Each line is a package under the name it is installed as. `requested -> selected` shows the
+version or range the package above it asks for and the version chosen for the whole tree; a line
+with one version asked for exactly that, or, where its reference states none, shows the version chosen. A package built in your project is shown by name alone:
+it has no version until it is built.
+
+| Mark | Meaning |
+|---|---|
+| `(*)` | This package's dependencies are shown where it first appears. |
+| `(p)` | A provided requirement (an npm peer dependency): the package is supplied by whatever depends on the one requiring it. |
+| `(n)` | Nothing is installed for this requirement, for example an optional peer dependency that no package in the tree supplies. |
+| `(!)` | A version that conflicts with another version of the same package in the tree, so building the target fails until you allow both or pin one. The conflicting versions are listed under the tree. |
+
+The tree is the one the target's own build resolves, so it depends on the configuration. A
+reference is read under the `build` operation; to see what another operation resolves, such as a
+package's `test_deps`, [require it on the reference](/reference/syntax/#constraints):
+
+```sh
+fabr deps 'mylib<BUILD_OPERATION=test>'
+```
+
+A target type that has no `build` operation and only one of its own (a `js_script` runs, a
+`js_test` tests) is read under that one.
+
+A package reference needs no declared target, which answers "what does this package bring with
+it" before you add it:
+
+```sh
+fabr deps @npm:glob:10.0.0
+fabr deps @dep:chai          # a catalog member, at the versions the catalog pins
+```
+
+`deps` builds none of the targets it lists and downloads no packages from a registry: it reads
+what each target declares and resolves versions exactly as a build would, which needs only each
+package's registry metadata. Only the properties that take packages are shown: a target named in
+one is listed by its name, whether it builds a package or plain files, and what a property that
+takes files names (`srcs`, `resources`) is left out. A reference that selects
+files (`mylib:build/*.js`) is an error: name the target.
+
+Two things are still computed, because the dependencies cannot be known without them:
+
+- A `repository_group` route that serves a package from files (`amperize = ./vendor/amperize;`)
+  reads that package's `package.json` for its version and dependencies. When those files are a
+  downloaded archive it is downloaded, and when they are a target's output that target is built.
+  This happens only when something in the tree requires that package.
+- A command substitution (`` `…` ``) in a value that names a dependency is run.
 
 ### `shell`
 

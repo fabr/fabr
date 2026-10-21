@@ -30,12 +30,11 @@
 
 import { Computable } from "../core/Computable";
 import { FabrError, ResolutionWalkError } from "../core/Errors";
-import { nodeId, nodeLabel, ResolutionExplainer, ResolutionGraph } from "./ResolutionGraph";
-import { canonicalRequirements, requiredAs, versionConstraintText } from "./Requirement";
+import { nodeId, nodeLabel, ResolutionExplainer, MVSResolution } from "./MVSResolution";
+import { canonicalRequirements, isBuildVersion, requiredAs, versionConstraintText, versionText } from "./Requirement";
 import {
   IRequirementEdge,
   IResolutionError,
-  MVSResolution,
   PackageIdentity,
   ROOT_REQUIRER,
   Requirement,
@@ -107,13 +106,13 @@ export function groupViolations<V>(
 
 /** The one-line summary of a conflict's further requirers: the first few by
  * name, the rest by count. */
-function alsoRequiredBy(constraint: string, others: readonly string[]): string[] {
+function alsoRequiredBy(name: string, constraint: string, others: readonly string[]): string[] {
   if (others.length === 0) {
     return [];
   }
   const shown = others.slice(0, 4).map(nodeLabel);
   const more = others.length - shown.length;
-  return [`  '${constraint}' also required by: ${shown.join(", ")}${more > 0 ? ` (+${more} more)` : ""}`];
+  return [`  ${versionConstraintText(constraint, name)} also required by: ${shown.join(", ")}${more > 0 ? ` (+${more} more)` : ""}`];
 }
 
 /**
@@ -131,13 +130,13 @@ function explainViolation<V>(
 ): string[] {
   const { find, pathTo } = explainer;
   const selection = find(`${violation.name}@${versionToString(violation.selected)}`);
-  const selected = versionToString(violation.selected);
+  const selected = versionText(versionToString(violation.selected), violation.name);
   const lines = selection?.selectedBy ? [`  ${selected} selected by: ${winnerOf(selection, selection.selectedBy, explainer)}`] : [];
   /* Only where there is a path to add: the requirer is already named on the
    * violation line, so repeating it alone would say nothing. */
   const requirer = violation.requiredBy === ROOT_REQUIRER ? undefined : find(violation.requiredBy);
   if (requirer !== undefined) {
-    lines.push(`  '${violation.versionConstraint}' required via: ${pathTo(requirer).join(" -> ")}`);
+    lines.push(`  ${versionConstraintText(violation.versionConstraint, violation.name)} required via: ${pathTo(requirer).join(" -> ")}`);
   }
   return lines;
 }
@@ -160,7 +159,7 @@ function conflictLines<V>(
   const winner = find(`${violation.name}@${selected}`)?.selectedBy;
   if (winner === undefined) {
     return [
-      `${violation.name}@${selected} does not satisfy '${violation.versionConstraint}' required by ${nodeLabel(violation.requiredBy)}${moreRequirers}`,
+      `${nodeLabel(`${violation.name}@${selected}`)} does not satisfy ${versionConstraintText(violation.versionConstraint, violation.name)} required by ${nodeLabel(violation.requiredBy)}${moreRequirers}`,
       ...explainViolation(violation, explainer, versionToString),
     ];
   }
@@ -171,8 +170,8 @@ function conflictLines<V>(
     const requirer = find(requiredBy);
     return `required via: ${requirer === undefined ? nodeLabel(requiredBy) : pathTo(requirer).join(" -> ")}`;
   };
-  const violated = `'${violation.versionConstraint}'`;
-  const winning = versionConstraintText(winner.versionConstraint);
+  const violated = versionConstraintText(violation.versionConstraint, violation.name);
+  const winning = versionConstraintText(winner.versionConstraint, violation.name);
   return [
     `${violation.name} is required as ${violated} and as ${winning}, and no one version is both`,
     `  ${violated} ${via(violation.requiredBy)}${moreRequirers}`,
@@ -188,14 +187,14 @@ function winnerOf<V>(
   explainer: ResolutionExplainer<V>
 ): string {
   if (winner.requiredBy === ROOT_REQUIRER) {
-    return `the requested ${versionConstraintText(winner.versionConstraint)}`;
+    return `the requested ${versionConstraintText(winner.versionConstraint, selection.name)}`;
   }
   const winnerNode = explainer.find(winner.requiredBy);
   if (!winnerNode) {
     /* The winning requirement was declared by a version itself since superseded */
-    return `${nodeLabel(winner.requiredBy)} requiring ${versionConstraintText(winner.versionConstraint)} (since superseded)`;
+    return `${nodeLabel(winner.requiredBy)} requiring ${versionConstraintText(winner.versionConstraint, selection.name)} (since superseded)`;
   }
-  const chosen = `${explainer.id(selection)} (${winner.versionConstraint ?? "any version"})`;
+  const chosen = `${nodeLabel(explainer.id(selection))} (${winner.versionConstraint === undefined ? "any version" : versionConstraintText(winner.versionConstraint, selection.name)})`;
   return [...explainer.pathTo(winnerNode), chosen].join(" -> ");
 }
 
@@ -213,9 +212,11 @@ function explainDuplicate<V>(
     if (selection === undefined || via === undefined) {
       return [];
     }
+    const shown = versionText(versionToString(version), pkg);
+    const stated = via.versionConstraint === undefined || isBuildVersion(via.versionConstraint) ? "" : ` (${versionConstraintText(via.versionConstraint, pkg)})`;
     return via.requiredBy === ROOT_REQUIRER
-      ? [`  ${versionToString(version)} required directly${via.versionConstraint === undefined ? "" : ` ('${via.versionConstraint}')`}`]
-      : [`  ${versionToString(version)} required via: ${explainer.pathTo(selection).join(" -> ")}`];
+      ? [`  ${shown} required directly${stated}`]
+      : [`  ${shown} required via: ${explainer.pathTo(selection).join(" -> ")}`];
   });
 }
 
@@ -238,7 +239,7 @@ export function conflictError<V>(
   violations: Violation<V>[],
   duplicates: Array<[string, V[]]>,
   needed: readonly Selected<V>[],
-  graph: Pick<ResolutionGraph<V>, "versionToString" | "explainer">,
+  graph: Pick<MVSResolution<V>, "versionToString" | "explainer">,
   refText: RefRenderer,
   written?: ReadonlyMap<string, ReadonlySet<string>>,
   suggestion?: string[]
@@ -254,7 +255,7 @@ export function conflictError<V>(
   const sanctionNoted = new Set<string>();
   for (const { first, others } of groupViolations(violations, versionToString)) {
     const moreRequirers = others.length > 0 ? ` (and ${others.length} more)` : "";
-    lines.push(...conflictLines(first, moreRequirers, explainer, versionToString), ...alsoRequiredBy(first.versionConstraint, others));
+    lines.push(...conflictLines(first, moreRequirers, explainer, versionToString), ...alsoRequiredBy(first.name, first.versionConstraint, others));
     /* A partial sanction is a set mismatch, called out where the conflict is
      * reported: the versions this delivery needs vs the versions written. */
     const declared = written?.get(first.name);
@@ -264,7 +265,7 @@ export function conflictError<V>(
       const missing = shipped.filter(version => !declared.has(version));
       if (missing.length > 0) {
         lines.push(
-          `  required ${first.name} versions: ${shipped.join(", ")} — allowed: ${[...declared].join(", ")}; ` +
+          `  required ${first.name} versions: ${shipped.map(version => versionText(version, first.name)).join(", ")} — allowed: ${[...declared].map(version => versionText(version, first.name)).join(", ")}; ` +
             `add ${missing.map(version => refText(identityOf(needed, first.name), version, "?")).join(", ")}`
         );
       }
@@ -275,7 +276,10 @@ export function conflictError<V>(
    * violation entry report here — a safety net for a multiplicity nothing
    * above explained, not the normal path. */
   for (const [pkg, versions] of duplicates.filter(([pkg]) => !violatedPkgs.has(pkg))) {
-    lines.push(`${pkg} is required at ${versions.map(versionToString).join(" and ")}`, ...explainDuplicate(pkg, versions, explainer, versionToString));
+    lines.push(
+      `${pkg} is required at ${versions.map(version => versionText(versionToString(version), pkg)).join(" and ")}`,
+      ...explainDuplicate(pkg, versions, explainer, versionToString)
+    );
   }
   /* The help IS the remedy: the suggester's pasteable override set when it
    * produced one, else the generic statement of the two fixes. */
@@ -296,16 +300,16 @@ export function conflictError<V>(
 export function unrepairableError<V>(
   root: string,
   violations: Violation<V>[],
-  graph: ResolutionGraph<V>,
+  graph: MVSResolution<V>,
   refText: RefRenderer
 ): Error {
   const { versionToString } = graph;
   const explainer = graph.explainer();
   const groups = groupViolations(violations, versionToString);
   const lines = groups.flatMap(({ first, others }) => [
-    `no published version of ${first.name} satisfies '${first.versionConstraint}' required by ${nodeLabel(first.requiredBy)}`,
+    `no published version of ${first.name} satisfies ${versionConstraintText(first.versionConstraint, first.name)} required by ${nodeLabel(first.requiredBy)}`,
     ...explainViolation(first, explainer, versionToString),
-    ...alsoRequiredBy(first.versionConstraint, others),
+    ...alsoRequiredBy(first.name, first.versionConstraint, others),
   ]);
   const forceLines = [...new Map(groups.map(({ first }) => [first.name, first])).values()].map(violation =>
     refText(identityOf(graph.selections, violation.name), versionToString(violation.selected), "!")
@@ -583,7 +587,7 @@ export function completeRepairSet<V, C>(
             `completing the resolution with those versions also hits ${conflicts.size} version conflict(s), sanctioned by the list below:`,
             ...groupViolations(completed.violations, domain.versionToString).map(({ first, others }) => {
               const more = others.length > 0 ? ` (and ${others.length} more)` : "";
-              return `  ${first.name}@${domain.versionToString(first.selected)} does not satisfy '${first.versionConstraint}' required by ${nodeLabel(first.requiredBy)}${more}`;
+              return `  ${nodeLabel(`${first.name}@${domain.versionToString(first.selected)}`)} does not satisfy ${versionConstraintText(first.versionConstraint, first.name)} required by ${nodeLabel(first.requiredBy)}${more}`;
             }),
           ]
         : [];

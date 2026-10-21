@@ -19,9 +19,9 @@
 
 /**
  * The js_compile rule: the one TS-compile path, a self-contained target
- * `{ srcs = FILES; deps = FILES }`. `deps` are the dependencies the sources are
- * compiled against (package deps + any @types, already resolved by the caller
- * so materialization here is a no-op). It resolves its *own* toolchain as a
+ * `{ srcs = FILES; deps = PACKAGES }`. `deps` are the dependencies the sources are
+ * compiled against (package deps + any @types), handed over as content by the
+ * rule that creates the sub-target. It resolves its *own* toolchain as a
  * **runnable** (`BUILD_OPERATION=run`), so it needn't know how to launch it:
  * fabr's TypeScript **driver** (TSC_DRIVER, internal), which carries the pinned
  * compiler as one of its own dependencies — the compiler's own CLI cannot be
@@ -36,7 +36,19 @@
  * closure — there is no tree to build.
  */
 
-import { Computable, FabrError, FileSet, MemoryFile, Name, PackageFileSet, RuleDefinition, RuleResult, TargetContext } from "@fabr-build/core";
+import {
+  Computable,
+  defineRule,
+  FabrError,
+  FileSet,
+  Flag,
+  MemoryFile,
+  Name,
+  PackageFileSet,
+  RuleDefinition,
+  RuleResult,
+  TargetContext,
+} from "@fabr-build/core";
 import {
   esLevelOrder,
   JSTarget,
@@ -298,20 +310,28 @@ export function importRewrites(rewrites: Name[]): Array<{ pattern: string; repla
   return rules.length === 0 ? undefined : rules;
 }
 
-function compileTypescript(context: TargetContext): Computable<RuleResult> {
+/** A compile's requirements, materialized. */
+interface CompileInputs {
+  srcs: FileSet[];
+  deps: FileSet[];
+  resources: FileSet[];
+}
+
+function compileTypescript(context: TargetContext, { srcs: srcSets, deps, resources }: CompileInputs): Computable<RuleResult> {
   return Computable.forAll(
     [
-      context.getFileSetProperties(["srcs", "deps", "resources"]),
       context.getGlobalString("JS_TARGET"),
       context.getGlobalRunnable("TSC_DRIVER"),
       context.getGlobalString("BUILD_TYPE"),
-      context.getFlags("deps"),
       context.getProperty("package_name"),
       context.getProperty("module_extension"),
       context.getRewriteRules("rewrite_imports"),
     ],
-    ({ srcs: srcSets, deps, resources }, target, driver, buildType, depFlags, packageNameProp, moduleExtensionProp, rewriteRules) => {
+    (target, driver, buildType, packageNameProp, moduleExtensionProp, rewriteRules) => {
       assertOnePackagePerName(deps);
+      /* Source-mode flags (strictness relaxations, the ES level) ride among
+       * `deps` like any other dep; a flag materializes to nothing. */
+      const depFlags = deps.filter((dep): dep is Flag => dep instanceof Flag);
       const jsTarget = parseJSTarget(target);
       if (jsTarget.module === "dual") {
         /* Not a user error: every caller pins a format (js_package builds one
@@ -323,11 +343,9 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
       const packageName = packageNameProp?.toString();
       const moduleExtension = moduleExtensionProp?.toString();
       const srcs = FileSet.unionAll(...srcSets);
-      /* Source-mode flags (strictness relaxations) ride among `deps` like any
-       * other dep — read here with getFlags and recognized into a compilerOptions
-       * overlay (the flag→option table lives with the tsconfig it feeds). Empty
-       * (the default) leaves the strict tsconfig unchanged. The materialized
-       * `deps` above carries the packages; a flag materializes to nothing. */
+      /* The flags recognized into a compilerOptions overlay (the flag→option
+       * table lives with the tsconfig it feeds). Empty (the default) leaves the
+       * strict tsconfig unchanged. */
       const modeOverlay = resolveSourceMode(depFlags);
       /* The ES level these sources are written against (an `es<level>` flag
        * among deps), which drives `lib` and the class-field semantics. */
@@ -439,4 +457,13 @@ function compileTypescript(context: TargetContext): Computable<RuleResult> {
   );
 }
 
-export const jsCompileRule: RuleDefinition = { type: "js_compile", properties: {}, evaluate: compileTypescript };
+export const jsCompileRule: RuleDefinition = defineRule({
+  type: "js_compile",
+  properties: {},
+  requirements: context => ({
+    srcs: context.getFileProperty("srcs"),
+    deps: context.getPackageProperty("deps"),
+    resources: context.getFileProperty("resources"),
+  }),
+  evaluateMaterialized: (context, inputs) => compileTypescript(context, inputs),
+});

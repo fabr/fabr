@@ -99,6 +99,8 @@ function propertyTypeName(type: PropertyType): string {
       return "REWRITE";
     case PropertyType.Map:
       return "MAP";
+    case PropertyType.Packages:
+      return "PACKAGES";
     default:
       return "FILES";
   }
@@ -167,6 +169,29 @@ function summarize(contents: IBuildFileContents): Record<string, unknown> {
 function summary(overrides: Record<string, unknown>): Record<string, unknown> {
   return { includes: [], plugins: [], properties: {}, defaults: {}, targets: {}, targetdefs: {}, ...overrides };
 }
+
+describe("override markers on a name", () => {
+  const marker = (written: string): string | undefined => parseName(written).getMarker();
+
+  it("records a `?` or `!` written unquoted at the end", () => {
+    expect([marker("foo?"), marker("foo!"), marker("@npm:x:1.0.0!"), marker("foo")]).to.deep.equal(["alternate", "force", "force", undefined]);
+  });
+
+  it("does not record one that is quoted, escaped, or inside the name", () => {
+    expect([marker('"foo!"'), marker("'foo?'"), marker("foo\\!"), marker("foo!:bar"), marker("a?b")]).to.deep.equal([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("keeps the name's text as written", () => {
+    expect(parseName("foo!").toString()).to.equal("foo!");
+    expect(parseName("foo!").withoutMarker().toString()).to.equal("foo");
+  });
+});
 
 describe("Parser Tests", () => {
   it("Include Decl", () => {
@@ -429,13 +454,19 @@ describe("Parser Tests", () => {
   });
 
   it("Targetdef", () => {
-    expect(summarize(parseValid("targetdef js_package {\n  deps = FILES;\n  srcs=FILES REQUIRED;version=STRING}"))).to.deep.equal(
+    expect(summarize(parseValid("targetdef js_package {\n  deps = PACKAGES;\n  srcs=FILES REQUIRED;version=STRING}"))).to.deep.equal(
       summary({
         targetdefs: {
-          js_package: { deps: "FILES", srcs: "REQUIRED FILES", version: "STRING" },
+          js_package: { deps: "PACKAGES", srcs: "REQUIRED FILES", version: "STRING" },
         },
       })
     );
+  });
+
+  it("Targetdef PACKAGES parses to PropertyType.Packages", () => {
+    const def = parseValid("targetdef js_package {\n  deps = PACKAGES;\n  srcs = FILES;\n}").targetdefs[0];
+    expect(def.properties.get("deps")?.type).to.equal(PropertyType.Packages);
+    expect(def.properties.get("srcs")?.type).to.equal(PropertyType.FileSet);
   });
 
   it("Targetdef with a wildcard member (* = FILES)", () => {
@@ -545,7 +576,7 @@ describe("Parser Tests", () => {
     });
 
     it("attaches comments to individual properties", () => {
-      const def = parseValid("targetdef js_test {\n  # The test files.\n  tests = FILES;\n  deps = FILES;\n}").targetdefs[0];
+      const def = parseValid("targetdef js_test {\n  # The test files.\n  tests = FILES;\n  deps = PACKAGES;\n}").targetdefs[0];
       expect(def.properties.get("tests")?.docComment).to.equal("The test files.");
       expect(def.properties.get("deps")?.docComment).to.be.undefined;
     });

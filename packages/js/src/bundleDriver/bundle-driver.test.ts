@@ -29,7 +29,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-import { FileSet, IFile, MemoryFile, PackageFileSet } from "@fabr-build/core";
+import { FileSet, IFile, MemoryFile, PackageFileSet, dependenciesOn } from "@fabr-build/core";
 import { PNP_DATA_FILE } from "../pnp/PnPResolver";
 import { pnpManifestOf, treeMountOf } from "../PnPManifest";
 import { isBareSpecifier, main, packageOf, rewriteStyledImport, treeOf, unresolvedHelp } from "./bundle-driver";
@@ -281,12 +281,12 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
     const dep = (version: string): PackageFileSet =>
       new PackageFileSet(content("dep", version, `module.exports = { v: "dep${version}" };\n`), "dep", version, []);
     const shared = content("shared", "1.0.0", 'module.exports = require("dep");\n');
-    const left = new PackageFileSet(content("left", "1.0.0", 'module.exports = require("shared");\n'), "left", "1.0.0", [
-      new PackageFileSet(shared, "shared", "1.0.0", [dep("1.0.0")]),
-    ]);
-    const right = new PackageFileSet(content("right", "1.0.0", 'module.exports = require("shared");\n'), "right", "1.0.0", [
-      new PackageFileSet(shared, "shared", "1.0.0", [dep("2.0.0")]),
-    ]);
+    const left = new PackageFileSet(content("left", "1.0.0", 'module.exports = require("shared");\n'), "left", "1.0.0", dependenciesOn(
+      new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("1.0.0")))
+    ));
+    const right = new PackageFileSet(content("right", "1.0.0", 'module.exports = require("shared");\n'), "right", "1.0.0", dependenciesOn(
+      new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("2.0.0")))
+    ));
     const manifest = pnpManifestOf([left, right]);
     const store = path.join(work, "store");
     for (const pkg of manifest.packages) {

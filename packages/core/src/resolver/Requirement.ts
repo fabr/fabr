@@ -21,26 +21,13 @@
  * Reading a {@link Requirement}, ecosystem-generic: the name its package is
  * required as, its identity (the key a root set and a resolution memo are
  * built from), the constraint its stated version makes, and the spelling of
- * the override marker written on that version.
+ * the override marker written on that version. Also the versions of packages
+ * built in the project ({@link BUILDS_ALONE}) and the domain a resolution
+ * holding them runs over ({@link allowingBuilds}).
  */
 
+import { compareText } from "../support/Functional";
 import { Requirement, VersionDomain, Violation } from "./Types";
-
-/**
- * Split a written version slot's trailing override marker: `1.4.2?` (permitted
- * alternate) / `2.0.0!` (forced version). Pure text — the caller validates the
- * remainder against its domain (markers demand an exact version) and reports
- * in its own reference grammar.
- */
-export function splitOverrideMarker(written: string): { text: string; override?: "alternate" | "force" } {
-  if (written.endsWith("?")) {
-    return { text: written.slice(0, -1), override: "alternate" };
-  }
-  if (written.endsWith("!")) {
-    return { text: written.slice(0, -1), override: "force" };
-  }
-  return { text: written };
-}
 
 /** The marker an override is written with (`?` / `!`), or none. */
 export function markerOf(override: Requirement["override"]): "" | "?" | "!" {
@@ -91,9 +78,29 @@ export function constraintOf<V, C>(domain: VersionDomain<V, C>, versionConstrain
   return versionConstraint === undefined ? domain.unconstrained : domain.parseConstraint(versionConstraint);
 }
 
-/** A requirement's version constraint as a message quotes it. */
-export function versionConstraintText(versionConstraint: string | undefined): string {
-  return versionConstraint === undefined ? "any version" : `'${versionConstraint}'`;
+/** Format a version of `name`, as its domain writes it, for a message: a
+ * build as the reference to it. */
+export function versionText(version: string, name: string): string {
+  return isBuildVersion(version) ? buildReference(name, version) : version;
+}
+
+/** Write the reference to the build `version` names, as a message suggests
+ * writing it: the target's name, with the configuration that tells it apart. */
+export function buildReference(name: string, version: string, marker?: "?" | "!"): string {
+  const configuration = version.slice(BUILD_PREFIX.length, version.lastIndexOf(" #")).trim();
+  return `${name}${configuration === "" ? "" : `<${configuration}>`}${marker ?? ""}`;
+}
+
+/** Format a requirement's version constraint for a message: a build as the
+ * reference to it where the package's `name` is given. */
+export function versionConstraintText(versionConstraint: string | undefined, name?: string): string {
+  if (versionConstraint === undefined) {
+    return "any version";
+  }
+  if (isBuildVersion(versionConstraint)) {
+    return name === undefined ? "a build" : `'${buildReference(name, versionConstraint)}'`;
+  }
+  return `'${versionConstraint}'`;
 }
 
 /**
@@ -111,32 +118,89 @@ export function violationKey<V>(violation: Violation<V>): string {
   return `${violation.name}\n${violation.versionConstraint}`;
 }
 
-/** How a package with no version is written where a version would be. */
-export const UNVERSIONED = "*";
-
 /**
- * `domain`, over versions that may be absent: a package with no version — one
- * built in the project and not yet given one — answers whatever is asked of
- * it, since nothing else answers to its name, and orders below any version.
+ * Make the key of a package built in the project: its version in
+ * {@link BUILDS_ALONE}, and the constraint naming it exactly. It is written
+ * with the configuration that tells it from the other builds of its name and
+ * a digest of what it is (`<build BUILD_TYPE=release #1a2b3c4d>`).
  */
-export function allowingUnversioned<V, C>(domain: VersionDomain<V, C>): VersionDomain<V | undefined, C> {
-  /* One per domain: a domain's identity is how deliveries are told to belong
-   * together. */
-  const held = UNVERSIONED_DOMAINS.get(domain) as VersionDomain<V | undefined, C> | undefined;
-  if (held !== undefined) {
-    return held;
-  }
-  const isStable = domain.isStable?.bind(domain);
-  const lifted: VersionDomain<V | undefined, C> = {
-    ...domain,
-    compare: (a, b) => (a === undefined ? (b === undefined ? 0 : -1) : b === undefined ? 1 : domain.compare(a, b)),
-    satisfies: (version, constraint) => version === undefined || domain.satisfies(version, constraint),
-    versionToString: version => (version === undefined ? UNVERSIONED : domain.versionToString(version)),
-    parseVersion: text => (text === UNVERSIONED ? undefined : domain.parseVersion(text)),
-    ...(isStable === undefined ? {} : { isStable: (version: V | undefined) => version === undefined || isStable(version) }),
-  };
-  UNVERSIONED_DOMAINS.set(domain, lifted);
-  return lifted;
+export function buildKey(configuration: string, digest: string): string {
+  return `${BUILD_PREFIX}${configuration === "" ? "" : ` ${configuration}`} #${digest}>`;
 }
 
-const UNVERSIONED_DOMAINS = new WeakMap<object, object>();
+/** Check whether `value`, a version, a constraint or the text of either, is
+ * a build's version: its key, which is also the constraint naming it. */
+export function isBuildVersion(value: unknown): value is string {
+  return typeof value === "string" && value.startsWith(BUILD_PREFIX);
+}
+
+const BUILD_PREFIX = "<build";
+
+/**
+ * The versions of packages built in the project: each build is its key
+ * ({@link buildKey}), which is also the only constraint it satisfies. Nothing
+ * is published in it, so a constraint that is no build's key is floorless and
+ * answered by none. Builds order by their keys.
+ */
+export const BUILDS_ALONE: VersionDomain<string, string> = {
+  parseConstraint: text => {
+    if (!isBuildVersion(text)) {
+      throw new Error(`'${text}' asks for a published version, and none is in reach here`);
+    }
+    return text;
+  },
+  /* No build's key: floorless and answered by none, as every constraint that
+   * is no key is. Reached only by a requirement stating no version, which no
+   * requirement among builds alone makes (each names a build). */
+  unconstrained: "",
+  compare: compareText,
+  minimumOf: constraint => {
+    if (!isBuildVersion(constraint)) {
+      throw new Error("internal: nothing is published among builds alone");
+    }
+    return constraint;
+  },
+  isFloorless: constraint => !isBuildVersion(constraint),
+  satisfies: (version, constraint) => version === constraint,
+  versionToString: version => version,
+  parseVersion: text => {
+    if (!isBuildVersion(text)) {
+      throw new Error(`'${text}' names a published version, and none is in reach here`);
+    }
+    return text;
+  },
+  exactVersion: text => (isBuildVersion(text) ? text : undefined),
+};
+
+/**
+ * Make the domain of `domain`'s versions and {@link BUILDS_ALONE}'s together,
+ * for a resolution with packages built in the project among its candidates.
+ * Each answers only its own constraints, so a build answers no version range
+ * (a build the collection requests itself answers the other requirements on
+ * its name by being forced), and a build ranks above every version of
+ * `domain`. A version of `domain` must not be a string.
+ */
+export function allowingBuilds<V, C>(domain: VersionDomain<V, C>): VersionDomain<V | string, C | string> {
+  const isStable = domain.isStable?.bind(domain);
+  const exactVersion = domain.exactVersion?.bind(domain);
+  return {
+    ...domain,
+    parseConstraint: text => (isBuildVersion(text) ? BUILDS_ALONE.parseConstraint(text) : domain.parseConstraint(text)),
+    minimumOf: constraint => (isBuildVersion(constraint) ? BUILDS_ALONE.minimumOf(constraint) : domain.minimumOf(constraint as C)),
+    isFloorless: constraint => !isBuildVersion(constraint) && domain.isFloorless(constraint as C),
+    compare: (a, b) =>
+      isBuildVersion(a) ? (isBuildVersion(b) ? BUILDS_ALONE.compare(a, b) : 1) : isBuildVersion(b) ? -1 : domain.compare(a as V, b as V),
+    /* A build answers the constraint naming it, and a floorless one (`*`),
+     * which any selection answers; a range is a demand on the registry. */
+    satisfies: (version, constraint) =>
+      isBuildVersion(constraint)
+        ? isBuildVersion(version) && BUILDS_ALONE.satisfies(version, constraint)
+        : isBuildVersion(version)
+        ? domain.isFloorless(constraint as C)
+        : domain.satisfies(version as V, constraint as C),
+    versionToString: version => (isBuildVersion(version) ? version : domain.versionToString(version as V)),
+    parseVersion: text => (isBuildVersion(text) ? text : domain.parseVersion(text)),
+    exactVersion: text => (isBuildVersion(text) ? text : exactVersion?.(text)),
+    ...(isStable === undefined ? {} : { isStable: (version: V | string) => isBuildVersion(version) || isStable(version as V) }),
+  };
+}

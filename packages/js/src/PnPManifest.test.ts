@@ -27,7 +27,8 @@ import {
   PACKAGE_RESOLUTION_PROVENANCE,
   PackageFileSet,
   PackageGraphBuilder,
-  } from "@fabr-build/core";
+  dependenciesOn,
+} from "@fabr-build/core";
 import { packageNodeSignature } from "@fabr-build/core";
 import * as path from "path";
 import { assertOnePackagePerName, IPnpPackageInfo, pnpManifestOf, PnpDependencyTarget, TREE_MOUNT, treeMountOf } from "./PnPManifest";
@@ -47,7 +48,7 @@ function built(name: string, version = "1.0.0", deps: PackageFileSet[] = [], bod
     new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}@${version}${body}`)]]),
     name,
     version,
-    deps
+    dependenciesOn(...deps)
   );
 }
 
@@ -106,8 +107,8 @@ describe("pnpManifestOf", () => {
      * requirers), bound to different versions of a requirement. One row would
      * hand half its requirers a dependency table that is not theirs. */
     const content = new Map<string, IFile>([["index.js", MemoryFile.from("// plugin")]]);
-    const left = new PackageFileSet(content, "plugin", "1.0.0", [pkg("core", "1.0.0")]);
-    const right = new PackageFileSet(content, "plugin", "1.0.0", [pkg("core", "2.0.0")]);
+    const left = new PackageFileSet(content, "plugin", "1.0.0", dependenciesOn(pkg("core", "1.0.0")));
+    const right = new PackageFileSet(content, "plugin", "1.0.0", dependenciesOn(pkg("core", "2.0.0")));
     const manifest = pnpManifestOf([pkg("left", "1.0.0", [left]), pkg("right", "1.0.0", [right])]);
     const rows = [...rowsOf(manifest, "plugin")];
     expect(rows).to.have.lengthOf(2);
@@ -121,8 +122,8 @@ describe("pnpManifestOf", () => {
      * gets a PnP virtual location resolving to the one tree, and neither owns
      * the tree itself. */
     const content = new Map<string, IFile>([["index.js", MemoryFile.from("// shared")]]);
-    const left = new PackageFileSet(content, "shared", "1.0.0", [pkg("dep", "1.0.0")]);
-    const right = new PackageFileSet(content, "shared", "1.0.0", [pkg("dep", "2.0.0")]);
+    const left = new PackageFileSet(content, "shared", "1.0.0", dependenciesOn(pkg("dep", "1.0.0")));
+    const right = new PackageFileSet(content, "shared", "1.0.0", dependenciesOn(pkg("dep", "2.0.0")));
     const manifest = pnpManifestOf([pkg("left", "1.0.0", [left]), pkg("right", "1.0.0", [right])]);
     const rows = [...rowsOf(manifest, "shared").values()];
     expect(rows).to.have.lengthOf(2);
@@ -142,8 +143,8 @@ describe("pnpManifestOf", () => {
      * its own mid. */
     const shared = new Map<string, IFile>([["index.js", MemoryFile.from("// shared")]]);
     const mid = new Map<string, IFile>([["index.js", MemoryFile.from("// mid")]]);
-    const left = new PackageFileSet(shared, "shared", "1.0.0", [new PackageFileSet(mid, "mid", "1.0.0", [pkg("leaf", "1.0.0")])]);
-    const right = new PackageFileSet(shared, "shared", "1.0.0", [new PackageFileSet(mid, "mid", "1.0.0", [pkg("leaf", "2.0.0")])]);
+    const left = new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(new PackageFileSet(mid, "mid", "1.0.0", dependenciesOn(pkg("leaf", "1.0.0")))));
+    const right = new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(new PackageFileSet(mid, "mid", "1.0.0", dependenciesOn(pkg("leaf", "2.0.0")))));
     const manifest = pnpManifestOf([pkg("left", "1.0.0", [left]), pkg("right", "1.0.0", [right])]);
     const rows = [...rowsOf(manifest, "shared").values()];
     expect(rows).to.have.lengthOf(2);
@@ -172,8 +173,8 @@ describe("pnpManifestOf", () => {
     const builder = new PackageGraphBuilder();
     const a = builder.node(new Map<string, IFile>([["index.js", MemoryFile.from("// a")]]), "a", "1.0.0");
     const b = builder.node(new Map<string, IFile>([["index.js", MemoryFile.from("// b")]]), "b", "1.0.0");
-    builder.wire(a, [b]);
-    builder.wire(b, [a]);
+    builder.wire(a, dependenciesOn(b));
+    builder.wire(b, dependenciesOn(a));
     builder.seal();
 
     const manifest = pnpManifestOf([a]);
@@ -346,8 +347,8 @@ describe("treeMountOf", () => {
      * carries none of those, so two deliveries of the same bytes are one
      * directory however differently they are composed. */
     const content = new Map<string, IFile>([["index.js", MemoryFile.from("// shared")]]);
-    const left = new PackageFileSet(content, "shared", "1.0.0", [pkg("dep", "1.0.0")]);
-    const right = new PackageFileSet(content, "shared", "2.0.0", [pkg("dep", "2.0.0")]);
+    const left = new PackageFileSet(content, "shared", "1.0.0", dependenciesOn(pkg("dep", "1.0.0")));
+    const right = new PackageFileSet(content, "shared", "2.0.0", dependenciesOn(pkg("dep", "2.0.0")));
     expect(treeMountOf(left)).to.equal(treeMountOf(right));
   });
 

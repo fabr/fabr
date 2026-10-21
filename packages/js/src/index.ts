@@ -19,7 +19,8 @@
 
 /**
  * @fabr-build/js: the Javascript/NPM ecosystem support for fabr, loaded as a fabr
- * plugin (`plugin @fabr-build/js;` — see PLUGINS.md for the plugin contract):
+ * plugin (`plugin @fabr-build/js;` — see docs/src/content/docs/developer/plugins.md
+ * for the plugin contract):
  * activation contributes the js rules, the npm repository type, and this
  * package's lib/ (JS.fabr), which the plugin declaration auto-includes.
  *
@@ -44,7 +45,7 @@ import { jsScriptRule } from "./rules/RunJSScript";
 import { npmRepositoryRegistration } from "./NPMRepository";
 
 /* The compile pipeline helpers, for other js rules to build on (in-tree only:
- * cross-plugin extension isn't supported yet — see PLUGINS.md) */
+ * cross-plugin extension isn't supported yet — see docs/src/content/docs/developer/plugins.md) */
 export { assembleNodeModules } from "./NodeModules";
 export {
   classifySources,
@@ -61,7 +62,8 @@ export {
  * sass_compile, css_postcss), the npm
  * repository type, and this package's `.fabr` library (JS.fabr), which a
  * `plugin @fabr-build/js;` declaration auto-includes. Pure: no global registration
- * (see PLUGINS.md); the host merges this into the build model's rule tables.
+ * (see docs/src/content/docs/developer/plugins.md); the host merges this into the
+ * build model's rule tables.
  */
 export function activate(): PluginContribution {
   return {

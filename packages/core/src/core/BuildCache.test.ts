@@ -39,6 +39,7 @@ import { MemoryFile } from "./MemoryFS";
 import { CacheLink, SymlinkFile } from "./SymlinkFile";
 import { Log } from "../support/Log";
 import { expect } from "chai";
+import { dependenciesOn } from "./Repository";
 
 const NULL_LOG: Log = { log: () => undefined };
 /** A unit test is its own observer: track transfers with the silent report. */
@@ -662,7 +663,7 @@ describe("BuildCache discovered dependencies", () => {
       new Map(Object.entries(headers).map(([file, content]) => [file, MemoryFile.from(content)])),
       name,
       version,
-      deps
+      dependenciesOn(...deps)
     );
   }
 
@@ -910,7 +911,7 @@ describe("BuildCache discovered dependencies", () => {
     const lodash = (version: string, body: string): PackageFileSet =>
       new PackageFileSet(new Map([["index.d.ts", MemoryFile.from(body)]]), "lodash", version, []);
     const express = (deps: PackageFileSet[]): PackageFileSet =>
-      new PackageFileSet(new Map([["index.d.ts", MemoryFile.from("express")]]), "express", "1.0.0", deps);
+      new PackageFileSet(new Map([["index.d.ts", MemoryFile.from("express")]]), "express", "1.0.0", dependenciesOn(...deps));
     /* Build 1: lodash@4 bound directly, express carrying nothing. Build 2: the
      * direct binding is lodash@5, and the very same lodash@4 is still reachable
      * under express. */
@@ -1289,8 +1290,8 @@ describe("BuildCache discovered dependencies", () => {
       const builder = new PackageGraphBuilder();
       const one = builder.node(new Map([["a.h", MemoryFile.from(bytes)]]), "ouro", "1.0.0");
       const two = builder.node(new Map([["a.h", MemoryFile.from(`${bytes}-2`)]]), "ouro", "2.0.0");
-      builder.wire(one, [two]);
-      builder.wire(two, [one]);
+      builder.wire(one, dependenciesOn(two));
+      builder.wire(two, dependenciesOn(one));
       builder.seal();
       return { deps: [one] };
     };

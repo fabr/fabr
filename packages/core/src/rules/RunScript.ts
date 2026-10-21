@@ -24,54 +24,42 @@
  * `deps` stage any further support files (their filesets union flat — no
  * package mounting, this is just files); `args` are fixed leading arguments.
  * It yields a `RunnableFileSet` — the staged files plus how to launch them —
- * for `fabr run`, the generic `run` target, or a golden test to invoke. It
- * does not itself execute (executing a runnable and collecting output is the
- * generic `run` target's job).
+ * for `fabr run` or a `generate` command to invoke. It does not itself
+ * execute: running a runnable and collecting its output is `generate`'s job.
  */
 
-import { TargetContext } from "../model/BuildContext";
 import { BUILD_OPERATION, BUILD_OVERRIDE } from "../model/Constraints";
-import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
-import { RuleDefinition, RuleResult } from "./Types";
+import { defineRule, RuleDefinition, RuleResult } from "./Types";
 import { FabrError } from "../core/Errors";
 
-function defineScriptRunnable(context: TargetContext): Computable<RuleResult> {
-  /* deps/entry are ordinary build content — resolve them under build, not the
-   * run operation this rule is selected by (constraints otherwise propagate). */
-  return Computable.forAll(
-    [
-      context.getFileProperty("deps", BUILD_OVERRIDE),
-      context.getFileProperty("entry", BUILD_OVERRIDE),
-      context.getProperty("args"),
-    ],
-    (depSources, entrySources, args) =>
-      /* THE collection point: deps and entry materialize jointly, so any
-       * carried external requirements resolve with the target's own pins. The
-       * install is a sealed program, so resolution repairs are accepted (a
-       * multi-version npm closure in a flat-unioned script install still
-       * conflicts loudly at the union). */
-      context.collect({ deps: depSources, entry: entrySources }, { resolutionMode: "permissive" }).then(({ deps, entry }) => {
-        /* The entry is the script file itself — exactly one. (A shell script
-         * has no notion of a package bin; a packaged tool is js_script's job.) */
-        const entrySet = FileSet.unionAll(...entry);
-        const names = [...entrySet].map(([name]) => name);
-        if (names.length !== 1) {
-          throw new FabrError(
-            names.length === 0
-              ? "script 'entry' resolved to no file — name the script file itself"
-              : `script 'entry' resolved to ${names.length} files (${names.slice(0, 5).join(", ")}) — name exactly one`
-          );
-        }
-        const install = FileSet.unionAll(...deps, entrySet);
-        return RunnableFileSet.forEntry(install, names[0], args ? args.getValues() : [], "sh");
-      })
-  );
-}
-
-export const scriptRunRule: RuleDefinition = {
+/* deps/entry are ordinary build content, read under build rather than the run
+ * operation this rule is selected by (constraints otherwise propagate). Both
+ * are read for their files: each requirement delivers its own — a repository
+ * reference the package's files alone, a target what it built — and nothing
+ * is resolved together. */
+export const scriptRunRule: RuleDefinition = defineRule({
   type: "script",
   properties: { [BUILD_OPERATION]: "run" },
-  evaluate: defineScriptRunnable,
-};
+  requirements: context => ({
+    deps: context.getFileProperty("deps", BUILD_OVERRIDE),
+    entry: context.getFileProperty("entry", BUILD_OVERRIDE),
+  }),
+  evaluateMaterialized: (context, { deps, entry }) =>
+    context.getProperty("args").then((args): RuleResult => {
+      /* The entry is the script file itself — exactly one. (A shell script
+       * has no notion of a package bin; a packaged tool is js_script's job.) */
+      const entrySet = FileSet.unionAll(...entry);
+      const names = [...entrySet].map(([name]) => name);
+      if (names.length !== 1) {
+        throw new FabrError(
+          names.length === 0
+            ? "script 'entry' resolved to no file — name the script file itself"
+            : `script 'entry' resolved to ${names.length} files (${names.slice(0, 5).join(", ")}) — name exactly one`
+        );
+      }
+      const install = FileSet.unionAll(...deps, entrySet);
+      return RunnableFileSet.forEntry(install, names[0], args ? args.getValues() : [], "sh");
+    }),
+});

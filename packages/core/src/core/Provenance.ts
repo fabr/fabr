@@ -18,6 +18,7 @@
  */
 
 import { IDiagnosticNote } from "../support/Log";
+import type { Label } from "./Errors";
 
 /**
  * A single step in a provenance chain: a small, inert, kind-tagged description
@@ -123,6 +124,43 @@ export function chainSteps(steps: ReadonlyArray<IProvenanceStep>, parent: IProve
     chain = { ...step, parent: chain };
   }
   return chain;
+}
+
+/**
+ * Replace the last step of the chain `origin` with `root`, as where a chain
+ * was made over a stand-in for content that now has an origin of its own.
+ * Either is returned alone where the other is undefined.
+ */
+export function rootedAt(origin: IProvenanceStep | undefined, root: IProvenanceStep | undefined): IProvenanceStep | undefined {
+  if (origin === undefined || root === undefined) {
+    return origin ?? root;
+  }
+  return origin.parent === undefined ? root : { ...origin, parent: rootedAt(origin.parent, root) };
+}
+
+
+/**
+ * What a reference whose provenance includes a step of one kind does with
+ * what crosses it: a failure of what the reference names is reported as the
+ * reference's, and a cycle through it is reported by the reference's label.
+ */
+export interface IReferenceStep {
+  /** Get the error a failure of what the reference names is reported as. */
+  failure(step: IProvenanceStep, err: Error): Error;
+  /** Get the label a cycle through what the reference names carries. */
+  label(step: IProvenanceStep): Label;
+}
+
+const REFERENCE_STEPS = new Map<string, IReferenceStep>();
+
+export function registerReferenceStep(kind: string, handling: IReferenceStep): void {
+  REFERENCE_STEPS.set(kind, handling);
+}
+
+/** Get how a reference with `step` among its provenance answers for what
+ * crosses it; undefined for a step of a kind that registered nothing. */
+export function referenceStep(step: IProvenanceStep): IReferenceStep | undefined {
+  return REFERENCE_STEPS.get(step.kind);
 }
 
 /**

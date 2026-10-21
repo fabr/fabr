@@ -25,7 +25,8 @@
  */
 
 import { INameValue, IPropertyDecl, ITargetDecl } from "./AST";
-import { FabrError } from "../core/Errors";
+import { FabrError, Label } from "../core/Errors";
+import { describeProvenance, IProvenanceStep } from "../core/Provenance";
 import { Name } from "../core/Name";
 import { ISourceSpan } from "../support/Log";
 import type { Constraints } from "./Constraints";
@@ -76,6 +77,42 @@ export interface IUseSite {
   value: INameValue;
   property: IPropertyDecl;
   target?: ITargetDecl;
+}
+
+/** The next {@link NameLabel.order}. */
+let nextOrder = 0;
+
+/** The label of a node computing what a name stands for: a target's or a
+ * global's answer in one configuration, or a target's build. */
+export class NameLabel implements Label {
+  /** Where this stands among the names asked for, earliest lowest. */
+  public readonly order = nextOrder++;
+
+  constructor(
+    public readonly name: string,
+    public readonly target?: ITargetDecl
+  ) {}
+}
+
+/** The label of a node computing what one written reference names. */
+export class ReferenceLabel implements Label {
+  public readonly name: string;
+
+  constructor(public readonly site: IUseSite) {
+    this.name = site.value.value.toString();
+  }
+}
+
+/**
+ * The label of a node computing what a reference delivers, by the reference's
+ * provenance steps; the step saying where it was written is among them.
+ */
+export class ProvenanceLabel implements Label {
+  public readonly name: string;
+
+  constructor(public readonly steps: ReadonlyArray<IProvenanceStep>) {
+    this.name = steps.map(step => describeProvenance(step)).find(described => described !== undefined) ?? "a reference";
+  }
 }
 
 /**
