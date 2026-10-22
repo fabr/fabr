@@ -26,7 +26,7 @@ import { IProvenanceStep, registerProvenanceLocator, registerProvenanceRenderer,
 import { ConflictError, FabrError } from "./Errors";
 import { canonicalFileName, isCanonicalFileName } from "../support/Paths";
 import { hashString } from "./FSWrapper";
-import { manifestLine } from "./Manifest";
+import { encodeName, manifestLine } from "./Manifest";
 
 /** The permission bits (`man 2 stat`, the low 12 bits — rwx triples plus
  * setuid/setgid/sticky) fabr records for a file when none are otherwise known:
@@ -60,6 +60,15 @@ export interface IFile {
    * own terms.
    */
   mime: string;
+
+  /**
+   * The file's path from the project root, for a file read from the project's
+   * own tree; undefined for anything else (built, fetched, generated, or read
+   * from outside the project). It names where the file lives, whatever name a
+   * file set gives it, and is key material: two files differing only in it are
+   * different files.
+   */
+  readonly sourcePath?: string;
 
   readString(encoding?: BufferEncoding): Computable<string>;
 
@@ -340,7 +349,7 @@ export class FileSet implements FileSource {
   /**
    * The hash of this set's {@link toManifest} — a stable identity for its
    * content, distinguishing exactly what the manifest distinguishes (names,
-   * content hashes and modes) and nothing else: not provenance, not the
+   * content hashes, modes and source paths) and nothing else: not provenance, not the
    * delivery that produced it.
    *
    * For an action that assembles its own inputs: the key can name a whole
@@ -355,7 +364,8 @@ export class FileSet implements FileSource {
     const result = [];
     for (const name of [...this.content.keys()].sort()) {
       const file = this.content.get(name);
-      result.push(manifestLine(name, String(file?.hash), file?.mode ?? DEFAULT_FILE_MODE));
+      const sourcePath = file?.sourcePath === undefined ? undefined : encodeName(file.sourcePath);
+      result.push(manifestLine(name, String(file?.hash), file?.mode ?? DEFAULT_FILE_MODE, sourcePath));
     }
     return result.join("\n");
   }

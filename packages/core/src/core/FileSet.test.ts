@@ -21,6 +21,7 @@ import { expect } from "chai";
 import { FileSet } from "./FileSet";
 import { canonicalFileName, isCanonicalFileName } from "../support/Paths";
 import { MemoryFile } from "./MemoryFS";
+import { FSFile } from "./FSFileSource";
 import { ConflictError } from "./Errors";
 import { registerProvenanceRenderer, renderProvenance } from "./Provenance";
 import { parseName } from "../model/Parser";
@@ -53,6 +54,29 @@ describe("FileSet.rename", () => {
   it("reports a conflict when two different files rename to one name", () => {
     const files = set({ "a.in": "1", "b.in": "2" });
     expect(() => files.rename(() => "collide.out")).to.throw(ConflictError);
+  });
+});
+
+describe("FileSet source paths", () => {
+  /* One blob, read from the project tree at `sourcePath`. */
+  const source = (sourcePath: string): FSFile =>
+    new FSFile("/project", sourcePath, { size: 1, mtime: new Date(0) }, "h", "text/plain", "/cache/blob/h", sourcePath);
+
+  it("keeps a file's source path whatever name the set gives it", () => {
+    const renamed = new FileSet(new Map([["src/a.ts", source("pkg/src/a.ts")]])).rename(name => `lib/${name}`);
+    expect([...renamed].map(([name, file]) => [name, file.sourcePath])).to.deep.equal([["lib/src/a.ts", "pkg/src/a.ts"]]);
+  });
+
+  it("treats the same bytes from two source paths as two files", () => {
+    const one = new FileSet(new Map([["a.ts", source("x/a.ts")]]));
+    expect(() => FileSet.unionAll(one, new FileSet(new Map([["a.ts", source("y/a.ts")]])))).to.throw(ConflictError);
+    expect(FileSet.unionAll(one, new FileSet(new Map([["a.ts", source("x/a.ts")]]))).size).to.equal(1);
+  });
+
+  it("distinguishes source paths in the manifest", () => {
+    const at = (sourcePath: string): string => new FileSet(new Map([["a.ts", source(sourcePath)]])).toManifest();
+    expect(at("x/a.ts")).to.not.equal(at("y/a.ts"));
+    expect(at("x/a.ts")).to.equal(at("x/a.ts"));
   });
 });
 

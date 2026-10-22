@@ -21,6 +21,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { BuildCache } from "./BuildCache";
+import { FSFileSource } from "./FSFileSource";
 import { WatchController } from "./WatchController";
 import { Computable, ComputableSource } from "./Computable";
 import { hashString } from "./FSWrapper";
@@ -100,6 +101,18 @@ describe("SourceFileSource", () => {
     expect(file.getAbsPath()!.startsWith(path.join(cacheRoot, "blob"))).to.equal(true);
     expect(file.hash).to.equal(hashString("original"));
     expect((await toPromise(file.getBuffer())).toString()).to.equal("original");
+  });
+
+  it("gives a file its path from the project root as its source path", async () => {
+    fs.mkdirSync(path.join(sourceRoot, "sub"));
+    fs.writeFileSync(path.join(sourceRoot, "sub/a.txt"), "content");
+    const src = new SourceFileSource(sourceRoot, cache);
+
+    expect((await toPromise(src.get("sub/a.txt")))!.sourcePath).to.equal("sub/a.txt");
+    /* The trusted path (a verified index row) serves it too. */
+    expect((await toPromise(src.ingest("sub/a.txt")))!.sourcePath).to.equal("sub/a.txt");
+    /* A plain filesystem source is not the project tree. */
+    expect((await toPromise(new FSFileSource(sourceRoot).ingest("sub/a.txt")))!.sourcePath).to.equal(undefined);
   });
 
   it("compiles the frozen snapshot, not a later edit — closing the hash/stage race", async () => {

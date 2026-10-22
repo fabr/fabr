@@ -171,10 +171,11 @@ export class SourceFileSource extends FSFileSource {
   }
 
   /**
-   * The file as a blob-backed FSFile. A file whose stat matches its source-index
-   * row (and whose blob the pool still holds) is served from the row — no read,
-   * no hash; anything else takes the full path: read the file once, hash those
-   * exact bytes, ingest them into the blob store, and refresh the row.
+   * The file as a blob-backed FSFile, whose source path is its name here. A
+   * file whose stat matches its source-index row (and whose blob the pool still
+   * holds) is served from the row — no read, no hash; anything else takes the
+   * full path: read the file once, hash those exact bytes, ingest them into the
+   * blob store, and refresh the row.
    */
   public override ingest(filename: string): Computable<FSFile | undefined> {
     const filepath = path.resolve(this.root, filename);
@@ -193,7 +194,7 @@ export class SourceFileSource extends FSFileSource {
               /* Confirmation is unconditional in ingest — which branch served
                * the hash must not decide whether an echo is judged. */
               this.confirmExpected(filename, held.hash);
-              return Computable.resolve(new FSFile(this.root, filename, fsStat, held.hash, held.mime, blobPath));
+              return Computable.resolve(new FSFile(this.root, filename, fsStat, held.hash, held.mime, blobPath, filename));
             }
           }
           return readFileBuffer(filepath).then(bytes => {
@@ -203,7 +204,7 @@ export class SourceFileSource extends FSFileSource {
             this.recordIndexRow(rows, filename, fileStat.size, fileStat.mtimeMs, hash, mime);
             return this.cache
               .ensureBlob(hash, bytes, fileStat.mode)
-              .then(blobPath => new FSFile(this.root, filename, fsStat, hash, mime, blobPath));
+              .then(blobPath => new FSFile(this.root, filename, fsStat, hash, mime, blobPath, filename));
           });
         })
       )

@@ -2386,7 +2386,7 @@ class BuildFile implements IFile {
   }
 
   public isSameFile(file: IFile): boolean {
-    return file.getAbsPath() === this.getAbsPath();
+    return file.getAbsPath() === this.getAbsPath() && file.sourcePath === undefined;
   }
 
   public getAbsPath(): string {

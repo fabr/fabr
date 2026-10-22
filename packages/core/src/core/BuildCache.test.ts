@@ -32,7 +32,7 @@ import { DiscoveredDeps, ISourceIndexRow, parseRecordedBase } from "./Manifest";
 import { Computable } from "./Computable";
 import { readStream } from "./Fetch";
 import { SILENT_REPORT, TaskTracker } from "../support/Execute";
-import { DEFAULT_FILE_MODE, FileSet } from "./FileSet";
+import { DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
 import { hashString } from "./FSWrapper";
 import { FSFile } from "./FSFileSource";
 import { MemoryFile } from "./MemoryFS";
@@ -2112,7 +2112,7 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
     const entry = await toPromise(
       cache.ensureTree(
         new FileSet(
-          new Map([
+          new Map<string, IFile>([
             ["bin/tool", pooled],
             ["lib/generated.js", MemoryFile.from("x")],
           ])

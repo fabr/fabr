@@ -53,7 +53,15 @@ export class FSFile implements IFile {
    */
   private readonly contentPath: string;
 
-  constructor(root: string, name: string, stat: FSFileStats, hash: string, public readonly mime: string, contentPath?: string) {
+  constructor(
+    root: string,
+    name: string,
+    stat: FSFileStats,
+    hash: string,
+    public readonly mime: string,
+    contentPath?: string,
+    public readonly sourcePath?: string
+  ) {
     this.root = root;
     this.name = name;
     this.stat = stat;
@@ -74,7 +82,7 @@ export class FSFile implements IFile {
   }
 
   public isSameFile(file: IFile): boolean {
-    return file.getAbsPath() === this.getAbsPath();
+    return file.getAbsPath() === this.getAbsPath() && file.sourcePath === this.sourcePath;
   }
 
   public getAbsPath(): string {

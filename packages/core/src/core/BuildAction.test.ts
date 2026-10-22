@@ -21,6 +21,7 @@ import { expect } from "chai";
 import { Computable } from "./Computable";
 import { EMPTY_FILESET, FileSet } from "./FileSet";
 import { MemoryFile } from "./MemoryFS";
+import { FSFile } from "./FSFileSource";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
 import { StringReader } from "../support/StringReader";
 import {
@@ -314,6 +315,15 @@ describe("the action key", () => {
     expect(action({ inputs: { ...srcs, deps: [dep("one")] } }).actionKey(), "an ordinary input is key material").to.not.equal(
       anchored
     );
+  });
+
+  it("keys an input on its source path", () => {
+    const file = (sourcePath: string): FSFile =>
+      new FSFile("/project", sourcePath, { size: 1, mtime: new Date(0) }, "h", "text/plain", "/blob/h", sourcePath);
+    const at = (sourcePath: string): string =>
+      action({ inputs: { srcs: new FileSet(new Map([["src/index.ts", file(sourcePath)]])) } }).actionKey();
+    expect(at("a/src/index.ts"), "moved").to.not.equal(at("b/src/index.ts"));
+    expect(at("a/src/index.ts"), "unmoved").to.equal(at("a/src/index.ts"));
   });
 
   it("keeps same-named members apart across the two sections", () => {
