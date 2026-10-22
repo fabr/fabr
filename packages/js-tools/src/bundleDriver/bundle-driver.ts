@@ -47,7 +47,7 @@ import * as path from "node:path";
 import { SourceMap } from "node:module";
 import { PNP_DATA_FILE, PnpResolver } from "../pnp/PnPResolver";
 import { resolveVirtual } from "../pnp/VirtualPath";
-import type { IBundleOptions } from "../JSBundle";
+import type { IBundleOptions } from "./BundleOptions";
 
 /* Minimal structural typing for the slice of esbuild's API we use — esbuild is
  * fetched at build time rather than depended on, so its own types are not
@@ -647,12 +647,4 @@ class PackageNames {
     }
     return version;
   }
-}
-
-if (require.main === module) {
-  main(process.argv.slice(2)).catch((err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`${message}\n`);
-    process.exitCode = 1;
-  });
 }

@@ -25,7 +25,7 @@
  * found nothing, node's own code where node's algorithm failed.
  */
 
-import type { PnpDependencyTarget } from "../PnPManifest";
+import type { PnpDependencyTarget } from "./PnPState";
 
 export interface IPhysicalPackageLocator {
   name: string;

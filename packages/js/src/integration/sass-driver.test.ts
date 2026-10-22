@@ -14,6 +14,10 @@
  * details.
  */
 
+/* The driver is @fabr-build/js-tools'; the PnP tables its importer resolves
+ * through are built by this package's `pnpManifestOf`, as `sass_compile` writes
+ * them: an integration test of the two packages, so it lives with the plugin. */
+
 /* The unit tests pin the shape of what the driver writes beside the lowered
  * CSS. The driver tests run its real main(): the REAL compiler (sass-embedded)
  * and the real importer (@fabr-build/sass-pnp-importer), resolving through the
@@ -26,11 +30,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { FileSet, IFile, MemoryFile, PackageFileSet, dependenciesOn } from "@fabr-build/core";
-import type { ISassOptions } from "../CSSCompile";
-import { PNP_DATA_FILE } from "../pnp/PnPResolver";
+import type { ISassOptions } from "@fabr-build/js-tools";
+import { PNP_DATA_FILE } from "@fabr-build/js-tools";
 import { pnpManifestOf, TREE_MOUNT, treeMountOf } from "../PnPManifest";
-import { relativeToMap, relocateCssSources, sourceMapComment } from "./Support";
-import { main, sassFailure } from "./sass-driver";
+import { relativeToMap, relocateCssSources, SassDriver, sourceMapComment } from "@fabr-build/js-tools";
+
+const { main, sassFailure } = SassDriver;
 
 describe("sassFailure", () => {
   it("attributes a positioned failure 1-based from the exception's 0-based span", () => {

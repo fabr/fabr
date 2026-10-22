@@ -31,7 +31,7 @@
 import * as fs from "node:fs";
 import Module, { isBuiltin } from "node:module";
 import * as path from "node:path";
-import type { IPnpSerializedState, PnpDependencyTarget } from "../PnPManifest";
+import type { IPnpSerializedState, PnpDependencyTarget } from "./PnPState";
 import { exportedSubpath, exportsSubpath, type ExportsValue, type IConditionSet, resolveExportsAll, resolveImports, resolveImportsAll } from "./PackageExports";
 import {
   type IPackageInformation,

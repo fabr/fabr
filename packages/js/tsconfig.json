@@ -7,7 +7,15 @@
     "rootDir": "src",
     "tsBuildInfoFile": "build/tsconfig.tsbuildinfo"
   },
-  "include": ["src/**/*"],
-  "exclude": ["src/testRunner/test-globals.d.ts"],
-  "references": [{ "path": "../core" }]
+  "include": [
+    "src/**/*"
+  ],
+  "references": [
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../js-tools"
+    }
+  ]
 }

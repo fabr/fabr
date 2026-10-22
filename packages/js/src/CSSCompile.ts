@@ -52,7 +52,7 @@ import {
   PackageFileSet,
   TargetContext,
 } from "@fabr-build/core";
-import { isSassSource, sassLoweredName } from "./cssDriver/Support";
+import { type IPostcssOptions, type IPostcssSource, isSassSource, type ISassOptions, type ISassSource, sassLoweredName } from "@fabr-build/js-tools";
 
 /** Where the drivers write, and the rules collect, the compiled CSS from. */
 export const CSS_OUTDIR = "out";
@@ -67,95 +67,6 @@ export const CSS_DEPS_DIR = "node_modules";
 /** Where the CSS toolchain + driver mount — disjoint from the styled tree so
  * the tools' deps neither collide with nor are visible to the sources. */
 export const CSS_TOOL_DIR = ".fabr-css";
-
-/**
- * One Sass source and every name the sass step produces for it. The driver
- * reads this and writes exactly these paths — it derives none of them.
- */
-export interface ISassSource {
-  /** The styled source, relative to {@link CSS_SRC_ROOT}. */
-  path: string;
-  /** Where the lowered CSS goes, relative to {@link CSS_OUTDIR} — the
-   * {@link sassLoweredName}, `.module.` marker intact. */
-  css: string;
-  /** Where the source map goes, relative to {@link CSS_OUTDIR}; absent when
-   * this build does not carry maps. */
-  map?: string;
-}
-
-/**
- * The options document fabr writes for the Sass driver — a plain, tool-free
- * description of the lowering. Serialized to JSON, so it stays
- * content-addressed with no host paths.
- */
-export interface ISassOptions {
-  /** Every source to lower, with its output names. Partials are staged but
-   * never listed. */
-  sources: ISassSource[];
-  /** Root (relative to the working dir) the source files are staged under. */
-  srcRoot: string;
-  /** Sass load paths (relative to the working dir) — the mounted scss dep roots
-   * against which `@use`/`@import` of shared partials resolve. */
-  loadPaths: string[];
-  /** Where the driver writes outputs, relative to the working dir. */
-  outdir: string;
-}
-
-/**
- * One stylesheet input and every name the postcss step produces for it. The
- * driver reads this and writes exactly these paths — it derives none of them.
- */
-export interface IPostcssSource {
-  /** The stylesheet input, relative to {@link CSS_SRC_ROOT} — plain CSS: a
-   * lowered Sass source (`.module.` marker intact) or an authored `.css`. */
-  path: string;
-  /** Where the published CSS goes, relative to {@link CSS_OUTDIR} — the
-   * {@link scopedCssName}, marker consumed. */
-  css: string;
-  /**
-   * The suffix a local name takes when it is scoped — `<local>_<scope>`. Every
-   * stylesheet has one, including a plain one: its own output keeps its names
-   * as written ({@link module} is what decides that), but a css-module
-   * composing from it gets a scoped private copy of its rules, and those
-   * classes are named with this.
-   */
-  scope: string;
-  /** Whether this stylesheet's OWN output is scoped and carries a class map —
-   * the `.module.` marker, read once here rather than from the name again. */
-  module: boolean;
-  /** The JS shim carrying the class-name map (css-modules only). */
-  shim?: string;
-  /** The map the input ARRIVED with (relative to {@link CSS_SRC_ROOT}), for a
-   * module's output map to chain through; absent for an authored stylesheet. */
-  prev?: string;
-  /** Where the source map goes, relative to {@link CSS_OUTDIR}: chained through
-   * {@link prev} for a module, carried through beside a plain stylesheet that
-   * arrived with one, absent otherwise. */
-  map?: string;
-}
-
-/**
- * The options document fabr writes for the postcss driver. Serialized to JSON,
- * so it stays content-addressed with no host paths.
- */
-export interface IPostcssOptions {
-  /** Every stylesheet to process, with its output names. */
-  sources: IPostcssSource[];
-  /**
-   * A dependency's stylesheets — readable, composable, never published by this
-   * step. Named relative to the working dir (under {@link CSS_DEPS_DIR}, so a
-   * package specifier is the path below it) and carrying the scope their
-   * classes take in the private copy a compose inlines.
-   */
-  composable: Array<{ path: string; scope: string }>;
-  /** Root (relative to the working dir) the inputs are staged under. */
-  srcRoot: string;
-  /** Where a dependency's files are mounted, which a package-shaped compose
-   * specifier is resolved against. */
-  depsDir: string;
-  /** Where the driver writes outputs, relative to the working dir. */
-  outdir: string;
-}
 
 /** Whether a styled source is a Sass PARTIAL (`_foo.scss`) — included by another
  * stylesheet rather than compiled in its own right, so it produces nothing. */

@@ -326,7 +326,3 @@ function toTestResults(file: ICompletedFile): ITestResult[] {
     };
   });
 }
-
-if (require.main === module) {
-  main(process.argv.slice(2));
-}

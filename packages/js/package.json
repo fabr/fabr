@@ -13,6 +13,7 @@
     "@fabr-build/core": "0.1.0"
   },
   "dependencies": {
-    "@fabr-build/sass-pnp-importer": "0.1.0"
+    "@fabr-build/sass-pnp-importer": "0.1.0",
+    "@fabr-build/js-tools": "0.1.0"
   }
 }

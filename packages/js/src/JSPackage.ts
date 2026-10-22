@@ -52,7 +52,7 @@ import {
 } from "@fabr-build/core";
 import { assembleNodeModules } from "./NodeModules";
 import { compileCssSources, cssImportRewrites, partitionCssOutput } from "./CSSCompile";
-import { type ExportsValue, resolveExports } from "./pnp/PackageExports";
+import { type ExportsValue, resolveExports } from "@fabr-build/js-tools";
 
 export interface JSTarget {
   version: string;

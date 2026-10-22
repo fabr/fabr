@@ -17,15 +17,25 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+/* The resolver is @fabr-build/js-tools'; the tables it reads here are built by
+ * this package's `pnpManifestOf`, so these check the writer and the reader
+ * agree: an integration test of the two packages, so it lives with the plugin. */
+
 import { expect } from "chai";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { FileSet, IFile, MemoryFile, PackageFileSet, dependenciesOn } from "@fabr-build/core";
-import { type IPnpPackageInfo, type IPnpSerializedState, pnpManifestOf, treeMountOf } from "../PnPManifest";
-import type { ExportsValue } from "./PackageExports";
-import { PnpResolver, splitSpecifier, typesPackageName } from "./PnPResolver";
-import { realpathKeepingVirtual } from "./VirtualPath";
+import { pnpManifestOf, treeMountOf } from "../PnPManifest";
+import {
+  type ExportsValue,
+  type IPnpPackageInfo,
+  type IPnpSerializedState,
+  PnpResolver,
+  realpathKeepingVirtual,
+  splitSpecifier,
+  typesPackageName,
+} from "@fabr-build/js-tools";
 
 const ROOT = path.resolve("/workspace");
 

@@ -58,7 +58,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { IPostcssOptions, IPostcssSource } from "../CSSCompile";
+import type { IPostcssOptions, IPostcssSource } from "./Options";
 import {
   annotationName,
   IRawSourceMap,
@@ -316,12 +316,4 @@ export async function main(argv: string[]): Promise<void> {
   for (const source of options.sources) {
     await processFile(source, options, { postcss, modules }, table);
   }
-}
-
-if (require.main === module) {
-  main(process.argv.slice(2)).catch((err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`${message}\n`);
-    process.exitCode = 1;
-  });
 }

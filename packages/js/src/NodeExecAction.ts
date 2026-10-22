@@ -42,8 +42,8 @@ import {
 } from "@fabr-build/core";
 import { assembleNodeModules } from "./NodeModules";
 import { pnpManifestOf, TREE_MOUNT } from "./PnPManifest";
-import { PNP_DATA_FILE } from "./pnp/PnPResolver";
-import { IChangeLists, splitDepsPath, toRunReport } from "./pnp/ReadSet";
+import { PNP_DATA_FILE } from "@fabr-build/js-tools";
+import { IChangeLists, splitDepsPath, toRunReport } from "@fabr-build/js-tools";
 
 /**
  * The JS ecosystem's build step, and the one place that owns **how a JS tool

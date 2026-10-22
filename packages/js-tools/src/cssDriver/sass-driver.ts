@@ -43,7 +43,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ISassOptions, ISassSource } from "../CSSCompile";
+import type { ISassOptions, ISassSource } from "./Options";
 import { PnpResolver } from "../pnp/PnPResolver";
 import { IRawSourceMap, parseManifestPath, relativeToMap, relocateCssSources, sourceMapComment, writeOut } from "./Support";
 
@@ -157,12 +157,4 @@ export async function main(argv: string[]): Promise<void> {
   } finally {
     await compiler.dispose();
   }
-}
-
-if (require.main === module) {
-  main(process.argv.slice(2)).catch((err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`${message}\n`);
-    process.exitCode = 1;
-  });
 }

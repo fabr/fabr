@@ -14,6 +14,10 @@
  * details.
  */
 
+/* The driver is @fabr-build/js-tools'; the PnP tables it bundles through are
+ * built by this package's `pnpManifestOf`, as `js_bundle` writes them: an
+ * integration test of the two packages, so it lives with the plugin. */
+
 /* The single-variant cases below drive the REAL esbuild, which is a test
  * dependency of this package for exactly that reason (as typescript is for the
  * tsc driver's): the rule they check is a claim about what esbuild does with a
@@ -30,9 +34,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { FileSet, IFile, MemoryFile, PackageFileSet, dependenciesOn } from "@fabr-build/core";
-import { PNP_DATA_FILE } from "../pnp/PnPResolver";
+import { PNP_DATA_FILE } from "@fabr-build/js-tools";
 import { pnpManifestOf, treeMountOf } from "../PnPManifest";
-import { isBareSpecifier, main, packageOf, rewriteStyledImport, treeOf, unresolvedHelp } from "./bundle-driver";
+import { BundleDriver } from "@fabr-build/js-tools";
+
+const { isBareSpecifier, main, packageOf, rewriteStyledImport, treeOf, unresolvedHelp } = BundleDriver;
 
 describe("packageOf", () => {
   it("takes the first segment of an unscoped specifier", () => {

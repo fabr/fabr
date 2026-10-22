@@ -111,13 +111,35 @@ generate package_extensions {
   run = package_extensions_json > package-extensions.json;
 }
 
+# The runtime half of the plugin: the drivers and test runners fabr launches,
+# and the documents they read. The plugin's own tests check the two halves agree.
+js_package @fabr-build/js-tools {
+  srcs = packages/js-tools/src:**/*.ts README.md COPYING -> LICENSE;
+  exports = packages/js-tools/src:index.ts;
+  tests = packages/js-tools/src:**/*.test.ts;
+  deps = @pkg:@types/node;
+  # The test runners write core's CTRF report, whose types they compile against.
+  provided_deps = @fabr-build/core;
+  # postcss / postcss-modules: the PostCSS driver's tests scope real stylesheets.
+  test_deps = chai jest_types @pkg:postcss @pkg:postcss-modules;
+  metadata = { FABR_METADATA; description = Fabr JS support plugin tools }
+}
+
+# Stage 0: compiling @fabr-build/js-tools needs a tsc driver, so this build takes
+# the one installed with the fabr running it rather than the one it builds.
+@fabr-boot = @fabr-home:@fabr-build;
+js_script TSC_DRIVER {
+  entry = @fabr-boot/js-tools:fabr-tsc;
+  deps = ${TYPESCRIPT};
+}
+
 js_package @fabr-build/js {
   srcs = packages/js/src:**/*.ts packages/js:lib/** package_extensions:** -> lib/** README.md COPYING -> LICENSE;
   exports = packages/js/src:index.ts;
   tests = packages/js/src:**/*.test.ts;
   # The Sass importer is no import of the plugin's: it rides along so installing
   # fabr installs it, for the Sass driver (SASS_PNP_IMPORTER).
-  deps = @pkg:@types/node @fabr-build/sass-pnp-importer;
+  deps = @pkg:@types/node @fabr-build/js-tools @fabr-build/sass-pnp-importer;
   provided_deps = @fabr-build/core;
   # typescript / esbuild: the tsc and bundle drivers' tests drive the real tools
   # (each driver itself requires its own from the tool install fabr stages,
@@ -162,7 +184,8 @@ sync release {
   @npm:@fabr-build/cli:${FABR_VERSION} = @fabr-build/cli;
   @npm:@fabr-build/core:${FABR_VERSION} = @fabr-build/core;
   @npm:@fabr-build/js:${FABR_VERSION} = @fabr-build/js;
+  @npm:@fabr-build/js-tools:${FABR_VERSION} = @fabr-build/js-tools;
   @npm:@fabr-build/sass-pnp-importer:${FABR_VERSION} = @fabr-build/sass-pnp-importer;
 }
 
-all = @fabr-build/core @fabr-build/js @fabr-build/cli @fabr-build/sass-pnp-importer;
+all = @fabr-build/core @fabr-build/js @fabr-build/js-tools @fabr-build/cli @fabr-build/sass-pnp-importer;

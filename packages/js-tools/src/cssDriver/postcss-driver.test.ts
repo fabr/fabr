@@ -25,7 +25,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import postcss from "postcss";
-import type { IPostcssOptions, IPostcssSource } from "../CSSCompile";
+import type { IPostcssOptions, IPostcssSource } from "./Options";
 import { cssModuleShim, main, resolveComposePath, scopedNameOf, scopeFailure, scopeTableOf } from "./postcss-driver";
 import { relocateCssSources } from "./Support";
 

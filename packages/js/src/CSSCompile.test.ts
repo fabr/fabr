@@ -34,7 +34,7 @@ import {
   sassSourceOutputs,
   scopedCssName,
 } from "./CSSCompile";
-import { sassLoweredName } from "./cssDriver/Support";
+import { sassLoweredName } from "@fabr-build/js-tools";
 
 function fileSet(...names: string[]): FileSet {
   return new FileSet(new Map(names.map(name => [name, MemoryFile.from("")])));

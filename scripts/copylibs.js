@@ -31,7 +31,7 @@ const fs = require("fs");
 const path = require("path");
 const { packageExtensionsJson } = require("./package-extensions-json");
 
-for (const pkg of ["core", "js"]) {
+for (const pkg of ["core", "js", "js-tools"]) {
   const pkgDir = path.join(__dirname, "..", "packages", pkg);
   const lib = path.join(pkgDir, "lib");
   const libDest = path.join(pkgDir, "build", "lib");

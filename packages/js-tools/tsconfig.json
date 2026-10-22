@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "incremental": true,
+    "outDir": "build",
+    "rootDir": "src",
+    "tsBuildInfoFile": "build/tsconfig.tsbuildinfo"
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "src/testRunner/test-globals.d.ts"
+  ],
+  "references": [
+    {
+      "path": "../core"
+    }
+  ]
+}

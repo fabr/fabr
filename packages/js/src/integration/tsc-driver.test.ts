@@ -17,25 +17,34 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+/* The driver is @fabr-build/js-tools'; the import rewrites it is configured
+ * with come from this package's `importRewrites` and `cssImportRewrites`, as
+ * `js_compile` writes them: an integration test of the two packages, so it
+ * lives with the plugin. */
+
 import { expect } from "chai";
 import { cssImportRewrites } from "../CSSCompile";
 import { importRewrites } from "../rules/BuildJSCompile";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import type { IPnpSerializedState, PnpDependencyTarget } from "../PnPManifest";
-import { PnpResolver } from "../pnp/PnPResolver";
-import { toChangeLists, toRunReport } from "../pnp/ReadSet";
 import {
   DriverMemo,
   ICompileTelemetry,
   IMemoFile,
+  type IPnpSerializedState,
   parseDriverMemo,
   planCompile,
+  type PnpDependencyTarget,
+  PnpResolver,
   serializeDriverMemo,
+  toChangeLists,
   toCompileTelemetry,
-} from "./Planning";
-import {
+  toRunReport,
+  TscDriver,
+} from "@fabr-build/js-tools";
+
+const {
   assertDrivableCompiler,
   canonicalizeUnions,
   emittedPathOf,
@@ -47,7 +56,7 @@ import {
   supportsOption,
   rewriteDeclaration,
   withinSourceRoot,
-} from "./tsc-driver";
+} = TscDriver;
 
 /** A staged workspace: sources, a tsconfig, a manifest, and a store the
  * manifest's locations point into through the same link a build step stages. */

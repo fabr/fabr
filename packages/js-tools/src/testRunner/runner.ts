@@ -69,7 +69,3 @@ export function main(argv: string[]): void {
    * (describe/it/...) is preloaded into each. */
   runTestFiles(options, [path.join(__dirname, "globals.js")]);
 }
-
-if (require.main === module) {
-  main(process.argv.slice(2));
-}

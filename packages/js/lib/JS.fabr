@@ -17,13 +17,6 @@ default NPM_REPOSITORY_URL = https://registry.npmjs.org/;
 default JS_TARGET = es6-esm;
 
 #
-# Internal: the program that runs the TypeScript compiler. To choose the
-# compiler version, set `TYPESCRIPT`.
-#
-
-default TSC_DRIVER = @fabr-build/js-tools/tsc-driver;
-
-#
 # The TypeScript compiler that compiles your sources, as a version or a range.
 # A dist-tag such as `latest` is not accepted.
 #
@@ -61,54 +54,12 @@ default POSTCSS = @npm:postcss:8.5.28;
 default POSTCSS_MODULES = @npm:postcss-modules:9.0.1;
 
 #
-# Internal: the program `js_bundle` runs, which drives esbuild.
-#
-
-default JS_BUNDLER = @fabr-build/js-tools/bundle-driver;
-
-#
-# Internal: the program `sass_compile` runs, which drives Sass.
-#
-
-default SASS_DRIVER = @fabr-build/js-tools/sass-driver;
-
-#
-# Internal: the program `css_postcss` runs, which drives PostCSS.
-#
-
-default POSTCSS_DRIVER = @fabr-build/js-tools/postcss-driver;
-
-#
 # The test framework a project's tests are written for: `node` (Node.js's
 # built-in `node:test`), `jest` or `vitest`. A target overrides it with its
 # `test_framework` property (`framework` on a `js_test`).
 #
 
 default JS_TEST_FRAMEWORK = node;
-
-#
-# The program that runs tests under the `node` framework. A replacement is run
-# in the directory of compiled tests as `<runner> --report=<file>
-# --env=<node|jsdom> [--update-snapshots] [--setup=<file>]… <test files…>`. It
-# must exit with a non-zero status when a test fails, and write its results to
-# the report file in CTRF form.
-#
-
-default JS_NODE_TEST_RUNNER = @fabr-build/js-tools/test-runner;
-
-#
-# The program that runs tests under the `jest` framework, invoked as
-# `JS_NODE_TEST_RUNNER` is.
-#
-
-default JS_JEST_RUNNER = @fabr-build/js-tools/jest-runner;
-
-#
-# The program that runs tests under the `vitest` framework, invoked as
-# `JS_NODE_TEST_RUNNER` is.
-#
-
-default JS_VITEST_RUNNER = @fabr-build/js-tools/vitest-runner;
 
 #
 # The jest release that the `jest` test framework uses. Jest 29 and 30 are
@@ -472,7 +423,6 @@ targetdef css_postcss {
     package_name = STRING;
 }
 
-
 ####################### Repository ##########################
 
 #
@@ -489,66 +439,67 @@ default npm_repository @npm {
 ##################### Driver tools ########################
 
 #
-# The programs fabr runs to drive each tool, declared as ordinary runnable
-# targets over the compiled scripts shipped in this installation (paths are
-# relative to this file). Each is reached through a global (`JS_BUNDLER`,
-# `SASS_DRIVER`, …). They are named under `@fabr-build/js-tools` rather than
-# `@fabr-build/js`, because that name is a target in a project that builds the
-# plugin itself, and a name cannot be both a target and a namespace.
+# The programs fabr runs to drive each tool: bins of @fabr-build/js-tools, with
+# the tool each drives. A project replaces one by declaring the name itself.
 #
 
-# Internal: runs esbuild for `js_bundle`. The default `JS_BUNDLER`.
-js_script @fabr-build/js-tools/bundle-driver {
-    entry = ../bundleDriver/bundle-driver.js;
-    deps = ${ESBUILD} ../pnp/PnPResolver.js ../pnp/PnPApi.js ../pnp/VirtualPath.js ../pnp/PackageExports.js ../pnp/ReadSet.js;
+#
+# Internal: the program that runs the TypeScript compiler. To choose the
+# compiler version, set `TYPESCRIPT`.
+#
+default js_script TSC_DRIVER {
+    entry = @fabr-build/js-tools:fabr-tsc;
+    deps = ${TYPESCRIPT};
 }
 
-# Internal: runs Sass for `sass_compile`. The default `SASS_DRIVER`.
-js_script @fabr-build/js-tools/sass-driver {
-    entry = ../cssDriver/sass-driver.js;
-    deps = ${SASS} ${SASS_PNP_IMPORTER}
-           ../cssDriver/Support.js
-           ../pnp/PnPResolver.js ../pnp/PnPApi.js ../pnp/VirtualPath.js ../pnp/PackageExports.js ../pnp/ReadSet.js;
+#
+# Internal: the program `js_bundle` runs, which drives esbuild.
+#
+default js_script JS_BUNDLER {
+    entry = @fabr-build/js-tools:fabr-bundle;
+    deps = ${ESBUILD};
 }
 
-# Internal: runs PostCSS for `css_postcss`. The default `POSTCSS_DRIVER`.
-js_script @fabr-build/js-tools/postcss-driver {
-    entry = ../cssDriver/postcss-driver.js;
-    deps = ${POSTCSS} ${POSTCSS_MODULES} ../cssDriver/Support.js;
+#
+# Internal: the program `sass_compile` runs, which drives Sass.
+#
+default js_script SASS_DRIVER {
+    entry = @fabr-build/js-tools:fabr-sass;
+    deps = ${SASS} ${SASS_PNP_IMPORTER};
 }
 
-# Internal: runs the TypeScript compiler for `js_compile`, through its API.
-# The default `TSC_DRIVER`.
-js_script @fabr-build/js-tools/tsc-driver {
-    entry = ../tscDriver/tsc-driver.js;
-    deps = ../pnp/PnPResolver.js ../pnp/PnPApi.js ../pnp/VirtualPath.js ../pnp/PackageExports.js ../pnp/ReadSet.js
-           ../tscDriver/Planning.js ../tscDriver/Wave.js ${TYPESCRIPT};
+#
+# Internal: the program `css_postcss` runs, which drives PostCSS.
+#
+default js_script POSTCSS_DRIVER {
+    entry = @fabr-build/js-tools:fabr-postcss;
+    deps = ${POSTCSS} ${POSTCSS_MODULES};
 }
 
-# Runs tests under the `node` framework, with Node.js's `node:test`. The
-# default `JS_NODE_TEST_RUNNER`.
-js_script @fabr-build/js-tools/test-runner {
-    entry = ../testRunner/runner.js;
-    deps = ../testRunner/Assets.js ../testRunner/Report.js ../testRunner/globals.js ../testRunner/RunTests.js
-           ../testRunner/test-globals.d.ts;
+#
+# The program that runs tests under the `node` framework. A replacement is run
+# in the directory of compiled tests as `<runner> --report=<file>
+# --env=<node|jsdom> [--update-snapshots] [--setup=<file>]… <test files…>`. It
+# must exit with a non-zero status when a test fails, and write its results to
+# the report file in CTRF form.
+#
+default js_script JS_NODE_TEST_RUNNER {
+    entry = @fabr-build/js-tools:fabr-test-runner;
 }
 
-# Runs tests under the `jest` framework, with jest's own test framework and
-# libraries and Node.js's module loader. The default `JS_JEST_RUNNER`.
-js_script @fabr-build/js-tools/jest-runner {
-    entry = ../jestRunner/runner.js;
-    deps = ${JEST} ${SWC} JEST_TYPE_PINS
-           ../jestRunner/child.js ../jestRunner/Config.js ../jestRunner/Environment.js
-           ../jestRunner/Failures.js ../jestRunner/Hoist.js ../jestRunner/JestObject.js ../jestRunner/Registry.js
-           ../jestRunner/RuntimeFacade.js ../jestRunner/SnapshotResolver.js ../jestRunner/Tools.js
-           ../testRunner/Assets.js ../testRunner/Report.js ../testRunner/RunTests.js;
+#
+# The program that runs tests under the `jest` framework, invoked as
+# `JS_NODE_TEST_RUNNER` is.
+#
+default js_script JS_JEST_RUNNER {
+    entry = @fabr-build/js-tools:fabr-jest-runner;
+    deps = ${JEST} ${SWC} JEST_TYPE_PINS;
 }
 
-# Runs tests under the `vitest` framework, with the vitest the target declares
-# in its `test_deps`. The default `JS_VITEST_RUNNER`.
-js_script @fabr-build/js-tools/vitest-runner {
-    entry = ../vitestRunner/runner.js;
-    deps = ../vitestRunner/preload.js ../vitestRunner/VitestRun.js
-           ../testRunner/Assets.js ../testRunner/Report.js ../testRunner/RunTests.js
-           vitest-runner.package.json -> package.json;
+#
+# The program that runs tests under the `vitest` framework, invoked as
+# `JS_NODE_TEST_RUNNER` is.
+#
+default js_script JS_VITEST_RUNNER {
+    entry = @fabr-build/js-tools:fabr-vitest-runner;
 }

@@ -35,12 +35,13 @@ module.exports = {
     "!**/docs/**",
     /* The runner runtimes execute standalone in test child processes, not under
      * jest (the jest-compat one loads jest's libraries from its own tool mount) */
-    "!**/packages/js/src/testRunner/**",
-    "!**/packages/js/src/jestRunner/**",
+    "!**/packages/js-tools/src/testRunner/**",
+    "!**/packages/js-tools/src/jestRunner/**",
   ],
   moduleNameMapper: {
     "^@fabr-build/core$": "<rootDir>/packages/core/src/index.ts",
     "^@fabr-build/js$": "<rootDir>/packages/js/src/index.ts",
+    "^@fabr-build/js-tools$": "<rootDir>/packages/js-tools/src/index.ts",
     "^@fabr-build/sass-pnp-importer$": "<rootDir>/packages/sass-pnp-importer/src/index.ts",
   },
   transform: {
@@ -58,9 +59,9 @@ module.exports = {
   moduleFileExtensions: ["ts", "js", "mjs"],
   testRegex: ".*\\.test\\.ts$",
   /* The runner runtime's tests are node:test based and run under the fabr test
-   * harness itself (fabr test @fabr-build/js), not under jest. The DRIVERS'
+   * harness itself (fabr test @fabr-build/js-tools), not under jest. The DRIVERS'
    * tests are not among them: each requires its tool lazily inside main(), so
    * nothing at load needs esbuild or sass, and the parts under test are either
    * pure or drive a tool declared as a test dependency. */
-  testPathIgnorePatterns: ["/node_modules/", "/build/", "/packages/js/src/testRunner/"],
+  testPathIgnorePatterns: ["/node_modules/", "/build/", "/packages/js-tools/src/testRunner/"],
 };

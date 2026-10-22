@@ -1,4 +1,1 @@
-{
-  "files": [],
-  "references": [{ "path": "packages/core" }, { "path": "packages/cli" }, { "path": "packages/js" }, { "path": "packages/sass-pnp-importer" }]
-}
+{"files": [], "references": [{"path": "packages/core"}, {"path": "packages/cli"}, {"path": "packages/js"}, {"path": "packages/sass-pnp-importer"}, {"path": "packages/js-tools"}]}

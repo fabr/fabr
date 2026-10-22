@@ -17,6 +17,10 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+/* The plugin's exec step driving the real tsc driver (@fabr-build/js-tools'
+ * `fabr-tsc`) through the real cache: an integration test of the two packages,
+ * so it lives with the plugin. */
+
 import { expect } from "chai";
 import * as fs from "fs";
 import * as os from "os";
@@ -34,26 +38,26 @@ import {
   SILENT_REPORT,
   dependenciesOn,
 } from "@fabr-build/core";
-import { createNodeExecAction, NODE_EXEC_ACTION, PNP } from "./NodeExecAction";
-import { parseDriverMemo, toCompileTelemetry } from "./tscDriver/Planning";
-import { CHANGES_FILE, CHANGES_FLAG, DEPS_REPORT_FILE, STATE_DIR, STATE_DIR_FLAG } from "./pnp/ReadSet";
-import { COMPILE_OUT_DIR, COMPILE_SRC_DIR, makeTsConfig } from "./rules/BuildJSCompile";
-import { parseJSTarget } from "./JSPackage";
+import { createNodeExecAction, NODE_EXEC_ACTION, PNP } from "../NodeExecAction";
+import { parseDriverMemo, toCompileTelemetry } from "@fabr-build/js-tools";
+import { CHANGES_FILE, CHANGES_FLAG, DEPS_REPORT_FILE, STATE_DIR, STATE_DIR_FLAG } from "@fabr-build/js-tools";
+import { COMPILE_OUT_DIR, COMPILE_SRC_DIR, makeTsConfig } from "../rules/BuildJSCompile";
+import { parseJSTarget } from "../JSPackage";
 
 const NULL_LOG: Log = { log: () => undefined };
 
 /**
  * The driver as a program to launch — the real one, compiled, since these cases
- * are about what a real compile does. Found beside this test where the tests
- * run from the built tree (`fabr test`), and in the devchain's output where
- * they run from source (ts-jest). Its own `typescript` resolves from wherever
- * it is found, which is why `@pkg:typescript` is among this package's
- * test_deps.
+ * are about what a real compile does: the `fabr-tsc` bin of the installed
+ * @fabr-build/js-tools, wherever its package puts it. Its own `typescript`
+ * resolves from wherever it is found, which is why `@pkg:typescript` is among
+ * this package's test_deps.
  */
-const TSC_DRIVER = [
-  path.resolve(__dirname, "tscDriver/tsc-driver.js"),
-  path.resolve(__dirname, "../build/tscDriver/tsc-driver.js"),
-].find(candidate => fs.existsSync(candidate));
+const TSC_DRIVER = ((): string => {
+  const manifest = require.resolve("@fabr-build/js-tools/package.json");
+  const bin = (JSON.parse(fs.readFileSync(manifest, "utf8")) as { bin: Record<string, string> }).bin;
+  return path.resolve(path.dirname(manifest), bin["fabr-tsc"]);
+})();
 /** The target key every build in a case shares — what a declared target's identity
  * would compose to, which this test supplies directly. */
 const TARGET_KEY = "target-key-under-test";

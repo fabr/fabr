@@ -509,7 +509,7 @@ const FORMAT_TAGGED = /\.[cm]js$/;
 /** tsc's own exit codes, which fabr's step reports as the tool's outcome. */
 const EXIT_OK = 0;
 const EXIT_ERRORS_NO_OUTPUT = 1;
-const EXIT_ERRORS = 2;
+export const EXIT_ERRORS = 2;
 
 /**
  * Resolution against the manifest, installed on the compiler host.
@@ -3294,13 +3294,4 @@ function configHost(ts: ITypeScript): unknown {
       throw new Error(`tsc-driver: unreadable project (${JSON.stringify(diagnostic)})`);
     },
   };
-}
-
-if (require.main === module) {
-  try {
-    process.exitCode = main(process.argv.slice(2));
-  } catch (err: unknown) {
-    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
-    process.exitCode = EXIT_ERRORS;
-  }
 }

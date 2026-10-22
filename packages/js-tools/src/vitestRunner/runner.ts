@@ -108,7 +108,3 @@ export function main(argv: string[]): void {
       process.exit(1);
     });
 }
-
-if (require.main === module) {
-  main(process.argv.slice(2));
-}

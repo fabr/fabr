@@ -14,6 +14,10 @@
  * details.
  */
 
+/* The resolver is @fabr-build/js-tools'; the manifest it is compared over is
+ * built by this package's `pnpManifestOf`, as a real build writes it: an
+ * integration test of the two packages, so it lives with the plugin. */
+
 /*
  * PnpResolver against Yarn's own PnP runtime, as a conformance oracle: one
  * manifest, staged once, loaded into both, and every query enumerated from the
@@ -28,10 +32,16 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { FileSet, IFile, MemoryFile, PACKAGE_RESOLUTION_PROVENANCE, PackageFileSet, dependenciesOn } from "@fabr-build/core";
-import { type IPnpSerializedState, type ISelfPackage, pnpManifestOf, PnpDependencyTarget, TREE_MOUNT, treeMountOf } from "../PnPManifest";
-import type { IPnpApi, PackageLocator, ResolveRequestOptions } from "./PnPApi";
-import { PnpResolver } from "./PnPResolver";
-import { resolveVirtual } from "./VirtualPath";
+import { type ISelfPackage, pnpManifestOf, TREE_MOUNT, treeMountOf } from "../PnPManifest";
+import {
+  type IPnpApi,
+  type IPnpSerializedState,
+  type PackageLocator,
+  type PnpDependencyTarget,
+  PnpResolver,
+  type ResolveRequestOptions,
+  resolveVirtual,
+} from "@fabr-build/js-tools";
 
 /** As much of `@yarnpkg/pnp` and `@yarnpkg/fslib` as the oracle uses, typed
  * here: their own declarations need a newer `@types/node` than this repo

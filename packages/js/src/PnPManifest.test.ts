@@ -31,8 +31,9 @@ import {
 } from "@fabr-build/core";
 import { packageNodeSignature } from "@fabr-build/core";
 import * as path from "path";
-import { assertOnePackagePerName, IPnpPackageInfo, pnpManifestOf, PnpDependencyTarget, TREE_MOUNT, treeMountOf } from "./PnPManifest";
-import { resolveVirtual } from "./pnp/VirtualPath";
+import type { IPnpPackageInfo, PnpDependencyTarget } from "@fabr-build/js-tools";
+import { assertOnePackagePerName, pnpManifestOf, TREE_MOUNT, treeMountOf } from "./PnPManifest";
+import { resolveVirtual } from "@fabr-build/js-tools";
 
 /** A package as a REPOSITORY delivered it — carrying a resolution provenance,
  * which is what marks it as something this build did not produce and therefore

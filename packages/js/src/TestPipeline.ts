@@ -91,8 +91,8 @@ const GLOBALS_TYPES_FILE = "test-globals.d.ts";
  * ambient-types file mounts so tsc auto-includes it for the test compile */
 const RUNNER_STAGE_DIR = ".fabr-testrunner";
 const GLOBALS_TYPES_MOUNT = "@types/fabr-test-globals/index.d.ts";
-/* The runner's own globals .d.ts as it appears in @fabr-build/js's srcs, dropped
- * when @fabr-build/js tests itself so it doesn't collide with the synthetic mount. */
+/* The runner's own globals .d.ts as it appears in @fabr-build/js-tools's srcs,
+ * dropped when it tests itself so it doesn't collide with the synthetic mount. */
 const RUNNER_GLOBALS_TYPES = "testRunner/test-globals.d.ts";
 
 /** The directory a test file's recorded snapshots live in, beside it — jest's
@@ -128,11 +128,9 @@ const SETUP_STEM = "setupTests";
  * The runner's ambient globals types, extracted from its resolved install (a
  * test-globals.d.ts anywhere among its files) and mounted as the synthetic
  * @types package the test compile auto-includes; empty when the runner ships
- * none. Part of the runner contract, so a replaced runner carries its
- * own globals typings with it rather than inheriting fabr's — and, equally,
- * a runner typed by an ordinary `@types` package the target declares (the jest
- * flavour, typed by `@types/jest`) ships none, since two sets of ambient
- * describe/it declarations would collide.
+ * none. Part of the runner contract for a framework whose runner supplies them
+ * ({@link ITestFramework.globalsTypes}), so a replaced runner carries its own
+ * globals typings with it rather than inheriting fabr's.
  */
 function runnerGlobalsTypes(runner: FileSet): FileSet {
   const found = [...runner].find(([name]) => name === GLOBALS_TYPES_FILE || name.endsWith("/" + GLOBALS_TYPES_FILE));
@@ -146,6 +144,10 @@ export interface ITestFramework {
   /** The module format the runner loads test files as, which the tests are
    * therefore compiled to — whatever the package itself is built as. */
   module: PinnedJSTarget["module"];
+  /** Whether the runner supplies the types of the test globals it installs
+   * (its install's `test-globals.d.ts`); otherwise an ordinary `@types`
+   * package the target declares does, as `@types/jest` does for jest. */
+  globalsTypes: boolean;
 }
 
 /**
@@ -157,9 +159,9 @@ export interface ITestFramework {
  * CommonJS test cannot `require`, and does its own hoisting over ES modules.
  */
 export const TEST_FRAMEWORKS: ReadonlyMap<string, ITestFramework> = new Map([
-  ["node", { runner: "JS_NODE_TEST_RUNNER", module: "commonjs" }],
-  ["jest", { runner: "JS_JEST_RUNNER", module: "commonjs" }],
-  ["vitest", { runner: "JS_VITEST_RUNNER", module: "esm" }],
+  ["node", { runner: "JS_NODE_TEST_RUNNER", module: "commonjs", globalsTypes: true }],
+  ["jest", { runner: "JS_JEST_RUNNER", module: "commonjs", globalsTypes: false }],
+  ["vitest", { runner: "JS_VITEST_RUNNER", module: "esm", globalsTypes: false }],
 ]);
 
 /** What a test target requires, as written (unmaterialized): everything the
@@ -274,7 +276,7 @@ export function compileAndRunTests(
        *
        * Built as the package would build it, stylesheets included — a test
        * importing one gets the CSS the package ships, not raw Sass. */
-      return compileContents(context, sources, [...deps, ...testDeps, runnerGlobalsTypes(runner)], {
+      return compileContents(context, sources, [...deps, ...testDeps, framework.globalsTypes ? runnerGlobalsTypes(runner) : EMPTY_FILESET], {
         packageName: settings.packageName,
         constraints: Constraints.of({ JS_TARGET: formatJSTarget(testTarget) }),
         /* A distinct label: the test compile is its own work item (its tree

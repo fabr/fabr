@@ -61,7 +61,7 @@ import {
 } from "../JSPackage";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
 import { assertOnePackagePerName } from "../PnPManifest";
-import { CHANGES_FILE, CHANGES_FLAG, DEPS_REPORT_FILE, DEPS_REPORT_FLAG, STATE_DIR, STATE_DIR_FLAG } from "../pnp/ReadSet";
+import { CHANGES_FILE, CHANGES_FLAG, DEPS_REPORT_FILE, DEPS_REPORT_FLAG, STATE_DIR, STATE_DIR_FLAG } from "@fabr-build/js-tools";
 
 /** Where the toolchain is mounted in the working dir — disjoint from src/node_modules/build. */
 const TOOL_DIR = ".tools/tsc";

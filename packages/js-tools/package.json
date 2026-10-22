@@ -1,0 +1,24 @@
+{
+  "name": "@fabr-build/js-tools",
+  "version": "0.1.0",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "homepage": "https://github.com/fabr/fabr",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "bin": {
+    "fabr-tsc": "build/bin/fabr-tsc.js",
+    "fabr-bundle": "build/bin/fabr-bundle.js",
+    "fabr-sass": "build/bin/fabr-sass.js",
+    "fabr-postcss": "build/bin/fabr-postcss.js",
+    "fabr-test-runner": "build/bin/fabr-test-runner.js",
+    "fabr-jest-runner": "build/bin/fabr-jest-runner.js",
+    "fabr-vitest-runner": "build/bin/fabr-vitest-runner.js"
+  },
+  "peerDependencies": {
+    "@fabr-build/core": "0.1.0"
+  },
+  "devDependencies": {
+    "@fabr-build/core": "0.1.0"
+  }
+}

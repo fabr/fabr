@@ -30,6 +30,7 @@
  */
 
 import { dependencyName, FabrError, FileSet, PackageFileSet, RewriteFn } from "@fabr-build/core";
+import type { IBundleEntry, IBundleOptions } from "@fabr-build/js-tools";
 import { JSTarget, soleModuleFormat } from "./JSPackage";
 
 /** Where esbuild writes and the rule collects the bundle output from. */
@@ -47,44 +48,6 @@ export function compiledName(name: string): string {
 export interface IBundleEntrySource {
   path: string;
   name: string;
-}
-
-export interface IBundleEntry {
-  in: string;
-  out: string;
-}
-
-/**
- * The options document fabr writes for the bundle driver — a plain, esbuild-free
- * description of the build. The driver maps it onto esbuild's BuildOptions and
- * owns the resolver plugin (membership + single-variant). Serialized to JSON, so
- * it stays content-addressed with no host paths.
- */
-export interface IBundleOptions {
-  /** Entry points to bundle, each with its output name. */
-  entries: IBundleEntry[];
-  /** Package names (dependency closure) to externalize — their imports survive
-   * verbatim; a bundled source importing one of these is left as-is. */
-  external: string[];
-  /** esbuild platform, from JS_TARGET's environment component. */
-  platform: "browser" | "node";
-  /** esbuild output format: esm, or (for non-esm) iife in the browser else cjs. */
-  format: "esm" | "cjs" | "iife";
-  /** esbuild target ES level (JS_TARGET's version component). */
-  target: string;
-  /** Minify per BUILD_TYPE. */
-  minify: boolean;
-  /** Linked external sourcemap (`//# sourceMappingURL=`) per BUILD_TYPE, or none. */
-  sourcemap: "linked" | false;
-  /** Where the driver writes outputs, relative to the working directory. */
-  outdir: string;
-  /** esbuild `define`: identifier -> replacement code text (the `defines` MAP,
-   * verbatim). Omitted when no defines were declared. */
-  define?: Record<string, string>;
-  /** esbuild `inject`: modules whose EXPORTS fill same-named free identifiers in
-   * every bundled module (the `js/node_globals` glue). Paths are relative to the
-   * working root. Omitted when nothing is injected. */
-  inject?: string[];
 }
 
 /** Every package name reachable from the given roots — the roots themselves plus

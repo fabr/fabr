@@ -50,7 +50,7 @@ import {
   TYPE_EXTENSION,
 } from "./JSPackage";
 import { NpmPublishIdentity } from "./NPMProtocol";
-import { encodeTargetPath } from "./pnp/PackageExports";
+import { encodeTargetPath } from "@fabr-build/js-tools";
 
 /** Fields fabr computes from the target itself — a `metadata` key naming one is
  *  rejected (it would be silently overridden), and a seed copy is dropped (fabr

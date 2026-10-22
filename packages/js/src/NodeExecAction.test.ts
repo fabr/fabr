@@ -50,7 +50,7 @@ import {
   IResolutionEdge,
   STATE_DIR,
   STATE_DIR_FLAG,
-} from "./pnp/ReadSet";
+} from "@fabr-build/js-tools";
 
 const NULL_LOG: Log = { log: () => undefined };
 
