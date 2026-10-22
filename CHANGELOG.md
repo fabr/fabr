@@ -6,10 +6,12 @@ version number.
 @fabr-build/core:
 - Split resolution and materialization explicitly to support pure dependency operations
 - Move cycle checking down to the low-level Computable to fix some missed cycles.
+- Circular dependency errors list the written references making up the cycle, closing one first.
 - Built packages now participate normally in dependency resolution, including ? and ! marks.
 - Add explicit 'PACKAGES' property type.
 - Repositories/namespaces now error if used unprojected rather than silently doing nothing.
-- Circular dependency errors list the written references making up the cycle, closing one first.
+- Generalize fabr_home to the full installed namespace.
+- Allow '-' in identifiers (property names)
 
 @fabr-build/cli:
 - Add `fabr deps`: print the dependency tree of targets or packages, marking conflicting versions `(!)`.

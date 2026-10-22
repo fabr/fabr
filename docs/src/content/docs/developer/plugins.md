@@ -241,7 +241,7 @@ composition is always through sub-targets.
 ## Repository types
 
 A repository answers references such as `@npm:semver:7.6.0`. A plugin contributes a repository
-type as `{ type, provider, declaresNamespace? }`, and a build file declares a repository of that
+type as `{ type, provider }`, and a build file declares a repository of that
 type (`npm_repository @npm { … }`).
 
 The `provider` is called once per build configuration that uses the repository, with the
@@ -259,10 +259,13 @@ interface that answers it:
 | `RepositoryLookup` | Each reference on its own (`resolve`, optionally `resolveFiles`). | `fabr_home` |
 | `RepositoryCollection` | A set the repository resolved itself (`member`). | `catalog` |
 
-With `declaresNamespace: true`, a declaration of the type also declares the namespace of its name:
-a name under it that nothing else declares is looked up in the repository. STD.fabr's
-`fabr_home @fabr-build` works this way, making packages installed with fabr available as
-`@fabr-build/<package>`.
+A namespace can answer names it does not declare through a repository: a property of the
+namespace's own name is its fallback, and a name under the namespace that nothing declares is a
+reference into the property's value. STD.fabr makes packages installed with fabr available as
+`@fabr-build/<package>` this way, with `fabr_home @fabr-home { }` and
+`default @fabr-build = @fabr-home:@fabr-build;`. `@fabr-home:@fabr-build` names the scope rather
+than a package: `getRepositoryRef` may return a `NamespaceRef` naming a namespace of the
+repository's names, which a name projected into it goes on from.
 
 ## Current limitations
 

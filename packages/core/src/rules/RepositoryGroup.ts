@@ -436,7 +436,14 @@ interface ContentRoute {
  * joint resolution exactly as a registry-served package does.
  */
 function routeValue(groupName: string, routeName: string, sources: readonly SourceRef[]): RegistryRoute | ContentRoute {
-  const repositories = sources.filter((source): source is NamespaceRef => source instanceof NamespaceRef).map(named => named.repository);
+  const named = sources.filter((source): source is NamespaceRef => source instanceof NamespaceRef);
+  const within = named.find(source => source.name !== "");
+  if (within !== undefined) {
+    throw new FabrError(`route '${routeName}' in ${groupName} names a namespace of a repository ('${within.toString()}'), not a repository`).withHelp(
+      "a route's value is a reference to a declared registry, e.g. `@fortawesome/* = @fa;`: the key selects the package names"
+    );
+  }
+  const repositories = named.map(source => source.repository);
   if (repositories.length === 0) {
     if (sources.length !== 1) {
       throw new FabrError(

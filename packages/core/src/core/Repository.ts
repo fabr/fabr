@@ -52,10 +52,13 @@ export interface Repository {
    * the identity portion it resolves (npm: `name:version`) and packs anything
    * left over into the ref as a projection *into* the resolved content (the
    * written-name rule rides on it) — so the caller holds one deferred ref, with
-   * nothing of the name left to interpret. Throws if this repository cannot be
-   * read from, or the name is no valid identity.
+   * nothing of the name left to interpret. Where the name is a namespace of
+   * the repository's names rather than one (a scope, `@fabr-build`), vend the
+   * {@link NamespaceRef} naming it instead, for the name to go on from.
+   * Throws if this repository cannot be read from, or the name is no valid
+   * identity.
    */
-  getRepositoryRef(name: Name): RepositoryRef;
+  getRepositoryRef(name: Name): RepositoryRef | NamespaceRef;
 
   /**
    * Vend a publish ref: validate `name` as an address in this repository's

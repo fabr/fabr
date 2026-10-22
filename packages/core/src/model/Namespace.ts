@@ -63,11 +63,17 @@ export class Namespace {
   /* If it's an explicit namespace, keep it here; leave undefined for implicit ones */
   private decl?: INamespaceDecl;
 
-  /** The declaration answering names under this namespace that nothing
-   *  declares — and the name of the namespace itself, as a target. */
-  private fallback?: ITargetDecl;
+  /** The property of this namespace's own name: it answers names under the
+   *  namespace that nothing declares (the rest of the name is a projection
+   *  into its value), and the namespace's name itself. */
+  private fallback?: IPropertyEntry;
 
-  constructor(content: Map<string, ContentType>, targetDefs: Map<string, ITargetDefDecl>, decl?: INamespaceDecl, fallback?: ITargetDecl) {
+  constructor(
+    content: Map<string, ContentType>,
+    targetDefs: Map<string, ITargetDefDecl>,
+    decl?: INamespaceDecl,
+    fallback?: IPropertyEntry
+  ) {
     this.content = content;
     this.decl = decl;
     this.targetDefs = targetDefs;
@@ -119,9 +125,6 @@ export class Namespace {
     for (const [key, item] of this.content) {
       const qualified = prefix === "" ? key : prefix + NAME_COMPONENT_SEPARATOR + key;
       if (item instanceof Namespace) {
-        if (item.fallback !== undefined) {
-          result.push({ name: qualified, decl: item.fallback });
-        }
         result.push(...item.getTargets(qualified));
       } else if (item.kind === DeclKind.Target) {
         result.push({ name: qualified, decl: item });
@@ -136,19 +139,24 @@ export class Namespace {
    * configuration surface (`BUILD_TYPE`, `JS_TARGET`, …). */
   public getProperties(prefix = ""): { name: string; decl: IPropertyDecl }[] {
     const result: { name: string; decl: IPropertyDecl }[] = [];
+    /* One row per NAME: this documents the configuration surface, so a
+     * property declared once per platform is still one property. The first
+     * declaration represents it (a default only if nothing else declares it). */
+    const add = (name: string, entry: IPropertyEntry): void => {
+      const first = entry.decls[0] ?? entry.defaults[0];
+      if (first) {
+        result.push({ name, decl: first });
+      }
+    };
     for (const [key, item] of this.content) {
       const qualified = prefix === "" ? key : prefix + NAME_COMPONENT_SEPARATOR + key;
       if (item instanceof Namespace) {
+        if (item.fallback !== undefined) {
+          add(qualified, item.fallback);
+        }
         result.push(...item.getProperties(qualified));
       } else if (item.kind === DeclKind.Property) {
-        /* One row per NAME: this documents the configuration surface, so a
-         * property declared once per platform is still one property. The first
-         * declaration represents it (a default only if nothing else declares
-         * it). */
-        const first = item.decls[0] ?? item.defaults[0];
-        if (first) {
-          result.push({ name: qualified, decl: first });
-        }
+        add(qualified, item);
       }
     }
     return result;

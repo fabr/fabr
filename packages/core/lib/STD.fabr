@@ -190,15 +190,17 @@ targetdef repository_group {
 }
 
 #
-# The packages installed with fabr itself: its plugins and the tools they use.
-# The standard library declares `fabr_home @fabr-build { }`, so that a name such
-# as `@fabr-build/sass-pnp-importer` refers to the installed package, at the
-# version that is installed, unless the project declares a target of that name.
+# The packages installed with fabr itself — its plugins and the tools they use —
+# at the versions installed. `@fabr-home:@fabr-build/sass-pnp-importer` is the
+# installed package, whatever the project declares.
 #
 targetdef fabr_home {
 }
 
-fabr_home @fabr-build { }
+fabr_home @fabr-home { }
+
+# Supply @fabr-build packages directly into the root namespace.
+default @fabr-build = @fabr-home:@fabr-build;
 
 #
 # A named switch. A target turns a flag on by listing it in its `deps`, and the

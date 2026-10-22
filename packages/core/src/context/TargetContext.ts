@@ -323,7 +323,7 @@ export abstract class TargetContext {
       if (!namespace) {
         throw new FabrError(`'${name.toString()}' does not name a repository`);
       }
-      return namespace.repository.getRepositoryPublishRef(match.rest).withRepositoryName(match.name);
+      return namespace.getRepositoryPublishRef(match.rest, match.name);
     });
   }
 

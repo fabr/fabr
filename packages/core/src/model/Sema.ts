@@ -30,10 +30,7 @@ import { PluginContribution } from "../rules/Types";
  * become the model's rule tables, so rule selection is per-model, not global.
  */
 export function toBuildModel(files: IBuildFileContents[], log: Log, contributions: PluginContribution[]): BuildModel {
-  const namespaceTypes = new Set(
-    contributions.flatMap(contribution => (contribution.repositories ?? []).filter(type => type.declaresNamespace === true).map(type => type.type))
-  );
-  const builder = new NamespaceBuilder(log, namespaceTypes);
+  const builder = new NamespaceBuilder(log);
 
   files.forEach(file => {
     file.namespaces.forEach(ns => builder.addNamespaceDecl(ns));

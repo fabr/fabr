@@ -24,8 +24,10 @@ import * as path from "node:path";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
+import { NamespaceRef } from "../core/NamespaceRef";
 import { PackageFileSet, reachablePackages } from "../core/PackageFileSet";
 import { FSFileSource } from "../core/FSFileSource";
+import { RepositoryRef } from "../core/Repository";
 import { FabrHomeRepository } from "./FabrHome";
 
 /** A fixture installation: its `node_modules`, holding fabr's own package
@@ -64,12 +66,21 @@ function toPromise<T>(computable: Computable<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.then(resolve, reject));
 }
 
-const repository = (): FabrHomeRepository => new FabrHomeRepository("@fabr-build", new FSFileSource("/"), host);
+const repository = (): FabrHomeRepository => new FabrHomeRepository(new FSFileSource("/"), host);
+
+/** The reference `repo` vends for `name`, where that names a package. */
+function packageRef(repo: FabrHomeRepository, name: Name): RepositoryRef {
+  const ref = repo.getRepositoryRef(name);
+  if (!(ref instanceof RepositoryRef)) {
+    throw new Error(`'${name.toString()}' vended no package reference`);
+  }
+  return ref;
+}
 
 describe("FabrHomeRepository", () => {
   it("delivers the installed package, its nested node_modules left out, with its installed dependencies", async () => {
     const repo = repository();
-    const reference = repo.getRepositoryRef(Name.fromLiteral("tool"));
+    const reference = packageRef(repo, Name.fromLiteral("@fabr-build/tool"));
     const delivered = (await toPromise(repo.resolve(reference))) as PackageFileSet;
     expect(delivered.packageName).to.equal("@fabr-build/tool");
     /* Asked for by its full name, so an edge to it is named as the package is. */
@@ -91,7 +102,7 @@ describe("FabrHomeRepository", () => {
       { "index.js": "helper" }
     );
     const repo = repository();
-    const reference = repo.getRepositoryRef(Name.fromLiteral("tool"));
+    const reference = packageRef(repo, Name.fromLiteral("@fabr-build/tool"));
     const delivered = (await toPromise(repo.resolve(reference))) as PackageFileSet;
     expect(reference.applyTo(delivered)).to.equal(delivered);
     const tools = reachablePackages([delivered]).filter(pkg => pkg.packageName === "@fabr-build/tool");
@@ -102,7 +113,7 @@ describe("FabrHomeRepository", () => {
   it("chains the reference's provenance into every package it delivers for it", async () => {
     const repo = repository();
     const step = { kind: "test-step" };
-    const reference = repo.getRepositoryRef(Name.fromLiteral("tool")).withStep(step);
+    const reference = packageRef(repo, Name.fromLiteral("@fabr-build/tool")).withStep(step);
     const delivered = (await toPromise(repo.resolve(reference))) as PackageFileSet;
     for (const pkg of reachablePackages([delivered])) {
       expect(pkg.origin?.kind).to.equal("test-step");
@@ -111,20 +122,26 @@ describe("FabrHomeRepository", () => {
   });
 
   it("refuses an override marker: an installed package is not resolved", () => {
-    expect(() => repository().getRepositoryRef(Name.fromLiteral("tool!").withMarker())).to.throw(
-      "'tool!' is installed with fabr, not resolved, so an override marker means nothing on it"
+    expect(() => repository().getRepositoryRef(Name.fromLiteral("@fabr-build/tool!").withMarker())).to.throw(
+      "'@fabr-build/tool!' is installed with fabr, not resolved, so an override marker means nothing on it"
     );
   });
 
+  it("names a bare scope as the namespace of it, which a package name goes on from", () => {
+    const scope = repository().getRepositoryRef(Name.fromLiteral("@fabr-build"));
+    expect(scope).to.be.instanceOf(NamespaceRef);
+    expect((scope as NamespaceRef).name).to.equal("@fabr-build");
+  });
+
   it("projects into the package after a ':'", () => {
-    const ref = repository().getRepositoryRef(Name.fromLiteral("tool:lib/x.js"));
+    const ref = packageRef(repository(), Name.fromLiteral("@fabr-build/tool:lib/x.js"));
     expect(ref.name.toString()).to.equal("@fabr-build/tool");
     expect(ref.projections).to.have.lengthOf(1);
   });
 
   it("fails for a package not installed with fabr", async () => {
     const repo = repository();
-    const failure = await toPromise(repo.resolve(repo.getRepositoryRef(Name.fromLiteral("missing")))).then(
+    const failure = await toPromise(repo.resolve(packageRef(repo, Name.fromLiteral("@fabr-build/missing")))).then(
       () => undefined,
       (err: Error) => err.message
     );
@@ -138,14 +155,14 @@ describe("FabrHomeRepository", () => {
       { "index.js": "native" }
     );
     const repo = repository();
-    const delivered = (await toPromise(repo.resolve(repo.getRepositoryRef(Name.fromLiteral("native"))))) as PackageFileSet;
+    const delivered = (await toPromise(repo.resolve(packageRef(repo, Name.fromLiteral("@fabr-build/native"))))) as PackageFileSet;
     expect(delivered.dependencies).to.deep.equal([]);
   });
 
   it("names the installed manifest it cannot read", async () => {
     fs.writeFileSync(path.join(root, "node_modules", "helper", "package.json"), JSON.stringify({ version: 1 }));
     const repo = repository();
-    const failure = await toPromise<FileSet>(repo.resolve(repo.getRepositoryRef(Name.fromLiteral("tool")))).then(
+    const failure = await toPromise<FileSet>(repo.resolve(packageRef(repo, Name.fromLiteral("@fabr-build/tool")))).then(
       () => undefined,
       (err: Error) => err.message
     );
@@ -155,7 +172,7 @@ describe("FabrHomeRepository", () => {
   it("fails for a required dependency that is not installed", async () => {
     fs.rmSync(path.join(root, "node_modules", "helper"), { recursive: true });
     const repo = repository();
-    const failure = await toPromise<FileSet>(repo.resolve(repo.getRepositoryRef(Name.fromLiteral("tool")))).then(
+    const failure = await toPromise<FileSet>(repo.resolve(packageRef(repo, Name.fromLiteral("@fabr-build/tool")))).then(
       () => undefined,
       (err: Error) => err.message
     );

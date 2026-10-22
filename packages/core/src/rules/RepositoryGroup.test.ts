@@ -26,6 +26,7 @@ import { Computable } from "../core/Computable";
 import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { Name } from "../core/Name";
+import { NamespaceRef } from "../core/NamespaceRef";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { PublishableFileSet } from "../core/PublishableFileSet";
@@ -239,8 +240,10 @@ class FakeRegistry implements Repository, RepositoryReader<SemverVersion, Semver
     private readonly context: TargetContext
   ) {}
 
-  public getRepositoryRef(name: Name): RepositoryRef {
-    return vendPackageRef(this, this.format, name);
+  /** A bare scope names the namespace of it, as npm's naming allows. */
+  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+    const literal = name.toString();
+    return /^@[^/:]+$/.test(literal) ? new NamespaceRef(this, literal) : vendPackageRef(this, this.format, name);
   }
 
   public getRepositoryPublishRef(name: Name): never {
@@ -485,6 +488,12 @@ describe("repository_group (through the model)", () => {
     );
     const message = await failure(model, "t");
     expect(message).to.contain("route '@scope/*' in @deps maps a name prefix to package content");
+  });
+
+  it("rejects a namespace of a repository as a route's value", async () => {
+    const { model } = build(REGISTRIES + "repository_group @deps { @acme/* = @a:@acme; * = @b; }\ntest_deps t { deps = @deps:x:1.0.0; }\n");
+    const message = await failure(model, "t");
+    expect(message).to.contain("route '@acme/*' in @deps names a namespace of a repository ('@a:@acme'), not a repository");
   });
 
   it("rejects two routes that parse to one canonical key", async () => {

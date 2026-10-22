@@ -285,8 +285,7 @@ export class BuildContextImpl implements InternalBuildContext {
          * itself. */
         /* Stamp the alias the repository was reached by, as written — how the resolution layer
          * renders suggestions and progress in the user's own spelling. */
-        const ref = source.repository.getRepositoryRef(pattern);
-        references.push(ref.withRepositoryName(repositoryName ?? source.name));
+        references.push(source.getRepositoryRef(pattern, repositoryName));
       } else if (source instanceof PackageFileSet || source instanceof RunnableFileSet) {
         /* A projection into a package or a runnable defers as a FileSetRef, keeping a package's
          * identity and a runnable's launch machinery (its projection names an entry, not files).
@@ -1309,7 +1308,7 @@ export class BuildContextImpl implements InternalBuildContext {
     if (provider) {
       const context = new DeclaredTargetContext(target, this.targetDefOf(target.type), this, stack);
       return provider(context).then(
-        (provided): SourceRef[] => [isRepository(provided) ? new NamespaceRef(provided, context.name) : provided],
+        (provided): SourceRef[] => [isRepository(provided) ? new NamespaceRef(provided, "", undefined, context.name) : provided],
         err => {
           throw new DependencyFailedError(target, err);
         }

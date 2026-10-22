@@ -602,14 +602,22 @@ describe("Parser Tests", () => {
     );
   });
 
-  it("rejects '-'/'.' in identifier positions (property names, constraint keys)", () => {
-    /* `-`/`.` belong to SIMPLE_NAME (names), not IDENTIFIER (property names,
-     * keys, types), so a property named `a-b` can't start a statement. */
-    expect(parseInvalid("a-b = 1;")).to.deep.equal([
-      diagnosticBlock(1, 1, "Read Name but expected Statement", "a-b = 1;"),
+  it("accepts an interior '-' in identifier positions, but not '.'", () => {
+    /* `-` is an identifier char (`@fabr-build`); `.` belongs to SIMPLE_NAME
+     * (names), not IDENTIFIER (property names, keys, types). */
+    expect(summarize(parseValid("a-b = 1;\ndefault @fabr-build = @fabr-home;"))).to.deep.equal(
+      summary({ properties: { "a-b": ["1"] }, defaults: { "@fabr-build": ["@fabr-home"] } })
+    );
+    expect(
+      nameOf(parseValid("dep = mylib<a-b=1>;").properties[0].values[0])
+        .getConstraints()
+        .map(([key]) => key)
+    ).to.deep.equal(["a-b"]);
+    expect(parseInvalid("a.b = 1;")).to.deep.equal([
+      diagnosticBlock(1, 1, "Read Name but expected Statement", "a.b = 1;"),
     ]);
-    expect(parseInvalid("dep = mylib<a-b=1>;")).to.deep.equal([
-      diagnosticBlock(1, 13, "Read Name but expected a constraint key", "dep = mylib<a-b=1>;"),
+    expect(parseInvalid("dep = mylib<a.b=1>;")).to.deep.equal([
+      diagnosticBlock(1, 13, "Read Name but expected a constraint key", "dep = mylib<a.b=1>;"),
     ]);
   });
 

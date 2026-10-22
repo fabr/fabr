@@ -62,6 +62,7 @@ import { PackageFormat } from "../resolver/PackageFormat";
 import { Requirement } from "../resolver/Types";
 import { resolveBarePackage, vendPackageRef } from "../resolver/PackageResolver";
 import { RepositoryReader } from "../core/Repository";
+import { NamespaceRef } from "../core/NamespaceRef";
 import {
   CircularDependencyError,
   DependencyFailedError,
@@ -411,13 +412,13 @@ class TestRegistry implements Repository, RepositoryReader<SemverVersion, Semver
 let registries = 0;
 registerRepositoryProvider("test_registry", context => Computable.resolve(new TestRegistry(`${context.name}#${++registries}`, context.operation)));
 
-/** A repository answering every name under its namespace with a package of that
- * name, marked as its answer — a stand-in for `fabr_home`. */
+/** A repository answering every name with the package of that name, marked as
+ * its answer, and a bare scope with the namespace of it — a stand-in for
+ * `fabr_home`. */
 class TestNamespaceRepo implements Repository, RepositoryLookup {
-  constructor(private readonly namespace: string) {}
-
-  public getRepositoryRef(name: Name): RepositoryRef {
-    return RepositoryRef.written(this, name);
+  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
+    const literal = name.toString();
+    return /^@[^/:]+$/.test(literal) ? new NamespaceRef(this, literal) : RepositoryRef.written(this, name);
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
@@ -425,16 +426,10 @@ class TestNamespaceRepo implements Repository, RepositoryLookup {
   }
 
   public resolve(reference: RepositoryRef): Computable<FileSet> {
-    const name = `${this.namespace}/${reference.name}`;
-    return Computable.resolve(new PackageFileSet(new Map([["from-fallback", MemoryFile.from("")]]), name, "1.0.0"));
+    return Computable.resolve(new PackageFileSet(new Map([["from-fallback", MemoryFile.from("")]]), reference.name, "1.0.0"));
   }
 }
-testRepos.push({
-  type: "test_ns_repo",
-  declaresNamespace: true,
-  provider: context => Computable.resolve(new TestNamespaceRepo(context.name)),
-});
-registerRepositoryProvider("test_plain_ns_repo", context => Computable.resolve(new TestNamespaceRepo(context.name)));
+registerRepositoryProvider("test_ns_repo", () => Computable.resolve(new TestNamespaceRepo()));
 
 /* Every member any destination has been asked to package, in call order — the
  * probe behind the "packages only what is named" test. */
@@ -3007,8 +3002,8 @@ describe("contributed-lib-relative FILES", () => {
   });
 });
 
-describe("a namespace declared by a repository", () => {
-  const preamble = "targetdef test_ns_repo { }\ntargetdef test_plain_ns_repo { }\ntargetdef test_package { }\n";
+describe("a namespace's fallback property", () => {
+  const preamble = "targetdef test_ns_repo { }\ntargetdef test_package { }\ntest_ns_repo @root { }\n";
 
   function load(source: string): { model: ReturnType<typeof toBuildModel>; errors: string[] } {
     const errors: string[] = [];
@@ -3018,41 +3013,17 @@ describe("a namespace declared by a repository", () => {
   }
 
   /** Materialize `name` and report the package's name and whether the
-   * namespace's repository answered. */
+   * fallback's repository answered. */
   async function answer(model: ReturnType<typeof toBuildModel>, name: string): Promise<{ name: string; fallback: boolean }> {
     const [source] = await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine(name));
     const pkg = source as PackageFileSet;
     return { name: pkg.packageName, fallback: (await pkg.get("from-fallback")) !== undefined };
   }
 
-  it("answers an undeclared name under it through the repository", async () => {
-    const { model, errors } = load("test_ns_repo @ns { }\n");
-    expect(errors).to.deep.equal([]);
-    expect(await answer(model, "@ns/tool")).to.deep.equal({ name: "@ns/tool", fallback: true });
-  });
-
-  it("leaves a declared name to its declaration, whichever is declared first", async () => {
-    for (const source of ["test_ns_repo @ns { }\ntest_package @ns/tool { }\n", "test_package @ns/tool { }\ntest_ns_repo @ns { }\n"]) {
-      const { model, errors } = load(source);
-      expect(errors).to.deep.equal([]);
-      expect(await answer(model, "@ns/tool")).to.deep.equal({ name: "@ns/tool", fallback: false });
-      expect(await answer(model, "@ns/other")).to.deep.equal({ name: "@ns/other", fallback: true });
-    }
-  });
-
-  it("names the repository by the namespace's own name, and refuses it where files are wanted", async () => {
-    const { model } = load("test_ns_repo @ns { }\n");
-    const outcome = await Promise.resolve(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("@ns"))).then(
+  /** The innermost cause of materializing `name`, or "materialized". */
+  async function failure(model: ReturnType<typeof toBuildModel>, name: string): Promise<string> {
+    return Promise.resolve(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine(name))).then(
       () => "materialized",
-      (err: Error) => err.message
-    );
-    expect(outcome).to.equal("'@ns' names a repository, not a package or files");
-  });
-
-  it("refuses a repository named on its own among a target's packages", async () => {
-    const { model } = load("targetdef test_override { dep = PACKAGES; }\ntest_ns_repo @ns { }\ntest_override t { dep = @ns; }\n");
-    const outcome = await Promise.resolve(model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t"))).then(
-      () => "built",
       (err: Error) => {
         let cause: unknown = err;
         while (cause instanceof DependencyFailedError || cause instanceof ReferenceFailedError) {
@@ -3061,22 +3032,50 @@ describe("a namespace declared by a repository", () => {
         return (cause as Error).message;
       }
     );
-    expect(outcome).to.equal("'@ns' names a repository, not a package or files");
+  }
+
+  it("answers an undeclared name under the namespace as a projection into its value", async () => {
+    /* The value names the `@ns` scope of the repository, unresolved; the rest of
+     * the name goes on from it. */
+    const { model, errors } = load("default @ns = @root:@ns;\n");
+    expect(errors).to.deep.equal([]);
+    expect(await answer(model, "@ns/tool")).to.deep.equal({ name: "@ns/tool", fallback: true });
   });
 
-  it("still conflicts with an ordinary target of the namespace's name", () => {
-    expect(load("test_ns_repo @ns { }\ntest_package @ns { }\n").errors.join("\n")).to.match(/@ns/);
-    expect(load("test_package @ns { }\ntest_ns_repo @ns { }\n").errors.join("\n")).to.match(/@ns/);
+  it("leaves a declared name to its declaration, whichever is declared first", async () => {
+    for (const source of ["default @ns = @root:@ns;\ntest_package @ns/tool { }\n", "test_package @ns/tool { }\ndefault @ns = @root:@ns;\n"]) {
+      const { model, errors } = load(source);
+      expect(errors).to.deep.equal([]);
+      expect(await answer(model, "@ns/tool")).to.deep.equal({ name: "@ns/tool", fallback: false });
+      expect(await answer(model, "@ns/other")).to.deep.equal({ name: "@ns/other", fallback: true });
+    }
   });
 
-  it("allows one fallback per namespace", () => {
-    expect(load("test_ns_repo @ns { }\ntest_ns_repo @ns { }\n").errors.join("\n")).to.match(/@ns/);
+  it("takes an ordinary declaration over a default one, as any property does", async () => {
+    const { model, errors } = load("default @ns = @nowhere;\n@ns = @root:@ns;\ntest_package @ns/tool { }\n");
+    expect(errors).to.deep.equal([]);
+    expect(await answer(model, "@ns/other")).to.deep.equal({ name: "@ns/other", fallback: true });
   });
 
-  it("gives an ordinary repository type no namespace of its own", () => {
-    /* Without the flag a repository is an ordinary target of its name, which a
-     * namespace of that name conflicts with. */
-    expect(load("test_plain_ns_repo @ns { }\ntest_package @ns/tool { }\n").errors.join("\n")).to.match(/conflicts with/);
+  it("refuses the namespace's own name where files are wanted, as its value is a repository", async () => {
+    const { model } = load("default @ns = @root:@ns;\ntest_package @ns/tool { }\n");
+    expect(await failure(model, "@ns")).to.match(/names a repository, not a package or files/);
+  });
+
+  it("conflicts with a target of the namespace's name", () => {
+    expect(load("default @ns = @root:@ns;\ntest_package @ns/tool { }\ntest_package @ns { }\n").errors.join("\n")).to.match(/@ns/);
+    expect(load("test_package @ns { }\ntest_package @ns/tool { }\ndefault @ns = @root:@ns;\n").errors.join("\n")).to.match(/@ns/);
+  });
+
+  it("allows one declaration of it per tier", () => {
+    expect(load("@ns = @root:@ns;\n@ns = @root:@ns;\ntest_package @ns/tool { }\n").errors.join("\n")).to.match(/@ns/);
+  });
+
+  it("gives a repository no namespace of its own", () => {
+    /* Only a property is a namespace's fallback: a repository declared under the
+     * namespace's name is an ordinary target of it, which the namespace
+     * conflicts with. */
+    expect(load("test_ns_repo @ns { }\ntest_package @ns/tool { }\n").errors.join("\n")).to.match(/conflicts with/);
   });
 });
 

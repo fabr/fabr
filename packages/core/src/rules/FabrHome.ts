@@ -18,9 +18,10 @@
  */
 
 /**
- * `fabr_home`: packages installed with fabr itself, found as node finds them
- * from fabr's own code — the way plugins are. Its declaration declares the
- * namespace of its name (STD.fabr: `fabr_home @fabr-build { }`), so
+ * `fabr_home`: the packages installed with fabr itself, found as node finds
+ * them from fabr's own code — the way plugins are. A reference names a package
+ * by its full name (`@fabr-home:@fabr-build/sass-pnp-importer`); STD.fabr makes
+ * its `@fabr-build` scope the `@fabr-build` namespace's fallback, so
  * `@fabr-build/<package>` resolves here unless the project declares the name.
  *
  * A delivery is the installed package's files (less its nested `node_modules`)
@@ -32,6 +33,7 @@ import { Computable } from "../core/Computable";
 import { FabrError, toError } from "../core/Errors";
 import { FileSet, FileSource, IFile } from "../core/FileSet";
 import { Name, NamePartKind } from "../core/Name";
+import { NamespaceRef } from "../core/NamespaceRef";
 import { PackageFileSet, PackageGraphBuilder } from "../core/PackageFileSet";
 import { chainSteps, IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
 import { RefSource, Repository, RepositoryLookup, RepositoryPublishRef, RepositoryRef } from "../core/Repository";
@@ -186,22 +188,22 @@ function installedPackage(
 }
 
 /**
- * The repository a `fabr_home` declaration answers its namespace with: a
- * reference names a package in the namespace (`sass-pnp-importer` for
- * `@fabr-build/sass-pnp-importer`), with an optional `:projection` into it.
+ * The repository a `fabr_home` declaration is: a reference names an installed
+ * package (`@fabr-build/sass-pnp-importer`), with an optional `:projection`
+ * into it; a bare scope (`@fabr-build`) names the scope, for a package name
+ * to go on from.
  */
 export class FabrHomeRepository implements Repository, RepositoryLookup {
   /** `files` is a source over absolute paths (the run's absolute-path source);
    *  packages are looked up as node looks them up from `resolveFrom`. */
   constructor(
-    private readonly namespace: string,
     private readonly files: FileSource,
     private readonly resolveFrom: string = INSTALLED_FROM
   ) {}
 
-  /** Vend the reference to the package `name` names under this namespace,
-   *  by its full package name (`@fabr-build/<name>`), as it is installed. */
-  public getRepositoryRef(name: Name): RepositoryRef {
+  /** Vend the reference to the installed package `name` names, or the
+   *  namespace of a bare scope. */
+  public getRepositoryRef(name: Name): RepositoryRef | NamespaceRef {
     if (name.getMarker() !== undefined) {
       throw new FabrError(`'${name.toString()}' is installed with fabr, not resolved, so an override marker means nothing on it`).withHelp(
         "write the reference without the marker"
@@ -209,9 +211,12 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
     }
     const literal = name.getLiteralPrefix();
     const colon = literal.indexOf(":");
+    if (colon === -1 && !name.hasGlob() && /^@[^/]+$/.test(literal)) {
+      return new NamespaceRef(this, literal);
+    }
     return colon === -1
-      ? new RepositoryRef(this, { name: `${this.namespace}/${name.toBaseString()}`, versionConstraint: undefined, renameTo: name.getRenameTo()?.toString() })
-      : new RepositoryRef(this, { name: `${this.namespace}/${literal.substring(0, colon)}`, versionConstraint: undefined }).find(name.substring(colon + 1));
+      ? new RepositoryRef(this, { name: name.toBaseString(), versionConstraint: undefined, renameTo: name.getRenameTo()?.toString() })
+      : new RepositoryRef(this, { name: literal.substring(0, colon), versionConstraint: undefined }).find(name.substring(colon + 1));
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
@@ -237,8 +242,6 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
 export function fabrHomeRegistration(resolveFrom: string = INSTALLED_FROM): RepositoryRegistration {
   return {
     type: "fabr_home",
-    declaresNamespace: true,
-    provider: (context: TargetContext) =>
-      Computable.resolve(new FabrHomeRepository(context.name, context.execution.absFileSource, resolveFrom)),
+    provider: (context: TargetContext) => Computable.resolve(new FabrHomeRepository(context.execution.absFileSource, resolveFrom)),
   };
 }

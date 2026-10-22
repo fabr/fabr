@@ -50,10 +50,11 @@ import { FabrError } from "../core/Errors";
  * The three name tiers form a widening ladder, classified purely by the
  * characters a bare token contains — narrowest first:
  *
- * - `IDENTIFIER` — `@`/`_`/alphanumeric only. The tier for things the grammar
- *   NAMES atomically: keywords, property names, constraint keys, target *types*.
- * - `SIMPLE_NAME` — IDENTIFIER plus interior `/`, `-`, `.` (`@fabr-build/js`,
- *   `my-target`, `lib/utils`, `lodash.merge`). The tier for a *declared name* or
+ * - `IDENTIFIER` — `@`/`_`/alphanumeric, plus interior `-` (`@fabr-build`,
+ *   `my-target`). The tier for things the grammar NAMES atomically: keywords,
+ *   property names, constraint keys, target *types*.
+ * - `SIMPLE_NAME` — IDENTIFIER plus interior `/` and `.` (`@fabr-build/js`,
+ *   `lib/utils`, `lodash.merge`). The tier for a *declared name* or
  *   a simple path — anything the grammar accepts as its own name — and the base
  *   of a reference that carries no `:`.
  * - `NAME` — anything wider: contains `:` (a reference/projection separator, so
@@ -342,16 +343,16 @@ function isFirstIdentChar(ch: number): boolean {
 }
 
 /* The interior char classes behind the {@link TokenType} name tiers. IDENTIFIER
- * and SIMPLE_NAME both start like an identifier; SIMPLE_NAME's extras (`/ - .`)
+ * and SIMPLE_NAME both start like an identifier; their extras (`-`, and `/ .`)
  * are interior-only, so a leading `.`/`-`/`/` (a relative include `./x`, a
  * version `1.2.3`) stays a NAME. `:` is NOT a SIMPLE_NAME char — it bumps a token
  * to the NAME tier (see the {@link TokenType} doc). */
 function isIdentChar(ch: number): boolean {
-  return isFirstIdentChar(ch) || isDigit(ch);
+  return isFirstIdentChar(ch) || isDigit(ch) || ch === CHAR_DASH;
 }
 
 function isSimpleNameChar(ch: number): boolean {
-  return isIdentChar(ch) || ch === CHAR_SLASH || ch === CHAR_DASH || ch === CHAR_DOT;
+  return isIdentChar(ch) || ch === CHAR_SLASH || ch === CHAR_DOT;
 }
 
 function* codepoints(text: string): Generator<number> {
@@ -379,7 +380,7 @@ function isIdentifier(text?: string): text is string {
 }
 
 /** True iff `text` is a SIMPLE_NAME: starts like an identifier, body is
- * identifier chars plus `/`, `-`, `.` (a superset of {@link isIdentifier}). */
+ * identifier chars plus `/` and `.` (a superset of {@link isIdentifier}). */
 function isSimpleName(text: string): boolean {
   const first = text.codePointAt(0);
   if (first === undefined || !isFirstIdentChar(first)) return false;

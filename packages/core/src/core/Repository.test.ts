@@ -25,7 +25,8 @@ import { FileSetRef } from "./FileSetRef";
 import { MemoryFile } from "./MemoryFS";
 import { Name } from "./Name";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
-import { dependenciesOn, renamedAs, Repository, RepositoryLookup, RepositoryRef } from "./Repository";
+import { NamespaceRef } from "./NamespaceRef";
+import { dependenciesOn, renamedAs, Repository, RepositoryLookup, RepositoryPublishRef, RepositoryRef, RepositoryWriter } from "./Repository";
 import { ResolutionContext } from "../resolver/Types";
 import { bindProvided, collectLists } from "../context/CollectionPoint";
 import { parseName } from "../model/Parser";
@@ -119,6 +120,40 @@ class StubRepository implements Repository {
     return Computable.resolve(new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}`)]]), name, "1.0.0"));
   }
 }
+
+describe("NamespaceRef", () => {
+  /** A repository vending every reference and publish ref it is asked for, as
+   *  asked. */
+  class VendingRepository implements Repository, RepositoryLookup {
+    public getRepositoryRef(name: Name): RepositoryRef {
+      return RepositoryRef.written(this, name);
+    }
+
+    public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
+      const [coordinate, version] = name.toString().split(":");
+      return new RepositoryPublishRef({} as RepositoryWriter, { name: coordinate, version });
+    }
+
+    public resolve(): Computable<FileSet> {
+      throw new Error("not resolved");
+    }
+  }
+  const vending = new VendingRepository();
+
+  it("vends a reference within its namespace, stamped with the repository's written name", () => {
+    const scope = new NamespaceRef(vending, "@acme", undefined, "@registry");
+    const ref = scope.getRepositoryRef(Name.fromLiteral("widget")) as RepositoryRef;
+    expect(ref.name).to.equal("@acme/widget");
+    expect(ref.repositoryName).to.equal("@registry");
+    expect((new NamespaceRef(vending).getRepositoryRef(Name.fromLiteral("widget")) as RepositoryRef).name).to.equal("widget");
+  });
+
+  it("vends a publish ref within its namespace, as it does a reference", () => {
+    const scope = new NamespaceRef(vending, "@acme", undefined, "@registry");
+    expect(scope.getRepositoryPublishRef(Name.fromLiteral("widget:1.0.0"), "@acme").toString()).to.equal("@acme:@acme/widget:1.0.0");
+    expect(scope.getRepositoryPublishRef(Name.fromLiteral("widget:1.0.0")).toString()).to.equal("@registry:@acme/widget:1.0.0");
+  });
+});
 
 /** The consuming-side surface the resolution layer wants — enough for tests
  * whose repositories deliver per reference (nothing joint to memoize). */
