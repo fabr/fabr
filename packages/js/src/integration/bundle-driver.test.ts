@@ -34,7 +34,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { FileSet, IFile, MemoryFile, PackageFileSet, dependenciesOn } from "@fabr-build/core";
-import { PNP_DATA_FILE } from "@fabr-build/js-tools";
+import { PNP_DATA_FILE, SOURCE_OWNER_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { pnpManifestOf, treeMountOf } from "../PnPManifest";
 import { BundleDriver } from "@fabr-build/js-tools";
 
@@ -338,6 +338,111 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
       'console.log(JSON.stringify([require("left").v, require("right").v]));\n'
     );
     assert.equal(await bundleAndRun("entry.js"), JSON.stringify(["dep1.0.0", "dep2.0.0"]));
+  });
+
+  it("names every source of its map by the reference resolving to it", async () => {
+    /* `left` ships its own map naming its source by reference, as a package
+     * fabr built does; every other file is named by the step's table. */
+    const { manifest } = stage();
+    const left = manifest.packages.find(pkg => pkg.packageName === "left")!;
+    const leftTree = path.join(work, "store", path.basename(treeMountOf(left)));
+    fs.appendFileSync(path.join(leftTree, "index.js"), "//# sourceMappingURL=index.js.map\n");
+    fs.writeFileSync(
+      path.join(leftTree, "index.js.map"),
+      JSON.stringify({ version: 3, sources: ["fabr:./left/src/index.ts"], names: [], mappings: "AAAA" })
+    );
+    fs.writeFileSync(path.join(work, "entry.js"), 'console.log(require("left").v);\n');
+    const table: Record<string, string> = { "entry.js": "./app/entry.js" };
+    for (const pkg of manifest.packages) {
+      for (const [name] of pkg as FileSet) {
+        table[`${treeMountOf(pkg)}/${name}`] = `@npm:${pkg.packageName}:${pkg.version}:${name}`;
+      }
+    }
+    fs.writeFileSync(path.join(work, SOURCE_PATHS_FILE), JSON.stringify(table));
+    fs.writeFileSync(
+      path.join(work, "options.json"),
+      JSON.stringify({ entries: [{ in: "entry.js", out: "bundle" }], external: [], platform: "node", format: "cjs", target: "es2021", minify: false, sourcemap: "linked", outdir: "out" })
+    );
+    const cwd = process.cwd();
+    try {
+      process.chdir(work);
+      await main(["--options=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, "app"]);
+    } finally {
+      process.chdir(cwd);
+    }
+    assert.equal(process.exitCode ?? 0, 0, "the bundle should have succeeded");
+    const sources = (JSON.parse(fs.readFileSync(path.join(work, "out", "bundle.js.map"), "utf8")) as { sources: string[] }).sources;
+    assert.deepEqual([...sources].sort(), [
+      "fabr:./app/entry.js",
+      "fabr:./left/src/index.ts",
+      "fabr:@npm:dep:1.0.0:index.js",
+      "fabr:@npm:shared:1.0.0:index.js",
+    ]);
+  });
+
+  it("names a source a package's own map names but the package does not ship by the package", async () => {
+    /* `left` ships `index.js` with a map under `dist/` naming `../src/index.ts`,
+     * which it left out: no reference resolves to it, but the package is known,
+     * and no staging path may reach the shipped map. */
+    const { manifest } = stage();
+    const left = manifest.packages.find(pkg => pkg.packageName === "left")!;
+    const leftTree = path.join(work, "store", path.basename(treeMountOf(left)));
+    fs.appendFileSync(path.join(leftTree, "index.js"), "//# sourceMappingURL=dist/index.js.map\n");
+    fs.mkdirSync(path.join(leftTree, "dist"), { recursive: true });
+    fs.writeFileSync(
+      path.join(leftTree, "dist", "index.js.map"),
+      JSON.stringify({ version: 3, sources: ["../src/index.ts"], sourcesContent: ["export const v = 1;\n"], names: [], mappings: "AAAA" })
+    );
+    fs.writeFileSync(path.join(work, "entry.js"), 'console.log(require("left").v);\n');
+    const table: Record<string, string> = { "entry.js": "./app/entry.js" };
+    for (const pkg of manifest.packages) {
+      for (const [name] of pkg as FileSet) {
+        table[`${treeMountOf(pkg)}/${name}`] = `@npm:${pkg.packageName}:${pkg.version}:${name}`;
+      }
+    }
+    fs.writeFileSync(path.join(work, SOURCE_PATHS_FILE), JSON.stringify(table));
+    fs.writeFileSync(
+      path.join(work, "options.json"),
+      JSON.stringify({ entries: [{ in: "entry.js", out: "bundle" }], external: [], platform: "node", format: "cjs", target: "es2021", minify: false, sourcemap: "linked", outdir: "out" })
+    );
+    const cwd = process.cwd();
+    try {
+      process.chdir(work);
+      await main(["--options=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, "app"]);
+    } finally {
+      process.chdir(cwd);
+    }
+    assert.equal(process.exitCode ?? 0, 0, "the bundle should have succeeded");
+    const text = fs.readFileSync(path.join(work, "out", "bundle.js.map"), "utf8");
+    assert.ok((JSON.parse(text) as { sources: string[] }).sources.includes(`fabr:@npm:left:${left.version}:src/index.ts`));
+    assert.ok(!text.includes(".fabr-tree"), "no staging path reaches the shipped map");
+  });
+
+  it("keeps a stylesheet's map entries naming its sources by reference", async () => {
+    /* `card.css` arrives as a css step ships it: its map names the authored
+     * stylesheet by reference. */
+    stage();
+    fs.writeFileSync(path.join(work, "card.css"), ".card {\n  color: red;\n}\n/*# sourceMappingURL=card.css.map */\n");
+    fs.writeFileSync(
+      path.join(work, "card.css.map"),
+      JSON.stringify({ version: 3, sources: ["fabr:./app/card.module.scss"], names: [], mappings: "AAAA;EACE" })
+    );
+    fs.writeFileSync(path.join(work, "entry.js"), 'require("./card.css");\n');
+    fs.writeFileSync(path.join(work, SOURCE_PATHS_FILE), JSON.stringify({ "entry.js": "./app/entry.js", "card.css": "app:card.css" }));
+    fs.writeFileSync(
+      path.join(work, "options.json"),
+      JSON.stringify({ entries: [{ in: "entry.js", out: "bundle" }], external: [], platform: "browser", format: "esm", target: "es2021", minify: false, sourcemap: "linked", outdir: "out" })
+    );
+    const cwd = process.cwd();
+    try {
+      process.chdir(work);
+      await main(["--options=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, "app"]);
+    } finally {
+      process.chdir(cwd);
+    }
+    assert.equal(process.exitCode ?? 0, 0, "the bundle should have succeeded");
+    const sources = (JSON.parse(fs.readFileSync(path.join(work, "out", "bundle.css.map"), "utf8")) as { sources: string[] }).sources;
+    assert.deepEqual(sources, ["fabr:./app/card.module.scss"]);
   });
 
   it("takes an entry point at a virtual location as that wiring", async () => {

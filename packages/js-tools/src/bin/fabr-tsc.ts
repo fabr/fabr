@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { runMain } from "../Main";
+import { runMain } from "../support/Main";
 import { EXIT_ERRORS, main } from "../tscDriver/tsc-driver";
 
 runMain(() => main(process.argv.slice(2)), EXIT_ERRORS);

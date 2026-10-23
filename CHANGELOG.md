@@ -21,6 +21,7 @@ version number.
   form (`"foo": "npm:mylib@1.2.3"`).
 - Split runtime tools out into their own js-tools package.
 - Add optional_provided_deps support.
+- Change source maps to generate fabr: urls w/ project-relative where possible.
 
 ## Fabr 0.3.0
 @fabr-build/core:

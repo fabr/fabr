@@ -30,6 +30,7 @@ const SOURCE_TREE: WritableSourceTree = {
   find: (name, prefix) => EMPTY_FILESET.find(name, prefix),
   get: name => EMPTY_FILESET.get(name),
   root: "/project",
+  locate: () => undefined,
   applyWriteBack: () => Computable.resolve([]),
 };
 

@@ -35,7 +35,7 @@ import { contentOf, Dependency, dependencyName, isPackage, Package, PackageFileS
 import { isRepositoryReader, RefSource, RepositoryReader, RepositoryRef, SourceRef } from "../core/Repository";
 import { TargetRef } from "../core/TargetRef";
 import { PackageRequest, ResolutionContext, Resolution, ResolvedRoot } from "./Types";
-import { chainSteps, IProvenanceStep } from "../core/Provenance";
+import { chainSteps, IProvenanceStep, ISourcePathStep, SOURCE_PATH_PROVENANCE } from "../core/Provenance";
 import type { Reference } from "../core/Reference";
 import { RunnableFileSet } from "../core/RunnableFileSet";
 import { PackageFormat } from "./PackageFormat";
@@ -980,10 +980,13 @@ class ResolutionGraph<V, C> {
        * package is not the name its content is fetched under. */
       const reference = this.resolution.rootReferences.get(id);
       node = builder.resolved(
-        { key: `${registry.identity} ${id}`, files: () => registry.fetch(selected.publishedName ?? selected.name, version) },
+        {
+          key: `${registry.identity} ${id}`,
+          files: () => registry.fetch(selected.publishedName ?? selected.name, version),
+        },
         selected.name,
         registry.format.versionToString(version),
-        reference === undefined ? this.originOf(selected) : this.rootOrigin(reference)
+        namedFrom(registry, selected.publishedName ?? selected.name, version, reference === undefined ? this.originOf(selected) : this.rootOrigin(reference))
       );
       this.nodes.set(id, node);
       pending.push([id, node]);
@@ -1131,7 +1134,7 @@ export function instantiatePackage<V, C>(registry: RepositoryReader<V, C>, refer
         req.name,
         shown,
         dependencies,
-        origin,
+        namedFrom(registry, req.name, version, origin),
         provided
       );
     })
@@ -1355,3 +1358,20 @@ function validatedResolutionDoc<V, C>(
 export function packageRequest(reference: RepositoryRef): PackageRequest {
   return { reference, as: "package" };
 }
+
+/** The origin of the package `name` that `registry` publishes at `version`,
+ *  made with `origin`: under a step naming it by the reference that resolves to
+ *  it (`@npm:react:18.2.0`), where the registry has a name. */
+function namedFrom<V, C>(registry: RepositoryReader<V, C>, name: string, version: V, origin: IProvenanceStep | undefined): IProvenanceStep | undefined {
+  const declared = registry.name;
+  if (declared === undefined) {
+    return origin;
+  }
+  const step: ISourcePathStep = {
+    kind: SOURCE_PATH_PROVENANCE,
+    sourcePath: `${declared}:${name}:${registry.format.versionToString(version)}`,
+    parent: origin,
+  };
+  return step;
+}
+

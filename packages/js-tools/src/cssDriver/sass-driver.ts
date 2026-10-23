@@ -45,7 +45,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ISassOptions, ISassSource } from "./Options";
 import { PnpResolver } from "../pnp/PnPResolver";
-import { IRawSourceMap, parseManifestPath, relativeToMap, relocateCssSources, sourceMapComment, writeOut } from "./Support";
+import { stagedReferences } from "../support/SourceMap";
+import { IRawSourceMap, parseManifestPath, referencedCssSources, relativeToMap, relocateCssSources, sourceMapComment, writeOut } from "./Support";
 
 /* Minimal structural typing for the slice of sass-embedded's API we use — it is
  * not a fabr dependency (it is fetched at build time), so its own types are not
@@ -92,6 +93,8 @@ export function sassFailure(rel: string, err: unknown): Error {
 interface ISassTools {
   compiler: ISassCompiler;
   importers?: ISassImporter[];
+  /** How a staged source is named in a map, where the step staged a table. */
+  referenceOf?: (staged: string, own?: string) => string | undefined;
 }
 
 /** Lower one Sass source and write everything the options document names for
@@ -118,7 +121,11 @@ async function processFile(source: ISassSource, options: ISassOptions, tools: IS
      * read. Sass reports its sources as absolute `file://` URLs, which relocate
      * against the staged root like any other. */
     const where = { root: process.cwd(), srcRoot: options.srcRoot, mapDir: path.dirname(path.join(options.outdir, source.css)) };
-    writeOut(options.outdir, source.map, JSON.stringify(relativeToMap(relocateCssSources(map, where), source.map)));
+    const finished =
+      tools.referenceOf === undefined
+        ? relativeToMap(relocateCssSources(map, where), source.map)
+        : referencedCssSources(map, source.map, where, tools.referenceOf);
+    writeOut(options.outdir, source.map, JSON.stringify(finished));
     writeOut(options.outdir, source.css, css + sourceMapComment(source.map));
     return;
   }
@@ -145,6 +152,12 @@ export async function main(argv: string[]): Promise<void> {
    * layout and needs no importer at all. */
   const resolver = PnpResolver.load(process.cwd(), []);
   const importers = resolver ? [pnpImporter().sassPnpImporter({ pnpApi: resolver })] : undefined;
+  /* Its maps name each source by the reference resolving to it, where the step
+   * staged their table; one of its own sources with none is named by the owner
+   * as the step's source root holds it. */
+  const referenceOf = stagedReferences(argv, process.cwd(), staged =>
+    staged.startsWith(`${options.srcRoot}/`) ? staged.slice(options.srcRoot.length + 1) : undefined
+  );
   const compiler = await sass.initAsyncCompiler();
   try {
     /* Sass partials (`_foo.scss`) are absent from this list by construction:
@@ -152,7 +165,7 @@ export async function main(argv: string[]): Promise<void> {
      * the rule names no outputs for them. They are still STAGED, because the
      * stylesheets that include them need them on disk. */
     for (const source of options.sources) {
-      await processFile(source, options, { compiler, importers });
+      await processFile(source, options, { compiler, importers, referenceOf });
     }
   } finally {
     await compiler.dispose();

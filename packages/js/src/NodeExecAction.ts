@@ -41,7 +41,7 @@ import {
   writeFileSet,
 } from "@fabr-build/core";
 import { assembleNodeModules } from "./NodeModules";
-import { pnpManifestOf, TREE_MOUNT } from "./PnPManifest";
+import { pnpManifestOf, TREE_MOUNT, treeMountOf } from "./PnPManifest";
 import { PNP_DATA_FILE } from "@fabr-build/js-tools";
 import { IChangeLists, splitDepsPath, toRunReport } from "@fabr-build/js-tools";
 
@@ -62,15 +62,33 @@ import { IChangeLists, splitDepsPath, toRunReport } from "@fabr-build/js-tools";
  * during evaluation (a hit is proof the same inputs assembled cleanly). The
  * packages carry their `origin` in, so the diagnostic keeps its provenance.
  */
+/**
+ * The table a tool names its sources by: each staged file that has a source
+ * path, by its staged name. The action's key records each input's source path,
+ * so the table is a function of the key.
+ */
+function sourcePathTable(files: FileSet): MemoryFile {
+  const rows = [...files.sourcePaths].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  return MemoryFile.from(JSON.stringify(Object.fromEntries(rows)));
+}
+
 export const NODE_EXEC_ACTION: IBuildActionDefinition = {
   id: "js:exec",
   /* Tracks the exec body this delegates to, plus this step's own layouts; add
    * a `+ N` when what a layout produces changes. A change to the action-key
    * text's shape (see BuildAction.actionKey) already invalidates mechanically
    * and needs no bump here. */
-  version: EXEC_ACTION.version + 9,
+  version: EXEC_ACTION.version + 10,
   run: (action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> => {
     const deps = depsInput(action);
+    const sourcePathsName = optionalConfig(action, "sourcePaths");
+    /* The table, over the staged files and, where the rule asks, the packages'
+     * files where the layout puts them. */
+    const sourcePaths = (packages: FileSet): FileSet =>
+      sourcePathsName === undefined
+        ? EMPTY_FILESET
+        : FileSet.layout({ [sourcePathsName]: sourcePathTable(FileSet.unionAll(fileSetInput(action, "files"), packages)) });
+    const withPackages = optionalConfig(action, "packageSourcePaths") !== undefined;
     const files = FileSet.unionAll(fileSetInput(action, "files"), configFiles(action));
     const depsReportName = optionalConfig(action, "depsReport");
     const exec = (staged: FileSet, argv: string[], incremental?: Incremental, handover?: Handover): Computable<BuildResult> =>
@@ -105,7 +123,8 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
     if (layout !== PNP) {
       const mount = stringConfig(action, "mount");
       const mounted = assembleNodeModules(deps);
-      return exec(FileSet.unionAll(files, FileSet.layout({ [mount]: mounted })), argv);
+      const layout = FileSet.layout({ [mount]: mounted });
+      return exec(FileSet.unionAll(files, layout, sourcePaths(withPackages ? layout : EMPTY_FILESET)), argv);
     }
     /* Nothing is laid out: the packages become trees in the cache's pool, and
      * what each of them SEES is a row in the table staged beside the sources.
@@ -118,6 +137,7 @@ export const NODE_EXEC_ACTION: IBuildActionDefinition = {
         exec(
           FileSet.unionAll(
             files,
+            sourcePaths(withPackages ? FileSet.layout(Object.fromEntries(manifest.packages.map(pkg => [treeMountOf(pkg), pkg]))) : EMPTY_FILESET),
             FileSet.layout({
               [PNP_DATA_FILE]: manifest.toFile(),
               /* The pool itself, mounted once: the manifest addresses trees by
@@ -232,11 +252,21 @@ export function createNodeExecAction(
     depsReport?: string;
     stateDir?: string;
     changes?: string;
+    /** Where to stage the table of the source path of each file in `files`
+     * (see {@link sourcePathTable}). */
+    sourcePaths?: string;
+    /** Whether that table also names the packages' files, where the layout
+     * stages them. */
+    packageSourcePaths?: boolean;
   } = {}
 ): BuildAction {
+  /* Discoverable only where the tool reports what it read: otherwise the whole
+   * closure is the selection, and the package graph keys that in one line per
+   * package rather than one per file. */
+  const reported = options.depsReport !== undefined;
   return new BuildAction(
     NODE_EXEC_ACTION,
-    { files },
+    reported ? { files } : { files, deps },
     {
       argv,
       /* The report and the state directory are collected with the outputs, not
@@ -256,23 +286,26 @@ export function createNodeExecAction(
       ...(options.depsReport ? { depsReport: options.depsReport } : {}),
       ...(options.stateDir ? { stateDir: options.stateDir } : {}),
       ...(options.changes ? { changes: options.changes } : {}),
+      ...(options.sourcePaths ? { sourcePaths: options.sourcePaths } : {}),
+      ...(options.packageSourcePaths ? { packageSourcePaths: "true" } : {}),
     },
-    /* The packages are the tool's **discoverable deps**: it is given the whole
+    /* Where the tool reports its reads, the packages are its **discoverable deps**: it is given the whole
      * closure and reads a handful of declaration files out of it, so `deps`
      * leaves the anchor and the entry is keyed on the run's reported reads —
-     * translated back to the input packages (see {@link selectionOf}) — or on
-     * the whole deps manifest where the tool reports nothing (see
-     * {@link depsReport}). Editing a dependency a reporting compile never
+     * translated back to the input packages (see {@link selectionOf}). Editing a dependency a reporting compile never
      * opened then invalidates nothing; the mount and layout options stay in
      * the anchor and keep a table install apart from a tree one. Keying
      * needs no tree, so no closure is declined — a cross-generation version
      * cycle, which only PnP can deliver, keys like everything else. */
-    { deps },
+    reported ? { deps } : undefined,
     options.label,
     /* A tool told where to keep state, or where to find what moved, is one that
      * diffs — so the cache is asked to record what this build was made from.
      * Nothing else pays for a record nothing reads. */
-    options.stateDir !== undefined || options.changes !== undefined
+    options.stateDir !== undefined || options.changes !== undefined,
+    undefined,
+    /* The table names `files` always, and the packages where the rule asks. */
+    options.sourcePaths === undefined ? [] : options.packageSourcePaths ? ["files", "deps"] : ["files"]
   );
 }
 
@@ -429,10 +462,10 @@ function collectedWith(outputs: string, depsReport: string | undefined, stateDir
   return bookkeeping.length === 0 ? outputs : [...bookkeeping, outputs];
 }
 
-/** The discoverable `deps`: the direct deps as delivered, which the step
- * assembles. */
+/** The `deps`: the direct deps as delivered, which the step assembles —
+ * discoverable where the tool reports its reads, an ordinary input otherwise. */
 function depsInput(action: BuildAction): FileSet[] {
-  const value = action.discoverable?.deps;
+  const value = action.discoverable?.deps ?? action.inputs.deps;
   if (!Array.isArray(value)) {
     throw new FabrError(`Input 'deps' must be a list of filesets`);
   }

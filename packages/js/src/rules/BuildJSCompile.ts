@@ -61,7 +61,17 @@ import {
 } from "../JSPackage";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
 import { assertOnePackagePerName } from "../PnPManifest";
-import { CHANGES_FILE, CHANGES_FLAG, DEPS_REPORT_FILE, DEPS_REPORT_FLAG, STATE_DIR, STATE_DIR_FLAG } from "@fabr-build/js-tools";
+import {
+  CHANGES_FILE,
+  CHANGES_FLAG,
+  DEPS_REPORT_FILE,
+  DEPS_REPORT_FLAG,
+  SOURCE_OWNER_FLAG,
+  SOURCE_PATHS_FILE,
+  SOURCE_PATHS_FLAG,
+  STATE_DIR,
+  STATE_DIR_FLAG,
+} from "@fabr-build/js-tools";
 
 /** Where the toolchain is mounted in the working dir — disjoint from src/node_modules/build. */
 const TOOL_DIR = ".tools/tsc";
@@ -425,6 +435,10 @@ function compileTypescript(context: TargetContext, { srcs: srcSets, deps, resour
               STATE_DIR,
               CHANGES_FLAG,
               CHANGES_FILE,
+              SOURCE_PATHS_FLAG,
+              SOURCE_PATHS_FILE,
+              SOURCE_OWNER_FLAG,
+              context.buildReference(),
             ],
             { base: TOOL_DIR }
           ),
@@ -445,6 +459,7 @@ function compileTypescript(context: TargetContext, { srcs: srcSets, deps, resour
             depsReport: DEPS_REPORT_FILE,
             stateDir: STATE_DIR,
             changes: CHANGES_FILE,
+            sourcePaths: SOURCE_PATHS_FILE,
             /* The sources' own package identity is a row like any other, which
              * is how a package's references to itself resolve without the
              * compiler ever searching for them. */

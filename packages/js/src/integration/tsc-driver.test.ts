@@ -38,6 +38,9 @@ import {
   type PnpDependencyTarget,
   PnpResolver,
   serializeDriverMemo,
+  SOURCE_OWNER_FLAG,
+  SOURCE_PATHS_FILE,
+  SOURCE_PATHS_FLAG,
   toChangeLists,
   toCompileTelemetry,
   toRunReport,
@@ -1447,6 +1450,39 @@ describe("emitting under a renamed extension", () => {
     stage(work.root, [], [], [], undefined, "commonjs");
     fs.writeFileSync(path.join(work.root, "src", "index.ts"), "export const value = 1;\n");
     expect(() => compile(work.root, ["--emit-extension", ".mjs"])).to.throw(/needs an ES-module emit/);
+  });
+});
+
+describe("naming sources in its maps", () => {
+  /** Compile `sources` with source maps on, under a staged table of source
+   *  paths and an owner, and answer each emitted map's `sources`. */
+  function compileNamed(sources: Record<string, string>, paths: Record<string, string>): { status: number; output: string; sourcesOf: (name: string) => unknown } {
+    const work = fixture();
+    stage(work.root, [], [], []);
+    const configPath = path.join(work.root, "tsconfig.json");
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    config.compilerOptions.sourceMap = true;
+    fs.writeFileSync(configPath, JSON.stringify(config));
+    for (const [name, text] of Object.entries(sources)) {
+      fs.writeFileSync(path.join(work.root, "src", name), text);
+    }
+    fs.writeFileSync(path.join(work.root, SOURCE_PATHS_FILE), JSON.stringify(paths));
+    const { status, output } = compile(work.root, [SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, "mylib<BUILD_TYPE=release>"]);
+    return {
+      status,
+      output,
+      sourcesOf: name => (JSON.parse(fs.readFileSync(path.join(work.root, "build", name), "utf8")) as { sources: unknown }).sources,
+    };
+  }
+
+  it("names a source by its source path, and one without by its owner", () => {
+    const { status, output, sourcesOf } = compileNamed(
+      { "index.ts": "export const a = 1;\n", "generated.ts": "export const b = 2;\n" },
+      { "src/index.ts": "./packages/mylib/src/index.ts" }
+    );
+    expect(status, output).to.equal(0);
+    expect(sourcesOf("index.js.map")).to.deep.equal(["fabr:./packages/mylib/src/index.ts"]);
+    expect(sourcesOf("generated.js.map")).to.deep.equal(["fabr:mylib<BUILD_TYPE=release>:generated.ts"]);
   });
 });
 

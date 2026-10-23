@@ -132,17 +132,24 @@ export class BuildAction {
      * content depends on: the files it is given are all it may draw content
      * from.
      */
-    public readonly reshape?: (output: FileSet) => FileSet | Computable<FileSet>
+    public readonly reshape?: (output: FileSet) => FileSet | Computable<FileSet>,
+    /**
+     * The inputs (of {@link inputs} or {@link discoverable}) whose files' source
+     * paths the step hands its tool. Only these carry source paths into the key
+     * and the recorded base: another input's source paths reach nothing the
+     * step produces.
+     */
+    public readonly sourcePathInputs: ReadonlyArray<string> = []
   ) {}
 
   /** @return a copy carrying the given display label */
   public withLabel(label: string): BuildAction {
-    return new BuildAction(this.step, this.inputs, this.config, this.discoverable, label, this.trackChangedFiles, this.reshape);
+    return new BuildAction(this.step, this.inputs, this.config, this.discoverable, label, this.trackChangedFiles, this.reshape, this.sourcePathInputs);
   }
 
   /** @return a copy whose output is given its delivered shape by `reshape`. */
   public withReshape(reshape: (output: FileSet) => FileSet | Computable<FileSet>): BuildAction {
-    return new BuildAction(this.step, this.inputs, this.config, this.discoverable, this.label, this.trackChangedFiles, reshape);
+    return new BuildAction(this.step, this.inputs, this.config, this.discoverable, this.label, this.trackChangedFiles, reshape, this.sourcePathInputs);
   }
 
   /**
@@ -182,7 +189,7 @@ export class BuildAction {
    * {@link preciseActionKey} — never under a bare anchor.
    */
   public actionKey(): string {
-    return `rule:${this.step.id}:${this.step.version}\n# inputs\n${manifestFileInputs(this.inputs)}\n# config\n${manifestConfig(
+    return `rule:${this.step.id}:${this.step.version}\n# inputs\n${manifestFileInputs(this.inputs, this.sourcePathInputs)}\n# config\n${manifestConfig(
       this.config
     )}`;
   }
@@ -266,7 +273,7 @@ function manifestConfigValue(value: ActionConfigValue): string {
     return "[" + value.map(element => JSON.stringify(element)).join(",") + "]";
   }
   if (value instanceof FileSet) {
-    return manifestFileInput(value);
+    return manifestFileInput(value, false);
   }
   return JSON.stringify(value.toGlobString());
 }
@@ -292,6 +299,10 @@ export interface INarrowedInput {
   /** The files the selection's paths landed on, each named by the flat
    * spelling ({@link joinDepsPath}) of the path that found it. */
   readonly resolved: FileSet;
+  /** The {@link FileSet.sourcePathsDigest} of each set `resolved`'s files were
+   * read from, where it is not empty, by the flat spelling of the route that
+   * reached it (a read's path less its file; empty for a loose member). */
+  readonly sourcePathsDigests: ReadonlyMap<string, string>;
   /** The paths that landed on nothing, as flat spellings. Unordered:
    * {@link preciseActionKey} sorts. */
   readonly absent: ReadonlyArray<string>;
@@ -308,12 +319,13 @@ export type INarrowedDeps = Record<string, INarrowedInput>;
 
 /**
  * @return the canonical manifest of an action's per-file inputs: keys in
- * sorted order, one `name=manifest` line each.
+ * sorted order, one `name=manifest` line each, those named in
+ * `sourcePathInputs` with their source paths.
  */
-export function manifestFileInputs(inputs: ActionFileInputs): string {
+export function manifestFileInputs(inputs: ActionFileInputs, sourcePathInputs: ReadonlyArray<string> = []): string {
   return Object.keys(inputs)
     .sort()
-    .map(name => `${name}=${manifestFileInput(inputs[name])}`)
+    .map(name => `${name}=${manifestFileInput(inputs[name], sourcePathInputs.includes(name))}`)
     .join("\n");
 }
 
@@ -333,32 +345,42 @@ function narrowedSections(used: INarrowedDeps): string {
   return Object.keys(used)
     .sort()
     .map(name => {
-      const { resolved, absent } = used[name];
-      return [`${name}=${manifestFileInput(resolved)}`, ...[...absent].sort().map(path => `${ABSENT_PREFIX}${encodeName(path)}`)].join(
-        "\n"
-      );
+      const { resolved, sourcePathsDigests, absent } = used[name];
+      const digests = [...sourcePathsDigests].map(([route, digest]) => `${SOURCE_PATHS_PREFIX}${route} ${digest}`).sort();
+      return [
+        `${name}=${manifestFileInput(resolved, false)}`,
+        ...digests,
+        ...[...absent].sort().map(path => `${ABSENT_PREFIX}${encodeName(path)}`),
+      ].join("\n");
     })
     .join("\n");
 }
 
+/** The line kind recording, in a precise key, what names the files read
+ * through one route. */
+const SOURCE_PATHS_PREFIX = "# source-paths ";
+
 /**
  * One per-file input as key material: the loose members' file manifests, then
- * the package graph as {@link manifestGraph} walks it. List order does not
+ * the package graph as {@link manifestGraph} walks it, each with its
+ * {@link FileSet.sourcePathsDigest} where `sourcePaths`. List order does not
  * participate; how a package is REACHED does.
  */
-function manifestFileInput(value: FileSet | ReadonlyArray<FileSet>): string {
+function manifestFileInput(value: FileSet | ReadonlyArray<FileSet>, sourcePaths: boolean): string {
   const members = [...new Set(Array.isArray(value) ? (value as FileSet[]) : [value as FileSet])];
+  const digest = (member: FileSet): string => (!sourcePaths || member.sourcePathsDigest === "" ? "" : ` ${member.sourcePathsDigest}`);
   const loose = members
     .filter(member => !(member instanceof PackageFileSet))
-    .map(member => `{\n${member.toManifest()}\n}`)
+    .map(member => `{\n${member.toManifest()}\n}${digest(member)}`)
     .sort();
-  return "{\n" + [...loose, ...manifestGraph(members)].join("\n") + "\n}";
+  return "{\n" + [...loose, ...manifestGraph(members, digest)].join("\n") + "\n}";
 }
 
 /**
  * The package graph as key material, in the same path vocabulary as a
  * discovered-deps record: one line per root and one per edge, each holding the
- * path the node is reached by, and its content hash.
+ * path the node is reached by, its content hash, and what `digest` gives it
+ * (its {@link FileSet.sourcePathsDigest}, or nothing).
  *
  * A package's own edges are walked at its FIRST-SEEN path only, so the count is
  * one line per root plus one per edge rather than one per distinct route (which
@@ -370,11 +392,9 @@ function manifestFileInput(value: FileSet | ReadonlyArray<FileSet>): string {
  * path is only well defined against a fixed order. Inert {@link RepositoryRef}
  * edges are omitted: an assembler cannot see through them.
  */
-function manifestGraph(members: ReadonlyArray<FileSet>): string[] {
+function manifestGraph(members: ReadonlyArray<FileSet>, digest: (pkg: FileSet) => string): string[] {
   const lines: string[] = [];
-  walkPackages(members, (pkg, route) =>
-    lines.push(`${route.join(" ")} ${pkg.toManifestHash()}`)
-  );
+  walkPackages(members, (pkg, route) => lines.push(`${route.join(" ")} ${pkg.toManifestHash()}${digest(pkg)}`));
   return lines;
 }
 

@@ -380,7 +380,8 @@ class TestRegistry implements Repository, RepositoryReader<SemverVersion, Semver
 
   constructor(
     public readonly identity: string,
-    public readonly operation: string
+    public readonly operation: string,
+    public readonly name: string
   ) {}
 
   public getRepositoryRef(name: Name): RepositoryRef {
@@ -410,7 +411,7 @@ class TestRegistry implements Repository, RepositoryReader<SemverVersion, Semver
 /* A fresh identity per instance: a resolution is memoized by it through the
  * cache, and each test's model is a fresh registry. */
 let registries = 0;
-registerRepositoryProvider("test_registry", context => Computable.resolve(new TestRegistry(`${context.name}#${++registries}`, context.operation)));
+registerRepositoryProvider("test_registry", context => Computable.resolve(new TestRegistry(`${context.name}#${++registries}`, context.operation, context.name)));
 
 /** A repository answering every name with the package of that name, marked as
  * its answer, and a bare scope with the namespace of it — a stand-in for
@@ -3632,6 +3633,28 @@ describe("a reference to a target", () => {
 
   beforeEach(() => {
     evaluated = [];
+  });
+
+  it("gives each file a target delivers the reference that resolves to it", async () => {
+    const config = configOf("gen g { }\nlib l { }\n");
+    const sourcePaths = async (name: string): Promise<Array<[string, string | undefined]>> => {
+      const [built] = await config.materialize(writtenOnCommandLine(name));
+      return [...(built as FileSet)].map(([file]) => [file, (built as FileSet).sourcePathOf(file)]);
+    };
+    expect(await sourcePaths("g")).to.deep.equal([["out.txt", "g:out.txt"]]);
+    expect(await sourcePaths("l")).to.deep.equal([["index.js", "l:index.js"]]);
+    /* With the configuration that tells the build apart. */
+    expect(await sourcePaths("g<FLAVOR=x>")).to.deep.equal([["out.txt", "g<FLAVOR=x>:out.txt"]]);
+  });
+
+  it("gives each file a registry delivers the reference that resolves to it", async () => {
+    const log = new LogFormatter(LogLevel.Info, () => undefined);
+    const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", "targetdef test_registry { }\ntest_registry @reg { }\n", log)], log, testContributions);
+    const config = model.getConfig(Constraints.of({}), execution);
+    const [pkg] = await config.materialize(writtenOnCommandLine("@reg:pkg:1.2.0"));
+    expect([...(pkg as FileSet)].map(([file]) => [file, (pkg as FileSet).sourcePathOf(file)])).to.deep.equal([
+      ["pkg/data.txt", "@reg:pkg:1.2.0:pkg/data.txt"],
+    ]);
   });
 
   it("hands a sub-target the packages it was given as they stand, provided requirements among them or not", async () => {

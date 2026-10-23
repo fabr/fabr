@@ -30,7 +30,9 @@ import type { Label } from "./Errors";
  * Provenance is a runtime-only annotation: it is reconstructed from the
  * project files on every run, is never serialized into the build cache (it may
  * change from run to run without affecting the cached content), and never
- * participates in manifests, cache keys, or content equality. Rendering is
+ * participates in manifests, cache keys, or content equality — except as a
+ * file's source path ({@link sourcePathOf}), which an action's key records for
+ * each of its inputs. Rendering is
  * deferred until an explanation is actually needed (typically the failure
  * path), so steps must be cheap to construct: hold references, don't compute.
  */
@@ -75,7 +77,7 @@ export function derivedFrom(from: string, by: string): IDerivedStep {
 export interface IRenderContext {
   /** The file path being explained, where relevant */
   path?: string;
-  /** Index of the step being rendered within its chain (0 = nearest) */
+  /** Index of the step being rendered among those that render something (0 = nearest) */
   stepIndex?: number;
   /**
    * Constraint keys to omit from "with k=v" annotations: the caller's ambient
@@ -100,15 +102,19 @@ export function registerProvenanceRenderer(kind: string, renderer: ProvenanceRen
 
 /**
  * Render a full provenance chain, nearest step first, concatenating each
- * step's notes. Steps with no registered renderer contribute a placeholder.
+ * step's notes. Steps with no registered renderer contribute a placeholder; a
+ * step whose renderer says nothing is not counted in `stepIndex`.
  */
 export function renderProvenance(step: IProvenanceStep | undefined, context: IRenderContext = {}): IDiagnosticNote[] {
   const notes: IDiagnosticNote[] = [];
   let index = 0;
   for (let current = step; current; current = current.parent) {
     const renderer = PROVENANCE_RENDERERS.get(current.kind);
-    notes.push(...(renderer ? renderer(current, { ...context, stepIndex: index }) : [{ message: `(${current.kind})` }]));
-    index++;
+    const rendered = renderer ? renderer(current, { ...context, stepIndex: index }) : [{ message: `(${current.kind})` }];
+    notes.push(...rendered);
+    if (rendered.length > 0) {
+      index++;
+    }
   }
   return notes;
 }
@@ -191,45 +197,152 @@ export function describeProvenance(step: IProvenanceStep | undefined): string | 
 }
 
 /**
- * Locate one named file's origin in the USER'S SOURCE TREE: given the step and
- * the file's path within the content that step explains, the absolute path the
- * file was read from — or undefined if this step can't say (content fabr
- * produced, or a step that doesn't track locations).
- *
- * The third dispatch on a chain, alongside rendering and describing, and asked
- * of provenance for the same reason: "where did this come from" is precisely
- * what a chain records, it is runtime-only ghost data, and a step that
- * *rearranges* files (a union, a mount) already knows how to rebase a path onto
- * its contributor — so the walk composes through assembly for free.
+ * How one kind of step names a file's source path — the text of the fabr
+ * reference that resolves to the file (`./src/a.ts`, `gen:made.ts`,
+ * `@npm:react:18.2.0:index.js`) — and what those names depend on. Registered
+ * together, since an action's key records the second in place of the first.
  */
-export type ProvenanceLocator = (step: IProvenanceStep, path: string) => string | undefined;
+export interface IProvenanceNaming {
+  /**
+   * Get the source path of the file named `path` within the content the step
+   * explains. `below` asks the steps beneath this one (its `parent` chain) for
+   * a name; a step that renames passes the name it had there, and one that
+   * stands for whole content (a target's build) answers only where nothing
+   * below does, so a file that passed through unchanged keeps the source path
+   * it had.
+   */
+  sourcePath(step: IProvenanceStep, path: string, below: (path: string) => string | undefined): string | undefined;
+  /**
+   * Get what the step's answers depend on, besides the names asked for, as
+   * text: the same text wherever the answers are the same, for every name.
+   * `below` gives the steps beneath's. Empty where the step and those beneath
+   * name nothing.
+   */
+  digest(step: IProvenanceStep, below: () => string): string;
+}
 
-const PROVENANCE_LOCATORS = new Map<string, ProvenanceLocator>();
+const PROVENANCE_NAMINGS = new Map<string, IProvenanceNaming>();
 
-export function registerProvenanceLocator(kind: string, locator: ProvenanceLocator): void {
-  PROVENANCE_LOCATORS.set(kind, locator);
+export function registerProvenanceNaming(kind: string, naming: IProvenanceNaming): void {
+  PROVENANCE_NAMINGS.set(kind, naming);
 }
 
 /**
- * Walk a chain for the source-tree path of the file named `path` within the
- * content it explains: the nearest step that can say wins, and a step that
- * can't is transparent (the walk continues to its parent, since a step that
- * merely annotates — a model reference, a target evaluation — doesn't move
- * files). A locator that rebases (see FileSet's merge provenance) recurses on
- * its own; only a step that genuinely repositions content needs to.
- *
- * @return the absolute source path, or undefined if nothing in the chain
- * sources the file from the user's tree (it was built, generated or fetched).
+ * Get the source path of the file named `path` within the content `step`
+ * explains: what the innermost step able to name it answers, a step of a kind
+ * that registered nothing passing the name through unchanged. Undefined where
+ * no reference reaches the file (it was made inside a sub-target, or read from
+ * outside the project).
  */
-export function locateSource(step: IProvenanceStep | undefined, path: string): string | undefined {
-  for (let current = step; current; current = current.parent) {
-    const located = PROVENANCE_LOCATORS.get(current.kind)?.(current, path);
-    if (located !== undefined) {
-      return located;
+export function sourcePathOf(step: IProvenanceStep | undefined, path: string): string | undefined {
+  if (step === undefined) {
+    return undefined;
+  }
+  const naming = PROVENANCE_NAMINGS.get(step.kind);
+  const below = (name: string): string | undefined => sourcePathOf(step.parent, name);
+  return naming === undefined ? below(path) : naming.sourcePath(step, path, below);
+}
+
+/**
+ * Get what the source paths of the content `step` explains depend on, besides
+ * the files' names: equal text means every name has the same source path.
+ * Empty where nothing in the chain names a file.
+ */
+export function sourcePathsDigestOf(step: IProvenanceStep | undefined): string {
+  if (step === undefined) {
+    return "";
+  }
+  const naming = PROVENANCE_NAMINGS.get(step.kind);
+  const below = (): string => sourcePathsDigestOf(step.parent);
+  return naming === undefined ? below() : naming.digest(step, below);
+}
+
+/**
+ * Get the text of a step that renames: what each name in `names` (new name →
+ * name beneath) was called, as the one prefix mapping every name follows —
+ * the name beneath is `[from, to]`'s `from` plus the name less `to` — or the
+ * whole table where no single mapping fits. Either way a function of the
+ * names alone.
+ */
+export function renamingText(names: ReadonlyMap<string, string>): string {
+  const mapping = prefixMappingOf(names);
+  if (mapping !== undefined) {
+    return JSON.stringify(mapping);
+  }
+  return JSON.stringify([...names].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)));
+}
+
+/** The `[from, to]` prefixes every entry of `names` follows, from the first
+ *  entry's longest common suffix; undefined where some entry does not. */
+function prefixMappingOf(names: ReadonlyMap<string, string>): [string, string] | undefined {
+  const first = names.entries().next();
+  if (first.done) {
+    return ["", ""];
+  }
+  const [name, was] = first.value;
+  let common = 0;
+  while (common < name.length && common < was.length && name[name.length - 1 - common] === was[was.length - 1 - common]) {
+    common++;
+  }
+  const to = name.slice(0, name.length - common);
+  const from = was.slice(0, was.length - common);
+  for (const [other, otherWas] of names) {
+    if (!other.startsWith(to) || otherWas !== from + other.slice(to.length)) {
+      return undefined;
     }
   }
-  return undefined;
+  return [from, to];
 }
+
+/** A digest naming a step's own part, `kind` and `own`, over the steps
+ *  beneath's: one line each. */
+export function namingDigest(kind: string, own: string, below: string): string {
+  return below === "" ? `${kind} ${own}` : `${kind} ${own}\n${below}`;
+}
+
+/**
+ * The step a content's provenance carries where a reference names the content
+ * whole: each file's source path is `<sourcePath>:<its name>`, where nothing
+ * beneath names it otherwise. A registry's package carries one, naming the
+ * package as `@npm:react:18.2.0` names it.
+ */
+export const SOURCE_PATH_PROVENANCE = "source-path";
+
+export interface ISourcePathStep extends IProvenanceStep {
+  readonly kind: typeof SOURCE_PATH_PROVENANCE;
+  /** The reference naming the content, as written. */
+  readonly sourcePath: string;
+}
+
+registerProvenanceNaming(SOURCE_PATH_PROVENANCE, {
+  sourcePath: (step, path, below) => below(path) ?? `${(step as ISourcePathStep).sourcePath}:${path}`,
+  digest: (step, below) => namingDigest(SOURCE_PATH_PROVENANCE, JSON.stringify((step as ISourcePathStep).sourcePath), below()),
+});
+/* Explains nothing a diagnostic needs: the steps beneath say why the content
+ * is here. */
+registerProvenanceRenderer(SOURCE_PATH_PROVENANCE, () => []);
+
+/**
+ * A step recording that a set's files were renamed: each new name to the name
+ * it had in the set beneath, so a name beneath is asked by the name it had
+ * there.
+ */
+export const RENAME_PROVENANCE = "rename";
+
+export interface IRenameStep extends IProvenanceStep {
+  readonly kind: typeof RENAME_PROVENANCE;
+  /** Each renamed file's name to its name beneath; a name not here is unchanged. */
+  readonly from: ReadonlyMap<string, string>;
+}
+
+registerProvenanceNaming(RENAME_PROVENANCE, {
+  sourcePath: (step, path, below) => below((step as IRenameStep).from.get(path) ?? path),
+  digest: (step, below) => {
+    const below_ = below();
+    return below_ === "" ? "" : namingDigest(RENAME_PROVENANCE, renamingText((step as IRenameStep).from), below_);
+  },
+});
+registerProvenanceRenderer(RENAME_PROVENANCE, () => []);
 
 registerProvenanceRenderer(DERIVED_PROVENANCE, (step, context): IDiagnosticNote[] => {
   const derived = step as IDerivedStep;

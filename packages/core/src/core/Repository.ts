@@ -174,6 +174,10 @@ export interface RepositoryReader<V, C> extends RequirementSource<V> {
   /** Stable identity for the resolution memo key, and nothing else (npm: the
    * registry url; a group: its serialized route table). */
   readonly identity: string;
+  /** The name the repository is declared as (`@npm`), by which each file of a
+   * package it delivers has its source path: `@npm:react:18.2.0:<file>`.
+   * Absent where it has none, and its files then have none. */
+  readonly name?: string;
   /**
    * An opaque discriminator of what a resolution is computed *for* — anything
    * beyond the roots that shapes the graph (npm: the target platform, which

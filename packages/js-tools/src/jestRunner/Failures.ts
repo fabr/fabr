@@ -27,12 +27,16 @@
  * raw one gets a wall of jestAdapterInit frames around the one line that
  * matters, so fabr calls the same formatter jest does.
  *
+ * Each frame naming a source by reference is first pointed at where the source
+ * is staged, which is the file jest's code frame reads.
+ *
  * Two adjustments, both because the surrounding report is fabr's and not jest's:
  * the `● suite › test` header is dropped (the report already names the test on
  * the line above), and jest's own four-space body indent is removed (the report
  * indents the detail itself, and two indents read as one deep one).
  */
 
+import { withStagedSources } from "../testRunner/Report";
 import { jestLibrary } from "./Tools";
 
 /** What the formatter reads off an assertion result. Circus supplies all of it;
@@ -59,7 +63,7 @@ export function formatFailures(test: IFormattableResult, projectConfig: unknown,
   return test.failureMessages.map((raw, index) => {
     /* One at a time: formatResultsErrors renders every failure it is given into
      * a single string, and these have to stay separable. */
-    const single = { ...test, failureMessages: [raw], failureDetails: [test.failureDetails?.[index]] };
+    const single = { ...test, failureMessages: [withStagedSources(raw)], failureDetails: [test.failureDetails?.[index]] };
     try {
       const formatted = util.formatResultsErrors([single], projectConfig, globalConfig, testPath);
       return formatted === null ? raw : presentable(formatted);

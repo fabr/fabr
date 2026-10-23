@@ -27,7 +27,17 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ITestResult } from "@fabr-build/core";
-import { buildReport, describeSnapshotFailure, formatTestFailures, formatTestSummary, reportPathOf } from "./Report";
+import { SOURCE_LOCATIONS_FILE } from "../support/SourceMap";
+import {
+  buildReport,
+  describeSnapshotFailure,
+  formatTestFailures,
+  formatTestSummary,
+  reportPathOf,
+  snapshotPathOf,
+  sourcePathOf,
+  withStagedSources,
+} from "./Report";
 
 function test(name: string, status: ITestResult["status"], extra?: Partial<ITestResult>): ITestResult {
   return { name, status, duration: 0, ...extra };
@@ -105,6 +115,44 @@ describe("reportPathOf", () => {
     const file = path.join(install, "build", "nomap.test.js");
     fs.writeFileSync(file, "");
     assert.equal(withInstallCwd(() => reportPathOf(file)), "nomap.test.js");
+  });
+
+  describe("a map naming its source by reference", () => {
+    const referenced = (compiled: string, entry: string): string => {
+      const file = path.join(install, "build", compiled);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, "");
+      fs.writeFileSync(`${file}.map`, JSON.stringify({ version: 3, sources: [entry], mappings: "" }));
+      return file;
+    };
+    fs.writeFileSync(path.join(install, SOURCE_LOCATIONS_FILE), JSON.stringify({ "./pkg/src/c.test.ts": "src/c.test.ts" }));
+
+    it("names it by the path the reference gives", () => {
+      const file = referenced("c.test.js", "fabr:./pkg/src/c.test.ts");
+      assert.equal(withInstallCwd(() => reportPathOf(file)), "pkg/src/c.test.ts");
+    });
+
+    it("finds where the installation stages it, and nothing where it records none", () => {
+      const file = referenced("c.test.js", "fabr:./pkg/src/c.test.ts");
+      assert.equal(withInstallCwd(() => sourcePathOf(file)), path.join(install, "src", "c.test.ts"));
+      const unstaged = referenced("d.test.js", "fabr:gen:d.test.ts");
+      assert.equal(withInstallCwd(() => sourcePathOf(unstaged)), undefined);
+    });
+
+    it("names its snapshots for the source's own file name", () => {
+      const file = referenced("e.test.js", "fabr:./pkg/src/e.test.ts");
+      assert.equal(withInstallCwd(() => snapshotPathOf(file)), path.join(install, "build", "__snapshots__", "e.test.ts.snap"));
+    });
+
+    it("points a stack's frames at where the installation stages their sources", () => {
+      const stack = ["Error: boom", "    at f (fabr:./pkg/src/c.test.ts:2:3)", "    at fabr:./pkg/src/c.test.ts:4:1", "    at g (fabr:gen:d.test.ts:1:1)"].join("\n");
+      assert.deepEqual(withInstallCwd(() => withStagedSources(stack)).split("\n"), [
+        "Error: boom",
+        `    at f (${path.join(install, "src", "c.test.ts")}:2:3)`,
+        `    at ${path.join(install, "src", "c.test.ts")}:4:1`,
+        "    at g (fabr:gen:d.test.ts:1:1)",
+      ]);
+    });
   });
 });
 

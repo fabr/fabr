@@ -77,7 +77,7 @@ import {
   splitDepsPath,
 } from "./Manifest";
 import { PackageFileSet } from "./PackageFileSet";
-import { mapComputable, mapObject, select } from "../support/Functional";
+import { mapComputable, mapObject } from "../support/Functional";
 import { registerTempTree, removeTempTree, writeFileSet } from "./Staging";
 import { CacheLink, SymlinkFile } from "./SymlinkFile";
 import { computableFind } from "./WorkList";
@@ -132,6 +132,9 @@ export interface IBuildState {
    * staged names. Present together with {@link IBuildState.discovered} or not
    * at all: the two are one diff base. */
   readonly inputs?: FileSet;
+  /** The source path each of {@link IBuildState.inputs} had, where it had one,
+   * by the same name. Present with `inputs`. */
+  readonly inputSourcePaths?: ReadonlyMap<string, string>;
   /** What the build tried to ACCESS of its discoverable inputs, successfully
    * or not — see {@link IDiscoveredBase}. */
   readonly discovered?: IDiscoveredBase;
@@ -488,7 +491,8 @@ export class BuildCache {
           options?.targetKey,
           options?.force ?? false,
           action?.inputs,
-          discoverable
+          discoverable,
+          action?.sourcePathInputs
         )
       );
     /* The entry's class — the key text's namespace, stamped into the manifest
@@ -503,7 +507,7 @@ export class BuildCache {
         return this.createEntry(anchorKey, inContext, options, undefined, action, discoverable, cls);
       }
       if (discoverable !== undefined) {
-        return this.cacheGetDiscovered(anchorKey, discoverable, options?.targetKey).then(
+        return this.cacheGetDiscovered(anchorKey, discoverable, action?.sourcePathInputs ?? [], options?.targetKey).then(
           hit => hit ?? this.createEntry(anchorKey, inContext, options, undefined, action, discoverable, cls)
         );
       }
@@ -523,9 +527,14 @@ export class BuildCache {
    * makes is probed, then the whole-discoverable key — where a non-reporting
    * run's entry lives, and which needs no record — last.
    */
-  private cacheGetDiscovered(anchorKey: string, discoverable: ActionFileInputs, targetKey?: string): Computable<FileSet | undefined> {
+  private cacheGetDiscovered(
+    anchorKey: string,
+    discoverable: ActionFileInputs,
+    sourcePathInputs: ReadonlyArray<string>,
+    targetKey?: string
+  ): Computable<FileSet | undefined> {
     const probe = (record: DiscoveredDeps, recordFile?: string): Computable<FileSet | undefined> => {
-      const preciseKey = hashString(preciseActionKey(anchorKey, narrowDeps(discoverable, record)));
+      const preciseKey = hashString(preciseActionKey(anchorKey, narrowDeps(discoverable, record, sourcePathInputs)));
       return this.cacheGet(preciseKey).then(entry => {
         if (entry !== undefined) {
           this.noteEntryServed(preciseKey, targetKey);
@@ -969,7 +978,7 @@ export class BuildCache {
           /* A step that reports nothing read is taken as having read all of
            * them, which is the selection mentioning no input: every input then
            * keys whole, and the lookup reconstructs that key with no record. */
-          const narrowed = discoverable === undefined ? undefined : narrowDeps(discoverable, selection ?? new Map());
+          const narrowed = discoverable === undefined ? undefined : narrowDeps(discoverable, selection ?? new Map(), action?.sourcePathInputs);
           const entryKey = narrowed === undefined ? key : hashString(preciseActionKey(key, narrowed));
           /* The base is what the key was just made of, from the same bag the
            * key's own serialization walks — so the record and the key cannot
@@ -977,7 +986,7 @@ export class BuildCache {
            * non-discoverable inputs' rows) and what was ACCESSED (the rows and
            * absences the discoverable deps narrow to). */
           const inputs =
-            action?.trackChangedFiles !== true ? undefined : recordedInputs(action.inputs, Object.keys(discoverable ?? {}));
+            action?.trackChangedFiles !== true ? undefined : recordedInputs(action.inputs, Object.keys(discoverable ?? {}), action.sourcePathInputs);
           const discovered = inputs === undefined ? undefined : recordedDiscovered(narrowed);
           /* Entry first, records second, and only for a run that produced one: a
            * red run commits nothing and records nothing, which is what keeps
@@ -1253,6 +1262,7 @@ export class BuildCache {
             ? {}
             : {
                 inputs: this.rowsAsFiles(inputs.rows),
+                inputSourcePaths: new Map(inputs.rows.flatMap(row => (row.extra === undefined ? [] : [[row.name, decodeName(row.extra)]]))),
                 discovered: { files: this.rowsAsFiles(discovered.rows), absent: discovered.absent },
               }),
           incrementalState,
@@ -1267,7 +1277,9 @@ export class BuildCache {
    * in uningested and their blobs are not checked. */
   private rowsAsFiles(rows: ReadonlyArray<IManifestRow>): FileSet {
     return new FileSet(
-      new Map(rows.map(row => [row.name, new BuildFile(this.blobRoot, row.hash, row.name, row.mode, "")])),
+      new Map(
+        rows.map(row => [row.name, new BuildFile(this.blobRoot, row.hash, row.name, row.mode, "")])
+      ),
       undefined,
       CANONICAL
     );
@@ -2230,6 +2242,8 @@ export class ActionContext {
    *   {@link changedFiles}; absent for a demand that tracks nothing.
    * @param discoverable the action's discoverable inputs, which decide which
    *   half of the comparison a name is judged in.
+   * @param sourcePathInputs the inputs whose source paths the comparison
+   *   counts (see {@link BuildAction.sourcePathInputs}).
    */
   constructor(
     private readonly cache: BuildCache,
@@ -2238,7 +2252,8 @@ export class ActionContext {
     private readonly targetKey?: string,
     private readonly force = false,
     private readonly inputs?: ActionFileInputs,
-    private readonly discoverable?: ActionFileInputs
+    private readonly discoverable?: ActionFileInputs,
+    private readonly sourcePathInputs: ReadonlyArray<string> = []
   ) {}
 
   /** A streaming CAS-output factory: bytes are hashed as written and placed
@@ -2288,7 +2303,14 @@ export class ActionContext {
     return this.record().then(state =>
       state?.inputs === undefined || state.discovered === undefined || this.inputs === undefined
         ? undefined
-        : diffBuildState(this.inputs, this.discoverable, state.inputs, state.discovered)
+        : diffBuildState(
+            this.inputs,
+            this.discoverable,
+            this.sourcePathInputs,
+            state.inputs,
+            state.inputSourcePaths ?? new Map(),
+            state.discovered
+          )
     );
   }
 
@@ -2365,7 +2387,13 @@ class BuildFile implements IFile {
    * backing blob, which is read-only. Reapplied when the file is exported or
    * packed. The mime likewise rides the manifest, so a cache-served file
    * classifies with no read. */
-  constructor(root: string, hash: string, name: string, public mode: number, public readonly mime: string) {
+  constructor(
+    root: string,
+    hash: string,
+    name: string,
+    public mode: number,
+    public readonly mime: string
+  ) {
     this.root = root;
     this.hash = hash;
     this.name = name;
@@ -2386,7 +2414,7 @@ class BuildFile implements IFile {
   }
 
   public isSameFile(file: IFile): boolean {
-    return file.getAbsPath() === this.getAbsPath() && file.sourcePath === undefined;
+    return file.getAbsPath() === this.getAbsPath();
   }
 
   public getAbsPath(): string {
@@ -2448,19 +2476,23 @@ function isProcessAlive(pid: number): boolean {
  * run tried to ACCESS — and a loose member's rows landing here would read as
  * staged names that are never staged, i.e. as a deletion every build.
  */
-function recordedInputs(inputs: ActionFileInputs, discoverable: ReadonlyArray<string>): string {
+function recordedInputs(inputs: ActionFileInputs, discoverable: ReadonlyArray<string>, sourcePathInputs: ReadonlyArray<string>): string {
   const excluded = new Set(discoverable);
   return Object.keys(inputs)
     .sort()
     .filter(name => !excluded.has(name))
     .flatMap(name => {
       const value = inputs[name];
+      const withSourcePaths = sourcePathInputs.includes(name);
       /* Sorted by NAME, per member: canonical against the content, so an edit
        * moves a row's hash and never its place. */
       return (Array.isArray(value) ? value : [value]).flatMap(member =>
         [...member]
           .sort(([left], [right]) => (left < right ? -1 : 1))
-          .map(([file, held]) => manifestLine(file, held.hash, held.mode))
+          .map(([file, held]) => {
+            const sourcePath = withSourcePaths ? member.sourcePaths.get(file) : undefined;
+            return manifestLine(file, held.hash, held.mode, sourcePath === undefined ? undefined : encodeName(sourcePath));
+          })
       );
     })
     .join("\n");
@@ -2502,7 +2534,9 @@ function baseRows(used: INarrowedDeps): string[] {
 function diffBuildState(
   current: ActionFileInputs,
   discoverable: ActionFileInputs | undefined,
+  sourcePathInputs: ReadonlyArray<string>,
   baseInputs: FileSet,
+  baseSourcePaths: ReadonlyMap<string, string>,
   baseDiscovered: IDiscoveredBase
 ): IChangedFiles {
   const added: string[] = [];
@@ -2510,23 +2544,24 @@ function diffBuildState(
   const deleted: string[] = [];
   /* The action's own half: the current non-discoverable inputs as one name
    * space, exactly how the recorded rows name them. */
-  const now = new Map<string, IFile>();
+  const now = new Map<string, { file: IFile; sourcePath: string | undefined }>();
   for (const name of Object.keys(current)) {
     if (discoverable?.[name] !== undefined) {
       continue;
     }
     const value = current[name];
+    const withSourcePaths = sourcePathInputs.includes(name);
     for (const member of Array.isArray(value) ? value : [value]) {
       for (const [file, held] of member) {
-        now.set(file, held);
+        now.set(file, { file: held, sourcePath: withSourcePaths ? member.sourcePaths.get(file) : undefined });
       }
     }
   }
-  for (const [name, file] of now) {
+  for (const [name, { file, sourcePath }] of now) {
     const was = baseInputs.getFile(name);
     if (was === undefined) {
       added.push(name);
-    } else if (was.hash !== file.hash) {
+    } else if (was.hash !== file.hash || baseSourcePaths.get(name) !== sourcePath) {
       changed.push(name);
     }
   }
@@ -2544,7 +2579,7 @@ function diffBuildState(
     const resolved = resolvePackagePath(members, splitDepsPath(name));
     if (resolved === undefined) {
       deleted.push(name);
-    } else if (resolved.hash !== was.hash) {
+    } else if (resolved.file.hash !== was.hash) {
       changed.push(name);
     }
   }
@@ -2556,9 +2591,18 @@ function diffBuildState(
   return { added: added.sort(), changed: changed.sort(), deleted: deleted.sort() };
 }
 
-export function narrowDeps(discoverable: ActionFileInputs, selection: DiscoveredDeps): INarrowedDeps {
+/**
+ * Narrow the discoverable inputs to `selection`, recording the source-path
+ * digest of each route read for the inputs named in `sourcePathInputs`.
+ */
+export function narrowDeps(
+  discoverable: ActionFileInputs,
+  selection: DiscoveredDeps,
+  sourcePathInputs: ReadonlyArray<string> = []
+): INarrowedDeps {
   return mapObject(discoverable, (input, value) => {
     const members = Array.isArray(value) ? value : [value];
+    const withSourcePaths = sourcePathInputs.includes(input);
     /* No discovery data for this input — the action believes it discoverable
      * and the run said nothing about it (a non-reporting tool, or a report
      * that omitted the input). The conservative default is applied HERE, once:
@@ -2566,17 +2610,24 @@ export function narrowDeps(discoverable: ActionFileInputs, selection: Discovered
      * reported, so nothing above this point can tell the two apart. */
     const selectedPaths = selection.get(input) ?? everythingPaths(members);
     const mapped = new Map<string, IFile>();
+    const sourcePathsDigests = new Map<string, string>();
     const absent: string[] = [];
     for (const path of selectedPaths) {
       const name = joinDepsPath(path);
       const resolved = resolvePackagePath(members, path);
       if (resolved) {
-        mapped.set(name, resolved);
+        mapped.set(name, resolved.file);
+        const digest = withSourcePaths ? resolved.holder.sourcePathsDigest : "";
+        if (digest !== "") {
+          /* The route is the flat name less its file: the parts before the last separator. */
+          const route = name.lastIndexOf(" ");
+          sourcePathsDigests.set(route < 0 ? "" : name.slice(0, route), digest);
+        }
       } else {
         absent.push(name);
       }
     }
-    return { resolved: new FileSet(mapped, undefined, CANONICAL), absent };
+    return { resolved: new FileSet(mapped, undefined, CANONICAL), sourcePathsDigests, absent };
   });
 }
 
@@ -2619,13 +2670,20 @@ function everythingPaths(members: ReadonlyArray<FileSet>): DepsPath[] {
  * decided a recorded path (a fallback-pool answer, an alias) were converted
  * to this form by the REPORTER — the cache replays, it never resolves.
  */
-function resolvePackagePath(members: ReadonlyArray<FileSet>, path: DepsPath): IFile | undefined {
-  if (path.length === 1) {
-    return select(members, member => (member.name === "" ? member.getFile(path[0]) : undefined))[0];
-  }
-  const pkg = path.slice(1, -1).reduce<FileSet | undefined>(
-    (prev, file) => (prev instanceof PackageFileSet ? prev.getDependency(file)?.package : undefined),
-    members.find(child => child.name === path[0])
-  );
-  return pkg instanceof FileSet ? pkg.getFile(path.at(-1)!) : undefined;
+function resolvePackagePath(
+  members: ReadonlyArray<FileSet>,
+  path: DepsPath
+): { file: IFile; holder: FileSet } | undefined {
+  const leaf = path.at(-1)!;
+  const holder =
+    path.length === 1
+      ? members.find(member => member.name === "" && member.getFile(leaf) !== undefined)
+      : path
+          .slice(1, -1)
+          .reduce<FileSet | undefined>(
+            (prev, file) => (prev instanceof PackageFileSet ? prev.getDependency(file)?.package : undefined),
+            members.find(child => child.name === path[0])
+          );
+  const file = holder instanceof FileSet ? holder.getFile(leaf) : undefined;
+  return file === undefined ? undefined : { file, holder: holder as FileSet };
 }

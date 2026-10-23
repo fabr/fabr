@@ -31,7 +31,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { FileSet, IFile, MemoryFile, PackageFileSet, dependenciesOn } from "@fabr-build/core";
 import type { ISassOptions } from "@fabr-build/js-tools";
-import { PNP_DATA_FILE } from "@fabr-build/js-tools";
+import { PNP_DATA_FILE, SOURCE_OWNER_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { pnpManifestOf, TREE_MOUNT, treeMountOf } from "../PnPManifest";
 import { relativeToMap, relocateCssSources, SassDriver, sourceMapComment } from "@fabr-build/js-tools";
 
@@ -105,7 +105,7 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
    * content's tree once, the manifest beside the sources — then lower `source`
    * and answer the CSS and its map's sources.
    */
-  async function lower(deps: PackageFileSet[], source: string): Promise<{ css: string; sources: string[] }> {
+  async function lower(deps: PackageFileSet[], source: string, named = false): Promise<{ css: string; sources: string[] }> {
     const manifest = pnpManifestOf(deps);
     const store = path.join(root, "store");
     fs.mkdirSync(store);
@@ -122,10 +122,20 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
     fs.writeFileSync(path.join(root, "src", "app.scss"), source);
     const options: ISassOptions = { sources: [{ path: "app.scss", css: "app.css", map: "app.css.map" }], srcRoot: "src", loadPaths: [], outdir: "out" };
     fs.writeFileSync(path.join(root, "options.json"), JSON.stringify(options));
+    /* Named: the table the step stages, the stylesheet and every package file. */
+    if (named) {
+      const table: Record<string, string> = { "src/app.scss": "./app/app.scss" };
+      for (const each of manifest.packages) {
+        for (const [name] of each as FileSet) {
+          table[`${treeMountOf(each)}/${name}`] = `@npm:${each.packageName}:${each.version}:${name}`;
+        }
+      }
+      fs.writeFileSync(path.join(root, SOURCE_PATHS_FILE), JSON.stringify(table));
+    }
     const cwd = process.cwd();
     try {
       process.chdir(root);
-      await main(["--manifest=options.json"]);
+      await main(named ? ["--manifest=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, "app"] : ["--manifest=options.json"]);
     } finally {
       process.chdir(cwd);
     }
@@ -179,5 +189,21 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
       sources.some(source => source.startsWith(`${TREE_MOUNT}/`) && source.endsWith("/_index.scss")),
       `a package's file is named by its tree: ${sources.join(", ")}`
     );
+  });
+
+  it("names every source by the reference resolving to it, a virtual location by its package", async () => {
+    const shared = files({ "package.json": "{}", "_index.scss": '@use "dep";\n.shared { v: dep.$v; }\n' });
+    const dep = (version: string): PackageFileSet => pkg("dep", version, { "_index.scss": `$v: "${version}";\n` });
+    const a = pkg("a", "1.0.0", { "_index.scss": '@forward "shared";\n' }, [new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("1.0.0")))]);
+    const b = pkg("b", "1.0.0", { "_index.scss": '@forward "shared";\n' }, [new PackageFileSet(shared, "shared", "1.0.0", dependenciesOn(dep("2.0.0")))]);
+    /* `shared`'s two wirings are one stored file, so both name it; `a` and `b`
+     * only forward, so map nothing. */
+    const { sources } = await lower([a, b], '@use "a";\n@use "b";\n.app { v: 1; }\n', true);
+    assert.deepEqual([...new Set(sources)].sort(), [
+      "fabr:./app/app.scss",
+      "fabr:@npm:dep:1.0.0:_index.scss",
+      "fabr:@npm:dep:2.0.0:_index.scss",
+      "fabr:@npm:shared:1.0.0:_index.scss",
+    ]);
   });
 });

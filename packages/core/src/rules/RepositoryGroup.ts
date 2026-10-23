@@ -173,7 +173,12 @@ export class RepositoryGroup<V, C>
     private readonly routes: Route<V, C>[]
   ) {}
 
-  /** The group's declared name (`@deps`), for miss diagnostics. */
+  /** The group's declared name (`@deps`), which what it delivers is named by. */
+  public get name(): string {
+    return this.context.name;
+  }
+
+  /** The group's declared name, for miss diagnostics. */
   private get groupName(): string {
     return this.context.name;
   }

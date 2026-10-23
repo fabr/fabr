@@ -26,7 +26,7 @@ import { FileSet, IFile } from "./FileSet";
 import { FSFileSource } from "./FSFileSource";
 import { MemoryFile } from "./MemoryFS";
 import { parseName } from "../model/Parser";
-import { locateSource } from "./Provenance";
+import { ISourcePathStep, SOURCE_PATH_PROVENANCE, sourcePathOf } from "./Provenance";
 import { IWriteBackCandidate, IWriteBackObserver, WriteBackFileSet, writeBackCandidates, writeBackFile } from "./WriteBack";
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {
@@ -50,32 +50,118 @@ function candidate(content: string, at: string): IWriteBackCandidate {
   };
 }
 
-describe("locateSource", () => {
-  it("gives the on-disk path a file in a source query came from", async () => {
+/** A tree whose files a reference from the project names, as the project's
+ * own source does. */
+class ProjectTree extends FSFileSource {
+  public override get sourcePathPrefix(): string {
+    return "./";
+  }
+}
+
+describe("sourcePathOf", () => {
+  it("names a file in a source query by its path from the project root", async () => {
     fs.mkdirSync(path.join(dir, "src"));
     fs.writeFileSync(path.join(dir, "src/a.txt"), "a");
-    const files = await new FSFileSource(dir).find(parseName("src:*.txt"));
+    const files = await new ProjectTree(dir).find(parseName("src:*.txt"));
     /* The projection stripped `src/`, so the result name alone cannot say where
      * the file was read from — which is exactly what the provenance step
      * records. */
     expect([...files].map(([name]) => name)).to.deep.equal(["a.txt"]);
-    expect(locateSource(files.origin, "a.txt")).to.equal(path.join(dir, "src/a.txt"));
+    expect(sourcePathOf(files.origin, "a.txt")).to.equal("./src/a.txt");
   });
 
-  it("follows a file through a union and a mount to its own source", async () => {
+  it("names nothing read from a tree no reference addresses", async () => {
     fs.writeFileSync(path.join(dir, "a.txt"), "a");
     const files = await new FSFileSource(dir).find(parseName("*.txt"));
+    expect(sourcePathOf(files.origin, "a.txt")).to.equal(undefined);
+  });
+
+  it("follows a file through a union, a mount and a rename to its own source", async () => {
+    fs.writeFileSync(path.join(dir, "a.txt"), "a");
+    const files = await new ProjectTree(dir).find(parseName("*.txt"));
     /* Assembly rebases before delegating, so a file's origin survives being
      * unioned with generated content and mounted under a prefix. */
     const generated = new FileSet(new Map<string, IFile>([["b.txt", MemoryFile.from("b")]]));
     const install = FileSet.layout({ lib: [FileSet.unionAll(files, generated)] });
-    expect(locateSource(install.origin, "lib/a.txt")).to.equal(path.join(dir, "a.txt"));
-    /* Generated content has no source location, and does not borrow one. */
-    expect(locateSource(install.origin, "lib/b.txt")).to.equal(undefined);
+    expect(sourcePathOf(install.origin, "lib/a.txt")).to.equal("./a.txt");
+    expect(install.mountedAt("top").sourcePathOf("top/lib/a.txt")).to.equal("./a.txt");
+    expect(install.rename(name => name.replace(/\.txt$/, ".out")).sourcePathOf("lib/a.out")).to.equal("./a.txt");
+    /* Generated content has no source path, and does not borrow one. */
+    expect(sourcePathOf(install.origin, "lib/b.txt")).to.equal(undefined);
+  });
+
+  it("names content a reference names whole by that reference, where nothing beneath names it", async () => {
+    fs.writeFileSync(path.join(dir, "a.txt"), "a");
+    const tree = await new ProjectTree(dir).find(parseName("*.txt"));
+    const generated = new FileSet(new Map<string, IFile>([["b.txt", MemoryFile.from("b")]]));
+    const step: ISourcePathStep = { kind: SOURCE_PATH_PROVENANCE, sourcePath: "gen" };
+    const built = FileSet.unionAll(tree, generated).withStep(step);
+    expect(built.sourcePathOf("b.txt")).to.equal("gen:b.txt");
+    /* A file passed through unchanged keeps its own. */
+    expect(built.sourcePathOf("a.txt")).to.equal("./a.txt");
+  });
+
+  it("names a file two contributors hold by the least of their source paths, whatever the union's order", () => {
+    const file = MemoryFile.from("same");
+    const named = (sourcePath: string): FileSet => {
+      const step: ISourcePathStep = { kind: SOURCE_PATH_PROVENANCE, sourcePath };
+      return new FileSet(new Map<string, IFile>([["a.txt", file]]), step);
+    };
+    const forward = FileSet.unionAll(named("y"), named("x"));
+    const backward = FileSet.unionAll(named("x"), named("y"));
+    expect([forward.sourcePathOf("a.txt"), backward.sourcePathOf("a.txt")]).to.deep.equal(["x:a.txt", "x:a.txt"]);
+    expect(forward.sourcePathsDigest).to.equal(backward.sourcePathsDigest);
+  });
+
+  it("digests what names the files: the same where every name is, different where any is not", () => {
+    const content = new Map<string, IFile>([["b.txt", MemoryFile.from("b")]]);
+    const named = (sourcePath: string): FileSet => {
+      const step: ISourcePathStep = { kind: SOURCE_PATH_PROVENANCE, sourcePath };
+      return new FileSet(content, step);
+    };
+    expect(named("gen").sourcePathsDigest).to.equal(named("gen").sourcePathsDigest);
+    expect(named("gen").sourcePathsDigest).to.not.equal(named("gen2").sourcePathsDigest);
+    expect(named("gen").mountedAt("lib").sourcePathsDigest).to.not.equal(named("gen2").mountedAt("lib").sourcePathsDigest);
+    expect(new FileSet(content).sourcePathsDigest).to.equal("");
+  });
+
+  it("digests a merge by its contributors' naming, not their content", () => {
+    const named = (sourcePath: string, files: [string, string][]): FileSet => {
+      const step: ISourcePathStep = { kind: SOURCE_PATH_PROVENANCE, sourcePath };
+      return new FileSet(new Map<string, IFile>(files.map(([name, text]) => [name, MemoryFile.from(text)])), step);
+    };
+    const merged = (a: [string, string][], b: [string, string][]): string =>
+      FileSet.unionAll(named("x", a), named("y", b)).sourcePathsDigest;
+    expect(merged([["a.txt", "one"]], [["b.txt", "b"]]), "an edit").to.equal(merged([["a.txt", "two"]], [["b.txt", "b"]]));
+    /* At one mount, which contributor holds a name decides its source path. */
+    expect(merged([["a.txt", "one"]], [["b.txt", "b"]]), "a move between contributors").to.not.equal(
+      merged([["b.txt", "b"]], [["a.txt", "one"]])
+    );
+    /* At disjoint mounts the name alone decides. */
+    const laidOut = (a: [string, string][]): string =>
+      FileSet.layout({ x: named("x", a), y: named("y", [["b.txt", "b"]]) }).sourcePathsDigest;
+    expect(laidOut([["a.txt", "one"]]), "a file added at a disjoint mount").to.equal(laidOut([["a.txt", "one"], ["c.txt", "c"]]));
+  });
+
+  it("digests a tree read and a rename by the prefixes their names follow, where one mapping fits", async () => {
+    fs.mkdirSync(path.join(dir, "src"));
+    fs.writeFileSync(path.join(dir, "src", "a.ts"), "a");
+    const one = await new ProjectTree(dir).find(parseName("src:*.ts"));
+    fs.writeFileSync(path.join(dir, "src", "b.ts"), "b");
+    const two = await new ProjectTree(dir).find(parseName("src:*.ts"));
+    expect(two.sourcePathOf("b.ts")).to.equal("./src/b.ts");
+    expect(one.sourcePathsDigest, "a file added").to.equal(two.sourcePathsDigest);
+    const lib = await new ProjectTree(dir).find(parseName("src/*.ts"));
+    expect(lib.sourcePathsDigest, "another projection").to.not.equal(two.sourcePathsDigest);
+    const shifted = (set: FileSet): FileSet => set.rename(name => `out/${name}`);
+    expect(shifted(one).sourcePathsDigest, "renamed alike").to.equal(shifted(two).sourcePathsDigest);
+    const swapped = two.rename(name => (name === "a.ts" ? "b.ts" : "a.ts"));
+    expect(swapped.sourcePathOf("a.ts")).to.equal("./src/b.ts");
+    expect(swapped.sourcePathsDigest, "a renaming no mapping fits").to.not.equal(two.sourcePathsDigest);
   });
 
   it("says nothing about a file no chain explains", () => {
-    expect(locateSource(undefined, "a.txt")).to.equal(undefined);
+    expect(sourcePathOf(undefined, "a.txt")).to.equal(undefined);
   });
 });
 

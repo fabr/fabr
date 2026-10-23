@@ -47,6 +47,7 @@ import * as path from "node:path";
 import { SourceMap } from "node:module";
 import { PNP_DATA_FILE, PnpResolver } from "../pnp/PnPResolver";
 import { resolveVirtual } from "../pnp/VirtualPath";
+import { stagedReferences, withReferencedSources } from "../support/SourceMap";
 import type { IBundleOptions } from "./BundleOptions";
 
 /* Minimal structural typing for the slice of esbuild's API we use — esbuild is
@@ -520,12 +521,47 @@ export async function main(argv: string[]): Promise<void> {
     }
     errors = failure as IMessage[];
   }
+  if (errors.length === 0) {
+    nameMapSources(argv, options.outdir);
+  }
   if (errors.length) {
     const resolver = usesManifest() ? PnpResolver.load(process.cwd(), []) : undefined;
     const rendered = await esbuild.formatMessages(readableMessages(errors, process.cwd(), resolver), { kind: "error", color: false });
     process.stderr.write(unresolvedHelp(rendered.join(""), unresolved).replace(/\n*$/, "\n"));
     process.exitCode = 1;
   }
+}
+
+/**
+ * Name the sources of every map the bundle wrote by the references that
+ * resolve to them, where the step staged their table: what esbuild carried
+ * through from an input's own map (already a reference) stays as it is. A
+ * package's file is looked up where it is stored, not at the virtual path it
+ * was reached by, and a source inside a package that the package does not ship
+ * (its own map names a `src/` it left out) by that package's reference. Any
+ * other source is one of the bundle's own.
+ */
+function nameMapSources(argv: string[], outdir: string): void {
+  const root = process.cwd();
+  /* A file fabr staged under its tree pool or a node_modules is named by the
+   * path within it, so no staging path reaches the shipped map. */
+  const named = stagedReferences(argv, root, staged => staged.replace(/^(?:\.fabr-tree|node_modules)\//, ""), { withinPackages: true });
+  if (named === undefined) {
+    return;
+  }
+  const referenceOf = (staged: string): string | undefined =>
+    named(path.relative(root, resolveVirtual(path.resolve(root, staged))).split(path.sep).join("/"));
+  for (const file of mapFilesUnder(path.resolve(root, outdir))) {
+    fs.writeFileSync(file, withReferencedSources(fs.readFileSync(file, "utf8"), file, root, referenceOf));
+  }
+}
+
+/** Every `.map` file under `dir`. */
+function mapFilesUnder(dir: string): string[] {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+    const full = path.join(dir, entry.name);
+    return entry.isDirectory() ? mapFilesUnder(full) : entry.name.endsWith(".map") ? [full] : [];
+  });
 }
 
 /**

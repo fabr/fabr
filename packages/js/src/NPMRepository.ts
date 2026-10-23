@@ -149,6 +149,10 @@ export class NPMRepository
     return this.url;
   }
 
+  public get name(): string {
+    return this.context.name;
+  }
+
   public getRepositoryRef(name: Name): RepositoryRef {
     return vendPackageRef(this, this.format, name);
   }

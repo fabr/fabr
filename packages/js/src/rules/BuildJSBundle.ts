@@ -55,6 +55,7 @@ import {
 } from "@fabr-build/core";
 import { compileContents, formatJSTarget, JSTarget, parseJSTarget, stripExtension, usesNodeGlobals } from "../JSPackage";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
+import { SOURCE_OWNER_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { pnpManifestOf } from "../PnPManifest";
 import {
   buildBundleOptions,
@@ -136,7 +137,8 @@ function stageBundle(
   srcPackages: PackageFileSet[],
   code: FileSet,
   css: FileSet,
-  entrySources: IBundleEntrySource[]
+  entrySources: IBundleEntrySource[],
+  owner: string
 ): RuleResult {
   const { jsTarget, buildType, rewrite, defines, nodeGlobals, srcs, deps, bundler } = inputs;
   if (entrySources.length === 0) {
@@ -153,7 +155,12 @@ function stageBundle(
   };
   /* The bundler launches from its own mount (its deps resolve there); cwd is
    * the working root, so the options manifest and outdir resolve against it. */
-  const argv = bundler.toCommandLine(["--options=bundle-options.json"], { base: TOOL_DIR });
+  /* Its maps name each source by the reference resolving to it, from the table
+   * the step stages: the bundle's own sources and the packages it bundles. */
+  const argv = bundler.toCommandLine(
+    ["--options=bundle-options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, owner],
+    { base: TOOL_DIR }
+  );
   /* The bundled packages go over unassembled and unmaterialized: esbuild reads
    * the PnP table natively, so the step generates it (and the trees it names)
    * on a miss. The entry paths in the options document already name those trees
@@ -161,6 +168,8 @@ function stageBundle(
   return createNodeExecAction(FileSet.unionAll(code, css, FileSet.layout(workspace)), srcPackages, argv, `${BUNDLE_OUTDIR}:**`, {
     layout: PNP,
     label: "bundle",
+    sourcePaths: SOURCE_PATHS_FILE,
+    packageSourcePaths: true,
   });
 }
 
@@ -255,7 +264,7 @@ function composeBundle(context: TargetContext, inputs: IBundleInputs): Computabl
         ...looseEntries.flatMap(set => [...set].map(([name]) => ({ path: stagedEntry(code, name), name }))),
         ...containedSources,
       ];
-      return stageBundle(inputs, srcPackages, code, built.css, entrySources);
+      return stageBundle(inputs, srcPackages, code, built.css, entrySources, context.buildReference());
     });
   });
 }

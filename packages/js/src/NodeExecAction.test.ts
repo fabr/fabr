@@ -562,12 +562,14 @@ describe("js_compile discovered dependencies", () => {
     );
   }
 
-  /** Demand the action through the cache exactly as the framework does. */
+  /** Demand the action through the cache as the framework does: under a fixed
+   * anchor where its deps are discoverable, so what the reads add is all that
+   * moves the key, and under its own key where they are an ordinary input. */
   function build(deps: PackageFileSet[], report: IReport, tool = REPORT_TOOL): Promise<FileSet> {
     const built = action(deps, report, tool);
     return toPromise(
       cache.getOrCreate(
-        ANCHOR,
+        built.discoverable === undefined ? built.actionKey() : ANCHOR,
         ctx => {
           runs++;
           return NODE_EXEC_ACTION.run(built, ctx, SILENT_REPORT);
@@ -825,9 +827,8 @@ describe("js_compile discovered dependencies", () => {
   });
 
   it("keys a non-reporting run on the whole deps manifest: a hit when nothing moved", async () => {
-    /* Reporting is a soundness gate, not a key shape. A run that discovers
-     * nothing is keyed on everything it could have read — the deps input's own
-     * manifest — so an unchanged closure hits. */
+    /* A run that reports nothing is keyed on everything it could have read —
+     * its deps as an ordinary input — so an unchanged closure hits. */
     await build([declPkg("used"), declPkg("unused")], NOTHING, PLAIN_TOOL);
     expect(runs).to.equal(1);
     await build([declPkg("used"), declPkg("unused")], NOTHING, PLAIN_TOOL);
@@ -867,12 +868,15 @@ describe("js_compile discovered dependencies", () => {
 });
 
 describe("the js exec step's discoverable deps", () => {
-  it("declares deps into the discoverable deps once, for every layout", () => {
-    /* Keying never branches on layout or on reporting: they are structural
-     * on the constructed action, and the mount/layout options stay in the
-     * anchor. */
-    const built = createNodeExecAction(FileSet.layout({}), [declPkg("left-pad")], ["node"], "out:**");
-    expect(Object.keys(built.discoverable ?? {})).to.deep.equal(["deps"]);
+  it("declares deps discoverable where the tool reports its reads, and an ordinary input otherwise", () => {
+    /* The mount/layout options stay in the anchor either way. */
+    const deps = [declPkg("left-pad")];
+    const reporting = createNodeExecAction(FileSet.layout({}), deps, ["node"], "out:**", { depsReport: DEPS_REPORT_FILE });
+    expect(Object.keys(reporting.discoverable ?? {})).to.deep.equal(["deps"]);
+    expect(Object.keys(reporting.inputs)).to.deep.equal(["files"]);
+    const plain = createNodeExecAction(FileSet.layout({}), deps, ["node"], "out:**");
+    expect(plain.discoverable).to.equal(undefined);
+    expect(Object.keys(plain.inputs)).to.deep.equal(["files", "deps"]);
   });
 });
 

@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { runMain } from "../Main";
+import { runMain } from "../support/Main";
 import { main } from "../testRunner/runner";
 
 runMain(() => main(process.argv.slice(2)));

@@ -43,6 +43,7 @@ import type { IConditionSet } from "../pnp/PackageExports";
 import { PnpResolver, splitSpecifier, typesPackageName } from "../pnp/PnPResolver";
 import { isVirtual, realpathKeepingVirtual, resolveVirtual } from "../pnp/VirtualPath";
 import { CHANGES_FLAG, DEPS_REPORT_FLAG, IChangeLists, joinDepsPath, STATE_DIR_FLAG, toChangeLists } from "../pnp/ReadSet";
+import { stagedReferences, withReferencedSources } from "../support/SourceMap";
 import {
   DriverMemo,
   ICompilePlan,
@@ -2275,6 +2276,12 @@ export function main(argv: string[]): number {
    * rewriter serves both phases — the JavaScript and the declarations land in
    * the same directory, so they name each other identically. */
   const jsExtension = emitExtensionOf(argv);
+  /* A source with no source path is named by the owner as the compile's root
+   * holds it. */
+  const sourceRoot = sourceRootOf(parsed.options, root);
+  const referenceOf = stagedReferences(argv, root, staged =>
+    sourceRoot !== undefined && staged.startsWith(`${sourceRoot}/`) ? staged.slice(sourceRoot.length + 1) : undefined
+  );
   const layout = emitLayoutOf(ts, parsed.options, root, jsExtension, rewrites, installed?.packageSpecifier, installed?.ownSpecifier, installed?.exists);
   if (jsExtension !== undefined && layout?.rewriteExtensions !== true) {
     /* Renaming without rewriting is the exact failure `--emit-extension` refuses
@@ -2325,9 +2332,13 @@ export function main(argv: string[]): number {
      * layout, so the two agree by construction. Only the file's own map
      * references still name the pre-rename spelling. */
     const retargeted = jsExtension === undefined ? canonical : retargetSourceMap(fileName, canonical, jsExtension);
+    /* A map names its sources by the references that resolve to them, so it
+     * reads the same wherever the output is installed. */
+    const referenced =
+      referenceOf !== undefined && fileName.endsWith(".map") ? withReferencedSources(retargeted, fileName, root, referenceOf) : retargeted;
     const written = renamedOutput(fileName, jsExtension);
-    graph?.emitted(written, declaration, retargeted, writeByteOrderMark);
-    host.writeFile(written, retargeted, writeByteOrderMark);
+    graph?.emitted(written, declaration, referenced, writeByteOrderMark);
+    host.writeFile(written, referenced, writeByteOrderMark);
   };
   let fellBack = false;
   let built = graph === undefined ? undefined : graph.run(program, transformers, writeEmitted);

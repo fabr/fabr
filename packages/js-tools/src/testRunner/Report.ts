@@ -29,6 +29,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ITestReport, ITestResult, ITestSummary } from "@fabr-build/core";
+import { referenceOfEntry, SOURCE_LOCATIONS_FILE } from "../support/SourceMap";
 
 /**
  * The mounts a test installation is laid out under — the compile's own `src/`
@@ -40,19 +41,18 @@ import type { ITestReport, ITestResult, ITestSummary } from "@fabr-build/core";
 const INSTALL_MOUNTS = ["src", "build"];
 
 /**
- * How a test file should be NAMED in the report: as the target named it.
+ * How a test file should be NAMED in the report: as the source it was compiled
+ * from. Fabr compiles ahead of the run, so the file executed is
+ * `build/Foo.test.js` while the thing to point at is its source, and the
+ * `.js.map` beside it records that authoritatively (a stem guess cannot tell
+ * `Foo.test.ts` from a `Foo.test.js` next to it).
  *
- * Two corrections to the path a runner is handed. It should name what the user
- * wrote rather than the artifact that ran — fabr compiles ahead of the run, so
- * the file executed is `build/Foo.test.js` while the thing to point at is
- * `Foo.test.ts` — and the `.js.map` beside it records that authoritatively (a
- * stem guess in the parallel source directory cannot tell `Foo.test.ts` from a
- * `Foo.test.js` next to it). And the install's mount point is not part of the
- * name: a target whose `srcs` are `src:**` calls the file `Foo.test.ts`, not
- * `src/Foo.test.ts`.
- *
- * Degrades rather than fails: no map (a release build emits none) leaves the
- * compiled name, which is still mount-stripped. Memoized because the node:test
+ * A map fabr wrote names the source by its reference
+ * (`fabr:./packages/x/src/Foo.test.ts`), and the report names it by the path
+ * that reference gives (`packages/x/src/Foo.test.ts`). A map naming its source
+ * relative to itself is named as the install lays it out, the mount (`src/`)
+ * stripped. Degrades rather than fails: no map (a release build emits none)
+ * leaves the compiled name, likewise stripped. Memoized because the node:test
  * flavour asks per *test*, not per file.
  */
 const reportPaths = new Map<string, string>();
@@ -60,7 +60,12 @@ const reportPaths = new Map<string, string>();
 export function reportPathOf(file: string): string {
   let name = reportPaths.get(file);
   if (name === undefined) {
-    name = stripMount(path.relative(installRoot(), sourcePathOf(file) ?? file));
+    const entry = mapEntryOf(file);
+    const reference = entry === undefined ? undefined : referenceOfEntry(entry);
+    name =
+      reference !== undefined
+        ? reference.replace(/^\.\//, "")
+        : stripMount(path.relative(installRoot(), sourcePathOf(file) ?? file));
     reportPaths.set(file, name);
   }
   return name;
@@ -79,27 +84,75 @@ function stripMount(relative: string): string {
 }
 
 /**
- * The source a compiled file was emitted from, per its own `.js.map`, or
- * undefined when it cannot be known — no map (a release build emits none),
- * unreadable, or not JSON. Absolute, since a map's `sources` are relative to
- * the map itself.
- *
- * Shared rather than private: the snapshot resolver needs the same answer, to
- * name a record for the source rather than for the artifact that ran.
+ * The source a compiled file's own `.js.map` names, as written there: a fabr
+ * reference, or a path relative to the map (resolved here, against its
+ * `sourceRoot`). Undefined when it cannot be known — no map (a release build
+ * emits none), unreadable, or not JSON.
  */
-export function sourcePathOf(compiled: string): string | undefined {
+function mapEntryOf(compiled: string): string | undefined {
   try {
     const map = JSON.parse(fs.readFileSync(`${compiled}.map`, "utf8")) as { sources?: string[]; sourceRoot?: string };
     /* tsc emits one source per output; a `sources` with anything else in it is
      * not something this can meaningfully name, so take the first or nothing. */
     const [first] = map.sources ?? [];
     if (typeof first === "string") {
-      return path.resolve(path.dirname(compiled), map.sourceRoot ?? "", first);
+      return referenceOfEntry(first) !== undefined ? first : path.resolve(path.dirname(compiled), map.sourceRoot ?? "", first);
     }
   } catch {
     /* Fall through: the caller decides what an unknown source means. */
   }
   return undefined;
+}
+
+/**
+ * Where the source a compiled file was emitted from is staged, per its own
+ * `.js.map`: the path a relative entry resolves to, or for a fabr reference the
+ * location the installation records for it ({@link SOURCE_LOCATIONS_FILE}).
+ * Undefined when it cannot be known. Absolute.
+ *
+ * Shared rather than private: the jest flavour reads a test's docblock from it.
+ */
+export function sourcePathOf(compiled: string): string | undefined {
+  const entry = mapEntryOf(compiled);
+  const reference = entry === undefined ? undefined : referenceOfEntry(entry);
+  if (reference === undefined) {
+    return entry;
+  }
+  const staged = stagedSources().get(reference);
+  return staged === undefined ? undefined : path.resolve(installRoot(), staged);
+}
+
+/** A stack frame's location naming a fabr reference: the reference, then the
+ *  line and column, at the end of a frame line or before its closing paren. */
+const REFERENCED_FRAME = /fabr:(\S+?):(\d+):(\d+)(?=\)|$)/gm;
+
+/**
+ * `stack` with each frame that names a source by reference naming where the
+ * installation stages it instead, so that what reads a frame's file (jest's
+ * code frame) finds it. A frame naming a source the installation does not
+ * stage is left as it is.
+ */
+export function withStagedSources(stack: string): string {
+  return stack.replace(REFERENCED_FRAME, (frame: string, reference: string, line: string, column: string) => {
+    const at = stagedSources().get(reference);
+    return at === undefined ? frame : `${path.resolve(installRoot(), at)}:${line}:${column}`;
+  });
+}
+
+let staged: ReadonlyMap<string, string> | undefined;
+
+/** The installation's record of where each source is staged, by source path:
+ *  empty where it records none. Read once. */
+function stagedSources(): ReadonlyMap<string, string> {
+  if (staged === undefined) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(installRoot(), SOURCE_LOCATIONS_FILE), "utf8")) as Record<string, unknown>;
+      staged = new Map(Object.entries(parsed).filter((row): row is [string, string] => typeof row[1] === "string"));
+    } catch {
+      staged = new Map();
+    }
+  }
+  return staged;
 }
 
 /** The directory a test file's recorded snapshots live in, beside it. */
@@ -114,9 +167,9 @@ export const SNAPSHOT_EXT = ".snap";
  */
 export function snapshotPathOf(testPath: string): string {
   const dir = path.join(path.dirname(testPath), SNAPSHOT_DIR);
-  const source = sourcePathOf(testPath);
+  const source = mapEntryOf(testPath);
   if (source !== undefined) {
-    return path.join(dir, path.basename(source) + SNAPSHOT_EXT);
+    return path.join(dir, path.posix.basename(referenceOfEntry(source) ?? source.split(path.sep).join("/")) + SNAPSHOT_EXT);
   }
   const stem = stemOf(path.basename(testPath));
   const existing = readdir(dir).find(name => name.endsWith(SNAPSHOT_EXT) && stemOf(name.slice(0, -SNAPSHOT_EXT.length)) === stem);

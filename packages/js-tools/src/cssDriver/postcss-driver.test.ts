@@ -28,6 +28,7 @@ import postcss from "postcss";
 import type { IPostcssOptions, IPostcssSource } from "./Options";
 import { cssModuleShim, main, resolveComposePath, scopedNameOf, scopeFailure, scopeTableOf } from "./postcss-driver";
 import { relocateCssSources } from "./Support";
+import { SOURCE_OWNER_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "../support/SourceMap";
 
 describe("cssModuleShim", () => {
   it("imports its own stylesheet by basename and exports the map as a default", () => {
@@ -448,6 +449,41 @@ describe("postcss-driver, over the real plugin set", () => {
     assert.deepEqual([...shipped.sources].sort(), ["card.css", "card.module.scss"]);
     assert.equal(JSON.stringify(shipped).includes(work), false);
     assert.match(out("w/card.css"), /sourceMappingURL=card\.css\.map/);
+  });
+
+  it("names its sources by reference where the step staged their table", async () => {
+    /* As the rule runs it: from the working root, with the table and owner on
+     * its command line. The chained source is already a reference, from the
+     * Sass step; the step's own intermediate is named by the owner, for the
+     * stylesheet it publishes. */
+    const lowered = await postcss([]).process(".card { color: red; }\n", {
+      from: "w/card.module.scss",
+      to: "w/card.module.css",
+      map: { inline: false, annotation: false },
+    });
+    const prev = lowered.map.toJSON();
+    prev.sources = ["fabr:./app/w/card.module.scss"];
+    fs.mkdirSync(path.join(work, "src", "w"), { recursive: true });
+    fs.writeFileSync(path.join(work, "src", "w", "card.module.css"), `${lowered.css}\n.extra { margin: 0; }\n`);
+    fs.writeFileSync(path.join(work, "src", "w", "card.module.css.map"), JSON.stringify(prev));
+    const options: IPostcssOptions = {
+      sources: [{ ...module("w/card", "sW"), prev: "w/card.module.css.map", map: "w/card.css.map" }],
+      composable: [],
+      srcRoot: "src",
+      depsDir: "node_modules",
+      outdir: "out",
+    };
+    fs.writeFileSync(path.join(work, "postcss-manifest.json"), JSON.stringify(options));
+    fs.writeFileSync(path.join(work, SOURCE_PATHS_FILE), JSON.stringify({}));
+    const cwd = process.cwd();
+    try {
+      process.chdir(work);
+      await main(["--manifest=postcss-manifest.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, "app"]);
+    } finally {
+      process.chdir(cwd);
+    }
+    const shipped = JSON.parse(fs.readFileSync(path.join(work, "out", "w", "card.css.map"), "utf8")) as { sources: string[] };
+    assert.deepEqual([...shipped.sources].sort(), ["fabr:./app/w/card.module.scss", "fabr:app:w/card.css"]);
   });
 
   it("names an unchained module's map source as the module itself", async () => {

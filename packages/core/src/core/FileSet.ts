@@ -22,11 +22,21 @@ import { FileSetRef } from "./FileSetRef";
 import type { IProjection } from "./Reference";
 import { Computable, ComputableSource } from "./Computable";
 import { IDiagnosticNote } from "../support/Log";
-import { IProvenanceStep, registerProvenanceLocator, registerProvenanceRenderer, renderProvenance, locateSource } from "./Provenance";
+import {
+  IProvenanceStep,
+  IRenameStep,
+  namingDigest,
+  RENAME_PROVENANCE,
+  registerProvenanceNaming,
+  registerProvenanceRenderer,
+  renderProvenance,
+  sourcePathOf,
+  sourcePathsDigestOf,
+} from "./Provenance";
 import { ConflictError, FabrError } from "./Errors";
 import { canonicalFileName, isCanonicalFileName } from "../support/Paths";
 import { hashString } from "./FSWrapper";
-import { encodeName, manifestLine } from "./Manifest";
+import { manifestLine } from "./Manifest";
 
 /** The permission bits (`man 2 stat`, the low 12 bits — rwx triples plus
  * setuid/setgid/sticky) fabr records for a file when none are otherwise known:
@@ -61,14 +71,6 @@ export interface IFile {
    */
   mime: string;
 
-  /**
-   * The file's path from the project root, for a file read from the project's
-   * own tree; undefined for anything else (built, fetched, generated, or read
-   * from outside the project). It names where the file lives, whatever name a
-   * file set gives it, and is key material: two files differing only in it are
-   * different files.
-   */
-  readonly sourcePath?: string;
 
   readString(encoding?: BufferEncoding): Computable<string>;
 
@@ -162,9 +164,15 @@ export class FileSet implements FileSource {
   /**
    * Optional provenance chain, preserved through single-source derivations.
    * This is runtime-only "ghost" data: it must never participate in manifests,
-   * cache keys, or file equality.
+   * cache keys, or file equality, except as the files' source paths
+   * ({@link sourcePaths}), which an action's key records.
    */
   public readonly origin: IProvenanceStep | undefined;
+
+  /** {@link sourcePaths} and {@link sourcePathsDigest}, once asked: functions of
+   * the content and `origin`. */
+  private sourcePathTable?: ReadonlyMap<string, string>;
+  private sourcePathsDigestText?: string;
 
   /**
    * Handed an existing FileSet, the receiver **shares** its content map rather
@@ -246,6 +254,39 @@ export class FileSet implements FileSource {
    */
   public withStep(step: IProvenanceStep): FileSet {
     return this.withOrigin({ ...step, parent: this.origin });
+  }
+
+  /** Get the source path of the file this set names `name`, as its provenance
+   *  gives it ({@link sourcePathOf}); undefined where no reference reaches it. */
+  public sourcePathOf(name: string): string | undefined {
+    return sourcePathOf(this.origin, name);
+  }
+
+  /** What its files' source paths depend on besides their names, as a hash:
+   *  equal digests mean every name has the same source path. Empty where none
+   *  has one. What an action's key records of an input in place of each file's
+   *  source path. */
+  public get sourcePathsDigest(): string {
+    if (this.sourcePathsDigestText === undefined) {
+      const text = sourcePathsDigestOf(this.origin);
+      this.sourcePathsDigestText = text === "" ? "" : hashString(text);
+    }
+    return this.sourcePathsDigestText;
+  }
+
+  /** The source path of each of this set's files that has one, by name. */
+  public get sourcePaths(): ReadonlyMap<string, string> {
+    if (this.sourcePathTable === undefined) {
+      const table = new Map<string, string>();
+      for (const name of this.content.keys()) {
+        const sourcePath = sourcePathOf(this.origin, name);
+        if (sourcePath !== undefined) {
+          table.set(name, sourcePath);
+        }
+      }
+      this.sourcePathTable = table;
+    }
+    return this.sourcePathTable;
   }
 
   /**
@@ -349,7 +390,7 @@ export class FileSet implements FileSource {
   /**
    * The hash of this set's {@link toManifest} — a stable identity for its
    * content, distinguishing exactly what the manifest distinguishes (names,
-   * content hashes, modes and source paths) and nothing else: not provenance, not the
+   * content hashes and modes) and nothing else: not provenance, not the
    * delivery that produced it.
    *
    * For an action that assembles its own inputs: the key can name a whole
@@ -364,8 +405,7 @@ export class FileSet implements FileSource {
     const result = [];
     for (const name of [...this.content.keys()].sort()) {
       const file = this.content.get(name);
-      const sourcePath = file?.sourcePath === undefined ? undefined : encodeName(file.sourcePath);
-      result.push(manifestLine(name, String(file?.hash), file?.mode ?? DEFAULT_FILE_MODE, sourcePath));
+      result.push(manifestLine(name, String(file?.hash), file?.mode ?? DEFAULT_FILE_MODE));
     }
     return result.join("\n");
   }
@@ -419,7 +459,7 @@ export class FileSet implements FileSource {
     for (const [name, file] of this.content) {
       result.set(mount + name, file);
     }
-    return new FileSet(result, this.origin, CANONICAL);
+    return new FileSet(result, mergeOrigin([{ prefix: mount, fileset: this }]), CANONICAL);
   }
 
   /**
@@ -459,7 +499,7 @@ export class FileSet implements FileSource {
       result.set(newName, file);
       sourceName.set(newName, name);
     }
-    return new FileSet(result, this.origin, CANONICAL);
+    return new FileSet(result, renamedOrigin(this.origin, sourceName), CANONICAL);
   }
 
   /**
@@ -598,10 +638,49 @@ registerProvenanceRenderer(FILESET_MERGE_PROVENANCE, (step, context): IDiagnosti
 
 /* A merge repositions content, so it must rebase before delegating — the same
  * "strip the mount prefix, find the holder, recurse" walk the renderer does. */
-registerProvenanceLocator(FILESET_MERGE_PROVENANCE, (step, path) => {
-  const found = contributorOf(step as IMergeOrigin, path);
-  return found && locateSource(found.fileset.origin, found.rel);
+registerProvenanceNaming(FILESET_MERGE_PROVENANCE, {
+  /* Where several contributors hold the name — one file, deduplicated by the
+   * union — the least of their source paths, so it does not depend on the
+   * order the union was given them in. */
+  sourcePath: (step, path) => {
+    let least: string | undefined;
+    for (const { prefix, fileset } of (step as IMergeOrigin).sources) {
+      const rel = path.startsWith(prefix) ? path.slice(prefix.length) : undefined;
+      const sourcePath = rel === undefined || fileset.getFile(rel) === undefined ? undefined : fileset.sourcePathOf(rel);
+      if (sourcePath !== undefined && (least === undefined || sourcePath < least)) {
+        least = sourcePath;
+      }
+    }
+    return least;
+  },
+  /* Each contributor by its mount and its own digest, in sorted order for the
+   * same reason. Where another contributor's mount overlaps its own, which of
+   * them answers for a name depends on the names each holds, so those are
+   * recorded too. */
+  digest: step => {
+    const { sources: all } = step as IMergeOrigin;
+    const overlaps = (prefix: string): boolean =>
+      all.filter(other => other.prefix.startsWith(prefix) || prefix.startsWith(other.prefix)).length > 1;
+    const sources = all
+      .filter(({ fileset }) => fileset.sourcePathsDigest !== "")
+      .map(({ prefix, fileset }) => {
+        const names = overlaps(prefix) ? ` ${hashString([...fileset].map(([name]) => name).sort().join("\n"))}` : "";
+        return `${JSON.stringify(prefix)}${names} ${fileset.sourcePathsDigest}`;
+      })
+      .sort();
+    return sources.length === 0 ? "" : namingDigest(FILESET_MERGE_PROVENANCE, sources.join(" "), "");
+  },
 });
+
+/** The origin of a set renamed from one with `origin`, each new name to its
+ * old one in `from`: a rename step over it where any name changed. */
+function renamedOrigin(origin: IProvenanceStep | undefined, from: ReadonlyMap<string, string>): IProvenanceStep | undefined {
+  if (origin === undefined || [...from].every(([name, was]) => name === was)) {
+    return origin;
+  }
+  const step: IRenameStep = { kind: RENAME_PROVENANCE, from, parent: origin };
+  return step;
+}
 
 /** The merged-in set holding `path`, and the name it holds it under. */
 function contributorOf(merge: IMergeOrigin, path: string): { fileset: FileSet; rel: string } | undefined {

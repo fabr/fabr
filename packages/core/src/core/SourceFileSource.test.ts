@@ -27,6 +27,7 @@ import { Computable, ComputableSource } from "./Computable";
 import { hashString } from "./FSWrapper";
 import { MemoryFile } from "./MemoryFS";
 import { parseSourceIndex } from "./Manifest";
+import { parseName } from "../model/Parser";
 import { SourceFileSource } from "./SourceFileSource";
 import { IResolvedWriteBack } from "./WriteBack";
 import { expect } from "chai";
@@ -103,16 +104,16 @@ describe("SourceFileSource", () => {
     expect((await toPromise(file.getBuffer())).toString()).to.equal("original");
   });
 
-  it("gives a file its path from the project root as its source path", async () => {
+  it("gives a file its reference from the project root as its source path, and locates one", async () => {
     fs.mkdirSync(path.join(sourceRoot, "sub"));
     fs.writeFileSync(path.join(sourceRoot, "sub/a.txt"), "content");
     const src = new SourceFileSource(sourceRoot, cache);
 
-    expect((await toPromise(src.get("sub/a.txt")))!.sourcePath).to.equal("sub/a.txt");
-    /* The trusted path (a verified index row) serves it too. */
-    expect((await toPromise(src.ingest("sub/a.txt")))!.sourcePath).to.equal("sub/a.txt");
+    expect((await toPromise(src.find(parseName("sub:*.txt")))).sourcePathOf("a.txt")).to.equal("./sub/a.txt");
     /* A plain filesystem source is not the project tree. */
-    expect((await toPromise(new FSFileSource(sourceRoot).ingest("sub/a.txt")))!.sourcePath).to.equal(undefined);
+    expect((await toPromise(new FSFileSource(sourceRoot).find(parseName("sub:*.txt")))).sourcePathOf("a.txt")).to.equal(undefined);
+    expect(src.locate("./sub/a.txt")).to.equal(path.join(sourceRoot, "sub/a.txt"));
+    expect(src.locate("gen:a.txt")).to.equal(undefined);
   });
 
   it("compiles the frozen snapshot, not a later edit — closing the hash/stage race", async () => {

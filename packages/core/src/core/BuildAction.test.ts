@@ -21,7 +21,7 @@ import { expect } from "chai";
 import { Computable } from "./Computable";
 import { EMPTY_FILESET, FileSet } from "./FileSet";
 import { MemoryFile } from "./MemoryFS";
-import { FSFile } from "./FSFileSource";
+import { ISourcePathStep, SOURCE_PATH_PROVENANCE } from "./Provenance";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
 import { StringReader } from "../support/StringReader";
 import {
@@ -62,10 +62,11 @@ interface ActionParts {
   inputs?: ActionFileInputs;
   config?: ActionConfig;
   discoverable?: ActionFileInputs;
+  sourcePathInputs?: string[];
 }
 
 function action(parts: ActionParts, step = STEP): BuildAction {
-  return new BuildAction(step, parts.inputs ?? {}, parts.config ?? {}, parts.discoverable, "compile");
+  return new BuildAction(step, parts.inputs ?? {}, parts.config ?? {}, parts.discoverable, "compile", false, undefined, parts.sourcePathInputs);
 }
 
 describe("target-key identity", () => {
@@ -317,13 +318,24 @@ describe("the action key", () => {
     );
   });
 
-  it("keys an input on its source path", () => {
-    const file = (sourcePath: string): FSFile =>
-      new FSFile("/project", sourcePath, { size: 1, mtime: new Date(0) }, "h", "text/plain", "/blob/h", sourcePath);
-    const at = (sourcePath: string): string =>
-      action({ inputs: { srcs: new FileSet(new Map([["src/index.ts", file(sourcePath)]])) } }).actionKey();
-    expect(at("a/src/index.ts"), "moved").to.not.equal(at("b/src/index.ts"));
-    expect(at("a/src/index.ts"), "unmoved").to.equal(at("a/src/index.ts"));
+  it("keys an input on its source path where the step hands its tool source paths", () => {
+    /* One file, named by provenance as the reference `sourcePath` names it. */
+    const named = (sourcePath: string): FileSet => {
+      const step: ISourcePathStep = { kind: SOURCE_PATH_PROVENANCE, sourcePath };
+      return new FileSet(new Map([["src/index.ts", MemoryFile.from("h")]]), step);
+    };
+    const at = (sourcePath: string, sourcePathInputs = ["srcs"]): string =>
+      action({ inputs: { srcs: named(sourcePath) }, sourcePathInputs }).actionKey();
+    expect(at("a"), "built by another").to.not.equal(at("b"));
+    expect(at("a"), "built by the same").to.equal(at("a"));
+    expect(at("a", []), "source paths the tool is not given").to.equal(at("b", []));
+    const pkg = (sourcePath: string, sourcePathInputs = ["deps"]): string =>
+      action({
+        inputs: { deps: [new PackageFileSet(named(sourcePath), "p", "1.0.0", [], named(sourcePath).origin)] },
+        sourcePathInputs,
+      }).actionKey();
+    expect(pkg("a"), "a package from another").to.not.equal(pkg("b"));
+    expect(pkg("a", []), "a package whose source paths the tool is not given").to.equal(pkg("b", []));
   });
 
   it("keeps same-named members apart across the two sections", () => {

@@ -59,10 +59,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { IPostcssOptions, IPostcssSource } from "./Options";
+import { stagedReferences } from "../support/SourceMap";
 import {
   annotationName,
+  carriedReferences,
   IRawSourceMap,
   parseManifestPath,
+  referencedCssSources,
   relativeToMap,
   relocateCssSources,
   sassLoweredName,
@@ -222,6 +225,8 @@ function displayName(filename: string, srcRoot: string): string {
 interface IPostcssTools {
   postcss: IPostcss;
   modules: IPostcssModules;
+  /** How a staged source is named in a map, where the step staged a table. */
+  referenceOf?: (staged: string, own?: string) => string | undefined;
 }
 
 /**
@@ -238,8 +243,12 @@ async function processFile(source: IPostcssSource, options: IPostcssOptions, too
     if (source.map !== undefined) {
       const carried = JSON.parse(fs.readFileSync(path.join(options.srcRoot, source.map), "utf8")) as IRawSourceMap;
       const mapDir = path.dirname(path.join(options.srcRoot, source.map));
-      const moved = relocateCssSources(carried, { root: process.cwd(), srcRoot: options.srcRoot, mapDir });
-      writeOut(options.outdir, source.map, JSON.stringify(relativeToMap(moved, source.map)));
+      const where = { root: process.cwd(), srcRoot: options.srcRoot, mapDir };
+      const finished =
+        tools.referenceOf === undefined
+          ? relativeToMap(relocateCssSources(carried, where), source.map)
+          : referencedCssSources(carried, source.map, where, tools.referenceOf);
+      writeOut(options.outdir, source.map, JSON.stringify(finished));
       writeOut(options.outdir, source.css, copied + sourceMapComment(source.map));
     } else {
       writeOut(options.outdir, source.css, copied);
@@ -256,6 +265,9 @@ async function processFile(source: IPostcssSource, options: IPostcssOptions, too
     !wantsMap || source.prev === undefined
       ? undefined
       : (JSON.parse(fs.readFileSync(path.join(options.srcRoot, source.prev), "utf8")) as IRawSourceMap);
+  /* postcss would mangle the input map's fabr references while composing it
+   * (see carriedReferences), so they cross it carried. */
+  const chained = prev === undefined || tools.referenceOf === undefined ? prev : carriedReferences(prev);
   let scoped: IPostcssResult;
   let exported: Record<string, string> = {};
   try {
@@ -280,7 +292,7 @@ async function processFile(source: IPostcssSource, options: IPostcssOptions, too
          * CLEAR the annotations its inputs carried — every one in the root, so
          * a composed stylesheet's rides out with the rules it inlined — and
          * write this step's own in their place. */
-        ...(wantsMap ? { map: { ...(prev ? { prev } : {}), inline: false, annotation: annotationName(source.map!) } } : {}),
+        ...(wantsMap ? { map: { ...(chained ? { prev: chained } : {}), inline: false, annotation: annotationName(source.map!) } } : {}),
       });
   } catch (err) {
     throw scopeFailure(source.path, err, { root: process.cwd(), srcRoot: options.srcRoot });
@@ -292,7 +304,11 @@ async function processFile(source: IPostcssSource, options: IPostcssOptions, too
     /* Chained, the input is an intermediate whose name never ships; unchained,
      * the input IS the authored source and keeps its name. */
     const ownInput = prev === undefined ? undefined : { path: source.path, rename: source.css };
-    writeOut(options.outdir, source.map, JSON.stringify(relativeToMap(relocateCssSources(outMap, where, ownInput), source.map)));
+    const finished =
+      tools.referenceOf === undefined
+        ? relativeToMap(relocateCssSources(outMap, where, ownInput), source.map)
+        : referencedCssSources(outMap, source.map, where, tools.referenceOf, ownInput);
+    writeOut(options.outdir, source.map, JSON.stringify(finished));
   }
   /* With no map of its own to name, postcss is not asked for an annotation and
    * so clears none: whatever the inputs carried is stripped here instead. */
@@ -313,7 +329,13 @@ export async function main(argv: string[]): Promise<void> {
 
   const options = JSON.parse(fs.readFileSync(parseManifestPath(argv, "postcss-driver"), "utf8")) as IPostcssOptions;
   const table = scopeTableOf(options);
+  /* Its maps name each source by the reference resolving to it, where the step
+   * staged their table; one of its own inputs with none is named by the owner
+   * as the step's source root holds it. */
+  const referenceOf = stagedReferences(argv, process.cwd(), staged =>
+    staged.startsWith(`${options.srcRoot}/`) ? staged.slice(options.srcRoot.length + 1) : undefined
+  );
   for (const source of options.sources) {
-    await processFile(source, options, { postcss, modules }, table);
+    await processFile(source, options, { postcss, modules, referenceOf }, table);
   }
 }

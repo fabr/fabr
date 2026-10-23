@@ -34,6 +34,7 @@ export * from "./pnp/PnPResolver";
 export * from "./pnp/PnPState";
 export * from "./pnp/ReadSet";
 export * from "./pnp/VirtualPath";
+export * from "./support/SourceMap";
 export * from "./tscDriver/Planning";
 export * as BundleDriver from "./bundleDriver/bundle-driver";
 export * as SassDriver from "./cssDriver/sass-driver";

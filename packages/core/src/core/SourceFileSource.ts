@@ -48,6 +48,10 @@ const INDEX_WRITE_INTERVAL_MS = 30_000;
  *
  * TODO: Locking
  */
+/** What a project file's path from the root is prefixed with to make its
+ *  source path, a reference to it from the project root. */
+const SOURCE_PATH_PREFIX = "./";
+
 export class SourceFileSource extends FSFileSource {
   private readonly cache: BuildCache;
   /**
@@ -71,6 +75,16 @@ export class SourceFileSource extends FSFileSource {
   constructor(sourceRoot: string, cache: BuildCache, watchController?: WatchController) {
     super(sourceRoot, watchController);
     this.cache = cache;
+  }
+
+  public override get sourcePathPrefix(): string {
+    return SOURCE_PATH_PREFIX;
+  }
+
+  /** Get where in the tree the file with source path `sourcePath` lives;
+   *  undefined for a source path that names no file of the tree. */
+  public locate(sourcePath: string): string | undefined {
+    return sourcePath.startsWith(SOURCE_PATH_PREFIX) ? path.join(this.root, sourcePath.slice(SOURCE_PATH_PREFIX.length)) : undefined;
   }
 
   protected override isExpectedChange(rel: string, removed = false): boolean {
@@ -171,7 +185,8 @@ export class SourceFileSource extends FSFileSource {
   }
 
   /**
-   * The file as a blob-backed FSFile, whose source path is its name here. A
+   * The file as a blob-backed FSFile, whose source path is its name here as a
+   * reference (`./<name>`). A
    * file whose stat matches its source-index row (and whose blob the pool still
    * holds) is served from the row — no read, no hash; anything else takes the
    * full path: read the file once, hash those exact bytes, ingest them into the
@@ -194,7 +209,7 @@ export class SourceFileSource extends FSFileSource {
               /* Confirmation is unconditional in ingest — which branch served
                * the hash must not decide whether an echo is judged. */
               this.confirmExpected(filename, held.hash);
-              return Computable.resolve(new FSFile(this.root, filename, fsStat, held.hash, held.mime, blobPath, filename));
+              return Computable.resolve(new FSFile(this.root, filename, fsStat, held.hash, held.mime, blobPath));
             }
           }
           return readFileBuffer(filepath).then(bytes => {
@@ -204,7 +219,7 @@ export class SourceFileSource extends FSFileSource {
             this.recordIndexRow(rows, filename, fileStat.size, fileStat.mtimeMs, hash, mime);
             return this.cache
               .ensureBlob(hash, bytes, fileStat.mode)
-              .then(blobPath => new FSFile(this.root, filename, fsStat, hash, mime, blobPath, filename));
+              .then(blobPath => new FSFile(this.root, filename, fsStat, hash, mime, blobPath));
           });
         })
       )
@@ -347,7 +362,7 @@ export class SourceFileSource extends FSFileSource {
  * of a root: a FileSet is a FileSource too and is rooted nowhere on disk, and
  * a containment bound should never come from downcasting a general interface.
  */
-export type WritableSourceTree = FileSource & Pick<SourceFileSource, "root" | "applyWriteBack">;
+export type WritableSourceTree = FileSource & Pick<SourceFileSource, "root" | "locate" | "applyWriteBack">;
 
 /** A destination as this source names it (tree-relative, posix), or undefined
  * if it lies outside the tree — which {@link SourceFileSource.applyWriteBack}

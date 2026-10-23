@@ -61,7 +61,7 @@ import {
   writeFileSet,
   Constraints,
   IResolvedWriteBack,
-  locateSource,
+  sourcePathOf,
   writeBackCandidates,
 } from "@fabr-build/core";
 import { runInteractive, RunSupervisor } from "./RunHandler";
@@ -306,7 +306,8 @@ function applyExpectationUpdates(execution: ExecutionContext, site: IInvocationS
         execution.log.log(DIAG_EXPECTATION_UNPLACEABLE, { test: name });
         continue;
       }
-      const source = locateSource(origin, input);
+      const sourcePath = sourcePathOf(origin, input);
+      const source = sourcePath === undefined ? undefined : site.sourceFileSource.locate(sourcePath);
       if (source === undefined) {
         execution.log.log(DIAG_EXPECTATION_UNPLACEABLE, { test: input });
         continue;

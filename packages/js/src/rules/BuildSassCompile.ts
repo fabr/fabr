@@ -46,6 +46,7 @@ import {
 } from "@fabr-build/core";
 import { buildSassOptions, CSS_OUTDIR, CSS_SRC_ROOT, CSS_TOOL_DIR } from "../CSSCompile";
 import { emitsSourceMap } from "../JSPackage";
+import { SOURCE_OWNER_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
 
 function buildSassCompile(context: TargetContext, collected: { srcs: FileSet[]; deps: FileSet[] }): Computable<RuleResult> {
@@ -66,13 +67,20 @@ function buildSassCompile(context: TargetContext, collected: { srcs: FileSet[]; 
       };
       /* The driver launches from its own mount (its deps resolve there); cwd is
        * the working root, so the manifest and src/out roots resolve against it. */
-      const argv = compiler.toCommandLine(["--manifest=sass-manifest.json"], { base: CSS_TOOL_DIR });
+      /* Its maps name each source by the reference resolving to it, from the
+       * table the step stages: the stylesheets and the packages they reach. */
+      const argv = compiler.toCommandLine(
+        ["--manifest=sass-manifest.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, context.buildReference()],
+        { base: CSS_TOOL_DIR }
+      );
       /* Nothing is mounted: the stylesheets' dependency closure is a table the
        * step generates beside them on a miss, which the driver's importer
        * reads. */
       return createNodeExecAction(FileSet.layout(workspace), deps, argv, `${CSS_OUTDIR}:**`, {
         layout: PNP,
         label: "compile-sass",
+        sourcePaths: SOURCE_PATHS_FILE,
+        packageSourcePaths: true,
       });
     }
   );

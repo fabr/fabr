@@ -18,7 +18,7 @@
  */
 
 import { FileSet } from "../core/FileSet";
-import { IProvenanceStep } from "../core/Provenance";
+import { IProvenanceStep, namingDigest, registerProvenanceNaming } from "../core/Provenance";
 import { ITargetDecl } from "./AST";
 
 export const TARGET_PROVENANCE = "target";
@@ -30,7 +30,18 @@ export const TARGET_PROVENANCE = "target";
 export interface ITargetOrigin extends IProvenanceStep {
   kind: typeof TARGET_PROVENANCE;
   decl: ITargetDecl;
+  /** The reference naming this build of the target: its name, with the
+   *  configuration that tells the build apart (`gen<FLAVOR=x>`). */
+  reference: string;
 }
+
+/* What the target built is named from its reference (`gen:out/x.ts`), where
+ * nothing beneath names it otherwise: a file it passed through unchanged keeps
+ * its own. */
+registerProvenanceNaming(TARGET_PROVENANCE, {
+  sourcePath: (step, path, below) => below(path) ?? `${(step as ITargetOrigin).reference}:${path}`,
+  digest: (step, below) => namingDigest(TARGET_PROVENANCE, JSON.stringify((step as ITargetOrigin).reference), below()),
+});
 
 /**
  * The final evaluated result of a TargetDecl, normally consisting of a FileSet

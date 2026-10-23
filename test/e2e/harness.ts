@@ -290,6 +290,10 @@ function reaperFor(child: ChildProcess): OrphanReaper {
  * `.ts` to `.js` verbatim (fixtures must be type-free), emitting a trivial
  * `.d.ts`. Under `allowJs` it also copies `.js`/`.jsx` inputs to `.js` verbatim,
  * standing in for tsc's real downlevel (which the tsconfig unit test covers).
+ * Where the tsconfig asks for source maps and the step staged a source-paths
+ * table, each `.ts` also gets a map naming its source as the real driver does:
+ * by the table's reference, or failing one, by `--source-owner` and its path
+ * under rootDir.
  */
 export const STUB_TSC: Record<string, string> = {
   "teststub/typescript/bin/tsc": `const fs = require("fs"), path = require("path");
@@ -300,6 +304,9 @@ const rootDir = cfg.rootDir || "src", outDir = cfg.outDir || "build";
 const flag = process.argv.indexOf("--emit-extension");
 const jsExt = flag < 0 ? ".js" : process.argv[flag + 1];
 const dtsExt = jsExt === ".mjs" ? ".d.mts" : ".d.ts";
+const flagValue = name => { const at = process.argv.indexOf(name); return at < 0 ? undefined : process.argv[at + 1]; };
+const pathsFile = flagValue("--source-paths"), owner = flagValue("--source-owner");
+const sourcePaths = cfg.sourceMap && pathsFile ? JSON.parse(fs.readFileSync(pathsFile, "utf8")) : undefined;
 (function walk(dir) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name);
@@ -308,8 +315,16 @@ const dtsExt = jsExt === ".mjs" ? ".d.mts" : ".d.ts";
       const rel = path.relative(rootDir, p).replace(/\\.ts$/, "");
       const outJs = path.join(outDir, rel + jsExt);
       fs.mkdirSync(path.dirname(outJs), { recursive: true });
-      fs.writeFileSync(outJs, fs.readFileSync(p, "utf8"));
       fs.writeFileSync(path.join(outDir, rel + dtsExt), "export {};\\n");
+      if (sourcePaths === undefined) {
+        fs.writeFileSync(outJs, fs.readFileSync(p, "utf8"));
+      } else {
+        const staged = p.split(path.sep).join("/");
+        const reference = sourcePaths[staged] ?? owner + ":" + rel + ".ts";
+        const map = path.basename(outJs) + ".map";
+        fs.writeFileSync(outJs, fs.readFileSync(p, "utf8") + "//# sourceMappingURL=" + map + "\\n");
+        fs.writeFileSync(outJs + ".map", JSON.stringify({ version: 3, file: path.basename(outJs), sources: ["fabr:" + reference], names: [], mappings: "AAAA" }));
+      }
     }
     else if (cfg.allowJs && /\\.jsx?$/.test(e.name)) {
       const rel = path.relative(rootDir, p).replace(/\\.jsx?$/, jsExt);

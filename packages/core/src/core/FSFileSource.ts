@@ -27,7 +27,7 @@ import { mapComputable } from "../support/Functional";
 import { DEFAULT_FILE_MODE, FileSet, IFile, FileSource } from "./FileSet";
 import { hashFile, isDirectoryError, isNotFound, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
 import { FabrError, toError } from "./Errors";
-import { IProvenanceStep, registerProvenanceLocator, registerProvenanceRenderer } from "./Provenance";
+import { IProvenanceStep, namingDigest, registerProvenanceNaming, registerProvenanceRenderer, renamingText } from "./Provenance";
 import { PreparedUpdate, WatchController, WatchEntry } from "./WatchController";
 
 export interface FSFileStats {
@@ -53,15 +53,7 @@ export class FSFile implements IFile {
    */
   private readonly contentPath: string;
 
-  constructor(
-    root: string,
-    name: string,
-    stat: FSFileStats,
-    hash: string,
-    public readonly mime: string,
-    contentPath?: string,
-    public readonly sourcePath?: string
-  ) {
+  constructor(root: string, name: string, stat: FSFileStats, hash: string, public readonly mime: string, contentPath?: string) {
     this.root = root;
     this.name = name;
     this.stat = stat;
@@ -82,7 +74,7 @@ export class FSFile implements IFile {
   }
 
   public isSameFile(file: IFile): boolean {
-    return file.getAbsPath() === this.getAbsPath() && file.sourcePath === this.sourcePath;
+    return file.getAbsPath() === this.getAbsPath();
   }
 
   public getAbsPath(): string {
@@ -331,7 +323,7 @@ export class TreeQuery extends ComputableSource<FileSet> implements WatchEntry {
   }
 
   private build(): Computable<FileSet> {
-    return buildFileSet(this.files, this.project, this.root);
+    return buildFileSet(this.files, this.project, this.owner.sourcePathPrefix);
   }
 
   private deliver(generation: number): void {
@@ -429,6 +421,12 @@ export class FSFileSource implements FileSource {
   constructor(root: string, watchController?: WatchController) {
     this.root = root;
     this.watchController = watchController;
+  }
+
+  /** What a file's path under this tree is prefixed with to make its source
+   *  path: none for a plain tree, which no reference from the project names. */
+  public get sourcePathPrefix(): string | undefined {
+    return undefined;
   }
 
   public find(name: Name, prefix = ""): ComputableSource<FileSet> {
@@ -604,33 +602,37 @@ export const FS = {
 type Projector = (input: string) => string | undefined;
 
 /**
- * Content read straight out of the user's source tree. The one provenance step
- * that can answer {@link locateSource}: it holds the tree it walked and, per
- * result name, the tree-relative path the file was read from (the query's
- * projection is not invertible — `pkg/src:**\/*.ts` strips a prefix, a rename
- * template rewrites outright — so the correspondence is recorded as it is made).
- * That is what a write-back needs and what nothing else in the build can
- * reconstruct: a file's *content* may since have been snapshotted into an
- * immutable blob, but this says where it came from and, thus, where an updated
- * version of it belongs.
+ * Content read straight out of a source tree: per result name, the path under
+ * the tree it was read from (the query's projection is not invertible —
+ * `pkg/src:**\/*.ts` strips a prefix, a rename template rewrites outright — so
+ * the correspondence is recorded as it is made). For the project's own tree it
+ * names each file's source path, `./<path>`, which is also how a write-back
+ * finds where an updated version of the file belongs.
  */
 export const SOURCE_TREE_PROVENANCE = "source-tree";
 
 interface ISourceTreeOrigin extends IProvenanceStep {
   readonly kind: typeof SOURCE_TREE_PROVENANCE;
-  /** The tree that was walked (absolute). */
-  readonly root: string;
-  /** Result name → the path under `root` it was read from. */
+  /** What a file's path under the tree is prefixed with to make its source
+   *  path; undefined for a tree no reference addresses. */
+  readonly sourcePathPrefix: string | undefined;
+  /** Result name → the path under the tree it was read from. */
   readonly paths: ReadonlyMap<string, string>;
 }
 
-registerProvenanceLocator(SOURCE_TREE_PROVENANCE, (step, name) => {
-  const { root, paths } = step as ISourceTreeOrigin;
-  const rel = paths.get(name);
-  return rel === undefined ? undefined : path.resolve(root, rel);
+registerProvenanceNaming(SOURCE_TREE_PROVENANCE, {
+  sourcePath: (step, name) => {
+    const { sourcePathPrefix, paths } = step as ISourceTreeOrigin;
+    const rel = paths.get(name);
+    return rel === undefined || sourcePathPrefix === undefined ? undefined : `${sourcePathPrefix}${rel}`;
+  },
+  digest: step => {
+    const { sourcePathPrefix, paths } = step as ISourceTreeOrigin;
+    return sourcePathPrefix === undefined ? "" : namingDigest(SOURCE_TREE_PROVENANCE, `${JSON.stringify(sourcePathPrefix)} ${renamingText(paths)}`, "");
+  },
 });
 
-/* Renders nothing: the step exists to locate, and every diagnostic that would
+/* Renders nothing: the step exists to name files, and every diagnostic that would
  * want the path already shows it (an FS file's display name IS its source
  * path). Registered all the same, so the chain doesn't render a bare
  * "(source-tree)" placeholder for a step that has nothing to add. */
@@ -642,7 +644,7 @@ registerProvenanceRenderer(SOURCE_TREE_PROVENANCE, () => []);
 function buildFileSet(
   files: Map<string, Computable<FSFile | undefined>>,
   project: Projector,
-  root: string
+  sourcePathPrefix: string | undefined
 ): Computable<FileSet> {
   return Computable.forAll(Array.from(files.values()), (...done: (FSFile | undefined)[]) => {
     const content = new Map<string, IFile>();
@@ -654,7 +656,7 @@ function buildFileSet(
         paths.set(name, file.name);
       }
     }
-    const origin: ISourceTreeOrigin = { kind: SOURCE_TREE_PROVENANCE, root, paths };
+    const origin: ISourceTreeOrigin = { kind: SOURCE_TREE_PROVENANCE, sourcePathPrefix, paths };
     return new FileSet(content, origin);
   });
 }

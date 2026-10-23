@@ -26,6 +26,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveVirtual } from "../pnp/VirtualPath";
 
 /** Whether a name is a Sass source (the ones the driver compiles; a plain
  * `.css` passes through). */
@@ -126,6 +127,78 @@ export interface ISourceMapLocation {
    * directory the map sits in, whether it is being written there or was read
    * from there. */
   mapDir: string;
+}
+
+/**
+ * The scheme a fabr reference is carried under while postcss composes maps.
+ *
+ * A source-map entry is either relative to its map or an absolute URL, and a
+ * fabr reference is written as an opaque URL (`fabr:./src/a.scss`, no `//`).
+ * postcss composes an input map (`map.prev`) through `source-map-js`, which
+ * counts only `scheme://…` as absolute: it reads `fabr:./src/a.scss` as a path
+ * and joins it onto the input map's directory, so the composed map would name
+ * `w/fabr:./src/a.scss`. Carried as `fabr-reference://<encoded reference>` the
+ * entry passes through untouched, and {@link referencedCssSources} restores it.
+ * The scheme never appears in a map the step ships.
+ */
+const CARRIED_REFERENCE = "fabr-reference://";
+
+/** An input map to hand postcss as `map.prev`, its fabr references carried
+ * under {@link CARRIED_REFERENCE} so that postcss leaves them as they are. */
+export function carriedReferences(map: IRawSourceMap): IRawSourceMap {
+  return {
+    ...map,
+    sources: map.sources.map(source =>
+      source.startsWith("fabr:") ? `${CARRIED_REFERENCE}${encodeURIComponent(source.slice("fabr:".length))}` : source
+    ),
+  };
+}
+
+/**
+ * A css step's map, its sources named as {@link relocateCssSources} names them
+ * relative to the map at `mapName`, except that each the step's table names is
+ * its fabr reference: an entry that already is one stays, and one the step
+ * staged (a `file://` URL or a path relative to the map, a package's reached
+ * through its virtual path) is named by `referenceOf`. A reference an input map
+ * held arrives as {@link carriedReferences} carried it, and is restored. The
+ * step's own
+ * intermediate input, where it has one, is named for the stylesheet it
+ * publishes.
+ */
+export function referencedCssSources(
+  map: IRawSourceMap,
+  mapName: string,
+  where: ISourceMapLocation,
+  referenceOf: (staged: string, own?: string) => string | undefined,
+  ownInput?: { path: string; rename: string }
+): IRawSourceMap {
+  const { root, srcRoot, mapDir } = where;
+  const relocated = relativeToMap(relocateCssSources(map, where, ownInput), mapName).sources;
+  const ownStaged = ownInput === undefined ? undefined : toPosix(path.relative(root, path.resolve(root, srcRoot, ownInput.path)));
+  return {
+    ...map,
+    sources: map.sources.map((source, at) => {
+      if (source.startsWith("fabr:")) {
+        return source;
+      }
+      /* An input map's reference, as carriedReferences carried it. */
+      if (source.startsWith(CARRIED_REFERENCE)) {
+        return `fabr:${decodeURIComponent(source.slice(CARRIED_REFERENCE.length))}`;
+      }
+      if (source === "<no source>") {
+        return relocated[at];
+      }
+      const absolute = source.startsWith("file://") ? fileURLToPath(source) : path.resolve(root, mapDir, source);
+      const staged = toPosix(path.relative(root, resolveVirtual(absolute)));
+      const reference = referenceOf(staged, staged === ownStaged ? ownInput!.rename : undefined);
+      return reference === undefined ? relocated[at] : `fabr:${reference}`;
+    }),
+  };
+}
+
+/** A path with POSIX separators. */
+function toPosix(name: string): string {
+  return name.split(path.sep).join("/");
 }
 
 export function relocateCssSources(

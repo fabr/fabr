@@ -34,7 +34,7 @@ import { Requirement } from "../resolver/Types";
 import { declaredRequirement } from "../resolver/PackageResolver";
 import { Flag } from "../core/Flag";
 import { SubTargetInputs } from "../rules/Types";
-import { Constraints, HOST, operationOf, RUN_OVERRIDE, TARGET } from "../model/Constraints";
+import { BUILD_OPERATION, Constraints, HOST, operationOf, RUN_OVERRIDE, shownConstraints, TARGET } from "../model/Constraints";
 import { IFetchReport, ITargetBuildTask, TaskDescription } from "../model/BuildEvents";
 import { ExecutionContext } from "../model/ExecutionContext";
 import { ITargetOrigin, TARGET_PROVENANCE } from "../model/Target";
@@ -179,6 +179,23 @@ export abstract class TargetContext {
   /** Get the context of the declared target this evaluation belongs to (this
    * one, for a declared target). */
   public abstract getDeclaredContext(): DeclaredTargetContext;
+
+  /**
+   * Get the reference naming the declared target's build in its configuration:
+   * its name, with the constraints that tell the build apart
+   * (`mylib<BUILD_TYPE=release>`), the operation among them where it is not
+   * `build` (`tool<BUILD_OPERATION=run>`).
+   */
+  public buildReference(): string {
+    const declared = this.getDeclaredContext();
+    const constraints = declared.context.getConstraints();
+    const operation = operationOf(constraints);
+    const shown = [...shownConstraints(constraints), ...(operation === "build" ? [] : [[BUILD_OPERATION, operation] as const])]
+      .map(([key, value]) => `${key}=${value}`)
+      .sort()
+      .join(", ");
+    return shown === "" ? declared.name : `${declared.name}<${shown}>`;
+  }
 
   /** Stamp the target's provenance onto a FileSet it yields: the declared
    * target's TARGET_PROVENANCE step. An anonymous target adds none, since its
@@ -636,7 +653,7 @@ export class DeclaredTargetContext extends TargetContext {
   }
 
   public stampProvenance(result: FileSet): FileSet {
-    const step: ITargetOrigin = { kind: TARGET_PROVENANCE, decl: this.target, parent: result.origin };
+    const step: ITargetOrigin = { kind: TARGET_PROVENANCE, decl: this.target, reference: this.buildReference(), parent: result.origin };
     return result.withOrigin(step);
   }
 

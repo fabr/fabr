@@ -52,6 +52,7 @@ import {
   FabrError,
   SymlinkFile,
   FileSet,
+  MemoryFile,
   IFile,
   IWriteBackCandidate,
   PackageFileSet,
@@ -69,6 +70,7 @@ import {
   toEnvironment,
   PackageSources,
 } from "@fabr-build/core";
+import { SOURCE_LOCATIONS_FILE } from "@fabr-build/js-tools";
 import { createTestRunAction } from "./TestRunAction";
 import { posix } from "path";
 import { COMPILE_OUT_DIR, COMPILE_SRC_DIR } from "./rules/BuildJSCompile";
@@ -135,6 +137,15 @@ const SETUP_STEM = "setupTests";
 function runnerGlobalsTypes(runner: FileSet): FileSet {
   const found = [...runner].find(([name]) => name === GLOBALS_TYPES_FILE || name.endsWith("/" + GLOBALS_TYPES_FILE));
   return found ? FileSet.layout({ [GLOBALS_TYPES_MOUNT]: found[1] }) : EMPTY_FILESET;
+}
+
+/** The location of each of `sources` in the test installation (under
+ *  {@link COMPILE_SRC_DIR}), by its source path. */
+function sourceLocations(sources: FileSet): MemoryFile {
+  const rows = [...sources.sourcePaths]
+    .map(([name, sourcePath]): [string, string] => [sourcePath, `${COMPILE_SRC_DIR}/${name}`])
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  return MemoryFile.from(JSON.stringify(Object.fromEntries(rows)));
 }
 
 /** How one test framework's suites are built and run. */
@@ -456,6 +467,10 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
        * tree, with no rename to re-encode fabr's layout in the declaration. */
       [COMPILE_OUT_DIR]: [runtime, run.testResources, run.expectations],
       [COMPILE_SRC_DIR]: [run.compileSrcs],
+      /* Where each staged source is, by its source path: the compile's maps
+       * name a source by its reference, and a runner reading one (the jest
+       * flavour's docblock) opens it from here. */
+      [SOURCE_LOCATIONS_FILE]: sourceLocations(run.compileSrcs),
     });
     /* Bare interpreter (e.g. "node"): resolved against PATH inside the step, so
      * no host-specific absolute path enters the action manifest.

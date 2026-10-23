@@ -86,8 +86,12 @@ export function splitDepsPath(name: string): string[] {
  * specifier's `:@&` legible.
  */
 export function encodeName(name: string): string {
-  return encodeURI(name);
+  return URI_UNESCAPED.test(name) ? name : encodeURI(name);
 }
+
+/** The characters `encodeURI` leaves as they are: a name made only of them
+ * encodes to itself, and almost every name is one. */
+const URI_UNESCAPED = /^[A-Za-z0-9\-_.!~*'();/?:@&=+$,#]*$/;
 
 /** Decode a name field. `encodeURI` only ever introduces `%` escapes, so a
  * field without one decodes to itself — and almost none have one, which makes
