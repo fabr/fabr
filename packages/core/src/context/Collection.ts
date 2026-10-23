@@ -75,13 +75,17 @@ export const DEPENDENCIES_KEY = "dependencies";
 /** As {@link DEPENDENCIES_KEY}, for the requirements the package's consumer
  * supplies (its provided requirements). */
 export const PROVIDED_KEY = "provided";
+/** As {@link PROVIDED_KEY}, for the provided requirements the consumer may
+ * leave out: the target is built against them, and a consumer binds each only
+ * to what it supplies or its installation already holds. */
+export const OPTIONAL_PROVIDED_KEY = "optional_provided";
 /**
  * The package the target is made from: resolved on its own, as material and
  * not as a requirement. Where it is exactly one package, the target is a
  * package with that one's version and requirements.
  */
 export const EXTENDS_KEY = "extends";
-const TRANSITIVE_KEYS: ReadonlySet<string> = new Set([DEPENDENCIES_KEY, PROVIDED_KEY, EXTENDS_KEY]);
+const TRANSITIVE_KEYS: ReadonlySet<string> = new Set([DEPENDENCIES_KEY, PROVIDED_KEY, OPTIONAL_PROVIDED_KEY, EXTENDS_KEY]);
 
 /**
  * What a requirement settles to once materialized: one read

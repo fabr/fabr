@@ -222,6 +222,10 @@ targetdef js_package {
     # Packages the sources import but whoever uses this package supplies, such
     # as `react` for a component library. Written to `peerDependencies`.
     provided_deps = PACKAGES;
+    # As `provided_deps`, for packages whoever uses this package may leave out:
+    # the sources are built against them, and they are written to
+    # `peerDependencies` marked optional.
+    optional_provided_deps = PACKAGES;
     # The package's public entry points, named by the sources they compile
     # from. They are compiled even if `srcs` doesn't list them.
     exports = FILES;

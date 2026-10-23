@@ -30,6 +30,7 @@ import {
   dependencyName,
   requestedConstraint,
   DEPENDENCIES_KEY,
+  OPTIONAL_PROVIDED_KEY,
   PROVIDED_KEY,
   Conflicts,
   NO_CONFLICTS,
@@ -94,6 +95,7 @@ function label(dep: Dependency, style: Style): string {
 const HEADINGS: ReadonlyMap<string, string> = new Map([
   [DEPENDENCIES_KEY, "deps"],
   [PROVIDED_KEY, "provided_deps"],
+  [OPTIONAL_PROVIDED_KEY, "optional_provided_deps"],
 ]);
 
 /** One name's tree: its sections, each the edges to the packages a

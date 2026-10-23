@@ -20,6 +20,7 @@ version number.
 - A sibling package depended on under a rename (`deps = mylib -> foo;`) is declared in npm's alias
   form (`"foo": "npm:mylib@1.2.3"`).
 - Split runtime tools out into their own js-tools package.
+- Add optional_provided_deps support.
 
 ## Fabr 0.3.0
 @fabr-build/core:

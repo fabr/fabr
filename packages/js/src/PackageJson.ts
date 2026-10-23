@@ -65,6 +65,7 @@ const COMPUTED_FIELDS = new Set([
   "bin",
   "dependencies",
   "peerDependencies",
+  "peerDependenciesMeta",
 ]);
 
 /** Fields stripped from an imported package.json (and rejected in `metadata`):
@@ -625,6 +626,9 @@ export interface IPackageJsonInputs {
   declared: (Requirement | undefined)[];
   /** Declared requirements from `provided_deps` → `peerDependencies`. */
   provided: (Requirement | undefined)[];
+  /** Declared requirements from `optional_provided_deps` → `peerDependencies`,
+   * each marked optional in `peerDependenciesMeta`. */
+  optionalProvided?: (Requirement | undefined)[];
   jsTarget: JSTarget;
   metadata: PropertyMap;
   /** The sources named in `exports`, by the name they compile under. Empty for a
@@ -652,6 +656,7 @@ export function createPackageJson({
   version,
   declared,
   provided,
+  optionalProvided,
   jsTarget,
   metadata,
   exports = [],
@@ -711,10 +716,15 @@ export function createPackageJson({
   if (dependencies.size > 0) {
     packageJson.dependencies = Object.fromEntries(dependencies);
   }
-  /* provided_deps → peerDependencies: the host supplies the one shared copy. */
+  /* provided_deps → peerDependencies: the host supplies the one shared copy.
+   * An optional one is there too, marked so the host need not have it. */
   const peerDependencies = peerDependenciesOf(provided);
-  if (peerDependencies.size > 0) {
-    packageJson.peerDependencies = Object.fromEntries(peerDependencies);
+  const optionalPeers = peerDependenciesOf(optionalProvided ?? []);
+  if (peerDependencies.size + optionalPeers.size > 0) {
+    packageJson.peerDependencies = Object.fromEntries([...peerDependencies, ...optionalPeers]);
+  }
+  if (optionalPeers.size > 0) {
+    packageJson.peerDependenciesMeta = Object.fromEntries([...optionalPeers.keys()].map(name => [name, { optional: true }]));
   }
 
   return MemoryFile.from(JSON.stringify(packageJson, undefined, 2) + "\n");

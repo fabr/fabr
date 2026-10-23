@@ -16,7 +16,7 @@ are.
 |---|---|
 | `dependencies` in `package.json` | A target's `deps`. |
 | `devDependencies` | `test_deps` for what tests need. Build tools aren't dependencies; they are [settings](#tool-versions) such as `TYPESCRIPT`. |
-| `peerDependencies` | A target's `provided_deps`. |
+| `peerDependencies` | A target's `provided_deps`, or `optional_provided_deps` for an optional peer. |
 | `npm install` | Nothing. Packages are fetched during the build and cached. |
 | The lockfile | Nothing. The same build file always selects the same versions. |
 | A range such as `^4.17.0` installs the newest match | A range selects the **lowest** version that satisfies everything in the build. |
@@ -41,13 +41,14 @@ The version is an exact version or any npm range: `^2.1.0`, `~2.1.0`, `2.x`, `>=
 that contains a space or one of `< > = |` needs quotes, as in `@npm:send:">=0.19.0"`. A dist-tag
 such as `latest` is rejected, because what it names changes over time.
 
-Three properties of a `js_package` take dependencies, and they differ in what the published
+Four properties of a `js_package` take dependencies, and they differ in what the published
 package says about them:
 
 | Property | Used for | In the generated `package.json` |
 |---|---|---|
 | `deps` | Packages the code imports | `dependencies` |
 | `provided_deps` | Packages the code imports but whoever uses the package supplies, such as `react` for a component library | `peerDependencies` |
+| `optional_provided_deps` | As `provided_deps`, for packages whoever uses the package may leave out. The package is still built against them. | `peerDependencies`, marked optional in `peerDependenciesMeta` |
 | `test_deps` | Packages only the tests import | Not written |
 
 The range written to `package.json` is the one you declared: `@npm:lodash:^4.17.0` becomes

@@ -176,6 +176,23 @@ describe("createPackageJson", () => {
     expect(await generate(undefined, new Map())).to.not.have.property("dependencies");
   });
 
+  it("emits optional_provided_deps as peerDependencies, each marked optional", async () => {
+    const file = createPackageJson({
+      files: new FileSet(new Map()),
+      name: "pkg",
+      version: "1.0.0",
+      declared: [],
+      provided: [{ name: "react", versionConstraint: "^18.0.0" }],
+      optionalProvided: [{ name: "@fabr-build/core", versionConstraint: "^0.1.0" }],
+      jsTarget: JS_TARGET,
+      metadata: new Map(),
+    });
+    const pkg = JSON.parse(await file.readString()) as Record<string, unknown>;
+    expect(pkg.peerDependencies).to.deep.equal({ react: "^18.0.0", "@fabr-build/core": "^0.1.0" });
+    expect(pkg.peerDependenciesMeta).to.deep.equal({ "@fabr-build/core": { optional: true } });
+    expect(await generate(undefined, new Map())).to.not.have.property("peerDependenciesMeta");
+  });
+
   it("rejects a metadata key fabr computes, and one it strips", async () => {
     const rejects = async (metadata: PropertyMap, pattern: RegExp): Promise<void> => {
       try {

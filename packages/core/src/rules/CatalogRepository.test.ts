@@ -294,12 +294,15 @@ describe("CatalogRepository (through the model)", () => {
    * `deps` as written — packages as packages, external requirements as inert
    * references — and its `provided` as provided requirements, as a
    * package-building rule delivers one. */
-  const providedNames = (provided: ReadonlyArray<SourceRef>): Map<string, "expected"> =>
-    new Map(
-      provided.flatMap(
+  const providedNames = (provided: ReadonlyArray<SourceRef>, optional: ReadonlyArray<Written>): Map<string, "expected" | "optional"> =>
+    new Map([
+      ...provided.flatMap(
         (source): Array<[string, "expected"]> => (source instanceof RepositoryRef ? [[source.localName, "expected"]] : [])
-      )
-    );
+      ),
+      ...optional.flatMap(({ opened }): Array<[string, "optional"]> =>
+        isPackage(opened) ? [[opened.packageName, "optional"]] : opened instanceof RepositoryRef ? [[opened.localName, "optional"]] : []
+      ),
+    ]);
   /* Read `deps` and `provided`, each target among them as `open` gives it (its
    * node, or its build), and yield them with `provided` as read. */
   /** Each written source with what it opens to, and the `provided` sources. */
@@ -310,14 +313,19 @@ describe("CatalogRepository (through the model)", () => {
   const written = (
     context: TargetContext,
     open: (target: TargetRef) => Computable<ReadonlyArray<SourceRef | Unbuilt>>
-  ): Computable<[Written[], SourceRef[]]> =>
-    Computable.forAll([context.getFileProperty("deps"), context.getFileProperty("provided")], (sources, provided) =>
-      Computable.forAll(
-        [...sources, ...provided].map(source =>
-          (source instanceof TargetRef ? open(source) : Computable.resolve([source])).then(opened => opened.map((each): Written => ({ reference: source, opened: each })))
-        ),
-        (...opened: Written[][]): [Written[], SourceRef[]] => [opened.flat(), provided]
-      )
+  ): Computable<[Written[], SourceRef[], Written[]]> =>
+    Computable.forAll(
+      [context.getFileProperty("deps"), context.getFileProperty("provided"), context.getFileProperty("optional")],
+      (sources, provided, optional) => {
+        const opening = (source: SourceRef): Computable<Written[]> =>
+          (source instanceof TargetRef ? open(source) : Computable.resolve([source])).then(opened =>
+            opened.map((each): Written => ({ reference: source, opened: each }))
+          );
+        return Computable.forAll(
+          [Computable.forAll([...sources, ...provided].map(opening), (...all: Written[][]) => all.flat()), Computable.forAll(optional.map(opening), (...all: Written[][]) => all.flat())],
+          (carried, optionals): [Written[], SourceRef[], Written[]] => [[...carried, ...optionals], provided, optionals]
+        );
+      }
     );
   /* The edges to what was opened: a package by the reference written for it,
    * a repository's reference as it stands. */
@@ -333,17 +341,21 @@ describe("CatalogRepository (through the model)", () => {
     type: "test_pkg",
     properties: {},
     requirements: (context: TargetContext) =>
-      Computable.resolve({ dependencies: context.getPackageProperty("deps"), provided: context.getPackageProperty("provided") }),
+      Computable.resolve({
+        dependencies: context.getPackageProperty("deps"),
+        provided: context.getPackageProperty("provided"),
+        optional_provided: context.getPackageProperty("optional"),
+      }),
     evaluate: (context: TargetContext) =>
       written(context, target => target.materialize()).then(
-        ([sources, provided]) =>
+        ([sources, provided, optional]) =>
           new PackageFileSet(
             new Map([[`${context.name}/data.txt`, contentOf(context.name)]]),
             context.name,
             undefined,
             carriedAmong(sources) as Array<Dependency<PackageFileSet>>,
             undefined,
-            providedNames(provided)
+            providedNames(provided, optional)
           )
       ),
   };
@@ -516,7 +528,7 @@ describe("CatalogRepository (through the model)", () => {
     "targetdef test_usetool { tool = PACKAGES; }\n" +
     "targetdef test_useglobal { }\n" +
     "targetdef test_sealed { deps = PACKAGES; }\n" +
-    "targetdef test_pkg { deps = PACKAGES; provided = PACKAGES; }\n" +
+    "targetdef test_pkg { deps = PACKAGES; provided = PACKAGES; optional = PACKAGES; }\n" +
     "targetdef test_patch { }\n" +
     "targetdef test_mode { }\n" +
     "targetdef test_mixed { srcs = FILES; deps = PACKAGES; }\n" +
@@ -1398,6 +1410,49 @@ describe("CatalogRepository (through the model)", () => {
       );
       await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
       expect(edges(lastDepSets[0] as PackageFileSet)).to.deep.equal(["host@2.0.0"]);
+    });
+  });
+
+  describe("a built package's optional provided requirement", () => {
+    const edges = (pkg: PackageFileSet): string[] =>
+      pkg.dependencies.map(dep => (dep.package ? dep.package.packageId : `ref:${dep.reference.toString()}`));
+    const delivered = (name: string): string[] =>
+      [...new Set(reachablePackages(lastDepSets).filter(pkg => pkg.packageName === name).map(pkg => pkg.packageId))].sort();
+
+    it("is bound to the consumer's own package of that name", async () => {
+      const model = build("test_pkg host { }\n" + "test_pkg lib { optional = host; }\n" + "test_deps a { deps = lib host; }\n");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+      const lib = lastDepSets.find(set => set instanceof PackageFileSet && set.packageName === "lib") as PackageFileSet;
+      expect(lib.provided.get("host")).to.equal("optional");
+      expect(edges(lib)).to.deep.equal(["host@*"]);
+    });
+
+    it("is left unbound, installing nothing, where the consumer has none", async () => {
+      /* lib was built against host, but that copy is not what an optional
+       * requirement is answered by. */
+      const model = build("test_pkg host { }\n" + "test_pkg lib { optional = host; }\n" + "test_deps a { deps = lib; }\n");
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+      expect(edges(lastDepSets[0] as PackageFileSet)).to.deep.equal(["ref:host"]);
+      expect(delivered("host")).to.deep.equal([]);
+    });
+
+    it("installs nothing from its repository unless the consumer selects the package", async () => {
+      /* lib's own build is compiled against host; its consumer gets none. */
+      const model = build(
+        "package_repo @backing { }\n" + "test_pkg lib { optional = @backing:host:1.0.0; }\n" + "test_deps a { deps = lib; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+      expect(delivered("host")).to.deep.equal([]);
+    });
+
+    it("is bound to the consumer's own selection from the repository", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_pkg lib { optional = @backing:host:1.0.0; }\n" +
+          "test_deps a { deps = lib @backing:host:1.0.0; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+      expect(delivered("host")).to.deep.equal(["host@1.0.0"]);
     });
   });
 

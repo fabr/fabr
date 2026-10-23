@@ -1059,8 +1059,20 @@ export function bindProvided<S extends Resolved>(sources: S[], taken?: ReadonlyS
   if (!packages.some(pkg => pkg.provided.size > 0)) {
     return sources;
   }
+  /* What the installation holds: everything reached by an edge other than an
+   * optional provided one, which installs nothing of its own. */
+  const held = [...roots];
+  const holding = new Set<Package>(held);
+  for (let at = 0; at < held.length; at++) {
+    for (const dep of held[at].dependencies) {
+      if (dep.package !== undefined && held[at].provided.get(dependencyName(dep)) !== "optional" && !holding.has(dep.package)) {
+        holding.add(dep.package);
+        held.push(dep.package);
+      }
+    }
+  }
   const present = new Map<string, Array<{ pkg: Package; signature: string }>>();
-  for (const pkg of packages) {
+  for (const pkg of held) {
     present.set(pkg.packageName, [...(present.get(pkg.packageName) ?? []), { pkg, signature: packageNodeSignature(pkg) }]);
   }
   /** Find the package the installation holds that answers `reference` under
@@ -1161,9 +1173,13 @@ export function bindProvided<S extends Resolved>(sources: S[], taken?: ReadonlyS
         return { dep, supply };
       }
       const name = dependencyName(dep);
+      /* An optional one is never answered by the package on its edge (for a
+       * built package, the copy it was compiled against): only by what the
+       * consumer supplies or its installation holds. */
+      const optional = pkg.provided.get(name) === "optional";
       const answer =
         supplied(scope, name) ??
-        (dep.package !== undefined
+        (dep.package !== undefined && !optional
           ? { pkg: dep.package, scope: own }
           : dep.reference instanceof RepositoryRef
           ? ((held): ISupply | undefined => held && { pkg: held, scope: top })(answering(name, dep.reference))
@@ -1175,7 +1191,11 @@ export function bindProvided<S extends Resolved>(sources: S[], taken?: ReadonlyS
     });
     builder.wire(
       node,
-      bound.map(({ dep, supply }) => (supply === undefined ? dep : { reference: dep.reference, package: copy(supply.pkg, supply.scope) })),
+      /* An edge nothing answers is its reference alone (an optional one would
+       * otherwise keep the package it was built against). */
+      bound.map(({ dep, supply }) =>
+        supply === undefined ? { reference: dep.reference } : { reference: dep.reference, package: copy(supply.pkg, supply.scope) }
+      ),
       pkg.provided
     );
     return node;

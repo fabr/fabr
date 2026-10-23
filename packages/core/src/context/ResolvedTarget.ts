@@ -27,7 +27,7 @@ import { Resolved, SourceRef } from "../core/Repository";
 import { TargetNode } from "../core/TargetRef";
 import { BUILD_OPERATION, FILES_OPERATION, shownConstraints } from "../model/Constraints";
 import { ITargetOrigin, TARGET_PROVENANCE } from "../model/Target";
-import { DEPENDENCIES_KEY, EXTENDS_KEY, PROVIDED_KEY, ResolvedRequirements } from "./Collection";
+import { DEPENDENCIES_KEY, EXTENDS_KEY, OPTIONAL_PROVIDED_KEY, PROVIDED_KEY, ResolvedRequirements } from "./Collection";
 import { NameLabel } from "../model/Errors";
 import type { DeclaredTargetContext } from "./TargetContext";
 
@@ -87,9 +87,13 @@ class TargetBuild {
       return { version: only.version, dependencies: only.dependencies, provided: only.provided };
     }
     const provided = carried(PROVIDED_KEY);
+    const optional = carried(OPTIONAL_PROVIDED_KEY);
     return {
-      dependencies: [...carried(DEPENDENCIES_KEY), ...provided],
-      provided: new Map(provided.map((dep): [string, Provided] => [dependencyName(dep), "expected"])),
+      dependencies: [...carried(DEPENDENCIES_KEY), ...provided, ...optional],
+      provided: new Map([
+        ...provided.map((dep): [string, Provided] => [dependencyName(dep), "expected"]),
+        ...optional.map((dep): [string, Provided] => [dependencyName(dep), "optional"]),
+      ]),
     };
   }
 

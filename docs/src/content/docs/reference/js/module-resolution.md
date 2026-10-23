@@ -123,7 +123,9 @@ behaviour, but, as with nested copies under npm, the copies don't share module s
 you see this, bringing the peer down to one version removes the extra copy.
 
 An optional peer dependency (`peerDependenciesMeta: { "x": { "optional": true } }`) is connected
-only when the build already includes that package; declaring it optional never adds it.
+only when the build already includes that package; declaring it optional never adds it. A package
+you build declares one with `optional_provided_deps`: it is built against the package, and a
+target that uses it gets the package only if it has the package itself.
 
 Some packages name an optional peer only in `peerDependenciesMeta`, with no entry in
 `peerDependencies`; `sequelize` declares its database drivers this way. Fabr reads that as an

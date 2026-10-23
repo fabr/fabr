@@ -18,6 +18,11 @@
   "peerDependencies": {
     "@fabr-build/core": "0.1.0"
   },
+  "peerDependenciesMeta": {
+    "@fabr-build/core": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@fabr-build/core": "0.1.0"
   }

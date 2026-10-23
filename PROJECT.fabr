@@ -118,8 +118,9 @@ js_package @fabr-build/js-tools {
   exports = packages/js-tools/src:index.ts;
   tests = packages/js-tools/src:**/*.test.ts;
   deps = @pkg:@types/node;
-  # The test runners write core's CTRF report, whose types they compile against.
-  provided_deps = @fabr-build/core;
+  # The test runners write core's CTRF report, whose types they compile against;
+  # nothing loads core at run time.
+  optional_provided_deps = @fabr-build/core;
   # postcss / postcss-modules: the PostCSS driver's tests scope real stylesheets.
   test_deps = chai jest_types @pkg:postcss @pkg:postcss-modules;
   metadata = { FABR_METADATA; description = Fabr JS support plugin tools }

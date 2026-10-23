@@ -90,7 +90,8 @@ For the target at the top of this page, built as ES modules:
 | `exports` | The `exports` property; see [below](#entry-points). |
 | `bin` | Scripts in the package's `bin/` directory; see [below](#command-line-programs). |
 | `dependencies` | `deps`, with the version or range as you wrote it. |
-| `peerDependencies` | `provided_deps`, likewise. |
+| `peerDependencies` | `provided_deps` and `optional_provided_deps`, likewise. |
+| `peerDependenciesMeta` | `optional_provided_deps`, each marked `optional`. |
 | anything else | `metadata`. |
 
 There are no `devDependencies`: test dependencies aren't recorded, and build tools aren't

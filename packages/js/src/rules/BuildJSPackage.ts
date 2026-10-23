@@ -91,6 +91,7 @@ function requirements(context: TargetContext): Computable<{
   exports: Computable<SourceRef[]>;
   dependencies: Computable<PackageSources>;
   provided: Computable<PackageSources>;
+  optional_provided: Computable<PackageSources>;
   test_deps: Computable<LooseSources>;
   test_resources: Computable<SourceRef[]>;
   test_expectations: Computable<SourceRef[]>;
@@ -104,6 +105,7 @@ function requirements(context: TargetContext): Computable<{
       exports: context.getFileProperty("exports"),
       dependencies: context.getPackageProperty("deps"),
       provided: context.getPackageProperty("provided_deps"),
+      optional_provided: context.getPackageProperty("optional_provided_deps"),
       /* Only the loose files of `test_deps`, which are subtracted from `srcs`:
        * a build resolves and fetches nothing the tests alone need. */
       test_deps: context.getLooseFileProperty("test_deps"),
@@ -114,22 +116,32 @@ function requirements(context: TargetContext): Computable<{
 }
 
 /** Make the target's package: `files` under its name at `version`, requiring
- * the packages `deps` and `provided` are edges to, the latter named as provided. */
+ * the packages `deps`, `provided` and `optional` are edges to, the latter two
+ * named as provided. */
 function packageOf(
   context: TargetContext,
   files: Iterable<[string, IFile]>,
   version: string | undefined,
-  deps: ReadonlyArray<Dependency<PackageFileSet>>,
-  provided: ReadonlyArray<Dependency<PackageFileSet>>
+  edges: PackageEdges
 ): PackageFileSet {
   return new PackageFileSet(
     files,
     context.name,
     version,
-    [...deps, ...provided],
+    [...edges.dependencies, ...edges.provided, ...edges.optional_provided],
     undefined,
-    new Map(provided.map((dep): [string, Provided] => [dependencyName(dep), "expected"]))
+    new Map([
+      ...edges.provided.map((dep): [string, Provided] => [dependencyName(dep), "expected"]),
+      ...edges.optional_provided.map((dep): [string, Provided] => [dependencyName(dep), "optional"]),
+    ])
   );
+}
+
+/** The edges to the packages among the requirements a package passes on. */
+interface PackageEdges {
+  dependencies: ReadonlyArray<Dependency<PackageFileSet>>;
+  provided: ReadonlyArray<Dependency<PackageFileSet>>;
+  optional_provided: ReadonlyArray<Dependency<PackageFileSet>>;
 }
 
 function buildJsPackage(
@@ -141,12 +153,12 @@ function buildJsPackage(
     exports: FileSet[];
     dependencies: FileSet[];
     provided: FileSet[];
+    optional_provided: FileSet[];
     test_deps: FileSet[];
     test_resources: FileSet[];
     test_expectations: FileSet[];
   },
-  /** The edges to the packages among `dependencies` and `provided`. */
-  edges: { dependencies: ReadonlyArray<Dependency<PackageFileSet>>; provided: ReadonlyArray<Dependency<PackageFileSet>> }
+  edges: PackageEdges
 ): Computable<RuleResult> {
   return Computable.forAll(
     [context.getGlobalString("JS_TARGET"), context.getProperty("version"), context.getMap("metadata")],
@@ -161,6 +173,7 @@ function buildJsPackage(
           exports: exportSets,
           dependencies: deps,
           provided,
+          optional_provided: optionalProvided,
           test_deps: testDepSources,
           test_resources: testResourceSources,
           test_expectations: expectationSources,
@@ -189,16 +202,19 @@ function buildJsPackage(
             (source): source is FileSet => !(source instanceof Flag)
           );
           const compileSources = sources.minus(tests).minus(FileSet.unionAll(...testOnlySources));
-          const compileDeps = [...deps, ...provided].filter((dep): dep is FileSet => dep instanceof FileSet);
+          const compileDeps = [...deps, ...provided, ...optionalProvided].filter((dep): dep is FileSet => dep instanceof FileSet);
           /* Declared (not resolved) requirements for the generated manifest: each
            * reports what was *written* — an inline `@npm:pkg:1.2.3` off the
            * reference the edge was resolved for, a catalog dep from the catalog's
            * pin — not the version the joint resolution selected. Provided deps
-           * declare `peerDependencies`. */
+           * declare `peerDependencies`, optional ones marked so. */
           const declaredDeps = context.collectDeclaredRequirements(edges.dependencies);
           const declaredProvided = context.collectDeclaredRequirements(edges.provided);
+          const declaredOptional = context.collectDeclaredRequirements(edges.optional_provided);
 
-          return Computable.forAll([seedJson, declaredDeps, declaredProvided], (seed, declared, providedDeclared) => {
+          return Computable.forAll(
+            [seedJson, declaredDeps, declaredProvided, declaredOptional],
+            (seed, declared, providedDeclared, optionalDeclared) => {
             /* Compile against the direct deps: the sources see only these, while
              * the transitive closure is reachable only by the deps themselves —
              * the dependency manifest's doing, not a layout's. Provided deps are
@@ -256,6 +272,7 @@ function buildJsPackage(
                   version: version?.toString(),
                   declared,
                   provided: providedDeclared,
+                  optionalProvided: optionalDeclared,
                   jsTarget,
                   metadata,
                   /* Named by their source names: the map is generated from the
@@ -265,7 +282,7 @@ function buildJsPackage(
                   rewrites,
                 });
                 const assembled = FileSet.unionAll(shebanged, new FileSet(new Map([["package.json", packageJson]])));
-                return packageOf(context, assembled, version?.toString(), edges.dependencies, edges.provided);
+                return packageOf(context, assembled, version?.toString(), edges);
               });
             };
 
@@ -288,7 +305,13 @@ export const buildJsPackageRule: RuleDefinition = defineRule({
   requirements,
   evaluateResolved: (context, requirements) =>
     Computable.forAll(
-      [requirements.materializeAll(), requirements.packages("dependencies"), requirements.packages("provided")],
-      (gathered, dependencies, provided) => buildJsPackage(context, gathered, { dependencies, provided })
+      [
+        requirements.materializeAll(),
+        requirements.packages("dependencies"),
+        requirements.packages("provided"),
+        requirements.packages("optional_provided"),
+      ],
+      (gathered, dependencies, provided, optional_provided) =>
+        buildJsPackage(context, gathered, { dependencies, provided, optional_provided })
     ),
 });
