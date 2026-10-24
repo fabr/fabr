@@ -48,7 +48,7 @@ import {
 } from "@fabr-build/core";
 import { buildPostcssOptions, CSS_DEPS_DIR, CSS_OUTDIR, CSS_SRC_ROOT, CSS_TOOL_DIR } from "../CSSCompile";
 import { emitsSourceMap } from "../JSPackage";
-import { SOURCE_OWNER_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
+import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, SOURCE_OWNER_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { createNodeExecAction, NODE_MODULES } from "../NodeExecAction";
 
 function buildCssPostcss(context: TargetContext, collected: { srcs: FileSet[]; deps: FileSet[] }): Computable<RuleResult> {
@@ -80,7 +80,7 @@ function buildCssPostcss(context: TargetContext, collected: { srcs: FileSet[]; d
       /* Its maps name each source by the reference resolving to it, from the
        * table the step stages: the stylesheets and the packages they reach. */
       const argv = compiler.toCommandLine(
-        ["--manifest=postcss-manifest.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, context.buildReference()],
+        ["--manifest=postcss-manifest.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, context.buildReference(), DEPS_REPORT_FLAG, DEPS_REPORT_FILE],
         { base: CSS_TOOL_DIR }
       );
       return createNodeExecAction(FileSet.layout(workspace), deps, argv, `${CSS_OUTDIR}:**`, {
@@ -89,6 +89,7 @@ function buildCssPostcss(context: TargetContext, collected: { srcs: FileSet[]; d
         mount: CSS_DEPS_DIR,
         sourcePaths: SOURCE_PATHS_FILE,
         packageSourcePaths: true,
+        depsReport: DEPS_REPORT_FILE,
       });
     }
   );

@@ -12,6 +12,7 @@ version number.
 - Repositories/namespaces now error if used unprojected rather than silently doing nothing.
 - Generalize fabr_home to the full installed namespace.
 - Allow '-' in identifiers (property names)
+- Optimize npm downloading
 
 @fabr-build/cli:
 - Add `fabr deps`: print the dependency tree of targets or packages, marking conflicting versions `(!)`.
@@ -22,6 +23,7 @@ version number.
 - Split runtime tools out into their own js-tools package.
 - Add optional_provided_deps support.
 - Change source maps to generate fabr: urls w/ project-relative where possible.
+- Add discovered-deps support for sass + postcss
 
 ## Fabr 0.3.0
 @fabr-build/core:

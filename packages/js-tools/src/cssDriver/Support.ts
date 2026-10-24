@@ -26,6 +26,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { DEPS_REPORT_FLAG, IResolutionEdge, serializeRunReport } from "../pnp/ReadSet";
 import { resolveVirtual } from "../pnp/VirtualPath";
 
 /** Whether a name is a Sass source (the ones the driver compiles; a plain
@@ -96,6 +97,23 @@ export function withoutAnnotations(css: string): string {
 }
 
 /** The `--manifest=<path>` argument, the drivers' one piece of argv. */
+/**
+ * Write what the run read of the packages it was given, and how it resolved
+ * them, where the step asked for it (`--deps-report <file>`, relative to the
+ * working dir); nothing where it did not.
+ */
+export function writeDepsReport(argv: string[], reads: Iterable<string>, edges: ReadonlyArray<IResolutionEdge> = []): void {
+  const at = argv.indexOf(DEPS_REPORT_FLAG);
+  if (at < 0) {
+    return;
+  }
+  const file = argv[at + 1];
+  if (file === undefined) {
+    throw new Error(`${DEPS_REPORT_FLAG} needs a value`);
+  }
+  fs.writeFileSync(path.resolve(file), serializeRunReport(reads, edges));
+}
+
 export function parseManifestPath(argv: string[], driver: string): string {
   const flag = argv.find(arg => arg.startsWith("--manifest="));
   if (!flag) {

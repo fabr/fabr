@@ -196,3 +196,27 @@ function toResolutionEdges(json: unknown): IResolutionEdge[] {
     return { from, name, to, via };
   });
 }
+
+/**
+ * The run's report file: what it READ and how its names RESOLVED (the
+ * discovered-dependency halves, which the step joins into the walks the entry
+ * is keyed on), plus any further sections a driver keeps of its own, as one
+ * document. Sorted, so a report is a function of what the run read and
+ * resolved and not of the order it happened to ask.
+ */
+export function serializeRunReport(
+  reads: Iterable<string>,
+  edges: ReadonlyArray<IResolutionEdge>,
+  sections: Record<string, unknown> = {}
+): string {
+  return `${JSON.stringify({ reads: [...new Set(reads)].sort(), edges: [...edges].sort(compareEdges), ...sections }, undefined, 2)}\n`;
+}
+
+/** Edge order for the report: by requirer then name, in code-unit order —
+ * never a locale comparison, the point being one spelling on every machine
+ * (core's compareText, which a driver cannot import). */
+function compareEdges(left: IResolutionEdge, right: IResolutionEdge): number {
+  const l = `${left.from}\0${left.name}`;
+  const r = `${right.from}\0${right.name}`;
+  return l < r ? -1 : l > r ? 1 : 0;
+}

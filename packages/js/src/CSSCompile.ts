@@ -46,6 +46,7 @@ import {
   EMPTY_FILESET,
   FabrError,
   FileSet,
+  joinDepsPath,
   Name,
   NameBuilder,
   compareText,
@@ -414,18 +415,23 @@ export function buildPostcssOptions(
 /**
  * The stylesheets a dependency delivers, as the compose loader will find them:
  * mounted under {@link CSS_DEPS_DIR} by package name, each with a scope of its
- * own so two of them cannot name one class alike.
+ * own so two of them cannot name one class alike, and the dependency path a run
+ * reports reading it by.
  *
  * Scoped by delivered name: a compose takes a private copy, so the scope only
  * has to be distinct here.
  */
-function composableStylesheets(deps: PackageFileSet[]): Array<{ path: string; scope: string }> {
+function composableStylesheets(deps: PackageFileSet[]): IPostcssOptions["composable"] {
   return deps
     .flatMap(dep =>
       [...dep]
         .map(([name]) => name)
         .filter(name => name.toLowerCase().endsWith(".css"))
-        .map(name => ({ path: `${CSS_DEPS_DIR}/${dep.packageName}/${name}`, scope: cssScopeDigest(dep.packageName, name) }))
+        .map(name => ({
+          path: `${CSS_DEPS_DIR}/${dep.packageName}/${name}`,
+          scope: cssScopeDigest(dep.packageName, name),
+          read: joinDepsPath([dep.name, name]),
+        }))
     )
     .sort((left, right) => compareText(left.path, right.path));
 }

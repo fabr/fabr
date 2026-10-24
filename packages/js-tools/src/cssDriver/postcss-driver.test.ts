@@ -28,6 +28,7 @@ import postcss from "postcss";
 import type { IPostcssOptions, IPostcssSource } from "./Options";
 import { cssModuleShim, main, resolveComposePath, scopedNameOf, scopeFailure, scopeTableOf } from "./postcss-driver";
 import { relocateCssSources } from "./Support";
+import { DEPS_REPORT_FLAG, toRunReport } from "../pnp/ReadSet";
 import { SOURCE_OWNER_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "../support/SourceMap";
 
 describe("cssModuleShim", () => {
@@ -163,7 +164,7 @@ describe("the compose hooks", () => {
   it("reaches a package dependency's stylesheet, mounted under the deps dir", () => {
     /* `pkg/base.css` is not relative, so it names a package rather than a
      * sibling — resolved under the mount the options name. */
-    const withDep = scopeTableOf({ ...options, composable: [{ path: "/work/node_modules/ds/base.css", scope: "sDS" }] });
+    const withDep = scopeTableOf({ ...options, composable: [{ path: "/work/node_modules/ds/base.css", scope: "sDS", read: "ds base.css" }] });
     assert.equal(
       resolveComposePath(withDep, options.srcRoot, "ds/base.css", "/work/src/a/one.module.css", options.depsDir),
       path.resolve("/work/node_modules/ds/base.css")
@@ -214,7 +215,8 @@ describe("postcss-driver, over the real plugin set", () => {
   async function run(
     files: Record<string, string>,
     sources: IPostcssSource[],
-    deps: Record<string, string> = {}
+    deps: Record<string, string> = {},
+    argv: string[] = []
   ): Promise<(name: string) => string> {
     const srcRoot = path.join(work, "src");
     const outdir = path.join(work, "out");
@@ -230,10 +232,10 @@ describe("postcss-driver, over the real plugin set", () => {
       fs.writeFileSync(dest, text);
     }
     const manifest = path.join(work, "postcss-manifest.json");
-    const composable = Object.keys(deps).map(name => ({ path: path.join(depsDir, name), scope: "sDep" }));
+    const composable = Object.keys(deps).map(name => ({ path: path.join(depsDir, name), scope: "sDep", read: name.replace("/", " ") }));
     const options: IPostcssOptions = { sources, composable, srcRoot, depsDir, outdir };
     fs.writeFileSync(manifest, JSON.stringify(options));
-    await main([`--manifest=${manifest}`]);
+    await main([`--manifest=${manifest}`, ...argv]);
     return name => fs.readFileSync(path.join(outdir, name), "utf8");
   }
 
@@ -304,6 +306,17 @@ describe("postcss-driver, over the real plugin set", () => {
     /* The dependency is an input, never an output: nothing of it is published
      * under its own name. */
     assert.equal(fs.existsSync(path.join(work, "out", "ds")), false);
+  });
+
+  it("reports reading only the dependency stylesheets a compose reached", async () => {
+    const report = path.join(work, "deps.json");
+    await run(
+      { "a.module.css": ".fancy { composes: base from 'ds/base.css'; }\n" },
+      [module("a", "sA")],
+      { "ds/base.css": ".base { padding: 8px; }\n", "ds/other.css": ".other { margin: 0; }\n" },
+      [DEPS_REPORT_FLAG, report]
+    );
+    assert.deepEqual(toRunReport(JSON.parse(fs.readFileSync(report, "utf8"))), { reads: ["ds base.css"], edges: [] });
   });
 
   it("composes from a Sass-spelled specifier, resolved to the lowered input", async () => {

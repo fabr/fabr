@@ -537,6 +537,49 @@ export class PnpResolver implements IPnpApi {
   }
 
   /**
+   * Get what a run read of the package pool, as the path names its report
+   * states (see ReadSet.ts): each of `files` the run read or probed, by
+   * {@link pathNameOf} — a file outside the pool is left out, being in the
+   * step's anchor — plus what resolution depended on that no file listing
+   * states:
+   *
+   * - the **manifests** it consulted, since an `exports` edit can change which
+   *   file answers a specifier;
+   * - the **edges** it took, each named by the path it took and ending at the
+   *   answering package's manifest. A file's own row carries its instance's ONE
+   *   canonical route, so a package read through two requirers has its bytes
+   *   named by one of them; the edge rows pin the OTHER requirer's binding. A
+   *   lookup the requirer's own edges did not answer — through the fallback
+   *   pool, or not at all — adds the top-level lookup that decided it,
+   *   `<name> package.json`, a plain index of the direct members.
+   */
+  public readSetOf(files: Iterable<string>): string[] {
+    const names = new Set<string>();
+    const add = (file: string): void => {
+      const name = this.pathNameOf(file);
+      if (name !== undefined) {
+        names.add(name);
+      }
+    };
+    for (const file of files) {
+      add(file);
+    }
+    for (const location of this.consultedManifests) {
+      add(path.join(location, "package.json"));
+    }
+    for (const edge of this.resolutions.values()) {
+      const at = this.routeOf(edge.from);
+      if (at !== undefined) {
+        names.add(joinDepsPath([...at, edge.name, "package.json"]));
+      }
+      if (edge.via !== "own") {
+        names.add(joinDepsPath([edge.name, "package.json"]));
+      }
+    }
+    return [...names];
+  }
+
+  /**
    * The **instance name** of a resolved file: `<name>#<reference>/<path within
    * it>` — which exact node of the delivered graph was read, and where in it —
    * or undefined for anything outside a materialized package (the sources being

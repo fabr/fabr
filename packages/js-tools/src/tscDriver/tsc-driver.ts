@@ -42,7 +42,7 @@ import * as path from "node:path";
 import type { IConditionSet } from "../pnp/PackageExports";
 import { PnpResolver, splitSpecifier, typesPackageName } from "../pnp/PnPResolver";
 import { isVirtual, realpathKeepingVirtual, resolveVirtual } from "../pnp/VirtualPath";
-import { CHANGES_FLAG, DEPS_REPORT_FLAG, IChangeLists, joinDepsPath, STATE_DIR_FLAG, toChangeLists } from "../pnp/ReadSet";
+import { CHANGES_FLAG, DEPS_REPORT_FLAG, IChangeLists, serializeRunReport, STATE_DIR_FLAG, toChangeLists } from "../pnp/ReadSet";
 import { stagedReferences, withReferencedSources } from "../support/SourceMap";
 import {
   DriverMemo,
@@ -55,7 +55,6 @@ import {
   parseDriverMemo,
   planCompile,
   serializeDriverMemo,
-  serializeRunReport,
 } from "./Planning";
 import { IWaveResult, runWave } from "./Wave";
 
@@ -2367,9 +2366,10 @@ export function main(argv: string[]): number {
    * reading it is. Both written whether or not the compilation succeeded — a
    * failed run is not cached, so neither is ever asked for. */
   if (reportPath !== undefined && resolver !== undefined) {
+    const compile = graph?.telemetry(fellBack);
     fs.writeFileSync(
       path.resolve(root, reportPath),
-      serializeRunReport(readSetOf(program, opened, missed, resolver), resolver.edges(), graph?.telemetry(fellBack))
+      serializeRunReport(readSetOf(program, opened, missed, resolver), resolver.edges(), compile === undefined ? {} : { compile })
     );
   }
   const memo = graph?.memo();
@@ -2989,73 +2989,18 @@ function structureDiagnostic(
 }
 
 /**
- * What this compilation read of the packages it was given, in the instance
- * names the step translates back to its inputs (see ReadSet.ts) — the answer
- * `tsc --listFiles` gives, plus the two halves a file listing structurally
- * cannot:
- *
- * - the **manifests** resolution consulted. tsc reads a package's `package.json`
- *   to decide which file a specifier names and never lists it, so without this
- *   an `exports` edit would move the answer with nothing in the key to say so.
- * - the **edges** taken: every lookup this run made, named by the path it took.
- *   A file's own row carries its instance's ONE canonical route (pathNameOf),
- *   so a shared package read through two requirers has its bytes named by one
- *   of them — the edge rows are what pin the OTHER requirer's binding, without
- *   which that edge could rebind with nothing in the key to say so. A fallback
- *   resolution is two rows: its access path (which finds nothing) and the
- *   pool's answer, pinned at the answering instance's own canonical route.
- *
- * Everything outside the package pool — the sources, the tool's own install,
- * the compiler's libs — is left out here: those are in the step's anchor, and
- * the resolver answering `undefined` for them is exactly that statement.
+ * What this compilation read of the packages it was given (see
+ * {@link PnpResolver.readSetOf}): the program's files, what the compiler
+ * opened on the way to them (a package's `package.json`, a nested one a
+ * subpath resolves through — the half `tsc --listFiles` cannot give), and
+ * what it probed and found absent. Everything outside the package pool — the
+ * sources, the tool's own install, the compiler's libs — is left out: those
+ * are in the step's anchor.
  */
 function readSetOf(program: IProgram, opened: string[], missed: ReadonlySet<string>, resolver: PnpResolver): string[] {
-  const names = new Set<string>();
-  const add = (file: string): void => {
-    const name = resolver.pathNameOf(file);
-    if (name !== undefined) {
-      names.add(name);
-    }
-  };
-  for (const file of program.getSourceFiles()) {
-    add(file.fileName);
-  }
-  for (const file of opened) {
-    add(file);
-  }
-  /* Probed-and-absent files, recorded as the absences they were: replay
-   * resolves each row against the delivery at hand, so a row that was absent
-   * and now names a file moves the key. A row is a path either way — present
-   * and absent spell identically. */
-  for (const file of missed) {
-    add(file);
-  }
-  for (const location of resolver.manifestsConsulted()) {
-    add(path.join(location, "package.json"));
-  }
-  /* Every lookup is a fact this run depended on, named by the path it TOOK —
-   * the route to the asker, then the asked name — ending at the manifest every
-   * package carries. For a lookup that resolved, the row pins the answering
-   * BINDING: the files it answered with may all be named by another requirer's
-   * route (one canonical route per instance — pathNameOf), so this row is what
-   * moves when this edge alone rebinds. For a lookup that found nothing the
-   * path resolves to nothing, and replay reports it as the absence it was. */
-  for (const edge of resolver.edges()) {
-    const at = resolver.routeOf(edge.from);
-    if (at !== undefined) {
-      names.add(joinDepsPath([...at, edge.name, "package.json"]));
-    }
-    /* A lookup the requirer's own edges did not answer — through the fallback
-     * pool, or not at all — is decided by the top level's table, which IS the
-     * pool (and the surface a barred package's row carries): the direct member
-     * of that name, or none. So it is a second row, `<name> package.json`, a
-     * plain index of the direct members, and it moves when that member is
-     * edited, replaced, removed, or appears where nothing answered before. */
-    if (edge.via !== "own") {
-      names.add(joinDepsPath([edge.name, "package.json"]));
-    }
-  }
-  return [...names];
+  /* Probed-and-absent files are recorded as the absences they were: a row is a
+   * path either way, present and absent spelling identically. */
+  return resolver.readSetOf([...program.getSourceFiles().map(file => file.fileName), ...opened, ...missed]);
 }
 
 /**

@@ -39,7 +39,7 @@
  * comes from pnp/ReadSet.ts, which is shared source with no core dependency.
  */
 
-import { IChangeLists, IResolutionEdge } from "../pnp/ReadSet";
+import { IChangeLists } from "../pnp/ReadSet";
 
 /** The extensions a TypeScript program can hold — everything else staged under
  * the source root is content the compiler never opens. */
@@ -404,39 +404,6 @@ export interface ICompileTelemetry {
   bound?: { roots: number; project: number };
 }
 
-/**
- * The run's report file: what it READ and how its names RESOLVED (the
- * discovered-dependency halves, which the step joins into the walks the entry
- * is keyed on — see ReadSet.ts), plus its own telemetry, as sections of one
- * document. The driver's memo is not in here: it is a file, written into the
- * state directory the caller named.
- */
-export function serializeRunReport(
-  reads: Iterable<string>,
-  edges: ReadonlyArray<IResolutionEdge>,
-  compile?: ICompileTelemetry
-): string {
-  return `${JSON.stringify(
-    {
-      reads: [...new Set(reads)].sort(),
-      /* Sorted, so a report is a function of what the run resolved and not of
-       * the order it happened to ask. */
-      edges: [...edges].sort((left, right) => compareEdges(left, right)),
-      ...(compile === undefined ? {} : { compile }),
-    },
-    undefined,
-    2
-  )}\n`;
-}
-
-/** Edge order for the report: by requirer then name, in code-unit order —
- * never a locale comparison, the point being one spelling on every machine
- * (core's compareText, which the driver cannot import). */
-function compareEdges(left: IResolutionEdge, right: IResolutionEdge): number {
-  const l = `${left.from}\0${left.name}`;
-  const r = `${right.from}\0${right.name}`;
-  return l < r ? -1 : l > r ? 1 : 0;
-}
 
 /** The telemetry half of a run report, for a test comparing runs; undefined
  * for a run that had none. The document is this driver's own output, so the

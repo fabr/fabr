@@ -71,6 +71,7 @@ import {
   sassLoweredName,
   sourceMapComment,
   withoutAnnotations,
+  writeDepsReport,
   writeOut,
 } from "./Support";
 
@@ -227,6 +228,8 @@ interface IPostcssTools {
   modules: IPostcssModules;
   /** How a staged source is named in a map, where the step staged a table. */
   referenceOf?: (staged: string, own?: string) => string | undefined;
+  /** Told each stylesheet a compose resolved to. */
+  onCompose?: (resolved: string) => void;
 }
 
 /**
@@ -281,8 +284,11 @@ async function processFile(source: IPostcssSource, options: IPostcssOptions, too
           /* Both spellings, literal and camelCase (`.header-bar` read as
            * `styles.headerBar`). */
           localsConvention: "camelCase",
-          resolve: (file: string, importer: string): string =>
-            resolveComposePath(table, options.srcRoot, file, importer || inputPath, options.depsDir),
+          resolve: (file: string, importer: string): string => {
+            const resolved = resolveComposePath(table, options.srcRoot, file, importer || inputPath, options.depsDir);
+            tools.onCompose?.(resolved);
+            return resolved;
+          },
         }),
       ])
       .process(css, {
@@ -335,7 +341,18 @@ export async function main(argv: string[]): Promise<void> {
   const referenceOf = stagedReferences(argv, process.cwd(), staged =>
     staged.startsWith(`${options.srcRoot}/`) ? staged.slice(options.srcRoot.length + 1) : undefined
   );
+  /* A dependency's stylesheet is read only where a compose reaches it, so those
+   * are the run's reads of the packages it was given. */
+  const readOf = new Map(options.composable.map(entry => [path.resolve(entry.path), entry.read]));
+  const reads = new Set<string>();
+  const onCompose = (resolved: string): void => {
+    const read = readOf.get(resolved);
+    if (read !== undefined) {
+      reads.add(read);
+    }
+  };
   for (const source of options.sources) {
-    await processFile(source, options, { postcss, modules, referenceOf }, table);
+    await processFile(source, options, { postcss, modules, referenceOf, onCompose }, table);
   }
+  writeDepsReport(argv, reads);
 }

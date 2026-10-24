@@ -31,7 +31,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { FileSet, IFile, MemoryFile, PackageFileSet, dependenciesOn } from "@fabr-build/core";
 import type { ISassOptions } from "@fabr-build/js-tools";
-import { PNP_DATA_FILE, SOURCE_OWNER_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
+import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, PNP_DATA_FILE, SOURCE_OWNER_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG, toRunReport } from "@fabr-build/js-tools";
 import { pnpManifestOf, TREE_MOUNT, treeMountOf } from "../PnPManifest";
 import { relativeToMap, relocateCssSources, SassDriver, sourceMapComment } from "@fabr-build/js-tools";
 
@@ -105,7 +105,7 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
    * content's tree once, the manifest beside the sources — then lower `source`
    * and answer the CSS and its map's sources.
    */
-  async function lower(deps: PackageFileSet[], source: string, named = false): Promise<{ css: string; sources: string[] }> {
+  async function lower(deps: PackageFileSet[], source: string, named = false, extra: string[] = []): Promise<{ css: string; sources: string[] }> {
     const manifest = pnpManifestOf(deps);
     const store = path.join(root, "store");
     fs.mkdirSync(store);
@@ -135,7 +135,10 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
     const cwd = process.cwd();
     try {
       process.chdir(root);
-      await main(named ? ["--manifest=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, "app"] : ["--manifest=options.json"]);
+      await main([
+        ...(named ? ["--manifest=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, "app"] : ["--manifest=options.json"]),
+        ...extra,
+      ]);
     } finally {
       process.chdir(cwd);
     }
@@ -162,6 +165,20 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
     const { css } = await lower([left, right], '@use "left";\n@use "right";\n');
     assert.match(css, /v: "one"/);
     assert.match(css, /v: "two"/);
+  });
+
+  it("reports the package files it read and the lookups it made, and nothing else", async () => {
+    const design = pkg("design", "1.0.0", {
+      "_index.scss": '@use "./parts/colors";\n.design { v: colors.$main; }\n',
+      "parts/_colors.scss": "$main: red;\n",
+      "unused.scss": ".unused { v: 1; }\n",
+    });
+    await lower([design], '@use "design";\n', false, [DEPS_REPORT_FLAG, DEPS_REPORT_FILE]);
+    const { reads } = toRunReport(JSON.parse(fs.readFileSync(path.join(root, DEPS_REPORT_FILE), "utf8")));
+    for (const read of ["design _index.scss", "design parts/_colors.scss", "design package.json"]) {
+      assert.ok(reads.includes(read), `${read} in ${reads.join(", ")}`);
+    }
+    assert.ok(!reads.includes("design unused.scss"));
   });
 
   it("takes the stylesheet a package's exports map publishes under the sass condition", async () => {

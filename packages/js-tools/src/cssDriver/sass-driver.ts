@@ -46,7 +46,16 @@ import * as path from "node:path";
 import type { ISassOptions, ISassSource } from "./Options";
 import { PnpResolver } from "../pnp/PnPResolver";
 import { stagedReferences } from "../support/SourceMap";
-import { IRawSourceMap, parseManifestPath, referencedCssSources, relativeToMap, relocateCssSources, sourceMapComment, writeOut } from "./Support";
+import {
+  IRawSourceMap,
+  parseManifestPath,
+  referencedCssSources,
+  relativeToMap,
+  relocateCssSources,
+  sourceMapComment,
+  writeDepsReport,
+  writeOut,
+} from "./Support";
 
 /* Minimal structural typing for the slice of sass-embedded's API we use — it is
  * not a fabr dependency (it is fetched at build time), so its own types are not
@@ -151,6 +160,17 @@ export async function main(argv: string[]): Promise<void> {
    * or — with no manifest — the load paths fabr staged, which is the classic
    * layout and needs no importer at all. */
   const resolver = PnpResolver.load(process.cwd(), []);
+  /* Every file the importer probes or reads — a stylesheet, a partial it
+   * tries, a package's manifest — it first maps to where its bytes are, so
+   * that one call is where the run's reads of the packages are seen. */
+  const touched: string[] = [];
+  if (resolver !== undefined) {
+    const resolveVirtual = resolver.resolveVirtual.bind(resolver);
+    resolver.resolveVirtual = (file: string): string | null => {
+      touched.push(file);
+      return resolveVirtual(file);
+    };
+  }
   const importers = resolver ? [pnpImporter().sassPnpImporter({ pnpApi: resolver })] : undefined;
   /* Its maps name each source by the reference resolving to it, where the step
    * staged their table; one of its own sources with none is named by the owner
@@ -167,6 +187,7 @@ export async function main(argv: string[]): Promise<void> {
     for (const source of options.sources) {
       await processFile(source, options, { compiler, importers, referenceOf });
     }
+    writeDepsReport(argv, resolver?.readSetOf(touched) ?? [], resolver?.edges());
   } finally {
     await compiler.dispose();
   }
