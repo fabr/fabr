@@ -617,12 +617,45 @@ interface IMergeSource {
 interface IMergeOrigin extends IProvenanceStep {
   readonly kind: typeof FILESET_MERGE_PROVENANCE;
   readonly sources: ReadonlyArray<IMergeSource>;
+  /** The sources by the prefix each is mounted under (see {@link holdersOf}). */
+  readonly byPrefix: ReadonlyMap<string, ReadonlyArray<IMergeSource>>;
 }
 
 /** A merge-provenance step over `sources`, or undefined when none carries an
  * origin — nothing to attribute, so don't pay for a step that can never explain. */
 function mergeOrigin(sources: IMergeSource[]): IMergeOrigin | undefined {
-  return sources.some(source => source.fileset.origin !== undefined) ? { kind: FILESET_MERGE_PROVENANCE, sources } : undefined;
+  if (!sources.some(source => source.fileset.origin !== undefined)) {
+    return undefined;
+  }
+  const byPrefix = new Map<string, IMergeSource[]>();
+  for (const source of sources) {
+    const mounted = byPrefix.get(source.prefix);
+    if (mounted === undefined) {
+      byPrefix.set(source.prefix, [source]);
+    } else {
+      mounted.push(source);
+    }
+  }
+  return { kind: FILESET_MERGE_PROVENANCE, sources, byPrefix };
+}
+
+/**
+ * Get each source of `merge` holding `path`, with the name it holds it by: only
+ * a source mounted at the root or at one of the path's directories can, so
+ * those are the prefixes looked up.
+ */
+function holdersOf(merge: IMergeOrigin, path: string): Array<{ fileset: FileSet; rel: string }> {
+  const holders: Array<{ fileset: FileSet; rel: string }> = [];
+  for (let end = 0; end !== -1; end = path.indexOf("/", end) + 1 || -1) {
+    const prefix = path.slice(0, end);
+    for (const { fileset } of merge.byPrefix.get(prefix) ?? []) {
+      const rel = path.slice(prefix.length);
+      if (fileset.getFile(rel) !== undefined) {
+        holders.push({ fileset, rel });
+      }
+    }
+  }
+  return holders;
 }
 
 registerProvenanceRenderer(FILESET_MERGE_PROVENANCE, (step, context): IDiagnosticNote[] => {
@@ -644,9 +677,8 @@ registerProvenanceNaming(FILESET_MERGE_PROVENANCE, {
    * order the union was given them in. */
   sourcePath: (step, path) => {
     let least: string | undefined;
-    for (const { prefix, fileset } of (step as IMergeOrigin).sources) {
-      const rel = path.startsWith(prefix) ? path.slice(prefix.length) : undefined;
-      const sourcePath = rel === undefined || fileset.getFile(rel) === undefined ? undefined : fileset.sourcePathOf(rel);
+    for (const { fileset, rel } of holdersOf(step as IMergeOrigin, path)) {
+      const sourcePath = fileset.sourcePathOf(rel);
       if (sourcePath !== undefined && (least === undefined || sourcePath < least)) {
         least = sourcePath;
       }

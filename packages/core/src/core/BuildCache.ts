@@ -272,8 +272,12 @@ export class BuildCache {
   private readonly root: string;
 
   /* The stores, one resolved root each; each store's methods are grouped below
-   * under a heading. Entries themselves have no store — the loose
-   * `<hash>.manifest` files sit at the root (see {@link manifestPath}). */
+   * under a heading. */
+
+  /** The entries: one `<hash>.manifest` per key (see {@link manifestPath}).
+   * Kept out of the root, which is an ancestor of every work dir and so must
+   * stay small: a tool resolving a file lists the directories above it. */
+  private readonly entryRoot: string;
 
   /** The content pool: one file per distinct content, named by its hash — what
    * every entry's files are ultimately backed by (see {@link ensureBlob}). */
@@ -347,6 +351,7 @@ export class BuildCache {
 
   constructor(cachePath: string, log: Log, now: () => number = Date.now) {
     this.root = cachePath;
+    this.entryRoot = path.resolve(cachePath, "entries");
     this.blobRoot = path.resolve(cachePath, "blob");
     this.treeRoot = path.resolve(cachePath, "tree");
     this.workRoot = path.resolve(cachePath, "work");
@@ -1063,7 +1068,7 @@ export class BuildCache {
   }
 
   private manifestPath(key: string): string {
-    return path.resolve(this.root, key + ".manifest");
+    return path.resolve(this.entryRoot, key + ".manifest");
   }
 
   /*
@@ -1490,8 +1495,8 @@ export class BuildCache {
 
   /*
    * ── Entries ─────────────────────────────────────────────────
-   * The cache's main content: one `<hash>.manifest` at the ROOT per key (see
-   * {@link manifestPath}), naming the blobs that hold the bytes. Immutable once
+   * The cache's main content: one `<hash>.manifest` per key under the entry
+   * store (see {@link manifestPath}), naming the blobs that hold the bytes. Immutable once
    * committed, so a read takes no lock; only creation is serialized.
    */
 
@@ -2001,7 +2006,8 @@ export class BuildCache {
   }
 
   /**
-   * The expire step: delete root manifests past {@link GC_MAX_AGE_MS};
+   * The expire step: delete entry manifests past {@link GC_MAX_AGE_MS}, and any
+   * manifest at the root;
    * likewise expired incremental
    * records, discovered-deps records (and then-empty anchors), and tree dirs;
    * and reap dead-pid work trees. A root-level name the layout doesn't
@@ -2009,13 +2015,22 @@ export class BuildCache {
    * directory's contents, are not this layout's to delete.
    */
   private async expireStores(shouldAbort: () => boolean): Promise<void> {
+    for (const entry of await readdir(this.entryRoot).catch(() => [] as fs.Dirent[])) {
+      if (shouldAbort()) {
+        return;
+      }
+      if (CLAIMED_MANIFEST.test(entry.name) && entry.isFile()) {
+        await this.removeIfPast(path.resolve(this.entryRoot, entry.name), GC_MAX_AGE_MS);
+      }
+    }
+    /* A manifest at the root is never read (entries are under entryRoot), so
+     * nothing it names is kept for it: it goes. */
     for (const entry of await readdir(this.root).catch(() => [] as fs.Dirent[])) {
       if (shouldAbort()) {
         return;
       }
-      const file = path.resolve(this.root, entry.name);
       if (CLAIMED_MANIFEST.test(entry.name) && entry.isFile()) {
-        await this.removeIfPast(file, GC_MAX_AGE_MS);
+        await deleteFile(path.resolve(this.root, entry.name)).catch(() => undefined);
       }
     }
     for (const record of await readdir(this.incrementalRoot).catch(() => [] as fs.Dirent[])) {
@@ -2070,14 +2085,14 @@ export class BuildCache {
       }
     }
     const marked = new Set(rootedBlobs);
-    for (const entry of await readdir(this.root).catch(() => [] as fs.Dirent[])) {
+    for (const entry of await readdir(this.entryRoot).catch(() => [] as fs.Dirent[])) {
       if (shouldAbort()) {
         return undefined;
       }
       if (!entry.isFile() || !CLAIMED_MANIFEST.test(entry.name)) {
         continue;
       }
-      const file = path.resolve(this.root, entry.name);
+      const file = path.resolve(this.entryRoot, entry.name);
       const hashes = await this.manifestBlobHashes(file);
       if (hashes === undefined || hashes.some(hash => !present.has(hash))) {
         await deleteFile(file).catch(() => undefined);

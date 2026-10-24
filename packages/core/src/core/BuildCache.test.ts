@@ -181,8 +181,8 @@ describe("BuildCache", () => {
 
     /* Strip the trailing mime field, leaving the old three-field form. The
      * entry must rebuild — the format-change equivalent of a tag bump. */
-    const manifest = fs.readdirSync(root).find(name => name.endsWith(".manifest"))!;
-    const manifestPath = path.join(root, manifest);
+    const manifest = fs.readdirSync(path.join(root, "entries")).find(name => name.endsWith(".manifest"))!;
+    const manifestPath = path.join(root, "entries", manifest);
     fs.writeFileSync(manifestPath, fs.readFileSync(manifestPath, "utf8").replace(/^(\S+ \S+ \S+) \S+$/m, "$1"));
 
     const reopened = new BuildCache(root, NULL_LOG);
@@ -211,7 +211,7 @@ describe("BuildCache", () => {
     );
     await toPromise(cache.getOrCreate("torn entry", () => produced(files)));
 
-    const manifestPath = path.join(root, hashString("torn entry") + ".manifest");
+    const manifestPath = path.join(root, "entries", hashString("torn entry") + ".manifest");
     const lines = fs.readFileSync(manifestPath, "utf8").split("\n");
     fs.writeFileSync(manifestPath, [...lines.slice(0, lines.length - 2), ""].join("\n"));
 
@@ -235,7 +235,7 @@ describe("BuildCache", () => {
       cache.getOrCreate("countless", () => produced(new FileSet(new Map([["x.txt", MemoryFile.from("x")]]))));
     await toPromise(build());
 
-    const manifestPath = path.join(root, hashString("countless") + ".manifest");
+    const manifestPath = path.join(root, "entries", hashString("countless") + ".manifest");
     fs.writeFileSync(manifestPath, fs.readFileSync(manifestPath, "utf8").split("\n").slice(1).join("\n"));
 
     let rebuilt = false;
@@ -256,8 +256,8 @@ describe("BuildCache", () => {
 
     /* Corrupt the stored mode. A bogus field must fail the parse (so the entry
      * rebuilds), never parse to NaN and ride on the IFile as its permissions. */
-    const manifest = fs.readdirSync(root).find(name => name.endsWith(".manifest"))!;
-    const manifestPath = path.join(root, manifest);
+    const manifest = fs.readdirSync(path.join(root, "entries")).find(name => name.endsWith(".manifest"))!;
+    const manifestPath = path.join(root, "entries", manifest);
     fs.writeFileSync(manifestPath, fs.readFileSync(manifestPath, "utf8").replace(/^(\S+) \S+ /m, "$1 nonsense "));
 
     const reopened = new BuildCache(root, NULL_LOG);
@@ -333,10 +333,10 @@ describe("BuildCache", () => {
     await toPromise(cache.getOrCreate("atomic", () => produced(new FileSet(new Map([["a.txt", MemoryFile.from("hi")]])))));
     /* The manifest is present and the temp file was renamed into place, not left
      * behind (an atomic write, so no truncated manifest can ever be trusted). */
-    expect(fs.existsSync(path.join(root, hashString("atomic") + ".manifest"))).to.equal(true);
+    expect(fs.existsSync(path.join(root, "entries", hashString("atomic") + ".manifest"))).to.equal(true);
     /* Nothing transient is left in the store: the temp behind that atomic write
-     * lives in the work tree, and only blobs and manifests belong up here. */
-    expect(fs.readdirSync(root).filter(name => !["blob", "work"].includes(name) && !name.endsWith(".manifest"))).to.deep.equal([]);
+     * lives in the work tree, and only blobs and entries belong up here. */
+    expect(fs.readdirSync(root).filter(name => !["blob", "entries", "work"].includes(name))).to.deep.equal([]);
     /* A fresh cache reads the complete manifest back rather than rebuilding. */
     const files = await toPromise(
       cache.getOrCreate("atomic", () => {
@@ -365,7 +365,7 @@ describe("BuildCache", () => {
     }
     expect(failure?.message).to.equal("boom");
     expect(fs.existsSync(dirs[0]), "the failed attempt's work dir is gone").to.equal(false);
-    expect(fs.existsSync(path.join(root, hashString("failing manifest") + ".manifest")), "and it committed nothing").to.equal(false);
+    expect(fs.existsSync(path.join(root, "entries", hashString("failing manifest") + ".manifest")), "and it committed nothing").to.equal(false);
 
     /* The retry gets its own dir rather than whatever the last attempt left —
      * work dirs are named by owner, so there is no shared per-key dir to
@@ -728,9 +728,9 @@ describe("BuildCache discovered dependencies", () => {
      * function of its key — the entry lives under the precise key its reads
      * make: the anchor, the content manifest of what the paths found, and the
      * names they did not. */
-    expect(fs.existsSync(path.join(root, hashString(ANCHOR) + ".manifest"))).to.equal(false);
+    expect(fs.existsSync(path.join(root, "entries", hashString(ANCHOR) + ".manifest"))).to.equal(false);
     const used = narrowDeps(discoverable, selectionOf(discoverable, ["a.h"]));
-    expect(fs.existsSync(path.join(root, hashString(preciseActionKey(hashString(ANCHOR), used)) + ".manifest"))).to.equal(true);
+    expect(fs.existsSync(path.join(root, "entries", hashString(preciseActionKey(hashString(ANCHOR), used)) + ".manifest"))).to.equal(true);
   });
 
   it("does not join an in-flight attempt that was given different discoverable", async () => {
@@ -1112,7 +1112,7 @@ describe("BuildCache discovered dependencies", () => {
     await build(discoverableDeps({ "a.h": "", "b.h": "unused" }));
     await build(discoverableDeps({ "a.h": "", "b.h": "unused" }), { force: true });
     expect(runs, "force defeats the lookup, not the discovery").to.equal(2);
-    expect(fs.existsSync(path.join(root, hashString(ANCHOR) + ".manifest"))).to.equal(false);
+    expect(fs.existsSync(path.join(root, "entries", hashString(ANCHOR) + ".manifest"))).to.equal(false);
     /* And it commits as an ordinary entry, so the next demand is a hit again. */
     await build(discoverableDeps({ "a.h": "", "b.h": "unused" }));
     expect(runs).to.equal(2);
@@ -1421,7 +1421,7 @@ describe("BuildCache build state", () => {
     const inputs = fs.readFileSync(part(targetKey, "inputs"), "utf8");
     expect(parseRecordedBase(inputs)?.rows.length, "the key material reads back, sealed").to.equal(2);
     expect(fs.readFileSync(part(targetKey, "state"), "utf8").startsWith("!meta "), "the state is an entry manifest").to.equal(true);
-    expect(fs.readlinkSync(part(targetKey, "outputs"))).to.equal(path.join("..", "..", "..", `${key}.manifest`));
+    expect(fs.readlinkSync(part(targetKey, "outputs"))).to.equal(path.join("..", "..", "..", "entries", `${key}.manifest`));
     expect(fs.existsSync(path.join(root, "blob", hashString(Buffer.from(DRIVER_BYTES)))), "the tool's blob is in the pool").to.equal(
       true
     );
@@ -1476,7 +1476,7 @@ describe("BuildCache build state", () => {
      * is the whole invalidation. */
     const targetKey = "target-key-evicted";
     const key = await record(targetKey);
-    fs.rmSync(path.join(root, `${key}.manifest`), { force: true });
+    fs.rmSync(path.join(root, "entries", `${key}.manifest`), { force: true });
     expect(await readState(targetKey)).to.equal(undefined);
   });
 
@@ -1563,7 +1563,7 @@ describe("BuildCache build state", () => {
     const later = await entry("later-entry", { "out.js": "later" });
     await toPromise(cache.writeBuildState(targetKey, cache.beginBuildStateAttempt(targetKey), later, {}));
     expect(fs.readlinkSync(part(targetKey, "outputs")), "still the earlier build's entry").to.equal(
-      path.join("..", "..", "..", `${first}.manifest`)
+      path.join("..", "..", "..", "entries", `${first}.manifest`)
     );
     expect((await readState(targetKey))?.inputs?.size).to.equal(2);
   });
@@ -1992,7 +1992,7 @@ describe("BuildCache non-immutable fetches", () => {
      * rides every entry's header regardless — it is no freshness fact.) */
     origin.respond(serve(200, { "cache-control": "max-age=1" }, "one"));
     expect(await fetchDoc()).to.equal("one");
-    const manifest = fs.readFileSync(path.join(root, hashString(`fetch:test:1 ${origin.url}`) + ".manifest"), "utf8");
+    const manifest = fs.readFileSync(path.join(root, "entries", hashString(`fetch:test:1 ${origin.url}`) + ".manifest"), "utf8");
     expect(manifest.split("\n")[0]).to.equal('!meta {"entries":1,"class":"fetch"}');
     clock += 1_000_000_000; /* far past any origin-declared lifetime */
     expect(await fetchDoc()).to.equal("one");
@@ -2307,7 +2307,7 @@ describe("BuildCache garbage collection", () => {
   }
 
   function manifestOf(key: string): string {
-    return path.join(root, hashString(key) + ".manifest");
+    return path.join(root, "entries", hashString(key) + ".manifest");
   }
 
   function blobOf(hash: string): string {
