@@ -95,18 +95,13 @@ export interface IPostcssOptions {
   sources: IPostcssSource[];
   /**
    * A dependency's stylesheets — readable, composable, never published by this
-   * step. Named relative to the working dir (under `depsDir`, so a
-   * package specifier is the path below it) and carrying the scope their
-   * classes take in the private copy a compose inlines, and the name the
-   * run reports a read of it by (a dependency path: the package's name, then
-   * the file).
+   * step: each by the package name a specifier spells (`package`) and its path
+   * within the package, so `composes: x from '<package>/<path>'` names it,
+   * carrying the scope its classes take in the private copy a compose inlines.
    */
-  composable: Array<{ path: string; scope: string; read: string }>;
+  composable: Array<{ package: string; path: string; scope: string }>;
   /** Root (relative to the working dir) the inputs are staged under. */
   srcRoot: string;
-  /** Where a dependency's files are mounted, which a package-shaped compose
-   * specifier is resolved against. */
-  depsDir: string;
   /** Where the driver writes outputs, relative to the working dir. */
   outdir: string;
 }

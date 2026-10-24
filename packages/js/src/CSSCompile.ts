@@ -46,7 +46,6 @@ import {
   EMPTY_FILESET,
   FabrError,
   FileSet,
-  joinDepsPath,
   Name,
   NameBuilder,
   compareText,
@@ -60,10 +59,6 @@ export const CSS_OUTDIR = "out";
 
 /** Where the stylesheet inputs are staged (the drivers read from here). */
 export const CSS_SRC_ROOT = "src";
-
-/** Where a dependency's files mount, for the compose loader to read. Node's
- * own convention, so a package specifier is the path below it. */
-export const CSS_DEPS_DIR = "node_modules";
 
 /** Where the CSS toolchain + driver mount — disjoint from the styled tree so
  * the tools' deps neither collide with nor are visible to the sources. */
@@ -409,14 +404,13 @@ export function buildPostcssOptions(
   if (collision !== undefined) {
     throw collision.withHelp(SCOPE_COLLISION_HELP);
   }
-  return { sources, composable: composableStylesheets(deps), srcRoot: CSS_SRC_ROOT, depsDir: CSS_DEPS_DIR, outdir: CSS_OUTDIR };
+  return { sources, composable: composableStylesheets(deps), srcRoot: CSS_SRC_ROOT, outdir: CSS_OUTDIR };
 }
 
 /**
- * The stylesheets a dependency delivers, as the compose loader will find them:
- * mounted under {@link CSS_DEPS_DIR} by package name, each with a scope of its
- * own so two of them cannot name one class alike, and the dependency path a run
- * reports reading it by.
+ * The stylesheets a dependency delivers, as a compose names them: by the name
+ * the package is delivered under and the path within it, each with a scope of
+ * its own so two of them cannot name one class alike.
  *
  * Scoped by delivered name: a compose takes a private copy, so the scope only
  * has to be distinct here.
@@ -427,13 +421,9 @@ function composableStylesheets(deps: PackageFileSet[]): IPostcssOptions["composa
       [...dep]
         .map(([name]) => name)
         .filter(name => name.toLowerCase().endsWith(".css"))
-        .map(name => ({
-          path: `${CSS_DEPS_DIR}/${dep.packageName}/${name}`,
-          scope: cssScopeDigest(dep.packageName, name),
-          read: joinDepsPath([dep.name, name]),
-        }))
+        .map(name => ({ package: dep.name, path: name, scope: cssScopeDigest(dep.packageName, name) }))
     )
-    .sort((left, right) => compareText(left.path, right.path));
+    .sort((left, right) => compareText(`${left.package}/${left.path}`, `${right.package}/${right.path}`));
 }
 
 /**

@@ -37,5 +37,6 @@ export * from "./pnp/VirtualPath";
 export * from "./support/SourceMap";
 export * from "./tscDriver/Planning";
 export * as BundleDriver from "./bundleDriver/bundle-driver";
+export * as PostcssDriver from "./cssDriver/postcss-driver";
 export * as SassDriver from "./cssDriver/sass-driver";
 export * as TscDriver from "./tscDriver/tsc-driver";

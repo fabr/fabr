@@ -35,13 +35,14 @@
  *
  * Cross-file `composes` resolves against this step's own inputs, or — for a
  * package-shaped specifier — against the dependency stylesheets the options
- * list. A specifier naming a Sass source (`composes: x from './b.module.scss'`)
- * maps to the lowered input beside the importer, and every class is scoped with
- * its own file's scope — whichever file's run names it. Any reachable
- * stylesheet is composable, a plain one included: its rules arrive in the
- * importer as a scoped private copy, while its own output keeps its names as
- * written. A specifier naming nothing reachable — a Sass partial, an unmounted
- * package — fails loudly.
+ * list, located through the PnP table the step stages beside the sources. A
+ * specifier naming a Sass source (`composes: x from './b.module.scss'`) maps to
+ * the lowered input beside the importer, and every class is scoped with its own
+ * file's scope — whichever file's run names it. Any reachable stylesheet is
+ * composable, a plain one included: its rules arrive in the importer as a
+ * scoped private copy, while its own output keeps its names as written. A
+ * specifier naming nothing reachable — a Sass partial, a file no dependency
+ * delivers — fails loudly.
  *
  * Usage: node postcss-driver.js --manifest=<path-to-manifest.json>
  *
@@ -59,6 +60,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { IPostcssOptions, IPostcssSource } from "./Options";
+import { PnpResolver } from "../pnp/PnPResolver";
 import { stagedReferences } from "../support/SourceMap";
 import {
   annotationName,
@@ -162,13 +164,25 @@ export function scopeFailure(rel: string, err: unknown, where?: { root: string; 
  * arriving in the importer as a scoped private copy. */
 export type ScopeTable = Map<string, string>;
 
-export function scopeTableOf(options: IPostcssOptions): ScopeTable {
+/** A dependency's stylesheet by the specifier naming it (`<package>/<path>`),
+ * as the file the step staged for it. */
+export type PackageStylesheets = ReadonlyMap<string, string>;
+
+/** The specifier naming a composable stylesheet of a dependency. */
+export function composableSpecifier(entry: IPostcssOptions["composable"][number]): string {
+  return `${entry.package}/${entry.path}`;
+}
+
+export function scopeTableOf(options: IPostcssOptions, packages: PackageStylesheets = new Map()): ScopeTable {
   return new Map([
     ...options.sources.map((source): [string, string] => [path.resolve(options.srcRoot, source.path), source.scope]),
     /* A dependency's stylesheets are readable but never published here: they
      * are in the table so a compose can reach them, and absent from `sources`
      * so this step writes nothing for them. */
-    ...options.composable.map((entry): [string, string] => [path.resolve(entry.path), entry.scope]),
+    ...options.composable.flatMap((entry): [string, string][] => {
+      const file = packages.get(composableSpecifier(entry));
+      return file === undefined ? [] : [[path.resolve(file), entry.scope]];
+    }),
   ]);
 }
 
@@ -198,14 +212,18 @@ export function scopedNameOf(table: ScopeTable, srcRoot: string, local: string, 
  * anything else — a Sass partial, another package's file — is refused with the
  * specifier and the importer named, never a bare ENOENT.
  */
-export function resolveComposePath(table: ScopeTable, srcRoot: string, file: string, importer: string, depsDir: string): string {
+export function resolveComposePath(
+  table: ScopeTable,
+  srcRoot: string,
+  file: string,
+  importer: string,
+  packages: PackageStylesheets
+): string {
   const lowered = sassLoweredName(file);
   /* A relative specifier names a sibling of the importer; anything else names
-   * a package, which is mounted under the deps dir by its own name. */
-  const resolved = lowered.startsWith(".")
-    ? path.resolve(path.dirname(path.resolve(importer)), lowered)
-    : path.resolve(depsDir, lowered);
-  if (!table.has(resolved)) {
+   * a dependency's stylesheet. */
+  const resolved = lowered.startsWith(".") ? path.resolve(path.dirname(path.resolve(importer)), lowered) : packages.get(lowered);
+  if (resolved === undefined || !table.has(resolved)) {
     throw new Error(
       `composes: '${file}' (in '${displayName(importer, srcRoot)}') does not name a stylesheet this target can reach — ` +
         `a class composes from a stylesheet of the same target, or one a package dependency delivers`
@@ -228,6 +246,8 @@ interface IPostcssTools {
   modules: IPostcssModules;
   /** How a staged source is named in a map, where the step staged a table. */
   referenceOf?: (staged: string, own?: string) => string | undefined;
+  /** The dependencies' stylesheets a compose may name. */
+  packages: PackageStylesheets;
   /** Told each stylesheet a compose resolved to. */
   onCompose?: (resolved: string) => void;
 }
@@ -285,7 +305,7 @@ async function processFile(source: IPostcssSource, options: IPostcssOptions, too
            * `styles.headerBar`). */
           localsConvention: "camelCase",
           resolve: (file: string, importer: string): string => {
-            const resolved = resolveComposePath(table, options.srcRoot, file, importer || inputPath, options.depsDir);
+            const resolved = resolveComposePath(table, options.srcRoot, file, importer || inputPath, tools.packages);
             tools.onCompose?.(resolved);
             return resolved;
           },
@@ -334,7 +354,22 @@ export async function main(argv: string[]): Promise<void> {
   /* eslint-enable @typescript-eslint/no-var-requires */
 
   const options = JSON.parse(fs.readFileSync(parseManifestPath(argv, "postcss-driver"), "utf8")) as IPostcssOptions;
-  const table = scopeTableOf(options);
+  /* The dependencies are a table beside the sources, nothing mounted: each
+   * composable stylesheet is located through it, as the sources see it. A file
+   * is read where its bytes are, and reported as the table locates it. */
+  const resolver = PnpResolver.load(process.cwd(), []);
+  const issuer = `${process.cwd()}${path.sep}`;
+  const packages = new Map<string, string>();
+  const located = new Map<string, string>();
+  for (const entry of options.composable) {
+    const at = resolver?.resolveToUnqualified(composableSpecifier(entry), issuer, { considerBuiltins: false });
+    if (at !== undefined && at !== null) {
+      const file = path.resolve(resolver?.resolveVirtual(at) ?? at);
+      packages.set(composableSpecifier(entry), file);
+      located.set(file, at);
+    }
+  }
+  const table = scopeTableOf(options, packages);
   /* Its maps name each source by the reference resolving to it, where the step
    * staged their table; one of its own inputs with none is named by the owner
    * as the step's source root holds it. */
@@ -343,16 +378,15 @@ export async function main(argv: string[]): Promise<void> {
   );
   /* A dependency's stylesheet is read only where a compose reaches it, so those
    * are the run's reads of the packages it was given. */
-  const readOf = new Map(options.composable.map(entry => [path.resolve(entry.path), entry.read]));
   const reads = new Set<string>();
   const onCompose = (resolved: string): void => {
-    const read = readOf.get(resolved);
-    if (read !== undefined) {
-      reads.add(read);
+    const at = located.get(resolved);
+    if (at !== undefined) {
+      reads.add(at);
     }
   };
   for (const source of options.sources) {
-    await processFile(source, options, { postcss, modules, referenceOf, onCompose }, table);
+    await processFile(source, options, { postcss, modules, referenceOf, packages, onCompose }, table);
   }
-  writeDepsReport(argv, reads);
+  writeDepsReport(argv, resolver?.readSetOf(reads) ?? [], resolver?.edges());
 }

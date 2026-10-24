@@ -46,10 +46,10 @@ import {
   RuleResult,
   TargetContext,
 } from "@fabr-build/core";
-import { buildPostcssOptions, CSS_DEPS_DIR, CSS_OUTDIR, CSS_SRC_ROOT, CSS_TOOL_DIR } from "../CSSCompile";
+import { buildPostcssOptions, CSS_OUTDIR, CSS_SRC_ROOT, CSS_TOOL_DIR } from "../CSSCompile";
 import { emitsSourceMap } from "../JSPackage";
 import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, SOURCE_OWNER_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
-import { createNodeExecAction, NODE_MODULES } from "../NodeExecAction";
+import { createNodeExecAction, PNP } from "../NodeExecAction";
 
 function buildCssPostcss(context: TargetContext, collected: { srcs: FileSet[]; deps: FileSet[] }): Computable<RuleResult> {
   return Computable.forAll(
@@ -68,8 +68,8 @@ function buildCssPostcss(context: TargetContext, collected: { srcs: FileSet[]; d
       /* The package identity scoped class names are derived from. A target with
        * none (a bundle's own sources) scopes by path alone, which is still
        * unique within the one delivery it can appear in. */
-      /* Only a PACKAGE is composable: its stylesheets mount under a name a
-       * specifier can spell. A loose content dep has no such name. */
+      /* Only a PACKAGE is composable: its stylesheets have a name a specifier
+       * can spell. A loose content dep has no such name. */
       const packages = deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
       const options = buildPostcssOptions(fileNames, packageNameProp?.toString() ?? "", emitsSourceMap(buildType), packages);
       const workspace = {
@@ -78,15 +78,16 @@ function buildCssPostcss(context: TargetContext, collected: { srcs: FileSet[]; d
         "postcss-manifest.json": MemoryFile.from(JSON.stringify(options)),
       };
       /* Its maps name each source by the reference resolving to it, from the
-       * table the step stages: the stylesheets and the packages they reach. */
+       * table the step stages: the stylesheets and the packages they reach.
+       * Nothing is mounted: a dependency's stylesheet is located through the
+       * table the step generates beside the sources. */
       const argv = compiler.toCommandLine(
         ["--manifest=postcss-manifest.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, context.buildReference(), DEPS_REPORT_FLAG, DEPS_REPORT_FILE],
         { base: CSS_TOOL_DIR }
       );
       return createNodeExecAction(FileSet.layout(workspace), deps, argv, `${CSS_OUTDIR}:**`, {
         label: "postcss",
-        layout: NODE_MODULES,
-        mount: CSS_DEPS_DIR,
+        layout: PNP,
         sourcePaths: SOURCE_PATHS_FILE,
         packageSourcePaths: true,
         depsReport: DEPS_REPORT_FILE,

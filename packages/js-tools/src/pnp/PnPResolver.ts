@@ -485,22 +485,24 @@ export class PnpResolver implements IPnpApi {
     const barred = this.sources.has(locator) || this.excluded.has(locator);
     const own = from?.dependencies.get(name);
     const bound = own ?? (barred ? undefined : this.fallback.get(name));
-    const requirer = instance ?? "";
+    this.recordResolution(instance ?? "", name, bound, own !== undefined);
+    return bound === undefined ? undefined : this.rows.get(bound)?.location;
+  }
+
+  /**
+   * Record that `requirer` (an instance name, `""` for the compilation) looked
+   * `name` up and got `bound`, by its own row or not. A name nothing answers is
+   * recorded too, and is not merely an error waiting to happen: a caller given
+   * no answer may ask for something else instead (tsc settling for
+   * `@types/thing`), so the result can depend on this name having been
+   * unresolvable. A name the sources answer is no dependency.
+   */
+  private recordResolution(requirer: string, name: string, bound: string | undefined, own: boolean): void {
     if (bound === undefined) {
-      /* A name nothing answers is recorded too, and is not merely an error
-       * waiting to happen: a caller given no answer may ask for something else
-       * instead (tsc settling for `@types/thing`), so the compilation's result
-       * can depend on this name having been unresolvable. */
       this.resolutions.set(`${requirer}\0${name}`, { from: requirer, name, to: "", via: "absent" });
     } else if (!this.sources.has(bound)) {
-      this.resolutions.set(`${requirer}\0${name}`, {
-        from: requirer,
-        name,
-        to: instanceOfLocator(bound),
-        via: own === undefined ? "fallback" : "own",
-      });
+      this.resolutions.set(`${requirer}\0${name}`, { from: requirer, name, to: instanceOfLocator(bound), via: own ? "own" : "fallback" });
     }
-    return bound === undefined ? undefined : this.rows.get(bound)?.location;
   }
 
   /**
@@ -906,7 +908,10 @@ export class PnpResolver implements IPnpApi {
       throw pnpError("BUILTIN_NODE_RESOLUTION_FAILED", `pnp: '${from}' is outside the dependency tree`, { request, issuer: from });
     }
     const issuerInformation = this.informationOf(issuerLocator);
+    const issuerKey = locatorKey(issuerLocator.name, issuerLocator.reference);
+    const requirer = this.sources.has(issuerKey) ? "" : instanceOfLocator(issuerKey);
     let bound = issuerInformation.packageDependencies.get(dependencyName);
+    const own = bound !== undefined && bound !== null;
     let fallback: PnpDependencyTarget = null;
     if (bound === undefined || bound === null) {
       const excluded = issuerLocator.name !== null && this.fallbackExclusions.get(issuerLocator.name)?.has(issuerLocator.reference);
@@ -921,6 +926,7 @@ export class PnpResolver implements IPnpApi {
     }
     if (bound === undefined || bound === null) {
       if (fallback === null) {
+        this.recordResolution(requirer, dependencyName, undefined, false);
         const who = issuerLocator.name === null ? "your application" : issuerLocator.name;
         throw bound === null
           ? pnpError("MISSING_PEER_DEPENDENCY", `pnp: ${who} tried to access ${dependencyName} (a peer dependency), which nothing provides`, {
@@ -937,6 +943,7 @@ export class PnpResolver implements IPnpApi {
       bound = fallback;
     }
     const dependency = this.getLocator(dependencyName, bound);
+    this.recordResolution(requirer, dependencyName, locatorKey(dependency.name, dependency.reference), own);
     const location = this.informationOf(dependency).packageLocation;
     if (!location) {
       throw pnpError("MISSING_DEPENDENCY", `pnp: ${dependency.name}@${dependency.reference} has no location`, { request, issuer: from });

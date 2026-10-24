@@ -23,7 +23,8 @@ version number.
 - Split runtime tools out into their own js-tools package.
 - Add optional_provided_deps support.
 - Change source maps to generate fabr: urls w/ project-relative where possible.
-- Add discovered-deps support for sass + postcss
+- Add discovered-deps support for sass + postcss.
+- Convert postcss to use pnp.
 
 ## Fabr 0.3.0
 @fabr-build/core:
