@@ -17,6 +17,11 @@ default BUILD_OPERATION = build;
 # records back into the source tree. `fabr test -u` sets `update` for one run.
 default TEST_EXPECTATIONS = check;
 
+# Whether what is built and tested is measured for code coverage: `on` or
+# `off`. `fabr test --coverage` sets `on` for one run. A tool is always built
+# with it `off`.
+default COVERAGE = off;
+
 # The platform being built for, as a clang/LLVM target triple such as
 # `arm64-apple-macosx15.0` or `x86_64-linux-gnu`. Defaults to `HOST`, the
 # machine fabr is running on. Set it to cross-compile: for a whole run with

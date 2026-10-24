@@ -220,6 +220,15 @@ describe("Command", () => {
     expect(capture(["ls", "-w", "foo"]).err.join("\n")).to.match(/'-w' is not valid for the 'ls'/);
   });
 
+  it("turns coverage on with --coverage, writing to coverage/ or the directory given", () => {
+    const plain = parseCommandLine(["node", "fabr", "test", "--coverage", "foo"]);
+    expect(plain.properties.get("COVERAGE")).to.equal("on");
+    expect(plain.coverageDir).to.equal("coverage");
+    expect(parseCommandLine(["node", "fabr", "test", "--coverage=out/cov", "foo"]).coverageDir).to.equal("out/cov");
+    expect(parseCommandLine(["node", "fabr", "test", "foo"]).coverageDir).to.equal(undefined);
+    expect(capture(["build", "--coverage", "foo"]).err.join("\n")).to.match(/'--coverage' is not valid for the 'build'/);
+  });
+
   it("parses the (undocumented) force flag in both spellings", () => {
     expect(parseCommandLine(["node", "fabr", "build", "-f", "foo"]).force).to.be.true;
     expect(parseCommandLine(["node", "fabr", "test", "--force", "foo"]).force).to.be.true;

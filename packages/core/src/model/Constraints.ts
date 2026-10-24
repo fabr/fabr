@@ -64,14 +64,16 @@ export const TARGET = "TARGET";
 
 /**
  * The entries of `constraints` worth showing a reader: all but the `ambient`
- * keys, and but a TARGET equal to HOST — the host-native default, which running
- * a tool pins explicitly, so that it would otherwise read as a choice.
+ * keys, and but the values running a tool pins explicitly, so that they would
+ * otherwise read as a choice — a TARGET equal to HOST, and COVERAGE off.
  */
 export function shownConstraints(
   constraints: Iterable<[string, string]> & { get(key: string): string | undefined },
   ambient: ReadonlySet<string> = AMBIENT_CONSTRAINT_KEYS
 ): Array<[string, string]> {
-  return [...constraints].filter(([key, value]) => !ambient.has(key) && !(key === TARGET && value === constraints.get(HOST)));
+  return [...constraints].filter(
+    ([key, value]) => !ambient.has(key) && !(key === TARGET && value === constraints.get(HOST)) && !(key === COVERAGE && value === "off")
+  );
 }
 
 /**
@@ -87,6 +89,17 @@ export const TEST_EXPECTATIONS = "TEST_EXPECTATIONS";
 /** The {@link TEST_EXPECTATIONS} value that turns recorded expectations into
  * offered updates. */
 export const UPDATE_EXPECTATIONS = "update";
+
+/**
+ * Whether what is built and tested is measured for code coverage: `on` or
+ * `off` (the default, declared in STD.fabr). `fabr test --coverage` sets it; a
+ * tool is always resolved with it `off` (see TargetContext.runOverrides). Named
+ * here because the driver, the tool reset and the js rules agree on it.
+ */
+export const COVERAGE = "COVERAGE";
+
+/** The {@link COVERAGE} value that turns measurement on. */
+export const COVERAGE_ON = "on";
 
 /**
  * The `files` operation: "give me the output files, and do no more than that."

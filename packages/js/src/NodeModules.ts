@@ -131,6 +131,18 @@ function instanceNames({ byNode }: CollectedPackages): Map<string, string> {
   return names;
 }
 
+/**
+ * Get where {@link assembleNodeModules} lays out each package of the closure of
+ * `sets`: the directory, within node_modules, holding its files.
+ */
+export function packageDirectories(sets: FileSet[]): Map<PackageFileSet, string> {
+  const collected = collectPackages(sets);
+  const instance = instanceNames(collected);
+  return new Map(
+    collected.all.map(pkg => [pkg, `${INSTANCE_AREA}/${instance.get(collected.nodeOf(pkg))!}/node_modules/${pkg.packageName}`])
+  );
+}
+
 /** A relative symlink at `from` naming `to`, both paths within one tree. */
 function linkEntry(from: string, to: string): [string, IFile] {
   return [from, new SymlinkFile(posix.relative(posix.dirname(from), to))];

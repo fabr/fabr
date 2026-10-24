@@ -481,6 +481,14 @@ default js_script POSTCSS_DRIVER {
 }
 
 #
+# Internal: the program a test run measured for coverage runs after its tests,
+# which turns the V8 coverage they left into lcov.
+#
+default js_script JS_COVERAGE_DRIVER {
+    entry = @fabr-build/js-tools:fabr-coverage;
+}
+
+#
 # The program that runs tests under the `node` framework. A replacement is run
 # in the directory of compiled tests as `<runner> --report=<file>
 # --env=<node|jsdom> [--update-snapshots] [--setup=<file>]… <test files…>`. It

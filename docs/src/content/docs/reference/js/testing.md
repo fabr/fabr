@@ -98,6 +98,7 @@ Under jest and vitest, a helper that is matched by `tests` fails with
 fabr test mylib        # compile and run mylib's tests
 fabr test -w mylib     # ...and again whenever a source changes
 fabr test -u mylib     # ...and record or update snapshots
+fabr test --coverage mylib   # ...and measure code coverage
 ```
 
 A passing run prints one line per target, such as `mylib: 12 tests passed (1 skipped)`. A failing
@@ -118,7 +119,6 @@ Some things differ from running a test framework's own command:
   files share no state. Framework options that control workers or isolation don't apply.
 - **A test times out after 120 seconds** under every framework, where jest and vitest default to
   5 seconds. A timeout you set on an individual test still applies, as does `jest.setTimeout`.
-- **There is no coverage reporting.**
 
 ## The test environment
 
@@ -254,6 +254,35 @@ Two limits apply:
   ordinary run, and dropped from its file the next time `-u` rewrites that file. Fabr doesn't
   delete a `.snap` file whose test file is gone.
 
+## Coverage
+
+`fabr test --coverage` measures which code the tests ran, under every framework. It prints one line
+for all the targets tested, such as `Coverage: lines 91.23% (104/114), functions 100.00% (32/32),
+branches 85.47% (100/117)`, and writes an lcov report to `coverage/lcov.info`, or to
+`<dir>/lcov.info` with `--coverage=<dir>`, saying where it wrote it. The report names each source
+by its path in your project, which is what Codecov, Coveralls, SonarQube and editor coverage
+gutters expect.
+
+What is measured is the target's own sources, other than its tests, and every package built in
+your project that the tests run with: a library tested only through another target's tests gets
+credit for them, and a file the tests never load is reported as not run at all. Packages from a
+registry aren't measured. Testing several targets together reports their coverage as one, a source
+counted once however many targets measured it.
+
+Coverage comes from Node.js's own V8 coverage, so nothing is instrumented and the tests run as
+they otherwise would. Lines, functions and branches are counted as istanbul counts them (jest's
+default and nyc's), with some differences:
+
+- **What is measured is the code as compiled** for the target's `JS_TARGET`. Syntax that an older
+  target turns into conditionals, such as `?.` and `??`, counts as branches only where it is
+  compiled that way.
+- **A parameter's default value isn't counted as a branch.** V8 doesn't record whether a default
+  was used.
+
+A run with `--coverage` is a different build from one without it: it is cached separately, and
+the code under test is compiled with source maps even in a `release` build. The tools fabr runs,
+such as the compiler and the test runner, are never measured.
+
 ## `node:test`
 
 The default framework runs your tests with Node.js's built-in
@@ -365,7 +394,8 @@ No jest configuration is read: not `jest.config.js`, and not the `jest` key of a
 | `testTimeout` | Fixed at 120 seconds; set it per test, or call `jest.setTimeout` in `setupTests`. |
 | `clearMocks`, `resetMocks`, `restoreMocks` | No equivalent. Call `jest.clearAllMocks()` and the others from an `afterEach` in `setupTests`. |
 | `globalSetup`, `globalTeardown`, `reporters`, `resolver`, `runner`, `globals` | Not supported. |
-| `collectCoverage` and the other coverage options | Not supported. |
+| `collectCoverage` | `fabr test --coverage`; see [Coverage](#coverage). |
+| `coverageThreshold`, `coverageReporters` and the other coverage options | Not supported. The report is always lcov. |
 
 ### What works
 
@@ -468,8 +498,8 @@ import { describe, it, expect, vi } from "vitest";
   - `import.meta.env`, `import.meta.glob` and `import.meta.hot`.
   - `?raw`, `?url` and `?worker` imports. Plain stylesheet and image imports work; see
     [Stylesheets and other assets](#stylesheets-and-other-assets).
-- **Not available:** coverage, benchmarks (`bench`), type testing (`expectTypeOf` with
-  `--typecheck`), browser mode, projects, and in-source tests.
+- **Not available:** vitest's own coverage (use [`--coverage`](#coverage)), benchmarks (`bench`),
+  type testing (`expectTypeOf` with `--typecheck`), browser mode, projects, and in-source tests.
 - **Tests are ES modules,** so `require`, `__dirname` and `__filename` aren't defined in a test
   file. Use `import.meta.dirname`.
 - **`NODE_ENV` isn't set to `test`.** Set it in [`test_env`](#environment-variables) if your code

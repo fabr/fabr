@@ -28,6 +28,7 @@
  * with, as its dependencies, the installed packages node would load for it.
  */
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { Computable } from "../core/Computable";
 import { FabrError, toError } from "../core/Errors";
@@ -80,21 +81,23 @@ function toInstalledManifest(json: unknown): IInstalledManifest {
 }
 
 /**
- * The directory of the package `name` as node loads it from `from`, or
- * undefined if node finds none. A package whose `exports` hides its
- * `package.json` cannot be read as installed, and says so.
+ * The directory of the package `name` installed where node would look for it
+ * from `from` — the first `node_modules/<name>` holding a `package.json`, from
+ * `from` up — or undefined if there is none. Found by where it is installed,
+ * not by resolving a module of it, so its `exports` (which says what may be
+ * imported from it) has no say.
  */
 function locate(name: string, from: string): string | undefined {
-  try {
-    return path.dirname(require.resolve(`${name}/package.json`, { paths: [from] }));
-  } catch (err) {
-    const code = (err as { code?: string }).code;
-    if (code === "MODULE_NOT_FOUND") {
+  for (let dir = path.resolve(from); ; dir = path.dirname(dir)) {
+    if (path.basename(dir) !== "node_modules") {
+      const candidate = path.join(dir, "node_modules", name);
+      if (fs.existsSync(path.join(candidate, "package.json"))) {
+        return fs.realpathSync(candidate);
+      }
+    }
+    if (path.dirname(dir) === dir) {
       return undefined;
     }
-    throw code === "ERR_PACKAGE_PATH_NOT_EXPORTED"
-      ? new FabrError(`${name} does not publish its package.json (its "exports" leaves it out), so it cannot be read as installed`)
-      : err;
   }
 }
 

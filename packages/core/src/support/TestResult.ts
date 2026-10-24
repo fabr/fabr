@@ -84,6 +84,10 @@ export interface ITestReport {
 /** The report filename, relative to the test working directory */
 export const TEST_REPORT_FILENAME = "ctrf-report.json";
 
+/** The name a test result carries its coverage under, where the run was
+ * measured: an lcov document naming each source by its source path. */
+export const COVERAGE_REPORT_FILENAME = "lcov.info";
+
 /**
  * @return a one-line description of the run ("12 tests passed", "2 of 14
  * tests failed", ...).

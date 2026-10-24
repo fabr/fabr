@@ -38,6 +38,8 @@
 
 import {
   Computable,
+  COVERAGE,
+  COVERAGE_ON,
   defineRule,
   FabrError,
   FileSet,
@@ -192,7 +194,10 @@ export function makeTsConfig(
   /** The automatic `@types` inclusions, where the compiler cannot discover them
    * for itself (see {@link automaticTypes}); omitted under the classic layout,
    * where tsc's own scan is authoritative. */
-  types?: string[]
+  types?: string[],
+  /** Whether to emit JS source maps: by default, where the build type is one
+   * that carries them. */
+  sourceMaps = emitsSourceMap(buildType)
 ): Record<string, unknown> {
   return {
     compilerOptions: {
@@ -244,11 +249,12 @@ export function makeTsConfig(
        * compiler. So the driver supplies it (see `resolutionFor`), and a project
        * that states one of its own keeps it. */
       ...(packageName ? { paths: selfReferencePaths(packageName) } : {}),
-      /* JS source maps for debuggable builds; `release` omits them. `inlineSources`
+      /* JS source maps where asked for — a debuggable build, or one measured for
+       * coverage, which maps what ran back to its source. `inlineSources`
        * embeds the original TS into each `.js.map`, so the maps are self-contained
        * and debuggable at runtime without shipping a `src/` tree. tsc always writes
        * the `//# sourceMappingURL=` link comment when `sourceMap` is on. */
-      ...(emitsSourceMap(buildType) ? { sourceMap: true, inlineSources: true } : {}),
+      ...(sourceMaps ? { sourceMap: true, inlineSources: true } : {}),
       ...(jsx ? { jsx: jsx.mode, jsxImportSource: jsx.importSource } : {}),
       /* tsc ignores FORCE_COLOR (it only checks its own TTY), so formatted
        * diagnostics must be forced here; unwanted codes are stripped at
@@ -335,8 +341,9 @@ function compileTypescript(context: TargetContext, { srcs: srcSets, deps, resour
       context.getProperty("package_name"),
       context.getProperty("module_extension"),
       context.getRewriteRules("rewrite_imports"),
+      context.getGlobalString(COVERAGE),
     ],
-    (target, driver, buildType, packageNameProp, moduleExtensionProp, rewriteRules) => {
+    (target, driver, buildType, packageNameProp, moduleExtensionProp, rewriteRules, coverage) => {
       assertOnePackagePerName(deps);
       /* Source-mode flags (strictness relaxations, the ES level) ride among
        * `deps` like any other dep; a flag materializes to nothing. */
@@ -387,7 +394,8 @@ function compileTypescript(context: TargetContext, { srcs: srcSets, deps, resour
           packageName,
           sourceVersion,
           usesDom(depFlags),
-          automaticTypes(deps)
+          automaticTypes(deps),
+          emitsSourceMap(buildType) || coverage === COVERAGE_ON
         );
         const workspace = {
           [COMPILE_SRC_DIR]: srcs,

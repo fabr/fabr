@@ -61,11 +61,14 @@ copy of their declared inputs, so they can't change your project directory.
 ```sh
 fabr test mylib
 fabr test -u mylib    # also record new and changed snapshots
+fabr test --coverage mylib    # also measure code coverage
 ```
 
 A passing run is cached and isn't repeated until something the tests depend on changes. With `-u`,
 new and changed snapshots are written back into your source tree after a passing run, and each
-file is named as it is written. For JavaScript, see [Testing](/reference/js/testing/).
+file is named as it is written. With `--coverage`, the tests are measured for code coverage: a
+summary is printed and an lcov report written, to `coverage/lcov.info` unless a directory is given
+(`--coverage=<dir>`). For JavaScript, see [Testing](/reference/js/testing/).
 
 ### `run`
 
@@ -257,6 +260,7 @@ generated from it.
 | `-DNAME=VALUE` | all | Set a configuration property for this run, overriding the build file and any default. |
 | `-w` | `build`, `test`, `run` | Keep running, and rebuild, retest or restart when sources change. See [Watch mode](/guides/watch/). |
 | `-u`, `--update` | `test` | Record new and changed snapshots, and write them into your source tree. |
+| `--coverage[=DIR]` | `test` | Measure code coverage, print a summary and write `DIR/lcov.info` (`coverage/` by default). |
 | `-q`, `--quiet` | all | Don't show the progress display or the output of build steps. A step that fails still shows its output in the error. |
 | `--no-progress` | all | Don't show the progress display. Output from build steps is then printed as it arrives, as it is when stderr isn't a terminal. |
 | `-l` | `ls`, `list-*` | Long listing: hash and size for `ls`, source location for the `list-` commands. |

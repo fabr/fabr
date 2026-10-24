@@ -25,6 +25,7 @@ version number.
 - Change source maps to generate fabr: urls w/ project-relative where possible.
 - Add discovered-deps support for sass + postcss.
 - Convert postcss to use pnp.
+- Add test coverage reporting.
 
 ## Fabr 0.3.0
 @fabr-build/core:

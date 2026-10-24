@@ -92,6 +92,12 @@ describe("FabrHomeRepository", () => {
     expect(deps.map(dep => `${dep.packageName}@${dep.version}`)).to.deep.equal(["helper@1.0.0"]);
   });
 
+  it("delivers a dependency whose exports publish no package.json, found where it is installed", async () => {
+    install(path.join(root, "node_modules", "helper"), { name: "helper", version: "1.0.0", exports: "./index.mjs" }, { "index.mjs": "helper" });
+    const delivered = (await toPromise(repository().resolve(packageRef(repository(), Name.fromLiteral("@fabr-build/tool"))))) as PackageFileSet;
+    expect(delivered.packages.map(dep => `${dep.packageName}@${dep.version}`)).to.deep.equal(["helper@1.0.0"]);
+  });
+
   it("delivers an installation with a cycle through the package as one graph, the package one node of it", async () => {
     /* helper requires tool back, as a plugin requires its host: the reference's
      * delivery leaves the graph as it is, so the edge back leads to the very

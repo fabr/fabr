@@ -25,7 +25,7 @@ import {
   isPackage,
   Package,
   nodeNaming,
-  TARGET_PROVENANCE,
+  builtInProject,
   Dependency,
   dependencyName,
   requestedConstraint,
@@ -56,16 +56,6 @@ const YELLOW = "33";
 /** The colour of a package built in this project. */
 const LOCAL = "36";
 
-/** Check whether `pkg` was built in the project, that is, a target produced it. */
-function isLocal(pkg: Package): boolean {
-  for (let step = pkg.origin; step !== undefined; step = step.parent) {
-    if (step.kind === TARGET_PROVENANCE) {
-      return true;
-    }
-  }
-  return false;
-}
-
 /** Name one dependency for its line: a target's node as the reference to its
  * build, with the configuration that tells it from the target's other builds
  * (`lib<BUILD_TYPE=release>`), spelled as a conflict note spells one. */
@@ -81,7 +71,7 @@ function nameOf(dep: Dependency): string {
  *  only where the two differ, and the name alone where there is no version. */
 function label(dep: Dependency, style: Style): string {
   const plain = nameOf(dep);
-  const name = dep.package !== undefined && isLocal(dep.package) ? style(LOCAL, plain) : plain;
+  const name = dep.package !== undefined && builtInProject(dep.package.origin) ? style(LOCAL, plain) : plain;
   const requested = requestedConstraint(dep.reference);
   const selected = dep.package?.version;
   if (selected === undefined || requested === selected) {
@@ -182,7 +172,7 @@ export function renderDependencyTrees(blocks: ReadonlyArray<DependencyTree>, sty
           lines.push(marked(text, provided && "p", "n"));
           return;
         }
-        locals ||= isLocal(pkg);
+        locals ||= builtInProject(pkg.origin);
         const node = nodeOf(pkg);
         const repeated = shown.has(node);
         shown.add(node);

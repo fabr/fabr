@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { BUILD_OPERATION, Constraints, HOST, shownConstraints, TARGET } from "./Constraints";
+import { BUILD_OPERATION, Constraints, COVERAGE, HOST, shownConstraints, TARGET } from "./Constraints";
 
 describe("shownConstraints", () => {
   const host = "arm64-apple-macosx15.0";
@@ -35,5 +35,10 @@ describe("shownConstraints", () => {
   it("shows a TARGET other than the host — a cross build is a choice", () => {
     const constraints = Constraints.of({ [HOST]: host, [TARGET]: "x86_64-linux-gnu" });
     expect(shownConstraints(constraints)).to.deep.equal([[TARGET, "x86_64-linux-gnu"]]);
+  });
+
+  it("leaves out COVERAGE off, as running a tool pins it, and shows it on", () => {
+    expect(shownConstraints(Constraints.of({ [COVERAGE]: "off" }))).to.deep.equal([]);
+    expect(shownConstraints(Constraints.of({ [COVERAGE]: "on" }))).to.deep.equal([[COVERAGE, "on"]]);
   });
 });

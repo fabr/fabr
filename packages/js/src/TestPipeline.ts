@@ -46,8 +46,12 @@
 
 import {
   BUILD_OVERRIDE,
+  builtInProject,
   Computable,
   Constraints,
+  COVERAGE,
+  COVERAGE_ON,
+  COVERAGE_REPORT_FILENAME,
   EMPTY_FILESET,
   FabrError,
   SymlinkFile,
@@ -70,11 +74,11 @@ import {
   toEnvironment,
   PackageSources,
 } from "@fabr-build/core";
-import { SOURCE_LOCATIONS_FILE } from "@fabr-build/js-tools";
+import { type ICoverageOptions, SOURCE_LOCATIONS_FILE } from "@fabr-build/js-tools";
 import { createTestRunAction } from "./TestRunAction";
 import { posix } from "path";
 import { COMPILE_OUT_DIR, COMPILE_SRC_DIR } from "./rules/BuildJSCompile";
-import { assembleNodeModules } from "./NodeModules";
+import { assembleNodeModules, packageDirectories } from "./NodeModules";
 import {
   compileContents,
   formatJSTarget,
@@ -96,6 +100,15 @@ const GLOBALS_TYPES_MOUNT = "@types/fabr-test-globals/index.d.ts";
 /* The runner's own globals .d.ts as it appears in @fabr-build/js-tools's srcs,
  * dropped when it tests itself so it doesn't collide with the synthetic mount. */
 const RUNNER_GLOBALS_TYPES = "testRunner/test-globals.d.ts";
+
+/** Where a measured run stages the coverage driver's install, the document it
+ * reads, and the directory the test processes write their V8 coverage into. */
+const COVERAGE_STAGE_DIR = ".fabr-coverage";
+const COVERAGE_OPTIONS_FILE = ".fabr-coverage.json";
+const COVERAGE_RAW_DIR = ".fabr-coverage-raw";
+
+/** A compiled JavaScript file, which a measured run measures. */
+const COMPILED_SCRIPT = /\.[cm]?js$/;
 
 /** The directory a test file's recorded snapshots live in, beside it — jest's
  * convention, and fabr's: the staged inputs land there (they are ordinary
@@ -260,8 +273,11 @@ export function compileAndRunTests(
       context.getGlobalString(TEST_EXPECTATIONS),
       context.getGlobalString("JS_TARGET", BUILD_OVERRIDE),
       context.getMap(settings.envProperty),
+      context.getGlobalString(COVERAGE),
     ],
-    (runner, expectations, target, env): Computable<RuleResult> => {
+    (runner, expectations, target, env, coverage): Computable<RuleResult> =>
+      (coverage === COVERAGE_ON ? context.getGlobalRunnable("JS_COVERAGE_DRIVER") : Computable.resolve(undefined)).then(
+        (coverageDriver): Computable<RuleResult> => {
       const jsTarget = parseJSTarget(target);
       /* The test compile may import the package's deps, the test_deps, and the
        * runner globals directly (all passed to compileJsSources). The runtime
@@ -324,9 +340,11 @@ export function compileAndRunTests(
           env,
           packageName: settings.packageName,
           update: expectations === UPDATE_EXPECTATIONS,
+          coverage: coverageDriver === undefined ? undefined : { driver: coverageDriver, packages },
         });
       });
-    }
+        }
+      )
   );
 }
 
@@ -415,6 +433,10 @@ interface ITestRun {
   /** The package the sources may import themselves by, if any — see selfMount. */
   packageName?: string;
   update: boolean;
+  /** Where the run is measured for coverage: the program converting what the
+   * test processes record, and the packages installed for the run, of which
+   * those built in the project are measured. */
+  coverage?: { driver: RunnableFileSet; packages: PackageFileSet[] };
 }
 
 /**
@@ -458,9 +480,11 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
      * `build/` is ALSO the working directory (see the test-run action): a test's paths —
      * `./x` from cwd or `__dirname`-relative alike — then mean what they mean in
      * the source tree, since the compiled tree mirrors it. */
+    const coverage = run.coverage && measuredRun(run.coverage, compiledTree, new Set([...testFiles, ...(setupFile ? [setupFile] : [])]));
     const staged = FileSet.layout({
       node_modules: [run.nodeModules, selfMount(run.packageName)],
       [RUNNER_STAGE_DIR]: [run.runner],
+      ...(coverage?.staged ?? {}),
       "package.json": packageJson,
       /* Resources and records join the compiled tree, which is also the working
        * directory: a test's `./x` means the same thing here as in the source
@@ -498,9 +522,11 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
      * `dir`), so the refreshed records come back named as the compiled tree
      * names them — the namespace the tests and the staged records are already
      * matched in. */
-    const outputs = run.update
-      ? [TEST_REPORT_FILENAME, `${COMPILE_OUT_DIR}:${SNAPSHOT_DIR}/*.snap`, `${COMPILE_OUT_DIR}:**/${SNAPSHOT_DIR}/*.snap`]
-      : [TEST_REPORT_FILENAME];
+    const outputs = [
+      TEST_REPORT_FILENAME,
+      ...(coverage ? [COVERAGE_REPORT_FILENAME] : []),
+      ...(run.update ? [`${COMPILE_OUT_DIR}:${SNAPSHOT_DIR}/*.snap`, `${COMPILE_OUT_DIR}:**/${SNAPSHOT_DIR}/*.snap`] : []),
+    ];
     /* Under `update` the runner REWRITES the recorded files it was given, so
      * those inputs must be staged as writable copies. The DECLARED
      * `expectations` are that set, not whatever happens to sit in a
@@ -515,10 +541,45 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
     /* The run's output is given its delivered shape — the report, and what it
      * offers back to the tree — every evaluation, so refreshed records reach
      * the driver on a cache hit as well as on a miss. */
-    return createTestRunAction({ staged, writable, argv, testFiles, outputs, env: toEnvironment(run.env) }).withReshape(result =>
+    return createTestRunAction({
+      staged,
+      writable,
+      argv,
+      testFiles,
+      outputs,
+      env: toEnvironment(run.env),
+      coverage: coverage && { argv: coverage.argv, raw: COVERAGE_RAW_DIR },
+    }).withReshape(result =>
       reshapeTestResult(result, run.tests, records)
     );
   });
+}
+
+/**
+ * What a measured run adds to the install, and the coverage driver's command
+ * line, run from the install root. Measured is every compiled script of the
+ * compile but the tests and the setup script, and of every package built in
+ * the project, by where the install lays it out.
+ */
+function measuredRun(
+  { driver, packages }: { driver: RunnableFileSet; packages: PackageFileSet[] },
+  compiled: FileSet,
+  testInfrastructure: ReadonlySet<string>
+): { staged: Record<string, FileSet[] | IFile>; argv: string[] } {
+  const own = [...compiled]
+    .map(([name]) => name)
+    .filter(name => COMPILED_SCRIPT.test(name) && !testInfrastructure.has(name))
+    .map(name => `${COMPILE_OUT_DIR}/${name}`);
+  const installed = [...packageDirectories(packages)]
+    .filter(([pkg]) => builtInProject(pkg.origin))
+    .flatMap(([pkg, directory]) =>
+      [...pkg].map(([name]) => name).filter(name => COMPILED_SCRIPT.test(name)).map(name => `node_modules/${directory}/${name}`)
+    );
+  const options: ICoverageOptions = { raw: COVERAGE_RAW_DIR, measured: [...new Set([...own, ...installed])].sort(), output: COVERAGE_REPORT_FILENAME };
+  return {
+    staged: { [COVERAGE_STAGE_DIR]: [driver], [COVERAGE_OPTIONS_FILE]: MemoryFile.from(JSON.stringify(options)) },
+    argv: driver.toCommandLine([`--manifest=${COVERAGE_OPTIONS_FILE}`], { base: COVERAGE_STAGE_DIR }),
+  };
 }
 
 /**
@@ -531,7 +592,9 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
  * reproduced unchanged can be dropped — see {@link snapshotWriteBacks}.
  */
 function reshapeTestResult(result: FileSet, tests: FileSet, recorded: FileSet): FileSet {
-  const { report = EMPTY_FILESET, snapshots } = result.partition(name => (name === TEST_REPORT_FILENAME ? "report" : "snapshots"));
+  const { report = EMPTY_FILESET, snapshots } = result.partition(name =>
+    name === TEST_REPORT_FILENAME || name === COVERAGE_REPORT_FILENAME ? "report" : "snapshots"
+  );
   const candidates = snapshots ? snapshotWriteBacks(snapshots, tests, recorded) : [];
   return candidates.length === 0 ? report : new WriteBackFileSet(report, candidates);
 }

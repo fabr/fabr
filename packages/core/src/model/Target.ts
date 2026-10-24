@@ -41,6 +41,17 @@ registerProvenanceNaming(TARGET_PROVENANCE, {
   digest: (step, below) => namingDigest(TARGET_PROVENANCE, JSON.stringify(declName((step as ITargetOrigin).decl)), below()),
 });
 
+/** Check whether the content `origin` explains was built in the project, that
+ * is, a target produced it. */
+export function builtInProject(origin: IProvenanceStep | undefined): boolean {
+  for (let step = origin; step !== undefined; step = step.parent) {
+    if (step.kind === TARGET_PROVENANCE) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * The final evaluated result of a TargetDecl, normally consisting of a FileSet
  * and possibly additional properties.

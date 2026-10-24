@@ -44,6 +44,11 @@ catalog @pkg {
          # versions POSTCSS/POSTCSS_MODULES name: the css-modules dialect is
          # the plugin set's, so the one the tests pin must be the one fabr runs.
          @npm:postcss:8.5.28 @npm:postcss-modules:9.0.1
+         # The coverage driver's libraries. ast-v8-to-istanbul's js-tokens sits
+         # beside the one @types/jest's closure needs ('?' sanctions the
+         # coexistence).
+         @npm:ast-v8-to-istanbul:1.0.7 @npm:acorn:8.19.0 @npm:@bcoe/v8-coverage:1.0.2
+         @npm:js-tokens:10.0.0? @npm:js-tokens:4.0.0?
          # The PnP resolver's conformance suite runs Yarn's own runtime as its
          # oracle. The js and Sass-importer tests use it beside our own
          # @types/node, and it requires 18 (with its undici-types) — '?'
@@ -117,12 +122,14 @@ js_package @fabr-build/js-tools {
   srcs = packages/js-tools/src:**/*.ts README.md COPYING -> LICENSE;
   exports = packages/js-tools/src:index.ts;
   tests = packages/js-tools/src:**/*.test.ts;
-  deps = @pkg:@types/node;
+  # The coverage driver's libraries.
+  deps = @pkg:@types/node @pkg:ast-v8-to-istanbul @pkg:acorn @pkg:@bcoe/v8-coverage;
   # The test runners write core's CTRF report, whose types they compile against;
   # nothing loads core at run time.
   optional_provided_deps = @fabr-build/core;
   # postcss / postcss-modules: the PostCSS driver's tests scope real stylesheets.
-  test_deps = chai jest_types @pkg:postcss @pkg:postcss-modules;
+  # typescript: the coverage driver's tests compile a fixture to measure.
+  test_deps = chai jest_types @pkg:postcss @pkg:postcss-modules @pkg:typescript;
   metadata = { FABR_METADATA; description = Fabr JS support plugin tools }
 }
 

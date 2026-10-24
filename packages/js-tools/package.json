@@ -13,7 +13,13 @@
     "fabr-postcss": "build/bin/fabr-postcss.js",
     "fabr-test-runner": "build/bin/fabr-test-runner.js",
     "fabr-jest-runner": "build/bin/fabr-jest-runner.js",
-    "fabr-vitest-runner": "build/bin/fabr-vitest-runner.js"
+    "fabr-vitest-runner": "build/bin/fabr-vitest-runner.js",
+    "fabr-coverage": "build/bin/fabr-coverage.js"
+  },
+  "dependencies": {
+    "@bcoe/v8-coverage": "1.0.2",
+    "acorn": "8.19.0",
+    "ast-v8-to-istanbul": "1.0.7"
   },
   "peerDependencies": {
     "@fabr-build/core": "0.1.0"

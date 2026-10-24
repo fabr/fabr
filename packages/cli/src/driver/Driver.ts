@@ -63,6 +63,14 @@ import {
   IResolvedWriteBack,
   sourcePathOf,
   writeBackCandidates,
+  COVERAGE_REPORT_FILENAME,
+  coverageTotals,
+  getCoverageReport,
+  ICoverageTotal,
+  lcovOf,
+  MemoryFile,
+  mergeCoverage,
+  parseLcov,
 } from "@fabr-build/core";
 import { runInteractive, RunSupervisor } from "./RunHandler";
 import { shellInto } from "./ShellHandler";
@@ -74,11 +82,22 @@ import { IInvocationSite } from "./CommandLineSource";
 import { TerminalInteraction } from "./Interaction";
 import { ProgressReporter } from "./Progress";
 import { setActiveTerminal, TerminalStream } from "./Terminal";
+import * as fs from "node:fs";
 import * as path from "node:path";
 
 const DIAG_BUILD_FAILED = Diagnostic.Error<Record<string, never>>("Build failed");
 const DIAG_ERROR = Diagnostic.Error<{ message: string }>("{message}");
 const DIAG_TEST_RESULT = Diagnostic.Info<{ name: string; summary: string }>("{name}: {summary}");
+const DIAG_COVERAGE = Diagnostic.Info<{ lines: string; functions: string; branches: string }>(
+  "Coverage: lines {lines}, functions {functions}, branches {branches}"
+);
+const DIAG_COVERAGE_WRITTEN = Diagnostic.Info<{ file: string }>("Coverage report written to {file}");
+const DIAG_COVERAGE_NONE = Diagnostic.Warn<Record<string, never>>("No test target measured any coverage");
+/* A measured source no reference reaches (generated during the build): it has
+ * no place in the project to report it against. */
+const DIAG_COVERAGE_UNPLACEABLE = Diagnostic.Warn<{ count: number; examples: string }>(
+  "Left {count} generated source(s) out of the coverage report, having no source path: {examples}"
+);
 const DIAG_WATCHING = Diagnostic.Info<Record<string, never>>("Watching for changes (Ctrl-C to stop)");
 const DIAG_UNHANDLED = Diagnostic.Warn<{ message: string }>("Unhandled error: {message}");
 const DIAG_COPIED = Diagnostic.Info<{ count: number; dest: string }>("Copied {count} file(s) to {dest}");
@@ -270,8 +289,66 @@ function runTest(
   markForced(model, options, execution, names);
   const refs = names.map(name => options.commandLine.refFor(name, site));
   return testOperation(configFor(model, options, execution, "test"), refs).then(results =>
-    reportTestResults(execution.log, names, results).then(() => applyExpectationUpdates(execution, site, results))
+    reportTestResults(execution.log, names, results)
+      .then(() => applyExpectationUpdates(execution, site, results))
+      .then(() => (options.coverageDir === undefined ? undefined : reportCoverage(execution, site, options.coverageDir, results)))
   );
+}
+
+/** A coverage total as the summary shows it: the percentage, then the counts. */
+function coverageText({ covered, total }: ICoverageTotal): string {
+  return total === 0 ? "n/a" : `${((covered / total) * 100).toFixed(2)}% (${covered}/${total})`;
+}
+
+/**
+ * Merge the coverage every test result carries, summarise it, and write it as
+ * `<dir>/lcov.info`, naming each source by its path in the project. A record
+ * whose source has no source path is left out, with a warning.
+ *
+ * Written through the source tree where `dir` lies in it, as an expectation
+ * update is, so a watching run recognises the write as its own.
+ */
+function reportCoverage(execution: ExecutionContext, site: IInvocationSite, dir: string, results: SourceRef[][]): Computable<void> {
+  return Computable.forAll(results.map(sources => getCoverageReport(sources)), (...documents): Computable<void> | void => {
+    const measured = documents.filter((document): document is string => document !== undefined);
+    if (measured.length === 0) {
+      execution.log.log(DIAG_COVERAGE_NONE, {});
+      return;
+    }
+    const sources = site.sourceFileSource;
+    const placed = [];
+    const unplaced = [];
+    for (const record of mergeCoverage(measured.map(parseLcov)).values()) {
+      const located = sources.locate(record.source);
+      if (located === undefined) {
+        unplaced.push(record.source);
+      } else {
+        placed.push({ ...record, source: path.relative(sources.root, located).split(path.sep).join("/") });
+      }
+    }
+    if (unplaced.length > 0) {
+      execution.log.log(DIAG_COVERAGE_UNPLACEABLE, { count: unplaced.length, examples: unplaced.slice(0, 3).join(", ") });
+    }
+    const destination = path.resolve(dir, COVERAGE_REPORT_FILENAME);
+    const totals = coverageTotals(placed);
+    execution.log.log(DIAG_COVERAGE, {
+      lines: coverageText(totals.lines),
+      functions: coverageText(totals.functions),
+      branches: coverageText(totals.branches),
+    });
+    const report = (): void => execution.log.log(DIAG_COVERAGE_WRITTEN, { file: path.join(dir, COVERAGE_REPORT_FILENAME) });
+    const file = MemoryFile.from(lcovOf(placed));
+    const root = fs.realpathSync(sources.root);
+    const inTree = !path.relative(root, path.resolve(fs.existsSync(dir) ? fs.realpathSync(dir) : dir)).startsWith("..");
+    if (inTree) {
+      return sources.applyWriteBack([{ file, destination }]).then(report);
+    }
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    return file.getBuffer().then(buffer => {
+      fs.writeFileSync(destination, buffer);
+      report();
+    });
+  });
 }
 
 /**

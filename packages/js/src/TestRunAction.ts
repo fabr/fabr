@@ -76,12 +76,18 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
   const testFiles = stringListConfig(action, "test_files");
   const outputs = stringListConfig(action, "outputs");
   /* Each variable as `NAME=value`: a name holds no `=`, so the first one splits it. */
-  const env = Object.fromEntries(
+  const declared = Object.fromEntries(
     (Array.isArray(action.config.env) ? action.config.env : []).map((entry): [string, string] => {
       const at = entry.indexOf("=");
       return [entry.slice(0, at), entry.slice(at + 1)];
     })
   );
+  /* A measured run: every test process, and every process it starts, writes
+   * its V8 coverage into one directory, which the coverage driver converts
+   * once the run is green. */
+  const coverageRaw = typeof action.config.coverage_raw === "string" ? action.config.coverage_raw : undefined;
+  const coverageArgv = Array.isArray(action.config.coverage_argv) ? action.config.coverage_argv : undefined;
+  const env = coverageRaw === undefined ? declared : { ...declared, NODE_V8_COVERAGE: join(workDir, coverageRaw) };
   /* Tests run with only the environment their target declares (no ambient vars
    * that could alter their output); a test that must spawn a tool references it
    * by an absolute path (e.g. process.execPath), which needs no PATH. The argv's leading command
@@ -106,6 +112,11 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
         (...runs) => concludeRun(workDir, runs)
       );
     })
+    .then(() =>
+      coverageArgv === undefined
+        ? undefined
+        : execute(ctx.processLimit, findExecutable(coverageArgv[0]), coverageArgv.slice(1), workDir, declared, { ...report, output: undefined })
+    )
     .then(() => getResultFileSet(workDir, outputs))
     .then(result => ({ result }));
 }
@@ -254,13 +265,17 @@ export interface ITestRunInputs {
   outputs: string[];
   /** The environment variables each invocation runs with: its whole environment. */
   env: ReadonlyMap<string, string>;
+  /** Where the run is measured for coverage: the directory, relative to the
+   * install, its processes write V8 coverage into, and the coverage driver's
+   * command line, run from the install root once the run is green. */
+  coverage?: { raw: string; argv: string[] };
 }
 
 /**
  * @return the action that runs the tests. A generic exec cannot serve: a red
  * run must fail the target while keeping the report.
  */
-export function createTestRunAction({ staged, writable, argv, testFiles, outputs, env }: ITestRunInputs): BuildAction {
+export function createTestRunAction({ staged, writable, argv, testFiles, outputs, env, coverage }: ITestRunInputs): BuildAction {
   return new BuildAction(
     JS_TEST_STEP,
     { staged, writable },
@@ -269,6 +284,7 @@ export function createTestRunAction({ staged, writable, argv, testFiles, outputs
       test_files: testFiles,
       outputs,
       ...(env.size > 0 ? { env: [...env].map(([name, value]) => `${name}=${value}`) } : {}),
+      ...(coverage ? { coverage_raw: coverage.raw, coverage_argv: coverage.argv } : {}),
     }
   );
 }

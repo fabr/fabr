@@ -18,7 +18,7 @@
  */
 
 import { readFileSync } from "fs";
-import { preferredOperation, TEST_EXPECTATIONS, UPDATE_EXPECTATIONS } from "@fabr-build/core";
+import { COVERAGE, COVERAGE_ON, preferredOperation, TEST_EXPECTATIONS, UPDATE_EXPECTATIONS } from "@fabr-build/core";
 import { CommandLineSource } from "./CommandLineSource";
 import { dirname, join } from "path";
 
@@ -84,7 +84,7 @@ interface CommandSpec {
 
 const COMMAND_SPECS: CommandSpec[] = [
   { name: "build", synopsis: "[-w] <targets>", summary: "Build the given targets (the default command)", accepts: ["-w", "-q", "--no-progress", "-f"], requiresTarget: true },
-  { name: "test", synopsis: "[-w] [-u] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "-q", "--no-progress", "-f"], requiresTarget: true },
+  { name: "test", synopsis: "[-w] [-u] [--coverage] <targets>", summary: "Build and run the given targets' tests", accepts: ["-w", "-u", "--coverage", "-q", "--no-progress", "-f"], requiresTarget: true },
   { name: "run", synopsis: "[-w] <target> [args…]", summary: "Execute a target, forwarding trailing args to it", accepts: ["-w", "-q", "--no-progress", "-f"], requiresTarget: true },
   { name: "shell", synopsis: "<target>", summary: "Stage a target's build sandbox and open a shell in it (debugging)", accepts: ["-q", "--no-progress"], singleTarget: true, requiresTarget: true },
   { name: "ls", synopsis: "[-l] <names>", summary: "Build the given targets and list their contents", accepts: ["-l", "-q", "--no-progress"], requiresTarget: true },
@@ -158,6 +158,9 @@ export interface Options {
   /** For `cp`: the destination directory (the final positional), a plain
    * filesystem path resolved against the invocation cwd — not a model name. */
   dest?: string;
+  /** For `test --coverage[=<dir>]`: the directory the coverage report is written
+   * to, a plain filesystem path resolved against the invocation cwd. */
+  coverageDir?: string;
   /** Raw `-D` overrides, normalized into a Constraints at the driver's getConfig funnel. */
   properties: Map<string, string>;
   /** The invocation as source text — what a name given here is *written in*, so
@@ -208,6 +211,7 @@ function printUsage(write: (message: string) => void = console.log): void {
       "  -DPROP=VALUE      Force the given property PROP to VALUE (before the target for run)\n" +
       "  -w                Watch mode: rebuild / re-run as inputs change (build/test/run)\n" +
       "  -u, --update      Update recorded test expectations (snapshots) from the run (test)\n" +
+      "  --coverage[=DIR]  Measure code coverage and write DIR/lcov.info, coverage/ by default (test)\n" +
       "  -l                Long listing: hash and size per file (ls), or source location (list-*)\n" +
       "  --json            Emit JSON (the list-* verbs)\n" +
       "  --all             Include system-contributed targets (list-targets)\n" +
@@ -237,6 +241,10 @@ type SeenFlag = { raw: string; flag: string };
  * when a command was given, and (via {@link completeCommandLine}) the tail
  * deferred when one was not.
  */
+/** Where `--coverage` writes its report when not given a directory: jest's and
+ * c8's convention. */
+const DEFAULT_COVERAGE_DIR = "coverage";
+
 function applyOption(arg: string, options: Options, seenFlags: SeenFlag[]): void {
   if (arg === "-w") {
     options.mode = Mode.Watch;
@@ -256,6 +264,11 @@ function applyOption(arg: string, options: Options, seenFlags: SeenFlag[]): void
      * it rides the ordinary constraint. */
     options.properties.set(TEST_EXPECTATIONS, UPDATE_EXPECTATIONS);
     seenFlags.push({ raw: arg, flag: "-u" });
+  } else if (arg === "--coverage" || arg.startsWith("--coverage=")) {
+    /* Sugar for the -D pathway, as -u is: a measured build is a build input. */
+    options.properties.set(COVERAGE, COVERAGE_ON);
+    options.coverageDir = arg === "--coverage" ? DEFAULT_COVERAGE_DIR : arg.slice("--coverage=".length);
+    seenFlags.push({ raw: arg, flag: "--coverage" });
   } else if (arg === "-q" || arg === "--quiet") {
     options.quiet = true;
     seenFlags.push({ raw: arg, flag: "-q" });
