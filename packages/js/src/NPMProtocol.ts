@@ -401,6 +401,44 @@ export function parseMetadataResponse(data: string | Buffer, key: string): INPMP
   return parseJson(data, `response from NPM repository for '${key}'`, toVersionMetadata);
 }
 
+/** The fields of a version's metadata fabr reads — what a packument entry is
+ *  kept as. */
+const READ_FIELDS = [
+  "name",
+  "version",
+  "dist",
+  "dependencies",
+  "optionalDependencies",
+  "peerDependencies",
+  "peerDependenciesMeta",
+  "os",
+  "cpu",
+  "libc",
+] as const;
+
+/**
+ * A packument's published versions, each as the metadata fabr reads of it
+ * (only {@link READ_FIELDS}): what an abbreviated packument answers, by
+ * version. An entry that is not usable version metadata is left out, so the
+ * version is looked up on its own instead. A document with no `versions` map
+ * is not a packument (an error body, or the wrong URL).
+ */
+export function toPackumentVersions(json: unknown): Map<string, INPMPackageMetadata> {
+  if (!isJsonObject(json) || !isJsonObject(json.versions)) {
+    throw new FabrError("no versions");
+  }
+  const versions = new Map<string, INPMPackageMetadata>();
+  for (const [version, entry] of Object.entries(json.versions)) {
+    try {
+      const meta = toVersionMetadata(entry) as unknown as Record<string, unknown>;
+      versions.set(version, Object.fromEntries(READ_FIELDS.filter(field => meta[field] !== undefined).map(field => [field, meta[field]])) as unknown as INPMPackageMetadata);
+    } catch {
+      /* Looked up from its own document when asked for. */
+    }
+  }
+  return versions;
+}
+
 /** The converter behind {@link parseMetadataResponse}: the document as metadata,
  * or the reason it is unusable (attributed to the response by the caller). */
 function toVersionMetadata(json: unknown): INPMPackageMetadata {

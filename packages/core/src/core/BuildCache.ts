@@ -25,7 +25,7 @@ import { Readable, Transform } from "stream";
 import { PROJECT_FILENAME } from "../Constants";
 import { Computable } from "./Computable";
 import { FabrError, HttpStatusError, toError } from "./Errors";
-import { ICacheControl, openUrlStream, reportingProgress } from "./Fetch";
+import { FetchRole, ICacheControl, openUrlStream, reportingProgress } from "./Fetch";
 import { CANONICAL, DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
 
 import {
@@ -111,6 +111,9 @@ const DIAG_SERVING_STALE = Diagnostic.Warn<{ url: string; reason: string }>(
  */
 export interface FetchOptions {
   immutable?: boolean;
+  /** What the request is for, which decides the admission it waits in (see
+   *  core/Fetch.ts); a content transfer where absent. */
+  role?: FetchRole;
   /** Revalidate now regardless of remaining freshness — for a caller holding
    * evidence the copy is stale (e.g. it lacks a version known to exist). */
   forceRevalidate?: boolean;
@@ -630,8 +633,8 @@ export class BuildCache {
     if (entry?.meta?.lastModified) {
       validators["if-modified-since"] = entry.meta.lastModified;
     }
-    return openUrlStream(url, { ...headers, ...validators }, this.now).then(
-      response => {
+    const attempt = (): Computable<FileSet> =>
+      openUrlStream(url, { ...headers, ...validators }, this.now, options?.role).then(response => {
         const meta = options?.immutable !== false ? undefined : response.cacheControl;
         const stream = response.stream;
         if (stream) {
@@ -658,8 +661,16 @@ export class BuildCache {
         /* 304 is only possible for a conditional request, so we hold the entry
          * the validators came from; re-putting refreshes its lifetime in place. */
         return this.cachePut(key, entry!.files, meta, "fetch");
-      },
-      err => {
+      });
+    /* A whole attempt is retried — request and body together — so a transfer
+     * that failed part-way starts again from nothing, through the same commit. */
+    const retrying = (retry: number): Computable<FileSet> =>
+      attempt().catch(err => {
+        /* A held copy is served at once rather than waited for: retries are
+         * for a fetch with nothing to fall back on. */
+        if (!entry && retry < FETCH_RETRY_DELAYS_MS.length && isTransientFetchError(err)) {
+          return delay(FETCH_RETRY_DELAYS_MS[retry]).then(() => retrying(retry + 1));
+        }
         if (entry && isTransientFetchError(err)) {
           /* Stale-if-error (RFC 9111), never silently and only for a transient
            * failure — a definite 4xx answer propagates instead. Served is
@@ -670,8 +681,8 @@ export class BuildCache {
           return entry.files;
         }
         throw err;
-      }
-    );
+      });
+    return retrying(0);
   }
 
   /*
@@ -2371,12 +2382,65 @@ const UNBOUNDED_FUNNEL = new Semaphore(Number.MAX_SAFE_INTEGER);
  * any transport failure, any 5xx, and the two retry-later 4xx (408, 429). Every
  * other 4xx is a definite origin answer and must surface as itself.
  */
-function isTransientFetchError(err: unknown): boolean {
-  if (!(err instanceof HttpStatusError)) {
-    return true;
-  }
-  return err.statusCode >= 500 || err.statusCode === 408 || err.statusCode === 429;
+/** How long to wait before each retry of a fetch that failed transiently:
+ *  two retries, the second after a longer pause. */
+const FETCH_RETRY_DELAYS_MS = [1000, 4000];
+
+/** Network failures that make a fetch transient: the origin unreachable, or
+ *  the connection or stream dropping or stalling, as the codes undici and
+ *  node report them. */
+const TRANSIENT_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENETDOWN",
+  "ECONNABORTED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EPIPE",
+  "EAI_AGAIN",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CLOSED",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "ERR_HTTP2_STREAM_ERROR",
+  "ERR_HTTP2_SESSION_ERROR",
+]);
+
+/** Settle after `ms`. */
+function delay(ms: number): Computable<void> {
+  return Computable.from<void>(resolve => {
+    setTimeout(() => resolve(), ms);
+  });
 }
+
+/**
+ * Whether a fetch failed transiently, so it is worth trying again and, once
+ * retries are spent, a held copy may be served instead: a response the origin
+ * marks as temporary (408, 429, 5xx), or the connection or stream failing under
+ * it. A definite answer (another 4xx) or a failure of the content itself
+ * (integrity, a corrupt archive) is not.
+ */
+function isTransientFetchError(err: unknown): boolean {
+  if (err instanceof HttpStatusError) {
+    return err.statusCode >= 500 || err.statusCode === 408 || err.statusCode === 429;
+  }
+  /* Walked by shape, not `instanceof Error`: an error from another realm (a
+   * test's VM context) is an error all the same. */
+  for (let cause: unknown = err; typeof cause === "object" && cause !== null; cause = (cause as { cause?: unknown }).cause) {
+    const { code, message } = cause as { code?: unknown; message?: unknown };
+    if (
+      (typeof code === "string" && TRANSIENT_ERROR_CODES.has(code)) ||
+      (typeof message === "string" && /Stream closed with error code|stream timeout/.test(message))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 
 class BuildFile implements IFile {
   private readonly root: string;

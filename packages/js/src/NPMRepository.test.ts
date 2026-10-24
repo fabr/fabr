@@ -343,15 +343,26 @@ describe("unsupportedPlatformReason", () => {
 const METADATA_FILE = "metadata.json";
 const REG = "https://registry.example.org";
 
-function metadataFor(pkg: string, version: string, deps: Record<string, string>, extra: Record<string, unknown> = {}): FileSet {
-  const meta = {
+function versionMeta(pkg: string, version: string, deps: Record<string, string> = {}, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
     name: pkg,
     version,
     dependencies: deps,
     dist: { tarball: `${REG}/tarball/${version}.tgz`, integrity: "", shasum: "", signatures: [] },
     ...extra,
   };
-  return new FileSet(new Map([[METADATA_FILE, MemoryFile.from(JSON.stringify(meta))]]));
+}
+
+function metadataFor(pkg: string, version: string, deps: Record<string, string>, extra: Record<string, unknown> = {}): FileSet {
+  return new FileSet(new Map([[METADATA_FILE, MemoryFile.from(JSON.stringify(versionMeta(pkg, version, deps, extra)))]]));
+}
+
+/** A packument as the repository caches it: an entry for each of `versions`,
+ *  the metadata `docs` gives for it as `[deps, extra]` (as {@link metadataFor}
+ *  takes them), or none. */
+function packumentOf(pkg: string, versions: string[], docs: Record<string, [Record<string, string>, Record<string, unknown>?]> = {}): FileSet {
+  const entries = Object.fromEntries(versions.map(version => [version, versionMeta(pkg, version, ...(docs[version] ?? []))]));
+  return new FileSet(new Map([["packument.json", MemoryFile.from(JSON.stringify({ versions: entries }))]]));
 }
 
 /** `marker`, when given, names an extra empty file — a way for a test to tell
@@ -384,11 +395,16 @@ function fakeExecution(npmrc?: string): ExecutionContext {
  * any unexpected fetch rejects — so a test that expected the dependency closure
  * to be skipped fails loudly if it isn't.
  */
-function fakeContext(operation: string, served: Record<string, FileSet | Error>, fetched: string[]): TargetContext {
-  /* Properties the repository reads: the operation, and a fixed TARGET triple —
-   * test packages carry no os/cpu/libc gates, so it never filters anything; it
-   * only has to resolve (getJointResolution reads it for the memo key). */
-  const globals: Record<string, string> = { [BUILD_OPERATION]: operation, [TARGET]: "arm64-apple-macosx15.0" };
+function fakeContext(
+  operation: string,
+  served: Record<string, FileSet | Error>,
+  fetched: string[],
+  target = "arm64-apple-macosx15.0"
+): TargetContext {
+  /* Properties the repository reads: the operation, and a TARGET triple — most
+   * test packages carry no os/cpu/libc gates, so it filters nothing; it has to
+   * resolve (getJointResolution reads it for the memo key). */
+  const globals: Record<string, string> = { [BUILD_OPERATION]: operation, [TARGET]: target };
   return {
     /* The declared name of the repository, as the domain renders references
      * (suggestions read `@npm:pkg:ver`, matching what a user would write). */
@@ -556,8 +572,9 @@ describe("NPMRepository resolveAll under files", () => {
     expect(pkg.version).to.equal("2.4.1");
     expect(pkg.dependencies).to.deep.equal([]);
     expect([...pkg].map(([name]) => name).sort()).to.deep.equal(["index.js", "package.json"]);
-    /* Only the root's own metadata + tarball were fetched — never the dep. */
-    expect(fetched).to.deep.equal([`${REG}/@parcel%2fwatcher/2.4.1`, `${REG}/tarball/2.4.1.tgz`]);
+    /* Only the root's own metadata (its packument, then its version document,
+     * the packument not being served) + tarball were fetched — never the dep. */
+    expect(fetched).to.deep.equal([`${REG}/@parcel%2fwatcher`, `${REG}/@parcel%2fwatcher/2.4.1`, `${REG}/tarball/2.4.1.tgz`]);
   });
 
   it("resolves a range standalone at its constraint minimum", async () => {
@@ -610,7 +627,7 @@ describe("NPMRepository file requests", () => {
     const base = (delivered as FileSetRef).source;
     expect(base).to.not.be.instanceOf(PackageFileSet);
     expect([...base].map(([name]) => name).sort()).to.deep.equal(["index.js", "package.json"]);
-    expect(fetched).to.deep.equal([`${REG}/left-pad/1.2.0`, `${REG}/tarball/1.2.0.tgz`]);
+    expect(fetched).to.deep.equal([`${REG}/left-pad`, `${REG}/left-pad/1.2.0`, `${REG}/tarball/1.2.0.tgz`]);
   });
 
   it("pins nothing: it reads its own version beside a package that selects another", async () => {
@@ -679,10 +696,57 @@ describe("parseMetadataResponse", () => {
   });
 });
 
+describe("NPMRepository packuments", () => {
+  it("answers a version's requirements from the package's packument alone", async () => {
+    const fetched: string[] = [];
+    const served = { [`${REG}/pkg`]: packumentOf("pkg", ["1.0.0"], { "1.0.0": [{ dep: "^2.0.0" }] }) };
+    const repo = npmRepository(REG, fakeContext("build", served, fetched));
+    const requirements = await toPromise(repo.getRequirements("pkg", parseVersion("1.0.0")));
+    expect(requirements.map(req => `${req.name}@${req.versionConstraint}`)).to.deep.equal(["dep@^2.0.0"]);
+    expect(fetched).to.deep.equal([`${REG}/pkg`]);
+  });
+
+  it("reads a platform-gated version whole only where libc could still exclude it", async () => {
+    /* `app` has two optional native builds. An abbreviated packument leaves out
+     * `libc`, so a build whose os and cpu admit a target with a libc is read from
+     * its own document; one already excluded, or any on a target without a
+     * libc, is judged from its packument entry. */
+    const served = {
+      [`${REG}/app`]: packumentOf("app", ["1.0.0"], { "1.0.0": [{}, { optionalDependencies: { "native-linux": "1.0.0", "native-darwin": "1.0.0" } }] }),
+      [`${REG}/native-linux`]: packumentOf("native-linux", ["1.0.0"], { "1.0.0": [{}, { os: ["linux"], cpu: ["x64"] }] }),
+      [`${REG}/native-linux/1.0.0`]: metadataFor("native-linux", "1.0.0", {}, { os: ["linux"], cpu: ["x64"], libc: ["glibc"] }),
+      [`${REG}/native-darwin`]: packumentOf("native-darwin", ["1.0.0"], { "1.0.0": [{}, { os: ["darwin"], cpu: ["arm64"] }] }),
+    };
+    const requiredOn = async (target: string): Promise<{ names: string[]; fetched: string[] }> => {
+      const fetched: string[] = [];
+      const repo = npmRepository(REG, fakeContext("build", served, fetched, target));
+      const requirements = await toPromise(repo.getRequirements("app", parseVersion("1.0.0")));
+      return { names: requirements.map(req => req.name), fetched: fetched.filter(url => /\/\d+\.\d+\.\d+$/.test(url)) };
+    };
+    expect(await requiredOn("x86_64-unknown-linux-gnu")).to.deep.equal({ names: ["native-linux"], fetched: [`${REG}/native-linux/1.0.0`] });
+    expect(await requiredOn("arm64-apple-macosx15.0")).to.deep.equal({ names: ["native-darwin"], fetched: [] });
+  });
+
+  it("re-reads a packument that lacks the version asked for, then asks the version itself", async () => {
+    const fetched: string[] = [];
+    const served = {
+      [`${REG}/pkg`]: packumentOf("pkg", ["1.0.0"]),
+      [`${REG}/pkg/2.0.0`]: metadataFor("pkg", "2.0.0", { dep: "^3.0.0" }),
+    };
+    const repo = npmRepository(REG, fakeContext("build", served, fetched));
+    const requirements = await toPromise(repo.getRequirements("pkg", parseVersion("2.0.0")));
+    expect(requirements.map(req => req.name)).to.deep.equal(["dep"]);
+    expect(fetched).to.deep.equal([`${REG}/pkg`, `${REG}/pkg`, `${REG}/pkg/2.0.0`]);
+  });
+});
+
 describe("NPMRepository lowestAvailable", () => {
-  /** The packument as the repository caches it (the extracted version list). */
+  /** The packument as the repository caches it: each version's metadata. */
   function packument(versions: string[]): FileSet {
-    return new FileSet(new Map([["versions.json", MemoryFile.from(JSON.stringify(versions))]]));
+    const entries = Object.fromEntries(
+      versions.map(version => [version, { name: "left-pad", version, dist: { tarball: `${REG}/tarball/${version}.tgz` } }])
+    );
+    return new FileSet(new Map([["packument.json", MemoryFile.from(JSON.stringify({ versions: entries }))]]));
   }
 
   it("raises to the lowest published version satisfying the constraint", async () => {
@@ -1400,8 +1464,8 @@ describe("override markers", () => {
     [`${REG}/P/1.0.0`]: metadataFor("P", "1.0.0", { Q: "1.2.0", R: "1.3.0" }, { dist: tarballDist("p") }),
     [`${REG}/Q/1.2.0`]: metadataFor("Q", "1.2.0", { T: "*" }, { dist: tarballDist("q") }),
     [`${REG}/R/1.3.0`]: metadataFor("R", "1.3.0", { T: "*", U: "*" }, { dist: tarballDist("r") }),
-    [`${REG}/T`]: new FileSet(new Map([["versions.json", MemoryFile.from(JSON.stringify(["20.0.0", "24.2.0", "25.0.0-rc.1"]))]])),
-    [`${REG}/U`]: new FileSet(new Map([["versions.json", MemoryFile.from(JSON.stringify(["3.1.0"]))]])),
+    [`${REG}/T`]: packumentOf("T", ["20.0.0", "24.2.0", "25.0.0-rc.1"], { "24.2.0": [{}, { dist: tarballDist("t") }] }),
+    [`${REG}/U`]: packumentOf("U", ["3.1.0"], { "3.1.0": [{}, { dist: tarballDist("u") }] }),
     [`${REG}/T/24.2.0`]: metadataFor("T", "24.2.0", {}, { dist: tarballDist("t") }),
     [`${REG}/U/3.1.0`]: metadataFor("U", "3.1.0", {}, { dist: tarballDist("u") }),
     [`${REG}/tarball/p.tgz`]: packageTarball(),
@@ -1432,7 +1496,7 @@ describe("override markers", () => {
      * no second round of errors after pasting. */
     const cascade: Record<string, FileSet | Error> = {
       [`${REG}/P/1.0.0`]: metadataFor("P", "1.0.0", { W: "*", V: "^2.5.0" }, { dist: tarballDist("p") }),
-      [`${REG}/W`]: new FileSet(new Map([["versions.json", MemoryFile.from(JSON.stringify(["2.0.0"]))]])),
+      [`${REG}/W`]: packumentOf("W", ["2.0.0"], { "2.0.0": [{ V: "~1.5.0" }, { dist: tarballDist("w") }] }),
       [`${REG}/W/2.0.0`]: metadataFor("W", "2.0.0", { V: "~1.5.0" }, { dist: tarballDist("w") }),
       [`${REG}/V/1.5.0`]: metadataFor("V", "1.5.0", {}, { dist: tarballDist("v1") }),
       [`${REG}/V/2.5.0`]: metadataFor("V", "2.5.0", {}, { dist: tarballDist("v2") }),
@@ -1470,7 +1534,11 @@ describe("override markers", () => {
       [`${REG}/C/1.5.0`]: metadataFor("C", "1.5.0", {}, { dist: tarballDist("c1") }),
       [`${REG}/C/2.0.0`]: metadataFor("C", "2.0.0", {}, { dist: tarballDist("c2") }),
       [`${REG}/C/3.0.0`]: metadataFor("C", "3.0.0", {}, { dist: tarballDist("c3") }),
-      [`${REG}/C`]: new FileSet(new Map([["versions.json", MemoryFile.from(JSON.stringify(["1.5.0", "2.0.0", "3.0.0"]))]])),
+      [`${REG}/C`]: packumentOf("C", ["1.5.0", "2.0.0", "3.0.0"], {
+        "1.5.0": [{}, { dist: tarballDist("c1") }],
+        "2.0.0": [{}, { dist: tarballDist("c2") }],
+        "3.0.0": [{}, { dist: tarballDist("c3") }],
+      }),
       /* Each delivery fetches what it ships; the collection point judges after. */
       [`${REG}/tarball/d.tgz`]: packageTarball(),
       [`${REG}/tarball/c1.tgz`]: packageTarball(),

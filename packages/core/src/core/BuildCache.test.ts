@@ -1856,6 +1856,29 @@ describe("BuildCache non-immutable fetches", () => {
     expect(warnings).to.have.lengthOf(1);
   });
 
+  it("retries a fetch the origin answers as temporarily unavailable", async () => {
+    let calls = 0;
+    origin.respond((req, res) => serve(calls++ === 0 ? 503 : 200, {}, "one")(req, res));
+    expect(await fetchDoc()).to.equal("one");
+    expect(origin.requests).to.have.lengthOf(2);
+  });
+
+  it("does not retry a fetch whose content failed", async () => {
+    origin.respond(serve(200, {}, "one"));
+    const reject = (content: Readable): Computable<FileSet> =>
+      readStream(content).then(() => {
+        throw new Error("invalid content");
+      });
+    let failure: Error | undefined;
+    try {
+      await toPromise(cache.getOrFetch(origin.url, "test:1", reject, UNTRACKED));
+    } catch (err) {
+      failure = err as Error;
+    }
+    expect(failure?.message).to.equal("invalid content");
+    expect(origin.requests).to.have.lengthOf(1);
+  });
+
   it("propagates a validation failure and keeps the previous entry standing", async () => {
     origin.respond(serve(200, { "cache-control": "max-age=300", etag: '"v1"' }, "one"));
     await fetchDoc({ immutable: false });

@@ -181,8 +181,8 @@ export interface IFetchTask {
   role: "content" | "index";
 }
 
-/** How a fetch describes itself (see {@link IFetchTask}) — display only:
- *  nothing here reaches the cache key or the request. */
+/** How a fetch describes itself (see {@link IFetchTask}). Its role also
+ *  decides the request's admission; nothing here reaches the cache key. */
 export type IFetchReport = Pick<IFetchTask, "resource" | "role">;
 
 /**

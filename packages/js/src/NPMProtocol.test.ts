@@ -28,11 +28,30 @@ import {
   NPM_FORMAT,
   parseMetadataResponse,
   publishToRegistry,
+  toPackumentVersions,
   toPublishAccess,
   verifyTarballStream,
 } from "./NPMProtocol";
 import { OtpChallenge } from "./NPMAuth";
 import { NO_PACKAGE_EXTENSIONS, useInstalledPackageExtensions } from "./PackageExtensions";
+
+describe("toPackumentVersions", () => {
+  it("keeps each usable version's metadata, only the fields fabr reads, and leaves out an unusable entry", () => {
+    const versions = toPackumentVersions({
+      name: "pkg",
+      versions: {
+        "1.0.0": { name: "pkg", version: "1.0.0", dist: { tarball: "t" }, dependencies: { a: "^1" }, readme: "long", engines: {} },
+        "0.9.0": { name: "pkg", version: "0.9.0" },
+      },
+    });
+    expect([...versions.keys()]).to.deep.equal(["1.0.0"]);
+    expect(versions.get("1.0.0")).to.deep.equal({ name: "pkg", version: "1.0.0", dist: { tarball: "t" }, dependencies: { a: "^1" } });
+  });
+
+  it("refuses a document that is no packument", () => {
+    expect(() => toPackumentVersions({ name: "pkg" })).to.throw("no versions");
+  });
+});
 
 describe("parseMetadataResponse", () => {
   function doc(overrides: Record<string, unknown>): Buffer {

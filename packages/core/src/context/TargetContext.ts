@@ -418,7 +418,7 @@ export abstract class TargetContext {
       process,
       run => this.runTask({ kind: "fetch", url, ...report }, run),
       headers,
-      options
+      { ...options, role: report.role }
     );
   }
 

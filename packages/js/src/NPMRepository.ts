@@ -24,7 +24,6 @@ import {
   FileSet,
   HttpStatusError,
   IFile,
-  isJsonObject,
   lowestSatisfying,
   MemoryFile,
   Name,
@@ -64,9 +63,11 @@ import {
 import {
   INPMPackageMetadata,
   matchesTargetPlatform,
+  platformGateAdmits,
   NPM_FORMAT,
   NpmPublishIdentity,
   parseMetadataResponse,
+  toPackumentVersions,
   PublishAccess,
   publishToRegistry,
   toPublishAccess,
@@ -81,7 +82,12 @@ import { NPMAuth } from "./NPMAuth";
 import { jsPluginContext } from "./JSPluginContext";
 
 const METADATA_FILE = "metadata.json";
-const VERSIONS_FILE = "versions.json";
+const PACKUMENT_FILE = "packument.json";
+
+/** What a packument is asked for as: the abbreviated form npm and pnpm install
+ *  from — every version's dependencies, gates and `dist`, without the
+ *  READMEs and publish history of the full one. */
+const ABBREVIATED_PACKUMENT = "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*";
 
 /** name → version for the names `assignments` assign exactly one distinct
  *  version — the names a manifest dependency can be unambiguously rewritten to. */
@@ -91,16 +97,6 @@ function uniqueAssignments(assignments: readonly NpmPublishIdentity[]): Map<stri
     byName.set(name, (byName.get(name) ?? new Set()).add(version));
   }
   return new Map(select([...byName], ([name, versions]) => (versions.size === 1 ? ([name, [...versions][0]] as const) : undefined)));
-}
-
-/** The version names a packument lists — the only thing fabr reads one for.
- *  A document with no `versions` map is not a packument (an error body, or the
- *  wrong URL), and says nothing about what is published. */
-function toPublishedVersions(json: unknown): string[] {
-  if (!isJsonObject(json) || !isJsonObject(json.versions)) {
-    throw new FabrError("no versions");
-  }
-  return Object.keys(json.versions);
 }
 
 /**
@@ -132,6 +128,10 @@ export class NPMRepository
   private readonly access: PublishAccess;
   /* In-process memo over the persistent metadata cache, keyed by "pkg/version" */
   private readonly metadataCache: Map<string, Computable<INPMPackageMetadata>>;
+  /** Each package's packument as read this run, and as re-read when it lacked a
+   *  version asked for. */
+  private readonly packuments = new Map<string, Computable<ReadonlyMap<string, INPMPackageMetadata> | undefined>>();
+  private readonly revalidatedPackuments = new Map<string, Computable<ReadonlyMap<string, INPMPackageMetadata> | undefined>>();
   /** The repairs applied to every manifest this registry serves; the shipped
    * list unless a caller supplies one. */
   private readonly extensions: () => PackageExtensions;
@@ -386,7 +386,9 @@ export class NPMRepository
   public validateSelections(selections: Selected<SemverVersion>[]): Computable<void> {
     return this.targetPlatform().then(target =>
       Computable.forAll(
-        selections.map(sel => this.getVersionMetadata(sel.publishedName ?? sel.name, versionToString(sel.version)).then(meta => ({ sel, meta }))),
+        selections.map(sel =>
+          this.gatedMetadata(sel.publishedName ?? sel.name, versionToString(sel.version), target).then(meta => ({ sel, meta }))
+        ),
         (...entries) => {
           for (const { sel, meta } of entries) {
             const reason = unsupportedPlatformReason(meta, target);
@@ -444,50 +446,70 @@ export class NPMRepository
     return this.publishedVersions(pkg, false);
   }
 
-  /** The package's published version list, from its packument (a mutable
-   * pointer document — fetched with a freshness lifetime, not frozen), or
-   * undefined if the registry has no such package (its 404 for the packument —
-   * the package-level counterpart of getVersionMetadata's VersionNotFoundError,
-   * and no more an error here than an empty list would be). Unparseable version
-   * strings are skipped. */
+  /** The package's published versions, from its packument, or undefined if
+   * the registry has no such package. Unparseable version strings are
+   * skipped. */
   private publishedVersions(pkg: string, forceRevalidate: boolean): Computable<SemverVersion[] | undefined> {
-    const url = `${this.url}/${packagePath(pkg)}`;
-    return this.authHeadersFor(url)
-      .then(headers =>
-        this.context.fetch(
-          url,
-          "npm:packument:1",
-          content =>
-            readStream(content).then(data => {
-              /* The reader throws on anything unusable, so an invalid document
-               * is never cached. */
-              const versions = parseJson(data, `package document for ${pkg} from ${this.url}`, toPublishedVersions);
-              return new FileSet(new Map([[VERSIONS_FILE, MemoryFile.from(JSON.stringify(versions))]]));
-            }),
-          /* An index read: a resolution makes one of these per package it
-           * walks, and the resolve that asked is the item worth recording. */
-          { resource: "version list", role: "index" },
-          headers,
-          forceRevalidate ? { immutable: false, forceRevalidate: true } : { immutable: false }
-        )
-      )
-      .then(files => files.readFile(VERSIONS_FILE))
-      .then(
-        data =>
-          (JSON.parse(data) as string[]).flatMap(text => {
+    return this.packument(pkg, forceRevalidate).then(versions =>
+      versions === undefined
+        ? undefined
+        : [...versions.keys()].flatMap(text => {
             try {
               return [parseVersion(text)];
             } catch {
               return [];
             }
-          }),
-        err => {
-          if (err instanceof HttpStatusError && err.statusCode === 404) {
-            return undefined;
+          })
+    );
+  }
+
+  /**
+   * The package's abbreviated packument — each published version's metadata,
+   * by version — or undefined if the registry has no such package (its 404).
+   * A version's entry never changes once published, so a held packument is
+   * kept for every version it lists; `forceRevalidate` re-reads it, for a
+   * caller asking about a version it lacks. Read once per run either way.
+   */
+  private packument(pkg: string, forceRevalidate: boolean): Computable<ReadonlyMap<string, INPMPackageMetadata> | undefined> {
+    const held = forceRevalidate ? this.revalidatedPackuments : this.packuments;
+    let result = held.get(pkg);
+    if (result === undefined) {
+      const url = `${this.url}/${packagePath(pkg)}`;
+      const what = `package document for ${pkg} from ${this.url}`;
+      result = this.authHeadersFor(url)
+        .then(headers =>
+          this.context.fetch(
+            url,
+            "npm:packument:2",
+            content =>
+              readStream(content).then(data => {
+                /* The reader throws on anything unusable, so an invalid document
+                 * is never cached; what is kept is only what fabr reads. */
+                const versions = parseJson(data, what, toPackumentVersions);
+                return new FileSet(new Map([[PACKUMENT_FILE, MemoryFile.from(JSON.stringify({ versions: Object.fromEntries(versions) }))]]));
+              }),
+            /* An index read: a resolution makes one of these per package it
+             * walks, and the resolve that asked is the item worth recording. */
+            { resource: "package document", role: "index" },
+            { ...headers, accept: ABBREVIATED_PACKUMENT },
+            forceRevalidate ? { forceRevalidate: true } : undefined
+          )
+        )
+        .then(files => files.readFile(PACKUMENT_FILE))
+        .then(
+          data => parseJson(data, what, toPackumentVersions) as ReadonlyMap<string, INPMPackageMetadata> | undefined,
+          err => {
+            if (err instanceof HttpStatusError && err.statusCode === 404) {
+              return undefined;
+            }
+            throw err;
           }
-          throw err;
-        }
-      );
+        );
+      held.set(pkg, result);
+      /* A transient failure is read again when next asked, not kept for the run. */
+      result.catch(() => held.delete(pkg));
+    }
+    return result;
   }
 
   /**
@@ -515,23 +537,56 @@ export class NPMRepository
      * (malformed gates in a fetched document) is as non-fatal as one that could
      * not be fetched, and a handler passed to then() does not see the success
      * callback's own throw. */
-    return this.getVersionMetadata(req.name, probeVersion)
+    return this.gatedMetadata(req.name, probeVersion, target)
       .then(meta => (matchesTargetPlatform(meta, target) ? req : undefined))
       .catch(() => undefined);
   }
 
+  /** Get an exact package version's metadata: its packument entry, or for a
+   *  version that entry cannot fully answer, the version's own document. */
+  private getVersionMetadata(pkg: string, version: string): Computable<INPMPackageMetadata> {
+    const entry = (versions: ReadonlyMap<string, INPMPackageMetadata> | undefined): INPMPackageMetadata | undefined => versions?.get(version);
+    return this.packument(pkg, false)
+      .then(versions => (entry(versions) !== undefined ? entry(versions) : this.packument(pkg, true).then(entry)))
+      /* The packument only saves requests: where it cannot be read at all, the
+       * version's own document answers as it would have anyway. */
+      .catch(() => undefined)
+      .then(meta => meta ?? this.versionDocument(pkg, version));
+  }
+
+  /**
+   * Get an exact package version's metadata for judging it against `target`:
+   * as {@link getVersionMetadata} gives it, except that an abbreviated
+   * packument leaves out `libc`. A platform-gated version (one declaring `os` or
+   * `cpu`) whose gates admit a target that has a libc is read whole from its
+   * own document, so its `libc` gate is judged too; any other cannot be decided
+   * by `libc`.
+   */
+  private gatedMetadata(pkg: string, version: string, target: NpmPlatform): Computable<INPMPackageMetadata> {
+    return this.getVersionMetadata(pkg, version).then(meta =>
+      meta.libc === undefined &&
+      target.libc !== undefined &&
+      (meta.os !== undefined || meta.cpu !== undefined) &&
+      platformGateAdmits(meta.os, target.os) &&
+      platformGateAdmits(meta.cpu, target.cpu)
+        ? this.versionDocument(pkg, version)
+        : meta
+    );
+  }
+
   /**
    * Fetch the metadata document for an exact package version, persisted in the
-   * build cache and never refreshed. Note the immutability here is a *content*
+   * build cache and never refreshed, for a version its packument cannot fully
+   * answer for (see {@link getVersionMetadata}). Note the immutability here is a *content*
    * contract fabr asserts, not an HTTP one: npmjs serves version docs with only
    * `max-age=300` (unlike tarballs, which it marks `cache-control: immutable`
    * for a year), because a version doc has exactly one mutable field —
    * `deprecated`. The dependency-relevant fields can never change (a version
    * number is never republished), and fabr reads nothing else; if deprecation
-   * warnings are ever surfaced, that read must go through the non-immutable
-   * fetch path (like the packument), not this cache-forever one.
+   * warnings are ever surfaced, that read must go through a revalidating
+   * fetch, not this cache-forever one.
    */
-  private getVersionMetadata(pkg: string, version: string): Computable<INPMPackageMetadata> {
+  private versionDocument(pkg: string, version: string): Computable<INPMPackageMetadata> {
     const key = pkg + "/" + version;
     let result = this.metadataCache.get(key);
     if (!result) {

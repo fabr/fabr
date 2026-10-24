@@ -18,11 +18,13 @@
  */
 
 import * as http from "http";
+import { availableParallelism } from "os";
 import { URL } from "url";
 import { Readable, Transform } from "stream";
 import { EnvHttpProxyAgent, interceptors, request as httpRequest } from "undici";
 import { Computable } from "./Computable";
-import { FabrError, HttpStatusError } from "./Errors";
+import { FabrError, HttpStatusError, toError } from "./Errors";
+import { Semaphore } from "../support/Semaphore";
 
 /** Bounded redirect following: npmjs serves tarballs directly, but GitHub
  * Packages, Artifactory, and most corporate mirrors 302 to blob storage. */
@@ -56,6 +58,58 @@ const BODY_TIMEOUT_MS = 120_000;
  */
 const MAX_CONNECTIONS_PER_ORIGIN = 15;
 
+
+/**
+ * Requests in flight per origin, by role, whatever protocol the origin speaks:
+ * further requests queue until one ends. The socket limit above does not bound
+ * this where the origin speaks HTTP/2 (which undici negotiates by default),
+ * since one socket then carries many streams. A request holds its slot until
+ * its body has been read or discarded, so the bound is on transfers, not on
+ * handshakes. Each role is admitted apart, so a resolution's index reads never
+ * queue behind large downloads, and each is sized for what limits it: an index
+ * read is small and waits on the registry, so many at once (pnpm's own default:
+ * three per CPU core, between 64 and 96); a download is limited by bandwidth,
+ * which a few at once already fill, and more only share it thinner.
+ */
+const MAX_REQUESTS_PER_ORIGIN: Readonly<Record<FetchRole, number>> = {
+  index: Math.min(96, Math.max(availableParallelism() * 3, 64)),
+  content: 16,
+};
+
+/**
+ * HTTP/2 flow-control windows: how much a sender may have in flight unread on
+ * one stream, and on a connection's streams together. undici's defaults (256KB
+ * and 512KB) cap a stream at its window per round trip — a few MB/s whatever
+ * the link. A stream's window is sized for a large tarball at speed, and the
+ * connection's holds every stream an origin admits (both roles) at once, so
+ * streams read slowly cannot fill it and stall the others on the connection
+ * (which a registry then cuts as idle).
+ */
+const STREAM_WINDOW_BYTES = 4 * 1024 * 1024;
+const CONNECTION_WINDOW_BYTES = (MAX_REQUESTS_PER_ORIGIN.index + MAX_REQUESTS_PER_ORIGIN.content) * STREAM_WINDOW_BYTES;
+
+/** What a request is for: reading a registry's index (a packument,
+ *  per-version metadata) or transferring content the build consumes. */
+export type FetchRole = "content" | "index";
+
+/** Each origin's admission per role, made on first use. */
+const admissions = new Map<string, Semaphore>();
+
+/**
+ * Send a request to `urlstring`'s origin once it has a slot free for `role`,
+ * and hold the slot until `send` calls the release it is handed: when the
+ * response's body has been read, discarded or failed.
+ */
+function admitted(urlstring: string, role: FetchRole, send: (release: () => void) => void): void {
+  const key = `${role} ${new URL(urlstring).origin}`;
+  let limit = admissions.get(key);
+  if (limit === undefined) {
+    limit = new Semaphore(MAX_REQUESTS_PER_ORIGIN[role]);
+    admissions.set(key, limit);
+  }
+  void limit.run(() => Computable.from<void>(done => send(() => done())));
+}
+
 /**
  * The one dispatcher every fabr HTTP(S) request rides. It combines two things
  * node's raw `http`/`https` don't do:
@@ -73,6 +127,8 @@ const dispatcher = new EnvHttpProxyAgent({
   headersTimeout: HEADERS_TIMEOUT_MS,
   bodyTimeout: BODY_TIMEOUT_MS,
   connections: MAX_CONNECTIONS_PER_ORIGIN,
+  initialWindowSize: STREAM_WINDOW_BYTES,
+  connectionWindowSize: CONNECTION_WINDOW_BYTES,
 }).compose(interceptors.redirect({ maxRedirections: MAX_REDIRECTS }));
 
 /** Reject a non-HTTP(S) URL with a clear message rather than a transport-layer
@@ -115,20 +171,25 @@ export function sendRequest(urlstring: string, request: HttpRequest): Computable
       reject(unsupported);
       return;
     }
-    /* undici derives Content-Length from the body and follows redirects itself. */
-    httpRequest(urlstring, { method: request.method, headers: request.headers, body: request.body, dispatcher }).then(
-      response =>
-        response.body.arrayBuffer().then(
-          buffer =>
+    admitted(urlstring, "content", release => {
+      const fail = (err: unknown): void => {
+        release();
+        reject(toError(err));
+      };
+      /* undici derives Content-Length from the body and follows redirects itself. */
+      httpRequest(urlstring, { method: request.method, headers: request.headers, body: request.body, dispatcher }).then(
+        response =>
+          response.body.arrayBuffer().then(buffer => {
+            release();
             resolve({
               statusCode: response.statusCode,
               headers: response.headers as http.IncomingHttpHeaders,
               body: Buffer.from(buffer),
-            }),
-          reject
-        ),
-      reject
-    );
+            });
+          }, fail),
+        fail
+      );
+    });
   });
 }
 
@@ -212,7 +273,8 @@ export function reportingProgress(stream: Readable, report: (bytes: number) => v
 export function openUrlStream(
   urlstring: string,
   headers?: Record<string, string>,
-  now: () => number = Date.now
+  now: () => number = Date.now,
+  role: FetchRole = "content"
 ): Computable<UrlStreamResponse> {
   const conditional =
     headers !== undefined && Object.keys(headers).some(name => /^if-(none-match|modified-since)$/i.test(name));
@@ -222,24 +284,35 @@ export function openUrlStream(
       reject(unsupported);
       return;
     }
-    /* Redirects are followed transparently by the dispatcher, so the response
-     * we see is the final hop (a 200, a conditional 304, or an error status). */
-    httpRequest(urlstring, { method: "GET", headers, dispatcher }).then(response => {
-      const resHeaders = response.headers as http.IncomingHttpHeaders;
-      if (response.statusCode === 200) {
-        resolve({
-          cacheControl: parseCacheControl(resHeaders, now()),
-          stream: response.body,
-          contentLength: parseContentLength(resHeaders["content-length"]),
-        });
-      } else if (response.statusCode === 304 && conditional) {
-        void response.body.dump(); /* discard the (empty) body so the socket is released */
-        resolve({ cacheControl: parseCacheControl(resHeaders, now()) });
-      } else {
-        void response.body.dump();
-        reject(new HttpStatusError(response.statusCode, urlstring));
-      }
-    }, reject);
+    admitted(urlstring, role, release => {
+      /* Redirects are followed transparently by the dispatcher, so the response
+       * we see is the final hop (a 200, a conditional 304, or an error status). */
+      httpRequest(urlstring, { method: "GET", headers, dispatcher }).then(
+        response => {
+          const resHeaders = response.headers as http.IncomingHttpHeaders;
+          if (response.statusCode === 200) {
+            /* The slot is the transfer's: held until the body is read through or
+             * given up, however the consumer ends it. */
+            response.body.once("close", release);
+            resolve({
+              cacheControl: parseCacheControl(resHeaders, now()),
+              stream: response.body,
+              contentLength: parseContentLength(resHeaders["content-length"]),
+            });
+          } else if (response.statusCode === 304 && conditional) {
+            void response.body.dump().finally(release); /* discard the (empty) body so the socket is released */
+            resolve({ cacheControl: parseCacheControl(resHeaders, now()) });
+          } else {
+            void response.body.dump().finally(release);
+            reject(new HttpStatusError(response.statusCode, urlstring));
+          }
+        },
+        err => {
+          release();
+          reject(err);
+        }
+      );
+    });
   });
 }
 
