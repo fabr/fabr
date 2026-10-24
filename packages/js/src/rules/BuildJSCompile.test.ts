@@ -47,8 +47,6 @@ function stubContext(packageName?: string): TargetContext {
     /* No rename rules: these fixtures have no stylesheets, so the compile
      * carries neither the rewrite documents nor the resource list. */
     getRewriteRules: () => Computable.resolve([]),
-    /* The owner its maps name a source with no source path by. */
-    buildReference: () => "owner",
     /* Nothing reaches the store here (the stub declares no package deps), so a
      * cache that only knows where its store would be is enough. */
     execution: { buildCache: { storePath: "/store" } },

@@ -178,21 +178,17 @@ export function carriedReferences(map: IRawSourceMap): IRawSourceMap {
  * its fabr reference: an entry that already is one stays, and one the step
  * staged (a `file://` URL or a path relative to the map, a package's reached
  * through its virtual path) is named by `referenceOf`. A reference an input map
- * held arrives as {@link carriedReferences} carried it, and is restored. The
- * step's own
- * intermediate input, where it has one, is named for the stylesheet it
- * publishes.
+ * held arrives as {@link carriedReferences} carried it, and is restored.
  */
 export function referencedCssSources(
   map: IRawSourceMap,
   mapName: string,
   where: ISourceMapLocation,
-  referenceOf: (staged: string, own?: string) => string | undefined,
+  referenceOf: (staged: string) => string | undefined,
   ownInput?: { path: string; rename: string }
 ): IRawSourceMap {
-  const { root, srcRoot, mapDir } = where;
+  const { root, mapDir } = where;
   const relocated = relativeToMap(relocateCssSources(map, where, ownInput), mapName).sources;
-  const ownStaged = ownInput === undefined ? undefined : toPosix(path.relative(root, path.resolve(root, srcRoot, ownInput.path)));
   return {
     ...map,
     sources: map.sources.map((source, at) => {
@@ -208,7 +204,7 @@ export function referencedCssSources(
       }
       const absolute = source.startsWith("file://") ? fileURLToPath(source) : path.resolve(root, mapDir, source);
       const staged = toPosix(path.relative(root, resolveVirtual(absolute)));
-      const reference = referenceOf(staged, staged === ownStaged ? ownInput!.rename : undefined);
+      const reference = referenceOf(staged);
       return reference === undefined ? relocated[at] : `fabr:${reference}`;
     }),
   };

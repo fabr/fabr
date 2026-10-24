@@ -371,11 +371,8 @@ export async function main(argv: string[]): Promise<void> {
   }
   const table = scopeTableOf(options, packages);
   /* Its maps name each source by the reference resolving to it, where the step
-   * staged their table; one of its own inputs with none is named by the owner
-   * as the step's source root holds it. */
-  const referenceOf = stagedReferences(argv, process.cwd(), staged =>
-    staged.startsWith(`${options.srcRoot}/`) ? staged.slice(options.srcRoot.length + 1) : undefined
-  );
+   * staged their table. */
+  const referenceOf = stagedReferences(argv, process.cwd());
   /* A dependency's stylesheet is read only where a compose reaches it, so those
    * are the run's reads of the packages it was given. */
   const reads = new Set<string>();

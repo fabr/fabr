@@ -34,7 +34,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { FileSet, IFile, MemoryFile, PackageFileSet, dependenciesOn } from "@fabr-build/core";
-import { PNP_DATA_FILE, SOURCE_OWNER_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
+import { PNP_DATA_FILE, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { pnpManifestOf, treeMountOf } from "../PnPManifest";
 import { BundleDriver } from "@fabr-build/js-tools";
 
@@ -366,7 +366,7 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
     const cwd = process.cwd();
     try {
       process.chdir(work);
-      await main(["--options=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, "app"]);
+      await main(["--options=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE]);
     } finally {
       process.chdir(cwd);
     }
@@ -408,7 +408,7 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
     const cwd = process.cwd();
     try {
       process.chdir(work);
-      await main(["--options=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, "app"]);
+      await main(["--options=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE]);
     } finally {
       process.chdir(cwd);
     }
@@ -436,7 +436,7 @@ describe("one package wired two ways, bundled by real esbuild through its virtua
     const cwd = process.cwd();
     try {
       process.chdir(work);
-      await main(["--options=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, "app"]);
+      await main(["--options=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE]);
     } finally {
       process.chdir(cwd);
     }

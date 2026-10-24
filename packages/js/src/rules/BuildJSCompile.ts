@@ -66,7 +66,6 @@ import {
   CHANGES_FLAG,
   DEPS_REPORT_FILE,
   DEPS_REPORT_FLAG,
-  SOURCE_OWNER_FLAG,
   SOURCE_PATHS_FILE,
   SOURCE_PATHS_FLAG,
   STATE_DIR,
@@ -437,8 +436,6 @@ function compileTypescript(context: TargetContext, { srcs: srcSets, deps, resour
               CHANGES_FILE,
               SOURCE_PATHS_FLAG,
               SOURCE_PATHS_FILE,
-              SOURCE_OWNER_FLAG,
-              context.buildReference(),
             ],
             { base: TOOL_DIR }
           ),

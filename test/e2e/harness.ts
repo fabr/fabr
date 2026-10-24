@@ -292,8 +292,8 @@ function reaperFor(child: ChildProcess): OrphanReaper {
  * standing in for tsc's real downlevel (which the tsconfig unit test covers).
  * Where the tsconfig asks for source maps and the step staged a source-paths
  * table, each `.ts` also gets a map naming its source as the real driver does:
- * by the table's reference, or failing one, by `--source-owner` and its path
- * under rootDir.
+ * by the table's reference, or failing one, by its path relative to the map,
+ * as the compiler writes it.
  */
 export const STUB_TSC: Record<string, string> = {
   "teststub/typescript/bin/tsc": `const fs = require("fs"), path = require("path");
@@ -305,7 +305,7 @@ const flag = process.argv.indexOf("--emit-extension");
 const jsExt = flag < 0 ? ".js" : process.argv[flag + 1];
 const dtsExt = jsExt === ".mjs" ? ".d.mts" : ".d.ts";
 const flagValue = name => { const at = process.argv.indexOf(name); return at < 0 ? undefined : process.argv[at + 1]; };
-const pathsFile = flagValue("--source-paths"), owner = flagValue("--source-owner");
+const pathsFile = flagValue("--source-paths");
 const sourcePaths = cfg.sourceMap && pathsFile ? JSON.parse(fs.readFileSync(pathsFile, "utf8")) : undefined;
 (function walk(dir) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -320,10 +320,11 @@ const sourcePaths = cfg.sourceMap && pathsFile ? JSON.parse(fs.readFileSync(path
         fs.writeFileSync(outJs, fs.readFileSync(p, "utf8"));
       } else {
         const staged = p.split(path.sep).join("/");
-        const reference = sourcePaths[staged] ?? owner + ":" + rel + ".ts";
+        const reference = sourcePaths[staged];
+        const source = reference === undefined ? path.relative(path.dirname(outJs), p).split(path.sep).join("/") : "fabr:" + reference;
         const map = path.basename(outJs) + ".map";
         fs.writeFileSync(outJs, fs.readFileSync(p, "utf8") + "//# sourceMappingURL=" + map + "\\n");
-        fs.writeFileSync(outJs + ".map", JSON.stringify({ version: 3, file: path.basename(outJs), sources: ["fabr:" + reference], names: [], mappings: "AAAA" }));
+        fs.writeFileSync(outJs + ".map", JSON.stringify({ version: 3, file: path.basename(outJs), sources: [source], names: [], mappings: "AAAA" }));
       }
     }
     else if (cfg.allowJs && /\\.jsx?$/.test(e.name)) {

@@ -31,7 +31,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { FileSet, IFile, MemoryFile, PackageFileSet, dependenciesOn } from "@fabr-build/core";
 import type { ISassOptions } from "@fabr-build/js-tools";
-import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, PNP_DATA_FILE, SOURCE_OWNER_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG, toRunReport } from "@fabr-build/js-tools";
+import { DEPS_REPORT_FILE, DEPS_REPORT_FLAG, PNP_DATA_FILE, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG, toRunReport } from "@fabr-build/js-tools";
 import { pnpManifestOf, TREE_MOUNT, treeMountOf } from "../PnPManifest";
 import { relativeToMap, relocateCssSources, SassDriver, sourceMapComment } from "@fabr-build/js-tools";
 
@@ -136,7 +136,7 @@ describe("the Sass driver, resolving package loads through fabr's table", () => 
     try {
       process.chdir(root);
       await main([
-        ...(named ? ["--manifest=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, "app"] : ["--manifest=options.json"]),
+        ...(named ? ["--manifest=options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE] : ["--manifest=options.json"]),
         ...extra,
       ]);
     } finally {

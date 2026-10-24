@@ -2275,12 +2275,7 @@ export function main(argv: string[]): number {
    * rewriter serves both phases — the JavaScript and the declarations land in
    * the same directory, so they name each other identically. */
   const jsExtension = emitExtensionOf(argv);
-  /* A source with no source path is named by the owner as the compile's root
-   * holds it. */
-  const sourceRoot = sourceRootOf(parsed.options, root);
-  const referenceOf = stagedReferences(argv, root, staged =>
-    sourceRoot !== undefined && staged.startsWith(`${sourceRoot}/`) ? staged.slice(sourceRoot.length + 1) : undefined
-  );
+  const referenceOf = stagedReferences(argv, root);
   const layout = emitLayoutOf(ts, parsed.options, root, jsExtension, rewrites, installed?.packageSpecifier, installed?.ownSpecifier, installed?.exists);
   if (jsExtension !== undefined && layout?.rewriteExtensions !== true) {
     /* Renaming without rewriting is the exact failure `--emit-extension` refuses

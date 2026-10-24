@@ -3643,8 +3643,8 @@ describe("a reference to a target", () => {
     };
     expect(await sourcePaths("g")).to.deep.equal([["out.txt", "g:out.txt"]]);
     expect(await sourcePaths("l")).to.deep.equal([["index.js", "l:index.js"]]);
-    /* With the configuration that tells the build apart. */
-    expect(await sourcePaths("g<FLAVOR=x>")).to.deep.equal([["out.txt", "g<FLAVOR=x>:out.txt"]]);
+    /* The same in any configuration: a configuration names no source. */
+    expect(await sourcePaths("g<FLAVOR=x>")).to.deep.equal([["out.txt", "g:out.txt"]]);
   });
 
   it("gives each file a registry delivers the reference that resolves to it", async () => {

@@ -21,7 +21,7 @@ import { expect } from "chai";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { referenceOfEntry, SOURCE_OWNER_FLAG, SOURCE_PATHS_FLAG, stagedReferences, withReferencedSources } from "./SourceMap";
+import { referenceOfEntry, SOURCE_PATHS_FLAG, stagedReferences, withReferencedSources } from "./SourceMap";
 
 describe("withReferencedSources", () => {
   const root = path.resolve("/work");
@@ -60,19 +60,19 @@ describe("stagedReferences", () => {
   const named = (withinPackages: boolean): ((staged: string) => string | undefined) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-sourcemap-"));
     fs.writeFileSync(path.join(dir, "paths.json"), JSON.stringify(table));
-    const referenceOf = stagedReferences([SOURCE_PATHS_FLAG, "paths.json", SOURCE_OWNER_FLAG, "app"], dir, staged => staged, { withinPackages });
+    const referenceOf = stagedReferences([SOURCE_PATHS_FLAG, "paths.json"], dir, { withinPackages });
     fs.rmSync(dir, { recursive: true, force: true });
     return staged => referenceOf!(staged);
   };
 
-  it("names a listed file by the table, and anything else from the owner", () => {
+  it("names a listed file by the table, and nothing else", () => {
     expect(named(false)("src/a.ts")).to.equal("./app/src/a.ts");
-    expect(named(false)(".fabr-tree/h1/src/x.ts")).to.equal("app:.fabr-tree/h1/src/x.ts");
+    expect(named(false)(".fabr-tree/h1/src/x.ts")).to.equal(undefined);
   });
 
   it("names a file a listed package does not ship by the package, where asked to", () => {
     expect(named(true)(".fabr-tree/h1/src/x.ts")).to.equal("@npm:pkg:1.0.0:src/x.ts");
-    /* A project file gives no package: what lies beside it is the owner's. */
-    expect(named(true)("src/b.ts")).to.equal("app:src/b.ts");
+    /* A project file gives no package. */
+    expect(named(true)("src/b.ts")).to.equal(undefined);
   });
 });

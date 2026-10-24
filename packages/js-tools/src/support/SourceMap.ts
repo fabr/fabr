@@ -21,18 +21,17 @@
  * How a tool's source maps name the sources they map: by the fabr reference
  * that resolves to each (`fabr:./packages/core/src/Fabr.ts`, `fabr:gen:out/x.ts`),
  * an absolute entry no composing tool re-resolves. The step running a tool
- * stages a table of the source path of each file it staged; the tool names a
- * source the table lacks by its declared owner and its name there.
+ * stages a table of the source path of each file it staged; a source the table
+ * lacks keeps the entry the tool wrote for it.
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-/** Where the step stages the table, and the flags that name it and the owner
- *  on a tool's command line. */
+/** Where the step stages the table, and the flag that names it on a tool's
+ *  command line. */
 export const SOURCE_PATHS_FILE = ".fabr-source-paths.json";
 export const SOURCE_PATHS_FLAG = "--source-paths";
-export const SOURCE_OWNER_FLAG = "--source-owner";
 
 /** Where a test installation stages the location of each source it holds, by
  *  its source path: what a runner opens a source a map entry names by. */
@@ -104,33 +103,22 @@ export interface IStagedReferenceOptions {
 /**
  * How a tool names a source it staged, from the table a step staged and named
  * on its command line ({@link SOURCE_PATHS_FLAG}, written `--flag value` or
- * `--flag=value`): by the table's source path, or failing one (and, with
- * `withinPackages`, failing a package containing it), by the declared owner
- * ({@link SOURCE_OWNER_FLAG}) and the name `ownName` gives it there (the staged
- * path under the tool's own sources; undefined for a file not among them), or
- * the one a caller gives. Undefined where no table was staged.
+ * `--flag=value`): by the table's source path, or failing one, with
+ * `withinPackages`, by a package containing it. Undefined for a source neither
+ * names, and wholly where no table was staged.
  */
 export function stagedReferences(
   argv: string[],
   root: string,
-  ownName: (staged: string) => string | undefined,
   options: IStagedReferenceOptions = {}
-): ((staged: string, own?: string) => string | undefined) | undefined {
+): ((staged: string) => string | undefined) | undefined {
   const named = flagValue(argv, SOURCE_PATHS_FLAG);
   if (named === undefined) {
     return undefined;
   }
   const paths = readSourcePaths(path.resolve(root, named));
-  const owner = flagValue(argv, SOURCE_OWNER_FLAG);
   const within = options.withinPackages === true ? packageReferences(paths) : undefined;
-  /* `own`, where given, is the owner's name for the file instead. */
-  return (staged, own = ownName(staged)) => {
-    const sourcePath = paths.get(staged) ?? within?.(staged);
-    if (sourcePath !== undefined) {
-      return sourcePath;
-    }
-    return owner === undefined || own === undefined ? undefined : `${owner}:${own}`;
-  };
+  return staged => paths.get(staged) ?? within?.(staged);
 }
 
 /**

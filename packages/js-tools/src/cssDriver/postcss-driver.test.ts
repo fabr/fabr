@@ -28,7 +28,7 @@ import postcss from "postcss";
 import type { IPostcssOptions, IPostcssSource } from "./Options";
 import { cssModuleShim, main, resolveComposePath, scopedNameOf, scopeFailure, scopeTableOf } from "./postcss-driver";
 import { relocateCssSources } from "./Support";
-import { SOURCE_OWNER_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "../support/SourceMap";
+import { SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "../support/SourceMap";
 
 describe("cssModuleShim", () => {
   it("imports its own stylesheet by basename and exports the map as a default", () => {
@@ -422,10 +422,10 @@ describe("postcss-driver, over the real plugin set", () => {
   });
 
   it("names its sources by reference where the step staged their table", async () => {
-    /* As the rule runs it: from the working root, with the table and owner on
-     * its command line. The chained source is already a reference, from the
-     * Sass step; the step's own intermediate is named by the owner, for the
-     * stylesheet it publishes. */
+    /* As the rule runs it: from the working root, with the table on its
+     * command line. The chained source is already a reference, from the Sass
+     * step; the step's own intermediate, which the table does not list, is
+     * named for the stylesheet it publishes, relative to the map. */
     const lowered = await postcss([]).process(".card { color: red; }\n", {
       from: "w/card.module.scss",
       to: "w/card.module.css",
@@ -447,12 +447,12 @@ describe("postcss-driver, over the real plugin set", () => {
     const cwd = process.cwd();
     try {
       process.chdir(work);
-      await main(["--manifest=postcss-manifest.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, "app"]);
+      await main(["--manifest=postcss-manifest.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE]);
     } finally {
       process.chdir(cwd);
     }
     const shipped = JSON.parse(fs.readFileSync(path.join(work, "out", "w", "card.css.map"), "utf8")) as { sources: string[] };
-    assert.deepEqual([...shipped.sources].sort(), ["fabr:./app/w/card.module.scss", "fabr:app:w/card.css"]);
+    assert.deepEqual([...shipped.sources].sort(), ["card.css", "fabr:./app/w/card.module.scss"]);
   });
 
   it("names an unchained module's map source as the module itself", async () => {

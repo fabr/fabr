@@ -38,7 +38,6 @@ import {
   type PnpDependencyTarget,
   PnpResolver,
   serializeDriverMemo,
-  SOURCE_OWNER_FLAG,
   SOURCE_PATHS_FILE,
   SOURCE_PATHS_FLAG,
   toChangeLists,
@@ -1455,7 +1454,7 @@ describe("emitting under a renamed extension", () => {
 
 describe("naming sources in its maps", () => {
   /** Compile `sources` with source maps on, under a staged table of source
-   *  paths and an owner, and answer each emitted map's `sources`. */
+   *  paths, and answer each emitted map's `sources`. */
   function compileNamed(sources: Record<string, string>, paths: Record<string, string>): { status: number; output: string; sourcesOf: (name: string) => unknown } {
     const work = fixture();
     stage(work.root, [], [], []);
@@ -1467,7 +1466,7 @@ describe("naming sources in its maps", () => {
       fs.writeFileSync(path.join(work.root, "src", name), text);
     }
     fs.writeFileSync(path.join(work.root, SOURCE_PATHS_FILE), JSON.stringify(paths));
-    const { status, output } = compile(work.root, [SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, "mylib<BUILD_TYPE=release>"]);
+    const { status, output } = compile(work.root, [SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE]);
     return {
       status,
       output,
@@ -1475,14 +1474,14 @@ describe("naming sources in its maps", () => {
     };
   }
 
-  it("names a source by its source path, and one without by its owner", () => {
+  it("names a source by its source path, and leaves one without as the compiler named it", () => {
     const { status, output, sourcesOf } = compileNamed(
       { "index.ts": "export const a = 1;\n", "generated.ts": "export const b = 2;\n" },
       { "src/index.ts": "./packages/mylib/src/index.ts" }
     );
     expect(status, output).to.equal(0);
     expect(sourcesOf("index.js.map")).to.deep.equal(["fabr:./packages/mylib/src/index.ts"]);
-    expect(sourcesOf("generated.js.map")).to.deep.equal(["fabr:mylib<BUILD_TYPE=release>:generated.ts"]);
+    expect(sourcesOf("generated.js.map")).to.deep.equal(["../src/generated.ts"]);
   });
 });
 

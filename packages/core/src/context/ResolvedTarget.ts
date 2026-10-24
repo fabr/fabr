@@ -179,7 +179,7 @@ export class DeclaredResolvedTarget extends ResolvedTarget {
   ): DeclaredResolvedTarget {
     const build = new TargetBuild(context, resolved, evaluate);
     const stated = build.stated();
-    const origin: ITargetOrigin = { kind: TARGET_PROVENANCE, decl: context.target, reference: context.buildReference() };
+    const origin: ITargetOrigin = { kind: TARGET_PROVENANCE, decl: context.target };
     const constraints = context.taskDescription().constraints;
     /* One target under two configurations is two nodes. */
     const configuration = [...constraints]

@@ -55,7 +55,7 @@ import {
 } from "@fabr-build/core";
 import { compileContents, formatJSTarget, JSTarget, parseJSTarget, stripExtension, usesNodeGlobals } from "../JSPackage";
 import { createNodeExecAction, PNP } from "../NodeExecAction";
-import { SOURCE_OWNER_FLAG, SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
+import { SOURCE_PATHS_FILE, SOURCE_PATHS_FLAG } from "@fabr-build/js-tools";
 import { pnpManifestOf } from "../PnPManifest";
 import {
   buildBundleOptions,
@@ -137,8 +137,7 @@ function stageBundle(
   srcPackages: PackageFileSet[],
   code: FileSet,
   css: FileSet,
-  entrySources: IBundleEntrySource[],
-  owner: string
+  entrySources: IBundleEntrySource[]
 ): RuleResult {
   const { jsTarget, buildType, rewrite, defines, nodeGlobals, srcs, deps, bundler } = inputs;
   if (entrySources.length === 0) {
@@ -158,7 +157,7 @@ function stageBundle(
   /* Its maps name each source by the reference resolving to it, from the table
    * the step stages: the bundle's own sources and the packages it bundles. */
   const argv = bundler.toCommandLine(
-    ["--options=bundle-options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE, SOURCE_OWNER_FLAG, owner],
+    ["--options=bundle-options.json", SOURCE_PATHS_FLAG, SOURCE_PATHS_FILE],
     { base: TOOL_DIR }
   );
   /* The bundled packages go over unassembled and unmaterialized: esbuild reads
@@ -264,7 +263,7 @@ function composeBundle(context: TargetContext, inputs: IBundleInputs): Computabl
         ...looseEntries.flatMap(set => [...set].map(([name]) => ({ path: stagedEntry(code, name), name }))),
         ...containedSources,
       ];
-      return stageBundle(inputs, srcPackages, code, built.css, entrySources, context.buildReference());
+      return stageBundle(inputs, srcPackages, code, built.css, entrySources);
     });
   });
 }

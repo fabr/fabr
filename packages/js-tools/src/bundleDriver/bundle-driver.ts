@@ -543,9 +543,7 @@ export async function main(argv: string[]): Promise<void> {
  */
 function nameMapSources(argv: string[], outdir: string): void {
   const root = process.cwd();
-  /* A file fabr staged under its tree pool or a node_modules is named by the
-   * path within it, so no staging path reaches the shipped map. */
-  const named = stagedReferences(argv, root, staged => staged.replace(/^(?:\.fabr-tree|node_modules)\//, ""), { withinPackages: true });
+  const named = stagedReferences(argv, root, { withinPackages: true });
   if (named === undefined) {
     return;
   }

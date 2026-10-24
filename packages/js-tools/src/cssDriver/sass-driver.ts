@@ -173,11 +173,8 @@ export async function main(argv: string[]): Promise<void> {
   }
   const importers = resolver ? [pnpImporter().sassPnpImporter({ pnpApi: resolver })] : undefined;
   /* Its maps name each source by the reference resolving to it, where the step
-   * staged their table; one of its own sources with none is named by the owner
-   * as the step's source root holds it. */
-  const referenceOf = stagedReferences(argv, process.cwd(), staged =>
-    staged.startsWith(`${options.srcRoot}/`) ? staged.slice(options.srcRoot.length + 1) : undefined
-  );
+   * staged their table. */
+  const referenceOf = stagedReferences(argv, process.cwd());
   const compiler = await sass.initAsyncCompiler();
   try {
     /* Sass partials (`_foo.scss`) are absent from this list by construction:
