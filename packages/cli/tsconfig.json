@@ -5,7 +5,7 @@
     "incremental": true,
     "outDir": "build",
     "rootDir": "src",
-    "tsBuildInfoFile": "build/tsconfig.tsbuildinfo"
+    "tsBuildInfoFile": "../../.tsbuildinfo/cli.tsbuildinfo"
   },
   "include": ["src/**/*"],
   "references": [{ "path": "../core" }]
