@@ -94,9 +94,15 @@ Each entry produces a `.js` file named after it: `src:main.tsx` gives `main.js`.
 
 | File | When |
 |---|---|
-| `main.js.map` | In `debug` and `relwithdebinfo` builds. It maps back to your TypeScript. |
+| `main.js.map` | In `debug` and `relwithdebinfo` builds. It maps back to your TypeScript, and includes the sources' text. |
 | `main.css`, `main.css.map` | When the entry imports stylesheets. All the CSS it reaches is in this one file. |
 | `logo-OKA4D3M3.png` | For each imported asset; see [Assets](#assets). |
+
+The source maps name each of your sources by its path from the project root, such as
+`fabr:./src/main.tsx`, and each file from a package by the package and the file within it, such
+as `fabr:@npm:react:19.1.0:cjs/react.development.js`. Without the `fabr:` prefix, each is a name
+you can pass to `fabr cat` from the project root. The
+[TypeScript page](/reference/js/typescript/#source-maps) explains the form.
 
 `BUILD_TYPE` decides minification and source maps:
 

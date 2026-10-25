@@ -45,8 +45,10 @@ A stylesheet is recognised by its extension:
 | `_variables.scss` | nothing | A Sass partial, available to `@use` from the target's other stylesheets. |
 | `.less`, `.styl` | the same file | Shipped as it is, not compiled. |
 
-Source maps (`theme.css.map`) are written beside the CSS in `debug` and `relwithdebinfo` builds,
-and point back to the Sass source.
+Source maps (`theme.css.map`) are written beside the CSS in `debug` and `relwithdebinfo` builds.
+They point back to the Sass source, include its text, and name it by its path from the project
+root, such as `fabr:./src/theme.scss`, as the [TypeScript compiler's maps](/reference/js/typescript/#source-maps)
+do.
 
 Because a css-module's output drops `.module`, `Card.module.scss` and a `Card.scss` or `Card.css`
 in the same directory would both produce `Card.css`. Fabr reports that as a conflict; rename one
@@ -142,7 +144,12 @@ what its target declares (see [Module resolution](/reference/js/module-resolutio
 package, fabr looks first at its `exports` map under the `sass` and `style` conditions, then at
 the `sass` and `style` fields of its `package.json`, and then for the file itself, with Sass's
 usual handling of partials, `_index` files and extensions. Sass's own `pkg:design-system/tokens`
-form is accepted too.
+form is accepted too. A stylesheet inside a package loads other packages from that package's own
+dependencies, as its JavaScript would.
+
+Fabr records which package stylesheets each compile loaded, and compiles the target's stylesheets
+again only when one of those files, or one of the target's own, changes. Adding, upgrading or
+removing a package in `deps` that no stylesheet loads doesn't recompile them.
 
 There are no load paths, and webpack's `~` prefix isn't accepted:
 `'~bootstrap/scss/functions' uses the webpack '~' prefix, which Sass does not define — write the package name directly`.

@@ -170,10 +170,10 @@ Fields shared between packages can be kept in one map and included in each; see
 Two groups of fields can't be set, and are errors in `metadata`:
 
 - Fields fabr generates: `name`, `version`, `type`, `main`, `types`, `exports`, `bin`,
-  `dependencies`, `peerDependencies`.
+  `dependencies`, `peerDependencies`, `peerDependenciesMeta`.
 - Fields that only mean something in a source checkout: `devDependencies`, `scripts`, `files`,
-  `private`, `publishConfig`, `workspaces`, `overrides`, `resolutions` and
-  `bundledDependencies`.
+  `private`, `publishConfig`, `packageManager`, `workspaces`, `overrides`, `resolutions`,
+  `bundleDependencies` and `bundledDependencies`.
 
 If you are converting a package, you can instead list its existing `package.json` in `srcs`.
 Fields from it are carried into the generated one, except for those two groups, which are
@@ -246,6 +246,10 @@ cannot publish @acme/widgets: no version to record for '@acme/core' — a depend
 Add the dependency to the `sync`, or give it a `version` property, which is then what dependants
 require.
 
+A sibling depended on under another name (`deps = @acme/core -> core;`) is written as an npm
+alias with the sibling's `version` property, `"core": "npm:@acme/core@1.4.0"`, whether or not the
+`sync` publishes it; see [Known issues](#known-issues).
+
 ### Versions
 
 The version is whatever the entry says. Keeping it in a property, as `${VERSION}` above, lets one
@@ -301,6 +305,15 @@ sync release {
 - **Lifecycle scripts** (`prepublishOnly`, `prepack`, `prepare`).
 - **Version bumping, changelogs and git tags.**
 - **Publishing a `js_bundle`.** A bundle isn't a package.
+
+## Known issues
+
+- **A renamed sibling doesn't get the version being published.** Where `@acme/widgets` has
+  `deps = @acme/core -> core;`, its published `package.json` requires `@acme/core` at the
+  `version` property of the `@acme/core` target, not at the version in the `sync` entry. Without
+  a `version` property it is published as `"core": "npm:@acme/core@*"`, and no error is reported.
+  Until this is fixed, give a renamed sibling a `version` property equal to the version it is
+  published as, or depend on it by its own name.
 
 ## Troubleshooting
 

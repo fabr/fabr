@@ -15,7 +15,8 @@ Fabr needs Node.js 22.19 or later. Install the `fabr` command globally:
 npm install -g @fabr-build/cli
 ```
 
-That also installs `@fabr-build/js`, the plugin with the JavaScript and TypeScript rules.
+That also installs `@fabr-build/js`, the plugin with the JavaScript and TypeScript rules, and
+`@fabr-build/js-tools`, the compiler driver, test runners and other programs the plugin runs.
 
 :::caution
 Install `@fabr-build/cli` only. Adding `@fabr-build/js` to the command makes npm install a second
@@ -138,9 +139,10 @@ fabr test mylib
 
 A summary such as `mylib: 1 test passed` is printed for each target, and a failing test fails the
 build. A passing run is cached, so running `fabr test` again without changes reports the result
-without re-running the tests.
+without re-running the tests. `fabr test --coverage mylib` also measures code coverage, printing a
+summary and writing an lcov report to `coverage/lcov.info`.
 
-To run an existing jest or vitest suite, or to use snapshots or DOM tests, see
+To run an existing jest or vitest suite, or for snapshots, DOM tests and coverage, see
 [Testing](/reference/js/testing/).
 
 ## Running programs
@@ -172,6 +174,7 @@ name is passed to it. Options for fabr itself go before the target.
 | `fabr ls <reference>` | List the files a target produces. |
 | `fabr cat <reference>` | Print them. |
 | `fabr cp <reference…> <dir>` | Copy them into a directory. |
+| `fabr deps <target>` | Show the dependency versions the target resolves to. |
 
 Two options work with most of them:
 
@@ -185,7 +188,7 @@ The [command-line reference](/reference/command-line/) has the rest.
 
 - [Dependencies](/reference/js/dependencies/): version ranges, catalogs, conflicts, patches and
   private registries.
-- [Testing](/reference/js/testing/): the three test frameworks, snapshots and DOM tests.
+- [Testing](/reference/js/testing/): the three test frameworks, snapshots, DOM tests and coverage.
 - [TypeScript compilation](/reference/js/typescript/): what replaces `tsconfig.json`, and how
   fabr's output differs from `tsc`'s.
 - [Module resolution](/reference/js/module-resolution/): what an import can reach.

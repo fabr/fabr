@@ -375,4 +375,6 @@ The [plugin reference](/developer/plugins/) covers the rest of the contract:
 - [requirements](/developer/plugins/#requirements) beyond files: packages, what a target passes on
   to whatever depends on it, and version conflicts;
 - [composing targets](/developer/plugins/#composing-targets) from other target types;
+- [tools in a package of their own](/developer/plugins/#tools-in-a-package-of-their-own), for a
+  tool written in TypeScript rather than a script shipped in `lib/`;
 - [repository types](/developer/plugins/#repository-types).

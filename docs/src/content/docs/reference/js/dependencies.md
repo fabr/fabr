@@ -59,7 +59,7 @@ and [Packages built in your project](#packages-built-in-your-project).
 `@types` packages go in `deps` alongside the packages they describe, and so does anything else the
 compiler needs to see.
 
-A reference is a dependency only in a property that takes packages, such as these three. In a
+A reference is a dependency only in a property that takes packages, such as the four above. In a
 property that takes files, such as `resources`, `@npm:normalize.css:8.0.1` is that package's own
 files, with nothing it depends on; see [Property kinds](/reference/syntax/#property-kinds).
 
@@ -93,6 +93,35 @@ What follows from it:
 
 If the lowest version a range names was never published (`^1.2.0` where the first 1.x release was
 1.2.3), fabr selects the lowest published version that satisfies the range.
+
+### Seeing which versions were chosen
+
+`fabr deps <target>` prints the target's dependency tree: each requirement as written, the version
+selected for it, and `(!)` beside every package the build would need at more than one version. It
+reads only registry metadata, so it works on a target that fails to build because of a conflict:
+
+```
+$ fabr deps app
+app
+deps
+├── chalk:4.1.2
+│   ├── ansi-styles:^4.1.0 -> 4.1.0 (!)
+│   │   └── color-convert:^2.0.1 -> 2.0.1
+│   │       └── color-name:~1.1.4 -> 1.1.4
+│   └── supports-color:^7.1.0 -> 7.1.0
+│       └── has-flag:^4.0.0 -> 4.0.0
+└── pretty-format:30.0.5
+    ├── react-is:^18.3.1 -> 18.3.1
+    ├── ansi-styles:^5.2.0 -> 5.2.0 (!)
+    └── @jest/schemas:30.0.5
+        └── @sinclair/typebox:^0.34.0 -> 0.34.0
+
+(!) conflicting in app:
+  ansi-styles: 4.1.0, 5.2.0
+```
+
+[`fabr deps`](/reference/command-line/#deps) describes the rest of its output and the other names
+it accepts.
 
 ## Catalogs
 
@@ -137,7 +166,8 @@ the list of members it does have.
 
 A target uses one version of each package. When the requirements in a build can't all be met by
 one version, fabr stops and reports each requirement and where it came from, followed by lines
-you can paste to resolve it:
+you can paste to resolve it (`fabr deps` shows the same conflict
+[in the whole tree](#seeing-which-versions-were-chosen)):
 
 ```
 error: Resolution requires multiple versions of the same package:
@@ -253,8 +283,9 @@ deps = @npm:stream-browserify:3.0.0 -> stream;
 ```
 
 In a published `package.json` this is written as an npm alias,
-`"stream": "npm:stream-browserify@3.0.0"`. See
-[Aliases](/reference/js/module-resolution/#aliases).
+`"stream": "npm:stream-browserify@3.0.0"`. A package built in your project can be renamed the same
+way: `deps = mylib -> foo;` is written `"foo": "npm:mylib@1.2.3"`, with the `version` of the
+`mylib` target. See [Aliases](/reference/js/module-resolution/#aliases).
 
 ## Patching a package
 
@@ -363,6 +394,12 @@ The tools fabr runs are npm packages too, each named by a setting you can overri
 file. They are resolved separately from your targets' dependencies, so the version of TypeScript
 that compiles your code doesn't have to agree with a `typescript` your code imports.
 
+Fabr's own wrappers around these tools (its TypeScript compiler driver, the bundler and stylesheet
+drivers, the test runners) are installed with fabr, in `@fabr-build/js-tools`, and aren't
+downloaded. Each is a target with a setting's name — `TSC_DRIVER`, `JS_BUNDLER`, `SASS_DRIVER`,
+`POSTCSS_DRIVER`, `JS_COVERAGE_DRIVER` and the [test runners](/reference/js/testing/#using-your-own-test-runner)
+— which you replace by declaring that name in your build file (`TSC_DRIVER = my_driver;`).
+
 | Setting | Default | Used for |
 |---|---|---|
 | `TYPESCRIPT` | `@npm:typescript:5.6.3` | [Compiling](/reference/js/typescript/) TypeScript and JavaScript |
@@ -395,6 +432,7 @@ versions.
 |---|---|---|
 | `'latest' is not a valid version constraint for 'x'` | A dist-tag where a version is needed | Write a version or a range. |
 | `Missing version in package reference 'x'` | `@npm:x` with no version | Add one: `@npm:x:1.2.3`. |
+| `'@npm' names a repository, not a package or files` | A registry or catalog named on its own, as in `deps = @npm;` | Name a package in it: `@npm:x:1.2.3`. |
 | `Resolution requires multiple versions of the same package` | Requirements that no single version satisfies | See [When versions conflict](#when-versions-conflict). |
 | `'x' is required here as two different packages` | One `deps` list names `x` twice: two versions or ranges, two builds of a target, or a target and a registry package | Keep one, or mark the other with `?`; see [Packages built in your project](#packages-built-in-your-project). |
 | `… which is provided by the target 'x', but 'x' is not a package` | A package depends on `x`, and the target named `x` in the build produces plain files, not a package | Build `x` as a package, or rename the target so the names no longer collide. |

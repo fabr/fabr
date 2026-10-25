@@ -44,6 +44,7 @@ If you build a TypeScript project with npm scripts, `tsc`, a bundler and a test 
 | `npm install` after every pull | Nothing. Dependencies are fetched as a build needs them. |
 | Run scripts in the right order: build, then test | Name what you want: `fabr test mylib`. Fabr derives the order and runs steps in parallel. |
 | Start each tool's watch mode | Add `-w` to any command: `fabr test -w mylib`. |
+| `npm ls` to see which versions you got | `fabr deps mylib` prints the dependency tree a target resolves to, without downloading the packages. |
 | Find output in `dist/` or `build/` | Output stays in fabr's cache, out of your tree. You list, print or copy it with `fabr ls`, `cat` and `cp`. |
 | Switch configuration for a release build | `fabr build -DBUILD_TYPE=release app`. |
 
@@ -132,6 +133,7 @@ guarantee. See [Known limitations](/known-limitations/#host-tools-arent-hermetic
   `fabr` command and the `.fabr` language in full.
 - **[Core targets and configuration](/reference/standard-rules/)**: the target types and settings
   that are always available.
+- **[Writing a plugin](/developer/writing-a-plugin/)**: add target types and rules of your own.
 - **JavaScript reference**: [targets and configuration](/reference/js/targets/),
   [dependencies](/reference/js/dependencies/), [module resolution](/reference/js/module-resolution/),
   [TypeScript compilation](/reference/js/typescript/), [stylesheets](/reference/js/stylesheets/),

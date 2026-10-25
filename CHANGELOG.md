@@ -1,35 +1,43 @@
 Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
-(`@fabr-build/core`) and the JavaScript plugin (`@fabr-build/js`) are released together and share a
-version number.
+(`@fabr-build/core`), the JavaScript plugin (`@fabr-build/js`), its tools (`@fabr-build/js-tools`)
+and the Sass importer (`@fabr-build/sass-pnp-importer`) are released together and share a version
+number.
 
 ## Fabr 0.3.1
 @fabr-build/core:
-- Split resolution and materialization explicitly to support pure dependency operations
-- Move cycle checking down to the low-level Computable to fix some missed cycles.
+- Resolve dependencies separately from fetching and building them, so a version conflict fails
+  before anything is downloaded and `fabr deps` needs no package contents.
+- Find dependency cycles in the computation graph itself, fixing some cycles that went unreported.
 - Circular dependency errors list the written references making up the cycle, closing one first.
-- Built packages now participate normally in dependency resolution, including ? and ! marks.
-- Add explicit 'PACKAGES' property type.
-- Repositories/namespaces now error if used unprojected rather than silently doing nothing.
-- Generalize fabr_home to the full installed namespace.
-- Allow '-' in identifiers (property names)
-- Optimize package downloading
-- Fix handling of constraints in variable substitutions.
-- Keep persistent working directories for command-line run targets.
-- Add incremental support to the generic generate target.
-- Support ls of namespaces (where the parent is able to support it).
+- Built packages now participate normally in dependency resolution, including `?` and `!` marks.
+- Add the `PACKAGES` property type, for properties that take packages rather than plain files.
+- A repository named on its own (`deps = @npm;`) is now an error rather than silently naming nothing.
+- Generalize `fabr_home` to the whole installed tree (`@fabr-home:<package>`), with
+  `@fabr-build/*` falling back to the installed packages.
+- Allow `-` in property names.
+- Optimize package downloading, and stop re-reading metadata for cached packages.
+- Fix handling of constraints in variable substitutions and string lookups.
+- Keep `fabr run` installs between runs, updating only what changed; `run -w` swaps between two.
+- Add `incremental` and `changes` to the `generate` target.
+- Rename the plugin API's `packageLibFile` to `getPackageLibFile`.
 
 @fabr-build/cli:
 - Add `fabr deps`: print the dependency tree of targets or packages, marking conflicting versions `(!)`.
+- Add `fabr test --coverage[=DIR]`, writing an lcov report.
+- `fabr ls` lists a namespace where its repository can enumerate one (`fabr ls @npm:glob`).
+- `fabr build` and `fabr test` check every name before building anything, and refuse a path or a
+  file selection.
 
-### @fabr-build/js 0.3.1
+@fabr-build/js:
 - A sibling package depended on under a rename (`deps = mylib -> foo;`) is declared in npm's alias
   form (`"foo": "npm:mylib@1.2.3"`).
-- Split runtime tools out into their own js-tools package.
-- Add optional_provided_deps support.
-- Change source maps to generate fabr: urls w/ project-relative where possible.
-- Add discovered-deps support for sass + postcss.
-- Convert postcss to use pnp.
-- Add test coverage reporting.
+- Move the drivers and test runners into their own package, `@fabr-build/js-tools`, installed with
+  fabr.
+- Add `optional_provided_deps` (written as optional `peerDependencies`).
+- Source maps name each source as a `fabr:` reference, by its path in the project where it has one.
+- Sass and postcss steps recompile only when a stylesheet they read changes.
+- postcss resolves `composes` from packages through the PnP table.
+- Add test coverage reporting (`COVERAGE=on`).
 
 ## Fabr 0.3.0
 @fabr-build/core:

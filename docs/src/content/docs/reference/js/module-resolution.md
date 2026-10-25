@@ -79,7 +79,12 @@ deps = @npm:typescript:6.0.0-beta -> typescript-6;
 ```
 
 Your code then imports the package as `typescript-6`, and the name is written back as an npm alias
-in the `package.json` fabr generates for your package.
+in the `package.json` fabr generates for your package. A package built in your project can be
+renamed the same way: with `deps = mylib -> foo;`, your code imports `foo`, and the generated
+`package.json` declares `"foo": "npm:mylib@1.2.3"`.
+
+A renamed package counts as a package of its own name. Two versions of `typescript`, one of them
+renamed `typescript-6`, are two different packages, so they don't conflict.
 
 ## Which version you get
 

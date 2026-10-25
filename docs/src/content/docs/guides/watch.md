@@ -26,9 +26,10 @@ fabr build -w mylib     # recompile when a source changes
 fabr test -w mylib      # recompile and re-run the tests
 ```
 
-Each round prints what it rebuilt, and `fabr test -w` prints the test summary again, so the
-terminal shows whether the tests pass as you edit. A change that affects nothing, such as an edit
-to a file no target uses, prints nothing.
+Each round prints what it rebuilt, ending with `Built mylib`, and `fabr test -w` prints the test
+summary again, so the terminal shows whether the tests pass as you edit. A change that leaves
+nothing to redo, such as an edit to a file no target uses, prints nothing. A build error is
+reported once, and fabr goes on watching for the change that fixes it.
 
 Editing a build file takes effect in the same way as editing a source.
 
@@ -38,9 +39,23 @@ Editing a build file takes effect in the same way as editing a source.
 fabr run -w mytool --flag arg
 ```
 
-When something the program is built from changes, fabr rebuilds it, stops the running process and
-starts the new one with the same arguments. Stopping includes any processes the program started
-itself.
+When something the program is built from changes, fabr rebuilds it and restarts it with the same
+arguments:
+
+1. The new version is installed in a second directory while the old one keeps running, so a build
+   error, or a rebuild that turns out identical to the running program, leaves the old one running
+   undisturbed.
+2. fabr stops the running program with `SIGTERM`, and with `SIGKILL` if it hasn't exited within two
+   seconds. Stopping includes any processes the program started itself.
+3. Once it has exited, fabr starts the new version. A server can therefore bind the same port
+   again.
+
+The two directories take turns: the next restart updates the directory the old version ran from
+with only the files that changed. fabr keeps them in its cache after you stop it, so a later
+`fabr run -w` of the same program starts by updating them too.
+
+A program that exits by itself isn't restarted straight away: fabr goes on watching and starts it
+again on the next change.
 
 ## Dev servers with `serve`
 

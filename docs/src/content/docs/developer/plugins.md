@@ -72,9 +72,40 @@ core would make them a different, incompatible set. A plugin imports what it nee
 `@fabr-build/core` directly. [Writing a plugin](/developer/writing-a-plugin/) builds, tests and
 publishes a plugin this way.
 
-Code a plugin arranges to run in another process, such as `@fabr-build/js`'s test runner, which
-runs inside the test's own working directory, cannot reach fabr's core at all. It must have no
-runtime dependency on `@fabr-build/core`; type-only imports are fine.
+### Tools in a package of their own
+
+A program a plugin's rules run, such as a compiler driver or a test runner, runs in a process of
+its own, staged by fabr, where fabr's core is not loaded. Its code must have no runtime dependency
+on `@fabr-build/core`; type-only imports are fine. `@fabr-build/js` keeps its programs in a
+separate package, `@fabr-build/js-tools`, and a plugin with tools of its own can do the same:
+
+```
+js_package @example/text-lint-tools {
+  srcs = src:**/*.ts;
+  optional_provided_deps = @npm:@fabr-build/core:^0.3.1;
+}
+```
+
+Each program is a file under `src/bin/`, such as `src/bin/lint.ts`, which the generated
+`package.json` declares as the bin `lint`. `optional_provided_deps` makes core an optional peer
+dependency: the tools compile against core's types, and nothing has to install core beside them
+where they run. The plugin package lists the
+tools package in its `deps`, so installing the plugin installs the tools too.
+
+The plugin's `.fabr` files then declare each tool as a target, naming the installed package
+through `@fabr-home`, the set of packages installed alongside fabr:
+
+```
+default js_script TEXT_LINTER {
+  entry = @fabr-home:@example/text-lint-tools:lint;
+}
+```
+
+`@fabr-home:<package>` is the package installed alongside fabr, found as Node.js would find it
+from fabr's own code, and `:lint` selects its `lint` bin. `@fabr-build/js` names its tools as
+`@fabr-build/js-tools:fabr-tsc` and so on, through the standard `@fabr-build` property that stands
+in for every installed `@fabr-build/*` package; see
+[Properties that stand in for a group of names](/reference/syntax/#properties-that-stand-in-for-a-group-of-names).
 
 ## activate()
 
@@ -165,10 +196,13 @@ How a property is read says what its sources are for:
 A `targetdef` declares each property `FILES` or `PACKAGES`. `getPackageProperty` reads only a
 `PACKAGES` property; `getFileProperty` reads either.
 
-Three requirement names say what the target passes on to whatever depends on it:
+Four requirement names say what the target passes on to whatever depends on it:
 
 - **`dependencies`**: what a package the target builds requires.
 - **`provided`**: the same, for requirements the consumer supplies (npm's peer dependencies).
+- **`optional_provided`**: as `provided`, for requirements the consumer may leave out (npm's
+  optional peer dependencies). The target is built against them, and each is bound only to what
+  the consumer supplies or already has installed.
 - **`extends`**: the package the target is made from; where that is one package, the target passes
   on its version and requirements.
 
@@ -180,7 +214,9 @@ depended on.
 
 A package the rule returns lists what it requires as its `dependencies`: `{ reference, package }`
 pairs, the edges `requirements.packages("dependencies")` hands the evaluation — each package among
-the requirement with the reference it was resolved for.
+the requirement with the reference it was resolved for. The edges from `provided` and
+`optional_provided` go in the same list, and the package's `provided` map names each of them,
+`"expected"` or `"optional"`.
 
 Everything a target depends on belongs in `requirements`, except the **tools** it runs, which are
 read in the evaluation ([below](#running-a-tool)). Whatever the evaluation reads for itself is not part of
@@ -259,13 +295,11 @@ interface that answers it:
 | `RepositoryLookup` | Each reference on its own (`resolve`, optionally `resolveFiles`). | `fabr_home` |
 | `RepositoryCollection` | A set the repository resolved itself (`member`). | `catalog` |
 
-A namespace can answer names it does not declare through a repository: a property of the
-namespace's own name is its fallback, and a name under the namespace that nothing declares is a
-reference into the property's value. STD.fabr makes packages installed with fabr available as
-`@fabr-build/<package>` this way, with `fabr_home @fabr-home { }` and
-`default @fabr-build = @fabr-home:@fabr-build;`. `@fabr-home:@fabr-build` names the scope rather
-than a package: `getRepositoryRef` may return a `NamespaceRef` naming a namespace of the
-repository's names, which a name projected into it goes on from.
+A repository named on its own, or with a scope of its names (`@fabr-home:@fabr-build`), is
+not a package: `getRepositoryRef` may return a `NamespaceRef` for a scope, from which a name
+projected into it (`@fabr-build/js-tools`) goes on. This is what lets a property of a group's name
+answer every name in the group; see
+[Properties that stand in for a group of names](/reference/syntax/#properties-that-stand-in-for-a-group-of-names).
 
 ## Current limitations
 

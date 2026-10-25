@@ -12,9 +12,9 @@ that feature: see [Testing](/reference/js/testing/),
 
 | Limitation | Effect |
 |---|---|
-| [Programs on your machine aren't tracked](#host-tools-arent-hermetically-sealed-yet) | A different `node` can change results without fabr noticing; running fabr through `yarn` defeats the cache. |
+| [Programs on your machine aren't tracked](#host-tools-arent-hermetically-sealed-yet) | A different version of `node` can change results without fabr noticing. |
 | [npm install-time behaviour is missing](#npm-packages-that-rely-on-install-time-behaviour) | Packages that need a `postinstall` script may not work. |
-| [No lock between fabr processes](#concurrent-fabr-processes-duplicate-work-rather-than-sharing-it) | Two builds at once may each do the same work. |
+| [No lock between fabr processes](#concurrent-fabr-processes-duplicate-work-rather-than-sharing-it) | Two builds at once may each do the same work; deleting the cache under `fabr run` removes the running program. |
 | [A force-killed watch leaves its program running](#watch-mode-can-leave-a-program-running-if-fabr-is-force-killed) | `kill -9` on fabr orphans the program it started. |
 
 ## Host tools aren't hermetically sealed yet
@@ -22,21 +22,18 @@ that feature: see [Testing](/reference/js/testing/),
 Fabr intends a build to depend only on its
 [declared inputs](/introduction/#the-same-result-every-time). The programs it runs from your
 machine are the exception today. `node`, which runs every JavaScript tool, and `sh`, which runs
-shell scripts, are found by searching your `PATH`, and what fabr records about them is the path
-where they were found, not which version they are.
+shell scripts, are found by searching your `PATH` when each step runs, and what fabr records about
+them is only their name: not where they were found, and not which version they are.
 
-- **A different `node` can change a result without invalidating the cache.** If you switch Node.js
-  versions in place, at the same path, fabr reuses results built with the old one. Builds on two
-  machines with different Node.js versions aren't guaranteed to match.
-- **A `PATH` that changes on every run defeats the cache.** `yarn` puts a new temporary directory
-  at the front of `PATH` each time it runs a command, so `node` is found at a different path on
-  every run, and steps that should be reused run again. Under `yarn`, `fabr test` re-runs the
-  tests every time for this reason.
+So **a different `node` can change a result without invalidating the cache.** After you switch
+Node.js versions, with `nvm use`, an upgrade, or a different `PATH`, fabr reuses results built with
+the old one, including passing test runs. Builds on two machines with different Node.js versions
+aren't guaranteed to match.
 
-**Workaround:** run `fabr` directly, not through `yarn` or another wrapper that changes `PATH`,
-and use the same Node.js version on machines that should produce the same results. After
-switching Node.js versions in place, delete the cache. The second problem costs time only; the
-results are still correct.
+**Workaround:** use the same Node.js version on machines that should produce the same results,
+and delete the cache after switching versions, or keep a cache for each version with
+`FABR_CACHE_DIR`. In CI, include the Node.js version in the cache key; see
+[Continuous integration](/guides/ci/#saving-it).
 
 ## npm packages that rely on install-time behaviour
 
@@ -67,8 +64,9 @@ to the cache in a single step, so two runs can't corrupt an entry between them.
 **Workaround:** none is needed for correctness. To avoid the repeated work, don't run two builds
 of the same project at once, or give each its own cache with `FABR_CACHE_DIR`.
 
-Relatedly, deleting the cache while a `fabr run` is in progress deletes the files of the program
-it is running.
+Relatedly, `fabr run` installs the program it runs in the cache, and keeps the install there to
+reuse on the next run, so deleting the cache while `fabr run` or `fabr run -w` is running deletes
+the files of the program it is running. Stop the program first.
 
 ## Watch mode can leave a program running if fabr is force-killed
 

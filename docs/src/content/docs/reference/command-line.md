@@ -51,12 +51,18 @@ fabr build mylib
 fabr build -DBUILD_TYPE=release mylib app
 ```
 
+Each name must be one the project declares, such as a target, optionally with a
+[constraint](#naming-targets-and-files). A path or a pattern (`mylib:build/*.js`, `./src`) is an
+error: to get at particular files, use `ls`, `cat` or `cp`. fabr checks every name before it starts,
+so if any of them is wrong, nothing is built.
+
 When nothing has changed since the last build, fabr prints `Already up to date`.
 
 ### `test`
 
 Compiles and runs the targets' tests, and prints a summary for each target. The tests run in a
-copy of their declared inputs, so they can't change your project directory.
+copy of their declared inputs, so they can't change your project directory. Targets are named as
+for [`build`](#build).
 
 ```sh
 fabr test mylib
@@ -67,8 +73,8 @@ fabr test --coverage mylib    # also measure code coverage
 A passing run is cached and isn't repeated until something the tests depend on changes. With `-u`,
 new and changed snapshots are written back into your source tree after a passing run, and each
 file is named as it is written. With `--coverage`, the tests are measured for code coverage: a
-summary is printed and an lcov report written, to `coverage/lcov.info` unless a directory is given
-(`--coverage=<dir>`). For JavaScript, see [Testing](/reference/js/testing/).
+summary is printed and an lcov report written to `coverage/lcov.info`, or to `<dir>/lcov.info`
+with `--coverage=<dir>`; the directory is relative to the current directory. For JavaScript, see [Testing](/reference/js/testing/).
 
 ### `run`
 
@@ -83,6 +89,12 @@ fabr run @npm:typescript:5.6.3:tsc --version  # a package's command-line program
 
 Everything after the target is passed to the program unchanged, including a `--`. Options meant
 for fabr go before the target.
+
+fabr installs the program, with everything it needs, into a directory in its cache, and keeps that
+directory for the next run of the same program from the same project with the same `-D` settings:
+running it again updates only the files that changed. Two copies of one program running at the same
+time each get a directory of their own. An installation that hasn't been used for 30 days is removed
+when fabr trims its cache.
 
 A [`serve`](/reference/standard-rules/#serve) target is the exception to "runs in your current
 directory": it runs in a directory containing the files it serves. `fabr run -w` restarts the
@@ -107,7 +119,9 @@ fabr ls @npm:esbuild
 fabr ls @pkg
 ```
 
-npm can't list every package it holds, so `fabr ls @npm` is an error.
+npm can't list every package it holds, or every package in a scope, so `fabr ls @npm` and
+`fabr ls @npm:@types` are errors; name a package instead, as in `fabr ls @npm:@types/node`.
+Likewise `fabr ls @fabr-home` is an error, and `fabr ls @fabr-home:@fabr-build` lists the scope.
 
 ### `cat`
 
@@ -198,7 +212,9 @@ fabr deps @dep:chai          # a catalog member, at the versions the catalog pin
 what each target declares and resolves versions exactly as a build would, which needs only each
 package's registry metadata. Only the properties that take packages are shown: a target named in
 one is listed by its name, whether it builds a package or plain files, and what a property that
-takes files names (`srcs`, `resources`) is left out. A reference that selects
+takes files names (`srcs`, `resources`) is left out. So are the tools a target runs, such as the
+TypeScript compiler or a `generate` target's `run` command, which are installed apart from the
+target's own packages. A target with no packages prints `No dependencies`. A reference that selects
 files (`mylib:build/*.js`) is an error: name the target.
 
 Two things are still computed, because the dependencies cannot be known without them:
@@ -255,8 +271,8 @@ fabr list-targetdefs js_package
 
 ### `list-properties`
 
-Lists the configuration settings with their current values, and the flags. `--json` gives the
-output as JSON.
+Lists the configuration settings with their current values, and the flags. `-l` adds where each
+is declared, and `--json` gives the output as JSON.
 
 ### `list-all`
 
@@ -302,7 +318,8 @@ line:
   `'mylib<BUILD_TYPE=release>'`.
 
 Selecting files matters to `ls`, `cat` and `cp`, and to `run`, where it picks which of a package's
-programs to run. `build`, `test` and `sync` work on the whole target and ignore it.
+programs to run. `build`, `test` and `sync` work on a whole target: naming files, or a path in your
+project, is an error.
 
 A constraint is the per-reference form of `-D`. The difference shows when you name more than one
 target:

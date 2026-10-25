@@ -61,11 +61,12 @@ matches nothing are both errors.
 
 | Name | Characters allowed |
 |---|---|
-| Property, target type | letters, digits, `_`, `@` |
-| Target | the same, plus `/`, `.`, `-` |
+| Property, target type | letters, digits, `_`, `@`, `-` |
+| Target | the same, plus `/` and `.` |
 
-Registries and catalogs are conventionally named with a leading `@` (`@npm`, `@pkg`), which isn't
-required.
+Every name starts with a letter, `_` or `@`, so `my-tool` and `@fabr-build` are names but `-x` and
+`2fa` are not. Registries and catalogs are conventionally named with a leading `@` (`@npm`,
+`@pkg`), which isn't required.
 
 ## References
 
@@ -83,6 +84,11 @@ srcs = mylib:build/*.js;              # files selected from a target
 A path is relative to the build file it is written in. It can use `../` to reach files elsewhere
 in the project, but not outside it. A name that is both a target and a directory means the target;
 write `./name` for the directory.
+
+A registry or catalog named on its own, as in `deps = @npm;`, names no package or files, and is an
+error (`'@npm' names a repository, not a package or files`). Name what you want from it:
+`@npm:lodash:4.17.21`. The [`ls` command](/reference/command-line/#ls) is the exception, listing
+what some repositories contain.
 
 ### Globbing
 
@@ -136,6 +142,10 @@ VERSION = 2.4.0;
 url = "https://example.com/releases/v${VERSION}/";
 deps = @npm:my-package:${VERSION};
 ```
+
+Without braces, the name is the letters, digits and `_` that follow the `$`, so a property whose
+name contains `-` or `@` needs braces: `$my-prop` substitutes `my` followed by the text `-prop`,
+while `${my-prop}` substitutes `my-prop`.
 
 The value is inserted as text, and every character of it is taken literally: a `*` in it matches
 only a `*`, and a [constraint](#constraints) or [rename](#projection-and-renaming) in it is part of
@@ -359,6 +369,24 @@ default TYPESCRIPT = @npm:typescript:5.6.3;
 Fabr and its plugins declare their settings this way, which is why a build file can set
 `TYPESCRIPT` itself without that being a second declaration of the name.
 
+### Properties that stand in for a group of names
+
+A property can have the name of a group of targets, the part before a `/` in names such as
+`@fabr-build/js`. It then answers every name in that group that nothing declares: the rest of the
+name is looked up in the property's value. Fabr's standard definitions use this to make the
+packages installed with fabr available by their own names:
+
+```
+default @fabr-build = @fabr-home:@fabr-build;
+```
+
+`@fabr-home` is the set of packages installed alongside fabr, and `@fabr-home:@fabr-build` the
+ones in its `@fabr-build` scope (`fabr ls @fabr-home:@fabr-build` lists them; see
+[`ls`](/reference/command-line/#ls)). So `@fabr-build/sass-pnp-importer` means the installed
+package, unless your project declares a target of that name, which takes precedence. Declaring
+a property or a target named `@fabr-build` yourself replaces the default, like any other
+[default](#default-properties).
+
 ### String properties
 
 A string property is one or more words separated by whitespace. Each word is a reference or a
@@ -440,7 +468,8 @@ command fails.
 In a `generate` target, the files that redirections keep are the target's result. If the target
 sets `output`, that chooses the result instead, from those files and from any files the commands
 wrote, and a kept file it doesn't match is left out. A kept file and a written file with the same
-name is an error.
+name is an error. Files that `incremental` selects are kept for the command's next run rather
+than added to the result; see [`generate`](/reference/standard-rules/#generate).
 
 ### Guarded properties
 
@@ -554,7 +583,7 @@ targetdef sync {
 | `REQUIRED` | Not a kind but a modifier, written before one: the property must be set. |
 
 `MAP`, `COMMAND` and `REWRITE` are checked: a value of the wrong form is an error, as is a missing
-`REQUIRED` property. `STRING` and `FILES` are not told apart when a build file is read. They
+`REQUIRED` property. `STRING`, `FILES` and `PACKAGES` are not told apart when a build file is read. They
 document what a property is for, and the rule that reads the property decides how to treat its
 value.
 

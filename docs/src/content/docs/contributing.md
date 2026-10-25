@@ -11,12 +11,13 @@ design discussion and contributions are all welcome.
 
 ## Repository layout
 
-The repository holds four packages, under `packages/`:
+The repository holds five packages, under `packages/`:
 
 | Package | What it contains |
 |---|---|
 | `core` (`@fabr-build/core`) | The engine: the build-file parser and model, the evaluation graph, dependency version selection, the cache, and the target types that aren't specific to a language (`generate`, `script`, `serve`, `catalog`, `patched`, `sync` and others). |
-| `js` (`@fabr-build/js`) | Everything for JavaScript and TypeScript: `js_package`, `js_test`, `js_bundle`, `js_script`, the Sass and css-module steps, the npm registry, and the three test runners. It is a plugin, loaded with `plugin @fabr-build/js;`, and core never refers to it. |
+| `js` (`@fabr-build/js`) | The rules for JavaScript and TypeScript: `js_package`, `js_test`, `js_bundle`, `js_script`, the Sass and css-module steps, and the npm registry. It is a plugin, loaded with `plugin @fabr-build/js;`, and core never refers to it. |
+| `js-tools` (`@fabr-build/js-tools`) | The programs those rules run, each a separate process: the TypeScript compiler driver, the bundler, Sass and PostCSS drivers, the coverage driver, and the three test runners. |
 | `cli` (`@fabr-build/cli`) | The `fabr` command: argument handling, progress display and error reporting. |
 | `sass-pnp-importer` (`@fabr-build/sass-pnp-importer`) | A standalone Sass importer that finds package stylesheets without a `node_modules` directory. |
 
@@ -29,17 +30,19 @@ Fabr builds and tests itself, with the same `fabr` command and the same plugin m
 project has:
 
 ```sh
-fabr build @fabr-build/core @fabr-build/js @fabr-build/cli
-fabr test  @fabr-build/core @fabr-build/js @fabr-build/cli e2e_tests
+fabr build all
+fabr test  all e2e_tests
 ```
+
+`all` is a property in `PROJECT.fabr` listing the five packages.
 
 To get a `fabr` to do that with, you need to build one from source first, which is what the Yarn
 scripts are for:
 
 | Command | What it does |
 |---|---|
-| `yarn build` | Compiles the packages with `tsc`, giving a first `fabr`. The `fabr` script at the top of the repository runs it. |
-| `yarn bootstrap` | Runs `yarn build`, uses the result to build the packages with fabr, and then has *that* fabr run every package's tests and the end-to-end tests. |
+| `yarn build` | Compiles the packages with `tsc`, giving a first `fabr`, which `yarn fabr` runs. |
+| `yarn bootstrap` | Runs `yarn build`, uses the result to build the packages with fabr and copy them into `bootstrap/`, and then has *that* fabr run every package's tests and the end-to-end tests. The `fabr` script at the top of the repository runs the fabr in `bootstrap/`. |
 | `yarn dist` | Runs `yarn build`, the tests under jest, and eslint. |
 
 Before proposing a change, run both `yarn bootstrap` and `yarn dist`. The first shows that fabr
@@ -64,6 +67,6 @@ The cache is at `~/Library/Caches/fabr` on macOS and `~/.cache/fabr` on Linux, o
 ## Writing a plugin
 
 Support for a language or ecosystem is a plugin: an npm package that exports an `activate()`
-function returning its rules, registries and `.fabr` files. A build file loads it with
+function returning its rules, repository types and `.fabr` files. A build file loads it with
 `plugin <package>;`. [Writing a plugin](/developer/writing-a-plugin/) walks through building one, and
 [Plugin reference](/developer/plugins/) documents the interface.

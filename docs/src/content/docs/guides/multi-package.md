@@ -105,6 +105,12 @@ A package can use a sibling in other ways than as a dependency:
   one sibling, the one your target names directly is used; see
   [Packages built in your project](/reference/js/dependencies/#packages-built-in-your-project).
 - **As a test-only dependency:** `test_deps = @acme/test-helpers;`.
+- **Under another name:** `deps = @acme/core -> core;`, imported as `core`; see
+  [Renaming a package](/reference/js/dependencies/#renaming-a-package).
+
+`fabr deps @acme/app` prints what a package depends on, siblings and registry packages together,
+with the versions selected; see
+[Seeing which versions were chosen](/reference/js/dependencies/#seeing-which-versions-were-chosen).
 
 Dependencies can't form a cycle. If two packages depend on each other, fabr reports
 `Circular dependency: '@acme/app' depends on itself` and shows the references that make the loop.

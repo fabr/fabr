@@ -1,6 +1,6 @@
 ---
 title: Continuous integration
-description: How to run fabr in CI — installing it, what to cache, what its output and exit status look like, collecting test results, and what isn't available yet.
+description: How to run fabr in CI — installing it, what to cache, what its output and exit status look like, collecting test results and coverage, and what isn't available yet.
 ---
 
 Running fabr in CI needs little setup: install Node.js and fabr, run the same commands you run
@@ -12,14 +12,15 @@ fetches packages as part of the build.
 steps:
   - uses: actions/checkout@v4
   - uses: actions/setup-node@v4
+    id: node
     with:
       node-version: 22
-  - run: npm install -g @fabr-build/cli@0.2.1
+  - run: npm install -g @fabr-build/cli@0.3.1
   - uses: actions/cache@v4
     with:
       path: ~/.cache/fabr
-      key: fabr-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
-      restore-keys: fabr-${{ runner.os }}-${{ runner.arch }}-
+      key: fabr-${{ runner.os }}-${{ runner.arch }}-${{ steps.node.outputs.node-version }}-${{ github.sha }}
+      restore-keys: fabr-${{ runner.os }}-${{ runner.arch }}-${{ steps.node.outputs.node-version }}-
   - run: fabr test ALL
 ```
 
@@ -109,6 +110,10 @@ start of the next.
   project changes.
 - **Key it by operating system and architecture.** Platform-specific packages and the results
   built with them differ between platforms, so a cache shared across them mostly grows.
+- **Key it by Node.js version.** Fabr doesn't track which `node` a step ran with, so a cache built
+  with one Node.js version would be reused, passing test runs included, by a job running
+  another. The example takes the exact version from `actions/setup-node`'s output, so a new
+  Node.js release starts a new cache.
 - **Save it after `fabr` has finished**, not while it is running. A finished run leaves nothing
   half-written behind.
 - **Use an archive format that keeps hardlinks and modification times.** The cache stores each
@@ -134,13 +139,10 @@ Two things qualify that:
   publishes or deploys, a cache that an untrusted job could have saved. On GitHub, a pull request
   from a fork can't write to the base branch's cache; with other systems and self-hosted runners,
   check how caches are scoped, or publish from a job that starts with an empty cache.
-- **Tools on the runner aren't tracked by version.** If a runner image replaces `node` with a
-  different version at the same path, results built with the old one are reused.
-  `actions/setup-node` installs each version at its own path, so the problem doesn't arise there.
-  See [Known limitations](/known-limitations/#host-tools-arent-hermetically-sealed-yet).
-
-Run `fabr` directly, not through `yarn` or another wrapper that changes `PATH`: fabr records where
-it found `node`, and a path that changes on each run makes steps run again.
+- **Tools on the runner aren't tracked by version.** A cache restored into a job with a different
+  `node` serves results built with the old one, which is why the cache key above includes the
+  Node.js version. See
+  [Known limitations](/known-limitations/#host-tools-arent-hermetically-sealed-yet).
 
 ### Size
 
@@ -148,6 +150,10 @@ Fabr trims the cache itself. About once a day, at the end of a run, it removes e
 haven't been used for 30 days. There is no command or setting for this. In CI the trimmed cache
 only replaces the stored one if that run's cache is saved, which is another reason to save on
 every run.
+
+`fabr run` also keeps the installed files of each program it runs in the cache, to reuse on the
+next run. In CI they add to the size of the saved cache, and are trimmed like anything else once
+they go unused for 30 days.
 
 ## Test results
 
@@ -163,6 +169,22 @@ fabr cp '@acme/core<BUILD_OPERATION=test>:ctrf-report.json' reports/core
 The report exists only for a passing run. When tests fail, the failures are in the log and there
 is no report to collect.
 
+## Coverage
+
+`fabr test --coverage` also measures code coverage. It prints a summary line and writes an lcov
+report, which Codecov, Coveralls, SonarQube and most CI coverage tools read:
+
+```sh
+fabr test --coverage=reports/coverage ALL
+```
+
+This writes `reports/coverage/lcov.info`, with each source named by its path in your project;
+`--coverage` alone writes `coverage/lcov.info`. The directory is relative to the current
+directory. Like the CTRF report, coverage is reported only when every test passes. A run with
+`--coverage` is cached separately from one without it, so a job that always passes `--coverage`
+reuses its own earlier results. [Testing](/reference/js/testing/#coverage) describes what is
+measured.
+
 ## Network access
 
 Fabr contacts the npm registry (or the registry `NPM_REPOSITORY_URL` names), the hosts that
@@ -174,8 +196,10 @@ registry's packages are downloaded from, and the URLs of any `fetch` targets.
 - **Private registries** take credentials from `.npmrc`, where a value can come from the
   environment: `//npm.example.com/:_authToken=${NPM_TOKEN}`. See
   [Private registries](/reference/js/dependencies/#private-registries).
-- **Downloads aren't retried.** A network failure fails the build; run it again, and what was
-  downloaded before the failure is kept.
+- **A download that fails transiently is retried** twice, after one second and then four: a
+  connection that is refused, drops or times out, or a `408`, `429` or `5xx` response. Any other
+  failure, or a third failure, fails the build; run it again, and what was downloaded before the
+  failure is kept.
 
 ## Build steps and the environment
 
@@ -204,7 +228,6 @@ memory, limit each test process instead, with `NODE_OPTIONS` in `test_env`.
 - **A shared or remote cache.**
 - **A limit on parallel steps.**
 - **A machine-readable log, or CI annotations.**
-- **A test report for a failing run.**
-- **Coverage reports.**
+- **A test report or coverage report for a failing run.**
 - **Building in a container image, lint and format steps, and reports of outdated or vulnerable
   dependencies** aren't part of fabr yet.

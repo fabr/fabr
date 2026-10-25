@@ -57,6 +57,8 @@ npm registry, which takes a package name and a version:
 | `@npm:picomatch:4.0.5` | The package. |
 | `@npm:picomatch:4.0.5:package.json` | One file from it. |
 
+The registry on its own, `@npm`, names no files, and using it as a reference is an error.
+
 ### Naming the files
 
 A file set gives each file a name, and whatever consumes the set sees those names, not the paths
@@ -107,8 +109,8 @@ Two things differ from variables in a script:
 - **Order doesn't matter.** A property can be used before the line that declares it, and its
   value is worked out only when something needs it.
 
-Properties share one namespace with targets. A property name may contain letters, digits, `_` and
-`@`; a target name may also contain `/`, `.` and `-`.
+Properties share one namespace with targets. A property name may contain letters, digits, `_`,
+`@` and `-`; a target name may also contain `/` and `.`.
 
 ## Configuration
 
@@ -172,7 +174,7 @@ A rule is what does the building. Each rule applies to one target type and one *
 
 Rules are written in TypeScript and ship with fabr's core and its plugins; a build file can't
 define one. When a target type has several rules for an operation, the one that matches the
-current settings most specifically is used. That is how, for example, a `js_package` with
+current settings and the target's own properties most specifically is used. That is how, for example, a `js_package` with
 `test_framework = jest` is tested differently from one with `vitest`.
 
 ## Packages
@@ -182,14 +184,22 @@ A package is a file set that also has a name, a version and dependencies on othe
 
 The difference shows in how a package is used:
 
-- **Listed whole as a dependency** (`deps = hello;`), it is made available to imports under its
-  own name, together with the packages it depends on.
-- **With files selected from it** (`hello:*.js`, `hello/package.json`), you get those files and
-  nothing more: no name, no dependencies.
+- **Listed whole in a property that takes packages** (`deps = hello;`), it is made available to
+  imports under its own name, together with the packages it depends on.
+- **With files selected from it** (`hello:*.js`, `hello/package.json`), or listed in a property
+  that takes files (`resources = hello;`), you get its files and nothing more: no name, no
+  dependencies.
 
-Each target chooses the versions of its dependencies, and of their dependencies, for itself. Two
-targets can therefore end up with different versions of the same package. A **catalog** chooses
-versions once for every target that uses it:
+Which properties take packages is part of each target type's definition; the
+[language reference](/reference/syntax/#property-kinds) explains the difference.
+
+Each target chooses the versions of its dependencies, and of their dependencies, for itself. A
+package built in your project, such as `hello`, takes part in that choice in the same way as a
+package from the registry, so it can conflict with a registry package of the same name and be
+settled the same way; see
+[Packages built in your project](/reference/js/dependencies/#packages-built-in-your-project). Two
+targets can end up with different versions of the same package. A **catalog** chooses versions
+once for every target that uses it:
 
 ```
 catalog @pkg {
@@ -208,3 +218,29 @@ js_package ui {
 Catalogs and registries don't have to be named with a leading `@`. It is a convention that makes
 them easy to tell from targets.
 :::
+
+### Choosing versions comes before building
+
+A build happens in two steps. First fabr **resolves** what a target depends on: it reads the
+declarations, chooses a version for every package in the tree, and finds any version conflict,
+using only the registry's metadata. Then it builds the target, downloading the chosen packages and
+building the targets they include. So a conflict fails the build before anything is downloaded,
+and a target is built only when something being built needs it.
+
+`fabr deps` stops after the first step. It prints the tree a build would use, without downloading
+any package or building any target:
+
+```
+$ fabr deps app
+app
+deps
+├── hello
+│   ├── picomatch:4.0.2
+│   └── chalk:^5.0.0 -> 5.0.0
+└── debug:4.3.4
+    ├── ms:2.1.2
+    └── supports-color:* (p) (n)
+```
+
+`hello` is a target in the project, shown by name: it has no version until it is built. The
+[`deps` command](/reference/command-line/#deps) explains the rest of the notation.
